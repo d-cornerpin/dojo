@@ -55,10 +55,16 @@ const POKE_THRESHOLDS: Record<string, { first: number; second: number; escalate:
 
 const POKE_INTERVAL_MS = 60_000; // 60 seconds
 
-const SCHEDULER_INTERVAL_MS = 30_000; // 30 seconds, scheduler checks run separately
+// ⟨TOMBSTONE⟩ SWEEP CORE-2 item 3 (SWEEP-F T2): `SCHEDULER_INTERVAL_MS` and `schedulerTimer`
+// lived here, and `startPokeLoop`/`stopPokeLoop` installed and cleared the scheduler's clock.
+// They are `scheduler/clock.ts`'s now, with the 30-second period carried verbatim. The
+// coupling was not cosmetic: the scheduler's ONLY start sat inside `index.ts` 4c's
+// `isSetupCompleted() && isPMEnabled()` gate, so turning the project manager OFF silently
+// stopped every reminder and recurring task on the box.
+// requirement preserved: the immediate first check and the 30s period, both carried into
+// `startScheduler()`; asserted by `scheduler/__tests__/scheduler-owns-its-clock.test.ts` A1.
 
 let pokeLoopTimer: ReturnType<typeof setInterval> | null = null;
-let schedulerTimer: ReturnType<typeof setInterval> | null = null;
 
 // ── PM Agent System Prompt ──
 
@@ -373,22 +379,6 @@ export function startPokeLoop(): void {
       });
     });
   }, POKE_INTERVAL_MS);
-
-  // Start separate scheduler check at 30s interval
-  if (!schedulerTimer) {
-    // Immediate first check
-    import('../scheduler/runner.js').then(({ checkScheduledTasks }) => {
-      checkScheduledTasks().catch(err => logger.error('Scheduler initial check failed', { error: err instanceof Error ? err.message : String(err) }));
-    });
-
-    schedulerTimer = setInterval(() => {
-      import('../scheduler/runner.js').then(({ checkScheduledTasks }) => {
-        checkScheduledTasks().catch(err => logger.error('Scheduler tick failed', { error: err instanceof Error ? err.message : String(err) }));
-      });
-    }, SCHEDULER_INTERVAL_MS);
-
-    logger.info(`Scheduler started, checking every ${SCHEDULER_INTERVAL_MS / 1000}s`);
-  }
 }
 
 export function stopPokeLoop(): void {
@@ -396,11 +386,7 @@ export function stopPokeLoop(): void {
     clearInterval(pokeLoopTimer);
     pokeLoopTimer = null;
   }
-  if (schedulerTimer) {
-    clearInterval(schedulerTimer);
-    schedulerTimer = null;
-  }
-  logger.info('Poke loop and scheduler stopped');
+  logger.info('Poke loop stopped');
 }
 
 // ── Phase B.1: event-driven PM wake on transitions ──

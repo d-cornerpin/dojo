@@ -25,6 +25,8 @@ import {
   patchWork, setTrackerStatus, upholdClaim, throwBackClaim, resetRevertCount,
   requestUserVerdict, clearUserVerdict, deliveryForTaskClose, deliveryForCompletedChildren,
 } from '../work/tracker-store.js';
+// SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
+import { setNextRun } from '../work/next-run.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, findTaskOriginChain, renderTaskOriginChain } from './delivery-evidence.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
@@ -1283,12 +1285,15 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       };
       const nextRun = calculateNextRun(taskForCalc) ?? scheduledStart;
 
-      noteUnsettled(patchWork(taskId, {
-        scheduled_start: tsToMs(scheduledStart), repeat_interval: repeatInterval ?? null,
-        repeat_unit: repeatUnit ?? null, repeat_end_type: repeatEndType,
-        repeat_end_value: repeatEndValue ?? null, repeat_days_of_week: repeatDaysOfWeek ?? null,
-        anchor_local: anchorTime ?? null, next_run_at: tsToMs(nextRun),
-        schedule_status: 'waiting',
+      noteUnsettled(setNextRun(taskId, {
+        at: tsToMs(nextRun),
+        reason: 'a schedule was created; this is its first fire time',
+        alongside: {
+          scheduled_start: tsToMs(scheduledStart), repeat_interval: repeatInterval ?? null,
+          repeat_unit: repeatUnit ?? null, repeat_end_type: repeatEndType,
+          repeat_end_value: repeatEndValue ?? null, repeat_days_of_week: repeatDaysOfWeek ?? null,
+          anchor_local: anchorTime ?? null, schedule_status: 'waiting',
+        },
       }), 'trackerCreateTask: schedule recorded', { taskId });
 
       // SWEEP CORE-1 CT2 — DECLARE WHAT THIS SCHEDULE OWES A PERSON, ONCE, HERE.
@@ -2538,10 +2543,16 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
           // that have already fired, in that case leave whatever status was
           // there (typically 'completed' or 'idle').
           if (nextRun) {
-            noteUnsettled(patchWork(taskId, { next_run_at: tsToMs(nextRun), schedule_status: 'waiting' }), 'trackerEditTask: next run recomputed', { taskId });
+            noteUnsettled(setNextRun(taskId, {
+              at: tsToMs(nextRun), alongside: { schedule_status: 'waiting' },
+              reason: 'a schedule field was edited, so the next fire time was recomputed',
+            }), 'trackerEditTask: next run recomputed', { taskId });
           } else if (row.scheduled_start === null) {
             // Schedule was cleared entirely, drop next_run_at too.
-            noteUnsettled(patchWork(taskId, { next_run_at: null, schedule_status: 'idle' }), 'trackerEditTask: schedule cleared', { taskId });
+            noteUnsettled(setNextRun(taskId, {
+              at: null, alongside: { schedule_status: 'idle' },
+              reason: 'the schedule was cleared, so there is no next fire time',
+            }), 'trackerEditTask: schedule cleared', { taskId });
           }
         }
       } catch (recalcErr) {
@@ -3466,9 +3477,10 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
   // missed_runs_paused_at = NULL: an explicit resume also disarms the D12
   // engine fallback for a pause the missed-runs detector set.
   noteUnsettled(setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'schedule resumed; waiting for the next run' }), 'schedule resumed', { taskId });
-  noteUnsettled(patchWork(taskId, {
-    is_paused: 0, schedule_status: 'waiting',
-    next_run_at: tsToMs(nextRun), missed_runs_paused_at: null,
+  noteUnsettled(setNextRun(taskId, {
+    at: tsToMs(nextRun),
+    alongside: { is_paused: 0, schedule_status: 'waiting', missed_runs_paused_at: null },
+    reason: 'the schedule was resumed by the agent; walked to the next anchor',
   }), 'trackerResumeSchedule: schedule resumed', { taskId });
   const freshResumed = getTask(taskId);
   if (freshResumed) broadcast({ type: 'tracker:task_updated', data: freshResumed });
@@ -3534,9 +3546,10 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
       return `Could not compute a next-run for "${title}" (likely past repeat_end_value or anchor missing). Task stays paused; investigate manually.`;
     }
     noteUnsettled(setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'missed runs skipped; back on the schedule' }), 'missed runs skipped', { taskId });
-    noteUnsettled(patchWork(taskId, {
-      is_paused: 0, schedule_status: 'waiting',
-      next_run_at: tsToMs(nextRun), missed_runs_paused_at: null,
+    noteUnsettled(setNextRun(taskId, {
+      at: tsToMs(nextRun),
+      alongside: { is_paused: 0, schedule_status: 'waiting', missed_runs_paused_at: null },
+      reason: 'the agent resolved missed runs as SKIP; walked to the next future anchor',
     }), 'trackerResolveMissedRuns: missed runs skipped', { taskId });
     logger.info('Missed-runs resolved: skip', { taskId, nextRun }, agentId);
     return `OK: task "${title}" unpaused. All missed slots skipped. Next run: ${nextRun}.`;
@@ -3548,9 +3561,14 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
   // next anchor and the task resumes its normal cadence.
   const nowIso = new Date().toISOString();
   noteUnsettled(setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'catch-up run requested; back on the schedule now' }), 'catch-up run requested', { taskId });
-  noteUnsettled(patchWork(taskId, {
-    is_paused: 0, schedule_status: 'waiting',
-    next_run_at: tsToMs(nowIso), missed_runs_paused_at: null,
+  // ⚠ ONE OF THE TWO INSTANTS IN THE PRODUCT THAT DOES NOT COME FROM `calculateNextRun`, and
+  // it is declared as such in `work/next-run.ts`: the owner asked for ONE catch-up run, so the
+  // fire time is NOW by request rather than by cadence. `onTaskRunComplete` recomputes the
+  // natural anchor once that run closes.
+  noteUnsettled(setNextRun(taskId, {
+    at: tsToMs(nowIso),
+    alongside: { is_paused: 0, schedule_status: 'waiting', missed_runs_paused_at: null },
+    reason: 'the agent resolved missed runs as RUN_NOW; one catch-up run fires on the next tick',
   }), 'trackerResolveMissedRuns: catch-up run scheduled now', { taskId });
   logger.info('Missed-runs resolved: run_now', { taskId }, agentId);
   return `OK: task "${title}" unpaused and scheduled to fire on the next scheduler tick (within ~1 minute). Schedule resumes on its normal anchor after this run completes.`;

@@ -24,8 +24,10 @@ import { staleOverrideRequests, resolveOverrideRequest } from '../work/override-
 import {
   patchWork, setTrackerStatus, bumpWorkAttempts, upholdClaim, clearUserVerdict,
   recordValidationEscalation, deleteTrackerRow, deliveryForTaskClose,
-  deliveryForAgentSince, stopLiveSchedule,
+  deliveryForAgentSince,
 } from '../work/tracker-store.js';
+// SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
+import { setNextRun, clearLiveSchedule } from '../work/next-run.js';
 import { workSettled, noteUnsettled } from '../work/store.js';
 import {
   claimOccurrence, releaseOccurrence, settleOccurrence, occurrenceOf, inFlightOccurrence,
@@ -367,7 +369,7 @@ export const VALIDATION_ESCALATION_MIN = 5;
 // Everything this function does with the rows is unchanged.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
+export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
   const db = getDb();
   try {
     // OWNER-SCOPE RULE (owner ruling, 2026-07-18): the ask-the-user escalation
@@ -551,9 +553,10 @@ async function autoResolveStaleMissedRunPauses(): Promise<void> {
           reason: `missed-runs pause unresolved for ${MISSED_RUNS_AUTO_RESOLVE_MINUTES} minutes; skipped to the next anchor`,
         });
         if (releasedRes.kind !== 'applied') continue;
-        noteUnsettled(patchWork(taskId, {
-          is_paused: 0, schedule_status: 'waiting',
-          next_run_at: tsToMs(nextRun), missed_runs_paused_at: null,
+        noteUnsettled(setNextRun(taskId, {
+          at: tsToMs(nextRun),
+          alongside: { is_paused: 0, schedule_status: 'waiting', missed_runs_paused_at: null },
+          reason: 'D12 auto-resolved a stale missed-runs pause; skipped to the next future anchor',
         }), 'scheduler: stale missed-run pause auto-resolved', { taskId });
         writeTaskLog({
           taskId,
@@ -672,24 +675,39 @@ export async function checkScheduledTasks(): Promise<void> {
   // of the SAME instant, taken once, so a tick cannot compare two different "nows".
   const nowMs = Date.parse(now);
 
-  // ── Cleanup ──
-  cleanupOrphanedRuns();
-  cleanupStaleRuns();
-  pruneTerminalTasks();
-  resumeExpiredPauses();
+  // ── SWEEP CORE-2 item 3 (SWEEP-F T2): THE TICK KEEPS ONLY SCHEDULING. ──
+  //
+  // Six sweeps ran here and none of them was about deciding which occurrence fires now. They
+  // ran here for one reason, stated in their own comments: the scheduler tick was the nearest
+  // 30-second clock. That is exactly the reason PHASE-2 T9 built `work/work-reaper.ts` to
+  // retire — one declared owner for every periodic obligation sweep, each with the clock its
+  // cadence was CARRIED from. They are the reaper's kinds now:
+  //
+  //   cleanupOrphanedRuns + cleanupStaleRuns    -> `orphaned-and-stale-runs`      @30s
+  //   resumeExpiredPauses                       -> `expired-pauses`               @30s
+  //   sweepUnvalidatedTasksForUserEscalation    -> `validation-escalation`        @30s
+  //   closeSteeredRunsThatDelivered             -> `steered-run-delivery-close`   @30s
+  //   pruneTerminalTasks                        -> `terminal-task-prune`          @1h
+  //
+  // (The plan wrote "the five non-scheduling sweeps". Re-derived at HEAD it is SIX: SWEEP
+  // CORE-1 CT2 added `closeSteeredRunsThatDelivered` after the plan was written, and its own
+  // comment gives the same reason the other five had — "it rides the scheduler tick because
+  // that is where run lifecycle already lives". The two 12-hour sweeps the plan also counted
+  // left at PHASE-2 T9 and were already the reaper's.)
+  //
+  // WHAT STAYS, AND WHY: `autoResolveStaleMissedRunPauses` advances the cadence past slots
+  // that were missed while the box was down. That IS scheduling — it walks the recurrence and
+  // writes the next fire time — and moving it because it happens to have a ten-minute cliff
+  // would be filing a thing by its clock instead of by its job.
+  //
+  // ORDERING, STATED: the six no longer run immediately before the due scan in the same
+  // function. Both clocks are 30 seconds, so the worst case is that a row repaired by the
+  // reaper is picked up by the due scan one tick later than it would have been. Nothing in
+  // the six is a PRECONDITION of the scan: the occurrence claim is a UNIQUE constraint, not
+  // an assumption about what already ran.
+  //
   // D12: engine fallback for missed-runs pauses the model never resolved.
   await autoResolveStaleMissedRunPauses();
-  // PHASE-2 T9: the two 12-hour auto-expire sweeps moved to the ONE reaper
-  // (`work/work-reaper.ts`, kind `stale-override-and-verdict-requests`). They ran here
-  // because the scheduler tick was the nearest 30-second clock, not because they are
-  // scheduling — their deadline is `DEADLINES.stale_request`, which the reaper now owns
-  // alongside the other twelve cliffs. The functions themselves are unchanged and are
-  // exported as `sweepStaleRequests` below; the CADENCE is carried, not re-chosen.
-  // 5-minute validation escalation: if PM hasn't validated within the
-  // threshold, ask the user via primary chat (and iMessage if available).
-  await sweepUnvalidatedTasksForUserEscalation();
-  // SWEEP CORE-1 CT2: the VERIFY rung — a steered run closes when the message lands.
-  await closeSteeredRunsThatDelivered();
 
   // PHASE-6 T0C-W: this WHERE was the tree's most literal statement of what "overdue"
   // means, so it IS `dueScope()` now — the one declaration `work_update(filter:"overdue")`
@@ -758,7 +776,10 @@ export async function checkScheduledTasks(): Promise<void> {
             // in the ISO `now` this scheduler string-compares against, so a
             // same-date space value reads as already due and the defer would
             // collapse to "due again next tick". ISO keeps the defer honest.
-            noteUnsettled(patchWork(taskId, { next_run_at: Date.now() + 30_000 }, { touch: false }), 'scheduler: fire deferred 30s after a lost claim', { taskId });
+            noteUnsettled(setNextRun(taskId, {
+              at: Date.now() + 30_000, touch: false,
+              reason: 'a dependency is not complete; re-check this SAME occurrence in 30s',
+            }), 'scheduler: fire deferred 30s after a lost claim', { taskId });
             continue;
           }
         }
@@ -1129,7 +1150,11 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
       noteUnsettled(setTrackerStatus(taskId, 'on_deck', {
         by: 'scheduler', actorId: 'scheduler', reason: 'run finished; waiting for the next occurrence',
       }), 'scheduler: run finished, waiting for the next occurrence', { taskId });
-      noteUnsettled(patchWork(taskId, { next_run_at: tsToMs(nextRun), schedule_status: 'waiting', last_run_at: tsToMs(now) }), 'scheduler: run finished, waiting for the next occurrence', { taskId });
+      noteUnsettled(setNextRun(taskId, {
+        at: tsToMs(nextRun),
+        alongside: { schedule_status: 'waiting', last_run_at: tsToMs(now) },
+        reason: 'a run finished and the schedule has another occurrence',
+      }), 'scheduler: run finished, waiting for the next occurrence', { taskId });
     });
   } else if (failedFinalRun) {
     // D8: final run failed, keep the failure VISIBLE (see block comment above).
@@ -1239,17 +1264,29 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
 // When a reminder occurrence is dropped (its schedule is terminated on a
 // 'fallen' transition, or an orphaned run is swept), the owner asked to be
 // reminded of something and it is NOT going to happen. Tell them, in plain
-// language: a role='system' message straight into the primary agent's chat + a
-// chat:message broadcast, so it renders in the owner's chat history without
-// waking any agent turn (role='system' rows are dropped by the model-message
-// builder and matched by neither the pending-engine-event nor the waiting-human
-// selector). The "Heads up:" prefix is load-bearing: it makes the note render
-// in the owner's DEFAULT (non-wordy) chat, not just wordy mode.
-// NOTE: unlike the failed-final-run owner note above (converted to a model-visible
-// NOTICE in Phase 0.1), this owner heads-up still rides role='system' (owner-facing
-// only, the primary's model does not relay it). This site is outside the Phase 0
-// scope; if the demolition is extended here, convert it to postAgentNotice the
-// same way.
+// language.
+//
+// ── SWEEP CORE-2 item 3 (SWEEP-F T2): RE-POINTED OFF THE DEAD CHANNEL. ──
+// This was the LAST site in this file still writing a bare `role='system'` chat row, and the
+// comment that stood here admitted the whole defect while calling it a design: *"role='system'
+// rows are dropped by the model-message builder ... this owner heads-up still rides
+// role='system' (owner-facing only, the primary's model does not relay it) ... if the
+// demolition is extended here, convert it to postAgentNotice the same way."* It is extended
+// here, and the reason is not tidiness:
+//
+//   THE OWNER IS NOT AT THE DASHBOARD. This note exists for the one case where a reminder the
+//   owner ASKED FOR is never going to happen. Written as a `role='system'` chat row it renders
+//   in the dashboard chat history and NOWHERE ELSE — the primary's model never sees it, so it
+//   cannot relay it by iMessage when the owner is away, cannot answer a question about it, and
+//   cannot offer to set the reminder up again. The note reached the one surface the owner is
+//   least likely to be looking at when a reminder silently dies.
+//
+// It is now the same idiom as the failed-final-run owner note ~130 lines above (Phase 0.1's
+// conversion): a model-VISIBLE awareness NOTICE, `role='user'` / `origin_kind='engine'`, from
+// the Scheduler as a SUBSYSTEM (`selfIntro: false` — "this is the Scheduler agent" would
+// introduce an agent that does not exist). OR2's shape: the platform detects, the AGENT
+// speaks. The owner-facing sentence is carried BYTE-FOR-BYTE, including the "Heads up:" prefix
+// (`OWNER_ALERT_HEADS_UP_PREFIX`), which the visibility rules match on.
 export function postSkippedReminderHeadsUp(taskId: string, reason: string): void {
   try {
     const db = getDb();
@@ -1266,18 +1303,24 @@ export function postSkippedReminderHeadsUp(taskId: string, reason: string): void
       `${OWNER_ALERT_HEADS_UP_PREFIX} I skipped a reminder${when ? ` (set for ${when})` : ''}, "${what}", because ${reason}. ` +
       `Let me know if you still want it and I will set it up again.`;
     const primaryId = getPrimaryAgentId();
-    const ownerMsgId = uuidv4();
-    insertMessage({ id: ownerMsgId, agentId: primaryId, role: 'system', content: ownerMsg });
-    broadcast({
-      type: 'chat:message',
-      agentId: primaryId,
-      message: {
-        id: ownerMsgId, agentId: primaryId, role: 'system' as const,
-        content: ownerMsg,
-        tokenCount: null, modelId: null, cost: null, latencyMs: null,
-        createdAt: new Date().toISOString(),
-      },
+    postAgentNotice({
+      toAgentId: primaryId,
+      fromName: 'Scheduler',
+      selfIntro: false,
+      intent: 'reminder_skipped_owner',
+      brief: ownerMsg,
     });
+    // Wake the primary so it relays the skipped reminder this turn rather than waiting for an
+    // unrelated trigger. Best-effort: the notice is already persisted in the awareness lane and
+    // surfaces on the next assembled context regardless. Copies the alertMissedRuns wake idiom.
+    try {
+      const runtime = getAgentRuntime();
+      runtime.handleMessage(primaryId, '[scheduler: skipped-reminder note pending]').catch((err) => {
+        logger.warn('postSkippedReminderHeadsUp: primary wake failed', {
+          taskId, error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    } catch { /* runtime not ready, the notice is in the store and is read next time */ }
   } catch (err) {
     logger.warn('postSkippedReminderHeadsUp failed (non-fatal)', {
       taskId, error: err instanceof Error ? err.message : String(err),
@@ -1312,7 +1355,7 @@ export function terminateLiveScheduleOnFallen(
   const scheduleIsLive = row.schedule_status === 'waiting' || row.schedule_status === 'running';
   if (!scheduleIsLive) return { terminated: false, runsSkipped: 0, isReminder };
 
-  const stopped = { changes: stopLiveSchedule(taskId) ? 1 : 0 };
+  const stopped = { changes: clearLiveSchedule(taskId) ? 1 : 0 };
   if (stopped.changes !== 1) {
     // Raced with another terminator; leave the winner's outcome intact.
     return { terminated: false, runsSkipped: 0, isReminder };
@@ -1352,7 +1395,7 @@ export function terminateLiveScheduleOnFallen(
  * Find in-flight occurrences whose assigned agent is terminated.
  * Auto-complete them so the task can move on (or finish if it was the last run).
  */
-function cleanupOrphanedRuns(): void {
+export function cleanupOrphanedRuns(): void {
   const orphans = sweepTerminatedAgentOccurrences();
 
   if (orphans.length === 0) return;
@@ -1389,7 +1432,7 @@ function cleanupOrphanedRuns(): void {
  * ago, the agent has stalled and the run should be failed so the scheduler can
  * retry on the next cycle.
  */
-function cleanupStaleRuns(): void {
+export function cleanupStaleRuns(): void {
   const db = getDb();
   const AGENT_IDLE_THRESHOLD_MINUTES = 30;
   // PHASE-6 T10: the value and its v2.3.8 reasoning live in `agent/stuck-thresholds.ts`
@@ -1596,7 +1639,10 @@ function recoverMissingNextRun(taskId: string): void {
 
   const nextRun = calculateNextRun(scheduledTask);
   if (nextRun) {
-    noteUnsettled(patchWork(taskId, { next_run_at: tsToMs(nextRun), schedule_status: 'waiting' }), 'scheduler: missing next_run_at recovered', { taskId });
+    noteUnsettled(setNextRun(taskId, {
+      at: tsToMs(nextRun), alongside: { schedule_status: 'waiting' },
+      reason: 'a recurring row carried its repeat config with no fire time; recomputed so it can be seen again',
+    }), 'scheduler: missing next_run_at recovered', { taskId });
     if (task.status !== 'on_deck' && task.status !== 'in_progress') {
       noteUnsettled(setTrackerStatus(taskId, 'on_deck', {
         by: 'scheduler', actorId: 'scheduler',
@@ -1673,7 +1719,10 @@ export function forceResetStuckRecurringTask(taskId: string): void {
       by: 'scheduler', actorId: 'scheduler',
       reason: 'this run is failed; the schedule rejoins at its next occurrence',
     }), 'scheduler: failed run rejoins at next occurrence', { taskId });
-    noteUnsettled(patchWork(taskId, { schedule_status: 'waiting', next_run_at: tsToMs(nextRun) }), 'scheduler: stuck recurring task reset onto its next occurrence', { taskId });
+    noteUnsettled(setNextRun(taskId, {
+      at: tsToMs(nextRun), alongside: { schedule_status: 'waiting' },
+      reason: 'a structurally stuck recurring row was force-reset onto its next occurrence',
+    }), 'scheduler: stuck recurring task reset onto its next occurrence', { taskId });
     logger.warn('Scheduler: force-reset stuck recurring task to on_deck/waiting', { taskId, title: task.title, nextRun });
   } else {
     const frDelivery = deliveryForTaskClose(taskId);
@@ -1699,8 +1748,14 @@ export function forceResetStuckRecurringTask(taskId: string): void {
 // ── Prune terminal tasks ──
 
 const TERMINAL_TASK_CAP = 50;
-let lastPruneAt = 0;
-const PRUNE_INTERVAL_MS = 3600_000; // Once per hour is plenty
+
+// ⟨TOMBSTONE⟩ `lastPruneAt` + `PRUNE_INTERVAL_MS = 3600_000` lived here: a module-scope
+// wall-clock throttle inside a function called by a 30-second timer, so the function ran 120
+// times an hour to do nothing 119 of them. SWEEP CORE-2 item 3 gave the prune its own reaper
+// kind (`terminal-task-prune`, `everyMs: 3_600_000`) — the SAME hour, carried verbatim, now
+// declared where every other cadence in the platform is declared and driven by the one timer.
+// requirement preserved: "once per hour is plenty", asserted by
+// `scheduler/__tests__/scheduler-owns-its-clock.test.ts` A5.
 
 /**
  * Auto-resume paused tasks whose paused_until time has passed.
@@ -1708,7 +1763,7 @@ const PRUNE_INTERVAL_MS = 3600_000; // Once per hour is plenty
  * the pause fields. The PM agent will then see the task in its normal state
  * and the process continues as usual.
  */
-function resumeExpiredPauses(): void {
+export function resumeExpiredPauses(): void {
   const db = getDb();
 
   const expired = db.prepare(`
@@ -1746,10 +1801,7 @@ function resumeExpiredPauses(): void {
  * Keep each terminal state (complete, blocked, fallen) capped at 50 tasks.
  * Oldest tasks beyond the cap are deleted along with their runs and poke logs.
  */
-function pruneTerminalTasks(): void {
-  if (Date.now() - lastPruneAt < PRUNE_INTERVAL_MS) return;
-  lastPruneAt = Date.now();
-
+export function pruneTerminalTasks(): void {
   const db = getDb();
 
   for (const status of ['complete', 'blocked', 'fallen']) {

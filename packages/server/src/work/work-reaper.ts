@@ -338,6 +338,79 @@ export const REAPER_KINDS: readonly ReaperKind[] = [
       }
     },
   },
+  // ════════════════════════════════════════════════════════════════════════════════
+  // SWEEP CORE-2 item 3 (SWEEP-F T2) — THE SCHEDULER TICK'S NON-SCHEDULING SWEEPS.
+  //
+  // Five kinds for six functions. All six lived inside `checkScheduledTasks`, and every one of
+  // them said in its own comment why: the scheduler tick was the nearest 30-second clock.
+  // That is the sentence this module exists to stop being true. None of them decides which
+  // occurrence fires now; the one that DOES have a clock but IS scheduling —
+  // `autoResolveStaleMissedRunPauses`, which walks the recurrence past missed slots — stayed
+  // where it was, because filing a function by its cliff instead of by its job is how the
+  // eleven scattered deadlines happened in the first place.
+  // ════════════════════════════════════════════════════════════════════════════════
+  {
+    id: 'orphaned-and-stale-runs',
+    everyMs: 30_000,
+    cadenceFrom:
+      'the 30s scheduler tick (SCHEDULER_INTERVAL_MS, now scheduler/clock.ts) that hosted both cleanups inside checkScheduledTasks before this module owned them — the period is carried, not chosen',
+    // ONE kind for two functions, the same judgement `stale-override-and-verdict-requests`
+    // made: they are one kind — "a run whose actor died, went silent, or left the row
+    // inconsistent gets closed or recovered so the schedule can move". Sequential and each
+    // already swallowing its own failure, so one cannot silence the other.
+    wakes: false,
+    run: async () => {
+      const { cleanupOrphanedRuns, cleanupStaleRuns } = await import('../scheduler/runner.js');
+      cleanupOrphanedRuns();
+      cleanupStaleRuns();
+    },
+  },
+  {
+    id: 'expired-pauses',
+    everyMs: 30_000,
+    cadenceFrom:
+      'the 30s scheduler tick that hosted resumeExpiredPauses inside checkScheduledTasks; the cliff is the row\'s own paused_until, so the sweep only needs a clock fine enough to honour it',
+    wakes: false,
+    run: async () => {
+      const { resumeExpiredPauses } = await import('../scheduler/runner.js');
+      resumeExpiredPauses();
+    },
+  },
+  {
+    id: 'validation-escalation',
+    everyMs: 30_000,
+    cadenceFrom:
+      'the 30s scheduler tick that hosted this sweep; the CLIFF is VALIDATION_ESCALATION_MIN = 5 min (scheduler/runner.ts), which the sweep applies itself — the tick is only how often it looks',
+    // It wakes the primary so the owner is asked about a row the validator never reached.
+    // Declared TRUE so the storm law can see it: this is the one moved sweep that speaks.
+    wakes: true,
+    run: async () => {
+      const { sweepUnvalidatedTasksForUserEscalation } = await import('../scheduler/runner.js');
+      await sweepUnvalidatedTasksForUserEscalation();
+    },
+  },
+  {
+    id: 'steered-run-delivery-close',
+    everyMs: 30_000,
+    cadenceFrom:
+      'the 30s scheduler tick, which SWEEP CORE-1 CT2 chose for this rung in the same words the other five used — "the tick is the platform\'s existing 30-second clock, a cadence carried, not re-chosen"',
+    wakes: false,
+    run: async () => {
+      const { closeSteeredRunsThatDelivered } = await import('../scheduler/runner.js');
+      await closeSteeredRunsThatDelivered();
+    },
+  },
+  {
+    id: 'terminal-task-prune',
+    everyMs: 3_600_000,
+    cadenceFrom:
+      'PRUNE_INTERVAL_MS = 3600_000 ("once per hour is plenty") — the constant scheduler/runner.ts declared beside its own wall-clock throttle. The hour is carried; what died is the throttle, which existed only because a 30-second timer was calling an hourly job',
+    wakes: false,
+    run: async () => {
+      const { pruneTerminalTasks } = await import('../scheduler/runner.js');
+      pruneTerminalTasks();
+    },
+  },
   {
     id: 'join-ttl',
     everyMs: 10 * 60_000,

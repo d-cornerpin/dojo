@@ -56,6 +56,9 @@ import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import type { WorkEventKind } from './event-kinds.js';
+// SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module; these two statements
+// are its, and are called from inside this file's transactions (see `work/next-run.ts`).
+import { advanceScheduleOnClaim, restoreScheduleOnRelease } from './next-run.js';
 import { transition, appendWorkEvent, type WorkOutcome } from './store.js';
 import { NON_ANSWERING_DELIVERY_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from './ask-settlement.js';
 import { occurrenceOwesDeliverable } from './deliverable-declaration.js';
@@ -149,18 +152,18 @@ export function claimOccurrence(input: ClaimInput): string | null {
         input.nowMs, input.nowMs,
       );
 
-      const advanced = db.prepare(`
-        UPDATE work
-           SET schedule_status = 'running', last_run_at = ?, next_run_at = ?, updated_at = ?
-         WHERE id = ? AND schedule_status = 'waiting' AND is_paused = 0
-           AND next_run_at = ? AND next_run_at <= ?
-      `).run(input.nowMs, input.nextRunMs, input.nowMs, input.workId,
-             input.occurrenceMs, input.nowMs);
+      // SWEEP CORE-2 item 3: the fire-time advance is `work/next-run.ts`'s statement, run
+      // INSIDE this unit so the claim's two halves still succeed or roll back together. The
+      // SQL and every guard clause are carried byte-for-byte; only the address moved.
+      const advanced = advanceScheduleOnClaim(db, {
+        workId: input.workId, nowMs: input.nowMs,
+        nextRunMs: input.nextRunMs, occurrenceMs: input.occurrenceMs,
+      });
 
       // The schedule moved out from under this tick (paused, re-timed, or already claimed by
       // a process that got here first). Roll the occurrence row back with it — a claim token
       // whose schedule disagrees is not a claim.
-      if (advanced.changes !== 1) throw new LostClaim();
+      if (advanced !== 1) throw new LostClaim();
 
       appendWorkEvent(occurrenceId, OCCURRENCE_EVENT.fired, 'scheduler', {
         sequence: input.sequence, scheduled_for: input.occurrenceMs,
@@ -206,10 +209,9 @@ export function releaseOccurrence(
     appendWorkEvent(workId, OCCURRENCE_EVENT.released, 'scheduler', { reason, occurrenceId });
     db.prepare('DELETE FROM work_events WHERE work_id = ?').run(occurrenceId);
     db.prepare('DELETE FROM work WHERE id = ?').run(occurrenceId);
-    db.prepare(`
-      UPDATE work SET schedule_status = 'waiting', next_run_at = ?, last_run_at = ?, updated_at = ?
-       WHERE id = ?
-    `).run(occurrenceMs, priorLastRunMs, Date.now(), workId);
+    // Same move as the claim's advance: the statement is `work/next-run.ts`'s, run inside
+    // this unit so the delete and the restore stay one thing.
+    restoreScheduleOnRelease(db, { workId, occurrenceMs, priorLastRunMs });
   });
   logger.info('occurrence released unfired', { workId, occurrenceId, reason });
 }

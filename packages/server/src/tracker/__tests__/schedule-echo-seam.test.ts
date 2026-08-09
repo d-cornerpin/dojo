@@ -408,30 +408,56 @@ describe('one next-run computer', () => {
   it('every production write of a next_run_at VALUE derives from it', async () => {
     const { readFile } = await import('node:fs/promises');
     const files = await sourceFiles();
-    // A write is `next_run_at: <expr>`. Three shapes are not a computation and
-    // are named here so each stays deliberate rather than becoming a second
-    // computer by drift:
-    //   * `null` — clears a schedule; no occurrence is chosen.
-    //   * `Date.now() + 30_000` — the lost-claim backoff in `runner.ts`, which
-    //     re-fires the SAME occurrence after a CAS loss rather than choosing the
-    //     next one.
-    //   * `<obj>.next_run_at` — a copy-forward into the `ScheduledTask` input
-    //     projection that is then HANDED TO `calculateNextRun`. It carries the
-    //     value the computer already produced; it does not produce one.
-    const ALLOWED_NON_DERIVED =
-      /next_run_at:\s*(null|Date\.now\(\)\s*\+\s*30_000|[A-Za-z_$][\w$]*\.next_run_at\b)/;
+    // ── SWEEP CORE-2 item 3 RE-POINTED THIS CLAUSE, AND TIGHTENED IT. ──
+    // The fire time is written through `work/next-run.ts:setNextRun({ at })` now, not through
+    // a `next_run_at:` field on a generic patch — so the old regex would have gone on passing
+    // while seeing NOTHING. A guard blinded by a refactor is worse than no guard, so it reads
+    // BOTH shapes, and the loose escape it used to carry (`if (usesComputer && /tsToMs\(/)`,
+    // which passed ANY `tsToMs(...)` in ANY file that merely mentioned the computer) is gone:
+    // the two genuinely non-derived instants are now named individually, with their reasons.
+    //
+    // The shapes that are not a computation, each deliberate:
+    //   * `null` / `at: null` — clears a schedule; no occurrence is chosen.
+    //   * `Date.now() + 30_000` — the dependency defer in `runner.ts`, which re-fires the
+    //     SAME occurrence rather than choosing the next one.
+    //   * `tsToMs(nowIso)` — `trackerResolveMissedRuns(action='run_now')`: the owner asked for
+    //     ONE catch-up run, so the fire time is NOW by request. `onTaskRunComplete` recomputes
+    //     the natural anchor when that run closes.
+    //   * `<obj>.next_run_at` / `input.nextRunMs` — a copy-forward of a value the computer
+    //     already produced, into a `ScheduledTask` projection or the claim's CAS.
+    const ALLOWED_NON_DERIVED = new RegExp([
+      String.raw`(?:next_run_at|at):\s*null\b`,
+      String.raw`Date\.now\(\)\s*\+\s*30_000`,
+      String.raw`tsToMs\(nowIso\)`,
+      String.raw`(?:next_run_at|at):\s*[A-Za-z_$][\w$]*\.(?:next_run_at|nextRunMs)\b`,
+      String.raw`(?:next_run_at|at):\s*(?:input\.)?(?:nextRunMs|occurrenceMs)\b`,
+    ].join('|'));
+    /** The one module that turns a caller's instant into SQL. It chooses nothing. */
+    const WRITER = 'work/next-run.ts';
     const offenders: string[] = [];
     for (const f of files) {
+      const relPath = f.slice(SERVER_SRC.length);
+      if (relPath === WRITER) continue;
       const src = await readFile(f, 'utf8');
-      const usesComputer = src.includes('calculateNextRun');
-      src.split('\n').forEach((line, i) => {
-        const m = /(?<!\w)next_run_at:\s*(.+?)[,}]/.exec(line);
-        if (!m) return;
+      const lines = src.split('\n');
+      // `at:` is a common key name in this tree (caches, snapshots, join records), so the
+      // door-write scan is scoped to the lines of an actual `setNextRun(...)` call rather
+      // than to the key. The window is generous; the call is never longer.
+      const inDoorCall = new Set<number>();
+      lines.forEach((line, i) => {
+        if (!/\bsetNextRun\s*\(/.test(line)) return;
+        for (let j = i; j < Math.min(lines.length, i + 12); j++) inDoorCall.add(j);
+      });
+      lines.forEach((line, i) => {
+        const isFieldWrite = /(?<!\w)next_run_at:\s*(.+?)[,}]/.test(line);
+        const isDoorWrite = inDoorCall.has(i) && /(?<!\w)at:\s*(.+?)[,}]/.test(line);
+        if (!isFieldWrite && !isDoorWrite) return;
         if (ALLOWED_NON_DERIVED.test(line)) return;
         // Type declarations (`next_run_at: number | null;`) are not writes.
         if (/next_run_at\??:\s*(string|number|boolean)\b/.test(line)) return;
-        if (usesComputer && /tsToMs\(|nextRun/.test(line)) return;
-        offenders.push(`${f.slice(SERVER_SRC.length)}:${i + 1}  ${line.trim()}`);
+        // `tsToMs(nextRun)` / `tsToMs(nextAtFire)` — the computer's own output, named.
+        if (/tsToMs\((?:nextRun|nextAtFire)\)/.test(line)) return;
+        offenders.push(`${relPath}:${i + 1}  ${line.trim()}`);
       });
     }
     expect(
@@ -439,6 +465,19 @@ describe('one next-run computer', () => {
       'a next_run_at value is written from something other than calculateNextRun — ' +
       `a second answer to "when does this fire?":\n${offenders.join('\n')}`,
     ).toEqual([]);
+  });
+
+  it('the fire time has ONE writing module, and every door on it demands a reason', async () => {
+    const { readFile } = await import('node:fs/promises');
+    // SWEEP CORE-2 item 3: the companion half of the clause above. The computer being unique
+    // is worth nothing if forty-five-column generic patches can still SET the column with
+    // whatever they like — which is what `patchWork` allowed until this task.
+    const writer = await readFile(`${SERVER_SRC}work/next-run.ts`, 'utf8');
+    expect(writer).toMatch(/export function setNextRun/);
+    expect(writer).toMatch(/readonly reason: string/);
+    const store = await readFile(`${SERVER_SRC}work/tracker-store.ts`, 'utf8');
+    const union = store.slice(store.indexOf('export type TrackerAttr'), store.indexOf('export type WorkPatch'));
+    expect(union, 'the generic attribute union may not name the firing clock').not.toMatch(/'next_run_at'/);
   });
 });
 

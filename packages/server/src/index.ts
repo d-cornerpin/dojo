@@ -649,6 +649,30 @@ async function main(): Promise<void> {
     }
   }
 
+  // 4c1. SWEEP CORE-2 item 3 (SWEEP-F T2) — THE SCHEDULER'S OWN CLOCK.
+  //
+  // This used to be installed by `startPokeLoop()` inside 4c above, which meant the platform's
+  // answer to "when does a schedule fire" was a side effect of the PROJECT MANAGER starting.
+  // A box with `isPMEnabled() === false` therefore fired no reminders and no recurring tasks
+  // at all, silently. The clock is the scheduler's now and starts on its own terms.
+  //
+  // The gate that REMAINS is `isSetupCompleted()`: before OOBE finishes there is no owner, no
+  // primary agent to fire toward, and no schedules to fire. `isPMEnabled()` is gone from it,
+  // deliberately — the project manager validates work, it does not keep time.
+  {
+    const { isSetupCompleted: isSetupDone } = await import('./config/platform.js');
+    if (isSetupDone()) {
+      try {
+        const { startScheduler } = await import('./scheduler/clock.js');
+        startScheduler();
+      } catch (err) {
+        logger.error('Failed to start the scheduler clock', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
   // 4c2. Ensure Trainer agent exists (if enabled and setup is complete)
   {
     const { isTrainerEnabled, isSetupCompleted: isSetupDone } = await import('./config/platform.js');

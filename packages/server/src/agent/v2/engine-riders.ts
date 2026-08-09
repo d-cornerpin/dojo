@@ -86,6 +86,11 @@ export const ENGINE_RIDER_INTENTS = [
   'image_delivery_outcome', 'learning_loop', 'pm_review_failed', 'schedule_run_failed',
   'schedule_run_failed_owner', 'scheduler_missed_runs', 'spawn_timeout_decision',
   'spawn_timeout_undecided', 'validation_check',
+  // SWEEP CORE-2 item 3 (SWEEP-F T2) — the skipped-reminder heads-up, converted off the dead
+  // `role='system'` channel. Same shape and same reasoning as `project_needs_attention` above:
+  // a reminder the owner asked for is not going to happen, the AGENT is the one who tells him,
+  // and the note rides the agent's next turn rather than manufacturing one of its own.
+  'reminder_skipped_owner',
   // carried from the predicate's previous exclusion list; no live writer, still excluded
   'hint', 'system',
 ] as const;

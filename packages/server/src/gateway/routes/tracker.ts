@@ -21,6 +21,8 @@ import {
 import {
   upholdClaim, resetRevertCount, recordValidationEscalation, clearUserVerdict,
 } from '../../work/tracker-store.js';
+// SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
+import { setNextRun } from '../../work/next-run.js';
 import { workSettled, isStateConflict, noteUnsettled } from '../../work/store.js';
 import {
   findOverrideRequest, resolveOverrideRequest, listOverrideRequests,
@@ -580,16 +582,19 @@ trackerRouter.post('/tasks', async (c) => {
       };
       const nextRun = calculateNextRun(taskForCalc) ?? body.scheduled_start;
 
-      noteUnsettled(patchWork(taskId, {
-        scheduled_start: tsToMs(body.scheduled_start),
-        repeat_interval: body.repeat_interval ?? null,
-        repeat_unit: body.repeat_unit ?? null,
-        repeat_end_type: body.repeat_end_type ?? 'never',
-        repeat_end_value: body.repeat_end_value ?? null,
-        repeat_days_of_week: repeatDaysOfWeek,
-        anchor_local: anchorTime,
-        next_run_at: tsToMs(nextRun),
-        schedule_status: 'waiting',
+      noteUnsettled(setNextRun(taskId, {
+        at: tsToMs(nextRun),
+        reason: 'the owner created a schedule on the dashboard; this is its first fire time',
+        alongside: {
+          scheduled_start: tsToMs(body.scheduled_start),
+          repeat_interval: body.repeat_interval ?? null,
+          repeat_unit: body.repeat_unit ?? null,
+          repeat_end_type: body.repeat_end_type ?? 'never',
+          repeat_end_value: body.repeat_end_value ?? null,
+          repeat_days_of_week: repeatDaysOfWeek,
+          anchor_local: anchorTime,
+          schedule_status: 'waiting',
+        },
       }), 'dashboard: schedule recorded on task create', { taskId });
 
       // SWEEP CORE-1 CT2 — AND THIS IS THE DOOR THE OWNER'S OWN BRIEFS COME THROUGH.
@@ -748,10 +753,14 @@ trackerRouter.put('/tasks/:id', async (c) => {
     if (body.scheduled_start !== undefined) {
       if (body.scheduled_start === null) {
         // Remove schedule
-        noteUnsettled(patchWork(id, {
-          scheduled_start: null, repeat_interval: null, repeat_unit: null,
-          repeat_end_type: null, repeat_end_value: null, repeat_days_of_week: null,
-          anchor_local: null, next_run_at: null, schedule_status: 'unscheduled',
+        noteUnsettled(setNextRun(id, {
+          at: null,
+          reason: 'the owner removed the schedule on the dashboard; nothing fires again',
+          alongside: {
+            scheduled_start: null, repeat_interval: null, repeat_unit: null,
+            repeat_end_type: null, repeat_end_value: null, repeat_days_of_week: null,
+            anchor_local: null, schedule_status: 'unscheduled',
+          },
         }), 'dashboard: schedule cleared on task edit', { taskId: id });
       } else {
         const { calculateNextRun } = await import('../../scheduler/engine.js');
@@ -783,17 +792,20 @@ trackerRouter.put('/tasks/:id', async (c) => {
         };
         const nextRun = calculateNextRun(taskForCalc) ?? body.scheduled_start;
 
-        noteUnsettled(patchWork(id, {
-          scheduled_start: tsToMs(body.scheduled_start),
-          repeat_interval: body.repeat_interval ?? null,
-          repeat_unit: body.repeat_unit ?? null,
-          repeat_end_type: body.repeat_end_type ?? 'never',
-          repeat_end_value: body.repeat_end_value ?? null,
-          repeat_days_of_week: repeatDaysOfWeek,
-          anchor_local: anchorTime,
-          next_run_at: tsToMs(nextRun),
-          schedule_status: 'waiting',
-          is_paused: 0,
+        noteUnsettled(setNextRun(id, {
+          at: tsToMs(nextRun),
+          reason: 'the owner edited the schedule on the dashboard; the fire time was recomputed',
+          alongside: {
+            scheduled_start: tsToMs(body.scheduled_start),
+            repeat_interval: body.repeat_interval ?? null,
+            repeat_unit: body.repeat_unit ?? null,
+            repeat_end_type: body.repeat_end_type ?? 'never',
+            repeat_end_value: body.repeat_end_value ?? null,
+            repeat_days_of_week: repeatDaysOfWeek,
+            anchor_local: anchorTime,
+            schedule_status: 'waiting',
+            is_paused: 0,
+          },
         }), 'dashboard: schedule set on task edit', { taskId: id });
       }
     }

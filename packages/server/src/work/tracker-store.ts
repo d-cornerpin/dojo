@@ -162,6 +162,13 @@ export function openTrackerTask(p: OpenTrackerTaskInput): string {
  * `compile_pending` are deliberately absent: they are `transition()`'s, and a patcher that
  * could reach them would be the ungated second writer this phase is removing. The union is
  * the gate — a caller that names one of those does not compile.
+ *
+ * SWEEP CORE-2 item 3 (SWEEP-F T2) — `next_run_at` LEFT THIS UNION for the same reason.
+ * It is the platform's firing clock, and fourteen call sites reached it through this
+ * forty-five-column door with no way for the compiler to tell a caller it was moving a
+ * schedule rather than a title. It is `work/next-run.ts`'s now, behind doors that each
+ * demand a reason. `schedule_status` and the rest stay here: they are ordinary attributes,
+ * and the ones that must move WITH a fire time ride along in that module's own statement.
  */
 export type TrackerAttr =
   | 'parent_id' | 'agent_id' | 'assignee_agent' | 'requester_id' | 'conversation_id'
@@ -174,7 +181,7 @@ export type TrackerAttr =
   | 'scheduled_start' | 'repeat_interval' | 'repeat_unit' | 'repeat_end_type'
   | 'repeat_end_value' | 'repeat_days_of_week' | 'schedule_status' | 'is_paused'
   | 'paused_until' | 'status_before_pause' | 'last_run_at' | 'missed_runs_paused_at'
-  | 'anchor_local' | 'next_run_at' | 'attempts';
+  | 'anchor_local' | 'attempts';
 // PHASE-2 T8c item 2: the six ticket-stamp columns left this union with their storage. They
 // are `work_events` rows of kind `activity` now (see `stampTicket` below), so a patcher that
 // could still name them would be writing a column nothing reads.
@@ -438,16 +445,13 @@ export function deliveryForTaskClose(workId: string): string | null {
 // requirement preserved: exactly-once, the claim token, advance-at-fire, and the unfired
 // release — all four asserted in `work/__tests__/occurrences.test.ts`.
 
-/** Stop a live schedule, once. `changes === 1` is the token that says THIS caller won the
- *  race, which is what keeps two terminators from both announcing a termination. */
-export function stopLiveSchedule(workId: string): boolean {
-  const r = getDb().prepare(`
-    UPDATE work
-       SET schedule_status = 'completed', is_paused = 1, next_run_at = NULL, updated_at = ?
-     WHERE id = ? AND schedule_status IN ('waiting', 'running')
-  `).run(now(), workId);
-  return r.changes === 1;
-}
+// ⟨TOMBSTONE⟩ `stopLiveSchedule` lived here. SWEEP CORE-2 item 3 moved it to
+// `work/next-run.ts` as `clearLiveSchedule`, unchanged SQL, because it SETS `next_run_at` and
+// that column now has exactly one writing module. Its one caller
+// (`scheduler/runner.ts:terminateLiveScheduleOnFallen`) imports it from there.
+// requirement preserved: `changes === 1` is still the token that says THIS caller won the
+// race, which is what keeps two terminators from both announcing a termination — asserted in
+// `scheduler/__tests__/fallen-terminates.test.ts`.
 
 /**
  * The turn-finalize ticket stamp — ONE EVENT, not six columns (PHASE-2 T8c item 2, executing

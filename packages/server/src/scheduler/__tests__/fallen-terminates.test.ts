@@ -23,7 +23,14 @@ vi.mock('../../db/connection.js', () => ({
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
 vi.mock('../../agent/runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async () => { /* no-op */ } }) }));
 vi.mock('../../agent/agent-bus.js', () => ({ sendAgentMessage: () => { /* no-op */ } }));
-vi.mock('../../agent/agent-notice.js', () => ({ postAgentNotice: () => { /* no-op */ } }));
+// SWEEP CORE-2 item 3: the skipped-reminder heads-up rides this seam now, so the stub RECORDS
+// rather than swallows — the assertion below reads what the owner would actually be told.
+const notices: Array<{ toAgentId: string; brief: string; intent?: string; selfIntro?: boolean }> = [];
+vi.mock('../../agent/agent-notice.js', () => ({
+  postAgentNotice: (o: { toAgentId: string; brief: string; intent?: string; selfIntro?: boolean }) => {
+    notices.push(o); return 'notice-id';
+  },
+}));
 // T10: was `vi.mock('../../memory/interagent.js', … insertInterAgentEngineRow …)`. The shim
 // is deleted; the engine row goes through the writer module, so the no-op moves there —
 // and ONLY that function is replaced, because this file's other message-store consumers
@@ -156,6 +163,7 @@ function seedRun(db: Database.Database, taskId: string, _status: string, runNumb
 }
 
 beforeEach(() => {
+  notices.length = 0;
   mockDb.current = new Database(':memory:');
   applySchema(mockDb.current);
 });
@@ -212,9 +220,24 @@ describe('terminateLiveScheduleOnFallen (RC-17.5)', () => {
 
     expect(out.terminated).toBe(true);
     expect(out.isReminder).toBe(true);
-    const msg = db.prepare(`SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'`).get() as { content: string } | undefined;
-    expect(msg?.content).toContain('Heads up');
-    expect(msg?.content).toContain('take the trash out');
+    // SWEEP CORE-2 item 3 (SWEEP-F T2): the heads-up left the dead channel. It was a bare
+    // `role='system'` chat row written straight into the primary's chat — and the
+    // model-context builder STRIPS those, so the primary's model never saw it and could never
+    // relay a dropped reminder to an owner who is not sitting at the dashboard. It is an
+    // awareness NOTICE now (`role='user'`, `lane='events'`, `origin_kind='engine'`), and the
+    // owner-facing sentence is carried byte-for-byte — which is what the content assertions
+    // still hold. The no-longer-written chat row is asserted ABSENT, so a silent revert to
+    // the dead channel fails here rather than passing on the content alone.
+    expect(notices.length).toBe(1);
+    expect(notices[0].toAgentId).toBe('primary');
+    expect(notices[0].selfIntro, 'the Scheduler is a subsystem, not an agent').toBe(false);
+    expect(notices[0].intent).toBe('reminder_skipped_owner');
+    expect(notices[0].brief).toContain('Heads up');
+    expect(notices[0].brief).toContain('take the trash out');
+    const deadChannelRow = db.prepare(
+      `SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'`,
+    ).get() as { content: string } | undefined;
+    expect(deadChannelRow, 'the stripped role=system chat row must not come back').toBeUndefined();
   });
 });
 
