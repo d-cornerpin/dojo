@@ -97,6 +97,11 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
     why: 'the self-update route: every path is the running install and the downloaded artifact, both named by the platform. An agent can ask for an update; it cannot say what gets written.',
   },
   {
+    file: 'update/disk-preflight.ts',
+    klass: 'agent-triggered',
+    why: 'the update\'s disk-space pre-flight (SWEEP CORE-2 item 3, the owner\'s 2026-08-06 ask). Same class and same reasoning as gateway/routes/update.ts, which is its only caller: an agent can ask for an update, and this measures whether there is room for one. It is READ-ONLY — statfs on the data directory, statSync on the database and a walk of the installed platform tree — and every path is a platform literal (~/.dojo/data/dojo.db, ~/.dojo/platform) or is derived from it. The two parameters that can name a different path exist so a constrained-volume rehearsal and the unit suite can point it at a body of a known size; no agent-facing surface passes them. It writes nothing.',
+  },
+  {
     file: 'update-state.ts',
     klass: 'agent-triggered',
     why: 'the update state file, a fixed platform path. No argument reaches it.',
