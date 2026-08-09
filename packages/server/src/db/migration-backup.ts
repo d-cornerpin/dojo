@@ -55,8 +55,16 @@ export const MIGRATION_BACKUP_OVERRIDE_FILE = 'allow-migration-without-backup';
 /** The same permission for scripted and packaging boots, which have no data to lose. */
 export const MIGRATION_BACKUP_OVERRIDE_ENV = 'DOJO_ALLOW_MIGRATION_WITHOUT_BACKUP';
 
-/** Free space must hold ~2x the live footprint: VACUUM INTO writes a full copy. */
-const FREE_DISK_MULTIPLE = 2;
+/**
+ * Free space must hold ~2x the live footprint: VACUUM INTO writes a full copy.
+ *
+ * EXPORTED by SWEEP CORE-2 item 3 so the update path's PRE-flight and this POST-download
+ * enforcer cannot drift. Two copies of a threshold cannot be ordered, and a pre-flight that
+ * says "you have room" against a number the enforcer does not use is worse than no pre-flight
+ * — it is a promise the next boot breaks.
+ */
+export const MIGRATION_BACKUP_FREE_DISK_MULTIPLE = 2;
+const FREE_DISK_MULTIPLE = MIGRATION_BACKUP_FREE_DISK_MULTIPLE;
 
 export interface MigrationBackupOutcome {
   /**
@@ -221,7 +229,21 @@ function takeSnapshot(
   }
 }
 
-/** True when someone has explicitly said this chain may run with no way back. */
+/**
+ * True when the explicit override is PRESENT — without consuming it.
+ *
+ * SWEEP CORE-2 item 3: the update path's pre-flight has to know whether the owner has already
+ * said "let me through", but it must not EAT the one-shot file, because the migration chain
+ * that runs after the restart is the thing the file was written for. A pre-flight that
+ * consumed it would let the download proceed and then refuse the chain anyway — the exact
+ * shape of the failure this whole item exists to prevent.
+ */
+export function migrationBackupOverridePresent(dataDir: string): boolean {
+  if (process.env[MIGRATION_BACKUP_OVERRIDE_ENV] === '1') return true;
+  return fs.existsSync(path.join(dataDir, MIGRATION_BACKUP_OVERRIDE_FILE));
+}
+
+/** True when someone has explicitly said this chain may run with no way back. Consumes. */
 function takeOverride(dataDir: string): boolean {
   if (process.env[MIGRATION_BACKUP_OVERRIDE_ENV] === '1') return true;
   const overridePath = path.join(dataDir, MIGRATION_BACKUP_OVERRIDE_FILE);

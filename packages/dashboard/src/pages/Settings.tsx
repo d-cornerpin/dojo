@@ -6,6 +6,7 @@ import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
 import { RouterConfig, SystemModelConfig, VoiceOpenerModelConfig } from '../components/RouterConfig';
 import { DataBackupNotice } from '../components/DataBackupNotice';
+import { DiskSpaceNotice } from '../components/DiskSpaceNotice';
 import { RouterTest } from '../components/RouterTest';
 import { GoogleWorkspaceSettings } from '../components/GoogleWorkspaceSettings';
 import { MicrosoftWorkspaceSettings } from '../components/MicrosoftWorkspaceSettings';
@@ -5057,6 +5058,9 @@ const UpdateTab = () => {
           </div>
         )}
 
+        {/* SWEEP CORE-2 item 3: the pre-flight for the update being CONSIDERED, above the
+            record of the last one that HAPPENED. */}
+        <DiskSpaceNotice disk={updateInfo?.disk} />
         <DataBackupNotice backup={dbBackup} />
 
         <div className="srow pt-2">
@@ -5073,8 +5077,14 @@ const UpdateTab = () => {
             <button
               type="button"
               onClick={handleUpdate}
-              disabled={updating}
+              /* The button must not invite a click the platform is about to refuse with a
+                 507. `measured === false` deliberately does NOT disable it — a disk we
+                 cannot read is not a disk we know is full. */
+              disabled={updating || updateInfo?.disk?.ok === false}
               className="btn btn--primary btn--sm"
+              title={updateInfo?.disk?.ok === false
+                ? 'Not enough free disk space — see the warning above'
+                : undefined}
             >
               {updating ? 'Updating...' : 'Update Now'}
             </button>

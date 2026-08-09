@@ -1994,6 +1994,24 @@ export const updateDreamingConfig = async (config: Partial<DreamingConfig>): Pro
 
 export type UpdateChannel = 'stable' | 'preflight';
 
+/**
+ * SWEEP CORE-2 item 3 — the update's disk-space pre-flight, measured server-side at check
+ * time. Rides the check result so the tab can warn BEFORE the owner commits, with no second
+ * round-trip. `measured: false` means the volume could not be read, which is reported and
+ * never treated as a refusal.
+ */
+export interface UpdateDiskNeed {
+  ok: boolean;
+  measured: boolean;
+  freeBytes: number | null;
+  dbBytes: number;
+  backupNeedBytes: number;
+  artifactBytes: number;
+  platformBytes: number;
+  totalNeedBytes: number;
+  shortfallBytes: number;
+}
+
 export interface UpdateCheckResult {
   currentVersion: string;
   latestVersion: string | null;
@@ -2005,6 +2023,7 @@ export interface UpdateCheckResult {
   downloadUrl?: string | null;
   downloadSize?: number | null;
   channel?: UpdateChannel;
+  disk?: UpdateDiskNeed;
   error?: string;
 }
 

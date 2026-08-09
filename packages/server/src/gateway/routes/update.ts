@@ -15,6 +15,11 @@ import { readLastMigrationBackup } from '../../db/migration-backup.js';
 import { markPendingUpdate, markBootingNew } from '../../update-state.js';
 import { routeFailure } from './route-failure.js';
 import { ARTIFACT_MANIFEST_ASSET, fetchArtifactManifest, verifyArtifactAgainstManifest } from '../../update/artifact-integrity.js';
+// SWEEP CORE-2 item 3 — the owner's disk-space check, BEFORE anything is downloaded.
+import {
+  measureUpdateDiskNeed, updateDiskRefusal, isOutOfSpaceError, outOfSpaceFailureMessage,
+  type UpdateDiskNeed,
+} from '../../update/disk-preflight.js';
 
 const execAsync = promisify(exec);
 const logger = createLogger('updater');
@@ -373,6 +378,16 @@ export interface UpdateCheckResult {
   downloadSize?: number | null;
   /** Which channel this result was resolved against. */
   channel?: UpdateChannel;
+  /**
+   * SWEEP CORE-2 item 3 — the disk-space pre-flight for THIS release, measured at check time.
+   *
+   * It rides the check result rather than living behind its own route for one reason: the
+   * check is the moment the owner decides, and the artifact's own size — the only component of
+   * the need that cannot be measured locally — is in the release metadata this call already
+   * holds. A separate endpoint would have meant a second GitHub round-trip to learn a number
+   * we were already looking at. Absent when there is no release to measure against.
+   */
+  disk?: UpdateDiskNeed;
   error?: string;
 }
 
@@ -406,6 +421,17 @@ export async function checkForUpdate(channel?: UpdateChannel): Promise<UpdateChe
       downloadUrl: zipAsset?.browser_download_url ?? null,
       downloadSize: zipAsset?.size ?? null,
       channel: ch,
+      // Measured here, where the artifact's own size is in hand. Never allowed to fail a
+      // check: a disk we cannot read must not make "is there an update?" unanswerable.
+      disk: (() => {
+        try { return measureUpdateDiskNeed({ artifactBytes: zipAsset?.size ?? 0 }); }
+        catch (err) {
+          logger.debug('Update disk pre-flight failed (non-fatal)', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return undefined;
+        }
+      })(),
     };
   } catch (err) {
     return { currentVersion, latestVersion: null, updateAvailable: false, channel: ch, error: err instanceof Error ? err.message : String(err) };
@@ -595,6 +621,29 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
       return { ok: true, message: 'Already up to date', newVersion: currentVersion };
     }
 
+    // ── 1b. SWEEP CORE-2 item 3 — THE DISK-SPACE PRE-FLIGHT, BEFORE A SINGLE BYTE. ──
+    //
+    // Placed here on purpose: after the release metadata is in hand (so the artifact's own size
+    // is a fact rather than an estimate) and before the download, the unzip, the `cp -R` and
+    // the swap. Refusing HERE is strictly safer than the migration chain's refusal downstream,
+    // which the RESTORE-PATH work measured as protective precisely because nothing had been
+    // applied: refusing before the episode EXISTS means there is not even an episode to roll
+    // back. Nothing is downloaded, nothing is copied, and `markPendingUpdate` is never called.
+    //
+    // It is measured again here rather than trusting the check's copy, because the owner may
+    // have clicked ten minutes after looking, and a disk fills.
+    const disk = measureUpdateDiskNeed({ artifactBytes: zipAsset.size ?? 0 });
+    const diskRefusal = updateDiskRefusal(disk);
+    if (diskRefusal) {
+      logger.warn('Update REFUSED before download: not enough free disk', {
+        freeBytes: disk.freeBytes, neededBytes: disk.totalNeedBytes,
+        shortfallBytes: disk.shortfallBytes, dbBytes: disk.dbBytes,
+        artifactBytes: disk.artifactBytes, platformBytes: disk.platformBytes,
+      });
+      // 507 Insufficient Storage: the one status that says this without a paragraph.
+      return { ok: false, message: diskRefusal, status: 507 };
+    }
+
     logger.info('Starting update', { channel: ch, from: currentVersion, to: latestVersion, url: zipAsset.browser_download_url });
 
     // 2. Download the zip to a temp location
@@ -738,6 +787,13 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Update failed', { error: msg });
+    // SWEEP CORE-2 item 3, requirement (3): a mid-update failure for space says SO, in plain
+    // words. `curl`, `unzip`, `cp` and `rsync` each report a full disk differently and none of
+    // those shapes is a sentence — "Update failed: ENOSPC" tells the owner nothing he can act
+    // on, and the one thing he could have done about it is the one thing it did not say.
+    if (isOutOfSpaceError(err)) {
+      return { ok: false, message: outOfSpaceFailureMessage(msg), status: 507 };
+    }
     return { ok: false, message: `Update failed: ${msg}`, status: 500 };
   }
 }
