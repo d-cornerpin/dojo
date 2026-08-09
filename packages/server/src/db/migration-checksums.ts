@@ -23,6 +23,39 @@ const logger = createLogger('migrations');
  *  filesystem, and this module answers a question ABOUT files, not one about disks. */
 export type ReadMigration = (name: string) => string | null;
 
+/**
+ * An examined divergence, bound to the EXACT pair of hashes it was examined at.
+ *
+ * ── WHY THE LEDGER EXISTS (SWEEP CORE-2 item 6, rider (i)) ──
+ * The `logger.error` below is right to be loud, and it was firing TWICE ON EVERY
+ * BOOT of the dev box for months while nothing acted on it — and reaching the
+ * behavioural harness as two permanent BLOCKING `ambient_log_error` findings in
+ * every battery. An alarm that fires forever on a state nobody will change is a
+ * silenced alarm, and worse than silence: it teaches every reader that a blocking
+ * finding can be ignored. That is the instrument-rot class, and the answer is
+ * never to lower the level — it is to make the alarm mean "NOBODY HAS LOOKED AT
+ * THIS YET".
+ *
+ * ── WHY IT CANNOT BECOME A SILENCER ──
+ * An entry names BOTH hashes: what this database applied, and what the file said
+ * when a human examined it. It therefore cannot pre-approve a future edit — amend
+ * the file again and `fileChecksum` moves, the triple stops matching, and the
+ * error is back on the next boot. It also cannot be created by a box about
+ * itself: it lives in the REPO, in source, where a reviewer reads it, and never
+ * in the database whose honesty is in question.
+ */
+export type KnownDivergence = {
+  file: string;
+  /** The checksum recorded in `_migrations` on the boxes this covers. */
+  appliedChecksum: string;
+  /** The checksum of the file in the tree AT THE TIME IT WAS EXAMINED. */
+  fileChecksum: string;
+  /** ISO date of the adjudication. */
+  since: string;
+  /** What was measured, and what it means for the schema. Never "known issue". */
+  reason: string;
+};
+
 export type MigrationChecksumFinding = {
   file: string;
   /** `diverged`: the file exists and its content changed since it was applied.
@@ -30,6 +63,8 @@ export type MigrationChecksumFinding = {
   kind: 'diverged' | 'superseded';
   recorded: string;
   actual: string | null;
+  /** Present when this exact (file, recorded, actual) triple carries a ledger entry. */
+  adjudicated?: KnownDivergence;
 };
 
 export type MigrationChecksumAudit = {
@@ -37,8 +72,63 @@ export type MigrationChecksumAudit = {
   verified: number;
   /** applied before checksums were recorded — a question, never a verdict (#15) */
   unverifiable: number;
+  /** findings that carry a ledger entry — examined, and no longer news */
+  adjudicated: number;
   findings: MigrationChecksumFinding[];
 };
+
+/**
+ * ── THE DEV BOX's TWO, DIAGNOSED BY MEASUREMENT (2026-08-09) ──
+ *
+ * Both were amended by `54c7f73` ("hotfix(migrations): 144 tolerates duplicate
+ * task_runs slots; 146 tolerates an unreadable instant") AFTER this database had
+ * already applied them. Measured, not assumed: the checksums recorded in
+ * `_migrations` are byte-identical to `git show 54c7f73^:<file>` for both files,
+ * so this is REAL RECIPE DRIFT — the declaration is not stale.
+ *
+ * What the drift IS, and it is the part that decides the disposition. Diffing the
+ * DDL of each version:
+ *
+ *     for f in 144_task_runs_absorbed.sql 146_task_log_absorbed.sql; do
+ *       diff <(git show 54c7f73^:…/$f | grep -iE 'create |alter |drop |index|trigger|view ') \
+ *            <(git show HEAD:…/$f     | grep -iE 'create |alter |drop |index|trigger|view ')
+ *     done
+ *
+ * `146` is DDL-IDENTICAL. `144` differs only by the hotfix's own scratch tables
+ * (`_mig144_cand`, `_mig144_slot` and one index on the latter), each created and
+ * dropped inside the migration, leaving nothing behind. So the PERSISTENT SCHEMA
+ * this database carries IS the schema the repo describes — which is exactly what
+ * the alarm's own wording ("the schema it produced is NOT described by the repo")
+ * would otherwise assert falsely, every boot, for ever.
+ *
+ * What actually differs is which historical ROWS the rescue carried: the amended
+ * 144 keeps duplicate-slot runs as `work_events` audit rows instead of aborting,
+ * and clamps a readable pre-2020 `opened_at`; the amended 146 dates an unreadable
+ * `task_log` instant at its work row's `opened_at` instead of aborting. On a body
+ * with one run per slot and no unreadable instants — which is this one, since the
+ * pre-hotfix files COMMITTED here rather than aborting — those branches never
+ * fire, so the row outcome is the same too.
+ *
+ * The owner's production box is NOT covered by these entries and does not need to
+ * be: `54c7f73`'s own message records that 144 aborted three times there and left
+ * no `_migrations` row, so that box applied the AMENDED file and verifies clean.
+ */
+export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
+  {
+    file: '144_task_runs_absorbed.sql',
+    appliedChecksum: '7b58e91a0eb39ede7683c6e95c4ac899266b797b2e141b84d832dbc0fadf2e04',
+    fileChecksum: 'a5819f2961555361d4e7d8cac3a1e42873765916c076831d1c643452f15cecd2',
+    since: '2026-08-09',
+    reason: 'Amended by hotfix 54c7f73 after this box applied it. DDL delta is the hotfix\'s own TEMP tables only (_mig144_cand, _mig144_slot), created and dropped inside the file: the persistent schema is unchanged. The behavioural delta (duplicate-slot runs carried as audit rows, pre-2020 opened_at clamped) has no effect on a body with one run per slot, which is this one — the pre-hotfix file committed here rather than aborting.',
+  },
+  {
+    file: '146_task_log_absorbed.sql',
+    appliedChecksum: '171d97a53f8e39d593622aa76af573a2e8a7ed929e3a82aad8689f535c33ca76',
+    fileChecksum: '722e59159a2007be43c2212029eabcd77b0af8725d3f5be24862a7f4b8da514e',
+    since: '2026-08-09',
+    reason: 'Amended by hotfix 54c7f73 after this box applied it. DDL is BYTE-IDENTICAL between the two versions; the amendment only stops an unreadable task_log instant aborting the file, dating the entry at its work row\'s opened_at instead. This box had no unreadable instants (the pre-hotfix file committed here), so no row differs either.',
+  },
+];
 
 type Db = ReturnType<typeof getDb>;
 
@@ -96,8 +186,12 @@ export function ensureMigrationChecksumColumn(db: Db): void {
  * hashes, on every boot, until somebody re-applies or re-numbers. That is the signal the
  * incident lacked entirely.
  */
-export function auditMigrationChecksums(db: Db, read: ReadMigration): MigrationChecksumAudit {
-  const audit: MigrationChecksumAudit = { verified: 0, unverifiable: 0, findings: [] };
+export function auditMigrationChecksums(
+  db: Db,
+  read: ReadMigration,
+  ledger: readonly KnownDivergence[] = KNOWN_DIVERGENCES,
+): MigrationChecksumAudit {
+  const audit: MigrationChecksumAudit = { verified: 0, unverifiable: 0, adjudicated: 0, findings: [] };
   let rows: { name: string; checksum: string | null }[];
   try {
     rows = db.prepare('SELECT name, checksum FROM _migrations ORDER BY name').all() as typeof rows;
@@ -121,8 +215,14 @@ export function auditMigrationChecksums(db: Db, read: ReadMigration): MigrationC
       continue;
     }
     const actual = migrationChecksum(onDisk);
-    if (actual === row.checksum) audit.verified += 1;
-    else audit.findings.push({ file: row.name, kind: 'diverged', recorded: row.checksum, actual });
+    if (actual === row.checksum) { audit.verified += 1; continue; }
+    // The match is on the TRIPLE. An entry that named only the file would silence
+    // every future edit of it, which is the thing this must never become.
+    const adjudicated = ledger.find(
+      d => d.file === row.name && d.appliedChecksum === row.checksum && d.fileChecksum === actual,
+    );
+    if (adjudicated) audit.adjudicated += 1;
+    audit.findings.push({ file: row.name, kind: 'diverged', recorded: row.checksum, actual, ...(adjudicated ? { adjudicated } : {}) });
   }
   return audit;
 }
@@ -133,7 +233,15 @@ export function reportMigrationChecksums(db: Db, read: ReadMigration): Migration
   try {
     const audit = auditMigrationChecksums(db, read);
     for (const f of audit.findings) {
-      if (f.kind === 'diverged') {
+      if (f.kind === 'diverged' && f.adjudicated) {
+        // Examined, with its reason and its date, bound to these exact two
+        // hashes. Still SAID on every boot — the fact does not go away — but as
+        // news that has already been read rather than as an unanswered alarm.
+        logger.info(
+          'Migration divergence (examined): this file was amended after this database applied it, and the difference has been diagnosed.',
+          { file: f.file, appliedChecksum: f.recorded, fileChecksum: f.actual, since: f.adjudicated.since, reason: f.adjudicated.reason },
+        );
+      } else if (f.kind === 'diverged') {
         logger.error(
           'MIGRATION DIVERGENCE: this database was built by a version of this file that is not the version on disk. The schema it produced is NOT described by the repo, and re-running is not automatic (the name is already recorded). Re-apply deliberately or ship a new numbered migration.',
           { file: f.file, appliedChecksum: f.recorded, fileChecksum: f.actual },
@@ -148,7 +256,8 @@ export function reportMigrationChecksums(db: Db, read: ReadMigration): Migration
     logger.info('Migration checksum audit', {
       verified: audit.verified,
       unverifiable: audit.unverifiable,
-      diverged: audit.findings.filter(f => f.kind === 'diverged').length,
+      diverged: audit.findings.filter(f => f.kind === 'diverged' && !f.adjudicated).length,
+      divergedExamined: audit.adjudicated,
       superseded: audit.findings.filter(f => f.kind === 'superseded').length,
     });
     return audit;

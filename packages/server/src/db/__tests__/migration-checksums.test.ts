@@ -163,3 +163,114 @@ describe('auditMigrationChecksums', () => {
     expect(auditMigrationChecksums(db, read).findings).toHaveLength(1);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// THE ADJUDICATION LEDGER (SWEEP CORE-2 item 6, rider (i)).
+//
+// The alarm above was firing `logger.error` TWICE ON EVERY BOOT of the dev box —
+// on `144_task_runs_absorbed.sql` and `146_task_log_absorbed.sql` — for months,
+// and nothing acted on it. It also reached the behavioural harness as two
+// permanent BLOCKING `ambient_log_error` findings in every battery. An alarm that
+// fires forever on a state nobody will change is a silenced alarm, and worse than
+// silence: it teaches every reader that a blocking finding can be ignored.
+//
+// The answer is NOT to lower the level. It is to make the alarm mean "nobody has
+// looked at this yet". A divergence somebody HAS examined carries an entry
+// bound to BOTH hashes it was examined at — so the ledger can never pre-approve
+// a future edit: amend the file again and the file hash moves, the triple stops
+// matching, and the error comes back on the next boot.
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('divergence adjudication', () => {
+  it('an UNADJUDICATED divergence is loud, and stays loud', () => {
+    ensureMigrationChecksumColumn(db);
+    writeFile('200_x.sql', 'SELECT 2;');
+    record('200_x.sql', migrationChecksum('SELECT 1;'));
+    const audit = auditMigrationChecksums(db, read);
+    expect(audit.findings).toHaveLength(1);
+    expect(audit.findings[0].kind).toBe('diverged');
+    expect(audit.findings[0].adjudicated).toBeUndefined();
+    expect(audit.adjudicated).toBe(0);
+  });
+
+  it('an ADJUDICATED divergence is recorded as examined, not as a finding to shout about', () => {
+    ensureMigrationChecksumColumn(db);
+    const applied = migrationChecksum('SELECT 1;');
+    writeFile('200_x.sql', 'SELECT 2;');
+    const onDisk = migrationChecksum('SELECT 2;');
+    record('200_x.sql', applied);
+    const audit = auditMigrationChecksums(db, read, [
+      { file: '200_x.sql', appliedChecksum: applied, fileChecksum: onDisk, since: '2026-08-09', reason: 'test fixture' },
+    ]);
+    expect(audit.adjudicated).toBe(1);
+    expect(audit.findings[0].adjudicated?.reason).toBe('test fixture');
+  });
+
+  it('THE LEDGER CANNOT PRE-SILENCE THE NEXT EDIT — it is bound to both hashes', () => {
+    ensureMigrationChecksumColumn(db);
+    const applied = migrationChecksum('SELECT 1;');
+    const examinedAt = migrationChecksum('SELECT 2;');
+    record('200_x.sql', applied);
+    const ledger = [{ file: '200_x.sql', appliedChecksum: applied, fileChecksum: examinedAt, since: '2026-08-09', reason: 'test fixture' }];
+
+    // The file is edited AGAIN, after the adjudication.
+    writeFile('200_x.sql', 'SELECT 3;');
+    const audit = auditMigrationChecksums(db, read, ledger);
+    expect(audit.adjudicated, 'a NEW divergence must not inherit the old adjudication').toBe(0);
+    expect(audit.findings[0].adjudicated).toBeUndefined();
+  });
+
+  it('an adjudication whose applied hash differs does not match either (another box, another history)', () => {
+    ensureMigrationChecksumColumn(db);
+    writeFile('200_x.sql', 'SELECT 2;');
+    record('200_x.sql', migrationChecksum('SELECT 9;'));
+    const audit = auditMigrationChecksums(db, read, [
+      { file: '200_x.sql', appliedChecksum: migrationChecksum('SELECT 1;'), fileChecksum: migrationChecksum('SELECT 2;'), since: '2026-08-09', reason: 'test fixture' },
+    ]);
+    expect(audit.adjudicated).toBe(0);
+  });
+
+  it('THE DEV BOX\'s TWO ARE IN THE SHIPPED LEDGER, dated, with their measured reason', async () => {
+    const { KNOWN_DIVERGENCES } = await import('../migration-checksums.js');
+    const files = KNOWN_DIVERGENCES.map(d => d.file).sort();
+    expect(files).toEqual(['144_task_runs_absorbed.sql', '146_task_log_absorbed.sql']);
+    for (const d of KNOWN_DIVERGENCES) {
+      expect(d.appliedChecksum).toMatch(/^[0-9a-f]{64}$/);
+      expect(d.fileChecksum).toMatch(/^[0-9a-f]{64}$/);
+      expect(d.since).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(d.reason.length, 'an adjudication with no stated reason is a silencer').toBeGreaterThan(40);
+    }
+  });
+
+  it('THE SHIPPED LEDGER STILL DESCRIBES THE TREE — each entry\'s file hash is the file on disk NOW', async () => {
+    // If somebody amends 144 or 146 again, this goes red in the unit suite
+    // BEFORE anybody has to notice a boot log — which is the whole point of
+    // moving the alarm from "loud for ever" to "loud when it is news".
+    const { KNOWN_DIVERGENCES } = await import('../migration-checksums.js');
+    const migDir = path.resolve(__dirname, '../migrations');
+    for (const d of KNOWN_DIVERGENCES) {
+      const p = path.join(migDir, d.file);
+      expect(fs.existsSync(p), `${d.file} named in the ledger is gone from the tree`).toBe(true);
+      expect(migrationChecksum(fs.readFileSync(p, 'utf-8')), `${d.file} has been edited since it was adjudicated`).toBe(d.fileChecksum);
+    }
+  });
+});
+
+describe('divergence adjudication — the report tier', () => {
+  // A source census rather than a captured log: the module binds its logger at
+  // import, and a clause that mocked it would be asserting on the mock. What
+  // matters and is checkable here is that the two arms are DISTINCT and that the
+  // unexamined one is still the loud one.
+  it('an examined divergence drops to info; an unexamined one is still logger.error', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '../migration-checksums.ts'), 'utf-8');
+    const body = /export function reportMigrationChecksums[\s\S]*?\n}/.exec(src)![0];
+    const adjudicatedArm = /f\.kind === 'diverged' && f\.adjudicated[\s\S]*?else if/.exec(body)?.[0] ?? '';
+    expect(adjudicatedArm, 'the examined arm must exist and be separate').not.toBe('');
+    expect(adjudicatedArm).toMatch(/logger\.info/);
+    expect(adjudicatedArm).not.toMatch(/logger\.error/);
+    // The unexamined arm keeps the alarm, verbatim.
+    const loud = body.slice(body.indexOf('} else if'));
+    expect(loud).toMatch(/logger\.error/);
+    expect(loud).toMatch(/MIGRATION DIVERGENCE/);
+  });
+});

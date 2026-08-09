@@ -28,6 +28,7 @@ import {
   markAlertResolved as markAlertResolvedIn,
   type WatchdogState,
 } from './alert-ledger.js';
+import { diskFloorBytes, toGb } from './disk-floor.js';
 
 // ── Config ──
 
@@ -267,15 +268,12 @@ function markAlertResolved(alertKey: string): boolean {
  * there is somewhere to send it.
  *
  * THE HOLE THIS CLOSES (SWEEP CORE-2 item 6). Every recovery used to read
- * `if (markAlertResolved(k)) { const to = getImessageRecipient(); if (to) send(...) }`.
- * The ledger entry was retired FIRST, so a recovery arriving while the platform
- * DB was unreadable — the FA-W2 case, and an extremely likely one in the minutes
- * after an outage — was dropped on the floor and could never be retried: the
- * ledger now said the alert had never been active. The owner was left holding a
- * "Dojo platform is DOWN" text with no sequel.
- *
- * Resolving the recipient first means an unreachable owner POSTPONES the
- * recovery (the entry stays active, the next 120 s cycle tries again) instead of
+ * `if (markAlertResolved(k)) { const to = getImessageRecipient(); if (to) send() }`
+ * — retiring the entry BEFORE the message had anywhere to go, so a recovery
+ * arriving while the DB was unreadable (the FA-W2 case, very likely right after
+ * an outage) was dropped and could never retry: the ledger now said the alert had
+ * never been active, and the owner keeps a "platform is DOWN" text with no sequel.
+ * Recipient first means an unreachable owner POSTPONES the recovery instead of
  * destroying it.
  */
 function resolveAndTell(alertKey: string, text: string): boolean {
@@ -758,18 +756,30 @@ async function checkDiskSpace(): Promise<void> {
     const availableKb = parseInt(parts[3] ?? '0', 10);
     const availableGb = availableKb / (1024 * 1024);
 
-    if (availableGb < 1) {
-      log('warn', 'Disk space critically low', { availableGb: availableGb.toFixed(2) });
+    // rider (iii): ORDERED against the platform's own refusals — never below the
+    // point a pre-migration backup, and so an update, is refused. Why: disk-floor.ts.
+    const floor = diskFloorBytes();
+    const floorGb = toGb(floor.bytes);
+
+    if (availableGb < floorGb) {
+      log('warn', 'Disk space critically low', {
+        availableGb: availableGb.toFixed(2), floorGb: floorGb.toFixed(2), binding: floor.binding,
+      });
       if (shouldSendAlert('disk_low')) {
         const imRecipient = getImessageRecipient();
         if (imRecipient) {
-          await sendSmartAlert(imRecipient, `Watchdog: Disk space low, ${availableGb.toFixed(1)}GB free. Will follow up when resolved.`);
-          recordAlert(`Disk space low: ${availableGb.toFixed(1)}GB`);
+          // The owner is told WHICH answer set the number, in plain words: a
+          // threshold he cannot account for is a threshold he learns to ignore.
+          const because = floor.binding === 'backup'
+            ? ` This box needs about ${floorGb.toFixed(1)}GB free to keep making a database backup before it updates.`
+            : '';
+          await sendSmartAlert(imRecipient, `Watchdog: Disk space low, ${availableGb.toFixed(1)}GB free.${because} Will follow up when resolved.`);
+          recordAlert(`Disk space low: ${availableGb.toFixed(1)}GB (floor ${floorGb.toFixed(1)}GB, ${floor.binding})`);
         }
       }
     } else {
       resolveAndTell('disk_low', `Watchdog: Disk space recovered, ${availableGb.toFixed(1)}GB free.`);
-      log('debug', 'Disk space OK', { availableGb: availableGb.toFixed(1) });
+      log('debug', 'Disk space OK', { availableGb: availableGb.toFixed(1), floorGb: floorGb.toFixed(2) });
     }
 
     // Also check ~/.dojo/ size
@@ -875,11 +885,9 @@ async function attemptRestart(): Promise<void> {
       log('info', 'Fallback restart skipped, platform is already responding');
       return;
     }
-    // The exec failure arrives ASYNCHRONOUSLY, on a later tick, as an 'error'
-    // event — the try/catch around this cannot reach it, and an 'error' with no
-    // listener is rethrown and kills this daemon. That is the emergency restart
-    // path: the platform is already down when it runs, so a watchdog that dies
-    // here leaves nothing at all watching the box.
+    // The exec failure arrives ASYNCHRONOUSLY and the try/catch cannot reach it;
+    // an 'error' with no listener is rethrown and kills this daemon — on the
+    // emergency path, with the platform already down. (See spawnRollbackDetached.)
     const child = spawn(process.execPath, [entrypoint], {
       cwd: platformDir,
       env: { ...process.env, NODE_ENV: 'production' },
@@ -912,15 +920,11 @@ async function attemptRestart(): Promise<void> {
 // cascade, which would only kickstart the same bad build and race rollback.sh
 // (that script unloads BOTH launchd jobs). Never acts on a generic outage.
 async function maybeAutoRollback(): Promise<boolean> {
-  // ── THE DECISION IS MADE INSIDE THE LOCK (SWEEP CORE-2 item 6) ──
-  // This used to read the marker, decide, and then write a transition built on
-  // that first read. The platform's boot sentinel writes the SAME file from
-  // another process, so the window between the read and the write is a real lost
-  // update: a `markMigrationsRan()` landing inside it was ERASED by the write,
-  // and the next evaluation then saw a failing episode with no migration and
-  // performed exactly the code-only rollback the owner's 2026-07-06 decision
-  // forbids. `updateMarker` holds the file across the read and the write, and
-  // the decision is taken on the marker as it is at the moment of writing.
+  // THE DECISION IS MADE INSIDE THE LOCK (SWEEP CORE-2 item 6): reading first and
+  // writing a transition built on that read is a lost update against the
+  // platform's boot sentinel, and the flag it erases is the one that stops a
+  // code-only rollback onto a migrated database. Full argument and the exact
+  // interleaving: `auto-rollback.ts`, THE SERIALISED WRITE PATH.
   // (A holder object rather than plain `let`s: the assignments happen inside a
   // callback, and the compiler cannot see that they ran.)
   const seen: { marker: UpdateMarker | null; decision: RollbackDecision } = {
@@ -1181,18 +1185,12 @@ setInterval(() => {
 }, CHECK_INTERVAL_MS);
 
 // ── THE LAST NET (SWEEP CORE-2 item 6) ──
-// The watchdog exists to keep watching when everything else has stopped, so an
-// error it did not anticipate must not be the thing that stops IT. Node's
-// default for both of these is to print and EXIT; launchd would revive the
-// daemon, but a revival costs the in-flight cycle and, before the ledger was
-// persisted, cost the incident's memory as well.
-//
-// These handlers deliberately do NOT exit. That is the opposite of the usual
-// advice, and it is the right answer for THIS process: the alternative to a
-// possibly-degraded watchdog is NO watchdog, on a box that may already be in
-// trouble. Everything durable it owns is written atomically on each cycle
-// (marker, ledger, recipient cache), so there is no in-memory state whose
-// corruption could outlive the next 120-second tick.
+// Node's default for both of these is print-and-EXIT. These handlers deliberately
+// do NOT exit — the opposite of the usual advice, and the right answer for THIS
+// process: the alternative to a possibly-degraded watchdog is NO watchdog, on a
+// box that may already be in trouble. Nothing in memory can outlive the next
+// 120 s tick, because everything durable it owns (marker, ledger, recipient
+// cache) is written atomically every cycle.
 process.on('uncaughtException', (err) => {
   log('error', 'Uncaught exception — the watchdog is staying up and continuing to watch', {
     error: err instanceof Error ? err.message : String(err),

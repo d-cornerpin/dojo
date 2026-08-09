@@ -5,6 +5,7 @@
 import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { getDb } from '../db/connection.js';
+import { getCurrentVersion } from '../gateway/routes/update.js';
 import { isImessageConfigured } from '../services/presence.js';
 import { createLogger } from '../logger.js';
 
@@ -66,14 +67,26 @@ function getOllamaModels(): string[] {
   }
 }
 
+// ── SWEEP CORE-2 item 6, rider (ii): the manifest stops claiming 1.0.0 ──
+//
+// This read `config.platform_version`, a key NOTHING IN THE TREE HAS EVER
+// WRITTEN — the residue `release/release-steps.ts` recorded and deliberately did
+// not disturb. So the fallback fired on every box and every export manifest ever
+// produced claims it was made by platform "1.0.0". The import side reads the
+// field back and does nothing with it, so the lie has cost nothing yet; it would
+// cost exactly when somebody is diagnosing a bad import and asks which build made
+// the file.
+//
+// The reader's need is "which platform produced this export", and the tree
+// already has ONE authority for that: `getCurrentVersion()`, read off the
+// installed platform's package.json, used by the update path, the boot sentinel
+// and the release-step ledger. So the READER is retired rather than a writer
+// wired — wiring one would mint a SECOND version authority that can disagree
+// with the first, and add a write to the boot spine for a value already
+// derivable. `config.platform_version` is left exactly as unwritten as it was
+// found, and now has no readers either.
 function getPlatformVersion(): string {
-  try {
-    const db = getDb();
-    const row = db.prepare("SELECT value FROM config WHERE key = 'platform_version'").get() as { value: string } | undefined;
-    return row?.value ?? '1.0.0';
-  } catch {
-    return '1.0.0';
-  }
+  return getCurrentVersion();
 }
 
 export function generateManifest(dbSizeBytes: number, prompts: string[], techniques: string[], uploadsSize: number): ExportManifest {

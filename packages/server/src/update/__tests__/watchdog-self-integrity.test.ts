@@ -488,3 +488,106 @@ describe('watchdog self-integrity — the alert dedup / recovery ledger', () => 
     expect(o.send).toBe(true);
   }, 60_000);
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// 4. ONE QUESTION, ONE ANSWER: THE DISK FLOOR (SWEEP CORE-2 item 6, rider iii)
+//
+// Two thresholds answered "is there enough disk?" and did not know about each
+// other:
+//
+//   the watchdog        a FLAT 1 GB — alert the owner, on every 120 s cycle.
+//   the platform        `MIGRATION_BACKUP_FREE_DISK_MULTIPLE` x (db+wal+shm) —
+//                       refuse the pre-migration backup, and (CORE-2 item 3)
+//                       refuse the update before the first byte is downloaded.
+//
+// THE ORDERING IS ACCIDENTAL AND IT INVERTS. On the 198 MB body REVERT-REHEARSE
+// measured, the platform's threshold is 0.58 GB, so today the watchdog speaks
+// first and the ordering happens to be right. At a 600 MB database it is
+// 1.2 GB — ABOVE the watchdog's flat gigabyte — and the box silently loses the
+// ability to back up before a migration while the watchdog is still reporting
+// disk as fine. The owner learns about it from a refused update.
+//
+// They are ORDERED, not collapsed, because they answer genuinely different
+// questions: the watchdog asks "is this box in trouble" continuously; the
+// platform asks "can THIS operation complete". The law is the ordering itself —
+// THE WATCHDOG'S FLOOR IS NEVER BELOW THE LARGEST THRESHOLD THE PLATFORM'S OWN
+// OPERATIONS WILL REFUSE AT — so the warning always precedes the refusal.
+// ════════════════════════════════════════════════════════════════════════════
+
+const DISK_FLOOR_MOD = path.join(REPO_ROOT, 'watchdog/src/disk-floor.ts');
+
+describe('watchdog self-integrity — the disk floor is ordered against the platform\'s own refusals', () => {
+  it('the multiple is hand-synced with the platform\'s, and this suite is what binds them', async () => {
+    // The watchdog cannot import the platform (check-watchdog-contract.mjs RULE 3),
+    // so this number is copied, exactly like the update-state contract. That gate's
+    // COPIES list cannot take a third file (it requires every copy to declare every
+    // member), so the binding lives HERE — in the release-gated unit suite — and is
+    // named as such rather than left to a comment.
+    const { PLATFORM_BACKUP_FREE_DISK_MULTIPLE } = await import(/* @vite-ignore */ DISK_FLOOR_MOD);
+    const { MIGRATION_BACKUP_FREE_DISK_MULTIPLE } = await import('../../db/migration-backup.js');
+    expect(PLATFORM_BACKUP_FREE_DISK_MULTIPLE).toBe(MIGRATION_BACKUP_FREE_DISK_MULTIPLE);
+  });
+
+  it('the floor is the LARGER of the flat minimum and what a backup of this database needs', async () => {
+    const { diskFloorBytes, WATCHDOG_DISK_FLOOR_BYTES, PLATFORM_BACKUP_FREE_DISK_MULTIPLE } =
+      await import(/* @vite-ignore */ DISK_FLOOR_MOD);
+
+    // A small database: the flat minimum binds, and the alarm is unchanged from
+    // the behaviour that has been shipping.
+    const small = diskFloorBytes(198 * 1024 * 1024);
+    expect(small.bytes).toBe(WATCHDOG_DISK_FLOOR_BYTES);
+    expect(small.binding).toBe('floor');
+
+    // A large database: the backup need binds, and it is ABOVE the flat gigabyte —
+    // the inversion this rider exists to close.
+    const bigDb = 900 * 1024 * 1024;
+    const big = diskFloorBytes(bigDb);
+    expect(big.bytes).toBe(bigDb * PLATFORM_BACKUP_FREE_DISK_MULTIPLE);
+    expect(big.bytes).toBeGreaterThan(WATCHDOG_DISK_FLOOR_BYTES);
+    expect(big.binding).toBe('backup');
+  });
+
+  it('THE ORDERING HOLDS AT EVERY DATABASE SIZE — the warning never comes after the refusal', async () => {
+    const { diskFloorBytes, PLATFORM_BACKUP_FREE_DISK_MULTIPLE } = await import(/* @vite-ignore */ DISK_FLOOR_MOD);
+    const sizes = [0, 1, 1024, 50e6, 198e6, 500e6, 512e6, 1e9, 4e9, 40e9];
+    for (const db of sizes) {
+      const refusesAt = db * PLATFORM_BACKUP_FREE_DISK_MULTIPLE;
+      expect(diskFloorBytes(db).bytes, `at a ${db} byte database the watchdog would warn AFTER the platform refuses`)
+        .toBeGreaterThanOrEqual(refusesAt);
+    }
+  });
+
+  it('an unmeasurable database falls back to the flat minimum rather than to zero', async () => {
+    const { diskFloorBytes, WATCHDOG_DISK_FLOOR_BYTES } = await import(/* @vite-ignore */ DISK_FLOOR_MOD);
+    for (const bad of [null, undefined, NaN, -1]) {
+      const f = diskFloorBytes(bad as unknown as number);
+      expect(f.bytes).toBe(WATCHDOG_DISK_FLOOR_BYTES);
+      expect(f.binding).toBe('floor');
+    }
+  });
+
+  it('the daemon uses it, and its alert says WHICH answer bound', () => {
+    const idx = fs.readFileSync(path.join(REPO_ROOT, 'watchdog/src/index.ts'), 'utf-8');
+    expect(idx).toMatch(/from '\.\/disk-floor\.js'/);
+    expect(idx).toMatch(/diskFloorBytes\(/);
+    // The flat literal is gone: a second answer to the same question is the defect.
+    const code = idx.split('\n').map(l => l.replace(/^\s*\/\/.*$/, '')).join('\n');
+    expect(code, 'the flat 1 GB comparison must not survive beside the derived floor').not.toMatch(/availableGb\s*<\s*1\b/);
+    // And the owner is told what the number means when the DB is what set it.
+    expect(idx).toMatch(/database backup/i);
+  });
+
+  it('DRIVEN: the database size the floor is computed from is measured off disk, wal and shm included', () => {
+    const dataDir = path.join(home, '.dojo', 'data');
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(path.join(dataDir, 'dojo.db'), Buffer.alloc(3000));
+    fs.writeFileSync(path.join(dataDir, 'dojo.db-wal'), Buffer.alloc(500));
+    fs.writeFileSync(path.join(dataDir, 'dojo.db-shm'), Buffer.alloc(100));
+    const r = runInChild(`
+      const d = await import(${JSON.stringify(DISK_FLOOR_MOD)});
+      console.log(JSON.stringify({ bytes: d.measureDatabaseBytes() }));
+    `);
+    expect(r.status, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout.trim()).bytes).toBe(3600);
+  }, 60_000);
+});
