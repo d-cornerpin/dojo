@@ -77,6 +77,7 @@ import type { InboundChannel } from '../../inbound-channel.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
 import { tagTurnOutputs } from './conversation-tagging.js';
 import { finalizeTurnRecord } from './finalize-record.js';
+import { reclassifyTurnDrafts } from './draft-reclassify.js';
 import { flushStrandedAttachments } from './attachment-flush.js';
 
 const logger = createLogger('v2-loop');
@@ -213,6 +214,23 @@ export async function runTurnTeardown(
 
   tagTurnOutputs(ctx);
   await finalizeTurnRecord(state, ctx);
+  // SWEEP CORE-2 item 7 — DRAFTS ARE NOT ANSWERS. It runs HERE and the ORDER is the whole
+  // mechanism, not a preference: `finalizeTurnRecord` is what stamps `turns.answer_message_id`,
+  // so this is the first instant in the turn's life at which the platform knows WHICH bubble
+  // answered. Called before it, it would have nothing to read and would have to guess.
+  //
+  // Best-effort like every other arm of the `finally` (this block's own comments say three
+  // times that turn teardown must not throw), but LOUD rather than silent: a failure here
+  // leaves the drafting looking like answers on the owner's screen, which is the defect the
+  // module exists to remove, and a silence about that is how it would come back unnoticed.
+  try {
+    reclassifyTurnDrafts({ agentId: ctx.agentId, turnNumber: ctx.turnNumber });
+  } catch (err) {
+    logger.warn('v2: the turn-end draft re-classification FAILED — this turn\'s drafting will render as answers', {
+      agentId: ctx.agentId, turnNumber: ctx.turnNumber,
+      error: err instanceof Error ? err.message : String(err),
+    }, ctx.agentId);
+  }
   await flushStrandedAttachments(ctx);
 
   return proceed(advance(state, { phase: TEARDOWN_PHASE }));

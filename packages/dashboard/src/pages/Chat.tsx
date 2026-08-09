@@ -99,6 +99,11 @@ interface ChatMessage {
    *  surfaced text of a background turn still renders. Absent on local
    *  optimistic/streaming bubbles (treated as user-visible). */
   conversationId?: string | null;
+  /** The row's stored display classification (`messages.display_kind`). SWEEP CORE-2 item 7:
+   *  an ASSISTANT row stamped `working-note` is drafting the turn's own ledger key did not
+   *  name as the answer — re-classified at the turn boundary, content untouched. Read here
+   *  rather than re-derived from the text, because the text is deliberately unchanged. */
+  displayKind?: string | null;
 }
 
 
@@ -975,6 +980,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             source: m.source ?? null,
             origin: m.origin,
             conversationId: m.conversationId,
+            displayKind: m.displayKind ?? null,
           })),
         );
         setHasMore(result.data.length >= 50);
@@ -1023,6 +1029,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
         source: m.source ?? null,
         origin: m.origin,
         conversationId: m.conversationId,
+        displayKind: m.displayKind ?? null,
       }));
       setMessages(prev => [...older, ...prev]);
       setHasMore(result.data.length >= 50);
@@ -1087,6 +1094,21 @@ export const Chat = ({ panel = null }: ChatProps) => {
       const e = event as ChatWorkingNoteEvent;
       if (e.agentId !== agentIdRef.current) return;
       setMessages((prev) => {
+        // ── SWEEP CORE-2 item 7 — THE RE-CLASSIFICATION ARM ──
+        // The turn ended, the ledger named a different bubble as the answer, and THIS row
+        // moved into the working-note lane. It is a real, persisted assistant row: it keeps
+        // its id, its role and every byte of its content (the cache law), and only its stored
+        // `display_kind` changed. So the client must convert IN PLACE by stamping the same
+        // kind — fabricating a `[working-note]`-prefixed system row here would make the live
+        // view disagree with the reload that serves the row as it actually is, which is the
+        // exact divergence this event was built to close.
+        if (e.reclassified) {
+          const at = prev.findIndex((m) => m.id === e.messageId);
+          if (at < 0) return prev;
+          const out = [...prev];
+          out[at] = { ...out[at], displayKind: 'working-note', isStreaming: false };
+          return out;
+        }
         // RC-9: carry the internal flag through the persisted content prefix so the
         // render-time filter hides an internal note (routed-channel human turn) outside
         // wordy mode, identically live and on reload.
@@ -1815,6 +1837,21 @@ export const Chat = ({ panel = null }: ChatProps) => {
           if (!wordyMode && (msg.role === 'user' || msg.role === 'assistant')
               && classifyMessageForDisplay(msg).tier !== 'user-visible') {
             return null;
+          }
+          // ── SWEEP CORE-2 item 7 — DRAFTS ARE NOT ANSWERS ──
+          // An ASSISTANT row the engine re-classified at the turn boundary: the turn's own
+          // ledger key (`turns.answer_message_id`) named a DIFFERENT bubble as the answer, so
+          // this one was the agent drafting on its way there. It renders as the same dimmed,
+          // expandable note the mid-turn demotion has produced since 2026-07-10 — nothing is
+          // suppressed, every byte is still here, and the answer beside it now reads as the
+          // answer instead of as one more box in a stack of identical boxes.
+          //
+          // Keyed on the STORED kind and never on the text: the content is deliberately
+          // byte-unchanged, so there is nothing in it to key on and nothing in it that could
+          // drift. It renders in both modes, exactly as a plain working note does.
+          if (msg.role === 'assistant' && msg.displayKind === 'working-note') {
+            const { text: noteText } = parseMessageContent(msg.content);
+            return <WorkingNoteBubble key={msg.id} text={noteText || msg.content} />;
           }
           if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} wordyMode={wordyMode} />;
           if (msg.role === 'tool') {

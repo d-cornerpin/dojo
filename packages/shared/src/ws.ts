@@ -171,6 +171,28 @@ export interface ChatWorkingNoteEvent {
    * always-visible working note (dashboard/voice turns are unchanged).
    */
   internal?: boolean;
+  /**
+   * SWEEP CORE-2 item 7 — THIS IS A RE-CLASSIFICATION, NOT A DEMOTION-WITH-A-NEW-ROW.
+   *
+   * The two shapes ride the same event because they are the same fact on screen (a bubble
+   * becomes a dimmed note), but they are different facts in the database and the client has
+   * to know which it is:
+   *
+   *   absent/false  the pre-2026-07-10 demotion path. The engine decided MID-TURN that this
+   *                 narration was never a reply, wrote a NEW `[working-note]` system row, and
+   *                 the assistant text was never persisted at all. `messageId` is the streamed
+   *                 bubble to convert; `noteId` is the different row it becomes.
+   *   true          the turn-end path. The answer's identity is only known when the turn ends,
+   *                 so the bubble streamed and PERSISTED as an ordinary assistant row; what
+   *                 changed at the boundary is the platform's account of which bubble the
+   *                 ledger names as the answer. ONE row moves ONE column (`display_kind`
+   *                 -> `working-note`); `content` and `role` are untouched (the cache law), and
+   *                 `messageId` and `noteId` are therefore the SAME id.
+   *
+   * A client that fabricated a system row on the second shape would disagree with its own
+   * reload, which is the divergence class this event exists to close.
+   */
+  reclassified?: boolean;
 }
 
 /**

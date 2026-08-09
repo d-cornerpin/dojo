@@ -3,6 +3,7 @@
 // ════════════════════════════════════════
 
 import type { MessageOrigin } from './origin.js';
+import type { DisplayKind } from './visibility.js';
 
 export interface Provider {
   id: string;
@@ -195,6 +196,18 @@ export interface Message {
    * never skipped by the Dreamer while still being compacted (silent loss).
    */
   rowid?: number;
+  /**
+   * The row's stored display classification (`messages.display_kind`, migration 132's
+   * CHECKed vocabulary). SWEEP CORE-2 item 7 is the first RELOAD-path reader of it, and the
+   * reason it has to be served rather than re-derived is the point of the whole item: at
+   * turn end the engine re-classifies the bubbles the ledger did NOT name as the answer into
+   * the working-note lane, and it does that WITHOUT touching a byte of `content` (the cache
+   * law — an assistant row's bytes are replayed into the model prefix on every later turn).
+   * A re-derivation from content therefore CANNOT see the re-classification, which is exactly
+   * how the live view and a reload would come apart. Optional because a locally-constructed
+   * optimistic/streaming bubble has no row yet.
+   */
+  displayKind?: DisplayKind | null;
   /**
    * Per-agent monotonic outer-turn counter. Increments once per outer turn
    * (one user message → agent's complete response, possibly with many tool

@@ -97,7 +97,19 @@ export const NON_ANSWERING_DELIVERY_TOOLS = new Set(['engine-ack']);
  * message id (email, iMessage, SMS) is untouched — it is excluded only when the row it
  * carried is provably a chip.
  */
-export const NON_ANSWERING_DISPLAY_KINDS = ['tool-turn'] as const;
+/*
+ * SWEEP CORE-2 item 7 ADDS `working-note`, and it is the same argument one step later rather
+ * than a new one. A working note is a bubble the PLATFORM ITSELF has already declared not to
+ * be the answer — mid-turn when the narration rode with a tool call
+ * (`post-call-classify/terminal-text.ts`, 2026-07-10), or at the turn boundary when the
+ * ledger key named a different bubble (`steps/teardown/draft-reclassify.ts`). Every one of
+ * those bubbles STREAMED, so `deliveries` holds a dashboard receipt for it (PHASE-2 T5), and
+ * without this entry an ask could be closed on a receipt pointing at a row the platform has
+ * on record as drafting. That is CT0's defect class — `done` on the opening status line — in
+ * a new spelling, and it is excluded here for the reason the chip is: it is a NARROWING of
+ * what may count as an answer, never a widening.
+ */
+export const NON_ANSWERING_DISPLAY_KINDS = ['tool-turn', 'working-note'] as const;
 
 // ⚠ DECLARED HERE, ABOVE THE PREDICATES, rather than beside the join arm that reads it:
 // SWEEP CORE-1 CT0's `NOT_A_SUPERSEDED_BUBBLE` is a module-level SQL fragment and needs

@@ -850,6 +850,65 @@ export function setAnswerMessageId(
   ).run(p).changes;
 }
 
+/**
+ * SWEEP CORE-2 item 7 — RE-CLASSIFY A FINISHED TURN'S DRAFT BUBBLES INTO THE WORKING-NOTE
+ * LANE. The turn-end half of the demotion `post-call-classify/terminal-text.ts` has done at
+ * MID-turn since 2026-07-10, and the reason it has to be a second site rather than the same
+ * one is a fact about time, not about tidiness: THE ANSWER'S IDENTITY IS ONLY KNOWN AT TURN
+ * END. Mid-turn the engine can see that a line rode WITH a tool call; it cannot see that a
+ * tool-less line will be followed by another round, because the floors that grant that round
+ * have not run yet.
+ *
+ * MEASURED (read-only, `VACUUM INTO` copy of the live body at `92447af`): 535 of 3,543
+ * answering turns — one in seven — put TWO or THREE answer-shaped bubbles on the owner's
+ * screen; 531 of them already carry a key naming which one answered.
+ *
+ * ── WHAT MOVES, AND WHAT MAY NOT ──
+ * ONE COLUMN: `display_kind`, `agent-text` -> `working-note`. `content` is NOT touched, and
+ * that is the CACHE LAW (OR7), not a preference: an assistant row's bytes are replayed into
+ * the model prefix on every later turn, so rewriting them here would move the cached prefix
+ * boundary of the very next turn and make the platform lie about what it said. `role` is not
+ * touched either — the row is still the agent speaking; what changed is the platform's
+ * account of WHICH thing it said was the answer. `display_tier` is already `user-visible` on
+ * both kinds (`classifyMessageForDisplay`, shared), so nothing is hidden by this write.
+ *
+ * ── THE DISCRIMINATOR ──
+ * `turns.answer_message_id`, and nothing else. No prose is read. The caller passes the key it
+ * read from the ledger; a caller with NO key must not call at all (there is nothing to
+ * compare against, and guessing is the defect).
+ *
+ * Returns the rows it moved, so the caller can ANNOUNCE each one. A row edit nobody is told
+ * about is how the live view and a reload come apart, which is the thing this fix exists to
+ * stop.
+ */
+export function reclassifyDraftsAsWorkingNotes(
+  p: { agentId: string; turnNumber: number; answerMessageId: string },
+): Array<{ id: string; content: string }> {
+  const db = getDb();
+  const select = db.prepare(
+    `SELECT id, content FROM messages
+      WHERE agent_id = @agentId AND turn_number = @turnNumber AND lane = 'owner'
+        AND role = 'assistant' AND display_kind = 'agent-text' AND id <> @answerMessageId
+        AND retired_at IS NULL
+      ORDER BY seq ASC`,
+  );
+  const update = db.prepare(
+    `UPDATE messages SET display_kind = 'working-note'
+      WHERE agent_id = @agentId AND turn_number = @turnNumber AND lane = 'owner'
+        AND role = 'assistant' AND display_kind = 'agent-text' AND id <> @answerMessageId
+        AND retired_at IS NULL`,
+  );
+  // The read and the write are ONE statement's worth of truth: the caller announces exactly
+  // the set that moved, so a concurrent insert cannot land between them and be announced
+  // without having been re-classified (or the reverse).
+  return db.transaction((): Array<{ id: string; content: string }> => {
+    const rows = select.all(p) as Array<{ id: string; content: string }>;
+    if (rows.length === 0) return [];
+    update.run(p);
+    return rows;
+  })();
+}
+
 // ── Engine-event lifecycle (serve boundary, mig 099/112) ──
 
 /** "Now", offset — `param` is a SQLite modifier this module's own callers supply

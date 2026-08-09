@@ -352,6 +352,13 @@ function rowToMessage(row: Record<string, unknown>): Message {
     latencyMs: row.latency_ms as number | null,
     createdAt: row.created_at as string,
     reasoningContent: (row.reasoning_content as string | null) ?? null,
+    // SWEEP CORE-2 item 7 — THE RELOAD PATH'S HALF OF THE RE-CLASSIFICATION. At turn end the
+    // engine moves this turn's non-answer bubbles into the working-note lane by moving ONE
+    // COLUMN and nothing else (`content` is untouched: the cache law). So the only way a
+    // refreshed browser can render what the live socket rendered is to be TOLD the stored
+    // kind. Serving it is not a filter — the route's set is unchanged, and the client still
+    // decides what to draw.
+    displayKind: (row.display_kind as Message['displayKind']) ?? null,
     attachments: row.attachments ? JSON.parse(row.attachments as string) : undefined,
     source: row.lane === 'a2a' ? 'a2a' : row.channel === 'voice' ? 'voice' : null,
     // The conversation this row belongs to (`conversations.id`). Resolved at ingest on
