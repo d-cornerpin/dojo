@@ -14,6 +14,9 @@
 
 import { getDb } from '../db/connection.js';
 import { HEALER_WORKING_STUCK_MINUTES, DORMANT_THRESHOLD_DAYS } from '../agent/stuck-thresholds.js';
+// SWEEP CORE-2 item 2: the ONE budget owner and the ONE spend reader. See getBudgetStatus.
+import { getBudgets } from '../costs/budget.js';
+import { getDailySpend } from '../costs/tracker.js';
 import { createLogger } from '../logger.js';
 import { v4 as uuidv4 } from 'uuid';
 import { getVaultStats, getPoisonedArchiveStats } from '../vault/store.js';
@@ -770,27 +773,47 @@ function getProviderOutagePatterns(): DiagnosticItem[] {
   return items;
 }
 
+// ── THE SHADOW BUDGET LEDGER IS GONE (SWEEP CORE-2 item 2 / SWEEP-F T1) ──
+//
+// This collector used to keep its own books. It read a config key `daily_budget_usd` that
+// NOTHING in the tree has ever written — one reference in the whole repo, this read — and fell
+// back to a hardcoded 25; then it summed `audit_log.cost`, a column only two of the eight
+// `recordCost` sites populate. Two invented numbers over one another.
+//
+// On the owner's own box at `adfee42` that produced *"Spending is normal ($5.45 of $25 daily
+// limit)"* while `budgets.global_daily` said **500** — a cap understated twentyfold, written
+// into 24 persisted `healer_diagnostics` rows, shown on the health page, and fed to the Healer
+// in its own cycle prompt every cycle. Past ~$20 of real spend it would have raised
+// BUDGET_HIGH, and a single warning item is enough to wake the LLM Healer for a paid cycle
+// (`healer-agent.ts` remainingIssues) — a whole recovery cycle bought with a fabricated limit.
+//
+// The LEDGER dies; the ANSWER does not. `costs/budget.ts` owns the limit and `costs/tracker.ts`
+// owns the spend, and this now asks them, which is the same thing the budget wall and the cost
+// pages already ask. Deleting the item outright was the other option and was NOT taken: it has
+// live readers (#15) — the Healer's cycle prompt, the stale-proposal sweep's code set,
+// `GET /healer/diagnostics`, the Settings counts, and `BUDGET_HIGH` as a worked example in the
+// `healer_propose` tool description.
+//
+// One honest difference, stated rather than hidden: `getDailySpend()` is a ROLLING 24 HOURS,
+// where the old SUM was calendar-day-to-date. That is the window the budget WALL enforces, so
+// the health page and the thing that actually stops an agent now answer the same question.
 function getBudgetStatus(): DiagnosticItem[] {
-  const db = getDb();
   const items: DiagnosticItem[] = [];
 
   try {
-    const budgetRow = db.prepare("SELECT value FROM config WHERE key = 'daily_budget_usd'").get() as { value: string } | undefined;
-    const budget = budgetRow ? parseFloat(budgetRow.value) : 25;
+    const limit = getBudgets().global?.limitUsd;
+    // No budget configured is not a fault and is not an alarm: say nothing rather than
+    // invent a cap, which is the whole defect this replaces.
+    if (limit === undefined || !(limit > 0)) return items;
+    const spend = getDailySpend();
 
-    const today = new Date().toISOString().split('T')[0];
-    const spendRow = db.prepare(`
-      SELECT COALESCE(SUM(cost), 0) as total FROM audit_log
-      WHERE action_type = 'model_call' AND created_at >= ?
-    `).get(today) as { total: number };
-
-    const percentage = (spendRow.total / budget) * 100;
+    const percentage = (spend / limit) * 100;
     items.push({
       severity: percentage > 80 ? 'warning' : 'info',
       code: percentage > 80 ? 'BUDGET_HIGH' : 'BUDGET_OK',
       title: percentage > 80
-        ? `Spending is getting close to the daily limit ($${spendRow.total.toFixed(2)} of $${budget})`
-        : `Spending is normal ($${spendRow.total.toFixed(2)} of $${budget} daily limit)`,
+        ? `Spending is getting close to the daily limit ($${spend.toFixed(2)} of $${limit})`
+        : `Spending is normal ($${spend.toFixed(2)} of $${limit} daily limit)`,
       detail: percentage > 80
         ? `The dojo has used ${percentage.toFixed(0)}% of today's budget. Agents may be slowed or stopped if the limit is reached.`
         : `Everything is within the daily budget. No action needed.`,

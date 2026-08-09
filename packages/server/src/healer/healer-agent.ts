@@ -13,6 +13,8 @@
 import fs from 'node:fs';
 import { CHARS_PER_TOKEN } from '../memory/budget.js'; // PHASE-3 T2: was a private 3 (§T0-C #6)
 import { HEALER_WORKING_STUCK_MINUTES } from '../agent/stuck-thresholds.js';
+// SWEEP CORE-2 item 2: the Healer's three status writes go through the ONE writer.
+import { writeAgentStatus, terminateDuplicateAgentsByName } from '../agent/agent-status.js';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -393,7 +395,9 @@ function runHealerSelfWatchdog(): void {
     }
 
     if (shouldReset) {
-      db.prepare(`UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?`).run(healerId);
+      // SWEEP CORE-2 item 2: through the ONE writer. Same column, same value; the broadcast
+      // stays here, in the order this site already emitted it.
+      writeAgentStatus(healerId, 'idle');
       broadcast({ type: 'agent:status', agentId: healerId, status: 'idle' });
       logger.warn('Healer self-watchdog reset Healer to idle', {
         healerId, healerName: row.name, prevStatus: row.status, reason,
@@ -446,9 +450,11 @@ export function ensureHealerAgentRunning(): void {
     return;
   }
 
-  // Clean up any old temporary Healer agents (from before permanent resident approach)
-  db.prepare("UPDATE agents SET status = 'terminated', updated_at = datetime('now') WHERE name = ? AND id != ?")
-    .run(healerName, healerId);
+  // Clean up any old temporary Healer agents (from before permanent resident approach).
+  // SWEEP CORE-2 item 2: this was the tree's only name-scoped status write. It now selects
+  // and terminates each clone through the one writer, so a clone's exit is an ordinary
+  // transition rather than a second dialect of one.
+  terminateDuplicateAgentsByName(healerName, healerId);
 
   const existing = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(healerId) as
     | { id: string; status: string }
@@ -479,22 +485,30 @@ export function ensureHealerAgentRunning(): void {
 
   if (existing) {
     // Reactivate from terminated
-    db.prepare(`
-      UPDATE agents SET
-        name = ?,
-        model_id = ?,
-        status = 'idle',
-        agent_type = 'persistent',
-        parent_agent = ?,
-        spawn_depth = 1,
-        max_runtime = NULL,
-        timeout_at = NULL,
-        permissions = ?,
-        tools_policy = ?,
-        config = '{"persist":true,"shareUserProfile":true}',
-        updated_at = datetime('now')
-      WHERE id = ?
-    `).run(healerName, modelId, primaryId, HEALER_PERMISSIONS, HEALER_TOOLS_POLICY, healerId);
+    // SWEEP CORE-2 item 2: the re-enrolment upsert kept its `status = 'idle'` in the same SET
+    // list as the row's identity columns — one of the five byte-shaped copies T10 named as a
+    // class and could not see with a one-line grep. The identity columns stay here (they are
+    // this module's business); the STATUS goes through the one writer. Both run inside ONE
+    // transaction, so the reactivation is still atomic: no reader can see a row that is
+    // renamed-but-terminated or terminated-but-renamed.
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE agents SET
+          name = ?,
+          model_id = ?,
+          agent_type = 'persistent',
+          parent_agent = ?,
+          spawn_depth = 1,
+          max_runtime = NULL,
+          timeout_at = NULL,
+          permissions = ?,
+          tools_policy = ?,
+          config = '{"persist":true,"shareUserProfile":true}',
+          updated_at = datetime('now')
+        WHERE id = ?
+      `).run(healerName, modelId, primaryId, HEALER_PERMISSIONS, HEALER_TOOLS_POLICY, healerId);
+      writeAgentStatus(healerId, 'idle');
+    })();
     logger.info('Healer agent reactivated', { healerId, healerName });
   } else {
     // Create fresh

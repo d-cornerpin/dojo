@@ -8,6 +8,10 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
+// SWEEP CORE-2 item 2: the Healer's six status resets go through the ONE writer
+// (`agent/agent-status.ts`, PHASE-6 T10). Same column, same value, same `updated_at`; the
+// broadcast stays at each site because that is the order these sites already emitted in.
+import { writeAgentStatus } from '../agent/agent-status.js';
 import { v4 as uuidv4 } from 'uuid';
 import { sanitizeMessagesOnModelChange } from '../agent/model-switch.js';
 import type { DiagnosticItem } from './diagnostic.js';
@@ -84,7 +88,7 @@ export function runFrequentAutoFixes(): void {
     `).all() as Array<{ id: string; name: string; status: string; updated_at: string }>;
 
     for (const a of longPaused) {
-      db.prepare(`UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?`).run(a.id);
+      writeAgentStatus(a.id, 'idle');
       broadcast({ type: 'agent:status', agentId: a.id, status: 'idle' });
       logger.info('Frequent auto-fix: resumed long-paused agent', {
         agentId: a.id, agentName: a.name, pausedSince: a.updated_at,
@@ -101,7 +105,7 @@ export function runFrequentAutoFixes(): void {
     `).all() as Array<{ id: string; name: string; status: string; updated_at: string }>;
 
     for (const a of longErrored) {
-      db.prepare(`UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?`).run(a.id);
+      writeAgentStatus(a.id, 'idle');
       broadcast({ type: 'agent:status', agentId: a.id, status: 'idle' });
       logger.info('Frequent auto-fix: reset long-errored agent', {
         agentId: a.id, agentName: a.name, erroredSince: a.updated_at,
@@ -142,8 +146,7 @@ export function startFrequentAutoFixes(): void {
 function fixStuckAgent(item: DiagnosticItem): AutoFixResult {
   if (item.code !== 'STUCK_AGENT' || !item.agentId) return { applied: false, description: '' };
 
-  const db = getDb();
-  db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(item.agentId);
+  writeAgentStatus(item.agentId, 'idle');
   broadcast({ type: 'agent:status', agentId: item.agentId, status: 'idle' });
   clearRecoveryBookkeeping(item.agentId); // FA-X3
 
@@ -167,7 +170,7 @@ function fixPausedAgent(item: DiagnosticItem): AutoFixResult {
     return { applied: false, description: `${item.agentName} was paused recently — giving it time to cool down before restarting` };
   }
 
-  db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(item.agentId);
+  writeAgentStatus(item.agentId, 'idle');
   broadcast({ type: 'agent:status', agentId: item.agentId, status: 'idle' });
   clearRecoveryBookkeeping(item.agentId); // FA-X3
 
@@ -191,7 +194,7 @@ function fixErrorAgent(item: DiagnosticItem): AutoFixResult {
     return { applied: false, description: '' };
   }
 
-  db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(item.agentId);
+  writeAgentStatus(item.agentId, 'idle');
   broadcast({ type: 'agent:status', agentId: item.agentId, status: 'idle' });
   clearRecoveryBookkeeping(item.agentId); // FA-X3
 
@@ -316,7 +319,7 @@ function fixStaleRateLimit(item: DiagnosticItem): AutoFixResult {
     return { applied: false, description: '' };
   }
 
-  db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(item.agentId);
+  writeAgentStatus(item.agentId, 'idle');
   broadcast({ type: 'agent:status', agentId: item.agentId, status: 'idle' });
 
   return {

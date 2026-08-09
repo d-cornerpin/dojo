@@ -31,7 +31,7 @@ import {
   recoveryRunStreak,
   MAX_INLOOP_RECOVERIES_SAME_INPUTS,
 } from '../shared-state.js';
-import { setAgentStatus } from '../agent-status.js';
+import { setAgentStatus, writeAgentLastError } from '../agent-status.js';
 import type { AgentTurnState } from './state.js';
 import {
   formatErrorForHuman,
@@ -451,18 +451,15 @@ async function tryPlatformErrorRecovery(
   const systemNote = `[System (platform error): ${humanText}]`;
   persistAndBroadcastSystemNote(agentId, systemNote);
 
-  // Set status='error' so the dashboard reflects the locked state.
-  setAgentStatus(agentId, 'error');
-
-  // Persist last_error for diagnostics (full technical detail logged
-  // already above; only sanitized version stored).
-  try {
-    getDb()
-      .prepare(
-        `UPDATE agents SET last_error = ?, last_error_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
-      )
-      .run(`[${platform.kind}] ${message.slice(0, 400)}`, agentId);
-  } catch { /* best effort */ }
+  // Set status='error' so the dashboard reflects the locked state, and persist last_error for
+  // diagnostics in the SAME statement (full technical detail logged already above; only the
+  // sanitized version stored, still sliced HERE at 400 — the slice is the caller's).
+  //
+  // SWEEP CORE-2 item 2: these were two statements, the second inside a swallowing try/catch.
+  // A throw on it — or a process death between them — left `error` with a NULL `last_error`,
+  // and `rehydrateInjuredAgents` filtered exactly those rows out, so the agent was invisible to
+  // the sweep that exists to rescue it across a restart. One statement, no window.
+  setAgentStatus(agentId, 'error', { lastError: `[${platform.kind}] ${message.slice(0, 400)}` });
 
   // Plain-English chat:error toast.
   const code =
@@ -529,6 +526,10 @@ async function recordInjury(
   // remains as the SAFETY NET for genuine error loops — but the
   // threshold should rarely be hit now that Tier B errors don't bump
   // the count (they no longer reach recordInjury).
+  // Persisted so the healer system can diagnose and attempt auto-recovery without needing the
+  // in-memory state. Computed BEFORE the pause decision so the status write below can carry it.
+  const errDetail = (cause ? `${message} (${cause})` : message).slice(0, 500);
+
   const paused = recordError(agentId);
   if (!paused) {
     // v2.3.19 — keep setting status='error' here for the unclassified
@@ -536,20 +537,16 @@ async function recordInjury(
     // recordInjury fires; anything that reaches this function is by
     // definition "we couldn't classify or recover, the agent should
     // pause until something changes."
-    setAgentStatus(agentId, 'error');
-  }
-
-  // Persist the error details so the healer system can diagnose and
-  // attempt auto-recovery without needing the in-memory state.
-  try {
-    const errDetail = cause ? `${message} (${cause})` : message;
-    getDb()
-      .prepare(
-        `UPDATE agents SET last_error = ?, last_error_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
-      )
-      .run(errDetail.slice(0, 500), agentId);
-  } catch {
-    /* best effort */
+    //
+    // SWEEP CORE-2 item 2: status and diagnostic in ONE statement, so this arm cannot leave
+    // an `error` row with a NULL `last_error`.
+    setAgentStatus(agentId, 'error', { lastError: errDetail });
+  } else {
+    // The PAUSED arm keeps two writes, and deliberately: `recordError` has already moved the
+    // status inside `agent/errors.ts`, which decides the pause without ever seeing this
+    // message. Both writes go through the one owner, and the window they leave is what the
+    // rehydrate sweep's widened query (injury-recovery.ts) is there to catch on the next boot.
+    try { writeAgentLastError(agentId, errDetail); } catch { /* best effort */ }
   }
 
   // Schedule healer notification after grace period.

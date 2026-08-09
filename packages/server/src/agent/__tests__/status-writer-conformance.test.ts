@@ -65,21 +65,33 @@ const STATUS_OWNER_MODULE = 'agent/agent-status.ts';
  */
 const SWEEP_OWNED_WRITERS: Record<string, string> = {
   'gateway/routes/agents.ts': 'SWEEP-E — the dashboard doors',
-  'healer/auto-fix.ts': 'SWEEP-F — the Healer (T10 lands the engine side only)',
-  'healer/healer-agent.ts': 'SWEEP-F — the Healer, + one member of the re-enrolment class',
   'services/imessage-commands.ts': 'SWEEP-A — the channel commands',
   'vault/maintenance.ts': 'SWEEP-C — the Dreamer, + one member of the re-enrolment class',
   'imaginer/imaginer-agent.ts': 'SWEEP-G — the Imaginer (re-enrolment class)',
-  'tracker/pm-agent.ts': 'SWEEP-F — the PM (re-enrolment class)',
   'techniques/trainer-agent.ts': 'SWEEP-D — the Trainer (re-enrolment class)',
 };
 
-/** THE FIVE-MEMBER CLASS, named once. Membership is pinned in both directions below. */
-const RE_ENROLMENT_CLASS: readonly string[] = [
+// ── SWEEP CORE-2 item 2 (SWEEP-F T1) — THE THREE SWEEP-F ROWS ARE CONVERTED ──
+//
+// T10 declared four rows to SWEEP-F: `healer/auto-fix.ts` (6 statements),
+// `healer/healer-agent.ts` (3, one of them the re-enrolment shape) and `tracker/pm-agent.ts`
+// (1, re-enrolment). This task converts all TEN and takes those rows OFF the map above,
+// which is the direction the map was built to be read in: a stale entry for a module a
+// sweep has already converted fails this walk exactly as loudly as a new writer does.
+//
+// The declared surface therefore goes 8 modules -> 5, and the re-enrolment class 5 -> 3.
+// The five that remain are other sweeps' and are unchanged here.
+const SWEEP_F_CONVERTED: readonly string[] = [
+  'healer/auto-fix.ts',
   'healer/healer-agent.ts',
+  'tracker/pm-agent.ts',
+];
+
+/** THE RE-ENROLMENT CLASS, named once. Membership is pinned in both directions below.
+ *  Five at T10; THREE now — SWEEP CORE-2 item 2 converted the Healer's and the PM's. */
+const RE_ENROLMENT_CLASS: readonly string[] = [
   'imaginer/imaginer-agent.ts',
   'techniques/trainer-agent.ts',
-  'tracker/pm-agent.ts',
   'vault/maintenance.ts',
 ];
 
@@ -161,6 +173,36 @@ describe('T10 Step 1a — the status writers are a declared set, not a discovery
     // cuts by construction — and it is strictly stronger, because a step package growing its
     // own status write fails here too.
     expect(countStatusWrites(engineText()), 'the engine bypasses the status owner').toBe(0);
+  });
+
+  it('SWEEP CORE-2 item 2: the three SWEEP-F modules write no status of their own', () => {
+    // Ten statements at `adfee42`: auto-fix 6, healer-agent 3 (one the re-enrolment shape),
+    // pm-agent 1. Named by file so the day one of them grows a private UPDATE again, the
+    // failure says WHICH — the same shape as the engine clause above.
+    for (const f of SWEEP_F_CONVERTED) {
+      expect(countStatusWrites(read(f)), `${f} bypasses the status owner`).toBe(0);
+    }
+    // …and each reaches the owner, so this is a CONVERSION and not a deletion of the write.
+    for (const f of SWEEP_F_CONVERTED) {
+      expect(read(f), `${f} does not import the status owner`).toMatch(/agent-status\.js'/);
+    }
+  });
+
+  it('the last_error column has the same one owner — the diagnostic cannot drift from the status', () => {
+    // Research 09's pair is "agents.last_error/status FOUR writers, two bypassing
+    // setAgentStatus". T10 closed the STATUS half; the `last_error`-only writes were
+    // invisible to a census that keys on `status =` in the SET list, so they survived:
+    // `agent/v2/recovery.ts` wrote the status through the owner and then the diagnostic
+    // through a SECOND raw statement, which is how a row can hold `error` with no
+    // `last_error` — the exact row `rehydrateInjuredAgents` could not see (SWEEP-F T1).
+    const setsLastError = (text: string): boolean => setSegments(text)
+      .some((s) => /\blast_error\s*=/i.test(s));
+    const measured = sourceFiles().filter((f) => setsLastError(read(f))).sort();
+    expect(measured).toEqual([
+      STATUS_OWNER_MODULE,
+      // SWEEP-E's door, declared above with the same owner and the same reason.
+      'gateway/routes/agents.ts',
+    ].sort());
   });
 
   it('the owner module is NOT vacuous — it holds every status shape the tree writes', () => {

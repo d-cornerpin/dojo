@@ -6,6 +6,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+// SWEEP CORE-2 item 2: the PM's one status write goes through the ONE writer.
+import { writeAgentStatus } from '../agent/agent-status.js';
 import {
   taskScope, msToText, STATE_TO_STATUS_SQL, validatedExpr, revertCountExpr,
   awaitingUserVerdictExpr, pendingCloseRequestExpr,
@@ -302,21 +304,26 @@ export function ensurePMAgentRunning(): void {
     // PM exists but was terminated, reactivate with correct name, model, and permissions
     const reactivatePermissions = PM_PERMISSIONS_JSON;
     const reactivateToolsPolicy = JSON.stringify({ allow: [...PM_ALLOWED_TOOLS] });
-    db.prepare(`
-      UPDATE agents SET
-        name = ?,
-        model_id = ?,
-        status = 'idle',
-        agent_type = 'persistent',
-        parent_agent = ?,
-        spawn_depth = 1,
-        max_runtime = NULL,
-        timeout_at = NULL,
-        permissions = ?,
-        tools_policy = ?,
-        updated_at = datetime('now')
-      WHERE id = ?
-    `).run(pmName, modelId, primaryId, reactivatePermissions, reactivateToolsPolicy, pmId);
+    // SWEEP CORE-2 item 2: the identity columns stay here; the STATUS goes through the ONE
+    // writer (`agent/agent-status.ts`). Both inside ONE transaction, so the reactivation is
+    // as atomic as the single statement it replaces.
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE agents SET
+          name = ?,
+          model_id = ?,
+          agent_type = 'persistent',
+          parent_agent = ?,
+          spawn_depth = 1,
+          max_runtime = NULL,
+          timeout_at = NULL,
+          permissions = ?,
+          tools_policy = ?,
+          updated_at = datetime('now')
+        WHERE id = ?
+      `).run(pmName, modelId, primaryId, reactivatePermissions, reactivateToolsPolicy, pmId);
+      writeAgentStatus(pmId, 'idle');
+    })();
 
     logger.info('PM agent reactivated', { pmId, pmName });
   } else {

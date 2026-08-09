@@ -95,6 +95,56 @@ export function writeAgentStatus(
 }
 
 /**
+ * Write ONLY the diagnostic, leaving the status alone.
+ *
+ * SWEEP CORE-2 item 2: research 09's duplication pair is "agents.last_error/status FOUR
+ * writers, two bypassing setAgentStatus". T10 closed the STATUS half; a census that keys on
+ * `status =` inside the SET list could not see the writers that touch `last_error` ALONE, so
+ * two of them survived in `agent/v2/recovery.ts` — each firing a SECOND raw statement right
+ * after the status went through this module. That is how a row comes to read `error` with a
+ * NULL `last_error`, which is the row `rehydrateInjuredAgents` was blind to.
+ *
+ * Every caller that owns BOTH facts should pass `{ lastError }` to the writers above and get
+ * one statement. This exists for the one arm that does not: the error-loop pause decides the
+ * status inside `agent/errors.ts` before the message that explains it is in hand.
+ */
+export function writeAgentLastError(agentId: string, lastError: string): void {
+  getDb().prepare(`
+    UPDATE agents SET last_error = ?, last_error_at = datetime('now'), updated_at = datetime('now') WHERE id = ?
+  `).run(lastError, agentId);
+}
+
+/**
+ * Clear the diagnostic, leaving the status alone.
+ *
+ * The Healer's deliberate-recovery chokepoint (`injury-recovery.ts onAgentRecovered`) uses it:
+ * the Tier-1 auto-fix flips a row to `idle` on a path that does not clear the error, so the
+ * clear happens once, there, rather than being sprinkled over every fix.
+ */
+export function clearAgentLastError(agentId: string): void {
+  getDb().prepare(`
+    UPDATE agents SET last_error = NULL, last_error_at = NULL, updated_at = datetime('now') WHERE id = ?
+  `).run(agentId);
+}
+
+/**
+ * Terminate every OTHER row carrying this name — a singleton service agent's boot-time
+ * cleanup of clones left by an older spawn strategy.
+ *
+ * SWEEP CORE-2 item 2: this was a name-scoped `UPDATE agents SET status = 'terminated'` with
+ * no id, the only writer in the tree shaped that way besides the boot sweep. It selects and
+ * then writes through the one writer, so the statement count stays at one owner and each
+ * termination is a normal transition. Returns how many it terminated.
+ */
+export function terminateDuplicateAgentsByName(name: string, keepId: string): number {
+  const clones = getDb()
+    .prepare('SELECT id FROM agents WHERE name = ? AND id != ?')
+    .all(name, keepId) as Array<{ id: string }>;
+  for (const clone of clones) writeAgentStatus(clone.id, 'terminated');
+  return clones.length;
+}
+
+/**
  * The boot sweep: a process that died mid-turn leaves rows reading `working` that no run
  * owns. Restarting is the only thing that can know that, so it is the only thing that does
  * this — a SET-based repair with no id, no broadcast (nothing is connected yet) and, kept
@@ -115,7 +165,16 @@ export function resetWorkingAgentsToIdleAtBoot(): number {
  * PHASE-6 T10: the SQL moved to `writeAgentStatus` above and nothing else changed — same
  * two shapes chosen on the same condition, same broadcast, same swallow-and-log.
  */
-export function setAgentStatus(agentId: string, status: AgentStatus): void {
+export function setAgentStatus(
+  agentId: string,
+  status: AgentStatus,
+  // SWEEP CORE-2 item 2: an OPTIONAL override, absent at every pre-existing call site, so the
+  // FA-A2 rule below is unchanged for all of them. It exists so a caller that already holds
+  // the diagnostic can write the status and the diagnostic in ONE statement instead of
+  // following this seam with a second raw UPDATE — the shape that let a row read `error` with
+  // a NULL `last_error` and disappear from the restart sweep.
+  opts?: StatusWriteOptions,
+): void {
   try {
     // The turn's human-conversation binding: non-null conv_key on a genuine human turn
     // (dashboard / iMessage / voice), null on a pure background a2a / engine turn,
@@ -133,7 +192,7 @@ export function setAgentStatus(agentId: string, status: AgentStatus): void {
     // retry and raced the Healer's grace-delayed notify. Clearing on 'idle' lets
     // it survive across retries and clears once the turn actually finishes clean.
     // Genuine recovery also clears it via onAgentRecovered (injury-recovery.ts).
-    writeAgentStatus(agentId, status, status === 'idle' ? { clearError: true } : undefined);
+    writeAgentStatus(agentId, status, opts ?? (status === 'idle' ? { clearError: true } : undefined));
     // On 'working', carry the turn kind so the composer can stay quiet on pure
     // A2A turns (unless wordy mode). Defaults to 'user' until the counterparty
     // is resolved early in the turn.

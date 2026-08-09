@@ -19,6 +19,7 @@ import { sendAlert } from '../services/imessage-bridge.js';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
 import { classifyProviderErrorText } from '../agent/provider-error.js';
 import { broadcast } from '../gateway/ws.js';
+import { clearAgentLastError } from '../agent/agent-status.js';
 import { TRANSIENT_PROVIDER_ERROR_SQL } from './diagnostic.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 
@@ -516,16 +517,14 @@ export function onAgentRecovered(agentId: string): void {
   setAttempts(agentId, 0);
 
   // FA-A2: this is the deliberate-recovery chokepoint (a clean turn end with
-  // prior attempts, and the Tier-1 auto-fix reset which flips status via a raw
-  // UPDATE that does NOT route through setAgentStatus). last_error now survives
-  // the 'working' transition, so clear it HERE too, otherwise an auto-fixed agent
-  // would carry a stale diagnostic that re-trips the injury readers. Not called
-  // on mid-turn retries, so "diagnostic survives retries" is preserved.
-  try {
-    getDb().prepare(
-      "UPDATE agents SET last_error = NULL, last_error_at = NULL, updated_at = datetime('now') WHERE id = ?",
-    ).run(agentId);
-  } catch { /* best effort */ }
+  // prior attempts, and the Tier-1 auto-fix reset, which moves the status without
+  // clearing the diagnostic). last_error now survives the 'working' transition, so
+  // clear it HERE too, otherwise an auto-fixed agent would carry a stale diagnostic
+  // that re-trips the injury readers. Not called on mid-turn retries, so "diagnostic
+  // survives retries" is preserved.
+  // SWEEP CORE-2 item 2: the clear itself moved to the one owner of the column; the
+  // decision to clear stays here, where it was made.
+  try { clearAgentLastError(agentId); } catch { /* best effort */ }
 
   // v2.3.19, also clear the Healer backoff window so the next injury
   // gets full attention again (don't carry a "muted Healer" state across
@@ -783,11 +782,21 @@ async function notifyHealerOfRecovery(agentId: string): Promise<void> {
 export function rehydrateInjuredAgents(): void {
   try {
     const db = getDb();
+    // SWEEP CORE-2 item 2 — WHY THE `last_error IS NOT NULL` FILTER IS GONE.
+    //
+    // The loop below reads `agent.last_error ?? 'Unknown error (pre-restart)'`. Under the old
+    // filter that fallback could never fire: a dead branch is the code's own statement that
+    // the filter contradicted the intent. And the rows it excluded are precisely the ones
+    // that most need this sweep — an injury writes the status and the diagnostic, and if the
+    // second write is lost (a throw inside its best-effort catch, or the process dying between
+    // them) the row reads `error` with a NULL `last_error`. The rescue that exists to survive
+    // a crash was skipped by exactly the crash it is for. `error`/`paused` is itself the
+    // durable record that a dispatch is owed, so that is the whole condition now. (The
+    // recovery.ts merge closes the window on the `error` arms; this closes it for the rows a
+    // real box is already carrying, and for the pause arm that still writes twice.)
     const injured = db.prepare(`
       SELECT id, last_error, recovery_attempts FROM agents
       WHERE status IN ('error', 'paused')
-        AND status != 'terminated'
-        AND last_error IS NOT NULL
     `).all() as Array<{ id: string; last_error: string | null; recovery_attempts: number | null }>;
 
     if (injured.length > 0) {
