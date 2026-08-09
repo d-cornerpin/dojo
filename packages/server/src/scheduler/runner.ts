@@ -35,6 +35,8 @@ import {
 // SWEEP CORE-1 CT2 — the deliverable declaration and the steer-to-deliver ladder's verify rung.
 import { occurrenceOwesDeliverable } from '../work/deliverable-declaration.js';
 import { RUN_DELIVER_STEER_MARKER } from '../work/run-deliver-drive.js';
+// SWEEP CORE-2 item 1 — the owner-escalation candidate query and the ordering law it obeys.
+import { countRowsHeldBackFromOwner, selectRowsForOwnerEscalation } from '../work/validation-drive.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getTask } from '../tracker/schema.js';
@@ -349,6 +351,22 @@ async function sweepStaleUserVerdictRequests(): Promise<void> {
 // validator is accountable before the owner is bothered), and two copies cannot be ordered.
 export const VALIDATION_ESCALATION_MIN = 5;
 
+// ════════════════════════════════════════════════════════════════════════════════════════
+// SWEEP CORE-2 ITEM 1 — THE ORDERING LAW LANDS HERE. TB8 handed this up and named it a
+// design fork; the owner ruled it on 2026-08-06: *"Escalation to the owner only AFTER a
+// recorded validation attempt."*
+//
+// What that fixes, measured: BATTERY6 `bmsh708xse7` — 5 of 6 owner-escalated rows never
+// received an in-window verdict. BATTERY9 `bmshmu5ygd5` — 3 of 3. And the original clock,
+// battery `bmsgs7qejup`: this sweep told the owner three rows were unvalidated at 01:20:00
+// and its own validator upheld them at 01:23:11. An escalation naming un-attempted work is
+// the defect all six denominators measured.
+//
+// The candidate query moved to `work/validation-drive.ts` — beside the spine tables it reads
+// and beside the attempt ledger it now consults, so the law and the query cannot drift apart.
+// Everything this function does with the rows is unchanged.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
 async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
   const db = getDb();
   try {
@@ -365,45 +383,18 @@ async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
     // "was it actually done?" yes/no questions the owner cannot answer.
     const { getSystemServiceAgentIds } = await import('../config/platform.js');
     const serviceIds = getSystemServiceAgentIds().filter((id): id is string => Boolean(id));
-    // Impossible-sentinel fallback so an empty list yields NOT IN ('__none__'),
-    // which matches nothing (a bare '' would wrongly exclude NULL assignees via
-    // the COALESCE below).
-    const serviceParams = serviceIds.length > 0 ? serviceIds : ['__none__'];
-    const servicePlaceholders = serviceParams.map(() => '?').join(',');
-    const stale = db.prepare(`
-      SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
-             w.agent_id AS assigned_to, ${msToText('w.updated_at')} as updated
-      FROM work w
-      WHERE ${taskScope('w')}
-        AND NOT EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = w.id AND e.kind = 'validation_escalated')
-        AND ${awaitingUserVerdictExpr('w')} = 0
-        AND COALESCE(w.agent_id, '') NOT IN (${servicePlaceholders})
-        AND COALESCE(w.requester_id, '') NOT IN (${servicePlaceholders})
-        AND (
-          (w.state = 'done' AND ${validatedExpr('w', 'done')} = 0)
-          -- PHASE-2 T8T: the other half of "an unvalidated close does not sit
-          -- forever". Migration 139 means a worker's own close leaves the row
-          -- claimed with a Key-1 request on it instead of moving it to done, so
-          -- reading only the done arm would let exactly the rows this sweep exists
-          -- for age out of its sight. Same requirement, both shapes.
-          OR (w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1)
-          -- An active missed_runs_paused_at means the ENGINE paused this task for
-          -- missed runs (alertMissedRuns), not the agent. Demolition Phase 1
-          -- stopped alertMissedRuns pre-blessing it (it now lands
-          -- pause_validated=0), so this missed_runs_paused_at guard is now
-          -- LOAD-BEARING (no longer belt-and-suspenders): without it, this
-          -- OWNER-facing sweep would ask the owner to validate an engine
-          -- missed-runs pause, which is not the owner's call. The PM sweep is the
-          -- one that adjudicates that unvalidated pause; the ENGINE still owns its
-          -- resolution via D12 (autoResolveStaleMissedRunPauses, keyed on
-          -- missed_runs_paused_at) within 10 minutes. Genuine agent pauses carry
-          -- no missed_runs_paused_at, so they still escalate to the owner here.
-          OR (w.state = 'paused' AND ${validatedExpr('w', 'paused')} = 0 AND w.missed_runs_paused_at IS NULL)
-          OR (w.state = 'blocked' AND ${validatedExpr('w', 'blocked')} = 0)
-        )
-        AND w.updated_at < ?
-      LIMIT 20
-    `).all(...serviceParams, ...serviceParams, Date.now() - VALIDATION_ESCALATION_MIN * 60_000) as Array<{ id: string; title: string; status: string; assigned_to: string | null; updated: string }>;
+    const staleBefore = Date.now() - VALIDATION_ESCALATION_MIN * 60_000;
+    const stale = selectRowsForOwnerEscalation(staleBefore, serviceIds);
+
+    // THE HOLD IS SAID OUT LOUD. A row kept back by the ordering law is not a silent skip:
+    // it is the platform saying "my own validator has not been asked yet, so this is not the
+    // owner's problem yet" — and it must be readable when it is wrong.
+    const heldBack = countRowsHeldBackFromOwner(staleBefore, serviceIds);
+    if (heldBack > 0) {
+      logger.info('Validation escalation HELD: these rows are past the bound but their validator has no recorded attempt', {
+        heldBack, boundMin: VALIDATION_ESCALATION_MIN, escalating: stale.length,
+      });
+    }
     if (stale.length === 0) return;
 
     const { writeTaskLog } = await import('../tracker/task-log.js');

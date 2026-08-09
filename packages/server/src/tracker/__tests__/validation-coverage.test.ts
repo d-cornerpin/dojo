@@ -144,7 +144,13 @@ describe('TB8 JOB 2 — the review WIRES the law: recorded, said out loud, re-dr
     const src = pmSource();
     // `writeTaskLog` is the one seam every tracker audit entry goes through
     // (`tracker/task-log.ts:118`). The miss rides it.
-    expect(src).toMatch(/validation_review_miss/);
+    //
+    // ⚠ CENSUS UPDATED, SWEEP CORE-2 item 1: the marker string moved to
+    // `work/validation-drive.ts` and arrives here as `VALIDATION_ATTEMPT_MISS`, because the
+    // scheduler now READS it to decide whether the owner may be told. The literal is
+    // asserted at its new owner; what this clause pins is unchanged — the miss goes through
+    // the existing audit door and is keyed on the coverage result.
+    expect(src).toMatch(/VALIDATION_ATTEMPT_MISS/);
     expect(src).toMatch(/coverage\.missed/);
   });
 
@@ -156,7 +162,10 @@ describe('TB8 JOB 2 — the review WIRES the law: recorded, said out loud, re-dr
     const src = pmSource();
     const at = src.indexOf('const coverage = validationCoverageAfterReview');
     expect(at).toBeGreaterThan(-1);
-    expect(src.slice(at, at + 2400)).toMatch(/lastSituationReportHash\s*=\s*''/);
+    // Window widened from 2400 to 3200 chars, SWEEP CORE-2 item 1: the recorder's block grew
+    // a comment naming the two new readers of the miss record (the owner-escalation gate and
+    // the queue order). The property is unchanged — the reset still lives inside this block.
+    expect(src.slice(at, at + 3200)).toMatch(/lastSituationReportHash\s*=\s*''/);
   });
 
   it('THE LOUD HALF: the validation skips are no longer structurally invisible', () => {
@@ -164,12 +173,17 @@ describe('TB8 JOB 2 — the review WIRES the law: recorded, said out loud, re-dr
     // production, so every `logger.debug` in this file could never be read. Measured: a
     // six-hour production log containing 388 PM ticks holds ZERO occurrences of any of
     // these lines. A skip nobody can see is the silent skip the owner ruled against.
+    // ⚠ CENSUS UPDATED, SWEEP CORE-2 item 1, in the commit that earned it. Two of the four
+    // phrases TB8 promoted — `PM review skipped, hourly LLM cap reached` and
+    // `PM validation review deferred: event-wake cap full` — are GONE, because the skips
+    // they described are gone: the owner retired the per-hour cap outright. A skip cannot be
+    // loud if it cannot happen, and asserting the loudness of a deleted branch is exactly the
+    // dead-guard class this suite exists to prevent. Their absence is asserted, by name, in
+    // `supervisor-works.test.ts`. The two that remain are still live skips and still loud.
     const src = pmSource();
     for (const phrase of [
       'PM review: no issues detected',
       'PM review: actionable issue-set unchanged since last review',
-      'PM review skipped, hourly LLM cap reached',
-      'PM validation review deferred: event-wake cap full',
     ]) {
       const at = src.indexOf(phrase);
       expect(at, `${phrase} must still exist`).toBeGreaterThan(-1);

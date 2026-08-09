@@ -15,6 +15,10 @@ import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../work/track
 import { noteUnsettled } from '../work/store.js';
 import { listOverrideRequests, PENDING_OVERRIDE_COUNT_SQL } from '../work/override-requests.js';
 import { activeRuns as pmActiveRuns } from '../agent/shared-state.js';
+import {
+  setValidationDoorbellHandler, validationAttemptCountExpr, validationQueueOrderExpr,
+  VALIDATION_ATTEMPT_MISS, VALIDATION_ATTEMPT_UNAVAILABLE, type DoorbellRing,
+} from '../work/validation-drive.js';
 import { VALIDATION_ESCALATION_MIN } from '../scheduler/runner.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -23,7 +27,7 @@ import { postAgentNotice } from '../agent/agent-notice.js';
 import { listTasks, getTask } from './schema.js';
 import { currentRung, lastPoke as lastPokeOf, recordPoke, recordRemediation } from '../work/poke-ladder.js';
 import { getAgentRuntime } from '../agent/runtime.js';
-import { getRecentObservations, getRecentTransitions, formatEntryLine, listTaskLog } from './task-log.js';
+import { getRecentObservations, getRecentTransitions, formatEntryLine, listTaskLog, writeTaskLog } from './task-log.js';
 import {
   deleteForAgentBefore,
   deleteNonSystemForAgent,
@@ -407,6 +411,72 @@ const SMELL_PAUSE_THRASH_WINDOW_MIN = 30;
 const transitionBuffer = new Set<string>();
 let transitionDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+// ════════════════════════════════════════════════════════════════════════════════════════
+// SWEEP CORE-2 ITEM 1 — THE DOORBELL (the owner's design, 2026-08-06, his words):
+//   *"so and so says they got this done. Confirm and mark it in the tracker, or push back,
+//    or get more info — whatever needs done to make sure the task gets completed."*
+//
+// A completion that owes Key 2 wakes this validator CARRYING THAT ROW. `work/store.ts` rings
+// it from inside `transition()` — the spine's one writer — so no close path can forget, and
+// the rows ride in as a RIDER on the next review rather than waiting to be re-discovered by
+// a patrol sweep whose dedup then compares the unchanged set equal and skips it.
+//
+// THE LATENCY BOUND IS CARRIED, NOT CHOSEN: `TRANSITION_DEBOUNCE_MS`, the burst-coalescer
+// this file has used for event wakes since Phase B.1. It exists so a chaotic spell of
+// transitions becomes ONE review instead of thirty, and that reason is unchanged. Measured
+// against the only clock in the product that says how long a row may await Key 2 before the
+// OWNER is told — `VALIDATION_ESCALATION_MIN` = 5 min — it is 1/30th of it. The defect this
+// closes is those two clocks running in the wrong order; 10 s vs 300 s orders them.
+//
+// WHAT IT REPLACES, MEASURED: BATTERY6 `bmsh708xse7` — 102 miss rows, one at 36.9 minutes.
+// BATTERY9 `bmshmu5ygd5` — ZERO Key-2 verdicts in 84 minutes, 96 of 98 handed rows missed.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** The doorbell's latency: how long a completion may wait for its targeted wake. */
+export const PM_DOORBELL_LATENCY_MS = TRANSITION_DEBOUNCE_MS;
+
+/** Rows rung in and not yet carried into a review. */
+const doorbellRows = new Set<string>();
+
+/** Wire the spine's doorbell to this validator. Called at module load so no boot path can
+ *  forget it, and re-callable (it is idempotent — one registry slot). */
+export function wireValidationDoorbell(): void {
+  setValidationDoorbellHandler(noteValidationDoorbell);
+}
+wireValidationDoorbell();
+
+/**
+ * THE DOORBELL RANG. Buffer the row and arm a targeted review inside the stated bound.
+ *
+ * Note what is deliberately NOT here: no cap, no budget, no per-row attempt ceiling and no
+ * "we already looked at this one" suppression. *"cost and token use is not really a factor…
+ * let her do it."*
+ */
+export function noteValidationDoorbell(ring: DoorbellRing): void {
+  doorbellRows.add(ring.workId);
+  logger.info('PM doorbell: an agent says this is done and Key 2 is owed', {
+    taskId: ring.workId, shape: ring.shape, carrying: doorbellRows.size,
+    latencyMs: PM_DOORBELL_LATENCY_MS,
+  });
+  armDebouncedReview(ring.workId, `doorbell:${ring.shape}`);
+}
+
+/**
+ * The rows THIS review carries. Drained once: after the review has held them they live in
+ * the ordinary queue with their own attempt count, and a rider that never drained would
+ * bypass the dedup for ever.
+ */
+export function drainValidationDoorbell(): string[] {
+  const ids = Array.from(doorbellRows);
+  doorbellRows.clear();
+  return ids;
+}
+
+/** How many rows are waiting to be carried. Exported for the driven clause. */
+export function pendingValidationDoorbellCount(): number {
+  return doorbellRows.size;
+}
+
 /**
  * Called by trackerUpdateStatus / completeAgent / closeProjectAndOpenTasks
  * whenever a task transitions into paused, complete, or blocked. Buffers
@@ -421,35 +491,37 @@ export function noteTransitionForReview(taskId: string, toStatus: string): void 
   } catch (err) {
     logger.warn('runSmellDetector threw (non-fatal)', { taskId, toStatus, error: err instanceof Error ? err.message : String(err) });
   }
+  armDebouncedReview(taskId, `transition:${toStatus}`);
+}
+
+/**
+ * ONE debounced wake, shared by the transition wake and the doorbell.
+ *
+ * SWEEP CORE-2 item 1: the cap check that used to sit in the timer's body is GONE. It
+ * dropped the wake entirely — *"PM event wake dropped: hourly LLM cap reached"* — which is
+ * the throttle the owner retired outright, in the one place where dropping the wake means
+ * the completion is never looked at until a patrol sweep happens to notice it.
+ */
+function armDebouncedReview(taskId: string, why: string): void {
   const wasEmpty = transitionBuffer.size === 0;
   transitionBuffer.add(taskId);
   if (transitionDebounceTimer) {
-    logger.info('PM event wake: transition buffered (timer already running)', { taskId, toStatus, bufferSize: transitionBuffer.size });
+    logger.info('PM event wake: buffered (timer already running)', { taskId, why, bufferSize: transitionBuffer.size });
     return;
   }
-  logger.info('PM event wake: armed debounce timer', { taskId, toStatus, debounceMs: TRANSITION_DEBOUNCE_MS, freshBuffer: wasEmpty });
+  logger.info('PM event wake: armed debounce timer', { taskId, why, debounceMs: TRANSITION_DEBOUNCE_MS, freshBuffer: wasEmpty });
   transitionDebounceTimer = setTimeout(() => {
     transitionDebounceTimer = null;
     const fired = Array.from(transitionBuffer);
     transitionBuffer.clear();
-    // Phase C cost guard: when PM has already burned its hourly budget,
-    // drop the event wake and let the polled 10-minute review pick this
-    // up later. Keeps a runaway transition burst from dragging cost up.
-    if (pmCapReached()) {
-      logger.warn('PM event wake dropped: hourly LLM cap reached', {
-        cap: PM_LLM_CALLS_PER_HOUR_CAP,
-        callsLastHour: pmLlmCallsInLastHour(),
-        droppedTasks: fired,
-      });
-      return;
-    }
     // Reset the throttle so the next runPMReview fires immediately (responsive to a
     // genuine transition). Do NOT clear lastSituationReportHash here: a transition that
     // does not change the actionable issue-set must still dedup-skip, or we reintroduce
     // the "re-notify the same board on every task churn" firehose. runPMReview recomputes
-    // the issue-set and re-runs only if it actually changed.
+    // the issue-set and re-runs only if it actually changed — and a DOORBELL row bypasses
+    // that gate on its own terms, because a doorbell IS the change.
     lastLLMReviewAt = 0;
-    logger.info('PM event wake: firing runPMReview', { batchedTasks: fired });
+    logger.info('PM event wake: firing runPMReview', { batchedTasks: fired, carryingDoorbell: doorbellRows.size });
     runPMReview().catch((err) => {
       logger.error('Event-driven PM review failed', { error: err instanceof Error ? err.message : String(err) });
     });
@@ -746,14 +818,38 @@ function runSmellDetector(taskId: string, toStatus: string): void {
 // ── PM LLM Review, runs the PM agent's brain periodically ──
 
 let lastLLMReviewAt = 0;
-// FA-T5: separate cadence marker for the POLLED validation-review path. When the
-// per-hour event-wake cap is full, validation reviews still run but are bounded
-// to one per LLM_REVIEW_INTERVAL_MS (~6/hr) so they cannot reopen the
-// ~900-calls/day poll loop D7 closed. Left at 0 so the first validation review
-// after a cap-full stretch is never delayed.
-let lastValidationReviewAt = 0;
 let lastSituationReportHash = '';
 const LLM_REVIEW_INTERVAL_MS = 600_000; // 10 minutes, gives tasks time to settle before reviewing
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// ⚰ TOMBSTONE — THE PM'S HOURLY LLM CALL CAP, RETIRED OUTRIGHT (SWEEP CORE-2 item 1).
+//
+// WHAT WAS HERE: `PM_LLM_CALLS_PER_HOUR_CAP = 30` with `pmLlmCallTimestamps`,
+// `recordPmLlmCall()`, `pmLlmCallsInLastHour()`, `pmCapReached()`, and FA-T5's reserved
+// `lastValidationReviewAt` cadence (~6/hr) that was supposed to keep validation from being
+// starved by the cap. Three gates read them: the event-wake drop, the validation-review
+// deferral, and the non-validation skip.
+//
+// WHY IT WENT, in the owner's words (2026-08-06): *"cost and token use is not really a
+// factor… let her do it."* The cap was a blunt patch for a DIFFERENT problem — the PM
+// spinning out for tens of minutes on something trivial — and it treated the symptom by
+// rationing the validator. BATTERY9 `bmshmu5ygd5` measured what that costs: the cap
+// throttling validation to ~6/hr while 98 rows waited, ZERO Key-2 verdicts written in 84
+// minutes, and 96 of 98 handed rows missed across 27 no-verdict reviews.
+//
+// WHAT REPLACES IT: nothing. No replacement throttle, no budget, no reserved cadence. The
+// SPIN is handled where a spin belongs — the platform's existing detect-and-steer recovery
+// that every other agent already gets (the grind rung keyed on the provider's own stop
+// signal, `agent/v2/steps/post-call-classify/empty-response.ts`; the repeated-identical-work
+// brake, `agent/v2/identical-call-brake.ts`, whose own header records that the PM is the
+// agent it was BUILT for). *"This needs to be more of a 'get the agent back on track when
+// spinning out' thing like we do with the other agents. Then otherwise, let the PM do their
+// work."*
+//
+// requirement preserved: the ~900-calls/day poll loop D7 closed stays closed — by
+// `LLM_REVIEW_INTERVAL_MS` above (the idle heartbeat, unchanged) and by the `stableIssuesKey`
+// dedup below, which are cadence and necessity gates rather than a ration.
+// ════════════════════════════════════════════════════════════════════════════════════════
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // SWEEP-A TB8 JOB 2 — VALIDATION COVERAGE: did the validator actually rule?
@@ -856,6 +952,50 @@ export function validationCoverageAfterReview(input: ValidationCoverageInput): V
   };
 }
 
+/**
+ * THE VALIDATOR COULD NOT BE ASKED. Record it on the rows that are waiting, once each.
+ *
+ * SWEEP CORE-2 item 1. Scoped to the unvalidated-COMPLETE class (TB8's scope, and the class
+ * the owner's ordering law is about) and to rows carrying NO recorded attempt yet — so the
+ * record is exactly what the escalation gate needs and never a per-tick firehose into the
+ * audit trail while a PM is down. The next tick re-reads the same predicate, so a row that
+ * appears while the validator is still gone gets its own entry.
+ */
+function recordValidatorUnavailable(pmId: string, pmStatus: string): void {
+  try {
+    const rows = getDb().prepare(`
+      SELECT w.id AS id FROM work w
+      WHERE ${taskScope('w')}
+        AND (
+          (w.state = 'done' AND ${validatedExpr('w', 'done')} = 0)
+          OR (w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1)
+        )
+        AND ${awaitingUserVerdictExpr('w')} = 0
+        AND ${validationAttemptCountExpr('w')} = 0
+      LIMIT 20
+    `).all() as Array<{ id: string }>;
+    if (rows.length === 0) return;
+    logger.error('PM validation review CANNOT RUN: there is no validator to ask', {
+      pmId, pmStatus, rowsWaiting: rows.length,
+    });
+    for (const r of rows) {
+      writeTaskLog({
+        taskId: r.id,
+        fromEntity: 'pm',
+        entryKind: 'observation',
+        actionTaken: VALIDATION_ATTEMPT_UNAVAILABLE,
+        reason:
+          `the platform tried to get this row validated and there was no validator to ask `
+          + `(PM ${pmId} is ${pmStatus}); the owner escalation is released so this does not sit silent`,
+      });
+    }
+  } catch (err) {
+    logger.warn('recording validator-unavailable failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 // How many recent messages to keep for the PM. Bumped from 10 to 30 in
 // v2.7.27, at 10 the pair-aware cutoff + downstream orphan sanitizer
 // were trimming the PM down to 1-2 effective messages on bad turns,
@@ -864,32 +1004,6 @@ export function validationCoverageAfterReview(input: ValidationCoverageInput): V
 // window small. PM is still stateless conceptually (tracker is its
 // memory), this is just enough scratch space.
 const PM_MAX_MESSAGES = 30;
-
-// ── Phase C: per-hour PM LLM call cap (cost guard) ──
-//
-// Even with debounced event wakes, a chaotic spell of agent transitions
-// can wake PM dozens of times in an hour. Each wake is a real DeepSeek
-// call. We hard-cap PM LLM invocations per rolling 60-minute window:
-// once the cap is hit, runPMReview falls back to "polled-only" mode
-// (event wakes are dropped, the 10-min polled review still runs as the
-// safety net heartbeat) until the window rolls forward.
-const PM_LLM_CALLS_PER_HOUR_CAP = 30;
-const pmLlmCallTimestamps: number[] = [];
-function recordPmLlmCall(): void {
-  const now = Date.now();
-  pmLlmCallTimestamps.push(now);
-  const cutoff = now - 60 * 60 * 1000;
-  while (pmLlmCallTimestamps.length > 0 && pmLlmCallTimestamps[0] < cutoff) {
-    pmLlmCallTimestamps.shift();
-  }
-}
-function pmLlmCallsInLastHour(): number {
-  const cutoff = Date.now() - 60 * 60 * 1000;
-  return pmLlmCallTimestamps.filter((t) => t >= cutoff).length;
-}
-function pmCapReached(): boolean {
-  return pmLlmCallsInLastHour() >= PM_LLM_CALLS_PER_HOUR_CAP;
-}
 
 /**
  * Prune old PM messages to keep the context window small.
@@ -957,13 +1071,16 @@ async function runPMReview(): Promise<void> {
   const now = Date.now();
   const db = getDb();
 
+  // SWEEP CORE-2 item 1 — THE RIDER. Whatever the doorbell rang for since the last review is
+  // carried INTO this one: these rows lead the queue, skip the settle window (a doorbell row
+  // IS the completion event) and defeat the dedup gate (a doorbell IS the change).
+  const doorbell = new Set(drainValidationDoorbell());
+
   // The 10-minute time gate avoids spamming the LLM when nothing meaningful is
   // happening. But unvalidated-complete / blocked / paused tasks and pending
   // override requests are time-sensitive: the sooner PM validates them, the
   // sooner real danglers surface to the user, so the review bypasses the
-  // 10-minute cadence gate when validation work is queued. Cost stays bounded by
-  // the per-hour PM LLM cap (PM_LLM_CALLS_PER_HOUR_CAP); FA-T5 below reserves
-  // validation its own ~6/hr cadence so a full event-wake cap can't starve it.
+  // 10-minute cadence gate when validation work is queued.
   const pendingValidationCount = (() => {
     try {
       return (db.prepare(`
@@ -985,31 +1102,9 @@ async function runPMReview(): Promise<void> {
   const validationPending = pendingValidationCount > 0;
   if (!validationPending && now - lastLLMReviewAt < LLM_REVIEW_INTERVAL_MS) return;
 
-  // D7 + FA-T5: the per-hour PM LLM cap (PM_LLM_CALLS_PER_HOUR_CAP) bounds the
-  // event-wake firehose so a transition burst can't drag cost up, and it also
-  // gates the non-validation polled path. But completion validation must not be
-  // STARVED when event wakes have already eaten the whole budget: reserve it
-  // headroom. When validation work is pending we run the review even past the
-  // event-wake cap, bounded only by its OWN cadence (lastValidationReviewAt +
-  // LLM_REVIEW_INTERVAL_MS, ~6/hr) so it can't reopen the ~900-calls/day poll
-  // loop D7 closed. Event wakes themselves stay capped (noteTransitionForReview
-  // still honors pmCapReached), preserving the D7 cost guard. In normal operation
-  // (cap not reached) the validation cadence gate is inert, so event-driven
-  // validation stays fully responsive.
-  if (validationPending) {
-    if (pmCapReached() && now - lastValidationReviewAt < LLM_REVIEW_INTERVAL_MS) {
-      // TB8 JOB 2: promoted from `logger.debug`.
-      logger.info('PM validation review deferred: event-wake cap full, within validation cadence', {
-        cap: PM_LLM_CALLS_PER_HOUR_CAP, pendingValidation: pendingValidationCount,
-      });
-      return;
-    }
-  } else if (pmCapReached()) {
-    // TB8 JOB 2: promoted from `logger.debug` — a cap that silently stops the validator is
-    // the same silent skip by another door.
-    logger.info('PM review skipped, hourly LLM cap reached', { cap: PM_LLM_CALLS_PER_HOUR_CAP, pendingValidation: pendingValidationCount });
-    return;
-  }
+  // SWEEP CORE-2 item 1: the two per-hour cap gates that stood here are DELETED. See the
+  // tombstone above `PM_MAX_MESSAGES`. Nothing rations the validator now — a spin is handled
+  // by the platform's own recovery, and validation runs whenever there is validation to do.
 
   const pmId = getPMAgentId();
 
@@ -1053,7 +1148,16 @@ async function runPMReview(): Promise<void> {
 
   // Check if PM agent exists and has a model
   const pmAgent = db.prepare('SELECT id, model_id, status FROM agents WHERE id = ?').get(pmId) as { id: string; model_id: string | null; status: string } | undefined;
-  if (!pmAgent || !pmAgent.model_id || pmAgent.status === 'terminated') return;
+  if (!pmAgent || !pmAgent.model_id || pmAgent.status === 'terminated') {
+    // ── SWEEP CORE-2 item 1 — THERE IS NO VALIDATOR TO ASK, AND THE ROW MUST SAY SO ──
+    // This return has always been silent, and it becomes load-bearing the moment the owner
+    // escalation waits for a recorded attempt: a box whose PM is gone would record nothing,
+    // escalate nothing, and tell the owner NOTHING for ever. An attempt that could not be
+    // made is still an attempt — recorded through the SAME audit door as a miss, with its own
+    // marker so the record does not claim a review happened.
+    if (validationPending) recordValidatorUnavailable(pmId, pmAgent?.status ?? 'missing');
+    return;
+  }
 
   // ── Engine-level checks (fast, deterministic, no LLM needed) ──
   const allTasks = listTasks({});
@@ -1080,10 +1184,9 @@ async function runPMReview(): Promise<void> {
   }
 
   lastLLMReviewAt = now;
-  // FA-T5: advance the validation cadence marker when this pass is a validation
-  // review, so the reserved ~6/hr headroom stays bounded even if the dedup below
-  // skips the actual LLM call.
-  if (validationPending) lastValidationReviewAt = now;
+  // (FA-T5's reserved validation cadence marker was here. It existed only to keep the
+  // retired per-hour cap from starving validation; with the cap gone it rationed nothing and
+  // is deleted with it — see the tombstone.)
 
   const agents = db.prepare(`
     SELECT id, name, status, classification, updated_at, parent_agent, task_id, timeout_at
@@ -1323,6 +1426,13 @@ async function runPMReview(): Promise<void> {
     });
   }
 
+  // SWEEP CORE-2 item 1 — the doorbell's rows, as a bound OR-arm on the settle window.
+  // Parameterised (never interpolated) because a work id is data.
+  const doorbellIds = Array.from(doorbell).slice(0, 20);
+  const doorbellIn = doorbellIds.length > 0
+    ? { sql: `OR w.id IN (${doorbellIds.map(() => '?').join(',')})`, params: doorbellIds }
+    : { sql: '', params: [] as string[] };
+
   // ── Phase B.1: UNVALIDATED_COMPLETE ──
   // Every task whose close is filed and unblessed needs a PM judgment. Read the goal,
   // result, evidence, and any smell_flag context; open files / pull audit log entries when
@@ -1345,6 +1455,7 @@ async function runPMReview(): Promise<void> {
            -- model reads; the coverage law needs a clock, and re-parsing prose for one is
            -- how a measurement quietly stops meaning what it says.
            w.updated_at AS updated_at_ms,
+           ${validationAttemptCountExpr('w')} AS attempts_recorded,
            ${revertCountExpr('w')} AS revert_count
     FROM work w
     WHERE ${taskScope('w')}
@@ -1353,15 +1464,28 @@ async function runPMReview(): Promise<void> {
         OR (w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1)
       )
       AND ${awaitingUserVerdictExpr('w')} = 0
-      AND w.updated_at < ?
-    ORDER BY w.updated_at ASC
+      -- SWEEP CORE-2 item 1 — THE RIDER SKIPS THE SETTLE WINDOW. The 15 s guard exists so a
+      -- row is not reported mid-write; a DOORBELL row was rung by the very write that
+      -- finished it, with its result and evidence already persisted, so making it wait is the
+      -- patrol sweep this task removes wearing a shorter name.
+      AND (w.updated_at < ? ${doorbellIn.sql})
+    -- SWEEP CORE-2 item 1 — HEAD-OF-LINE IS DESIGNED OUT (owner's constraint (c)).
+    -- Ordering by age alone meant the row that kept defeating the validator LED EVERY
+    -- REVIEW, eating the turn while the queue behind it went unserved — 84 minutes of it in
+    -- BATTERY9. Ordering by recorded attempts first means a steered-off spin serves the items
+    -- behind it and CIRCLES BACK: the count is a COUNT over durable audit rows, the row is
+    -- never dropped, never capped, and never rendered un-approvable. Age still breaks ties,
+    -- so equal-attempt rows keep their FIFO fairness. The order is READ from
+    -- work/validation-drive.ts, never restated, so the proof and the queue cannot drift.
+    ORDER BY ${validationQueueOrderExpr('w')}
     LIMIT 10
-  `).all(Date.now() - 15_000) as Array<{
+  `).all(Date.now() - 15_000, ...doorbellIn.params) as Array<{
     id: string; title: string; assigned_to: string | null; goal: string | null;
     result: string | null; evidence_json: string | null; last_smell_flag: string | null;
     created_by: string; project_id: string | null;
     repeat_interval: number | null; next_run_at: string | null;
-    priority: string; updated_at: string; updated_at_ms: number; revert_count: number;
+    priority: string; updated_at: string; updated_at_ms: number; attempts_recorded: number;
+    revert_count: number;
   }>;
 
   // Phase B.1: per-task lookup for goal-edit history. If the goal was
@@ -1456,10 +1580,22 @@ async function runPMReview(): Promise<void> {
     // TB8 JOB 2: this row is now IN FRONT OF the validator. Recorded here, judged after
     // the turn returns — coverage is about what was ASKED, never the board's total backlog.
     askedForKeyTwo.push({ id: cTask.id, awaitingSinceMs: cTask.updated_at_ms });
+    // SWEEP CORE-2 item 1 — the doorbell's own line, in the owner's framing. It is model-
+    // directed engine prose exactly like every other line in this report (OR2 holds by
+    // shape: the engine steers, the PM speaks), and it names the ONE thing he asked for —
+    // confirm it, push back on it, or go get more information.
+    const doorbellLine = doorbell.has(cTask.id)
+      ? `\n  🔔 ${agentName} just said they got this done. Confirm and mark it in the tracker, `
+        + `or push back, or get more info — whatever it takes to make sure the task actually `
+        + `gets completed. Do this one now.`
+      : '';
+    // Not shown to the model — it is the ordering fact, and prose about it would only invite
+    // the validator to treat a stubborn row as suspect. Logged instead, below.
+    void cTask.attempts_recorded;
     issues.push({
       stableId: `${cTask.id}|UNVALIDATED_COMPLETE|${cTask.revert_count}`,
       text:
-        `UNVALIDATED_COMPLETE: "${cTask.title}" (${cTask.id.slice(0, 8)}) closed by ${agentName}, awaiting your validation.${smellLine}${runLine}${goalEditLine}\n` +
+        `UNVALIDATED_COMPLETE: "${cTask.title}" (${cTask.id.slice(0, 8)}) closed by ${agentName}, awaiting your validation.${doorbellLine}${smellLine}${runLine}${goalEditLine}\n` +
         `  Goal: ${cTask.goal ?? '(no goal recorded, pre-migration row)'}\n` +
         `  Result: ${cTask.result ?? '(none)'}\n` +
         `  Evidence:\n${evidenceLines}\n` +
@@ -1609,7 +1745,12 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
   // never length.
   const stableIssuesKey = issues.map(i => i.stableId).sort().join(',');
   const reportHash = stableIssuesKey;
-  if (reportHash === lastSituationReportHash) {
+  // SWEEP CORE-2 item 1 — A DOORBELL DEFEATS THE DEDUP, because a doorbell IS the change.
+  // The gate compares the issue-SET; a row rung in by its own completion event can have the
+  // same stable id it had a minute ago (the id is `task|UNVALIDATED_COMPLETE|revert_count`),
+  // and skipping it as "unchanged" is precisely what swallowed the silent turns TB8 measured.
+  const carriedDoorbell = issues.some((i) => doorbell.has(i.stableId.split('|')[0]));
+  if (reportHash === lastSituationReportHash && !carriedDoorbell) {
     // TB8 JOB 2: promoted from `logger.debug` (structurally invisible in production).
     // THIS is the line that swallowed the two silent validation turns measured in battery
     // `bmsgs7qejup` — it now says how much validation work it is skipping over.
@@ -1652,7 +1793,6 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
 
   const runtime = getAgentRuntime();
   try {
-    recordPmLlmCall();
     await runtime.handleMessage(pmId, situationReport);
 
     // ── SWEEP-A TB8 JOB 2: DID THE VALIDATOR ACTUALLY RULE? ──────────────────────────────
@@ -1688,13 +1828,18 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
 
         // DURABLE, on the row itself, so a census can finally see the thing BATTERY4's
         // `audit` count was reaching for. One entry per missed row per review.
-        const { writeTaskLog } = await import('./task-log.js');
+        //
+        // SWEEP CORE-2 item 1: this record now has TWO more jobs. It is what releases the
+        // owner escalation (`scheduler/runner.ts` will not tell him a row is unvalidated
+        // until one of these exists), and its COUNT is what orders the queue so a stubborn
+        // row stops leading every review. The marker string is single-sourced in
+        // `work/validation-drive.ts` so the writer here and the reader there cannot drift.
         for (const m of coverage.missed) {
           writeTaskLog({
             taskId: m.id,
             fromEntity: 'pm',
             entryKind: 'observation',
-            actionTaken: 'validation_review_miss',
+            actionTaken: VALIDATION_ATTEMPT_MISS,
             reason:
               `the validation review ran and returned no verdict on this row; ` +
               `awaiting Key 2 for ${Math.round(m.waitedMs / 1000)}s` +

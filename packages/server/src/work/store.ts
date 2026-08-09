@@ -40,6 +40,9 @@ import { createLogger } from '../logger.js';
 // it was for `TransitionResult`, so every caller keeps ONE import path and the
 // split is an implementation detail rather than a second place to look.
 import type { WorkEventKind } from './event-kinds.js';
+// SWEEP CORE-2 item 1 — THE DOORBELL. Rung from inside the one writer, so no close path can
+// forget it. `work/` still does not import `tracker/`: the validator registers a handler.
+import { ringValidationDoorbell } from './validation-drive.js';
 import { noSuchWorkDetail } from './outcome.js';
 import type { TransitionApplied, TransitionGate, WorkOutcome } from './outcome.js';
 export type { TransitionApplied, TransitionGate, WorkOutcome, WorkOutcomeReason, WorkPatchOutcome } from './outcome.js';
@@ -368,6 +371,14 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
       result_delivery_id: deliveryId ?? null,
     });
     logger.info('work close requested (Key 1 filed)', { workId, kind: row.kind, from: row.state, eventId });
+    // ── SWEEP CORE-2 item 1 — THE DOORBELL, SHAPE 1 (owner's design, 2026-08-06) ──
+    // *"so and so says they got this done. Confirm and mark it in the tracker, or push back,
+    // or get more info."* This is that moment, and until now it woke NOBODY: the tool door
+    // returns on this refusal (`tracker/tools.ts`) before it reaches the only PM wake in the
+    // tree, so the platform's most common completion shape waited on a patrol sweep whose
+    // dedup then compared the unchanged set equal and skipped it. Measured cost, BATTERY9:
+    // zero Key-2 verdicts in 84 minutes.
+    ringValidationDoorbell({ workId, shape: 'close-request' });
     return {
       kind: 'refused', workId, reason: 'requires-validation',
       detail: `close request recorded (event ${eventId}); a ${row.kind} is closed by an authority or by the engine's own delivery receipt, not by the worker that did it`,
@@ -508,6 +519,20 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   });
 
   logger.info('work transition applied', { workId, from, to: input.to, by: input.by, eventId });
+
+  // ── SWEEP CORE-2 item 1 — THE DOORBELL, SHAPE 2 ──
+  // The engine / scheduler / healer closing on a delivery receipt. The adjudication above is
+  // stamped with the ROLE, and `validatedExpr('done')` excludes exactly those roles, so this
+  // row is `done` AND still owes Key 2 — TB5's whole subject. An `authoritative` close is not
+  // rung: that IS Key 2 turning.
+  //
+  // Rung AFTER the transaction, deliberately: the validator must never be woken about a row
+  // whose write could still roll back, and a handler must never run inside the single
+  // writer's unit. `ringValidationDoorbell` swallows its own failures for the same reason.
+  if (twoKeySubject && input.claim !== 'authoritative' && SYSTEM_CLOSERS.includes(input.by)) {
+    ringValidationDoorbell({ workId, shape: 'engine-receipt' });
+  }
+
   const value: TransitionApplied = { workId, from, to: input.to, eventId };
   return { kind: 'applied', value };
 }

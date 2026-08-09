@@ -233,3 +233,47 @@ describe('TB8 JOB 1 — the grind rung: detect, steer once, then the existing su
     expect(src).not.toMatch(/systemPrompt|systemVolatile/);
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────────────────────
+// SWEEP CORE-2 item 1 — THE PM IS AN AGENT, AND THIS RUNG IS AGENT-AGNOSTIC.
+//
+// The owner's binding constraint (2026-08-06): *"This needs to be more of a 'get the agent
+// back on track when spinning out' thing like we do with the other agents. Then otherwise,
+// let the PM do their work."* The recovery the PM is wired into is THIS ONE — no second
+// mechanism was built for her — and the retired per-hour LLM cap that used to stand in for
+// it is gone. These clauses pin that she is not excluded, here, beside the rung itself,
+// rather than in a second copy of this harness under `tracker/`.
+// ────────────────────────────────────────────────────────────────────────────────────────
+
+describe('SWEEP CORE-2 item 1 — the PM inherits the grind rung, driven', () => {
+  const pmCtx = (over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext =>
+    ctxFor({ agentId: 'kelly', ...over });
+
+  it("a PM validation turn that burns its whole output budget with no tool call is STEERED", () => {
+    const out = runEmptyResponse(freshState(), pmCtx({
+      result: modelResult({ stopReason: resolveOpenAIStopReason('length', 0), content: '', toolCalls: [] }),
+    }));
+    expect(out.directive).toBe('continue');
+    if (out.directive !== 'continue') throw new Error('unreachable');
+    expect(steerFired(out.state.steerQueue, 'output-grind')).toBe(true);
+    const next = nextSteer(out.state.steerQueue);
+    expect(next?.floor).toBe('output-grind');
+    // OR2 by shape: model-visible, never a line composed for the person.
+    expect(next!.content.startsWith('[System:')).toBe(true);
+  });
+
+  it('NEGATIVE CONTROL — a PM turn that actually called a validation verb is untouched', () => {
+    const out = runEmptyResponse(freshState(), pmCtx({
+      result: modelResult({
+        stopReason: resolveOpenAIStopReason('length', 1),
+        toolCalls: [{ id: 'c1', name: 'work_validate', arguments: {} }] as unknown as ToolCall[],
+      }),
+    }));
+    expect(out.directive).toBe('proceed');
+  });
+
+  it('the rung is keyed on the CALL, never on who made it — no agent is named anywhere in it', () => {
+    const src = readFileSync(path.resolve(__dirname, '../empty-response.ts'), 'utf8');
+    expect(src).not.toMatch(/isPMAgent|getPMAgentId|pm_agent_id|'kelly'/);
+  });
+});
