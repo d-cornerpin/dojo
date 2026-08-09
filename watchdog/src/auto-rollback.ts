@@ -149,16 +149,37 @@ export function decideAutoRollback(marker: UpdateMarker | null, nowMs: number): 
 // SAME failing gate can catch a restored build that also will not boot (which
 // then escalates, never a second rollback). Also stops a duplicate cycle from
 // spawning twice (rollbackCount is now at the bound).
+//
+// ── THE ANCHOR IS SET, NOT CLEARED (SWEEP CORE-2 item 6) ──
+// This used to write `firstBootAt: null`, which left the fresh window with NO
+// clock to measure from. The failing gate reads two things: the boot-attempt
+// counter (stamped by the platform's boot sentinel) and the wall clock (measured
+// from `firstBootAt`). If the restored build cannot execute AT ALL — a truncated
+// backup, a half-finished restore, a launchd job that never comes back — nothing
+// ever reaches the sentinel, so `bootAttempts` stays 0 AND the anchor stays null,
+// `decideAutoRollback` answers 'none' for ever, and the update episode NEVER
+// escalates. The box is down and the D-F machinery is silent about the update
+// that took it down. Anchoring the fresh window at the ROLLBACK INSTANT keeps the
+// restored build's grace period intact (nothing is failing for the next 15
+// minutes) while guaranteeing the gate can still trip afterwards: with
+// `rollbackCount` now at the bound, that trip is 'exhausted' — the honest verdict
+// that the one allowed rollback was spent and did not work.
+//
+// `recordBootAttempt`'s `firstBootAt ?? now` means a restored build that DOES
+// boot keeps this anchor rather than restarting the clock, which is deliberate:
+// a restored build is OLD code and runs no new migrations, so it has no claim on
+// the migration allowance the 15 minutes was sized for.
 export function toRolledBack(marker: UpdateMarker): UpdateMarker {
+  const now = new Date().toISOString();
   return {
     ...marker,
     phase: 'rolled-back',
     rollbackCount: marker.rollbackCount + 1,
     bootAttempts: 0,
-    firstBootAt: null,
+    firstBootAt: now,
     lastBootAt: null,
     confirmedHealthyAt: null,
-    updatedAt: new Date().toISOString(),
+    updatedAt: now,
   };
 }
 
