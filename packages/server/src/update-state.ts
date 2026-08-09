@@ -76,6 +76,16 @@ export interface UpdateMarker {
    * so ONLY a migration-escalation may later self-recover (see confirmHealthy).
    */
   failedReason: 'migration' | 'exhausted' | null;
+  /**
+   * Monotonic write counter — the compare-and-swap token (SWEEP CORE-2 item 6).
+   * TWO PROCESSES read-modify-write this file and that cannot be reduced to one:
+   * the watchdog must be able to write `rolled-back` on a box whose platform will
+   * not boot. So the discipline is not "one writer" but "one serialised write
+   * order": every RMW goes through `updateMarker`, and a write whose base no
+   * longer matches what is on disk is REFUSED. SHARED CONTRACT with
+   * watchdog/src/auto-rollback.ts.
+   */
+  writeSeq: number;
   /** ISO, last write. */
   updatedAt: string;
 }
@@ -101,6 +111,7 @@ export function emptyMarker(): UpdateMarker {
     rollbackCount: 0,
     migrationsRanDuringEpisode: false,
     failedReason: null,
+    writeSeq: 0,
     updatedAt: nowIso(),
   };
 }
@@ -134,6 +145,7 @@ export function readMarker(): UpdateMarker | null {
       rollbackCount: num(parsed.rollbackCount),
       migrationsRanDuringEpisode: parsed.migrationsRanDuringEpisode === true,
       failedReason,
+      writeSeq: num(parsed.writeSeq),
       updatedAt: str(parsed.updatedAt) ?? nowIso(),
     };
   } catch {
@@ -141,14 +153,81 @@ export function readMarker(): UpdateMarker | null {
   }
 }
 
+// ── THE SERIALISED WRITE PATH (SWEEP CORE-2 item 6) ─────────────────────────
+//
+// Every write below goes: take an exclusive lock → read → decide → compare-and-
+// swap → release. Two things made that necessary and neither is hypothetical.
+//
+//   THE LOST UPDATE. `recordBootAttempt` / `markMigrationsRan` / `confirmHealthy`
+//   and the watchdog's rollback transition are all read-modify-writes on one
+//   file from two processes. The dangerous interleaving is exact: the watchdog
+//   reads (no migration yet) → the boot sentinel stamps `markMigrationsRan()` →
+//   the watchdog writes its transition from the STALE copy and ERASES the flag.
+//   The next gate evaluation then reads a failing episode with no migration and
+//   performs a code-only rollback onto a database the old build cannot read —
+//   the precise brick the owner's 2026-07-06 decision exists to prevent, reached
+//   through a race rather than through a bug in the gate.
+//
+//   THE SHARED TEMP FILE. Both processes wrote `${UPDATE_STATE_PATH}.tmp`. The
+//   rename is atomic; writing the temp file is not, and two writers sharing one
+//   temp name can rename a partially-written document over the real marker.
+//
+// The lock is best-effort by design: it is broken when stale, and a writer that
+// cannot take it still proceeds — the compare-and-swap is what makes a stale
+// write harmless, and the last line of defense must never be BLOCKED by a lock
+// file. Nothing here throws into the boot or update path.
+
+const LOCK_PATH = `${UPDATE_STATE_PATH}.lock`;
+/** A lock older than this belonged to a process that died holding it. SHARED
+ *  CONTRACT with watchdog/src/auto-rollback.ts. */
+export const MARKER_LOCK_STALE_MS = 30_000;
+const LOCK_WAIT_TRIES = 40;
+const LOCK_WAIT_MS = 25;
+
+let tmpCounter = 0;
+/** Per-writer temp name: pid + a process-local counter. */
+function tempPath(): string {
+  return `${UPDATE_STATE_PATH}.${process.pid}.${(tmpCounter++).toString(36)}.tmp`;
+}
+
+function sleepSync(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    /* nothing to do; fall through to the next attempt immediately */
+  }
+}
+
+function acquireMarkerLock(): (() => void) | null {
+  for (let i = 0; i < LOCK_WAIT_TRIES; i++) {
+    try {
+      if (!fs.existsSync(DOJO_DIR)) fs.mkdirSync(DOJO_DIR, { recursive: true });
+      const fd = fs.openSync(LOCK_PATH, 'wx');  // O_CREAT | O_EXCL — atomic
+      try { fs.writeSync(fd, String(process.pid)); } finally { fs.closeSync(fd); }
+      return () => { try { fs.unlinkSync(LOCK_PATH); } catch { /* already gone */ } };
+    } catch {
+      try {
+        const st = fs.statSync(LOCK_PATH);
+        if (Date.now() - st.mtimeMs > MARKER_LOCK_STALE_MS) {
+          fs.unlinkSync(LOCK_PATH);
+          continue;   // retry immediately against the freed lock
+        }
+      } catch { /* the lock vanished under us: retry */ }
+      sleepSync(LOCK_WAIT_MS);
+    }
+  }
+  return null;
+}
+
 // Atomic write: temp file + rename (rename is atomic on POSIX, so a crash
 // mid-write leaves either the old file or the new one, never a half file).
 // Best-effort: a persist failure must NEVER throw into the boot/update path.
+// The write counter advances here so no caller can forget to bump it.
 export function writeMarker(marker: UpdateMarker): void {
   try {
     if (!fs.existsSync(DOJO_DIR)) fs.mkdirSync(DOJO_DIR, { recursive: true });
-    const next: UpdateMarker = { ...marker, updatedAt: nowIso() };
-    const tmp = `${UPDATE_STATE_PATH}.tmp`;
+    const next: UpdateMarker = { ...marker, writeSeq: (marker.writeSeq ?? 0) + 1, updatedAt: nowIso() };
+    const tmp = tempPath();
     fs.writeFileSync(tmp, JSON.stringify(next, null, 2));
     fs.renameSync(tmp, UPDATE_STATE_PATH);
   } catch (err) {
@@ -158,50 +237,89 @@ export function writeMarker(marker: UpdateMarker): void {
   }
 }
 
+/**
+ * Compare-and-swap. Writes `next` ONLY if the file still carries `base`'s write
+ * counter. Returns whether the write landed — a refusal is a fact the caller is
+ * meant to be able to see, never a silent no-op.
+ */
+export function writeMarkerIfUnchanged(base: UpdateMarker | null, next: UpdateMarker): boolean {
+  const onDisk = readMarker();
+  if ((onDisk?.writeSeq ?? -1) !== (base?.writeSeq ?? -1)) return false;
+  writeMarker(next);
+  return true;
+}
+
+/**
+ * THE ONE DOOR every read-modify-write goes through. Holds the lock across the
+ * read and the write, so `mutate` sees the marker as it is at the moment of
+ * writing rather than as it was when the caller last looked. Returning null from
+ * `mutate` means "nothing to do" and writes nothing.
+ *
+ * Returns the marker as it stands afterwards (which, on a refused CAS, is
+ * somebody else's newer marker — the honest answer to "what does the file say").
+ */
+export function updateMarker(mutate: (current: UpdateMarker | null) => UpdateMarker | null): UpdateMarker | null {
+  const release = acquireMarkerLock();
+  try {
+    const current = readMarker();
+    const next = mutate(current);
+    if (!next) return current;
+    if (!writeMarkerIfUnchanged(current, next)) {
+      logger.warn('update-state: refused a write built on a stale marker (another writer moved it first)');
+      return readMarker();
+    }
+    return readMarker();
+  } catch (err) {
+    logger.warn('update-state: marker update failed', { error: err instanceof Error ? err.message : String(err) });
+    return readMarker();
+  } finally {
+    release?.();
+  }
+}
+
 // ── Writer helpers (who writes which phase, when) ──
 
 // applyUpdate / rollback seam (gateway/routes/update.ts): call right AFTER the
 // pre-swap backup exists. Opens a fresh episode.
 export function markPendingUpdate(args: { targetVersion: string; previousVersion: string; backupDir: string }): void {
-  writeMarker({
+  // A new episode resets every field EXCEPT the write counter: rewinding it would
+  // let a straggling write from the previous episode pass the compare-and-swap.
+  updateMarker((prev) => ({
     ...emptyMarker(),
     phase: 'pending-update',
     targetVersion: args.targetVersion,
     previousVersion: args.previousVersion,
     backupDir: args.backupDir,
-  });
+    writeSeq: prev?.writeSeq ?? 0,
+  }));
 }
 
 // applyUpdate / rollback seam: call right BEFORE the scheduled process.exit(0)
 // that hands off to launchd. The NEW process boots and the sentinel increments.
 export function markBootingNew(): void {
-  const m = readMarker() ?? emptyMarker();
-  writeMarker({
-    ...m,
+  updateMarker((m) => ({
+    ...(m ?? emptyMarker()),
     phase: 'booting-new',
     bootAttempts: 0,
     firstBootAt: null,
     lastBootAt: null,
     confirmedHealthyAt: null,
-  });
+  }));
 }
 
 // Boot sentinel (index.ts, BEFORE runMigrations). If a self-update boot episode
 // is in flight, count this start. Returns the updated marker (so the caller can
 // decide whether to watch migrations), or null on a normal (non-update) boot.
 export function recordBootAttempt(): UpdateMarker | null {
-  const m = readMarker();
-  if (!m) return null;
-  if (m.phase !== 'booting-new' && m.phase !== 'rolled-back') return null;
-  const now = nowIso();
-  const next: UpdateMarker = {
-    ...m,
-    bootAttempts: m.bootAttempts + 1,
-    firstBootAt: m.firstBootAt ?? now,
-    lastBootAt: now,
-  };
-  writeMarker(next);
-  return next;
+  let acted = false;
+  const after = updateMarker((m) => {
+    if (!m) return null;
+    if (m.phase !== 'booting-new' && m.phase !== 'rolled-back') return null;
+    acted = true;
+    const now = nowIso();
+    return { ...m, bootAttempts: m.bootAttempts + 1, firstBootAt: m.firstBootAt ?? now, lastBootAt: now };
+  });
+  return acted ? after : null;
 }
 
 // Jump-#1 synthetic episode. An OLD in-app updater (one that predates the D-F
@@ -221,7 +339,7 @@ export function recordBootAttempt(): UpdateMarker | null {
 // migrations) or a normal restart (no pending migrations).
 export function synthesizeMigrationBootEpisode(targetVersion: string | null): UpdateMarker {
   const now = nowIso();
-  const marker: UpdateMarker = {
+  const after = updateMarker((prev) => ({
     ...emptyMarker(),
     phase: 'booting-new',
     targetVersion,
@@ -232,9 +350,9 @@ export function synthesizeMigrationBootEpisode(targetVersion: string | null): Up
     lastBootAt: now,
     migrationsRanDuringEpisode: true,
     failedReason: null,
-  };
-  writeMarker(marker);
-  return marker;
+    writeSeq: prev?.writeSeq ?? 0,
+  }));
+  return after ?? { ...emptyMarker(), phase: 'booting-new', targetVersion, bootAttempts: 1, firstBootAt: now, lastBootAt: now, migrationsRanDuringEpisode: true };
 }
 
 // Boot sentinel follow-up (index.ts, right AFTER runMigrations) when a migration
@@ -242,11 +360,12 @@ export function synthesizeMigrationBootEpisode(targetVersion: string | null): Up
 // changed the database, we must NOT trust a code-only rollback; the watchdog
 // escalates loudly instead.
 export function markMigrationsRan(): void {
-  const m = readMarker();
-  if (!m) return;
-  if (m.phase !== 'booting-new' && m.phase !== 'rolled-back') return;
-  if (m.migrationsRanDuringEpisode) return;
-  writeMarker({ ...m, migrationsRanDuringEpisode: true });
+  updateMarker((m) => {
+    if (!m) return null;
+    if (m.phase !== 'booting-new' && m.phase !== 'rolled-back') return null;
+    if (m.migrationsRanDuringEpisode) return null;
+    return { ...m, migrationsRanDuringEpisode: true };
+  });
 }
 
 // Health-confirm (index.ts, ~90s after server.listen). The booting build proved
@@ -256,19 +375,17 @@ export function markMigrationsRan(): void {
 // watchdog treating the now-stable box as still-failing. Returns whether it
 // acted (false on a normal boot or an already-confirmed marker).
 export function confirmHealthy(): boolean {
-  const m = readMarker();
-  if (!m) return false;
+  let acted = false;
+  let recovered = false;
+  updateMarker((m) => {
+    if (!m) return null;
 
-  // In-flight confirmation (the common path): a build that is still coming up.
-  if (m.phase === 'booting-new' || m.phase === 'rolled-back') {
-    if (m.confirmedHealthyAt) return false;
-    writeMarker({
-      ...m,
-      phase: m.phase === 'booting-new' ? 'healthy' : 'rolled-back',
-      confirmedHealthyAt: nowIso(),
-    });
-    return true;
-  }
+    // In-flight confirmation (the common path): a build that is still coming up.
+    if (m.phase === 'booting-new' || m.phase === 'rolled-back') {
+      if (m.confirmedHealthyAt) return null;
+      acted = true;
+      return { ...m, phase: m.phase === 'booting-new' ? 'healthy' : 'rolled-back', confirmedHealthyAt: nowIso() };
+    }
 
   // FALSE-ESCALATION RECOVERY. A migration-carrying self-update can legitimately
   // finish AFTER the watchdog's 15-min wall-clock (FAIL_WALL_CLOCK_MS): by then
@@ -284,15 +401,17 @@ export function confirmHealthy(): boolean {
   // rollback was already spent and the restored build ALSO failed) or any other
   // terminal state must NEVER self-bless: that would let a genuinely half-rolled-
   // back box paper over its own failure. Preserve that refusal.
-  if (m.phase === 'failed-permanently' && m.failedReason === 'migration' && !m.confirmedHealthyAt) {
-    writeMarker({
-      ...m,
-      phase: 'healthy',
-      confirmedHealthyAt: nowIso(),
-    });
-    logger.info('D-F: a migration-escalated self-update confirmed healthy after the watchdog window; cleared the false failed-permanently state (watchdog will send the owner correction)');
-    return true;
-  }
+    if (m.phase === 'failed-permanently' && m.failedReason === 'migration' && !m.confirmedHealthyAt) {
+      acted = true;
+      recovered = true;
+      return { ...m, phase: 'healthy', confirmedHealthyAt: nowIso() };
+    }
 
-  return false;
+    return null;
+  });
+
+  if (recovered) {
+    logger.info('D-F: a migration-escalated self-update confirmed healthy after the watchdog window; cleared the false failed-permanently state (watchdog will send the owner correction)');
+  }
+  return acted;
 }

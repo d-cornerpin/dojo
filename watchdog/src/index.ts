@@ -10,14 +10,24 @@ import fs from 'node:fs';
 import Database from 'better-sqlite3';
 import {
   readMarker,
-  writeMarker,
+  updateMarker,
   decideAutoRollback,
   toRolledBack,
   toFailedPermanently,
   spawnRollbackDetached,
   ROLLBACK_SCRIPT,
   FAIL_WALL_CLOCK_MS,
+  type RollbackDecision,
+  type UpdateMarker,
 } from './auto-rollback.js';
+import {
+  emptyState,
+  readState,
+  persistState,
+  shouldSendAlert as shouldSendAlertIn,
+  markAlertResolved as markAlertResolvedIn,
+  type WatchdogState,
+} from './alert-ledger.js';
 
 // ── Config ──
 
@@ -223,94 +233,62 @@ const PROVIDER_FAILURE_THRESHOLD = 3; // ~3 cycles = ~6 min at CHECK_INTERVAL_MS
 const providerFailureCounts: Record<string, number> = {};
 
 // ── Alert deduplication ──
-// Tracks when each alert type was last sent to avoid spamming.
-// First occurrence: send immediately. Same issue again: suppress for 2 hours.
-// Issue resolved: send a recovery message.
-const ALERT_COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2 hours
-
-type AlertLedger = Record<string, { lastSentAt: number; active: boolean }>;
-
-interface WatchdogState {
-  // Liveness the platform reads (FA-W5).
-  lastHeartbeat: string | null;
-  lastAlert: { message: string; at: string } | null;
-  // Alert dedup/recovery ledger (FA-W6): persisted so send-once, the 2h
-  // cooldown, and always-send-recovery hold ACROSS a KeepAlive restart.
-  alertState: AlertLedger;
-}
-
-let state: WatchdogState = { lastHeartbeat: null, lastAlert: null, alertState: {} };
+// The ledger itself lives in `alert-ledger.ts` (extracted by SWEEP CORE-2 item 6
+// so it can be DRIVEN — this file starts a daemon at import and could never be
+// unit-loaded). The rules are FA-W6's, unchanged: first occurrence sends, the
+// same still-active issue is suppressed for 2 hours, a resolution sends exactly
+// one recovery message.
+let state: WatchdogState = emptyState();
 
 function loadState(): void {
-  try {
-    if (!fs.existsSync(STATE_PATH)) return;
-    const parsed = JSON.parse(fs.readFileSync(STATE_PATH, 'utf-8')) as Partial<WatchdogState>;
-    const ledger: AlertLedger = {};
-    if (parsed.alertState && typeof parsed.alertState === 'object') {
-      for (const [key, val] of Object.entries(parsed.alertState)) {
-        if (val && typeof (val as { lastSentAt?: unknown }).lastSentAt === 'number'
-          && typeof (val as { active?: unknown }).active === 'boolean') {
-          ledger[key] = { lastSentAt: (val as { lastSentAt: number }).lastSentAt, active: (val as { active: boolean }).active };
-        }
-      }
-    }
-    state = {
-      lastHeartbeat: typeof parsed.lastHeartbeat === 'string' ? parsed.lastHeartbeat : null,
-      lastAlert: parsed.lastAlert && typeof parsed.lastAlert.message === 'string' && typeof parsed.lastAlert.at === 'string'
-        ? { message: parsed.lastAlert.message, at: parsed.lastAlert.at }
-        : null,
-      alertState: ledger,
-    };
-  } catch {
-    // Corrupt/unreadable store: start clean rather than crash. Worst case is a
-    // single restart's dedup/recovery slipping, i.e. the pre-fix behaviour.
-  }
+  state = readState(STATE_PATH);
 }
 
 function saveState(): void {
-  // Crash-safe atomic write: write a temp file then rename over the real one.
-  // rename() is atomic on POSIX, so a crash mid-write can never leave a
-  // half-written store, a reader sees either the old file or the new one.
-  // (Chosen over a tiny sqlite: one small doc, no schema, no second DB to keep
-  // read-only-safe, and the daemon already round-trips a JSON cache file.)
-  // Best-effort: a failed persist must NEVER throw into the check cycle.
-  try {
-    if (!fs.existsSync(DOJO_DIR)) fs.mkdirSync(DOJO_DIR, { recursive: true });
-    const tmp = `${STATE_PATH}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(state));
-    fs.renameSync(tmp, STATE_PATH);
-  } catch (err) {
-    log('error', 'Failed to persist watchdog state', {
-      error: err instanceof Error ? err.message : String(err),
-    });
+  if (!persistState(state, STATE_PATH)) {
+    log('error', 'Failed to persist watchdog state', { path: STATE_PATH });
   }
 }
 
 function shouldSendAlert(alertKey: string): boolean {
-  const entry = state.alertState[alertKey];
-  if (!entry || !entry.active) {
-    // First time or was resolved, send it
-    state.alertState[alertKey] = { lastSentAt: Date.now(), active: true };
-    saveState();
-    return true;
-  }
-  // Already sent and still active, only re-send after cooldown
-  if (Date.now() - entry.lastSentAt > ALERT_COOLDOWN_MS) {
-    state.alertState[alertKey] = { lastSentAt: Date.now(), active: true };
-    saveState();
-    return true;
-  }
-  return false;
+  const send = shouldSendAlertIn(state, alertKey);
+  if (send) saveState();
+  return send;
 }
 
 function markAlertResolved(alertKey: string): boolean {
-  const entry = state.alertState[alertKey];
-  if (entry?.active) {
-    state.alertState[alertKey] = { lastSentAt: entry.lastSentAt, active: false };
-    saveState();
-    return true; // Was active, now resolved, caller should send recovery
+  const resolved = markAlertResolvedIn(state, alertKey);
+  if (resolved) saveState();
+  return resolved;
+}
+
+/**
+ * Resolve an alert AND tell the owner it is over — in that order, and only when
+ * there is somewhere to send it.
+ *
+ * THE HOLE THIS CLOSES (SWEEP CORE-2 item 6). Every recovery used to read
+ * `if (markAlertResolved(k)) { const to = getImessageRecipient(); if (to) send(...) }`.
+ * The ledger entry was retired FIRST, so a recovery arriving while the platform
+ * DB was unreadable — the FA-W2 case, and an extremely likely one in the minutes
+ * after an outage — was dropped on the floor and could never be retried: the
+ * ledger now said the alert had never been active. The owner was left holding a
+ * "Dojo platform is DOWN" text with no sequel.
+ *
+ * Resolving the recipient first means an unreachable owner POSTPONES the
+ * recovery (the entry stays active, the next 120 s cycle tries again) instead of
+ * destroying it.
+ */
+function resolveAndTell(alertKey: string, text: string): boolean {
+  const to = getImessageRecipient();
+  if (!to) {
+    if (state.alertState[alertKey]?.active) {
+      log('warn', 'Recovery message HELD: no approved recipient could be resolved; the alert stays active and the next cycle retries', { alertKey });
+    }
+    return false;
   }
-  return false; // Was already resolved or never sent
+  if (!markAlertResolved(alertKey)) return false;
+  sendIMessage(to, text);
+  return true;
 }
 
 // ── Logging ──
@@ -765,12 +743,8 @@ async function checkSystemMemory(): Promise<void> {
     }
   } else {
     // Memory is fine, send recovery if it was previously alerting
-    if (markAlertResolved('memory_low')) {
+    if (resolveAndTell('memory_low', `Watchdog: Memory recovered, ${freeMb}MB free (${freePercent.toFixed(0)}%)`)) {
       log('info', 'System memory recovered', { freeMb, freePercent: freePercent.toFixed(1) });
-      const imRecipient = getImessageRecipient();
-      if (imRecipient) {
-        sendIMessage(imRecipient, `Watchdog: Memory recovered, ${freeMb}MB free (${freePercent.toFixed(0)}%)`);
-      }
     } else {
       log('debug', 'System memory OK', { freeMb, freePercent: freePercent.toFixed(1) });
     }
@@ -794,12 +768,7 @@ async function checkDiskSpace(): Promise<void> {
         }
       }
     } else {
-      if (markAlertResolved('disk_low')) {
-        const imRecipient = getImessageRecipient();
-        if (imRecipient) {
-          sendIMessage(imRecipient, `Watchdog: Disk space recovered, ${availableGb.toFixed(1)}GB free.`);
-        }
-      }
+      resolveAndTell('disk_low', `Watchdog: Disk space recovered, ${availableGb.toFixed(1)}GB free.`);
       log('debug', 'Disk space OK', { availableGb: availableGb.toFixed(1) });
     }
 
@@ -906,11 +875,21 @@ async function attemptRestart(): Promise<void> {
       log('info', 'Fallback restart skipped, platform is already responding');
       return;
     }
+    // The exec failure arrives ASYNCHRONOUSLY, on a later tick, as an 'error'
+    // event — the try/catch around this cannot reach it, and an 'error' with no
+    // listener is rethrown and kills this daemon. That is the emergency restart
+    // path: the platform is already down when it runs, so a watchdog that dies
+    // here leaves nothing at all watching the box.
     const child = spawn(process.execPath, [entrypoint], {
       cwd: platformDir,
       env: { ...process.env, NODE_ENV: 'production' },
       detached: true,
       stdio: 'ignore',
+    });
+    child.on('error', (err) => {
+      log('error', 'Fallback restart spawn failed', {
+        error: err instanceof Error ? err.message : String(err), entrypoint,
+      });
     });
     child.unref();
     log('info', 'Restart attempted via direct entrypoint spawn', { pid: child.pid ?? null, entrypoint });
@@ -933,17 +912,38 @@ async function attemptRestart(): Promise<void> {
 // cascade, which would only kickstart the same bad build and race rollback.sh
 // (that script unloads BOTH launchd jobs). Never acts on a generic outage.
 async function maybeAutoRollback(): Promise<boolean> {
-  const marker = readMarker();
-  const decision = decideAutoRollback(marker, Date.now());
+  // ── THE DECISION IS MADE INSIDE THE LOCK (SWEEP CORE-2 item 6) ──
+  // This used to read the marker, decide, and then write a transition built on
+  // that first read. The platform's boot sentinel writes the SAME file from
+  // another process, so the window between the read and the write is a real lost
+  // update: a `markMigrationsRan()` landing inside it was ERASED by the write,
+  // and the next evaluation then saw a failing episode with no migration and
+  // performed exactly the code-only rollback the owner's 2026-07-06 decision
+  // forbids. `updateMarker` holds the file across the read and the write, and
+  // the decision is taken on the marker as it is at the moment of writing.
+  // (A holder object rather than plain `let`s: the assignments happen inside a
+  // callback, and the compiler cannot see that they ran.)
+  const seen: { marker: UpdateMarker | null; decision: RollbackDecision } = {
+    marker: null,
+    decision: { action: 'none' },
+  };
+  updateMarker((fresh) => {
+    seen.marker = fresh;
+    const d = decideAutoRollback(fresh, Date.now());
+    seen.decision = d;
+    if (!fresh || d.action === 'none') return null;
+    return d.action === 'escalate' ? toFailedPermanently(fresh, d.reason) : toRolledBack(fresh);
+  });
+  const marker = seen.marker;
+  const decision = seen.decision;
   if (!marker || decision.action === 'none') return false;
 
   const imRecipient = getImessageRecipient();
 
   if (decision.action === 'escalate') {
-    // No rollback: record the terminal state (with the reason, so the platform's
-    // confirmHealthy can later recover a migration escalation that finishes healthy
-    // after the window), alert once (loud, plain language).
-    writeMarker(toFailedPermanently(marker, decision.reason));
+    // The terminal state is already recorded above (with the reason, so the
+    // platform's confirmHealthy can later recover a migration escalation that
+    // finishes healthy after the window). Alert once, loud, plain language.
     log('error', 'D-F: escalating a failed self-update to failed-permanently (no auto-rollback)', {
       reason: decision.reason,
       targetVersion: marker.targetVersion,
@@ -973,12 +973,12 @@ async function maybeAutoRollback(): Promise<boolean> {
     bootAttempts: marker.bootAttempts,
     firstBootAt: marker.firstBootAt,
   });
-  // Record the rollback intent + open a fresh boot window for the restored build
-  // BEFORE anything else: a restored build that also fails then escalates (never
-  // a second rollback), and a duplicate cycle sees rollbackCount and won't spawn
-  // twice. Alert the owner BEFORE spawning, because rollback.sh unloads this
-  // watchdog's launchd job and could cut a slow send short.
-  writeMarker(toRolledBack(marker));
+  // The rollback intent + the restored build's fresh boot window were recorded
+  // above, inside the lock and BEFORE anything else: a restored build that also
+  // fails then escalates (never a second rollback), and a duplicate cycle sees
+  // rollbackCount and will not spawn twice. Alert the owner BEFORE spawning,
+  // because rollback.sh unloads this watchdog's launchd job and could cut a slow
+  // send short.
   if (shouldSendAlert('auto_rollback') && imRecipient) {
     const toVer = marker.previousVersion ? ` (${marker.previousVersion})` : '';
     await sendSmartAlert(
@@ -988,7 +988,11 @@ async function maybeAutoRollback(): Promise<boolean> {
     );
     recordAlert('Auto-rollback to previous build initiated');
   }
-  const pid = spawnRollbackDetached();
+  const pid = spawnRollbackDetached(undefined, (err) => {
+    log('error', 'D-F: rollback.sh could not be executed (async spawn error)', {
+      error: err.message, script: ROLLBACK_SCRIPT,
+    });
+  });
   if (pid === null) {
     log('error', 'D-F: rollback.sh could not be spawned (missing script or exec error)', { script: ROLLBACK_SCRIPT });
   } else {
@@ -1103,12 +1107,7 @@ async function runCheck(): Promise<void> {
     // so this must NOT be gated on consecutiveFailures. A successful restart resets the
     // counter to 0 before the next healthy cycle, and that reset must not suppress the
     // recovery notice (FA-W1).
-    if (markAlertResolved('platform_down')) {
-      const imRecipient = getImessageRecipient();
-      if (imRecipient) {
-        sendIMessage(imRecipient, 'Watchdog: Dojo platform is back UP and healthy.');
-      }
-    }
+    resolveAndTell('platform_down', 'Watchdog: Dojo platform is back UP and healthy.');
     // FA-W3(b) recovery pairing: clear the restart-failed flag on recovery so a future
     // outage re-alerts cleanly. No separate text, the "back UP and healthy" message above
     // already tells the owner it recovered (respects the 2h anti-spam intent).
@@ -1121,12 +1120,7 @@ async function runCheck(): Promise<void> {
     // SAME alert path the escalation went out on. markAlertResolved returns true only if
     // that alert was actually active (i.e. was sent), so the correction fires exactly
     // when an escalation preceded a recovery.
-    if (markAlertResolved('auto_rollback_failed')) {
-      const imRecipient = getImessageRecipient();
-      if (imRecipient) {
-        sendIMessage(imRecipient, 'Watchdog: the Dojo update finished starting up after all and the box is healthy. No action needed.');
-      }
-    }
+    resolveAndTell('auto_rollback_failed', 'Watchdog: the Dojo update finished starting up after all and the box is healthy. No action needed.');
     // Clear the "putting the previous version back" alert on recovery too, so a future
     // episode re-alerts cleanly. Silent: the "back UP and healthy" message above already
     // told the owner the box recovered.
@@ -1185,6 +1179,33 @@ setInterval(() => {
     log('error', 'Check cycle failed', { error: err instanceof Error ? err.message : String(err) });
   });
 }, CHECK_INTERVAL_MS);
+
+// ── THE LAST NET (SWEEP CORE-2 item 6) ──
+// The watchdog exists to keep watching when everything else has stopped, so an
+// error it did not anticipate must not be the thing that stops IT. Node's
+// default for both of these is to print and EXIT; launchd would revive the
+// daemon, but a revival costs the in-flight cycle and, before the ledger was
+// persisted, cost the incident's memory as well.
+//
+// These handlers deliberately do NOT exit. That is the opposite of the usual
+// advice, and it is the right answer for THIS process: the alternative to a
+// possibly-degraded watchdog is NO watchdog, on a box that may already be in
+// trouble. Everything durable it owns is written atomically on each cycle
+// (marker, ledger, recipient cache), so there is no in-memory state whose
+// corruption could outlive the next 120-second tick.
+process.on('uncaughtException', (err) => {
+  log('error', 'Uncaught exception — the watchdog is staying up and continuing to watch', {
+    error: err instanceof Error ? err.message : String(err),
+    stack: err instanceof Error ? err.stack : undefined,
+  });
+});
+
+process.on('unhandledRejection', (reason) => {
+  log('error', 'Unhandled promise rejection — the watchdog is staying up and continuing to watch', {
+    error: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
+});
 
 // Handle graceful shutdown
 process.on('SIGTERM', () => {

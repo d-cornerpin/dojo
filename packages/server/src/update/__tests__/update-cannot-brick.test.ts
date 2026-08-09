@@ -75,6 +75,7 @@ function marker(over: Partial<UpdateMarker> = {}): UpdateMarker {
     rollbackCount: 0,
     migrationsRanDuringEpisode: false,
     failedReason: null,
+    writeSeq: 0,
     updatedAt: new Date(T0).toISOString(),
     ...over,
   } as UpdateMarker;

@@ -60,6 +60,14 @@ export interface UpdateMarker {
   // packages/server/src/update-state.ts: the platform's confirmHealthy reads this so
   // ONLY a migration escalation may later self-recover if the box comes up healthy.
   failedReason: 'migration' | 'exhausted' | null;
+  // Monotonic write counter — the compare-and-swap token (SWEEP CORE-2 item 6).
+  // TWO PROCESSES read-modify-write this file and that cannot be reduced to one:
+  // this daemon must be able to write 'rolled-back' on a box whose platform will
+  // not boot. So the discipline is not "one writer" but "one serialised write
+  // order": every RMW goes through updateMarker, and a write whose base no longer
+  // matches what is on disk is REFUSED. SHARED CONTRACT with
+  // packages/server/src/update-state.ts.
+  writeSeq: number;
   updatedAt: string;
 }
 
@@ -93,6 +101,7 @@ export function readMarker(statePath: string = UPDATE_STATE_PATH): UpdateMarker 
       rollbackCount: num(parsed.rollbackCount),
       migrationsRanDuringEpisode: parsed.migrationsRanDuringEpisode === true,
       failedReason: parsed.failedReason === 'migration' || parsed.failedReason === 'exhausted' ? parsed.failedReason : null,
+      writeSeq: num(parsed.writeSeq),
       updatedAt: str(parsed.updatedAt) ?? new Date().toISOString(),
     };
   } catch {
@@ -100,17 +109,111 @@ export function readMarker(statePath: string = UPDATE_STATE_PATH): UpdateMarker 
   }
 }
 
+// ── THE SERIALISED WRITE PATH (SWEEP CORE-2 item 6) ─────────────────────────
+//
+// Mirrors packages/server/src/update-state.ts. The interleaving this closes is
+// exact: this daemon reads the marker (no migration yet) → the platform's boot
+// sentinel stamps markMigrationsRan() → this daemon writes its transition from
+// the STALE copy and ERASES the flag → the next evaluation sees a failing
+// episode with no migration and performs a code-only rollback onto a database
+// the old build cannot read. That is the brick the owner's 2026-07-06 decision
+// forbids, reached through a race rather than through a bug in the gate.
+//
+// The shared `${statePath}.tmp` was the second half: the rename is atomic, the
+// temp write is not, and two writers sharing one temp name can rename a
+// half-written document over the real marker.
+//
+// The lock is BEST-EFFORT on purpose. It is broken when stale and a writer that
+// cannot take it still proceeds — the compare-and-swap is what makes a stale
+// write harmless, and the last line of defense must never be blocked by a lock
+// file somebody died holding.
+
+// SHARED CONTRACT with packages/server/src/update-state.ts.
+export const MARKER_LOCK_STALE_MS = 30_000;
+const LOCK_WAIT_TRIES = 40;
+const LOCK_WAIT_MS = 25;
+
+let tmpCounter = 0;
+function tempPath(statePath: string): string {
+  return `${statePath}.${process.pid}.${(tmpCounter++).toString(36)}.tmp`;
+}
+
+function sleepSync(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    /* fall through to the next attempt immediately */
+  }
+}
+
+function acquireMarkerLock(statePath: string): (() => void) | null {
+  const lockPath = `${statePath}.lock`;
+  for (let i = 0; i < LOCK_WAIT_TRIES; i++) {
+    try {
+      const dir = path.dirname(statePath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const fd = fs.openSync(lockPath, 'wx');  // O_CREAT | O_EXCL — atomic
+      try { fs.writeSync(fd, String(process.pid)); } finally { fs.closeSync(fd); }
+      return () => { try { fs.unlinkSync(lockPath); } catch { /* already gone */ } };
+    } catch {
+      try {
+        const st = fs.statSync(lockPath);
+        if (Date.now() - st.mtimeMs > MARKER_LOCK_STALE_MS) {
+          fs.unlinkSync(lockPath);
+          continue;
+        }
+      } catch { /* the lock vanished under us: retry */ }
+      sleepSync(LOCK_WAIT_MS);
+    }
+  }
+  return null;
+}
+
 // Atomic write (temp + rename). Best-effort: never throws into the check cycle.
+// The write counter advances here so no caller can forget to bump it.
 export function writeMarker(marker: UpdateMarker, statePath: string = UPDATE_STATE_PATH): void {
   try {
     const dir = path.dirname(statePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const next: UpdateMarker = { ...marker, updatedAt: new Date().toISOString() };
-    const tmp = `${statePath}.tmp`;
+    const next: UpdateMarker = { ...marker, writeSeq: (marker.writeSeq ?? 0) + 1, updatedAt: new Date().toISOString() };
+    const tmp = tempPath(statePath);
     fs.writeFileSync(tmp, JSON.stringify(next, null, 2));
     fs.renameSync(tmp, statePath);
   } catch {
     // Best-effort: a failed persist must never throw into the check cycle.
+  }
+}
+
+// Compare-and-swap. Writes `next` ONLY if the file still carries `base`'s write
+// counter. Returns whether the write landed — a refusal is a fact the caller can
+// see, never a silent no-op.
+export function writeMarkerIfUnchanged(base: UpdateMarker | null, next: UpdateMarker, statePath: string = UPDATE_STATE_PATH): boolean {
+  const onDisk = readMarker(statePath);
+  if ((onDisk?.writeSeq ?? -1) !== (base?.writeSeq ?? -1)) return false;
+  writeMarker(next, statePath);
+  return true;
+}
+
+// THE ONE DOOR every read-modify-write goes through. Holds the lock across the
+// read and the write, so `mutate` decides on the marker as it is at the moment
+// of writing rather than as it was when the caller last looked — which is what
+// lets this daemon RE-DECIDE the rollback question against a migration that
+// landed while it was thinking. Returning null means "nothing to do".
+export function updateMarker(
+  mutate: (current: UpdateMarker | null) => UpdateMarker | null,
+  statePath: string = UPDATE_STATE_PATH,
+): UpdateMarker | null {
+  const release = acquireMarkerLock(statePath);
+  try {
+    const current = readMarker(statePath);
+    const next = mutate(current);
+    if (!next) return current;
+    if (!writeMarkerIfUnchanged(current, next, statePath)) return readMarker(statePath);
+    return readMarker(statePath);
+  } catch {
+    return readMarker(statePath);
+  } finally {
+    release?.();
   }
 }
 
@@ -203,13 +306,25 @@ export function toFailedPermanently(marker: UpdateMarker, reason: 'migration' | 
 // SIGTERM the rollback mid-flight. Returns the child pid, or null if it could
 // not spawn (missing script / exec error). The scriptPath override keeps this
 // testable against a fake script under a scratch HOME.
-export function spawnRollbackDetached(scriptPath: string = ROLLBACK_SCRIPT): number | null {
+export function spawnRollbackDetached(
+  scriptPath: string = ROLLBACK_SCRIPT,
+  onSpawnError?: (err: Error) => void,
+): number | null {
+  // ── THE 'error' EVENT IS ASYNCHRONOUS AND THE try/catch CANNOT SEE IT ──
+  // `spawn` returns immediately; a failure to actually exec (ENOENT, EACCES,
+  // EMFILE, a broken cwd) arrives on a LATER TICK as an 'error' event. An
+  // 'error' event with no listener is RETHROWN by EventEmitter, which on a later
+  // tick means an uncaught exception, which kills the process. The try/catch
+  // below is outside that tick and catches nothing. So the watchdog — the last
+  // line of defense — died at the exact instant it was performing a rollback,
+  // leaving a box mid-restore with nothing watching it. The listener is attached
+  // on the line after the spawn, deliberately: the conformance census in
+  // `watchdog-self-integrity.test.ts` reads a short window and a handler that
+  // drifts away from its spawn is a handler somebody will eventually delete.
   try {
     if (!fs.existsSync(scriptPath)) return null;
-    const child = spawn('/bin/bash', [scriptPath], {
-      detached: true,
-      stdio: 'ignore',
-    });
+    const child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' });
+    child.on('error', (err) => { onSpawnError?.(err instanceof Error ? err : new Error(String(err))); });
     child.unref();
     return child.pid ?? null;
   } catch {
