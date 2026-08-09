@@ -57,7 +57,7 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { transition, abandonUnservableAsks } from './store.js';
+import { transition, abandonUnservableAsks, clearPhantomCountdowns } from './store.js';
 import { sweepByRowid } from '../memory/message-store.js';
 // Single-sourced, never restated: the max-attempts bound the engine-event lifecycle enforces
 // is read from the module that owns it, so the boot sweep's exclusion window cannot drift
@@ -404,6 +404,16 @@ export const REAPER_KINDS: readonly ReaperKind[] = [
         logger.warn('reaper: abandoned ask ticket(s) that could never be served or closed', {
           abandoned, byClass,
         });
+      }
+      // SWEEP CORE-2 item 5, BATCH C — the sibling shape, on the same clock and for the same
+      // reason: a `remaining_children > 0` with no child rows is an obligation the ledger
+      // records and nothing can discharge. It rides HERE rather than owning a kind of its own
+      // because the cadence question is already answered — `STUCK_AGENT_CHECK_MS`, "repairing
+      // rows a dead or terminated actor left behind" — and inventing a second period for the
+      // same class is exactly what this module exists to stop (#14).
+      const { cleared } = clearPhantomCountdowns();
+      if (cleared > 0) {
+        logger.warn('reaper: cleared phantom join countdown(s) with no children to count', { cleared });
       }
     },
   },

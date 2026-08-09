@@ -1089,14 +1089,44 @@ export function openDelegationJoin(p: OpenJoinInput): string[] {
       });
       ids.push(childId);
     }
+    // ── SWEEP CORE-2 item 5 — THE COUNTDOWN COUNTS CHILDREN THAT EXIST, NOT ATTEMPTS ──
+    //
+    // It was `ids.length`, and `ids` was pushed to UNCONDITIONALLY after an `INSERT OR
+    // IGNORE`. That is the silent-discard class `insertMessage`'s own R1 header names —
+    // IGNORE swallows NOT NULL and CHECK failures as well as UNIQUE ones — so a child that
+    // never landed still moved the countdown, and the parent was left holding a number no
+    // decrement could ever reach. TB3 §8.4's fourteen phantom countdowns are that shape (their
+    // producer on this box turned out to be the harness teardown, but the writer could make
+    // them too, and a hole is closed at the writer rather than argued about).
+    //
+    // ⚠ THE SUBSET IS DELIBERATE, and it is the same number on every ordinary open: the rows
+    // are counted from `work` itself, restricted to this parent, to the children THIS call
+    // handled, and to the states a child can still settle FROM. A sibling that already settled
+    // between two opens cannot decrement again — counting it is how `ask:7a4810b1…` came to
+    // hold `remaining_children = 2` against one live thread.
+    const ph = ids.map(() => '?').join(', ');
+    const live = ids.length === 0 ? [] : (db.prepare(
+      `SELECT id FROM work
+        WHERE parent_id = ? AND id IN (${ph}) AND state IN ${CHILD_OPEN_STATES}`,
+    ).all(p.parentWorkId, ...ids) as Array<{ id: string }>);
+    const liveIds = new Set(live.map((r) => r.id));
+    const landed = ids.filter((id) => liveIds.has(id));
+    if (landed.length !== ids.length) {
+      logger.warn('delegation join: some children did not land; the countdown counts the ones that did', {
+        agentId: p.agentId, parentWorkId: p.parentWorkId,
+        attempted: ids.length, counted: landed.length,
+      }, p.agentId);
+    }
     db.prepare(
       `UPDATE work SET remaining_children = ?, ttl_at = ?, reply_conversation_id = ?,
                        compile_pending = 0, updated_at = ?
         WHERE id = ?`,
-    ).run(ids.length, p.ttlAt, replyConversationId, at, p.parentWorkId);
+    ).run(landed.length, p.ttlAt, replyConversationId, at, p.parentWorkId);
     appendEvent(p.parentWorkId, 'join_opened', p.agentId, {
-      children: ids.length, threads: threads.map((t) => t.threadId), ttl_at: p.ttlAt,
+      children: landed.length, threads: threads.map((t) => t.threadId), ttl_at: p.ttlAt,
     });
+    ids.length = 0;
+    ids.push(...landed);
   });
   logger.info('delegation join opened', {
     agentId: p.agentId, parentWorkId: p.parentWorkId, children: ids.length,
@@ -1128,6 +1158,84 @@ export function findJoinChildByThread(agentId: string, threadId: string): JoinCh
     id: r.id, parentId: r.parent_id, agentId: r.agent_id, threadId: r.root_id,
     state: r.state, assigneeAgent: r.assignee_agent, replyConversationId: r.reply_conversation_id,
   };
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SWEEP CORE-2 item 5, BATCH C — NO COUNTDOWN WITHOUT CHILDREN
+// ════════════════════════════════════════════════════════════════════════════════
+//
+// SWEEP-A's POST-TB3 adjudication item 4, from TB3 §8.4: a `remaining_children > 0` with ZERO
+// child rows is a countdown that can never reach zero — "a shape the ledger should not
+// contain; cannot storm, cannot resolve". Fourteen measured, all `done`, all on this box's
+// harness bot.
+//
+// ── WHY A CENSUS AND NOT A SCHEMA TRIGGER, WHICH WAS CONSIDERED AND REFUSED ──
+// Migration 151 already proves a trigger CAN hold a shape like this at the database, below
+// the `foreign_keys` pragma a CLI leaves off. It is refused here on a MEASUREMENT rather than
+// a preference: the only producer on this box is the harness teardown
+// (`dojo-test-kit/behavioral/runner.mjs`, which deletes a settled join PIECE whose delivery
+// belongs to a swept peer and leaves the parent's countdown behind), and a refusing trigger
+// would ABORT that sweep — the exact failure 151's own comment records having caused once
+// already, one class earlier. So the shape is hunted, not forbidden, and the WRITER's own
+// path to it is closed above instead.
+//
+// ── ONE-SHOT, WITHOUT A ONE-SHOT'S BOOKKEEPING ──
+// The adjudication asks for "a one-shot dated clear, same non-falsifying shape as the
+// orphan-flag clear". The SHAPE is exactly that: the row keeps its state, its receipt and its
+// close time; only the stale number moves, and it moves through a recorded, dated event that
+// preserves what it used to say. The HOST is the standing reaper rather than a migration-armed
+// pass, because the arm is idempotent BY PREDICATE — after one sweep there is nothing left to
+// find, which is what "one-shot" buys — and because an invariant a one-shot cannot enforce
+// twice is not an invariant. No migration is owed and none is written.
+
+export interface PhantomCountdown { id: string; remainingChildren: number }
+
+/** THE INVARIANT, as a census: this must return NOTHING. */
+export function phantomCountdownCensus(): PhantomCountdown[] {
+  return (getDb().prepare(`
+    SELECT w.id AS id, w.remaining_children AS n
+      FROM work w
+     WHERE w.remaining_children > 0
+       AND NOT EXISTS (SELECT 1 FROM work c WHERE c.parent_id = w.id)
+     ORDER BY w.opened_at ASC
+  `).all() as Array<{ id: string; n: number }>).map((r) => ({ id: r.id, remainingChildren: r.n }));
+}
+
+/**
+ * Clear the countdowns that no child can ever move. Returns the denominator.
+ *
+ * ⚠ THE RECORD IS NEVER FALSIFIED. The number it USED to say rides the event, so a reader of
+ * `work_events` months later can see both what the row claimed and why it stopped claiming it.
+ * Nothing is deleted, nothing is back-dated, and no ask is re-opened: these rows were not
+ * wrong about being answered, only about what they were still waiting for.
+ */
+export function clearPhantomCountdowns(): { cleared: number; ids: string[] } {
+  const db = getDb();
+  const rows = phantomCountdownCensus();
+  const ids: string[] = [];
+  for (const r of rows) {
+    const info = db.prepare(
+      `UPDATE work SET remaining_children = 0, updated_at = ?
+        WHERE id = ? AND remaining_children > 0
+          AND NOT EXISTS (SELECT 1 FROM work c WHERE c.parent_id = work.id)`,
+    ).run(now(), r.id);
+    if (info.changes !== 1) continue;
+    appendEvent(r.id, 'audit', 'work-reaper', {
+      marker: 'phantom_countdown_cleared',
+      remaining_children: r.remainingChildren,
+      reason: 'the countdown claimed ' + r.remainingChildren + ' outstanding child(ren) and '
+        + 'there are no child rows at all, so no settlement could ever move it. The state, the '
+        + 'receipt and the close time are untouched — only the number that could never reach '
+        + 'zero is cleared.',
+    });
+    ids.push(r.id);
+  }
+  if (ids.length > 0) {
+    logger.warn('cleared phantom join countdown(s): a countdown with no children to count', {
+      count: ids.length,
+    });
+  }
+  return { cleared: ids.length, ids };
 }
 
 /** Read a join's live counts. `total` and `landed` are COUNTED off the children, never
