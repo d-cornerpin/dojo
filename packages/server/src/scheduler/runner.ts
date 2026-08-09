@@ -30,8 +30,11 @@ import { workSettled, noteUnsettled } from '../work/store.js';
 import {
   claimOccurrence, releaseOccurrence, settleOccurrence, occurrenceOf, inFlightOccurrence,
   assignOccurrence, skipOpenOccurrences, sweepOrphanedOccurrences,
-  sweepTerminatedAgentOccurrences,
+  sweepTerminatedAgentOccurrences, runDeliverableEvidence,
 } from '../work/occurrences.js';
+// SWEEP CORE-1 CT2 — the deliverable declaration and the steer-to-deliver ladder's verify rung.
+import { occurrenceOwesDeliverable } from '../work/deliverable-declaration.js';
+import { RUN_DELIVER_STEER_MARKER } from '../work/run-deliver-drive.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getTask } from '../tracker/schema.js';
@@ -608,6 +611,69 @@ async function autoResolveStaleMissedRunPauses(): Promise<void> {
 
 // ── Check and trigger due tasks ──
 
+// ════════════════════════════════════════════════════════════════════════════════
+// SWEEP CORE-1 CT2 — THE VERIFY RUNG OF THE STEER-TO-DELIVER LADDER.
+//
+// OR2's shape is detect → steer → VERIFY → bounded retry, and this is the verify. Without it
+// the ladder is a wall: MEASURED on the first post-fix drive (behavioral run `bmslq48axkn`,
+// 2026-08-09), the model called `work_update(status="complete")` BEFORE it spoke, was correctly
+// refused, then went on and delivered a real brief — *"Good morning — here's tomorrow's brief
+// (Monday, Aug 10): your calendar is clear…"* — and never called the tool again. The person had
+// their brief and the run sat `open` for ever. A refusal that leaves the run stuck is not an
+// improvement on a lie; it is a different failure.
+//
+// So the run closes ON THE DELIVERY, exactly as an ask does (`work/ask-settlement.ts`'s
+// delivery arm). The scope is deliberately narrow and every clause of it is load-bearing:
+//
+//   * the run must have been STEERED at least once. The steer is the agent's own assertion
+//     that the work is finished, refused only for want of evidence; without it this sweep would
+//     be closing runs nobody said were done, which is a different and much worse behaviour.
+//   * the evidence is re-derived by the AUTHORITY (`runDeliverableEvidence`), never by this
+//     sweep. One predicate, one owner.
+//   * the close goes through `onTaskRunComplete`, the ordinary full flow, so the run count, the
+//     next occurrence, the audit trail and the notices are all exactly what they would have
+//     been if the model had called the tool a second time itself.
+//
+// It rides the scheduler tick because that is where run lifecycle already lives (beside
+// `cleanupOrphanedRuns` and the orphan sweep) and because the tick is the platform's existing
+// 30-second clock — a cadence carried, not re-chosen.
+// ════════════════════════════════════════════════════════════════════════════════
+export async function closeSteeredRunsThatDelivered(): Promise<number> {
+  const db = getDb();
+  const steered = db.prepare(`
+    SELECT w.id AS occurrence_id, w.parent_id AS task_id
+      FROM work w
+      JOIN work p ON p.id = w.parent_id
+     WHERE w.kind = 'occurrence' AND w.state IN ('open','claimed')
+       AND p.task_kind IS NOT NULL
+       AND EXISTS (SELECT 1 FROM work_events e
+                    WHERE e.work_id = w.id AND e.kind = 'audit'
+                      AND json_extract(e.payload, '$.marker') = ?)
+  `).all(RUN_DELIVER_STEER_MARKER) as Array<{ occurrence_id: string; task_id: string }>;
+
+  let closed = 0;
+  for (const row of steered) {
+    if (!occurrenceOwesDeliverable(row.occurrence_id).owes) continue;
+    const evidence = runDeliverableEvidence(row.occurrence_id);
+    if (!evidence) continue;
+    logger.info('Scheduler: a steered run delivered — closing it on the message', {
+      taskId: row.task_id, runId: row.occurrence_id, deliveryId: evidence.id, tool: evidence.tool,
+    });
+    const advanced = await onTaskRunComplete(
+      row.task_id, 'complete',
+      'the run was steered to deliver and the message reached the user; closed on that delivery',
+    ).catch((err: unknown) => {
+      logger.warn('Scheduler: closing a steered run failed (non-fatal)', {
+        taskId: row.task_id, runId: row.occurrence_id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    });
+    if (advanced) closed += 1;
+  }
+  return closed;
+}
+
 export async function checkScheduledTasks(): Promise<void> {
   const db = getDb();
   const now = new Date().toISOString();
@@ -631,6 +697,8 @@ export async function checkScheduledTasks(): Promise<void> {
   // 5-minute validation escalation: if PM hasn't validated within the
   // threshold, ask the user via primary chat (and iMessage if available).
   await sweepUnvalidatedTasksForUserEscalation();
+  // SWEEP CORE-1 CT2: the VERIFY rung — a steered run closes when the message lands.
+  await closeSteeredRunsThatDelivered();
 
   // PHASE-6 T0C-W: this WHERE was the tree's most literal statement of what "overdue"
   // means, so it IS `dueScope()` now — the one declaration `work_update(filter:"overdue")`
@@ -951,10 +1019,24 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
     .get(runId) as { agent_id: string; opened_at: number } | undefined;
   const delivered = occRow ? deliveryForAgentSince(occRow.agent_id, occRow.opened_at) : null;
   const settled = settleOccurrence(runId, status, delivered, summary);
-  if (settled.kind !== 'applied') {
+
+  // ── SWEEP CORE-1 CT2 — THE RUN OWES A MESSAGE AND NONE WAS SENT. ──
+  // The authority refused, the run is still open, and NOTHING here may advance: no run count,
+  // no next occurrence, no "completed" log entry, no notice to the owner that a run finished.
+  // The caller (the model's own close tool) is handed the refusal and steers on it. This is the
+  // whole of the owner's sentence in code — *"I won't close the run until after the message is
+  // sent."* The bound is the ladder's, inside the authority, not a loop here.
+  if (settled.verdict === 'owed') {
+    logger.info('Scheduler: run close REFUSED — it owes a user-visible message and none was sent', {
+      taskId, runId, detail: settled.detail,
+    });
+    return false;
+  }
+
+  if (settled.outcome?.kind !== 'applied') {
     logger.info('Scheduler: run already closed elsewhere, skipping advance', {
-      taskId, runId, result: settled.kind,
-      reason: settled.reason,
+      taskId, runId, result: settled.outcome?.kind,
+      reason: settled.outcome && 'reason' in settled.outcome ? settled.outcome.reason : undefined,
     });
     return false;
   }

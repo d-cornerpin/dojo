@@ -49,7 +49,15 @@ import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
 import { recordRemediation } from '../work/poke-ladder.js';
 import { injectTaskAssignmentNotification, claimAssignmentNoticeForTerminalTask } from './notify.js';
 import { writeTaskLog } from './task-log.js';
-import { inFlightOccurrence, skipOpenOccurrencesAsComplete } from '../work/occurrences.js';
+import { inFlightOccurrence, skipOpenOccurrencesAsComplete, runDeliverableEvidence } from '../work/occurrences.js';
+// SWEEP CORE-1 CT2: the deliverable declaration and the steer-to-deliver ladder.
+import {
+  declareDeliverableOnSchedule, taskOwesDeliverable, declaredDeliverableShape,
+  findLiveRecurringTwin, DELIVERABLE_OWING_TASK_KINDS,
+} from '../work/deliverable-declaration.js';
+import {
+  nextRunDeliverRung, recordRunDeliverSteer, runDeliverSteerText,
+} from '../work/run-deliver-drive.js';
 import { calculateNextRun, normalizeDbTimestamp, parseDaysOfWeek, wallToInstant, getBoxTimeZone, type ScheduledTask, type WallClock } from '../scheduler/engine.js';
 import { onTaskRunComplete, terminateLiveScheduleOnFallen } from '../scheduler/runner.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -1101,6 +1109,77 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       }
     }
 
+    // ════════════════════════════════════════════════════════════════════════════
+    // SWEEP CORE-1 CT2 — THE DUPLICATE **RECURRING** GUARD.
+    //
+    // From the same 2026-08-07 transcript as the run-completion incident: after the timezone
+    // fix the owner recreated his two briefs and never cancelled the old pair, so FOUR
+    // schedules were firing where two should. He was told about the same thing twice, every
+    // morning, from schedules he had no memory of creating.
+    //
+    // ── WHY THE GUARD ABOVE COULD NOT HAVE CAUGHT IT, and this is the whole design ──
+    // Both prongs above are scoped to `opened_at >= now - 5 minutes`. They exist for a
+    // different disease: a tool-error loop minting 27 copies of one task inside one session.
+    // His duplicate was created DAYS after its twin, deliberately, by a person who thought he
+    // was replacing something. A five-minute window cannot see that and never could.
+    //
+    // A LIVE RECURRING SCHEDULE IS DIFFERENT IN KIND FROM A TASK ROW: it is a standing
+    // instruction that fires for ever. Two of them with the same owner, the same cadence and
+    // the same deliverable shape are not "two pieces of work that share a title" — they are one
+    // instruction the platform will carry out twice, indefinitely. So this prong has NO TIME
+    // WINDOW at all. It asks a different question and it gets a different scope.
+    //
+    // ── THE THREE THINGS THAT MUST MATCH, each chosen against his actual case ──
+    //   same owner      — `requester_id`, the creating agent, as both prongs above use.
+    //   same CADENCE    — `repeat_interval` + `repeat_unit` + `repeat_days_of_week`. NOT the
+    //                     anchor instant, and that is the load-bearing exclusion: he recreated
+    //                     the briefs BECAUSE the anchor was wrong, so the twin he was trying to
+    //                     replace has a DIFFERENT anchor by construction. Matching on the
+    //                     anchor would have missed his case exactly.
+    //   same DELIVERABLE SHAPE — the CT2 declaration (`work/deliverable-declaration.ts`),
+    //                     derived from each definition. Two daily `brief` schedules for one
+    //                     owner is the shape; a daily brief beside a daily backup is not.
+    //
+    // Only LIVE schedules count (`schedule_status IN ('waiting','running')`, not paused, not
+    // terminal): a stopped schedule fires nothing and refusing against it would block a
+    // legitimate re-creation, which is precisely what the owner was trying to do.
+    //
+    // `allow_duplicate` is honoured with its EXISTING semantics — the same flag, the same
+    // meaning ("I know, I meant it"), read once at the top for all three prongs. Nothing about
+    // the two prongs above changes.
+    // ════════════════════════════════════════════════════════════════════════════
+    if (!allowDuplicate && args.repeat_interval) {
+      const shape = declaredDeliverableShape({
+        kind: args.kind as string | undefined,
+        title,
+        description: description ?? null,
+        goal,
+        hasSchedule: true,
+      });
+      if (shape && DELIVERABLE_OWING_TASK_KINDS.includes(shape.shape)) {
+        const twin = findLiveRecurringTwin({
+          creatorId: agentId,
+          shape: shape.shape,
+          repeatInterval: (args.repeat_interval as number | undefined) ?? null,
+          repeatUnit: (args.repeat_unit as string | undefined) ?? null,
+          repeatDaysOfWeek: (args.repeat_days_of_week as string | undefined) ?? null,
+        });
+        if (twin) {
+          const id8 = twin.id.slice(0, 8);
+          const nextRun = twin.nextRunAt ? new Date(twin.nextRunAt).toISOString() : null;
+          return (
+            `Error: a recurring "${shape.shape}" on this exact schedule already exists and is still live: `
+            + `"${twin.title ?? twin.id}" (id=${id8}${nextRun ? `, next run ${nextRun}` : ''}). `
+            + `Creating this one would deliver the same thing twice, every time, for ever.\n\n`
+            + `If you are FIXING the existing one (wrong time, wrong wording, wrong timezone), edit it: `
+            + `work_update(action="edit") on id=${id8}. If you are REPLACING it, stop the old one first: `
+            + `work_schedule(action="pause") or work_update(action="status", status="cancelled") on id=${id8}, `
+            + `then create this. If you genuinely want both to fire, re-call with allow_duplicate=true.`
+          );
+        }
+      }
+    }
+
     const taskId = createTask({
       origin: getWorkOriginForAgent(agentId, (args.kind as string | undefined) === 'reminder' ? 'reminder' : 'model'),
       projectId,
@@ -1211,6 +1290,12 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
         anchor_local: anchorTime ?? null, next_run_at: tsToMs(nextRun),
         schedule_status: 'waiting',
       }), 'trackerCreateTask: schedule recorded', { taskId });
+
+      // SWEEP CORE-1 CT2 — DECLARE WHAT THIS SCHEDULE OWES A PERSON, ONCE, HERE.
+      // After the schedule columns, because "is this scheduled at all" is one of the inputs.
+      // Idempotent and never overriding a caller who named the kind. Its runs will not be
+      // recordable as complete without a message the person actually received.
+      declareDeliverableOnSchedule(taskId);
     }
 
     // Handle group assignment (validated: an unknown group id would otherwise
@@ -1763,6 +1848,44 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         };
         return calculateNextRun(probe) === null;
       })();
+
+      // ── SWEEP CORE-1 CT2 — THE RUN CLOSES ON THE MESSAGE, NOT ON THIS CALL. ──
+      //
+      // The owner's 2026-08-07 transcript: his Tomorrow Brief fired, his agent did the work,
+      // wrote the brief, called exactly this tool with status="complete" — and sent nothing.
+      // The tool answered "Run completed for recurring task.", the schedule advanced, and the
+      // owner's run history read **complete** for a morning he heard nothing. His own sentence
+      // is the rule: *"I won't close the run until after the message is sent."*
+      //
+      // The refusal is asked HERE, before the advance and before anything is archived, because
+      // this is the one moment the model is present and can act on it: it is mid-turn, it has
+      // the brief it just wrote, and a sentence naming what is missing is a far better steer
+      // than a wakeup ten minutes later. `settleOccurrence` refuses the same close independently
+      // (it is the authority; this is not a second decider), so a close arriving by any other
+      // door is refused too — this door just gets to SAY so.
+      //
+      // Only DECLARED deliverable-owing tasks reach this branch. A nightly backup closes
+      // exactly as it always has.
+      const owedRun = taskOwesDeliverable(taskId);
+      if (owedRun.owes && !runDeliverableEvidence(openRun.id)) {
+        const rung = nextRunDeliverRung(openRun.id);
+        if (rung.rung === 'steer') {
+          recordRunDeliverSteer(openRun.id, {
+            attempt: rung.attempt, bound: rung.bound, taskId,
+            why: 'the close was attempted with no user-visible delivery in the run window',
+            // The bound is counted in TURNS, not calls — see `runDriveCount`. The floor model
+            // routinely re-calls this tool three or four times inside one turn, and each of
+            // those is the SAME drive: it has had no chance to act on the steer yet.
+            turnNumber: getWorkOriginForAgent(agentId, 'model').turn,
+          });
+          return runDeliverSteerText({
+            taskId, taskTitle: taskRow?.title as string | undefined ?? null,
+            taskKind: owedRun.taskKind, attempt: rung.attempt, bound: rung.bound,
+          });
+        }
+        // The ladder is spent. Fall through: `settleOccurrence` records the run UNDELIVERED
+        // (never complete) and the schedule advances, so tomorrow's run still fires.
+      }
 
       if (!wouldBeTerminal) {
         // Non-terminal recurring per-run: archive result+evidence to

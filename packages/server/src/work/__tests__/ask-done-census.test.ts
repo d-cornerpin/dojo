@@ -116,8 +116,22 @@ const DONE_WRITERS: Record<string, DoneSites & { subjects: string; owner: string
       + '(commitments ONLY: it refuses an ask row)',
   },
   'work/occurrences.ts': {
+    // SWEEP CORE-1 CT2 — THE COUNT DID NOT MOVE AND THE OWNER DID, which is the whole record
+    // this line has to carry. `settleOccurrence` was a bookkeeping closer: it took whatever
+    // the caller passed and, when nothing was passed, still stamped `run_status:'complete'`
+    // on the run's own settle event — so the owner's run history read **complete** for a
+    // scheduled brief that reached nobody (his box, 2026-08-07; driven at `8a060c5`, run
+    // `bmslpj41gkx`, where a Tomorrow Brief closed `done` on the tool-call CHIP of the
+    // `work_update(status="complete")` call that closed it). It is now an EVIDENCE-BASED
+    // AUTHORITY for its own subject: for a task DECLARED deliverable-owing
+    // (`work/deliverable-declaration.ts`) it re-derives the run's own qualifying delivery
+    // (`runDeliverableEvidence`, six narrowings, five of them shared with the ask authority)
+    // and answers `owed` rather than settling when there is none.
     done: 1, dynamic: 0, subjects: 'occurrence',
-    owner: 'settleOccurrenceRun — a scheduler run closing on its own record',
+    owner: 'settleOccurrence — the ONE settlement authority for a scheduler RUN (SWEEP CORE-1 '
+      + 'CT2): the run closes on a message the person actually received, or it does not close. '
+      + 'The `done` site is unchanged; what changed is that the delivery it points at is the '
+      + 'authority\'s own, not the caller\'s',
   },
   'work/tracker-store.ts': {
     done: 0, dynamic: 1, subjects: 'task, project',
@@ -188,6 +202,77 @@ describe('CENSUS A — every writer of ask-`done` resolves to the one authority'
     expect(engineText(), 'invocation (b): the turn-finalize adjudicator')
       .toMatch(/settleAsksAtTurnFinalize\(/);
     expect(read('index.ts'), 'invocation (c): boot reconcile').toMatch(/reconcileOrphanedClaims\(/);
+  });
+
+  // ── SWEEP CORE-1 CT2 — THE SCHEDULED-RUN CLOSER'S OWN INVENTORY ──
+  //
+  // Added in the same commit as the change that made it an authority, on TB2's precedent: an
+  // inventory that a task can extend without touching is an inventory that stops describing
+  // the product. It is a SEPARATE census from the ask one above because the subject is a
+  // different row kind with a different lifecycle — folding a run into `settleAsk` would have
+  // meant loosening three of that authority's narrowings (its conversation, its turn, its ask
+  // row) to admit a subject that has none of them, which is the "scoped away" move this sweep
+  // exists to refuse.
+  describe('CENSUS A2 — the scheduled-RUN closer', () => {
+    /** Every site that can record a run's own outcome word. `settleOccurrence` is the one
+     *  writer; the three below are its scopes and carry no decision of their own. */
+    const RUN_SETTLE_SITES: Array<{ file: string; fn: string }> = [
+      { file: 'work/occurrences.ts', fn: 'settleOccurrence' },
+    ];
+
+    it('exactly one function settles a run, and it is where the census says', () => {
+      const all = files().map(read).join('\n');
+      const declared = RUN_SETTLE_SITES.map((w) => `${w.file}:${w.fn}`);
+      expect(declared).toEqual(['work/occurrences.ts:settleOccurrence']);
+      for (const w of RUN_SETTLE_SITES) {
+        expect(read(w.file)).toMatch(new RegExp(`export function ${w.fn}\\b`));
+      }
+      // Nobody else may WRITE the run's own outcome word. A second writer of
+      // `occurrence_settled` is a second opinion about whether a scheduled run reached a
+      // person, which is the exact shape of the defect CT2 closed. The fingerprint is the
+      // APPEND, not the name — the kind is declared in `event-kinds.ts` and read by the run
+      // history projection, and neither of those is a writer.
+      const APPENDS_SETTLED = /appendWorkEvent\([^;]*OCCURRENCE_EVENT\.settled/;
+      const offenders = files()
+        .filter((f) => f !== 'work/occurrences.ts' && !f.startsWith('work/__tests__/'))
+        .filter((f) => APPENDS_SETTLED.test(stripComments(read(f))));
+      expect(offenders, 'the run\'s own outcome word has ONE writer').toEqual([]);
+      expect(APPENDS_SETTLED.test(read('work/occurrences.ts')), 'the rule is not vacuous').toBe(true);
+
+      // The declared READERS of that word, so a new one arrives as a red somebody must admit
+      // rather than as a silent third interpretation of "was this run complete".
+      const readers = files()
+        .filter((f) => f !== 'work/occurrences.ts' && !f.startsWith('work/__tests__/'))
+        .filter((f) => /OCCURRENCE_EVENT\.settled|'occurrence_settled'/.test(stripComments(read(f))));
+      expect(readers.sort(), 'the declared readers of the run\'s outcome word').toEqual([
+        'work/event-kinds.ts',      // the declaration itself — the CHECK's own list
+        'work/occurrence-runs.ts',  // the owner's run history projection (`runStatusOf`)
+      ]);
+      expect(all).toMatch(/OCCURRENCE_EVENT\.settled/);
+    });
+
+    it('the run closer asks the DECLARATION and never the run\'s prose', () => {
+      const closer = stripComments(read('work/occurrences.ts'));
+      expect(closer, 'the only question about "does this owe a message" is the declared kind')
+        .toMatch(/occurrenceOwesDeliverable\(/);
+      const decl = stripComments(read('work/deliverable-declaration.ts'));
+      expect(decl, 'the declaration reads ONE column at close time')
+        .toMatch(/SELECT task_kind FROM work/);
+      // The derivation may only read the DEFINITION fields, and only at create. If a future
+      // edit makes it read the run's output, this is the line that has to be argued with.
+      expect(decl).toMatch(/const definition = \[def\.title, def\.description, def\.goal\]/);
+    });
+
+    it('the deliverable-owing inventory is a single closed list with one reader', () => {
+      const decl = read('work/deliverable-declaration.ts');
+      expect(decl).toMatch(/export const DELIVERABLE_OWING_TASK_KINDS/);
+      // Nobody re-states the list. A second copy is a second definition of what owes a person
+      // a message, and the two would drift the first time one of them grew.
+      const restaters = files()
+        .filter((f) => f !== 'work/deliverable-declaration.ts' && !f.startsWith('work/__tests__/'))
+        .filter((f) => /\['reminder',\s*'brief',\s*'report',\s*'notify'\]/.test(read(f)));
+      expect(restaters).toEqual([]);
+    });
   });
 
   it('the model own close tool no longer decides an ask, and says so steerably', () => {

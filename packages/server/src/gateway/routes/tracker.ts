@@ -591,6 +591,15 @@ trackerRouter.post('/tasks', async (c) => {
         next_run_at: tsToMs(nextRun),
         schedule_status: 'waiting',
       }), 'dashboard: schedule recorded on task create', { taskId });
+
+      // SWEEP CORE-1 CT2 — AND THIS IS THE DOOR THE OWNER'S OWN BRIEFS COME THROUGH.
+      // It has no `kind` field and never has, which is exactly why the deliverable declaration
+      // is DERIVED from the task's definition here rather than asked for as a parameter: a
+      // requirement that only the tool door can express would leave every schedule the owner
+      // creates himself permanently undeclared, and that is the population his 2026-08-07
+      // incident came from. Same call, same rules, same audit row as the tool door.
+      const { declareDeliverableOnSchedule } = await import('../../work/deliverable-declaration.js');
+      declareDeliverableOnSchedule(taskId);
     }
 
     const task = getTask(taskId);

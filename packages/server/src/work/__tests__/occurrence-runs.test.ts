@@ -199,8 +199,12 @@ describe('requirement preserved: close-once (RC-17)', () => {
     // concurrent tick cannot advance `run_count` twice (the P-5 inflation class).
     seedSchedule(T0);
     const o1 = fire(1);
-    expect(settleOccurrence(o1, 'complete', 'del-1', 'first').kind).toBe('applied');
-    expect(settleOccurrence(o1, 'complete', 'del-1', 'second').kind).not.toBe('applied');
+    // SWEEP CORE-1 CT2: the close token is now `settleOccurrence(...).outcome`, because the
+    // authority gained a third answer — `owed`, the run that may not close because it owes a
+    // person a message. This schedule is not deliverable-owing, so the two arms below are the
+    // same two they always were.
+    expect(settleOccurrence(o1, 'complete', 'del-1', 'first').outcome!.kind).toBe('applied');
+    expect(settleOccurrence(o1, 'complete', 'del-1', 'second').outcome!.kind).not.toBe('applied');
   });
 
   it('the first summary is not overwritten by the loser', () => {

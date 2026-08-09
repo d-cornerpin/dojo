@@ -285,13 +285,13 @@ describe('settling an occurrence — the run outcome, not a judgement', () => {
 
   it('a failed run fails its occurrence', () => {
     const id = claim();
-    expect(settleOccurrence(id, 'failed', null, 'provider error').kind).toBe('applied');
+    expect(settleOccurrence(id, 'failed', null, 'provider error').outcome!.kind).toBe('applied');
     expect(stateOf(id)).toBe('failed');
   });
 
   it('a skipped occurrence is abandoned', () => {
     const id = claim();
-    expect(settleOccurrence(id, 'skipped', null, null).kind).toBe('applied');
+    expect(settleOccurrence(id, 'skipped', null, null).outcome!.kind).toBe('applied');
     expect(stateOf(id)).toBe('abandoned');
   });
 
@@ -300,7 +300,8 @@ describe('settling an occurrence — the run outcome, not a judgement', () => {
     // read as `done` — the same call T7 made for commitments and T8b for tracker closes.
     const id = claim();
     const r = settleOccurrence(id, 'complete', null, null);
-    expect(r.kind).toBe('applied');
+    expect(r.verdict).toBe('settled');
+    expect(r.outcome!.kind).toBe('applied');
     expect(stateOf(id)).toBe('abandoned');
     const ev = mockDb.current!.prepare(
       `SELECT payload FROM work_events WHERE work_id = ? AND kind = 'transition'`,
@@ -312,7 +313,7 @@ describe('settling an occurrence — the run outcome, not a judgement', () => {
     const id = claim();
     mockDb.current!.exec(`CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY)`);
     mockDb.current!.prepare('INSERT INTO deliveries (id) VALUES (?)').run('d1');
-    expect(settleOccurrence(id, 'complete', 'd1', 'said it').kind).toBe('applied');
+    expect(settleOccurrence(id, 'complete', 'd1', 'said it').outcome!.kind).toBe('applied');
     expect(stateOf(id)).toBe('done');
     const row = mockDb.current!.prepare('SELECT result_delivery_id FROM work WHERE id = ?')
       .get(id) as { result_delivery_id: string };
