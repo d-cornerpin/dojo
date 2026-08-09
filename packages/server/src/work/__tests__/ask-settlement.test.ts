@@ -39,7 +39,10 @@ vi.mock('../../db/connection.js', async () => {
 
 import { runMigrations } from '../../db/migrations.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn, openDelegationJoin } from '../store.js';
-import { settleAsk, settleAsksForDelivery, settleAsksAtTurnFinalize, reconcileOrphanedClaims } from '../ask-settlement.js';
+import {
+  settleAsk, settleAsksForDelivery, settleAsksAtTurnFinalize, reconcileOrphanedClaims,
+  MAX_ASK_RE_SERVES, RE_SERVE_MARKER,
+} from '../ask-settlement.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { assembledContextAsks } from '../../agent/v2/counterparty.js';
 
@@ -531,5 +534,268 @@ describe('the crash window: a `done` ask with an unresolved join whose turn neve
     for (let i = 1; i <= 5; i++) expect(workFor(`m-${i}`).state).toBe('blocked');
     // and the second pass is a no-op — bounded, not repeated
     expect(reconcileOrphanedClaims().handedBack).toBe(0);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// ARM 6 — THE RECEIPT MUST BE THE TURN'S ANSWER (SWEEP CORE-1, CT0)
+//
+// WHAT WAS MEASURED, so "RED" is a number rather than a claim. Three investigate-shaped
+// asks were driven through the real door (`POST /api/chat/kevin/messages`) at the SHIPPED
+// build `587693e` on 2026-08-09, and all three were marked `done` on the model's OPENING
+// START-ACK — seconds after the question arrived and tens of seconds before the answer
+// existed:
+//
+//   ask:d8cf8457  done 09:36:02 (+9 s)  receipt -> "On it — checking the folder now."
+//                                        answer  09:36:09  "16 .ts files … store.ts at 1,667 lines"
+//   ask:1f5911cc  done 09:38:39 (+4 s)  receipt -> "On it — checking each part separately."
+//                                        answer  09:39:16  "All four parts checked. Here's the summary…"
+//   ask:ed356166  done 09:41:26 (+4 s)  receipt -> "On it — checking the folder now."
+//                                        answer  09:41:41  "29 .ts files directly in that folder…"
+//
+// On all three `turns.answer_message_id` — the truthful-answer key, ONE setter — named the
+// REAL answer while `work.result_delivery_id` named the ack. The platform already knew which
+// message was the answer; the settlement pointed somewhere else. Box-wide at that instant:
+// 2,632 `done` asks carry a dashboard receipt, 2,053 of which ARE the turn's answer key —
+// 579 are not (324 on a turn that recorded a DIFFERENT answer, 255 on a turn that recorded
+// no answer at all).
+//
+// The doctrine is not new and this arm does not widen it — `NON_ANSWERING_DELIVERY_TOOLS`
+// ("A START-ACK IS NOT AN ANSWER") and `NON_ANSWERING_DISPLAY_KINDS` ("AND NEITHER IS A
+// TOOL-CALL CHIP") are the same sentence about the `engine-ack` lane and about a chip. This
+// is its third form: the model's own opening line, delivered under the ordinary door, while
+// the turn is still working. It is corrected at the TURN BOUNDARY for the same reason TB2's
+// ordering arm is: mid-turn the authority cannot know which bubble was the answer, and at
+// the boundary the turn record says so.
+//
+// TB3's remediation pass already treated the identical two-armed shape for chip receipts
+// (re-point when the same turn really answered, hand back when nothing ever did). It
+// corrected the HISTORY; nothing stopped the class recurring. This is the forward behaviour.
+// ════════════════════════════════════════════════════════════════════════
+
+describe('ARM 6 — an ask is done on the turn ANSWER, never on its opening status line', () => {
+  /** A user-visible assistant bubble, and the delivery that carried it out of the building. */
+  const bubbleDelivery = (
+    deliveryId: string, messageId: string, text: string,
+    o: { turn?: number; offsetSeconds?: number; tool?: string; conversationId?: string | null } = {},
+  ): void => {
+    const t = { turn: 4, offsetSeconds: 0, tool: 'dashboard', conversationId: CONV, ...o };
+    mockDb.current!.prepare(
+      `INSERT INTO messages (id, agent_id, role, content, lane, display_kind, display_tier,
+                             conversation_id, turn_number, created_at)
+       VALUES (?, ?, 'assistant', ?, 'owner', 'agent-text', 'user-visible', ?, ?, ?)`,
+    ).run(messageId, AGENT, text, t.conversationId, t.turn, Date.now() + t.offsetSeconds * 1000);
+    mockDb.current!.prepare(
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id,
+                               message_id, outcome, created_at)
+       VALUES (?, ?, ?, ?, 'dashboard', ?, ?, 'delivered', datetime('now', ?))`,
+    ).run(deliveryId, AGENT, t.turn, t.tool, t.conversationId, messageId, `${t.offsetSeconds} seconds`);
+  };
+  /** The turn record as `finalizeTurn` writes it, BEFORE the settlement runs (finalize-record.ts). */
+  const finalizedTurn = (n: number, answerMessageId: string | null): void => {
+    mockDb.current!.prepare(
+      `INSERT OR REPLACE INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason,
+                                     answered, answer_message_id)
+       VALUES (?, ?, datetime('now','-60 seconds'), datetime('now'), ?, ?, ?)`,
+    ).run(AGENT, n, answerMessageId ? 'answered' : 'no_reply_intended', answerMessageId ? 1 : 0, answerMessageId);
+  };
+  const receiptOf = (messageId: string): string | null =>
+    workFor(messageId).result_delivery_id as string | null;
+  const auditsFor = (messageId: string): Array<Record<string, unknown>> =>
+    (mockDb.current!.prepare(
+      `SELECT payload FROM work_events WHERE work_id = ? AND kind = 'audit' ORDER BY id`,
+    ).all(askIdForMessage('' + messageId)) as Array<{ payload: string }>)
+      .map((r) => JSON.parse(r.payload) as Record<string, unknown>);
+
+  it("THE OWNER'S CASE — the ack closes it mid-turn, and the BOUNDARY re-points the receipt at the answer", () => {
+    claimedAsk('m-1', 4);
+    // +0 s: "On it — checking the folder now." leaves the building. It is the only delivery
+    // in existence, so the delivery arm closes the ask on it. That much is TB1's design.
+    bubbleDelivery('d-ack', 'msg-ack', 'On it — checking the folder now.', { turn: 4 });
+    expect(settleAsk(askIdForMessage('m-1'), { agentId: AGENT, turnNumber: 4, at: 'delivery' }).verdict)
+      .toBe('closed');
+    expect(receiptOf('m-1')).toBe('d-ack');
+    // +7 s: the real answer.
+    bubbleDelivery('d-ans', 'msg-ans', '16 .ts files. The largest is store.ts at 1,667 lines.',
+      { turn: 4, offsetSeconds: 7 });
+    finalizedTurn(4, 'msg-ans');
+    settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 4 });
+    // The ask really was answered, so it stays done — and the record now names the answer.
+    expect(workFor('m-1').state).toBe('done');
+    expect(receiptOf('m-1')).toBe('d-ans');
+    const audit = auditsFor('m-1').at(-1)!;
+    expect(audit.marker).toBe('ct0_receipt_repointed');
+    expect(audit.from_delivery_id).toBe('d-ack');
+    expect(audit.to_delivery_id).toBe('d-ans');
+    expect(String(audit.reason)).toContain('start-ack');
+  });
+
+  it('THE ACK-ONLY TURN — nothing answered the person, so the ask is OWED again with a NAMED cause', () => {
+    claimedAsk('m-1', 4);
+    bubbleDelivery('d-ack', 'msg-ack', 'On it — I will look into that now.', { turn: 4 });
+    expect(settleAsk(askIdForMessage('m-1'), { agentId: AGENT, turnNumber: 4, at: 'delivery' }).verdict)
+      .toBe('closed');
+    finalizedTurn(4, null);                       // the turn ended having said only that
+    settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 4 });
+    expect(workFor('m-1').state).toBe('open');
+    expect(receiptOf('m-1')).toBeNull();          // a row handed back is settled on nothing
+    const last = transitionsFor('m-1').at(-1)!;
+    expect(last.to).toBe('open');
+    expect(last.reason).toContain('start-ack');
+    expect(last.reason.length).toBeGreaterThan(40);   // a NAMED cause, not a shrug
+    // The record is not falsified: the close stays in the log, followed by the undo.
+    expect(transitionsFor('m-1').map((t) => t.to)).toEqual(['claimed', 'done', 'open']);
+  });
+
+  it('NEGATIVE CONTROL — a turn whose ONE bubble IS the answer is not touched at all', () => {
+    claimedAsk('m-1', 4);
+    bubbleDelivery('d-ans', 'msg-ans', 'Sixteen. store.ts is the biggest.', { turn: 4 });
+    settleAsk(askIdForMessage('m-1'), { agentId: AGENT, turnNumber: 4, at: 'delivery' });
+    finalizedTurn(4, 'msg-ans');
+    const before = (mockDb.current!.prepare('SELECT count(*) AS c FROM work_events WHERE work_id = ?')
+      .get(askIdForMessage('m-1')) as { c: number }).c;
+    settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 4 });
+    expect(workFor('m-1').state).toBe('done');
+    expect(receiptOf('m-1')).toBe('d-ans');
+    expect((mockDb.current!.prepare('SELECT count(*) AS c FROM work_events WHERE work_id = ?')
+      .get(askIdForMessage('m-1')) as { c: number }).c).toBe(before);
+  });
+
+  it('NEGATIVE CONTROL — a CHANNEL send carries no bubble, so the bubble rule cannot reach it', () => {
+    // Keyed on the delivery's OWN message row, exactly as the chip narrowing is: an email or
+    // iMessage send records no message id and is untouched even when the turn's answer key
+    // names some other row.
+    claimedAsk('m-1', 4);
+    seedDelivery('d-email', { turn: 4, tool: 'send_email' });          // no message_id
+    settleAsk(askIdForMessage('m-1'), { agentId: AGENT, turnNumber: 4, at: 'delivery' });
+    expect(receiptOf('m-1')).toBe('d-email');
+    bubbleDelivery('d-note', 'msg-note', 'Sent.', { turn: 4, offsetSeconds: 5 });
+    finalizedTurn(4, 'msg-note');
+    settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 4 });
+    expect(workFor('m-1').state).toBe('done');
+    expect(receiptOf('m-1')).toBe('d-email');
+  });
+
+  it("NEGATIVE CONTROL — the ENGINE'S join relay is not a model bubble and is untouched", () => {
+    claimedAsk('m-1', 4);
+    seedDelivery('d-relay', { turn: 4, tool: 'a2a-join-relay' });
+    settleAsk(askIdForMessage('m-1'), { agentId: AGENT, turnNumber: 4, at: 'delivery' });
+    bubbleDelivery('d-later', 'msg-later', 'Anything else?', { turn: 4, offsetSeconds: 5 });
+    finalizedTurn(4, 'msg-later');
+    settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 4 });
+    expect(workFor('m-1').state).toBe('done');
+    expect(receiptOf('m-1')).toBe('d-relay');
+  });
+
+  it("NEGATIVE CONTROL — another turn's settled ask is not re-adjudicated by this turn's boundary", () => {
+    claimedAsk('m-1', 3);
+    bubbleDelivery('d-ack3', 'msg-ack3', 'On it.', { turn: 3 });
+    settleAsk(askIdForMessage('m-1'), { agentId: AGENT, turnNumber: 3, at: 'delivery' });
+    finalizedTurn(3, null);
+    finalizedTurn(4, null);
+    settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 4 });   // a DIFFERENT turn finalizes
+    expect(workFor('m-1').state).toBe('done');
+    expect(receiptOf('m-1')).toBe('d-ack3');
+  });
+
+  it('ADJUDICATED ONCE — a second finalize over the same turn moves nothing and writes nothing', () => {
+    claimedAsk('m-1', 4);
+    bubbleDelivery('d-ack', 'msg-ack', 'On it — checking now.', { turn: 4 });
+    settleAsk(askIdForMessage('m-1'), { agentId: AGENT, turnNumber: 4, at: 'delivery' });
+    bubbleDelivery('d-ans', 'msg-ans', 'Sixteen files; store.ts is biggest.', { turn: 4, offsetSeconds: 7 });
+    finalizedTurn(4, 'msg-ans');
+    settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 4 });
+    const events = (mockDb.current!.prepare('SELECT count(*) AS c FROM work_events WHERE work_id = ?')
+      .get(askIdForMessage('m-1')) as { c: number }).c;
+    settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 4 });
+    expect(receiptOf('m-1')).toBe('d-ans');
+    expect((mockDb.current!.prepare('SELECT count(*) AS c FROM work_events WHERE work_id = ?')
+      .get(askIdForMessage('m-1')) as { c: number }).c).toBe(events);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// ARM 7 — THE RE-SERVE HAS A BOUND OF ITS OWN (SWEEP CORE-1 CT0, closing TB3 §8.3)
+//
+// TB3 §8.3: *"the settlement authority's no-evidence arm has NO BOUND OF ITS OWN: it will
+// hand an ask back forever, and the only thing between that and a spin is a counter owned by
+// a different subsystem for a different reason."* Measured on the live body at the shipped
+// build: `ask:3bba2728` handed back on turns 452, 457, 458, 459, 460 and 461 — six serves in
+// three minutes, every turn exiting `no_reply_intended` — and `ask:ec6392a5` on 4285 and 4286
+// with a third serve on 4287, 45 seconds end to end.
+// ════════════════════════════════════════════════════════════════════════
+
+describe('ARM 7 — an ask is not served into the same silence for ever', () => {
+  const finalizeWithNothing = (messageId: string, turn: number): string =>
+    settleAsk(askIdForMessage(messageId), { agentId: AGENT, turnNumber: turn, at: 'finalize' }).verdict;
+  const reclaim = (messageId: string, turn: number): void => {
+    claimAsk(askIdForMessage(messageId), AGENT);
+    stampClaimingTurn(askIdForMessage(messageId), turn);
+  };
+
+  it('the ladder spends its rungs, then STANDS DOWN — held OWED, never closed, never abandoned', () => {
+    claimedAsk('m-1', 1);
+    // Serves 1..MAX: each finalize with nothing delivered hands the ask back OPEN.
+    for (let i = 0; i < MAX_ASK_RE_SERVES; i++) {
+      expect(finalizeWithNothing('m-1', 1 + i)).toBe('reopened');
+      expect(workFor('m-1').state).toBe('open');
+      reclaim('m-1', 2 + i);
+    }
+    // The rung after the bound: the drain's queue is `state = 'open'`, so holding the row
+    // `blocked` is what actually stops the spin — and `blocked` is an OWED state the OPEN
+    // WORK surface renders, so the model keeps being reminded rather than the ask vanishing.
+    expect(finalizeWithNothing('m-1', 1 + MAX_ASK_RE_SERVES)).toBe('held');
+    const w = workFor('m-1');
+    expect(w.state).toBe('blocked');
+    expect(w.closed_at).toBeNull();                       // not closed
+    expect(w.result_delivery_id).toBeNull();              // and settled on nothing
+    const last = transitionsFor('m-1').at(-1)!;
+    expect(last.to).toBe('blocked');
+    expect(last.reason).toContain('re-serve stood down');
+    expect(last.reason).toContain('NOT answered');
+  });
+
+  it('the count is on the RECORD, so a reader never has to add it up', () => {
+    claimedAsk('m-1', 1);
+    expect(finalizeWithNothing('m-1', 1)).toBe('reopened');
+    expect(transitionsFor('m-1').at(-1)!.reason).toContain(`serve 2 of ${MAX_ASK_RE_SERVES + 1}`);
+    const audits = mockDb.current!.prepare(
+      `SELECT payload FROM work_events WHERE work_id = ? AND kind = 'audit' ORDER BY id`,
+    ).all(askIdForMessage('m-1')) as Array<{ payload: string }>;
+    expect(audits).toHaveLength(1);
+    expect((JSON.parse(audits[0].payload) as { marker: string }).marker).toBe(RE_SERVE_MARKER);
+  });
+
+  it('NEGATIVE CONTROL — an ask that gets ANSWERED never reaches the bound', () => {
+    claimedAsk('m-1', 1);
+    for (let i = 0; i < MAX_ASK_RE_SERVES; i++) {
+      expect(finalizeWithNothing('m-1', 1 + i)).toBe('reopened');
+      reclaim('m-1', 2 + i);
+    }
+    seedDelivery('d-1', { turn: 1 + MAX_ASK_RE_SERVES });
+    expect(settleAsk(askIdForMessage('m-1'), {
+      agentId: AGENT, turnNumber: 1 + MAX_ASK_RE_SERVES, at: 'finalize',
+    }).verdict).toBe('closed');
+    expect(workFor('m-1').state).toBe('done');
+  });
+
+  it("NEGATIVE CONTROL — the ladder is PER ROW: one spent ask does not stand another one down", () => {
+    claimedAsk('m-1', 1);
+    for (let i = 0; i < MAX_ASK_RE_SERVES; i++) { finalizeWithNothing('m-1', 1 + i); reclaim('m-1', 2 + i); }
+    expect(finalizeWithNothing('m-1', 1 + MAX_ASK_RE_SERVES)).toBe('held');
+    claimedAsk('m-2', 50);
+    expect(finalizeWithNothing('m-2', 50)).toBe('reopened');
+    expect(workFor('m-2').state).toBe('open');
+  });
+
+  it('a held ask is not re-held on every later boundary — the stand-down is idempotent', () => {
+    claimedAsk('m-1', 1);
+    for (let i = 0; i < MAX_ASK_RE_SERVES; i++) { finalizeWithNothing('m-1', 1 + i); reclaim('m-1', 2 + i); }
+    finalizeWithNothing('m-1', 1 + MAX_ASK_RE_SERVES);
+    const events = (mockDb.current!.prepare('SELECT count(*) AS c FROM work_events WHERE work_id = ?')
+      .get(askIdForMessage('m-1')) as { c: number }).c;
+    expect(finalizeWithNothing('m-1', 99)).toBe('held');
+    expect((mockDb.current!.prepare('SELECT count(*) AS c FROM work_events WHERE work_id = ?')
+      .get(askIdForMessage('m-1')) as { c: number }).c).toBe(events);
   });
 });

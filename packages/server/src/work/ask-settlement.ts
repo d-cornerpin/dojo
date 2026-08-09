@@ -99,6 +99,24 @@ export const NON_ANSWERING_DELIVERY_TOOLS = new Set(['engine-ack']);
  */
 export const NON_ANSWERING_DISPLAY_KINDS = ['tool-turn'] as const;
 
+// ⚠ DECLARED HERE, ABOVE THE PREDICATES, rather than beside the join arm that reads it:
+// SWEEP CORE-1 CT0's `NOT_A_SUPERSEDED_BUBBLE` is a module-level SQL fragment and needs
+// this set at module-evaluation time. It moved WHOLE — comment, name and value unchanged.
+/**
+ * ⚠ SWEEP-A TB13 — THE ENGINE'S OWN RELAY, NAMED ON THE LEDGER RATHER THAN INFERRED.
+ *
+ * `a2a-join-relay` is the tool the engine records when IT hands a delegated answer to the
+ * owner (`agent/a2a-transport.ts`, both the one-piece deterministic relay and the compile
+ * ladder's last rung). No model can call it: it is written by the platform, from the pieces
+ * the peers actually returned, and it is by construction the compiled answer to the join it
+ * names. That is why it is exempt from the delegating-turn narrowing below and why it is what
+ * the ladder asks about before it speaks a second time.
+ *
+ * `a2a-join-failed` and `a2a-join-late` are deliberately NOT here: the first is a notice that
+ * there is no answer, and the second has its own arm with its own boundary.
+ */
+export const ENGINE_JOIN_RELAY_TOOLS = new Set(['a2a-join-relay']);
+
 /** How far back a boot reconciliation will reach. Carried verbatim from the pickup-stamp
  *  reconciliation it replaced (`index.ts` 4b1): a claim stranded by a genuine crash is
  *  seconds-to-minutes old, and anything older is history a restart must not re-answer. */
@@ -211,6 +229,7 @@ function qualifyingDelivery(
         AND d.outcome = 'delivered'
         AND d.tool NOT IN (${excluded.map(() => '?').join(', ')})
         AND ${NOT_A_TOOL_CHIP}
+        AND ${NOT_A_SUPERSEDED_BUBBLE}
         AND unixepoch(d.created_at) >= ?
       ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
   ).get(ask.agent_id, turnNumber, ask.conversation_id, ...excluded, Math.floor(ask.opened_at / 1000)) as
@@ -245,6 +264,173 @@ export function askAnswerEvidence(
 const NOT_A_TOOL_CHIP =
   `NOT EXISTS (SELECT 1 FROM messages m WHERE m.id = d.message_id AND m.display_kind IN (${
     NON_ANSWERING_DISPLAY_KINDS.map((k) => `'${k}'`).join(', ')}))`;
+
+/**
+ * ⚠ SWEEP CORE-1 CT0 — THE SIXTH NARROWING, AND IT IS THE SAME SENTENCE A THIRD TIME.
+ *
+ * "A START-ACK IS NOT AN ANSWER" was written for the `engine-ack` LANE; TB2 wrote it again
+ * one row deeper for the tool-call CHIP. Neither reaches the third form: **the model's own
+ * opening line, delivered under the ordinary dashboard door, while the turn is still
+ * working.** It is an `agent-text` bubble, it is `user-visible`, it is `delivered`, it is in
+ * the ask's own conversation and it postdates the ask's arrival — it passes all five — and
+ * mid-turn it is the ONLY delivery in existence, so the delivery arm closes the ask on it.
+ *
+ * MEASURED, not reasoned about — three investigate-shaped asks driven through the real door
+ * (`POST /api/chat/kevin/messages`) at the SHIPPED build `587693e`, 2026-08-09, all three
+ * marked `done` on the ack, seconds after the question arrived and tens of seconds before
+ * the answer existed:
+ *
+ *   ask:d8cf8457  done 09:36:02 (+9 s)  receipt -> "On it — checking the folder now."
+ *                                        answer  09:36:09  "16 .ts files … store.ts, 1,667 lines"
+ *   ask:1f5911cc  done 09:38:39 (+4 s)  receipt -> "On it — checking each part separately."
+ *                                        answer  09:39:16  "All four parts checked…"
+ *   ask:ed356166  done 09:41:26 (+4 s)  receipt -> "On it — checking the folder now."
+ *                                        answer  09:41:41  "29 .ts files directly in that folder…"
+ *
+ * THE PLATFORM ALREADY KNEW. `turns.answer_message_id` — the truthful-answer key, whose ONE
+ * setter is `noteTerminalAnswer` — named the REAL answer on all three while
+ * `work.result_delivery_id` named the ack. Two halves of one edge, disagreeing. Box-wide at
+ * that instant: 2,632 `done` asks carry a dashboard receipt, 2,053 of which ARE the turn's
+ * answer key; 324 name a different bubble of a turn that DID record an answer, and 255 name
+ * a bubble of a turn that recorded no answer at all.
+ *
+ * SO THE RULE IS TIME-SHAPED, and that is the whole design: mid-turn the authority cannot
+ * know which bubble was the answer — nobody can, the turn has not finished speaking — so the
+ * delivery moment is left EXACTLY as TB1 built it and a quick answer still closes instantly.
+ * ONCE THE TURN HAS ENDED the record says which bubble was the answer, and from that moment
+ * the only model bubble that can be an ask's receipt is that one.
+ *
+ * WHAT IT DELIBERATELY CANNOT REACH, each excluded by MEASUREMENT on the live body:
+ *   * a delivery with no message row at all — every `auto-route` channel send (28 of 28 on
+ *     this box carry `message_id IS NULL`), exactly as the chip narrowing is keyed;
+ *   * the ENGINE'S OWN JOIN RELAY (`ENGINE_JOIN_RELAY_TOOLS`), which IS persisted as an
+ *     `assistant`/`agent-text` row (28 of 28) but is written by the platform under a tool no
+ *     model can call, out of the pieces the peers returned — TB13's correction, kept whole:
+ *     25 of those 28 sit on turns that recorded no answer key and would have been refused;
+ *   * a turn still running (`ended_at IS NULL`) — which is every delivery-moment close and
+ *     the whole of the boot crash arm, so `reconcileOrphanedClaims` is untouched.
+ */
+const NOT_A_SUPERSEDED_BUBBLE =
+  `NOT EXISTS (
+     SELECT 1 FROM messages mb
+       JOIN turns tb ON tb.agent_id = d.agent_id AND tb.turn_number = d.turn_number
+      WHERE mb.id = d.message_id
+        AND mb.role = 'assistant' AND mb.display_kind = 'agent-text'
+        AND d.tool NOT IN (${[...ENGINE_JOIN_RELAY_TOOLS].map((t) => `'${t}'`).join(', ')})
+        AND tb.ended_at IS NOT NULL
+        AND (tb.answer_message_id IS NULL OR tb.answer_message_id <> d.message_id))`;
+
+/**
+ * SWEEP CORE-1 CT0 — is the receipt this row is settled on a bubble THIS FINISHED TURN does
+ * not call its answer? One read, asked with the SAME fragment the evidence predicate uses,
+ * so the arm that corrects the row and the predicate that judges it can never disagree about
+ * what a superseded bubble is.
+ *
+ * Scoped to the turn being adjudicated: an ask another turn settled is that turn's business
+ * and is not re-opened by this boundary.
+ */
+function receiptIsASupersededBubble(ask: AskRow, turnNumber: number | null): boolean {
+  if (turnNumber == null || ask.result_delivery_id == null) return false;
+  return getDb().prepare(
+    `SELECT 1 AS hit FROM deliveries d
+      WHERE d.id = ? AND d.agent_id = ? AND d.turn_number = ?
+        AND NOT (${NOT_A_SUPERSEDED_BUBBLE}) LIMIT 1`,
+  ).get(ask.result_delivery_id, ask.agent_id, turnNumber) !== undefined;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// THE RE-SERVE LADDER — SWEEP CORE-1 CT0, closing SWEEP-A TB3 §8.3
+//
+// TB3 recorded the hole and could not close it inside its own scope: *"the settlement
+// authority's no-evidence arm has NO BOUND OF ITS OWN: it will hand an ask back forever, and
+// the only thing between that and a spin is a counter owned by a different subsystem for a
+// different reason."* That counter is `MAX_DRAIN_STUCK = 4` (`agent/turn-state.ts`), the
+// HUMAN DRAIN'S per-CONVERSATION ladder. It is real, durable and it did its job — but it is
+// not this arm's bound, it counts a different thing, and when it trips it writes the whole
+// conversation off.
+//
+// MEASURED ON THE LIVE BODY, both shapes:
+//   ask:3bba2728  handed back on turns 452, 457, 458, 459, 460, 461 — SIX serves, three
+//                 minutes, every turn exiting `no_reply_intended`, ending `abandoned` by the
+//                 drain's write-off;
+//   ask:ec6392a5  handed back on 4285 and 4286 and served a third time on 4287 (45 seconds).
+//
+// THE LADDER, on OR2's shape (steer → tell the owner) and bounded PER ROW:
+//   serves 1..MAX_ASK_RE_SERVES+1  the ask goes back OPEN and the drain re-serves it. The
+//                                  count rides on the transition reason, so the record says
+//                                  "serve 3 of 4" rather than leaving a reader to add up.
+//   beyond that                    THE RE-SERVE STANDS DOWN. The ask is not closed, not
+//                                  abandoned and not forgotten: it is HELD `blocked`, which
+//                                  is an OWED state the OPEN WORK surface renders, so the
+//                                  model keeps being reminded it owes this answer while the
+//                                  drain — whose queue is `state = 'open'` — stops picking it
+//                                  up. A steer the model can still act on, and a row the
+//                                  owner can still see, instead of a spin.
+//
+// The counter is a COUNT over the row's own durable log, never a maintained integer — the
+// same discipline `join-drive.ts` uses for its ladder, and for the same reason.
+//
+// ⚠ HANDED UP, stated rather than left to be discovered: OR2's LAST rung — the platform
+// telling the OWNER in its own voice — is not wired here. `recordFloorGhost` is the surface
+// for it and it needs a new declared `OUT_OF_BAND_GHOST_SUBJECTS` value, which the ghost
+// census and the dashboard's owner-alert allowlist both judge. That is a surface change with
+// its own review, and it is named in the CT0 report rather than slipped in beside this one.
+// ════════════════════════════════════════════════════════════════════════════════
+
+/** How many times the authority will hand ONE ask back before it stands the re-serve down.
+ *  Three, on the same orchestrator judgment (Phase-0 standing authority) that set the join
+ *  ladder's N — and beside it on purpose, so the two bounds are read together. */
+export const MAX_ASK_RE_SERVES = 3;
+
+/** The marker the ladder spends against, inside the `audit` payload — see `join-drive.ts`. */
+export const RE_SERVE_MARKER = 'ct0_ask_re_served';
+
+/** How many hand-backs this row has already spent. A COUNT over the log. */
+function reServesSpent(workId: string): number {
+  try {
+    return (getDb().prepare(
+      `SELECT COUNT(*) AS n FROM work_events
+        WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.marker') = ?`,
+    ).get(workId, RE_SERVE_MARKER) as { n: number } | undefined)?.n ?? 0;
+  } catch (err) {
+    // A ladder that cannot read its own counter must not spend an unbounded number of serves.
+    // Reporting it as already spent is the safe direction: the ask is HELD and visible rather
+    // than re-served for ever, which is the failure this bound exists to refuse.
+    logger.warn('ask re-serve ladder: could not read its own counter; treating it as spent', {
+      workId, error: err instanceof Error ? err.message : String(err),
+    });
+    return Number.MAX_SAFE_INTEGER;
+  }
+}
+
+/** Record one rung's spend on the row's own history. */
+function recordReServe(workId: string, attempt: number, why: string): void {
+  appendWorkEvent(workId, 'audit', 'ask-settlement', {
+    marker: RE_SERVE_MARKER, attempt, bound: MAX_ASK_RE_SERVES + 1,
+    reason: `the ask was handed back to be served again (${attempt + 1} of ${MAX_ASK_RE_SERVES + 1}): ${why}`,
+  });
+}
+
+/** The ladder's top rung: stop re-serving, keep the ask OWED and in front of the model. */
+function standDownReServe(
+  ask: AskRow, ctx: SettlementContext, actorId: string, spent: number,
+  out: (v: AskSettlementVerdict, d: string, id?: string | null) => AskSettlementOutcome,
+): AskSettlementOutcome {
+  const reason = `re-serve stood down after ${spent + 1} serves: turn ${ctx.turnNumber ?? '?'} finalized `
+    + 'without delivering an answer, as the ones before it did. The ask is NOT answered and is '
+    + 'NOT closed — it is held OWED and stays in front of the agent, but the drain will stop '
+    + 'serving the same question into the same silence';
+  if (ask.state === 'blocked') return out('held', 'already held: the re-serve ladder is spent');
+  const r = transition(ask.id, {
+    to: 'blocked', by: 'agent', actorId, expectedState: ask.state, reason,
+  });
+  if (r.kind !== 'applied') return out('unchanged', `stand-down refused: ${r.kind}`);
+  logger.error('ask re-serve STOOD DOWN: the same question was served into silence up to its bound', {
+    agentId: ask.agent_id, workId: ask.id, serves: spent + 1, bound: MAX_ASK_RE_SERVES + 1,
+    turnNumber: ctx.turnNumber,
+  }, ask.agent_id);
+  return out('held', reason);
+}
 
 /** Is there delegated work under this ask that has not come back and been compiled yet? */
 function joinOutstanding(ask: AskRow): boolean {
@@ -323,6 +509,67 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     }
   }
 
+  // ── THE RECEIPT-TRUTH ARM (SWEEP CORE-1 CT0). A turn that ACKED, and then either answered
+  //    or said nothing more. ──
+  //
+  // The sixth narrowing above makes the EVIDENCE honest from the turn boundary onward. This
+  // arm is what it is for: a row already closed mid-turn on a bubble the finished turn does
+  // not call its answer is re-adjudicated once, here, and the two outcomes are the two
+  // TB3's remediation pass used for the identical shape one row up (a chip receipt):
+  //
+  //   * THE TURN REALLY ANSWERED — the receipt MOVES to the delivery that carried the
+  //     answer. State is untouched, because the ask really is done: the person has their
+  //     result. Nothing is re-served, nothing is asked twice, and no second answer is
+  //     provoked. What changes is only that the record now names the thing that answered.
+  //   * THE TURN NEVER ANSWERED — it said "On it" and stopped. Nobody was answered, so the
+  //     ask is NOT done: it goes back OWED and visible, with the cause NAMED on the
+  //     transition, exactly as the ordering arm hands back a close-then-delegate turn.
+  //
+  // ⚠ The same rider the ordering arm carries applies here: the `done` transition already
+  // happened and STAYS in the history. The row is honest from the boundary onward, never
+  // retroactively — undoing the RECORD would be the forgery this spine exists to refuse.
+  if (ask.state === 'done' && (ctx.at === 'finalize' || ctx.at === 'boot')
+      && receiptIsASupersededBubble(ask, ctx.turnNumber)) {
+    const answer = qualifyingDelivery(ask, ctx.turnNumber);
+    if (answer) {
+      getDb().prepare('UPDATE work SET result_delivery_id = ?, updated_at = ? WHERE id = ?')
+        .run(answer.id, Date.now(), workId);
+      appendWorkEvent(workId, 'audit', actorId, {
+        marker: 'ct0_receipt_repointed',
+        from_delivery_id: ask.result_delivery_id, to_delivery_id: answer.id, tool: answer.tool,
+        turn_number: ctx.turnNumber,
+        reason: 'the ask was closed mid-turn on the model\'s opening start-ack. The same turn '
+          + 'went on to deliver a real answer, and the receipt now points at that instead — '
+          + 'a start-ack is not an answer, and the ticket must name what answered.',
+      });
+      logger.info('ask receipt re-pointed: it named the start-ack, not the answer', {
+        agentId: ask.agent_id, workId, from: ask.result_delivery_id, to: answer.id,
+        turnNumber: ctx.turnNumber,
+      }, ask.agent_id);
+      return out('unchanged', `receipt re-pointed to the answer this turn delivered (${answer.tool})`, answer.id);
+    }
+    const undo = transition(workId, {
+      to: 'open', by: 'engine', actorId: 'ask-settlement', expectedState: 'done',
+      evidenceRef: ask.result_delivery_id ?? undefined,
+      clearResultDelivery: true,
+      reason: 'handed back: this ask was closed on the model\'s opening start-ack and the turn '
+        + 'then finished without delivering an answer — nobody was answered, so the person is '
+        + 'still waiting and the ask is owed again rather than left looking finished',
+    });
+    if (undo.kind === 'applied') {
+      // The hand-back spends a rung of the re-serve ladder like every other one: a question
+      // served into "On it" four times over is the same spin the bound exists to refuse.
+      recordReServe(workId, reServesSpent(workId), 'the turn acked and then finished without answering');
+      logger.warn('ask handed back at the turn boundary: it was closed on a start-ack that nothing followed', {
+        agentId: ask.agent_id, workId, receipt: ask.result_delivery_id, turnNumber: ctx.turnNumber,
+      }, ask.agent_id);
+      const after = settleAsk(workId, ctx);
+      return after.verdict === 'unchanged'
+        ? out('reopened', 'handed back after a turn that acked and never answered')
+        : after;
+    }
+  }
+
   if (isTerminal(ask.state)) return out('unchanged', `already ${ask.state}`);
 
   // ── THE JOIN ARM (SWEEP-A TB2). The delegated job's own settlement, on the same rule. ──
@@ -376,14 +623,19 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   // At turn finalize the question is settled: this turn is over, nothing was delivered for
   // this ask, and the person is still waiting. It goes back — visible.
   if (ask.state === 'open') return out('unchanged', 'already open and waiting');
+  const spent = reServesSpent(workId);
+  if (spent >= MAX_ASK_RE_SERVES) return standDownReServe(ask, ctx, actorId, spent, out);
   const reason = `re-opened: turn ${ctx.turnNumber ?? '?'} finalized with no delivery that answers this ask — `
-    + 'the person is still waiting, so the ask is visible again rather than parked';
+    + `the person is still waiting, so the ask is visible again rather than parked `
+    + `(serve ${spent + 2} of ${MAX_ASK_RE_SERVES + 1})`;
   const r = transition(workId, {
     to: 'open', by: 'agent', actorId, expectedState: ask.state, reason,
   });
   if (r.kind !== 'applied') return out('unchanged', `re-open refused: ${r.kind}`);
+  recordReServe(workId, spent + 1, 'the turn finalized without delivering an answer');
   logger.info('ask re-opened: its turn finalized without delivering an answer', {
     agentId: ask.agent_id, workId, turnNumber: ctx.turnNumber, from: ask.state,
+    reServe: spent + 1, bound: MAX_ASK_RE_SERVES,
   }, ask.agent_id);
   return out('reopened', reason);
 }
@@ -459,20 +711,6 @@ function delegatingTurn(workId: string): number | null {
   return r?.t ?? null;
 }
 
-/**
- * ⚠ SWEEP-A TB13 — THE ENGINE'S OWN RELAY, NAMED ON THE LEDGER RATHER THAN INFERRED.
- *
- * `a2a-join-relay` is the tool the engine records when IT hands a delegated answer to the
- * owner (`agent/a2a-transport.ts`, both the one-piece deterministic relay and the compile
- * ladder's last rung). No model can call it: it is written by the platform, from the pieces
- * the peers actually returned, and it is by construction the compiled answer to the join it
- * names. That is why it is exempt from the delegating-turn narrowing below and why it is what
- * the ladder asks about before it speaks a second time.
- *
- * `a2a-join-failed` and `a2a-join-late` are deliberately NOT here: the first is a notice that
- * there is no answer, and the second has its own arm with its own boundary.
- */
-export const ENGINE_JOIN_RELAY_TOOLS = new Set(['a2a-join-relay']);
 
 /** The `detail` the join relay stamps on its delivery row — ONE derivation, imported by the
  *  writer (`deliverJoinResultToOwner`) and by every reader, so "which join was this?" cannot
@@ -757,14 +995,19 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
     `SELECT id FROM work
       WHERE agent_id = ? AND kind = 'ask' AND state = 'claimed' AND claimed_by_turn = ?`,
   ).all(p.agentId, p.turnNumber) as Array<{ id: string }>;
-  // SWEEP-A TB2 — the third scope: an ask THIS TURN CLOSED that now carries a delegation.
-  // `claimed_by_turn` is nulled by the close, so the turn is re-identified through the receipt
-  // the close points at. Narrow by construction: it can only ever match a row this turn's own
-  // delivery closed, and only while delegated work under it is outstanding.
-  const closedThenDelegated = db.prepare(
+  // SWEEP-A TB2 — the third scope: an ask THIS TURN CLOSED. `claimed_by_turn` is nulled by
+  // the close, so the turn is re-identified through the receipt the close points at. Narrow
+  // by construction: it can only ever match a row this turn's own delivery closed.
+  //
+  // ⚠ SWEEP CORE-1 CT0 — the `remaining_children > 0 OR compile_pending = 1` filter came OFF.
+  // It was the ordering arm's own question ("did this turn close it and THEN delegate?"), and
+  // asking it HERE made the scope answer a question only one of the arms cares about. The
+  // receipt-truth arm needs the same set without a delegation on it — a turn that acked, then
+  // answered, and delegated nothing is the ordinary investigate shape and was invisible. The
+  // arms ask their own questions; the scope only says WHICH ROWS this turn is responsible for.
+  const closedByThisTurn = db.prepare(
     `SELECT w.id AS id FROM work w
       WHERE w.agent_id = ? AND w.kind = 'ask' AND w.state = 'done'
-        AND (w.remaining_children > 0 OR w.compile_pending = 1)
         AND w.result_delivery_id IN (
           -- the outcome filter is redundant here (the receipt on the row can only ever have
           -- come from a delivered row) and it is written anyway: the enumeration guard in
@@ -781,7 +1024,7 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
     else if (v === 'held') result.held++;
     else if (v === 'reopened') result.reopened++;
   };
-  for (const r of [...claimed, ...closedThenDelegated]) {
+  for (const r of [...claimed, ...closedByThisTurn]) {
     if (seen.has(r.id)) continue;
     seen.add(r.id);
     tally(settleAsk(r.id, { agentId: p.agentId, turnNumber: p.turnNumber, at: 'finalize' }).verdict);

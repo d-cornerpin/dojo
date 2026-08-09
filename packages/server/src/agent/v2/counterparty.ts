@@ -242,7 +242,18 @@ export function quarantineWaitingConversation(agentId: string, convKey: string):
     // up on a conversation it cannot serve, and it is recorded as that.
     const res = transition(r.work_id, {
       to: 'abandoned', by: 'agent', actorId: agentId,
-      reason: 'quarantined: this conversation repeatedly aborted its turn and was starving the queue',
+      // ⚠ SWEEP CORE-1 CT0 — THE REASON LINE SAID SOMETHING THAT HAD NOT HAPPENED, and a
+      // write-off's own explanation is the one place that must not guess. TB3 §8.3 measured
+      // the trip: `ask:3bba2728` reached this line after FIVE serving turns (452, 457-461)
+      // that each COMPLETED and exited `no_reply_intended`. Nothing aborted. The old text —
+      // "this conversation repeatedly aborted its turn" — sent every reader looking for a
+      // crash that was never there, and it is the only sentence the owner ever sees about a
+      // question that got written off. What is true of BOTH paths (the poisoned attachment
+      // this ladder was built for AND the served-into-silence path TB3 found) is that the
+      // conversation was served again and again and never produced a reply.
+      reason: 'quarantined: this conversation was served again and again and never produced a reply '
+        + '(a poisoned message, or turns that finish without answering), and it was starving the '
+        + 'queue behind it',
     });
     if (res.kind === 'applied') n++;
   }

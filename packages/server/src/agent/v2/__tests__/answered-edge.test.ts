@@ -596,7 +596,7 @@ describe('2b — `abandoned` is reachable from >= 3 causes with a single-transit
     const id = openOne('m-q');
     expect(transition(id, {
       to: 'abandoned', by: 'agent', actorId: AGENT,
-      reason: 'quarantined: this conversation repeatedly aborted its turn',
+      reason: 'quarantined: this conversation was served again and again and never produced a reply',
     }).kind).toBe('applied');
   });
 
