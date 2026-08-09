@@ -273,9 +273,12 @@ function bind(m: NewMessage): { lane: Lane; id: string; displayKind: DisplayKind
 // safety argument for the cutover: the set of rows that opens a ticket is by construction
 // the set the old predicate surfaced, so no ask starts appearing and none stops.
 //
-// It reads `messages.authorized` NOWHERE, on purpose: that column and `deriveOrigin` are
+// It read `messages.authorized` NOWHERE, on purpose: that column and `deriveOrigin` were
 // two mechanisms for one job (recorded at PHASE-1's exit, owned by SWEEP A), and switching
-// to it here would change WHICH rows count inside a task with no mandate to.
+// to it there would have changed WHICH rows count inside a task with no mandate to.
+// ⚠ THAT MANDATE ARRIVED — see the block below. SWEEP CORE-2 item 5 is the task, and the
+// two mechanisms are now ONE: the producer's ingest stamp decides trust, and `deriveOrigin`
+// decides everything else.
 
 /** Is this row an authorized person asking this agent for something? */
 function isOwnerAsk(m: NewMessage, storedContent: string): boolean {
@@ -283,6 +286,37 @@ function isOwnerAsk(m: NewMessage, storedContent: string): boolean {
   const lane: Lane = m.lane ?? 'owner';
   if (lane !== 'owner') return false;
   if (m.sourceAgentId || m.a2aThreadId) return false;
+  // ── SWEEP CORE-2 item 5 (owner, ✅ DECIDED 2026-08-05, sharpened at the Phase-6 exit) ──
+  //
+  //   "Don't make the automatic ticket rule apply to unknown/ignored senders. That's
+  //    literally what 'ignored' means."
+  //
+  // A message from a sender the platform is required to ignore is RECORDED and stamped (the
+  // insert above already did both — audit visibility, nothing vanishes without a trace) and
+  // files NO ticket. A row shaped as future-work-owed, where no work will ever be done, is a
+  // lie in the work record.
+  //
+  // ── WHY THIS LINE AND NOT A SECOND CLASSIFIER (OR4: one authority) ──
+  // `m.authorized` is the ingest stamp the PRODUCER decided and wrote in the SAME insert —
+  // the iMessage bridge's `!!senderRecord`, Teams' `isDm && isSenderAuthorized(...)`, Gmail's
+  // and Outlook's `isDirectToAgent`, SMS's `knownSender`, the Twilio voice route's literal
+  // `false`. Nothing is re-derived here and nothing new is invented; the gate simply reads
+  // the verdict that was already taken.
+  //
+  // ── THE CAUSE THIS CLOSES, MEASURED AT `e1108c7` ──
+  // `deriveOrigin`'s structured trust input is `inbound_meta`, and every one of those five
+  // producers writes `inbound_meta` with `recordInboundMeta()` — AFTER this insert. So at the
+  // instant this gate runs the meta is ALWAYS absent, `deriveOrigin` falls through to its
+  // legacy prose shim (branch 4, the `[SOURCE: IMESSAGE FROM …]` marker), and that branch
+  // returns `authorized: true` unconditionally for anything that names a channel. On the
+  // owner's own body that had filed 30 open stranger tickets, every one of which stood the
+  // agent's self-wakes down for ever (TB2 §8.3's recorded confound, `ask:69f636ec`).
+  //
+  // REFUSAL: this is a NARROWING, never a new opinion. A row whose producer stamped nothing
+  // (`authorized` absent) behaves exactly as before — `?? true` in `bind()` is the same
+  // default the column has always taken — so the only rows that stop opening tickets are the
+  // ones a producer has already declared unauthorized.
+  if (m.authorized === false) return false;
   // ── PHASE-2 T6 (C7) — A PERSON'S MESSAGE NAMES THE DOOR IT CAME THROUGH. ──
   //
   // OR4 is the ruling this reads: "channel, sender, trust and lane are stamped at INGEST,

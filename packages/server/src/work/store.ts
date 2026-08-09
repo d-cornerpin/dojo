@@ -749,55 +749,152 @@ export function revertAskClaimOnAbort(
 /**
  * 2b, CAUSE 3 — an ask NOBODY CAN EVER SERVE OR CLOSE gets an honest terminal state.
  *
- * Two shapes, both structural and both unservable by construction:
+ * FIVE shapes, every one structural and unservable by construction. The first two are the
+ * original pair; the last three are SWEEP CORE-2 item 5's, and each was MEASURED on the
+ * owner's own body before it was written (TB3 §8.2 for the middle two, this task's Step 0 for
+ * the sender arm):
  *   * no conversation identity — the settlement authority matches evidence on the
  *     conversation, so a ticket without one can never be closed by any delivery, ever;
  *   * the root message is GONE — a cleared history or a terminated agent takes the row the
- *     obligation was FOR, and nothing can be served against a message nobody can read.
+ *     obligation was FOR, and nothing can be served against a message nobody can read;
+ *   * the SENDER IS IGNORED — the platform is required not to serve them, so a ticket saying
+ *     work is owed to them was never true (30 measured at `e1108c7`);
+ *   * the AGENT IS TERMINATED — C20 forbids resurrection, so nobody is left to serve it
+ *     (7 measured);
+ *   * the ask is BELOW ITS AGENT'S SESSION BOUNDARY — the user's own line, which both the
+ *     waiting-set read and the staleness sweep floor on, so it is invisible to everything
+ *     that could pick it up (12 measured).
  *
- * `abandoned` is the honest word for both: the platform is not going to answer this, and
+ * `abandoned` is the honest word for all five: the platform is not going to answer this, and
  * saying so is better than a ticket that sits `open` forever poisoning the settled read.
  * The once-guard is `transition()`'s own `expectedState` CAS — the same guard the quarantine
  * and the delegated-piece abandon use, which is what makes `abandoned` "reachable from >= 3
- * causes with a SINGLE-transition once-guard" rather than three hand-rolled ones.
+ * causes with a SINGLE-transition once-guard" rather than five hand-rolled ones.
  *
- * PHASE-2 T6 also closed the PRODUCERS (`memory/message-store.ts`, the ingest-channel gate),
- * so on a tree from this commit forward this reaper finds nothing to do. It stays because a
- * producer nobody has met yet is exactly what #15 says not to assume away, and because the
- * gone-root shape has no producer to close.
+ * PHASE-2 T6 closed the PRODUCERS of the first two shapes and SWEEP CORE-2 item 5 closed the
+ * producer of the third (`memory/message-store.ts`'s ingest gate now reads the OR4 trust
+ * stamp), so on a tree from this commit forward the reaper finds those nothing to do. It
+ * stays because a producer nobody has met yet is exactly what #15 says not to assume away,
+ * and because the gone-root, dead-agent and session-boundary shapes have no producer to
+ * close — they are made by events (a wipe, a kill, a reset) that are legitimate in
+ * themselves.
  */
-export function abandonUnservableAsks(agentId?: string): { abandoned: number; ids: string[] } {
-  const db = getDb();
-  const scoped = agentId != null;
-  const rows = db.prepare(`
-    SELECT w.id AS id, w.state AS state,
-           (w.conversation_id IS NULL) AS no_identity,
-           (m.id IS NULL) AS no_root
-      FROM work w LEFT JOIN messages m ON m.id = w.root_id AND m.agent_id = w.agent_id
+// ── SWEEP CORE-2 item 5 — THE STRUCTURAL INVARIANT, AND ITS THREE NEW ARMS ──
+//
+// The orchestrator's post-TB3 adjudication (SWEEP-A §POST-TB3 item 2) states the law in one
+// sentence: **no open ask may exist that the platform's own rules make unservable — one
+// reaper, named reasons, never ageing.** TB3 §8.2 measured nineteen such rows in three
+// pre-existing classes and this reaper knew about none of them; it knew only about a missing
+// conversation and a missing root message.
+//
+// The five classes below are ONE expression, used by TWO readers that must never disagree:
+// `unservableOpenAskCensus()` (the invariant — what MUST NOT exist) and
+// `abandonUnservableAsks()` (the remediation — what CLOSES it). A census keyed on a
+// different predicate from the pass that satisfies it is how a class goes on recurring while
+// its check stays green, so there is only one predicate.
+//
+// ⚠ NO AGEING (owner, 2026-08-05, resolving the question outright). Not one arm reads a
+// clock. The main user's open asks never expire; every class here is UNSERVABLE BY
+// CONSTRUCTION — a rule the platform itself enforces makes it impossible to serve — and a
+// provably-dead-but-open ask is a defect this hunts, never a thing to age away. The
+// `no-unservable-open-ask.test.ts` §5 clauses grep this SQL for a clock and refuse one.
+//
+// PRECEDENCE, and why it is this order: identity first (the two original arms, which are
+// facts about the ROW), then the sender (a fact about WHO), then the agent (a fact about
+// WHO OWES IT), then the boundary (a fact about WHEN, relative to the user's own line). A row
+// that qualifies twice is reported once, under the first class that names it, so the
+// denominators sum to the population rather than double-counting it.
+const UNSERVABLE_OPEN_ASK_SELECT = `
+    SELECT w.id AS id, w.agent_id AS agent_id, w.state AS state,
+           CASE
+             WHEN w.conversation_id IS NULL              THEN 'no-identity'
+             WHEN m.id IS NULL                           THEN 'gone-root'
+             WHEN m.authorized = 0                       THEN 'ignored-sender'
+             WHEN a.status = 'terminated'                THEN 'dead-agent'
+             ELSE                                             'below-session-boundary'
+           END AS cls
+      FROM work w
+      LEFT JOIN messages m ON m.id = w.root_id AND m.agent_id = w.agent_id
+      LEFT JOIN agents a ON a.id = w.agent_id
      WHERE w.kind = 'ask' AND w.state IN ('open','claimed')
-       AND (w.conversation_id IS NULL OR m.id IS NULL)
-       ${scoped ? 'AND w.agent_id = ?' : ''}
-     ORDER BY w.opened_at ASC LIMIT 200
-  `).all(...(scoped ? [agentId] : [])) as Array<{
-    id: string; state: WorkState; no_identity: number; no_root: number;
+       AND (
+            w.conversation_id IS NULL
+         OR m.id IS NULL
+         OR m.authorized = 0
+         OR a.status = 'terminated'
+         OR (a.session_started_at IS NOT NULL
+             AND w.opened_at < (unixepoch(a.session_started_at) * 1000))
+       )`;
+
+/** One row per class. The reason is the RECORD — a reader of `work_events` months later has
+ *  to be able to see not just that the platform gave up, but by which of its own rules. */
+const UNSERVABLE_REASON: Readonly<Record<string, string>> = {
+  'no-identity':
+    'no conversation identity: no delivery can ever match this ask, so it can never be closed',
+  'gone-root':
+    'the message this obligation was FOR no longer exists, so it can never be served',
+  'ignored-sender':
+    'the sender is one this platform is required to IGNORE (its ingest trust stamp says '
+    + 'unauthorized), so no turn will ever be spent on it and no answer will ever go back',
+  'dead-agent':
+    'the agent that owes this answer is TERMINATED and the platform refuses to resurrect one '
+    + '(C20), so there is nobody left who could ever serve it',
+  'below-session-boundary':
+    'this ask predates its own agent\'s session boundary, which is the user\'s own line — the '
+    + 'waiting set and the staleness sweep both floor on it, so nothing will ever pick it up',
+};
+
+export interface UnservableOpenAsk {
+  id: string; agentId: string; state: WorkState;
+  /** One of the five keys of `UNSERVABLE_REASON`. */
+  cls: string;
+}
+
+/**
+ * THE INVARIANT, as a census: this must return NOTHING.
+ *
+ * Census-shaped rather than a schema CHECK, and that is a measurement rather than a
+ * preference — every arm but `no-identity` needs a JOIN (to `messages` for the sender's
+ * ingest stamp, to `agents` for the assignee's status and the session boundary), and SQLite
+ * CHECK constraints cannot reach another table. What a CHECK could express is already
+ * expressed: `work`'s own DDL.
+ */
+export function unservableOpenAskCensus(agentId?: string): UnservableOpenAsk[] {
+  const scoped = agentId != null;
+  const rows = getDb().prepare(
+    `${UNSERVABLE_OPEN_ASK_SELECT}${scoped ? ' AND w.agent_id = ?' : ''} ORDER BY w.opened_at ASC`,
+  ).all(...(scoped ? [agentId] : [])) as Array<{
+    id: string; agent_id: string; state: WorkState; cls: string;
+  }>;
+  return rows.map((r) => ({ id: r.id, agentId: r.agent_id, state: r.state, cls: r.cls }));
+}
+
+export function abandonUnservableAsks(agentId?: string): {
+  abandoned: number; ids: string[]; byClass: Record<string, number>;
+} {
+  const scoped = agentId != null;
+  const rows = getDb().prepare(
+    `${UNSERVABLE_OPEN_ASK_SELECT}${scoped ? ' AND w.agent_id = ?' : ''} ORDER BY w.opened_at ASC LIMIT 200`,
+  ).all(...(scoped ? [agentId] : [])) as Array<{
+    id: string; agent_id: string; state: WorkState; cls: string;
   }>;
   const ids: string[] = [];
+  const byClass: Record<string, number> = {};
   for (const r of rows) {
-    const why = r.no_root === 1
-      ? 'the message this obligation was FOR no longer exists, so it can never be served'
-      : 'no conversation identity: no delivery can ever match this ask, so it can never be closed';
+    const why = UNSERVABLE_REASON[r.cls];
+    if (why === undefined) continue;   // a class with no reason is not closed by silence
     const res = transition(r.id, {
       to: 'abandoned', by: 'agent', actorId: 'work-reaper',
       expectedState: r.state, reason: `unservable — ${why}`,
     });
-    if (res.kind === 'applied') ids.push(r.id);
+    if (res.kind === 'applied') { ids.push(r.id); byClass[r.cls] = (byClass[r.cls] ?? 0) + 1; }
   }
   if (ids.length > 0) {
     logger.warn('abandoned ask ticket(s) that could never be served or closed', {
-      agentId: agentId ?? '(all)', count: ids.length,
+      agentId: agentId ?? '(all)', count: ids.length, byClass,
     });
   }
-  return { abandoned: ids.length, ids };
+  return { abandoned: ids.length, ids, byClass };
 }
 
 // ════════════════════════════════════════════════════════════════════════════════

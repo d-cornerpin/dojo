@@ -137,7 +137,12 @@ describe('T10 Step 1d — the two counters answer different questions, on real r
   it('an UNREADABLE spine stands the drain down — the conversation count could not say this', () => {
     mockDb.current!.exec('DROP TABLE work');
     const verdict = selfWakeStandDown(AGENT);
-    expect(verdict).toEqual({ standDown: true, humanAsksOpen: -1 });
+    // SWEEP CORE-2 item 5 added the tier breakdown to the verdict. It fails closed the same
+    // way the number does — an unreadable spine invents no tier either.
+    expect(verdict).toEqual({
+      standDown: true, humanAsksOpen: -1,
+      tiers: { mainUser: 0, safeSenders: 0, otherAgents: 0 },
+    });
   });
 });
 
@@ -152,9 +157,12 @@ describe('T10 Step 1d — the drain is wired to the authority', () => {
   it('every one of the three log lines carries the SPINE number under its own name', () => {
     // The field name was never the defect; the value under it was. It keeps its name, and a
     // rename to match the wrong number is refused in advance by the plan.
-    // The trailing comma is what separates the three LOG payloads from the one
-    // destructuring (`{ standDown, humanAsksOpen: openAsks }`), which closes with `}`.
-    const lines = drain().match(/humanAsksOpen: \w+,/g) ?? [];
+    // The trailing comma used to separate the three LOG payloads from the one destructuring
+    // (`{ standDown, humanAsksOpen: openAsks }`, which closed with `}`). SWEEP CORE-2 item 5
+    // added `tiers` to the verdict, so the destructuring now ends in a comma too and is
+    // excluded BY NAME instead — the discriminator stays exact rather than becoming a count
+    // somebody has to remember to bump.
+    const lines = drain().match(/humanAsksOpen: \w+,(?! tiers)/g) ?? [];
     expect(lines.length, 'three drain log lines carry the count').toBe(3);
     for (const l of lines) expect(l).toBe('humanAsksOpen: openAsks,');
   });

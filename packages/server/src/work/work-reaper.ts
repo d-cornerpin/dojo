@@ -223,6 +223,54 @@ export function humanAsksOpen(agentId: string): number {
 }
 
 /**
+ * WHO is waiting, in the owner's decided precedence (SWEEP CORE-2 item 5, requirement 2:
+ * "main user first, safe senders second, other agents third").
+ *
+ * The tiers are READ OFF OR4's ingest stamps and nothing else — `inbound_meta.relation`, the
+ * verdict the producer already took, with the channel as the structured fallback for a row
+ * written before the relation was stamped. There is no second classification here and no
+ * prose is consulted: that was the whole defect this task closed at the ingest gate, and
+ * re-opening it one file away would be the same mistake wearing a different name.
+ *
+ * The key ORDER is the law and is asserted as an order, because a precedence expressed as an
+ * unordered bag of counters is not a precedence.
+ */
+export interface OpenAskTiers {
+  /** The primary user themselves — dashboard, voice, or a producer that stamped `owner`. */
+  mainUser: number;
+  /** A safe sender: on an allowlist, authorized, but not the owner. */
+  safeSenders: number;
+  /** Another agent. */
+  otherAgents: number;
+}
+
+export function openAskTiers(agentId: string): OpenAskTiers {
+  const empty: OpenAskTiers = { mainUser: 0, safeSenders: 0, otherAgents: 0 };
+  try {
+    const rows = getDb().prepare(`
+      SELECT CASE
+               WHEN m.source_agent_id IS NOT NULL OR m.a2a_thread_id IS NOT NULL THEN 'otherAgents'
+               WHEN json_extract(m.inbound_meta, '$.relation') = 'agent'         THEN 'otherAgents'
+               WHEN json_extract(m.inbound_meta, '$.relation') = 'known_contact' THEN 'safeSenders'
+               WHEN json_extract(m.inbound_meta, '$.relation') = 'owner'         THEN 'mainUser'
+               WHEN m.channel IN ('dashboard','voice')                           THEN 'mainUser'
+               WHEN m.channel IS NOT NULL                                        THEN 'safeSenders'
+               ELSE 'mainUser'
+             END AS tier, count(*) AS n
+        FROM work w LEFT JOIN messages m ON m.id = w.root_id AND m.agent_id = w.agent_id
+       WHERE w.kind = 'ask' AND w.state = 'open' AND w.agent_id = ?
+       GROUP BY tier
+    `).all(agentId) as Array<{ tier: keyof OpenAskTiers; n: number }>;
+    for (const r of rows) empty[r.tier] = r.n;
+    return empty;
+  } catch {
+    // Same discipline as `humanAsksOpen`: a count is never invented from a failure. The
+    // caller already stands down on the -1 that function returns.
+    return empty;
+  }
+}
+
+/**
  * THE LAW, in one call: "self-wakes stand down completely while any human conversation
  * waits" (PHASE-2.md Global Constraints; the 2026-07-23 storm is the incident behind it —
  * the owner pleaded "stop" and the self-wake machinery kept the agent busy).
@@ -231,10 +279,26 @@ export function humanAsksOpen(agentId: string): number {
  * inbound — asks this first. `humanAsksOpen` is returned alongside the verdict so the caller
  * can RECORD the number it stood down on, which is what makes the invariant able to tell a
  * healthy drain from a storm without guessing.
+ *
+ * ── SWEEP CORE-2 item 5 — WHAT THE NUMBER MEANS NOW ──
+ * The law COUNTS ONLY THE TICKETS THAT EXIST, and that sentence became true at the INGEST
+ * GATE, not here: an ignored sender no longer files a ticket, so their message can no longer
+ * enter this count. Nothing in this predicate changed and nothing needed to — a counter
+ * hardened against a row the ledger should never have contained would have been the fix at
+ * the counter that the owner explicitly rejected. What is added is the RECORD: the verdict
+ * now carries WHO is waiting, in his decided precedence, so a stand-down that lasts says
+ * whose obligation is holding it rather than only how many there are.
+ *
+ * MEASURED at `e1108c7`, before the fix: nine agents on the owner's box were standing every
+ * platform-decided wake down, on 49 open tickets of which ZERO were servable — 30 owed to
+ * senders the platform is required to ignore, 12 below their own agent's session boundary,
+ * 7 owed by terminated agents.
  */
-export function selfWakeStandDown(agentId: string): { standDown: boolean; humanAsksOpen: number } {
+export function selfWakeStandDown(
+  agentId: string,
+): { standDown: boolean; humanAsksOpen: number; tiers: OpenAskTiers } {
   const n = humanAsksOpen(agentId);
-  return { standDown: n !== 0, humanAsksOpen: n };
+  return { standDown: n !== 0, humanAsksOpen: n, tiers: openAskTiers(agentId) };
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -332,9 +396,14 @@ export const REAPER_KINDS: readonly ReaperKind[] = [
       "STUCK_AGENT_CHECK_MS (agent/runtime.ts) — the platform's declared period for repairing rows a dead or terminated actor left behind, which is exactly what an unservable ask is. T6 concern 6 asked for a periodic home and refused to invent a cadence (#14); this is the existing clock whose CLASS matches.",
     wakes: false,
     run: async () => {
-      const { abandoned } = abandonUnservableAsks();
+      // SWEEP CORE-2 item 5: the DENOMINATOR rides the log line. "5 abandoned" says nothing a
+      // reader can act on; "3 ignored-sender, 2 dead-agent" names which of the platform's own
+      // rules made them unservable, which is the difference between a number and a diagnosis.
+      const { abandoned, byClass } = abandonUnservableAsks();
       if (abandoned > 0) {
-        logger.warn('reaper: abandoned ask ticket(s) that could never be served or closed', { abandoned });
+        logger.warn('reaper: abandoned ask ticket(s) that could never be served or closed', {
+          abandoned, byClass,
+        });
       }
     },
   },

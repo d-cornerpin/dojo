@@ -284,7 +284,12 @@ const seedAsk = (id: string, state: string, openedAt = 1_000): void => {
 describe('T9 — the storm law reads WORK STATE: self-wakes stand down while a human waits', () => {
   it('no open ask -> no stand-down', () => {
     expect(humanAsksOpen(AGENT)).toBe(0);
-    expect(selfWakeStandDown(AGENT)).toEqual({ standDown: false, humanAsksOpen: 0 });
+    expect(selfWakeStandDown(AGENT)).toEqual({
+      standDown: false, humanAsksOpen: 0,
+      // SWEEP CORE-2 item 5: the verdict now also says WHO is waiting, in the owner's
+      // decided precedence. Nobody is, so every tier is zero.
+      tiers: { mainUser: 0, safeSenders: 0, otherAgents: 0 },
+    });
   });
 
   it('ONE open ask is enough — the law is "completely", not "mostly"', () => {
@@ -326,7 +331,11 @@ describe('T9 — the storm law reads WORK STATE: self-wakes stand down while a h
     // is waiting, the safe answer is silence — the 2026-07-23 storm is what the other
     // direction costs.
     db.exec('DROP TABLE work');
-    expect(selfWakeStandDown(AGENT)).toEqual({ standDown: true, humanAsksOpen: -1 });
+    expect(selfWakeStandDown(AGENT)).toEqual({
+      standDown: true, humanAsksOpen: -1,
+      // The tiers fail closed with the number: no count is invented from a failure.
+      tiers: { mainUser: 0, safeSenders: 0, otherAgents: 0 },
+    });
   });
 });
 
@@ -413,7 +422,7 @@ describe('T9 — the DERIVED drain bound is a refused design, and it stays refus
     // The pin is kept, not deleted: it is what made the change impossible to make quietly,
     // and it does the same job for the next one.
     const rt = read('agent/runtime.ts');
-    expect(rt).toMatch(/const \{ standDown, humanAsksOpen: openAsks \} = selfWakeStandDown\(agentId\)/);
+    expect(rt).toMatch(/const \{ standDown, humanAsksOpen: openAsks, tiers \} = selfWakeStandDown\(agentId\)/);
     expect(rt).toMatch(/humanAsksOpen: openAsks,/);
     // …and the conversation reader is STILL here, for the drain that needs the head itself.
     expect(rt).toMatch(/const waiting = getWaitingHumanConversations\(agentId\)/);

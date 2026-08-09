@@ -740,11 +740,17 @@ class AgentRuntime {
           // (`-1`), which a conversation count could not express: not knowing whether somebody
           // is waiting must never read as "nobody is". `getWaitingHumanConversations` keeps
           // every other caller — it answers WHICH conversations, which no count can.
-          const { standDown, humanAsksOpen: openAsks } = selfWakeStandDown(agentId);
+          //
+          // SWEEP CORE-2 item 5 — AND IT NOW SAYS WHO. The number alone could not distinguish
+          // "the owner is waiting" from "a stranger the platform is required to ignore filed a
+          // ticket nobody will ever serve", which is precisely the confound that stood nine
+          // agents down on this box for weeks. `tiers` carries the owner's decided precedence
+          // — main user, safe senders, other agents — onto the same log line as the count.
+          const { standDown, humanAsksOpen: openAsks, tiers } = selfWakeStandDown(agentId);
           if (standDown) {
             clearDrainLadder(agentId, 'unserved_wake');
             logger.info('unserved-wake drain: standing down, a human is waiting', {
-              agentId, humanAsksOpen: openAsks,
+              agentId, humanAsksOpen: openAsks, waitingTiers: tiers,
             }, agentId);
             throw { __skipWakeDrain: true };
           }
