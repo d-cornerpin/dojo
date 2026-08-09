@@ -21,6 +21,10 @@ import { getAgentRuntime } from './runtime.js';
 import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
+// SWEEP CORE-2 item 5: STATIC, because the relay's scope check runs on the synchronous
+// path beside the compose branches. `config/platform.ts` imports only `db/connection.js`,
+// so there is no cycle to buy with the dynamic form the older call sites in this file use.
+import { isPrimaryAgent } from '../config/platform.js';
 import { type DeliveryInput } from './v2/deliveries.js';
 import { recordAtDoor, withOutboundAsync, recordedId } from './v2/outbound.js';
 // PHASE-2 T4: the join lives in `work`. Everything below is transport — it lands pieces and
@@ -49,6 +53,7 @@ import { recordFloorGhost } from './v2/floor-ghost.js';
 // loaded by Node.js in production without a TS loader).
 // Types are still imported from @dojo/shared as type-only (erased at compile time).
 import type { A2AIntent, A2AEnvelope, A2ADropReason, ToolCall } from '@dojo/shared';
+import type { ToolOutcome } from './tool-outcome.js';
 
 // Terminal intents CLOSE the thread (prevent acknowledgement replies).
 // But closing the thread and waking the receiver are INDEPENDENT concepts.
@@ -1220,6 +1225,85 @@ function askRowForJoin(join: JoinState): { content: string; inbound_meta: string
   return r ?? null;
 }
 
+// ════════════════════════════════════════════════════════════════════════════════
+// SWEEP CORE-2 item 5 (SWEEP-A's INBOUND of 2026-08-04) — THE COMPOSE PATH AND THE WALL
+// AGREE, AND A REFUSAL IS NEVER SILENT AGAIN.
+//
+// PHASE-6 T0-KIT measured it and named the owner: this relay composed owner-channel replies
+// on ANY agent, while each channel handler refuses a non-primary one — and the refusal was
+// SILENT. The relay read `r.kind === 'applied'` and nothing else, so "the platform refused
+// this agent that door" and "this channel does not apply" arrived as the same fact and both
+// produced the same quiet dashboard fallback. Nobody was told the owner's channel reply did
+// not go out.
+//
+// ── ONE PREDICATE, NOT A COPY OF THE RULE ──
+// `isPrimaryAgent` is the function all four doors already ask:
+//     teams_send_message / outlook_reply -> `provider/microsoft.ts` `outlook_send`
+//     gmail_reply                        -> `provider/google.ts`    `gmail_send`
+//     sms_send                           -> `cat/comms.ts`          `sms_send`
+//     imessage_send                      -> gate ladder row 7 (`tools/gates.ts`)
+// This asks the same one. A second spelling of "who may send on the owner's channels" is the
+// disagreement the task exists to end, so no new set, no new config, no new grant.
+//
+// ⚠ REFUSAL: NEVER CLOSED BY WIDENING THE WALL. A non-primary agent gaining owner-channel
+// send is a capability the owner has not granted, and this function grants nothing — it only
+// declines to compose a message it can already tell will be refused, and says so out loud.
+//
+// ⚠ AND IT REACHES THE iMESSAGE BRANCH TOO, WHICH IS THE SHARPEST OF THE FOUR. That branch
+// calls `sendResponseViaIMessage` directly rather than through `executeTool`, so it crossed
+// NO wall at all while the `imessage_send` TOOL is refused to a non-primary agent by gate
+// ladder row 7 — the compose path and the wall disagreeing in the loudest possible way.
+// Bringing it inside the scope check is a NARROWING (the block's own first option), and it is
+// measured rather than assumed safe: every inbound channel producer on this box files its
+// message — and therefore its ask, and therefore any join rooted on it — to the PRIMARY agent
+// (`services/imessage-bridge.ts`, `teams-watcher.ts`, `gmail-watcher.ts`, `outlook-watcher.ts`
+// and `twilio/sms-inbound.ts` all resolve `primaryId` before they insert), so in production
+// this refuses nothing that used to succeed. What it refuses is the harness shape T0-KIT drove
+// — and that refusal is the finding, not a regression.
+export interface OwnerChannelRelayRefusal {
+  /** The channel the ask arrived on, so the owner is told which door stayed shut. */
+  channel: string;
+  /** The door that would have been crossed — a tool name, or the bridge function. */
+  tool: string;
+  /** Why, in a sentence the owner can act on. */
+  why: string;
+}
+
+/**
+ * Would the wall refuse this agent an owner-channel send? Returns the refusal, or `null` when
+ * the relay may compose. Exported so the agreement is a thing a test can read, rather than a
+ * property of two files that happen to agree today.
+ */
+export function ownerChannelRelayRefusal(
+  agentId: string, channel: string, tool: string,
+): OwnerChannelRelayRefusal | null {
+  if (isPrimaryAgent(agentId)) return null;
+  return {
+    channel, tool,
+    why: 'only the primary agent may send on the owner\'s channels, and this join belongs to '
+      + 'another agent',
+  };
+}
+
+/** The door each channel's relay branch crosses — written once so the refusal names the same
+ *  thing the branch would have called, and a channel added to one and not the other is
+ *  visible rather than silently unnamed. */
+const RELAY_DOOR: Readonly<Record<string, string>> = {
+  imessage: 'imessage-bridge',
+  teams: 'teams_send_message',
+  email: 'gmail_reply/outlook_reply',
+  sms: 'sms_send',
+};
+
+/** What the door said, STRUCTURALLY. `ToolOutcome`'s own arms — never the prose, which is the
+ *  line PHASE-4 T1 drew and this reader keeps: `refused` means the platform said no, `failed`
+ *  means the tool broke, and the two are different things to tell the owner. */
+function relayDoorDetail(r: ToolOutcome): string {
+  if (r.kind === 'refused') return `the door refused it (${r.reason})`;
+  if (r.kind === 'failed') return `the send failed (${r.reason})`;
+  return 'the send did not complete';
+}
+
 /**
  * Deliver a join's result to the owner on the channel their question arrived on, falling
  * back to the dashboard so they ALWAYS see it somewhere, and RECORD the delivery.
@@ -1281,11 +1365,29 @@ async function deliverJoinResultToOwnerInner(
   let delivered = false;
   let channel: DeliveryInput['channel'] = 'dashboard';
   let recipientId: string | null = null;
+  // ── SWEEP CORE-2 item 5 — THE SCOPE CHECK, RESOLVED ONCE, ABOVE EVERY BRANCH ──
+  // Above them deliberately: a fifth channel added later cannot be added outside it, which is
+  // how the iMessage branch came to be the one door that crossed no wall at all.
+  // `meta.channel` is the ask's own OR4 ingest stamp, so the door named in the refusal is the
+  // door the owner actually used.
+  let relayRefusal: OwnerChannelRelayRefusal | null =
+    meta.channel == null
+      ? null   // no channel to be refused FROM: the dashboard fallback IS the delivery
+      : ownerChannelRelayRefusal(join.agentId, meta.channel, RELAY_DOOR[meta.channel] ?? meta.channel);
+  /** A handler that refuses AFTER the scope check let the call through — the wall moving
+   *  underneath the relay must not make the failure silent again. */
+  const noteRelayRefusal = (ch: string, door: string, detail: string): void => {
+    relayRefusal ??= { channel: ch, tool: door, why: detail };
+  };
   try {
-    if (meta.channel === 'imessage' && meta.sender) {
+    if (relayRefusal) {
+      // Composed nothing. The answer is not lost — it goes to the dashboard below, exactly as
+      // it did for every other unhandled channel, and the owner is TOLD which door stayed shut.
+    } else if (meta.channel === 'imessage' && meta.sender) {
       const { sendResponseViaIMessage } = await import('../services/imessage-bridge.js');
       delivered = !!sendResponseViaIMessage(deliveryBody, join.agentId, meta.sender);
       channel = 'imessage'; recipientId = meta.sender;
+      if (!delivered) noteRelayRefusal('imessage', 'imessage-bridge', 'the iMessage bridge did not send it');
     } else if (
       meta.channel === 'teams' && meta.chatId &&
       // C18: never relay into a GROUP chat (the owner's private "Heard back from X" would go
@@ -1298,6 +1400,7 @@ async function deliverJoinResultToOwnerInner(
       const tc: ToolCall = { id: uuidv4(), name: 'teams_send_message', arguments: { chat_id: meta.chatId, message: deliveryBody } };
       const r = await executeTool(join.agentId, tc);
       delivered = r.kind === 'applied'; channel = 'teams'; recipientId = meta.chatId;
+      if (!delivered) noteRelayRefusal('teams', 'teams_send_message', relayDoorDetail(r));
     } else if (
       meta.channel === 'email' && meta.emailMessageId &&
       // C18: re-validate the email sender at relay time; a removed sender must not get the
@@ -1314,6 +1417,7 @@ async function deliverJoinResultToOwnerInner(
       };
       const r = await executeTool(join.agentId, tc);
       delivered = r.kind === 'applied'; channel = 'email'; recipientId = meta.sender ?? null;
+      if (!delivered) noteRelayRefusal('email', toolName, relayDoorDetail(r));
     } else if (meta.channel === 'sms' && (meta.smsFromNumber || meta.sender)) {
       // BUG-3 (comms-audit): the owner can ask via SMS; route via the sms_send tool (like the
       // teams/email branches) so the same executor, its safe-sender revalidation and the
@@ -1323,12 +1427,17 @@ async function deliverJoinResultToOwnerInner(
       const tc: ToolCall = { id: uuidv4(), name: 'sms_send', arguments: { to, body: deliveryBody } };
       const r = await executeTool(join.agentId, tc);
       delivered = r.kind === 'applied'; channel = 'sms'; recipientId = to;
+      if (!delivered) noteRelayRefusal('sms', 'sms_send', relayDoorDetail(r));
     }
   } catch (err) {
     logger.warn('join relay: channel delivery failed, falling back to dashboard', {
       agentId: join.agentId, work: join.id, channel: meta.channel,
       error: err instanceof Error ? err.message : String(err),
     });
+    if (meta.channel) {
+      noteRelayRefusal(meta.channel, RELAY_DOOR[meta.channel] ?? meta.channel,
+        err instanceof Error ? err.message : String(err));
+    }
     delivered = false;
   }
   let messageId: string | null = null;
@@ -1347,6 +1456,53 @@ async function deliverJoinResultToOwnerInner(
       message: { id: messageId, agentId: join.agentId, role, content: deliveryBody, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
     });
     channel = 'dashboard'; recipientId = 'owner';
+  }
+  // ── SWEEP CORE-2 item 5 — THE REFUSAL SURFACES LOUDLY, TO BOTH AUDIENCES ──
+  //
+  // The answer has already gone to the dashboard above — the owner never loses it, which is
+  // the 2026-08-05 governing priority. What was missing is that anybody KNOWS the channel
+  // reply did not go out. Two records, one for each audience:
+  //
+  //   * the PLATFORM, at ERROR level, naming the agent, the channel and the door, so a
+  //     wall/compose disagreement is greppable rather than inferable from a missing text;
+  //   * the OWNER, in words, through the ONE announce door — `role='system'` plus the shared
+  //     owner-alert prefix, written and put on the wire in the same breath, exactly as
+  //     `floor-ghost.ts` does it since SWEEP-A TB4. An alert nobody reads is a silenced alarm,
+  //     and `owner-alert-announce-census.test.ts` is what keeps this site honest.
+  //
+  // ⚠ CONDITIONAL ON A REFUSAL, never on the fallback. A dashboard-origin ask has no channel
+  // meta at all and there is nothing to report; an alert on every ordinary relay would be the
+  // noise that makes the real one invisible.
+  if (relayRefusal) {
+    logger.error('join relay: the owner\'s channel reply was REFUSED; it went to the dashboard instead', {
+      agentId: join.agentId, work: join.id, channel: relayRefusal.channel,
+      tool: relayRefusal.tool, why: relayRefusal.why,
+    });
+    const noticeId = uuidv4();
+    const notice = `${OWNER_ALERT_HEADS_UP_PREFIX} I could not send that answer back on `
+      + `${relayRefusal.channel}, so it is here on the dashboard instead. ${relayRefusal.why}.`;
+    try {
+      const persisted = insertMessageIfAbsent({
+        id: noticeId, agentId: join.agentId, role: 'system', content: notice,
+      });
+      // Announced only when a row was actually written: a frame with no row behind it is the
+      // other half of the same defect (live-only, gone on refresh).
+      if (persisted) {
+        broadcast({
+          type: 'chat:message', agentId: join.agentId,
+          message: {
+            id: noticeId, agentId: join.agentId, role: 'system', content: notice,
+            tokenCount: null, modelId: null, cost: null, latencyMs: null,
+            createdAt: persisted.createdAt,
+          },
+        });
+      }
+    } catch (err) {
+      logger.warn('join relay: the refusal notice could not be written (non-fatal)', {
+        agentId: join.agentId, work: join.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
   // PHASE-2 T4: the relay is a real outbound to a real person and it now RECORDS one — this
   // is the row `work.done` points at. PINNED §8 lists the park relay among the paths that
