@@ -109,7 +109,12 @@ const COPIES = [
 ];
 
 // The contract members this gate governs, by name.
-const CONST_MEMBERS = ['FAIL_BOOT_ATTEMPTS', 'FAIL_WALL_CLOCK_MS', 'MAX_AUTO_ROLLBACKS'];
+// MARKER_LOCK_STALE_MS joined this list at SWEEP CORE-2 item 6: the marker's
+// read-modify-write lock is now part of the hand-copied contract, and two copies
+// that disagree about when a lock is stale would break it in exactly the way
+// this gate exists to catch (one side waiting on a lock the other has already
+// declared abandoned).
+const CONST_MEMBERS = ['FAIL_BOOT_ATTEMPTS', 'FAIL_WALL_CLOCK_MS', 'MAX_AUTO_ROLLBACKS', 'MARKER_LOCK_STALE_MS'];
 const UNION_TYPE = 'UpdatePhase';
 const RUNTIME_LIST = 'PHASES';
 const SHAPE_INTERFACE = 'UpdateMarker';
