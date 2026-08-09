@@ -765,6 +765,23 @@ async function main(): Promise<void> {
       // its own denominator and its own reporting; it never rewrites a schedule.
       const { runAnchorCompensationPass } = await import('./scheduler/anchor-compensation.js');
       runAnchorCompensationPass();
+
+      // SWEEP CORE-2 item 3 — PER-RELEASE BOOT STEPS, the facility the pass above had to be
+      // hand-rolled without. The gap between the version this box last ran steps at and the one
+      // it is on now decides which steps run; every step is idempotent, so a lost marker costs a
+      // wasted pass and never a double repair. `work/release-steps.ts` says why the marker is a
+      // NEW key and not `config.platform_version` (which has three readers and no writer).
+      // Awaited: the first of these is the owner's stale-project checker, and its ONE plain line
+      // should be waiting for the primary's first turn, not racing it.
+      try {
+        const { runReleaseSteps } = await import('./release/release-steps.js');
+        const steps = await runReleaseSteps();
+        logger.info('Release steps pass complete', { from: steps.from, to: steps.to, ran: steps.ran, failed: steps.failed });
+      } catch (err) {
+        logger.warn('Release steps pass failed (non-fatal)', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 

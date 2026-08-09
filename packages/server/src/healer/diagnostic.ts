@@ -23,6 +23,9 @@ import { getVaultStats, getPoisonedArchiveStats } from '../vault/store.js';
 import { getUpdateCheckHealth } from '../gateway/routes/update.js';
 import { readMarker } from '../update-state.js';
 import { taskScope, projectScope, msToText } from '../work/tracker-view.js';
+// SWEEP CORE-2 item 3 — "what counts as orphaned" has ONE definition, shared with the
+// version-gap reconciliation pass that looks for the same two shapes on a different clock.
+import { ORPHANED_TASK_WHERE, ORPHANED_PROJECT_WHERE } from '../tracker/version-gap-reconcile.js';
 
 const logger = createLogger('healer-diagnostic');
 
@@ -382,12 +385,15 @@ function getTrackerHealth(): DiagnosticItem[] {
   }
 
   // Tasks assigned to terminated agents
+  // SWEEP CORE-2 item 3: the PREDICATE is single-sourced with the version-gap reconciliation
+  // pass, which looks for the same shape on a different clock. The two mechanisms stay separate
+  // — continuous health is not a one-shot version-gap pass — but "what counts as orphaned" has
+  // one definition, because two copies of it is the drift this project keeps closing.
   const orphanedTasks = db.prepare(`
     SELECT t.id, t.title, t.agent_id AS assigned_to, a.name as agent_name
     FROM work t
     JOIN agents a ON a.id = t.agent_id
-    WHERE ${taskScope('t')} AND t.state IN ('claimed', 'on_deck', 'paused')
-      AND a.status = 'terminated'
+    WHERE ${ORPHANED_TASK_WHERE('t', 'a')}
   `).all() as Array<{ id: string; title: string; assigned_to: string; agent_name: string }>;
 
   for (const task of orphanedTasks) {
@@ -408,15 +414,12 @@ function getTrackerHealth(): DiagnosticItem[] {
   // fallen task counts as "not done"), matching fixOrphanedProject. This is
   // what stops the Healer from re-detecting and re-offering to close a
   // fallen-containing project on every cycle (no infinite re-detect loop).
+  // Same single-sourcing as the task predicate above — and the D-K reasoning the comment
+  // block states lives WITH the predicate now, in `tracker/version-gap-reconcile.ts`.
   const orphanedProjects = db.prepare(`
     SELECT p.id, p.title
     FROM work p
-    WHERE ${projectScope('p')} AND p.state = 'open'
-      AND NOT EXISTS (
-        SELECT 1 FROM work t
-        WHERE t.parent_id = p.id AND t.kind = 'task' AND t.state <> 'done'
-      )
-      AND EXISTS (SELECT 1 FROM work t2 WHERE t2.parent_id = p.id AND t2.kind = 'task')
+    WHERE ${ORPHANED_PROJECT_WHERE('p')}
   `).all() as Array<{ id: string; title: string }>;
 
   for (const project of orphanedProjects) {

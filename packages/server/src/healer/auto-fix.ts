@@ -16,6 +16,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { sanitizeMessagesOnModelChange } from '../agent/model-switch.js';
 import type { DiagnosticItem } from './diagnostic.js';
 import { taskScope, projectScope } from '../work/tracker-view.js';
+import { ORPHANED_PROJECT_WHERE } from '../tracker/version-gap-reconcile.js';
 import { setTrackerStatus, patchWork, deliveryForCompletedChildren } from '../work/tracker-store.js';
 import { workSettled, noteUnsettled } from '../work/store.js';
 
@@ -274,13 +275,15 @@ function fixOrphanedProject(item: DiagnosticItem): AutoFixResult {
   // therefore `status != 'complete'` (not `NOT IN ('complete','fallen')`): a
   // fallen task now blocks the close, which is also what keeps the paired
   // ORPHANED_PROJECT detector from re-offering this project every cycle.
+  // SWEEP CORE-2 item 3 — THE PREDICATE WAS IN THREE PLACES AND IS NOW IN ONE. It stood here,
+  // in `healer/diagnostic.ts`'s ORPHANED_PROJECT detector, and (as of that task) in the
+  // version-gap reconciliation pass. Three copies of "what counts as a finished-but-open
+  // project" is three chances for the fixer and the detector to disagree about the same row —
+  // and the D-K reasoning above is exactly the kind that gets carried into two copies and
+  // updated in one. The definition, with that reasoning, lives with the predicate now.
   const finished = db.prepare(`
     SELECT p.id AS id FROM work p
-     WHERE ${projectScope('p')} AND p.state = 'open'
-       AND NOT EXISTS (
-         SELECT 1 FROM work t WHERE t.parent_id = p.id AND t.kind = 'task' AND t.state <> 'done'
-       )
-       AND EXISTS (SELECT 1 FROM work t2 WHERE t2.parent_id = p.id AND t2.kind = 'task')
+     WHERE ${ORPHANED_PROJECT_WHERE('p')}
   `).all() as Array<{ id: string }>;
   let closed = 0;
   for (const p of finished) {

@@ -91,6 +91,12 @@ export const ENGINE_RIDER_INTENTS = [
   // a reminder the owner asked for is not going to happen, the AGENT is the one who tells him,
   // and the note rides the agent's next turn rather than manufacturing one of its own.
   'reminder_skipped_owner',
+  // SWEEP CORE-2 item 3 — the version-gap reconciliation pass's ONE plain line. Same shape and
+  // same 2026-07-30 ruling as `project_needs_attention` above: the platform does not alert the
+  // owner directly about the state of his projects; the AGENT is told and decides. A rider is
+  // exactly right — a report about wreckage from an older version is not urgent enough to
+  // manufacture a turn, and it must not be, on the first boot after an update.
+  'version_gap_reconcile',
   // carried from the predicate's previous exclusion list; no live writer, still excluded
   'hint', 'system',
 ] as const;

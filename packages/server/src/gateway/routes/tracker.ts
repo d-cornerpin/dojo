@@ -23,6 +23,7 @@ import {
 } from '../../work/tracker-store.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
 import { setNextRun } from '../../work/next-run.js';
+import { VERSION_GAP_REPORT_KEY } from '../../tracker/version-gap-reconcile.js';
 import { workSettled, isStateConflict, noteUnsettled } from '../../work/store.js';
 import {
   findOverrideRequest, resolveOverrideRequest, listOverrideRequests,
@@ -925,3 +926,20 @@ trackerRouter.delete('/tasks/:id', (c) => {
 });
 
 export { trackerRouter };
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// SWEEP CORE-2 item 3 — THE VERSION-GAP RECONCILE REPORT, so the ONE plain line has somewhere
+// to point. The owner's requirement is *"ONE plain line on first boot with the detail in a
+// report he can open"*; the line goes to the primary (OR2, the 2026-07-30 ruling) and this is
+// the detail. It reads the durable `config` record rather than re-running the scan, because a
+// report that recomputes itself is a different report every time you open it.
+// ════════════════════════════════════════════════════════════════════════════════════════
+trackerRouter.get('/reconcile-report', (c) => {
+  try {
+    const row = getDb().prepare('SELECT value FROM config WHERE key = ?')
+      .get(VERSION_GAP_REPORT_KEY) as { value: string } | undefined;
+    return c.json({ ok: true, data: { report: row ? JSON.parse(row.value) : null } });
+  } catch (err) {
+    return routeFailure(c, logger, err, { status: 500 });
+  }
+});
