@@ -768,6 +768,7 @@ function compiledDelivery(
         WHERE d.id = @named AND d.agent_id = @agentId AND d.outcome = 'delivered'
           AND d.tool NOT IN (${excludedSql})
           AND ${NOT_A_TOOL_CHIP}
+          AND ${NOT_A_SUPERSEDED_BUBBLE}
           AND unixepoch(d.created_at) >= @floorSec
           ${laterTurn}`,
     ).get(bind({ named })) as { id: string; tool: string } | undefined) ?? null;
@@ -778,6 +779,7 @@ function compiledDelivery(
       WHERE d.agent_id = @agentId AND d.conversation_id = @conv AND d.outcome = 'delivered'
         AND d.tool NOT IN (${excludedSql})
         AND ${NOT_A_TOOL_CHIP}
+        AND ${NOT_A_SUPERSEDED_BUBBLE}
         AND unixepoch(d.created_at) >= @floorSec
         ${laterTurn}
       ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
