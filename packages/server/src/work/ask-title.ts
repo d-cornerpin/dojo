@@ -105,14 +105,46 @@ export const ASK_TITLE_MAX_CHARS = 80;
  */
 export const ASK_TITLE_INPUT_CHARS = 2000;
 
-const TITLE_INSTRUCTION = [
-  'Write a short title for the request below, for a work tracker.',
+/**
+ * UX-REPAIR T6 — `, for a work tracker` IS GONE FROM THE FIRST LINE, and its
+ * absence is the fix.
+ *
+ * Live on the box, 2026-08-10: *"Add a small section for gym stuff."* came back
+ * titled **"Add gym section to work tracker"**. "work tracker" is nowhere in the
+ * message. It was in THIS STRING, and the call is context-free by construction
+ * (`systemPrompt: ''`, one message, no conversation), so on a subject-free
+ * follow-up the only concrete noun the model had to reach for was the
+ * instruction's own. The rules below already carry the register the clause was
+ * there to set; nothing else about the register is lost.
+ *
+ * Exported so the test can assert the words are not here, rather than assert
+ * about a copy of them.
+ */
+export const TITLE_INSTRUCTION = [
+  'Write a short title for the request below.',
   'Rules:',
   '- 3 to 8 words, describing WHAT IS BEING ASKED.',
   '- Never copy values out of the message: no keys, tokens, passwords, account',
   '  numbers, addresses, phone numbers, or quoted text.',
   '- Reply with the title only. No quotes, no punctuation at the end, no prose.',
 ].join('\n');
+
+/**
+ * How many earlier owner-lane messages of the SAME conversation ride along as
+ * context, and the slice of the input budget they may take.
+ *
+ * WHY THIS IS NOT THE MECHANISM T9 REFUSED, stated here because the refusal is
+ * a few lines up and a reader will reach for it: T9 removed a title that WAS a
+ * 120-character SLICE of the message — the output was a copy. This is INPUT.
+ * The model still writes the title, and the title still passes
+ * `acceptModelTitle`'s scrub before anything is written. The current message's
+ * own text has always been input to this call; its predecessor is the same kind
+ * of thing, and the reason the model needs it is that a follow-up like "add a
+ * section for gym stuff" names no subject at all.
+ */
+const ASK_TITLE_CONTEXT_MESSAGES = 2;
+const ASK_TITLE_CONTEXT_CHARS = 600;
+const ASK_TITLE_CONTEXT_PER_MESSAGE = 280;
 
 /**
  * THE CHECK (requirement 3). Turn whatever the model said into a title, or
@@ -128,7 +160,37 @@ export function acceptModelTitle(agentId: string, raw: string | null | undefined
   t = t.replace(/^title\s*[:\-—]\s*/i, '');
   t = t.replace(/^["'`“”‘’]+/, '').replace(/["'`“”‘’]+$/, '');
   t = t.replace(/\s+/g, ' ').trim();
-  if (t.length > ASK_TITLE_MAX_CHARS) t = t.slice(0, ASK_TITLE_MAX_CHARS).trim();
+
+  // ── UX-REPAIR T6: FORMAT CONFORMANCE, AND WHY IT IS NOT THE REFUSED TEST ──
+  //
+  // The block below refuses an answer that does not obey THE INSTRUCTION'S OWN
+  // STATED RULES ("3 to 8 words", "reply with the title only, no prose"). It is
+  // the opposite of the shape-sniffing refused a few lines up: that refusal is
+  // about never GUESSING WHAT A VALUE MEANS ("does this look like a key"), and
+  // this check never looks at meaning at all. The declared-value scrub below
+  // remains the one and only secrecy authority, and it still runs after this.
+  //
+  // It exists because the scrub was the ONLY check, so a title was validated for
+  // secrets and for nothing else. Measured on the box: `ask:4149b755-…` is titled
+  // `{"type":"function","function":{"name":"file_write",…` — a raw tool-call blob,
+  // accepted. And of the TEN ask rows whose title is exactly ASK_TITLE_MAX_CHARS
+  // long — the signature of the truncation this replaces — every one is junk of
+  // that kind (tool-call JSON, the model's own monologue, a meta-refusal). Not
+  // one is a good title that was merely clipped. So over-length REFUSES now
+  // rather than truncating: an answer longer than the cap is an answer that
+  // ignored "3 to 8 words", and the ticket's own identifier is the better name.
+  //
+  // A newline is NOT listed here: the first-line extraction above already
+  // handles that case, and handles it better than a refusal would ("Check the
+  // invoice\nand also some prose" still yields a usable title).
+  const violatesFormat = t.length > ASK_TITLE_MAX_CHARS || t.includes('{') || t.includes('}');
+  if (violatesFormat) {
+    logger.warn('ask title refused: the model\'s answer does not obey the instruction\'s own '
+      + 'format (too long for a 3-8 word title, or structured output rather than prose) — '
+      + 'the ticket keeps its own identifier', { agentId, answeredChars: t.length });
+    return null;
+  }
+
   if (t.length === 0) {
     // Observed on the box: a system model can answer with nothing at all. The
     // fallback is correct and the ticket is fine — but a fallback nobody can see
@@ -162,7 +224,63 @@ export function acceptModelTitle(agentId: string, raw: string | null | undefined
  * model module reaches back into the message store, so a static import here is
  * a cycle.
  */
-export async function resolveAskTitle(agentId: string, content: string): Promise<string | null> {
+/**
+ * The earlier owner-lane messages of this conversation, oldest first, or `[]`.
+ *
+ * Read-only, bounded, and never throws: a title is a nicety and a database that
+ * cannot answer this question must not cost the caller anything. Scoped by
+ * conversation AND lane AND role, so agent traffic and other threads can never
+ * leak into the naming of this ticket, and by `seq` so only messages that
+ * genuinely came BEFORE this one are shown.
+ */
+function priorOwnerContext(agentId: string, conversationId: string | null | undefined, messageId: string): string[] {
+  if (!conversationId) return [];
+  try {
+    const rows = getDb().prepare(
+      `SELECT content FROM messages
+        WHERE agent_id = ? AND conversation_id = ? AND lane = 'owner' AND role = 'user'
+          AND retired_at IS NULL
+          AND seq < (SELECT seq FROM messages WHERE id = ?)
+        ORDER BY seq DESC LIMIT ?`,
+    ).all(agentId, conversationId, messageId, ASK_TITLE_CONTEXT_MESSAGES) as Array<{ content: string | null }>;
+    const texts = rows
+      .map((r) => (r.content ?? '').replace(/\s+/g, ' ').trim())
+      .filter((s) => s.length > 0)
+      .map((s) => s.slice(0, ASK_TITLE_CONTEXT_PER_MESSAGE))
+      .reverse();
+    // The block's own bound, independent of the per-message one.
+    const kept: string[] = [];
+    let used = 0;
+    for (const s of texts) {
+      if (used + s.length > ASK_TITLE_CONTEXT_CHARS) break;
+      kept.push(s);
+      used += s.length;
+    }
+    return kept;
+  } catch {
+    return [];
+  }
+}
+
+/** The exact string the system model is shown. One place, so the test can read
+ *  the same bytes the provider gets. */
+export function buildTitlePrompt(content: string, priorContext: readonly string[] = []): string {
+  if (priorContext.length === 0) {
+    return `${TITLE_INSTRUCTION}\n\n${content.slice(0, ASK_TITLE_INPUT_CHARS)}`;
+  }
+  const block =
+    'Earlier in this conversation, for context only — do NOT title these:\n'
+    + priorContext.map((s) => `- ${s}`).join('\n')
+    + '\n\nThe request to title:\n';
+  const room = Math.max(0, ASK_TITLE_INPUT_CHARS - block.length);
+  return `${TITLE_INSTRUCTION}\n\n${block}${content.slice(0, room)}`;
+}
+
+export async function resolveAskTitle(
+  agentId: string,
+  content: string,
+  priorContext: readonly string[] = [],
+): Promise<string | null> {
   if (!agentId || typeof content !== 'string' || content.trim().length === 0) return null;
 
   let systemModel: string | null = null;
@@ -187,7 +305,7 @@ export async function resolveAskTitle(agentId: string, content: string): Promise
       agentId,
       modelId: systemModel,
       systemPrompt: '',
-      messages: [{ role: 'user', content: `${TITLE_INSTRUCTION}\n\n${content.slice(0, ASK_TITLE_INPUT_CHARS)}` }],
+      messages: [{ role: 'user', content: buildTitlePrompt(content, priorContext) }],
       tools: false,
       // The caller fully handles failure with the id title, so a handled
       // failure must not read as an agent-level error in the log.
@@ -263,7 +381,12 @@ function retitleIfStillUnnamed(workId: string, title: string): boolean {
 export async function replaceAskTitleFromModel(m: NewMessage, messageId: string): Promise<void> {
   try {
     if (!wouldOpenAsk(m)) return;
-    const title = await resolveAskTitle(m.agentId, m.content);
+    // UX-REPAIR T6: the conversation the ticket belongs to, so a subject-free
+    // follow-up is not named from the instruction's own nouns. Gathered here,
+    // where the conversation id and the durable message id both already are.
+    const title = await resolveAskTitle(
+      m.agentId, m.content, priorOwnerContext(m.agentId, m.conversationId, messageId),
+    );
     // `null` is the designed outcome, not a failure: the ticket keeps the
     // content-free identifier it was filed with.
     if (title === null) return;

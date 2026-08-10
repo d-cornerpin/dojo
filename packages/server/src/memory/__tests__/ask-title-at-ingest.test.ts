@@ -62,7 +62,7 @@ import { askIdForMessage } from '../../work/store.js';
 import { patchWork } from '../../work/tracker-store.js';
 import {
   acceptModelTitle, insertInboundMessageIfAbsent, replaceAskTitleFromModel,
-  ASK_TITLE_MAX_CHARS,
+  ASK_TITLE_MAX_CHARS, ASK_TITLE_INPUT_CHARS, TITLE_INSTRUCTION,
 } from '../../work/ask-title.js';
 import {
   noteHandedCredentialValues, forgetHandedCredentialValues,
@@ -286,12 +286,20 @@ describe('the written title must pass the platform\'s declared-value scrub', () 
     expect(String(workFor('m-7')!.title)).not.toContain(SECRET);
   });
 
-  it('normalises what a model actually returns, and caps it', () => {
+  it('normalises what a model actually returns, and refuses what it cannot normalise', () => {
     expect(acceptModelTitle(AGENT, '  "Fix the roof quote"  ')).toBe('Fix the roof quote');
     expect(acceptModelTitle(AGENT, 'Title: Book the flight')).toBe('Book the flight');
     expect(acceptModelTitle(AGENT, 'Renew   the\tdomain')).toBe('Renew the domain');
     expect(acceptModelTitle(AGENT, '\n\nCheck the invoice\nand also some prose\n')).toBe('Check the invoice');
-    expect(acceptModelTitle(AGENT, 'x'.repeat(500))!.length).toBe(ASK_TITLE_MAX_CHARS);
+    // CHANGED BY UX-REPAIR T6, deliberately, and this clause is the record of it.
+    // This used to assert TRUNCATION to ASK_TITLE_MAX_CHARS. Measured on the dev
+    // DB before the change: all TEN ask rows whose title is exactly that length —
+    // the truncation's own signature — are junk (raw tool-call JSON, the model's
+    // monologue, a meta-refusal), and not one is a good title that was merely
+    // clipped. An answer over the cap is an answer that ignored "3 to 8 words",
+    // so the ticket keeps its own content-free identifier instead.
+    expect(acceptModelTitle(AGENT, 'x'.repeat(500))).toBeNull();
+    expect(acceptModelTitle(AGENT, 'x'.repeat(ASK_TITLE_MAX_CHARS))!.length).toBe(ASK_TITLE_MAX_CHARS);
   });
 
   it('an empty or unusable answer is a fallback, not a blank title', () => {
@@ -573,4 +581,139 @@ describe('the ticket files with its own identifier and the model\'s title replac
       await replaceAskTitleFromModel(ownerInbound({ id: 'nope' }) as never, 'nope');
       expect(workFor('nope')).toBeUndefined();
     }, SLOW);
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// 6. UX-REPAIR T6 — THE TITLE STOPS COMPLETING THE PROMPT'S OWN WORDS
+//
+// Live on the box, 2026-08-10: "Add a small section for gym stuff." became
+// **"Add gym section to work tracker"**. "work tracker" is not in the message —
+// it is in the INSTRUCTION ("Write a short title for the request below, for a
+// work tracker"), and the call is context-free by construction (`systemPrompt:
+// ''`, ONE message, no conversation), so on a subject-free follow-up the only
+// concrete noun the model had was the prompt's own.
+//
+// Same class, worse instance, also live: `ask:4149b755-…` is titled with a raw
+// tool-call JSON blob, because the ONLY acceptance check is the declared-secret
+// scrub — it validates for SECRETS, never for the instruction's own format.
+//
+// THE DISTINCTION THIS SECTION EXISTS TO KEEP (against `ask-title.ts:51-56`'s
+// recorded refusal, "there is no 'does this look like a key' test here and there
+// must never be one"): the new check reads the title against THE INSTRUCTION'S
+// OWN STATED RULES. It never infers what a value MEANS. The scrub remains the
+// only secrecy authority, and every clause of §3 above is untouched.
+// ════════════════════════════════════════════════════════════════════════
+
+describe('the title instruction no longer supplies the noun', () => {
+  it('RED FIRST: "work tracker" cannot come out of the instruction, because it is not in it', () => {
+    expect(TITLE_INSTRUCTION).not.toMatch(/work tracker/i);
+    // The rules that carry the register are the ones that stay.
+    expect(TITLE_INSTRUCTION).toContain('describing WHAT IS BEING ASKED');
+    expect(TITLE_INSTRUCTION).toContain('Never copy values out of the message');
+    expect(TITLE_INSTRUCTION).toContain('Reply with the title only');
+  });
+});
+
+describe('the model is shown the conversation it is naming', () => {
+  const WAIT = { timeout: 15_000, interval: 10 };
+  const SLOW = 30_000;
+
+  /** The S2 replay: a subject-bearing message, then the subject-free follow-up
+   *  that produced the confabulation. */
+  const FIRST = 'Make me a packing checklist for a 4-day work trip to Chicago, carry-on only, keep it practical. Put it in a file so I can open it later.';
+  const FOLLOW_UP = 'Add a small section for gym stuff.';
+
+  it('RED FIRST: the follow-up call carries the earlier owner message as labelled context',
+    async () => {
+      seedSystemTier();
+      callModel.mockResolvedValue(answered('Add gym section to packing checklist'));
+      insertInboundMessageIfAbsent(ownerInbound({ id: 'm-20', content: FIRST }) as never);
+      await vi.waitFor(() => expect(callModel).toHaveBeenCalledTimes(1), WAIT);
+
+      insertInboundMessageIfAbsent(ownerInbound({ id: 'm-21', content: FOLLOW_UP }) as never);
+      await vi.waitFor(() => expect(callModel).toHaveBeenCalledTimes(2), WAIT);
+
+      const sent = String((callModel.mock.calls[1][0] as { messages: Array<{ content: string }> }).messages[0].content);
+      // The subject the follow-up does not name is now in front of the model...
+      expect(sent).toContain('packing checklist');
+      // ...clearly marked as context, and never as the thing to title.
+      expect(sent).toMatch(/context only/i);
+      expect(sent).toContain(FOLLOW_UP);
+      // The whole input still fits the budget the call has always had.
+      expect(sent.length).toBeLessThanOrEqual(ASK_TITLE_INPUT_CHARS + TITLE_INSTRUCTION.length + 200);
+    }, SLOW);
+
+  it('CONTROL: the FIRST message in a conversation is asked exactly as it always was', async () => {
+    seedSystemTier();
+    callModel.mockResolvedValue(answered('Make a Chicago packing checklist'));
+    insertInboundMessageIfAbsent(ownerInbound({ id: 'm-22', content: FIRST }) as never);
+    await vi.waitFor(() => expect(callModel).toHaveBeenCalledTimes(1), WAIT);
+
+    const sent = String((callModel.mock.calls[0][0] as { messages: Array<{ content: string }> }).messages[0].content);
+    expect(sent).toBe(`${TITLE_INSTRUCTION}\n\n${FIRST}`);
+  }, SLOW);
+
+  it('CONTROL: context is scoped to this conversation and to the owner lane', async () => {
+    seedSystemTier();
+    mockDb.current!.prepare(
+      `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('conv-2', ?, 'dashboard', 'owner')`,
+    ).run(AGENT);
+    callModel.mockResolvedValue(answered('Something else entirely'));
+    insertInboundMessageIfAbsent(ownerInbound({ id: 'm-23', content: 'A message about beekeeping supplies.' }) as never);
+    await vi.waitFor(() => expect(callModel).toHaveBeenCalledTimes(1), WAIT);
+
+    insertInboundMessageIfAbsent(
+      ownerInbound({ id: 'm-24', conversationId: 'conv-2', content: FOLLOW_UP }) as never,
+    );
+    await vi.waitFor(() => expect(callModel).toHaveBeenCalledTimes(2), WAIT);
+    const sent = String((callModel.mock.calls[1][0] as { messages: Array<{ content: string }> }).messages[0].content);
+    expect(sent).not.toContain('beekeeping');
+    expect(sent).toBe(`${TITLE_INSTRUCTION}\n\n${FOLLOW_UP}`);
+  }, SLOW);
+});
+
+describe('a title that violates the instruction\'s own format is refused', () => {
+  // MEASURED, not imagined: every one of these is a real title the floor model
+  // wrote and `acceptModelTitle` accepted, read out of the dev DB on 2026-08-10.
+  // All TEN rows in that database whose title is exactly ASK_TITLE_MAX_CHARS
+  // long are junk of this kind — there is not one good title among them that was
+  // merely clipped, which is why over-length REFUSES rather than truncates.
+  const REAL_JUNK = [
+    '{"type":"function","function":{"name":"file_write","parameters":{"file_path":"/tmp/x.txt","content":"hi"}}}',
+    '{"name": "file_write", "arguments": {"file": "/tmp/dojo-steer-scenario.txt", "text": "steer scenario"}}',
+    'file_write("/tmp/dojo-steer-scenario-bmsfhr7n7h0.txt", "steer scenario")Done. Texted the summary.',
+    'I\'ll write the file first.The user instruction is clear: do exactly two things and nothing else.',
+    'The request content is missing, so I cannot generate a title. For your other question, see below.',
+  ];
+
+  it('RED FIRST: the raw tool-call blob is refused and the ticket keeps its own identifier', () => {
+    for (const junk of REAL_JUNK) expect(acceptModelTitle(AGENT, junk), junk).toBeNull();
+  });
+
+  it('CONTROL: every ordinary title still passes, unchanged', () => {
+    for (const good of [
+      'Compare and Recommend Note-Taking Apps',
+      'Create packing checklist for work trip',
+      'Schedule weekday calendar review and vet call',
+      'Compare HubSpot and Pipedrive for Small Team',
+      'Find largest file in fixtures folder',
+      'Summarize folder contents thoroughly',
+      'Total count of all files',
+      'Add gym section to packing checklist',
+    ]) {
+      expect(acceptModelTitle(AGENT, good), good).toBe(good);
+    }
+  });
+
+  it('CONTROL: the normalisations that already existed still normalise', () => {
+    expect(acceptModelTitle(AGENT, '  "Fix the roof quote"  ')).toBe('Fix the roof quote');
+    expect(acceptModelTitle(AGENT, 'Title: Book the flight')).toBe('Book the flight');
+    expect(acceptModelTitle(AGENT, '\n\nCheck the invoice\nand also some prose\n')).toBe('Check the invoice');
+  });
+
+  it('CONTROL: the format check is not a secret-shape test — a key-LOOKING string with no declared value passes', () => {
+    // `ask-title.ts:51-56`: "there is no 'does this look like a key' test here and
+    // there must never be one." This clause is what keeps that true after T6.
+    expect(acceptModelTitle(AGENT, 'Save sk-live-abc123def456 for weather')).toBe('Save sk-live-abc123def456 for weather');
+  });
 });
