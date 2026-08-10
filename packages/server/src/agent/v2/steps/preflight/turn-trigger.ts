@@ -77,8 +77,11 @@ export function runTurnTrigger(
   const contextModelId = isAutoRouted ? '__auto__' : configuredModelId;
   const contextWindow = getContextWindow(contextModelId);
 
-  setAgentStatus(agentId, 'working');
-  startStatusHeartbeat(agentId);
+  // UX-REPAIR T7: the `working` status write + its broadcast USED TO STAND HERE, ~80 lines
+  // before `chosenConvKey` exists. That is why frame 1 of every turn carried no `userFacing`
+  // and a FABRICATED `turnKind:'user'`: the turn's bag was still empty, so the seam had
+  // nothing true to say and said something anyway. The pair now runs immediately after the
+  // conversation key is published (below) — see the note there.
 
   // Trigger context, read once at preflight (Part XIX preservation).
   //
@@ -158,6 +161,28 @@ export function runTurnTrigger(
   // to it. null on engine/A2A turns (no waiting human) so recall doesn't latch the
   // last human conversation. Cleared when the agent goes idle.
   turnCtx.convKey = chosenConvKey;
+  // ── UX-REPAIR T7 — THE FIRST STATUS FRAME OF THE TURN, NOW THAT IT HAS SOMETHING TRUE
+  //    TO SAY ────────────────────────────────────────────────────────────────────────
+  // `userFacing`'s own commit (`e0acf31`) requires status events to carry human-facing truth
+  // "on working and idle alike". Frame 1 was the single place that could not: emitted at the
+  // top of this function, it read an empty bag and dropped the field. One statement after the
+  // publication above it is DETERMINED — a real conversation key, or null on a pure
+  // background a2a / engine turn — so the composer can stay quiet on an a2a turn from frame 1
+  // instead of frame 2.
+  //
+  // THE MOVE IS WITHIN ONE SYNCHRONOUS SPAN AND THAT IS THE WHOLE SAFETY ARGUMENT.
+  // `setAgentStatus` WELDS the DB write to the broadcast, and the `working` row must be
+  // visible early: `gateway/routes/agents.ts` returns 409 on it, peers' busy checks and the
+  // stuck-agent reaper read the same row. `runTurnTrigger` is a plain function containing no
+  // `await` anywhere, so nothing can observe the row between the old site and this one and
+  // the 409 window does not widen. `agent/__tests__/status-frame-never-asserts-an-unknown-
+  // turn-kind.test.ts` pins both facts, including the absence of the `await`.
+  //
+  // The heartbeat moves WITH it, keeping the pair's order: it re-broadcasts `working` and
+  // bumps `updated_at` for rows whose status is already `working`, so starting it before its
+  // own status write would be a new ordering, not a preserved one.
+  setAgentStatus(agentId, 'working');
+  startStatusHeartbeat(agentId);
   // The ID half of the same publication is written AFTER the pickup block below, where
   // `chosenConversationId` becomes final. See the note at that write.
   // OPEN-12: trigger on the OLDEST unanswered message in the chosen conversation,

@@ -758,6 +758,12 @@ export const Chat = ({ panel = null }: ChatProps) => {
   // only talking to another agent; we keep the composer quiet for those (no
   // thinking dots / stop button) unless wordy mode is on.
   const [turnKind, setTurnKind] = useState<'user' | 'a2a'>('user');
+  // UX-REPAIR T7. What the LAST working frame said about serving a human, kept as its own
+  // three-state value: `true` / `false` / `undefined` for a bare legacy frame that carried
+  // no such field. It is deliberately NOT folded into `turnKind`: a background scheduler /
+  // PM-poke / watcher turn is `turnKind:'user'` AND `userFacing:false`, so the two facts
+  // disagree on exactly the frames this guard is for.
+  const [turnUserFacing, setTurnUserFacing] = useState<boolean | undefined>(undefined);
   // The user has a request in flight (sent a message, no completion yet). Drives
   // the working UI (thinking dots + stop button) so it stays visible for the
   // WHOLE request — even when the agent dips into agent-to-agent (a2a)
@@ -1427,6 +1433,10 @@ export const Chat = ({ panel = null }: ChatProps) => {
         setIsWorking(true);
         const kind = e.turnKind ?? 'user';
         setTurnKind(kind);
+        // UX-REPAIR T7: record the frame's OWN answer, including "it did not say"
+        // (undefined). Since the server stopped fabricating `turnKind`, this is the only
+        // field frame 1 of a background turn has to keep the composer quiet with.
+        setTurnUserFacing(e.userFacing);
         // A user-FACING working status means the agent is on a turn serving a human
         // conversation (dashboard / iMessage / voice). Latch it (the same flag
         // handleSend sets) so the working UI (dots + stop) stays up for the WHOLE
@@ -1711,7 +1721,20 @@ export const Chat = ({ panel = null }: ChatProps) => {
   // user-initiated task both keep the UI visible for the whole turn. It hides
   // ONLY for pure background a2a (another agent working, no user waiting): then
   // turnKind==='a2a', awaitingUserReply===false, wordy off → hidden.
-  const showWorkingUi = isWorking && (turnKind !== 'a2a' || wordyMode || awaitingUserReply);
+  // UX-REPAIR T7 adds ONE clause: a frame that EXPLICITLY says `userFacing:false` never
+  // lights the working UI in regular mode. Before the seam was fixed, frame 1 of a
+  // background turn arrived with a fabricated `turnKind:'user'` and no `userFacing`, so
+  // `turnKind !== 'a2a'` alone let it through. The three shapes the clause is written
+  // against, all preserved:
+  //   · WORDY MODE — exempt, unchanged: wordy shows everything.
+  //   · A REQUEST IN FLIGHT (`awaitingUserReply`) — exempt, and that is `e0acf31`'s
+  //     busy-box race: a queued dashboard send must keep its dots while a BACKGROUND turn
+  //     runs in front of it. Suppressing on that turn's `userFacing:false` would reopen
+  //     exactly the defect the latch exists to close.
+  //   · A BARE LEGACY FRAME (no field at all — `tools/cat/media.ts` holds the dots up during
+  //     image generation) — `undefined !== false`, so it behaves exactly as today.
+  const showWorkingUi = isWorking
+    && (wordyMode || awaitingUserReply || (turnKind !== 'a2a' && turnUserFacing !== false));
   // In-flight turn cutoff for the chip background test (see toolChips): while
   // working, rows at/after the last user trigger belong to the live turn.
   const liveTurnCutoff = isWorking

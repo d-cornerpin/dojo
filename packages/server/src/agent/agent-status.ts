@@ -194,9 +194,23 @@ export function setAgentStatus(
     // Genuine recovery also clears it via onAgentRecovered (injury-recovery.ts).
     writeAgentStatus(agentId, status, opts ?? (status === 'idle' ? { clearError: true } : undefined));
     // On 'working', carry the turn kind so the composer can stay quiet on pure
-    // A2A turns (unless wordy mode). Defaults to 'user' until the counterparty
-    // is resolved early in the turn.
-    const turnKind = status === 'working' ? (turnContext(agentId)?.kind ?? 'user') : undefined;
+    // A2A turns (unless wordy mode).
+    //
+    // UX-REPAIR T7: this read USED TO END `?? 'user'`, and that default was a FABRICATION on
+    // the wire. `turnKind` is first computed at `steps/preflight/turn-classification.ts`, so
+    // any frame emitted before it — which was every turn's frame 1 — asserted `user` about a
+    // turn nobody had classified. The corrective frame landed on the same server tick, so the
+    // visible harm was at most a sub-frame flicker; the harm that mattered is that the WIRE
+    // stated a false fact, inherited by any consumer that samples between frames, reconnects,
+    // or drops the second (two unfiltered consumers exist: `pages/Agents.tsx`,
+    // `pages/Tracker.tsx`). An UNKNOWN kind is now OMITTED, exactly as `userFacing` already
+    // omits its unknown, and for the same reason.
+    //
+    // THE CLIENT DEFAULT STAYS. `Chat.tsx` reads a missing `turnKind` as `'user'` and the
+    // legacy bare broadcasts depend on it (`tools/cat/media.ts` holds the dots up during
+    // image generation with neither field). Omission here therefore changes nothing for a
+    // frame that has no better answer — it stops the SERVER claiming to have one.
+    const turnKind = status === 'working' ? turnContext(agentId)?.kind : undefined;
     // userFacing rides on EVERY status this seam emits (working AND idle/terminal),
     // captured above before the idle delete. `undefined` (no turn resolved yet, e.g.
     // the pre-classification 'working' at turn start) is omitted so the client keeps

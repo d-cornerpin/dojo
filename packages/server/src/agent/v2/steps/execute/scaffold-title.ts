@@ -94,18 +94,35 @@ export async function dispatchPMRenameHandoff(params: {
     // T8c item 1 (the PM voice half): an ENGINE rename request is the engine writing to the
     // PM, not the owner talking. Same reasoning and same door as the situation report — see
     // `tracker/pm-agent.ts`'s note at the `insertEngineEventIfAbsent` call there.
-    insertEngineEventIfAbsent({
+    const persisted = insertEngineEventIfAbsent({
       id: renameMsgId, agentId: pmId, content: renameRequest,
       sourceAgentId: null, originIntent: 'pm_rename', work: null,
     });
+    // ── UX-REPAIR T7 (the sibling defect, same class as the status frame) ──
+    // The row above is stamped honestly: `lane='events'`, `origin_intent='pm_rename'`,
+    // and the display classifier therefore lands it on `engine-note` / `agent-only`. The
+    // frame that went out beside it was HAND-BUILT and carried none of that — a bare
+    // `role:'user'` literal with no `displayKind`, which the dashboard reads as an ordinary
+    // person-typed bubble in the PM's chat (`Chat.tsx` classifies from
+    // `message.displayKind`, not from the row the seam attaches). The store knew it was
+    // engine traffic and the wire said a user spoke: live view and reload disagreeing about
+    // one row, which is the defect `gateway/ws.ts`'s BROADCAST_EQUALS_ROW seam exists to
+    // stop and could not reach here, because it is the authority for `content` and
+    // `createdAt` only ("everything else on the literal is left as the site set it").
+    //
+    // So the literal is BUILT FROM THE PERSISTED ROW instead of asserted beside it. No new
+    // wire vocabulary: `role` and `displayKind` are fields `Message` already carries, and
+    // `lane` already rides as `event.row.lane` off the seam. (`origin_intent` has no place
+    // on the wire `Message` type at all — recorded as the residual, not widened here.)
     broadcast({
       type: 'chat:message',
       agentId: pmId,
       message: {
         id: renameMsgId, agentId: pmId, role: 'user' as const,
         content: renameRequest,
+        displayKind: persisted?.displayKind ?? null,
         tokenCount: null, modelId: null, cost: null, latencyMs: null,
-        createdAt: new Date().toISOString(),
+        createdAt: persisted?.createdAt ?? new Date().toISOString(),
       },
     });
     // Fire-and-forget wake. handleMessage queues itself if PM is busy.
