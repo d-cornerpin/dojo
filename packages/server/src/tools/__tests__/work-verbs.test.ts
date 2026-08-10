@@ -41,7 +41,7 @@ import {
 import { TOOL_ALIASES, resolveToolAlias, isTombstone } from '../aliases.js';
 import { STRUCTURING_OPS } from '../../agent/v2/classifiers/hoarding.js';
 import { WORK_OP_CONCURRENCY } from '../../agent/v2/classifiers/concurrency.js';
-import { PM_ALLOWED_WORK_OPS, PM_ONLY_WORK_OPS, PM_ALLOWED_TOOLS } from '../../tracker/pm-agent.js';
+import { PM_ALLOWED_WORK_OPS, PM_ONLY_WORK_OPS, PRIMARY_ONLY_WORK_OPS, PM_ALLOWED_TOOLS } from '../../tracker/pm-agent.js';
 import { classifyTool } from '@dojo/shared';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -298,8 +298,23 @@ const CANARIES: Canary[] = [
     behaviour: 'B11 PM-ONLY operations (a worker calling one is refused at the executor)',
     where: 'agent/tools.ts via PM_ONLY_WORK_OPS',
     test: inSet(PM_ONLY_WORK_OPS),
-    fires: ['tracker_validate', 'tracker_retask', 'tracker_override', 'tracker_apply_user_verdict', 'tracker_apply_user_validation'],
-    silent: ['tracker_update_status', 'tracker_request_override', 'tracker_create_task', 'tracker_list_active'],
+    // ARGUED MOVE (UX-REPAIR round 2 T12): `tracker_apply_user_validation` left `fires` for
+    // `silent` and is pinned by B11p below instead. The behaviour did not go dark — it changed
+    // WALL. That op transcribes a verdict THE OWNER gave, and it was refused to the primary by
+    // this set AND to the PM by its absence from `PM_ALLOWED_WORK_OPS`: a double refusal that
+    // made the escalation's own terminal step unexecutable by everyone it addressed.
+    fires: ['tracker_validate', 'tracker_retask', 'tracker_override', 'tracker_apply_user_verdict'],
+    silent: [
+      'tracker_update_status', 'tracker_request_override', 'tracker_create_task', 'tracker_list_active',
+      'tracker_apply_user_validation',
+    ],
+  },
+  {
+    behaviour: 'B11p PRIMARY-ONLY operations (the owner speaks to the primary, so the primary records his verdict)',
+    where: 'agent/tools/gates.ts row 8p via PRIMARY_ONLY_WORK_OPS',
+    test: inSet(PRIMARY_ONLY_WORK_OPS),
+    fires: ['tracker_apply_user_validation'],
+    silent: ['tracker_validate', 'tracker_retask', 'tracker_override', 'tracker_apply_user_verdict', 'tracker_update_status'],
   },
   {
     behaviour: 'B12 the READ carve-out (never disarms, always parallelisable)',

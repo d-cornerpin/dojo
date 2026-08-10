@@ -140,7 +140,14 @@ describe('THE ORDERING LAW — the owner is not told about work nobody tried to 
   });
 
   it('WITH a recorded VALIDATOR-UNAVAILABLE, it escalates — nobody could be asked, and the owner must still hear it', () => {
-    seedEngineReceiptClose('e4');
+    // ARGUED CHANGE (UX-REPAIR round 2 T12): the fixture is the KEY-1-FILED shape now, not the
+    // engine-receipt one. The requirement this clause states — a box whose validator is dead
+    // must not go silent (`validation-drive.ts:120-128`) — is untouched and is what is asserted.
+    // What changed underneath is that an ENGINE-RECEIPT close means a delivered receipt is on
+    // file by construction (G7), i.e. it is the one shape T12 now declines to bother the owner
+    // about, so leaving it here would have made this clause pass on a fact it is not about. The
+    // engine-receipt case is pinned in its own right in the next describe, in both directions.
+    seedKeyOneFiled('e4');
     recordAttempt('e4', VALIDATION_ATTEMPT_UNAVAILABLE);
     expect(candidates()).toEqual(['e4']);
   });
@@ -215,5 +222,36 @@ describe('THE ORDERING LAW — the owner is not told about work nobody tried to 
     expect(r.kind).toBe('applied');
     mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(T, 'v1');
     expect(candidates()).toEqual([]);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// UX-REPAIR ROUND 2 T12 — THE REALITY CHECK, beside the ordering law it composes with.
+//
+// The ordering law bounds WHEN the owner is told. It never asked whether the work was
+// DELIVERED — the predicate touched `work`, `adjudications` and `work_events` and nothing
+// else. Measured on the box (2026-08-10): the sweep escalated a job whose answer had shipped
+// 25.4 seconds earlier, and the question it would have asked — "is this actually in_progress?"
+// about a finished, delivered job — was unanswerable.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('THE REALITY CHECK — the owner is not asked about work that already reached him', () => {
+  it('an ENGINE-RECEIPT close is not escalated: its delivered receipt is on file by construction (G7)', () => {
+    seedEngineReceiptClose('r1');
+    recordAttempt('r1', VALIDATION_ATTEMPT_MISS);
+    expect(candidates()).toEqual([]);
+  });
+
+  it('CONTROL: the same row with an UNDELIVERED receipt still escalates', () => {
+    seedEngineReceiptClose('r2');
+    recordAttempt('r2', VALIDATION_ATTEMPT_MISS);
+    mockDb.current!.prepare(`UPDATE deliveries SET outcome = 'failed' WHERE id = 'd-1'`).run();
+    expect(candidates()).toEqual(['r2']);
+  });
+
+  it('CONTROL: a Key-1-filed row with no receipt anywhere is untouched by the new clause', () => {
+    seedKeyOneFiled('r3');
+    recordAttempt('r3', VALIDATION_ATTEMPT_MISS);
+    expect(candidates()).toEqual(['r3']);
   });
 });

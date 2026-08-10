@@ -56,7 +56,14 @@ export const MAX_FLOOR_STEER_ATTEMPTS = 2;
  * that table — but the ghost row still has to NAME what ghosted, and that name must come from
  * a closed set rather than a free string. This is that set.
  */
-export const OUT_OF_BAND_GHOST_SUBJECTS = ['delegated-job-stuck'] as const;
+export const OUT_OF_BAND_GHOST_SUBJECTS = [
+  'delegated-job-stuck',
+  // UX-REPAIR round 2 T12 — the same shape one surface over: the 5-minute validation failsafe
+  // steers the PRIMARY to decide whether the owner needs to rule, and a primary that never
+  // speaks leaves a pulsing icon on a board and nothing else. Steered from a SWEEP, so no
+  // enqueue site, so it belongs here rather than in the steer-queue table.
+  'owner-verdict-unasked',
+] as const;
 
 /** What a ghost row may be ABOUT: a steer-queue floor, or a declared out-of-band subject. */
 export type FloorGhostSubject = SteerFloorId | (typeof OUT_OF_BAND_GHOST_SUBJECTS)[number];

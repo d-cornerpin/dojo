@@ -42,6 +42,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { AUDIT_KIND } from './audit-trail.js';
+import { appendWorkEvent } from './store.js';
 import {
   taskScope, msToText, STATE_TO_STATUS_SQL, validatedExpr, awaitingUserVerdictExpr,
   pendingCloseRequestExpr,
@@ -214,6 +215,40 @@ export interface OwnerEscalationRow {
 }
 
 /**
+ * THE REALITY CHECK (UX-REPAIR round 2 T12).
+ *
+ * ── WHAT THE PREDICATE COULD NOT SEE, measured (investigation-round2.md §3) ──
+ * Every table this sweep touched was `work`, `adjudications` and `work_events`. Not
+ * `deliveries`, not `work.result_delivery_id`, not the parent ask. So on S4 (2026-08-10) it
+ * escalated a job whose answer had shipped 25.4 seconds earlier:
+ *   06:20:15.120  ask:6224401b… → done, result_delivery_id 8eb0439c
+ *   06:20:40.569  77cba094 …    validation_escalated
+ * and the question the owner was to be asked — *"is this actually in_progress?"* — was
+ * unanswerable about a job that was finished and delivered. The gate that fired was working
+ * exactly as specified; the specification omitted the delivery.
+ *
+ * ── THE CLAUSE, AND WHY IT IS THIS SHAPE ──
+ * Two ways a row can already be answered, both RECORDED rather than inferred:
+ *   (a) its own `result_delivery_id` resolves to a delivered receipt;
+ *   (b) the ask it exists to satisfy (T11's `work.source_message_id` edge; ask ids are
+ *       `ask:<messageId>`) is terminal with a delivered receipt.
+ * The join is the one `work/ask-remediation.ts:236` already writes. An ask that is terminal
+ * with NO receipt does not suppress anything — "terminal" is not "delivered", and the
+ * genuinely-undelivered case is exactly what the 5-minute failsafe exists for.
+ */
+const DELIVERED_RECEIPT_EXPR = (a: string): string =>
+  `(SELECT d.id FROM deliveries d WHERE d.id = ${a}.result_delivery_id AND d.outcome = 'delivered')`;
+
+const PARENT_ASK_RECEIPT_EXPR = (a: string): string =>
+  `(SELECT d.id FROM work ask JOIN deliveries d ON d.id = ask.result_delivery_id AND d.outcome = 'delivered'`
+  + `  WHERE ${a}.source_message_id IS NOT NULL`
+  + `    AND ask.id = 'ask:' || ${a}.source_message_id AND ask.kind = 'ask')`;
+
+/** The receipt that says this row's work already reached the person, or NULL. */
+export const alreadyDeliveredReceiptExpr = (a: string): string =>
+  `COALESCE(${DELIVERED_RECEIPT_EXPR(a)}, ${PARENT_ASK_RECEIPT_EXPR(a)})`;
+
+/**
  * The rows the scheduler may tell the owner about. Moved here from `scheduler/runner.ts` so
  * the query and the law it now obeys live in one place, beside the spine tables they read —
  * the same reason `work/audit-trail.ts` holds the trail's SQL.
@@ -254,9 +289,165 @@ export function selectRowsForOwnerEscalation(
       -- SWEEP CORE-2 item 1 — THE ORDERING LAW. The owner is not told his validator did not
       -- rule while the platform holds no record that it was ever asked.
       AND ${ownerEscalationOrderingExpr('w')} = 1
+      -- UX-REPAIR round 2 T12 — THE REALITY CHECK. The owner is not asked whether work is
+      -- finished when the platform's own ledger says it already reached him.
+      AND ${alreadyDeliveredReceiptExpr('w')} IS NULL
       AND w.updated_at < ?
     LIMIT 20
   `).all(...serviceParams, ...serviceParams, staleBeforeMs) as OwnerEscalationRow[];
+}
+
+export interface SkippedAsDeliveredRow extends OwnerEscalationRow { deliveryId: string }
+
+/**
+ * The rows the REALITY CHECK is holding back right now, with the receipt that holds each one.
+ *
+ * Read only to say so out loud, exactly as `countRowsHeldBackFromOwner` below does for the
+ * ordering law: a skip nobody can see is the same silent behaviour in the other direction, and
+ * on the day this clause is wrong the log is where that becomes visible. Deliberately does NOT
+ * write `validation_escalated` — that stamp is permanent (`work/tracker-view.ts:323-324`,
+ * "one shot per row, forever"), and burning the row's one escalation on a pass that decided
+ * NOT to escalate would be worse than the defect it fixes.
+ */
+export function selectRowsSkippedAsDelivered(
+  staleBeforeMs: number,
+  serviceAgentIds: readonly string[],
+): SkippedAsDeliveredRow[] {
+  const serviceParams = serviceAgentIds.length > 0 ? [...serviceAgentIds] : ['__none__'];
+  const placeholders = serviceParams.map(() => '?').join(',');
+  try {
+    return getDb().prepare(`
+      SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
+             w.agent_id AS assigned_to, ${msToText('w.updated_at')} as updated,
+             ${alreadyDeliveredReceiptExpr('w')} AS deliveryId
+      FROM work w
+      WHERE ${taskScope('w')}
+        AND NOT EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = w.id AND e.kind = 'validation_escalated')
+        AND ${awaitingUserVerdictExpr('w')} = 0
+        AND COALESCE(w.agent_id, '') NOT IN (${placeholders})
+        AND COALESCE(w.requester_id, '') NOT IN (${placeholders})
+        AND (
+          (w.state = 'done' AND ${validatedExpr('w', 'done')} = 0)
+          OR (w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1)
+          OR (w.state = 'paused' AND ${validatedExpr('w', 'paused')} = 0 AND w.missed_runs_paused_at IS NULL)
+          OR (w.state = 'blocked' AND ${validatedExpr('w', 'blocked')} = 0)
+        )
+        AND ${ownerEscalationOrderingExpr('w')} = 1
+        AND ${alreadyDeliveredReceiptExpr('w')} IS NOT NULL
+        AND w.updated_at < ?
+      LIMIT 20
+    `).all(...serviceParams, ...serviceParams, staleBeforeMs) as SkippedAsDeliveredRow[];
+  } catch {
+    return [];
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE NUDGE — OR2'S SHAPE, CARRIED FROM THE FOUR SURFACES THAT ALREADY CONVERTED.
+//
+// The old text was written 2026-06-01 (`06e6ee3`), moved onto a live model-visible lane on
+// 2026-07-17 (`2f302dc`) with the commit stating *"The note text is unchanged"*, and never
+// included in the OR2 conversions. It read, in the ENGINE's voice, with the owner's name in
+// it: *"David, is this actually in_progress? Reply yes/no with any context. **Primary agent**:
+// when David replies, call work_validate(action="apply_user_validation", task_id="77cba094-…",
+// …)"*. 732 chars, sliced to 400 by the events lane, cut MID-TASK-ID — so the instruction
+// could not have been complied with even in principle.
+//
+// The recorded conversion pattern is the opposite shape (`PHASE-4.md:14`, owner ruling
+// 2026-07-30): *"the AGENT is told, with an 'if the user should know, please tell the user'
+// style nudge, and the agent decides and speaks."* This is that, and it is short enough that
+// the 400-char gist carries it WHOLE — so the severed-instruction defect dies without touching
+// the cap (O15 refused; the cap is a §T0-B budget decision).
+//
+// The two objections `packages/shared/src/visibility.ts:282-284` recorded when it declined to
+// allowlist this note — *"it embeds raw task ids and a '**Primary agent**: call …' tool
+// instruction"* — are both fixed here. Allowlisting is still NOT done, and that is the point:
+// the agent speaks to the owner, not the notice.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// AND IT CANNOT VANISH — the bounded verify-and-re-steer OR2 already runs elsewhere.
+//
+// MEASURED (investigation-round2.md §3): the notice rode a no-obligation awareness lane
+// (`requiresResponse:false`) under a header that says *"Surface one to the owner only if it
+// genuinely matters; never reply to its sender"*, so ending the turn silently was the lane's
+// DEFAULT POSTURE, not a failure — and `recordValidationEscalation` was called unconditionally
+// at ask time, writing a stamp that `work/tracker-view.ts:323-324` records as *"a permanent
+// stamp … one shot per row, forever"*. One silent turn ended the story, on a row that could
+// never be escalated again. kevin's turn was compliance, not a drop.
+//
+// OR2's shape is engine detects → steers → VERIFIES via delivery records → bounded retry →
+// the platform's own surface. This is that, with both numbers CARRIED rather than chosen:
+// the bound is `MAX_FLOOR_STEER_ATTEMPTS` (the platform's existing answer to "how many steers
+// before silence is a fault"), and the unit is the TURN, the same discipline
+// `work/run-deliver-drive.ts:76-92` adopted after a retry loop burned a whole ladder in ten
+// seconds. The one-shot suppressor STAYS for the fired case: once the agent has spoken to the
+// owner, or the bound is spent and the platform surface has said so, the row is done.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** The audit marker for one steer of the owner-verdict nudge. A free string inside the audit
+ *  payload, the landing place migration 152's header names for exactly this. */
+export const ESCALATION_STEER_MARKER = 'validation_escalation_steer';
+
+/** How many REAL steers this row has spent — DISTINCT primary turns, never rows, so a 30-second
+ *  sweep cadence cannot burn the bound between two of the agent's turns. */
+export function escalationSteerCount(workId: string): number {
+  try {
+    return (getDb().prepare(
+      `SELECT COUNT(DISTINCT COALESCE(json_extract(payload, '$.turn_number'), -id)) AS n
+         FROM work_events
+        WHERE work_id = ? AND kind = '${AUDIT_KIND}'
+          AND json_extract(payload, '$.action_taken') = ?`,
+    ).get(workId, ESCALATION_STEER_MARKER) as { n: number } | undefined)?.n ?? 0;
+  } catch (err) {
+    // A ladder that cannot read its own counter must not steer for ever. Reporting it spent
+    // hands the row to the platform surface, which is the direction that still says something.
+    logger.warn('owner-verdict ladder: could not read its own counter; treating it as spent', {
+      workId, error: err instanceof Error ? err.message : String(err),
+    });
+    return Number.MAX_SAFE_INTEGER;
+  }
+}
+
+/** When the FIRST steer for this row went out, so the verify step has a boundary to read the
+ *  delivery ledger against. Null when none has. */
+export function firstEscalationSteerAt(workId: string): number | null {
+  try {
+    return (getDb().prepare(
+      `SELECT MIN(created_at) AS at FROM work_events
+        WHERE work_id = ? AND kind = '${AUDIT_KIND}'
+          AND json_extract(payload, '$.action_taken') = ?`,
+    ).get(workId, ESCALATION_STEER_MARKER) as { at: number | null } | undefined)?.at ?? null;
+  } catch { return null; }
+}
+
+/** Record one steer's spend on the row's own durable history. */
+export function recordEscalationSteer(
+  workId: string, detail: { attempt: number; bound: number; turnNumber: number | null },
+): void {
+  appendWorkEvent(workId, AUDIT_KIND, 'engine', {
+    entry_kind: ESCALATION_STEER_MARKER,
+    from_status: null, to_status: null,
+    reason: `the primary was steered to decide whether the owner needs to rule on this row`,
+    action_taken: ESCALATION_STEER_MARKER,
+    note: `steer ${detail.attempt} of ${detail.bound}`,
+    evidence_json: null,
+    turn_number: detail.turnNumber,
+  });
+}
+
+export function ownerVerdictNudgeText(p: {
+  taskId: string; title: string; status: string; agentName: string;
+  ownerName: string; boundMin: number;
+}): string {
+  const shortId = p.taskId.slice(0, 8);
+  const title = p.title.length > 60 ? `${p.title.slice(0, 60)}…` : p.title;
+  return (
+    `${p.agentName} marked "${title}" (${shortId}) ${p.status} over ${p.boundMin} minutes ago `
+    + `and the PM still cannot confirm it. If you can settle it yourself, do that and leave `
+    + `${p.ownerName} out of it. If only he can say whether it is really done, ask him in your `
+    + `own voice — then record his answer with work_validate (apply_user_validation), quoting him.`
+  );
 }
 
 /**

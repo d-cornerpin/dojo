@@ -38,7 +38,12 @@ import {
 import { occurrenceOwesDeliverable } from '../work/deliverable-declaration.js';
 import { RUN_DELIVER_STEER_MARKER } from '../work/run-deliver-drive.js';
 // SWEEP CORE-2 item 1 — the owner-escalation candidate query and the ordering law it obeys.
-import { countRowsHeldBackFromOwner, selectRowsForOwnerEscalation } from '../work/validation-drive.js';
+import {
+  countRowsHeldBackFromOwner, selectRowsForOwnerEscalation, selectRowsSkippedAsDelivered,
+  ownerVerdictNudgeText, escalationSteerCount, firstEscalationSteerAt, recordEscalationSteer,
+} from '../work/validation-drive.js';
+import { recordFloorGhost, MAX_FLOOR_STEER_ATTEMPTS } from '../agent/v2/floor-ghost.js';
+import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getTask } from '../tracker/schema.js';
@@ -397,6 +402,17 @@ export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
         heldBack, boundMin: VALIDATION_ESCALATION_MIN, escalating: stale.length,
       });
     }
+    // UX-REPAIR round 2 T12 — THE REALITY CHECK, SAID OUT LOUD. A row held back because the
+    // ledger says its work already reached the person is not a silent skip; and it deliberately
+    // does NOT burn `validation_escalated`, which is permanent (one shot per row, forever), so
+    // a row whose delivery is later undone can still be escalated.
+    const skippedAsDelivered = selectRowsSkippedAsDelivered(staleBefore, serviceIds);
+    if (skippedAsDelivered.length > 0) {
+      logger.info('escalation_skipped_delivered: these rows are past the bound but the platform already delivered their work', {
+        skipped: skippedAsDelivered.length, boundMin: VALIDATION_ESCALATION_MIN,
+        rows: skippedAsDelivered.slice(0, 5).map((r) => ({ id: r.id, deliveryId: r.deliveryId })),
+      });
+    }
     if (stale.length === 0) return;
 
     const { writeTaskLog } = await import('../tracker/task-log.js');
@@ -418,41 +434,77 @@ export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
       const agentName = t.assigned_to
         ? (db.prepare('SELECT name FROM agents WHERE id = ?').get(t.assigned_to) as { name: string } | undefined)?.name ?? t.assigned_to
         : 'an agent';
-      const askText =
-        `[VALIDATION CHECK] Task "${t.title}" (id=${t.id}) was marked ${t.status} by ${agentName} ${VALIDATION_ESCALATION_MIN}+ minutes ago, ` +
-        `but the PM agent has not validated it. ` +
-        `${getOwnerName()}, is this actually ${t.status === 'complete' ? 'done' : t.status}? Reply yes/no with any context. ` +
-        `\n\n` +
-        `**Primary agent**: when ${getOwnerName()} replies, call work_validate(action="apply_user_validation", task_id="${t.id}", validated=<true if yes / false if no>, user_quote="<the user's exact reply>", feedback="<optional details if validated=false>"). ` +
-        `validated=true clears the bug icon; validated=false reverts to in_progress and notifies the assigned agent with the user's feedback.`;
-
-      // Dead-channel demolition (Phase 0.2): deliver the validation question AND the
-      // primary's work_validate(action="apply_user_validation") instruction as a model-VISIBLE
-      // awareness NOTICE (role='user' origin_kind='engine'), the same idiom
-      // alertMissedRuns uses above, NOT a bare role='system' row. role='system' rows
-      // are stripped by the model-context builder, so the primary's model never saw
-      // the "when the owner replies, call work_validate(action="apply_user_validation", ...)"
-      // instruction and the validation-relay flow was silently dead. As a NOTICE the
-      // primary sees it, relays the question to the owner in its own voice (dashboard
-      // chat, or imessage_send when the owner is away), and calls the tool when the
-      // owner answers. The note text is unchanged.
-      postAgentNotice({
-        toAgentId: primaryId,
-        fromName: 'Scheduler',
-        selfIntro: false,
-        intent: 'validation_check',
-        brief: askText,
+      // UX-REPAIR round 2 T12 — OR2'S SHAPE, at last. The old text was engine-composed, spoke
+      // TO the owner by name, and handed the primary a canned tool call with a 36-char task id
+      // in it — 732 chars, sliced to 400 by the events lane, cut MID-TASK-ID, so it could not
+      // have been complied with even in principle. `ownerVerdictNudgeText` is the recorded
+      // conversion pattern instead (PHASE-4.md:14, owner ruling 2026-07-30): the AGENT is told
+      // the fact and asked to decide and speak. It fits the 400-char gist WHOLE, so the severed
+      // instruction dies without touching the cap (O15 refused).
+      const askText = ownerVerdictNudgeText({
+        taskId: t.id, title: t.title, status: t.status, agentName,
+        ownerName: getOwnerName(), boundMin: VALIDATION_ESCALATION_MIN,
       });
 
-      stamp.run(threadId, t.id);
-      writeTaskLog({
-        taskId: t.id,
-        fromEntity: 'engine',
-        entryKind: 'directive',
-        actionTaken: '5-min validation escalation: asked user',
-        reason: `task has been ${t.status} with *_validated=0 since ${t.updated}; PM hasn't acted`,
-        note: askText,
-      });
+      // ── UX-REPAIR round 2 T12: VERIFY BEFORE RE-STEERING ──
+      // OR2's shape is detect → steer → VERIFY VIA DELIVERY RECORDS → bounded retry → the
+      // platform's own surface. The verify step: has the primary put anything in front of a
+      // person since the first steer went out? If so the nudge landed and the agent spoke, and
+      // the one-shot suppressor is written for that FIRED case exactly as it always was.
+      const firstSteerAt = firstEscalationSteerAt(t.id);
+      const spokeSince = firstSteerAt !== null
+        && deliveryForAgentSince(primaryId, firstSteerAt) !== null;
+      const steersSpent = escalationSteerCount(t.id);
+
+      if (spokeSince || steersSpent >= MAX_FLOOR_STEER_ATTEMPTS) {
+        // Either the agent has spoken, or it has been asked twice on two separate turns and
+        // has not. The second case is a PLATFORM fault and the platform's own watchdog surface
+        // is what says so — never the engine wearing the agent's face (OR2's last clause).
+        if (!spokeSince) {
+          recordFloorGhost({
+            agentId: primaryId, turnNumber: null, floor: 'owner-verdict-unasked', workId: t.id,
+            attempts: steersSpent,
+            ownerLine:
+              `a task has been marked ${t.status} for over ${VALIDATION_ESCALATION_MIN} minutes, `
+              + `your PM cannot confirm it, and your agent has not come back to you about it — `
+              + `the platform asked it twice and got no reply.`,
+            detail: { steers: steersSpent, task_title: t.title },
+          }, { broadcast });
+        }
+        stamp.run(threadId, t.id);
+        writeTaskLog({
+          taskId: t.id,
+          fromEntity: 'engine',
+          entryKind: 'directive',
+          actionTaken: '5-min validation escalation: asked user',
+          reason: spokeSince
+            ? `the primary was steered and has since spoken; the escalation is fired and closed`
+            : `task has been ${t.status} with *_validated=0 since ${t.updated}; the primary was steered `
+              + `${steersSpent} time(s) and did not come back — handed to the platform surface`,
+          note: askText,
+        });
+      } else {
+        // Dead-channel demolition (Phase 0.2): the nudge is a model-VISIBLE awareness NOTICE
+        // (role='user' origin_kind='engine'), the same idiom alertMissedRuns uses, NOT a bare
+        // role='system' row — those are stripped by the context builder, which is how this
+        // flow was silently dead before 2f302dc. What CHANGED in T12 is the voice (the agent
+        // decides and speaks; see ownerVerdictNudgeText) and the fact that ONE silent turn no
+        // longer ends the story: the stamp is not written until the ladder says it is over.
+        postAgentNotice({
+          toAgentId: primaryId,
+          fromName: 'Scheduler',
+          selfIntro: false,
+          intent: 'validation_check',
+          brief: askText,
+        });
+        recordEscalationSteer(t.id, {
+          attempt: steersSpent + 1, bound: MAX_FLOOR_STEER_ATTEMPTS,
+          turnNumber: currentTurnNumber(primaryId) || null,
+        });
+        logger.info('validation escalation: steered the primary to decide whether the owner needs to rule', {
+          taskId: t.id, attempt: steersSpent + 1, bound: MAX_FLOOR_STEER_ATTEMPTS,
+        });
+      }
 
       // Re-broadcast the task so the dashboard re-renders with the
       // "user has been asked" indicator (the bug icon pulse). Send the FULL

@@ -31,7 +31,7 @@
 // below, which is what the telemetry line names) and refused by nothing.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { PM_ONLY_WORK_OPS } from '../../tracker/pm-agent.js';
+import { PM_ONLY_WORK_OPS, PRIMARY_ONLY_WORK_OPS } from '../../tracker/pm-agent.js';
 import { workOperation } from '../../tools/work-verbs.js';
 import { effectsFor } from './registry.js';
 import type { EffectKind } from './types.js';
@@ -79,7 +79,7 @@ export type ToolGate =
   | { readonly kind: 'net'; readonly subAgentsOnly?: true; readonly row: string }
   /** Branch 4 — `can_spawn_agents`. */
   | { readonly kind: 'spawn'; readonly row: string }
-  /** Branches 7, 9, 13 — the primary-only wall. */
+  /** Branches 7, 8p, 9, 13 — the primary-only wall. */
   | { readonly kind: 'primary_only'; readonly message: string; readonly row: string }
   /** Branch 10 — primary OR the Healer. */
   | { readonly kind: 'primary_or_healer'; readonly row: string }
@@ -144,6 +144,17 @@ export function gatesForCall(name: string, args: Record<string, unknown>): ToolG
   const pmOnlyOp = workOperation(name, args);
   if (pmOnlyOp !== null && PM_ONLY_WORK_OPS.has(pmOnlyOp)) {
     gates.push({ kind: 'pm_only_operation', operation: pmOnlyOp, row: '8' });
+  }
+  // 8p — PRIMARY_ONLY_WORK_OPS, the same keying for the other direction (UX-REPAIR round 2
+  // T12). `work_validate:apply_user_validation` transcribes a verdict THE OWNER gave, and the
+  // owner speaks to the primary; see `PRIMARY_ONLY_WORK_OPS`' own note for the double refusal
+  // this replaces.
+  if (pmOnlyOp !== null && PRIMARY_ONLY_WORK_OPS.has(pmOnlyOp)) {
+    gates.push({
+      kind: 'primary_only',
+      row: '8p',
+      message: `Permission denied: only the primary agent can call ${pmOnlyOp} — it records the OWNER's own verdict, and the owner speaks to the primary. Escalate to the primary agent instead.`,
+    });
   }
   // 9 — PRIMARY_ONLY_TOOLS
   if (PRIMARY_ONLY_TOOLS.has(name)) {

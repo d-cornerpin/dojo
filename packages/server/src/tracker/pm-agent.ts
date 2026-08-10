@@ -195,6 +195,24 @@ export const PM_ONLY_WORK_OPS: ReadonlySet<string> = new Set<string>([
   'work_validate:retask',
   'work_validate:override',
   'work_validate:apply_user_verdict',
+]);
+
+/**
+ * Operations only the PRIMARY may perform. One member, and it is a CORRECTION.
+ *
+ * UX-REPAIR round 2 T12, measured: `work_validate:apply_user_validation` sat in
+ * `PM_ONLY_WORK_OPS` above AND was absent from `PM_ALLOWED_WORK_OPS`, so gate row 8 refused
+ * the primary (`PERMISSION_DENIED: only the PM agent can call …`) and `pmMayCall` refused the
+ * PM. The escalation's whole terminal step was closed to both agents it could be addressed to;
+ * the only working door was the dashboard route the owner drives himself.
+ *
+ * The key here is THE USER, not the PM: this op transcribes a verdict the OWNER gave, and the
+ * owner speaks to the primary. The failsafe's own 2026-06-01 intent is that the user
+ * adjudicates what the PM could not, so handing it back to the PM — which has already failed
+ * to rule on the row — would close the loop on the agent that could not close it. The PM stays
+ * out. The two-key contract is intact: the op still applies only a quoted user verdict.
+ */
+export const PRIMARY_ONLY_WORK_OPS: ReadonlySet<string> = new Set<string>([
   'work_validate:apply_user_validation',
 ]);
 

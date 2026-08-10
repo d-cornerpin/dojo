@@ -285,4 +285,30 @@ describe('working-note and owner-alert matchers', () => {
     expect(isOwnerAlertSystemNote('[SOURCE: TRACKER TASK UPDATE - automated] "Launch" completed')).toBe(false);
     expect(isOwnerAlertSystemNote('[VALIDATION CHECK] task 3f2a…')).toBe(false);
   });
+
+  // UX-REPAIR round 2 T12 — the clause above STAYS false, and now for a better reason.
+  //
+  // `packages/shared/src/visibility.ts:282-284` declined to allowlist this note because *"it
+  // embeds raw task ids and a '**Primary agent**: call …' tool instruction, and it currently
+  // mis-fires on engine-owned pauses. It stays wordy-mode-only until that is fixed and the copy
+  // is split."* T12 fixed all three reasons: the copy is the OR2 nudge (no raw uuid, no canned
+  // tool call — `work/validation-drive.ts` ownerVerdictNudgeText, pinned in
+  // `work/__tests__/the-escalation-checks-reality-first`), and the mis-fire is gone because the
+  // predicate reads the delivery ledger before it fires.
+  //
+  // ALLOWLISTING IS STILL NOT DONE, and that is the whole point of the conversion rather than
+  // an omission: the note is addressed to the AGENT, which decides and speaks to the owner in
+  // its own voice (PHASE-4.md:14, owner ruling 2026-07-30). A platform note that reached the
+  // owner directly would be the shape OR2 exists to prevent.
+  it('the converted validation nudge is STILL not an owner alert — the agent speaks, not the notice', () => {
+    expect(isOwnerAlertSystemNote(
+      'BehaviorBot marked "Synthesize the research" (77cba094) in_progress over 5 minutes ago '
+      + 'and the PM still cannot confirm it.',
+    )).toBe(false);
+    // …and the platform's OWN voice, when the agent has been asked twice and said nothing, is
+    // an owner alert, because that is a platform fault and the watchdog surface says so.
+    expect(isOwnerAlertSystemNote(
+      `${OWNER_ALERT_HEADS_UP_PREFIX} a task has been marked in_progress for over 5 minutes`,
+    )).toBe(true);
+  });
 });
