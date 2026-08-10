@@ -450,7 +450,9 @@ export interface Project {
 
 export interface ProjectDetail extends Project {
   tasks: Task[];
-  taskCounts: { pending: number; inProgress: number; complete: number; blocked: number; failed: number; paused: number };
+  /** T18: `cancelled` is counted apart from `failed`. Folding a user's cancellation into the
+   *  failure count is the same mislabel the status vocabulary carried, one layer up. */
+  taskCounts: { pending: number; inProgress: number; complete: number; blocked: number; failed: number; cancelled: number; paused: number };
 }
 
 export interface Task {
@@ -458,7 +460,10 @@ export interface Task {
   projectId: string | null;
   title: string;
   description: string | null;
-  status: 'on_deck' | 'in_progress' | 'complete' | 'blocked' | 'fallen' | 'paused';
+  /** T18: `cancelled` is the second TERMINAL outcome (spine `abandoned`), distinct from
+   *  `fallen`. It renders in the same board column with its own word — see
+   *  `dashboard/src/lib/task-status.ts`, which owns that rule. */
+  status: 'on_deck' | 'in_progress' | 'complete' | 'blocked' | 'fallen' | 'paused' | 'cancelled';
   assignedTo: string | null;
   assignedToName: string | null;
   createdBy: string;

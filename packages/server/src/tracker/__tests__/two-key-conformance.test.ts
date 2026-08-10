@@ -148,6 +148,13 @@ const KEY1_ALLOW: Record<string, string[]> = {
     "reason: 'the assignee returned a terminal deliverable on its ASSIGN thread; Key 1 filed from that receipt'",
     // The project umbrella, closed against its last finished child's real delivery.
     "reason: 'every task on this project is complete'",
+    // UX-REPAIR ROUND 3 T18 — SAME definition site, same write, same review; only the
+    // literal moved, exactly as it did for T8V above. `cancelled` is a real terminal status
+    // now, so a project can run out of open tasks with some of them CANCELLED rather than
+    // completed — and saying "every task on this project is complete" over that would be the
+    // umbrella telling the same lie the task statuses just stopped telling. The reason became
+    // a ternary that names the cancellations when there are any.
+    "reason: cancelledCount > 0",
     "reason: `bulk-closed with its project: ${reason}`",
     // PHASE-2 T8T — KEY 2 IS THE MOVE NOW, and this is the door it comes through.
     // Migration `139`'s trigger means a worker's close cannot set `complete` at all: it files

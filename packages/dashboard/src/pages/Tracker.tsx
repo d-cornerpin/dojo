@@ -167,6 +167,7 @@ const TaskDetailPanel = ({
               <option value="complete">Complete</option>
               <option value="blocked">Blocked</option>
               <option value="fallen">Failed</option>
+              <option value="cancelled">Cancelled</option>
             </select>
             {/* Awaiting-validation chip + manual validate button. */}
             {((task.status === 'complete' && task.completeValidated === 0) ||

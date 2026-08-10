@@ -474,9 +474,12 @@ export function checkProjectCompletion(projectId: string | null, callingAgentId:
 
     // Any task still genuinely open (not in a terminal state)? If so the
     // project keeps running, there's nothing to decide yet.
+    // T18: `abandoned` joins the terminal list. Without it a cancelled task counted as
+    // STILL OPEN and pinned its project open for ever — the silent fall-through a new
+    // terminal state creates in every "not terminal" predicate that was written as a list.
     const open = db.prepare(`
       SELECT COUNT(*) as count FROM work w
-      WHERE ${taskScope('w')} AND w.parent_id = ? AND w.state NOT IN ('done', 'failed')
+      WHERE ${taskScope('w')} AND w.parent_id = ? AND w.state NOT IN ('done', 'failed', 'abandoned')
     `).get(projectId) as { count: number };
     if (open.count > 0) return 'still_open';
 
@@ -493,6 +496,17 @@ export function checkProjectCompletion(projectId: string | null, callingAgentId:
       WHERE ${taskScope('w')} AND w.parent_id = ? AND w.state = 'failed'
       ORDER BY w.step_number ASC, w.opened_at ASC
     `).all(projectId) as Array<{ title: string }>;
+
+    // T18: cancellations are counted SEPARATELY and deliberately do NOT trip the D-K
+    // fail-open path. A task the owner called off is not a failed piece, and telling the
+    // primary "this project has ended with FAILED PIECES" over a cancellation is the same
+    // mislabel this task removed from the status vocabulary. What it must not do either is
+    // vanish: the rollup below says how many were cancelled, so "complete" never silently
+    // means "some of it was called off".
+    const cancelledCount = (db.prepare(`
+      SELECT COUNT(*) AS count FROM work w
+      WHERE ${taskScope('w')} AND w.parent_id = ? AND w.state = 'abandoned'
+    `).get(projectId) as { count: number }).count;
 
     if (fallen.length === 0) {
       // ── Genuine success: auto-close the umbrella (the reason auto-complete
@@ -511,7 +525,9 @@ export function checkProjectCompletion(projectId: string | null, callingAgentId:
       const rollupDelivery = deliveryForCompletedChildren(projectId);
       const rollupRes = setTrackerStatus(projectId, 'complete', {
         by: 'engine', actorId: callingAgentId,
-        reason: 'every task on this project is complete',
+        reason: cancelledCount > 0
+          ? `every task on this project is closed; ${cancelledCount} were cancelled`
+          : 'every task on this project is complete',
         evidenceRef: rollupDelivery,
         resultDeliveryId: rollupDelivery,
       });
@@ -547,7 +563,8 @@ export function checkProjectCompletion(projectId: string | null, callingAgentId:
       //      and let the owner know" which the model interpreted as a fresh
       //      assignment and kept working. The new text contains no
       //      verbs aimed at the reader, it's just the completion fact.
-      const completionLine = `[tracker:project_complete] "${project.title}", ${tasks.count} task${tasks.count === 1 ? '' : 's'} closed.`;
+      const completionLine = `[tracker:project_complete] "${project.title}", ${tasks.count} task${tasks.count === 1 ? '' : 's'} closed`
+        + (cancelledCount > 0 ? ` (${cancelledCount} cancelled).` : '.');
       notifyPrimaryAgent(completionLine, callingAgentId);
 
       logger.info('Project completed', { projectId, title: project.title, taskCount: tasks.count });
@@ -1476,11 +1493,25 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // clear synonyms to the canonical six and REJECT anything else with
     // guidance, so a mislabel is corrected or refused, never silently stored.
     // The failure words map per owner decision 2026-07-04: "stuck" -> blocked
-    // (needs the owner), "failed"/"cancelled" -> fallen (give up, archive).
+    // (needs the owner), "failed" -> fallen (give up, archive).
+    //
+    // ── UX-REPAIR ROUND 3 T18: "cancelled" LEFT THE FAILURE BUCKET ──
+    // It was folded into `fallen` here, beside `fail` and `wontfix`, and that fold is the
+    // one thing in this normalizer that was never typo forgiveness: a user saying "cancel
+    // it" is not a weak model misspelling "failed". The destination existed one layer below
+    // the whole time — `work/tracker-view.ts:55/69` already maps `cancelled <-> abandoned`
+    // in both directions, and the spine admits `abandoned` as a terminal state — under a
+    // doc comment that names exactly this defect: "a lossy arm here would silently rewrite
+    // a row's meaning". The ONE recorded reason for the fold (`tracker/schema.ts:381-386`,
+    // `632cadd`) was a RENDERING constraint — the kanban had no column, so a literal
+    // "cancelled" vanished from the board — and that is answered by
+    // `dashboard/src/lib/task-status.ts`, where `fallen` and `cancelled` now share the
+    // terminal column and each says its own word on the card.
+    // The failure words below are untouched: `fallen`/`failed`/`fail` still mean failed.
     const rawStatus = args.status as string | undefined;
     let status: string | undefined = rawStatus;
     if (rawStatus !== undefined) {
-      const CANONICAL_STATUSES = ['on_deck', 'in_progress', 'paused', 'complete', 'blocked', 'fallen'];
+      const CANONICAL_STATUSES = ['on_deck', 'in_progress', 'paused', 'complete', 'blocked', 'fallen', 'cancelled'];
       const STATUS_SYNONYMS: Record<string, string> = {
         done: 'complete', finished: 'complete', completed: 'complete', complete: 'complete',
         in_progress: 'in_progress', inprogress: 'in_progress', working: 'in_progress',
@@ -1489,16 +1520,19 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         queued: 'on_deck', backlog: 'on_deck', pending: 'on_deck',
         paused: 'paused', pause: 'paused', on_hold: 'paused', hold: 'paused', waiting: 'paused', parked: 'paused',
         blocked: 'blocked', block: 'blocked', stuck: 'blocked', stalled: 'blocked',
-        fallen: 'fallen', failed: 'fallen', fail: 'fallen', cancelled: 'fallen',
-        canceled: 'fallen', abandoned: 'fallen', dropped: 'fallen', wontfix: 'fallen',
+        fallen: 'fallen', failed: 'fallen', fail: 'fallen',
+        cancelled: 'cancelled', canceled: 'cancelled', cancel: 'cancelled',
+        abandoned: 'cancelled', dropped: 'cancelled', wontfix: 'cancelled',
       };
       const key = rawStatus.trim().toLowerCase().replace(/[\s-]+/g, '_');
       const mapped = CANONICAL_STATUSES.includes(key) ? key : STATUS_SYNONYMS[key];
       if (!mapped) {
         return (
-          `Error: "${rawStatus}" is not a recognized task status. Use one of: on_deck, in_progress, paused, complete, blocked, fallen. ` +
+          `Error: "${rawStatus}" is not a recognized task status. Use one of: on_deck, in_progress, paused, complete, blocked, fallen, cancelled. ` +
           `Common words map automatically ("done"/"finished" to complete, "in progress" to in_progress, "todo" to on_deck, "on hold"/"waiting" to paused). ` +
-          `For a task that failed or is stuck, choose "fallen" (give up, archive) or "blocked" (needs the owner) explicitly.`
+          `The two terminal outcomes are DIFFERENT and both are kept for history: "fallen" (it failed or you gave up; "failed"/"fail" map here) ` +
+          `and "cancelled" (someone chose to call it off; "dropped"/"wontfix"/"abandoned" map here). ` +
+          `For work that needs the owner instead, choose "blocked".`
         );
       }
       status = mapped;
@@ -2055,12 +2089,21 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // tasks (fall-last ordering), so the fail-open check must run here too, not
     // only on completions. Idempotent: still_open/noop guards make extra calls harmless.
     let fallenScheduleNote: string | null = null;
-    if (status === 'fallen') {
+    if (status === 'fallen' || status === 'cancelled') {
       // RC-17.5: 'fallen' on a live schedule must also STOP the schedule, or the
       // due query (which filters only schedule_status/is_paused, not status)
       // keeps firing it (F-17). Terminate it, close any open run as skipped, and
       // SAY so in the result.
-      const term = terminateLiveScheduleOnFallen(taskId, 'the task was marked fallen (given up on)');
+      //
+      // T18: `cancelled` is the SECOND terminal outcome and it arrives here for the same
+      // structural reason — F-17's own words are "a CANCELLED reminder fired anyway two
+      // hours later", so the one shape this guard was written for is exactly the one that
+      // would have slipped through if the new value had not been added. The reason string
+      // names the actor's choice rather than "given up on", which is a failure sentence
+      // that the owner then reads back on the task's own history.
+      const term = status === 'cancelled'
+        ? terminateLiveScheduleOnFallen(taskId, 'the task was cancelled', 'schedule terminated on cancel')
+        : terminateLiveScheduleOnFallen(taskId, 'the task was marked fallen (given up on)');
       if (term.terminated) {
         fallenScheduleNote =
           `Schedule stopped so it cannot fire again` +
@@ -4393,11 +4436,16 @@ export async function trackerOverride(
 
     // D-K: an approved override to 'fallen' can be the transition that empties
     // the project of open tasks; run the fail-open check (idempotent).
-    if (req.requestedStatus === 'fallen') {
+    if (req.requestedStatus === 'fallen' || req.requestedStatus === 'cancelled') {
       // RC-17.5: also STOP a live schedule so it cannot keep firing after the
-      // override lands it in 'fallen' (mirror of the tool + dashboard paths).
+      // override lands it in a terminal status (mirror of the tool + dashboard paths).
+      // T18: `cancelled` is the second terminal outcome and disarms for the same reason.
       try {
-        terminateLiveScheduleOnFallen(req.taskId, 'a PM override marked the task fallen (given up on)');
+        if (req.requestedStatus === 'cancelled') {
+          terminateLiveScheduleOnFallen(req.taskId, 'a PM override cancelled the task', 'schedule terminated on cancel');
+        } else {
+          terminateLiveScheduleOnFallen(req.taskId, 'a PM override marked the task fallen (given up on)');
+        }
       } catch { /* best-effort */ }
       try {
         checkProjectCompletion(freshOverride?.projectId ?? null, pmAgentId);
@@ -4593,11 +4641,16 @@ export async function trackerApplyUserVerdict(
 
   // D-K: a user verdict of 'fallen' can likewise be the transition that
   // empties the project of open tasks; run the fail-open check (idempotent).
-  if (status === 'fallen') {
+  if (status === 'fallen' || status === 'cancelled') {
     // RC-17.5: also STOP a live schedule so it cannot keep firing after the
-    // user verdict lands it in 'fallen' (mirror of the tool + dashboard paths).
+    // user verdict lands it in a terminal status (mirror of the tool + dashboard paths).
+    // T18: a user verdict of `cancelled` is the owner's own word and disarms identically.
     try {
-      terminateLiveScheduleOnFallen(taskId, 'the owner marked the task fallen (given up on)');
+      if (status === 'cancelled') {
+        terminateLiveScheduleOnFallen(taskId, 'the owner cancelled the task', 'schedule terminated on cancel');
+      } else {
+        terminateLiveScheduleOnFallen(taskId, 'the owner marked the task fallen (given up on)');
+      }
     } catch { /* best-effort */ }
     try {
       checkProjectCompletion(task.project_id, agentId);

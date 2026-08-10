@@ -100,7 +100,25 @@ const T0CW_BASELINE_CHARS = { work_open: 6327, work_update: 7058 };
 // count is unchanged, so no new capability was smuggled in with the bytes, and the second
 // half of T5's solve (`work_open` onto `SUB_AGENT_ALWAYS_LOADED`) is what makes the contract
 // followable by the agent that broke it, since it could not reach `work_open` in one call.
-const BASELINE_CHARS = { work_open: 6327, work_update: 7311 };
+const T5_BASELINE_CHARS = { work_open: 6327, work_update: 7311 };
+
+// ── UX-REPAIR ROUND 3 T18 — THE TWO TERMINAL OUTCOMES READ AS TWO, AND IT COSTS 295 CHARS ─
+// On this sitting's PREFIX RE-BLESSING REGISTER (the tool-doc status vocabulary), so it is a
+// reviewed re-blessing rather than silent creep. Measured, not estimated:
+//   work_open   6,327 → 6,327  (+0 — untouched; this edit is `work_update.status` only)
+//   work_update 7,311 → 7,606  (+295)
+// WHAT THE 295 BUY, and why they are a DECLARATION FIX rather than coaching. `cancelled` was
+// ALREADY in this enum and already schema-legal for action="status" — the tool accepted it
+// and then silently rewrote it to `fallen`, the failure word, so the user's own cancellation
+// came back to them as "Fallen"/"Failed" in coral and the agent got nudged that the project
+// "ended with failed pieces". Meanwhile the description said `"fallen" = abandoned/dropped`
+// while `templates/PM-SOUL.md:25` said "Fatally failed, not recoverable" — one word carrying
+// two meanings, never reconciled. The value now lands on the spine's `abandoned` terminal, so
+// the description states which outcome is which and when to reach for each.
+// THE GUARD BELOW STILL HOLDS: the property count is unchanged and the ENUM is unchanged —
+// not one new value, not one new property. The bytes are the meaning of values that were
+// already declared.
+const BASELINE_CHARS = { work_open: 6327, work_update: 7606 };
 
 describe('S2 + N1 — the shared declaration, and the wording said once', () => {
   const open = schemaOf('work_open');
@@ -133,19 +151,35 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     // The pin moved; this is the clause that says a rewording nobody approved cannot hide
     // inside the move. Same shape as the T0C-W guard above, inverted: T0C-W had to ADD
     // properties to earn its bytes, and this one has to add NONE.
-    expect(BASELINE_CHARS.work_open - T0CW_BASELINE_CHARS.work_open).toBe(0);
-    expect(BASELINE_CHARS.work_update - T0CW_BASELINE_CHARS.work_update).toBe(253);
-    const po = (open as { properties: Record<string, unknown> }).properties;
+    expect(T5_BASELINE_CHARS.work_open - T0CW_BASELINE_CHARS.work_open).toBe(0);
+    expect(T5_BASELINE_CHARS.work_update - T0CW_BASELINE_CHARS.work_update).toBe(253);
     const pu = (upd as { properties: Record<string, unknown> }).properties;
-    // No capability rode in on the bytes: the property rosters are exactly T0C-W's.
-    expect(Object.keys(po)).toHaveLength(25);
-    expect(Object.keys(pu)).toHaveLength(32);
     // And the bytes landed where they were declared to land.
     const taskId = String((pu.task_id as { description?: string }).description ?? '');
     expect(taskId).toMatch(/ALREADY EXISTS/);
     expect(taskId).toMatch(/work_open/);
     expect(taskId).toMatch(/NEVER invent an id/);
-    // `work_open`'s own `task_id`-shaped fields are untouched — this edit is one verb wide.
+  });
+
+  it('UX-REPAIR ROUND 3 T18 — the +295 is the status vocabulary and nothing else', () => {
+    // Same inverted guard, one re-blessing later: this edit also has to add NO capability.
+    expect(BASELINE_CHARS.work_open - T5_BASELINE_CHARS.work_open).toBe(0);
+    expect(BASELINE_CHARS.work_update - T5_BASELINE_CHARS.work_update).toBe(295);
+    const po = (open as { properties: Record<string, unknown> }).properties;
+    const pu = (upd as { properties: Record<string, unknown> }).properties;
+    // No capability rode in on the bytes: the property rosters are still exactly T0C-W's.
+    expect(Object.keys(po)).toHaveLength(25);
+    expect(Object.keys(pu)).toHaveLength(32);
+    // Nor did the ENUM move: `cancelled` was always advertised. What changed is that it now
+    // MEANS something the tool honours.
+    const status = pu.status as { enum: string[]; description: string };
+    expect(status.enum).toEqual(
+      ['on_deck', 'in_progress', 'complete', 'blocked', 'fallen', 'paused', 'cancelled'],
+    );
+    expect(status.description).toMatch(/two TERMINAL outcomes are different/);
+    expect(status.description).toMatch(/"cancelled" = someone \(usually the user\) chose to call it off/);
+    expect(status.description).toMatch(/NOT a failure/);
+    // `work_open` is untouched — this edit is one verb and one property wide.
     expect(JSON.stringify(open).length).toBe(T0CW_BASELINE_CHARS.work_open);
   });
 

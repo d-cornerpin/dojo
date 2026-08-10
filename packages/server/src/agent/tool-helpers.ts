@@ -173,7 +173,10 @@ export function isTerminalAgentStatus(status: string | null | undefined): boolea
 // ── isTerminalTaskStatus ─────────────────────────────────────────────────
 
 export function isTerminalTaskStatus(status: string | null | undefined): boolean {
-  return status === 'complete' || status === 'fallen';
+  // T18: `cancelled` is the THIRD terminal tracker status (spine `abandoned`). It is not a
+  // synonym of `fallen` any more, and every reader of this predicate treats a terminal task
+  // as one that can no longer be worked — which is as true of a cancellation as of a failure.
+  return status === 'complete' || status === 'fallen' || status === 'cancelled';
 }
 
 

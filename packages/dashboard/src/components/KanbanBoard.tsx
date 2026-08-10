@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, type DragEvent } from 'react';
 import type { Task } from '@dojo/shared';
 import { TaskCard } from './TaskCard';
+import { columnKeyForStatus, type KanbanColumnKey } from '../lib/task-status';
 
 // Subtle horizontal scrollbar rendered ABOVE the board. The board itself hides
 // its native scrollbar (scrollbar-width: none), and a native one would sit at
@@ -91,7 +92,7 @@ interface KanbanBoardProps {
 }
 
 interface ColumnDef {
-  key: Task['status'];
+  key: KanbanColumnKey;
   label: string;
   // Prototype kcol flavor modifier. On Deck has no flavor (the plain .kcol);
   // the others map onto the four prototype colors.
@@ -104,7 +105,11 @@ const columns: ColumnDef[] = [
   { key: 'paused', label: 'Paused', flavor: 'kcol--paused' },
   { key: 'complete', label: 'Complete', flavor: 'kcol--complete' },
   { key: 'blocked', label: 'Blocked', flavor: 'kcol--blocked' },
-  { key: 'fallen', label: 'Fallen', flavor: 'kcol--blocked' },
+  // T18: this column holds BOTH terminal outcomes — a task that failed and one the owner
+  // cancelled. It is one column with two words on the cards rather than a seventh column,
+  // because the whole reason `cancelled` was folded into `fallen` for a year is that a
+  // status with no column rendered NOWHERE. `columnKeyForStatus` owns that mapping.
+  { key: 'fallen', label: 'Fallen / Cancelled', flavor: 'kcol--blocked' },
 ];
 
 const KanbanColumn = ({
@@ -238,7 +243,7 @@ const desc = (av: string | null, bv: string | null): number => {
   return b.localeCompare(a);
 };
 
-const SORT_BY_COLUMN: Record<Task['status'], Cmp> = {
+const SORT_BY_COLUMN: Record<KanbanColumnKey, Cmp> = {
   on_deck: (a, b) =>
     asc(a.nextRunAt, b.nextRunAt) ||
     asc(a.scheduledStart, b.scheduledStart) ||
@@ -254,11 +259,11 @@ export const KanbanBoard = ({ tasks, workingAgentIds, onTaskClick, onStatusChang
   const tasksByStatus = columns.reduce(
     (acc, col) => {
       acc[col.key] = tasks
-        .filter((t) => t.status === col.key)
+        .filter((t) => columnKeyForStatus(t.status) === col.key)
         .sort(SORT_BY_COLUMN[col.key]);
       return acc;
     },
-    {} as Record<Task['status'], Task[]>,
+    {} as Record<KanbanColumnKey, Task[]>,
   );
 
   const handleDrop = (taskId: string, newStatus: Task['status']) => {

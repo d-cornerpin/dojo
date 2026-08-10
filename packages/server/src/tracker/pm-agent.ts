@@ -40,6 +40,7 @@ import {
 import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isPMEnabled, isSetupCompleted, getOwnerName, isSystemServiceAgent, isDreamerAgent } from '../config/platform.js';
 import type { Message } from '@dojo/shared';
 import { workOperation, type WorkOp } from '../tools/work-verbs.js';
+import { isTerminalTaskStatus } from '../agent/tool-helpers.js';
 
 const logger = createLogger('pm-agent');
 
@@ -1175,7 +1176,9 @@ async function runPMReview(): Promise<void> {
 
   // ── Engine-level checks (fast, deterministic, no LLM needed) ──
   const allTasks = listTasks({});
-  const activeTasks = allTasks.filter(t => !['complete', 'fallen', 'paused'].includes(t.status));
+  // T18: `cancelled` is terminal; poking an agent about work the owner called off is the
+  // failure this list exists to prevent, one status later.
+  const activeTasks = allTasks.filter(t => !['complete', 'fallen', 'cancelled', 'paused'].includes(t.status));
 
   // Phase B.1: even when no tasks are "active" (in_progress / on_deck /
   // blocked), there may still be unvalidated-complete or override-request
@@ -1235,7 +1238,7 @@ async function runPMReview(): Promise<void> {
       }
       const spawnTask = db.prepare(`SELECT ${STATE_TO_STATUS_SQL('state')} AS status FROM work WHERE id = ?`)
         .get(agent.task_id) as { status: string } | undefined;
-      if (!spawnTask || spawnTask.status === 'complete' || spawnTask.status === 'fallen') {
+      if (!spawnTask || isTerminalTaskStatus(spawnTask.status)) {
         dormantAgentIds.add(agent.id);
       }
     }
@@ -2010,7 +2013,7 @@ export async function runPokeCheck(): Promise<void> {
   }
 
   // ── Engine-level quick checks (still needed for immediate alerts) ──
-  const allActiveTasks = listTasks({}).filter(t => !['complete', 'fallen', 'paused'].includes(t.status));
+  const allActiveTasks = listTasks({}).filter(t => !['complete', 'fallen', 'cancelled', 'paused'].includes(t.status));
 
   // 2026-06-02 bug fix: also count tasks that need PM judgment but are not
   // "active" (complete-but-unvalidated, blocked-but-unvalidated, paused-but-

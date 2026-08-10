@@ -13,6 +13,9 @@ const statusColors: Record<string, string> = {
   running: 'glass-badge-amber',
   on_deck: 'glass-badge-gray',
   fallen: 'glass-badge-coral',
+  // T18: a cancellation is terminal but it is not an error, so it does not wear the error
+  // colour. Neutral, the same weight the card's own "Cancelled" line carries.
+  cancelled: 'glass-badge-gray',
   skipped: 'glass-badge-gray',
 };
 

@@ -1092,10 +1092,19 @@ export const toolDefinitions: ToolDefinition[] = [
         task_id: { type: 'string', description: 'The task ID (full UUID or 8+ char prefix) of a task that ALREADY EXISTS — either an id `work_open` returned to you, or one listed by `work_update(action="list")`. NEVER invent an id or pass a placeholder: if the task does not exist yet, call `work_open` to create it and use the id it returns. For action="complete_step", the step you just completed.' },
         project_id: workProp('project_id', 'The project ID (full UUID or 8+ char prefix). Used by action="edit" (rename a project), "close_project", and "get".'),
         id: { type: 'string', description: 'Alias for task_id / project_id on action="get".' },
+        // UX-REPAIR ROUND 3 T18 — the two terminal outcomes finally read as two. `cancelled`
+        // was ALREADY in this enum and was already schema-legal for action="status"; what
+        // happened to it was a silent rewrite into `fallen` at the tool boundary, so the
+        // description below said "fallen = abandoned/dropped" while `PM-SOUL.md:25` said
+        // "fatally failed". One word, two meanings, and a user's cancellation landing in the
+        // one the board paints red. The value now reaches the spine's `abandoned` terminal
+        // and the board renders it with its own word, so the description states which is
+        // which. Prompt-surface edit, on this phase's re-blessing register; static text, so
+        // the cached prefix stays byte-stable.
         status: {
           type: 'string',
           enum: ['on_deck', 'in_progress', 'complete', 'blocked', 'fallen', 'paused', 'cancelled'],
-          description: 'action="status": the new status. Quick reference: "in_progress" = actively working / about to take an action this turn. "complete" = done. "paused" = waiting on the user (already asked them), PM ignores entirely, no pokes. "blocked" = needs escalation/attention, PM surfaces this to the primary user. "on_deck" = queued, not yet started. "fallen" = abandoned/dropped, kept for history. action="close_project": the terminal status for the project and every open task, "complete" | "cancelled" (default "cancelled").',
+          description: 'action="status": the new status. Quick reference: "in_progress" = actively working / about to take an action this turn. "complete" = done. "paused" = waiting on the user (already asked them), PM ignores entirely, no pokes. "blocked" = needs escalation/attention, PM surfaces this to the primary user. "on_deck" = queued, not yet started. The two TERMINAL outcomes are different and both are kept for history: "fallen" = it failed or you gave up on it, and "cancelled" = someone (usually the user) chose to call it off, which is NOT a failure. Use "cancelled" whenever the user says to cancel, drop, skip or never mind something; both stop any schedule on the task immediately. action="close_project": the terminal status for the project and every open task, "complete" | "cancelled" (default "cancelled").',
         },
         notes: {
           type: 'string',

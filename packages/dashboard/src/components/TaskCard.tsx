@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { Task } from '@dojo/shared';
 import * as api from '../lib/api';
 import { formatShortDateTime, formatTimeSince } from '../lib/dates';
+import { terminalOutcomeLabel } from '../lib/task-status';
 
 interface TaskCardProps {
   task: Task;
@@ -64,6 +65,7 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
   const isPaused = task.status === 'paused';
   // Paused and complete cards read as dimmed in the prototype.
   const isDim = isPaused || task.status === 'complete';
+  const outcomeLabel = terminalOutcomeLabel(task.status);
 
   const awaitingValidation =
     (task.status === 'complete' && task.completeValidated === 0) ||
@@ -87,6 +89,12 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
         <div className="kcard__title">{task.title}</div>
         <span className="pill pill--norm">{priorityLabel}</span>
       </div>
+
+      {/* T18: the terminal column holds two OUTCOMES — failed, and cancelled by choice — so
+          the card says which one it is. Without this the shared column would be the old
+          mislabel wearing a different hat. `terminalOutcomeLabel` returns null for every
+          status whose column header already says it. */}
+      {outcomeLabel && <div className="kcard__sub">{outcomeLabel}</div>}
 
       {/* Next-run line, only when waiting on a schedule and not paused. */}
       {isScheduled && !isPaused && task.nextRunAt && task.scheduleStatus === 'waiting' && (

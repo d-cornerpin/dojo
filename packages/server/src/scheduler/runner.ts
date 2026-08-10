@@ -1394,6 +1394,11 @@ export function postSkippedReminderHeadsUp(taskId: string, reason: string): void
 export function terminateLiveScheduleOnFallen(
   taskId: string,
   reason = 'the task was marked fallen (given up on)',
+  // T18: the trail line the OWNER reads. It defaults to the string it has always written, so
+  // the fallen path is byte-identical; the cancellation call sites pass their own, because
+  // "terminated on fallen" stamped onto a task the owner cancelled is the same failure word
+  // in the same place, one table over from the status this task just fixed.
+  actionTaken = 'schedule terminated on fallen',
 ): { terminated: boolean; runsSkipped: number; isReminder: boolean } {
   const db = getDb();
   const row = db.prepare(
@@ -1422,7 +1427,7 @@ export function terminateLiveScheduleOnFallen(
     taskId,
     fromEntity: 'engine',
     entryKind: 'auto_sweep',
-    actionTaken: 'schedule terminated on fallen',
+    actionTaken,
     reason: `${reason}; schedule stopped so it cannot fire again${runsSkipped > 0 ? `, ${runsSkipped} open run(s) skipped` : ''}`,
   });
 
@@ -1586,7 +1591,7 @@ export function cleanupStaleRuns(): void {
       AND t.repeat_unit IS NOT NULL
       AND t.next_run_at IS NULL
       AND t.is_paused = 0
-      AND t.state NOT IN ('done', 'failed', 'paused')
+      AND t.state NOT IN ('done', 'failed', 'abandoned', 'paused')
       AND t.schedule_status != 'completed'
   `).all() as Array<{ id: string; title: string }>;
 
@@ -1850,13 +1855,15 @@ export function resumeExpiredPauses(): void {
 }
 
 /**
- * Keep each terminal state (complete, blocked, fallen) capped at 50 tasks.
+ * Keep each terminal state (complete, blocked, fallen, cancelled) capped at 50 tasks.
  * Oldest tasks beyond the cap are deleted along with their runs and poke logs.
  */
 export function pruneTerminalTasks(): void {
   const db = getDb();
 
-  for (const status of ['complete', 'blocked', 'fallen']) {
+  // T18: `cancelled` joins the list. A terminal state missing from here is one that never
+  // gets pruned — unbounded growth of exactly the rows nobody looks at again.
+  for (const status of ['complete', 'blocked', 'fallen', 'cancelled']) {
     const overflow = db.prepare(`
       SELECT w.id AS id FROM work w
       WHERE ${taskScope('w')} AND w.state = ?

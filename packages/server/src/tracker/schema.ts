@@ -310,6 +310,7 @@ export function getProject(id: string): ProjectDetail | null {
     complete: 0,
     blocked: 0,
     failed: 0,
+    cancelled: 0,
     paused: 0,
   };
 
@@ -320,6 +321,7 @@ export function getProject(id: string): ProjectDetail | null {
       case 'complete': taskCounts.complete++; break;
       case 'blocked': taskCounts.blocked++; break;
       case 'fallen': taskCounts.failed++; break;
+      case 'cancelled': taskCounts.cancelled++; break;
       case 'paused': taskCounts.paused++; break;
     }
   }
@@ -378,13 +380,15 @@ export function closeProjectAndOpenTasks(params: {
     ? { by: authority.by, actorId: authority.actorId, claim: 'authoritative' as const }
     : { by: 'agent' as Actor, actorId: closingAgentId, claim: undefined };
 
-  // Kanban DB-status mapping. The board only renders the six legacy task
-  // statuses (on_deck/in_progress/paused/complete/blocked/fallen); storing
-  // a literal "cancelled" on a task would make it disappear from the board.
-  // So a user-facing "cancelled" task is stored as "fallen" (the existing
-  // "didn't make it" terminal column) with a clear note. The project row
-  // itself stores the literal user-facing status, it isn't column-rendered.
-  const dbTaskStatus: TrackerStatus = taskStatus === 'cancelled' ? 'fallen' : 'complete';
+  // Kanban DB-status mapping. This USED to read: "the board only renders the six legacy task
+  // statuses … storing a literal 'cancelled' on a task would make it disappear from the
+  // board. So a user-facing 'cancelled' task is stored as 'fallen'." (`632cadd`, 2026-05-20.)
+  // That was true, it was a RENDERING constraint rather than a semantic judgement, and
+  // UX-REPAIR ROUND 3 T18 answered it rather than obeying it: `fallen` and `cancelled` share
+  // the terminal column and each card carries its own word
+  // (`dashboard/src/lib/task-status.ts`). So the user's word is now STORED as itself — spine
+  // `abandoned`, via `tracker-view.ts`'s existing total map — and nothing vanishes.
+  const dbTaskStatus: TrackerStatus = taskStatus === 'cancelled' ? 'cancelled' : 'complete';
   const noteMarker = taskStatus === 'cancelled' ? '[CANCELLED]' : '[Completed via bulk close]';
 
   const tasks = db
