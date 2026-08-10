@@ -2,6 +2,69 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/server/src/tracker/task-stamps.ts",
+      "from": 207,
+      "to": 268,
+      "by": "UX-REPAIR ROUND 4 T19 (D7) — newly PINNED, not raised: the file crossed 60% of the new-file cap",
+      "why": "+61 (36 of them comment). This file had no pin because it had never been above the cap fraction; the growth gate's rule is that a file crossing 240 lines is either split or pinned at its current count in a gate-side-only commit, and pinning is the branch taken. What grew: the declared non-tangible summary set and `isTangibleDeliverySummary` (the ONE predicate four consumers now ask), the dashboard/voice arm of `composeTurnDeliverySummary`, and the state line's third branch. The comment weight is the two incidents that had to be reconciled in one place — the 2026-07-22 strangle catch, which says a bare reply is not a handover and must keep its exact standard, and the 2026-08-10 reminder, whose state line said '(no delivery recorded)' about a message the owner had read. REFUSED: splitting the compose/render pair — the whole point of this task is that the WRITER and the READER of one column stop disagreeing about what it means, and putting them in two files is how they drifted. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts",
+      "from": 236,
+      "to": 238,
+      "by": "UX-REPAIR ROUND 4 T19 — the close-out gate's evidence consult asks the one predicate",
+      "why": "+2 (+4/-2; 2 of the added lines are comment). Same move as the tool door, one call site, byte-identical behaviour. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 4662,
+      "to": 4666,
+      "by": "UX-REPAIR ROUND 4 T19 — the tool door's tangibility question asks the one predicate",
+      "why": "+4 (+7/-3; 3 of the added lines are comment). Two consumers of the finished-work question move from `!!st.last_delivery_summary` to `isTangibleDeliverySummary(...)` so the 2026-07-22 standard survives the summary becoming truthful; the comment names why the two are no longer the same question. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts",
+      "from": 134,
+      "to": 140,
+      "by": "UX-REPAIR ROUND 4 T19 — this steer's 'recorded delivery' keeps meaning a handover",
+      "why": "+6 (+8/-2; 4 of the added lines are comment). Byte-identical behaviour: the steer's own two branches say 'no file artifact, no channel send', so it means TANGIBLE and it keeps meaning tangible now that the summary also names a dashboard bubble. Without this the floor would quote a dashboard delivery back as a recorded handover in the very case it is firing about. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/answered-edge.ts",
+      "from": 678,
+      "to": 703,
+      "by": "UX-REPAIR ROUND 4 T19 — the turn-receipt reader stops counting chips",
+      "why": "+25 (+30/-5; 21 of the added lines are comment). The code is +4: the imported declared set, one `NOT EXISTS` clause and the alias it needs. The comment records the measured incident (four `deliveries` rows on one turn, all pointing at `tool-turn` rows) directly under the docblock that claimed the opposite — 'the honest question is is there a delivery on the ledger for this turn' — which was true about the ledger and false about the person. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts",
+      "from": 196,
+      "to": 227,
+      "by": "UX-REPAIR ROUND 4 T19 — a scheduler turn's reply is not narration",
+      "why": "+31 (+32/-1; 27 of the added lines are comment, i.e. the code is +4: one import, one three-line predicate, one widened condition). The comment is the point: the arm's own header states the empirical law it was built on — 'every legitimate reply is tool-less' — and this incident is its recorded scheduler-turn counterexample. Deleting the header to pay for the fix would leave the next reader with a widened gate and no reason for it. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/finalize-record.ts",
+      "from": 289,
+      "to": 337,
+      "by": "UX-REPAIR ROUND 4 T19 — the deliver ladder's rung is spent at the turn boundary",
+      "why": "+48 (+50/-2; 25 of the added lines are comment). The turn boundary is the whole mechanism of D3 and this file IS the turn boundary — it is where `finalizeTurn` writes the turn record and where every other boundary-keyed disposition already reads it (the waiting-on-owner pause, the untracked-debt clear, the ticket stamps, the strike-0 close). The block is 22 lines of code: resolve the occurrence, ask the authority, run the ordinary close when the bound is reached. All the deciding lives in `work/occurrences.ts`. REFUSED: a sweep — a sweep cannot know which turn just ended, and 'which turns ended undelivered' is exactly the fact the distinct-turn counter needs. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/scheduler/runner.ts",
+      "from": 1890,
+      "to": 1953,
+      "by": "UX-REPAIR ROUND 4 T19 — an undelivered run tells the owner, and a delivered run closes",
+      "why": "+63 (+91/-28; 47 of the added lines are comment). Three things: the D4 owner surface at the ONE place a run close is completed (`onTaskRunComplete`), which is where the authority's recorded word becomes visible and where `broadcast` and the agent id already are; the D6 sweep body SHRINKING to a loop over `runsReadyToCloseOnDelivery` (its hand-rolled SELECT is deleted, -18); and the reminder wake's reworded instruction. REFUSED: putting the ghost inside `settleOccurrence` — `work/` would then import `agent/v2/floor-ghost.ts` and `gateway/ws.js`, inverting the layering for a surface that is a scheduler concern. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/occurrences.ts",
+      "from": 634,
+      "to": 822,
+      "by": "UX-REPAIR ROUND 4 T19 — the run authority gains the turn-boundary drive and the delivered-run row set",
+      "why": "+188 (+184/-6 on the diff; 85 of the added lines are comment). Two new exported functions land HERE and nowhere else because this file is already the run authority: `advanceRunDeliverLadderAtTurnEnd` (D3 — the ladder's missing drive tick; it must read `occurrenceOwesDeliverable` AND `runDeliverableEvidence`, both of which live here, and `work/run-deliver-drive.ts` cannot host it without importing this file back, which is the cycle the split exists to avoid) and `runsReadyToCloseOnDelivery` (D6 — the row set the scheduler sweep asks, kept beside the predicate that answers it so the sweep still never decides). The comment weight is the two incidents stated where the code is: the 1/3-2/3-2/3 ledger that never exhausted, and the delivered reminder that sat open for twelve minutes. REFUSED: a new `work/run-close-sweep.ts` — it would import this file for the authority and be imported by it for nothing, i.e. a file whose only content is two queries about occurrences, split away from the module named `occurrences`. From here this file may only shrink."
+    },
+    {
       "path": "packages/server/src/agent/v2/counterparty.ts",
       "from": 938,
       "to": 939,
@@ -2992,7 +3055,7 @@
     "packages/server/src/agent/tools/util.ts": 371,
     "packages/server/src/agent/turn-context.ts": 625,
     "packages/server/src/agent/turn-state.ts": 239,
-    "packages/server/src/agent/v2/answered-edge.ts": 678,
+    "packages/server/src/agent/v2/answered-edge.ts": 703,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 502,
     "packages/server/src/agent/v2/counterparty.ts": 939,
     "packages/server/src/agent/v2/loop.ts": 697,
@@ -3045,8 +3108,8 @@
     "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 323,
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 115,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 367,
-    "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 134,
-    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 196,
+    "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
+    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 227,
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 235,
@@ -3054,7 +3117,7 @@
     "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 171,
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 411,
     "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 165,
-    "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 236,
+    "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 238,
     "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts": 284,
     "packages/server/src/agent/v2/steps/preflight/inbound-and-abort.ts": 202,
     "packages/server/src/agent/v2/steps/preflight/index.ts": 290,
@@ -3067,7 +3130,7 @@
     "packages/server/src/agent/v2/steps/step-outcome.ts": 140,
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
     "packages/server/src/agent/v2/steps/teardown/conversation-tagging.ts": 70,
-    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 289,
+    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 337,
     "packages/server/src/agent/v2/steps/teardown/index.ts": 237,
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/costs/tracker.ts": 541,
@@ -3117,7 +3180,7 @@
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
     "packages/server/src/scheduler/engine.ts": 414,
-    "packages/server/src/scheduler/runner.ts": 1890,
+    "packages/server/src/scheduler/runner.ts": 1953,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/format-time.ts": 275,
     "packages/server/src/services/gmail-watcher.ts": 592,
@@ -3138,7 +3201,8 @@
     "packages/server/src/tracker/delivery-evidence.ts": 320,
     "packages/server/src/tracker/pm-agent.ts": 2448,
     "packages/server/src/tracker/schema.ts": 1068,
-    "packages/server/src/tracker/tools.ts": 4662,
+    "packages/server/src/tracker/task-stamps.ts": 268,
+    "packages/server/src/tracker/tools.ts": 4666,
     "packages/server/src/tracker/version-gap-reconcile.ts": 327,
     "packages/server/src/twilio/call-session.ts": 884,
     "packages/server/src/twilio/sms-inbound.ts": 406,
@@ -3158,7 +3222,7 @@
     "packages/server/src/work/ask-title.ts": 420,
     "packages/server/src/work/deliverable-declaration.ts": 320,
     "packages/server/src/work/join-drive.ts": 256,
-    "packages/server/src/work/occurrences.ts": 634,
+    "packages/server/src/work/occurrences.ts": 822,
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/store.ts": 1916,
     "packages/server/src/work/tracker-store.ts": 602,
