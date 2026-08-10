@@ -35,6 +35,15 @@ const logger = createLogger('v2-loop');
 // many agents...", "your agents are great"), so a bare noun reference never
 // matches. Canonical positive (the battery phrase):
 //   "Have one of your agents research it and report back to me."
+//
+// UX-REPAIR T3 widened the IMPERATIVE grammar only (two patterns added below);
+// the object requirement is unchanged, and every recorded negative still
+// refuses — `__tests__/delegation-hint.test.ts` holds both directions, and a
+// negative firing is the task's STOP condition. ACCEPTED RESIDUAL, recorded so
+// nobody mistakes this for coverage: an allowlist misses unlisted phrasings by
+// design ("assign this to your sub-agents" still refuses). The general
+// un-addressed-instruction detector is NOT the answer to that — it is
+// prose-keyed and under a standing ban (`turn-end-floors.mjs:32-36`).
 const DELEGATION_PATTERNS: readonly RegExp[] = [
   // Imperative delegation verb targeting the agent's OWN agents/team. Requires
   // the possessive "your" (optionally "one of your ..."), so "do you have any
@@ -50,10 +59,27 @@ const DELEGATION_PATTERNS: readonly RegExp[] = [
   // Explicit "spawn/spin up ... agent" (with an agent object, so "salmon spawn
   // in the river" and "the spawn point" never match).
   /\b(spawn|spin ?up|fire ?up|kick ?off)\s+(a |an |another |one )?(new\s+)?(sub-?)?agent\b/i,
+  // UX-REPAIR T3: the IMPERATIVE ROUTING grammar. The 2026-08-10 UX review's S4
+  // message — "Split the research between your helpers if that's faster" — has
+  // the possessive OBJECT the first pattern wants and none of its verbs, so all
+  // four patterns above returned false on the plainest routing instruction in
+  // the battery. This adds the divide-the-work verb family and its joiner, and
+  // it keeps the SAME conservative shape as pattern 0: the possessive "your"
+  // plus the agent-object is still required, so "split the bill between the
+  // four of us" and "share the doc with my team" never match. The gap between
+  // the verb and the joiner is bounded and sentence-local (no `.!?` and no
+  // newline inside it), so the verb of one sentence can never pair with the
+  // joiner of the next.
+  /\b(split|divide|distribute|farm\s*out|spread|share)\b[^.!?\n]{0,40}?\b(between|among|across|with)\s+(one of\s+)?your\s+(agents?|sub-?agents?|team|helpers?|assistants?)\b/i,
+  // "use your agents/helpers/team for|to|on <work>" — the same instruction in
+  // its other common form. The trailing preposition is what keeps it an
+  // INSTRUCTION: "can you use your judgement" has no agent object, and "your
+  // helpers are great" has no verb.
+  /\buse\s+your\s+(agents?|sub-?agents?|team|helpers?|assistants?)\s+(for|to|on)\b/i,
 ];
 
 /** True when the user text EXPLICITLY routes the work to the agent's agents. */
-function detectExplicitDelegation(text: string): boolean {
+export function detectExplicitDelegation(text: string): boolean {
   if (!text) return false;
   return DELEGATION_PATTERNS.some((re) => re.test(text));
 }

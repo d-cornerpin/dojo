@@ -3,6 +3,16 @@
 // Variables like {{agent_name}} are replaced at runtime
 // ════════════════════════════════════════
 
+// UX-REPAIR T3 (PREFIX RE-BLESSING, registered) — ONE LINE IN HERE IS NOT
+// UNCONDITIONAL ANY MORE. `## Capabilities`' "You can manage sub-agents for
+// specialized tasks." is a claim this file cannot check: it is true for the
+// primary and false for anything on `DEFAULT_SUBAGENT_PERMISSIONS`. The claim is
+// now answered to the manifest at the point this text becomes a prompt —
+// `applySpawnCapabilityTruth` in `prompt/assembler.ts`, which returns the string
+// BY IDENTITY for a spawn-capable agent, so the line is unchanged for everyone
+// it was ever true for. Edit the wording here and there together, or the
+// conditional stops finding it (`__tests__/spawn-capability-truth.test.ts` is
+// what catches that).
 export const DEFAULT_SOUL_MD = `# {{agent_name}} — System Identity
 
 You are {{agent_name}}, an AI agent running on the DOJO Agent Platform. You are helpful, direct, and technically competent.

@@ -6,6 +6,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { toolDefinitions } from '../agent/tools/definitions.js';
 import { getFilteredTools } from '../agent/tools/surface.js';
+import { getAgentPermissions } from '../agent/manifest.js';
 import { isPrimaryAgent, isPMAgent, isTrainerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getHealerAgentId, getHealerAgentName } from '../config/platform.js';
 import type { TurnCounterparty } from '../agent/v2/counterparty.js';
 import type { Channel } from '@dojo/shared';
@@ -85,7 +86,7 @@ export function extractMarkdownSection(markdown: string, header: string): string
 export function getSoulContent(agentId: string): string {
   // Primary agent gets SOUL.md
   if (isPrimaryAgent(agentId)) {
-    return readPromptFile('SOUL.md', DEFAULT_SOUL_MD);
+    return applySpawnCapabilityTruth(readPromptFile('SOUL.md', DEFAULT_SOUL_MD), agentId);
   }
 
   // PM agent gets PM-SOUL.md
@@ -102,7 +103,10 @@ export function getSoulContent(agentId: string): string {
   const agentSoulPath = path.join(PROMPTS_DIR, `${agentId.toUpperCase()}-SOUL.md`);
   if (fs.existsSync(agentSoulPath)) {
     try {
-      return fs.readFileSync(agentSoulPath, 'utf-8');
+      // The reachable half of the SOUL claim: a per-agent soul file is the one
+      // way the default SOUL's `## Capabilities` list lands on an agent that is
+      // not the primary, and such an agent runs on the sub-agent manifest.
+      return applySpawnCapabilityTruth(fs.readFileSync(agentSoulPath, 'utf-8'), agentId);
     } catch {
       // Fall through
     }
@@ -451,9 +455,58 @@ Tools default to **compact**: focused summaries, not raw dumps. The engine caps 
     lines.push(`## Spawning Sub-Agents`);
     lines.push(`Create a work_open(kind="project") first, then spawn agents into a group with \`spawn_agent\` and \`create_agent_group\`. Clean up via \`delete_group(terminate_members=true)\`. PM monitors all tasks, don't create your own monitoring agents.`);
     lines.push('');
+  } else {
+    // UX-REPAIR T3 (PREFIX RE-BLESSING, registered). Capability truth was
+    // surfaced ONLY positively: this `if` had no `else`, so for the ~all agents
+    // that cannot spawn (`DEFAULT_SUBAGENT_PERMISSIONS.can_spawn_agents` is
+    // false) NO truthful negative statement existed anywhere in the tree. The
+    // 2026-08-10 review's S4 agent derived its own capability correctly from the
+    // tool list, which is the model doing the platform's job.
+    //
+    // IT STATES CAPABILITY AND NOTHING ELSE. It deliberately does NOT add
+    // "and briefly say why" advice: that steer is the F9 delegation hint's, it
+    // rides the TAIL where it is turn-conditional, and more prefix-side
+    // "mention it" prose argues with the terseness rules this same prefix gives
+    // more forcefully (investigation PC-3d — the model cited exactly those rules
+    // when it suppressed the mention).
+    lines.push(`## Sub-Agents`);
+    lines.push(
+      `You cannot create new agents; \`spawn_agent\` is not on your tool list.` +
+      (hasSendToAgent
+        ? ` The agents that already exist are still reachable: \`list_agents\` shows who they are and \`send_to_agent\` tasks them.`
+        : ''),
+    );
+    lines.push('');
   }
 
   return lines.join('\n');
+}
+
+// UX-REPAIR T3 (PREFIX RE-BLESSING, registered) — THE SOUL'S CAPABILITY CLAIM
+// IS MANIFEST-CONDITIONAL.
+//
+// `templates.ts`'s default SOUL asserts this line unconditionally, inside the
+// CACHED prefix. It is true for the primary and false for anything running on
+// `DEFAULT_SUBAGENT_PERMISSIONS`. The claim now answers to the same authority
+// the tool strip does (`manifest.can_spawn_agents`, `tools/surface.ts`), so the
+// prefix cannot assert a capability the surface withheld.
+//
+// SCOPE, stated because it bounds the change: this is an exact match on the
+// PLATFORM'S OWN shipped line, not a reading of the owner's prose. A soul that
+// never carried the line is returned unchanged, and a spawn-capable agent gets
+// the string back BY IDENTITY — its prefix bytes cannot move.
+const SOUL_SPAWN_CAPABILITY_LINE = '- You can manage sub-agents for specialized tasks.\n';
+
+export function applySpawnCapabilityTruth(soul: string, agentId: string): string {
+  if (!soul.includes(SOUL_SPAWN_CAPABILITY_LINE)) return soul;
+  try {
+    if (getAgentPermissions(agentId).can_spawn_agents) return soul;
+  } catch {
+    // A manifest that cannot be read is not evidence of absence (#15): leave
+    // the soul exactly as authored rather than editing on a guess.
+    return soul;
+  }
+  return soul.split(SOUL_SPAWN_CAPABILITY_LINE).join('');
 }
 
 // ── Check if agent should receive USER.md ──
