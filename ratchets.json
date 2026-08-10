@@ -2,6 +2,13 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1351,
+      "to": 1438,
+      "by": "UX-REPAIR ROUND 6 T24 — compaction never erases answered-state",
+      "why": "+87 (+87/-2 net of the two replaced lines; 24 code, 55 comment, 8 blank). The 24 code lines are two ledger reads and their use: `spanHoldsConversation` (one prepared statement, looped over the chunk's ids) and `answeredAskTurns` (one prepared statement per user row), plus the guard clause on the placeholder branch and the tag on the input builder's line. The comment weight is the plan's own named cause being CORRECTED in place, and that correction is the single most valuable thing in the file for the next reader: the plan blamed the empty-FILTERED placeholder branch, and the ledger says the 51-row loss came through the SUCCESS path (an aborted summariser returning nothing, accepted as `{ok:true}` because `estimateTokens('') = 0`). A file whose comment says 'this branch ate the conversation' when the log says otherwise is how the next fixer re-fixes the wrong thing — so both are written down, with the measurement that separates them (all three genuine placeholder summaries: 0 owner-lane user rows, 0 answer stamps; the eaten spans: 7 and 3). The `answeredAskTurns` block additionally records WHY the answered-state rides the summariser INPUT and not an annotation of its output — there is no id token in a prose ask line to key on, and keying one on the prose is the parser `839eedc` deleted — and why it resolves at write (slot 300, the cacheable prefix, T20's own reason). REFUSED: moving both reads into `agent/v2/answered-edge.ts`, which is titled 'the ONE place this tree answers has the person heard from us' and would have moved +87 there instead of removing it, while pulling that module's dependency graph into every memory test that mocks only `db/connection`. Both questions have exactly one caller and both are compaction's own precondition — what may THIS branch destroy — not spine facts. REFUSED: trimming the correction to the guard clause. From here this file may only shrink.\n\nGate-side-only commit; no product code in it (`5546651` precedent)."
+    },
+    {
       "path": "packages/server/src/prompt/assembler.ts",
       "from": 1458,
       "to": 1477,
@@ -3202,7 +3209,7 @@
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
     "packages/server/src/memory/budget.ts": 442,
-    "packages/server/src/memory/compaction.ts": 1351,
+    "packages/server/src/memory/compaction.ts": 1438,
     "packages/server/src/memory/deliveries-lane.ts": 240,
     "packages/server/src/memory/lanes.ts": 867,
     "packages/server/src/memory/message-store.ts": 1122,
