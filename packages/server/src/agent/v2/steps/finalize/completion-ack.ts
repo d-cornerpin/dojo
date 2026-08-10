@@ -19,8 +19,8 @@
 // ════════════════════════════════════════
 
 import { createLogger } from '../../../../logger.js';
-import { msToText, engineScaffoldScope } from '../../../../work/tracker-view.js';
-import { owesAnswer } from '../../answered-edge.js';
+import { tsToMs, engineScaffoldScope } from '../../../../work/tracker-view.js';
+import { owesAnswer, substantiveReplySince } from '../../answered-edge.js';
 import { steerFired } from '../../steer-queue.js';
 import type { AgentTurnState } from '../../state.js';
 import type { FinalizeContext } from './index.js';
@@ -74,8 +74,17 @@ export function runCompletionAck(state: AgentTurnState, ctx: FinalizeContext): b
       // prose prefix on the task's PARENT PROJECT and therefore needed an inner join —
       // which also meant a scaffold row with no parent could never be found. The floor
       // opens a parentless task now, so the join goes with the prefix.
+      // UX-REPAIR T15 — THE BOUND IS ms, BECAUSE THE COLUMN IS. `closed_at` is INTEGER epoch
+      // ms and this bound used to be the TEXT `turnStartedAt`; in SQLite every INTEGER sorts
+      // below every TEXT, so the comparison was false for every row that has ever existed and
+      // this whole detection — all three arms below are gated on `justCompletedScaffold` being
+      // non-empty — never ran once. `opened_at` comes back as ms for the same reason: the
+      // boundary it feeds is `substantiveReplySince`, which is ms-native, so nothing on this
+      // path converts an instant to text and back. The siblings that already did it this way
+      // are `close-the-loop.ts` and `silent-closeout.ts`, both `tsToMs(turnStartedAt)`.
+      const turnStartedAtMs = tsToMs(turnStartedAt) ?? Date.now();
       const justCompletedScaffold = db.prepare(`
-        SELECT t.title AS title, t.result AS result, ${msToText('t.opened_at')} AS created_at,
+        SELECT t.title AS title, t.result AS result, t.opened_at AS opened_at_ms,
                t.source_message_id AS source_message_id FROM work t
         WHERE ${engineScaffoldScope('t')} AND t.kind = 'task' AND t.agent_id = ?
           AND t.state = 'done'
@@ -83,7 +92,7 @@ export function runCompletionAck(state: AgentTurnState, ctx: FinalizeContext): b
           AND t.repeat_interval IS NULL
         ORDER BY t.closed_at ASC
         LIMIT 3
-      `).all(agentId, turnStartedAt) as Array<{ title: string; result: string | null; created_at: string }>;
+      `).all(agentId, turnStartedAtMs) as Array<{ title: string; result: string | null; opened_at_ms: number }>;
       // CROSS-TURN DEDUP: the per-turn dedup on the outer gate
       // (lastAssistantTextForIM / surfacedReplyThisTurn) misses the common case
       // where the model DELIVERED the real answer on an earlier turn and the
@@ -96,10 +105,13 @@ export function runCompletionAck(state: AgentTurnState, ctx: FinalizeContext): b
       // tool_use/tool_result JSON rows so only a genuine model answer counts. The
       // genuine silent case (did the work, never told the user, drifted to A2A)
       // has no such reply, so the ack still fires there.
-      const earliestTaskCreatedAt = justCompletedScaffold
-        .map((t) => t.created_at)
-        .filter((c): c is string => !!c)
-        .sort()[0] ?? turnStartedAt;
+      // Same selection as before, in ms: the EARLIEST of the just-completed scaffolds' open
+      // instants, and `turnStartedAt` only when there are none. (The old form sorted the text
+      // form lexicographically, which for `YYYY-MM-DD HH:MM:SS` is the same order.)
+      const earliestTaskOpenedAtMs = justCompletedScaffold
+        .map((t) => t.opened_at_ms)
+        .filter((n): n is number => Number.isFinite(n))
+        .sort((a, b) => a - b)[0] ?? turnStartedAtMs;
       // P4b keyed read: if every just-completed scaffold's birthing ask
       // already records an answering reply (answer_message_id, mig 113),
       // the user has the answer and the ack is redundant, by identity.
@@ -110,16 +122,11 @@ export function runCompletionAck(state: AgentTurnState, ctx: FinalizeContext): b
       // has this" cannot mean two different things in two places in this file.
       const answeredByKey = rootIds.length === justCompletedScaffold.length && rootIds.length > 0
         && rootIds.every((mid) => !owesAnswer(mid));
-      const userAlreadyAnswered = answeredByKey || (justCompletedScaffold.length > 0 && !!db.prepare(`
-        SELECT 1 FROM messages
-        WHERE agent_id = ? AND role = 'assistant' AND created_at >= (unixepoch(?) * 1000)
-          AND lane <> 'a2a'
-          AND content NOT LIKE '[{%'
-          -- Engine acks are excluded STRUCTURALLY by their origin_intent tag.
-          AND origin_intent IS NULL
-          AND length(trim(content)) > 40
-        LIMIT 1
-      `).get(agentId, earliestTaskCreatedAt));
+      // T15: the pre-spine probe is `answered-edge.ts`'s, shared byte for byte with the
+      // sibling in `execute/result-notes.ts`. Engine acks are still excluded STRUCTURALLY by
+      // their origin_intent tag — that exclusion now lives in the one predicate.
+      const userAlreadyAnswered = answeredByKey
+        || (justCompletedScaffold.length > 0 && substantiveReplySince(agentId, earliestTaskOpenedAtMs));
       if (justCompletedScaffold.length > 0 && userAlreadyAnswered) {
         logger.info('v2: completion ack skipped, user already received a substantive reply for this work (cross-turn dedup)', {
           agentId, turnNumber,

@@ -140,6 +140,36 @@ export function owesAnswer(messageId: string | null | undefined): boolean {
 }
 
 /**
+ * THE PRE-SPINE FALLBACK for the same question, for work with no birthing ask to key on:
+ * "since this instant, has the person had a substantive, MODEL-AUTHORED reply?"
+ *
+ * Excluded, and each exclusion is a fact the row carries rather than a guess about its text:
+ * the a2a lane (not the person), tool_use/tool_result JSON blobs (`[{`), every engine-stamped
+ * row (`origin_intent IS NOT NULL` — this is how a promoted start-ack is refused, exactly as
+ * T2's stamp was written to be read), and anything under 40 trimmed characters.
+ *
+ * UX-REPAIR T15 — ONE COPY, AND A BOUNDARY THAT IS ms ON BOTH SIDES. This clause list used to
+ * exist twice, in `finalize/completion-ack.ts` and `execute/result-notes.ts`, each with its own
+ * `created_at >= (unixepoch(?) * 1000)` round-trip over a column that is ALREADY epoch ms.
+ * The round-trip is the defect's family: `unixepoch()` of an ms NUMBER is NULL, and an INTEGER
+ * ms column bounded by a TEXT datetime matches nothing in SQLite — which is precisely how the
+ * completion probe's scaffold selector sat dormant for its whole life. So the parameter here is
+ * ms, the column is ms, and there is no conversion anywhere on the path. Two copies of one
+ * question could answer it differently; one cannot.
+ */
+export function substantiveReplySince(agentId: string, sinceMs: number): boolean {
+  return !!getDb().prepare(
+    `SELECT 1 FROM messages
+      WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?
+        AND lane <> 'a2a'
+        AND content NOT LIKE '[{%'
+        AND origin_intent IS NULL
+        AND length(trim(content)) > 40
+      LIMIT 1`,
+  ).get(agentId, sinceMs);
+}
+
+/**
  * The agent's OWN recorded answer in this conversation, most recent first.
  *
  * The engine hands this back to the model to restate when a question it already answered is

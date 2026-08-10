@@ -17,13 +17,19 @@
 //                                              byte-identical by (1), so the turn-end demotion
 //                                              S1 observed still demotes the ack.
 //   3  the sixth narrowing                   — `mb.display_kind='agent-text'`; same, byte-identical.
-//   4  `finalize/completion-ack.ts:119`      — `AND origin_intent IS NULL`, comment: "Engine acks
-//   5  `execute/result-notes.ts:144`            are excluded STRUCTURALLY by their origin_intent
+//   4  `finalize/completion-ack.ts`          — `AND origin_intent IS NULL`, comment: "Engine acks
+//   5  `execute/result-notes.ts`                are excluded STRUCTURALLY by their origin_intent
 //                                              tag." These were WRITTEN EXPECTING THE STAMP. Their
 //                                              activation is designed behaviour being restored:
-//                                              today a 57-char "On it —" counts as a substantive
-//                                              reply and suppresses the completion machinery.
+//                                              a 57-char "On it —" used to count as a substantive
+//                                              reply and suppress the completion machinery.
 //                                              Ruled ACCEPTED, and proven here in BOTH directions.
+//                                              Reader 4 could not activate in T2's sitting (its
+//                                              selector was dormant — see the block above its
+//                                              clauses); UX-REPAIR ROUND 2 T15 repaired the
+//                                              selector and those clauses flipped, deliberately.
+//                                              Both probes now share ONE predicate,
+//                                              `answered-edge.ts:substantiveReplySince`.
 //
 // The 237 historical unstamped acks on the dev body stay unstamped — no backfill — so the probes'
 // behaviour on history is unchanged by construction.
@@ -312,27 +318,29 @@ describe('reader 4: the completion detection engages — and still composes NOTH
     ).run(closedAtMs, `d-${id}`, id);
   }
 
-  // ⚠ PREMISE CORRECTION, MEASURED IN THIS SITTING AND HANDED UP RATHER THAN FIXED.
+  // ⚠ THE PIN THIS SITTING WROTE, AND THE FLIP IT WAS WRITTEN FOR — UX-REPAIR ROUND 2, T15.
   //
-  // The plan expected reader 4 to flip with reader 5. It cannot, and the reason is one line
-  // ABOVE the `origin_intent IS NULL` probe: the detection's scaffold selector bounds an
-  // INTEGER epoch-ms column with the TEXT `turnStartedAt` —
+  // T2's sitting measured reader 4's activation as LATENT and pinned it rather than fixing it:
+  // one line ABOVE the `origin_intent IS NULL` probe, the detection's scaffold selector bounded
+  // an INTEGER epoch-ms column with the TEXT `turnStartedAt` —
   //
   //     AND t.closed_at >= ?          .all(agentId, turnStartedAt)
   //
-  // — and in SQLite every INTEGER sorts BELOW every TEXT, so the comparison is false for every
-  // row that exists. Measured on the live body (`~/.dojo/data/dojo.db`, read-only):
+  // — and in SQLite every INTEGER sorts BELOW every TEXT, so the comparison was false for every
+  // row that existed. Measured then on the live body (`~/.dojo/data/dojo.db`, read-only):
   //     closed_at >= '2026-01-01 00:00:00'   -> 0 engine-scaffold done tasks
   //     closed_at >= 1767225600000           -> 25
-  // and `SELECT 1786330000000 >= '2026-08-10 03:00:00'` -> 0.
-  // The sibling probe in `result-notes.ts` converts (`(unixepoch(?) * 1000)`) and works, which
-  // is why reader 5 above flips and this one does not.
+  // The stamp reached a probe nothing could reach. The pin's own words were: *"pinned here so a
+  // future repair of the selector cannot land without meeting the stamp"*.
   //
-  // So reader 4's activation is LATENT: the stamp reaches a probe nothing can reach. That is a
-  // separate defect with a separate cause, outside T2's intent inventory, and this task does
-  // not touch it. It is pinned here so a future repair of the selector cannot land without
-  // meeting the stamp, and so the claim "the probes flip" is not inherited as fact.
-  it('MEASURED — the detection selector matches nothing: an INTEGER ms column bounded by TEXT', () => {
+  // T15 IS THAT REPAIR, and this is the pin doing its job: the second clause below used to
+  // assert that the stamp changed NOTHING, and it now asserts the opposite in both directions.
+  // The change is deliberate, argued in the plan (T15's intent inventory: "the T2R dormancy-pin
+  // test FLIPS consciously — that is what the pin is for"), and the full behavioural proof lives
+  // with the repair, in `finalize/__tests__/the-completion-ack-probe-lives-again.test.ts`. What
+  // stays here is reader 4's disposition, because this file is the record of what the STAMP did
+  // to each of its readers: the activation T2 could only rule for, observed.
+  it('the selector reads the column\'s own type now — the ms bound, in production', () => {
     const t = Date.now() - 60_000;
     const turnStartedAt = new Date(t).toISOString().slice(0, 19).replace('T', ' ');
     completedScaffold('task-1', t, Date.now());
@@ -340,12 +348,17 @@ describe('reader 4: the completion detection engages — and still composes NOTH
       `SELECT count(*) c FROM work t WHERE t.root_kind='engine_scaffold' AND t.kind='task'
          AND t.agent_id = ? AND t.state = 'done' AND t.closed_at >= ? AND t.repeat_interval IS NULL`,
     ).get(AGENT, bound) as { c: number }).c;
-    expect(sel(turnStartedAt), 'the production TEXT bound').toBe(0);
+    // The measurement that named the defect, kept: this is why the TEXT bound had to go.
+    expect(sel(turnStartedAt), 'the bound production used to pass').toBe(0);
     expect(sel(t), 'the same instant as epoch ms').toBe(1);
+    // And the source no longer passes the text form or round-trips it.
+    const src = SRC('../../finalize/completion-ack.ts');
+    expect(src, 'the selector is bound with ms').toContain('turnStartedAtMs');
+    expect(src, 'and nothing converts an instant on this path').not.toContain('unixepoch(');
   });
 
-  it('and so the stamp changes NOTHING here — no fire, no dedup, and OR2 holds either way', () => {
-    for (const stamp of [START_ACK_INTENT, null]) {
+  it('ACTIVATED — the stamp decides it: a stamped ack fires the detection, a real answer quiets it', () => {
+    for (const [stamp, expectFire] of [[START_ACK_INTENT, true], [null, false]] as const) {
       warns.length = 0; infos.length = 0;
       const t = Date.now() - 60_000;
       const turnStartedAt = new Date(t).toISOString().slice(0, 19).replace('T', ' ');
@@ -355,9 +368,12 @@ describe('reader 4: the completion detection engages — and still composes NOTH
 
       expect(runCompletionAck(turnState(), finalizeCtx(turnStartedAt))).toBe(false);
 
-      expect(warns.some((w) => /NO user-facing reply/.test(w.msg))).toBe(false);
-      expect(infos.some((i) => /completion ack skipped/.test(i.msg))).toBe(false);
-      // OR2, whichever way the selector ever goes: the engine detects, it does not speak.
+      // Stamped: the engine ack is not an answer, so the person is still owed and the
+      // detection says so. Unstamped (the 237 historical rows): unchanged, still read as an
+      // answer, still deduped.
+      expect(warns.some((w) => /NO user-facing reply/.test(w.msg)), `stamp=${stamp}`).toBe(expectFire);
+      expect(infos.some((i) => /completion ack skipped/.test(i.msg)), `stamp=${stamp}`).toBe(!expectFire);
+      // OR2 is unmoved by the activation: the engine detects, it does not speak.
       expect((mockDb.current!.prepare('SELECT count(*) c FROM messages').get() as { c: number }).c)
         .toBe(before);
     }

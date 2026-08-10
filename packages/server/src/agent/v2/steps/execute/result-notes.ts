@@ -10,8 +10,8 @@
 
 import { getDb } from '../../../../db/connection.js';
 import { CLOSE_OPS_WITH_TASK_ID, toolOpKey } from '../../../../tools/work-verbs.js';
-import { engineScaffoldScope, msToText, taskScope } from '../../../../work/tracker-view.js';
-import { answerReceiptForAsk } from '../../answered-edge.js';
+import { engineScaffoldScope, taskScope } from '../../../../work/tracker-view.js';
+import { answerReceiptForAsk, substantiveReplySince } from '../../answered-edge.js';
 
 // v2.5.9, Just-in-time visibility hint helper.
 //
@@ -115,13 +115,13 @@ export function userRequestedCloseWantsReply(
   try {
     const db = getDb();
     const task = db.prepare(`
-      SELECT ${msToText('t.opened_at')} AS created_at, t.source_message_id AS source_message_id FROM work t
+      SELECT t.opened_at AS opened_at_ms, t.source_message_id AS source_message_id FROM work t
       LEFT JOIN work p ON p.id = t.parent_id
       WHERE ${taskScope('t')} AND t.agent_id = ?
         AND (t.id = ? OR t.id LIKE ?)
         AND (${engineScaffoldScope('t')} OR t.origin_kind = 'engine_scaffold' OR p.origin_kind = 'engine_scaffold')
       LIMIT 1
-    `).get(agentId, id, `${id}%`) as { created_at: string; source_message_id: string | null } | undefined;
+    `).get(agentId, id, `${id}%`) as { opened_at_ms: number; source_message_id: string | null } | undefined;
     if (!task) return false;
     // Already answered, P4 rekey: the ask row that BIRTHED this task records
     // the reply that answered it (answer_message_id, migration 113). A keyed
@@ -136,16 +136,11 @@ export function userRequestedCloseWantsReply(
       const receipt = answerReceiptForAsk(task.source_message_id);
       if (!(receipt.legacyRow && !receipt.answered)) return !receipt.answered;
     }
-    const alreadyAnswered = !!db.prepare(`
-      SELECT 1 FROM messages
-      WHERE agent_id = ? AND role = 'assistant' AND created_at >= (unixepoch(?) * 1000)
-        AND lane <> 'a2a'
-        AND content NOT LIKE '[{%'
-        AND origin_intent IS NULL
-        AND length(trim(content)) > 40
-      LIMIT 1
-    `).get(agentId, task.created_at);
-    return !alreadyAnswered;
+    // UX-REPAIR T15: the pre-spine probe is one function now (`answered-edge.ts`), shared with
+    // the completion detection in `finalize/completion-ack.ts` that used to carry its own copy
+    // of these six clauses. The boundary is ms on both sides — `opened_at` is epoch ms and the
+    // ms→text→seconds→ms round-trip that used to sit here is gone entirely.
+    return !substantiveReplySince(agentId, task.opened_at_ms);
   } catch {
     return false;
   }
