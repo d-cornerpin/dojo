@@ -2724,6 +2724,27 @@
       "to": 531,
       "by": "SWEEP CORE-2 item 4A `df3c45b` (2026-08-09) — per-message recall rides the tail, and it carries the conclusion",
       "why": "NEW FILE, born at 531 lines in a single commit and never touched since — it has never been over ANY pin, because it never had one. It crossed the 400-line new-file cap on the day it was written and the cap has been refusing the tree ever since; `92447af` names it as the first of the 28 inherited findings. Pinning it at its exact birth count is the stronger of the two remedies the cap offers (the other is splitting it) and it is the one this ledger has taken before for `work/ask-remediation.ts` and `services/format-time.ts`: a pin makes every future line argue for itself. It is the memory recall lane — the per-message retrieval that rides the tail of the assembled context. Decrease-only from here; this entry is meant to be seen and argued with, which is the point of the cap."
+    },
+    {
+      "path": "packages/shared/src/visibility.ts",
+      "from": 896,
+      "to": 945,
+      "by": "UX-REPAIR T5 `d35ca56` (2026-08-09) — the stored display record stops lying",
+      "why": "+16 code / +34 comment against 1 removed. The code is `toolTurnTier`: the row tier folds through `toolBadgeTier(classifyTool(name))` per block instead of asserting `user-visible` for every tool-bearing row. It buys the removal of a SECOND RULE rather than the addition of one — `toolBadgeTier` was dead code with zero callers, and wiring it here is what makes the stored answer and the drawn answer impossible to edit apart. The comment mass is the three facts a later reader cannot re-derive from the code: why the fold is deliberately ARG-LESS (all four dashboard `classifyTool` call sites are, so a tier computed WITH arguments re-opens the gap from the other side), why any non-`tool_use` block hands the row back to `user-visible`, and that serving is untouched. Deleting them to save the lines would restore the ambiguity that produced the defect. Decrease-only from 945."
+    },
+    {
+      "path": "packages/server/src/tools/tool-docs.ts",
+      "from": 550,
+      "to": 569,
+      "by": "UX-REPAIR T5 `d35ca56` (2026-08-09) — the stored display record stops lying",
+      "why": "+1 code / +18 comment. The one code line is the string `'work_open'`. Every other line is the measured reason it is there — the S1 turn that invented `task_id:\"placeholder\"` because the list carried the verb that CHANGES a task and not the one that CREATES one, and the declared ~5.5 KB prefix cost, spent knowingly. Byte cost has been the deciding argument on this exact list before (`:74-77`), so a raise that adds a tool without recording its cost is the one shape this file must not take. Decrease-only from 569."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2816,
+      "to": 2823,
+      "by": "UX-REPAIR T5 `d35ca56` (2026-08-09) — the stored display record stops lying",
+      "why": "+1 code / +7 comment against 1 removed — the smallest raise of the phase. The code line is `work_update.task_id`'s description, rewritten in place to carry its existence contract (+253 wire chars, pinned and argued in `agent/__tests__/work-verb-schema.test.ts`). The seven comment lines are the declaration-correction class this file has recorded twice before on `image_create` and `file_append`: \"we looked and this is what it does\" and \"nobody looked\" must never read the same. Decrease-only from 2823."
     }
   ],
   "maxNewFileLines": 400,
@@ -2780,7 +2801,7 @@
     "packages/server/src/agent/tools/cat/media.ts": 897,
     "packages/server/src/agent/tools/cat/session.ts": 242,
     "packages/server/src/agent/tools/cat/tracker.ts": 907,
-    "packages/server/src/agent/tools/definitions.ts": 2816,
+    "packages/server/src/agent/tools/definitions.ts": 2823,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
     "packages/server/src/agent/tools/index.ts": 676,
@@ -2927,7 +2948,7 @@
     "packages/server/src/techniques/share-import.ts": 311,
     "packages/server/src/techniques/store.ts": 546,
     "packages/server/src/techniques/tools.ts": 892,
-    "packages/server/src/tools/tool-docs.ts": 550,
+    "packages/server/src/tools/tool-docs.ts": 569,
     "packages/server/src/tools/unified-read.ts": 761,
     "packages/server/src/tools/work-verbs.ts": 373,
     "packages/server/src/tracker/pm-agent.ts": 2405,
@@ -2958,7 +2979,7 @@
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
     "packages/shared/src/types.ts": 540,
-    "packages/shared/src/visibility.ts": 896,
+    "packages/shared/src/visibility.ts": 945,
     "packages/shared/src/ws.ts": 1110,
     "watchdog/src/index.ts": 1217
   }
