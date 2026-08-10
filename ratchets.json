@@ -2,6 +2,90 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/server/src/agent/v2/counterparty.ts",
+      "from": 938,
+      "to": 939,
+      "by": "UX-REPAIR ROUND 3 T18 — a waiting counterparty releases on either terminal outcome",
+      "why": "+1: the import of the shared `isTerminalTaskStatus`; the predicate line itself is net 0 (a hand-rolled `complete || fallen` becomes the call). A counterparty that keeps waiting on a cancelled task waits forever, and this is the file where \"the referent went terminal\" is decided. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/pages/Tracker.tsx",
+      "from": 1381,
+      "to": 1382,
+      "by": "UX-REPAIR ROUND 3 T18 — the task detail dropdown can say the word",
+      "why": "+1: one `<option value=\"cancelled\">Cancelled</option>` beside the existing `Failed`. Without it the owner can SEE a cancelled task and cannot set one from the surface that lists every other status, and the one place `cancelled` already appeared in this file (the open-task count at :1075, which had listed it for months against a value nothing could produce) would still be the only mention. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/pm-agent.ts",
+      "from": 2445,
+      "to": 2448,
+      "by": "UX-REPAIR ROUND 3 T18 — the PM stops treating a cancellation as live work",
+      "why": "+3: two active-task filters admit `cancelled` (+2 with one comment line) and a third hand-rolled `complete || fallen` check is replaced by the shared `isTerminalTaskStatus` (net 0), plus its import. The comment states the stake in one line — poking an agent about work the owner called off is the failure that list exists to prevent, one status later. REFUSED: adding `cancelled` to the third site by hand (+0): the point of routing it through the shared predicate is that the NEXT terminal value is a one-line change in one file rather than a grep. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/schema.ts",
+      "from": 1064,
+      "to": 1068,
+      "by": "UX-REPAIR ROUND 3 T18 — the recorded reason for the fold is answered where it was written",
+      "why": "+4 net, and the code SHRANK to the same line count (`dbTaskStatus` still one line, `close_project` now storing the user's word instead of rewriting it; the census gains 2 lines for the new branch and field). The growth is the block that REPLACES `632cadd`'s comment rather than deleting it: that comment is the only place in the tree that ever stated why `cancelled` became `fallen` (\"storing a literal cancelled on a task would make it disappear from the board\"), it was TRUE, and it was a rendering constraint rather than a semantic judgement. The replacement quotes it, says which change answered it, and names the module that now owns the mapping. REFUSED: deleting the old comment and landing at -2 — an inherited constraint that is silently dropped is one that gets re-derived and re-imposed; the next person to add a status needs to read that this was considered and why it is now safe. From here this file may only shrink."
+    },
+    {
+      "path": "packages/shared/src/types.ts",
+      "from": 540,
+      "to": 545,
+      "by": "UX-REPAIR ROUND 3 T18 — the board's two declared shapes admit the second terminal outcome",
+      "why": "+5, all comment; the two declarations themselves are net 0 (`Task.status` gains `| 'cancelled'` on its existing line, `taskCounts` gains one field on its existing line). The comments point at the one owner of the rendering rule (`dashboard/src/lib/task-status.ts`) and state why `cancelled` is counted APART from `failed` — folding a user's cancellation into the failure count is the same mislabel the status vocabulary carried, one layer up, and a census is exactly where it would come back. This is the file the dashboard compiles against, so the widening is what made the compiler find the client sites; the ~10 silent server sites it could not find are enumerated in the T18 commit. REFUSED: landing at +0 — a union that gains a value with no note is how the next reader concludes `cancelled` is a display alias for `fallen`, which is the belief this whole task removed. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/tracker.ts",
+      "from": 945,
+      "to": 950,
+      "by": "UX-REPAIR ROUND 3 T18 — the dashboard's own terminal paths stop being fallen-only",
+      "why": "+5: the drag-to-terminal arm and the override-approval arm each admit `cancelled`, and the drag arm's single-expression disarm becomes an if/else so the reason and the trail label can differ (+4), with one comment line saying the second outcome takes the same two steps. This route is the OWNER's door — a drag on the kanban — so a cancelled card that left its schedule armed would be F-17 reproduced through the surface the owner actually touches. REFUSED: a ternary inside the one call (+2) — it puts three arguments' worth of branching on one line in a `catch`-wrapped best-effort block, which is where this codebase has twice hidden a wrong default. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/scheduler/runner.ts",
+      "from": 1883,
+      "to": 1890,
+      "by": "UX-REPAIR ROUND 3 T18 — the disarm and the prune both learn the second terminal state",
+      "why": "+7: one optional parameter with a 5-line reason, one word added to the prune list with a 2-line reason, and one state added to a stale-sweep predicate (net 0). The parameter DEFAULTS to the string this function has always written, so the fallen path is byte-identical and `fallen-terminates.test.ts` — which pins that exact literal — is untouched; the cancellation call sites pass their own, because \"schedule terminated on fallen\" stamped onto a task the owner cancelled is the same failure word in the same place, one table over from the status this task just fixed. The prune comment records the class: a terminal state missing from that list is one that never gets pruned, i.e. unbounded growth of exactly the rows nobody looks at again. REFUSED: hard-coding a second literal at the call sites (+0 here, +6 there) — the trail label belongs to the function that writes the trail line. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2823,
+      "to": 2832,
+      "by": "UX-REPAIR ROUND 3 T18 — the status property says which terminal outcome is which",
+      "why": "+9, and the declaration itself is unchanged in line count (the description is one physical line; the enum is untouched). All 9 are the reason block, in the class this file already established for `image_create`, `file_append` and T5's `task_id`: a prompt-surface correction states what was wrong and that it adds no capability. What was wrong: `cancelled` was ALREADY advertised in this enum and already schema-legal for action=\"status\" — the tool accepted it and silently rewrote it to `fallen` — while this description said `\"fallen\" = abandoned/dropped` and `templates/PM-SOUL.md:25` said \"Fatally failed, not recoverable\". One word, two meanings, never reconciled, and a user's cancellation landing in the one the board paints red. The block also carries the re-blessing register line, which is what makes the +295 cached-prefix chars reviewable rather than creep. REFUSED: landing at +0 by deleting the block — this file's own precedent is that \"we looked and this is what it does\" and \"nobody looked\" must never read the same, and a description edit with no recorded reason is the second kind. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/recall-lane.ts",
+      "from": 531,
+      "to": 547,
+      "by": "UX-REPAIR ROUND 3 T17 — a recalled promise is resolved against the spine before it is quoted",
+      "why": "+16: 4 lines for the validity marker and its reason, 4 of code in the vault loop, 8 of block comment. The code is the smallest possible change at this seam — one `obligationVerdict` call, one `continue`, one suffix — because everything that could be a rule lives in `work/obligation-memory.ts`. The 8-line block states the thing a reader of the loop cannot see: that this is CORE-2 item 4's own rule one noun over (recall resolves a hit against the authoritative record before showing it), that `not-an-obligation` takes the byte-for-byte path it always did, and that this is where the round-3 F3 defect was handed to the model. ALTERNATIVES MEASURED AND REFUSED. (a) Inline the resolver here (+70): refused, the writer guard and the terminal-exit retirement need the same predicate. (b) Drop the block comment (+8): refused — this lane is 531 lines of recorded reasoning about position and cache safety, and a filter that silently drops rows from the model's memory with no stated rule is the one thing in it a future reader would remove first. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 1897,
+      "to": 1916,
+      "by": "UX-REPAIR ROUND 3 T17 — the one writer of work.state retires the obligation's memory",
+      "why": "+19, of which 13 are comment and 6 are code (2 columns onto the transition's existing SELECT, 2 fields on `WorkRow`, one 3-line guarded call after the transaction). It is HERE rather than in `dismissCommitment`/`resolveCommitment` because this file's own header calls `transition()` \"The ONE writer of `work.state`\" and lists its complete transactional effect list — a retirement hung off the two closers instead would be the fourth closer's bug, waiting. The comment says why it is rung AFTER the transaction (a memory retirement is not one of the spine's atomic effects and must never be able to fail a state change already decided) and why the module it calls does not import back (terminality is asked of migration 135's CHECK constraint, so there is no cycle and no second copy of the terminal set). ALTERNATIVES MEASURED AND REFUSED. (a) Two call sites in the closers (+8): refused — `transition()` is reachable for a commitment from any future caller, and the whole defect being fixed is that a lifecycle exit existed with no vault effect. (b) Drop the 13 comment lines (+6): refused, they are the record of the ordering decision (after the transaction, beside the doorbell, for the doorbell's stated reason plus one more) which is the only part a reader cannot recover from the code. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/vault/tools.ts",
+      "from": 609,
+      "to": 641,
+      "by": "UX-REPAIR ROUND 3 T17 — the vault_remember refusal family gains its third member",
+      "why": "+32: 12 lines of refusal text, 6 of guard, 14 of reason block. It is the SAME shape as the two refusals directly above it (technique text, credentials) and it lands beside them on purpose — a reader meeting one meets all three. The reason block is the measurement, not narration: three vault lines on the worn-in box described promises whose spine rows were ALL `abandoned`, with `retrieval_count` up to 1,560, structurally immune to every hygiene arm because all four are keyed on `retrieval_count = 0` — being recalled is what kept them alive. It also names the sibling that already steers against this (`agent/v2/recorded-commitment.ts:199-201`, \"memory carries no obligation\") and had no story for a promise landing in BOTH. The refusal text is long for the same reason the credential one is: it must tell a floor model where the content actually goes (`work_open(kind=\"commitment\")`) and how to rescue the legitimate half as a fact, or the model just drops the information. ALTERNATIVES MEASURED AND REFUSED. (a) Put the classifier here instead of in `work/obligation-memory.ts` (+0 net across the tree): refused — the read side and the retirement side need the identical predicate, and three copies of \"what is an obligation\" is exactly the disease. (b) Cut the reason block to 4 lines (+22): refused, the 14 lines carry the measurement that justified ENABLING a refusal at all (false positives: 0 across the full live corpus), and a guard whose licence to refuse is unrecorded is one the next reader widens or deletes. (c) Shorten the refusal to one sentence (+20): refused, measured against its own siblings — both existing refusals in this file are 6-8 lines for the same reason, and the shortest of them is the one this project has never had to re-explain. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 4609,
+      "to": 4662,
+      "by": "UX-REPAIR ROUND 3 T18 — the two terminal outcomes are told apart at the tool boundary",
+      "why": "+53, and 40 of them are comment. THE CODE: `cancelled` joins CANONICAL_STATUSES and four synonyms re-point from `fallen` to it (net 0 lines, the table only changed values); the error text grows two lines because it now teaches the DIFFERENCE between the two terminal words instead of naming one; the terminal branch takes `|| status === 'cancelled'` and its `terminateLiveScheduleOnFallen` call becomes a two-arm ternary so the reason and the trail label name the actor's choice (+4); two more call sites (PM override, owner verdict) do the same (+6); `checkProjectCompletion` gains a 4-line COUNT of cancelled children plus a 2-line honest close reason, so a project can never roll up as \"every task is complete\" over work that was called off. THE COMMENT is the 40, in three blocks, and every one of them is the record of a decision a future reader will otherwise re-litigate: (a) at the synonym table, WHY `cancelled` left the failure bucket while `fallen`/`failed`/`fail` stay — the owner's 2026-07-04 rationale is typo forgiveness, and it is quoted and kept, because deleting it and leaving the change would read as a reversal of his decision rather than a narrowing of it; (b) at the schedule disarm, that F-17's own incident sentence is \"a CANCELLED reminder fired anyway two hours later\", which is why the new value had to be added HERE first; (c) at the rollup, why a cancellation deliberately does NOT trip the D-K failed-pieces broadcast and yet must not vanish from the count. ALTERNATIVES MEASURED AND REFUSED. (a) Drop the three blocks to land at +13: refused for the reason this file's own $comment gives — the fold survived a year because its one recorded reason lived in a DIFFERENT file (`tracker/schema.ts:381-386`) and nobody reading the table could see it. Repeating that shape with the fix would be the same defect wearing the opposite sign. (b) Move the normalizer into a new module: refused, it is 20 lines and its only caller is this function; a module would trade 53 lines here for ~80 across two files and one more indirection between the model's word and the row. (c) Fold the three ternaries into one helper: refused, they are three DIFFERENT actors (the agent, the PM, the owner) whose reason strings must stay legible as three sentences — collapsing them is how the \"given up on\" default got applied to a cancellation in the first place. From here this file may only shrink."
+    },
+    {
       "path": "packages/server/src/agent/v2/answered-edge.ts",
       "from": 648,
       "to": 678,
@@ -2870,7 +2954,7 @@
     "packages/dashboard/src/pages/Settings.tsx": 6428,
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
-    "packages/dashboard/src/pages/Tracker.tsx": 1381,
+    "packages/dashboard/src/pages/Tracker.tsx": 1382,
     "packages/server/src/agent/a2a-transport.ts": 2387,
     "packages/server/src/agent/agent-status.ts": 233,
     "packages/server/src/agent/brokers/deny.ts": 385,
@@ -2899,7 +2983,7 @@
     "packages/server/src/agent/tools/cat/media.ts": 897,
     "packages/server/src/agent/tools/cat/session.ts": 242,
     "packages/server/src/agent/tools/cat/tracker.ts": 907,
-    "packages/server/src/agent/tools/definitions.ts": 2823,
+    "packages/server/src/agent/tools/definitions.ts": 2832,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
     "packages/server/src/agent/tools/index.ts": 676,
@@ -2910,7 +2994,7 @@
     "packages/server/src/agent/turn-state.ts": 239,
     "packages/server/src/agent/v2/answered-edge.ts": 678,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 502,
-    "packages/server/src/agent/v2/counterparty.ts": 938,
+    "packages/server/src/agent/v2/counterparty.ts": 939,
     "packages/server/src/agent/v2/loop.ts": 697,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 442,
@@ -2995,7 +3079,7 @@
     "packages/server/src/gateway/routes/config.ts": 2530,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/setup-deps.ts": 513,
-    "packages/server/src/gateway/routes/tracker.ts": 945,
+    "packages/server/src/gateway/routes/tracker.ts": 950,
     "packages/server/src/gateway/routes/twilio.ts": 501,
     "packages/server/src/gateway/routes/update.ts": 1171,
     "packages/server/src/gateway/routes/upload.ts": 608,
@@ -3017,7 +3101,7 @@
     "packages/server/src/memory/deliveries-lane.ts": 240,
     "packages/server/src/memory/lanes.ts": 867,
     "packages/server/src/memory/message-store.ts": 1122,
-    "packages/server/src/memory/recall-lane.ts": 531,
+    "packages/server/src/memory/recall-lane.ts": 547,
     "packages/server/src/memory/recall.ts": 510,
     "packages/server/src/memory/retrieval.ts": 591,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
@@ -3033,7 +3117,7 @@
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
     "packages/server/src/scheduler/engine.ts": 414,
-    "packages/server/src/scheduler/runner.ts": 1883,
+    "packages/server/src/scheduler/runner.ts": 1890,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/format-time.ts": 275,
     "packages/server/src/services/gmail-watcher.ts": 592,
@@ -3052,9 +3136,9 @@
     "packages/server/src/tools/unified-read.ts": 761,
     "packages/server/src/tools/work-verbs.ts": 373,
     "packages/server/src/tracker/delivery-evidence.ts": 320,
-    "packages/server/src/tracker/pm-agent.ts": 2445,
-    "packages/server/src/tracker/schema.ts": 1064,
-    "packages/server/src/tracker/tools.ts": 4609,
+    "packages/server/src/tracker/pm-agent.ts": 2448,
+    "packages/server/src/tracker/schema.ts": 1068,
+    "packages/server/src/tracker/tools.ts": 4662,
     "packages/server/src/tracker/version-gap-reconcile.ts": 327,
     "packages/server/src/twilio/call-session.ts": 884,
     "packages/server/src/twilio/sms-inbound.ts": 406,
@@ -3064,7 +3148,7 @@
     "packages/server/src/vault/maintenance.ts": 2162,
     "packages/server/src/vault/retrieval.ts": 450,
     "packages/server/src/vault/store.ts": 1205,
-    "packages/server/src/vault/tools.ts": 609,
+    "packages/server/src/vault/tools.ts": 641,
     "packages/server/src/voice/hume-engine.ts": 605,
     "packages/server/src/voice/model-manager.ts": 583,
     "packages/server/src/voice/stt-service.ts": 538,
@@ -3076,7 +3160,7 @@
     "packages/server/src/work/join-drive.ts": 256,
     "packages/server/src/work/occurrences.ts": 634,
     "packages/server/src/work/override-requests.ts": 247,
-    "packages/server/src/work/store.ts": 1897,
+    "packages/server/src/work/store.ts": 1916,
     "packages/server/src/work/tracker-store.ts": 602,
     "packages/server/src/work/tracker-view.ts": 536,
     "packages/server/src/work/validation-drive.ts": 482,
@@ -3084,7 +3168,7 @@
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
-    "packages/shared/src/types.ts": 540,
+    "packages/shared/src/types.ts": 545,
     "packages/shared/src/visibility.ts": 945,
     "packages/shared/src/ws.ts": 1110,
     "watchdog/src/auto-rollback.ts": 333,
