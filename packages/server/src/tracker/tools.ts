@@ -11,7 +11,7 @@ import { getDb } from '../db/connection.js';
 import {
   taskScope, projectScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
   validatedExpr, revertCountExpr, awaitingUserVerdictExpr, validationThreadIdExpr,
-  pendingCloseRequestExpr, closeRequestDeliveryExpr,
+  pendingCloseRequestExpr, closeRequestFiledExpr, closeRequestDeliveryExpr,
   statusToState, stateToStatus, type TrackerStatus,
   stampColumns,
   engineScaffoldScope,
@@ -3212,9 +3212,10 @@ export async function trackerValidatePause(
   const task = db.prepare(
     `SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
             w.agent_id AS assigned_to, w.notes AS notes,
-            ${validatedExpr('w', 'paused')} AS pause_validated, w.goal AS goal
+            ${validatedExpr('w', 'paused')} AS pause_validated, w.goal AS goal,
+            ${closeRequestFiledExpr('w')} AS close_request_filed
        FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
-  ).get(taskId) as { id: string; title: string; status: string; assigned_to: string | null; notes: string | null; pause_validated: number; goal: string | null } | undefined;
+  ).get(taskId) as { id: string; title: string; status: string; assigned_to: string | null; notes: string | null; pause_validated: number; goal: string | null; close_request_filed: number } | undefined;
 
   if (!task) return `Error: task ${taskId} not found.`;
   if (task.status !== 'paused') {
@@ -3222,6 +3223,18 @@ export async function trackerValidatePause(
   }
 
   if (args.valid) {
+    // T21 — DEFENCE IN DEPTH. The pause lens no longer SELECTS a row whose close is filed,
+    // but a model holding a stale issue id can still call this verb on one, and blessing the
+    // pause is what ate S5's close: it answers a question the row has moved past, against a
+    // wait note that stopped being true when the work finished. The verdict is refused with
+    // the door that IS open, so the PM's next call is the right one.
+    if (task.close_request_filed === 1) {
+      return (
+        `Error: task "${task.title}" (${taskId.slice(0, 8)}) has filed a CLOSE REQUEST — its worker says the wait is over and the work is done. ` +
+        `Blessing the pause would answer a question this row has moved past. ` +
+        `Judge the close instead: work_validate(action="validate", kind="complete", task_id="${taskId}", valid=true|false, reject_reason="..." if false).`
+      );
+    }
     upholdClaim(taskId, 'paused', 'pm', pmAgentId, 'PM confirmed the pause is a real wait condition');
     writeTaskLog({
       taskId,
@@ -3954,7 +3967,7 @@ export async function trackerValidateComplete(
            w.agent_id AS assigned_to, w.priority AS priority, w.parent_id AS project_id,
            w.repeat_interval AS repeat_interval, ${msToText('w.next_run_at')} AS next_run_at,
            ${validatedExpr('w', 'done')} AS complete_validated,
-           ${pendingCloseRequestExpr('w')} AS pending_close_request,
+           ${closeRequestFiledExpr('w')} AS close_request_filed,
            ${closeRequestDeliveryExpr('w')} AS close_request_delivery,
            w.result AS result, w.evidence_json AS evidence_json, w.goal AS goal
     FROM work w WHERE ${taskScope('w')} AND w.id = ?
@@ -3962,17 +3975,20 @@ export async function trackerValidateComplete(
     id: string; title: string; status: string; assigned_to: string | null;
     priority: string; project_id: string | null; repeat_interval: number | null;
     next_run_at: string | null; complete_validated: number;
-    pending_close_request: number; close_request_delivery: string | null;
+    close_request_filed: number; close_request_delivery: string | null;
     result: string | null; evidence_json: string | null; goal: string | null;
   } | undefined;
 
   if (!task) return `Error: task ${taskId} not found.`;
   // PHASE-2 T8T — THE TWO SHAPES OF AN UNBLESSED CLOSE (RULING 1).
   // The engine's receipt close leaves the row `complete` and unvalidated, exactly as before.
-  // The WORKER's close no longer moves the row at all: it files Key 1 and the row stays
-  // `in_progress`. Both are the same rung — "somebody says this is finished and no authority
-  // has agreed" — so both arrive here, and `keyOneOnly` is which one this is.
-  const keyOneOnly = task.status === 'in_progress' && task.pending_close_request === 1;
+  // The WORKER's close no longer moves the row at all: it files Key 1 and the row stays where
+  // it was worked from. Both are the same rung — "somebody says this is finished and no
+  // authority has agreed" — so both arrive here, and `keyOneOnly` is which one this is.
+  // T21: WHICH states a close can be filed from is `closeRequestFiledExpr`'s answer, asked
+  // here rather than restated. This door used to name `in_progress` itself and so refused
+  // the close a paused job filed after its wait ended (round-5 S5).
+  const keyOneOnly = task.close_request_filed === 1;
   if (task.status !== 'complete' && !keyOneOnly) {
     return `Error: task "${task.title}" (${taskId}) is currently status="${task.status}", not "complete", and has no close request outstanding. Nothing to validate.`;
   }
@@ -4013,9 +4029,19 @@ export async function trackerValidateComplete(
       if (!workSettled(keyTwo)) {
         return closeRefusalText(taskId, keyTwo, 'complete');
       }
+      // T21 — the row closed FROM `paused` keeps `is_paused = 1`, because
+      // `tracker-store.ts:setTrackerStatus` deliberately leaves the flag alone on a close:
+      // *"a completed recurring task stays paused-from-the-scheduler's-view"*. That reason is
+      // about a SCHEDULE, and it is preserved verbatim — a recurring row is skipped here. A
+      // one-shot task has no schedule for the flag to mean anything about, so leaving it set
+      // is just a finished row still rendering as paused.
+      if (task.status === 'paused' && task.repeat_interval === null) {
+        noteUnsettled(patchWork(taskId, { is_paused: 0 }, { touch: false }),
+          'trackerValidateComplete: the work pause ended with the close it was blocking', { taskId });
+      }
       writeTaskLog({
         taskId, fromEntity: 'pm', entryKind: 'transition',
-        fromStatus: 'in_progress', toStatus: 'complete',
+        fromStatus: task.status, toStatus: 'complete',
         actionTaken: 'work_validate(action="validate", kind=complete, valid=true) — Key 2',
         reason: "PM turned the second key on the worker's close request",
       });

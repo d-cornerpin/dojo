@@ -10,7 +10,7 @@ import { getDb } from '../db/connection.js';
 import { writeAgentStatus } from '../agent/agent-status.js';
 import {
   taskScope, msToText, STATE_TO_STATUS_SQL, validatedExpr, revertCountExpr,
-  awaitingUserVerdictExpr, pendingCloseRequestExpr,
+  awaitingUserVerdictExpr, unvalidatedCloseExpr, unvalidatedPauseExpr,
   stampColumns,
 } from '../work/tracker-view.js';
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../work/tracker-store.js';
@@ -939,10 +939,7 @@ function idsStillAwaitingKeyTwo(ids: readonly string[]): Set<string> {
     const rows = db.prepare(`
       SELECT w.id AS id FROM work w
       WHERE w.id IN (${holes})
-        AND (
-          (w.state = 'done' AND ${validatedExpr('w', 'done')} = 0)
-          OR (w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1)
-        )
+        AND ${unvalidatedCloseExpr('w')}
         AND ${awaitingUserVerdictExpr('w')} = 0
     `).all(...ids) as Array<{ id: string }>;
     return new Set(rows.map((r) => r.id));
@@ -981,10 +978,7 @@ function recordValidatorUnavailable(pmId: string, pmStatus: string): void {
     const rows = getDb().prepare(`
       SELECT w.id AS id FROM work w
       WHERE ${taskScope('w')}
-        AND (
-          (w.state = 'done' AND ${validatedExpr('w', 'done')} = 0)
-          OR (w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1)
-        )
+        AND ${unvalidatedCloseExpr('w')}
         AND ${awaitingUserVerdictExpr('w')} = 0
         AND ${validationAttemptCountExpr('w')} = 0
       LIMIT 20
@@ -1100,13 +1094,13 @@ async function runPMReview(): Promise<void> {
     try {
       return (db.prepare(`
         SELECT
-          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'done' AND ${validatedExpr('w','done')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
-          -- PHASE-2 T8T: the SECOND shape of an unvalidated close. A worker's own close is a
-          -- Key-1 REQUEST now (RULING 1), so the row it is about is still claimed - counting
-          -- only the done ones would make the queue read empty while work waited in it.
-          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1 AND ${awaitingUserVerdictExpr('w')} = 0) +
+          -- PHASE-2 T8T: an unvalidated close has TWO shapes (the engine's receipt close and
+          -- the worker's filed request, which leaves the row where it was); T21 made the
+          -- second shape's STATE SET the one thing it is, so this count and the queue it
+          -- wakes cannot disagree about what is waiting.
+          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedCloseExpr('w')} AND ${awaitingUserVerdictExpr('w')} = 0) +
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'blocked' AND ${validatedExpr('w','blocked')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
-          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'paused' AND ${validatedExpr('w','paused')} = 0) +
+          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedPauseExpr('w')}) +
           ${PENDING_OVERRIDE_COUNT_SQL}
         AS c
       `).get() as { c: number }).c;
@@ -1187,13 +1181,9 @@ async function runPMReview(): Promise<void> {
   if (activeTasks.length === 0) {
     const pendingCount = db.prepare(`
       SELECT
-        (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'done' AND ${validatedExpr('w','done')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
-          -- PHASE-2 T8T: the SECOND shape of an unvalidated close. A worker's own close is a
-          -- Key-1 REQUEST now (RULING 1), so the row it is about is still claimed - counting
-          -- only the done ones would make the queue read empty while work waited in it.
-          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1 AND ${awaitingUserVerdictExpr('w')} = 0) +
+        (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedCloseExpr('w')} AND ${awaitingUserVerdictExpr('w')} = 0) +
         (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'blocked' AND ${validatedExpr('w','blocked')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
-        (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'paused' AND ${validatedExpr('w','paused')} = 0) +
+        (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedPauseExpr('w')}) +
         ${PENDING_OVERRIDE_COUNT_SQL}
       AS c
     `).get() as { c: number };
@@ -1382,8 +1372,7 @@ async function runPMReview(): Promise<void> {
     SELECT w.id AS id, w.title AS title, w.agent_id AS assigned_to,
            ${msToText('w.updated_at')} AS updated_at
     FROM work w
-    WHERE ${taskScope('w')} AND w.state = 'paused'
-      AND ${validatedExpr('w', 'paused')} = 0
+    WHERE ${taskScope('w')} AND ${unvalidatedPauseExpr('w')}
       AND w.updated_at < ?
     ORDER BY w.updated_at ASC
     LIMIT 10
@@ -1459,8 +1448,12 @@ async function runPMReview(): Promise<void> {
   //   * `done` + no authority verdict — the engine's own delivery-receipt close (strike 0,
   //     strike 2, the assignment-thread deliverable). Unchanged: the engine turns the
   //     trigger's key, never the PM's, so the row lands here exactly as it always did.
-  //   * `claimed` + a pending close request — the worker said it was finished and RULING 1
-  //     says that is Key 1. The row does not move until this rung blesses it.
+  //   * a pending close request — the worker said it was finished and RULING 1 says that is
+  //     Key 1. The row does not move until this rung blesses it, so it is still sitting in
+  //     whichever state it was worked from: `claimed`, or `paused` when the job was waiting
+  //     on the owner and then finished (round-5 S5, event 22401). Which states those are is
+  //     `closeRequestFiledExpr`'s to say, not this query's — the paused one was missing here
+  //     for exactly as long as this query answered it itself.
   // Reading only the first shape is how the queue would go quiet while work waited in it.
   const unvalidatedCompleteRows = db.prepare(`
     SELECT w.id AS id, w.title AS title, w.agent_id AS assigned_to, w.goal AS goal,
@@ -1476,10 +1469,7 @@ async function runPMReview(): Promise<void> {
            ${revertCountExpr('w')} AS revert_count
     FROM work w
     WHERE ${taskScope('w')}
-      AND (
-        (w.state = 'done' AND ${validatedExpr('w', 'done')} = 0)
-        OR (w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1)
-      )
+      AND ${unvalidatedCloseExpr('w')}
       AND ${awaitingUserVerdictExpr('w')} = 0
       -- SWEEP CORE-2 item 1 — THE RIDER SKIPS THE SETTLE WINDOW. The 15 s guard exists so a
       -- row is not reported mid-write; a DOORBELL row was rung by the very write that
@@ -2025,13 +2015,13 @@ export async function runPokeCheck(): Promise<void> {
     try {
       const row = getDb().prepare(`
         SELECT
-          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'done' AND ${validatedExpr('w','done')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
-          -- PHASE-2 T8T: the SECOND shape of an unvalidated close. A worker's own close is a
-          -- Key-1 REQUEST now (RULING 1), so the row it is about is still claimed - counting
-          -- only the done ones would make the queue read empty while work waited in it.
-          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1 AND ${awaitingUserVerdictExpr('w')} = 0) +
+          -- PHASE-2 T8T: an unvalidated close has TWO shapes (the engine's receipt close and
+          -- the worker's filed request, which leaves the row where it was); T21 made the
+          -- second shape's STATE SET the one thing it is, so this count and the queue it
+          -- wakes cannot disagree about what is waiting.
+          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedCloseExpr('w')} AND ${awaitingUserVerdictExpr('w')} = 0) +
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'blocked' AND ${validatedExpr('w','blocked')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
-          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'paused' AND ${validatedExpr('w','paused')} = 0) +
+          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND ${unvalidatedPauseExpr('w')}) +
           ${PENDING_OVERRIDE_COUNT_SQL}
         AS c
       `).get() as { c: number };

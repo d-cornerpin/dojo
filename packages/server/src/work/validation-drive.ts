@@ -45,7 +45,7 @@ import { AUDIT_KIND } from './audit-trail.js';
 import { appendWorkEvent } from './store.js';
 import {
   taskScope, msToText, STATE_TO_STATUS_SQL, validatedExpr, awaitingUserVerdictExpr,
-  pendingCloseRequestExpr,
+  unvalidatedCloseExpr, unvalidatedPauseExpr,
 } from './tracker-view.js';
 
 const logger = createLogger('validation-drive');
@@ -199,12 +199,14 @@ export function validationAttemptCount(workId: string): number {
  * SCOPE, STATED. The `paused` and `blocked` arms are a different verdict with no coverage
  * recorder behind them, so they are NOT gated — gating them would invent the very silence
  * this task removes. Their behaviour is byte-unchanged, and negative controls pin it.
+ *
+ * T21 REFINES THE WORD "paused", it does not widen this law: a paused row that has FILED A
+ * CLOSE is a close, not a pause, and the coverage recorder behind closes is exactly what this
+ * law is about. A paused row with no close request is untouched — the negative control.
  */
 export const ownerEscalationOrderingExpr = (a: string): string =>
-  `(CASE WHEN (`
-  + `    (${a}.state = 'done' AND ${validatedExpr(a, 'done')} = 0)`
-  + `    OR (${a}.state = 'claimed' AND ${pendingCloseRequestExpr(a)} = 1)`
-  + `  ) THEN ${validationAttemptRecordedExpr(a)} ELSE 1 END)`;
+  `(CASE WHEN ${unvalidatedCloseExpr(a)}`
+  + `  THEN ${validationAttemptRecordedExpr(a)} ELSE 1 END)`;
 
 export interface OwnerEscalationRow {
   id: string;
@@ -274,16 +276,16 @@ export function selectRowsForOwnerEscalation(
       AND COALESCE(w.agent_id, '') NOT IN (${placeholders})
       AND COALESCE(w.requester_id, '') NOT IN (${placeholders})
       AND (
-        (w.state = 'done' AND ${validatedExpr('w', 'done')} = 0)
-        -- PHASE-2 T8T: the other half of "an unvalidated close does not sit forever".
-        -- Migration 139 means a worker's own close leaves the row claimed with a Key-1
-        -- request on it instead of moving it to done, so reading only the done arm would let
-        -- exactly the rows this sweep exists for age out of its sight.
-        OR (w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1)
+        -- PHASE-2 T8T: "an unvalidated close does not sit forever" has two shapes, and
+        -- migration 139 means the worker's own close leaves the row where it was with a
+        -- Key-1 request on it. Reading only the done arm would let exactly the rows this
+        -- sweep exists for age out of its sight; unvalidatedCloseExpr is both shapes and
+        -- the whole state set they can sit in (T21).
+        ${unvalidatedCloseExpr('w')}
         -- An active missed_runs_paused_at means the ENGINE paused this task for missed runs
         -- (alertMissedRuns), not the agent — not the owner's call. The PM sweep adjudicates
         -- that unvalidated pause and D12 owns its resolution.
-        OR (w.state = 'paused' AND ${validatedExpr('w', 'paused')} = 0 AND w.missed_runs_paused_at IS NULL)
+        OR (${unvalidatedPauseExpr('w')} AND w.missed_runs_paused_at IS NULL)
         OR (w.state = 'blocked' AND ${validatedExpr('w', 'blocked')} = 0)
       )
       -- SWEEP CORE-2 item 1 — THE ORDERING LAW. The owner is not told his validator did not
@@ -327,9 +329,8 @@ export function selectRowsSkippedAsDelivered(
         AND COALESCE(w.agent_id, '') NOT IN (${placeholders})
         AND COALESCE(w.requester_id, '') NOT IN (${placeholders})
         AND (
-          (w.state = 'done' AND ${validatedExpr('w', 'done')} = 0)
-          OR (w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1)
-          OR (w.state = 'paused' AND ${validatedExpr('w', 'paused')} = 0 AND w.missed_runs_paused_at IS NULL)
+          ${unvalidatedCloseExpr('w')}
+          OR (${unvalidatedPauseExpr('w')} AND w.missed_runs_paused_at IS NULL)
           OR (w.state = 'blocked' AND ${validatedExpr('w', 'blocked')} = 0)
         )
         AND ${ownerEscalationOrderingExpr('w')} = 1
@@ -469,10 +470,7 @@ export function countRowsHeldBackFromOwner(
         AND ${awaitingUserVerdictExpr('w')} = 0
         AND COALESCE(w.agent_id, '') NOT IN (${placeholders})
         AND COALESCE(w.requester_id, '') NOT IN (${placeholders})
-        AND (
-          (w.state = 'done' AND ${validatedExpr('w', 'done')} = 0)
-          OR (w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1)
-        )
+        AND ${unvalidatedCloseExpr('w')}
         AND ${validationAttemptRecordedExpr('w')} = 0
         AND w.updated_at < ?
     `).get(...serviceParams, ...serviceParams, staleBeforeMs) as { n: number }).n;

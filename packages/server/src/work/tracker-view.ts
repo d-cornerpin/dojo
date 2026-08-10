@@ -290,6 +290,37 @@ export const pendingCloseRequestExpr = (a: string): string =>
   + `    WHERE e2.work_id = ${a}.id AND e2.kind IN ('transition', 'claim_rejected')), -1)`
   + ` THEN 1 ELSE 0 END)`;
 
+/**
+ * WHICH ROWS HAVE A CLOSE FILED ON THEM — the subject, written ONCE (UX-REPAIR round 5 T21).
+ *
+ * `pendingCloseRequestExpr` above answers "is a close request outstanding". It does NOT say
+ * which STATES a close can be filed from, and every reader answered that for itself, in the
+ * same hand-rolled pair: `state = 'claimed' AND pendingCloseRequestExpr(...) = 1`. Ten sites,
+ * four authors, one omission — `paused`. A row paused awaiting the owner's approval, then
+ * finished and delivered, files exactly this request `from:'paused'` (round-5 S5, event
+ * 22401) and reached NO queue: the completion lens could not see it, and the pause lens
+ * picked it up and asked the PM the wrong question against the stale wait note.
+ *
+ * So the subject is one expression. `claimed` and `paused` are the two states a worker can
+ * file a close FROM — they are the two non-terminal states a claimed job can be sitting in
+ * when its work finishes — and a reader that wants one of them without the other is asking a
+ * different question and must say so in its own words.
+ */
+export const closeRequestFiledExpr = (a: string): string =>
+  `(CASE WHEN ${a}.state IN ('claimed', 'paused') AND ${pendingCloseRequestExpr(a)} = 1 THEN 1 ELSE 0 END)`;
+
+/** "Somebody says this is finished and no authority has agreed" — the completion queue's
+ *  whole subject, in its two shapes: the engine's own receipt close (`done`, unblessed) and
+ *  the worker's filed close request (the row has not moved). */
+export const unvalidatedCloseExpr = (a: string): string =>
+  `((${a}.state = 'done' AND ${validatedExpr(a, 'done')} = 0) OR ${closeRequestFiledExpr(a)} = 1)`;
+
+/** The pause lens's subject — v2.7.18's anti-gaming question, MINUS the rows that have since
+ *  filed a close. A finished row is a completion question; asking the PM to bless its stale
+ *  pause note is how S5's close was eaten. */
+export const unvalidatedPauseExpr = (a: string): string =>
+  `(${a}.state = 'paused' AND ${validatedExpr(a, 'paused')} = 0 AND ${closeRequestFiledExpr(a)} = 0)`;
+
 /** The delivery the Key-1 request pointed at, so the validator closes against the receipt the
  *  worker actually had rather than resolving a fresh one. */
 export const closeRequestDeliveryExpr = (a: string): string =>
