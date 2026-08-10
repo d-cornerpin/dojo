@@ -1104,3 +1104,19 @@ export function deleteAgentBusRowsFor(agentId: string): number {
  *  rather than ordinary peer conversation. `origin_intent` is the open-vocabulary
  *  "which subsystem produced this" column (T3-0b §2) and this is exactly its job. */
 export const AGENT_BUS_INTENT = 'agent_bus';
+
+/**
+ * UX-REPAIR T2 — WHAT MARKS THE PROMOTED START LINE, IN ONE SPELLING.
+ *
+ * The model's opening line, pushed to the person EARLY, ahead of the answer
+ * (`post-call-classify/terminal-text.ts` — one production writer). It is the agent's own
+ * words, not engine prose (PHASE-4 T4), which is why its row also carries an explicit
+ * `displayKind: 'agent-text'` and reads in chat exactly as any other bubble.
+ *
+ * It lives HERE, beside `AGENT_BUS_INTENT`, for the reason stated there: `origin_intent` is
+ * this module's vocabulary. It is a CONSTANT rather than two string literals because the
+ * writer and the settlement authority that refuses it as an ask's receipt
+ * (`work/ask-settlement.ts`, the seventh narrowing) must be unable to drift apart — a stamp
+ * nobody matches is the defect this fix exists to close, in a new spelling.
+ */
+export const START_ACK_ORIGIN_INTENT = 'engine_start_ack';

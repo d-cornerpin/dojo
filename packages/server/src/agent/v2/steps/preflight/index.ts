@@ -41,7 +41,7 @@
 // ════════════════════════════════════════
 
 import type { Database } from 'better-sqlite3';
-import type { AgentStatus } from '@dojo/shared';
+import type { AgentStatus, DisplayKind } from '@dojo/shared';
 import type { TurnContext } from '../../../turn-context.js';
 import type { InboundChannel } from '../../inbound-channel.js';
 import type { TurnCounterparty, WaitingConversation } from '../../counterparty.js';
@@ -176,7 +176,9 @@ export interface PreflightOutputs {
   readonly noteTerminalAnswer: (rowId: string, surface: string) => void;
   readonly identicalCallState: RepeatCallState;
   readonly reminderLaneRefusedSigs: Set<string>;
-  readonly deliverEngineUserAck: (text: string, originIntent?: string | null, reuseId?: string | null) => Promise<void>;
+  readonly deliverEngineUserAck: (
+    text: string, originIntent?: string | null, reuseId?: string | null, displayKind?: DisplayKind | null,
+  ) => Promise<void>;
   // §6 — the F10 start-ack.
   readonly counterpartyIsAgentSender: boolean;
   readonly startAckArmed: boolean;

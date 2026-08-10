@@ -17,7 +17,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { INTERNAL_WORKING_NOTE_PREFIX, WORKING_NOTE_PREFIX } from '@dojo/shared';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
-import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
+import { insertMessageIfAbsent, START_ACK_ORIGIN_INTENT } from '../../../../memory/message-store.js';
 import { type AgentTurnState } from '../../state.js';
 import { outputPersistenceClassifier, stripLeadingTimeStamp } from '../../classifiers/output.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
@@ -125,7 +125,16 @@ export async function runTerminalText(
         // The doubled display the owner saw on .19 was ack row + demoted
         // NOTE of the same text; skipping the demotion below (the text was
         // promoted whole, nothing to demote) leaves exactly one copy.
-        await deliverEngineUserAck(startLine, null);
+        // UX-REPAIR T2: the engine KNOWS this bubble is a start line — it decided so
+        // two statements up — and until now it threw the knowledge away at the door.
+        // The stamp is what lets the settlement authority refuse it as an ask's
+        // receipt (`work/ask-settlement.ts`, the seventh narrowing) instead of
+        // marking a question answered before anybody has looked at it. The explicit
+        // `'agent-text'` is the other half: origin_intent alone would classify the
+        // row `fallback` (`shared/visibility.ts`), and this line is the MODEL'S OWN
+        // WORDS pushed early (PHASE-4 T4), not engine-composed prose. Both facts
+        // travel or neither should.
+        await deliverEngineUserAck(startLine, START_ACK_ORIGIN_INTENT, null, 'agent-text');
         logger.info('v2 start-ack steer: model spoke its start line mid-work; delivered as the visible ack (streamed bubble promoted in place)', {
           agentId, turnNumber, preview: startLine.slice(0, 60),
         }, agentId);

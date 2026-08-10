@@ -20,7 +20,7 @@
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
-import { formatRoutingMarker } from '@dojo/shared';
+import { formatRoutingMarker, type DisplayKind } from '@dojo/shared';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
@@ -53,7 +53,9 @@ export interface TurnClosuresOutputs {
   readonly noteTerminalAnswer: (rowId: string, surface: string) => void;
   readonly identicalCallState: RepeatCallState;
   readonly reminderLaneRefusedSigs: Set<string>;
-  readonly deliverEngineUserAck: (text: string, originIntent?: string | null, reuseId?: string | null) => Promise<void>;
+  readonly deliverEngineUserAck: (
+    text: string, originIntent?: string | null, reuseId?: string | null, displayKind?: DisplayKind | null,
+  ) => Promise<void>;
 }
 
 export function runTurnClosures(
@@ -220,16 +222,32 @@ export function runTurnClosures(
   // (2: first steer, one reminder) and the loop index the first steer rode are bounded
   // state, not a snapshot. Reasons at the fields (RULING P6-R3(1)).
   // originIntent stamps a machine-readable marker on the ack row so consumers
-  // (the completion-ack cross-turn dedup, the PM poke chain, the F10 replied-
-  // check) recognize an engine ack STRUCTURALLY instead of by copy prefix,
-  // which is what lets the wording vary freely. origin_kind is deliberately
-  // left NULL: an assistant row with only origin_intent still classifies as
-  // normal user-visible agent speech (deriveOrigin keys engine-origin off
-  // origin_kind, and the display classifier ignores origin_intent on assistant
-  // rows), so the ack still shows in chat exactly as before.
-  // originIntent defaults to null so a non-ack caller (e.g. the thrash-block
-  // user notice) keeps origin_intent NULL and stays a substantive reply. The
-  // start-ack sites pass 'engine_start_ack' explicitly.
+  // (the delivery-time ask settlement, the completion-ack cross-turn dedup, the
+  // PM poke chain, the F10 replied-check) recognize a start-ack STRUCTURALLY
+  // instead of by copy prefix, which is what lets the wording vary freely.
+  // origin_kind is deliberately left NULL: `deriveOrigin` keys engine-origin off
+  // origin_kind, so the row is still the agent speaking.
+  //
+  // ⚠ CORRECTED, UX-REPAIR T2 (2026-08-09). This block used to say "the display
+  // classifier ignores origin_intent on assistant rows" and "the start-ack sites
+  // pass 'engine_start_ack' explicitly". BOTH were false at the tree that carried
+  // them: `shared/visibility.ts` classifies ANY origin_intent-stamped owner-lane
+  // assistant row `fallback` (its own comment names the start-ack, from the era
+  // when the ack WAS engine-composed), and there were ZERO production writers of
+  // the value — the ONE caller passed null, which is the whole reason an ask could
+  // be closed on an "On it".
+  //
+  // What is true now: there is exactly ONE production writer (the promoted start
+  // line, `post-call-classify/terminal-text.ts`), it passes the intent AND an
+  // explicit `displayKind: 'agent-text'`, and the explicit kind is what keeps the
+  // row reading as ordinary agent speech. That is deliberate rather than
+  // incidental: PHASE-4 T4 converted this lane to the model's own words, so
+  // `agent-text` is the TRUTHFUL class and the `fallback` arm — kept intact for
+  // the intents that really are engine-composed — is bypassed by declaration, not
+  // by being weakened.
+  //
+  // originIntent still defaults to null so a non-ack caller (e.g. the thrash-block
+  // user notice) keeps origin_intent NULL and stays a substantive reply.
   // Captured text-with-tools that MIGHT be the user's genuine answer (set by the
   // demotion block, consumed by G-SUP-2 / the start-ack / the [no-reply]
   // promotion). Declared HERE, above the ack closures, so the start-ack timer
@@ -293,14 +311,26 @@ export function runTurnClosures(
   // a deliberate confirmation and proceeds.
   const reminderLaneRefusedSigs = new Set<string>();
 
-  const deliverEngineUserAck = async (text: string, originIntent: string | null = null, reuseId: string | null = null): Promise<void> => {
+  const deliverEngineUserAck = async (
+    text: string, originIntent: string | null = null, reuseId: string | null = null,
+    displayKind: DisplayKind | null = null,
+  ): Promise<void> => {
     // reuseId (2026-07-23, owner .19 report: doubled bubble): when the text
     // being delivered ALREADY streamed live under a bubble id, persist and
     // broadcast under THAT id so the streamed bubble becomes the delivered
     // message instead of a duplicate appearing next to a demoted note.
+    //
+    // displayKind (UX-REPAIR T2, 2026-08-09) — the declared override carrier
+    // (`NewMessage.displayKind`), named by the ONE caller that has to say what
+    // its row IS rather than let the classifier guess. Default `null` means
+    // "classify me", which is byte-identically what every call did before this
+    // parameter existed.
     const ackId = reuseId ?? uuidv4();
     try {
-      insertMessageIfAbsent({ id: ackId, agentId, role: 'assistant', content: text, turnNumber, originIntent });
+      insertMessageIfAbsent({
+        id: ackId, agentId, role: 'assistant', content: text, turnNumber, originIntent,
+        ...(displayKind ? { displayKind } : {}),
+      });
       broadcast({
         type: 'chat:message',
         agentId,

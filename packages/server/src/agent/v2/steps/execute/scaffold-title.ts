@@ -48,10 +48,16 @@ export function deriveScaffoldTitle(raw: string): string {
 // detectExplicitDelegation and DELEGATION_HINT_BODY — MOVED to
 // `steps/assemble/delegation-and-attachments.ts` with the one site that binds them.
 
-// F12.5: fire-and-forget PM rename handoff, factored out so BOTH scaffold sites
-// (turn-start classifier and mid-turn engine floor) hand the ugly interim names
-// to the PM agent to rewrite on its own turn via its local model. The user-facing
-// agent never waits; a failed PM call just leaves the interim names in place.
+// F12.5: fire-and-forget PM rename handoff — the ugly interim name goes to the PM agent to
+// rewrite on its own turn via its local model. The user-facing agent never waits; a failed PM
+// call just leaves the interim name in place.
+//
+// ⚠ CORRECTED, UX-REPAIR T2 (2026-08-09). This header said "factored out so BOTH scaffold
+// sites (turn-start classifier and mid-turn engine floor)" hand their names over. There is
+// ONE caller: `grep -rn dispatchPMRenameHandoff packages/server/src` → `tracker-floors.ts`
+// only. The turn-start scaffold site died with `d00f270` (PHASE-2 T8c item 3 deleted the
+// empty-project machine, and `multistep-detection.ts` records the deletion in full). The
+// factoring stands on its own; the second caller it names has not existed for two phases.
 export async function dispatchPMRenameHandoff(params: {
   callingAgentId: string;
   taskId: string;

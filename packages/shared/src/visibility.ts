@@ -674,10 +674,25 @@ function classifyInner(msg: DisplayMessageInput): DisplayClassification {
     return { tier: 'agent-only', kind: 'fallback' };
   }
   // Engine-composed text signed as the agent, named by `origin_intent` on an OWNER-lane
-  // assistant row (the start-ack, the cross-conversation send echo, the thrash notices).
+  // assistant row (the thrash notices and their kin).
   // This is ruling OR2's subject and PHASE 4 removes the composers. T8 records WHAT wrote
   // it and deliberately does NOT change what the owner sees — the tier stays user-visible,
   // because hiding these would be Phase 4's change made early and by the wrong task.
+  //
+  // ⚠ THE START-ACK IS NO LONGER ONE OF THESE, and the correction is UX-REPAIR T2's
+  // (2026-08-09). This comment named it from the era when the engine COMPOSED it; PHASE-4 T4
+  // converted the lane to the model's own opening words pushed early
+  // (`v2/steps/preflight/turn-closures.ts` records the conversion), so `agent-text` — not
+  // `fallback` — is the truthful class for that row.
+  //
+  // THE ARM IS NOT NARROWED FOR IT. This classifier is a leaf and takes no exceptions: the
+  // WRITER declares what its row is, through the override carrier `NewMessage.displayKind`
+  // (`memory/message-store.ts`, applied as `m.displayKind ?? display.kind`), and the start-ack
+  // is the one writer that passes it. Every other stamped intent — and an unstamped
+  // `engine_start_ack` row, should one ever be written — still classifies exactly as it did
+  // before, which is asserted rather than assumed
+  // (`memory/__tests__/display-taxonomy.test.ts`, and the CONTROL clause in
+  // `v2/steps/post-call-classify/__tests__/the-stamped-start-ack-keeps-its-readers-honest.test.ts`).
   if (msg.originIntent) {
     return { tier: 'user-visible', kind: 'fallback' };
   }

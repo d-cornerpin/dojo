@@ -52,7 +52,7 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { recordServingTurnByRowid } from '../memory/message-store.js';
+import { recordServingTurnByRowid, START_ACK_ORIGIN_INTENT } from '../memory/message-store.js';
 import {
   appendWorkEvent, claimFailedJoinForLateAnswer, isTerminal, revertAskClaimOnAbort, transition,
   type WorkState,
@@ -242,6 +242,7 @@ function qualifyingDelivery(
         AND d.tool NOT IN (${excluded.map(() => '?').join(', ')})
         AND ${NOT_A_TOOL_CHIP}
         AND ${NOT_A_SUPERSEDED_BUBBLE}
+        AND ${NOT_A_START_ACK}
         AND unixepoch(d.created_at) >= ?
       ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
   ).get(ask.agent_id, turnNumber, ask.conversation_id, ...excluded, Math.floor(ask.opened_at / 1000)) as
@@ -331,6 +332,46 @@ const NOT_A_SUPERSEDED_BUBBLE =
         AND d.tool NOT IN (${[...ENGINE_JOIN_RELAY_TOOLS].map((t) => `'${t}'`).join(', ')})
         AND tb.ended_at IS NOT NULL
         AND (tb.answer_message_id IS NULL OR tb.answer_message_id <> d.message_id))`;
+
+/**
+ * ⚠ UX-REPAIR T2 — THE SEVENTH NARROWING, AND IT IS THE DOCTRINE AT THE ONE MOMENT THE
+ * ENGINE COULD ALWAYS HAVE ENFORCED IT.
+ *
+ * A START-ACK IS NOT AN ANSWER. Three narrowings already say it — the `engine-ack` LANE, the
+ * tool-call CHIP, and the sixth's superseded bubble. The sixth is the closest, and it is
+ * deliberately TIME-SHAPED: it needs `turns.ended_at`, because mid-turn nobody can know which
+ * bubble was the answer. That argument is sound, and it does not apply here.
+ *
+ * FOR THIS ONE CLASS THE ENGINE KNOWS AT THE INSTANT. The promoted start line is not inferred
+ * from prose or from a missing `model_id`; the engine DECIDES to promote it
+ * (`post-call-classify/terminal-text.ts` sets `engineStartAckDeliveredThisTurn` two statements
+ * before it triggers the delivery) and now says so on the row, in the column built for saying
+ * it. So this narrowing asks a fact that is already true when the delivery lands, and it needs
+ * no turn record at all.
+ *
+ * MEASURED THROUGH THE REAL DOOR at `ba49131`, one request, floor model, BehaviorBot:
+ *   turn 4526, ask:9eaab2ba — `done` at +4.2 s on delivery a6c01865, whose message was
+ *   "On it — reading both files now."; `ct0_receipt_repointed` at +12.0 s. A 7.754 s window in
+ *   which `openObligations` told the MODEL, mid-turn, that it owed the person nothing.
+ * And the crash shape, turn 4527: killed between the ack and the answer, the ask stayed `done`
+ * on that same "On it" across the reboot — nobody was ever answered.
+ *
+ * WHAT IT DOES NOT WIDEN, and each of these has a control in
+ * `__tests__/an-ask-never-reads-done-on-a-start-ack.test.ts`:
+ *   * an UNSTAMPED bubble is untouched — TB1's instant close for a genuine quick answer is
+ *     exactly as it was, and CT0's boundary arm remains the backstop for it;
+ *   * a DIFFERENT `origin_intent` is untouched — the rule names one value, never the column;
+ *   * a delivery with no message row (every channel send) cannot be reached, keyed the same
+ *     way the chip and bubble narrowings are.
+ *
+ * THE OWNER-PRIORITY CHECK (`:19-26`): refusing the ack cannot park the ask. It stays
+ * `claimed`, the real answer's own delivery closes it, and if the turn dies the boot arms find
+ * a live claim on a dead turn and hand it back OPEN with a named cause — which is the outcome
+ * that priority asks for, and the one the close-on-the-ack was preventing.
+ */
+const NOT_A_START_ACK =
+  `NOT EXISTS (SELECT 1 FROM messages ma WHERE ma.id = d.message_id
+                 AND ma.origin_intent = '${START_ACK_ORIGIN_INTENT}')`;
 
 /**
  * SWEEP CORE-1 CT0 — is the receipt this row is settled on a bubble THIS FINISHED TURN does

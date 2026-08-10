@@ -238,7 +238,12 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     const out = await runPostCallClassify(freshState(), ctx);
 
     if (out.directive !== 'proceed') throw new Error('unreachable');
-    expect(deliverEngineUserAckSpy).toHaveBeenCalledWith('Here is the answer.', null);
+    // UX-REPAIR T2: the same call, now carrying the two facts the engine already knew and
+    // used to discard — the start-ack STAMP (so the ask settlement can refuse it as a
+    // receipt) and the explicit `agent-text` kind (so the stamp does not reclassify the
+    // model's own words as engine fallback). `reuseId` stays null.
+    expect(deliverEngineUserAckSpy)
+      .toHaveBeenCalledWith('Here is the answer.', 'engine_start_ack', null, 'agent-text');
     expect(out.persistedContent).toBeNull();
     // The pair is written ON THE BAG, live, so the wall-clock timer sees it at fire time.
     expect(ctx.turnCtx.engineStartAckDeliveredThisTurn).toBe(true);

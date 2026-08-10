@@ -37,6 +37,7 @@
 // ════════════════════════════════════════
 
 import type { Database } from 'better-sqlite3';
+import type { DisplayKind } from '@dojo/shared';
 import type { ModelCallResult } from '../../../model.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { TurnCounterparty } from '../../counterparty.js';
@@ -112,7 +113,9 @@ export interface PostCallClassifyContext {
    *  construction. */
   readonly reArmIfStrandedNoAnswer: () => void;
   readonly noteTerminalAnswer: (rowId: string, surface: string) => void;
-  readonly deliverEngineUserAck: (text: string, originIntent: string | null) => Promise<void>;
+  readonly deliverEngineUserAck: (
+    text: string, originIntent: string | null, reuseId?: string | null, displayKind?: DisplayKind | null,
+  ) => Promise<void>;
   readonly persistAndBroadcastSystemRow: (content: string) => void;
   readonly startAckRepliedNow: () => boolean;
 }
