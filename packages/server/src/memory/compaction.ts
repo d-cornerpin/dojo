@@ -16,6 +16,8 @@ import {
   replaceContextItems,
 } from './dag.js';
 import { generateSummary } from './summarize.js';
+// T20: the summariser's own cited work id, resolved against the spine before the row is stored.
+import { annotateSummaryObligations } from './summary-obligations.js';
 import { archiveMessagesBeforeCompaction, isDreamerIgnored, getArchiveHighWaterMark } from '../vault/archive.js';
 import { isSystemServiceAgent } from '../config/platform.js';
 import { lastCompactionDividerAt } from '../agent/shared-state.js';
@@ -939,10 +941,24 @@ export async function runLeafCompaction(
       // (The table name is deliberately not written here: T10's grep-zero list carries the
       // token, and a comment is not worth a false hit on it.)
 
+      // ── UX-REPAIR ROUND 4 T20 — THE CITED ID IS FINALLY DEREFERENCED ──
+      // The tombstone above records what `839eedc` removed and why: a summariser must not
+      // write the obligation ledger. It also added the instruction to CITE the work id, and
+      // nothing was ever built to read it, so a promise that died four days ago kept being
+      // served in the present tense from a stored summary while the OPEN WORK block in the
+      // same prompt correctly carried nothing. Resolving the id is not the deleted mechanism
+      // returning: nothing is parsed into a second table, no obligation is created, and the
+      // agent's sentence is left intact with the spine's answer appended beside it.
+      //
+      // It happens HERE, at write, because summaries ride slot 300 — the CACHEABLE PREFIX.
+      // Resolving at render would rewrite prefix bytes on a turn that changed nothing, which
+      // is the line T17 declined to cross for the recall lane and the reason it could fix the
+      // vault for free. Stored once, read as stored, for ever after.
+      const resolvedText = annotateSummaryObligations(summary.text);
       createLeafSummary(
         agentId,
-        summary.text,
-        summary.tokenCount,
+        resolvedText,
+        resolvedText === summary.text ? summary.tokenCount : estimateTokens(resolvedText),
         messageIds,
         earliestAt,
         latestAt,

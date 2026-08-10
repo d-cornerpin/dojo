@@ -63,7 +63,7 @@ ABSOLUTE RULES — NEVER VIOLATE THESE:
 - Preserve ALL technical specifics: error messages, config values, commands run, API responses
 - When the user says "X is Y", write "X is Y" — do not generalize to "discussed X"
 - Capability / tool availability is VOLATILE state, not a durable fact. Record what was ATTEMPTED and the OUTCOME ("tried to download from the user's account, got a 'no such tool' error"), but NEVER write a standing verdict like "the agent cannot download user attachments" or "that feature isn't supported" — the platform gains tools over time and such verdicts silently go false. Keep the dated attempt, drop the conclusion.
-- Note any unresolved questions, pending tasks, or open decisions in the narrative, tagged with the party/conversation they belong to. When such an item is already tracked, cite its work id as written (e.g. "still owed: email Bob the roof quote [cmt:1a2b3c4d5e6f]") — the id is the record, the summary is the context around it.
+- Note any unresolved questions, pending tasks, or open decisions in the narrative, tagged with the party/conversation they belong to. An OBLIGATION — something still owed to someone — may only be written if the conversation gives you its work id, cited as written (e.g. "still owed: email Bob the roof quote [cmt:1a2b3c4d5e6f]"). If there is no id for it, leave it out: the id is the record, the summary is the context around it. A summary is a record of what was SAID, never of what is currently owed; the OPEN WORK block in the live prompt is the current status, and an obligation line here is history whatever tense it is written in.
 - Attribute every fact to the correct person AND the correct conversation, using the [ROLE · PARTY] tags. Carry the party label into the summary text so whose-request-is-whose survives compression.
 - CRITICAL — Preserve resolution state. At the end of the summary, include a section:
   RESOLVED: [issue] — fixed [how/when]
@@ -102,6 +102,7 @@ ABSOLUTE RULES:
 - NEVER generalize specific facts into vague categories — "favorite movie is Meet Joe Black" must survive, not become "has movie preferences"
 - NEVER drop business names, project names, people's names, or technical specifics
 - Remove only true duplicates (exact same fact stated twice) and filler/pleasantries
+- Obligation lines (things owed to someone) carry a work id and, where the engine has resolved it, a bracketed state. Carry BOTH forward verbatim and never restate an obligation as currently owed: the OPEN WORK block is the current status, not these summaries. An obligation with no id does not survive condensation.
 - Do NOT carry forward standing capability verdicts ("agent can't do X", "X not supported") as current fact — keep a dated attempt/outcome if one is present, but those conclusions are stale-prone and must not be stated as present truth
 - Maintain correct attribution — never confuse who said or did what. The source summaries tag facts with the party/conversation they belong to (the owner, a named contact on a channel, another agent); CARRY THOSE LABELS FORWARD. Keep different parties' requests separate; never merge them into an unattributed statement.
 - Target approximately ${targetTokens} tokens — use the space for facts, not narrative
@@ -129,6 +130,7 @@ ABSOLUTE RULES:
 - Organize by topic (e.g., "User Profile", "Projects", "Preferences", "Technical Decisions") with date ranges
 - Drop only: routine tool calls, small talk, resolved errors with no lasting impact
 - Keep: anything that would be needed to resume a conversation months later
+- Obligation lines (things owed to someone) keep their work id and any bracketed state verbatim, and are never restated as currently owed: the OPEN WORK block is the current status, not this document. An obligation with no id does not survive condensation.
 - Maintain correct attribution
 - Target approximately ${targetTokens} tokens
 - Do NOT include preamble — write the reference summary directly
