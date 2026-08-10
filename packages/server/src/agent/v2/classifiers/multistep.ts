@@ -102,6 +102,14 @@ const ACTION_VERBS = new Set([
   'remind', 'notify', 'alert',
   'export', 'import', 'backup', 'restore',
   'attach', 'upload', 'save',
+  // UX-REPAIR T4 — the divide-and-recombine family. Measured, not guessed: on
+  // 2026-08-10 the LARGEST job in the six-scenario review scored
+  // `actionVerbs = 0` and took the 30s timer door instead of the pre-call one,
+  // because "Split ... and give me one combined write-up" contains no verb this
+  // set knew. These four are imperative WORK verbs; the `NOUNIFYING_PREDECESSORS`
+  // guard below still applies to them, so "what was the split" and "any
+  // distribute jobs today?" stay at zero.
+  'split', 'divide', 'distribute', 'combine',
 ]);
 
 const CONJUNCTIONS = new Set(['and', 'then', 'also', 'plus', 'after', 'next']);
@@ -164,10 +172,22 @@ export function looksLikeQuestion(query: string): boolean {
 // Deliverable indicators: words/phrases that signal a discrete output
 // the agent has to produce. Catches prompts that imply outputs without
 // explicit conjunctions ("a summary of X for Y").
+// UX-REPAIR T4: `summary` and `report` were already here — verified before
+// adding, and NOT re-added. What was missing is the class of deliverable NOUN
+// that names the thing the agent has to produce when the request is phrased as
+// a want rather than an order ("I want a comparison ... give me one combined
+// write-up with a bottom-line recommendation" scored zero deliverables).
+//
+// THESE ARE EXPLICIT ENTRIES, NOT A STEMMER. The verb morphology above folds
+// only s/ed/ing on purpose; `comparison → compare` is a derivational fold and
+// the moment this file starts guessing at word endings it starts flipping
+// verdicts nobody can predict from reading it. `comparison` earns its place by
+// being written down, and so does the next one.
 const DELIVERABLE_HINTS = [
   /\bsummary\b/, /\breport\b/, /\bdoc(?:ument)?\b/, /\bemail\b/,
   /\bmessage\b/, /\blist\b/, /\boverview\b/, /\bbreakdown\b/,
   /\bdigest\b/, /\bbrief\b/,
+  /\bcomparison\b/, /\brecommendation\b/, /\bwrite-?up\b/,
 ];
 
 export function multistepHeuristic(query: string): MultistepHeuristic {
