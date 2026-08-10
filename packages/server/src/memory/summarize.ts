@@ -43,6 +43,7 @@ INPUT FORMAT: The conversation below is formatted as [ROLE · PARTY] followed by
 [USER · <name>] = an inbound message, tagged with WHO it is from and on which channel (e.g. [USER · the owner], [USER · Alex Chen (imessage)], [USER · priya@northwind.example.com (email)], [USER · a PM agent (agent)])
 [ASSISTANT · <party>] / [TOOL · <party>] = the AI assistant's own reply / a tool result, tagged with the conversation it was part of
 The PARTY tag tells you which conversation each message belongs to. These are SEPARATE conversations with different people, not one stream.
+[USER · <name> · ANSWERED in turn <N>] = the engine's own record that this ask WAS ALREADY ANSWERED, on turn N. Carry that state into the summary — write "asked X; answered on turn N" — and NEVER list such an ask as outstanding, pending, or awaiting a reply. An ask with no ANSWERED tag is simply an ask; say what was asked, not that it is still owed.
 
 CONVERSATION ATTRIBUTION — CRITICAL:
 - Every fact, request, reminder, pending task, or decision MUST state which party/conversation it belongs to. Write "the owner asked to move their dentist to 3pm" and "Priya (email) asked for the offsite budget" — NEVER an unattributed "dentist moved to 3pm; offsite budget requested" that drops who it was for.
@@ -180,6 +181,33 @@ export type SummaryResult =
   | { ok: true; text: string; tokenCount: number }
   | { ok: false; reason: string };
 
+/**
+ * UX-REPAIR ROUND 6 T24 — AN EMPTY BODY IS A REFUSAL, and so is an aborted one.
+ *
+ * The contract above says a refusal is not a placeholder because "marking the sources
+ * compacted destroys the rows". It closed the no-model and model-threw paths and left the
+ * one that actually fired: a call that RETURNS, with nothing in it.
+ *
+ * Measured, 2026-08-10 22:56:03 (`dojo.log`, agent 57b52025): the background drain's
+ * 60s wall clock aborted an in-flight summariser at 59,968ms; the provider closed the
+ * stream with outputTokens=1; `estimateTokens('')` is 0, which is ≤ targetTokens * 1.5,
+ * so the empty string was returned as a SUMMARY and `createLeafSummary` marked all 51
+ * source rows compacted behind it — "Can you text my phone?" and its answer among them.
+ * Two more zero-length summaries on the same body ate 37 and 34 rows the same way.
+ *
+ * `summary-rebuild.ts` already refuses empty output for the NIGHTLY path, where nothing is
+ * destroyed by trying again. The live path, the one that reclaims rows, did not. Same test,
+ * moved to where the cost is irreversible.
+ *
+ * The abort arm is not belt-and-braces for the empty arm: an abort can also land mid-body,
+ * and a truncated span read as a whole one is the same lie with a longer body.
+ */
+function unusableOutput(text: string, abortSignal?: AbortSignal): string | null {
+  if (abortSignal?.aborted) return 'summarizer call was aborted before it finished';
+  if (!text || text.trim().length === 0) return 'summarizer returned empty text';
+  return null;
+}
+
 export async function generateSummary(params: {
   content: string;
   depth: number;
@@ -223,6 +251,14 @@ export async function generateSummary(params: {
       abortSignal,
     });
 
+    const unusable = unusableOutput(result.content, abortSignal);
+    if (unusable) {
+      logger.warn('SUMMARY_REFUSED summarizer produced no usable text', {
+        depth, targetTokens, reason: unusable,
+      }, agentId);
+      return { ok: false, reason: unusable };
+    }
+
     const resultTokens = estimateTokens(result.content);
 
     // Check if result is within acceptable range
@@ -252,6 +288,16 @@ export async function generateSummary(params: {
       tools: false,
       abortSignal,
     });
+
+    // Same test on the retry: the aggressive pass is where an abort is MOST likely to land,
+    // because it is the second model round of a call the caller may already have given up on.
+    const unusableRetry = unusableOutput(aggressiveResult.content, abortSignal);
+    if (unusableRetry) {
+      logger.warn('SUMMARY_REFUSED aggressive retry produced no usable text', {
+        depth, targetTokens, reason: unusableRetry,
+      }, agentId);
+      return { ok: false, reason: unusableRetry };
+    }
 
     const aggressiveTokens = estimateTokens(aggressiveResult.content);
 

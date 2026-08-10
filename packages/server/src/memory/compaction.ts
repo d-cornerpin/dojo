@@ -823,15 +823,89 @@ async function runCheckAndCompact(
  *     summary (`scrubStubFor`), because a summary is re-injected across sessions.
  */
 export function buildLeafSummaryInput(messages: Message[]): string {
+  const answered = answeredAskTurns(messages);
   return messages
     .filter(m => !isNonConversationForSummary(m.content))
     .map(m => {
       const role = m.role.toUpperCase();
       const party = summaryPartyTag(m);
-      const tag = party ? `${role} · ${party}` : role;
+      const base = party ? `${role} · ${party}` : role;
+      const servedBy = answered.get(m.id);
+      const tag = servedBy == null ? base : `${base} · ${ANSWERED_TAG} in turn ${servedBy}`;
       return `[${tag}] ${condenseToolJsonForSummary(scrubTechniqueContentForSummary(m.content))}`;
     })
     .join('\n\n---\n\n');
+}
+
+/** The literal the input builder writes and the summariser's own instruction names. One
+ *  token, so the writer, the prompt and the tests cannot drift apart. Deliberately free of
+ *  `]` — `summary-rebuild.ts`'s `ROLE_TAG_RE` strips `^\s*\[(USER|…)\b[^\]]*\]`, and a
+ *  bracket inside the tag would break the replay that file exists to perform. */
+export const ANSWERED_TAG = 'ANSWERED';
+
+/**
+ * UX-REPAIR ROUND 6 T24 — THE ASK'S ANSWERED STATE TRAVELS WITH THE ASK.
+ *
+ * T20's law, one surface further on: the spine is the only truth, and a summary is the
+ * context around it. A summary that lists the afternoon's questions with no record that they
+ * were ANSWERED is a parallel memory of obligations wearing a narrative's clothes — and it is
+ * what the model read on 2026-08-10 at turn 4656 before it re-ran the weather and vet asks and
+ * re-delivered research it had finished 100 seconds earlier.
+ *
+ * The state is asked of the LEDGER (`messages.answer_message_id` / `served_by_turn`, migration
+ * 113 — the same stamps `engine.recently-answered` reads), never inferred from the prose, and
+ * it is resolved HERE, at write, for the same reason T20 resolves where it does: summaries ride
+ * `MessageSlot.Summaries = 300`, inside the cacheable prefix. Stored once, read as stored.
+ *
+ * It rides the INPUT rather than being appended to the output because there is no id token in
+ * a user-ask line to key an annotation on, and keying one on the prose is the parser `839eedc`
+ * deleted. `summary-rebuild.ts` replays through this same builder, so the replay stays honest.
+ */
+function answeredAskTurns(messages: Message[]): Map<string, number> {
+  const out = new Map<string, number>();
+  const asks = messages.filter(m => m.role === 'user');
+  if (asks.length === 0) return out;
+  try {
+    const stmt = getDb().prepare(
+      `SELECT served_by_turn AS turn FROM messages
+        WHERE id = ? AND answer_message_id IS NOT NULL AND served_by_turn IS NOT NULL`,
+    );
+    for (const ask of asks) {
+      const row = stmt.get(ask.id) as { turn: number } | undefined;
+      if (row) out.set(ask.id, row.turn);
+    }
+  } catch { /* best effort: a missing stamp must never cost the summary itself */ }
+  return out;
+}
+
+/**
+ * Does this span hold anything the ledger calls CONVERSATION?
+ *
+ * The placeholder branch below claims "no user conversation in this span" and then marks the
+ * rows compacted, which destroys them. The claim must be answered by the record, not by the
+ * content filter that produced the empty string: the filter is anchored prose matching, and a
+ * genuine answer that opens "I'm sorry — I'm having trouble…" reads to it as plumbing.
+ *
+ * MEASURED on the dev body before it was written (2026-08-10): all three genuine placeholder
+ * summaries hold ZERO owner-lane user rows and ZERO answer stamps, so they still take the
+ * branch; the eaten spans hold 7 and 3, so they never could again.
+ */
+function spanHoldsConversation(agentId: string, messageIds: string[]): boolean {
+  const stmt = getDb().prepare(
+    `SELECT 1 FROM messages m
+      WHERE m.agent_id = ? AND m.id = ?
+        AND ( (m.role = 'user' AND m.lane = 'owner')
+           OR m.answer_message_id IS NOT NULL
+           OR EXISTS (SELECT 1 FROM messages a
+                       WHERE a.agent_id = m.agent_id AND a.answer_message_id = m.id)
+           OR EXISTS (SELECT 1 FROM turns t
+                       WHERE t.agent_id = m.agent_id AND t.answer_message_id = m.id) )
+      LIMIT 1`,
+  );
+  for (const id of messageIds) {
+    if (stmt.get(agentId, id)) return true;
+  }
+  return false;
 }
 
 export async function runLeafCompaction(
@@ -899,7 +973,20 @@ export async function runLeafCompaction(
       // conversation to summarize. Skip the LLM round-trip and record a minimal
       // placeholder so the rows are still marked compacted + removed from the live
       // tail (bookkeeping intact) without inventing narrative from plumbing.
+      //
+      // UX-REPAIR ROUND 6 T24: "entirely plumbing" is now the LEDGER'S verdict, not the
+      // content filter's. The filter is anchored prose matching; the branch it feeds marks
+      // rows compacted, and that is irreversible. Where the two disagree the span is LEFT
+      // UNCOMPACTED — the SUMMARY_REFUSED law four branches down, applied to the same cost:
+      // writing the placeholder over a span holding a real ask would be a lie about a span
+      // the summariser never read, and the rows would then be marked done.
       if (content.trim().length === 0) {
+        if (spanHoldsConversation(agentId, messageIds)) {
+          logger.warn('COMPACTION_REFUSED filtered-empty chunk holds ledger conversation; left uncompacted', {
+            messageCount: chunk.length, earliestAt, latestAt,
+          }, agentId);
+          continue;
+        }
         createLeafSummary(
           agentId,
           NO_CONVERSATION_PLACEHOLDER,
