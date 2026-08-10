@@ -331,7 +331,11 @@ export function getOwedMidTurnArrivals(
   convKey: string,
   turnStartedAt: string,
   assembledAtIso: string,
-): Array<{ rowid: number; content: string }> {
+  // UX-REPAIR ROUND 6 T25: `id` rides out with the row. The caller quotes these asks into a
+  // re-prompt that says they are still owed, and until now the row's IDENTITY was dropped at
+  // this boundary — leaving the quoted prose as the only trace, which no predicate can read as
+  // evidence. The column was already selected (`WAITING_COLS`); only the projection dropped it.
+): Array<{ rowid: number; id: string; content: string }> {
   const db = getDb();
   const sessionStart = sessionStartOf(agentId);
   // Same window `assembledContextAsks` uses (<= the final assembly), plus the
@@ -344,14 +348,14 @@ export function getOwedMidTurnArrivals(
         AND m.created_at <= (unixepoch(@assembledAt) * 1000)
       ORDER BY m.created_at ASC, m.seq ASC`,
   ).all({ agentId, sessionStart, turnStartedAt, assembledAt: assembledAtIso }) as Array<WaitingConversation['latest']>;
-  const owed: Array<{ rowid: number; content: string }> = [];
+  const owed: Array<{ rowid: number; id: string; content: string }> = [];
   for (const r of rows) {
     const o = originOfCandidate(r);
     // Same authorized-human gate as getWaitingHumanConversations: only an
     // authorized human's ask is a conversation the agent owes a reply.
     if (o.kind !== 'user' || !o.authorized) continue;
     if (conversationKey(o.channel, o.senderId, o.senderName, o.threadId) !== convKey) continue;
-    owed.push({ rowid: r.rowid, content: r.content });
+    owed.push({ rowid: r.rowid, id: r.id, content: r.content });
   }
   return owed;
 }

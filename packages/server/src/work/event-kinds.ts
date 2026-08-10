@@ -78,6 +78,11 @@ export const WORK_EVENT_KINDS = [
   'opened',
   'override_request',
   'override_resolved',
+  // UX-REPAIR ROUND 6 T25 (migration 159). The owed mid-turn interrupt records, BY ID, which
+  // asks a running turn still owes an answer to. It is the settlement authority's own
+  // discriminator: the mechanism that KNOWS an ask is still owed now says so on that ask's
+  // spine, instead of only quoting its text into a re-prompt nothing can read as evidence.
+  'owed_interrupt',
   'poke',
   'poke_remediation',
   'rearm_refused',

@@ -13,7 +13,9 @@
 // ONE list with two derived copies, and that a change to any one of them without the others
 // fails the build.
 //
-//   arm 1  DECLARED == CHECK      `work/event-kinds.ts` vs migration `152`'s `kind IN (…)`
+//   arm 1  DECLARED == CHECK      `work/event-kinds.ts` vs the LIVE CHECK-bearing migration
+//                                 (`152` created it; `159` is the current carrier — the file
+//                                 is derived, never named, see `liveCheckMigration` below)
 //   arm 2  WRITERS  ⊆ DECLARED    every kind any writer can pass is on the list
 //   arm 3  DECLARED \ WRITERS     exactly the declared-but-unwritten set, by name
 //
@@ -40,7 +42,28 @@ import path from 'node:path';
 import { WORK_EVENT_KINDS, isWorkEventKind, type WorkEventKind } from '../event-kinds.js';
 
 const SRC = path.join(__dirname, '..', '..');
-const MIGRATION = path.join(SRC, 'db', 'migrations', '152_work_event_kinds_check.sql');
+
+/**
+ * The migration that carries the LIVE `CHECK (kind IN (…))` — DERIVED, not named.
+ *
+ * This was pinned to `152_work_event_kinds_check.sql`, the file that first created the CHECK.
+ * UX-REPAIR ROUND 6 T25 added `owed_interrupt` at `159`, which rebuilds the table with a new
+ * CHECK — and a gate pinned to the FIRST statement of a rule reads a superseded one for ever
+ * after, which is the same "declared list and real list drift apart" disease this whole file
+ * exists to refuse. The chain applies in filename order, so the LAST file carrying the CHECK
+ * is the one the database actually ends up with, and that is the one diffed here.
+ */
+function liveCheckMigration(): string {
+  const dir = path.join(SRC, 'db', 'migrations');
+  const carriers = fs.readdirSync(dir)
+    .filter((f) => f.endsWith('.sql'))
+    .filter((f) => /CHECK\s*\(\s*kind\s+IN\s*\(/i.test(fs.readFileSync(path.join(dir, f), 'utf8')))
+    .sort();
+  if (carriers.length === 0) throw new Error('no migration carries a `CHECK (kind IN (…))`');
+  return path.join(dir, carriers[carriers.length - 1]);
+}
+
+const MIGRATION = liveCheckMigration();
 
 /** DECLARED-BUT-UNWRITTEN, by name. EMPTY since PHASE-4 T4 landed `floor_ghosted`'s writer
  *  (`agent/v2/floor-ghost.ts`). It is kept as a list rather than deleted because the arm's
@@ -144,7 +167,7 @@ function writtenKinds(): { kinds: Set<string>; unbound: string[] } {
 function checkListedKinds(): string[] {
   const sql = fs.readFileSync(MIGRATION, 'utf8');
   const m = /CHECK\s*\(\s*kind\s+IN\s*\(([\s\S]*?)\)\s*\)/i.exec(sql);
-  if (!m) throw new Error('migration 152 does not contain a `CHECK (kind IN (…))`');
+  if (!m) throw new Error(`${path.basename(MIGRATION)} does not contain a \`CHECK (kind IN (…))\``);
   return [...m[1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]);
 }
 
@@ -153,7 +176,7 @@ const sorted = (xs: Iterable<string>): string[] => [...xs].sort();
 // ── the three arms ─────────────────────────────────────────────────────────────────────
 
 describe('ARM 1 — the DECLARED list and the CHECK are the same list', () => {
-  it('migration 152 admits exactly WORK_EVENT_KINDS, in both directions', () => {
+  it('the live CHECK admits exactly WORK_EVENT_KINDS, in both directions', () => {
     expect(sorted(checkListedKinds())).toEqual(sorted(WORK_EVENT_KINDS));
   });
 
@@ -196,8 +219,9 @@ describe('ARM 2 — every kind a writer can pass is DECLARED', () => {
     expect(exprs).toContain("'transition'");            // the literal route
     expect(exprs).toContain('WORK_EVENT.activity');     // the bound-object route
     expect(exprs).toContain('AUDIT_KIND');              // the bound-single route
-    // 24 at T4-SCHEMA's close; 25 since PHASE-4 T4 landed `floor_ghosted`'s writer.
-    expect(writtenKinds().kinds.size).toBe(25);
+    // 24 at T4-SCHEMA's close; 25 since PHASE-4 T4 landed `floor_ghosted`'s writer;
+    // 26 since UX-REPAIR ROUND 6 T25 landed `owed_interrupt`'s (`work/ask-settlement.ts`).
+    expect(writtenKinds().kinds.size).toBe(26);
   });
 
   it('PLANTED FAULT: an undeclared literal at a call site is caught', () => {
@@ -264,10 +288,10 @@ describe('ARM 3 — the DECLARED list carries no unexplained value', () => {
 });
 
 describe('the list itself', () => {
-  it('is sorted, unique, and 25 values — the CHECK is diffed against it by humans', () => {
+  it('is sorted, unique, and 26 values — the CHECK is diffed against it by humans', () => {
     expect([...WORK_EVENT_KINDS]).toEqual(sorted(WORK_EVENT_KINDS));
     expect(new Set(WORK_EVENT_KINDS).size).toBe(WORK_EVENT_KINDS.length);
-    expect(WORK_EVENT_KINDS.length).toBe(25);
+    expect(WORK_EVENT_KINDS.length).toBe(26);
   });
 
   it('`isWorkEventKind` answers for every member and refuses a near-miss', () => {

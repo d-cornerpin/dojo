@@ -54,7 +54,8 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { recordServingTurnByRowid, START_ACK_ORIGIN_INTENT } from '../memory/message-store.js';
 import {
-  appendWorkEvent, claimFailedJoinForLateAnswer, isTerminal, revertAskClaimOnAbort, transition,
+  appendWorkEvent, askIdForMessage, claimFailedJoinForLateAnswer, isTerminal,
+  revertAskClaimOnAbort, transition,
   type WorkState,
 } from './store.js';
 
@@ -221,7 +222,8 @@ function readAsk(workId: string): AskRow | undefined {
  *   * it must POSTDATE the ask's arrival — a delivery recorded before the ask existed cannot
  *     be its answer, which is the shape the fresh probe pair produced and the shape a
  *     remediation keyed only on `answer_message_id` would have mis-read (verify report §5.6).
- * Plus the `engine-ack` exclusion, carried verbatim.
+ * Plus the `engine-ack` exclusion, carried verbatim, and (T25) the eighth narrowing: a
+ * delivery the owed-interrupt path already recorded this ask as still owed PAST.
  *
  * THE COMPARISON IS AT THE LEDGER'S OWN RESOLUTION, and that is a decision rather than a
  * rounding accident: `deliveries.created_at` is `datetime('now')`, i.e. whole seconds, while
@@ -243,9 +245,11 @@ function qualifyingDelivery(
         AND ${NOT_A_TOOL_CHIP}
         AND ${NOT_A_SUPERSEDED_BUBBLE}
         AND ${NOT_A_START_ACK}
+        AND ${NOT_OWED_PAST_THIS_DELIVERY}
         AND unixepoch(d.created_at) >= ?
       ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
-  ).get(ask.agent_id, turnNumber, ask.conversation_id, ...excluded, Math.floor(ask.opened_at / 1000)) as
+  ).get(ask.agent_id, turnNumber, ask.conversation_id, ...excluded,
+    ask.id, turnNumber, Math.floor(ask.opened_at / 1000)) as
     { id: string; tool: string } | undefined) ?? null;
 }
 
@@ -372,6 +376,83 @@ const NOT_A_SUPERSEDED_BUBBLE =
 const NOT_A_START_ACK =
   `NOT EXISTS (SELECT 1 FROM messages ma WHERE ma.id = d.message_id
                  AND ma.origin_intent = '${START_ACK_ORIGIN_INTENT}')`;
+
+/**
+ * ⚠ UX-REPAIR ROUND 6 T25 — THE EIGHTH NARROWING: A DELIVERY THE ENGINE ALREADY SAID DID NOT
+ * ANSWER THIS ASK.
+ *
+ * THE LEDGER, agent 57b52025, 2026-08-10, one turn:
+ *   23:00:35  "Compare the three best e-ink tablets under $400…"      → turn 4655's subject
+ *   23:00:43  "quick one — what's 15% of $240?"          arrived 8 s INTO the running turn
+ *   23:01:15  the RESEARCH bubble lands (delivery 6a20d864) — no math in it
+ *   23:01:15  the owed-interrupt path writes its re-prompt: "While you were working, the user
+ *             also sent: 'quick one — what's 15% of $240?'. Reply ONLY to it"
+ *   23:01:18  settlement closes that ask, open→done, ON delivery 6a20d864
+ *   23:03:25  the next turn actually answers the math
+ * Two engine mechanisms, three seconds apart, opposite verdicts. Had turn 4656 died, the board
+ * would read `done` on an ask whose answer never existed.
+ *
+ * THE DISCRIMINATOR IS THE MECHANISM'S OWN RECORD. Not arrival timing (a burst the model
+ * answers in one composite reply is the same timing and must still close — ARM 2's control),
+ * and never the re-prompt's quoted TEXT, which is the prose-as-authority shape this tree
+ * removes on sight. So the owed-interrupt path now records its subjects BY ID
+ * (`recordOwedInterruptSubjects`, migration 159) with the delivery ROWID HIGH-WATER at the
+ * instant it fired, and this narrowing reads that receipt: a delivery at or below that water
+ * existed BEFORE anything told the model this ask was still owed, so by the engine's own
+ * record it is not the ask's answer.
+ *
+ * ROWID, not the clock, and that is the same choice migration 088 made for the archive
+ * high-water: `deliveries.created_at` is `datetime('now')` — whole seconds — and the incident's
+ * bubble and record share a second exactly. A tie-free monotonic key decides it; a truncated
+ * timestamp would have to guess.
+ *
+ * WHAT IT DOES NOT WIDEN, each a control in
+ * `__tests__/a-waiting-ask-closes-only-on-its-own-answer.test.ts`:
+ *   * an ask with NO owed-interrupt record is untouched — the rule names the record, not
+ *     mid-turn arrival;
+ *   * a record from a DIFFERENT turn does not narrow this turn's evidence;
+ *   * the extra round the interrupt itself buys still closes the ask: that delivery is ABOVE
+ *     the water, in the same turn, and remains qualifying evidence.
+ *
+ * THE OWNER-PRIORITY CHECK (`:19-26`): refusing this delivery cannot park the ask. With no
+ * qualifying delivery the finalize arm hands it back OPEN — visible, on the re-serve ladder —
+ * which is the "answer again rather than fall silent" direction the ruling asks for, and the
+ * opposite of what closing it on someone else's receipt did.
+ */
+const NOT_OWED_PAST_THIS_DELIVERY =
+  `NOT EXISTS (SELECT 1 FROM work_events oi
+                WHERE oi.work_id = ? AND oi.kind = 'owed_interrupt'
+                  AND json_extract(oi.payload, '$.turnNumber') = ?
+                  AND d.rowid <= json_extract(oi.payload, '$.deliveryHighWater'))`;
+
+/**
+ * THE OWED-INTERRUPT PATH'S RECEIPT — written here because `work/` is the spine's single
+ * writer (PART A of `__tests__/single-writer-conformance.test.ts`), read by the narrowing
+ * above so the writer and the reader cannot drift.
+ *
+ * Called from the engine step that composes the re-prompt, with the message ids it is about to
+ * quote. Everything it needs is already in that step's hands; what was missing was anywhere to
+ * put it. Best-effort by construction: an owed message with no ask row (a burst sibling the
+ * ledger never ticketed) is skipped, and a failure here must never cost the re-prompt itself.
+ */
+export function recordOwedInterruptSubjects(
+  agentId: string, owedMessageIds: readonly string[], turnNumber: number,
+): void {
+  if (owedMessageIds.length === 0) return;
+  const db = getDb();
+  const water = (db.prepare(
+    'SELECT COALESCE(MAX(rowid), 0) AS water FROM deliveries WHERE agent_id = ?',
+  ).get(agentId) as { water: number }).water;
+  for (const messageId of owedMessageIds) {
+    const workId = askIdForMessage(messageId);
+    const exists = db.prepare('SELECT 1 FROM work WHERE id = ?').get(workId);
+    if (!exists) continue;
+    appendWorkEvent(workId, 'owed_interrupt', 'engine', { turnNumber, deliveryHighWater: water });
+    logger.info('owed mid-turn ask recorded on its own ledger: this turn\'s earlier deliveries are not its answer', {
+      agentId, workId, turnNumber, deliveryHighWater: water,
+    }, agentId);
+  }
+}
 
 /**
  * SWEEP CORE-1 CT0 — is the receipt this row is settled on a bubble THIS FINISHED TURN does
