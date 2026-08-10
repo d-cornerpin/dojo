@@ -433,7 +433,7 @@ export function runsReadyToCloseOnDelivery(): RunReadyToClose[] {
   const out: RunReadyToClose[] = [];
   for (const row of rows) {
     if (!occurrenceOwesDeliverable(row.occurrence_id).owes) continue;
-    if (!row.steered && agentHasTurnInFlight(row.occurrence_id)) continue;
+    if (!row.steered && runHasTurnInFlight(row.occurrence_id)) continue;
     const evidence = runDeliverableEvidence(row.occurrence_id);
     if (!evidence) continue;
     out.push({
@@ -444,15 +444,28 @@ export function runsReadyToCloseOnDelivery(): RunReadyToClose[] {
   return out;
 }
 
-/** Is the occurrence's own agent still inside a turn? A `turns` row with no `ended_at` is the
- *  spine's own statement that the turn has not finished (the column carries a CHECK pairing it
- *  with `exit_reason`, so there is no third state to read). */
-function agentHasTurnInFlight(occurrenceId: string): boolean {
+/**
+ * Is THIS RUN's own turn still going? A `turns` row with no `ended_at` has not finished (the
+ * column carries a CHECK pairing it with `exit_reason`, so there is no third state to read),
+ * and `root_kind`/`root_id` are what the turn stamps to say which occurrence it is serving.
+ *
+ * ⚠ IT ASKS ABOUT THE RUN, NOT THE AGENT, AND THAT IS A DRIVEN CATCH. The first draft asked
+ * "does this agent have any unended turn", which on a lived-in box is permanently TRUE: the
+ * dev body carries 22 unended `turns` rows for one agent and 279 across seven, every one of
+ * them a turn some crash or restart never closed. A guard keyed on that would have made the
+ * whole unsteered arm dead on arrival — silently, which is the exact failure class this phase
+ * exists to kill. Caught by the driven run (2026-08-10 19:43Z, occurrence `84b79c31`: the
+ * reminder was delivered, the evidence was on the ledger, and the sweep skipped it).
+ *
+ * Scoped to the run, the predicate says what it means: do not close a run out from under the
+ * turn that is serving it. An unended row on THIS occurrence still blocks — correctly, and
+ * boundedly, because a run nobody is serving meets the idle reaper.
+ */
+function runHasTurnInFlight(occurrenceId: string): boolean {
   const hit = getDb().prepare(
-    `SELECT 1 AS ok FROM turns t
-      JOIN work w ON w.id = ?
-     WHERE t.agent_id = w.agent_id AND t.ended_at IS NULL LIMIT 1`,
-  ).get(occurrenceId) as { ok: number } | undefined;
+    `SELECT 1 AS ok FROM turns
+      WHERE root_kind = ? AND root_id = ? AND ended_at IS NULL LIMIT 1`,
+  ).get(OCCURRENCE_KIND, occurrenceId) as { ok: number } | undefined;
   return hit !== undefined;
 }
 

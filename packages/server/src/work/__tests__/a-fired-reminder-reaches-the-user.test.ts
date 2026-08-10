@@ -407,9 +407,22 @@ describe('D6 — a run closes on the delivery whether or not anybody steered it'
 
   it('a run whose own turn is still RUNNING is not closed out from under it', () => {
     const run = claim();
-    seedTurn(4621, { ended_at: null, exit_reason: null });
+    seedTurn(4621, { ended_at: null, exit_reason: null, root_id: run });
     deliverInRun('d-real', 'agent-text', 4621);
     expect(runsReadyToCloseOnDelivery().map((r) => r.occurrenceId)).not.toContain(run);
+  });
+
+  // ⚠ THE DRIVEN CATCH, PINNED. The first draft of the in-flight guard asked "does this AGENT
+  // have any unended turn", and on the worn-in dev body that is permanently true: 22 unended
+  // `turns` rows for one agent, 279 across seven, every one a turn some crash never closed. It
+  // would have made this whole arm dead on arrival, silently. The guard is scoped to the RUN.
+  it('an unrelated turn that a crash never closed does NOT freeze the arm for ever', () => {
+    const run = claim();
+    // a stranded row from some other work, months old, never ended
+    seedTurn(1234, { ended_at: null, exit_reason: null, root_kind: 'ask', root_id: null });
+    seedTurn(4621);
+    deliverInRun('d-real', 'agent-text', 4621);
+    expect(runsReadyToCloseOnDelivery().map((r) => r.occurrenceId)).toContain(run);
   });
 
   it('CONTROL: a task that owes nobody a message is never swept by this arm', () => {
