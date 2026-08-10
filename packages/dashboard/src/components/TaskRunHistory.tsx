@@ -18,7 +18,13 @@ const statusColors: Record<string, string> = {
 
 const formatDuration = (start: string | null, end: string | null): string => {
   if (!start || !end) return '--';
-  const ms = new Date(end).getTime() - new Date(start).getTime();
+  // `startedAt`/`completedAt` are ISO-with-Z (`work/occurrence-runs.ts:53`) while the sibling
+  // `scheduledFor` is Z-less second-resolution text (`:58`) — one row, two shapes, documented at
+  // `occurrence-runs.ts:39-44`. `parseUtc` is right for both, so neither can drift (UX-REPAIR T9).
+  const s = parseUtc(start);
+  const e = parseUtc(end);
+  if (!s || !e) return '--';
+  const ms = e.getTime() - s.getTime();
   if (ms < 1000) return '<1s';
   if (ms < 60000) return `${Math.round(ms / 1000)}s`;
   if (ms < 3600000) return `${Math.round(ms / 60000)}m`;

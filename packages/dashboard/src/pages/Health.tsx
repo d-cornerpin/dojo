@@ -3,7 +3,7 @@ import type { HealthData, LogEntry } from '@dojo/shared';
 import type { LogEntryEvent, WsEvent } from '@dojo/shared';
 import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { formatDate } from '../lib/dates';
+import { formatDate, formatTimeOnly, parseUtc } from '../lib/dates';
 import { ProviderHealth } from '../components/ProviderHealth';
 import { HealerVitals } from '../components/HealerVitals';
 import { WatcherCards } from '../components/WatcherCards';
@@ -33,7 +33,8 @@ const formatUptime = (seconds: number): string => {
 
 const formatTimestamp = (ts: string | null): string => {
   if (!ts) return 'Never';
-  const d = new Date(ts);
+  const d = parseUtc(ts);
+  if (!d) return 'Never';
   const now = new Date();
   const diffMs = now.getTime() - d.getTime();
   const diffMins = Math.floor(diffMs / 60000);
@@ -191,7 +192,7 @@ const GoogleWorkspaceCard = () => {
           {status.lastActivity && (
             <div>
               <span className="k">Last activity</span>
-              <span className="v">{new Date(status.lastActivity).toLocaleTimeString()}</span>
+              <span className="v">{formatTimeOnly(status.lastActivity)}</span>
             </div>
           )}
         </div>

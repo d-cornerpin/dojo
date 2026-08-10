@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { listActiveGenerationJobs, cancelGenerationJob, type GenJobDto } from '../lib/api';
+import { formatElapsed } from '../lib/dates';
 
 // ════════════════════════════════════════
 // ActiveJobsIndicator — in-flight media generation jobs (image / audio /
@@ -18,18 +19,6 @@ import { listActiveGenerationJobs, cancelGenerationJob, type GenJobDto } from '.
 // update we refetch the merged active list (events are rare, so a refetch
 // is cheap and keeps the list authoritative instead of merging partials).
 // ════════════════════════════════════════
-
-function elapsed(startedAt: string): string {
-  // SQLite datetime is UTC without a zone marker; append Z so Date parses
-  // it as UTC rather than local.
-  const start = new Date(startedAt.replace(' ', 'T') + 'Z').getTime();
-  if (!Number.isFinite(start)) return '';
-  const secs = Math.max(0, Math.floor((Date.now() - start) / 1000));
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  const rem = secs % 60;
-  return `${mins}m ${rem}s`;
-}
 
 // Elapsed from a client-side millisecond timestamp. Engine-activity items are
 // purely event-driven (no DB row to refetch), so we stamp the moment the
@@ -334,7 +323,7 @@ export const ActiveJobsIndicator = ({ agentId }: { agentId: string }) => {
                         </>
                       )}
                       <span>·</span>
-                      <span>{elapsed(job.startedAt)}</span>
+                      <span>{formatElapsed(job.startedAt)}</span>
                     </div>
                   </div>
                   <button

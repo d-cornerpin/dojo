@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import * as api from '../lib/api';
+import { formatDate } from '../lib/dates';
 
 // Forensic memory search panel — substring search across vault, summaries,
 // projects, tasks, and scratchpads. Operator-grade cleanup tool for the
@@ -223,7 +224,7 @@ export const ForensicSearchPanel = () => {
                             {hit.title && <span className="text-ui/70 font-medium">{hit.title}</span>}
                             {hit.agentId && <span className="text-ui/40">{hit.agentId}</span>}
                             {hit.createdAt && (
-                              <span className="text-ui/25">{new Date(hit.createdAt).toLocaleString()}</span>
+                              <span className="text-ui/25">{formatDate(hit.createdAt)}</span>
                             )}
                             <span className="text-ui/25 ml-auto truncate" title={hit.id}>
                               {hit.id.slice(0, 12)}…

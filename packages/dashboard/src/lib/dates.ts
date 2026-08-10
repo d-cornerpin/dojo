@@ -35,6 +35,55 @@ export function formatDateShort(dateStr: string | null | undefined): string {
 }
 
 /**
+ * Short date + time, e.g. "Aug 10, 7:00 PM" — the kanban card's "Next:" and
+ * "Paused until" lines.
+ */
+export function formatShortDateTime(dateStr: string | null | undefined): string {
+  const d = parseUtc(dateStr);
+  if (!d || isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' +
+    d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+/**
+ * Elapsed since an instant, seconds-granular: "45s ago" / "3m ago" / "2h ago" / "5d ago".
+ * Distinct from `formatRelative`, which says "just now" under a minute.
+ */
+export function formatTimeSince(dateStr: string | null | undefined): string {
+  const d = parseUtc(dateStr);
+  if (!d || isNaN(d.getTime())) return '';
+  const seconds = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+/**
+ * Elapsed duration with no "ago" suffix: "45s" / "3m 5s" — in-flight job timers.
+ */
+export function formatElapsed(dateStr: string | null | undefined): string {
+  const d = parseUtc(dateStr);
+  if (!d) return '';
+  const start = d.getTime();
+  if (!Number.isFinite(start)) return '';
+  const secs = Math.max(0, Math.floor((Date.now() - start) / 1000));
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  const rem = secs % 60;
+  return `${mins}m ${rem}s`;
+}
+
+/**
+ * Format as time only (no date), e.g. "7:00:00 PM" — activity-log rows.
+ */
+export function formatTimeOnly(dateStr: string | null | undefined): string {
+  const d = parseUtc(dateStr);
+  if (!d || isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString();
+}
+
+/**
  * Format as relative time ("3m ago", "2h ago", "5d ago").
  */
 export function formatRelative(dateStr: string | null | undefined): string {

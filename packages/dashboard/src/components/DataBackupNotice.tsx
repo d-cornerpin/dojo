@@ -1,4 +1,5 @@
 import * as api from '../lib/api';
+import { formatDate } from '../lib/dates';
 
 /**
  * Whether the last update that changed the database left a way back.
@@ -14,7 +15,7 @@ export const DataBackupNotice = ({ backup }: { backup: api.MigrationBackupOutcom
   if (!backup || backup.status === 'not-applicable') return null;
 
   const mb = (n?: number) => (n === undefined ? '?' : `${(n / 1e6).toFixed(0)} MB`);
-  const when = new Date(backup.at).toLocaleString();
+  const when = formatDate(backup.at);
 
   if (backup.status === 'written') {
     return (

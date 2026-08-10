@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { formatTimeOnly } from '../lib/dates';
 
 const TOKEN = () => localStorage.getItem('dojo_token');
 
@@ -88,7 +89,7 @@ export const MicrosoftActivityLog = () => {
               {entries.map(entry => (
                 <tr key={entry.id} className="border-b border-ui/[0.06] hover:bg-ui/[0.03]">
                   <td className="py-1.5 pr-2 text-ui/25 whitespace-nowrap">
-                    {new Date(entry.createdAt).toLocaleTimeString()}
+                    {formatTimeOnly(entry.createdAt)}
                   </td>
                   <td className="py-1.5 pr-2 text-ui/55">{entry.agentName ?? entry.agentId.slice(0, 8)}</td>
                   <td className="py-1.5 pr-2 text-ui/70">{formatAction(entry.action)}</td>

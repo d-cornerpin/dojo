@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
+import { formatDate } from '../lib/dates';
 
 // Credentials panel - rendered as a tab on the Memory (Vault) page. Lists
 // every stored credential's metadata. Values are hidden by default; the
@@ -129,7 +130,7 @@ export const CredentialsPanel = () => {
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium text-ui/90 font-mono truncate">{c.service_name}</span>
                       <span className="text-xs text-ui/25">|</span>
-                      <span className="text-xs text-ui/40">accessed {c.access_count}× {c.last_accessed_at && `(last ${new Date(c.last_accessed_at).toLocaleString()})`}</span>
+                      <span className="text-xs text-ui/40">accessed {c.access_count}× {c.last_accessed_at && `(last ${formatDate(c.last_accessed_at)})`}</span>
                     </div>
                     {c.description && <p className="text-xs text-ui/55 mt-1">{c.description}</p>}
                   </div>

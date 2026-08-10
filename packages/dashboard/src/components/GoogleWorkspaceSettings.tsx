@@ -3,6 +3,7 @@ import * as api from '../lib/api';
 import { GoogleActivityLog } from './GoogleActivityLog';
 import { ChannelSafeSenders } from './ChannelSafeSenders';
 import { CollapseToggle, usePanelCollapse } from './CollapseToggle';
+import { formatDateShort } from '../lib/dates';
 
 type Slot = 'agent' | 'user';
 
@@ -183,7 +184,7 @@ export const GoogleWorkspaceSettings = () => {
           <div className="min-w-0 flex-1">
             <p className="text-sm text-ui/70 truncate">{acc.email ?? '(no email)'}</p>
             <p className="text-xs text-ui/25">
-              {!acc.connected ? 'Disconnected' : acc.lastVerified ? `Verified ${new Date(acc.lastVerified).toLocaleDateString()}` : 'Connected'}
+              {!acc.connected ? 'Disconnected' : acc.lastVerified ? `Verified ${formatDateShort(acc.lastVerified)}` : 'Connected'}
               {isPrimary ? ' · primary' : ''}
             </p>
           </div>

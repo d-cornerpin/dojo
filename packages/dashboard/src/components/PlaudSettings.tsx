@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useToast } from '../hooks/useToast';
+import { formatDateShort } from '../lib/dates';
 
 // Plaud is a meeting-recording / AI-summary service. Single account per
 // Dojo install (no slot model). Auth flow is interactive:
@@ -193,7 +194,7 @@ export const PlaudSettings = () => {
             Connected as <span className="font-medium">{status.email ?? '(unknown email)'}</span>
             {status.connectedAt && (
               <span className="text-xs text-ui/40 ml-2">
-                since {new Date(status.connectedAt).toLocaleDateString()}
+                since {formatDateShort(status.connectedAt)}
               </span>
             )}
           </div>

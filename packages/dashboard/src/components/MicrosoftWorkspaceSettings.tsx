@@ -3,6 +3,7 @@ import * as api from '../lib/api';
 import { MicrosoftActivityLog } from './MicrosoftActivityLog';
 import { ChannelSafeSenders } from './ChannelSafeSenders';
 import { CollapseToggle, usePanelCollapse } from './CollapseToggle';
+import { formatDateShort } from '../lib/dates';
 
 type Slot = 'agent' | 'user';
 
@@ -155,7 +156,7 @@ export const MicrosoftWorkspaceSettings = () => {
             <p className="text-sm text-ui/70 truncate">{acc.email ?? '(no email)'}</p>
             <p className="text-xs text-ui/25">
               {acc.accountType === 'entra' ? 'Work/School' : 'Personal'}
-              {!acc.connected ? ' · disconnected' : acc.lastVerified ? ` · Verified ${new Date(acc.lastVerified).toLocaleDateString()}` : ''}
+              {!acc.connected ? ' · disconnected' : acc.lastVerified ? ` · Verified ${formatDateShort(acc.lastVerified)}` : ''}
               {isPrimary ? ' · primary' : ''}
             </p>
           </div>

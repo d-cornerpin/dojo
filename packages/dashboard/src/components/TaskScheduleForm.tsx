@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { parseUtc } from '../lib/dates';
 
 /** Convert a Date to "YYYY-MM-DDTHH:MM" in the browser's local timezone (for datetime-local inputs) */
 function toLocalIso(d: Date): string {
@@ -69,8 +70,8 @@ export const DEFAULT_SCHEDULE: ScheduleConfig = {
 // stable and only mutate hours/minutes.
 function anchorTimeOfDay(iso: string | null): string {
   if (!iso) return '';
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return '';
+  const d = parseUtc(iso);
+  if (!d || isNaN(d.getTime())) return '';
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
@@ -78,7 +79,7 @@ function applyTimeOfDayToAnchor(currentAnchorIso: string | null, fallbackIso: st
   if (!hhmm) return null;
   const [h, m] = hhmm.split(':').map((p) => parseInt(p, 10));
   if (isNaN(h) || isNaN(m)) return null;
-  const base = currentAnchorIso ? new Date(currentAnchorIso) : (fallbackIso ? new Date(fallbackIso) : new Date());
+  const base = parseUtc(currentAnchorIso) ?? parseUtc(fallbackIso) ?? new Date();
   if (isNaN(base.getTime())) return null;
   base.setHours(h, m, 0, 0);
   return base.toISOString();
@@ -112,12 +113,10 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
   // datetime-local inputs expect "YYYY-MM-DDTHH:MM" in LOCAL time
   const dateTimeValue = (() => {
     if (!value.scheduledStart) return '';
-    // Parse as UTC (append Z if missing)
-    const utcStr = value.scheduledStart.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(value.scheduledStart)
-      ? value.scheduledStart
-      : value.scheduledStart + 'Z';
-    const d = new Date(utcStr);
-    if (isNaN(d.getTime())) return '';
+    // Parse as UTC. This used to hand-roll the append-Z rule; it now shares the one
+    // parser in lib/dates.ts (UX-REPAIR T9 — the duplicate is gone, not merely bypassed).
+    const d = parseUtc(value.scheduledStart);
+    if (!d || isNaN(d.getTime())) return '';
     return toLocalIso(d);
   })();
 

@@ -14,7 +14,7 @@ import { PlaudSettings } from '../components/PlaudSettings';
 import { TwilioSettings } from '../components/TwilioSettings';
 import { ScreenShareSettings } from '../components/ScreenSharePanel';
 import { CollapseChevron } from '../components/CollapseToggle';
-import { formatDate } from '../lib/dates';
+import { formatDate, formatDateShort, parseUtc } from '../lib/dates';
 import { MigrationExport } from '../components/MigrationExport';
 import { ImportWizard } from '../components/ImportWizard';
 import { useTheme } from '../themes';
@@ -3798,7 +3798,7 @@ const ModelsTab = () => {
         providers.map(provider => {
           const providerModels = models
             .filter(m => m.providerId === provider.id)
-            .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+            .sort((a, b) => (parseUtc(a.createdAt)?.getTime() ?? 0) - (parseUtc(b.createdAt)?.getTime() ?? 0));
           const isAggregator = provider.type === 'openai-compatible' && provider.isValidated;
           // Skip empty groups EXCEPT aggregators — they need the browse box visible
           if (providerModels.length === 0 && !isAggregator) return null;
@@ -5189,7 +5189,7 @@ const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) 
                 )}
               </div>
               <div className="text-[10px] text-ui/40 mt-0.5 truncate">
-                {r.name} · {new Date(r.publishedAt).toLocaleDateString()}
+                {r.name} · {formatDateShort(r.publishedAt)}
               </div>
             </div>
 

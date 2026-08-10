@@ -14,12 +14,13 @@
 
 import { useEffect, useState } from 'react';
 import * as api from '../lib/api';
+import { parseUtc } from '../lib/dates';
 
 const REFRESH_INTERVAL_MS = 30_000;
 
 function relativeTime(iso: string | null): string {
   if (!iso) return 'never';
-  const ts = new Date(iso).getTime();
+  const ts = parseUtc(iso)?.getTime() ?? NaN;
   if (Number.isNaN(ts)) return iso;
   const diffSec = Math.floor((Date.now() - ts) / 1000);
   if (diffSec < 5) return 'just now';

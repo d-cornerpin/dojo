@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Task } from '@dojo/shared';
 import * as api from '../lib/api';
+import { formatShortDateTime, formatTimeSince } from '../lib/dates';
 
 interface TaskCardProps {
   task: Task;
@@ -15,20 +16,10 @@ const priorityLabels: Record<string, string> = {
   low: 'Low',
 };
 
-const formatTimeSince = (dateStr: string): string => {
-  const normalized = dateStr.includes('Z') || dateStr.includes('+') ? dateStr : dateStr + 'Z';
-  const seconds = Math.max(0, Math.floor((Date.now() - new Date(normalized).getTime()) / 1000));
-  if (seconds < 60) return `${seconds}s ago`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return `${Math.floor(seconds / 86400)}d ago`;
-};
-
-const formatNextRun = (dateStr: string): string => {
-  const d = new Date(dateStr);
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' +
-    d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-};
+// `next_run_at`, `paused_until` and `updated_at` all arrive as Z-LESS UTC text (`msToText`,
+// `work/tracker-view.ts:189`). Both formatters live in `lib/dates.ts` and parse through
+// `parseUtc`; parsing them with a bare `new Date()` read them as local time and put every
+// "Next:" line on this card off by the box's UTC offset (UX-REPAIR T9).
 
 const DAY_NAMES_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -99,7 +90,7 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
 
       {/* Next-run line, only when waiting on a schedule and not paused. */}
       {isScheduled && !isPaused && task.nextRunAt && task.scheduleStatus === 'waiting' && (
-        <div className="kcard__line">Next: {formatNextRun(task.nextRunAt)}</div>
+        <div className="kcard__line">Next: {formatShortDateTime(task.nextRunAt)}</div>
       )}
 
       {/* Repeat cadence / run count. */}
@@ -109,7 +100,7 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
       {isPaused && (
         <div className="kcard__sub">
           {task.pausedUntil
-            ? `Paused until ${formatNextRun(task.pausedUntil)}`
+            ? `Paused until ${formatShortDateTime(task.pausedUntil)}`
             : 'Paused indefinitely'}
         </div>
       )}

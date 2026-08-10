@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
+import { formatDate } from '../lib/dates';
 
 // Contacts panel — rendered as a tab on the Vault page. Searchable
 // list view with sortable columns; clicking a row opens the edit
@@ -19,15 +20,6 @@ function parseCsv(v: string): string[] {
 
 function joinCsv(arr: string[]): string {
   return arr.join(', ');
-}
-
-function fmtDate(iso: string): string {
-  try {
-    const d = new Date(iso + (iso.endsWith('Z') ? '' : 'Z'));
-    return d.toLocaleString();
-  } catch {
-    return iso;
-  }
 }
 
 export const ContactsPanel = () => {
@@ -173,7 +165,7 @@ export const ContactsPanel = () => {
                     ))}
                   </div>
                 </td>
-                <td className="px-4 py-2 text-xs text-ui/40">{fmtDate(c.updated_at)}</td>
+                <td className="px-4 py-2 text-xs text-ui/40">{formatDate(c.updated_at)}</td>
               </tr>
             ))}
           </tbody>
@@ -389,8 +381,8 @@ const ContactEditDrawer = ({ contact, onClose, onSaved }: DrawerProps) => {
           {contact && (
             <div className="text-xs text-ui/40 pt-2 border-t border-ui/[0.04]">
               <div>ID: <span className="font-mono">{contact.id}</span></div>
-              <div>Created {fmtDate(contact.created_at)}{contact.created_by_agent_id ? ` by ${contact.created_by_agent_id}` : ''}</div>
-              <div>Updated {fmtDate(contact.updated_at)}{contact.last_updated_by_agent_id ? ` by ${contact.last_updated_by_agent_id}` : ''}</div>
+              <div>Created {formatDate(contact.created_at)}{contact.created_by_agent_id ? ` by ${contact.created_by_agent_id}` : ''}</div>
+              <div>Updated {formatDate(contact.updated_at)}{contact.last_updated_by_agent_id ? ` by ${contact.last_updated_by_agent_id}` : ''}</div>
             </div>
           )}
         </div>
@@ -431,7 +423,7 @@ const ContactEditDrawer = ({ contact, onClose, onSaved }: DrawerProps) => {
           >
             <h4 className="text-sm font-semibold text-ui">Contact changed while you were editing</h4>
             <p className="text-xs text-ui/70 leading-relaxed">
-              An agent (or another browser tab) modified <span className="font-medium text-ui">{conflictCurrent.display_name}</span> after you opened it. The server's current copy was last updated {fmtDate(conflictCurrent.updated_at)}.
+              An agent (or another browser tab) modified <span className="font-medium text-ui">{conflictCurrent.display_name}</span> after you opened it. The server's current copy was last updated {formatDate(conflictCurrent.updated_at)}.
             </p>
             <p className="text-xs text-ui/55 leading-relaxed">
               You can reload the latest version into the form (your unsaved edits will be lost) or save anyway and overwrite the change.

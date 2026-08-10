@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import type { Summary } from '@dojo/shared';
+import { parseUtc } from '../lib/dates';
 
 interface DagLink {
   summaryId: string;
@@ -24,8 +25,11 @@ const getDepthColor = (depth: number): string => {
 };
 
 const formatTimeRange = (earliest: string, latest: string): string => {
-  const e = new Date(earliest);
-  const l = new Date(latest);
+  // `summaries.earliest_at`/`latest_at` carry the message store's Z-less UTC text
+  // (`memory/store.ts:createdAtText`), so they must be parsed as UTC (UX-REPAIR T9).
+  const e = parseUtc(earliest);
+  const l = parseUtc(latest);
+  if (!e || !l) return '';
   const fmt = (d: Date) =>
     d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   if (fmt(e) === fmt(l)) return fmt(e);

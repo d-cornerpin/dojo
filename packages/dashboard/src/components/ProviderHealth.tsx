@@ -4,6 +4,8 @@
 // down providers render as .tile--down with a Down pill. The error
 // count and last-success timestamp carry through unchanged.
 
+import { parseUtc } from '../lib/dates';
+
 interface ProviderStatus {
   id: string;
   name: string;
@@ -18,7 +20,8 @@ interface ProviderHealthProps {
 
 const formatTimestamp = (ts: string | null): string => {
   if (!ts) return 'Never';
-  const d = new Date(ts);
+  const d = parseUtc(ts);
+  if (!d) return 'Never';
   const now = new Date();
   const diffMs = now.getTime() - d.getTime();
   const diffMins = Math.floor(diffMs / 60000);
