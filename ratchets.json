@@ -2,6 +2,20 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/server/src/work/tracker-view.ts",
+      "from": 536,
+      "to": 567,
+      "by": "UX-REPAIR ROUND 5 T21 — the close-request SUBJECT, written once instead of ten times",
+      "why": "+31: 6 code, 22 comment, 3 blank. The 6 code lines are three SQL expressions with two lines each. What they buy is a DELETION everywhere else: `tracker/pm-agent.ts` -10 and `work/validation-drive.ts` -2 in the same commit, because ten sites stop restating `state = 'claimed' AND pendingCloseRequestExpr(w) = 1` and ask instead. That restatement is the defect — four authors wrote the same pair and all four omitted `paused`, so a job paused for the owner's approval, then finished and delivered, filed its close (dev event 22401) into a queue that could not see it while the pause lens asked the PM the wrong question about it. The comment weight is the incident and the two things a future reader would otherwise re-derive wrongly: which states a close can be filed FROM (that is this expression's question, not its callers'), and why the pause lens's subject is the COMPLEMENT rather than a second opinion. REFUSED: putting the predicates in `validation-drive.ts` (+0 here) — `tracker/tools.ts` and `tracker/pm-agent.ts` would then import the validation sweep's module to ask a spine question, and `pendingCloseRequestExpr`, whose sentence this completes, lives here. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 4666,
+      "to": 4692,
+      "by": "UX-REPAIR ROUND 5 T21 — the completion door accepts the paused shape, and the pause door refuses to eat a close",
+      "why": "+26 (+36/-10; added 17 comment / 19 code). The code is three things and no fourth. (1) The completion door's `keyOneOnly` stops naming `in_progress` itself and asks `closeRequestFiledExpr` — that edit is net ZERO lines and is the whole fix; its task-log entry now records the state the row actually came from. (2) `trackerValidatePause(valid=true)` refuses a row with a filed close, 4 lines of guard and 5 of refusal TEXT: the text names the door that IS open, because a refusal the model cannot act on is a refusal it retries — the same argument `agent/tools/cat/tracker.ts` recorded at its 875 -> 891 raise. (3) `is_paused` is cleared on a close FROM `paused` for a one-shot row, 4 lines, guarded so `tracker-store.ts`'s recorded reason for leaving the flag alone on a close ('a completed recurring task stays paused-from-the-scheduler's-view') keeps its whole subject. The comments carry why (3) is not that rule being narrowed and why (2) exists when the queue already excludes the row. REFUSED: dropping the refusal text to a one-liner — the PM's next call is the point of it; and REFUSED: clearing `is_paused` inside `setTrackerStatus` (+0 here), which would change the flag's meaning for every recurring close to save four lines. From here this file may only shrink."
+    },
+    {
       "path": "packages/server/src/work/occurrences.ts",
       "from": 822,
       "to": 835,
@@ -3216,7 +3230,7 @@
     "packages/server/src/tracker/pm-agent.ts": 2448,
     "packages/server/src/tracker/schema.ts": 1068,
     "packages/server/src/tracker/task-stamps.ts": 268,
-    "packages/server/src/tracker/tools.ts": 4666,
+    "packages/server/src/tracker/tools.ts": 4692,
     "packages/server/src/tracker/version-gap-reconcile.ts": 327,
     "packages/server/src/twilio/call-session.ts": 884,
     "packages/server/src/twilio/sms-inbound.ts": 406,
@@ -3240,7 +3254,7 @@
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/store.ts": 1916,
     "packages/server/src/work/tracker-store.ts": 602,
-    "packages/server/src/work/tracker-view.ts": 536,
+    "packages/server/src/work/tracker-view.ts": 567,
     "packages/server/src/work/validation-drive.ts": 482,
     "packages/server/src/work/work-reaper.ts": 680,
     "packages/shared/src/markers.ts": 286,
