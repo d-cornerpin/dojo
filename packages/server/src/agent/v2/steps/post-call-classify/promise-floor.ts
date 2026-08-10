@@ -29,7 +29,7 @@ export function runPromiseFloor(
   ctx: PostCallClassifyContext,
   sc: PostCallScratch,
 ): StepOutcome {
-  const { agentId, chosenConvKey, counterparty, isEngineTurn, maxToolLoops, turnNumber } = ctx;
+  const { agentId, chosenConvKey, counterparty, db, isEngineTurn, maxToolLoops, turnNumber } = ctx;
   const MAX_TOOL_LOOPS = maxToolLoops;
   const { persistedContent } = sc;
   // ── Promise floor: a turn whose entire deliverable is a promise to start ──
@@ -69,7 +69,40 @@ export function runPromiseFloor(
     const transitionedATaskThisTurn = state.toolResults.some(
       (tr) => !tr.isError && CLOSING_WORK_OPS.has(toolOpKey(tr.name, argsForResult(state.toolCalls, tr))),
     );
+    // ── THE THIRD EXEMPTION (UX-REPAIR round 5 T22): the promise the SCHEDULER is
+    //    keeping. Round-5 S1: "In 15 minutes, look up whether the Mariners played today
+    //    and message me the score." The turn opened a task with `scheduled_start` fifteen
+    //    minutes out and said so — and because `work_open` classifies as BOOKKEEPING, the
+    //    two predicates above read the turn as a promise with nothing behind it and this
+    //    floor steered *"Do the work NOW"*, against the user's own explicit timing. The
+    //    model nearly obeyed in the worst way (its thinking: do the lookup now, deliver
+    //    now, cancel the scheduled task).
+    //
+    //    This floor's subject is a promise with NOTHING BEHIND IT — its header's 2026-07-08
+    //    case, pinned red in the tests. A promise backed by a tracked row with a FUTURE fire
+    //    is bounded and owned: the scheduler does the follow-through, not the next round.
+    //
+    //    RECEIPTS, NOT PROSE. The question is asked of the ROW — `origin_turn` is the stamp
+    //    every tracker open writes, so "this turn opened it" needs no parsing of a tool
+    //    result, and a work_open that FAILED left no row to find. Same `agent_id`/`origin_turn`
+    //    pair `teardown/finalize-record.ts`'s strike-0 close reads, widened to the opener
+    //    because a row assigned elsewhere is still this turn's promise to have made.
+    let openedFutureScheduledWorkThisTurn = false;
     if (!didEffectfulWorkThisTurn && !transitionedATaskThisTurn) {
+      try {
+        openedFutureScheduledWorkThisTurn = !!db.prepare(
+          'SELECT 1 AS ok FROM work w WHERE (w.agent_id = ? OR w.requester_id = ?)'
+          + ' AND w.origin_turn = ? AND COALESCE(w.scheduled_start, w.next_run_at) > ? LIMIT 1',
+        ).get(agentId, agentId, turnNumber, Date.now());
+      } catch (err) {
+        // A read that cannot run must not manufacture an exemption: the floor keeps its
+        // pre-T22 behaviour, which is the direction that never lets an empty promise pass.
+        logger.warn('promise floor: could not read this turn\'s opened work; falling back to the pre-exemption floor', {
+          agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
+        }, agentId);
+      }
+    }
+    if (!didEffectfulWorkThisTurn && !transitionedATaskThisTurn && !openedFutureScheduledWorkThisTurn) {
       const quoted = persistedContent.replace(/\s+/g, ' ').trim().slice(0, 200);
       if (steerFired(state.steerQueue, 'promise-floor')) {
         // Steered once already this turn and the model STILL ended on a promise.
