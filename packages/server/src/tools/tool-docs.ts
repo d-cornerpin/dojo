@@ -227,11 +227,14 @@ export const SUB_AGENT_ALWAYS_LOADED = [
   // This is the argument the pair above already makes, applied to the list that was missing
   // half of it: "a load_tool_docs round-trip is the friction that makes a weak model skip the
   // tracker entirely." Byte cost declared, because on this list byte cost has been the
-  // deciding argument before: `work_open`'s schema is the largest in the file, ~5.5 KB on
-  // every sub-agent's prompt. It is spent knowingly — the round-trip it removes is the one
-  // that produced a fabricated task id — and it is STATIC, so the per-agent prefix stays
-  // byte-stable turn to turn and prompt caching is unaffected (PREFIX RE-BLESSING REGISTER,
-  // UX-REPAIR).
+  // deciding argument before — and MEASURED off a live ronin's own tools array rather than
+  // estimated: `work_open`'s declaration is 10,129 chars, 22.7% of BehaviorBot's 44,632-char
+  // array. (The investigation's "~5.5 KB" was the `input_schema` alone; the full entry is
+  // nearly twice that. It is also NOT the largest entry in the file — `work_update`'s 13,174
+  // is, and this list already carried it, which is the whole asymmetry.) The cost is spent
+  // knowingly: the round-trip it removes is the one that produced a fabricated task id. It is
+  // STATIC, so the per-agent prefix stays byte-stable turn to turn and prompt caching is
+  // unaffected (PREFIX RE-BLESSING REGISTER, UX-REPAIR).
   'work_open',
   'work_update',
   'image_create',
