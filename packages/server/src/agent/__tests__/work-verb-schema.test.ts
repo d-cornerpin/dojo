@@ -82,7 +82,25 @@ const N1_BASELINE_CHARS = { work_open: 5628, work_update: 6310 };
 // `agent/tools/__tests__/effects-conformance.test.ts`).
 // This is the change the golden re-bless of `checks/golden/cache-prefix.kevin.txt`
 // records, and the numbers here are the same ones the prefix differ counts.
-const BASELINE_CHARS = { work_open: 6327, work_update: 7058 };
+const T0CW_BASELINE_CHARS = { work_open: 6327, work_update: 7058 };
+
+// ── UX-REPAIR T5 — ONE PROPERTY GAINS AN EXISTENCE CONTRACT, AND IT COSTS 253 CHARS ─────
+// On the PREFIX RE-BLESSING REGISTER for this phase, so it is a reviewed re-blessing rather
+// than a silent creep. Measured, not estimated:
+//   work_open   6,327 → 6,327  (+0 — untouched; this edit is `work_update` only)
+//   work_update 7,058 → 7,311  (+253)
+// WHAT THE 253 BUY. `work_update.task_id` demanded an id and said nothing about where one
+// comes from, and the description it sits inside is an END-OF-TURN DECISION MATRIX that
+// pushes status transitions hard. In S1 of the 2026-08-09 UX review a ronin agent called
+// `action="list"`, was told "No active tasks", and then called this tool with
+// `task_id:"placeholder"` — it invented an id against evidence in its own context. The
+// declaration now names the only two sources of a real id (`work_open`'s return value, or a
+// row from `action="list"`) and refuses invention in as many words.
+// THIS IS A DECLARATION FIX, NOT COACHING CREEP — the guard below still holds: the property
+// count is unchanged, so no new capability was smuggled in with the bytes, and the second
+// half of T5's solve (`work_open` onto `SUB_AGENT_ALWAYS_LOADED`) is what makes the contract
+// followable by the agent that broke it, since it could not reach `work_open` in one call.
+const BASELINE_CHARS = { work_open: 6327, work_update: 7311 };
 
 describe('S2 + N1 — the shared declaration, and the wording said once', () => {
   const open = schemaOf('work_open');
@@ -97,8 +115,8 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     // The pin above says "these are the bytes". This one says WHY they moved, so a later
     // reader cannot mistake a coaching-text creep for the owner's decided +1,447. Anything
     // that lands here without adding a declared property is a rewording nobody approved.
-    expect(BASELINE_CHARS.work_open - N1_BASELINE_CHARS.work_open).toBe(699);
-    expect(BASELINE_CHARS.work_update - N1_BASELINE_CHARS.work_update).toBe(748);
+    expect(T0CW_BASELINE_CHARS.work_open - N1_BASELINE_CHARS.work_open).toBe(699);
+    expect(T0CW_BASELINE_CHARS.work_update - N1_BASELINE_CHARS.work_update).toBe(748);
     const po = (open as { properties: Record<string, unknown> }).properties;
     const pu = (upd as { properties: Record<string, unknown> }).properties;
     expect(Object.keys(po)).toContain('local_time');
@@ -109,6 +127,26 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     // The retirement, pinned on the wire side too: `tz` never reaches the tools array.
     expect(Object.keys(po), 'work_open declares the retired `tz` alias').not.toContain('tz');
     expect(Object.keys(pu), 'work_update declares the retired `tz` alias').not.toContain('tz');
+  });
+
+  it('UX-REPAIR T5 — the +253 is `task_id`\'s existence contract and nothing else', () => {
+    // The pin moved; this is the clause that says a rewording nobody approved cannot hide
+    // inside the move. Same shape as the T0C-W guard above, inverted: T0C-W had to ADD
+    // properties to earn its bytes, and this one has to add NONE.
+    expect(BASELINE_CHARS.work_open - T0CW_BASELINE_CHARS.work_open).toBe(0);
+    expect(BASELINE_CHARS.work_update - T0CW_BASELINE_CHARS.work_update).toBe(253);
+    const po = (open as { properties: Record<string, unknown> }).properties;
+    const pu = (upd as { properties: Record<string, unknown> }).properties;
+    // No capability rode in on the bytes: the property rosters are exactly T0C-W's.
+    expect(Object.keys(po)).toHaveLength(25);
+    expect(Object.keys(pu)).toHaveLength(32);
+    // And the bytes landed where they were declared to land.
+    const taskId = String((pu.task_id as { description?: string }).description ?? '');
+    expect(taskId).toMatch(/ALREADY EXISTS/);
+    expect(taskId).toMatch(/work_open/);
+    expect(taskId).toMatch(/NEVER invent an id/);
+    // `work_open`'s own `task_id`-shaped fields are untouched — this edit is one verb wide.
+    expect(JSON.stringify(open).length).toBe(T0CW_BASELINE_CHARS.work_open);
   });
 
   it('preserves KEY ORDER on every shared property — stringify emits insertion order', () => {

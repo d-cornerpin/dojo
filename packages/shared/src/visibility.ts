@@ -699,8 +699,12 @@ function classifyInner(msg: DisplayMessageInput): DisplayClassification {
   // An assistant row whose content is the model's tool_use blocks rather than prose. The
   // dashboard renders these as chips; `role` and the blocks say which end of the call this
   // is, so the kind is the same one a role='tool' row gets.
+  //
+  // UX-REPAIR T5 (2026-08-09): the TIER is folded per block instead of asserted per row.
+  // It used to be a flat `user-visible` for every tool-bearing row, which made the stored
+  // column disagree with the screen on every bookkeeping-only turn — see `toolTurnTier`.
   if (trimmed.startsWith('[{') && trimmed.includes('"tool_use"')) {
-    return { tier: 'user-visible', kind: 'tool-turn' };
+    return { tier: toolTurnTier(trimmed), kind: 'tool-turn' };
   }
   return { tier: 'user-visible', kind: 'agent-text' };
 }
@@ -882,6 +886,51 @@ export function toolBadgeTier(cls: ToolDisplayClass): VisibilityTier {
   // effectful-action, retrieval, and delivery all surface something in
   // regular mode; bookkeeping is hidden.
   return cls === 'bookkeeping' ? 'agent-only' : 'user-visible';
+}
+
+// ── UX-REPAIR T5: the row tier is the FOLD of its blocks, not an assertion about them ──
+//
+// THE DEFECT THIS CLOSES. `display_tier` was stamped `user-visible` on every assistant row
+// whose content was tool_use JSON, regardless of which tools it held, while the
+// substantive/bookkeeping line was drawn PER BLOCK by `classifyTool` on the client. One row,
+// two rules, two answers — so a turn of six `work_*` and `load_tool_docs` calls was stored as
+// "the user saw this" and drew nothing. The 2026-08-09 UX review read the column and reported
+// a red error chip and five-to-seven badges that were never on screen. A column no renderer
+// reads still lies to every machine that reads it, and this is the machine-readable half of
+// the fix (the render half was already correct and is deliberately untouched).
+//
+// ONE RULE, NOT A SECOND COPY. This folds through `toolBadgeTier(classifyTool(name))` — the
+// same two functions the dashboard's own filter uses. `toolBadgeTier` had zero callers and
+// was dead; wiring it here is what makes the stored answer and the drawn answer impossible to
+// edit apart. It is deliberately ARG-LESS, because all four dashboard call sites are
+// (`Chat.tsx:576`, `tool-display.ts:164,167`, `ToolCallBlock.tsx:50`): the render rule never
+// sees a tool's arguments, so a tier computed WITH them would re-open the same gap from the
+// other side. The one consequence is recorded rather than hidden — `WORK_OP_DISPLAY_CLASS`'s
+// `work_open:reminder` promotion is unreachable on the render path and therefore here too.
+//
+// EVERY BLOCK, OR THE ROW KEEPS ITS TIER. A non-`tool_use` block (text, image, thinking) is
+// something the chip filter does not govern, so its presence hands the row straight back to
+// `user-visible`; only a row that is tool calls and NOTHING else can be folded away. Measured
+// on the worn-in box: 0 of 8,626 stored assistant tool rows carry a text block, so this is a
+// guard against a shape that does not exist yet rather than a live branch.
+//
+// SERVING IS NOT TOUCHED. `gateway/routes/chat.ts:305-310` records why tier must never become
+// a server-side WHERE clause; the served set is byte-identical after this change and the
+// refusal stands.
+function toolTurnTier(rawBlocks: string): VisibilityTier {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawBlocks);
+  } catch {
+    return 'user-visible';   // unparseable: fail toward showing it, never toward hiding
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) return 'user-visible';
+  for (const block of parsed) {
+    const b = block as { type?: unknown; name?: unknown } | null;
+    if (!b || b.type !== 'tool_use' || typeof b.name !== 'string') return 'user-visible';
+    if (toolBadgeTier(classifyTool(b.name)) === 'user-visible') return 'user-visible';
+  }
+  return 'agent-only';
 }
 
 // Map a channel-send tool to its channel kind, for the outbound badge.

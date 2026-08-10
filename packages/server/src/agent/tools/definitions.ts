@@ -1082,7 +1082,14 @@ export const toolDefinitions: ToolDefinition[] = [
           enum: ['status', 'edit', 'reassign', 'complete_step', 'close_project', 'list', 'get'],
           description: 'Which update to perform. Omit and the engine infers it from the fields you passed (`status` → status, `assigned_to` → reassign, a `project_id` with a `reason` → close_project, editable fields → edit, a bare id → get, nothing → list).',
         },
-        task_id: { type: 'string', description: 'The task ID (full UUID or 8+ char prefix). For action="complete_step", the step you just completed.' },
+        // UX-REPAIR T5 (2026-08-09) — the EXISTENCE CONTRACT. This field demanded an id and
+        // said nothing about where one comes from, so under the END-OF-TURN decision matrix
+        // above a weak model with no task in hand supplied a word: the UX review's S1 turn
+        // called this tool with `task_id:"placeholder"` moments after `action="list"` had
+        // told it "No active tasks." The declaration now names the only two sources of a
+        // real id and refuses invention outright. Prompt-surface edit, on the phase's
+        // re-blessing register; static text, so the cached prefix stays byte-stable.
+        task_id: { type: 'string', description: 'The task ID (full UUID or 8+ char prefix) of a task that ALREADY EXISTS — either an id `work_open` returned to you, or one listed by `work_update(action="list")`. NEVER invent an id or pass a placeholder: if the task does not exist yet, call `work_open` to create it and use the id it returns. For action="complete_step", the step you just completed.' },
         project_id: workProp('project_id', 'The project ID (full UUID or 8+ char prefix). Used by action="edit" (rename a project), "close_project", and "get".'),
         id: { type: 'string', description: 'Alias for task_id / project_id on action="get".' },
         status: {

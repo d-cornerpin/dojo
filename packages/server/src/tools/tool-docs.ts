@@ -214,6 +214,25 @@ export const SUB_AGENT_ALWAYS_LOADED = [
   'file_write',
   'send_to_agent',
   'vault_search',
+  // UX-REPAIR T5 (2026-08-09) — `work_open` joins its own pair, and the reason is measured.
+  // This list carried the verb that CHANGES a task and not the verb that CREATES one, and it
+  // was the only one of the three lists to do so (`work_open` is in the primary's list above
+  // and the Trainer's below). The cost was paid in S1 of the UX review: a ronin agent under
+  // the END-OF-TURN decision matrix called `work_update(action="list")`, was told "No active
+  // tasks", and then called `work_update(status="in_progress", task_id:"placeholder")` — it
+  // reached for the loaded tool and invented the id the schema demanded, against evidence
+  // already in its own context. Its own thinking names the asymmetry: "work_open isn't in my
+  // always-loaded list but it IS listed under 'Work Tracker' tools."
+  //
+  // This is the argument the pair above already makes, applied to the list that was missing
+  // half of it: "a load_tool_docs round-trip is the friction that makes a weak model skip the
+  // tracker entirely." Byte cost declared, because on this list byte cost has been the
+  // deciding argument before: `work_open`'s schema is the largest in the file, ~5.5 KB on
+  // every sub-agent's prompt. It is spent knowingly — the round-trip it removes is the one
+  // that produced a fabricated task id — and it is STATIC, so the per-agent prefix stays
+  // byte-stable turn to turn and prompt caching is unaffected (PREFIX RE-BLESSING REGISTER,
+  // UX-REPAIR).
+  'work_open',
   'work_update',
   'image_create',
   'show_to_user',
