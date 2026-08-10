@@ -1624,19 +1624,24 @@ export const setAgentBudget = async (
 
 // ── Services ──
 
+// UX-REPAIR T14: both shapes below are the WIRE's, field for field. They used to declare
+// `lastCheck` (the route emits `lastHeartbeat`) and two iMessage fields nothing has ever
+// emitted, with a defensive remap in `Health.tsx` keeping the mismatch quiet; a conformance
+// test now compares each shape against the payload its route actually returns. The iMessage
+// route also serves `approvedSenders`/`safeSenders`/`lastSeenRowId`, which no page reads —
+// a declared SUBSET is honest; a declared field that does not exist is not.
 export const getWatchdogStatus = async (): Promise<ApiResponse<{
   running: boolean;
-  lastCheck: string | null;
-  lastAlert: string | null;
+  lastHeartbeat: string | null;
+  lastAlert: { message: string; at: string } | null;
 }>> => {
   return request('/system/watchdog');
 };
 
 export const getIMBridgeStatus = async (): Promise<ApiResponse<{
+  running: boolean;
   enabled: boolean;
   connected: boolean;
-  lastReceived: string | null;
-  lastSent: string | null;
 }>> => {
   return request('/system/imessage');
 };

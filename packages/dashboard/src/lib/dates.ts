@@ -84,6 +84,28 @@ export function formatTimeOnly(dateStr: string | null | undefined): string {
 }
 
 /**
+ * Coarse "when did this last happen" for the Health page's status rows:
+ * "Never" / "Just now" / "12m ago" / "5h ago" / a plain date past a day.
+ *
+ * UX-REPAIR T14 folded this out of two byte-identical local copies (`Health.tsx`,
+ * `ProviderHealth.tsx`) and gave it the `isNaN` guard every other formatter here already had.
+ * That omission was the second half of the "Invalid Date" defect: fed something that is not a
+ * timestamp, the old copies fell through to `toLocaleDateString()` on an invalid Date and
+ * rendered the string "Invalid Date" into the card. A status row's honest answer to a value it
+ * cannot read is the same as its answer to no value at all.
+ */
+export function formatTimestamp(dateStr: string | null | undefined): string {
+  const d = parseUtc(dateStr);
+  if (!d || isNaN(d.getTime())) return 'Never';
+  const diffMins = Math.floor((Date.now() - d.getTime()) / 60000);
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  return d.toLocaleDateString();
+}
+
+/**
  * Format as relative time ("3m ago", "2h ago", "5d ago").
  */
 export function formatRelative(dateStr: string | null | undefined): string {

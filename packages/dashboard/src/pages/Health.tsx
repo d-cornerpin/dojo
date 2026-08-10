@@ -3,7 +3,7 @@ import type { HealthData, LogEntry } from '@dojo/shared';
 import type { LogEntryEvent, WsEvent } from '@dojo/shared';
 import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { formatDate, formatTimeOnly, parseUtc } from '../lib/dates';
+import { formatDate, formatTimeOnly, formatTimestamp } from '../lib/dates';
 import { ProviderHealth } from '../components/ProviderHealth';
 import { HealerVitals } from '../components/HealerVitals';
 import { WatcherCards } from '../components/WatcherCards';
@@ -31,20 +31,6 @@ const formatUptime = (seconds: number): string => {
   return `${mins}m`;
 };
 
-const formatTimestamp = (ts: string | null): string => {
-  if (!ts) return 'Never';
-  const d = parseUtc(ts);
-  if (!d) return 'Never';
-  const now = new Date();
-  const diffMs = now.getTime() - d.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
-  return d.toLocaleDateString();
-};
-
 const levelPill: Record<string, string> = {
   debug: 'pill--norm',
   info: 'pill--ok',
@@ -60,17 +46,19 @@ interface ProviderStatus {
   errorCount: number;
 }
 
+// UX-REPAIR T14: both of these are now the wire's own shape, named as the wire names it.
+// They used to be a wish list — `lastCheck` where the route emits `lastHeartbeat`, and two
+// iMessage fields the bridge has never carried — kept upright by a defensive remap in the
+// loader below. A remap that guesses is how a type stops describing anything.
 interface WatchdogStatus {
   running: boolean;
-  lastCheck: string | null;
-  lastAlert: string | null;
+  lastHeartbeat: string | null;
+  lastAlert: { message: string; at: string } | null;
 }
 
 interface IMBridgeStatus {
   enabled: boolean;
   connected: boolean;
-  lastReceived: string | null;
-  lastSent: string | null;
 }
 
 interface OllamaLockData {
@@ -250,25 +238,10 @@ export const Health = () => {
           errorCount: p.errorCount ?? 0,
         })));
       }
-      // Watchdog: map field names
-      if (watchdogResult?.ok) {
-        const wd = watchdogResult.data as Record<string, unknown>;
-        setWatchdog({
-          running: wd.running as boolean,
-          lastCheck: (wd.lastCheck ?? wd.lastHeartbeat ?? null) as string | null,
-          lastAlert: (wd.lastAlert ?? null) as string | null,
-        });
-      }
-      // iMessage: map field names
-      if (imResult?.ok) {
-        const im = imResult.data as Record<string, unknown>;
-        setImBridge({
-          enabled: (im.enabled ?? im.running ?? false) as boolean,
-          connected: (im.connected ?? im.running ?? false) as boolean,
-          lastReceived: (im.lastReceived ?? null) as string | null,
-          lastSent: (im.lastSent ?? null) as string | null,
-        });
-      }
+      // UX-REPAIR T14: no remap. `api.ts` declares what these two routes actually emit, so
+      // the payload IS the state — nothing to rename, nothing to guess a default for.
+      if (watchdogResult?.ok) setWatchdog(watchdogResult.data);
+      if (imResult?.ok) setImBridge(imResult.data);
       if (resourceResult?.ok) setResources(resourceResult.data as ResourceData);
       } catch {
         // Initial load failed; the page renders with whatever data arrived
@@ -500,8 +473,15 @@ export const Health = () => {
             </div>
             {watchdog ? (
               <div className="rows">
-                <div><span className="k">Last check</span><span className="v">{formatTimestamp(watchdog.lastCheck)}</span></div>
-                <div><span className="k">Last alert</span><span className="v">{formatTimestamp(watchdog.lastAlert)}</span></div>
+                <div><span className="k">Last check</span><span className="v">{formatTimestamp(watchdog.lastHeartbeat)}</span></div>
+                <div>
+                  <span className="k">Last alert</span>
+                  <span className="v">
+                    {watchdog.lastAlert
+                      ? `${watchdog.lastAlert.message} · ${formatTimestamp(watchdog.lastAlert.at)}`
+                      : 'None'}
+                  </span>
+                </div>
               </div>
             ) : (
               <div className="rows"><div><span className="k">Status</span><span className="v">Unavailable</span></div></div>
@@ -520,10 +500,12 @@ export const Health = () => {
             </div>
             {imBridge ? (
               <>
-                <div className="rows">
-                  <div><span className="k">Last received</span><span className="v">{formatTimestamp(imBridge.lastReceived)}</span></div>
-                  <div><span className="k">Last sent</span><span className="v">{formatTimestamp(imBridge.lastSent)}</span></div>
-                </div>
+                {/* UX-REPAIR T14: "Last received" / "Last sent" used to sit here and read
+                    "Never" on every box forever — `getIMBridgeStatus()` has never carried
+                    either field, and the bridge records no such instant to carry (measured:
+                    zero occurrences of the names in imessage-bridge.ts, pinned by test). Two
+                    rows that can only ever say one thing are worse than no rows. The pill
+                    above is the bridge's real, wired status. */}
                 {imBridge.enabled && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
                     <input

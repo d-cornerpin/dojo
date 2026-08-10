@@ -69,15 +69,23 @@ servicesRouter.get('/watchdog', (c) => {
   try {
     const statePath = path.join(os.homedir(), '.dojo', 'watchdog-state.json');
     let lastHeartbeat: string | null = null;
-    let lastAlert: string | null = null;
+    // UX-REPAIR T14: the watchdog stores `{ message, at }` and this route used to keep only
+    // `.message`, then serve it under the key `lastAlert` — which the Health card feeds to a
+    // TIMESTAMP formatter, so any box with a live alert rendered a literal "Invalid Date".
+    // Both facts travel now, in the watchdog's own shape, or neither does: half an alert is
+    // what produced the lie, so a state file missing `at` reads as no alert rather than as an
+    // alert with an unparseable time.
+    let lastAlert: { message: string; at: string } | null = null;
     try {
       const parsed = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as {
         lastHeartbeat?: unknown;
-        lastAlert?: { message?: unknown } | null;
+        lastAlert?: { message?: unknown; at?: unknown } | null;
       };
       if (typeof parsed.lastHeartbeat === 'string') lastHeartbeat = parsed.lastHeartbeat;
-      if (parsed.lastAlert && typeof parsed.lastAlert.message === 'string') {
-        lastAlert = parsed.lastAlert.message;
+      if (parsed.lastAlert
+        && typeof parsed.lastAlert.message === 'string'
+        && typeof parsed.lastAlert.at === 'string') {
+        lastAlert = { message: parsed.lastAlert.message, at: parsed.lastAlert.at };
       }
     } catch {
       // File absent or unreadable (watchdog not running yet, or crash mid-boot).
