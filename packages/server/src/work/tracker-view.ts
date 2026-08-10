@@ -439,6 +439,9 @@ export const scheduleRowColumns = (a = 'w'): string => `
   ${a}.repeat_end_value AS repeat_end_value,
   ${a}.repeat_days_of_week AS repeat_days_of_week,
   ${a}.anchor_local AS anchor_time,
+  -- UX-REPAIR round 2 T13: the declared per-reminder zone, finally projected. NULL on every
+  -- row that predates the write, and NULL means "the box timezone" — exactly today's answer.
+  ${a}.tz AS tz,
   ${a}.attempts AS run_count,
   ${a}.is_paused AS is_paused,
   ${msToText(a + '.last_run_at')} AS last_run_at,

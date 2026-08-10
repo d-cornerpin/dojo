@@ -218,7 +218,12 @@ export type TrackerAttr =
   | 'scheduled_start' | 'repeat_interval' | 'repeat_unit' | 'repeat_end_type'
   | 'repeat_end_value' | 'repeat_days_of_week' | 'schedule_status' | 'is_paused'
   | 'paused_until' | 'status_before_pause' | 'last_run_at' | 'missed_runs_paused_at'
-  | 'anchor_local' | 'attempts';
+  | 'anchor_local' | 'attempts'
+  // UX-REPAIR round 2 T13: `work.tz` existed since migration 135 and was DEAD — absent from
+  // this union, so no attribute write could name it, and absent from `scheduleRowColumns`, so
+  // the scheduler never read it. The declared per-reminder zone contract was silently void and
+  // every calendar-unit reminder resolved against the PROCESS timezone instead.
+  | 'tz';
 // PHASE-2 T8c item 2: the six ticket-stamp columns left this union with their storage. They
 // are `work_events` rows of kind `activity` now (see `stampTicket` below), so a patcher that
 // could still name them would be writing a column nothing reads.

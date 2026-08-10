@@ -315,5 +315,52 @@ describe('the seam: the anchor decides next_run_at, in whatever zone the box run
       // anchor governs every run AFTER it, which is what the stored value is for.
       expect(row.next_run_at).toBe(Date.parse(startIso));
     });
+
+    // UX-REPAIR round 2 T13 — THE DECLARED ZONE SURVIVES THE WRITE.
+    // `resolveLocalWallClock` has always resolved a caller-supplied `local_timezone`
+    // correctly and then DISCARDED the resolved zone: the `alongside` patch carried
+    // scheduled_start / repeat_* / anchor_local and no zone, `work.tz` was absent from
+    // `TrackerAttr` so nothing could name it, and it was absent from `scheduleRowColumns` so
+    // the scheduler never read it. Every calendar-unit advance therefore resolved against the
+    // PROCESS timezone, and the same reminder fires an hour early for four months of the year
+    // on a box running TZ=UTC. This clause is the end-to-end proof that the column is written.
+    it(`CREATE in ${zone}: an explicitly declared local_timezone reaches work.tz`, async () => {
+      process.env.TZ = zone;
+      const declared = zone === 'Asia/Tokyo' ? 'America/Los_Angeles' : 'Asia/Tokyo';
+      const future = new Date(Date.now() + 36 * 60 * 60 * 1000);
+      const wall = `${future.getUTCFullYear()}-${String(future.getUTCMonth() + 1).padStart(2, '0')}-`
+        + `${String(future.getUTCDate()).padStart(2, '0')}T09:00`;
+      const res = await trackerHandlers['work_open:task']({
+        agentId: AGENT,
+        args: {
+          title: `zoned-${zone}`, goal: 'fire at nine, in the zone the caller named',
+          local_time: wall, local_timezone: declared,
+          repeat_interval: 1, repeat_unit: 'months',
+        },
+      } as never);
+      expect(res.isError, res.content).toBe(false);
+      const row = mockDb.current!.prepare(
+        'SELECT tz, scheduled_start FROM work WHERE title = ?',
+      ).get(`zoned-${zone}`) as { tz: string | null; scheduled_start: number | null };
+      expect(row?.tz, 'the create door dropped the declared timezone').toBe(declared);
+      // …and it is the DECLARED zone that resolved the instant, not the box's.
+      expect(instantToWall(Number(row.scheduled_start), declared).hour).toBe(9);
+    });
+
+    it(`CREATE in ${zone}: a caller who names NO zone still gets today's behaviour (tz null)`, async () => {
+      process.env.TZ = zone;
+      const startIso = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      const res = await trackerHandlers['work_open:task']({
+        agentId: AGENT,
+        args: {
+          title: `unzoned-${zone}`, goal: 'no zone named',
+          scheduled_start: startIso, repeat_interval: 1, repeat_unit: 'days',
+        },
+      } as never);
+      expect(res.isError, res.content).toBe(false);
+      const row = mockDb.current!.prepare('SELECT tz FROM work WHERE title = ?')
+        .get(`unzoned-${zone}`) as { tz: string | null };
+      expect(row?.tz ?? null).toBeNull();
+    });
   }
 });

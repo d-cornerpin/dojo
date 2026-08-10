@@ -13,7 +13,11 @@
 // the absolute instant instead: "every 2 hours" means 2 real hours, so DST
 // wall-clock identity deliberately does not apply to them.
 //
-// DST policy, proven in the D21 verification harness:
+// DST policy, PINNED BY TEST at `scheduler/__tests__/the-reminder-clock-holds-its-wall-time.test.ts`
+// (UX-REPAIR round 2 T13). The citation above this line used to read "proven in the D21
+// verification harness" — a harness that is not in the tree and, by `grep -rn "D21"`, never was
+// anything but prose. Until those tests landed, NO test in the repo exercised
+// `repeat_unit:'months'` or `'years'` at all and none crossed a DST boundary:
 //   * spring-forward gap (e.g. 02:30 does not exist): the occurrence fires at
 //     the next valid instant (02:30 -> 03:30), and the NEXT day returns to the
 //     anchor's own wall time (02:30) because the walk carries wall-clock
@@ -42,6 +46,21 @@ export interface ScheduledTask {
   // drift the schedule by 5 minutes every cycle. Nullable for
   // backwards compatibility; when null, falls back to scheduled_start.
   anchor_time?: string | null;
+  /**
+   * UX-REPAIR round 2 T13 — THE DECLARED PER-TASK ZONE, honoured at last.
+   *
+   * `work.tz` has existed since migration `135` and was DEAD: absent from `TrackerAttr` so no
+   * write could name it, absent from `scheduleRowColumns` so the scheduler never read it, and
+   * absent from this interface entirely. `resolveLocalWallClock` accepted `local_timezone`,
+   * resolved it correctly, and DISCARDED the resolved zone at the write. So every calendar-unit
+   * schedule resolved against the PROCESS timezone — measured (investigation-round2.md R2):
+   * the same monthly reminder fires 9:00 AM local on this box and 8:00 AM if the process runs
+   * `TZ=UTC`, for four months of every year.
+   *
+   * NULL is the honest answer for every row that predates the write, and NULL means "the box
+   * timezone" — byte-identically today's behaviour.
+   */
+  tz?: string | null;
 }
 
 // ── Box timezone + wall-clock helpers (D21) ──
@@ -202,7 +221,12 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
   if (!task.scheduled_start) return null;
   if (task.is_paused) return null;
 
-  const tz = timeZone ?? getBoxTimeZone();
+  // UX-REPAIR round 2 T13 — precedence, and why the row's own zone is read HERE rather than at
+  // the callers. All twelve call sites passed exactly one argument, so `timeZone` was always
+  // `undefined` and the declared per-task zone reached nothing. Reading it inside is the shape
+  // a thirteenth caller cannot forget; an EXPLICIT argument still wins, so the one caller that
+  // ever wants to ask "when would this fire in Tokyo?" keeps that answer.
+  const tz = timeZone ?? task.tz ?? getBoxTimeZone();
 
   // One-time task
   if (!task.repeat_interval || !task.repeat_unit) {

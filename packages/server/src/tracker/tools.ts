@@ -1000,6 +1000,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     // engine-side into scheduled_start. Explicit scheduled_start wins if both are
     // given. Anchor defaults to scheduled_start downstream, so we only set the
     // start here.
+    let resolvedScheduleZone: string | null = null;
     if (args.local_time !== undefined && args.local_time !== null && args.local_time !== '' && !args.scheduled_start) {
       if (typeof args.local_time !== 'string') {
         return 'Error: local_time must be a string wall-clock time, e.g. "2026-07-16T21:00".';
@@ -1008,6 +1009,13 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       const resolved = resolveLocalWallClock(args.local_time, typeof tz === 'string' ? tz : undefined);
       if (!resolved.ok) return resolved.error;
       args.scheduled_start = resolved.iso;
+      // UX-REPAIR round 2 T13 — KEEP THE ZONE. `resolveLocalWallClock` has always resolved the
+      // caller's `local_timezone` correctly and then thrown the answer away: the `alongside`
+      // patch below carried scheduled_start / repeat_* / anchor_local and no zone, and
+      // `work.tz` was unwritable anyway. So the per-reminder zone contract the tool advertises
+      // was silently void and every calendar-unit advance resolved against the process
+      // timezone. Recorded here, at the moment the engine knows it.
+      resolvedScheduleZone = resolved.zone;
     }
 
     // 2026-07-03: schedule timestamps must be parseable, checked BEFORE the
@@ -1282,6 +1290,8 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
         schedule_status: 'waiting',
         repeat_days_of_week: repeatDaysOfWeek ?? null,
         anchor_time: anchorTime ?? null,
+        // T13: the row's own zone reaches the very first advance too, not only later ones.
+        tz: resolvedScheduleZone,
       };
       const nextRun = calculateNextRun(taskForCalc) ?? scheduledStart;
 
@@ -1293,6 +1303,9 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
           repeat_unit: repeatUnit ?? null, repeat_end_type: repeatEndType,
           repeat_end_value: repeatEndValue ?? null, repeat_days_of_week: repeatDaysOfWeek ?? null,
           anchor_local: anchorTime ?? null, schedule_status: 'waiting',
+          // T13: the declared per-reminder zone, persisted. NULL when the caller named none —
+          // and NULL means the box timezone, which is byte-identically today's behaviour.
+          tz: resolvedScheduleZone,
         },
       }), 'trackerCreateTask: schedule recorded', { taskId });
 
