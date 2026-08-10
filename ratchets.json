@@ -2,6 +2,27 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/server/src/work/ask-settlement.ts",
+      "from": 1213,
+      "to": 1294,
+      "by": "UX-REPAIR ROUND 6 T25 — a waiting ask closes only on a delivery that answers it",
+      "why": "+81 (+81/-1 net; 25 code, 47 comment, 9 blank). The code is the EIGHTH narrowing (a five-line NOT EXISTS fragment plus two bound parameters on the evidence query) and `recordOwedInterruptSubjects`, the spine-side writer the owed-interrupt step calls — which must live here because `__tests__/single-writer-conformance.test.ts` PART A refuses any write to `work_events` from outside `work/`. The comment weight is the house style of this exact function and the reason it can be trusted: the seven narrowings above it each carry the incident they answer, in the ledger's own numbers, and an eighth that arrived without one would be the only rule in the file a reader has to take on faith. So it carries the 2026-08-10 turn minute by minute (research bubble 23:01:15, owed-interrupt record 23:01:15, wrong close 23:01:18, real answer 23:03:25), the two things it deliberately does NOT key on (arrival timing — a burst answered in one composite reply is the same timing and must still close — and the re-prompt's quoted text, which is prose-as-authority), the ROWID-not-clock choice with migration 088's precedent and the second-resolution tie that forces it, three named non-widenings each matching a control in the test file, and the owner-priority check (refusing the delivery cannot park the ask; the finalize arm hands it back OPEN onto the re-serve ladder). REFUSED: a separate `owed-interrupt-evidence.ts` module (+0 here, +N there plus an import) — the narrowing is one fragment interpolated into the evidence query and separating a narrowing from the six beside it is how the seventh's argument would have been lost. REFUSED: dropping the incident timeline to the fragment. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts",
+      "from": 134,
+      "to": 152,
+      "by": "UX-REPAIR ROUND 6 T25 — a waiting ask closes only on a delivery that answers it",
+      "why": "+18 (5 code, 12 comment, 1 blank). The 5 code lines are a guarded dynamic import and one call recording the owed asks by id. The comment says the thing this step's whole failure was: everything above it KNOWS which asks are owed (`owed` holds the rows) and until now the only trace that survived the block was the quoted prose inside the re-prompt — so three seconds later settlement closed one of these very asks on another ask's delivery, with the ledger row and the delivery id written down beside the claim. It also states why the call is best-effort (a bookkeeping failure must never cost the re-prompt this step exists to send) and why the write goes through `work/` (the spine's single-writer boundary). REFUSED: dropping the comment to the call — a reader who deletes these five lines as 'bookkeeping' re-creates the defect, and the incident is the only thing that stops them. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/counterparty.ts",
+      "from": 939,
+      "to": 943,
+      "by": "UX-REPAIR ROUND 6 T25 — a waiting ask closes only on a delivery that answers it",
+      "why": "+4 (1 code, 4 comment, counted against two edited lines). `getOwedMidTurnArrivals` now carries each owed row's `id` out with its `rowid` and `content`. The column was ALREADY selected — `WAITING_COLS` lists `m.id` — and only the projection dropped it, which is the whole point the comment records: the caller quotes these asks into a re-prompt asserting they are still owed, and the row's IDENTITY died at this boundary, leaving prose as the only trace. Four comment lines to stop the next reader 'tidying' an unused-looking field back out. From here this file may only shrink."
+    },
+    {
       "path": "packages/server/src/memory/compaction.ts",
       "from": 1351,
       "to": 1438,
@@ -3106,7 +3127,7 @@
     "packages/server/src/agent/turn-state.ts": 239,
     "packages/server/src/agent/v2/answered-edge.ts": 703,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 502,
-    "packages/server/src/agent/v2/counterparty.ts": 939,
+    "packages/server/src/agent/v2/counterparty.ts": 943,
     "packages/server/src/agent/v2/loop.ts": 697,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 442,
@@ -3153,7 +3174,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/missed-reply.ts": 167,
     "packages/server/src/agent/v2/steps/post-call-classify/no-reply.ts": 359,
     "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 71,
-    "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 134,
+    "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 152,
     "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 323,
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 148,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 367,
@@ -3267,7 +3288,7 @@
     "packages/server/src/voice/stt-service.ts": 538,
     "packages/server/src/voice/voice-ws.ts": 2299,
     "packages/server/src/work/ask-remediation.ts": 314,
-    "packages/server/src/work/ask-settlement.ts": 1213,
+    "packages/server/src/work/ask-settlement.ts": 1294,
     "packages/server/src/work/ask-title.ts": 420,
     "packages/server/src/work/deliverable-declaration.ts": 320,
     "packages/server/src/work/join-drive.ts": 256,
