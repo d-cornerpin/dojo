@@ -469,6 +469,71 @@ describe('a turn that SPOKE to the owner and closed nothing hands the ball over 
     expect(pauseDriveWorkWaitingOnOwner(AGENT, 6).paused).toBe(0);
   });
 
+  // ⚠ UX-REPAIR ROUND 4 T19 (D2) — THIS CALLER'S BEHAVIOUR DELTA, ARGUED WITH A TEST.
+  // `turnDeliveredToPerson` now excludes the bubbles the platform has already declared
+  // not-an-answer (`NON_ANSWERING_DISPLAY_KINDS`). This disposition's whole premise is "the
+  // turn TALKED and did not ACT, so the work is now waiting on the person" — and a receipt
+  // written for a TOOL-CALL CHIP is not the person having been talked to. The delta runs in
+  // the owner-priority direction: one fewer false pause, i.e. the work keeps being driven
+  // instead of being parked on a bubble the platform itself recorded as drafting.
+  it('D2: a receipt pointing at a tool-call CHIP is not a reply — the work keeps driving', () => {
+    seedTurn(6, {
+      ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1,
+      answer_message_id: 'a-6', effectful_calls: 0,
+    });
+    insertMessage({
+      id: 'chip-6', agentId: AGENT, role: 'assistant', conversationId: CONV,
+      content: '[{"type":"tool_use","name":"work_update"}]', turnNumber: 6,
+    });
+    seedDelivery('d1', { turn_number: 6, message_id: 'chip-6' });
+    seedLegacyTask('t-1');
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 6, { conversationId: CONV }).paused).toBe(0);
+  });
+
+  it('CONTROL: the SAME turn with a receipt on the agent\'s own text still pauses', () => {
+    seedTurn(6, {
+      ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1,
+      answer_message_id: 'a-6', effectful_calls: 0,
+    });
+    insertMessage({
+      id: 'text-6', agentId: AGENT, role: 'assistant', conversationId: CONV,
+      content: 'Here is the roof quote.', turnNumber: 6,
+    });
+    seedDelivery('d1', { turn_number: 6, message_id: 'text-6' });
+    seedLegacyTask('t-1');
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 6, { conversationId: CONV }).paused).toBe(1);
+  });
+
+  // The CENSUS, so a fifth caller cannot appear unaudited. Each production reader of the
+  // receipt, and the direction D2 moves it:
+  //   `pauseDriveWorkWaitingOnOwner`  (this file)          — one fewer false PAUSE
+  //   redundant-closeout floor        (closeout-floors.ts)  — one fewer suppressed reply
+  //   a2a-handoff-floor ghost         (handoff-floors.ts)   — the ghost fires where it was mute
+  //   reminder-silence ghost          (handoff-floors.ts)   — the ghost fires where it was mute
+  // Every one of the four moves toward the owner hearing something, which is the standing
+  // tie-break (DESIGN.md:46) rather than a coincidence.
+  it('D2: the receipt reader has exactly FOUR production callers, all moving the same way', () => {
+    // The ENGINE corpus is the shared derivation (driver + step packages), never a path —
+    // `guard-corpus-census`'s rule. `answered-edge.ts` is this file's own subject and is read
+    // directly: it declares the function and holds one caller of it.
+    const sources = engineSources();
+    const callers = new Map<string, number>();
+    for (const s of sources) {
+      const n = (s.text.match(/turnDeliveredToPerson\(/g) ?? []).length;
+      if (n > 0) callers.set(s.rel, n);
+    }
+    expect([...callers.keys()].sort()).toEqual([
+      'agent/v2/steps/post-call-classify/closeout-floors.ts',
+      'agent/v2/steps/post-call-classify/handoff-floors.ts',
+    ]);
+    expect(callers.get('agent/v2/steps/post-call-classify/closeout-floors.ts')).toBe(1);
+    expect(callers.get('agent/v2/steps/post-call-classify/handoff-floors.ts')).toBe(2);
+    const own = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'answered-edge.ts'), 'utf8');
+    // the declaration plus exactly one internal caller — the disposition tested above
+    expect((own.match(/turnDeliveredToPerson\(/g) ?? []).length).toBe(2);
+  });
+
   it('NEGATIVE: a recurring schedule is never paused by a missed close-out', () => {
     seedTurn(6, {
       ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1,
