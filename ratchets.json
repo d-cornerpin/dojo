@@ -2745,6 +2745,13 @@
       "to": 2823,
       "by": "UX-REPAIR T5 `d35ca56` (2026-08-09) — the stored display record stops lying",
       "why": "+1 code / +7 comment against 1 removed — the smallest raise of the phase. The code line is `work_update.task_id`'s description, rewritten in place to carry its existence contract (+253 wire chars, pinned and argued in `agent/__tests__/work-verb-schema.test.ts`). The seven comment lines are the declaration-correction class this file has recorded twice before on `image_create` and `file_append`: \"we looked and this is what it does\" and \"nobody looked\" must never read the same. Decrease-only from 2823."
+    },
+    {
+      "path": "packages/server/src/tools/tool-docs.ts",
+      "from": 569,
+      "to": 572,
+      "by": "UX-REPAIR T5 `0e3deca` (2026-08-09) — the declared byte cost was an inherited estimate; here is the measurement",
+      "why": "+3, all comment, zero code — the whole raise is a MEASUREMENT replacing a number nobody had re-taken. The `work_open` entry landed declaring the investigation report’s “~5.5 KB per sub-agent call”; measured off a live ronin’s own tools array the entry is 10,129 chars (22.7% of BehaviorBot’s 44,632-char array), and the report’s claim that it is the largest entry in the file is also wrong — `work_update`’s 13,174 is, and this list already carried it, which is the asymmetry T5 closes stated in bytes. On a list whose own history shows byte cost deciding membership arguments, a declared cost that is off by half is worse than none. Decrease-only from 572."
     }
   ],
   "maxNewFileLines": 400,
@@ -2948,7 +2955,7 @@
     "packages/server/src/techniques/share-import.ts": 311,
     "packages/server/src/techniques/store.ts": 546,
     "packages/server/src/techniques/tools.ts": 892,
-    "packages/server/src/tools/tool-docs.ts": 569,
+    "packages/server/src/tools/tool-docs.ts": 572,
     "packages/server/src/tools/unified-read.ts": 761,
     "packages/server/src/tools/work-verbs.ts": 373,
     "packages/server/src/tracker/pm-agent.ts": 2405,
