@@ -2,6 +2,20 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/server/src/work/occurrences.ts",
+      "from": 822,
+      "to": 835,
+      "by": "UX-REPAIR ROUND 4 T19 (D6) — the in-flight guard is scoped to the RUN, and says why",
+      "why": "+13, 11 of them comment, and the comment is the whole value: the first draft of this guard asked whether the AGENT had any unended turn, which on a lived-in box is permanently TRUE (measured on the dev body the moment the driven run caught it: 22 unended `turns` rows for one agent, 279 across seven). The arm would have shipped dead and silent. The block records the measurement and the driven catch so the next person cannot re-derive the wrong predicate from first principles. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1335,
+      "to": 1351,
+      "by": "UX-REPAIR ROUND 4 T20 — the cited work id is finally dereferenced, at the write",
+      "why": "+16, and 13 of them are the comment block that answers `839eedc`'s tombstone SITTING DIRECTLY ABOVE. That tombstone records what was deleted and why — a summariser must not write the obligation ledger — and the same commit ADDED the instruction to cite a work id that nothing ever read. The new block states, where a reader will meet it, that resolving the cited id is not the deleted mechanism returning (nothing is parsed into a second table, no obligation is created, the agent's sentence is left intact) and why the resolution is at WRITE (slot 300 is the cacheable prefix; resolving at render would move prefix bytes on a turn that changed nothing). The code is 3 lines. REFUSED: putting the call in `dag.ts:createLeafSummary` (+0 here) — that function is the DAG writer and is also called by the placeholder path and the rebuild, so the resolution would fire on spans the summariser never read. From here this file may only shrink."
+    },
+    {
       "path": "packages/server/src/tracker/task-stamps.ts",
       "from": 207,
       "to": 268,
@@ -3160,7 +3174,7 @@
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
     "packages/server/src/memory/budget.ts": 442,
-    "packages/server/src/memory/compaction.ts": 1335,
+    "packages/server/src/memory/compaction.ts": 1351,
     "packages/server/src/memory/deliveries-lane.ts": 240,
     "packages/server/src/memory/lanes.ts": 867,
     "packages/server/src/memory/message-store.ts": 1122,
@@ -3222,7 +3236,7 @@
     "packages/server/src/work/ask-title.ts": 420,
     "packages/server/src/work/deliverable-declaration.ts": 320,
     "packages/server/src/work/join-drive.ts": 256,
-    "packages/server/src/work/occurrences.ts": 822,
+    "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/store.ts": 1916,
     "packages/server/src/work/tracker-store.ts": 602,
