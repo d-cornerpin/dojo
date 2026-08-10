@@ -63,6 +63,7 @@ import {
   answeredPairsForMessages, recentlyAnsweredAsks, RECENTLY_ANSWERED_LIMIT, type AnsweredPair,
 } from '../agent/v2/answered-edge.js';
 import { relativeTimeAgo } from '../agent/v2/outbound-ledger.js';
+import { obligationVerdict } from '../work/obligation-memory.js';
 import { parseDivider, NEW_SESSION_DIVIDER_LABEL } from '@dojo/shared';
 import { turnBoundary } from '../agent/turn-state.js';
 
@@ -195,6 +196,11 @@ const MSG_HEAD =
   'Older messages retrieved by meaning (ordered oldest → newest; when they conflict, the ' +
   'NEWEST line supersedes the older ones):';
 const VAULT_HEAD = 'From your long-term vault (retrieved by meaning):';
+/** T17: an obligation-shaped memory that resolves to NO commitment record. Not dead — the
+ *  spine simply has nothing to say about it, and "nothing" is not "still owed". The marker
+ *  says exactly that and names the check, so the model neither drops it nor repeats it. */
+const UNRESOLVED_OBLIGATION_MARK =
+  '[no live commitment matches this on the work board — verify before repeating as owed]';
 
 function renderPayload(p: RecallLanePayload): string | null {
   const parts: string[] = [];
@@ -279,7 +285,17 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
   if (ctx.includeVault) {
     for (const e of ctx.vaultHits) {
       if (vaultLines.length >= vaultRowCap()) break;
-      vaultLines.push(`- [vault:${e.type}] ${oneLine(e.content).slice(0, vaultChars())}`);
+      // ── UX-REPAIR ROUND 3 T17 — NO PARALLEL MEMORY OF OBLIGATIONS ──
+      // CORE-2 item 4 already resolves a recalled QUESTION against the answer stamp before
+      // quoting it. The same rule, one noun over: a recalled PROMISE is resolved against the
+      // spine before the model is told it is owed. A dead promise served in the present tense
+      // under "From your long-term vault" is the round-3 F3 defect, and this is where it was
+      // handed to the model. `not-an-obligation` is every other row and takes the byte-for-byte
+      // path it always did; only the four commitment-shaped outcomes are new.
+      const verdict = obligationVerdict(e.content);
+      if (verdict.kind === 'closed') continue;  // the spine says it is not owed: it is not memory, it is noise
+      const line = `- [vault:${e.type}] ${oneLine(e.content).slice(0, vaultChars())}`;
+      vaultLines.push(verdict.kind === 'unresolvable' ? `${line} ${UNRESOLVED_OBLIGATION_MARK}` : line);
     }
   }
 

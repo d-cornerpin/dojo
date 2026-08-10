@@ -44,6 +44,7 @@ import type { WorkEventKind } from './event-kinds.js';
 // forget it. `work/` still does not import `tracker/`: the validator registers a handler.
 import { ringValidationDoorbell } from './validation-drive.js';
 import { noSuchWorkDetail } from './outcome.js';
+import { retireObligationMemory } from './obligation-memory.js';
 import type { TransitionApplied, TransitionGate, WorkOutcome } from './outcome.js';
 export type { TransitionApplied, TransitionGate, WorkOutcome, WorkOutcomeReason, WorkPatchOutcome } from './outcome.js';
 export { workSettled, isStateConflict, noteUnsettled, noSuchWorkDetail } from './outcome.js';
@@ -188,6 +189,10 @@ interface WorkRow {
   state: WorkState;
   result_delivery_id: string | null;
   remaining_children: number | null;
+  /** T17: the two columns the obligation-memory retirement needs. Read here rather than in a
+   *  second SELECT because this row is already the transition's own read of the work item. */
+  agent_id: string;
+  title: string | null;
 }
 
 const now = (): number => Date.now();
@@ -245,7 +250,7 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   //        recorded baseline red; it must be REFUSED with something steerable, never
   //        silently create or silently succeed. ──
   const row = db.prepare(
-    'SELECT id, kind, root_kind, parent_id, state, result_delivery_id, remaining_children FROM work WHERE id = ?',
+    'SELECT id, kind, root_kind, parent_id, state, result_delivery_id, remaining_children, agent_id, title FROM work WHERE id = ?',
   ).get(workId) as WorkRow | undefined;
   if (!row) {
     return { kind: 'refused', workId, reason: 'no-such-work', detail: noSuchWorkDetail(workId) };
@@ -531,6 +536,20 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   // writer's unit. `ringValidationDoorbell` swallows its own failures for the same reason.
   if (twoKeySubject && input.claim !== 'authoritative' && SYSTEM_CLOSERS.includes(input.by)) {
     ringValidationDoorbell({ workId, shape: 'engine-receipt' });
+  }
+
+  // ── UX-REPAIR ROUND 3 T17 — THE OBLIGATION'S MEMORY DIES WITH THE OBLIGATION ──
+  // A commitment reaching a terminal state is the moment — and the ONLY moment — at which
+  // the platform knows a promise is no longer owed. Before this, no lifecycle exit touched
+  // `vault_entries` at all, so a promise the ledger had closed kept being recalled in the
+  // present tense (round-3 F3). It is HERE, at the one writer of `work.state`, rather than in
+  // `dismissCommitment`/`resolveCommitment`, so no future closer can be added without it.
+  //
+  // Rung AFTER the transaction, for the doorbell's reason and one more: retiring a memory is
+  // not one of the spine's atomic effects, and it must never be able to fail a state change
+  // that has already been decided (`retireObligationMemory` swallows its own failures).
+  if (row.kind === 'commitment' && terminal && !isTerminal(from)) {
+    retireObligationMemory({ workId, agentId: row.agent_id, title: row.title, state: input.to });
   }
 
   const value: TransitionApplied = { workId, from, to: input.to, eventId };

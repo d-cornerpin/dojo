@@ -8,6 +8,7 @@ import { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 import { createLogger } from '../logger.js';
 import { createEntry, semanticSearch, findNearDuplicateEntry, markObsolete, getEntry, updateEntry, listEntries, formatCitationSuffix, resolveRecallScope, OWNER_VAULT_AGENT_ID } from './store.js';
 import { searchUnfiledArchives, UNFILED_ARCHIVE_LABEL, type UnfiledArchiveSnippet } from './retrieval.js';
+import { obligationShape } from '../work/obligation-memory.js';
 
 const logger = createLogger('vault-tools');
 
@@ -221,6 +222,37 @@ export async function executeVaultRemember(
       `never appear in vault_search or Dreamer summaries, and are read on-demand at API-call time via credential_get. ` +
       `If you are saving a NOTE about a credential (e.g. "user prefers OAuth over PATs for GitHub"), rephrase to remove the ` +
       `credential-shaped substring and try again. ` +
+      `Do not report this as saved or stored; nothing was written.`
+    );
+  }
+
+  // ── UX-REPAIR ROUND 3 T17 — the third member of this refusal family ──
+  // The technique refusal above states the rule this one inherits: content that MUTATES
+  // elsewhere must not be frozen here, because the vault has no way to learn that it changed.
+  // A promise mutates by definition — it is kept, or it is dropped — and the ledger that
+  // knows is `work(kind='commitment')`. Measured on the worn-in dev box: three vault lines
+  // describing promises whose spine rows were all `abandoned`, `retrieval_count` up to 1560,
+  // structurally immune to every hygiene arm (all four are keyed on `retrieval_count = 0`),
+  // recalled in the present tense on a turn where the OPEN WORK block correctly showed none
+  // of them. `agent/v2/recorded-commitment.ts:199-201` already steers AGAINST this — "memory
+  // carries no obligation: it does not age, it never enters your OPEN WORK block" — and had
+  // no story for a promise landing in both. This is the door for that.
+  //
+  // The classifier is narrow on purpose and was MEASURED before it was allowed to refuse:
+  // every non-obsolete vault entry on the dev box was run through it, and the only refusals
+  // were the three defect lines themselves (corpus and result pinned in
+  // `work/__tests__/obligation-memory.test.ts` §1, false positives: 0).
+  const obligationMarker = obligationShape(content);
+  if (obligationMarker) {
+    return (
+      `Refused: this reads as an OBLIGATION rather than a memory (matched: ${obligationMarker}). ` +
+      `A promise changes state — it gets kept or dropped — and the vault has no way to find out: ` +
+      `it does not age, it never enters your OPEN WORK block, and nothing will ever surface it as ` +
+      `still owed. Worse, recall keeps it alive: vault hygiene only expires entries nobody reads. ` +
+      `Record it as work instead: work_open(kind="commitment", description="...") puts it in your ` +
+      `OPEN WORK block until you close it with work_close_request. ` +
+      `If you meant to save a FACT about the situation ("Bob's address is still unknown"), rephrase ` +
+      `it as the fact and try again. ` +
       `Do not report this as saved or stored; nothing was written.`
     );
   }
