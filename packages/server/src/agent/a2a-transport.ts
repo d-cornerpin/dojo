@@ -44,8 +44,10 @@ import { settleAskOnJoin, priorEngineJoinRelay, joinDeliveryDetail } from '../wo
 // …and the grind-vs-tell ladder, which owns "how many times has the system come back for
 // this, and what does it do when the drives are spent".
 import {
-  JOIN_DRIVE_ENTRY, nextJoinDriveRung, recordJoinDrive, type JoinDriveDecision,
+  JOIN_DRIVE_ENTRY, JOIN_REDRIVE_BOUND, nextJoinDriveRung, recordJoinDrive,
+  joinRedriveIsBlind, compileSteerText, type JoinDriveDecision,
 } from '../work/join-drive.js';
+import { currentTurnNumber } from './v2/turn-record.js';
 import { selfWakeStandDown } from '../work/work-reaper.js';
 import { recordFloorGhost } from './v2/floor-ghost.js';
 // A2A protocol constants and helpers, inlined here to avoid runtime
@@ -1635,7 +1637,7 @@ function recordPieceDelivery(p: {
  * forbidden. What CHANGED is only where the quotes come from: the children's own recorded
  * results instead of a `join-piece:` conv_key namespace that could come up empty.
  */
-function steerModelToCompile(join: JoinState): void {
+function steerModelToCompile(join: JoinState, rung?: { attempt: number; bound: number }): void {
   const PIECE_CAP = 1200;
   const rendered = joinPieces(join.id).map((p, i) => {
     const name = resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent';
@@ -1645,25 +1647,27 @@ function steerModelToCompile(join: JoinState): void {
       : `(no content came back — this piece ${p.state === 'abandoned' ? 'was abandoned' : 'failed'})`;
     return `Piece ${i + 1} (from ${name}, thread ${p.threadId.slice(0, 8)}): "${body}"`;
   });
-  const steer =
-    `All ${join.total} delegated pieces for the owner's request are now back. ` +
-    `The owner has NOT been answered yet. Here is each piece's delivered content, verbatim:\n\n` +
-    rendered.join('\n') +
-    `\n\nCompose ONE reply to the owner now that carries each piece's content exactly as delivered above ` +
-    `(quote the key results, e.g. any codes or figures, character for character; do not summarize them away, ` +
-    `and do not trust a tracker row that says "complete" over the delivered text itself). ` +
-    `Do NOT search, open files, run commands, or call any tools first; everything you need is quoted above. ` +
-    `If a piece reads as a failure, say so honestly in the same reply.`;
+  // The wording lives in `work/join-drive.ts` beside the ladder that spends it, so a test can
+  // read it without driving a turn (the shape `run-deliver-drive.ts` already uses). T10 also
+  // moved the ORDER ahead of the quotes — the events lane renders this row as a 400-char gist,
+  // and the instruction used to sit past the cut. Byte-identical re-sends were the other half:
+  // the model was never told this was attempt 2 or 3 (measured, PC2).
+  const steer = compileSteerText({
+    total: join.total, pieces: rendered,
+    attempt: rung?.attempt ?? null, bound: rung?.bound ?? JOIN_REDRIVE_BOUND,
+  });
   // Owner option B (2026-07-18): ride the IMPERATIVE engine-steer channel, not the ambient
   // awareness NOTICE — an origin_kind='engine' row on the 'engine-steer' sentinel, kept out of
   // the pending-event pool so it never drives its OWN turn; the deliverable's own wake carries
-  // it to the model.
+  // it to the model. T10 made the second half of that sentence true on an A2A wake as well
+  // (`memory/assembler.ts` scopeToA2AThread's one exemption).
   insertEngineEventIfAbsent({
     work: null, id: uuidv4(), agentId: join.agentId, content: steer,
     sourceAgentId: null, originIntent: 'fanout_join',
   });
   logger.info('join complete: steered the model to compile the combined reply', {
     agentId: join.agentId, work: join.id, total: join.total,
+    attempt: rung?.attempt ?? null, bound: rung?.bound ?? null,
   });
 }
 
@@ -1856,14 +1860,28 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<Compi
       const rung = nextJoinDriveRung(join.id);
       if (rung.rung === 'redrive') {
         // A REAL DRIVE: the owed step, with the join's own results in front of the model.
-        steerModelToCompile(join);
-        recordJoinDrive(join.id, JOIN_DRIVE_ENTRY.redrive, {
-          attempt: rung.attempt, bound: rung.bound,
-          note: 'the engine put the owed compile back in front of the agent with the pieces quoted',
+        //
+        // ── AND A RUNG IS ONLY SPENT WHEN THE MODEL HAD A TURN TO SPEND IT ON (T10) ──
+        // Two drive passes can land between two turns — the 10-minute reaper mid-turn and the
+        // turn-end drain of that same turn (measured on S4: 06:17:10 and 06:18:01, two of
+        // three rungs, with no turn in between either). The steer still rides, because the
+        // recorded contract is that the engine puts the owed step back in front of the agent;
+        // what stops is the free SPEND. `selfWakeStandDown`'s burn is covered by the same
+        // rule: standing the wake down means no turn happens, so the key does not move.
+        const turnKey = currentTurnNumber(agentId);
+        const blind = joinRedriveIsBlind(join.id, turnKey);
+        steerModelToCompile(join, rung);
+        recordJoinDrive(join.id, blind ? JOIN_DRIVE_ENTRY.redriveDeferred : JOIN_DRIVE_ENTRY.redrive, {
+          attempt: rung.attempt, bound: rung.bound, turnNumber: turnKey,
+          note: blind
+            ? 'the owed compile was put back in front of the agent, but a rung was already spent on this '
+              + 'turn — the model has not run since the last steer, so this pass is not a chance and does not count'
+            : 'the engine put the owed compile back in front of the agent with the pieces quoted',
         });
         out.drives++; out.wakeWanted ||= !standDown;
         logger.info('compile drive: re-drove the agent to the owed compile', {
           agentId, work: join.id, attempt: rung.attempt, bound: rung.bound,
+          turnNumber: turnKey, rungSpent: !blind,
           wakeQueued: !standDown, humanAsksOpen,
         });
         continue;

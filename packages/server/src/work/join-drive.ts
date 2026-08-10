@@ -45,7 +45,8 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { MAX_FLOOR_STEER_ATTEMPTS } from '../agent/v2/floor-ghost.js';
-import { appendAuditEntry, AUDIT_KIND } from './audit-trail.js';
+import { AUDIT_KIND } from './audit-trail.js';
+import { appendWorkEvent } from './store.js';
 
 const logger = createLogger('join-drive');
 
@@ -62,6 +63,10 @@ export const STUCK_NOTICE_RETRY_BOUND = MAX_FLOOR_STEER_ATTEMPTS;
 export const JOIN_DRIVE_ENTRY = {
   /** One real drive back to the owed compile, with the join's results in front of the model. */
   redrive: 'join_redrive',
+  /** A drive pass that landed on a turn a rung was ALREADY spent on — the model has not had a
+   *  turn since the last steer, so this pass is not a chance and does not spend one. Recorded
+   *  so the deferral is a fact on the row rather than an absence in the log. */
+  redriveDeferred: 'join_redrive_deferred',
   /** One steer asking the AGENT to tell the owner the job is stuck. */
   stuckNotice: 'join_stuck_notice',
   /** The agent could not deliver even the notice; the platform surface was handed the fault. */
@@ -82,7 +87,17 @@ export interface JoinDriveDecision {
   stuckNotices: number;
 }
 
-/** How many of this marker are on the row. A COUNT over the log, never a stored integer. */
+/** How many of this marker are on the row. A COUNT over the log, never a stored integer.
+ *
+ *  UX-REPAIR round 2 T10 note: this stayed a plain COUNT, deliberately. The sibling ladder
+ *  (`work/run-deliver-drive.ts:76-92`) counts DISTINCT TURNS because every one of its passes
+ *  originates in a turn, so a turn key that never moves means no pass ever happens. This
+ *  ladder's second driver is the 10-minute reaper, which fires whether the agent runs turns or
+ *  not — so a DISTINCT-turn count here would stall the ladder for exactly the agent it exists
+ *  to catch: one that has stopped running turns altogether, whose owner is then never told.
+ *  The same discipline is applied one layer up instead, where it cannot stall: a pass that is
+ *  not a real chance is RECORDED as `redriveDeferred` rather than `redrive`
+ *  (`joinRedriveIsBlind`), so the rung is not spent and the deferral is still visible. */
 export function joinDriveCount(workId: string, entryKind: JoinDriveEntry): number {
   try {
     const r = getDb().prepare(
@@ -101,14 +116,25 @@ export function joinDriveCount(workId: string, entryKind: JoinDriveEntry): numbe
   }
 }
 
-/** Record one rung's spend on the row's own durable history. Returns the event rowid. */
+/** Record one rung's spend on the row's own durable history. Returns the event rowid.
+ *
+ *  `turnNumber` is what the bound is counted in (see `joinDriveCount`) — the turn the agent was
+ *  on when the drive was issued. It is written through `appendWorkEvent` rather than
+ *  `appendAuditEntry` only because the trail's field set is fixed; every key `appendAuditEntry`
+ *  writes is written here byte-identically, so `readAuditTrail` renders these rows unchanged. */
 export function recordJoinDrive(
-  workId: string, entryKind: JoinDriveEntry, detail: { attempt: number; bound: number; note?: string },
+  workId: string, entryKind: JoinDriveEntry,
+  detail: { attempt: number; bound: number; note?: string; turnNumber?: number | null },
 ): number {
-  return appendAuditEntry(workId, 'engine', {
-    entryKind,
-    actionTaken: `${entryKind} ${detail.attempt}/${detail.bound}`,
+  return appendWorkEvent(workId, AUDIT_KIND, 'engine', {
+    entry_kind: entryKind,
+    from_status: null,
+    to_status: null,
     reason: detail.note ?? null,
+    action_taken: `${entryKind} ${detail.attempt}/${detail.bound}`,
+    note: null,
+    evidence_json: null,
+    turn_number: detail.turnNumber ?? null,
   });
 }
 
@@ -134,4 +160,97 @@ export function nextJoinDriveRung(workId: string): JoinDriveDecision {
     };
   }
   return { rung: 'platform-trouble', attempt: 1, bound: 1, redrives, stuckNotices };
+}
+
+/**
+ * IS THIS PASS A REAL CHANCE, OR A RE-RUN AGAINST A TURN THAT HAS ALREADY HAD ONE?
+ *
+ * ── WHAT IT IS FOR (measured, S4 2026-08-10) ──
+ * Two drive passes landed either side of one turn boundary with no turn in between: the
+ * 10-minute reaper at 06:17:10, with turn 4553 already in flight and its context long since
+ * assembled, and the turn-end drain of that SAME turn at 06:18:01. Two of three rungs, 51
+ * seconds apart, against a model that had not run once since the first steer. That is the same
+ * class `work/run-deliver-drive.ts:76-92` fixed for the run ladder after `bmslqef2w3r`: a rung
+ * is meant to be a DRIVE — a separate attempt with a turn in between for the agent to act on
+ * the steer — so the unit is the turn.
+ *
+ * ── AND WHY THE GRACE IS EXACTLY ONE PASS ──
+ * The ladder's LAST rung exists for an agent that is not speaking at all, and that agent's turn
+ * key never moves. An unbounded "wait for a new turn" would therefore silence the ladder for
+ * precisely the case it was built to catch. So a turn gets ONE deferral: the pass that finds a
+ * rung already spent here and no deferral yet recorded here. The next pass accepts that the key
+ * is not going to move and spends. Worst case the ladder takes one extra pass per rung; the
+ * platform rung stays reachable, which the governing priority ("it never errs toward silence")
+ * requires. `selfWakeStandDown`'s burn is covered by the same rule — standing the wake down
+ * means no turn happens, so the key does not move.
+ */
+export function joinRedriveIsBlind(workId: string, turnNumber: number | null): boolean {
+  if (turnNumber === null) return false;
+  try {
+    const seen = getDb().prepare(
+      `SELECT json_extract(payload, '$.entry_kind') AS entry_kind
+         FROM work_events
+        WHERE work_id = ? AND kind = ?
+          AND json_extract(payload, '$.turn_number') = ?
+          AND json_extract(payload, '$.entry_kind') IN (?, ?)`,
+    ).all(
+      workId, AUDIT_KIND, turnNumber,
+      JOIN_DRIVE_ENTRY.redrive, JOIN_DRIVE_ENTRY.redriveDeferred,
+    ) as Array<{ entry_kind: string }>;
+    const spentHere = seen.some((r) => r.entry_kind === JOIN_DRIVE_ENTRY.redrive);
+    const deferredHere = seen.some((r) => r.entry_kind === JOIN_DRIVE_ENTRY.redriveDeferred);
+    return spentHere && !deferredHere;
+  } catch (err) {
+    // Unreadable history: treat the pass as a real one. Spending a rung keeps the ladder MOVING
+    // toward telling the owner, which is the safe direction for this failure.
+    logger.warn('join drive: could not read the turn the last rung was spent on; treating this pass as a real drive', {
+      workId, turnNumber, error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
+/**
+ * THE COMPILE ORDER, as text. Pure, and exported for the same reason `runDeliverSteerText` is:
+ * the wording is incident-derived and belongs beside the ladder that spends it, where a test
+ * can read it without driving a turn.
+ *
+ * ── WHY THE IMPERATIVE COMES FIRST (UX-REPAIR round 2 T10) ──
+ * This row reaches the model through the EVENTS & NOTICES lane, which renders each row as a
+ * 400-char gist (`memory/lanes.ts:308`, applied at `memory/assembler.ts:1099-1111`). The
+ * original wording put "Compose ONE reply to the owner now" AFTER two piece quotes capped at
+ * 1,200 chars each — i.e. past the cut, every time. Measured on S4 (2026-08-10): the model
+ * quoted only the opening sentence back in its own reasoning and went to `history_get` for the
+ * rest. Order first, quotes after: the cap is untouched (#14 / O15's refusal stands) and the
+ * order survives it.
+ *
+ * ── WHAT IS CARRIED UNCHANGED ──
+ * Every clause below is incident-derived and stays: the pieces are quoted VERBATIM because the
+ * separate-lane architecture keeps A2A deliverables out of the chat store, so "read the
+ * messages above" pointed at content the model could not reach (run bmrpxzuhxvh: four empty
+ * history_search calls and no compile); tools are FORBIDDEN because an earlier wording that
+ * said "verify each piece's ACTUAL content" made the floor model exec a blocked loop and spin
+ * 45 tool calls (run bmrplgdg33l).
+ *
+ * `attempt` null = the steer issued at join completion, before any rung has been spent.
+ */
+export function compileSteerText(p: {
+  total: number; pieces: string[]; attempt: number | null; bound: number;
+}): string {
+  const attemptLine = p.attempt === null
+    ? ''
+    : ` (steer ${p.attempt} of ${p.bound}; after that the platform asks you to tell the owner `
+      + `the job is stuck, and then reports it as a platform fault.)`;
+  return (
+    `All ${p.total} delegated pieces for the owner's request are now back. `
+    + `The owner has NOT been answered yet.\n\n`
+    + `Compose ONE reply to the owner now that carries each piece's content exactly as delivered `
+    + `below (quote the key results, e.g. any codes or figures, character for character; do not `
+    + `summarize them away, and do not trust a tracker row that says "complete" over the delivered `
+    + `text itself). Do NOT search, open files, run commands, or call any tools first — not the `
+    + `tracker, not the vault, not a peer notification; everything you need is quoted below. `
+    + `If a piece reads as a failure, say so honestly in the same reply.${attemptLine}\n\n`
+    + `Here is each piece's delivered content, verbatim:\n\n`
+    + p.pieces.join('\n')
+  );
 }

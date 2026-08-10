@@ -590,7 +590,7 @@ function stripA2AFromTail(tail: Message[]): Message[] {
  * from MEMORY (vault/summaries/tracker), which is assembled separately. Uses
  * structured origin (deriveOrigin), no marker regex.
  */
-function scopeToA2AThread(tail: Message[], threadId: string | null): Message[] {
+export function scopeToA2AThread(tail: Message[], threadId: string | null): Message[] {
   // The message's origin.threadId is the FULL a2a_thread_id (36-char UUID from
   // the column). The turn's counterparty.threadId (passed here as `threadId`) is
   // the 8-char SHORT id parsed from the "[A2A:… thread:xxxxxxxx …]" marker
@@ -639,6 +639,24 @@ function scopeToA2AThread(tail: Message[], threadId: string | null): Message[] {
       const humanStamped = !!m.conversationId && o.channel !== 'a2a';
       return (isToolActivity && !humanStamped) || o.channel === 'a2a';
     }
+    // UX-REPAIR ROUND 2 T10 — THE ONE NARROW EXEMPTION, and why it is not a class.
+    //
+    // `b2027b0`'s rule ("one counterparty per turn; engine/human rows out") predates the
+    // fan-out compile rider by six weeks and was never reconciled with it. The rider's own
+    // recorded delivery contract is "the deliverable's own wake carries it to the model"
+    // (`a2a-transport.ts`, owner option B 2026-07-18) — but a delegated job's own wake IS an
+    // A2A turn, so this `return false` deleted the compile order from exactly the turns it
+    // was designed to ride. Measured on the box (S4, 2026-08-10): the order and redrives 1
+    // and 2 were absent from turns 4553 and 4554; the answer came on 4555 only because that
+    // wake happened to be bare and took the HUMAN scoper, which keeps engine rows (`:734`).
+    //
+    // requirement preserved: the exclusion exists so a SECOND CONVERSATION never bleeds into
+    // this thread. The compile order is not a conversation at all — it is an imperative
+    // addressed to THIS agent, quoting THIS agent's own children's returned pieces. Every
+    // other engine intent stays excluded, and `__tests__/a-compile-order-the-model-can-see`
+    // enumerates `ENGINE_RIDER_INTENTS` so a new rider is excluded by default and a future
+    // widening has to come here and argue for itself.
+    if (o.kind === 'engine' && o.intent === 'fanout_join') return true;
     return false;                                          // exclude human + engine
   });
 }
