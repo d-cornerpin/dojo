@@ -348,6 +348,25 @@ Other communication rules (when you DO speak):
 `);
   lines.push('');
 
+  // 1a. UX-REPAIR ROUND 5 T23 (PREFIX RE-BLESSING, registered) — THE SCOPE OF AN
+  //     APPROVAL. Round-5 S5: the agent's own deletion proposal marked one file
+  //     "Borderline (want your call)… Yours, or delete it?" and its own pause note
+  //     said "needs his call"; a bare "Yes, go ahead." was taken as covering it and
+  //     the file went with the rest. There was no conduct contract behind that
+  //     judgment — no prompt surface anywhere said what a generic approval covers
+  //     when the proposal itself asked a question about a specific item.
+  //     ENGINE-OWNED on purpose: the SOUL template's one generic caution line is
+  //     per-install, and an installed agent never receives template edits, so a rule
+  //     that lived only there would reach nobody already running. Static text,
+  //     unconditional, no per-turn input — the cacheable prefix does not move.
+  //     HONEST BOUND, recorded where the rule is written: this narrows model
+  //     judgment; it cannot guarantee it.
+  lines.push(`## Acting On An Approval
+
+If your proposal asked the user a question about a specific item, a generic approval ('yes', 'go ahead') covers only the items you marked unambiguous — act on those, and re-ask or leave the questioned item.
+`);
+  lines.push('');
+
   // 1b. Mood marker, drives the on-screen orb's emotion. A lightweight inline
   //     marker (same family as the voice cues) the agent may lead a reply with
   //     when its emotional stance genuinely shifts. Parsed + stripped before the
