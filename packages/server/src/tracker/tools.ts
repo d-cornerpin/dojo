@@ -28,7 +28,7 @@ import {
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
 import { setNextRun } from '../work/next-run.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, findTaskOriginChain, renderTaskOriginChain } from './delivery-evidence.js';
-import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
+import { renderTaskStamps, renderStepFacts, isTangibleDeliverySummary, type TaskStampFields } from './task-stamps.js';
 import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { createLogger } from '../logger.js';
 import {
@@ -2723,7 +2723,11 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
           // Tangibility rule (battery catch 2026-07-22): the ALREADY-DELIVERED
           // block requires a recorded handover, never a bare reply.
           const st = getTaskStampFields(task.id);
-          const stamped = !!st && st.last_answered_turn !== null && !!st.last_delivery_summary;
+          // T19 (D7): the tangibility question is asked of the ONE helper. A dashboard bubble
+          // is now NAMED in the summary (so the state line above stops lying) and is still
+          // not a handover, so this block's 2026-07-22 standard is byte-for-byte the same.
+          const stamped = !!st && st.last_answered_turn !== null
+            && isTangibleDeliverySummary(st.last_delivery_summary);
           const evRaw = stamped ? null : findDeliveryEvidenceForTask(task.id);
           const ev = evRaw && (evRaw.artifacts.length > 0 || evRaw.deliveredVia.length > 0) ? evRaw : null;
           if (stamped || ev) {
@@ -2881,7 +2885,7 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
               const steps = renderStepFacts(st);
               parts.push(`      ^ state: ${renderTaskStamps(st)}${steps ? ` | ${steps}` : ''}`);
             }
-            if (!st || st.last_answered_turn === null || !st.last_delivery_summary) {
+            if (!st || st.last_answered_turn === null || !isTangibleDeliverySummary(st.last_delivery_summary)) {
               const ev = findDeliveryEvidenceForTask(tid);
               if (ev && (ev.artifacts.length > 0 || ev.deliveredVia.length > 0)) {
                 parts.push(`      ^ ENGINE RECORD: appears already delivered (${renderDeliveryEvidence(ev)}); close it complete, do not redo.`);

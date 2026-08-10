@@ -20,6 +20,10 @@ import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent, START_ACK_ORIGIN_INTENT } from '../../../../memory/message-store.js';
 import { type AgentTurnState } from '../../state.js';
 import { outputPersistenceClassifier, stripLeadingTimeStamp } from '../../classifiers/output.js';
+// T19 (D1): the closed, declared inventory of scheduled work that owes a person a message.
+// Asked, never re-typed — a fifth copy of "is this a reminder" is what the declaration exists
+// to prevent.
+import { DELIVERABLE_OWING_TASK_KINDS } from '../../../../work/deliverable-declaration.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
@@ -100,7 +104,34 @@ export async function runTerminalText(
     // finalize block recovers it so the ask is never silently dropped. On an
     // inter-agent / background turn it is coordination narration, hard-
     // suppress with no recovery (keeps A2A chatter off human channels).
-    if (hasUnansweredUser && !interAgentTurn) {
+    //
+    // ⚠ UX-REPAIR ROUND 4 T19 (D1) — AND A SCHEDULER TURN HAS A WAITING HUMAN THAT
+    // `hasUnansweredUser` CANNOT SEE. That flag asks whether an unanswered CHAT ROW exists,
+    // and `preflight/turn-classification.ts` states the rule in so many words: *"Engine
+    // events and A2A are not human conversations, so they never make this true."* A fired
+    // reminder is the one shape where a person IS waiting and no unanswered row exists — the
+    // wake IS the ask. On 2026-08-10 13:45Z the model wrote its reminder (`routine.`) twice,
+    // each time in the same response as the `work_update` call the engine's own steer asked
+    // for, and both times this arm was skipped, the text was demoted to `[working-note]`, and
+    // the owner heard nothing. The capture's stated purpose — *"so the ask is never silently
+    // dropped"* — was scoped to asks and could not reach a run.
+    //
+    // The question asked is the DECLARED one and nothing else: is this turn's root an
+    // occurrence whose task was declared deliverable-owing (`work/deliverable-declaration.ts`,
+    // the closed inventory `reminder|brief|report|notify`)? Never the run's prose, never a
+    // guess about what the text looks like. A nightly backup's run owes nobody a message and
+    // is unchanged, byte for byte.
+    //
+    // The header's empirical claim above — *"every legitimate reply is tool-less"* — was
+    // measured on USER turns and stays the rule there; this incident is its recorded
+    // scheduler-turn counterexample. Demote-don't-discard (owner 2026-07-10) is untouched:
+    // the note is still written and the streamed bubble is still converted in place. The only
+    // change is that the words are REMEMBERED, so `finalize/deferred-recovery.ts` can deliver
+    // them if the turn ends with no tool-less reply.
+    const userDeliverableRunTurn =
+      turnCtx.root?.kind === 'occurrence' &&
+      DELIVERABLE_OWING_TASK_KINDS.includes(turnCtx.servedWork?.taskKind ?? '');
+    if ((hasUnansweredUser || userDeliverableRunTurn) && !interAgentTurn) {
       turnCtx.deferredUserReplyWithTools = persistedContent;
       // Steered start line (owner ruling 2026-07-22): the start-ack steer
       // asked the model to speak and this is its next text riding with

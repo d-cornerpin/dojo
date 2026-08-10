@@ -32,11 +32,10 @@ import { workSettled, noteUnsettled } from '../work/store.js';
 import {
   claimOccurrence, releaseOccurrence, settleOccurrence, occurrenceOf, inFlightOccurrence,
   assignOccurrence, skipOpenOccurrences, sweepOrphanedOccurrences,
-  sweepTerminatedAgentOccurrences, runDeliverableEvidence,
+  sweepTerminatedAgentOccurrences, runsReadyToCloseOnDelivery,
 } from '../work/occurrences.js';
 // SWEEP CORE-1 CT2 — the deliverable declaration and the steer-to-deliver ladder's verify rung.
-import { occurrenceOwesDeliverable } from '../work/deliverable-declaration.js';
-import { RUN_DELIVER_STEER_MARKER } from '../work/run-deliver-drive.js';
+import { RUN_STATUS_UNDELIVERED } from '../work/run-deliver-drive.js';
 // SWEEP CORE-2 item 1 — the owner-escalation candidate query and the ordering law it obeys.
 import {
   countRowsHeldBackFromOwner, selectRowsForOwnerEscalation, selectRowsSkippedAsDelivered,
@@ -683,34 +682,37 @@ async function autoResolveStaleMissedRunPauses(): Promise<void> {
 // It rides the scheduler tick because that is where run lifecycle already lives (beside
 // `cleanupOrphanedRuns` and the orphan sweep) and because the tick is the platform's existing
 // 30-second clock — a cadence carried, not re-chosen.
+//
+// ⚠ UX-REPAIR ROUND 4 T19 (D6) — AND THE FIRST CLAUSE'S WORRY IS NOW ANSWERED WITH EVIDENCE
+// RATHER THAN OBEYED AS PROSE, which is why the name lost the word "Steered". The complement
+// of the case above — the model DELIVERS FIRST and never attempts a close at all — produces no
+// steer marker and was uncovered. Driven, 2026-08-10 18:45Z: a one-shot reminder reached the
+// owner (`agent-text`, a real `deliveries` row), the run sat `open` for twelve minutes, the
+// model was refused `complete` TWICE for want of a pointer the ledger already held, and the
+// run was only resolved because a PM poke dragged the model back and a second agent authorised
+// a cancel. Absent that it meets the 30-minute idle reaper and a perfectly delivered reminder
+// is recorded failed. A steer is the agent SAYING it is finished; `runDeliverableEvidence` is
+// the ledger SHOWING the person got something, and the second is the stronger of the two.
+//
+// The row set — including the one narrowing the unsteered arm needs, that the agent's own turn
+// has ENDED — lives with the authority in `work/occurrences.ts:runsReadyToCloseOnDelivery`,
+// so this sweep still asks and never decides.
 // ════════════════════════════════════════════════════════════════════════════════
-export async function closeSteeredRunsThatDelivered(): Promise<number> {
-  const db = getDb();
-  const steered = db.prepare(`
-    SELECT w.id AS occurrence_id, w.parent_id AS task_id
-      FROM work w
-      JOIN work p ON p.id = w.parent_id
-     WHERE w.kind = 'occurrence' AND w.state IN ('open','claimed')
-       AND p.task_kind IS NOT NULL
-       AND EXISTS (SELECT 1 FROM work_events e
-                    WHERE e.work_id = w.id AND e.kind = 'audit'
-                      AND json_extract(e.payload, '$.marker') = ?)
-  `).all(RUN_DELIVER_STEER_MARKER) as Array<{ occurrence_id: string; task_id: string }>;
-
+export async function closeRunsThatDelivered(): Promise<number> {
   let closed = 0;
-  for (const row of steered) {
-    if (!occurrenceOwesDeliverable(row.occurrence_id).owes) continue;
-    const evidence = runDeliverableEvidence(row.occurrence_id);
-    if (!evidence) continue;
-    logger.info('Scheduler: a steered run delivered — closing it on the message', {
-      taskId: row.task_id, runId: row.occurrence_id, deliveryId: evidence.id, tool: evidence.tool,
+  for (const row of runsReadyToCloseOnDelivery()) {
+    logger.info('Scheduler: a run delivered — closing it on the message', {
+      taskId: row.taskId, runId: row.occurrenceId, deliveryId: row.deliveryId,
+      tool: row.tool, steered: row.steered,
     });
     const advanced = await onTaskRunComplete(
-      row.task_id, 'complete',
-      'the run was steered to deliver and the message reached the user; closed on that delivery',
+      row.taskId, 'complete',
+      row.steered
+        ? 'the run was steered to deliver and the message reached the user; closed on that delivery'
+        : 'the run delivered its message to the user without ever asking to close; closed on that delivery',
     ).catch((err: unknown) => {
-      logger.warn('Scheduler: closing a steered run failed (non-fatal)', {
-        taskId: row.task_id, runId: row.occurrence_id,
+      logger.warn('Scheduler: closing a delivered run failed (non-fatal)', {
+        taskId: row.taskId, runId: row.occurrenceId,
         error: err instanceof Error ? err.message : String(err),
       });
       return false;
@@ -738,11 +740,11 @@ export async function checkScheduledTasks(): Promise<void> {
   //   cleanupOrphanedRuns + cleanupStaleRuns    -> `orphaned-and-stale-runs`      @30s
   //   resumeExpiredPauses                       -> `expired-pauses`               @30s
   //   sweepUnvalidatedTasksForUserEscalation    -> `validation-escalation`        @30s
-  //   closeSteeredRunsThatDelivered             -> `steered-run-delivery-close`   @30s
+  //   closeRunsThatDelivered                    -> `steered-run-delivery-close`   @30s
   //   pruneTerminalTasks                        -> `terminal-task-prune`          @1h
   //
   // (The plan wrote "the five non-scheduling sweeps". Re-derived at HEAD it is SIX: SWEEP
-  // CORE-1 CT2 added `closeSteeredRunsThatDelivered` after the plan was written, and its own
+  // CORE-1 CT2 added `closeRunsThatDelivered` after the plan was written, and its own
   // comment gives the same reason the other five had — "it rides the scheduler tick because
   // that is where run lifecycle already lives". The two 12-hour sweeps the plan also counted
   // left at PHASE-2 T9 and were already the reaper's.)
@@ -994,8 +996,17 @@ export async function checkScheduledTasks(): Promise<void> {
     // execute-multiple-steps sense, they're a single conversational
     // delivery to the user. The agent should say the thing in its
     // normal voice and silently close out.
+    //
+    // ⚠ UX-REPAIR ROUND 4 T19 (D1) — "WHEN YOU'RE DONE SPEAKING, SILENTLY CALL …" WAS AN
+    // INSTRUCTION TO BUILD THE ONE SHAPE THE PLATFORM DESTROYS. Text emitted in the SAME model
+    // response as a tool call is classified as working notes and demoted
+    // (`post-call-classify/terminal-text.ts`, G-SUP-2), so a model that reads "when you're
+    // done speaking" as *in this response* loses its reminder. Measured 2026-08-10 13:45Z:
+    // that is exactly what happened, twice, and the owner heard nothing. The wake now asks for
+    // the ORDER it actually needs — the reply alone, the bookkeeping in the next response.
+    // This is an events-lane message row, not a prompt-prefix surface; no golden moves.
     const message = taskKind === 'reminder'
-      ? `[Reminder due] ${taskDesc ?? taskTitle}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nDeliver this reminder to the user now as a single short chat message in your normal voice. Do NOT prefix with "Reminder:" or "Here's your reminder", just say the thing naturally (e.g. user asked to be reminded to "go get coffee" → "Hey, time to go get coffee."). When you're done speaking, silently call work_update(action="status") with task_id="${taskId}" and status="complete". The close-out is internal bookkeeping; do NOT write any user-facing message about marking the reminder complete ("Task closed", "All done", "Marked complete"). The reminder message itself is the entire user-facing output.`
+      ? `[Reminder due] ${taskDesc ?? taskTitle}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nDeliver this reminder to the user now as a single short chat message in your normal voice. Do NOT prefix with "Reminder:" or "Here's your reminder", just say the thing naturally (e.g. user asked to be reminded to "go get coffee" → "Hey, time to go get coffee."). Say it as a SEPARATE response with no tool call in it — text that rides along with a tool call is treated as working notes and never reaches the user. Then, in your NEXT response, silently call work_update(action="status") with task_id="${taskId}" and status="complete". The close-out is internal bookkeeping; do NOT write any user-facing message about marking the reminder complete ("Task closed", "All done", "Marked complete"). The reminder message itself is the entire user-facing output.`
       : `[Scheduled Task, Run #${runNumber}${totalRuns}] ${taskTitle}${taskDesc ? '\n' + taskDesc : ''}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nWhen this run is finished, call work_update(action="status") with task_id="${taskId}" and status="complete". The close-out is internal bookkeeping; do NOT write any user-facing message about marking the task complete (e.g. "Task closed", "All done", "Marked complete"). The user already received your reminder/output above; an extra "task closed" line is just noise.`;
 
     // Inject as engine event and trigger runtime.
@@ -1103,6 +1114,58 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
       reason: settled.outcome && 'reason' in settled.outcome ? settled.outcome.reason : undefined,
     });
     return false;
+  }
+
+  // ── UX-REPAIR ROUND 4 T19 (D4) — AN UNDELIVERED RUN IS NOT A NEUTRAL BADGE ──
+  //
+  // The authority has just recorded that this run owed a person a message and reached nobody.
+  // Before this, the ONLY place that fact was visible was `TaskRunHistory.tsx` — inside an
+  // expanded task detail, rendered as a neutral badge, on a row the board does not even show
+  // (`taskScope()` is `kind='task'`, so occurrences never appear on it). Measured on the
+  // owner's box, 2026-08-10: the reminder run went terminal at 14:15:54 and NOTHING told him.
+  // `DESIGN.md:46` calls that shape by name — *"it NEVER errs toward silence, a parked ticket,
+  // or a quiet close."*
+  //
+  // OR2's last rung, and it is the surface OR2 names for exactly this: the PLATFORM's own
+  // voice, never the engine wearing the agent's face, never the reminder text re-read out of
+  // the work row as if the agent had said it. `recordFloorGhost` writes the durable row, the
+  // owner-alert system note and the health frame — the same three parts the in-turn
+  // reminder-silence ghost writes. It is not a second mechanism, it is the same one reached
+  // from the run's close instead of from a turn's end.
+  //
+  // ONE alert per run: if the in-turn floor already ghosted this incident (the ordinary path
+  // when the model is still in the loop), this arm stays quiet rather than telling the owner
+  // twice. The owner's tie-break — "worst case he hears it twice" — is about the ANSWER, not
+  // about platform alarms.
+  if (settled.runStatusRecorded === RUN_STATUS_UNDELIVERED) {
+    try {
+      const alreadyGhosted = db.prepare(
+        `SELECT 1 AS ok FROM work_events
+          WHERE kind = 'floor_ghosted' AND work_id IN (?, ?) LIMIT 1`,
+      ).get(runId, taskId) as { ok: number } | undefined;
+      const title = String(
+        (db.prepare('SELECT title FROM work WHERE id = ?').get(taskId) as { title?: string } | undefined)?.title
+        ?? 'a scheduled task',
+      );
+      if (!alreadyGhosted && occRow?.agent_id) {
+        recordFloorGhost({
+          agentId: occRow.agent_id,
+          turnNumber: null,
+          floor: 'run-undelivered',
+          workId: runId,
+          attempts: 0,
+          ownerLine:
+            `a scheduled run of "${title}" finished without delivering anything to you. It owed you `
+            + 'a message, the engine could find no record of one reaching you, and the run is '
+            + 'recorded as undelivered rather than complete. Ask your agent what it was.',
+          detail: { task_id: taskId, run_status: settled.runStatusRecorded },
+        }, { broadcast });
+      }
+    } catch (err) {
+      logger.warn('Scheduler: could not surface an undelivered run to the owner (non-fatal)', {
+        taskId, runId, error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   // P2 serve boundary, close claims its trigger BY KEY: the occurrence is

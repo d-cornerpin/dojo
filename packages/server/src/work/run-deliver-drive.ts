@@ -179,6 +179,15 @@ export function recordRunDeliverStandDown(
  * drive (run `bmslq48axkn`): the old wording tripped NO_ENGINE_REFUSAL, and the honest fix is
  * the word, not a pardon. `agent/v2/steps/execute/refusal-gates.ts` avoids the same signature
  * the same way ("Refused once:"), for the same reason.
+ *
+ * ⚠ AND IT NO LONGER SAYS "and THEN call", BECAUSE THAT SENTENCE BUILT THE TRAP IT WAS
+ * WARNING ABOUT (UX-REPAIR ROUND 4 T19, D1). A model that reads "and THEN" as *in this
+ * response* emits text AND a tool call in one message — which is exactly the shape
+ * `post-call-classify/terminal-text.ts`'s G-SUP-2 rule demotes to a `[working-note]`. Measured
+ * on the owner's box 2026-08-10 13:45Z: the model obeyed this steer twice, wrote the reminder
+ * twice, and the platform destroyed its words both times. D1 makes the capture arm recover
+ * them; this makes the engine stop asking for the shape in the first place. Tail-side string
+ * (a tool return value), so no cached prefix moves.
  */
 export function runDeliverSteerText(p: {
   taskId: string; taskTitle: string | null; taskKind: string | null;
@@ -188,9 +197,11 @@ export function runDeliverSteerText(p: {
     `Not yet — this run is not finished. "${p.taskTitle ?? p.taskId}" is a `
     + `${p.taskKind ?? 'scheduled'} task — its whole point is a message the user actually reads — `
     + `and nothing user-visible has been sent since this run started.\n\n`
-    + `Send the thing itself now, as a normal chat message in your own voice (or on the channel `
-    + `the user asked for), and THEN call work_update(action="status") with task_id="${p.taskId}" `
-    + `and status="complete". The run closes on the message, not on this call.\n\n`
+    + `Say the thing itself now, in your own voice, as a SEPARATE reply with NO tool call in it `
+    + `(or on the channel the user asked for). Then, in the response AFTER that, call `
+    + `work_update(action="status") with task_id="${p.taskId}" and status="complete". Text that `
+    + `rides in the same response as a tool call is treated as working notes, not as your reply, `
+    + `so the user never sees it. The run closes on the message, not on this call.\n\n`
     + `A tool-call chip, an internal note, an engine acknowledgement, or a hand-off to another `
     + `agent is not the user receiving it.\n\n`
     + `(steer ${p.attempt} of ${p.bound}; after that the run is recorded UNDELIVERED in the `

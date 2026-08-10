@@ -63,6 +63,14 @@ export const OUT_OF_BAND_GHOST_SUBJECTS = [
   // speaks leaves a pulsing icon on a board and nothing else. Steered from a SWEEP, so no
   // enqueue site, so it belongs here rather than in the steer-queue table.
   'owner-verdict-unasked',
+  // UX-REPAIR ROUND 4 T19 (D4) — a scheduled run that OWED the owner a message closed having
+  // reached nobody. Recorded by `settleOccurrence`'s deliverable gate and surfaced from the
+  // run's close in `scheduler/runner.ts`, which is a run lifecycle event and not a turn, so it
+  // has no enqueue site either. Distinct from `reminder-silence`, which is the in-turn floor:
+  // that one fires while the model is still in the loop and could still speak; this one is the
+  // close saying nobody ever did. One alert per run — the close arm stays quiet when the
+  // in-turn floor already ghosted the same incident.
+  'run-undelivered',
 ] as const;
 
 /** What a ghost row may be ABOUT: a steer-queue floor, or a declared out-of-band subject. */

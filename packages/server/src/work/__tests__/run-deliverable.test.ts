@@ -339,12 +339,35 @@ describe('ARM 3 — THE CLOSER: the run closes on the message, or it does not cl
     expect(settledRunStatus(runId)).toBe('complete'); // and the owner's history still says so
   });
 
-  it('3d NEGATIVE CONTROL — `failed` and `skipped` never reach the gate', () => {
+  // ⚠ UX-REPAIR ROUND 4 T19 (D4) — THIS CLAUSE'S SUBJECT CHANGED, DELIBERATELY, AND IT IS
+  // STRICTER FOR IT. Its original property was "the gate only ever narrows a `complete`", and
+  // the reason `failed` was outside it was that nobody had asked what a `failed` close MEANS
+  // for a run that owed a person a message. The owner's box answered on 2026-08-10: the
+  // 30-minute idle reaper closed a reminder run `failed` with the note "assigned agent idle for
+  // 30+ minutes" — true about the agent, silent about the owner, and rendered as a neutral
+  // badge behind two clicks. `failed` now reaches the gate to be RENAMED by the authority
+  // (UNDELIVERED, the word the platform already owns for exactly this) and is NEVER refused —
+  // refusing it would leave a stalled run open for ever, which is the safety net's own failure
+  // mode. `skipped` is untouched, and a `failed` run that DID deliver keeps the caller's word.
+  it('3d — `skipped` never reaches the gate, and `failed` is renamed by it, never refused', () => {
     seedSchedule();
     declareDeliverableOnSchedule(W);
     const a = claim();
+    // A run that owed a message and reached nobody: settled, never refused, and the run's own
+    // word is the honest one rather than the caller's.
+    const failed = settleOccurrence(a, 'failed', null, 'provider error');
+    expect(failed.verdict).toBe('settled');
+    expect(settledRunStatus(a)).toBe(RUN_STATUS_UNDELIVERED);
+    expect(markerCount(a, RUN_DELIVER_STAND_DOWN_MARKER)).toBe(1);
+  });
+
+  it('3d(ii) NEGATIVE CONTROL — a task that owes NOBODY a message still settles `failed`', () => {
+    seedSchedule({ task_kind: null, description: 'nightly database backup', title: 'DB backup' });
+    const a = claim();
     expect(settleOccurrence(a, 'failed', null, 'provider error').verdict).toBe('settled');
     expect(stateOf(a)).toBe('failed');
+    expect(settledRunStatus(a)).toBe('failed');
+    expect(markerCount(a, RUN_DELIVER_STAND_DOWN_MARKER)).toBe(0);
   });
 
   it('3e THE LADDER — bounded steers, then a stand-down that is NEVER complete', () => {

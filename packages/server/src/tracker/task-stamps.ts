@@ -20,6 +20,9 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { taskScope } from '../work/tracker-view.js';
 import { stampTicket } from '../work/tracker-store.js';
+// T19 (D7): the declared set of bubbles the platform has already ruled not-an-answer. Read,
+// never retyped — same owner as `work/occurrences.ts` and `agent/v2/answered-edge.ts`.
+import { NON_ANSWERING_DISPLAY_KINDS } from '../work/ask-settlement.js';
 
 const logger = createLogger('task-stamps');
 
@@ -36,8 +39,45 @@ function relAgo(sqliteUtc: string | null): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+/**
+ * ⚠ UX-REPAIR ROUND 4 T19 (D7) — THE CHANNELS A SUMMARY MAY NAME WITHOUT LICENSING A CLOSE.
+ *
+ * The TANGIBILITY RULE has its own incident and it is not being narrowed here. Battery catch
+ * 2026-07-22: *"A reply without a recorded delivery is often just an ack ('back with you
+ * soon'); nudging CLOSE on it strangled a delegation synthesis task mid-wait."* Four consumers
+ * read "is `last_delivery_summary` set" and every one of them MEANS "is there a tangible
+ * handover" — the CLOSE-if-done nudge below, the ALREADY-DELIVERED block
+ * (`tracker/tools.ts`), the close-out gate's evidence consult, and the strike-0 same-turn
+ * close (`steps/teardown/finalize-record.ts`).
+ *
+ * The defect D7 fixes is a different one: the summary EXCLUDED the dashboard outright, so a
+ * reminder the owner read in chat was stamped `(no delivery recorded)` for ever. On
+ * 2026-08-10 13:45Z the model read ONE tool result carrying both that line and
+ * `[ENGINE RECORD: this task's work appears ALREADY DELIVERED …]` (which does NOT exclude the
+ * dashboard) and spent ~700 words of reasoning trying to reconcile them.
+ *
+ * So the summary becomes TRUE without becoming a licence: a dashboard-or-voice-only delivery
+ * is NAMED, as one of these declared values, and `isTangibleDeliverySummary` reports it as not
+ * a handover. One writer, one reader, exact strings, a closed set — never a prose test, and
+ * never a second copy of the rule.
+ */
+export const NON_TANGIBLE_DELIVERY_SUMMARIES: readonly string[] = ['via dashboard', 'via voice'];
+
+/** Does this stored summary describe a TANGIBLE handover — the 2026-07-22 standard, unchanged?
+ *  The ONE predicate every consumer of the finished-work question asks. */
+export function isTangibleDeliverySummary(summary: string | null | undefined): boolean {
+  return !!summary && !NON_TANGIBLE_DELIVERY_SUMMARIES.includes(summary);
+}
+
 /** Compose the compact delivery summary for a turn from its delivery and
- *  artifact records. Empty string when the turn delivered nothing. */
+ *  artifact records. Empty string when the turn delivered nothing.
+ *
+ *  Two halves, in order: the TANGIBLE handover (files, out-of-band channels) exactly as
+ *  before; and, only when there is no tangible handover at all, the honest naming of a
+ *  dashboard/voice message the person actually read — see `NON_TANGIBLE_DELIVERY_SUMMARIES`.
+ *  A chip is not a message: the dashboard half asks the same declared set
+ *  (`NON_ANSWERING_DISPLAY_KINDS`) that the deliverable authority and the turn-receipt reader
+ *  ask, so a `tool-turn` or `working-note` receipt names nothing. */
 export function composeTurnDeliverySummary(agentId: string, turnNumber: number): string {
   try {
     const db = getDb();
@@ -67,7 +107,21 @@ export function composeTurnDeliverySummary(agentId: string, turnNumber: number):
         WHERE agent_id = ? AND turn_number = ? AND outcome = 'delivered' AND channel NOT IN ('dashboard', 'voice')`,
     ).all(agentId, turnNumber) as Array<{ channel: string }>;
     if (chans.length > 0) parts.push(`via ${chans.map((c) => c.channel).join('/')}`);
-    return parts.join('; ').slice(0, 120);
+    if (parts.length > 0) return parts.join('; ').slice(0, 120);
+    // T19 (D7): no tangible handover — but the person may still have READ something. Name it
+    // truthfully, as one of the declared non-tangible values, so `(no delivery recorded)`
+    // means what it says. Chips excluded by the same set the deliverable authority reads.
+    const chipKinds = NON_ANSWERING_DISPLAY_KINDS.map((k) => `'${k}'`).join(', ');
+    const seen = db.prepare(
+      `SELECT DISTINCT d.channel AS channel FROM deliveries d
+        WHERE d.agent_id = ? AND d.turn_number = ? AND d.outcome = 'delivered'
+          AND d.channel IN ('dashboard', 'voice')
+          AND NOT EXISTS (SELECT 1 FROM messages m
+                           WHERE m.id = d.message_id AND m.display_kind IN (${chipKinds}))`,
+    ).all(agentId, turnNumber) as Array<{ channel: string }>;
+    const named = NON_TANGIBLE_DELIVERY_SUMMARIES
+      .find((s) => seen.some((c) => s === `via ${c.channel}`));
+    return named ?? '';
   } catch {
     return '';
   }
@@ -174,8 +228,15 @@ export function renderTaskStamps(t: TaskStampFields): string {
     // delivery is often just an ack ("back with you soon"); nudging CLOSE on
     // it strangled a delegation synthesis task mid-wait (battery catch,
     // 2026-07-22). Facts only in that case.
-    if (t.last_delivery_summary) {
+    if (isTangibleDeliverySummary(t.last_delivery_summary)) {
       return `answered T${t.last_answered_turn} ${relAgo(t.last_answered_at)}; ${t.last_delivery_summary}; CLOSE if done`;
+    }
+    // T19 (D7): "facts only" used to mean "(no delivery recorded)", which on the owner's
+    // primary channel was FALSE — and the model read it in the same tool result as an
+    // ALREADY-DELIVERED assertion built from the same window. Facts only still means facts
+    // only; it now means the TRUE ones.
+    if (t.last_delivery_summary) {
+      return `answered T${t.last_answered_turn} ${relAgo(t.last_answered_at)}; ${t.last_delivery_summary}`;
     }
     return `replied T${t.last_answered_turn} ${relAgo(t.last_answered_at)} (no delivery recorded)`;
   }

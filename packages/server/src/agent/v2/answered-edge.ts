@@ -39,6 +39,9 @@ import { createLogger } from '../../logger.js';
 import type { TurnExitReason } from './turn-record.js';
 import { writeTaskLog } from '../../tracker/task-log.js';
 import { askIdForMessage, type WorkState } from '../../work/store.js';
+// T19 (D2): the DECLARED set of bubbles the platform has already ruled not-an-answer. One
+// owner, three readers (this file, `work/occurrences.ts`, `work/ask-remediation.ts`).
+import { NON_ANSWERING_DISPLAY_KINDS } from '../../work/ask-settlement.js';
 import { taskScope, tsToMs, type TrackerStatus } from '../../work/tracker-view.js';
 import { setTrackerStatus } from '../../work/tracker-store.js';
 
@@ -304,6 +307,25 @@ export function answeredPairsForMessages(
  * `conversationId` narrows to the person this turn is addressing: an email sent to a third
  * party while working on the owner's question is not the owner's answer. Pass `null` only
  * when the caller genuinely means "any person".
+ *
+ * ⚠ UX-REPAIR ROUND 4 T19 (D2) — AND THE HONEST QUESTION NEEDED ONE MORE CLAUSE TO BE HONEST.
+ * The paragraph above was true about the LEDGER and false about the PERSON, because the
+ * dashboard door records a receipt for EVERY assistant row including the tool-call chips.
+ * Measured on the owner's box, 2026-08-10 13:45Z: a fired reminder produced FOUR `deliveries`
+ * rows on one turn, all `outcome='delivered'`, `channel='dashboard'` — and all four pointed at
+ * `display_kind='tool-turn'` message rows. Nothing the owner could read was among them. This
+ * function returned TRUE, which suppressed the reminder-silence ghost (`handoff-floors.ts`),
+ * the one arm whose whole job was to tell him the reminder never arrived.
+ *
+ * The narrowing is not new and is not invented here: `NON_ANSWERING_DISPLAY_KINDS` is the
+ * declared set `work/ask-settlement.ts` already uses for exactly this reason — *"a bubble the
+ * PLATFORM ITSELF has already declared not to be the answer … without this entry an ask could
+ * be closed on a receipt pointing at a row the platform has on record as drafting"* — and
+ * `work/occurrences.ts`'s `runDeliverableEvidence` reads it too. Three readers of one question
+ * now read one set. IMPORTED, never retyped.
+ *
+ * A receipt with NO message row behind it (the channel doors write those) is untouched: the
+ * clause is a `NOT EXISTS`, exactly as the deliverable authority writes it.
  */
 export function turnDeliveredToPerson(
   agentId: string, turnNumber: number | null | undefined, conversationId?: string | null,
@@ -311,12 +333,15 @@ export function turnDeliveredToPerson(
   if (turnNumber == null) return false;
   const db = getDb();
   const scoped = conversationId != null;
+  const chipKinds = NON_ANSWERING_DISPLAY_KINDS.map((k) => `'${k}'`).join(', ');
   const hit = db.prepare(
-    `SELECT 1 AS ok FROM deliveries
-      WHERE agent_id = ? AND turn_number = ? AND outcome = 'delivered'
-        AND channel <> 'a2a'
-        AND tool NOT IN (${NON_ANSWERING_TOOLS.join(', ')})
-        ${scoped ? 'AND conversation_id = ?' : 'AND conversation_id IS NOT NULL'}
+    `SELECT 1 AS ok FROM deliveries d
+      WHERE d.agent_id = ? AND d.turn_number = ? AND d.outcome = 'delivered'
+        AND d.channel <> 'a2a'
+        AND d.tool NOT IN (${NON_ANSWERING_TOOLS.join(', ')})
+        AND NOT EXISTS (SELECT 1 FROM messages m
+                         WHERE m.id = d.message_id AND m.display_kind IN (${chipKinds}))
+        ${scoped ? 'AND d.conversation_id = ?' : 'AND d.conversation_id IS NOT NULL'}
       LIMIT 1`,
   ).get(...(scoped ? [agentId, turnNumber, conversationId] : [agentId, turnNumber])) as
     { ok: number } | undefined;

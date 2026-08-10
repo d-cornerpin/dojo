@@ -475,8 +475,8 @@ export const REAPER_KINDS: readonly ReaperKind[] = [
       'the 30s scheduler tick, which SWEEP CORE-1 CT2 chose for this rung in the same words the other five used — "the tick is the platform\'s existing 30-second clock, a cadence carried, not re-chosen"',
     wakes: false,
     run: async () => {
-      const { closeSteeredRunsThatDelivered } = await import('../scheduler/runner.js');
-      await closeSteeredRunsThatDelivered();
+      const { closeRunsThatDelivered } = await import('../scheduler/runner.js');
+      await closeRunsThatDelivered();
     },
   },
   {

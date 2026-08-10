@@ -132,7 +132,20 @@ describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () 
     // PHASE-6 GUARD-AUDIT: the close-out gate's evidence consult is inside the driver's
     // body and moves with its tranche. Its requirement is "the ENGINE requires both
     // halves", never "loop.ts contains this string", so the corpus is the engine.
-    expect(engineText()).toMatch(/st\.last_answered_turn !== null && st\.last_delivery_summary/);
+    //
+    // ⚠ UX-REPAIR ROUND 4 T19 (D7) — THE MATCHED FORM MOVED AND THE CLAUSE GOT STRICTER.
+    // `last_delivery_summary` being non-null used to BE the tangibility question. It no longer
+    // is: the summary now also NAMES a dashboard-or-voice-only bubble, because stamping
+    // `(no delivery recorded)` on the owner's primary channel was a false negative the model
+    // read in the same tool result as an ALREADY-DELIVERED assertion. The tangibility standard
+    // itself (battery catch 2026-07-22) is unchanged and is now a DECLARED predicate with one
+    // owner, so this clause pins two things where it used to pin one: both halves are still
+    // required, AND the second half is asked of `isTangibleDeliverySummary` rather than of a
+    // truthiness check any future edit could quietly widen.
+    expect(engineText())
+      .toMatch(/st\.last_answered_turn !== null && isTangibleDeliverySummary\(st\.last_delivery_summary\)/);
+    // and no consumer of the finished-work question may go back to reading the raw column
+    expect(engineText()).not.toMatch(/last_answered_turn !== null && !?!?st\.last_delivery_summary\b/);
   });
 
   it("the SAME turn under outcome 'answered' does stamp — so the brake is what withholds it", () => {

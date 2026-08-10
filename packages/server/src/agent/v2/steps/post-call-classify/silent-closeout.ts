@@ -103,8 +103,14 @@ export async function runSilentCloseout(
           // honesty instead of a victory lap.
           let receipts = '';
           try {
-            const { composeTurnDeliverySummary } = await import('../../../../tracker/task-stamps.js');
-            receipts = composeTurnDeliverySummary(agentId, turnNumber);
+            const { composeTurnDeliverySummary, isTangibleDeliverySummary } =
+              await import('../../../../tracker/task-stamps.js');
+            // T19 (D7): this steer's own two branches say "no file artifact, no channel send"
+            // — it means TANGIBLE, and it keeps meaning tangible. The summary now also names a
+            // dashboard-only bubble, which is exactly the case this floor is firing ABOUT, so
+            // quoting it back as a recorded delivery would be the engine contradicting itself.
+            const summary = composeTurnDeliverySummary(agentId, turnNumber);
+            receipts = isTangibleDeliverySummary(summary) ? summary : '';
           } catch { /* fall through to the no-receipts wording */ }
           const steerText =
             `[Engine record: this turn marked ${whichTask} complete. ` +

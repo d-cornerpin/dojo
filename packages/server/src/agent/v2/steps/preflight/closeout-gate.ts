@@ -139,7 +139,7 @@ export async function runCloseoutGate(
       // says so and names the right disposition instead of offering a menu.
       try {
         const { findDeliveryEvidenceForTask, renderDeliveryEvidence } = await import('../../../../tracker/delivery-evidence.js');
-        const { renderTaskStamps } = await import('../../../../tracker/task-stamps.js');
+        const { renderTaskStamps, isTangibleDeliverySummary } = await import('../../../../tracker/task-stamps.js');
         const evidenced: string[] = [];
         for (const r of inProgressDanglers) {
           // Stamps first (mig 124), live join as backfill for pre-stamp rows.
@@ -151,7 +151,9 @@ export async function runCloseoutGate(
           // bare answered reply is often an ack on a task legitimately
           // waiting (delegation synthesis), and pushing CLOSE on it forged a
           // wrong close. Same standard as the strike-2 engine close.
-          if (st && st.last_answered_turn !== null && st.last_delivery_summary) {
+          // T19 (D7): asked of the ONE helper, so a dashboard bubble named in the summary
+          // cannot quietly become a handover here.
+          if (st && st.last_answered_turn !== null && isTangibleDeliverySummary(st.last_delivery_summary)) {
             evidenced.push(`  - "${r.title}" (${r.id.slice(0, 8)}): ${renderTaskStamps(st)}`);
             continue;
           }

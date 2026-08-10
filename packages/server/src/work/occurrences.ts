@@ -63,8 +63,8 @@ import { transition, appendWorkEvent, type WorkOutcome } from './store.js';
 import { NON_ANSWERING_DELIVERY_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from './ask-settlement.js';
 import { occurrenceOwesDeliverable } from './deliverable-declaration.js';
 import {
-  MAX_RUN_DELIVER_STEERS, RUN_STATUS_UNDELIVERED, nextRunDeliverRung,
-  recordRunDeliverStandDown,
+  MAX_RUN_DELIVER_STEERS, RUN_STATUS_UNDELIVERED, RUN_DELIVER_STEER_MARKER,
+  nextRunDeliverRung, recordRunDeliverStandDown, recordRunDeliverSteer, runDriveCount,
 } from './run-deliver-drive.js';
 
 const logger = createLogger('occurrences');
@@ -302,6 +302,160 @@ export function runDeliverableEvidence(
     { id: string; tool: string; channel: string } | undefined) ?? null;
 }
 
+/** What a turn boundary did to the deliver ladder. `spent` is whether THIS turn's drive was
+ *  newly recorded; `standDownDue` is whether the bound is now reached and the caller must run
+ *  the honest close. */
+export interface RunLadderTurnEnd {
+  spent: boolean;
+  standDownDue: boolean;
+  taskId: string | null;
+}
+
+const NO_LADDER_MOVE: RunLadderTurnEnd = { spent: false, standDownDue: false, taskId: null };
+
+/**
+ * ⚠ UX-REPAIR ROUND 4 T19 (D3) — THE DRIVE TICK THE LADDER NEVER HAD.
+ *
+ * `runDriveCount` counts DISTINCT TURNS and that rule is MEASURED, not designed: behavioral
+ * run `bmslqef2w3r` had the floor model call `work_update(status="complete")` FOUR TIMES
+ * INSIDE ONE TURN before it had spoken at all, and counting ROWS spent the whole ladder in
+ * ten seconds. The unit is the turn, and it stays the turn.
+ *
+ * But the count only ever MOVED when the model attempted another close — the steer is the
+ * tool's own return value — so a model that stops calling the tool freezes the ladder wherever
+ * it stands. The owner's box, 2026-08-10: three steers, all inside turn 4602, ledger reading
+ * `1 of 3`, `2 of 3`, `2 of 3`. Rung 3 was never reached, `recordRunDeliverStandDown` never
+ * ran, `RUN_STATUS_UNDELIVERED` was never written, and the run sat `open` for thirty minutes
+ * until a generic idle reaper closed it with a sentence about the AGENT.
+ *
+ * A rung is a DRIVE — *"a separate attempt, with a turn in between for the agent to act on the
+ * steer"* — and a turn that ENDED having been told, and delivered nothing, is exactly that
+ * attempt, whether or not the model came back to the tool. So the turn boundary spends it.
+ *
+ * ── THE FOUR REFUSALS, each one a requirement this cannot break ──
+ *   * the run must ALREADY carry a steer. An unsteered run never burns a rung here, so the
+ *     ladder still cannot start itself and `closeRunsThatDelivered`'s steered arm's premise stands;
+ *   * the anti-burn rule is untouched: this records ONE row keyed on THIS turn, and a turn
+ *     already on the ledger records nothing (the count is DISTINCT turns, so a repeat is free
+ *     by construction as well as by this guard);
+ *   * evidence wins: a turn that delivered is not an attempt that failed;
+ *   * it DECIDES and never CLOSES. The caller performs the stand-down through the ordinary
+ *     run-complete flow, so the schedule advance, the notices and the audit trail are the
+ *     same ones every other close produces (`join-drive.ts`'s rule, carried).
+ */
+export function advanceRunDeliverLadderAtTurnEnd(
+  occurrenceId: string, turnNumber: number | null | undefined,
+): RunLadderTurnEnd {
+  if (turnNumber == null) return NO_LADDER_MOVE;
+  const occ = getDb().prepare(
+    `SELECT state FROM work WHERE id = ? AND kind = ?`,
+  ).get(occurrenceId, OCCURRENCE_KIND) as { state: string } | undefined;
+  if (!occ || (occ.state !== 'open' && occ.state !== 'claimed')) return NO_LADDER_MOVE;
+
+  const owed = occurrenceOwesDeliverable(occurrenceId);
+  if (!owed.owes) return NO_LADDER_MOVE;
+  // Never STARTS the ladder — only advances one that the model's own close attempt began.
+  if (runDriveCount(occurrenceId, RUN_DELIVER_STEER_MARKER) === 0) return NO_LADDER_MOVE;
+  if (runDeliverableEvidence(occurrenceId)) return NO_LADDER_MOVE;
+
+  const alreadyThisTurn = (getDb().prepare(
+    `SELECT COUNT(*) AS n FROM work_events
+      WHERE work_id = ? AND kind = 'audit'
+        AND json_extract(payload, '$.marker') = ?
+        AND json_extract(payload, '$.turn_number') = ?`,
+  ).get(occurrenceId, RUN_DELIVER_STEER_MARKER, turnNumber) as { n: number }).n > 0;
+
+  let spent = false;
+  if (!alreadyThisTurn) {
+    const rung = nextRunDeliverRung(occurrenceId);
+    recordRunDeliverSteer(occurrenceId, {
+      attempt: rung.attempt, bound: rung.bound, taskId: owed.taskId ?? occurrenceId,
+      why: 'the turn ended with nothing user-visible sent, on a run that had already been steered',
+      turnNumber,
+    });
+    spent = true;
+  }
+  return {
+    spent,
+    standDownDue: nextRunDeliverRung(occurrenceId).rung === 'stand-down',
+    taskId: owed.taskId ?? null,
+  };
+}
+
+/** A run the delivery ledger says is finished, and whether anybody steered it. */
+export interface RunReadyToClose {
+  occurrenceId: string;
+  taskId: string;
+  deliveryId: string;
+  tool: string;
+  steered: boolean;
+}
+
+/**
+ * ⚠ UX-REPAIR ROUND 4 T19 (D6) — THE COMPLEMENT OF THE VERIFY RUNG.
+ *
+ * The verify rung (`scheduler/runner.ts`) required a steer marker and its header states the clause as
+ * load-bearing: *"the steer is the agent's own assertion that the work is finished, refused
+ * only for want of evidence; without it this sweep would be closing runs nobody said were
+ * done."* That worry is real and it is ANSWERED HERE rather than deleted: the complement case
+ * — the model DELIVERS FIRST and never attempts a close at all — produces no marker, and the
+ * deliverable authority's own predicate is STRONGER evidence than an assertion. A steer is the
+ * agent SAYING it is finished; `runDeliverableEvidence` is the ledger showing the person got
+ * something.
+ *
+ * Measured, driven, 2026-08-10 18:45Z: a one-shot reminder was delivered to the owner
+ * (`agent-text`, a real `deliveries` row) and the run sat `open` for twelve minutes, was
+ * refused `complete` twice for want of a pointer it already had, and was only resolved because
+ * a PM poke dragged the model back. Absent that it meets the 30-minute idle reaper and a
+ * perfectly delivered reminder is recorded failed.
+ *
+ * ⚠ AND THE ROW SET IS WHERE THE NARROWING LIVES, not in a second predicate. The sweep chooses
+ * WHICH runs to ask about; `runDeliverableEvidence` is still the only thing that answers. The
+ * one added clause is the turn boundary — an agent with a turn still in flight is mid-work,
+ * and closing its run out from under it is the race the orphan sweep's own age guard exists to
+ * avoid. CT0's doctrine, carried: the turn boundary is where a fact about a turn becomes
+ * readable. A STEERED run keeps today's behaviour exactly — the model asked to close, so
+ * there is nothing to race.
+ */
+export function runsReadyToCloseOnDelivery(): RunReadyToClose[] {
+  const rows = getDb().prepare(`
+    SELECT w.id AS occurrence_id, w.parent_id AS task_id,
+           EXISTS (SELECT 1 FROM work_events e
+                    WHERE e.work_id = w.id AND e.kind = 'audit'
+                      AND json_extract(e.payload, '$.marker') = ?) AS steered
+      FROM work w
+      JOIN work p ON p.id = w.parent_id
+     WHERE w.kind = ? AND w.state IN ('open','claimed')
+       AND p.task_kind IS NOT NULL
+  `).all(RUN_DELIVER_STEER_MARKER, OCCURRENCE_KIND) as
+    Array<{ occurrence_id: string; task_id: string; steered: number }>;
+
+  const out: RunReadyToClose[] = [];
+  for (const row of rows) {
+    if (!occurrenceOwesDeliverable(row.occurrence_id).owes) continue;
+    if (!row.steered && agentHasTurnInFlight(row.occurrence_id)) continue;
+    const evidence = runDeliverableEvidence(row.occurrence_id);
+    if (!evidence) continue;
+    out.push({
+      occurrenceId: row.occurrence_id, taskId: row.task_id,
+      deliveryId: evidence.id, tool: evidence.tool, steered: row.steered === 1,
+    });
+  }
+  return out;
+}
+
+/** Is the occurrence's own agent still inside a turn? A `turns` row with no `ended_at` is the
+ *  spine's own statement that the turn has not finished (the column carries a CHECK pairing it
+ *  with `exit_reason`, so there is no third state to read). */
+function agentHasTurnInFlight(occurrenceId: string): boolean {
+  const hit = getDb().prepare(
+    `SELECT 1 AS ok FROM turns t
+      JOIN work w ON w.id = ?
+     WHERE t.agent_id = w.agent_id AND t.ended_at IS NULL LIMIT 1`,
+  ).get(occurrenceId) as { ok: number } | undefined;
+  return hit !== undefined;
+}
+
 /** What `settleOccurrence` answers. `owed` is the arm CT2 adds: the run is NOT settled, nothing
  *  was transitioned, and the caller must steer rather than advance. */
 export type RunSettlementVerdict = 'settled' | 'owed';
@@ -314,6 +468,10 @@ export interface RunSettlement {
   deliveryId: string | null;
   /** Why, in one line, for the log and for the caller that wants to say something. */
   detail: string;
+  /** T19 (D4): the run's own word AS RECORDED — the gate's word, not the caller's. The
+   *  `occurrence_settled` event already carries it; a caller that has to surface the fact
+   *  (the owner-facing ghost) reads it here instead of re-deriving the gate's decision. */
+  runStatusRecorded: string;
 }
 
 /**
@@ -360,7 +518,9 @@ export interface RunSettlement {
 export function settleOccurrence(
   occurrenceId: string, runStatus: string, deliveryId: string | null, summary: string | null,
 ): RunSettlement {
-  // ── THE DELIVERABLE GATE. Only ever narrows a `complete`; every other word is untouched. ──
+  // ── THE DELIVERABLE GATE. Only ever narrows a `complete` or a `failed`; `skipped` is
+  //    untouched (a run that never ran owes nobody an explanation about a message it was
+  //    never going to send — `skipOpenOccurrences` says so at its own call site). ──
   let effectiveStatus = runStatus;
   let effectiveDelivery = deliveryId;
   let gateNote: string | null = null;
@@ -381,6 +541,7 @@ export function settleOccurrence(
             detail: `the run cannot be recorded complete: "${owed.taskKind}" work owes the person a `
               + 'user-visible message and nothing was sent in this run\'s window '
               + `(steer ${rung.attempt} of ${rung.bound})`,
+            runStatusRecorded: runStatus,
           };
         }
         // The ladder is spent. The run is recorded UNDELIVERED — never complete.
@@ -391,6 +552,32 @@ export function settleOccurrence(
         effectiveDelivery = null;
         gateNote = `stood down after ${rung.steersSpent} steer(s) with nothing delivered`;
       }
+    }
+  } else if (runStatus === 'failed') {
+    // ⚠ UX-REPAIR ROUND 4 T19 (D4) — THE `failed` CLOSE WALKED PAST THIS GATE, AND THAT IS
+    // HOW THE INCIDENT ENDED. `cleanupStaleRuns` is a stalled-agent safety net and it stays
+    // one: its 30-minute idle rule, its retry-next-cycle promise and its trigger are all
+    // untouched. What it may no longer do is choose the WORD. On 2026-08-10 it closed a
+    // reminder run `failed` with the note *"Auto-failed: assigned agent idle for 30+ minutes"*
+    // — true about the agent, silent about the owner, and rendered as a neutral badge behind
+    // two clicks in an expanded task detail. The owner's run history said the agent was idle
+    // for a morning his reminder never reached him.
+    //
+    // A run that was DECLARED deliverable-owing and reached nobody has exactly one honest
+    // word, and the platform already owns it: UNDELIVERED, with the stand-down on the row.
+    // The `failed` arm is NEVER refused (`owed` would leave a stalled run open for ever,
+    // which is the safety net's own failure mode) — it is RENAMED by the authority, which is
+    // what the gate above already does for `complete`. A run that DID deliver keeps the
+    // caller's `failed`: the run genuinely failed, and the word is about the run.
+    const owed = occurrenceOwesDeliverable(occurrenceId);
+    if (owed.owes && !runDeliverableEvidence(occurrenceId)) {
+      recordRunDeliverStandDown(occurrenceId, {
+        steersSpent: runDriveCount(occurrenceId, RUN_DELIVER_STEER_MARKER),
+        taskId: owed.taskId ?? occurrenceId,
+      });
+      effectiveStatus = RUN_STATUS_UNDELIVERED;
+      effectiveDelivery = null;
+      gateNote = 'the run ended without reaching the person it owed a message';
     }
   }
 
@@ -420,9 +607,9 @@ export function settleOccurrence(
       reason: runStatusInner === 'complete'
         ? 'the run for this occurrence finished with nothing delivered to a person'
         : runStatusInner === RUN_STATUS_UNDELIVERED
-          ? 'the run for this occurrence did its work and reached NOBODY: the task owes the person '
-            + 'a user-visible message, the agent was steered to send one up to the bound, and none '
-            + 'was ever sent. It is recorded UNDELIVERED rather than complete'
+          ? 'the run for this occurrence ended and reached NOBODY: the task owes the person a '
+            + 'user-visible message and none was ever sent. It is recorded UNDELIVERED rather '
+            + `than ${runStatus === 'failed' ? 'failed' : 'complete'}`
           : `the occurrence was ${runStatusInner} without running`,
       note: summary,
     });
@@ -456,6 +643,7 @@ export function settleOccurrence(
     outcome,
     deliveryId: effectiveDelivery,
     detail: gateNote ?? `run settled ${effectiveStatus}`,
+    runStatusRecorded: effectiveStatus,
   };
 }
 

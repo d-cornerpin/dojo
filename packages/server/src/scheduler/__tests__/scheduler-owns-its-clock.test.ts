@@ -218,10 +218,15 @@ describe('A4 there is exactly one next-run computer', () => {
 
 /**
  * Re-derived at HEAD (#14). The plan wrote "the five non-scheduling sweeps"; at this commit
- * it is SIX, because SWEEP CORE-1 CT2 added `closeSteeredRunsThatDelivered` after the plan
- * was written and it rides the tick for exactly the reason the other five did — "that is
- * where run lifecycle already lives". The two 12-hour sweeps the plan also counted left at
+ * it is SIX, because SWEEP CORE-1 CT2 added the delivered-run close after the plan was
+ * written and it rides the tick for exactly the reason the other five did — "that is where
+ * run lifecycle already lives". The two 12-hour sweeps the plan also counted left at
  * PHASE-2 T9 and are already the reaper's.
+ *
+ * UX-REPAIR ROUND 4 T19 (D6) renamed that sixth sweep `closeRunsThatDelivered`: it no longer
+ * requires a steer marker, because the deliverable authority's own evidence predicate is
+ * stronger than the agent's assertion it replaced. Same sweep, same owner, same cadence —
+ * only the name and the row set moved, and this list follows its subject.
  *
  * What STAYS on the scheduler tick, and why: the due scan itself, and
  * `autoResolveStaleMissedRunPauses` — that one advances the cadence past missed slots, which
@@ -233,7 +238,7 @@ const MOVED_TO_THE_REAPER = [
   'pruneTerminalTasks',
   'resumeExpiredPauses',
   'sweepUnvalidatedTasksForUserEscalation',
-  'closeSteeredRunsThatDelivered',
+  'closeRunsThatDelivered',
 ];
 
 describe('A5 the scheduler tick keeps only scheduling', () => {
