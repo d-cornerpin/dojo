@@ -2395,6 +2395,335 @@
       "to": 1217,
       "by": "SWEEP CORE-2 item 6 (2026-08-09) — the daemon stops dying, and its disk alarm stops disagreeing with the platform",
       "why": "+19 NET, and the file gave up 65 lines on the way: the whole alert dedup/recovery ledger LEFT this file for `watchdog/src/alert-ledger.ts` (`git diff 9d982a8 --numstat` reads 153 added / 117 removed). What is added is four mechanisms, each with a measured defect behind it: (1) `'error'` listeners on both spawn sites — a spawn failure arrives on a LATER TICK, the try/catch around each site cannot reach it, and an unhandled 'error' is rethrown and KILLS the daemon, one of them while it is performing a rollback and the other while the platform is already down; (2) a process-level `uncaughtException`/`unhandledRejection` net that logs and deliberately does not exit (proven in a real child process, with a negative control that dies); (3) `resolveAndTell`, which resolves the recipient BEFORE retiring the ledger entry — the old order dropped the owner's \"it is back\" message permanently whenever the DB was unreadable, which is exactly when it is most likely; (4) the disk floor derived from the platform's own backup threshold instead of a flat 1 GB that inverts above a ~500 MB database. THE ALTERNATIVES WERE MEASURED. (a) Extract the FA-W2 last-known-good recipient cache to its own module (-50, lands at ~1167, no raise needed): a REAL improvement and it is HANDED UP rather than done here — the cache's fs half is drivable but the FA-W2 POLICY it exists for (only a FAILED read may fall back; a successful-empty read must CLEAR it) lives in `getApprovedSenders`, which opens the platform DB, so extracting the plumbing alone would be relocation with the untested part left behind. It belongs with a task that tests the policy. (b) Cut the rationale comments (-19 exactly): PARTLY TAKEN and the saving is already in this number — the rollback-race argument now exists in full in BOTH `auto-rollback.ts` and `update-state.ts`, so this file's third copy became a five-line pointer, and three of the four other blocks were tightened the same way. What remains is the part that is not written anywhere else. (c) Leave the flat 1 GB disk check (-15): REFUSED on the measurement in `disk-floor.ts` — at a 600 MB database the platform refuses a pre-migration backup at 1.2 GB while a flat-gigabyte watchdog still reports disk as healthy, so the warning arrives after the thing it exists to warn about. From here this file may only shrink from 1217."
+    },
+    {
+      "path": "packages/server/src/work/ask-settlement.ts",
+      "from": 898,
+      "to": 1196,
+      "by": "SWEEP CORE-1 CT0 `691a2d3` +243 / `8a060c5` +2 / SWEEP CORE-2 item 7 `8472699` +12 / UX-REPAIR T2 `18119c2` +41 (2026-08-09)",
+      "why": "The settlement authority absorbed CT0's receipt-repointing arm and its six delivery-time narrowings, then CORE-2 item 7's draft rule, then UX-REPAIR T2's SEVENTH narrowing — a delivery stamped `origin_intent='engine_start_ack'` is never qualifying evidence, written beside the doctrine comment it enforces (plan T2 step 2). INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/counterparty.ts",
+      "from": 927,
+      "to": 938,
+      "by": "SWEEP CORE-1 CT0 `691a2d3` +11 (2026-08-09)",
+      "why": "The batch state-write became a pure READ under CT0. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/work/occurrences.ts",
+      "from": 426,
+      "to": 634,
+      "by": "SWEEP CORE-1 CT2 `3a4dc6a` +206 / CORE-2 item 3A `41f9492` +2 (2026-08-09)",
+      "why": "CT2's completion-truth rule for SCHEDULED RUNS: an occurrence cannot read complete without a message the owner received. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 4455,
+      "to": 4596,
+      "by": "SWEEP CORE-1 CT2 `3a4dc6a` +123 / CORE-2 item 3A `41f9492` +18 (2026-08-09)",
+      "why": "Same rule at the agent-facing tracker tools, then the scheduler clock ownership. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/scheduler/runner.ts",
+      "from": 1706,
+      "to": 1831,
+      "by": "SWEEP CORE-1 CT2 `3a4dc6a` +82 / CORE-2 item 1 `adfee42` −9 / item 3A `41f9492` +52 (2026-08-09)",
+      "why": "The scheduled-run completion rule and then item 3's single clock owner; the −9 is real shrink already taken inside the same window. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/tracker.ts",
+      "from": 906,
+      "to": 945,
+      "by": "SWEEP CORE-1 CT2 `3a4dc6a` +9 / CORE-2 item 3A `41f9492` +12 / item 3C `d07c2aa` +18 (2026-08-09)",
+      "why": "Route-side reads of the completion rule and the version-gap reconciliation pass. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/tracker/pm-agent.ts",
+      "from": 2267,
+      "to": 2405,
+      "by": "SWEEP CORE-2 item 1 `adfee42` +145 / item 2 `b66efcb` +7 / item 3A `41f9492` −14 (2026-08-09)",
+      "why": "The supervisor doorbell and the retired cap; the −14 is real shrink already taken inside the same window. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/agent/agent-status.ts",
+      "from": 160,
+      "to": 233,
+      "by": "SWEEP CORE-2 item 2 `b66efcb` +59 / UX-REPAIR T7 `ba49131` +14 (2026-08-09)",
+      "why": "Item 2 made this the ONE status writer; UX-REPAIR T7 then stopped the seam fabricating `turnKind:'user'` on frame 1 and made it carry truthful `userFacing` (+2 code, +25 comment across the seam pair). UX-REPAIR (2026-08-09), the seven root-caused UX-review defects. Pinned at the exact current count; decrease-only from here. Inherited portion argued at `b66efcb`."
+    },
+    {
+      "path": "packages/server/src/healer/diagnostic.ts",
+      "from": 1041,
+      "to": 1067,
+      "by": "SWEEP CORE-2 item 2 `b66efcb` +23 / item 3C `d07c2aa` +3 (2026-08-09)",
+      "why": "One recovery owner, and the version-gap pass reading it. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/healer/healer-agent.ts",
+      "from": 1172,
+      "to": 1186,
+      "by": "SWEEP CORE-2 item 2 `b66efcb` +14 (2026-08-09)",
+      "why": "The shadow ledger removed, one recovery owner left standing. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/healer/injury-recovery.ts",
+      "from": 822,
+      "to": 831,
+      "by": "SWEEP CORE-2 item 2 `b66efcb` +9 (2026-08-09)",
+      "why": "Same single-owner conversion at the recovery side. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/index.ts",
+      "from": 1215,
+      "to": 1256,
+      "by": "SWEEP CORE-2 item 3A `41f9492` +24 / item 3C `d07c2aa` +17 (2026-08-09)",
+      "why": "Two boot steps: the scheduler's own clock, and the version-gap reconciliation pass. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/work/tracker-store.ts",
+      "from": 530,
+      "to": 534,
+      "by": "SWEEP CORE-2 item 3A `41f9492` +4 (2026-08-09)",
+      "why": "Store-side read of the scheduler's clock. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/update.ts",
+      "from": 1115,
+      "to": 1171,
+      "by": "SWEEP CORE-2 item 3B `7f2b56b` +56 (2026-08-09)",
+      "why": "The update route checks disk space and tells the user instead of failing mute. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/db/migration-backup.ts",
+      "from": 343,
+      "to": 365,
+      "by": "SWEEP CORE-2 item 3B `7f2b56b` +22 (2026-08-09)",
+      "why": "The disk-space precondition at the backup that the update depends on. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/dashboard/src/lib/api.ts",
+      "from": 2337,
+      "to": 2356,
+      "by": "SWEEP CORE-2 item 3B `7f2b56b` +19 (2026-08-09)",
+      "why": "Typed client for the disk-space answer. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/dashboard/src/pages/Settings.tsx",
+      "from": 6418,
+      "to": 6428,
+      "by": "SWEEP CORE-2 item 3B `7f2b56b` +10 (2026-08-09)",
+      "why": "The Update tab renders the disk-space refusal. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/answered-edge.ts",
+      "from": 546,
+      "to": 648,
+      "by": "SWEEP CORE-2 item 4A `df3c45b` +102 (2026-08-09)",
+      "why": "Per-message recall rides the tail and carries its conclusion. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/memory/lanes.ts",
+      "from": 822,
+      "to": 867,
+      "by": "SWEEP CORE-2 item 4A `df3c45b` +45 (2026-08-09)",
+      "why": "The recall lane's reads at the lane table. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts",
+      "from": 247,
+      "to": 266,
+      "by": "SWEEP CORE-2 item 4A `df3c45b` +19 (2026-08-09)",
+      "why": "The tail-riding recall injection. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/prompt/registry/entries.ts",
+      "from": 524,
+      "to": 542,
+      "by": "SWEEP CORE-2 item 4A `df3c45b` +18 (2026-08-09)",
+      "why": "The recall slot declared in the prompt registry. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/receipt.ts",
+      "from": 433,
+      "to": 442,
+      "by": "SWEEP CORE-2 item 4A `df3c45b` +9 (2026-08-09)",
+      "why": "Receipt-side read of the same conclusion. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 1739,
+      "to": 1897,
+      "by": "SWEEP CORE-2 item 1 `adfee42` +25 / item 5A `a38f0a8` +97 / item 5C `9d982a8` +108 (2026-08-09); −95 of real shrink already taken at `5626055`/`a78a455`",
+      "why": "An ignored sender opens no ticket, no open ask may be unservable, and no countdown without children. The shrink WAS taken first — this file gave up 95 lines earlier in the same arc. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/work/work-reaper.ts",
+      "from": 528,
+      "to": 680,
+      "by": "SWEEP CORE-2 item 3A `41f9492` +73 / item 5A `a38f0a8` +69 / item 5C `9d982a8` +10 (2026-08-09)",
+      "why": "The reaper reads the scheduler's clock, the unservable-ask rule and the countdown rule. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1442,
+      "to": 1448,
+      "by": "SWEEP CORE-2 item 5A `a38f0a8` +6 (2026-08-09)",
+      "why": "Runtime-side read of the unservable-ask rule. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 2213,
+      "to": 2369,
+      "by": "SWEEP CORE-2 item 5B `33ecd4b` +156 (2026-08-09)",
+      "why": "The relay's compose path and the channel wall made to AGREE. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/memory/message-store.ts",
+      "from": 1013,
+      "to": 1122,
+      "by": "SWEEP CORE-2 item 5A `a38f0a8` +34 / item 7 `8472699` +59 / UX-REPAIR T2 `18119c2` +16 (2026-08-09)",
+      "why": "The draft/answer distinction at the write side, then T2's explicit `displayKind` carrier at the ack insert — the declared override that keeps the demotion and the sixth narrowing byte-identical (plan T2 amended step 1). UX-REPAIR (2026-08-09), the seven root-caused UX-review defects. Pinned at the exact current count; decrease-only from here. Inherited portion argued at `a38f0a8`/`8472699`."
+    },
+    {
+      "path": "packages/shared/src/ws.ts",
+      "from": 1088,
+      "to": 1110,
+      "by": "SWEEP CORE-2 item 7 (1/2) `8472699` +22 (2026-08-09)",
+      "why": "The turn-end re-classification's wire shape: drafts are not answers. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/shared/src/types.ts",
+      "from": 527,
+      "to": 540,
+      "by": "SWEEP CORE-2 item 7 (1/2) `8472699` +13 (2026-08-09)",
+      "why": "The same re-classification's shared types. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/index.ts",
+      "from": 219,
+      "to": 237,
+      "by": "SWEEP CORE-2 item 7 (1/2) `8472699` +18 (2026-08-09)",
+      "why": "The turn-end demotion runs at teardown. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/chat.ts",
+      "from": 485,
+      "to": 492,
+      "by": "SWEEP CORE-2 item 7 (1/2) `8472699` +7 (2026-08-09)",
+      "why": "Serving side of the re-classification. The recorded refusal at `:305-310` (no server-side `display_tier` WHERE clause) is untouched by this raise and by UX-REPAIR T5. INHERITED DEBT, not this phase. The growth landed and was argued in the commit named above; the ratchet was never re-pinned then, and `92447af` recorded the whole set as known (\"28 items… all inherited from earlier tasks in this sweep\"). This entry does the re-pin that was owed, at the file's exact current count. Nothing is weakened: no gate, clause, threshold or whitelist is touched, and the file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/tracker-floors.ts",
+      "from": 288,
+      "to": 314,
+      "by": "UX-REPAIR T1 `a8a3bad` +26 (2026-08-09) — the scaffold floor stops taxing answered work",
+      "why": "+11 code / +21 comment against 6 removed: the ≥6 floor's note and fire log now carry BOTH counters (\"this turn: N; total untracked in this conversation: M\") so the misfire can never be invisible again, and the two stale comments promising the same-turn close `d00f270` removed are gone. UX-REPAIR (2026-08-09), the seven root-caused UX-review defects. Pinned at the exact current count; decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/agent/turn-state.ts",
+      "from": 218,
+      "to": 239,
+      "by": "UX-REPAIR T1 `a8a3bad` +21 (2026-08-09)",
+      "why": "+4 code / +17 comment: the missing clear on the cross-turn accumulator, with RC-19's anti-dodge requirement written beside it — a turn BREAK still never resets the count; only a turn that ANSWERED its human clears it. UX-REPAIR (2026-08-09), the seven root-caused UX-review defects. Pinned at the exact current count; decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/finalize-record.ts",
+      "from": 264,
+      "to": 289,
+      "by": "UX-REPAIR T1 `a8a3bad` +25 (2026-08-09)",
+      "why": "+6 code / +19 comment: the clear fires at the one site that already holds `outcome.answered`, `effectfulCalls` and the conv key — the plan's named site, not a new one. UX-REPAIR (2026-08-09), the seven root-caused UX-review defects. Pinned at the exact current count; decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/scaffold-title.ts",
+      "from": 113,
+      "to": 149,
+      "by": "UX-REPAIR T1 `a8a3bad` +13 / T7 `ba49131` +17 / T2 `18119c2` +6 (2026-08-09)",
+      "why": "T1 aligned the hardcoded \"6+\" prose so the PM handoff and the engine note cannot contradict each other; T7 made the PM-rename broadcast carry the stored row's own role/lane/origin_intent instead of hard-coded `role:'user'`; T2 corrected the \"BOTH scaffold sites\" comment to the one caller that has existed since `d00f270`. UX-REPAIR (2026-08-09), the seven root-caused UX-review defects. Pinned at the exact current count; decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/preflight/turn-closures.ts",
+      "from": 396,
+      "to": 426,
+      "by": "UX-REPAIR T2 `18119c2` +30 (2026-08-09)",
+      "why": "+12 code / +32 comment against 14 removed: the comment at `:230-232` becomes TRUE (aligned to the single production writer) and the ack path carries its explicit display kind. UX-REPAIR (2026-08-09), the seven root-caused UX-review defects. Pinned at the exact current count; decrease-only from here."
+    },
+    {
+      "path": "packages/shared/src/visibility.ts",
+      "from": 881,
+      "to": 896,
+      "by": "UX-REPAIR T2 `18119c2` +15 (2026-08-09)",
+      "why": "+0 code / +16 comment against 1 removed — the whole raise is prose. The `:676-683` fallback arm stopped naming the start-ack (model-spoken since PHASE-4 T4) and records the explicit-displayKind carrier instead. Zero behaviour bought. UX-REPAIR (2026-08-09), the seven root-caused UX-review defects. Pinned at the exact current count; decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts",
+      "from": 187,
+      "to": 196,
+      "by": "UX-REPAIR T2 `18119c2` +9 (2026-08-09)",
+      "why": "+2 code / +9 comment: the promotion call passes `originIntent='engine_start_ack'` and the explicit `displayKind`, making a comment with zero production writers behind it finally true. UX-REPAIR (2026-08-09), the seven root-caused UX-review defects. Pinned at the exact current count; decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/index.ts",
+      "from": 219,
+      "to": 222,
+      "by": "UX-REPAIR T2 `18119c2` +3 (2026-08-09)",
+      "why": "+4 code against 1 removed: the extended `deliverEngineUserAck` signature threaded through. UX-REPAIR (2026-08-09), the seven root-caused UX-review defects. Pinned at the exact current count; decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/preflight/index.ts",
+      "from": 288,
+      "to": 290,
+      "by": "UX-REPAIR T2 `18119c2` +2 (2026-08-09)",
+      "why": "+4 code against 2 removed: same signature, preflight side. UX-REPAIR (2026-08-09), the seven root-caused UX-review defects. Pinned at the exact current count; decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/prompt/assembler.ts",
+      "from": 1405,
+      "to": 1458,
+      "by": "UX-REPAIR T3 `5991d9e` +53 (2026-08-09) — a routing instruction cannot be silently overridden",
+      "why": "+22 code / +33 comment: `:449`'s `if (canSpawn)` gains the else that has never existed — an agent that cannot spawn is TOLD so, and told it can still message existing agents with `send_to_agent`. PREFIX EDIT, on the re-blessing register; goldens moved once, deliberately, in the same commit. UX-REPAIR (2026-08-09), the seven root-caused UX-review defects. Pinned at the exact current count; decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts",
+      "from": 183,
+      "to": 209,
+      "by": "UX-REPAIR T3 `5991d9e` +26 (2026-08-09)",
+      "why": "+3 code / +24 comment: the F9 detector's imperative-routing grammar, each added pattern carrying its positive AND negative rows in the comment beside it. The conservative stance survives — bare mentions still refuse. UX-REPAIR (2026-08-09), the seven root-caused UX-review defects. Pinned at the exact current count; decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/classifiers/multistep.ts",
+      "from": 482,
+      "to": 502,
+      "by": "UX-REPAIR T4 `5dfe476` +20 (2026-08-09)",
+      "why": "+2 code / +18 comment: vocabulary only — four action verbs and the deliverable nouns S4 scored zero on. No stemmer, no threshold moved, and the research-03 over-firing hazard held by the corpus regression the task ran. UX-REPAIR (2026-08-09), the seven root-caused UX-review defects. Pinned at the exact current count; decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/work/ask-title.ts",
+      "from": 297,
+      "to": 420,
+      "by": "UX-REPAIR T6 `c26431a` +123 (2026-08-09) — ask titles stop completing the prompt's own words",
+      "why": "+59 code / +70 comment against 6 removed, the largest single raise of the phase. It buys three things: the leaked noun \", for a work tracker\" gone from the instruction; the previous 1–2 owner-lane messages supplied as INPUT inside the existing char budget; and FORMAT conformance in `acceptModelTitle` (newline/brace/length → id-title fallback), which is why a raw tool-call JSON blob was accepted as a title. The comment mass is the recorded distinction between format conformance and the `:51-56` shape-sniffing refusal, which stands. UX-REPAIR (2026-08-09), the seven root-caused UX-review defects. Pinned at the exact current count; decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/preflight/turn-trigger.ts",
+      "from": 287,
+      "to": 312,
+      "by": "UX-REPAIR T7 `ba49131` +25 (2026-08-09)",
+      "why": "+2 code / +25 comment: the `setAgentStatus('working')` call MOVED (not added) to after the conv-key publication, still inside the synchronous window; the comment mass is the proof that no `await` sits between the old and new site, which is the task's STOP condition. UX-REPAIR (2026-08-09), the seven root-caused UX-review defects. Pinned at the exact current count; decrease-only from here."
+    },
+    {
+      "path": "packages/dashboard/src/pages/Chat.tsx",
+      "from": 1970,
+      "to": 2030,
+      "by": "SWEEP CORE-2 item 7 `8472699` +37 / UX-REPAIR T7 `ba49131` +23 (2026-08-09)",
+      "why": "T7: +4 code / +20 comment — `showWorkingUi` refuses frames with an EXPLICIT `userFacing:false` while bare legacy frames (media path) behave exactly as before, which is the whole reason the guard is three lines and its reason is twenty. UX-REPAIR (2026-08-09), the seven root-caused UX-review defects. Pinned at the exact current count; decrease-only from here. Inherited portion argued at `8472699`."
+    },
+    {
+      "path": "packages/server/src/memory/recall-lane.ts",
+      "from": "(unlisted, 400-line new-file cap)",
+      "to": 531,
+      "by": "SWEEP CORE-2 item 4A `df3c45b` (2026-08-09) — per-message recall rides the tail, and it carries the conclusion",
+      "why": "NEW FILE, born at 531 lines in a single commit and never touched since — it has never been over ANY pin, because it never had one. It crossed the 400-line new-file cap on the day it was written and the cap has been refusing the tree ever since; `92447af` names it as the first of the 28 inherited findings. Pinning it at its exact birth count is the stronger of the two remedies the cap offers (the other is splitting it) and it is the one this ledger has taken before for `work/ask-remediation.ts` and `services/format-time.ts`: a pin makes every future line argue for itself. It is the memory recall lane — the per-message retrieval that rides the tail of the assembled context. Decrease-only from here; this entry is meant to be seen and argued with, which is the point of the cap."
     }
   ],
   "maxNewFileLines": 400,
@@ -2411,20 +2740,20 @@
     "packages/dashboard/src/components/TechniqueSessionProvider.tsx": 533,
     "packages/dashboard/src/components/TwilioSettings.tsx": 563,
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
-    "packages/dashboard/src/lib/api.ts": 2337,
+    "packages/dashboard/src/lib/api.ts": 2356,
     "packages/dashboard/src/lib/voice/voice-client.ts": 873,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 438,
     "packages/dashboard/src/pages/Agents.tsx": 678,
-    "packages/dashboard/src/pages/Chat.tsx": 1970,
+    "packages/dashboard/src/pages/Chat.tsx": 2030,
     "packages/dashboard/src/pages/Costs.tsx": 686,
     "packages/dashboard/src/pages/Health.tsx": 650,
     "packages/dashboard/src/pages/Memory.tsx": 499,
-    "packages/dashboard/src/pages/Settings.tsx": 6418,
+    "packages/dashboard/src/pages/Settings.tsx": 6428,
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1381,
-    "packages/server/src/agent/a2a-transport.ts": 2213,
-    "packages/server/src/agent/agent-status.ts": 160,
+    "packages/server/src/agent/a2a-transport.ts": 2369,
+    "packages/server/src/agent/agent-status.ts": 233,
     "packages/server/src/agent/brokers/deny.ts": 385,
     "packages/server/src/agent/brokers/grants.ts": 344,
     "packages/server/src/agent/brokers/proc.ts": 375,
@@ -2440,7 +2769,7 @@
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 317,
-    "packages/server/src/agent/runtime.ts": 1442,
+    "packages/server/src/agent/runtime.ts": 1448,
     "packages/server/src/agent/shared-state.ts": 90,
     "packages/server/src/agent/spawner.ts": 1420,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
@@ -2459,18 +2788,18 @@
     "packages/server/src/agent/tools/types.ts": 338,
     "packages/server/src/agent/tools/util.ts": 371,
     "packages/server/src/agent/turn-context.ts": 625,
-    "packages/server/src/agent/turn-state.ts": 218,
-    "packages/server/src/agent/v2/answered-edge.ts": 546,
-    "packages/server/src/agent/v2/classifiers/multistep.ts": 482,
-    "packages/server/src/agent/v2/counterparty.ts": 927,
+    "packages/server/src/agent/turn-state.ts": 239,
+    "packages/server/src/agent/v2/answered-edge.ts": 648,
+    "packages/server/src/agent/v2/classifiers/multistep.ts": 502,
+    "packages/server/src/agent/v2/counterparty.ts": 938,
     "packages/server/src/agent/v2/loop.ts": 697,
     "packages/server/src/agent/v2/outbound.ts": 462,
-    "packages/server/src/agent/v2/receipt.ts": 433,
+    "packages/server/src/agent/v2/receipt.ts": 442,
     "packages/server/src/agent/v2/recorded-commitment.ts": 209,
     "packages/server/src/agent/v2/recovery.ts": 605,
     "packages/server/src/agent/v2/state.ts": 621,
     "packages/server/src/agent/v2/steer-queue.ts": 287,
-    "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 183,
+    "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
     "packages/server/src/agent/v2/steps/assemble/index.ts": 302,
     "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts": 180,
     "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 112,
@@ -2478,7 +2807,7 @@
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 198,
     "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 310,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
-    "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 247,
+    "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 266,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 149,
     "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 225,
     "packages/server/src/agent/v2/steps/execute/index.ts": 265,
@@ -2486,10 +2815,10 @@
     "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 337,
     "packages/server/src/agent/v2/steps/execute/result-notes.ts": 152,
     "packages/server/src/agent/v2/steps/execute/run-one.ts": 280,
-    "packages/server/src/agent/v2/steps/execute/scaffold-title.ts": 113,
+    "packages/server/src/agent/v2/steps/execute/scaffold-title.ts": 149,
     "packages/server/src/agent/v2/steps/execute/tool-sets.ts": 97,
     "packages/server/src/agent/v2/steps/execute/tracker-counting.ts": 125,
-    "packages/server/src/agent/v2/steps/execute/tracker-floors.ts": 288,
+    "packages/server/src/agent/v2/steps/execute/tracker-floors.ts": 314,
     "packages/server/src/agent/v2/steps/execute/work-status.ts": 52,
     "packages/server/src/agent/v2/steps/execute/xml-fallback.ts": 155,
     "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 391,
@@ -2505,7 +2834,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/empty-response.ts": 174,
     "packages/server/src/agent/v2/steps/post-call-classify/going-idle.ts": 320,
     "packages/server/src/agent/v2/steps/post-call-classify/handoff-floors.ts": 209,
-    "packages/server/src/agent/v2/steps/post-call-classify/index.ts": 219,
+    "packages/server/src/agent/v2/steps/post-call-classify/index.ts": 222,
     "packages/server/src/agent/v2/steps/post-call-classify/missed-reply.ts": 167,
     "packages/server/src/agent/v2/steps/post-call-classify/no-reply.ts": 359,
     "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 71,
@@ -2514,7 +2843,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 115,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 367,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 134,
-    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 187,
+    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 196,
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 235,
@@ -2525,30 +2854,30 @@
     "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 236,
     "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts": 284,
     "packages/server/src/agent/v2/steps/preflight/inbound-and-abort.ts": 202,
-    "packages/server/src/agent/v2/steps/preflight/index.ts": 288,
+    "packages/server/src/agent/v2/steps/preflight/index.ts": 290,
     "packages/server/src/agent/v2/steps/preflight/recall-flag.ts": 102,
     "packages/server/src/agent/v2/steps/preflight/start-ack.ts": 176,
     "packages/server/src/agent/v2/steps/preflight/step-contexts.ts": 138,
     "packages/server/src/agent/v2/steps/preflight/turn-classification.ts": 381,
-    "packages/server/src/agent/v2/steps/preflight/turn-closures.ts": 396,
-    "packages/server/src/agent/v2/steps/preflight/turn-trigger.ts": 287,
+    "packages/server/src/agent/v2/steps/preflight/turn-closures.ts": 426,
+    "packages/server/src/agent/v2/steps/preflight/turn-trigger.ts": 312,
     "packages/server/src/agent/v2/steps/step-outcome.ts": 140,
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
     "packages/server/src/agent/v2/steps/teardown/conversation-tagging.ts": 70,
-    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 264,
-    "packages/server/src/agent/v2/steps/teardown/index.ts": 219,
+    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 289,
+    "packages/server/src/agent/v2/steps/teardown/index.ts": 237,
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/costs/tracker.ts": 541,
     "packages/server/src/credentials/secret-fields.ts": 241,
-    "packages/server/src/db/migration-backup.ts": 343,
+    "packages/server/src/db/migration-backup.ts": 365,
     "packages/server/src/gateway/routes/agents.ts": 858,
-    "packages/server/src/gateway/routes/chat.ts": 485,
+    "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2530,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/setup-deps.ts": 513,
-    "packages/server/src/gateway/routes/tracker.ts": 906,
+    "packages/server/src/gateway/routes/tracker.ts": 945,
     "packages/server/src/gateway/routes/twilio.ts": 501,
-    "packages/server/src/gateway/routes/update.ts": 1115,
+    "packages/server/src/gateway/routes/update.ts": 1171,
     "packages/server/src/gateway/routes/upload.ts": 608,
     "packages/server/src/google/auth.ts": 771,
     "packages/server/src/google/tools-forms.ts": 821,
@@ -2556,18 +2885,19 @@
     "packages/server/src/google/tools-slides.ts": 3022,
     "packages/server/src/google/tools-write.ts": 1862,
     "packages/server/src/healer/approval-routing.ts": 496,
-    "packages/server/src/healer/diagnostic.ts": 1041,
-    "packages/server/src/healer/healer-agent.ts": 1172,
-    "packages/server/src/healer/injury-recovery.ts": 822,
-    "packages/server/src/index.ts": 1215,
+    "packages/server/src/healer/diagnostic.ts": 1067,
+    "packages/server/src/healer/healer-agent.ts": 1186,
+    "packages/server/src/healer/injury-recovery.ts": 831,
+    "packages/server/src/index.ts": 1256,
     "packages/server/src/memory/assembler.ts": 2615,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
     "packages/server/src/memory/budget.ts": 442,
     "packages/server/src/memory/compaction.ts": 1335,
     "packages/server/src/memory/deliveries-lane.ts": 240,
-    "packages/server/src/memory/lanes.ts": 822,
-    "packages/server/src/memory/message-store.ts": 1013,
+    "packages/server/src/memory/lanes.ts": 867,
+    "packages/server/src/memory/message-store.ts": 1122,
+    "packages/server/src/memory/recall-lane.ts": 531,
     "packages/server/src/memory/recall.ts": 510,
     "packages/server/src/memory/retrieval.ts": 591,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
@@ -2578,11 +2908,11 @@
     "packages/server/src/microsoft/tools-write.ts": 2131,
     "packages/server/src/migration/checks.ts": 537,
     "packages/server/src/migration/import.ts": 407,
-    "packages/server/src/prompt/assembler.ts": 1405,
-    "packages/server/src/prompt/registry/entries.ts": 524,
+    "packages/server/src/prompt/assembler.ts": 1458,
+    "packages/server/src/prompt/registry/entries.ts": 542,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
-    "packages/server/src/scheduler/runner.ts": 1706,
+    "packages/server/src/scheduler/runner.ts": 1831,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/format-time.ts": 275,
     "packages/server/src/services/gmail-watcher.ts": 592,
@@ -2600,9 +2930,9 @@
     "packages/server/src/tools/tool-docs.ts": 550,
     "packages/server/src/tools/unified-read.ts": 761,
     "packages/server/src/tools/work-verbs.ts": 373,
-    "packages/server/src/tracker/pm-agent.ts": 2267,
+    "packages/server/src/tracker/pm-agent.ts": 2405,
     "packages/server/src/tracker/schema.ts": 1064,
-    "packages/server/src/tracker/tools.ts": 4455,
+    "packages/server/src/tracker/tools.ts": 4596,
     "packages/server/src/twilio/call-session.ts": 884,
     "packages/server/src/twilio/sms-inbound.ts": 406,
     "packages/server/src/update-state.ts": 417,
@@ -2616,20 +2946,20 @@
     "packages/server/src/voice/stt-service.ts": 538,
     "packages/server/src/voice/voice-ws.ts": 2299,
     "packages/server/src/work/ask-remediation.ts": 314,
-    "packages/server/src/work/ask-settlement.ts": 898,
-    "packages/server/src/work/ask-title.ts": 297,
-    "packages/server/src/work/occurrences.ts": 426,
+    "packages/server/src/work/ask-settlement.ts": 1196,
+    "packages/server/src/work/ask-title.ts": 420,
+    "packages/server/src/work/occurrences.ts": 634,
     "packages/server/src/work/override-requests.ts": 247,
-    "packages/server/src/work/store.ts": 1739,
-    "packages/server/src/work/tracker-store.ts": 530,
+    "packages/server/src/work/store.ts": 1897,
+    "packages/server/src/work/tracker-store.ts": 534,
     "packages/server/src/work/tracker-view.ts": 533,
-    "packages/server/src/work/work-reaper.ts": 528,
+    "packages/server/src/work/work-reaper.ts": 680,
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
-    "packages/shared/src/types.ts": 527,
-    "packages/shared/src/visibility.ts": 881,
-    "packages/shared/src/ws.ts": 1088,
+    "packages/shared/src/types.ts": 540,
+    "packages/shared/src/visibility.ts": 896,
+    "packages/shared/src/ws.ts": 1110,
     "watchdog/src/index.ts": 1217
   }
 }
