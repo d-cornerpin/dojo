@@ -2,6 +2,13 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/server/src/prompt/assembler.ts",
+      "from": 1458,
+      "to": 1477,
+      "by": "UX-REPAIR ROUND 5 T23 — one engine-owned conduct sentence, and the incident that bought it",
+      "why": "+19: 4 code, 13 comment, 2 blank. The 4 code lines are a `lines.push` of a static block; the 13 comment lines are the round-5 S5 incident (the agent's own proposal marked a file 'Borderline (want your call)… Yours, or delete it?', its own pause note said 'needs his call', and a bare 'Yes, go ahead.' took the file with the rest) plus the two decisions a later reader would otherwise re-litigate: WHY the sentence is engine-owned rather than left in the SOUL template (the template is per-install and an installed agent never receives template edits, so a fix that lived only there reaches nobody already running), and the HONEST BOUND written where the rule is written — this narrows model judgment, it cannot guarantee it, and three driven replays on the floor model did not reproduce the shape. This is a registered prefix re-blessing under OR7 and the golden moved by exactly these 235 bytes; a prefix edit whose reason is not next to it is the shape OR7 exists to refuse. REFUSED: a new registry-declared slot in `prompt/registry/entries.ts` (+0 here, +12 there plus a declaration in the cache-prefix gate's SLOT_DECLARATIONS) — the task names an existing engine-owned surface as the preferred home and `sys.tools` already carries every unconditional conduct block; a second slot would be a second place to look. REFUSED: trimming the comment to the four code lines. From here this file may only shrink."
+    },
+    {
       "path": "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts",
       "from": 115,
       "to": 148,
@@ -3210,7 +3217,7 @@
     "packages/server/src/microsoft/tools-write.ts": 2131,
     "packages/server/src/migration/checks.ts": 537,
     "packages/server/src/migration/import.ts": 407,
-    "packages/server/src/prompt/assembler.ts": 1458,
+    "packages/server/src/prompt/assembler.ts": 1477,
     "packages/server/src/prompt/registry/entries.ts": 542,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
