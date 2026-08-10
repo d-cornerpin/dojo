@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { findDeliveryEvidenceForTask, renderDeliveryEvidence } from './delivery-evidence.js';
+import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { turnContext } from '../agent/turn-context.js';
 import path from 'node:path';
@@ -201,7 +201,10 @@ export const PM_ONLY_WORK_OPS: ReadonlySet<string> = new Set<string>([
 // Non-work tools the PM may call. Plain names: these tools were not collapsed.
 const PM_ALLOWED_OTHER_TOOLS: readonly string[] = [
   'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
-  'vault_search', 'vault_remember', 'history_search', 'history_get',
+  // UX-REPAIR round 2 T11: `vault_get` was named by the PM's own prompt (`PM-SOUL.md:66`) and
+  // refused by this gate — the prompt described a door that did not exist. Read-only, and the
+  // alignment is to the prompt: no prompt text changed (it is the PM's prefix; cache tenet).
+  'vault_search', 'vault_get', 'vault_remember', 'history_search', 'history_get',
   'load_tool_docs', 'get_current_time',
   // Read-only artifact verification for close-out validation (C2 sub-finding):
   // confirm the actual deliverable instead of trusting the agent's claim.
@@ -1582,6 +1585,25 @@ async function runPMReview(): Promise<void> {
         + `or push back, or get more info — whatever it takes to make sure the task actually `
         + `gets completed. Do this one now.`
       : '';
+    // UX-REPAIR round 2 T11 — THE DEREFERENCEABLE POINTER, finally in the payload that demands
+    // one. `resolveTaskAnswerPointer` reads the ask's own recorded receipt (via T11's task→ask
+    // edge) or the task's answered turn; it returns null rather than anything inferred, so a
+    // row with nothing behind it reads exactly as it does today. See its header for why the
+    // review could not do this before: kelly's ~40 `history_search` calls on S4 were searching
+    // lanes the answer does not live in, because the payload gave it nothing to open.
+    const answerPointer = resolveTaskAnswerPointer(cTask.id);
+    const deliveredLine = answerPointer
+      ? `\n  📄 DELIVERED ANSWER ON RECORD (${answerPointer.basis === 'parent-ask-receipt'
+          ? 'the receipt the engine recorded for the request this task exists for'
+          : 'this task\'s own answered turn'}`
+        + `${answerPointer.channel ? `, via ${answerPointer.channel}` : ''}`
+        + `${answerPointer.at ? `, ${answerPointer.at} UTC` : ''}`
+        + `; delivery ${answerPointer.deliveryId.slice(0, 8)}`
+        + `${answerPointer.messageId ? `, message ${answerPointer.messageId.slice(0, 8)}` : ''}):\n`
+        + `    "${answerPointer.excerpt}"\n`
+        + `  This IS the dereference — compare it against the goal and rule. `
+        + `Use history_get on the message id above if you need the whole thing.`
+      : '';
     // Not shown to the model — it is the ordering fact, and prose about it would only invite
     // the validator to treat a stubborn row as suspect. Logged instead, below.
     void cTask.attempts_recorded;
@@ -1591,7 +1613,7 @@ async function runPMReview(): Promise<void> {
         `UNVALIDATED_COMPLETE: "${cTask.title}" (${cTask.id.slice(0, 8)}) closed by ${agentName}, awaiting your validation.${doorbellLine}${smellLine}${runLine}${goalEditLine}\n` +
         `  Goal: ${cTask.goal ?? '(no goal recorded, pre-migration row)'}\n` +
         `  Result: ${cTask.result ?? '(none)'}\n` +
-        `  Evidence:\n${evidenceLines}\n` +
+        `  Evidence:\n${evidenceLines}${deliveredLine}\n` +
         `  Priority=${cTask.priority}, revert_count=${cTask.revert_count}.${tierHint}\n` +
         `  Read the file/audit log/output referenced in evidence BEFORE validating (skepticism rule). ` +
         `Call work_validate(action="validate", kind="complete", task_id="${cTask.id}", valid=true) when the work demonstrably matches the goal. ` +

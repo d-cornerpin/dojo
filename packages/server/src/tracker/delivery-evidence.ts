@@ -137,6 +137,111 @@ export function findDeliveryEvidenceForTask(taskId: string): TaskDeliveryEvidenc
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════════
+// UX-REPAIR ROUND 2 T11 — THE POINTER THE VALIDATION REVIEW WAS MISSING.
+//
+// The Key-2 payload orders the PM to *"Read the file/audit log/output referenced in evidence
+// BEFORE validating"* (`pm-agent.ts:1596`) and PM-SOUL forbids rejecting for non-dereference
+// (*"NEVER reject because you didn't dereference"*, `PM-SOUL.md:61-66`) — while the payload
+// itself selects only the work row's own prose. On S4 (2026-08-10) kelly wrote 7
+// `validation_review_miss` rows over 383 s and made ~40 `history_search` calls that could not
+// have worked: the rundown is an owner-lane row in BehaviorBot's conversation and the pieces
+// are `lane='a2a'` rows. The rule and the payload were in direct contradiction.
+//
+// This resolves ONE dereferenceable pointer per row from records the engine already keeps, in
+// the order of how directly each was RECORDED rather than inferred:
+//   (a) the task→ask edge (T11's `work.source_message_id` stamp) → the ask's own
+//       `result_delivery_id` — which is what `compile_resolved` wrote, i.e. the authority that
+//       knew which delivery satisfied the request said so;
+//   (b) failing that, `findDeliveryEvidenceForTask`'s turn-level answer for the task itself.
+// Nothing is guessed: no pointer resolves to null, which is the honest answer and leaves the
+// PM's existing behaviour unchanged for rows that genuinely have nothing behind them.
+//
+// Bounded by construction: at most three small indexed lookups, on a queue already capped at
+// `LIMIT 10` (`pm-agent.ts:1475`).
+// ════════════════════════════════════════════════════════════════════════════════
+
+export interface TaskAnswerPointer {
+  deliveryId: string;
+  messageId: string | null;
+  /** How the pointer was established — recorded, never inferred prose. */
+  basis: 'parent-ask-receipt' | 'task-turn-answer';
+  excerpt: string;
+  channel: string | null;
+  at: string | null;
+}
+
+const ANSWER_EXCERPT_CHARS = 400;
+
+function deliveryPointer(
+  deliveryId: string, basis: TaskAnswerPointer['basis'],
+): TaskAnswerPointer | null {
+  const db = getDb();
+  const d = db.prepare(
+    `SELECT d.id AS id, d.message_id AS message_id, d.channel AS channel,
+            d.created_at AS created_at, m.content AS content
+       FROM deliveries d LEFT JOIN messages m ON m.id = d.message_id
+      WHERE d.id = ? AND d.outcome = 'delivered'`,
+  ).get(deliveryId) as {
+    id: string; message_id: string | null; channel: string | null;
+    created_at: string; content: string | null;
+  } | undefined;
+  if (!d) return null;
+  const raw = (d.content ?? '').replace(/^\[[^\]]*\]\s*/g, '').replace(/\s+/g, ' ').trim();
+  if (!raw) return null;
+  return {
+    deliveryId: d.id, messageId: d.message_id, basis, channel: d.channel, at: d.created_at,
+    excerpt: raw.length > ANSWER_EXCERPT_CHARS ? `${raw.slice(0, ANSWER_EXCERPT_CHARS)}…` : raw,
+  };
+}
+
+export function resolveTaskAnswerPointer(taskId: string): TaskAnswerPointer | null {
+  try {
+    const db = getDb();
+    const task = db.prepare(
+      `SELECT w.agent_id AS assigned_to, w.source_message_id AS source_message_id,
+              w.result_delivery_id AS result_delivery_id
+         FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
+    ).get(taskId) as {
+      assigned_to: string | null; source_message_id: string | null; result_delivery_id: string | null;
+    } | undefined;
+    if (!task) return null;
+
+    // (a) THE RECORDED ANSWER TO THE REQUEST THIS TASK EXISTS FOR. `ask:<messageId>` is the
+    //     spine's own derivation (`work/store.ts:602`), so the edge needs no second column.
+    if (task.source_message_id) {
+      const ask = db.prepare(
+        `SELECT result_delivery_id FROM work WHERE id = ? AND kind = 'ask'`,
+      ).get(`ask:${task.source_message_id}`) as { result_delivery_id: string | null } | undefined;
+      if (ask?.result_delivery_id) {
+        const p = deliveryPointer(ask.result_delivery_id, 'parent-ask-receipt');
+        if (p) return p;
+      }
+    }
+
+    // (b) THE TASK'S OWN ANSWERED TURN, through the machinery that already reads
+    //     turns/turn_artifacts/deliveries for the poke ladder and the close-out gate.
+    const evidence = findDeliveryEvidenceForTask(taskId);
+    if (evidence?.answerMessageId && task.assigned_to) {
+      const d = db.prepare(
+        `SELECT id FROM deliveries
+          WHERE agent_id = ? AND message_id = ? AND outcome = 'delivered'
+          ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      ).get(task.assigned_to, evidence.answerMessageId) as { id: string } | undefined;
+      if (d) {
+        const p = deliveryPointer(d.id, 'task-turn-answer');
+        if (p) return p;
+      }
+    }
+    return null;
+  } catch (err) {
+    logger.warn('resolveTaskAnswerPointer failed (treated as no pointer)', {
+      taskId, error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
 /** One-line human rendering for steer/gate copy. */
 export function renderDeliveryEvidence(e: TaskDeliveryEvidence): string {
   const parts = [`an answered reply on this task's own conversation (turn ${e.turnNumber}, ${e.answeredAt} UTC)`];

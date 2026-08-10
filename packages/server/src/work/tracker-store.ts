@@ -27,6 +27,7 @@ import { getDb } from '../db/connection.js';
 import { patchAssignments } from '../db/patch.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
+import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { noSuchWorkDetail, noteUnsettled, type WorkPatchOutcome } from './outcome.js';
 import {
   transition, rejectClaim, appendWorkEvent,
@@ -118,10 +119,46 @@ export function openTrackerProject(p: OpenTrackerProjectInput): string {
   return id;
 }
 
+/**
+ * THE TASK→ASK EDGE (UX-REPAIR round 2 T11). "This tracker task exists to satisfy that ask"
+ * lived only in prose — the task's origin line renders *"created from the owner's dashboard
+ * conversation at …, asking: …"* — so the ask's own `compile_resolved`, and the receipt it
+ * names, were unreachable from the task. Two separate defects (the PM's blind review, and the
+ * owner escalation that fired 25 s after the answer shipped) both needed this one edge.
+ *
+ * No schema change and no new column: `work.source_message_id` already exists and already
+ * carries exactly this fact everywhere else that has it (`delivery-evidence.ts:52-70`,
+ * `task-stamps.ts:98`, `tools.ts:698`, `spawner.ts:861`). An ask's id IS `ask:<messageId>`
+ * (`store.ts:602`), so stamping the ask's own source message makes the edge resolvable with
+ * the derivation the spine already publishes, rather than a second pointer to keep in step.
+ *
+ * Only fills a GAP: a caller that states an origin keeps it byte-identically.
+ */
+function askSourceMessageForCreatingTurn(agentId: string): string | null {
+  try {
+    const turn = currentTurnNumber(agentId);
+    if (!turn) return null;
+    const r = getDb().prepare(
+      `SELECT root_id FROM work
+        WHERE kind = 'ask' AND agent_id = ? AND state = 'claimed' AND claimed_by_turn = ?
+        ORDER BY opened_at DESC LIMIT 1`,
+    ).get(agentId, turn) as { root_id: string } | undefined;
+    return r?.root_id ?? null;
+  } catch (err) {
+    // A missing edge is the status quo, never a failed task creation.
+    logger.warn('task create: could not resolve the creating turn\'s ask; the task is opened without the edge', {
+      agentId, error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
 export function openTrackerTask(p: OpenTrackerTaskInput): string {
   const db = getDb();
   const id = p.id ?? uuidv4();
   const at = now();
+  const sourceMessageId = p.origin.sourceMessageId
+    ?? askSourceMessageForCreatingTurn(p.assignedTo ?? p.createdBy);
   // `agent_id` is NOT NULL on the spine and the legacy column was nullable, so an unassigned
   // task belongs to its creator until someone claims it — the same COALESCE migration `135`
   // used (`COALESCE(t.assigned_to, t.created_by)`), not a new rule.
@@ -144,7 +181,7 @@ export function openTrackerTask(p: OpenTrackerTaskInput): string {
       p.priority ?? 'normal', p.stepNumber ?? null, p.totalSteps ?? null, p.phase ?? 1,
       JSON.stringify(p.dependsOn ?? []), p.assignedToGroup ?? null, p.taskKind ?? null,
       p.a2aThreadId ?? null,
-      p.origin.sourceMessageId, p.origin.turn, p.origin.convKey, p.origin.kind, at, at,
+      sourceMessageId, p.origin.turn, p.origin.convKey, p.origin.kind, at, at,
     );
     appendWorkEvent(id, 'opened', p.createdBy, { kind: 'task', title: p.title, project_id: p.projectId ?? null });
   });
@@ -417,22 +454,48 @@ export function deliveryForCompletedChildren(projectId: string): string | null {
  * Null when the agent delivered nothing, and the close is then refused by G7. That refusal
  * is the phase's central requirement, not a failure of this function.
  */
-export function deliveryForAgentSince(agentId: string, sinceMs: number): string | null {
+export function deliveryForAgentSince(
+  agentId: string, sinceMs: number, notBeforeTurn?: number | null,
+): string | null {
+  const floor = notBeforeTurn ?? null;
   const r = getDb().prepare(
     `SELECT id FROM deliveries
       WHERE agent_id = ? AND outcome = 'delivered' AND tool <> 'engine-ack'
         AND CAST(strftime('%s', created_at) AS INTEGER) * 1000 >= ?
+        AND (@floor IS NULL OR turn_number IS NULL OR turn_number >= @floor)
       ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-  ).get(agentId, sinceMs) as { id: string } | undefined;
+  ).get(agentId, sinceMs, { floor }) as { id: string } | undefined;
   return r?.id ?? null;
 }
 
-/** The same question asked of a work row: its own agent, its own opening instant. */
+/**
+ * The same question asked of a work row: its own agent, its own opening instant — AND NOT
+ * BEFORE THE CLOSE REQUEST'S OWN TURN (UX-REPAIR round 2 T11).
+ *
+ * ── WHAT THE OLD WINDOW ADMITTED, measured (investigation-round2.md §2) ──
+ * "The newest delivery by this agent since the task opened" spans every turn between. On S4
+ * (2026-08-10) the task opened 06:11:11 and the close was filed 06:15:14, so the newest
+ * delivery in the window was the 06:11:16 line *"On it — I've handed Squarespace to one helper
+ * and WordPress to another"* — which became the task's recorded `result_delivery_id`. The
+ * `tool <> 'engine-ack'` exclusion could not catch it: that ack was MODEL-authored on the
+ * dashboard and is indistinguishable at the ledger from a real answer. The PM was then told to
+ * dereference a pointer that named an acknowledgement.
+ *
+ * ── THE NARROWING, AND WHY IT IS THIS ONE ──
+ * A close request is filed FROM a turn, so the turn is the boundary the ledger already
+ * records: a delivery this agent made on an EARLIER turn is, by construction, not what this
+ * close is reporting. Nothing else is removed — a delivery from the close's own turn (the
+ * ordinary "answered then closed" shape, and G7's requirement) resolves exactly as before, a
+ * LATER delivery still resolves, and a delivery with no turn stamp at all (1,372 of 14,810
+ * rows on the live box: alerts, a2a hand-offs, owner-closes) is untouched, because "unknown
+ * turn" is not "earlier turn". None → null, which is the true answer: nothing has delivered
+ * this yet, and G7's refusal is the correct outcome rather than a false receipt.
+ */
 export function deliveryForTaskClose(workId: string): string | null {
   const w = getDb().prepare('SELECT agent_id, opened_at FROM work WHERE id = ?')
     .get(workId) as { agent_id: string; opened_at: number } | undefined;
   if (!w) return null;
-  return deliveryForAgentSince(w.agent_id, w.opened_at);
+  return deliveryForAgentSince(w.agent_id, w.opened_at, currentTurnNumber(w.agent_id) || null);
 }
 
 // ⟨TOMBSTONE⟩ `claimOccurrence` lived here and was D21's timestamp CAS: one UPDATE keyed on

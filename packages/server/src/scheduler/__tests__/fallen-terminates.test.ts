@@ -56,8 +56,13 @@ function applySchema(db: Database.Database): void {
     -- nobody cannot be 'done'), so this suite now reaches deliveryForAgentSince. It could
     -- not before: inFlightOccurrence found nothing in a task_runs-only fixture, so the whole
     -- settle branch was dark here. More of the real path runs now, which is the point.
+    -- UX-REPAIR round 2 T11: turn_number joins the fixture because the close-receipt
+    -- resolver reads it now (a delivery from an EARLIER turn is not what this close is
+    -- reporting). Widening the fixture is the honest fix, exactly as the note above records
+    -- for the same class — a narrow twin that drifts from the real schema is worse than none.
     CREATE TABLE IF NOT EXISTS deliveries (
-      id TEXT PRIMARY KEY, agent_id TEXT, outcome TEXT, tool TEXT, created_at INTEGER
+      id TEXT PRIMARY KEY, agent_id TEXT, outcome TEXT, tool TEXT, created_at INTEGER,
+      turn_number INTEGER
     );
     -- PHASE-2 T10F: the task_runs fixture DDL is GONE with the table. A run is an
     -- occurrence work row now, and createWorkTable above already declares it, including

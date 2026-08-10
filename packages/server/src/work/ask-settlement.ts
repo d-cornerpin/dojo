@@ -918,6 +918,23 @@ function settleOnJoin(
   appendWorkEvent(ask.id, 'compile_resolved', actorId, {
     reason, basis, delivery_id: evidence.id, tool: evidence.tool, boundary_at: boundaryMs,
   });
+  // UX-REPAIR round 2 T11 — THE DELIVERY LEARNS WHAT IT ANSWERED, from the authority that just
+  // decided it. A compiled answer usually lands on a BARE WAKE (S4 turn 4555: `turns.kind`
+  // NULL, `subject_kind='none'`), so the delivery is written with `root_kind=''`/`root_id=''`
+  // and no reverse lookup can find it — while the delegating turn's ACK, which does carry
+  // `root_kind='ask'`, is the only row that answers "which delivery belongs to this ask".
+  // This is RECORDED, not inferred: at this instant the settlement authority holds both ids.
+  // Only ever fills a blank — an already-attributed delivery is never re-pointed.
+  try {
+    getDb().prepare(
+      `UPDATE deliveries SET root_kind = 'ask', root_id = ?
+        WHERE id = ? AND COALESCE(root_kind, '') = '' AND COALESCE(root_id, '') = ''`,
+    ).run(ask.id, evidence.id);
+  } catch (err) {
+    logger.warn('join settled: the compiled delivery could not be stamped with the ask it answered', {
+      workId: ask.id, deliveryId: evidence.id, error: err instanceof Error ? err.message : String(err),
+    });
+  }
   logger.info('join settled: the compiled answer reached the owner', {
     agentId: ask.agent_id, workId: ask.id, deliveryId: evidence.id, tool: evidence.tool,
   }, ask.agent_id);

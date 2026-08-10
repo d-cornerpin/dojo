@@ -409,6 +409,44 @@ describe('(ii) the join settles through the authority, on the COMPILED delivery'
     expect(eventKinds(askId)).toContain('compile_resolved');
   });
 
+  // UX-REPAIR round 2 T11 — the compiled answer usually lands on a BARE WAKE (S4 turn 4555:
+  // `turns.kind` NULL, `subject_kind='none'`), so `deliveries.root_kind`/`root_id` are written
+  // empty and no reverse lookup can find it — while the delegating turn's ACK, which does
+  // carry `root_kind='ask'`, is the only row that answers "which delivery belongs to this
+  // ask". The authority that settles the join holds both ids at that instant; it records it.
+  it('the compiled delivery is STAMPED with the ask it answered, at `compile_resolved`', () => {
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 2);
+    landAll(kids);
+    seedDelivery('d-compiled', { turn: 9, displayKind: 'agent-text', offsetSeconds: 5, content: 'HARBOR-0 and HARBOR-1' });
+    const before = mockDb.current!.prepare('SELECT root_kind, root_id FROM deliveries WHERE id = ?')
+      .get('d-compiled') as { root_kind: string | null; root_id: string | null };
+    expect(before.root_kind ?? '').toBe('');
+
+    expect(settleAskOnJoin(askId, { agentId: AGENT, reason: 'the compile answered the owner' }).verdict).toBe('closed');
+
+    const after = mockDb.current!.prepare('SELECT root_kind, root_id FROM deliveries WHERE id = ?')
+      .get('d-compiled') as { root_kind: string; root_id: string };
+    expect(after.root_kind).toBe('ask');
+    expect(after.root_id).toBe(askId);
+  });
+
+  it('CONTROL: a delivery that ALREADY names its origin is never re-pointed', () => {
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 2);
+    landAll(kids);
+    seedDelivery('d-compiled', { turn: 9, displayKind: 'agent-text', offsetSeconds: 5, content: 'HARBOR-0 and HARBOR-1' });
+    mockDb.current!.prepare(`UPDATE deliveries SET root_kind = 'tracker', root_id = 'someone-elses' WHERE id = ?`)
+      .run('d-compiled');
+
+    expect(settleAskOnJoin(askId, { agentId: AGENT, reason: 'the compile answered the owner' }).verdict).toBe('closed');
+
+    const after = mockDb.current!.prepare('SELECT root_kind, root_id FROM deliveries WHERE id = ?')
+      .get('d-compiled') as { root_kind: string; root_id: string };
+    expect(after.root_kind).toBe('tracker');
+    expect(after.root_id).toBe('someone-elses');
+  });
+
   it('NEGATIVE: the EARLIER delivery of the delegating turn is not the compiled answer', () => {
     const askId = claimedAsk('m-1', 7);
     const kids = openJoin(askId, 2);
