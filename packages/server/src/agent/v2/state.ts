@@ -372,18 +372,15 @@ export interface AgentTurnState {
    */
   nudgedForCloseOutThisTurn: boolean;
 
-  /**
-   * The task id of a project the ENGINE itself auto-scaffolded THIS turn
-   * (mid-turn floor at 6+ work calls), or null. The engine owns the
-   * lifecycle of tasks it opens: on a read-only conversation turn the
-   * normal going-idle closeout machinery never fires (it requires a
-   * scheduler / A2A / side-effecting turn), so without this the task the
-   * engine opened would dangle and later trip the PM poke chain into
-   * re-delivering the old answer. Recorded here so natural turn-end can
-   * close JUST that task against the reply the user already saw, without
-   * bulk-closing unrelated danglers.
+  /*
+   * UX-REPAIR T1: `autoScaffoldedTaskIdThisTurn` LIVED HERE and is deleted. It fed exactly
+   * one mechanism — `closeEngineScaffoldSameTurn`, the engine's same-turn close of its own
+   * scaffold — which `d00f270` removed on purpose as "the ONLY engine path allowed to write
+   * `status='complete'` on a task", the thing the two-key contract exists to prevent. From
+   * that commit the field had one write and ZERO readers, while this doc block went on
+   * describing the deleted close as live. A write-only field with a comment promising
+   * behaviour is worse than no field: it is the next reader's wrong mental model.
    */
-  autoScaffoldedTaskIdThisTurn: string | null;
   /**
    * Set true at preflight when there is an unacknowledged compaction
    * recall nudge in the message log (i.e. compaction fired and the
@@ -519,7 +516,6 @@ export function initState(params: InitStateParams): AgentTurnState {
     closeOutGateSatisfied: false,
     nudgedForCloseOutThisTurn: false,
 
-    autoScaffoldedTaskIdThisTurn: null,
     awaitingPostCompactRecall: false,
     nudgedForPostCompactRecall: false,
     taskClosedWithTextThisTurn: false,

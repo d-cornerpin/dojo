@@ -184,9 +184,17 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
         // so the continuing agent sees the task id + how to close it THIS turn.
         // Label form ([System] body) so the events-lane leading-bracket strip
         // keeps the body. conv_key sentinel keeps it un-selectable as an event.
+        // UX-REPAIR T1 (observability): the note used to print ONLY `nonTrackerToolCalls`,
+        // the PER-TURN counter — the one that did not decide anything. The gate reads
+        // `effectiveUntracked`. Printing one while gating on the other is how a firing could
+        // read "you made 2 work calls" against a floor of 6 and look like a string bug
+        // instead of the accumulator defect it was. BOTH numbers, always, so the next reader
+        // sees which one fired the floor.
         const autoNoteText = (
           `[System] The engine opened tracker task "${scaffoldName}" (task_id: ${scaffoldTaskId}) for this work ` +
-          `(you made ${state.nonTrackerToolCalls} work calls with no tracker entry; untracked multi-step work drifts and the PM cannot monitor it). ` +
+          `(work calls with no tracker entry — this turn: ${state.nonTrackerToolCalls}; ` +
+          `total untracked in this conversation: ${effectiveUntracked}; floor: ${TRACKER_AUTO_SCAFFOLD_AT}; ` +
+          `untracked multi-step work drifts and the PM cannot monitor it). ` +
           `Keep working; update it with work_note as you go and close it with work_update(action="status", complete) plus result/evidence when done.`
         );
         const autoNoteId = uuidv4();
@@ -206,14 +214,20 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
         // `workRowOpenedThisTurn` is the one the floor tier itself reads now (D4).
         // trackerToolCalledThisTurn is kept for parity with the agent-engaged-tracker
         // signal. The queue entry
-        // delivers the scaffold note to a continuing agent this turn (F2.2);
-        // autoScaffoldedTaskIdThisTurn lets natural turn-end close JUST this
-        // task if the turn was read-only and nothing else closed it (F2.1).
+        // delivers the scaffold note to a continuing agent this turn (F2.2).
+        //
+        // UX-REPAIR T1: `autoScaffoldedTaskIdThisTurn` USED TO BE SET HERE, and the comment
+        // that stood in these lines promised "natural turn-end can close JUST this task
+        // (F2.1)". That close path died with `d00f270` — `closeEngineScaffoldSameTurn` was
+        // the ONLY engine path allowed to write `status='complete'` on a task, and the
+        // two-key contract removed it deliberately. The field had ZERO readers from that
+        // commit onward, so the write and both comments were live misinformation about a
+        // mechanism the tree does not have. The row is closed by the going-idle close-out
+        // gate, the PM ladder's delivery-evidence consult, or the reaper — as `d00f270` says.
         state = advance(state, {
           trackerToolCalledThisTurn: true,
           trackerWriteThisTurn: true,
           workRowOpenedThisTurn: true,
-          autoScaffoldedTaskIdThisTurn: scaffoldTaskId,
           steerQueue: enqueueSteer(state.steerQueue, { floor: 'tracker-scaffold', content: autoNoteText, atLoop: state.loopCount }),
         });
         // RC-19 item 3: the floor just tracked the work, so reset
@@ -221,8 +235,15 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
         // write that never flows through the per-iteration accumulate/clear above,
         // so clear it explicitly or the count would re-trip the floor next turn.
         clearUntrackedWorkAcrossTurns(agentId);
+        // UX-REPAIR T1: the log line carried only `nonTrackerToolCalls` too, so the misfire
+        // was invisible in the logs as well as in the note. `effectiveUntracked` is the
+        // number the gate compared against the floor; record it beside its input.
         logger.info('v2: tracker auto-scaffold fired (engine floor)', {
-          agentId, nonTrackerToolCalls: state.nonTrackerToolCalls, taskId: scaffoldTaskId,
+          agentId,
+          nonTrackerToolCalls: state.nonTrackerToolCalls,
+          effectiveUntracked,
+          floor: TRACKER_AUTO_SCAFFOLD_AT,
+          taskId: scaffoldTaskId,
         }, agentId);
         // START ACK (NEXT-WAVE item 1): the engine floor is now the ONLY
         // engine-side work-opening site, so this is where the requirement lives.
@@ -243,6 +264,11 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
           taskId: scaffoldTaskId,
           taskTitle: scaffoldName,
           originalPrompt: scaffoldPrompt,
+          // UX-REPAIR T1: the same two numbers the note carries, so the handoff and the
+          // note can never state different reasons for the same firing again.
+          untrackedInConversation: effectiveUntracked,
+          untrackedThisTurn: state.nonTrackerToolCalls,
+          floor: TRACKER_AUTO_SCAFFOLD_AT,
         });
       } catch (err) {
         logger.warn('Tracker auto-scaffold failed (non-fatal, falling back to nudge)', {

@@ -22,6 +22,7 @@
 
 import { createLogger } from '../../../../logger.js';
 import { setAnswerMessageId } from '../../../../memory/message-store.js';
+import { clearUntrackedWorkAcrossTurnsForConversation } from '../../../turn-state.js';
 import { taskScope } from '../../../../work/tracker-view.js';
 import { setTrackerStatus, patchWork } from '../../../../work/tracker-store.js';
 import { joinState, noteUnsettled } from '../../../../work/store.js';
@@ -162,6 +163,30 @@ export async function finalizeTurnRecord(
       logger.warn('v2: turn-end obligation disposition failed (non-fatal)', {
         agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
       }, agentId);
+    }
+    // ── UX-REPAIR T1 — AN ANSWERED, DELIVERED TURN PAYS OFF ITS UNTRACKED-WORK DEBT ──
+    //
+    // The >=6 engine floor keys on the CROSS-TURN untracked-work total (RC-19 item 3), whose
+    // only clears were a tracker write, a new session, and the floor's own firing. None of
+    // them is "the turn ended and the person got their answer", so finished, delivered work
+    // stayed on the ledger forever and the 6th call opened a phantom task on whatever trivial
+    // turn came next. Measured: 10 of 35 firings in the current design era reported a
+    // per-turn count BELOW the threshold, which is only reachable via inherited debt.
+    //
+    // RC-19'S REQUIREMENT SURVIVES VERBATIM. Its subject is a turn BREAK — the A2A dodge that
+    // exits WITHOUT answering — and this clear cannot reach that shape, because it demands
+    // BOTH halves of the answered edge: the truthful-answer key AND the delivery receipt that
+    // proves the reply left the building. A turn that talked and delivered nothing keeps its
+    // debt; a turn that broke early to a peer keeps its debt.
+    //
+    // Two RECORDS and no prose, the same doctrine as the disposition above. Scoped to the
+    // conversation that was answered (`answered-edge.ts`'s own narrowing: an email to a third
+    // party is not the owner's answer), so a different conversation's running total is left
+    // exactly where it was.
+    if (answerRow && terminalDeliveryId && chosenConvKey) {
+      try {
+        clearUntrackedWorkAcrossTurnsForConversation(agentId, chosenConvKey);
+      } catch { /* in-memory map; best effort like the rest of this arm */ }
     }
     // Ticket stamps (owner design 2026-07-22): the ONE stamping point. The
     // engine writes what it observed onto every ticket this turn's root

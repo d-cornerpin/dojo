@@ -154,6 +154,27 @@ export function clearUntrackedWorkAcrossTurns(agentId: string): void {
   untrackedWorkAcrossTurns.delete(agentId);
 }
 
+/**
+ * UX-REPAIR T1 — THE CLEAR THIS MAP WAS ALWAYS MISSING: a turn that ANSWERED ITS HUMAN.
+ *
+ * RC-19 above names its own scope precisely, and it is a turn BREAK: "an agent that breaks
+ * the turn with an A2A send (the 'send_to_agent IS the response' exit) ... can dodge the
+ * floor forever". The dodge is DEFINED by exiting WITHOUT answering the person. Carrying the
+ * count across turns that COMPLETED AND DELIVERED was never the requirement, and it is what
+ * made the >=6 floor fire on trivial turns: measured on the worn-in dev DB, 10 of 35 firings
+ * in the current design era reported a per-turn count below 6, which is only reachable when
+ * the accumulator was carrying finished work's debt.
+ *
+ * SCOPED, not blanket. The map holds ONE `{convKey, count}` per agent, so a turn answering
+ * conversation B must leave conversation A's running total alone: if the stored convKey is
+ * not the one that was answered, nothing is cleared. `clearUntrackedWorkAcrossTurns` above
+ * (tracker write / floor firing / new session) keeps its blanket semantics unchanged.
+ */
+export function clearUntrackedWorkAcrossTurnsForConversation(agentId: string, convKey: string): void {
+  const prev = untrackedWorkAcrossTurns.get(agentId);
+  if (prev && prev.convKey === convKey) untrackedWorkAcrossTurns.delete(agentId);
+}
+
 // Drain progress: how many consecutive times the head (oldest-waiting) conversation
 // stayed stuck. Bounds the "keep working through the queue" re-trigger so a conversation
 // the agent cannot serve (it never produces a terminal reply for it) doesn't spin the loop

@@ -57,6 +57,14 @@ export async function dispatchPMRenameHandoff(params: {
   taskId: string;
   taskTitle: string;
   originalPrompt: string;
+  /** UX-REPAIR T1: the counters the floor actually fired on, so this handoff states the
+   *  SAME fact the engine note states. The sentence below used to hardcode the prose
+   *  "6+ work calls" beside a note that printed the per-turn counter, so a firing at
+   *  per-turn 2 produced two strings that contradicted each other on the same row.
+   *  Optional so the shape survives a caller that has not measured them. */
+  untrackedInConversation?: number;
+  untrackedThisTurn?: number;
+  floor?: number;
 }): Promise<void> {
   try {
     const { getPMAgentId, getPMAgentName, getPrimaryAgentName } = await import('../../../../config/platform.js');
@@ -66,9 +74,14 @@ export async function dispatchPMRenameHandoff(params: {
     if (!pmId || !pmName) return;
     // T8c item 3: the engine floor opens ONE task, so there is one name to fix, not a
     // project name and a first-step name that had to be made distinct from each other.
+    const why = typeof params.untrackedInConversation === 'number'
+      ? `the agent reached ${params.untrackedInConversation} untracked work calls in this conversation` +
+        (typeof params.untrackedThisTurn === 'number' ? ` (${params.untrackedThisTurn} this turn)` : '') +
+        (typeof params.floor === 'number' ? `, at or over its floor of ${params.floor},` : '')
+      : `the agent did untracked multi-step work`;
     const renameRequest = (
       `[ENGINE RENAME REQUEST] An engine-opened task needs a better name. ` +
-      `The multi-step floor just opened this because the agent did 6+ work calls with nothing ` +
+      `The multi-step floor just opened this because ${why} with nothing ` +
       `tracked, and named it with a slice of the user's prompt, which looks bad on the kanban.\n\n` +
       `Task id: ${params.taskId}\n` +
       `Current title: ${params.taskTitle}\n\n` +
