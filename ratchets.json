@@ -3200,6 +3200,20 @@
       "to": 959,
       "by": "UX-REPAIR ROUND 8 T34 — tracker frames tell the stored truth",
       "why": "+9 (3 code, 6 comment). The dashboard's POST /tasks has the identical createTask-then-schedule shape as the agent's door and inherited the identical stale frame, so it gets the identical two lines (the `announced` capture and the settle call) rather than a second mechanism. The comment names the seam and points at the shared helper. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts",
+      "from": 219,
+      "to": 286,
+      "by": "UX-REPAIR ROUND 9 T36 — standing-state claims need a board receipt",
+      "why": "+67 (28 code, 45 comment, 1 blank; -7 replaced). The floor gained a THIRD CLASS, on the same argument T33's raise made for the second and for the same reason it refused to split: round-9 S5's \"Recap the week for me\" answered with 1,100 characters and ZERO tool calls, asserting 'schedule intact for tomorrow' (no row), 'Still on deck: parking pass renewal' (nothing) and 'two fence quotes still parked' (88 such commitments, every one abandoned). The code is the class term, the board-contact predicate, the exemption read off the turn's own tool results, and the third steer. The comment carries the incident and the three things a reader would otherwise re-litigate: WHY this class's exemption is a READ where the others' are writes (the failure is not that nothing was recorded, it is that nothing was looked at); WHY the calendar side is a NAME PREFIX where `tools/work-verbs.ts` forbids exactly that (there a missed member made a GATE go dark, here it would only make an EXEMPTION too narrow, so widening on a new tool is the safe default); and WHY the steer's last sentence exists at all — it is DRIVEN, from two floor-model replays that took the granted round and spent it on a blocked task the board read had just surfaced. SPLITTING WAS REFUSED AGAIN, in T33's own words: all three classes share every guard, the ONE steer per turn and the no-spin latch, so a third file would put a third of the floor's answer somewhere the latch cannot see it. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/ack-copy.ts",
+      "from": 228,
+      "to": 303,
+      "by": "UX-REPAIR ROUND 9 T36 — standing-state claims need a board receipt",
+      "why": "ADMITTED at 303 and PINNED DECREASE-ONLY — the stronger of the two remedies the growth detector offers for an unlisted file that crossed 240 of the 400-line cap, and the right one here. T36 added +75 (25 code, 49 comment, 3 blank): `standingStateClaimSentence`, `isStandingStateClaimReply`, six patterns and one hedge pattern. The comment is 2:1 because this predicate's whole risk is what it must NOT match — its false positive is not a re-prompted promise like its siblings', it is an ordinary answer sent off to read a board it had no reason to read — so the header records the exclusions BY NAME (bare 'is set for', 'still open', 'still active', bare 'still on') with the sentence each one would have caught, and records the one deliberate divergence from the siblings (a per-SENTENCE question test rather than a whole-reply one, because a question changes whether a reply COMMITTED but does not un-assert 'still parked' — a distinction the driven replay then proved, the floor model's recap ending in a question). SPLITTING WAS MEASURED AND REFUSED, in this file's own recorded words: 'the family stays in one file so the floor cannot grow a second private copy of the question' (`ack-copy.ts:46-51`, T33). A fourth file for the third member is precisely the second copy that header exists to prevent, and the promise floor imports all three from one place. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3265,6 +3279,7 @@
     "packages/server/src/agent/tools/util.ts": 371,
     "packages/server/src/agent/turn-context.ts": 625,
     "packages/server/src/agent/turn-state.ts": 239,
+    "packages/server/src/agent/v2/ack-copy.ts": 303,
     "packages/server/src/agent/v2/answered-edge.ts": 703,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 502,
     "packages/server/src/agent/v2/counterparty.ts": 943,
@@ -3316,7 +3331,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 71,
     "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 276,
     "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 323,
-    "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 219,
+    "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 286,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 367,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
     "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 227,
