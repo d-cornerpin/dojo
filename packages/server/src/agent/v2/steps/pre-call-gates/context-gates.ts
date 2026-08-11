@@ -22,7 +22,7 @@ import {
   checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD,
 } from '../../../../memory/compaction.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
-import { backgroundDrains, pendingWakeups } from '../../../shared-state.js';
+import { backgroundDrains, queueSelfWake } from '../../../shared-state.js';
 import { compactionGate } from '../../classifiers/compaction.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
@@ -93,7 +93,7 @@ export async function runContextGates(
     }
     // Queue wakeup so the next iteration assembles fresh post-compaction context
     stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
-    pendingWakeups.add(agentId);
+    queueSelfWake(agentId, 'context-gate-rebuild');
     return requestExit(state, 'context-emergency-compact' satisfies PreCallGatesExitReason);
   } else if (gateResult.decision === 'block') {
     logger.error(gateResult.reason ?? 'context impossibly full', {
@@ -120,7 +120,7 @@ export async function runContextGates(
       await checkAndCompact(agentId, configuredModelId, contextWindow, { force: true });
     } catch { /* best effort */ }
     stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
-    pendingWakeups.add(agentId);
+    queueSelfWake(agentId, 'context-gate-rebuild');
     return requestExit(state, 'context-full' satisfies PreCallGatesExitReason);
   }
 

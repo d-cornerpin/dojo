@@ -8,6 +8,10 @@
 // runtime version is active. v1 and v2 share the SAME sets/maps.
 // ════════════════════════════════════════
 
+import { createLogger } from '../logger.js';
+
+const sharedStateLogger = createLogger('shared-state');
+
 // Track active agent runs to prevent concurrent processing.
 export const activeRuns = new Set<string>();
 
@@ -15,7 +19,47 @@ export const activeRuns = new Set<string>();
 export const pendingWakeups = new Set<string>();
 
 // Agents that should halt on the next loop iteration.
+//
+// UX-REPAIR T37 — THE FLAG'S LIFETIME IS THE RUN'S LIFETIME. It used to be
+// deleted by whichever checkpoint noticed it first (the pre-call gate, the
+// model-call catch, the executor's mid-batch check). That made the stop
+// invisible to everything that runs AFTER the loop breaks — and the loop
+// breaking is not the end of the run. `handleMessage`'s `finally` then asked
+// its drains "is a human still waiting?", the answer was yes precisely BECAUSE
+// the stop left the ask unanswered, and it started a fresh turn 500 ms later on
+// the same request (measured on the dev box, 2026-08-11: stop at 07:24:30.475,
+// "Processing queued wakeup" at 07:24:31.571, `work_open` at 07:24:38.718).
+// The checkpoints now READ the flag; `runtime.ts`'s run-exit `finally` is the
+// ONE owner of the clear, and `the-stop-button-stops-the-agent.test.ts` runs
+// the census that keeps it at one.
 export const stoppedAgents = new Set<string>();
+
+/**
+ * THE ONE DOOR FOR A TURN'S OWN WAKEUP (UX-REPAIR T37).
+ *
+ * Every "wake myself again when this run ends" site — the A2A re-trigger, the
+ * compile drive, the unserved-wake drain, the human-conversation drain, the
+ * wake-budget resume, the in-loop recovery re-drives, the completion report —
+ * queues through here, and here is where a live user stop is honoured. Four of
+ * those sites were added after the stop button was written and not one of them
+ * knew about it; a single door is what makes the fifth one safe by default.
+ *
+ * NOT a self-wake, and deliberately NOT routed through here: the direct
+ * `pendingWakeups.add` in `handleMessage`'s busy path. That one parks a message
+ * that ARRIVED — somebody asking for something — for the end of the current
+ * run. Stopping the work the agent was already doing is not a reason to drop
+ * somebody's new message on the floor.
+ *
+ * @returns true if the wakeup was queued, false if a live stop refused it.
+ */
+export function queueSelfWake(agentId: string, reason: string): boolean {
+  if (stoppedAgents.has(agentId)) {
+    sharedStateLogger.info('self-wake refused: the user stopped this agent', { reason }, agentId);
+    return false;
+  }
+  pendingWakeups.add(agentId);
+  return true;
+}
 
 // AbortControllers for in-flight API calls — aborting kills request immediately.
 export const activeAbortControllers = new Map<string, AbortController>();

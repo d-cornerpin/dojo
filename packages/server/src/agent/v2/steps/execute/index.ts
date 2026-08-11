@@ -174,6 +174,30 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
   outer: for (const batch of batches) {
     if (stoppedMidBatch) break;
 
+    // ── UX-REPAIR T37: THE STOP IS HONOURED BETWEEN BATCHES, NOT ONLY BETWEEN
+    // SERIAL CALLS ──
+    //
+    // The per-call check below lives inside the SERIAL arm, so a stop landing
+    // during a parallel `safe` batch (three web_searches, twenty seconds) was
+    // seen by nothing until the next model call — and by then a whole further
+    // round had gone out (dev box control C3, 2026-08-11: stop 07:34:19, the
+    // next batch dispatched at 07:34:46). The batch already in flight cannot be
+    // unsent; the NEXT one can, and its calls come back as Cancelled exactly
+    // like the serial arm's remainder, so the model's context is never missing
+    // a result for a call it made.
+    if (stoppedAgents.has(agentId)) {
+      for (const rem of batch.calls) {
+        turnToolResults.push({
+          toolCallId: rem.id,
+          name: rem.name,
+          content: 'Cancelled by user (agent stopped).',
+          isError: true,
+        });
+      }
+      stoppedMidBatch = true;
+      break outer;
+    }
+
     // Per-call processing (used in both parallel and serial paths).
     if (batch.category === 'safe') {
       // Parallel execution for safe reads
@@ -182,9 +206,9 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
     } else {
       // Serial execution for everything else
       for (const tc of batch.calls) {
-        // Stop check between each serial call
+        // Stop check between each serial call. UX-REPAIR T37: READ, never
+        // delete — the run's own exit path owns the clear (`shared-state.ts`).
         if (stoppedAgents.has(agentId)) {
-          stoppedAgents.delete(agentId);
           // Fill synthetic Cancelled for remaining calls (Part XIX preservation)
           const remaining = batch.calls.slice(batch.calls.indexOf(tc));
           for (const rem of remaining) {

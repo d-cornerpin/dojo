@@ -175,13 +175,22 @@ describe('inputs and outputs — the shared step contract, reused', () => {
 });
 
 describe('the exit-request channel — seven ways out, each with a name', () => {
-  it('a stopped agent exits, and the stop signal is CONSUMED', async () => {
+  it('a stopped agent exits, and the stop signal SURVIVES the gate that honoured it', async () => {
+    // UX-REPAIR T37 — THE ONE CHANGE TO THIS CLAUSE, and it is the fix's subject.
+    // This gate used to delete the flag. The stop was then invisible to
+    // everything that runs after the loop breaks, and `handleMessage`'s
+    // end-of-run drains — which see a human ask left unanswered BY THE STOP —
+    // queued a wakeup that restarted the agent 500 ms later on the same request
+    // (dev box, 2026-08-11 07:24:30 → 07:24:38). The flag is now retired by the
+    // run's own exit path, so the drains can still see it. The requirement the
+    // delete carried (no stale flag kills the NEXT turn) is kept: it now dies
+    // with the run that honoured it.
     stoppedAgents.add(AGENT);
     const ctx = makeCtx();
     const out = await runPreCallGates(stateInStep(), ctx);
 
     expect(out).toMatchObject({ directive: 'exit', reason: 'stopped-by-user' satisfies PreCallGatesExitReason });
-    expect(stoppedAgents.has(AGENT)).toBe(false);
+    expect(stoppedAgents.has(AGENT)).toBe(true);
     expect(ctx.setAgentStatus).toHaveBeenCalledWith(AGENT, 'idle');
   });
 
@@ -220,6 +229,11 @@ describe('the exit-request channel — seven ways out, each with a name', () => 
 
     stoppedAgents.add(AGENT);
     reasons.push((await runPreCallGates(stateInStep(), makeCtx()) as { reason: string }).reason);
+    // UX-REPAIR T37: the gate READS the stop flag and no longer retires it — the
+    // run's own exit path in `runtime.ts` owns that clear — so this census has to
+    // put the fixture back itself before asking for the next exit. The census's
+    // subject (every way out carries a NAME) is untouched.
+    stoppedAgents.delete(AGENT);
 
     preemptedAgents.add(AGENT);
     reasons.push((await runPreCallGates(stateInStep(), makeCtx()) as { reason: string }).reason);

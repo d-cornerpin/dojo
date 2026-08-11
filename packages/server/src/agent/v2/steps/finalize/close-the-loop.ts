@@ -16,7 +16,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../../../logger.js';
 import { insertEngineEventIfAbsent } from '../../../../memory/message-store.js';
 import { taskScope, tsToMs } from '../../../../work/tracker-view.js';
-import { pendingWakeups } from '../../../shared-state.js';
+import { queueSelfWake } from '../../../shared-state.js';
 import type { FinalizeContext } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -80,7 +80,7 @@ export async function scheduleCompletionReport(ctx: FinalizeContext): Promise<vo
           turnNumber,
         });
         // Queue wakeup so handleMessage's finally fires the report turn.
-        pendingWakeups.add(agentId);
+        queueSelfWake(agentId, 'completion-report');
         logger.info('v2 close-the-loop: scheduled completion report after A2A turn', {
           agentId, taskCount: justCompleted.length, taskIds: justCompleted.map(t => t.id.slice(0, 8)),
         }, agentId);

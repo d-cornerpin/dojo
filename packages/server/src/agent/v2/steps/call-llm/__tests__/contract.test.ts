@@ -202,7 +202,7 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
     expect(abandons).toBe(2);
   });
 
-  it('ABANDON, STOPPED: the flag is consumed, the agent goes idle, and the turn is asked to end', async () => {
+  it('ABANDON, STOPPED: the agent goes idle, the turn is asked to end, and the flag SURVIVES', async () => {
     stoppedAgents.add('kevin');
     callModelSpy.mockRejectedValue(new Error('aborted mid-stream'));
 
@@ -211,7 +211,12 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
     expect(out.directive).toBe('abandon');
     if (out.directive !== 'abandon') throw new Error('unreachable');
     expect(out.reason).toContain('stopped');
-    expect(stoppedAgents.has('kevin')).toBe(false);   // consumed exactly once
+    // UX-REPAIR T37: this catch READS the flag and no longer consumes it. The
+    // run's own exit path (`runtime.ts`) is the single owner of the clear, so
+    // the end-of-run drains can still see that the user stopped this agent and
+    // refuse to wake it again. The preempt clause below is UNCHANGED and still
+    // consumes at its checkpoint — a preempt exists so a queued wakeup CAN fire.
+    expect(stoppedAgents.has('kevin')).toBe(true);
     expect(setAgentStatusSpy).toHaveBeenCalledWith('kevin', 'idle');
   });
 
@@ -232,12 +237,38 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
     // The failure mode the channel exists to remove. An abandoning step that kept
     // running would retry the model call the user just stopped, and would hand back
     // an ask the turn is not finished with.
+    //
+    // UX-REPAIR T37: the count moved 1 → 0 and the requirement is unchanged and
+    // stronger. A stop that is ALREADY recorded when this step runs no longer
+    // buys the user one more provider call: `stopAgent` can only abort a call
+    // in flight, so a stop landing between the pre-call gate and the wire used
+    // to hit nothing at all (dev box control C3: one extra 27 s call and a whole
+    // extra tool batch, 49 s past the button). The step now reads the flag at
+    // the instant the call becomes interruptible. The "no retry" arm it was
+    // written for is asserted directly below, on a stop that lands MID-call.
     stoppedAgents.add('kevin');
     callModelSpy.mockRejectedValue(new Error('aborted mid-stream'));
 
     await runCallLLM(freshState(), ctxFor({ isAutoRouted: true }));   // 3 attempts available
 
+    expect(callModelSpy).toHaveBeenCalledTimes(0);
+    expect(revertTriggerStampOnAbortSpy).not.toHaveBeenCalled();
+  });
+
+  it('A STOP THAT LANDS MID-CALL still spends exactly one attempt, never the fallback ladder', async () => {
+    // The original arm of the clause above, kept whole: the flag is NOT set when
+    // the step starts, it arrives while the provider call is open (which is what
+    // `stopAgent`'s abort produces), and the auto-router's three attempts must
+    // not be spent re-dialling something the user stopped.
+    callModelSpy.mockImplementation(async () => {
+      stoppedAgents.add('kevin');
+      throw new Error('aborted mid-stream');
+    });
+
+    const out = await runCallLLM(freshState(), ctxFor({ isAutoRouted: true }));   // 3 attempts available
+
     expect(callModelSpy).toHaveBeenCalledTimes(1);
+    expect(out.directive).toBe('abandon');
     expect(revertTriggerStampOnAbortSpy).not.toHaveBeenCalled();
   });
 

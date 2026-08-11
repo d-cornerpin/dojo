@@ -27,7 +27,7 @@ import { hasActiveRateLimitRetry } from '../rate-limit-retry.js';
 import { classifyRecoverableProviderError, classifyPlatformError } from './classifiers/provider.js';
 import { classifyProviderError, classifyProviderErrorText, type ProviderErrorFacts } from '../provider-error.js';
 import {
-  pendingWakeups,
+  queueSelfWake,
   recoveryRunStreak,
   MAX_INLOOP_RECOVERIES_SAME_INPUTS,
 } from '../shared-state.js';
@@ -252,7 +252,7 @@ async function tryContextOverflowRecovery(
     const cw = getContextWindow(compactModelId);
     await checkAndCompact(agentId, compactModelId, cw, { force: true });
     logger.warn('v2: forced compaction after context overflow on non-Dreamer agent', { agentId }, agentId);
-    pendingWakeups.add(agentId);
+    queueSelfWake(agentId, 'recovery-forced-compaction');
     return true;
   } catch (recovErr) {
     logger.warn('v2: context overflow recovery attempt failed', {
@@ -289,7 +289,7 @@ async function tryOutputTruncationRecovery(
     `Be more concise — produce a shorter response, or break the task into smaller pieces. ` +
     `If a tool result is too large to summarize in one turn, call complete_task or update the user with what you've done so far and continue next turn.]`;
   persistAndBroadcastSystemNote(agentId, note);
-  pendingWakeups.add(agentId);
+  queueSelfWake(agentId, 'recovery-output-cap-note');
   return true;
 }
 
@@ -390,7 +390,7 @@ async function tryProviderRecovery(
 
   // Tier B: NO status change. Queue a wakeup so the agent retries with
   // the system note in context.
-  pendingWakeups.add(agentId);
+  queueSelfWake(agentId, 'recovery-tier-b-retry');
   return true;
 }
 

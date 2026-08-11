@@ -21,7 +21,7 @@ import { createLogger } from '../../../../logger.js';
 import { getContextWindow } from '../../../model.js';
 import { checkAndCompact } from '../../../../memory/compaction.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
-import { turnContinuationCounts, pendingWakeups } from '../../../shared-state.js';
+import { turnContinuationCounts, queueSelfWake } from '../../../shared-state.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { enqueueSteer } from '../../steer-queue.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
@@ -158,7 +158,7 @@ export async function runTurnTimeBudget(
     });
     // Queue wakeup so handleMessage's finally fires the loop again
     stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
-    pendingWakeups.add(agentId);
+    queueSelfWake(agentId, 'turn-budget-continuation');
     return requestExit(state, 'turn-time-budget' satisfies PreCallGatesExitReason);
   }
   return proceed(state);

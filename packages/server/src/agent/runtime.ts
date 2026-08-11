@@ -371,6 +371,10 @@ import {
   preemptedAgents,
   agentStartTimes,
   statusHeartbeats,
+  // UX-REPAIR T37: the ONE door every self-wake goes through. It refuses while
+  // the user's stop is live, which is what stops a stopped run from restarting
+  // itself out of its own end-of-run drains.
+  queueSelfWake,
 } from './shared-state.js';
 
 import { turnBoundary, forceA2ATurn, a2aTurnRetries, MAX_A2A_TURN_RETRIES, lastTurnWasA2A, MAX_DRAIN_STUCK } from './turn-state.js';
@@ -567,7 +571,15 @@ class AgentRuntime {
       logger.info('Skipping run, agent is terminated', { agentId }, agentId);
       return;
     }
-    // If agent is already running, queue a wakeup so we re-run after current loop finishes
+    // If agent is already running, queue a wakeup so we re-run after current loop finishes.
+    //
+    // UX-REPAIR T37 — THE ONE DIRECT ADD IN THE TREE, and the census in
+    // `the-stop-button-stops-the-agent.test.ts` pins it at one. This is not a
+    // self-wake: something ARRIVED (a message, a peer, a scheduled event) while
+    // the agent was busy, and parking it here is how it gets served at all.
+    // A user stop is about the work the agent was already doing; it must not
+    // silently eat somebody else's inbound. Every wake the RUN queues for
+    // ITSELF goes through `queueSelfWake` instead.
     if (activeRuns.has(agentId)) {
       logger.info('Agent busy, queuing wakeup for after current run', { agentId }, agentId);
       pendingWakeups.add(agentId);
@@ -668,7 +680,7 @@ class AgentRuntime {
               if (tries <= MAX_A2A_TURN_RETRIES) {
                 a2aTurnRetries.set(agentId, tries);
                 forceA2ATurn.add(agentId);
-                pendingWakeups.add(agentId);
+                queueSelfWake(agentId, 'a2a-retrigger-retry');
                 logger.info('Retrying dedicated A2A turn for unreplied inbound', {
                   agentId, intent: owed.intent, thread: owed.threadShort, attempt: tries,
                 }, agentId);
@@ -694,7 +706,7 @@ class AgentRuntime {
               // A2A just arrived), give it its own turn next. No penalty: it
               // hasn't actually had a turn to fail yet.
               forceA2ATurn.add(agentId);
-              pendingWakeups.add(agentId);
+              queueSelfWake(agentId, 'a2a-retrigger-deferred');
               logger.info('Queuing dedicated A2A turn for deferred inbound', {
                 agentId, intent: owed.intent, thread: owed.threadShort,
               }, agentId);
@@ -736,7 +748,7 @@ class AgentRuntime {
         // below already use, so it collapses with theirs and obeys the same guards; the drive
         // itself has already consulted the storm law, and the ladder bounds it at three.
         if (drive.wakeWanted) {
-          pendingWakeups.add(agentId);
+          queueSelfWake(agentId, 'compile-drive');
           logger.info('compile drive: queued a wakeup so the re-driven agent actually sees the owed step', {
             agentId, drives: drive.drives,
           }, agentId);
@@ -818,7 +830,7 @@ class AgentRuntime {
             // now `drain_state` (migration 140), one UPSERT, same semantics, durable.
             const stuck = bumpDrainLadder(agentId, 'unserved_wake', head);
             if (stuck < 2) {
-              pendingWakeups.add(agentId);
+              queueSelfWake(agentId, 'unserved-wake-drain');
               logger.info('unserved-wake drain: leftover wake/engine event after turn end; queuing immediate re-run', {
                 agentId, head, stuck, humanAsksOpen: openAsks,
               }, agentId);
@@ -865,7 +877,7 @@ class AgentRuntime {
             if (stuck < MAX_DRAIN_STUCK) {
               // D2: cap self-re-triggers so a multi-row backlog can't spin into
               // hundreds of full-context turns. A real new inbound still wakes it.
-              if (underWakeBudget(agentId)) pendingWakeups.add(agentId);
+              if (underWakeBudget(agentId)) queueSelfWake(agentId, 'human-conversation-drain');
             } else {
               // D9: the head conversation has failed to advance across
               // MAX_DRAIN_STUCK serves, it's poisoned (bad attachment, per-thread
@@ -882,7 +894,7 @@ class AgentRuntime {
               } catch { /* best effort */ }
               clearDrainLadder(agentId, 'human_conversation');
               const remaining = getWaitingHumanConversations(agentId);
-              if (remaining.length > 0 && underWakeBudget(agentId)) pendingWakeups.add(agentId);
+              if (remaining.length > 0 && underWakeBudget(agentId)) queueSelfWake(agentId, 'human-conversation-drain-after-quarantine');
             }
           } else if (getPendingEngineEvent(agentId)) {
             // E-A2: a human is no longer waiting but an engine event (scheduler/
@@ -891,7 +903,7 @@ class AgentRuntime {
             // It is stamped served at pickup, so this fires at most once per event
             // (no spin), and only when no human is owed.
             clearDrainLadder(agentId, 'human_conversation');
-            if (underWakeBudget(agentId)) pendingWakeups.add(agentId);
+            if (underWakeBudget(agentId)) queueSelfWake(agentId, 'pending-engine-event');
           } else {
             clearDrainLadder(agentId, 'human_conversation');
             // D8: nothing is due NOW, but an engine event may be parked on a retry
@@ -951,6 +963,28 @@ class AgentRuntime {
         // No wakeup pending, safe to clear turnBoundary immediately
         turnBoundary.delete(agentId);
       }
+
+      // ── UX-REPAIR T37 — THE ONE OWNER OF THE STOP FLAG'S CLEAR ──
+      //
+      // The stop is honoured by whichever checkpoint sees it (the pre-call
+      // gate, the model-call catch, the executor between serial calls); it is
+      // RETIRED here, at the end of the run it stopped, and nowhere else. Every
+      // one of those checkpoints used to delete it itself, which meant the flag
+      // was already gone by the time this `finally` — and its four self-wake
+      // drains — ran. The drains then saw an unanswered human ask (unanswered
+      // BECAUSE of the stop), queued a wakeup, and the agent restarted 500 ms
+      // later on the very request the user had stopped. Measured on the dev box
+      // 2026-08-11: stop 07:24:30.475 → "Processing queued wakeup" 07:24:31.571
+      // → `work_open` 07:24:38.718. The drains are stop-aware now
+      // (`queueSelfWake`), and they can only stay that way if the flag is still
+      // standing when they run.
+      //
+      // Requirement preserved from the deletes this replaces (chat.ts's
+      // 2026-06-02 note: a stale flag must never kill the NEXT turn): the flag
+      // dies with the run that honoured it, which is strictly tighter than
+      // "whichever checkpoint noticed first". The two human-intent clears
+      // (a fresh user message; reset-session) are untouched.
+      stoppedAgents.delete(agentId);
     }
   }
 
@@ -1288,7 +1322,7 @@ function underWakeBudget(agentId: string): boolean {
       const t = setTimeout(() => {
         try {
           if (getWaitingHumanConversations(agentId).length > 0 || getPendingEngineEvent(agentId) !== null) {
-            pendingWakeups.add(agentId);
+            queueSelfWake(agentId, 'wake-budget-window-cleared');
             logger.info('Wake budget window cleared; resuming the self-drain for owed work', { agentId }, agentId);
           }
         } catch { /* best effort */ }

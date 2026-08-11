@@ -145,8 +145,15 @@ export async function runPreCallGates(
   const { agentId, setAgentStatus } = ctx;
 
   // Stop / preempt checks
+  //
+  // UX-REPAIR T37: this gate READS the stop flag and no longer deletes it. The
+  // clear belongs to the run's own exit path (`runtime.ts`'s `finally`), which
+  // is the only place that runs after every one of this turn's remaining
+  // machinery — including the end-of-run drains that used to restart the agent
+  // 500 ms after the user stopped it. The requirement the delete carried ("a
+  // stale flag must never kill the NEXT turn") is kept, and kept more exactly:
+  // the flag now dies with the run that honoured it.
   if (stoppedAgents.has(agentId)) {
-    stoppedAgents.delete(agentId);
     logger.info('v2 agent stopped by user', {}, agentId);
     setAgentStatus(agentId, 'idle');
     return requestExit(state, 'stopped-by-user' satisfies PreCallGatesExitReason);

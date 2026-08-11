@@ -81,7 +81,35 @@ export async function callWithRetryAndFallback(
   let result: Awaited<ReturnType<typeof callModel>> | undefined;
   let callSucceeded = false;
 
+  /** UX-REPAIR T37 — the turn's ONE stop-abandon, said twice with two truthful
+   *  reasons. Kept as one call so the step's abandon census (its contract test
+   *  counts `abandonTurn` in this file) still reads TWO: this and the preempt. */
+  const abandonForStop = (reason: 'stopped-before-call' | 'stopped-mid-call'): { abandoned: StepOutcome } => {
+    setAgentStatus(agentId, 'idle');
+    return { abandoned: abandonTurn(state, reason) };
+  };
+
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // ── UX-REPAIR T37: THE WINDOW BETWEEN THE GATE AND THE WIRE ──
+    //
+    // `stopAgent` can only abort a call that is ALREADY in flight — it aborts
+    // whatever is in `activeAbortControllers`. Between the pre-call gate that
+    // read the flag and the `set` below sits the whole of assemble (vector
+    // search, context build, injections) plus, on the first round, the tool
+    // batch that preceded it. A stop landing in there hit nothing: no
+    // checkpoint to see it, no controller to abort. Measured on the dev box
+    // 2026-08-11 (control C3): stop at 07:34:19.429 — 70 ms after that
+    // iteration's gate — and the provider call went out at 07:34:19.506 and ran
+    // 27 s to completion, followed by a whole tool batch; the turn did not
+    // actually stop until the NEXT gate at 07:35:08.284, 49 s later.
+    //
+    // Reading the flag at the instant the call becomes interruptible closes the
+    // window from the other side: either the stop was already recorded and we
+    // never dial, or the controller is registered and the abort reaches the
+    // fetch. There is no third state.
+    const beforeCall = stoppedAgents.has(agentId) ? abandonForStop('stopped-before-call') : null;
+    if (beforeCall) return beforeCall;
+
     const abortController = new AbortController();
     activeAbortControllers.set(agentId, abortController);
 
@@ -215,11 +243,11 @@ export async function callWithRetryAndFallback(
     } catch (err) {
       activeAbortControllers.delete(agentId);
 
-      if (stoppedAgents.has(agentId)) {
-        stoppedAgents.delete(agentId);
-        setAgentStatus(agentId, 'idle');
-        return { abandoned: abandonTurn(state, 'stopped-mid-call') };
-      }
+      // UX-REPAIR T37: READ, never delete. The flag's owner is the run's own
+      // exit path in `runtime.ts` — see `shared-state.ts`'s header on
+      // `stoppedAgents`. The preempt below still consumes at its checkpoint,
+      // and must: a preempt exists so the QUEUED WAKEUP CAN FIRE.
+      if (stoppedAgents.has(agentId)) return abandonForStop('stopped-mid-call');
       if (preemptedAgents.has(agentId)) {
         preemptedAgents.delete(agentId);
         logger.info('v2 run preempted, queued wakeup will fire', {}, agentId);

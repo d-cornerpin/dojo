@@ -705,8 +705,13 @@ describe('runV2Turn integration', () => {
       .get('primary') as { status: string };
     expect(agent.status).toBe('idle');
 
-    // stoppedAgents should be cleared by the loop
-    expect(stoppedAgents.has('primary')).toBe(false);
+    // UX-REPAIR T37: the LOOP no longer clears the flag — it honours it and
+    // leaves it standing. The clear belongs to the RUN's exit path
+    // (`handleMessage`'s `finally` in `runtime.ts`), which is one level above
+    // `runV2Turn` and is not on this test's path. That is the whole fix: the
+    // end-of-run drains have to be able to see that the user stopped this
+    // agent, or they queue a wakeup and restart it 500 ms later.
+    expect(stoppedAgents.has('primary')).toBe(true);
   });
 
   it('PRESERVATION #37: pre-call compaction gate fires WARN at 90%', async () => {
