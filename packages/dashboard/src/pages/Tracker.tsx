@@ -309,6 +309,9 @@ const TaskDetailPanel = ({
                     smell_flag: 'text-cp-coral',
                     user_verdict_request: 'text-cp-amber',
                     user_verdict_applied: 'text-cp-teal',
+                    // UX-REPAIR T40: a filed close is Key 1 and only Key 1 — the row does not
+                    // move, so nothing in this log used to show for the whole pending window.
+                    validation_requested: 'text-cp-amber',
                     auto_sweep: 'text-ui/55',
                     legacy_note: 'text-ui/55',
                   };

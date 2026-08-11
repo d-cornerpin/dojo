@@ -456,15 +456,15 @@ export function ownerVerdictNudgeText(p: {
  * front of a validator. Read only to say so out loud: a hold nobody can see is the same
  * silent skip in the other direction.
  */
-export function countRowsHeldBackFromOwner(
+export function selectRowsHeldBackFromOwner(
   staleBeforeMs: number,
   serviceAgentIds: readonly string[],
-): number {
+): string[] {
   const serviceParams = serviceAgentIds.length > 0 ? [...serviceAgentIds] : ['__none__'];
   const placeholders = serviceParams.map(() => '?').join(',');
   try {
     return (getDb().prepare(`
-      SELECT COUNT(*) AS n FROM work w
+      SELECT w.id AS id FROM work w
       WHERE ${taskScope('w')}
         AND NOT EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = w.id AND e.kind = 'validation_escalated')
         AND ${awaitingUserVerdictExpr('w')} = 0
@@ -473,8 +473,143 @@ export function countRowsHeldBackFromOwner(
         AND ${unvalidatedCloseExpr('w')}
         AND ${validationAttemptRecordedExpr('w')} = 0
         AND w.updated_at < ?
-    `).get(...serviceParams, ...serviceParams, staleBeforeMs) as { n: number }).n;
-  } catch {
-    return 0;
+      ORDER BY w.updated_at ASC
+      LIMIT 20
+    `).all(...serviceParams, ...serviceParams, staleBeforeMs) as Array<{ id: string }>).map((r) => r.id);
+  } catch (err) {
+    logger.warn('held-back lens unreadable (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+}
+
+/** The same set, as the count the sweep has always logged. */
+export function countRowsHeldBackFromOwner(
+  staleBeforeMs: number,
+  serviceAgentIds: readonly string[],
+): number {
+  return selectRowsHeldBackFromOwner(staleBeforeMs, serviceAgentIds).length;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// 5 · THE FLOOR — UX-REPAIR T40. A FILED CLOSE CANNOT SIT PAST ITS BOUND IN SILENCE.
+//
+// ── THE INCIDENT ──
+// The owner's first task after the `.27` update filed a close (RESULT + EVIDENCE on the row,
+// `updated_at` moved) and never closed. His card's activity log showed ZERO validation
+// events, ever. Whatever kept his validator from ruling, the ORDER above then did the rest:
+// the escalation is gated on a recorded attempt, and the only two writers of that record live
+// INSIDE the validator's own review. A validator that never runs writes neither marker, so
+// the gate it feeds holds the row out of the owner's sight with no ceiling and no timeout.
+// The hold was already said out loud in the log; nothing ever ENDED it.
+//
+// ── WHY THIS IS NOT A WEAKENING OF THE ORDERING LAW ──
+// The law's sentence is *"the owner is told a row is unvalidated only AFTER a recorded
+// validation attempt exists for it"*. It is about ORDER, not about silence: it assumes
+// attempts eventually get recorded, because the validator eventually runs. This closes the
+// case the assumption misses. It uses the SAME bound the escalation already uses (no new
+// threshold, #14), records the SAME `validator_unavailable` marker the PM's own
+// no-validator branch writes (no new kind, migration 152's CHECK untouched), and escalates
+// NOTHING itself — it makes the existing escalation able to see the row on its next pass.
+//
+// It is also IDEMPOTENT by construction: the lens it reads selects only rows with ZERO
+// recorded attempts, so a row it has already marked drops out of its own candidate set.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Record an attempt-of-record on every row past the bound that no validator has ever been
+ * asked about. Returns the ids marked, for the caller's log.
+ */
+export function recordAttemptsForRowsNoValidatorEverSaw(
+  staleBeforeMs: number,
+  serviceAgentIds: readonly string[],
+): string[] {
+  const ids = selectRowsHeldBackFromOwner(staleBeforeMs, serviceAgentIds);
+  const marked: string[] = [];
+  for (const id of ids) {
+    try {
+      appendWorkEvent(id, AUDIT_KIND, 'engine', {
+        entry_kind: 'observation',
+        from_status: null,
+        to_status: null,
+        reason:
+          'this close request has been waiting past the escalation bound and the platform '
+          + 'holds no record that its validator was ever asked; recording the attempt so the '
+          + 'row stops being invisible',
+        action_taken: VALIDATION_ATTEMPT_UNAVAILABLE,
+        note: null,
+        evidence_json: null,
+      });
+      marked.push(id);
+    } catch (err) {
+      logger.warn('could not record an attempt-of-record for a held-back row (non-fatal)', {
+        workId: id, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  if (marked.length > 0) {
+    logger.error('validation is STALLED: rows past the bound whose validator was never asked', {
+      rows: marked.length, ids: marked.slice(0, 5),
+    });
+  }
+  return marked;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// 6 · AND THE OWNER HEARS ABOUT IT — through the toast machinery that already exists.
+//
+// The reality check (§3) suppresses owner ESCALATION whenever the work already reached the
+// person, and the owner's incident is exactly that shape: the brief was sent, so the question
+// the escalation asks — *"is this actually done?"* — is one he should never be bothered with.
+// That is correct, and it is also why releasing the row above cannot, by itself, reach him.
+//
+// So the thing he is told is not about the WORK. It is about the VALIDATOR: task validation
+// is stalled. One statement per episode (the T27 lesson — not one per row and not one per
+// sweep), and the episode ENDS when validation resumes, so a later stall speaks again.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** True while an unresolved stall has already been announced. */
+let validatorSilenceAnnounced = false;
+
+/** Test seam / boot reset. */
+export function resetValidatorSilenceEpisode(): void {
+  validatorSilenceAnnounced = false;
+}
+
+export const VALIDATOR_STALLED_TOAST =
+  'Task validation is stalled — closed work is waiting on the project manager and it has not '
+  + 'ruled. Nothing is lost; the tasks stay open until it does.';
+
+/**
+ * @param stalledRows how many rows this sweep found past the bound with no attempt recorded
+ * @param agentId     the agent whose chat the toast belongs to (the primary)
+ */
+export async function noteValidatorSilence(stalledRows: number, agentId: string): Promise<void> {
+  if (stalledRows <= 0) {
+    // The validator is ruling again — the episode is over and a NEW stall may speak.
+    validatorSilenceAnnounced = false;
+    return;
+  }
+  if (validatorSilenceAnnounced) return;
+  validatorSilenceAnnounced = true;
+  try {
+    // Imported at the point of use, as `scheduler/runner.ts` does: `work/` is loaded by
+    // modules the gateway itself pulls in, and a static edge here is a cycle.
+    const { broadcast } = await import('../gateway/ws.js');
+    broadcast({
+      type: 'chat:error',
+      agentId,
+      error: VALIDATOR_STALLED_TOAST,
+      code: 'VALIDATION_STALLED',
+      // `warning` (auto-dismissing amber), not `error`: nothing is lost and there is no
+      // action the owner must take — the platform is telling him what it is waiting on.
+      severity: 'warning',
+      retryable: false,
+    });
+  } catch (err) {
+    logger.warn('validator-silence toast failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }

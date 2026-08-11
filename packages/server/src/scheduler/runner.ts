@@ -40,6 +40,7 @@ import { RUN_STATUS_UNDELIVERED } from '../work/run-deliver-drive.js';
 import {
   countRowsHeldBackFromOwner, selectRowsForOwnerEscalation, selectRowsSkippedAsDelivered,
   ownerVerdictNudgeText, escalationSteerCount, firstEscalationSteerAt, recordEscalationSteer,
+  recordAttemptsForRowsNoValidatorEverSaw, noteValidatorSilence,
 } from '../work/validation-drive.js';
 import { recordFloorGhost, MAX_FLOOR_STEER_ATTEMPTS } from '../agent/v2/floor-ghost.js';
 import { currentTurnNumber } from '../agent/v2/turn-record.js';
@@ -401,6 +402,16 @@ export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
         heldBack, boundMin: VALIDATION_ESCALATION_MIN, escalating: stale.length,
       });
     }
+    // ── UX-REPAIR T40 — THE FLOOR, AND THE ONE THING THE OWNER IS TOLD. ──
+    // The hold above was already said out loud; what it never had was an END. A row past the
+    // bound whose validator was never asked stayed held FOREVER, because the only writers of
+    // an attempt record live inside the validator's own review. The floor writes the
+    // attempt-of-record so the escalation immediately above can see the row on the NEXT pass,
+    // and — because the reality check correctly silences escalation for work that already
+    // reached the person, which is exactly the owner's incident — it also tells him the one
+    // fact escalation cannot: his task validation is stalled. Once per episode.
+    const stalled = recordAttemptsForRowsNoValidatorEverSaw(staleBefore, serviceIds);
+    await noteValidatorSilence(stalled.length, getPrimaryAgentId());
     // UX-REPAIR round 2 T12 — THE REALITY CHECK, SAID OUT LOUD. A row held back because the
     // ledger says its work already reached the person is not a silent skip; and it deliberately
     // does NOT burn `validation_escalated`, which is permanent (one shot per row, forever), so

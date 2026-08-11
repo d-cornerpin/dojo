@@ -117,9 +117,24 @@ export function readAuditTrail(
             NULL, NULL, ${jx('note')}, NULL, e.created_at
        FROM work_events e
       WHERE e.work_id = ? AND e.kind IN (${VERDICT_KINDS.map((k) => `'${k}'`).join(', ')})`,
+    // ── (d) UX-REPAIR T40 — THE PENDING CLOSE IS A FACT THE OWNER CAN SEE. ──
+    // A worker's close is Key 1 and ONLY Key 1: `validation_requested` lands and the row
+    // does not move (migration 139 / RULING 1). With no branch for that kind, the three
+    // branches above had NOTHING to show for the entire pending window — so the owner's
+    // card read "no entries yet" whether the close had been filed and ignored, or never
+    // filed at all. Those are different failures and he could not tell them apart.
+    //
+    // This branch RENDERS an existing event. It introduces no event kind, writes nothing,
+    // and touches no predicate — `pendingCloseRequestExpr` and `unvalidatedCloseExpr` are
+    // untouched, which is the T21/T26 preservation property stated as a fact about the diff.
+    `SELECT e.id, e.work_id, e.actor, 'validation_requested',
+            ${STATE_TO_STATUS_SQL(jx('from'))}, ${STATE_TO_STATUS_SQL(jx('requested_state'))},
+            ${jx('reason')}, NULL, 'close requested — awaiting validation', NULL, e.created_at
+       FROM work_events e
+      WHERE e.work_id = ? AND e.kind = 'validation_requested'`,
   ];
 
-  const params: unknown[] = [workId, workId, workId];
+  const params: unknown[] = [workId, workId, workId, workId];
   let sql =
     `SELECT id, task_id, from_entity, entry_kind, from_status, to_status, reason,
             action_taken, note, evidence_json,

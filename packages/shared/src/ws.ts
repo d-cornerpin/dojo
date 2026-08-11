@@ -297,7 +297,12 @@ export interface ChatErrorEvent {
     // the owner's own lane; it does not any more. This is the platform saying, as the
     // platform, that a platform fault happened — the health half of the same event
     // `work_events(kind='floor_ghosted')` records durably.
-    | 'FLOOR_GHOSTED';
+    | 'FLOOR_GHOSTED'
+    // UX-REPAIR T40. Closed work is waiting on the project manager and it has not ruled.
+    // Not a fault the owner must fix and nothing is lost — the tasks stay open until the
+    // validator returns — so it rides `severity:'warning'`. It exists because the owner
+    // watched a task sit unclosed with no surface anywhere saying what it was waiting on.
+    | 'VALIDATION_STALLED';
   severity?: 'info' | 'warning' | 'error';
   retryable?: boolean;
 }
