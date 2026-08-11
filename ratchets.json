@@ -3081,6 +3081,20 @@
       "to": 414,
       "by": "UX-REPAIR round 2 T13 — admitted to the ratchet at 414 lines",
       "why": "+14 over the cap, and ALL of it is the `ScheduledTask.tz` field with the block explaining why the column was dead (unwritable, unprojected, undeclared) plus the corrected DST citation. The arithmetic is unchanged; the file crossed 400 by documenting a defect rather than by gaining behaviour."
+    },
+    {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1438,
+      "to": 1442,
+      "by": "UX-REPAIR round 7 T28 — the agent id reaches the summary annotator",
+      "why": "+4, of which ONE is code: `annotateSummaryObligations(summary.text)` gains its second argument. The other three are the comment saying why an id-LESS obligation line cannot be resolved without an agent (a commitment spine belongs to one agent; matching a line against another agent's rows is the failure mode this whole leg exists to avoid) and that a caller which cannot name one gets T20's behaviour byte for byte. Refusing the raise would mean either dropping the comment — leaving a bare second argument at the one seam in this 1,442-line lane where the model's stored memory is mutated — or moving the call out of the write path, which is the cache law T20 records at this exact site. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/obligation-memory.ts",
+      "from": null,
+      "to": 448,
+      "by": "UX-REPAIR round 7 T28 — admitted to the ratchet at 448 lines",
+      "why": "224 -> 448, and PINNED DECREASE-ONLY rather than absorbed by `--record`: the stronger of the two remedies the detector offers, and the right one for the module that owns 'what does this line resolve to'. The split is 116 lines of §4 (the id-less resolver: five gates, two token helpers, one agent-scoped read) and 108 of header and comment. THE SPLIT-IT REMEDY WAS THE FIRST THING MEASURED AND IT IS THE ONE THING THIS FILE MAY NOT DO. §1-§3 exist because three surfaces — the vault write guard, the recall lane and the terminal-exit retirement — needed ONE predicate instead of three, and that argument is recorded twice in ratchets.json already (the `vault/tools.ts` and `memory/recall-lane.ts` raises both refuse the inline alternative in the same words). §4 is a fourth caller of the same question and it reuses §1's two join-token regexes directly; a second file would be a second place a reader looks for the answer, which is the disease, not the cure. THE COMMENT HALF IS THE MEASUREMENT, NOT NARRATION. §4's header states what the first cut of the matcher did on the worn-in body before anything was applied (35 candidate lines; it joined \"David is still owed the final reply\" to a commitment about a codeword on \"David\" + \"final\"), which is the entire justification for the two extra gates that a later reader would otherwise delete as over-engineering: the shared-phrase test and the run-id-disagreement refusal. It also amends the file's own most load-bearing sentence — 'there is no fuzzy matching, no similarity, no title comparison' — which was TRUE of §1-§3 and had to be re-stated precisely rather than left standing as a lie one section down. ALTERNATIVES MEASURED AND REFUSED. (a) Put §4 in `memory/summary-obligations.ts` (+0 net): refused, that file is the summary WRITER; the spine question belongs beside the spine reader, and T20's own header says so. (b) Cut §4's header to four lines (-24): refused — a matcher that is deliberately narrower than it looks is exactly the code a later reader widens; the two gates only survive if the measurement that bought them travels with them. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3251,7 +3265,7 @@
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
     "packages/server/src/memory/budget.ts": 442,
-    "packages/server/src/memory/compaction.ts": 1438,
+    "packages/server/src/memory/compaction.ts": 1442,
     "packages/server/src/memory/deliveries-lane.ts": 240,
     "packages/server/src/memory/lanes.ts": 867,
     "packages/server/src/memory/message-store.ts": 1122,
@@ -3327,6 +3341,7 @@
     "packages/shared/src/visibility.ts": 945,
     "packages/shared/src/ws.ts": 1110,
     "watchdog/src/auto-rollback.ts": 333,
-    "watchdog/src/index.ts": 1217
+    "watchdog/src/index.ts": 1217,
+    "packages/server/src/work/obligation-memory.ts": 448
   }
 }

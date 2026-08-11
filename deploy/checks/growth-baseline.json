@@ -608,7 +608,7 @@
     "packages/server/src/work/event-kinds.ts": 105,
     "packages/server/src/work/join-drive.ts": 256,
     "packages/server/src/work/next-run.ts": 175,
-    "packages/server/src/work/obligation-memory.ts": 224,
+    "packages/server/src/work/obligation-memory.ts": 448,
     "packages/server/src/work/obligations.ts": 174,
     "packages/server/src/work/occurrence-runs.ts": 133,
     "packages/server/src/work/occurrences.ts": 822,
