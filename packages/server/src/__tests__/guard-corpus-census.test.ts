@@ -293,6 +293,35 @@ const STEPS_BY_PATH: Declaration[] = [
       + '(`read(n.file).includes(n.what)`), so a stale entry fails loudly and names itself — '
       + 'which is exactly how CUT 8 found it.',
   },
+  {
+    rel: 'packages/server/src/work/__tests__/a-withdrawal-reaches-the-ledger.test.ts',
+    verdict: 'step-aware',
+    why: 'IT GROWS NO WALK — it is not a seventh copy of the engine walk, which is the thing '
+      + 'this list exists to refuse. It reads THREE files BY NAME through its own one-line '
+      + '`sourceOf` (`fs.readFileSync(path.resolve(here, rel), utf8)`), two of them under '
+      + '`agent/v2/steps`: `post-call-classify/owed-interrupt.ts` (T32 subject) and '
+      + '`post-call-classify/index.ts` (the one call site that proves the in-flight arm is '
+      + 'reached on tool-riding passes). Naming two files is not deriving a corpus, and there '
+      + 'is no set here that could quietly become empty. THE FAILURE MODE THIS CENSUS EXISTS '
+      + 'TO PREVENT CANNOT OCCUR HERE, and that is the whole argument: a guard goes quiet when '
+      + 'its corpus silently shrinks to nothing and its negative clauses then pass vacuously. '
+      + '`readFileSync` on a moved file THROWS ENOENT — the loud failure, not the silent one — '
+      + 'so a PHASE-6 cut that relocates either file cannot make this guard stop seeing its '
+      + 'subject; it can only make it fail by name. AND EVERY NEGATIVE CLAUSE IS ANCHORED BY A '
+      + 'POSITIVE ONE IN THE SAME `it`, checked clause by clause rather than assumed: the '
+      + 'gate-shape clause asserts `indexOf(...) > -1` before it slices and then '
+      + '`.not.toContain`s; the `maySteer` and `mayRecord` clauses `.toContain` their own '
+      + 'declaration text before asserting what is absent from it; the in-flight-prompt clause '
+      + '`.toContain`s four phrases of the prompt body before `.not.toContain`ing the '
+      + 'after-reply wording. A vanished anchor reds the positive assertion first. '
+      + '`engineText()` WOULD BE THE WRONG CORPUS, not merely an unnecessary one: the '
+      + 'assertions slice single declarations out of one named file (`const maySteer =` up to '
+      + 'its `;`) and count occurrences WITHIN that file (`enqueueSteer(` exactly once, '
+      + '`recordOwedInterruptSubjects(agentId` exactly once — the bounds that make "one steer '
+      + 'per turn" a fact rather than a hope). Concatenated engine text cannot express '
+      + '"exactly one of these in THIS file", so importing the shared derivation here would '
+      + 'delete the guarantee in order to satisfy the census.',
+  },
 ];
 
 // ════════════════════════════════════════════════════════════════════════════════════════
