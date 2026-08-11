@@ -4,7 +4,8 @@
     "in a gate-side-only commit, deliberately. A file more than 25% above its entry",
     "here fails; an unpinned file that was at or below 60% of ratchets.json",
     "maxNewFileLines and is now above it fails. Re-record roughly every 30 days.",
-    "HAND-MOVED, 2026-08-11, ONE entry, gate-side-only: agent/shared-state.ts 90 -> 134 for UX-REPAIR T37 (`f0e385d`), argued in ratchets.json's $raises and in that commit. Moved BY HAND rather than by --record on purpose: a blanket re-record would also have reset the headroom of 28 other files that have drifted since 36fe2fe and are still under the limit, which is the silent absorption this detector exists to prevent (the `5546651` precedent's own words). recordedAt/recordedAtCommit are deliberately NOT touched: the baseline is still the 2026-08-10 one, with a single named exception."
+    "HAND-MOVED, 2026-08-11, ONE entry, gate-side-only: agent/shared-state.ts 90 -> 134 for UX-REPAIR T37 (`f0e385d`), argued in ratchets.json's $raises and in that commit. Moved BY HAND rather than by --record on purpose: a blanket re-record would also have reset the headroom of 28 other files that have drifted since 36fe2fe and are still under the limit, which is the silent absorption this detector exists to prevent (the `5546651` precedent's own words). recordedAt/recordedAtCommit are deliberately NOT touched: the baseline is still the 2026-08-10 one, with a single named exception.",
+    "HAND-MOVED, 2026-08-11, ONE entry, gate-side-only: agent/tools/provider/mailbox-banner.ts 58 -> 127 for UX-REPAIR T39 (`a1da94a`), argued in that commit. +47 code / +44 comment against -20 code: the file gained the AGENT half of a rule that had only ever had its user half, which is the defect the owner reported, plus the resolver call that makes the header name the mailbox that was actually served. Same hand-move discipline as the T37 entry above and for the same reason — a blanket --record would reset 28 other files' headroom silently."
   ],
   "recordedAt": "2026-08-10",
   "recordedAtCommit": "36fe2fe",
@@ -206,7 +207,7 @@
     "packages/server/src/agent/tools/pagination.ts": 106,
     "packages/server/src/agent/tools/process-run.ts": 167,
     "packages/server/src/agent/tools/provider/google.ts": 117,
-    "packages/server/src/agent/tools/provider/mailbox-banner.ts": 58,
+    "packages/server/src/agent/tools/provider/mailbox-banner.ts": 127,
     "packages/server/src/agent/tools/provider/microsoft.ts": 125,
     "packages/server/src/agent/tools/provider/plaud.ts": 43,
     "packages/server/src/agent/tools/provider/unified.ts": 39,
