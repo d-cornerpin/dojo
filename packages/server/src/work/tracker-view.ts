@@ -164,10 +164,30 @@ export const projectScope = (a = 'w'): string =>
  * active-status filter — only a predicate carrying both agrees with both.
  *
  * Reconciliation + containment measurement: `tracker/__tests__/census-wire-through-seam.test.ts`.
+ *
+ * ⚠ UX-REPAIR ROUND 6 T26 — A FILED STOP HOLDS THE ROW OUT OF FIRING, AND IT IS NOT A
+ * THRESHOLD. The paragraph above is about noise floors; this clause is about AUTHORITY. When
+ * a worker files `complete_all_runs` — "every run is done; the schedule stops here" — the
+ * two-key wall deliberately leaves the row unmoved until Key 2 rules. Without this, the row
+ * keeps firing while the verdict is outstanding: the 2026-08-10 duplicate weather task was
+ * due again the next day at 4:08 on BOTH twins, five seconds after its own stop was filed.
+ * A row whose stop is awaiting a verdict is not overdue for a run — it is a validation
+ * subject, and it is fully visible as one through the completion queue.
+ *
+ * SELF-LIFTING, BY THE SAME EXPRESSION: if Key 2 REFUSES, the PM's `claim_rejected` answers
+ * the request, `pendingCloseRequestExpr` drops to 0 and the row rejoins its cadence on the
+ * very next tick — with the refusal reason on its own ledger. Nothing has to remember to
+ * un-hold it, which is the property this whole two-key surface is built on.
+ *
+ * ONE DECLARATION, deliberately: `work_update(filter:"overdue")` reads this same expression,
+ * and it should — a row held for a verdict is not a row the model should be told to go run.
+ * Splitting the scheduler's copy from the model's would be a second definition of "overdue",
+ * which is the thing this predicate exists to prevent.
  */
 export const dueScope = (a = 'w'): string =>
   `${a}.next_run_at IS NOT NULL AND ${a}.next_run_at <= ?`
-  + ` AND ${a}.schedule_status = 'waiting' AND ${a}.is_paused = 0`;
+  + ` AND ${a}.schedule_status = 'waiting' AND ${a}.is_paused = 0`
+  + ` AND ${pendingCloseRequestExpr(a)} = 0`;
 
 
 /** `root_kind` for rows this platform opens from now on. Migrated rows keep `'legacy'`;
@@ -270,13 +290,44 @@ export const validatedExpr = (a: string, state: WorkState): string =>
  * Key 1 moved from the state to an EVENT: `transition()`'s `validation_requested` row.
  *
  * "Pending" is the request being NEWER than the row's newest ANSWER, which is what makes it
- * self-clearing: the engine's receipt close, a retask, a reopen — anything that moves the row
- * — writes a `transition`, and a PM who throws the claim back writes a `claim_rejected`
- * without moving anything. Either answers the request, so both end it, and nobody has to
- * remember to clear a flag. Compared by `work_events.id`, never by `created_at`: this
- * phase has now hit the same-millisecond defect three times (the poke ladder's window, the
- * scheduler's occurrence CAS, the adjudication instant in `store.ts`), and a sequence exists
- * here, so a clock is the wrong instrument.
+ * self-clearing: the engine's receipt close, a retask, a reopen — anything that ENDS or
+ * RE-TASKS the row — writes a `transition`, and a PM who throws the claim back writes a
+ * `claim_rejected` without moving anything. Either answers the request, so both end it, and
+ * nobody has to remember to clear a flag. Compared by `work_events.id`, never by `created_at`:
+ * this phase has now hit the same-millisecond defect three times (the poke ladder's window,
+ * the scheduler's occurrence CAS, the adjudication instant in `store.ts`), and a sequence
+ * exists here, so a clock is the wrong instrument.
+ *
+ * ⚠ UX-REPAIR ROUND 6 T26 — NOT EVERY TRANSITION IS AN ANSWER, and one of them was burying
+ * the request five seconds after it was filed.
+ *
+ * THE LEDGER (dev body, 2026-08-10, by event id): 22628 is the agent's honest
+ * `complete_all_runs` on a duplicate recurring row — `{requested_state:'done', from:'claimed',
+ * "agent asserts every run is done; the schedule stops here"}`. 22630, five seconds later, is
+ * the janitor that resets structurally-stuck recurring rows: `claimed→on_deck`, by SCHEDULER,
+ * "this run is failed; the schedule rejoins at its next occurrence". 22630 > 22628, so this
+ * expression read 0 and the request vanished from every queue that asks for it. The duplicate
+ * rejoined its cadence and its occurrence was orphaned and skipped four minutes later (22632).
+ *
+ * SO: WHICH events answer "is this job finished?" A verdict does — `claim_rejected`. A
+ * transition that ENDS the row (`done`/`failed`/`abandoned`) does: the row is finished, one
+ * way or another. A transition back to `open` does: it has been re-tasked, so it is not
+ * finished and the old request is moot. A move BETWEEN WORKING STATES — claimed→on_deck,
+ * claimed→paused, on_deck→claimed — says where the job IS, never whether it is FINISHED, and
+ * leaves the request exactly where the worker put it.
+ *
+ * KEYED ON THE ROW'S OWN MOVEMENT, NOT ON THE ACTOR. `by:'scheduler'` was the tempting
+ * discriminator and it is the wrong one: the scheduler also writes the legitimate receipt
+ * close (`forceResetStuckRecurringTask`'s no-future-runs branch closes `by:'scheduler'` when
+ * it holds a delivery), so an actor test would have re-broken the self-clearing this
+ * expression's own paragraph promises. The destination state is the fact.
+ *
+ * T21's SELF-HEAL PROPERTY IS UNTOUCHED AND STRENGTHENED. `claim_upheld` was never in the
+ * comparison set — that omission is what let round-5's stuck paused rows heal the moment the
+ * queue could see them — and it is still not. The set only got SMALLER, so nothing that was
+ * pending before is buried now: the round-5 shape heals faster, never slower. Asserted in
+ * `tracker/__tests__/a-close-request-survives-the-scheduler.test.ts` and re-proven by re-running
+ * `a-close-filed-from-a-paused-row.test.ts` whole.
  *
  * requirement preserved: work whose worker says it is finished is SEEN by the validator.
  * That was the `complete_validated=0` queue; this is the same queue, keyed on the row that
@@ -287,7 +338,11 @@ export const pendingCloseRequestExpr = (a: string): string =>
   + `    WHERE e.work_id = ${a}.id AND e.kind = 'validation_requested'`
   + `      AND json_extract(e.payload, '$.requested_state') = 'done'), -1)`
   + `  > COALESCE((SELECT MAX(e2.id) FROM work_events e2`
-  + `    WHERE e2.work_id = ${a}.id AND e2.kind IN ('transition', 'claim_rejected')), -1)`
+  + `    WHERE e2.work_id = ${a}.id`
+  + `      AND (e2.kind = 'claim_rejected'`
+  + `        OR (e2.kind = 'transition'`
+  + `            AND json_extract(e2.payload, '$.to')`
+  + `                IN ('done', 'failed', 'abandoned', 'open')))), -1)`
   + ` THEN 1 ELSE 0 END)`;
 
 /**

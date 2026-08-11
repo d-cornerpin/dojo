@@ -1255,7 +1255,32 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
     logger.warn('scheduler: writeTaskLog on run-complete failed (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
   }
 
-  if (nextRun) {
+  // ── UX-REPAIR ROUND 6 T26 — THE CADENCE RESET IS ALSO A BOOKKEEPING MOVE ──
+  //
+  // Same rule as `forceResetStuckRecurringTask`'s guard, at the OTHER site that moves a
+  // running recurring row back to `on_deck`. A worker that filed `complete_all_runs` is asking
+  // for the SCHEDULE to stop; sending the row to `on_deck` while that request is outstanding
+  // takes it out of the close-request subject (`closeRequestFiledExpr`: `claimed`/`paused`,
+  // T21's argued pair) and leaves it held out of firing with no path to a verdict — a row
+  // frozen between two mechanisms. It stays `claimed`, in front of the validator, until Key 2
+  // rules; if the close is REFUSED the request is answered, the hold in `dueScope` lifts, and
+  // the next tick resumes the cadence with the refusal on the row's own ledger.
+  const stopPending = (getDb().prepare(
+    `SELECT ${pendingCloseRequestExpr('w')} AS pending FROM work w WHERE w.id = ?`,
+  ).get(taskId) as { pending: number } | undefined)?.pending === 1;
+
+  if (nextRun && stopPending) {
+    // The next occurrence is still computed and stored — a refusal must find a live cadence
+    // to resume — but the row does NOT leave the validator's queue.
+    noteUnsettled(setNextRun(taskId, {
+      at: tsToMs(nextRun),
+      alongside: { last_run_at: tsToMs(now) },
+      reason: 'a run finished while a close request was pending; the cadence is recorded but the row stays with the validator',
+    }), 'scheduler: run finished with a close request pending', { taskId });
+    logger.info('Scheduler: run finished with a stop filed — the row stays claimed for the validator instead of rejoining its cadence', {
+      taskId, nextRun,
+    });
+  } else if (nextRun) {
     // Recurring: set next run, go back to waiting, reset task status to on_deck
     // T2: the tracker state and the schedule columns describe ONE event — this run
     // finished and the next one is due at T. Split across two transactions they could
@@ -1816,6 +1841,33 @@ export function forceResetStuckRecurringTask(taskId: string): void {
   if (!task) return;
   if (task.status !== 'in_progress') return;
   if (!task.repeat_interval) return;
+
+  // ── UX-REPAIR ROUND 6 T26 — A ROW WITH A FILED CLOSE IS NOT A STUCK ROW ──
+  //
+  // This function's premise is "structurally stuck: in_progress with no productive way out".
+  // A row whose worker has filed `complete_all_runs` looks identical from the outside and is
+  // the exact opposite: it is unmoved ON PURPOSE, because the two-key wall (migration 139)
+  // will not let a worker close its own work, and it is waiting for the validator.
+  //
+  // MEASURED, dev body 2026-08-10: event 22628 filed the stop on the duplicate weather task
+  // at 23:09:10 ("agent asserts every run is done; the schedule stops here"); five seconds
+  // later this function wrote event 22630, `claimed→on_deck`, "this run is failed; the
+  // schedule rejoins at its next occurrence". That transition is what buried the request, and
+  // four minutes after it the row's occurrence was skipped as an orphan (22632) — a run
+  // recorded failed beside an answer that had already been delivered.
+  //
+  // Guarded HERE rather than at the three callers (the stale/stuck sweep, going-idle's
+  // recurring-dangler pass, tracker-closeout's) because it is this function's own
+  // precondition, and a precondition stated once cannot be forgotten by the fourth caller.
+  const heldForValidation = db.prepare(
+    `SELECT ${pendingCloseRequestExpr('w')} AS pending FROM work w WHERE w.id = ?`,
+  ).get(taskId) as { pending: number } | undefined;
+  if (heldForValidation?.pending === 1) {
+    logger.info('Scheduler: force-reset SKIPPED — a close request is pending on this row; it is a validation subject, not a stuck row', {
+      taskId, title: task.title,
+    });
+    return;
+  }
 
   const scheduledTask: ScheduledTask = {
     id: task.id as string,
