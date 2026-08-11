@@ -3263,6 +3263,48 @@
       "to": 254,
       "by": "UX-REPAIR T38 `4c7a908` — an expired Plaud login tells the user",
       "why": "NOT A RAISE — A FIRST PIN, which is the stronger of the two remedies the growth detector offers for an unpinned file crossing 60% of the 400-line cap (215 -> 254), and it follows the `5546651` precedent for `services/format-time.ts`: pinning makes every future line argue for itself, where re-recording the baseline would absorb this growth silently. +25 code / +17 comment: the card gained the THIRD state it never had (an expired login rendered as \"Connected as … since 25 May\" forever) and the sentence the owner asked for — that signing in happens on the Mac that runs Dojo and has to be finished there. REFUSED: splitting the card. Its three states are one decision the user reads top to bottom, and a second component would put the expired branch somewhere the connected branch cannot be compared with it. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/validation-drive.ts",
+      "from": 482,
+      "to": 615,
+      "by": "UX-REPAIR POST-.27 T40 — the Tomorrow-Brief close that no one validated",
+      "why": "+81 code / +52 comment / +8 blank against -6 code. The 81 lines are SOLVE LAYER 2's whole mechanism and they are HERE for the reason this module's own header gives: `tracker/pm-agent.ts` writes an attempt and `scheduler/runner.ts` reads whether one exists, so the marker, the lens that finds rows nobody ever asked about, and the writer that records the attempt must have ONE owner or the writer and the reader drift (the TB5 class this file was created to end). Splitting them across the two ends is exactly the defect the module exists to prevent. The lens itself is not new code so much as relocated truth: `countRowsHeldBackFromOwner` was a COUNT over a query whose rows nobody could act on; it is now `selectRowsHeldBackFromOwner` returning the ids, with the count kept as `.length` so its one caller is byte-identical. REFUSED: a new module. The ordering law and the floor that ends its silence are one design and one argument."
+    },
+    {
+      "path": "packages/server/src/prompt/assembler.ts",
+      "from": 1477,
+      "to": 1528,
+      "by": "UX-REPAIR POST-.27 T40 — the Tomorrow-Brief close that no one validated",
+      "why": "+46 code / +32 comment / +2 blank against -25 code / -4 comment. Net code +21, and it buys the deletion of a store: `soulFileForAgent` / `readSoulFile` / `writeSoulFile` / `readStoredCharter` are the resolution `getSoulContent` ALREADY performed, now exported so the Settings card reads and writes the same place the model reads. Before this the card ran its own copy of a first-system-row SELECT over a history the PM's prune deletes from the front, which is why the owner's card showed `[Agent ended turn without replying — conversation closed]` as his project manager's entire soul. The alternative that would have kept this file under its pin is a second implementation living in the route — a fifth copy of the statement whose four copies are the defect."
+    },
+    {
+      "path": "packages/server/src/scheduler/runner.ts",
+      "from": 2005,
+      "to": 2016,
+      "by": "UX-REPAIR POST-.27 T40 — the Tomorrow-Brief close that no one validated",
+      "why": "+3 code / +8 comment. The three lines are the floor's call, the toast's call, and the `const` between them; the eight are why the hold the sweep already logged needed an END, and why the thing the owner is told is about the VALIDATOR rather than about the work (the T12 reality check correctly silences the work question for exactly this incident's shape)."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 4703,
+      "to": 4708,
+      "by": "UX-REPAIR POST-.27 T40 — the Tomorrow-Brief close that no one validated",
+      "why": "+4 code / +6 comment against -5 code. Net code -1: the `[FILED]` coaching text stopped promising `the engine closes it automatically` — an outcome the platform cannot know at the moment it speaks, which on the owner's box was false and which his agent then repeated to him in its own words. The six comment lines record that, so the promise cannot come back as a tidy-up."
+    },
+    {
+      "path": "packages/shared/src/ws.ts",
+      "from": 1110,
+      "to": 1115,
+      "by": "UX-REPAIR POST-.27 T40 — the Tomorrow-Brief close that no one validated",
+      "why": "+2 code / +4 comment against -1 code. One new `chat:error` code, `VALIDATION_STALLED`, on the existing union — the owner's directive was to use the toast machinery that exists and add no new channel. The four comment lines say why it rides `warning` rather than `error`: nothing is lost and there is no action he must take."
+    },
+    {
+      "path": "packages/dashboard/src/pages/Tracker.tsx",
+      "from": 1382,
+      "to": 1385,
+      "by": "UX-REPAIR POST-.27 T40 — the Tomorrow-Brief close that no one validated",
+      "why": "+1 code / +2 comment. One colour entry so a filed close renders in the activity log it was previously absent from. The event is not new; only the branch that shows it is."
     }
   ],
   "maxNewFileLines": 400,
@@ -3291,7 +3333,7 @@
     "packages/dashboard/src/pages/Settings.tsx": 6428,
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
-    "packages/dashboard/src/pages/Tracker.tsx": 1382,
+    "packages/dashboard/src/pages/Tracker.tsx": 1385,
     "packages/server/src/agent/a2a-transport.ts": 2414,
     "packages/server/src/agent/agent-status.ts": 233,
     "packages/server/src/agent/brokers/deny.ts": 385,
@@ -3313,7 +3355,7 @@
     "packages/server/src/agent/shared-state.ts": 134,
     "packages/server/src/agent/spawner.ts": 1420,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
-    "packages/server/src/agent/tools/cat/agents.ts": 1284,
+    "packages/server/src/agent/tools/cat/agents.ts": 1280,
     "packages/server/src/agent/tools/cat/comms.ts": 854,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
@@ -3413,7 +3455,7 @@
     "packages/server/src/credentials/secret-fields.ts": 241,
     "packages/server/src/db/migration-backup.ts": 365,
     "packages/server/src/db/migration-checksums.ts": 270,
-    "packages/server/src/gateway/routes/agents.ts": 858,
+    "packages/server/src/gateway/routes/agents.ts": 842,
     "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2530,
     "packages/server/src/gateway/routes/memory.ts": 632,
@@ -3452,12 +3494,12 @@
     "packages/server/src/microsoft/tools-write.ts": 2131,
     "packages/server/src/migration/checks.ts": 537,
     "packages/server/src/migration/import.ts": 407,
-    "packages/server/src/prompt/assembler.ts": 1477,
+    "packages/server/src/prompt/assembler.ts": 1528,
     "packages/server/src/prompt/registry/entries.ts": 542,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
     "packages/server/src/scheduler/engine.ts": 414,
-    "packages/server/src/scheduler/runner.ts": 2005,
+    "packages/server/src/scheduler/runner.ts": 2016,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/format-time.ts": 275,
     "packages/server/src/services/gmail-watcher.ts": 592,
@@ -3479,7 +3521,7 @@
     "packages/server/src/tracker/pm-agent.ts": 2448,
     "packages/server/src/tracker/schema.ts": 1105,
     "packages/server/src/tracker/task-stamps.ts": 268,
-    "packages/server/src/tracker/tools.ts": 4703,
+    "packages/server/src/tracker/tools.ts": 4708,
     "packages/server/src/tracker/version-gap-reconcile.ts": 327,
     "packages/server/src/twilio/call-session.ts": 884,
     "packages/server/src/twilio/sms-inbound.ts": 406,
@@ -3505,14 +3547,14 @@
     "packages/server/src/work/store.ts": 1916,
     "packages/server/src/work/tracker-store.ts": 602,
     "packages/server/src/work/tracker-view.ts": 622,
-    "packages/server/src/work/validation-drive.ts": 482,
+    "packages/server/src/work/validation-drive.ts": 615,
     "packages/server/src/work/work-reaper.ts": 680,
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
     "packages/shared/src/types.ts": 545,
     "packages/shared/src/visibility.ts": 945,
-    "packages/shared/src/ws.ts": 1110,
+    "packages/shared/src/ws.ts": 1115,
     "watchdog/src/auto-rollback.ts": 333,
     "watchdog/src/index.ts": 1217
   }

@@ -622,7 +622,7 @@
     "packages/server/src/work/store.ts": 1916,
     "packages/server/src/work/tracker-store.ts": 602,
     "packages/server/src/work/tracker-view.ts": 536,
-    "packages/server/src/work/validation-drive.ts": 482,
+    "packages/server/src/work/validation-drive.ts": 615,
     "packages/server/src/work/work-reaper.ts": 680,
     "packages/shared/src/a2a-protocol.ts": 90,
     "packages/shared/src/api.ts": 187,
