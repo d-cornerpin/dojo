@@ -3,7 +3,8 @@
     "Growth baseline for deploy/checks/check-growth.mjs. Refreshed with --record,",
     "in a gate-side-only commit, deliberately. A file more than 25% above its entry",
     "here fails; an unpinned file that was at or below 60% of ratchets.json",
-    "maxNewFileLines and is now above it fails. Re-record roughly every 30 days."
+    "maxNewFileLines and is now above it fails. Re-record roughly every 30 days.",
+    "HAND-MOVED, 2026-08-11, ONE entry, gate-side-only: agent/shared-state.ts 90 -> 134 for UX-REPAIR T37 (`f0e385d`), argued in ratchets.json's $raises and in that commit. Moved BY HAND rather than by --record on purpose: a blanket re-record would also have reset the headroom of 28 other files that have drifted since 36fe2fe and are still under the limit, which is the silent absorption this detector exists to prevent (the `5546651` precedent's own words). recordedAt/recordedAtCommit are deliberately NOT touched: the baseline is still the 2026-08-10 one, with a single named exception."
   ],
   "recordedAt": "2026-08-10",
   "recordedAtCommit": "36fe2fe",
@@ -165,7 +166,7 @@
     "packages/server/src/agent/scope.ts": 332,
     "packages/server/src/agent/sensei-policy.ts": 247,
     "packages/server/src/agent/session-reset.ts": 66,
-    "packages/server/src/agent/shared-state.ts": 90,
+    "packages/server/src/agent/shared-state.ts": 134,
     "packages/server/src/agent/site-snapshot.ts": 118,
     "packages/server/src/agent/spawner.ts": 1420,
     "packages/server/src/agent/squad-workspace.ts": 42,

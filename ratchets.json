@@ -3214,6 +3214,41 @@
       "to": 303,
       "by": "UX-REPAIR ROUND 9 T36 — standing-state claims need a board receipt",
       "why": "ADMITTED at 303 and PINNED DECREASE-ONLY — the stronger of the two remedies the growth detector offers for an unlisted file that crossed 240 of the 400-line cap, and the right one here. T36 added +75 (25 code, 49 comment, 3 blank): `standingStateClaimSentence`, `isStandingStateClaimReply`, six patterns and one hedge pattern. The comment is 2:1 because this predicate's whole risk is what it must NOT match — its false positive is not a re-prompted promise like its siblings', it is an ordinary answer sent off to read a board it had no reason to read — so the header records the exclusions BY NAME (bare 'is set for', 'still open', 'still active', bare 'still on') with the sentence each one would have caught, and records the one deliberate divergence from the siblings (a per-SENTENCE question test rather than a whole-reply one, because a question changes whether a reply COMMITTED but does not un-assert 'still parked' — a distinction the driven replay then proved, the floor model's recap ending in a question). SPLITTING WAS MEASURED AND REFUSED, in this file's own recorded words: 'the family stays in one file so the floor cannot grow a second private copy of the question' (`ack-copy.ts:46-51`, T33). A fourth file for the third member is precisely the second copy that header exists to prevent, and the promise floor imports all three from one place. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/shared-state.ts",
+      "from": 90,
+      "to": 134,
+      "by": "UX-REPAIR T37 `f0e385d` — the stop button stops the agent again",
+      "why": "+44 (10 code, 34 comment/blank). THE FIX'S OWN DOOR LIVES HERE. `queueSelfWake` (10 code lines) is the single seam every self-wake in the tree now goes through, and it is what refuses to restart an agent the user stopped; the other 34 lines are the two headers that record WHY the stop flag's lifetime is now the run's lifetime, with the box's own timestamps (stop 07:24:30.475 → 'Processing queued wakeup' 07:24:31.571 → `work_open` 07:24:38.718) — the measurement is the argument, and a reader who deletes it re-opens the hole in a week. REFUSED: putting the door in its own module. This file is the canonical home of the two sets it reads (`stoppedAgents`, `pendingWakeups`); a door elsewhere is a second module reaching into them, which is the shape the T1 pin at 218 exists to prevent. UX-REPAIR T37 — the stop button. No gate, clause, threshold or whitelist is touched and no test is weakened; each file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1487,
+      "to": 1521,
+      "by": "UX-REPAIR T37 `f0e385d` — the stop button stops the agent again",
+      "why": "+34 net (43 added / 9 removed; 10 of the additions code, 33 comment/blank — net CODE +2). The four end-of-run drains that restarted the stopped agent live in this file's `finally`, and so does the ONE owner of the stop flag's clear that replaces three scattered deletes. Eight `pendingWakeups.add` sites became eight `queueSelfWake` calls at net zero; one line was added for the clear and one for the import. Everything else is the record — the argued exemption on the one direct add that stays (a message that ARRIVED is not a self-wake, and stopping the work the agent was already doing must not drop somebody's inbound), and the dated pin of when the button broke: `b2027b0`, 2026-06-25, which added the human-conversation drain here. UX-REPAIR T37 — the stop button. No gate, clause, threshold or whitelist is touched and no test is weakened; each file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/model-call.ts",
+      "from": 310,
+      "to": 338,
+      "by": "UX-REPAIR T37 `f0e385d` — the stop button stops the agent again",
+      "why": "+28 net (33 added / 5 removed; 7 of the additions code, 26 comment/blank). The second window this task found and closed: `stopAgent` can only abort a call already in flight, so a stop landing between the pre-call gate and `activeAbortControllers.set` — across assemble, and across the tool batch before it — hit nothing at all. Measured at 49 seconds and one whole extra round past the button (control C3: stop 07:34:19.429, provider call out 07:34:19.506, turn actually stopped 07:35:08.284). The 7 code lines are one read of the flag where the call becomes interruptible plus the shared abandon helper that keeps this step's abandon census at TWO rather than three. UX-REPAIR T37 — the stop button. No gate, clause, threshold or whitelist is touched and no test is weakened; each file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/index.ts",
+      "from": 265,
+      "to": 289,
+      "by": "UX-REPAIR T37 `f0e385d` — the stop button stops the agent again",
+      "why": "+24 net (26 added / 2 removed; 12 of the additions code, 14 comment/blank). A stop landing during a PARALLEL `safe` tool batch was seen by nothing — the per-call check lives inside the serial arm, so three web searches or twenty seconds of fetching ran the stop straight through. The 12 code lines are the same check hoisted to the batch boundary, filling the same synthetic Cancelled results Part XIX already requires so the model's context is never missing a result for a call it made. UX-REPAIR T37 — the stop button. No gate, clause, threshold or whitelist is touched and no test is weakened; each file may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/index.ts",
+      "from": 171,
+      "to": 178,
+      "by": "UX-REPAIR T37 `f0e385d` — the stop button stops the agent again",
+      "why": "+7 net (8 added / 1 removed; ZERO code lines added, one code line DELETED). Pure record. The only change to this file is that the stop gate no longer DELETES the flag it honours, and eight lines saying why: the drains that run after the loop breaks have to be able to see the stop, and the requirement the delete carried (chat.ts's 2026-06-02 note — no stale flag kills the NEXT turn) is kept, and kept more exactly, by the run's own exit path. UX-REPAIR T37 — the stop button. No gate, clause, threshold or whitelist is touched and no test is weakened; each file may only shrink from here."
     }
   ],
   "maxNewFileLines": 400,
@@ -3259,8 +3294,8 @@
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 317,
-    "packages/server/src/agent/runtime.ts": 1487,
-    "packages/server/src/agent/shared-state.ts": 90,
+    "packages/server/src/agent/runtime.ts": 1521,
+    "packages/server/src/agent/shared-state.ts": 134,
     "packages/server/src/agent/spawner.ts": 1420,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
     "packages/server/src/agent/tools/cat/agents.ts": 1284,
@@ -3296,12 +3331,12 @@
     "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 112,
     "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 222,
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 198,
-    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 310,
+    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 338,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 266,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 149,
     "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 225,
-    "packages/server/src/agent/v2/steps/execute/index.ts": 265,
+    "packages/server/src/agent/v2/steps/execute/index.ts": 289,
     "packages/server/src/agent/v2/steps/execute/post-result.ts": 351,
     "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 337,
     "packages/server/src/agent/v2/steps/execute/result-notes.ts": 152,
@@ -3339,7 +3374,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 235,
     "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 197,
-    "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 171,
+    "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 178,
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 411,
     "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 165,
     "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 238,
