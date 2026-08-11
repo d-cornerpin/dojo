@@ -15,6 +15,23 @@ import { formatDateShort } from '../lib/dates';
 // Once connected, agents see plaud_* tools the next time their tool
 // surface is assembled. The CLI owns ~/.plaud/tokens.json and refreshes
 // silently after that.
+//
+// ── UX-REPAIR T38 (owner report) ──
+// TWO things this card used to leave the user to find out the hard way.
+//
+// (a) WHERE THE LOGIN HAPPENS. That `plaud login` subprocess runs on the Mac
+// the platform is installed on, and the CLI opens a browser THERE. The server
+// asks it not to (`BROWSER=none`, `NO_OPEN=1`, so it prints the URL instead),
+// but the owner watched a browser window open on the Mac anyway — those hints
+// evidently do not take on this CLI. Either way the sign-in finishes on that
+// machine, which matters enormously when the dashboard is being driven from a
+// phone or another computer. The card now says so before the click, and the
+// printed URL stays as the way to finish from wherever you are.
+//
+// (b) THAT THE LOGIN CAN EXPIRE. `status.connected` was the only state, so an
+// expired login rendered as "Connected as … since 25 May" forever while every
+// agent tool call failed. `reauthRequired` is the third state, served by the
+// route (never re-derived here), and it renders as an instruction.
 
 export const PlaudSettings = () => {
   const [status, setStatus] = useState<api.PlaudStatus | null>(null);
@@ -127,20 +144,40 @@ export const PlaudSettings = () => {
         {status.connected && (
           <span className="text-xs px-2 py-0.5 rounded-full bg-cp-teal/20 text-cp-teal">Connected</span>
         )}
+        {status.reauthRequired && !connecting && (
+          <span className="text-xs px-2 py-0.5 rounded-full bg-cp-amber/20 text-cp-amber">Login expired</span>
+        )}
       </div>
       <p className="text-xs text-ui/40">
         Plaud captures meeting audio (device or app) and auto-generates transcripts and summaries. Connect to give your agents read access to recordings, transcripts, AI summaries, and signed audio download URLs.
       </p>
 
-      {/* ── Disconnected state ── */}
+      {/* ── Disconnected / expired state ── */}
       {!status.connected && !connecting && (
         <>
+          {status.reauthRequired && (
+            <div className="alert-banner alert-warning text-xs">
+              <p className="font-medium mb-1">
+                Your Plaud login has expired{status.email ? ` (${status.email})` : ''}.
+              </p>
+              <p className="text-ui/55">
+                Your agents can&apos;t reach your recordings until you reconnect. Nothing else is
+                affected.
+              </p>
+            </div>
+          )}
           <button
             onClick={handleConnect}
             className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
           >
-            Connect Plaud
+            {status.reauthRequired ? 'Reconnect Plaud' : 'Connect Plaud'}
           </button>
+          <p className="text-xs text-ui/55">
+            Signing in happens <span className="font-medium">on the Mac that runs Dojo</span> — a
+            browser window opens there, and the sign-in has to be completed on that machine. If
+            you&apos;re reading this from your phone or another computer, use the link that appears
+            below once you click, or go over to the Mac.
+          </p>
           <p className="text-[11px] text-ui/40">
             No Plaud account?{' '}
             <a
@@ -171,7 +208,9 @@ export const PlaudSettings = () => {
                   {authUrl}
                 </a>
                 <p className="mt-2 text-ui/55">
-                  The dashboard will update automatically once you complete the sign-in.
+                  A browser may already have opened on the Mac that runs Dojo — finishing the
+                  sign-in there works too. The dashboard will update automatically once you
+                  complete it.
                 </p>
               </div>
               <button

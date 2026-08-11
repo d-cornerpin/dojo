@@ -42,7 +42,7 @@ export interface PlaudCommandResult {
  */
 export async function runPlaudCommand(
   args: string[],
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; agentId?: string | null } = {},
 ): Promise<PlaudCommandResult> {
   const timeoutMs = options.timeoutMs ?? 30_000;
   const fullArgs = ['-y', PLAUD_NPM_PACKAGE, ...args];
@@ -65,6 +65,29 @@ export async function runPlaudCommand(
 
     if (needsReauth) {
       logger.warn('Plaud command needs reauth', { args: args[0], exitCode });
+      // ── UX-REPAIR T38: THE ONE PLACE THE EXPIRY IS NOTICED ──
+      // `needsReauth` is computed here and nowhere else, so this is where the
+      // transition gets recorded and the user gets told — once per episode, by
+      // `notePlaudReauthRequired`. Before this, every caller turned the flag
+      // into a sentence for the model and dropped it on the floor.
+      //
+      // `logout` is EXCLUDED: `plaudLogout` runs it, and a CLI that answers
+      // "not logged in" to an intentional logout is agreeing with the user, not
+      // reporting an expiry.
+      //
+      // Dynamic import, deliberately: `plaud/auth.ts` imports this module
+      // statically, so a static import back would be a cycle. Same shape the
+      // runtime already uses for `a2a-transport`.
+      if (args[0] !== 'logout') {
+        try {
+          const { notePlaudReauthRequired } = await import('./auth.js');
+          notePlaudReauthRequired(options.agentId ?? null);
+        } catch (noteErr) {
+          logger.warn('Plaud reauth notice failed (non-fatal)', {
+            error: noteErr instanceof Error ? noteErr.message : String(noteErr),
+          });
+        }
+      }
     } else {
       logger.error('Plaud command failed', {
         args: args[0], exitCode, signal: e.signal,

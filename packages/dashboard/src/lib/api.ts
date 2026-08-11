@@ -645,6 +645,11 @@ export const getCleanupStatus = async (): Promise<ApiResponse<CleanupStatusRespo
 // `plaud:connected`. Dashboard listens to both events.
 export interface PlaudStatus {
   connected: boolean;
+  /** UX-REPAIR T38: was connected, the login expired — a third state, and the
+   *  only one that is an instruction to the user. Served by the route; NOT
+   *  re-derived here (the `.26` Health-page lesson: a client that guesses the
+   *  wire shape is a lie held together by a remap). */
+  reauthRequired: boolean;
   email: string | null;
   connectedAt: string | null;
   loginInProgress: boolean;

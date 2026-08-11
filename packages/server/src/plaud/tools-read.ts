@@ -136,20 +136,24 @@ for (const def of plaudReadToolDefinitions) {
 export async function executePlaudTool(
   name: string,
   args: Record<string, unknown>,
+  /** UX-REPAIR T38: whose turn hit the door. Threaded to `runPlaudCommand` so
+   *  an expiry noticed here is told to THAT agent's conversation — the toast
+   *  lane is per-agent. Optional so internal callers stay valid. */
+  agentId?: string | null,
 ): Promise<string> {
 
   switch (name) {
     case 'plaud_list_recordings': {
       const page = (args.page as number | undefined) ?? 1;
       const pageSize = Math.min((args.page_size as number | undefined) ?? 20, 100);
-      const result = await runPlaudCommand(['files', '--page', String(page), '--page-size', String(pageSize)]);
+      const result = await runPlaudCommand(['files', '--page', String(page), '--page-size', String(pageSize)], { agentId });
       if (!result.ok) return result.error ?? 'Plaud files command failed.';
       return formatRecordingList(parsePlaudListOutput(result.stdout));
     }
 
     case 'plaud_recent_recordings': {
       const days = (args.days as number | undefined) ?? 7;
-      const result = await runPlaudCommand(['recent', '--days', String(days)]);
+      const result = await runPlaudCommand(['recent', '--days', String(days)], { agentId });
       if (!result.ok) return result.error ?? 'Plaud recent command failed.';
       return formatRecordingList(parsePlaudListOutput(result.stdout));
     }
@@ -160,7 +164,7 @@ export async function executePlaudTool(
       if (args.from) cliArgs.push('--from', args.from as string);
       if (args.to) cliArgs.push('--to', args.to as string);
       if (args.max_results !== undefined) cliArgs.push('--max', String(args.max_results));
-      const result = await runPlaudCommand(cliArgs);
+      const result = await runPlaudCommand(cliArgs, { agentId });
       if (!result.ok) return result.error ?? 'Plaud search command failed.';
       const parsed = parsePlaudListOutput(result.stdout);
       return formatRecordingList(parsed, `Search results for "${query}":`);
@@ -168,7 +172,7 @@ export async function executePlaudTool(
 
     case 'plaud_get_recording': {
       const recordingId = args.recording_id as string;
-      const result = await runPlaudCommand(['file', recordingId]);
+      const result = await runPlaudCommand(['file', recordingId], { agentId });
       if (!result.ok) return result.error ?? 'Plaud file command failed.';
       // The `file` command outputs human-readable key:value pairs. Pass
       // through with a header so the agent sees it cleanly.
@@ -177,21 +181,21 @@ export async function executePlaudTool(
 
     case 'plaud_get_transcript': {
       const recordingId = args.recording_id as string;
-      const result = await runPlaudCommand(['transcript', recordingId], { timeoutMs: 60_000 });
+      const result = await runPlaudCommand(['transcript', recordingId], { agentId, timeoutMs: 60_000 });
       if (!result.ok) return result.error ?? 'Plaud transcript fetch failed.';
       return `Transcript for ${recordingId}:\n\n${result.stdout.trim()}`;
     }
 
     case 'plaud_get_summary': {
       const recordingId = args.recording_id as string;
-      const result = await runPlaudCommand(['summary', recordingId], { timeoutMs: 30_000 });
+      const result = await runPlaudCommand(['summary', recordingId], { agentId, timeoutMs: 30_000 });
       if (!result.ok) return result.error ?? 'Plaud summary fetch failed.';
       return `Summary for ${recordingId}:\n\n${result.stdout.trim()}`;
     }
 
     case 'plaud_get_audio_url': {
       const recordingId = args.recording_id as string;
-      const result = await runPlaudCommand(['audio', recordingId]);
+      const result = await runPlaudCommand(['audio', recordingId], { agentId });
       if (!result.ok) return result.error ?? 'Plaud audio URL fetch failed.';
       // CLI prints the signed URL as part of its plain-text output.
       // Some recordings have no audio file uploaded; the CLI emits
@@ -207,7 +211,7 @@ export async function executePlaudTool(
     }
 
     case 'plaud_account_info': {
-      const result = await runPlaudCommand(['me']);
+      const result = await runPlaudCommand(['me'], { agentId });
       if (!result.ok) return result.error ?? 'Plaud `me` command failed.';
       // Output is plain text. Try to surface the email cleanly; pass the
       // raw block through so any other fields the CLI prints (plan, name)

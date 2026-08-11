@@ -22,6 +22,14 @@ const CONFIG_KEY_CONNECTED_AT = 'plaud_connected_at';
 
 export interface PlaudStatus {
   connected: boolean;
+  /**
+   * UX-REPAIR T38: the card needs THREE states, not two. "Never connected" and
+   * "was connected, the login expired" are different things to say to a person,
+   * and only the second one is an instruction. Derived, not stored: a
+   * `plaud_connected_at` stamp with `plaud_connected` false is a login that
+   * used to work — which is exactly `notePlaudReauthRequired`'s transition.
+   */
+  reauthRequired: boolean;
   email: string | null;
   connectedAt: string | null;
   /** True while an interactive `plaud login` subprocess is running. */
@@ -64,13 +72,76 @@ export function isPlaudConnected(): boolean {
 }
 
 export function getPlaudStatus(): PlaudStatus {
+  const connected = isPlaudConnected();
+  const connectedAt = readConfigValue(CONFIG_KEY_CONNECTED_AT);
   return {
-    connected: isPlaudConnected(),
+    connected,
+    reauthRequired: !connected && connectedAt !== null,
     email: readConfigValue(CONFIG_KEY_EMAIL),
-    connectedAt: readConfigValue(CONFIG_KEY_CONNECTED_AT),
+    connectedAt,
     loginInProgress: loginProcess !== null,
     loginUrl: pendingLoginUrl,
   };
+}
+
+/**
+ * UX-REPAIR T38 — THE ONE OWNER OF THE EXPIRY TRANSITION.
+ *
+ * OWNER REPORT: when the Plaud login expires, nothing tells the user. The
+ * expiry was always DETECTED — `runPlaudCommand` computes `needsReauth` from
+ * the CLI's exit code 2 — and then thrown away: the eight `plaud_*` tools
+ * turned it into a sentence for the MODEL and returned, so the stored
+ * `plaud_connected` flag stayed `true`, the card kept saying "Connected as
+ * … since 25 May", the tool gate kept offering the tools, and the person who
+ * had to go and renew the login heard nothing. The only path that flipped the
+ * flag, `refreshPlaudAccountInfo`, is reachable only from a route no UI calls.
+ *
+ * THE STORED FLAG IS THE EPISODE LATCH. No new state, no timer, no counter:
+ * the first failing call flips `plaud_connected` to false and speaks; every
+ * later call in the same episode sees it already false and says nothing (T27's
+ * lesson — once per episode, not once per call). A reconnect sets it true
+ * again, which arms the next episode.
+ *
+ * IT SPEAKS THROUGH THE EXISTING TOAST PATH AND NO OTHER (owner directive):
+ * `chat:error` → `Chat.tsx`'s severity switch, at severity `error`, which that
+ * switch defines as "stays until dismissed". A login the user must go and renew
+ * is not something to auto-dismiss out from under them. The `AUTH_INVALID` code
+ * already exists for exactly this class ("the engine can't proceed and the user
+ * needs to act"), so no code is invented either.
+ *
+ * `agentId` is the agent whose tool call hit the expiry — the toast lane is
+ * per-agent (`Chat.tsx` filters on it), and that agent's conversation is where
+ * the failure just happened. Null when nothing agent-shaped is in hand (the
+ * status/refresh route): the state still moves and the card is still told; only
+ * the toast is skipped, because addressing one to an invented agent would put it
+ * in a chat where nothing happened.
+ *
+ * @returns true if this call was the transition (and therefore spoke).
+ */
+export function notePlaudReauthRequired(agentId?: string | null): boolean {
+  if (!isPlaudConnected()) return false;
+  writeConfigValue(CONFIG_KEY_CONNECTED, 'false');
+  // The email and the connect stamp DELIBERATELY survive: they describe the
+  // account whose login expired, which is what the card needs to name so the
+  // user knows WHICH login to renew. `plaud_connected` is the only authority on
+  // connectedness (it is what `isPlaudConnected` reads), so keeping the address
+  // changes no gate. A real `logout` still wipes both.
+  logger.info('Plaud login expired (reauth required)', { agentId: agentId ?? null });
+  try { broadcast({ type: 'plaud:disconnected' }); } catch { /* best effort */ }
+  if (agentId) {
+    try {
+      broadcast({
+        type: 'chat:error',
+        agentId,
+        error: 'Your Plaud login has expired, so I can\'t reach your recordings. '
+             + 'Reconnect it in Settings → Integrations → Plaud.',
+        code: 'AUTH_INVALID',
+        severity: 'error',
+        retryable: false,
+      });
+    } catch { /* best effort */ }
+  }
+  return true;
 }
 
 /**
@@ -103,9 +174,11 @@ export async function refreshPlaudAccountInfo(): Promise<{ connected: boolean; e
   }
   // Both failed - probably actually disconnected (no tokens, expired, etc).
   if (plainResult.needsReauth || jsonResult.needsReauth) {
-    logger.info('Plaud disconnected (reauth required)');
-    writeConfigValue(CONFIG_KEY_CONNECTED, 'false');
-    deleteConfigValue(CONFIG_KEY_EMAIL);
+    // T38: one owner for this transition. This branch used to write the flag
+    // and wipe the email itself — a second copy of the same state change, and
+    // the copy that nothing was listening to. The email now survives (see
+    // `notePlaudReauthRequired`) so the card can name the expired account.
+    notePlaudReauthRequired(null);
   } else {
     logger.warn('Plaud `me` command failed (both --json and plain)', {
       jsonError: jsonResult.error,

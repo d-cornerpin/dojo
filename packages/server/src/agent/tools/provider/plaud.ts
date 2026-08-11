@@ -14,7 +14,7 @@ import { executePlaudTool } from '../../../plaud/tools-read.js';
 import type { ToolHandler, ToolHandlerMap } from '../handler.js';
 
 const handlers = {
-  async "plaud_list_recordings"({ name, args }) {
+  async "plaud_list_recordings"({ agentId, name, args }) {
     let content = '';
     let isError = false;
     if (!isPlaudConnected()) {
@@ -22,7 +22,9 @@ const handlers = {
       isError = true;
       return { content, isError };
     }
-    content = await executePlaudTool(name, args);
+    // UX-REPAIR T38: the agent id rides along so an expiry noticed inside the
+    // CLI call is told to THIS conversation — the toast lane is per-agent.
+    content = await executePlaudTool(name, args, agentId);
     isError = content.startsWith('Error') || content.startsWith('Plaud is no longer connected');
     return { content, isError };
   },
