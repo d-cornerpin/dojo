@@ -219,6 +219,21 @@ export interface AgentTurnState {
    */
   owedInterruptGrant: OwedInterruptGrant | null;
 
+  /**
+   * UX-REPAIR ROUND 7.5 T32 LEG B1 — the owed-interrupt SETTLEMENT record has been written
+   * this turn.
+   *
+   * A second latch beside the queue's, because B1 split two things that used to be one
+   * instant. The STEER now fires as early as the arrival is visible (that is the point: "never
+   * mind" has to reach the model before it delivers the answer nobody wants). The RECORD may
+   * not move with it: T25's narrowing compares `deliveries.rowid` against the high water taken
+   * when it is written, so writing it before the turn's own answer exists would hand that
+   * answer back the right to close an ask it never addressed — the exact defect T25 closed.
+   * So the record stays where it was, on the first pass where a reply exists, and this says
+   * whether it has already happened.
+   */
+  owedInterruptSubjectsRecorded: boolean;
+
   // ── Loop break / repetition ──
   recentToolSignatures: string[];
 
@@ -511,6 +526,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     toolResults: [],
     steerQueue: emptySteerQueue(),
     owedInterruptGrant: null,
+    owedInterruptSubjectsRecorded: false,
 
     recentToolSignatures: [],
 

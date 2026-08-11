@@ -572,7 +572,30 @@ export const trackerHandlers: ToolHandlerMap = {
       { name: 'disposition', value: args.disposition, type: 'string' },
     ]);
     if (crErr) { content = crErr; isError = true; return { content, isError }; }
-    const crRow = findObligationByTypedId(agentId, args.id as string);
+    let crRow = findObligationByTypedId(agentId, args.id as string);
+    // ── UX-REPAIR ROUND 7.5 T32 LEG B2 — the withdrawal has to reach the ask the turn is
+    // HOLDING, and the shared owed-states set deliberately does not include `claimed`.
+    //
+    // `OWED_STATES` is `('open','paused','blocked','on_deck')` and it is right for what it is
+    // for: the OPEN WORK block lists what is owed and NOT being worked, so the ask the current
+    // turn is serving is correctly absent from it. But the round-7 S6 withdrawal arrives
+    // exactly then — "never mind, forget the earbuds" twenty seconds into the turn comparing
+    // earbuds — and the row is `claimed` by that very turn. Widening the shared constant would
+    // change every obligation surface; this looks the one row up at the door instead, narrowed
+    // three ways: `dropped` only, `kind='ask'` only, and claimed BY THIS AGENT. The engine
+    // supplies the id in the in-flight steer, so the model does not have to find it in a block
+    // that is not showing it.
+    if (!crRow && String(args.disposition) === 'dropped') {
+      const typed = String(args.id ?? '').trim().replace(/^\[+|\]+$/g, '').toLowerCase();
+      const claimedAsk = typed ? getDb().prepare(
+        `SELECT w.id AS id, w.kind AS kind, w.title AS title, w.conversation_id AS conversationId,
+                w.opened_at AS openedAt, w.state AS state
+           FROM work w
+          WHERE w.agent_id = ? AND w.kind = 'ask' AND w.state = 'claimed' AND lower(w.id) = ?
+          LIMIT 1`,
+      ).get(agentId, typed) as { id: string; kind: string; title: string | null } | undefined : undefined;
+      if (claimedAsk) crRow = claimedAsk as unknown as typeof crRow;
+    }
     if (!crRow) {
       // The refusal is steerable, and it names the surface the id comes from — the
       // recorded baseline red is a model writing to an id from a previous session.
@@ -588,15 +611,60 @@ export const trackerHandlers: ToolHandlerMap = {
     // owner's ask is not the model's to close — the record that answers it closes it.
     // The refusal is steerable and names what actually decides, because a model that cannot
     // tell why it was refused invents a second way to try.
+    //
+    // ── UX-REPAIR ROUND 7.5 T32 LEG B2 — ONE SHAPE IS ADMITTED, AND IT IS NOT A CLOSE ──
+    //
+    // The refusal above answers "may the model mark an owner's ask ANSWERED", and the answer
+    // stays NO, totally: `disposition="kept"` on an ask is refused in the same words it always
+    // was. What it cannot answer is the round-7 S6 shape, because that ask is never going to be
+    // answered by anybody: at 00:40:58 the user said *"Never mind, forget the earbuds"*, and
+    // the ledger recorded NOTHING — `SELECT COUNT(*) FROM work_events WHERE payload LIKE
+    // '%never mind%' OR '%cancelled by the user%'` → 0. The ask closed `done` on the answer it
+    // had told the agent not to give. "It closes itself the moment an answer is delivered" is
+    // true and useless for a request that was withdrawn.
+    //
+    // So the withdrawal is admitted, and its actor is the model for the same reason T18 made it
+    // the model for tasks: the engine may not read prose to decide the user called something
+    // off (`definitions.ts:1107`, *"Use 'cancelled' whenever the user says to cancel, drop,
+    // skip or never mind something"*), and the model is already the classifier through this
+    // exact door — this tool's own description says *"Use disposition 'dropped' when the person
+    // told you to forget it or it no longer applies."* The door and the vocabulary both already
+    // existed; only the ask was fenced out of them. NO tool surface changes, so no prompt
+    // prefix moves (cache tenet untouched).
+    //
+    // It lands on `abandoned`, T18's user-choice terminal, NOT `done` and NOT `failed` — the
+    // board's own word for "someone chose to call it off, which is NOT a failure" — and the
+    // reason carries the model's note, which is where the user's words finally reach the ledger.
+    // The state machine already admits it: `open -> abandoned` and `claimed -> abandoned` are
+    // both declared transitions (`work/store.ts:97,99`).
+    const crNote = (args.note as string | undefined)?.trim() || null;
     if (crRow.kind === 'ask') {
-      content = `Not closed: "${crRow.title ?? crRow.id}" is something the owner asked YOU for, not a `
-        + 'promise you made. It closes itself the moment an answer is delivered for it — the '
-        + 'delivery record is what marks it done, at send time and again when the turn ends. '
-        + 'Answer it and it will tick off on its own; there is nothing to call here.';
-      isError = true;
+      if (String(args.disposition) !== 'dropped') {
+        content = `Not closed: "${crRow.title ?? crRow.id}" is something the owner asked YOU for, not a `
+          + 'promise you made. It closes itself the moment an answer is delivered for it — the '
+          + 'delivery record is what marks it done, at send time and again when the turn ends. '
+          + 'Answer it and it will tick off on its own; there is nothing to call here. If the '
+          + 'user called it off instead, use disposition "dropped" with their own words as the note.';
+        isError = true;
+        return { content, isError };
+      }
+      if (!crNote) {
+        // The note is the whole point of the leg: a withdrawal whose reason is not the user's
+        // words is the engine guessing, which is what this task exists to stop.
+        content = `Not dropped: pass \`note\` with what the user actually said when they called `
+          + `"${crRow.title ?? crRow.id}" off. The reason goes on the record.`;
+        isError = true;
+        return { content, isError };
+      }
+      const withdrawn = dismissCommitment(crRow.id, { agentId, reason: `cancelled by the user: ${crNote}` });
+      if (withdrawn.kind === 'applied') {
+        content = `[OK] Dropped: ${crRow.title ?? crRow.id} — recorded as cancelled by the user, not answered.`;
+      } else {
+        content = `Error: could not drop ${crRow.id} (${withdrawn.kind}).`;
+        isError = true;
+      }
       return { content, isError };
     }
-    const crNote = (args.note as string | undefined)?.trim() || null;
     if (String(args.disposition) === 'dropped') {
       const dr = dismissCommitment(crRow.id, {
         agentId, reason: crNote ?? 'no longer owed',

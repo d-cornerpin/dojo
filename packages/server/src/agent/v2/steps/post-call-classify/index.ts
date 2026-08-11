@@ -52,6 +52,7 @@ import { runNoReply } from './no-reply.js';
 import { runCloseoutFloors } from './closeout-floors.js';
 import { runPersistAssistant } from './persist-assistant.js';
 import { runNoToolCalls } from './no-tool-calls.js';
+import { runOwedInterrupt } from './owed-interrupt.js';
 
 /** The phase the driver advances INTO before calling this step. It never writes it. */
 export const POST_CALL_CLASSIFY_PHASE = 'postCallClassify' as const;
@@ -210,6 +211,29 @@ export async function runPostCallClassify(
     const ended = await runNoToolCalls(state, ctx, sc);
     if (ended.directive !== 'proceed') return ended as PostCallClassifyOutcome;
     state = ended.state;
+  } else {
+    // ── UX-REPAIR ROUND 7.5 T32 LEG B1 — THE SECOND CALL SITE, AND IT IS WHY B1 IS NOT INERT ──
+    //
+    // `runOwedInterrupt` lives in the turn-ending floor family, which runs only when the model
+    // called NO tools. On a research turn that is the LAST pass — every pass before it rode
+    // tool calls — so the one step that points at a mid-turn arrival could not see it until the
+    // turn's own answer had already been written. W11 measured exactly that and recorded the
+    // in-flight arm as never exercised; the round-7 S6 incident is its consequence, the full
+    // earbuds comparison delivered seven seconds after "never mind, forget the earbuds".
+    //
+    // T30's own text asks for this in as many words — *"surface it to the in-flight model call
+    // loop instead of holding it for the follow-up turn"*. The step is called, not copied, so
+    // there is one detection, one steer text pair and one grant record.
+    //
+    // ⚠ IT MAY NOT TAKE THE LOOP HERE. The tool calls this pass produced have not run yet: the
+    // `execute` step is four statements downstream, and a `continue` would drop them. The step
+    // reads `ctx.result.toolCalls` and returns `proceed` on this path for that reason; the
+    // steer rides into the next assembly out of the queue, which is how every other floor's
+    // steer reaches the model anyway. Non-`proceed` is still forwarded, because a step that
+    // asks to stop stops — it just cannot happen from this arm.
+    const owedInFlight = await runOwedInterrupt(state, ctx, sc);
+    if (owedInFlight.directive !== 'proceed') return owedInFlight as PostCallClassifyOutcome;
+    state = owedInFlight.state;
   }
 
   return {

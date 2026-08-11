@@ -213,11 +213,17 @@ describe('§2 the steer text', () => {
   it('no longer asks the model to reply to the arrival — that sentence bought the duplicate', async () => {
     const t = await steer();
     expect(t).not.toContain('Reply ONLY to');
-    expect(t).toContain('Do NOT answer it here');
+    expect(t).toContain('Do NOT answer it in this turn');
   });
 
   it('says WHY, in the terms the person experiences: a second answer is a duplicate', async () => {
     expect(await steer()).toContain('duplicate');
+  });
+
+  it('IT RELEASES ITSELF ON A LATER TURN — the row outlives its turn and must say when it stops', async () => {
+    // Driven 2026-08-11 02:32 without this clause: the arrival's OWN turn read "do not answer
+    // it here" out of the persisted row and spent its whole budget not answering.
+    expect(await steer()).toContain('If you are reading this on a LATER turn, that turn IS its turn — answer it normally.');
   });
 
   it('says what the round IS for: stop or change work the arrival affects', async () => {

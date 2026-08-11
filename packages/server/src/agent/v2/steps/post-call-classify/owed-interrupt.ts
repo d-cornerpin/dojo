@@ -95,12 +95,38 @@ export async function runOwedInterrupt(
   // change meant to help. The owner priority (`ask-settlement.ts:19-26`) settles the direction
   // of error — ambiguity resolves toward answering, never toward closing — so the sentinel is
   // no longer asked for and nothing here reads the round's outcome.
+  // ── UX-REPAIR ROUND 7.5 T32 LEG B1 — THE STEER STOPS WAITING FOR A REPLY TO EXIST ──
+  //
+  // Round-7 S6, verified in the ledger: "Never mind, forget the earbuds" landed at 00:40:58,
+  // twenty seconds into turn 4679's research, and turn 4679 delivered the full 1,900-character
+  // earbuds comparison at 00:41:05 — SEVEN SECONDS AFTER the user said not to bother. The
+  // arrival was in the reassembled tail the whole time; the only step that POINTS at it could
+  // not run, because the gate below required a reply to already exist. On a turn spent in tool
+  // calls, that is after the answer nobody wanted has been written.
+  //
+  // So the two jobs this block used to do in one instant are separated, and the split is a
+  // T25 guarantee rather than a tidy-up:
+  //   * STEERING may happen as early as the arrival is visible — that is the whole point;
+  //   * RECORDING may not move with it. `recordOwedInterruptSubjects` takes MAX(deliveries
+  //     .rowid) as its high water AT THE MOMENT OF WRITING, and T25's narrowing excludes only
+  //     deliveries at or below it. Written on a pass before the turn's own answer exists, the
+  //     water would predate that answer and hand it back the right to close an ask it never
+  //     addressed — T25's defect, restored by a change meant to help. It therefore stays where
+  //     it was: the first pass on which a reply exists, once per turn (`state
+  //     .owedInterruptSubjectsRecorded`).
+  // One steer per turn either way (the queue's own latch), still bounded by MAX_TOOL_LOOPS.
+  const hasReply = !!persistedContent && persistedContent.trim().length > 0;
+  const mayRecord = hasReply && !state.owedInterruptSubjectsRecorded;
+  const maySteer = !steerFired(state.steerQueue, 'owed-interrupt') && state.loopCount < MAX_TOOL_LOOPS;
+  // A pass that RODE TOOL CALLS is the in-flight case, and it must not take the loop: the model
+  // is already getting another round to run them in, and returning `continue` here would skip
+  // the execute phase and drop the calls on the floor. The steer rides into the next assembly
+  // on its own.
+  const ridingToolCalls = ctx.result.toolCalls.length > 0;
   if (
     counterparty.kind === 'user' &&
     !isEngineTurn &&
-    !steerFired(state.steerQueue, 'owed-interrupt') &&
-    persistedContent && persistedContent.trim().length > 0 &&
-    state.loopCount < MAX_TOOL_LOOPS &&
+    (maySteer || mayRecord) &&
     turnCtx.lastAssembledAtIso &&
     chosenConvKey &&
     chosenConvKey !== 'engine'
@@ -134,16 +160,56 @@ export async function runOwedInterrupt(
       // declaration — it is that nothing this round writes reaches the person as a reply
       // (`closeout-floors.ts` holds it), so the model cannot cost the person a duplicate by
       // getting this wrong.
-      const rePrompt = (
+      const isAre = owed.length === 1 ? 'it is' : 'they are';
+      const itsTheir = owed.length === 1 ? 'its' : 'their';
+      // ── THE SELF-LIMITING CLAUSE, AND IT IS NOT DECORATION ──
+      // This row is PERSISTED and model-visible (that is how every steer reaches the model),
+      // which means it is still in the tail on the arrival's OWN turn — the turn whose whole
+      // job is to answer it. Driven at 02:32 on 2026-08-11 with the clause absent: turn 4697
+      // picked the podcast ask up as its trigger, read "Do NOT answer it here", and spent its
+      // whole budget on history searches without ever answering. A steer that outlives its turn
+      // has to say when it stops applying, so it does.
+      const laterTurnRelease =
+        ` (If you are reading this on a LATER turn, that turn IS ${itsTheir} turn — answer ${itThem} normally.)`;
+      const afterReplyPrompt = (
         `[System] While you were working, the user also sent: ${quoted}. ` +
-        `Do NOT answer ${itThem} here — ${owed.length === 1 ? 'it is' : 'they are'} queued and will be served on ${owed.length === 1 ? 'its' : 'their'} own turn next, ` +
-        `and a second answer from you now would reach the user as a duplicate. ` +
+        `Do NOT answer ${itThem} in this turn — ${isAre} queued and will be served on ${itsTheir} own turn next, ` +
+        `and a second answer from you now would reach the user as a duplicate.${laterTurnRelease} ` +
         `Do not re-run the tools you used for the main task; that work is done and delivered. ` +
         `Do NOT repeat, summarize, or re-deliver ANY part of your earlier reply; the user already has it. ` +
         `If what they sent CANCELS or CHANGES work you are still doing, stop that work now and record it; otherwise finish this turn without adding anything.`
       );
+      // ── T32 LEG B1 — THE IN-FLIGHT FORM, and it is a DIFFERENT INSTRUCTION, not a reworded
+      // one. Nothing has reached the person yet, so there is no duplicate to prevent and no
+      // earlier reply to point at. What there is, is work in progress that the person may have
+      // just called off — the incident's own shape — and the ONE reply this turn is going to
+      // write, which is still ahead.
+      //
+      // Aligned with T31's ruling (T32's GROUND says so in as many words): it asks the model to
+      // finish-or-abort ITS OWN work, never to answer the arrival. The arrival's own turn
+      // serves it, and asking for it here would manufacture exactly the duplicate T31 measured.
+      // The withdrawal door is named because it exists and the model has to be told which one
+      // it is: `work_close_request(action="commitment", disposition="dropped")` on the ask's
+      // own bracketed id (T32 leg B2), so the ledger carries the user's words instead of the
+      // engine guessing at them.
+      // The id is SUPPLIED, not left to be found: the ask this turn is serving is `claimed`, and
+      // the OPEN WORK block lists what is owed and NOT being worked, so it is correctly absent
+      // from the one surface the model would look at. The engine knows it — `turnCtx.root` is
+      // that ask — so it says it, and the door accepts a claimed ask for `dropped` (leg B2).
+      const servingAskId = turnCtx.root?.kind === 'ask' && turnCtx.root.id ? `ask:${turnCtx.root.id}` : null;
+      const inFlightPrompt = (
+        `[System] While you are working, the user also sent: ${quoted}. ` +
+        `Nothing has reached them yet this turn. Do NOT answer ${itThem} in this turn — ${isAre} queued and will be served on ${itsTheir} own turn next.${laterTurnRelease} ` +
+        `What this changes is the work you are doing RIGHT NOW: if it cancels or replaces that work, STOP — do not finish it and do not deliver its answer, ` +
+        `and record the cancellation with work_close_request(action="commitment", disposition="dropped"` +
+        `${servingAskId ? `, id="${servingAskId}"` : ', id=<the id in [brackets] from your OPEN WORK block>'}` +
+        `, note="<the user's own words>"). ` +
+        `If it only adds to the work, carry on and cover it when its turn comes. ` +
+        `Whatever you say in your one reply this turn, do not deliver the cancelled task's answer as though they had not spoken.`
+      );
+      const rePrompt = hasReply ? afterReplyPrompt : inFlightPrompt;
       const rePromptId = uuidv4();
-      try {
+      if (maySteer) try {
         // Model-visible engine channel, same pattern as the thrash steer and the
         // auto-scaffold note: an origin_kind='engine' row (EVENTS lane surfaces
         // it) with the 'engine-steer' conv_key sentinel so it can never be picked
@@ -170,14 +236,21 @@ export async function runOwedInterrupt(
       // settlement authority's eighth narrowing reads. Written through `work/`, the spine's
       // single writer; best-effort, because a bookkeeping failure must never cost the
       // re-prompt this step exists to send.
-      try {
-        const { recordOwedInterruptSubjects } = await import('../../../../work/ask-settlement.js');
-        recordOwedInterruptSubjects(agentId, owed.map((m) => m.id), turnNumber);
-      } catch (err) {
-        logger.warn('owed-interrupt subjects not recorded; settlement will fall back to its other narrowings', {
-          agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
-        }, agentId);
+      //
+      // T32 LEG B1 PINS IT TO `mayRecord`, AND THAT IS THE WHOLE CARE IN THE SPLIT ABOVE: the
+      // water is taken here, so this may not run on a pass that predates the turn's own answer.
+      if (mayRecord) {
+        try {
+          const { recordOwedInterruptSubjects } = await import('../../../../work/ask-settlement.js');
+          recordOwedInterruptSubjects(agentId, owed.map((m) => m.id), turnNumber);
+        } catch (err) {
+          logger.warn('owed-interrupt subjects not recorded; settlement will fall back to its other narrowings', {
+            agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
+          }, agentId);
+        }
+        state = advance(state, { owedInterruptSubjectsRecorded: true });
       }
+      if (!maySteer) return proceed(state);
       state = advance(state, {
         steerQueue: enqueueSteer(state.steerQueue, { floor: 'owed-interrupt', content: rePrompt, atLoop: state.loopCount }),
         // T31: the seam writes down WHAT the round is for, beside the queue's record of THAT
@@ -186,13 +259,16 @@ export async function runOwedInterrupt(
         owedInterruptGrant: {
           atLoop: state.loopCount,
           messageIds: owed.map((m) => m.id),
-          afterReply: !!persistedContent && persistedContent.trim().length > 0,
+          afterReply: hasReply,
         },
       });
-      logger.info('v2 owed-interrupt re-prompt: a mid-turn user message was assembled but may be unanswered; giving the model one more round before the teardown claim marks it served', {
+      logger.info('v2 owed-interrupt steer: a mid-turn user message was assembled and is not this turn\'s to answer; pointing the model at it before the teardown claim marks it served', {
         agentId, turnNumber, owedCount: owed.length, convKey: chosenConvKey,
+        inFlight: !hasReply, ridingToolCalls,
       }, agentId);
-      return continueLoop(state); // exactly one more round for the model to answer the owed ask
+      // The in-flight pass keeps its tool calls: the loop is already going to come back, and
+      // the steer is in the queue for the next assembly.
+      return ridingToolCalls ? proceed(state) : continueLoop(state);
     }
   }
 
