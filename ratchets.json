@@ -2,6 +2,20 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/server/src/work/tracker-view.ts",
+      "from": 567,
+      "to": 622,
+      "by": "UX-REPAIR ROUND 6 T26 — a close request survives the scheduler",
+      "why": "+55 (+55/-4 net of the replaced lines; 9 code, 42 comment, 4 blank). The 9 code lines are the narrowed comparison set inside `pendingCloseRequestExpr` and one clause on `dueScope`. This file is a file of PREDICATES that other modules interpolate blind, so the argument for each one has to travel with it: nobody reading `scheduler/runner.ts` can see why a transition does or does not consume a close request unless the expression says so. The 42 lines are the 2026-08-10 ledger by event id (22628 filed, 22630 buried it five seconds later, 22632 skipped the orphaned run four minutes after that), the DESIGN ANSWER the plan asked for in writing — only a verdict or a transition that ENDS or RE-TASKS the row answers 'is this job finished?', a move between working states does not — the refused alternative and why it is refused (keying on `by:'scheduler'` would have re-broken self-clearing, because the scheduler also writes the legitimate receipt close), and T21's self-heal property restated with the reason it survives (the set only got SMALLER). `dueScope`'s block carries its own two: why a filed stop is not a threshold, and why the hold is SELF-LIFTING on a refusal so nothing has to remember to release it. REFUSED: a separate `firingHeldExpr` so `work_update(filter:\"overdue\")` could keep the old meaning — that would be a second definition of 'overdue', which is the exact thing `dueScope` was created to end, and a row held for a verdict is not a row to tell the model to go run. REFUSED: trimming either block to its clause. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/scheduler/runner.ts",
+      "from": 1953,
+      "to": 2005,
+      "by": "UX-REPAIR ROUND 6 T26 — a close request survives the scheduler",
+      "why": "+52 (18 code, 30 comment, 4 blank), in two guards at the two sites that move a running recurring row out of `claimed`. `forceResetStuckRecurringTask` gets a precondition (a row with a filed close is not a stuck row) placed in the FUNCTION rather than at its three callers — the stale/stuck sweep, going-idle's recurring-dangler pass, tracker-closeout's — so the fourth caller cannot forget it; its comment carries the five-second gap between event 22628 and event 22630 that is the whole incident. `onTaskRunComplete`'s cadence reset gets the same guard plus the branch that keeps the next occurrence computed and stored while leaving the row claimed; its comment records the STALEMATE that branch exists to refuse — held out of firing by `dueScope` and moved out of `closeRequestFiledExpr`'s argued claimed/paused pair by the reset, a row would freeze between two mechanisms with no path to a verdict. That failure mode was found by following this task's own fix and is invisible from either site alone, which is why it is written at the site that would cause it. REFUSED: guarding at the three callers instead (+N at each, and the next caller is unguarded by default). REFUSED: dropping the stalemate note. From here this file may only shrink."
+    },
+    {
       "path": "packages/server/src/work/ask-settlement.ts",
       "from": 1213,
       "to": 1294,
@@ -3250,7 +3264,7 @@
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
     "packages/server/src/scheduler/engine.ts": 414,
-    "packages/server/src/scheduler/runner.ts": 1953,
+    "packages/server/src/scheduler/runner.ts": 2005,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/format-time.ts": 275,
     "packages/server/src/services/gmail-watcher.ts": 592,
@@ -3296,7 +3310,7 @@
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/store.ts": 1916,
     "packages/server/src/work/tracker-store.ts": 602,
-    "packages/server/src/work/tracker-view.ts": 567,
+    "packages/server/src/work/tracker-view.ts": 622,
     "packages/server/src/work/validation-drive.ts": 482,
     "packages/server/src/work/work-reaper.ts": 680,
     "packages/shared/src/markers.ts": 286,
