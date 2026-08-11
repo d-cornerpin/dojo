@@ -42,6 +42,38 @@
 // anywhere in the set makes the memory live and it is rendered exactly as today. The
 // same rule governs retirement — a shared token never retires a memory while one of its
 // siblings is still owed.
+//
+// ── UX-REPAIR ROUND 7 T28 — THE ONE SHAPE THE TOKEN RULE COULD NOT REACH ────────
+// The paragraph above says "no title comparison", and for the VAULT leg (§1–§3) that is
+// still exactly true: nothing below is reachable from `obligationVerdict`,
+// `obligationShape` or `retireObligationMemory`, and the vault's write guard and read
+// marker behave byte-identically to the day they shipped.
+//
+// §4 exists because the token rule left a measured hole. T20 counted 17 obligation lines
+// in stored summaries that cite no id at all and left them, deliberately, as an id-only
+// pass. Round 7 measured the cost: on 2026-08-11 five stored summaries for one agent
+// still carried "the fence and roof quotes are still parked, waiting on Bob's address"
+// while ALL 131 of that agent's commitment rows were terminal (87 of them naming Bob,
+// every one `abandoned`, newest closed 2026-08-06) — and the model served those lines to
+// the owner as live work. Fourth recurrence of the same class across rounds 3, 4 and 7.
+//
+// So the ban is narrowed, not lifted, and the narrowing is the whole design:
+//   · it runs ONLY on a line that is already obligation-shaped IN PROSE (§4's cue list),
+//   · it matches ONLY within one agent's own spine,
+//   · the vocabulary comes FROM the spine rows — never invented from the prose — and a
+//     row matches only when the line names BOTH its counterparty (a proper noun the
+//     title carries) AND one of its deliverable nouns,
+//   · AND the line and the title must share a three-word PHRASE containing that
+//     counterparty. Bag-of-words agreement alone was measured on the worn-in body first
+//     and it was not good enough: it joined "David is still owed the final reply" to a
+//     commitment about a codeword on the strength of "David" plus "final", and it hung a
+//     validity marker on a bare heading. The phrase requirement is what makes a match
+//     something a reader can check in one glance ("waiting on Bob's address" is in both),
+//     and it is the difference between a join and a resemblance,
+//   · and it can only ever say the thing that is safe to be wrong about: a match whose
+//     rows are wholly terminal is annotated as history; ONE still-open row anywhere in
+//     the match set leaves the line exactly as written (same rule as §2, same reason).
+// It never retires a memory, never rewrites a word, and never runs on the vault.
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -221,4 +253,196 @@ export function retireObligationMemory(p: {
     }, p.agentId);
     return 0;
   }
+}
+
+// ── 4. THE ID-LESS OBLIGATION LINE (UX-REPAIR ROUND 7 T28) ──────────────────────
+//
+// Everything below is additive and is called from exactly one place — the summary
+// annotator. §1–§3 do not reach it.
+
+/**
+ * The prose an obligation line uses when the model wrote no id.
+ *
+ * Every cue here was read off the ten stored lines the round-7 incident produced
+ * ("still parked", "waiting on Bob's address", "pending Bob's address", "two
+ * outstanding quotes", "remain parked"). It is a GATE, not the decision: a line that
+ * fires this and matches no commitment of its own agent is still left alone.
+ */
+const IDLESS_OBLIGATION_PROSE =
+  /\b(?:waiting (?:on|for)|awaiting|parked|still owed?|outstanding|pending)\b/i;
+
+/** Words a title capitalises that are not counterparties. Sentence-initial words are
+ *  dropped positionally; this list covers the rest ("… address. Waiting on Bob's …"). */
+const NOT_A_COUNTERPARTY = new Set([
+  'email', 'send', 'sends', 'sent', 'reply', 'record', 'note', 'waiting', 'wait',
+  'commitment', 'promise', 'deliver', 'the', 'once', 'after', 'before', 'later',
+  'today', 'tomorrow', 'his', 'her', 'their', 'and', 'then', 'from', 'with', 'for',
+  'reminder', 'task', 'project', 'ask',
+]);
+
+/** Title words that describe the PROCEDURE rather than the thing owed. Excluding them is
+ *  what makes "names the deliverable" mean something: a line that shares only "address"
+ *  with a title has not named what is owed. */
+const NOT_A_DELIVERABLE = new Set([
+  'address', 'send', 'sends', 'sending', 'sent', 'once', 'later', 'today', 'tomorrow',
+  'before', 'after', 'proceeding', 'waiting', 'provides', 'need', 'needs', 'email',
+  'emails', 'emailed', 'when', 'then', 'from', 'with', 'that', 'this', 'them', 'they',
+  'his', 'her', 'their', 'have', 'will', 'until', 'about', 'over',
+]);
+
+/** Singular form for the crude plural the summariser writes ("quotes" ↔ "quote"). */
+function fold(word: string): string {
+  return word.length > 4 && word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word;
+}
+
+interface NamedCommitmentRow { id: string; state: string; closed: number; title: string }
+
+/**
+ * A run/fixture identifier the model wrote into the prose — `promise-bms6yg5klro`,
+ * `failproj-bmsgoeiyu25-a1`. Alphabetic prefix, then a segment that is long AND carries a
+ * digit, which is what separates an id from an ordinary hyphenated word
+ * ("technique-distillation" is not an id) and from a UUID fragment.
+ *
+ * It exists for ONE purpose: when a line and a title BOTH name an id and the ids differ,
+ * the model has told us they are different records and no amount of shared phrasing
+ * outranks that. On a body full of fixture runs whose titles differ only in that id, this
+ * is the difference between joining the right row and joining its twin.
+ */
+const RUN_ID_TOKEN = /\b[a-z]{4,}-(?=[a-z0-9]*\d)[a-z0-9]{8,}(?:-[a-z0-9]+)?\b/gi;
+
+function runIds(text: string): string[] {
+  RUN_ID_TOKEN.lastIndex = 0;
+  return [...new Set((text.match(RUN_ID_TOKEN) ?? []).map((t) => t.toLowerCase()))];
+}
+
+/** Possessives collapse so "Bob's address" and "Bob" are the same name, then words only.
+ *  Both sides of every comparison go through this one function. */
+function normalizedWords(text: string): string[] {
+  return (text.replace(/['’]s\b/gi, '').match(/\b[A-Za-z][A-Za-z-]*\b/g) ?? [])
+    .map((w) => w.toLowerCase());
+}
+
+/** The three-word phrases of a text. Three, not two: two-word agreement on "waiting on"
+ *  is the cue itself and joins nothing. */
+function trigrams(words: string[]): Set<string> {
+  const out = new Set<string>();
+  for (let i = 0; i + 2 < words.length; i++) out.add(`${words[i]} ${words[i + 1]} ${words[i + 2]}`);
+  return out;
+}
+
+/** One spine row reduced to what a line has to share with it to match. */
+export interface RowVocabulary {
+  row: NamedCommitmentRow;
+  counterparties: string[];
+  deliverables: string[];
+  phrases: Set<string>;
+  ids: string[];
+}
+
+function vocabularyOf(row: NamedCommitmentRow): RowVocabulary {
+  const title = (row.title ?? '').replace(PROMISE_TAG, ' ').replace(CMT_TAG, ' ');
+  CMT_TAG.lastIndex = 0; PROMISE_TAG.lastIndex = 0;
+  const words = title.match(/\b[A-Za-z][A-Za-z'’-]{1,}\b/g) ?? [];
+  const counterparties: string[] = [];
+  const deliverables: string[] = [];
+  words.forEach((w, i) => {
+    const lower = w.replace(/['’]s$/i, '').toLowerCase();
+    // A counterparty is a proper noun the title carries — capitalised, and never the
+    // word the title happens to open with.
+    if (i > 0 && /^[A-Z][a-z]{2,}(?:['’]s)?$/.test(w) && !NOT_A_COUNTERPARTY.has(lower)
+        && !counterparties.includes(lower)) counterparties.push(lower);
+    const f = fold(lower);
+    if (f.length >= 4 && !NOT_A_DELIVERABLE.has(f) && !NOT_A_DELIVERABLE.has(lower)
+        && !deliverables.includes(f)) deliverables.push(f);
+  });
+  return {
+    row,
+    counterparties,
+    deliverables: deliverables.filter((d) => !counterparties.includes(d)),
+    phrases: trigrams(normalizedWords(title)),
+    ids: runIds(row.title ?? ''),
+  };
+}
+
+/** Agent-scoped, read once per sweep/annotation rather than per line. */
+function commitmentVocabulary(agentId: string): RowVocabulary[] {
+  const rows = getDb().prepare(
+    `SELECT id, state, (closed_at IS NOT NULL) AS closed, COALESCE(title, '') AS title
+       FROM work WHERE kind = 'commitment' AND agent_id = ?
+      ORDER BY closed_at, opened_at`,
+  ).all(agentId) as NamedCommitmentRow[];
+  return rows.map(vocabularyOf).filter((v) => v.counterparties.length > 0 && v.deliverables.length > 0);
+}
+
+export type IdlessObligationVerdict =
+  /** Not obligation-shaped in prose, or it names nobody this agent ever owed anything to. */
+  | { kind: 'not-an-obligation' }
+  /** It names a commitment of this agent's that is STILL OWED. Leave it exactly as written. */
+  | { kind: 'live'; workIds: string[] }
+  /** Every commitment it names is closed on the spine. */
+  | { kind: 'closed'; workIds: string[]; states: string[]; newest: string; matchedTitle: string }
+  /** It names a counterparty this agent has commitments with, but no deliverable of theirs. */
+  | { kind: 'unmatched'; counterparty: string };
+
+/**
+ * Resolve ONE id-less summary line against ONE agent's commitment spine.
+ *
+ * `vocab` is passed in so a sweep over a whole body reads the spine once per agent.
+ */
+export function idlessObligationVerdict(
+  line: string, agentId: string, vocab?: RowVocabulary[],
+): IdlessObligationVerdict {
+  const text = (line ?? '').trim();
+  if (!text || !IDLESS_OBLIGATION_PROSE.test(text)) return { kind: 'not-an-obligation' };
+  const rows = vocab ?? commitmentVocabulary(agentId);
+  if (rows.length === 0) return { kind: 'not-an-obligation' };
+
+  const words = normalizedWords(text);
+  const lineWords = new Set(words.map(fold));
+  const linePhrases = trigrams(words);
+  // The counterparty must be named as a PROPER NOUN in the line too — "bob" inside a URL
+  // or a lowercase word is not somebody being owed something.
+  const properInLine = new Set(
+    (text.match(/\b[A-Z][a-z]{2,}(?:['’]s)?\b/g) ?? [])
+      .map((w) => w.replace(/['’]s$/i, '').toLowerCase()),
+  );
+
+  const lineIds = runIds(text);
+
+  const matched: RowVocabulary[] = [];
+  let counterpartySeen: string | null = null;
+  for (const v of rows) {
+    const person = v.counterparties.find((c) => properInLine.has(c));
+    if (!person) continue;
+    // Both sides named an id and they disagree: the model already told us these are two
+    // different records.
+    if (lineIds.length > 0 && v.ids.length > 0 && !v.ids.some((i) => lineIds.includes(i))) continue;
+    // The phrase test: line and title must share three consecutive words, one of them the
+    // counterparty. Without it, agreement on a name plus one common noun is enough to
+    // join two unrelated records — measured, and it was.
+    const shared = [...linePhrases].some((p) => v.phrases.has(p) && p.split(' ').includes(person));
+    if (!shared) continue;
+    counterpartySeen ??= person;
+    if (v.deliverables.some((d) => lineWords.has(d))) matched.push(v);
+  }
+  if (matched.length === 0) {
+    return counterpartySeen === null
+      ? { kind: 'not-an-obligation' }
+      : { kind: 'unmatched', counterparty: counterpartySeen };
+  }
+  // Same law as §2: one still-owed row anywhere in the set makes the line live.
+  const open = matched.filter((m) => !m.row.closed);
+  if (open.length > 0) return { kind: 'live', workIds: open.map((m) => m.row.id) };
+  return {
+    kind: 'closed',
+    workIds: matched.map((m) => m.row.id),
+    states: [...new Set(matched.map((m) => m.row.state))],
+    newest: matched[matched.length - 1].row.id,
+    matchedTitle: matched[matched.length - 1].row.title,
+  };
+}
+
+/** Exposed so a caller sweeping many lines of one agent reads the spine once. */
+export function commitmentVocabularyFor(agentId: string): RowVocabulary[] {
+  return commitmentVocabulary(agentId);
 }

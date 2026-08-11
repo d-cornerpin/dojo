@@ -42,11 +42,35 @@
 // left exactly as written. That is the same refusal `839eedc` bought with 623 deleted lines,
 // and it is why the one-time hygiene pass over stored rows is deterministic rather than a
 // second prose parser wearing a different hat.
+//
+// ════════════════════════════════════════════════════════════════════════════════
+// UX-REPAIR ROUND 7 T28 — BOB'S LAST SURFACE.
+//
+// The paragraph above is why T20 shipped as an id-ONLY pass, and it counted the price of that
+// choice honestly: 17 obligation lines in stored summaries carried no id and were left. Round
+// 7 measured what the price bought. On 2026-08-11, FIVE stored summaries for BehaviorBot still
+// said "the fence and roof quotes are still parked, waiting on Bob's address" — ten separate
+// lines, not one of them citing an id — while every one of that agent's 131 commitment rows
+// was terminal (87 naming Bob, all `abandoned`, newest closed 2026-08-06). The week-overview
+// answer served them to the owner as live work. That is the fourth recurrence of the same
+// class across rounds 3, 4 and 7, and the header sentence T20 added to the lane
+// ("obligation lines here are HISTORICAL") did not stop it.
+//
+// So the ban narrows to admit exactly one shape, and the narrowing lives in
+// `work/obligation-memory.ts` §4 — beside the id resolver, not in a second file — because
+// "what does this line resolve to" must keep having exactly one owner. What it may say is
+// bounded three ways: the line must already read as an obligation IN PROSE, it must name a
+// counterparty AND a deliverable that the agent's OWN spine rows carry, and one still-open row
+// anywhere in the match set leaves the line untouched. What it may NOT do is unchanged: it
+// never rewrites the agent's words, never runs at render time, and never touches the vault.
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
-import { obligationTags, obligationVerdict } from '../work/obligation-memory.js';
+import {
+  obligationTags, obligationVerdict,
+  idlessObligationVerdict, commitmentVocabularyFor, type RowVocabulary,
+} from '../work/obligation-memory.js';
 import { updateSummaryContent } from './dag.js';
 import { estimateTokens } from './budget.js';
 
@@ -55,6 +79,11 @@ const logger = createLogger('summary-obligations');
 /** The opening of the engine's appended finding. One literal, so the writer, the idempotence
  *  check and the tests all read the same token and cannot drift. */
 export const SUMMARY_OBLIGATION_MARK = '[work state as of ';
+
+/** T28's second literal: an obligation-shaped line that names somebody this agent has
+ *  commitments with, but no deliverable any of them records. It says the one true thing
+ *  available — that nothing LIVE matches — and never that the obligation is dead. */
+export const SUMMARY_NO_MATCH_MARK = '[historical note — no live commitment matches]';
 
 /** `YYYY-MM-DD`, the granularity every other dated marker in this tree uses. */
 function today(): string {
@@ -83,6 +112,29 @@ function findingFor(line: string): string | null {
 }
 
 /**
+ * T28: the finding for one line the model gave NO id, or null to leave it alone.
+ *
+ * The annotation NAMES the row it matched. An id-cited line needs no such thing — the id is
+ * already in the sentence — but a name match is an inference, and an inference the reader
+ * cannot check is the same lie in a new place. It also disambiguates the one multi-topic line
+ * the incident produced, where the obligation clause is the last of three.
+ */
+function idlessFindingFor(line: string, agentId: string, vocab: RowVocabulary[]): string | null {
+  const verdict = idlessObligationVerdict(line, agentId, vocab);
+  switch (verdict.kind) {
+    case 'closed':
+      return `${SUMMARY_OBLIGATION_MARK}${today()}: ${verdict.states.join('/')} — matched by name to `
+        + `${verdict.workIds.length} commitment row(s), newest ${verdict.newest}]`;
+    case 'unmatched':
+      return SUMMARY_NO_MATCH_MARK;
+    case 'live':          // still owed: the line is TRUE and stays exactly as written
+    case 'not-an-obligation':
+    default:
+      return null;
+  }
+}
+
+/**
  * Resolve every id-cited obligation line in a summary against the spine.
  *
  * Line-oriented on purpose: the summariser writes one item per line, the annotation belongs to
@@ -90,12 +142,17 @@ function findingFor(line: string): string | null {
  * Idempotent by the mark, so the write path and the one-time hygiene pass can both run over
  * the same text without stacking.
  */
-export function annotateSummaryObligations(text: string): string {
-  if (!text || !text.includes('cmt:') && !text.includes('promise-')) return text;
+export function annotateSummaryObligations(text: string, agentId?: string): string {
+  if (!text) return text;
+  // T28's leg is agent-scoped by construction — a spine belongs to one agent — so a caller
+  // that cannot name the agent gets exactly T20's behaviour, byte for byte.
+  const vocab = agentId ? commitmentVocabularyFor(agentId) : [];
+  if (vocab.length === 0 && !text.includes('cmt:') && !text.includes('promise-')) return text;
   let changed = false;
   const out = text.split('\n').map((line) => {
-    if (line.includes(SUMMARY_OBLIGATION_MARK)) return line;
-    const finding = findingFor(line);
+    if (line.includes(SUMMARY_OBLIGATION_MARK) || line.includes(SUMMARY_NO_MATCH_MARK)) return line;
+    const finding = findingFor(line)
+      ?? (agentId && vocab.length > 0 ? idlessFindingFor(line, agentId, vocab) : null);
     if (!finding) return line;
     changed = true;
     return `${line.trimEnd()} ${finding}`;
@@ -103,10 +160,19 @@ export function annotateSummaryObligations(text: string): string {
   return changed ? out.join('\n') : text;
 }
 
+/** One line a sweep would touch, so the pass can be READ before it is applied. */
+export interface SummaryObligationCandidate {
+  summaryId: string;
+  agentId: string;
+  line: string;
+  finding: string;
+}
+
 export interface SummaryObligationSweep {
   scanned: number;
   affected: number;
   ids: string[];
+  candidates: SummaryObligationCandidate[];
 }
 
 /**
@@ -128,18 +194,32 @@ export function sweepStoredSummaryObligations(
 ): SummaryObligationSweep {
   const db = getDb();
   const rows = (opts.agentId
-    ? db.prepare('SELECT id, content FROM summaries WHERE agent_id = ?').all(opts.agentId)
-    : db.prepare('SELECT id, content FROM summaries').all()) as Array<{ id: string; content: string }>;
+    ? db.prepare('SELECT id, agent_id, content FROM summaries WHERE agent_id = ?').all(opts.agentId)
+    : db.prepare('SELECT id, agent_id, content FROM summaries').all()
+  ) as Array<{ id: string; agent_id: string; content: string }>;
 
+  // One spine read per agent, not per line — a body with 162 summaries is a routine size here.
+  const vocabByAgent = new Map<string, RowVocabulary[]>();
   const ids: string[] = [];
+  const candidates: SummaryObligationCandidate[] = [];
   for (const r of rows) {
-    const next = annotateSummaryObligations(r.content ?? '');
+    if (!vocabByAgent.has(r.agent_id)) vocabByAgent.set(r.agent_id, commitmentVocabularyFor(r.agent_id));
+    const vocab = vocabByAgent.get(r.agent_id) ?? [];
+    // The per-line record the measurement obligation needs. Same two deciders the writer
+    // uses, in the same order, so what is reported is what would be written.
+    for (const line of (r.content ?? '').split('\n')) {
+      if (line.includes(SUMMARY_OBLIGATION_MARK) || line.includes(SUMMARY_NO_MATCH_MARK)) continue;
+      const finding = findingFor(line)
+        ?? (vocab.length > 0 ? idlessFindingFor(line, r.agent_id, vocab) : null);
+      if (finding) candidates.push({ summaryId: r.id, agentId: r.agent_id, line: line.trim(), finding });
+    }
+    const next = annotateSummaryObligations(r.content ?? '', r.agent_id);
     if (next === r.content) continue;
     ids.push(r.id);
     if (!opts.dryRun) updateSummaryContent(r.id, next, estimateTokens(next));
   }
   logger.info('summary obligation hygiene pass', {
-    scanned: rows.length, affected: ids.length, dryRun: opts.dryRun,
+    scanned: rows.length, affected: ids.length, lines: candidates.length, dryRun: opts.dryRun,
   });
-  return { scanned: rows.length, affected: ids.length, ids };
+  return { scanned: rows.length, affected: ids.length, ids, candidates };
 }

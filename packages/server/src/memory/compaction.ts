@@ -1041,7 +1041,11 @@ export async function runLeafCompaction(
       // Resolving at render would rewrite prefix bytes on a turn that changed nothing, which
       // is the line T17 declined to cross for the recall lane and the reason it could fix the
       // vault for free. Stored once, read as stored, for ever after.
-      const resolvedText = annotateSummaryObligations(summary.text);
+      //
+      // ROUND 7 T28: the agent is passed because the id-LESS leg is agent-scoped — it may only
+      // ever match a line against THIS agent's own commitment rows. Without it the call is
+      // T20's, unchanged.
+      const resolvedText = annotateSummaryObligations(summary.text, agentId);
       createLeafSummary(
         agentId,
         resolvedText,
