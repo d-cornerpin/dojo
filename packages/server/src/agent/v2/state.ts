@@ -138,6 +138,25 @@ export interface ChannelInboundContext {
   phoneFromNumber?: string;
 }
 
+/**
+ * UX-REPAIR ROUND 7.5 T31 — what the owed-interrupt seam wrote down when it bought a round.
+ * Identity only: which arrival, which ask, which loop, and whether the person already had a
+ * reply when the round was bought. No text travels in here on purpose.
+ */
+export interface OwedInterruptGrant {
+  /** `loopCount` when the round was granted. A later loop IS the granted round. */
+  readonly atLoop: number;
+  /** The mid-turn arrival rows the round was bought for. */
+  readonly messageIds: readonly string[];
+  /**
+   * TRUE when a user-facing reply had already landed this turn before the round was bought.
+   * The two cases are different behaviours, not degrees: after a reply the granted round can
+   * only be a SECOND bubble about the arrival (T31 holds it, the arrival's own turn serves
+   * it); before any reply the granted round IS the turn's one reply and must never be held.
+   */
+  readonly afterReply: boolean;
+}
+
 export interface AgentTurnState {
   // ── Identity & config (immutable across turn) ──
   readonly agentId: string;
@@ -184,6 +203,21 @@ export interface AgentTurnState {
    * those sites — the latch is the queue ENTRY now, one per floor, never shared.
    */
   steerQueue: SteerQueue;
+
+  /**
+   * UX-REPAIR ROUND 7.5 T31 — THE OWED-INTERRUPT SEAM'S OWN RECORD OF THE ROUND IT GRANTED.
+   *
+   * The queue entry already says a round was bought and at which loop; it does not say WHAT
+   * FOR. T31's enforcement may not read the model's words to find out — a wording verdict in
+   * the suppression direction is exactly the swallow P4b deleted from `closeout-floors.ts`
+   * (its tombstone is still there) — so the seam writes down its own subject at the moment it
+   * decides, and every later step asks THIS instead of asking the text.
+   *
+   * Null until the seam grants a round; written once (the queue's latch is one steer per
+   * turn), never cleared inside the turn — the record of a round that was granted outlives
+   * the round itself, because the enforcement runs after it.
+   */
+  owedInterruptGrant: OwedInterruptGrant | null;
 
   // ── Loop break / repetition ──
   recentToolSignatures: string[];
@@ -476,6 +510,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     toolCalls: [],
     toolResults: [],
     steerQueue: emptySteerQueue(),
+    owedInterruptGrant: null,
 
     recentToolSignatures: [],
 

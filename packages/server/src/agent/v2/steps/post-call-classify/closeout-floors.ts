@@ -30,6 +30,31 @@ const logger = createLogger('v2-loop');
  *  longer is substantive and is never dropped, whatever the delivery ledger says. */
 const REDUNDANT_CLOSEOUT_MAX_CHARS = 30;
 
+/**
+ * DEMOTE, DON'T DISCARD (owner request 2026-07-10) — the one copy of it in this file.
+ *
+ * Persist the model's words as a `[working-note]` system row (role='system' never enters model
+ * context, so a demoted line can never feed the re-answer class) and tell the dashboard to
+ * convert the already-streamed bubble in place into a dimmed note. Live view and reload agree.
+ *
+ * Extracted by UX-REPAIR ROUND 7.5 T31, which needed the same demotion for a second reason.
+ * A second inline copy is how two demotions drift into disagreeing about what a demotion is;
+ * the RC-5.3 proactive-budget arm below calls this and its behaviour is byte-identical.
+ * Cosmetic by contract: a failure here never blocks the turn.
+ */
+function demoteToWorkingNote(
+  p: { agentId: string; messageId: string; turnNumber: number; text: string },
+): void {
+  try {
+    const noteId = uuidv4();
+    insertMessageIfAbsent({
+      id: noteId, agentId: p.agentId, role: 'system',
+      content: `${WORKING_NOTE_PREFIX}${p.text}`, turnNumber: p.turnNumber,
+    });
+    broadcast({ type: 'chat:workingnote', agentId: p.agentId, messageId: p.messageId, noteId, content: p.text });
+  } catch { /* cosmetic; never block the turn */ }
+}
+
 /** "Respond once": the closeout floors and the surfaced-reply arm. No way out. */
 export function runCloseoutFloors(
   state: AgentTurnState,
@@ -83,6 +108,47 @@ export function runCloseoutFloors(
   // answer_message_id stamps (migration 113), and the worst case of the
   // swallow's absence is a visible duplicate paragraph, never a silent
   // drop. The re-prompt itself (below) is unchanged.
+  //
+  // ── UX-REPAIR ROUND 7.5 T31 — AND THAT WORST CASE HAPPENED. ──
+  //
+  // W11's driven replay and my own control at `e0b5804` both produced TWO answers to one
+  // mid-turn arrival — in mine, "Darknet Diaries…" and then, 48 seconds later, "Hardcore
+  // History…". Contradictory picks, both user-visible, one question. The class is protected;
+  // the tombstone above is the record of the last attempt to close it and of exactly why that
+  // attempt was wrong.
+  //
+  // So this is the same suppression the swallow attempted, with the discriminator the swallow
+  // lacked: the seam's OWN RECORD of the round it granted and what for (`owedInterruptGrant`,
+  // written at `owed-interrupt.ts`). Not one character of the reply is read. What it says:
+  //
+  //   a round bought AFTER a reply had already landed is bought to ASK ABOUT THE ARRIVAL, and
+  //   the arrival is not this turn's to answer — its own turn serves it (T31 ruling 2). So the
+  //   text that round produces is not a second bubble; it is a working note.
+  //
+  // THE ARRIVAL IS NOT LOST, AND THAT IS WHAT MAKES THE HOLD SAFE: the ask stays open (T25's
+  // narrowing keeps this turn's earlier delivery off it, and nothing here touches its state),
+  // it re-serves, and the follow-up turn answers it — exactly once. The hold can only ever
+  // cost the person a SECOND copy; it can never cost them the answer.
+  //
+  // `afterReply` is the whole guard against the mirror failure. A round granted BEFORE
+  // anything reached the person (T30 leg B's in-flight shape) carries the turn's ONE reply,
+  // and holding that is silence — the thing this tree refuses harder than duplication.
+  // Demote-don't-discard (owner 2026-07-10) rather than the swallow's `null`: the words are
+  // written and the streamed bubble converts in place, so nothing the model wrote disappears.
+  const grant = state.owedInterruptGrant;
+  if (
+    grant &&
+    grant.afterReply &&
+    state.loopCount > grant.atLoop &&
+    persistedContent && persistedContent.trim().length > 0
+  ) {
+    logger.info('v2 T31: the owed-interrupt round produced a second user-facing answer to the arrival; holding it as a working note — the arrival is served by its own turn', {
+      agentId, turnNumber, loopCount: state.loopCount, grantedAtLoop: grant.atLoop,
+      owedCount: grant.messageIds.length, preview: persistedContent.slice(0, 80),
+    }, agentId);
+    demoteToWorkingNote({ agentId, messageId, turnNumber, text: persistedContent });
+    persistedContent = null;
+  }
 
   // ── RC-5.3: proactive-send budget (backoff on unanswered background chatter) ──
   // A settled-context wake (no human waiting, not a deliberate surface) that produces
@@ -107,16 +173,9 @@ export function runCloseoutFloors(
         agentId, turnNumber, streak, threshold: PROACTIVE_SEND_DEMOTE_THRESHOLD,
         preview: persistedContent.slice(0, 80),
       }, agentId);
-      try {
-        const noteId = uuidv4();
-        insertMessageIfAbsent({
-          id: noteId, agentId, role: 'system',
-          content: `${WORKING_NOTE_PREFIX}${persistedContent}`, turnNumber,
-        });
-        // Convert the already-streamed dashboard bubble in place into the dimmed note
-        // (same demote mechanism as the RC-9 text-with-tools path).
-        broadcast({ type: 'chat:workingnote', agentId, messageId, noteId, content: persistedContent });
-      } catch { /* cosmetic; never block the turn */ }
+      // Convert the already-streamed dashboard bubble in place into the dimmed note
+      // (same demote mechanism as the RC-9 text-with-tools path).
+      demoteToWorkingNote({ agentId, messageId, turnNumber, text: persistedContent });
       persistedContent = null;
     } else {
       // Allowed proactive delivery: count it toward the streak. It flows through to

@@ -33,6 +33,7 @@ export async function runOwedInterrupt(
   } = ctx;
   const MAX_TOOL_LOOPS = maxToolLoops;
   const { persistedContent } = sc;
+
   // ── THE SAME-TURN SCAFFOLD CLOSE IS GONE (PHASE-2 T8c item 3) ──
   // `closeEngineScaffoldSameTurn` and this call site both die with the empty-project
   // machine, exactly as the plan's Step 4 says. The turn-start classifier no longer
@@ -59,19 +60,41 @@ export async function runOwedInterrupt(
   //
   // Fix the CAUSE, don't suppress the claim: on a user turn that produced a
   // reply, give the model exactly ONE more round to address any owed mid-turn
-  // arrival BEFORE the same teardown claim marks it served. The [no-reply]
-  // escape is what keeps this from creating a NEW duplicate-answer problem when
-  // the main reply already covered it. getOwedMidTurnArrivals scopes to the
+  // arrival BEFORE the same teardown claim marks it served.
+  // getOwedMidTurnArrivals scopes to the
   // EXACT set the claim will take (same conv-scoping + window) narrowed to
   // mid-turn arrivals (created_at > turnStartedAt), so the trigger and any
   // pre-turn burst siblings (answered as the turn's subject) are excluded.
   //
   // Placed AFTER the F2.1 scaffold close so that close still runs on THIS
-  // iteration's reply (it must not be deferred into a possible [no-reply] extra
+  // iteration's reply (it must not be deferred into the extra
   // round), and it yields to the going-idle hardcap above (which breaks first on
   // a worked-task-with-danglers turn) so this never fights that reconciliation.
   // One-shot (the queue's own latch for `owed-interrupt`) and skipped at the loop cap, so it
   // can neither spin the loop nor push past MAX_TOOL_LOOPS.
+  //
+  // ── UX-REPAIR ROUND 7.5 T31 — WHAT THE ROUND IS FOR CHANGED, AND SO DID WHO ANSWERS ──
+  //
+  // The paragraph above says the round exists so the model can ADDRESS the arrival, and the
+  // steer used to say "Reply ONLY to it". Measured twice on the dev box (W11's replay and my
+  // own control at `e0b5804`), that is what produced two answers to one question: the arrival
+  // is answered here AND on the turn the wakeup drains into, with different content both
+  // times ("Darknet Diaries…" then "Hardcore History…"). T25's record — correctly — keeps this
+  // turn's delivery off that ask, so the second turn always comes.
+  //
+  // Ruling: the arrival's ONE answering turn is its own. This round now exists so the model
+  // can STOP or ADJUST work the arrival changed; the steer says so, and `closeout-floors.ts`
+  // holds whatever it writes as a working note, keyed on `owedInterruptGrant` below.
+  //
+  // A DISCRIMINATOR THAT WAS TRIED HERE AND FAILED, recorded so it is not tried again: the
+  // old text offered `[no-reply]` for "my earlier reply already answered it", and honouring
+  // that declaration would let the earlier delivery close the ask instead of it re-serving. It
+  // was built and driven (2026-08-11, floor model, luggage/podcast replay): the turn answered
+  // its OWN subject only, the arrival untouched — and the model returned `[no-reply]` anyway.
+  // Acting on it closed the podcast ask on the LUGGAGE delivery: T25's defect restored by a
+  // change meant to help. The owner priority (`ask-settlement.ts:19-26`) settles the direction
+  // of error — ambiguity resolves toward answering, never toward closing — so the sentinel is
+  // no longer asked for and nothing here reads the round's outcome.
   if (
     counterparty.kind === 'user' &&
     !isEngineTurn &&
@@ -96,13 +119,28 @@ export async function runOwedInterrupt(
         .map((m) => `"${m.content.replace(/\s+/g, ' ').trim().slice(0, 200)}"`)
         .join('; ');
       const itThem = owed.length === 1 ? 'it' : 'them';
+      // ── UX-REPAIR ROUND 7.5 T31 — THE STEER STOPS ASKING FOR A SECOND ANSWER ──
+      //
+      // It used to say "Reply ONLY to it, in one or two sentences", and that sentence is what
+      // bought the duplicate: the arrival is not this turn's to answer. Its own turn serves it
+      // — the wakeup is already queued, `getOwedMidTurnArrivals` found it precisely because
+      // nothing has claimed it, and T25's record keeps this turn's earlier delivery off it. So
+      // the round exists to let the model STOP or ADJUST what it is doing in light of what the
+      // person just said, not to write them a second bubble.
+      //
+      // The `[no-reply]` escape is GONE from this text, deliberately, and the reason is the
+      // tombstone above: it was invoked when it was not true, so asking for it invited a
+      // declaration the model does not reliably make. What replaces it is not another
+      // declaration — it is that nothing this round writes reaches the person as a reply
+      // (`closeout-floors.ts` holds it), so the model cannot cost the person a duplicate by
+      // getting this wrong.
       const rePrompt = (
         `[System] While you were working, the user also sent: ${quoted}. ` +
-        `Reply ONLY to ${itThem}, in one or two sentences. ` +
-        `Answer from what you already know, with at most one quick lookup if truly needed. ` +
+        `Do NOT answer ${itThem} here — ${owed.length === 1 ? 'it is' : 'they are'} queued and will be served on ${owed.length === 1 ? 'its' : 'their'} own turn next, ` +
+        `and a second answer from you now would reach the user as a duplicate. ` +
         `Do not re-run the tools you used for the main task; that work is done and delivered. ` +
         `Do NOT repeat, summarize, or re-deliver ANY part of your earlier reply; the user already has it. ` +
-        `If your earlier reply already answered ${itThem}, reply exactly [no-reply].`
+        `If what they sent CANCELS or CHANGES work you are still doing, stop that work now and record it; otherwise finish this turn without adding anything.`
       );
       const rePromptId = uuidv4();
       try {
@@ -140,7 +178,17 @@ export async function runOwedInterrupt(
           agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
         }, agentId);
       }
-      state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'owed-interrupt', content: rePrompt, atLoop: state.loopCount }) });
+      state = advance(state, {
+        steerQueue: enqueueSteer(state.steerQueue, { floor: 'owed-interrupt', content: rePrompt, atLoop: state.loopCount }),
+        // T31: the seam writes down WHAT the round is for, beside the queue's record of THAT
+        // it was bought. Everything downstream that has to tell the arrival's answer from the
+        // turn's own answer reads this and nothing else.
+        owedInterruptGrant: {
+          atLoop: state.loopCount,
+          messageIds: owed.map((m) => m.id),
+          afterReply: !!persistedContent && persistedContent.trim().length > 0,
+        },
+      });
       logger.info('v2 owed-interrupt re-prompt: a mid-turn user message was assembled but may be unanswered; giving the model one more round before the teardown claim marks it served', {
         agentId, turnNumber, owedCount: owed.length, convKey: chosenConvKey,
       }, agentId);
