@@ -12,6 +12,7 @@ import {
   resolveTaskId,
   formatResolveError,
   setTaskStatusResult,
+  broadcastTaskSettled,
 } from '../../tracker/schema.js';
 import { getDb } from '../../db/connection.js';
 import {
@@ -556,6 +557,11 @@ trackerRouter.post('/tasks', async (c) => {
       phase: body.phase ?? undefined,
     });
 
+    // T34: the view `createTask` just broadcast. The schedule below lands AFTER it, so the
+    // settle frame at the end of this handler compares against this one — same seam, same
+    // staleness, same fix as the agent's `work_open` door.
+    const announced = getTask(taskId);
+
     // Handle scheduling if provided
     if (body.scheduled_start) {
       const { calculateNextRun } = await import('../../scheduler/engine.js');
@@ -607,6 +613,9 @@ trackerRouter.post('/tasks', async (c) => {
       const { declareDeliverableOnSchedule } = await import('../../work/deliverable-declaration.js');
       declareDeliverableOnSchedule(taskId);
     }
+
+    // T34: the LAST frame for this id must equal the stored row. No-op when nothing settled.
+    broadcastTaskSettled(taskId, announced);
 
     const task = getTask(taskId);
     return c.json({ ok: true, data: task }, 201);

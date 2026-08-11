@@ -513,13 +513,20 @@ export function createTask(params: {
   dependsOn?: string[];
   phase?: number;
   kind?: string;
+  /**
+   * UX-REPAIR ROUND 8 T34 — the goal rides the INSERT now, optional so no existing caller
+   * changes. It used to be patched on immediately AFTER this function broadcast the row, which
+   * made the announcement frame stale on every tool-door creation the moment it was sent. A row
+   * is announced complete or it is announced twice; complete is better.
+   */
+  goal?: string | null;
   // P1 lineage spine (migration 112): REQUIRED so every creation path states
   // its origin deliberately. Values may be null (legacy/no-turn contexts), the
   // PARAM may not be omitted: a new writer that forgets lineage fails to
   // compile instead of silently minting origin-less work.
   origin: { kind: string | null; sourceMessageId: string | null; turn: number | null; convKey: string | null };
 }): string {
-  const { projectId, title, description, assignedTo, createdBy, priority, stepNumber, dependsOn, phase, kind } = params;
+  const { projectId, title, description, assignedTo, createdBy, priority, stepNumber, dependsOn, phase, kind, goal } = params;
 
   // v2.8.x rule: 'on_deck' is reserved for tasks with a future
   // scheduled_start (the scheduler owns the transition to 'in_progress'
@@ -538,6 +545,7 @@ export function createTask(params: {
     status: 'in_progress',
     assignedTo: assignedTo ?? null,
     createdBy,
+    goal: goal ?? null,
     priority: priority ?? 'normal',
     stepNumber: stepNumber ?? null,
     phase: phase ?? 1,
@@ -557,6 +565,35 @@ export function createTask(params: {
   }
 
   return taskId;
+}
+
+/**
+ * UX-REPAIR ROUND 8 T34 — THE LAST FRAME FOR A ROW EQUALS THE STORED ROW.
+ *
+ * `createTask` announces the row it inserted, and a creation door that then SETTLES that row
+ * (a future `scheduled_start` moves it to `on_deck`; `setNextRun` writes the fire time and
+ * `schedule_status='waiting'`; the goal is patched on afterwards) left the announcement as the
+ * last thing the wire ever said about it. Neither `setTrackerStatus` nor `setNextRun`
+ * broadcasts — they are work-store writers that run inside transactions — so a dashboard
+ * watching live showed round 8's reminders as `in_progress` / `unscheduled` / `nextRunAt:null`
+ * until someone reloaded the page (observed twice in one review round, S2 and S6).
+ *
+ * This is the discipline the rest of the tracker already follows — `updateTask`,
+ * `closeProject` and `tracker/tools.ts` all read the row back after their writes and
+ * broadcast the FRESH one. Here it is named, so both creation doors share it.
+ *
+ * It is a no-op when nothing settled: `announced` is the view the creation frame carried, and
+ * an identical view means the announcement is already the truth, so an unscheduled creation
+ * still emits exactly ONE frame. One settle frame, never a firehose.
+ *
+ * @returns true when a correcting frame was sent.
+ */
+export function broadcastTaskSettled(taskId: string, announced: Task | null): boolean {
+  const settled = getTask(taskId);
+  if (!settled) return false;
+  if (announced && JSON.stringify(announced) === JSON.stringify(settled)) return false;
+  broadcast({ type: 'tracker:task_updated', data: settled });
+  return true;
 }
 
 /**

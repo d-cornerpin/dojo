@@ -46,6 +46,7 @@ import {
   closeProjectAndOpenTasks,
   setTaskStatus,
   setTaskStatusResult,
+  broadcastTaskSettled,
 } from './schema.js';
 import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
 import { recordRemediation } from '../work/poke-ladder.js';
@@ -1219,16 +1220,17 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       dependsOn,
       phase,
       kind: args.kind as string | undefined,
+      // T34: the goal rides the INSERT. It used to be patched on immediately after `createTask`
+      // had already broadcast the row, so the announcement frame was stale about the goal on
+      // every creation through this door — the same defect as the schedule columns, one column
+      // over. A row is announced complete, or it is announced twice.
+      goal,
     });
 
-    // Persist the goal onto the new row. (createTask itself only writes the
-    // legacy columns; adding goal as an extra parameter would force every
-    // call site to update. Cleaner to set it here.)
-    try {
-      noteUnsettled(patchWork(taskId, { goal }, { touch: false }), 'trackerCreateTask: goal recorded', { taskId });
-    } catch (err) {
-      logger.warn('Failed to persist goal on new task (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
-    }
+    // T34: the view `createTask` just put on the wire. Everything below this line — the on_deck
+    // transition, the fire time, the group — changes the row AFTER that frame, so the settle
+    // frame at the end compares against this one and corrects the wire if the row moved.
+    const announced = getTask(taskId);
 
     // Status reconciliation. v2.8.x rule: 'on_deck' is reserved for
     // tasks with a FUTURE scheduled_start (the scheduler owns the
@@ -1339,10 +1341,19 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     if (assignedToGroup) {
       const groupRow = getDb().prepare('SELECT 1 FROM agent_groups WHERE id = ?').get(assignedToGroup);
       if (!groupRow) {
+        // T34: this path still created and settled a row, so the wire owes the truth about it
+        // before we hand the model its error.
+        broadcastTaskSettled(taskId, announced);
         return `Error: agent group '${assignedToGroup}' does not exist. The task was created assigned to you; use work_update(action="edit") to reassign once you have a valid group id.`;
       }
       noteUnsettled(patchWork(taskId, { assigned_to_group: assignedToGroup, assignee_agent: null }), 'trackerCreateTask: assigned to a group', { taskId });
     }
+
+    // T34: every write to this row is done. If the row moved since it was announced — a future
+    // schedule settles it `on_deck` with a fire time, and the goal lands after the insert — the
+    // wire hears the settled row now, so the LAST frame for this id equals the stored row. A
+    // creation that settled nothing sends nothing (the announcement was already true).
+    broadcastTaskSettled(taskId, announced);
 
     const parts = [
       `[OK] task_id=${taskId} | title=${title}`,
