@@ -44,9 +44,10 @@
 //    The strings are unchanged, deliberately: changing them would blind that classifier to
 //    every line already in flight.
 // 2. THE REPLY-SHAPE PREDICATE FAMILY: `isForwardPromiseReply` + `FORWARD_PROMISE_PATTERNS`,
-//    and (UX-REPAIR ROUND 8 T33) `isStandingPromiseReply` + its scope/commitment patterns.
+//    (UX-REPAIR ROUND 8 T33) `isStandingPromiseReply` + its scope/commitment patterns, and
+//    (UX-REPAIR ROUND 9 T36) `standingStateClaimSentence` / `isStandingStateClaimReply`.
 //    Live: the promise floor (`steps/post-call-classify/promise-floor.ts`) and
-//    `__tests__/ack-copy.test.ts` share these ONE definitions. Neither is ack copy at all —
+//    `__tests__/ack-copy.test.ts` share these ONE definitions. None is ack copy at all —
 //    they are reply-shape predicates that happen to live here, beside the pools, and the
 //    family stays in one file so the floor cannot grow a second private copy of the question.
 //
@@ -225,4 +226,78 @@ export function isStandingPromiseReply(text: string | null | undefined): boolean
     (sentence) => STANDING_SCOPE_PATTERNS.some((re) => re.test(sentence))
       && FIRST_PERSON_COMMITMENT.test(sentence),
   );
+}
+
+// ── Standing-STATE claim detection (promise floor, UX-REPAIR ROUND 9 T36) ──
+//
+// The third member, and the read-side complement of the other two. They ask what the reply
+// PROMISED; this one asks what the reply ASSERTED about the board. Round-9 S5: "Recap the week
+// for me" produced a 1,100-character answer with ZERO tool calls in the whole scenario, whose
+// past-work claims were nearly perfect (exact file names, an exact 11-file count) and whose
+// live-state claims were not — "schedule intact for tomorrow" (no such row), "Still on deck:
+// parking pass renewal" (nothing on the board), "two fence quotes still parked, waiting on Bob's
+// address" (88 such commitments, every one `abandoned`, across four documents). Third sighting of
+// the shape in two rounds. The model recaps memory-state and never row-state.
+//
+// CONSERVATISM IS THE WHOLE DESIGN CONSTRAINT HERE, and it is a different one from the siblings'.
+// Their false positive re-prompts a turn that promised something; this one's would send an
+// ordinary answer off to read a board it had no reason to read. So:
+//   - The patterns are BOARD VOCABULARY, keyed on state the reply presents as PERSISTING since
+//     before this turn ("still parked", "on deck", "schedule intact") or as FIRING later ("will
+//     go off at 6"). Bare "is set for", "still open", "still active" and bare "still on" are
+//     deliberately OUT: a shop, a question and a game are all "still open", and "your reminder is
+//     set for 7pm" is the sentence a turn emits in the same breath as the `work_open` that made
+//     it — which is why the pinned round-8 control 'Your reminder is set for 7pm.' must stay
+//     unsteered. The cost of those exclusions is recorded, not hidden: a bare confirmation with
+//     no board contact is NOT caught by this predicate.
+//   - The QUESTION test is per-sentence, not whole-reply as in the siblings, and for their own
+//     reason applied to a different predicate: a question changes whether a reply COMMITTED, so
+//     one anywhere disqualifies a promise — but a question elsewhere in a recap does not un-assert
+//     "still parked". The sentence doing the asserting must itself be an assertion.
+//   - A reply that DISCLOSES it is answering from memory has already done the honest half the
+//     floor's steer would ask for, exactly as `DISCLOSED_INABILITY` does for the standing promise.
+// One match anywhere is enough, because the steer is about the whole reply: the S5 bullets that no
+// pattern could catch ("recycling out Fri 6 PM") get re-checked along with the ones that did.
+const STANDING_STATE_PATTERNS: readonly RegExp[] = [
+  // `on_deck` is one of the tracker's own row states, and the phrase is not saying anything else
+  // in a reply to the person whose board it is.
+  /\bon deck\b/i,
+  // State the reply presents as having PERSISTED into now. Every word is board vocabulary.
+  /\bstill (?:parked|pending|outstanding|owed|queued|scheduled|set|booked|waiting|unresolved|in progress)\b/i,
+  // Round-9 S5's own phrase.
+  /\bschedule (?:is |looks |remains )?intact\b/i,
+  // A future firing asserted as fact.
+  /\bwill (?:still )?(?:fire|go off|run|trigger|remind you|nudge you|ping you|kick off)\b/i,
+  // Asserted membership of a board or calendar this turn may not have read.
+  /\b(?:on|in) (?:the|your) (?:books|board|tracker|calendar|schedule|queue)\b/i,
+  // Asserted to be unchanged since before the turn.
+  /\b(?:remains?|stays?) (?:on|set|scheduled|open|pending|parked|unchanged|in place)\b/i,
+];
+/** The reply already said the answer is unverified — the honest outcome, not a false assertion. */
+const DISCLOSED_FROM_MEMORY =
+  /\bfrom memory\b|\bgoing (?:off|from) memory\b|\bwithout checking\b|\bnot (?:yet )?verified\b|\b(?:have|has|did|do)(?:n(?:’|')?t| not)\s+(?:re-?)?check(?:ed)?\b|\bi(?:’|')?d need to (?:check|look)\b/i;
+
+/**
+ * The sentence in `text` that asserts STANDING or FUTURE board state ("still parked on Bob's
+ * address", "on deck", "will fire at 6"), or null when the reply makes no such claim. Returned
+ * rather than a bare boolean so the floor's steer can quote the CLAIM instead of the top of a
+ * long recap. Pure; the caller pairs it with the floor's other conditions — above all the board
+ * RECEIPT, which is the exemption. See STANDING_STATE_PATTERNS for the conservatism rationale.
+ */
+export function standingStateClaimSentence(text: string | null | undefined): string | null {
+  if (!text) return null;
+  const s = text.replace(/\s+/g, ' ').trim();
+  if (!s) return null;
+  if (DISCLOSED_FROM_MEMORY.test(s)) return null;
+  const sentences = s.split(/(?<=[.!?])\s+/).map((x) => x.trim()).filter(Boolean);
+  for (const sentence of sentences.length > 0 ? sentences : [s]) {
+    if (sentence.includes('?')) continue; // the reply asked here; it did not assert
+    if (STANDING_STATE_PATTERNS.some((re) => re.test(sentence))) return sentence;
+  }
+  return null;
+}
+
+/** Boolean face of `standingStateClaimSentence`, for symmetry with the two siblings. */
+export function isStandingStateClaimReply(text: string | null | undefined): boolean {
+  return standingStateClaimSentence(text) !== null;
 }

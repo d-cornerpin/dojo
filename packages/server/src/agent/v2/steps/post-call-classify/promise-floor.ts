@@ -13,10 +13,10 @@ import { v4 as uuidv4 } from 'uuid';
 import { classifyTool } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
 import { insertEngineEventIfAbsent } from '../../../../memory/message-store.js';
-import { CLOSING_WORK_OPS, toolOpKey } from '../../../../tools/work-verbs.js';
+import { CLOSING_WORK_OPS, isWorkVerb, toolOpKey } from '../../../../tools/work-verbs.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { enqueueSteer, steerFired } from '../../steer-queue.js';
-import { isForwardPromiseReply, isStandingPromiseReply } from '../../ack-copy.js';
+import { isForwardPromiseReply, isStandingPromiseReply, standingStateClaimSentence } from '../../ack-copy.js';
 import { argsForResult } from './args-for-result.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
@@ -36,6 +36,25 @@ const DURABLE_MEMORY_WRITES: ReadonlySet<string> = new Set([
   'vault_update',
   'update_agent',
 ]);
+
+/**
+ * UX-REPAIR ROUND 9 T36 — CONTACT WITH THE BOARD THIS TURN, which is the third class's exemption.
+ *
+ * Two surfaces answer "what is currently scheduled or owed": the work board (the six verbs — a
+ * `work_update` list or get READS it, and an open, note or transition means this turn put the row
+ * there itself) and the calendar. Reads and writes both count on purpose: the question is whether
+ * the turn had any contact with the thing it is describing, and a turn that just opened the
+ * reminder it is confirming has not asserted anything from memory.
+ *
+ * The calendar side is a NAME PREFIX rather than an enumerated set, which is the opposite of the
+ * rule `tools/work-verbs.ts` exists to enforce — and deliberately, because the direction of
+ * failure is opposite too. There, a set that missed a member made a GATE go dark. Here a missed
+ * member makes an EXEMPTION too narrow, i.e. steers a turn that did look; a new `calendar_*` tool
+ * joining the exemption on the day it ships is the safe default, not a silent widening of a gate.
+ */
+function isBoardContact(name: string): boolean {
+  return isWorkVerb(name) || name.startsWith('calendar_');
+}
 
 /** The promise floor: a turn that only promised gets one more round to deliver. */
 export function runPromiseFloor(
@@ -84,8 +103,24 @@ export function runPromiseFloor(
   // now; for a promise about future occasions the only thing that can make it real is a
   // durable record, so this class asks: was anything DURABLE written this turn? The forward
   // class keeps precedence, so every case the floor already fired on keeps its exact steer.
+  //
+  // ── THE THIRD CLASS (UX-REPAIR ROUND 9 T36): THE STANDING-STATE CLAIM ──
+  // Round-9 S5, "Recap the week for me": one 1,100-character answer, ZERO tool calls in the whole
+  // scenario. Its PAST-work claims were nearly perfect — exact file names, an exact 11-file count,
+  // the flight fare quoted from the ticket's own result. Its claims about what is still LIVE were
+  // fiction: "schedule intact for tomorrow" (no such row; the only future fire on the board was a
+  // pasta timer), "Still on deck: parking pass renewal" (nothing), "two fence quotes still parked,
+  // waiting on Bob's address" (88 such commitment rows, every one `abandoned`, four documents).
+  // Third sighting in two rounds (round-8 S1, round-9 S5): the model recaps memory-state.
+  //
+  // The two promise classes ask what the reply COMMITTED to; this one asks what it ASSERTED, and
+  // its exemption is a READ rather than a write — the same receipts-not-prose rule pointed the
+  // other way. "I checked the tracker just now" is not a check. Both promise classes keep
+  // precedence, so every case the floor already fired on keeps its exact steer.
   const forwardPromise = isForwardPromiseReply(persistedContent);
   const standingPromise = !forwardPromise && isStandingPromiseReply(persistedContent);
+  const standingStateClaim = !forwardPromise && !standingPromise
+    ? standingStateClaimSentence(persistedContent) : null;
   if (
     counterparty.kind === 'user' &&
     !isEngineTurn &&
@@ -93,7 +128,7 @@ export function runPromiseFloor(
     state.loopCount < MAX_TOOL_LOOPS &&
     chosenConvKey &&
     chosenConvKey !== 'engine' &&
-    (forwardPromise || standingPromise)
+    (forwardPromise || standingPromise || standingStateClaim !== null)
   ) {
     const didEffectfulWorkThisTurn = state.toolResults.some(
       (tr) => !tr.isError && !!tr.name && classifyTool(tr.name, argsForResult(state.toolCalls, tr)) === 'effectful-action',
@@ -162,9 +197,21 @@ export function runPromiseFloor(
         }
       }
     }
+    // ── T36's EXEMPTION QUESTION, for the standing-STATE class only: did this turn have any
+    //    contact with the board it is describing? RECEIPTS, NOT PROSE for the third time — the
+    //    model writing "I checked the tracker just now" is not a check, and the S5 reply that
+    //    named four live rows made no tool call at all. Read from the turn's own tool results
+    //    rather than from a row, because the question is about the LOOKING, and a read leaves no
+    //    row behind to find.
+    let readTheBoardThisTurn = false;
+    if (standingStateClaim !== null && !didEffectfulWorkThisTurn && !transitionedATaskThisTurn) {
+      readTheBoardThisTurn = state.toolResults.some(
+        (tr) => !tr.isError && !!tr.name && isBoardContact(tr.name),
+      );
+    }
     if (!didEffectfulWorkThisTurn && !transitionedATaskThisTurn && !openedFutureScheduledWorkThisTurn
-      && !wroteSomethingDurableThisTurn) {
-      const quoted = persistedContent.replace(/\s+/g, ' ').trim().slice(0, 200);
+      && !wroteSomethingDurableThisTurn && !readTheBoardThisTurn) {
+      const quoted = (standingStateClaim ?? persistedContent).replace(/\s+/g, ' ').trim().slice(0, 200);
       if (steerFired(state.steerQueue, 'promise-floor')) {
         // Steered once already this turn and the model STILL ended on a promise.
         // Don't spin, let the turn end. This warn is the tripwire that a harder
@@ -173,7 +220,23 @@ export function runPromiseFloor(
           agentId, turnNumber, convKey: chosenConvKey,
         }, agentId);
       } else {
-        const steer = standingPromise ? (
+        const steer = standingStateClaim !== null ? (
+          // T36: the same floor, a third order — nothing here needs doing or recording, it needs
+          // READING before it is said. Engine speaks to the MODEL, never to the user (OR2).
+          //
+          // THE LAST SENTENCE IS DRIVEN, NOT GUESSED. Two floor-model replays of the round-9 send
+          // (2026-08-11) took the granted round and spent it on a blocked task the board read had
+          // just surfaced — the check happened, the correction never did, and the recap the person
+          // actually asked for was left behind as the turn's non-answer. Bounding the round to the
+          // answer it was granted for is the difference between a check and a detour.
+          `[System] Your reply told the user what is currently scheduled or owed ('${quoted}'), ` +
+          `but nothing this turn read the board, so that came from memory rather than from a row. ` +
+          `Check it before you assert it: work_update(action="list") for the live tracker, plus ` +
+          `calendar_agenda if you named a calendar event. Then say that same answer again with ` +
+          `every line corrected against what the board actually holds — a row that is abandoned, ` +
+          `closed, or was never created is not "on deck" and will not fire. This round is for ` +
+          `correcting THAT answer: do not pick up new work you were not asked for.`
+        ) : standingPromise ? (
           // T33: the same floor, a different order — there is no work to "do now" for a promise
           // about future occasions, and the engine speaks to the MODEL, never to the user (OR2).
           `[System] Your reply made a STANDING promise to the user ('${quoted}') — a commitment ` +
@@ -207,8 +270,12 @@ export function runPromiseFloor(
           });
         } catch { /* best effort */ }
         state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'promise-floor', content: steer, atLoop: state.loopCount }) });
-        logger.info('v2 promise floor: reply was a forward promise with negligible work this turn; steering the model to do the work now', {
+        // The message names the CLASS because there are three of them now and the old wording
+        // ("reply was a forward promise") has been false for two of them since T33.
+        logger.info('v2 promise floor: the reply cleared none of this class\'s receipts; steering the model', {
           agentId, turnNumber, convKey: chosenConvKey,
+          floorClass: standingStateClaim !== null ? 'standing-state-claim'
+            : standingPromise ? 'standing-promise' : 'forward-promise',
         }, agentId);
         return continueLoop(state); // one more round to actually do the work and deliver
       }

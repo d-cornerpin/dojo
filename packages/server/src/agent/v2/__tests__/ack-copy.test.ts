@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { isForwardPromiseReply, isStandingPromiseReply } from '../ack-copy.js';
+import {
+  isForwardPromiseReply, isStandingPromiseReply,
+  isStandingStateClaimReply, standingStateClaimSentence,
+} from '../ack-copy.js';
 
 describe('isForwardPromiseReply', () => {
   // A bare promise to START work, judged by the reply's ending. These must fire
@@ -117,5 +120,85 @@ describe('isStandingPromiseReply', () => {
   it('the two predicates are independent: neither answers for the other', () => {
     expect(isForwardPromiseReply("From now on I'll add a line for gym stuff to the weekly checklist.")).toBe(false);
     expect(isStandingPromiseReply('On it. Let me pull up all your calendars.')).toBe(false);
+  });
+});
+
+// UX-REPAIR ROUND 9 T36 — the third member, and the read-side one. Round-9 S5's recap is the pin.
+// The NEGATIVES carry the whole risk of this predicate: its false positive is not a re-prompted
+// promise, it is an ordinary answer sent off to read a board it had no reason to read.
+describe('isStandingStateClaimReply', () => {
+  const POSITIVES: readonly string[] = [
+    // THE PIN: round-9 S5's three live-state claims (catalog §9.3 rows 18, 20, 21), each of which
+    // the record contradicted — no 6:45 AM row, 88 abandoned fence commitments, no parking row.
+    '6:45 AM weekday "routine" reminder set up (first delivery glitched; schedule intact for tomorrow).',
+    'Quotes: two fence quotes still parked, waiting on Bob\'s address.',
+    'Still on deck: parking pass renewal, and the fence quote once Bob sends his address.',
+    'Your dinner reminder will fire at 6 PM on Wednesday.',
+    'The vet call is on your calendar for Friday at 10.',
+    'That one is still pending — nothing has come back yet.',
+    'The weekly review stays scheduled for Friday afternoon.',
+    // A question elsewhere does not un-assert the claim: only the ASSERTING sentence must assert.
+    'Two fence quotes are still parked. Want me to chase Bob for the address?',
+  ];
+
+  const NEGATIVES: readonly string[] = [
+    // Asking about standing state is not asserting it.
+    'Is the parking pass renewal still on deck, or did you take care of it?',
+    // Already hedged: the honest half the floor's steer would have asked for.
+    'From memory, the parking pass renewal is still on deck — I have not checked the tracker.',
+    "Going off memory here, but I think the fence quotes are still parked.",
+    // The contracted form has to work too, or the hedge is only available to careful writers.
+    "I haven't checked the board, but the parking pass renewal is still on deck.",
+    // Ordinary English reusing a board word. Bare "still open"/"still on" are out of the set
+    // precisely so these stay quiet.
+    'The hardware store is still open until 8, so you can pick the bolts up tonight.',
+    "That question is still open — I'd want your call on it before I go further.",
+    'I am still on it and will send the draft over when it is ready.',
+    // A single confirmation right after creating the row. Deliberately NOT caught: this is the
+    // sentence a `work_open` turn emits, and it is round-8 T33's pinned negative control.
+    'Your reminder is set for 7pm. Whenever you want to change it, let me know.',
+    // Past state, not live state.
+    'The recycling reminder was cancelled last Thursday at your request.',
+    // A past-work recap with nothing standing in it.
+    'We finished the Denver checklist, tidied three folders and cleared 11 junk files.',
+    // Short factual answers.
+    'Your garage code is 8841.',
+    'The Mariners lost 4-2 to the Angels.',
+    // The two sibling classes, which keep their own predicates and their own steers.
+    'On it. Let me pull up all your calendars.',
+    "From now on I'll add a line for gym stuff to the weekly checklist.",
+  ];
+
+  for (const text of POSITIVES) {
+    it(`treats as a standing-state claim: ${JSON.stringify(text.slice(0, 70))}`, () => {
+      expect(isStandingStateClaimReply(text)).toBe(true);
+    });
+  }
+
+  for (const text of NEGATIVES) {
+    it(`does NOT treat as a standing-state claim: ${JSON.stringify(text.slice(0, 70))}`, () => {
+      expect(isStandingStateClaimReply(text)).toBe(false);
+    });
+  }
+
+  it('is empty/null safe', () => {
+    expect(isStandingStateClaimReply('')).toBe(false);
+    expect(isStandingStateClaimReply(null)).toBe(false);
+    expect(isStandingStateClaimReply(undefined)).toBe(false);
+    expect(isStandingStateClaimReply('   ')).toBe(false);
+  });
+
+  it('returns the asserting SENTENCE, so the steer can quote the claim and not the greeting', () => {
+    const claim = standingStateClaimSentence(
+      "Here's the week, David. We finished the Denver checklist and tidied three folders. "
+      + 'Two fence quotes are still parked, waiting on Bob\'s address.');
+    expect(claim).toBe("Two fence quotes are still parked, waiting on Bob's address.");
+  });
+
+  it('all three predicates are independent: none answers for the others', () => {
+    expect(isForwardPromiseReply('Still on deck: parking pass renewal.')).toBe(false);
+    expect(isStandingPromiseReply('Still on deck: parking pass renewal.')).toBe(false);
+    expect(isStandingStateClaimReply('On it. Let me pull up all your calendars.')).toBe(false);
+    expect(isStandingStateClaimReply("From now on I'll text your phone as a backup.")).toBe(false);
   });
 });
