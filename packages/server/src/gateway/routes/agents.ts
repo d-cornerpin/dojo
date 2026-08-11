@@ -10,8 +10,9 @@ import { parseCreatedByKind } from '../../agent/created-by-kind.js';
 import { stopAgent } from '../../agent/runtime.js';
 import { getAgentMessages } from '../../agent/agent-bus.js';
 import {
-  insertMessageIfAbsent, rewriteSystemPromptRow, deleteAllForAgent, deleteAgentBusRowsFor,
+  insertMessageIfAbsent, deleteAllForAgent, deleteAgentBusRowsFor,
 } from '../../memory/message-store.js';
+import { readAgentPromptSurface, writeAgentPromptSurface } from '../../prompt/agent-prompt-surface.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../ws.js';
 import { isPrimaryAgent, getPrimaryAgentId, getHealerAgentId, getDreamerAgentId, getImaginerAgentId } from '../../config/platform.js';
@@ -265,19 +266,17 @@ agentsRouter.get('/:id/system-prompt', (c) => {
   const id = c.req.param('id');
   const db = getDb();
 
-  if (isPrimaryAgent(id)) {
-    const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
-    try {
-      const content = fs.readFileSync(soulPath, 'utf-8');
-      return c.json({ ok: true, data: { content } });
-    } catch (err) {
-      noteRouteFailure(c, logger, err);
-      return c.json({ ok: true, data: { content: '' } });
-    }
+  // UX-REPAIR T40: ONE SURFACE. This used to be `SELECT ... role='system' ORDER BY rowid ASC
+  // LIMIT 1` for every non-primary agent — the OLDEST system row, over a history the PM's own
+  // prune deletes from the front. On the owner's box that row was an engine marker, so his
+  // project manager's card showed `[Agent ended turn without replying — conversation closed]`
+  // as its entire soul, while the model was reading `~/.dojo/prompts/PM-SOUL.md`.
+  try {
+    return c.json({ ok: true, data: { content: readAgentPromptSurface(id) } });
+  } catch (err) {
+    noteRouteFailure(c, logger, err);
+    return c.json({ ok: true, data: { content: '' } });
   }
-
-  const msg = db.prepare("SELECT content FROM messages WHERE agent_id = ? AND role = 'system' ORDER BY rowid ASC LIMIT 1").get(id) as { content: string } | undefined;
-  return c.json({ ok: true, data: { content: msg?.content ?? '' } });
 });
 
 // PUT /:id — update agent config (model, system prompt, permissions, tools policy)
@@ -317,26 +316,11 @@ agentsRouter.put('/:id', async (c) => {
   }
 
   if (typeof body.systemPrompt === 'string') {
-    // For primary agent, write to SOUL.md. For others, store as first system message.
-    if (isPrimaryAgent(id)) {
-      const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
-      fs.mkdirSync(path.dirname(soulPath), { recursive: true });
-      fs.writeFileSync(soulPath, body.systemPrompt, 'utf-8');
-      logger.info('Primary agent SOUL.md updated via agent config', { agentId: id });
-    } else {
-      // Update or insert the system message for this agent
-      const existing = db.prepare("SELECT id FROM messages WHERE agent_id = ? AND role = 'system' ORDER BY rowid ASC LIMIT 1").get(id) as { id: string } | undefined;
-      if (existing) {
-        rewriteSystemPromptRow(existing.id, body.systemPrompt);
-      } else {
-        insertMessageIfAbsent({ id: uuidv4(), agentId: id, role: 'system', content: body.systemPrompt });
-      }
-      // FA-PT6: keep the durable charter column (migration 096) in sync with the
-      // edited system prompt, so getSoulContent reflects the update immediately.
-      try {
-        db.prepare('UPDATE agents SET charter = ? WHERE id = ?').run(body.systemPrompt, id);
-      } catch { /* charter column may not exist on a very old database */ }
-    }
+    // UX-REPAIR T40: the same door the card READS through, so an edit reaches the prompt the
+    // model is actually given. Before this, a PM/trainer edit landed in a `role='system'`
+    // message row that the assembler's `tailRender` drops on the floor — the owner could
+    // rewrite his project manager's soul and change nothing.
+    writeAgentPromptSurface(id, body.systemPrompt);
   }
 
   if (body.permissions !== undefined) {

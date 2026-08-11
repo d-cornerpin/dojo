@@ -9,7 +9,7 @@ import { getFilteredTools } from '../agent/tools/surface.js';
 import { getAgentPermissions } from '../agent/manifest.js';
 import { isPrimaryAgent, isPMAgent, isTrainerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getHealerAgentId, getHealerAgentName } from '../config/platform.js';
 import type { TurnCounterparty } from '../agent/v2/counterparty.js';
-import type { Channel } from '@dojo/shared';
+import { NO_REPLY_CLOSED_MARKER, type Channel } from '@dojo/shared';
 import { isWorkVerb } from '../tools/work-verbs.js';
 import { getAgentGoogleAccessLevel, getGoogleWorkspaceConfig, isGoogleConnected, isEmailMonitoringEnabled, isEmailSendingEnabled } from '../google/auth.js';
 import { getAgentMicrosoftAccessLevel, getMsAccountType, getMicrosoftWorkspaceConfig, isMicrosoftConnected, isMsEmailMonitoringEnabled, isMsEmailSendingEnabled } from '../microsoft/auth.js';
@@ -83,30 +83,89 @@ export function extractMarkdownSection(markdown: string, header: string): string
   return body.join('\n').trim();
 }
 
+/**
+ * The prompt FILE that holds an agent's stored identity, when one does.
+ *
+ * ⚠ ONE OWNER (UX-REPAIR T40). The runtime reads the identity through `getSoulContent`
+ * below; the Settings card reads and WRITES it through `prompt/agent-prompt-surface.ts`.
+ * Before T40 those were different stores: the card served
+ * `SELECT content FROM messages WHERE role='system' ORDER BY rowid ASC LIMIT 1` — first-row
+ * archaeology over a history the PM prune deletes from the front — while the model got this
+ * file. On a worn-in box the oldest surviving system row is an ENGINE MARKER, so the owner's
+ * card showed `[Agent ended turn without replying — conversation closed]` as his project
+ * manager's whole soul, and an edit typed into that box reached nothing the model reads.
+ * Both surfaces resolve the store HERE now, so they cannot disagree again.
+ */
+export interface AgentSoulFile {
+  /** File name inside `~/.dojo/prompts`. */
+  readonly file: string;
+  /** The default written on first read; empty for a per-agent file, which must already exist. */
+  readonly fallback: string;
+  /** Whether the spawn-capability truth pass applies to this file's content. */
+  readonly spawnTruth: boolean;
+}
+
+export function soulFileForAgent(agentId: string): AgentSoulFile | null {
+  if (isPrimaryAgent(agentId)) return { file: 'SOUL.md', fallback: DEFAULT_SOUL_MD, spawnTruth: true };
+  if (isPMAgent(agentId)) return { file: 'PM-SOUL.md', fallback: DEFAULT_PM_SOUL_MD, spawnTruth: false };
+  if (isTrainerAgent(agentId)) return { file: 'TRAINER-SOUL.md', fallback: DEFAULT_TRAINER_SOUL_MD, spawnTruth: false };
+  const perAgent = `${agentId.toUpperCase()}-SOUL.md`;
+  if (fs.existsSync(path.join(PROMPTS_DIR, perAgent))) return { file: perAgent, fallback: '', spawnTruth: true };
+  return null;
+}
+
+/** Read a soul file's STORED bytes — what an editor edits, before any truth pass. */
+export function readSoulFile(soul: AgentSoulFile): string {
+  if (soul.fallback) return readPromptFile(soul.file, soul.fallback);
+  return fs.readFileSync(path.join(PROMPTS_DIR, soul.file), 'utf-8');
+}
+
+/** Write a soul file's stored bytes. The one write door for every identity that lives in a file. */
+export function writeSoulFile(soul: AgentSoulFile, content: string): void {
+  ensurePromptsDir();
+  fs.writeFileSync(path.join(PROMPTS_DIR, soul.file), content, 'utf-8');
+}
+
+/**
+ * A sub-agent's STORED charter: the durable column (migration 096), or — for agents spawned
+ * before that column existed — the earliest `role='system'` row that is not an engine
+ * coordination row.
+ *
+ * T40 adds `NO_REPLY_CLOSED_MARKER` to that refusal, by parameter rather than by a second
+ * copy of the literal. The marker is written as a `role='system'` row by the engine, and on
+ * a legacy agent whose charter column is NULL it could stand in as the identity — the same
+ * class of defect as the card's, one layer down. An engine marker is never an identity.
+ */
+export function readStoredCharter(agentId: string): string {
+  const db = getDb();
+  const row = db.prepare('SELECT charter FROM agents WHERE id = ?').get(agentId) as
+    | { charter: string | null }
+    | undefined;
+  const declared = (row?.charter ?? '').trim();
+  if (declared) return declared;
+  try {
+    const charterRow = db.prepare(
+      "SELECT content FROM messages WHERE agent_id = ? AND role = 'system' " +
+        "AND content NOT LIKE '[SOURCE:%' AND content NOT LIKE '[System:%' AND content NOT LIKE '──%' " +
+        'AND TRIM(content) <> ? ' +
+        'ORDER BY rowid ASC LIMIT 1',
+    ).get(agentId, NO_REPLY_CLOSED_MARKER) as { content: string } | undefined;
+    return charterRow?.content?.trim() ?? '';
+  } catch {
+    return '';
+  }
+}
+
 export function getSoulContent(agentId: string): string {
-  // Primary agent gets SOUL.md
-  if (isPrimaryAgent(agentId)) {
-    return applySpawnCapabilityTruth(readPromptFile('SOUL.md', DEFAULT_SOUL_MD), agentId);
-  }
-
-  // PM agent gets PM-SOUL.md
-  if (isPMAgent(agentId)) {
-    return readPromptFile('PM-SOUL.md', DEFAULT_PM_SOUL_MD);
-  }
-
-  // Trainer agent gets TRAINER-SOUL.md
-  if (isTrainerAgent(agentId)) {
-    return readPromptFile('TRAINER-SOUL.md', DEFAULT_TRAINER_SOUL_MD);
-  }
-
-  // Check for agent-specific soul file
-  const agentSoulPath = path.join(PROMPTS_DIR, `${agentId.toUpperCase()}-SOUL.md`);
-  if (fs.existsSync(agentSoulPath)) {
+  // Primary / PM / Trainer / per-agent souls all live in a file (see `soulFileForAgent`).
+  const soulFile = soulFileForAgent(agentId);
+  if (soulFile) {
     try {
+      const stored = readSoulFile(soulFile);
       // The reachable half of the SOUL claim: a per-agent soul file is the one
       // way the default SOUL's `## Capabilities` list lands on an agent that is
       // not the primary, and such an agent runs on the sub-agent manifest.
-      return applySpawnCapabilityTruth(fs.readFileSync(agentSoulPath, 'utf-8'), agentId);
+      return soulFile.spawnTruth ? applySpawnCapabilityTruth(stored, agentId) : stored;
     } catch {
       // Fall through
     }
@@ -146,18 +205,10 @@ export function getSoulContent(agentId: string): string {
     // dividers / reauth notices). A creator charter like '[Mission] ...' does
     // not match any of these and passes. Agents whose charter lives in a
     // <ID>-SOUL.md file are handled by the file branch above.
-    let charter = (agentRow?.charter ?? '').trim();
-    if (!charter) {
-      try {
-        const charterRow = db.prepare(
-          "SELECT content FROM messages WHERE agent_id = ? AND role = 'system' " +
-            "AND content NOT LIKE '[SOURCE:%' AND content NOT LIKE '[System:%' AND content NOT LIKE '──%' " +
-            "ORDER BY rowid ASC LIMIT 1",
-        ).get(agentId) as { content: string } | undefined;
-        const c = charterRow?.content?.trim() ?? '';
-        if (c) charter = c;
-      } catch { /* no charter row: fall back to the synthesized identity below */ }
-    }
+    //
+    // T40 moved the statement itself into `readStoredCharter` (above) — one owner, shared
+    // with the Settings card, and with the silent-turn close marker added to the refusal.
+    const charter = readStoredCharter(agentId);
 
     // Get parent agent name
     let parentInfo = '';

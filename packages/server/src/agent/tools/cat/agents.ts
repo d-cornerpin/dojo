@@ -34,7 +34,8 @@ import { getDb } from '../../../db/connection.js';
 import { broadcast } from '../../../gateway/ws.js';
 import { writeAgentStatus } from '../../agent-status.js';
 import { isPrimaryAgent } from '../../../config/platform.js';
-import { insertMessageIfAbsent, rewriteSystemPromptRow } from '../../../memory/message-store.js';
+import { insertMessageIfAbsent } from '../../../memory/message-store.js';
+import { readAgentPromptSurface, writeAgentPromptSurface } from '../../../prompt/agent-prompt-surface.js';
 import { writeToolReceipt } from '../../../receipts/store.js';
 import { taskScope, projectScope, STATE_TO_STATUS_SQL } from '../../../work/tracker-view.js';
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../../../work/tracker-store.js';
@@ -750,12 +751,8 @@ export const agentsHandlers: ToolHandlerMap = {
           finalName = trimmedName;
         }
         if (typeof newPrompt === 'string') {
-          const existingMsg = db.prepare("SELECT id FROM messages WHERE agent_id = ? AND role = 'system' ORDER BY rowid ASC LIMIT 1").get(target.id) as { id: string } | undefined;
-          if (existingMsg) {
-            rewriteSystemPromptRow(existingMsg.id, newPrompt);
-          } else {
-            insertMessageIfAbsent({ id: uuidv4(), agentId: target.id, role: 'system', content: newPrompt });
-          }
+          // UX-REPAIR T40: one write door — the store the runtime reads.
+          writeAgentPromptSurface(target.id, newPrompt);
           db.prepare("UPDATE agents SET updated_at = datetime('now') WHERE id = ?").run(target.id);
           changes.push(`system prompt rewritten (${newPrompt.length} chars)`);
         }
@@ -852,11 +849,10 @@ export const agentsHandlers: ToolHandlerMap = {
         FROM agents WHERE id = ?
       `).get(gapResolved.id) as AgentProfileRow;
 
-      // System prompt = first system-role message (mirrors update_agent)
-      const promptRow = db.prepare(
-        "SELECT content FROM messages WHERE agent_id = ? AND role = 'system' ORDER BY rowid ASC LIMIT 1"
-      ).get(target.id) as { content: string } | undefined;
-      const systemPrompt = promptRow?.content ?? '';
+      // UX-REPAIR T40: the agent's STORED identity, through the one surface the Settings
+      // card and the runtime both use. This used to be its own copy of the first-system-row
+      // SELECT, which on a worn body returns an engine marker.
+      const systemPrompt = readAgentPromptSurface(target.id);
 
       // Resolve model name if a model is configured
       let modelLabel = '(none / auto-routed)';
