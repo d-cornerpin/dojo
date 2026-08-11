@@ -3165,6 +3165,13 @@
       "to": 668,
       "by": "UX-REPAIR ROUND 7.5 T32 — withdrawals land in the ledger",
       "why": "+16 (2 code, 13 comment, 1 blank). One boolean field and its initializer. The note is W11's preserved argument for why the field has to exist at all: the steer moved earlier, the settlement record did not, and the latch is what says the record has already happened this turn. A reader who deletes it as a duplicate of the steer queue's latch re-couples two things this task deliberately separated. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/summary-obligations.ts",
+      "from": 0,
+      "to": 297,
+      "by": "UX-REPAIR ROUND 7.5 T28b — the marker moves to the front of the line",
+      "why": "ADMITTED at 297 and PINNED DECREASE-ONLY, which is the stronger of the two remedies the growth detector offers for an unlisted file past 240 of the 400-line cap, and the right one here. The file is 63 lines of header and 234 of module; the header is three dated sections (T20, T28, T28b) and each is the incident that bought the code under it — T20's 'nothing was ever built to READ the citation', T28's five stored summaries still serving Bob's quotes as live, T28b's 2-of-2 driven runs where the model read past a TRAILING marker. THE SPLIT-IT REMEDY WAS MEASURED AND REFUSED, in the same words `work/obligation-memory.ts`'s own raise refuses it: this file is the summary WRITER and the only thing in the tree that turns a resolver verdict into stored text. Its three exported surfaces (the write-path annotator, the one-time sweep, the two literals) are one mechanism read three ways, and a second file would put the annotator's rendering rule somewhere other than the annotator — which is precisely the failure T28b had to repair, because a rendering rule with two homes is a rendering rule with two answers. WHAT T28b ADDED: +74 (29 code, 40 comment, 4 blank net). The code is `withLeadingFinding`, `splitTrailingFinding`, `LEADING_STRUCTURE_RE` and the relocation arm — a relocating annotator rather than an appending one. The comment states the two things the code cannot: that the finding's WORDING was deliberately NOT changed (two renderings of one finding is the drift `SUMMARY_OBLIGATION_MARK`'s own note refuses, and a bounded retry with two variables cannot be read), and that the marker goes after the markdown structure rather than in front of it, because a finding ahead of the '- ' stops the line rendering as a list item and a marker nobody can see is not louder. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3413,6 +3420,7 @@
     "watchdog/src/auto-rollback.ts": 333,
     "watchdog/src/index.ts": 1217,
     "packages/server/src/work/obligation-memory.ts": 448,
-    "packages/server/src/agent/tools/gates.ts": 245
+    "packages/server/src/agent/tools/gates.ts": 245,
+    "packages/server/src/memory/summary-obligations.ts": 297
   }
 }
