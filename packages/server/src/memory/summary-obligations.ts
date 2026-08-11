@@ -150,14 +150,75 @@ export function annotateSummaryObligations(text: string, agentId?: string): stri
   if (vocab.length === 0 && !text.includes('cmt:') && !text.includes('promise-')) return text;
   let changed = false;
   const out = text.split('\n').map((line) => {
+    const already = splitTrailingFinding(line);
+    if (already) {
+      // T28b: the finding is already on this line, and the only question left is WHERE. A line
+      // whose finding is already leading is returned untouched, which is what keeps the pass
+      // idempotent across as many runs as anybody cares to make.
+      changed = true;
+      return withLeadingFinding(already.rest, already.finding);
+    }
     if (line.includes(SUMMARY_OBLIGATION_MARK) || line.includes(SUMMARY_NO_MATCH_MARK)) return line;
     const finding = findingFor(line)
       ?? (agentId && vocab.length > 0 ? idlessFindingFor(line, agentId, vocab) : null);
     if (!finding) return line;
     changed = true;
-    return `${line.trimEnd()} ${finding}`;
+    return withLeadingFinding(line, finding);
   });
   return changed ? out.join('\n') : text;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// UX-REPAIR ROUND 7.5 T28b — THE MARKER MOVES TO THE FRONT OF THE LINE.
+//
+// T28's residual, measured twice on the live body: the stored lines carried their findings and
+// the floor model served the sentence anyway —
+//
+//     "- **Standing:** daily 4:08 PM weather check; fence & roof quotes still parked, waiting
+//      on Bob's address."
+//
+// — in 2 of 2 driven week-overview runs, while its own OPEN WORK block was empty. The finding
+// was APPENDED, after a sentence long enough that a weak reader has already decided what the
+// line says by the time it arrives. One bounded retry, and the variable is POSITION.
+//
+// WHAT IS NOT CHANGED, and it is a deliberate refusal: the finding's WORDING. The plan's example
+// shows a shorter, louder form; adopting it would mean two renderings of one finding, which is
+// exactly the drift `SUMMARY_OBLIGATION_MARK`'s own note ("one literal, so the writer, the
+// idempotence check and the tests all read the same token") exists to prevent. The retry has one
+// variable so its outcome means something.
+//
+// AFTER THE LIST MARKER, NOT BEFORE IT: the summariser writes markdown bullets, and a finding
+// in front of the `- ` would break the list — the line would stop rendering as an item on every
+// surface that renders these, and a marker nobody can see is not louder. "Line-initial" here
+// means first in the line's OWN TEXT.
+
+/** The leading run of markdown structure a finding must not get in front of. */
+const LEADING_STRUCTURE_RE = /^(\s*(?:[-*+]\s+|\d+[.)]\s+|#{1,6}\s+|>\s+)*)/;
+
+/** Put the finding first in the line's own text, keeping the markdown structure intact. */
+function withLeadingFinding(line: string, finding: string): string {
+  const lead = LEADING_STRUCTURE_RE.exec(line)?.[1] ?? '';
+  const body = line.slice(lead.length).trimStart();
+  return body.length > 0 ? `${lead}${finding} ${body}` : `${lead}${finding}`;
+}
+
+/**
+ * A line this module already annotated, split into its words and its finding — so the one-time
+ * pass can MOVE a finding it wrote before rather than write a second one.
+ *
+ * The finding is always the tail (that is where T28 appended it) and always ends the line, so
+ * the last occurrence of either literal is the whole of it. Returns null when the line has no
+ * finding, and null when the finding is already leading, which is what makes the relocation
+ * idempotent.
+ */
+function splitTrailingFinding(line: string): { rest: string; finding: string } | null {
+  const at = Math.max(line.lastIndexOf(SUMMARY_OBLIGATION_MARK), line.lastIndexOf(SUMMARY_NO_MATCH_MARK));
+  if (at < 0 || !line.trimEnd().endsWith(']')) return null;
+  const lead = LEADING_STRUCTURE_RE.exec(line)?.[1] ?? '';
+  if (at === lead.length) return null;                      // already where T28b wants it
+  const rest = line.slice(0, at).trimEnd();
+  if (rest.length <= lead.length) return null;              // nothing but the finding on the line
+  return { rest, finding: line.slice(at).trimEnd() };
 }
 
 /** One line a sweep would touch, so the pass can be READ before it is applied. */
@@ -166,6 +227,10 @@ export interface SummaryObligationCandidate {
   agentId: string;
   line: string;
   finding: string;
+  /** T28b: this line already carried its finding and the pass is MOVING it to the front. The
+   *  measurement obligation is the same either way — the pass gets read before it is applied —
+   *  and a relocation has to be visible in that table or the read is of the wrong pass. */
+  relocated?: true;
 }
 
 export interface SummaryObligationSweep {
@@ -208,6 +273,13 @@ export function sweepStoredSummaryObligations(
     // The per-line record the measurement obligation needs. Same two deciders the writer
     // uses, in the same order, so what is reported is what would be written.
     for (const line of (r.content ?? '').split('\n')) {
+      const move = splitTrailingFinding(line);
+      if (move) {
+        candidates.push({
+          summaryId: r.id, agentId: r.agent_id, line: move.rest.trim(), finding: move.finding, relocated: true,
+        });
+        continue;
+      }
       if (line.includes(SUMMARY_OBLIGATION_MARK) || line.includes(SUMMARY_NO_MATCH_MARK)) continue;
       const finding = findingFor(line)
         ?? (vocab.length > 0 ? idlessFindingFor(line, r.agent_id, vocab) : null);

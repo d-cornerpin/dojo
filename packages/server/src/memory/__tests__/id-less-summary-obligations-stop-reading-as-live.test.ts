@@ -136,8 +136,12 @@ describe('an id-less obligation line is resolved against the spine it never cite
       const after = annotateSummaryObligations(line, AGENT);
       expect(after, line.slice(0, 60)).toContain(SUMMARY_OBLIGATION_MARK);
       expect(after, line.slice(0, 60)).toContain('abandoned');
-      // the agent's own sentence is never rewritten — the finding is appended
-      expect(after.startsWith(line)).toBe(true);
+      // T28b, argued update: the agent's own sentence is still never REWRITTEN, and that is
+      // what this clause was for — but the finding now LEADS instead of trailing, because the
+      // floor model read past a trailing one in 2 of 2 driven runs. The words are intact and
+      // in order, after the line's markdown structure; only the finding moved.
+      expect(after.endsWith(line.replace(/^(\s*(?:[-*+]\s+|\d+[.)]\s+|#{1,6}\s+|>\s+)*)/, ''))).toBe(true);
+      expect(after.replace(/\[work state as of [^\]]*\] /, '')).toBe(line);
     }
   });
 
@@ -245,7 +249,8 @@ describe('an obligation naming a counterparty whose deliverable is unrecognisabl
     const after = annotateSummaryObligations(line, AGENT);
     expect(after).toContain(SUMMARY_NO_MATCH_MARK);
     expect(after).not.toContain('abandoned');
-    expect(after.startsWith(line)).toBe(true);
+    // T28b: leading, not trailing; the sentence itself is byte-identical either way.
+    expect(after).toBe(`- ${SUMMARY_NO_MATCH_MARK} ${line.slice(2)}`);
   });
 
   it('and it is idempotent too', () => {
