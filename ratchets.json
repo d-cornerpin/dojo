@@ -3172,6 +3172,34 @@
       "to": 297,
       "by": "UX-REPAIR ROUND 7.5 T28b — the marker moves to the front of the line",
       "why": "ADMITTED at 297 and PINNED DECREASE-ONLY, which is the stronger of the two remedies the growth detector offers for an unlisted file past 240 of the 400-line cap, and the right one here. The file is 63 lines of header and 234 of module; the header is three dated sections (T20, T28, T28b) and each is the incident that bought the code under it — T20's 'nothing was ever built to READ the citation', T28's five stored summaries still serving Bob's quotes as live, T28b's 2-of-2 driven runs where the model read past a TRAILING marker. THE SPLIT-IT REMEDY WAS MEASURED AND REFUSED, in the same words `work/obligation-memory.ts`'s own raise refuses it: this file is the summary WRITER and the only thing in the tree that turns a resolver verdict into stored text. Its three exported surfaces (the write-path annotator, the one-time sweep, the two literals) are one mechanism read three ways, and a second file would put the annotator's rendering rule somewhere other than the annotator — which is precisely the failure T28b had to repair, because a rendering rule with two homes is a rendering rule with two answers. WHAT T28b ADDED: +74 (29 code, 40 comment, 4 blank net). The code is `withLeadingFinding`, `splitTrailingFinding`, `LEADING_STRUCTURE_RE` and the relocation arm — a relocating annotator rather than an appending one. The comment states the two things the code cannot: that the finding's WORDING was deliberately NOT changed (two renderings of one finding is the drift `SUMMARY_OBLIGATION_MARK`'s own note refuses, and a bounded retry with two variables cannot be read), and that the marker goes after the markdown structure rather than in front of it, because a finding ahead of the '- ' stops the line rendering as a list item and a marker nobody can see is not louder. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts",
+      "from": 148,
+      "to": 219,
+      "by": "UX-REPAIR ROUND 8 T33 — a standing promise is recorded or not made",
+      "why": "+71 (28 code, 39 comment, 4 blank). The floor gained a SECOND CLASS, not a second floor: round-8 S5's \"From now on ... I'll text it to your phone as a backup\" with zero tool calls and zero writes to any durable surface. The code is the class split (`forwardPromise` / `standingPromise`, forward taking precedence so every case the floor already fired on stays byte-identical), the durable-receipt question (a named tool-result set plus one `origin_turn` read of `work`), and the second steer text. The comment is the incident plus the two things a reader would otherwise re-litigate: WHY this class asks a different question of the turn (there is no work to \"do now\" for a promise about future occasions, so the only thing that can make it real is a durable record), and WHY `scratchpad_set` is excluded from the receipt set (its own tool description says the pad does not survive session reset, which is exactly the death this promise died). SPLITTING WAS CONSIDERED AND REFUSED: the two classes share every guard, the ONE steer per turn, and the same exemption spine, so a second file would put half the floor's answer somewhere the floor's own no-spin latch cannot see it. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/schema.ts",
+      "from": 1068,
+      "to": 1105,
+      "by": "UX-REPAIR ROUND 8 T34 — tracker frames tell the stored truth",
+      "why": "+37 (10 code, 25 comment, 2 blank): `broadcastTaskSettled` and `createTask`'s optional `goal`. Both are the fix for one defect seen twice in one review round — `createTask` announces the row it inserted, the caller settles that row afterwards (on_deck, fire time, goal), nothing re-broadcast, and a live board showed round 8's reminders as in-progress and unscheduled until reload. The helper lives HERE rather than in either door because both creation doors need ONE answer to \"has the wire been told the truth about this row\"; two copies is how two doors drift apart. The comment carries the incident, the no-op-when-nothing-settled rule that keeps an unscheduled creation at exactly one frame, and why the goal now rides the INSERT. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 4692,
+      "to": 4703,
+      "by": "UX-REPAIR ROUND 8 T34 — tracker frames tell the stored truth",
+      "why": "+11 (5 code, 6 comment) NET, and the code side is smaller than it reads: the goal's own post-insert `patchWork` + try/catch was DELETED (it WAS the staleness, one column over) and replaced by passing `goal` into `createTask`. What is added is the `announced` capture and two `broadcastTaskSettled` calls — the normal return and the unknown-group early return, which also created and settled a row and would otherwise leave the wire lying while it hands the model an error. Nothing here widens this door surface structurally. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/tracker.ts",
+      "from": 950,
+      "to": 959,
+      "by": "UX-REPAIR ROUND 8 T34 — tracker frames tell the stored truth",
+      "why": "+9 (3 code, 6 comment). The dashboard's POST /tasks has the identical createTask-then-schedule shape as the agent's door and inherited the identical stale frame, so it gets the identical two lines (the `announced` capture and the settle call) rather than a second mechanism. The comment names the seam and points at the shared helper. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3288,7 +3316,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 71,
     "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 276,
     "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 323,
-    "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 148,
+    "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 219,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 367,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
     "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 227,
@@ -3324,7 +3352,7 @@
     "packages/server/src/gateway/routes/config.ts": 2530,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/setup-deps.ts": 513,
-    "packages/server/src/gateway/routes/tracker.ts": 950,
+    "packages/server/src/gateway/routes/tracker.ts": 959,
     "packages/server/src/gateway/routes/twilio.ts": 501,
     "packages/server/src/gateway/routes/update.ts": 1171,
     "packages/server/src/gateway/routes/upload.ts": 608,
@@ -3382,9 +3410,9 @@
     "packages/server/src/tools/work-verbs.ts": 373,
     "packages/server/src/tracker/delivery-evidence.ts": 320,
     "packages/server/src/tracker/pm-agent.ts": 2448,
-    "packages/server/src/tracker/schema.ts": 1068,
+    "packages/server/src/tracker/schema.ts": 1105,
     "packages/server/src/tracker/task-stamps.ts": 268,
-    "packages/server/src/tracker/tools.ts": 4692,
+    "packages/server/src/tracker/tools.ts": 4703,
     "packages/server/src/tracker/version-gap-reconcile.ts": 327,
     "packages/server/src/twilio/call-session.ts": 884,
     "packages/server/src/twilio/sms-inbound.ts": 406,
