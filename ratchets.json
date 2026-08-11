@@ -3116,6 +3116,27 @@
       "to": 245,
       "by": "UX-REPAIR round 7 T29 — admitted to the ratchet at 245 lines",
       "why": "229 -> 245, crossing 60% of the 400-line cap, and PINNED rather than left unlisted. +16: 8 comment, 8 code, all of it inside ladder row 7. The wall is untouched — row 7 still fires, still `primary_only`, still for both iMessage tools, and with nothing else live its message is byte-identical to the one it has always emitted (asserted whole, both directions). What is added is the channel that IS live, read at the moment of refusal, because in round-7 S3 a sub-agent was told only to escalate and escalated about the dead channel. The comment says which incident bought each clause and why the text names `sms_send is primary-only too` rather than dangling a tool the sub-agent also may not call. This file is the DECLARATION of fifteen refusals and its header already argues that a requirement you can print beats control flow you have to read; a pin makes every future line of it argue for itself. ALTERNATIVES MEASURED AND REFUSED. (a) Move row 7's message into `gate-eval.ts` (+0 net): refused, the message is part of the declaration — that is this module's entire thesis. (b) Emit a bare 'check other channels' with no facts (-8): refused, it is the same silence in politer words, and the S3 sub-agent would have escalated about iMessage again."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/closeout-floors.ts",
+      "from": 137,
+      "to": 196,
+      "by": "UX-REPAIR ROUND 7.5 T31 — the mid-turn arrival is answered exactly once",
+      "why": "+59 (27 code, 41 comment, 1 blank; against 10 lines deleted). THE CODE IS TWO THINGS. First, `demoteToWorkingNote`, extracted from the RC-5.3 arm below so this file holds ONE demotion rule instead of two — the T31 hold needs the same demotion for a different reason, and a second inline copy is how two demotions drift into disagreeing about what a demotion is; the RC-5.3 arm now calls it and is byte-identical (its clause asserts exactly one `chat:workingnote` literal survives in the file). Second, the hold itself: a four-clause guard reading `state.owedInterruptGrant` and a call. It lands AT the tombstone of the swallow P4b deleted from this very spot, and that is the whole comment weight. That tombstone says the swallow was removed for deciding on a wording-similarity verdict and that the worst case of its absence is 'a visible duplicate paragraph, never a silent drop'. My own driven replay at `e0b5804` produced that worst case in the owner's chat — 'Darknet Diaries…' at 01:59:07 and 'Hardcore History…' at 01:59:55, two answers to one question, contradictory picks — so the comment states the measurement, states that the discriminator is now the seam's own record of the round it granted rather than the reply's words, and states the mirror failure `afterReply` exists to prevent (a round granted before anything reached the person carries the turn's ONE reply, and holding that is silence). A reader who deletes this guard without that paragraph re-creates either the duplicate or the silence, and the tombstone above proves the first attempt was already lost once. REFUSED: putting the hold in a new file (+0 here, +N there plus an import, and it would sit away from the tombstone that is its own argument). REFUSED: dropping the driven numbers to 'see T31'. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts",
+      "from": 152,
+      "to": 200,
+      "by": "UX-REPAIR ROUND 7.5 T31 — the mid-turn arrival is answered exactly once",
+      "why": "+48 (11 code, 44 comment, 1 blank; against 8 lines deleted). The code is the rewritten steer text (the round is no longer asked to answer the arrival) and the grant record written beside the existing `enqueueSteer`. Two comment blocks earn their lines. The first amends this step's own F3 header, which still said the round exists so the model can ADDRESS the arrival — measured twice on the dev box, that sentence is what produced two answers to one question, so the header now says who answers the arrival (its own turn) and what the round is for instead (stop or change work the arrival cancels); leaving the old paragraph beside the new behaviour would make the file argue with itself. The second is a TOMBSTONE for a discriminator that was built, DRIVEN and disproved inside this task: honouring `[no-reply]` in the granted round as 'my earlier reply already answered it'. On 2026-08-11 the turn answered its own subject only, the arrival untouched, and the floor model returned the sentinel anyway; acting on it closed the podcast ask on the LUGGAGE delivery, which is T25's defect restored by a change meant to help. It records the run, the wrong close, and the owner-priority rule that settles the direction of error (toward answering, never toward closing). That is the single most likely thing the next reader will try, and eleven lines is cheaper than re-running the experiment in production. REFUSED: deleting the disproved design silently — the plan's own T31 text names an enforcement in that family, so a reader WILL come back to it. REFUSED: moving the tombstone to the report; reports are not read at the call site. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/state.ts",
+      "from": 621,
+      "to": 652,
+      "by": "UX-REPAIR ROUND 7.5 T31 — the mid-turn arrival is answered exactly once",
+      "why": "+31 (7 code, 26 comment, 2 blank). The code is one exported interface of three fields, one field on `AgentTurnState`, and its initializer. The comment weight is two arguments this file's own style demands. On `OwedInterruptGrant`: why the steer queue's existing entry is not enough — it records THAT a round was bought and at which loop, never WHAT FOR, and 'what for' is the fact the enforcement reads instead of reading the model's words. On `afterReply`: that the two cases are different behaviours and not degrees, because a round granted before anything reached the person carries the turn's ONE reply and holding it is silence. Both are the kind of note that stops a later reader collapsing the field into a boolean or dropping it as unused. REFUSED: carrying the subject on the `SteerEntry` instead — the queue is a delivery mechanism shared by 29 floors and one floor's subject does not belong in its shape. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3189,7 +3210,7 @@
     "packages/server/src/agent/v2/receipt.ts": 442,
     "packages/server/src/agent/v2/recorded-commitment.ts": 209,
     "packages/server/src/agent/v2/recovery.ts": 605,
-    "packages/server/src/agent/v2/state.ts": 621,
+    "packages/server/src/agent/v2/state.ts": 652,
     "packages/server/src/agent/v2/steer-queue.ts": 287,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
     "packages/server/src/agent/v2/steps/assemble/index.ts": 302,
@@ -3222,7 +3243,7 @@
     "packages/server/src/agent/v2/steps/finalize/route-reply.ts": 211,
     "packages/server/src/agent/v2/steps/finalize/stranded-attachments.ts": 122,
     "packages/server/src/agent/v2/steps/post-call-classify/args-for-result.ts": 27,
-    "packages/server/src/agent/v2/steps/post-call-classify/closeout-floors.ts": 137,
+    "packages/server/src/agent/v2/steps/post-call-classify/closeout-floors.ts": 196,
     "packages/server/src/agent/v2/steps/post-call-classify/empty-response.ts": 174,
     "packages/server/src/agent/v2/steps/post-call-classify/going-idle.ts": 320,
     "packages/server/src/agent/v2/steps/post-call-classify/handoff-floors.ts": 209,
@@ -3230,7 +3251,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/missed-reply.ts": 167,
     "packages/server/src/agent/v2/steps/post-call-classify/no-reply.ts": 359,
     "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 71,
-    "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 152,
+    "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 200,
     "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 323,
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 148,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 367,
