@@ -305,7 +305,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/missed-reply.ts": 167,
     "packages/server/src/agent/v2/steps/post-call-classify/no-reply.ts": 359,
     "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 71,
-    "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 200,
+    "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 276,
     "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 323,
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 148,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 367,

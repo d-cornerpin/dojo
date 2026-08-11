@@ -3137,6 +3137,34 @@
       "to": 652,
       "by": "UX-REPAIR ROUND 7.5 T31 — the mid-turn arrival is answered exactly once",
       "why": "+31 (7 code, 26 comment, 2 blank). The code is one exported interface of three fields, one field on `AgentTurnState`, and its initializer. The comment weight is two arguments this file's own style demands. On `OwedInterruptGrant`: why the steer queue's existing entry is not enough — it records THAT a round was bought and at which loop, never WHAT FOR, and 'what for' is the fact the enforcement reads instead of reading the model's words. On `afterReply`: that the two cases are different behaviours and not degrees, because a round granted before anything reached the person carries the turn's ONE reply and holding it is silence. Both are the kind of note that stops a later reader collapsing the field into a boolean or dropping it as unused. REFUSED: carrying the subject on the `SteerEntry` instead — the queue is a delivery mechanism shared by 29 floors and one floor's subject does not belong in its shape. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts",
+      "from": 200,
+      "to": 276,
+      "by": "UX-REPAIR ROUND 7.5 T32 — withdrawals land in the ledger",
+      "why": "+76 net (40 code and 53 comment lines added, 17 lines deleted). The code is the gate split (`hasReply`/`mayRecord`/`maySteer`/`ridingToolCalls`, the two `if` guards they feed, and the `owedInterruptSubjectsRecorded` advance), the SECOND steer text (the in-flight form, which is a different instruction rather than a rewording), the supplied ask id, and the shared release clause. Three comment blocks earn their lines and each answers a question a reader will otherwise get wrong. (1) WHY THE SPLIT IS ASYMMETRIC: the steer may move earlier and the RECORD may not, because T25's high water is MAX(deliveries.rowid) at write time and moving it hands the turn's own answer the right to close an ask it never addressed. That is W11's argument, preserved verbatim, and it is the entire care in this change. (2) WHY THE IN-FLIGHT TEXT IS SEPARATE: nothing has reached the person, so there is no duplicate to prevent and no earlier reply to point at; what there is, is work the person may have just called off, and the door that records it. (3) THE RELEASE CLAUSE'S OWN INCIDENT: this row is persisted and model-visible, so it is still in the tail on the arrival's OWN turn — driven at 02:32 on 2026-08-11 without the clause, turn 4697 read 'do not answer it in this turn' on the very turn whose job it was and spent its whole budget not answering. A steer that outlives its turn has to say when it stops applying, and the next reader who trims that parenthesis needs the run. REFUSED: a second module for the in-flight form (+0 here, +N there, and the two texts must be read side by side to see that only one of them asks for a reply). REFUSED: shortening the incidents to task ids. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/tracker.ts",
+      "from": 907,
+      "to": 975,
+      "by": "UX-REPAIR ROUND 7.5 T32 — withdrawals land in the ledger",
+      "why": "+68 net (35 code and 40 comment lines added, 7 lines deleted). Two code additions at one door. The narrow claimed-ask lookup (a 9-line SELECT + guard): the withdrawal arrives while the ask is `claimed` by the running turn, and `OWED_STATES` correctly excludes that state because the OPEN WORK block lists what is owed and NOT being worked — so the row is looked up here, narrowed to dropped/kind='ask'/claimed-by-this-agent, instead of widening a constant that every obligation surface reads. And the withdrawal branch itself (disposition check, note requirement, `dismissCommitment`, two refusal texts). The comment is the argument for admitting ONE shape into a refusal SWEEP-A TB1 wrote for good reason: it states what the refusal answers and still answers (may the model mark an ask ANSWERED — no), what it could not answer (an ask nobody will ever answer because the user called it off), the measured zero (`work_events` LIKE '%never mind%' → 0 rows on the incident), why the actor is the model (T18's precedent: the engine may not read prose to decide the user called something off, and this tool's own description already asks the model to make exactly this call), and that no tool surface moves so no prefix byte does. Without it the next reader sees a hole in a documented wall. REFUSED: a new tool (a prompt-surface edit, a golden pass and a cache re-blessing for a door that already existed). REFUSED: widening `OWED_STATES`. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/index.ts",
+      "from": 222,
+      "to": 246,
+      "by": "UX-REPAIR ROUND 7.5 T32 — withdrawals land in the ledger",
+      "why": "+24 (5 code, 19 comment). The code is an `else` branch, one call, one forward and one import. The comment is 19 lines because the branch is four lines that will look redundant to anyone who does not know two things: that `runOwedInterrupt` lives in the no-tool-calls family and therefore could not see a mid-turn arrival until the turn's own answer was written (W11 measured the in-flight arm as never exercised, and the round-7 S6 incident is the consequence), and that this call MAY NOT TAKE THE LOOP — the pass's tool calls have not run, `execute` is downstream, and a `continue` here drops them silently. Both facts are invisible from these four lines. REFUSED: moving the whole step out of the floor family (it belongs there for the terminal case, and two call sites of one step is cheaper than one step in the wrong place). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/state.ts",
+      "from": 652,
+      "to": 668,
+      "by": "UX-REPAIR ROUND 7.5 T32 — withdrawals land in the ledger",
+      "why": "+16 (2 code, 13 comment, 1 blank). One boolean field and its initializer. The note is W11's preserved argument for why the field has to exist at all: the steer moved earlier, the settlement record did not, and the latch is what says the record has already happened this turn. A reader who deletes it as a duplicate of the steer queue's latch re-couples two things this task deliberately separated. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3192,7 +3220,7 @@
     "packages/server/src/agent/tools/cat/healer.ts": 288,
     "packages/server/src/agent/tools/cat/media.ts": 897,
     "packages/server/src/agent/tools/cat/session.ts": 242,
-    "packages/server/src/agent/tools/cat/tracker.ts": 907,
+    "packages/server/src/agent/tools/cat/tracker.ts": 975,
     "packages/server/src/agent/tools/definitions.ts": 2832,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
@@ -3210,7 +3238,7 @@
     "packages/server/src/agent/v2/receipt.ts": 442,
     "packages/server/src/agent/v2/recorded-commitment.ts": 209,
     "packages/server/src/agent/v2/recovery.ts": 605,
-    "packages/server/src/agent/v2/state.ts": 652,
+    "packages/server/src/agent/v2/state.ts": 668,
     "packages/server/src/agent/v2/steer-queue.ts": 287,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
     "packages/server/src/agent/v2/steps/assemble/index.ts": 302,
@@ -3247,11 +3275,11 @@
     "packages/server/src/agent/v2/steps/post-call-classify/empty-response.ts": 174,
     "packages/server/src/agent/v2/steps/post-call-classify/going-idle.ts": 320,
     "packages/server/src/agent/v2/steps/post-call-classify/handoff-floors.ts": 209,
-    "packages/server/src/agent/v2/steps/post-call-classify/index.ts": 222,
+    "packages/server/src/agent/v2/steps/post-call-classify/index.ts": 246,
     "packages/server/src/agent/v2/steps/post-call-classify/missed-reply.ts": 167,
     "packages/server/src/agent/v2/steps/post-call-classify/no-reply.ts": 359,
     "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 71,
-    "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 200,
+    "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 276,
     "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 323,
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 148,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 367,
