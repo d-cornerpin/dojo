@@ -78,7 +78,7 @@ import { handlerFor } from './handlers.js';
 // leaf with the array it projects; this file keeps only the cap's READER,
 // which `applyMaxResultTokensCap` below is the sole caller of.
 import { getRegisteredMaxResultTokens } from '../v2/classifiers/concurrency.js';
-import { prependUserMailboxBanner } from './provider/mailbox-banner.js';
+import { prependMailboxOwnerHeader } from './provider/mailbox-banner.js';
 import { auditLog, agentCanSelfCompleteById, permissionDeniedMessage, openFileInCanvas } from './util.js';
 import { evaluateGate } from './gate-eval.js';
 import { openCallCapability } from '../effects/scopes.js';
@@ -544,7 +544,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         content = await executeGoogleWriteTool(name, args, agentId, dispatchAgentName);
         isError = content.startsWith('Error');
       } else if (GOOGLE_READ_TOOL_NAMES.has(name)) {
-        content = prependUserMailboxBanner(await executeGoogleReadTool(name, args, agentId, dispatchAgentName), name);
+        content = prependMailboxOwnerHeader(await executeGoogleReadTool(name, args, agentId, dispatchAgentName), name, args);
         isError = content.startsWith('Error');
       } else if (MS_WRITE_TOOL_NAMES.has(name)) {
         content = await executeMicrosoftWriteTool(name, args, agentId, dispatchAgentName);

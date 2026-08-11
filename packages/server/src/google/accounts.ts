@@ -149,7 +149,16 @@ export function resolveGoogleAccountForTool(
   if (account && account.connected) return { account };
   const connected = listGoogleAccounts(kind).filter(a => a.connected);
   if (connected.length === 0) {
-    return { error: `No ${kind} Google account is connected. Connect one in Settings → Google.` };
+    // UX-REPAIR T39: name the SIBLING slot when it is the one that is connected.
+    // The tool docs already say which slot each variant reads; a refusal that
+    // repeats only "connect one" leaves a model holding a connected mailbox it
+    // does not know it can reach, which is the confusion this task exists to end.
+    const sibling = kind === 'agent' ? 'user' : 'agent';
+    const siblingConnected = listGoogleAccounts(sibling).some(a => a.connected);
+    const pointer = siblingConnected
+      ? ` Your ${sibling} Google account IS connected — the ${sibling === 'user' ? '`user_` tool variants read' : 'unprefixed tools read'} that one.`
+      : '';
+    return { error: `No ${kind} Google account is connected. Connect one in Settings → Google.${pointer}` };
   }
   const emails = connected.map(a => a.email ?? a.id).join(', ');
   if (email) {

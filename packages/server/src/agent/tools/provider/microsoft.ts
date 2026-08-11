@@ -23,7 +23,7 @@
 import { getDb } from '../../../db/connection.js';
 import { executeMicrosoftReadTool } from '../../../microsoft/tools-read.js';
 import { executeMicrosoftWriteTool } from '../../../microsoft/tools-write.js';
-import { prependUserMailboxBanner } from './mailbox-banner.js';
+import { prependMailboxOwnerHeader } from './mailbox-banner.js';
 import { isPrimaryAgent } from '../../../config/platform.js';
 import { auditLog } from '../util.js';
 import type { ToolHandler, ToolHandlerMap } from '../handler.js';
@@ -34,7 +34,7 @@ const handlers = {
     let isError = false;
     const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
     content = await executeMicrosoftReadTool(name, args, agentId, agentRow?.name ?? agentId);
-    content = prependUserMailboxBanner(content, name);
+    content = prependMailboxOwnerHeader(content, name, args);
     isError = content.startsWith('Error');
     return { content, isError };
   },

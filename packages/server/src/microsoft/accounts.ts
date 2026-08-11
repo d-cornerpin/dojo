@@ -135,7 +135,14 @@ export function resolveMicrosoftAccountForTool(
   if (account && account.connected) return { account };
   const connected = listMicrosoftAccounts(kind).filter(a => a.connected);
   if (connected.length === 0) {
-    return { error: `No ${kind} Microsoft account is connected. Connect one in Settings → Microsoft.` };
+    // UX-REPAIR T39: mirrors google/accounts.ts — name the SIBLING slot when it
+    // is the one that is connected. See that file for the argument.
+    const sibling = kind === 'agent' ? 'user' : 'agent';
+    const siblingConnected = listMicrosoftAccounts(sibling).some(a => a.connected);
+    const pointer = siblingConnected
+      ? ` Your ${sibling} Microsoft account IS connected — the ${sibling === 'user' ? '`user_` tool variants read' : 'unprefixed tools read'} that one.`
+      : '';
+    return { error: `No ${kind} Microsoft account is connected. Connect one in Settings → Microsoft.${pointer}` };
   }
   const emails = connected.map(a => a.email ?? a.id).join(', ');
   if (email) {
