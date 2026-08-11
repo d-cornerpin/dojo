@@ -43,9 +43,12 @@
 //    courtesy rather than as a question. #15 forbids resting a deletion on "nobody sends it".
 //    The strings are unchanged, deliberately: changing them would blind that classifier to
 //    every line already in flight.
-// 2. `isForwardPromiseReply` + `FORWARD_PROMISE_PATTERNS`. Live: the promise floor in
-//    `loop.ts` and `__tests__/ack-copy.test.ts` share this ONE definition. It is not ack copy
-//    at all — it is a reply-shape predicate that happens to live here.
+// 2. THE REPLY-SHAPE PREDICATE FAMILY: `isForwardPromiseReply` + `FORWARD_PROMISE_PATTERNS`,
+//    and (UX-REPAIR ROUND 8 T33) `isStandingPromiseReply` + its scope/commitment patterns.
+//    Live: the promise floor (`steps/post-call-classify/promise-floor.ts`) and
+//    `__tests__/ack-copy.test.ts` share these ONE definitions. Neither is ack copy at all —
+//    they are reply-shape predicates that happen to live here, beside the pools, and the
+//    family stays in one file so the floor cannot grow a second private copy of the question.
 //
 // House style for every line here: casual, plain, everyday language; no questions, no emoji,
 // no names, no em-dashes.
@@ -165,4 +168,61 @@ export function isForwardPromiseReply(text: string | null | undefined): boolean 
   const region = tail.replace(/\blet me know\b.*$/i, '').trim();
   if (!region) return false;
   return FORWARD_PROMISE_PATTERNS.some((re) => re.test(region));
+}
+
+// ── Standing-promise detection (promise floor, UX-REPAIR ROUND 8 T33) ──
+//
+// The second member of the family, and a different failure. `isForwardPromiseReply`
+// asks "did this reply promise to start work it then did not do?" — one occasion,
+// now. Round-8 S5 was the OTHER shape: "From now on, when a reminder fires I'll post
+// it here first — and if you haven't replied within a few minutes, I'll text it to
+// your phone as a backup." Zero tool calls, zero writes to any durable surface, and
+// the reply's own scope is EVERY future occasion. Nothing on the box watches for an
+// unanswered reminder and this agent's `sms_send` is refused by identity, so the
+// promise was not merely undone — it was unkeepable and unrecorded, and it did not
+// survive the next session reset because it lived only in one assistant message.
+//
+// Same conservatism as its sibling, and the same reason: this is only ONE of the
+// floor's conditions, and the action is a re-prompt.
+//   - A standing SCOPE and a first-person COMMITMENT must appear in the SAME sentence,
+//     so "I'll send that now. Whenever you're free, we can review." is not a standing
+//     promise (two facts in two sentences are not one promise).
+//   - A question mark anywhere = the reply asked the user something = a valid ending.
+//   - A DISCLOSED INABILITY anywhere ("I can't", "I'm not able to", "I don't have")
+//     means the reply already did the honest half, which the floor's own steer offers
+//     as the acceptable alternative. Steering it would be the engine arguing with a
+//     truthful answer.
+const STANDING_SCOPE_PATTERNS: readonly RegExp[] = [
+  /\bfrom now on\b/i,
+  /\bgoing forward\b/i,
+  /\bmoving forward\b/i,
+  /\bfrom here on(?: out)?\b/i,
+  /\b(?:every|each) time\b/i,
+  /\bwhenever\b/i,
+  /\bany time (?:you|that|there|a|an|the)\b/i,
+  /\bin (?:the )?future\b/i,
+];
+/** A first-person promise to act. Deliberately narrow: "I'll", "I will", "I'm going to". */
+const FIRST_PERSON_COMMITMENT = /\bi(?:'|’)?ll\b|\bi will\b|\bi(?:'|’)?m going to\b/i;
+/** The reply already said what it cannot do — the honest outcome, not a bare promise. */
+const DISCLOSED_INABILITY =
+  /\bi\s(?:can(?:no|’|')?t|cannot|won(?:’|')?t be able|am not able|(?:’|')?m not able|do(?:n(?:’|')?t| not) have)\b/i;
+
+/**
+ * True when `text` reads as a STANDING promise — a commitment about every future
+ * occasion of something ("from now on / whenever X … I'll Y") — judged on the sentence
+ * that carries both halves. Pure; the caller pairs it with the floor's other conditions
+ * (a real user trigger, and nothing DURABLE written this turn) before acting.
+ */
+export function isStandingPromiseReply(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const s = text.replace(/\s+/g, ' ').trim();
+  if (!s) return false;
+  if (s.includes('?')) return false;
+  if (DISCLOSED_INABILITY.test(s)) return false;
+  const sentences = s.split(/(?<=[.!])\s+/).map((x) => x.trim()).filter(Boolean);
+  return (sentences.length > 0 ? sentences : [s]).some(
+    (sentence) => STANDING_SCOPE_PATTERNS.some((re) => re.test(sentence))
+      && FIRST_PERSON_COMMITMENT.test(sentence),
+  );
 }
