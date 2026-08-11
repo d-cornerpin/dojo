@@ -33,6 +33,7 @@ import {
 import { isImessageConfigured } from './presence.js';
 import { getTwilioConfig } from '../twilio/auth.js';
 import { getPlaudStatus } from '../plaud/auth.js';
+import { getTwilioSmsSafeSenders } from './channel-safe-senders.js';
 
 export interface MailboxCapability {
   provider: 'gmail' | 'outlook';
@@ -118,6 +119,52 @@ export function getChannelCapabilities(): ChannelCapabilities {
   } catch { /* twilio not configured */ }
 
   return { mailboxes, imessage: { configured: imessageConfigured }, teams: { available: teamsAvailable }, twilio };
+}
+
+// ── UX-REPAIR ROUND 7 T29 — WHAT A CLOSED CHANNEL DOOR IS ALLOWED TO SAY NEXT ──
+//
+// Round-7 S3: the user asked for a text and no text was sent on any channel. Both agents
+// reached for the DISABLED iMessage bridge, and the engine's own door text then sent them the
+// wrong way — "respond to them in the dashboard chat instead" — while `twilio_config` on that
+// same box had `enabled=1, sms_enabled=1` and David's number on the approved list. The door
+// was not wrong about iMessage; it was wrong about the alternative, and it was wrong because
+// it never asked.
+//
+// The fact lives HERE, with the rest of "what can this agent reach right now", so the two
+// doors that offer it cannot drift into two different answers. THE WORDING does not live here:
+// each door frames it for the caller it is refusing (one can act on it; the other must
+// escalate), and a shared sentence would have to be vague enough to fit both.
+
+export interface SmsReachability {
+  /** Enabled end to end AND at least one approved recipient — the only state in which
+   *  `sms_send` would actually deliver. Enabled-with-nobody-approved is not an alternative:
+   *  `twilio/sms-outbound.ts` refuses it, so offering it would be the same lie one door over. */
+  live: boolean;
+  /** Approved recipients, rendered "Name (+1555…)" where a name exists. */
+  approved: string[];
+}
+
+/** Read at the moment of refusal, never asserted statically. */
+export function getSmsReachability(): SmsReachability {
+  try {
+    const cfg = getTwilioConfig();
+    if (!cfg.configured || !cfg.enabled || !cfg.smsEnabled) return { live: false, approved: [] };
+    const approved = getTwilioSmsSafeSenders()
+      .map((s) => (s.name ? `${s.name} (${s.address})` : s.address));
+    return { live: approved.length > 0, approved };
+  } catch {
+    // Same posture as every other block in this file: an unreadable config is "not
+    // available", never a promise the sender cannot keep.
+    return { live: false, approved: [] };
+  }
+}
+
+/** The recipients clause, bounded so a long allowlist cannot run away with a door's text. */
+export function describeSmsRecipients(r: SmsReachability, limit = 3): string {
+  if (r.approved.length === 0) return '';
+  const shown = r.approved.slice(0, limit).join(', ');
+  const rest = r.approved.length - Math.min(limit, r.approved.length);
+  return rest > 0 ? `${shown} and ${rest} more` : shown;
 }
 
 export function listIntegrationStatuses(): IntegrationStatus[] {

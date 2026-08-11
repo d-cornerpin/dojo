@@ -1297,6 +1297,33 @@ const RELAY_DOOR: Readonly<Record<string, string>> = {
   sms: 'sms_send',
 };
 
+/**
+ * The origins that have NO outbound door of their own — the dashboard IS the delivery, and a
+ * voice call is over by the time a join lands.
+ *
+ * UX-REPAIR ROUND 7 T29 — THE ARM'S OWN ⚠ COMMENT WAS THE SPEC, AND THE CODE HAD DRIFTED OFF
+ * IT. That comment says "a dashboard-origin ask has no channel meta at all and there is
+ * nothing to report". That premise is false and was false when it was written: `InboundMeta`
+ * declares `channel: ChannelKind | 'dashboard' | 'voice'` and 3,310 of the 3,669 stamped rows
+ * on the worn-in body carry `'dashboard'` — the single most common value. So the seed's
+ * `meta.channel == null` test caught almost none of the joins the comment describes, and on
+ * 2026-08-11 the arm told the owner "I could not send that answer back on dashboard, so it is
+ * here on the dashboard instead" about an answer that had delivered fine. An alert that fires
+ * on the ordinary case is the noise that makes the real one invisible — which is what the
+ * comment predicted about itself.
+ *
+ * Written as a named set rather than by inverting `RELAY_DOOR`, so a fifth channel added to
+ * the delivery branches and forgotten in that table still ALERTS (loudly, under its own name)
+ * instead of falling silent.
+ */
+const NON_RELAYABLE_ORIGINS: ReadonlySet<string> = new Set(['dashboard', 'voice']);
+
+/** Is there a channel here that could have refused anything? Exported so the law is a value a
+ *  test can read, exactly as `ownerChannelRelayRefusal` is. */
+export function originHasNoRelayDoor(channel: string | null | undefined): boolean {
+  return channel == null || NON_RELAYABLE_ORIGINS.has(channel);
+}
+
 /** What the door said, STRUCTURALLY. `ToolOutcome`'s own arms — never the prose, which is the
  *  line PHASE-4 T1 drew and this reader keeps: `refused` means the platform said no, `failed`
  *  means the tool broke, and the two are different things to tell the owner. */
@@ -1373,9 +1400,9 @@ async function deliverJoinResultToOwnerInner(
   // `meta.channel` is the ask's own OR4 ingest stamp, so the door named in the refusal is the
   // door the owner actually used.
   let relayRefusal: OwnerChannelRelayRefusal | null =
-    meta.channel == null
+    originHasNoRelayDoor(meta.channel)
       ? null   // no channel to be refused FROM: the dashboard fallback IS the delivery
-      : ownerChannelRelayRefusal(join.agentId, meta.channel, RELAY_DOOR[meta.channel] ?? meta.channel);
+      : ownerChannelRelayRefusal(join.agentId, meta.channel!, RELAY_DOOR[meta.channel!] ?? meta.channel!);
   /** A handler that refuses AFTER the scope check let the call through — the wall moving
    *  underneath the relay must not make the failure silent again. */
   const noteRelayRefusal = (ch: string, door: string, detail: string): void => {

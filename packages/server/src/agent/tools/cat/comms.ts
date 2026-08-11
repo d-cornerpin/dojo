@@ -61,6 +61,7 @@ import { executeSmsSend } from '../../../twilio/sms-outbound.js';
 import { isEmailSendingEnabled, getGoogleWorkspaceConfig } from '../../../google/auth.js';
 import { isMsEmailSendingEnabled, getMicrosoftWorkspaceConfig } from '../../../microsoft/auth.js';
 import { parseSafeSenders, reloadApprovedSenders, getSafeSenders, getIMBridgeStatus, findSafeSenderByAddress, getTurnScopedImRecipient, sendIMessageWithAttachments } from '../../../services/imessage-bridge.js';
+import { getSmsReachability, describeSmsRecipients } from '../../../services/capability-registry.js';
 import { queuePendingAttachments } from '../../pending-attachments.js';
 import { syncSafeSenderToContacts } from '../../../contacts/from-safe-senders.js';
 import type { ToolHandlerMap } from '../handler.js';
@@ -466,11 +467,21 @@ export const commsHandlers: ToolHandlerMap = {
     // the user when nothing was actually sent. Now the agent gets a
     // clear error so it can tell the user the bridge is disabled
     // and use the dashboard chat instead.
+    // UX-REPAIR ROUND 7 T29 — the door was right about iMessage and wrong about the
+    // alternative. Round-7 S3: it prescribed the dashboard while SMS was enabled and approved
+    // on the same box, and the user's text was never sent on any channel. The alternative is
+    // now READ from live config at the moment of refusal; when nothing else is live the
+    // sentence below is the one that has always been here, byte for byte.
     const bridgeStatus = getIMBridgeStatus();
     if (!bridgeStatus.running) {
+      const sms = getSmsReachability();
       content =
         'iMessage bridge is currently disabled, so this message was NOT sent. ' +
-        'Tell the user that iMessage is turned off on this server and respond to them in the dashboard chat instead. ' +
+        (sms.live
+          ? `SMS IS live on this server (approved: ${describeSmsRecipients(sms)}) — send it with `
+            + 'sms_send instead. Only if that fails too should you tell the user and answer in '
+            + 'the dashboard chat. '
+          : 'Tell the user that iMessage is turned off on this server and respond to them in the dashboard chat instead. ') +
         (bridgeStatus.enabled
           ? 'To re-enable iMessage delivery, the user can start it from Settings → Channels (iMessage card).'
           : 'The user can enable iMessage by adding an approved sender in Settings → Channels (iMessage card).');

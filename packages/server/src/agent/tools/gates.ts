@@ -34,6 +34,7 @@
 import { PM_ONLY_WORK_OPS, PRIMARY_ONLY_WORK_OPS } from '../../tracker/pm-agent.js';
 import { workOperation } from '../../tools/work-verbs.js';
 import { effectsFor } from './registry.js';
+import { getSmsReachability, describeSmsRecipients } from '../../services/capability-registry.js';
 import type { EffectKind } from './types.js';
 
 /**
@@ -131,11 +132,26 @@ export function gatesForCall(name: string, args: Record<string, unknown>): ToolG
   // 5 — web_fetch (hostname of args.url) · 6 — web_search (a FIXED host, no arg)
   if (name === 'web_fetch' || name === 'web_search') gates.push({ kind: 'net', row: name === 'web_fetch' ? '5' : '6' });
   // 7 — the iMessage primary-only wall
+  //
+  // UX-REPAIR ROUND 7 T29: the WALL is unchanged and correct — only its guidance is. In
+  // round-7 S3 a sub-agent was told to escalate and nothing else, so it escalated about the
+  // wrong channel: iMessage was disabled on that box while SMS was enabled with the owner's
+  // number approved. The refusal now names the channel that IS live, read from config at the
+  // moment of refusal, so the escalation the sub-agent is being sent on can be about the door
+  // that would actually open. `sms_send` is primary-only too (`cat/comms.ts`), so this is not
+  // an offer of a tool it may call — it is the fact the primary needs to hear. Nothing live:
+  // the sentence is the one that has always been here, byte for byte.
   if (IMESSAGE_PRIMARY_ONLY.has(name)) {
+    const sms = getSmsReachability();
     gates.push({
       kind: 'primary_only',
       row: '7',
-      message: `Permission denied: only the primary agent can call ${name}. Escalate to the primary agent instead.`,
+      message: `Permission denied: only the primary agent can call ${name}.`
+        + (sms.live
+          ? ` iMessage may not be the live channel here: SMS is enabled on this server`
+            + ` (approved: ${describeSmsRecipients(sms)}) and sms_send is primary-only too.`
+            + ' Escalate to the primary agent and name SMS as the channel.'
+          : ' Escalate to the primary agent instead.'),
     });
   }
   // 8 — PM_ONLY_WORK_OPS, keyed on the OPERATION (PHASE-2 T8V): after the verb
