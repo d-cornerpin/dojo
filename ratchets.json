@@ -3095,6 +3095,27 @@
       "to": 448,
       "by": "UX-REPAIR round 7 T28 — admitted to the ratchet at 448 lines",
       "why": "224 -> 448, and PINNED DECREASE-ONLY rather than absorbed by `--record`: the stronger of the two remedies the detector offers, and the right one for the module that owns 'what does this line resolve to'. The split is 116 lines of §4 (the id-less resolver: five gates, two token helpers, one agent-scoped read) and 108 of header and comment. THE SPLIT-IT REMEDY WAS THE FIRST THING MEASURED AND IT IS THE ONE THING THIS FILE MAY NOT DO. §1-§3 exist because three surfaces — the vault write guard, the recall lane and the terminal-exit retirement — needed ONE predicate instead of three, and that argument is recorded twice in ratchets.json already (the `vault/tools.ts` and `memory/recall-lane.ts` raises both refuse the inline alternative in the same words). §4 is a fourth caller of the same question and it reuses §1's two join-token regexes directly; a second file would be a second place a reader looks for the answer, which is the disease, not the cure. THE COMMENT HALF IS THE MEASUREMENT, NOT NARRATION. §4's header states what the first cut of the matcher did on the worn-in body before anything was applied (35 candidate lines; it joined \"David is still owed the final reply\" to a commitment about a codeword on \"David\" + \"final\"), which is the entire justification for the two extra gates that a later reader would otherwise delete as over-engineering: the shared-phrase test and the run-id-disagreement refusal. It also amends the file's own most load-bearing sentence — 'there is no fuzzy matching, no similarity, no title comparison' — which was TRUE of §1-§3 and had to be re-stated precisely rather than left standing as a lie one section down. ALTERNATIVES MEASURED AND REFUSED. (a) Put §4 in `memory/summary-obligations.ts` (+0 net): refused, that file is the summary WRITER; the spine question belongs beside the spine reader, and T20's own header says so. (b) Cut §4's header to four lines (-24): refused — a matcher that is deliberately narrower than it looks is exactly the code a later reader widens; the two gates only survive if the measurement that bought them travels with them. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 2387,
+      "to": 2414,
+      "by": "UX-REPAIR round 7 T29 — the relay-refusal arm's own ⚠ comment, made executable",
+      "why": "+27 (5 code, 22 comment). The code is `NON_RELAYABLE_ORIGINS`, a two-element set, and `originHasNoRelayDoor`, a one-line predicate the seed now calls. The comment weight is the measurement, and it is the point: the arm's ⚠ note says 'a dashboard-origin ask has no channel meta at all and there is nothing to report', and that premise was false when it was written — `InboundMeta` declares `channel: ChannelKind | 'dashboard' | 'voice'` and 3,310 of the 3,669 stamped rows on the worn-in body carry 'dashboard', the most common value by an order of magnitude. So `meta.channel == null` caught almost none of the joins the comment describes and the arm told the owner on 2026-08-11 'I could not send that answer back on dashboard, so it is here on the dashboard instead' about an answer that had delivered fine. Deleting that record to save 22 lines would leave the next reader with the same false premise that produced the misfire, in the same words. ALTERNATIVES MEASURED AND REFUSED. (a) Invert `RELAY_DOOR` instead of naming the set (-6): refused, and this is a behaviour difference rather than a style one — a fifth channel added to the delivery branches and forgotten in that table would then fall SILENT instead of alerting under its own name, which is the failure mode SWEEP CORE-2 item 5 built this whole arm to end. (b) Guard inline without the exported predicate (-4): refused, `ownerChannelRelayRefusal`'s own comment two screens up states the house rule — 'exported so the agreement is a thing a test can read, rather than a property of two files that happen to agree today' — and the same reason applies to the origin law. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/comms.ts",
+      "from": 843,
+      "to": 854,
+      "by": "UX-REPAIR round 7 T29 — the bridge-down refusal reads the alternative instead of guessing it",
+      "why": "+11 (6 code, 5 comment). The 6 code lines are one `getSmsReachability()` call and a ternary on its verdict; the false branch is the sentence that has always been here, byte for byte, and a test asserts it whole. The 5-line comment records why the door changed at all: round-7 S3, the user asked for a text, and this door said 'respond to them in the dashboard chat instead' while `twilio_config` on the same box read enabled=1, sms_enabled=1 with the owner's number on the allowlist. No text was sent on any channel. A door that prescribes a fallback it never checked is the defect, and a reader who cannot see that will delete the check as a needless config read. ALTERNATIVES MEASURED AND REFUSED. (a) Compose the whole sentence in `capability-registry.ts` and interpolate it (+0 here, +6 there): refused — the registry owns the FACT and two doors offer it to two different callers, one who can act on it and one who must escalate with it; a sentence vague enough to fit both helps neither, and the split is stated in the registry's own block. (b) Read the config once at module load: refused, the whole point is that it is read at the moment of refusal. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/gates.ts",
+      "from": null,
+      "to": 245,
+      "by": "UX-REPAIR round 7 T29 — admitted to the ratchet at 245 lines",
+      "why": "229 -> 245, crossing 60% of the 400-line cap, and PINNED rather than left unlisted. +16: 8 comment, 8 code, all of it inside ladder row 7. The wall is untouched — row 7 still fires, still `primary_only`, still for both iMessage tools, and with nothing else live its message is byte-identical to the one it has always emitted (asserted whole, both directions). What is added is the channel that IS live, read at the moment of refusal, because in round-7 S3 a sub-agent was told only to escalate and escalated about the dead channel. The comment says which incident bought each clause and why the text names `sms_send is primary-only too` rather than dangling a tool the sub-agent also may not call. This file is the DECLARATION of fifteen refusals and its header already argues that a requirement you can print beats control flow you have to read; a pin makes every future line of it argue for itself. ALTERNATIVES MEASURED AND REFUSED. (a) Move row 7's message into `gate-eval.ts` (+0 net): refused, the message is part of the declaration — that is this module's entire thesis. (b) Emit a bare 'check other channels' with no facts (-8): refused, it is the same silence in politer words, and the S3 sub-agent would have escalated about iMessage again."
     }
   ],
   "maxNewFileLines": 400,
@@ -3123,7 +3144,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1382,
-    "packages/server/src/agent/a2a-transport.ts": 2387,
+    "packages/server/src/agent/a2a-transport.ts": 2414,
     "packages/server/src/agent/agent-status.ts": 233,
     "packages/server/src/agent/brokers/deny.ts": 385,
     "packages/server/src/agent/brokers/grants.ts": 344,
@@ -3145,7 +3166,7 @@
     "packages/server/src/agent/spawner.ts": 1420,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
     "packages/server/src/agent/tools/cat/agents.ts": 1284,
-    "packages/server/src/agent/tools/cat/comms.ts": 843,
+    "packages/server/src/agent/tools/cat/comms.ts": 854,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
     "packages/server/src/agent/tools/cat/media.ts": 897,
@@ -3342,6 +3363,7 @@
     "packages/shared/src/ws.ts": 1110,
     "watchdog/src/auto-rollback.ts": 333,
     "watchdog/src/index.ts": 1217,
-    "packages/server/src/work/obligation-memory.ts": 448
+    "packages/server/src/work/obligation-memory.ts": 448,
+    "packages/server/src/agent/tools/gates.ts": 245
   }
 }

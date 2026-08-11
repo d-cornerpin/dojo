@@ -494,7 +494,7 @@
     "packages/server/src/services/canvas-html.ts": 100,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/capability-model.ts": 160,
-    "packages/server/src/services/capability-registry.ts": 154,
+    "packages/server/src/services/capability-registry.ts": 201,
     "packages/server/src/services/channel-inspect.ts": 169,
     "packages/server/src/services/channel-safe-senders.ts": 171,
     "packages/server/src/services/email-attachments.ts": 179,
