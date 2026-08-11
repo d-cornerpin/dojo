@@ -77,6 +77,14 @@ export async function enforceModelCapabilities(
 
     let imagesStripped = 0;
     let imagesCaptioned = 0;
+    // ── UX-REPAIR ROUND 6 T27 — WHAT THE GATE ALREADY DECIDED ──
+    // These two count images resolved from the STORE rather than from a fresh attempt. They
+    // are separate counters on purpose: they must still cause the message array to be
+    // rewritten (an image block may never reach a non-vision provider), and they must NOT
+    // reach the toast or the "just sent" nudge, which are statements about THIS turn.
+    let imagesRecalled = 0;
+    const { imageFingerprint, lookupVisionCaption, recordVisionCaption, UNCAPTIONED_IMAGE_STUB } =
+      await import('../services/vision-captions.js');
 
     // Pull the data URL / base64 out of an Anthropic-shape image block.
     // We support the two common shapes we ourselves emit upstream:
@@ -166,8 +174,36 @@ export async function enforceModelCapabilities(
       const kept: Array<Record<string, unknown>> = [];
       for (const b of blocks) {
         if (b.type === 'image') {
+          // ── UX-REPAIR ROUND 6 T27 — ASK THE STORE BEFORE ASKING THE MODEL ──
+          //
+          // This gate walks the ASSEMBLED HISTORY on every model call and used to remember
+          // nothing, so ONE image row re-tripped it for ever: re-sent to the fallback model,
+          // re-failed, re-toasted (11 amber `chat:error` toasts in 15 minutes, dev body
+          // 2026-08-10) and re-followed by a "the user just sent N images … respond ONLY
+          // about the image" splice that was false from the second turn and hijacked whatever
+          // the user was actually asking.
+          //
+          // A stored verdict is REPLAYED, never re-litigated: a caption is inlined again (so
+          // the model can still discuss an image it saw described last turn — this is why the
+          // store exists rather than a bare "historical images become stubs" rule), a failure
+          // becomes its durable stub. Neither touches the fresh counters, so neither speaks to
+          // the user. First sighting means "no row", which is the only definition of "this
+          // turn" available here — no message id reaches this function.
+          const fp = imageFingerprint(b);
+          const prior = fp ? lookupVisionCaption(fp) : null;
+          if (prior) {
+            kept.push(prior.outcome === 'captioned' && prior.caption
+              ? {
+                  type: 'text',
+                  text: `[Image content (described by fallback vision model "${prior.modelId ?? fallback?.apiModelId}"): ${prior.caption}]`,
+                }
+              : { type: 'text', text: UNCAPTIONED_IMAGE_STUB });
+            imagesRecalled++;
+            continue;
+          }
           const caption = await captionOne(b);
           if (caption) {
+            if (fp) recordVisionCaption(fp, 'captioned', caption, fallback?.apiModelId ?? null);
             kept.push({
               type: 'text',
               text: `[Image content (described by fallback vision model "${fallback?.apiModelId}"): ${caption}]`,
@@ -182,10 +218,8 @@ export async function enforceModelCapabilities(
             // told the model nothing. Leave an honest note in the image's place
             // instead of removing it silently. Counters/banner/nudge are unchanged;
             // only the residue goes from nothing to this note.
-            kept.push({
-              type: 'text',
-              text: '[An image attachment arrived here. Your current model cannot view images and no vision description was available, so you have NOT seen it. Say so honestly if it matters to the request; do not claim attachments cannot reach you.]',
-            });
+            if (fp) recordVisionCaption(fp, 'failed', null, fallback?.apiModelId ?? null);
+            kept.push({ type: 'text', text: UNCAPTIONED_IMAGE_STUB });
             imagesStripped++;
           }
           continue;
@@ -224,8 +258,13 @@ export async function enforceModelCapabilities(
 
       const blocks = m.content as unknown as Array<Record<string, unknown>>;
       const beforeTouches = imagesStripped + imagesCaptioned;
+      const beforeAny = beforeTouches + imagesRecalled;
       const kept = await processBlocks(blocks);
-      const changed = (imagesStripped + imagesCaptioned) !== beforeTouches;
+      // T27: the ARRAY is rewritten whenever ANY image was resolved — a recalled one still
+      // must not reach a provider that cannot see it — but `lastTouchedUserIdx`, which is
+      // what places the nudge, moves only for a FRESH decision.
+      const changed = (imagesStripped + imagesCaptioned + imagesRecalled) !== beforeAny;
+      const fresh = (imagesStripped + imagesCaptioned) !== beforeTouches;
       if (!changed) continue;
 
       // If nothing but text remains, collapse to a plain string so older call
@@ -238,7 +277,7 @@ export async function enforceModelCapabilities(
       } else {
         messages[i] = { role: 'user', content: kept as unknown as Anthropic.ContentBlockParam[] };
       }
-      lastTouchedUserIdx = i;
+      if (fresh) lastTouchedUserIdx = i;
     }
 
     if (imagesStripped + imagesCaptioned > 0) {

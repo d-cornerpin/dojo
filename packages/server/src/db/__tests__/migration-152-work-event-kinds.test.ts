@@ -36,6 +36,27 @@ const FILES = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).s
 const BEFORE = '151_delivery_evidence_guard.sql';
 const SUBJECT = '152_work_event_kinds_check.sql';
 
+/** The kinds ONE migration file declares in its own `CHECK (kind IN (…))`. */
+function checkListIn(file: string): string[] {
+  const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
+  const m = /CHECK\s*\(\s*kind\s+IN\s*\(([\s\S]*?)\)\s*\)/i.exec(sql);
+  if (!m) throw new Error(`${file} carries no CHECK (kind IN (…))`);
+  return [...m[1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]).sort();
+}
+
+/**
+ * The migration that carries the LIVE CHECK — DERIVED, never named.
+ *
+ * UX-REPAIR ROUND 6 T25 added `owed_interrupt` at `159`, which rebuilds the table with a new
+ * CHECK. This file's BODY A/B/B' replays stay pinned to `152` on purpose — they are about
+ * THAT migration's quarantine behaviour on a lived-in body, which is a fixed historical
+ * question — but "the file and the union are one list" is a question about the CURRENT list,
+ * and asking it of the file that FIRST stated the rule reads a superseded one for ever after.
+ */
+const LIVE_CHECK = FILES.filter((f) => {
+  try { checkListIn(f); return true; } catch { return false; }
+}).slice(-1)[0];
+
 /** The runner's own base schema, lifted from `migrations.ts` so this replay cannot drift
  *  from it (the `150` test's helper, reused verbatim in shape). */
 function baseSchemaFromRunner(): string {
@@ -142,12 +163,17 @@ describe('BODY B — the CONTROL: a virgin chain, nothing to carry', () => {
       .toEqual({ c: 0 });
   });
 
-  it('every one of the 25 DECLARED kinds is accepted — the CHECK admits the whole list', () => {
+  it('every kind 152 DECLARED is accepted — the CHECK admits its whole list', () => {
+    // Chained UP TO 152, so the subject is 152's own list. Kinds declared by LATER migrations
+    // (T25's `owed_interrupt` at 159) are not in this body's CHECK and must not be, which is
+    // why this asserts the file's list rather than the union; the union's own equality with
+    // the LIVE carrier is asserted below.
     seedWork();
     applyOne(db, SUBJECT);
-    for (const k of WORK_EVENT_KINDS) putEvent(WORK_ID, k, '{}', 1);
+    const declaredBy152 = checkListIn(SUBJECT);
+    for (const k of declaredBy152) putEvent(WORK_ID, k, '{}', 1);
     expect(db.prepare('SELECT count(DISTINCT kind) AS c FROM work_events').get())
-      .toEqual({ c: WORK_EVENT_KINDS.length });
+      .toEqual({ c: declaredBy152.length });
   });
 
   it('`floor_ghosted` is insertable — PHASE-4 T4 Step 2 depends on exactly this', () => {
@@ -310,22 +336,29 @@ describe('what the rebuild must not lose', () => {
 });
 
 describe('the file and the union are one list', () => {
-  it('the CHECK in the landed migration is exactly WORK_EVENT_KINDS', () => {
-    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, SUBJECT), 'utf-8');
-    const m = /CHECK\s*\(\s*kind\s+IN\s*\(([\s\S]*?)\)\s*\)/i.exec(sql);
-    expect(m).not.toBeNull();
-    const listed = [...m![1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]).sort();
-    expect(listed).toEqual([...WORK_EVENT_KINDS].sort());
+  it('the CHECK in the LIVE carrier is exactly WORK_EVENT_KINDS', () => {
+    expect(checkListIn(LIVE_CHECK)).toEqual([...WORK_EVENT_KINDS].sort());
+  });
+
+  it('the walk is not vacuous: it finds a real carrier, and 152 is one of them', () => {
+    expect(LIVE_CHECK).toBeTruthy();
+    expect(FILES.filter((f) => { try { checkListIn(f); return true; } catch { return false; } }))
+      .toContain(SUBJECT);
   });
 
   it('the QUARANTINE predicate carries the same list as the CHECK — one cannot drift from the other', () => {
     // Two copies of the list live in this file by necessity (SQLite has no way to name one).
     // If the `WHERE kind NOT IN (…)` ever admitted a value the CHECK refuses, the rebuild
     // would abort on exactly the row the quarantine was supposed to have taken.
+    // Compared against 152's OWN CHECK, not against the union: the quarantine and the CHECK
+    // must agree WITHIN the file that runs them in one transaction. A later migration that
+    // widens the list (T25's `159`) needs no quarantine at all — a list that only GROWS
+    // cannot refuse a row that already satisfied the narrower CHECK — so binding this to the
+    // union would fail for a reason that is not a defect.
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, SUBJECT), 'utf-8');
     const guard = /WHERE kind NOT IN \(([\s\S]*?)\n \);/.exec(sql);
     expect(guard).not.toBeNull();
     const quarantined = [...guard![1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]).sort();
-    expect(quarantined).toEqual([...WORK_EVENT_KINDS].sort());
+    expect(quarantined).toEqual(checkListIn(SUBJECT));
   });
 });

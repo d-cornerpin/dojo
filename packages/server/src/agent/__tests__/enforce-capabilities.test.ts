@@ -30,11 +30,43 @@ vi.mock('../../services/vision-model.js', () => ({
   getEffectiveVisionModel: () => null,
 }));
 
+// UX-REPAIR ROUND 6 T27: the gate now asks a STORE whether it has already decided about an
+// image. Without this mock these tests would reach `getDb()` and read — and WRITE — the real
+// dev database (measured: one row landed in `~/.dojo/data/dojo.db` on the first run). A
+// per-file in-memory map keeps this suite's subject exactly what it was — strip vs. keep-PDF
+// and the banner — and keeps it off any real body. The store's own behaviour is pinned in
+// `the-vision-gate-stops-re-litigating-history.test.ts`, which owns a migrated in-memory DB.
+const captionStore = new Map<string, { caption: string | null; modelId: string | null; outcome: string }>();
+vi.mock('../../services/vision-captions.js', async () => {
+  const crypto = await import('node:crypto');
+  return {
+    imageFingerprint: (b: Record<string, unknown>) => {
+      const src = b.source as Record<string, unknown> | undefined;
+      if (src?.type === 'base64' && typeof src.data === 'string') {
+        return crypto.createHash('sha256').update(`b64:${src.data}`).digest('hex');
+      }
+      if (src?.type === 'url' && typeof src.url === 'string') {
+        return crypto.createHash('sha256').update(`url:${src.url}`).digest('hex');
+      }
+      return null;
+    },
+    lookupVisionCaption: (fp: string) => captionStore.get(fp) ?? null,
+    recordVisionCaption: (fp: string, outcome: string, caption: string | null, modelId: string | null) => {
+      if (!captionStore.has(fp)) captionStore.set(fp, { caption, modelId, outcome });
+    },
+    UNCAPTIONED_IMAGE_STUB:
+      '[An image attachment arrived here. Your current model cannot view images and no vision '
+      + 'description was available, so you have NOT seen it. Say so honestly if it matters to the '
+      + 'request; do not claim attachments cannot reach you.]',
+  };
+});
+
 import { enforceModelCapabilities } from '../runtime.js';
 
 beforeEach(() => {
   broadcastSpy.mockClear();
   capabilitiesMock.mockReset();
+  captionStore.clear();
 });
 
 function imageBlock() {
