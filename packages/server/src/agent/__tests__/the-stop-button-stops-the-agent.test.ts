@@ -169,26 +169,30 @@ describe('the stop flag outlives the checkpoint that honoured it', () => {
     expect(stoppedAgents.has(AGENT)).toBe(true);
   });
 
-  it('the executor\'s mid-batch stop leaves the flag standing too', async () => {
-    const src = fs.readFileSync(path.join(SRC_ROOT, 'agent/v2/steps/execute/index.ts'), 'utf-8');
-    expect(src).toMatch(/stoppedAgents\.has\(agentId\)/);
-    expect(src).not.toMatch(/stoppedAgents\.delete\(/);
-  });
-
-  it('the model-call catch leaves the flag standing too', async () => {
-    const src = fs.readFileSync(path.join(SRC_ROOT, 'agent/v2/steps/call-llm/model-call.ts'), 'utf-8');
-    expect(src).toMatch(/stoppedAgents\.has\(agentId\)/);
-    expect(src).not.toMatch(/stoppedAgents\.delete\(/);
+  it('EVERY engine checkpoint reads the flag and NONE of them retires it', async () => {
+    // The corpus is the SHARED derivation (`engine-sources.ts`), not a fourth
+    // hand-rolled walk of the step packages — PHASE-6 GUARD-AUDIT's rule, and
+    // the reason is exactly this clause's shape: a negative assertion over a
+    // corpus that has quietly stopped containing its subject passes forever.
+    const { engineSources } = await import('../v2/__tests__/engine-sources.js');
+    const sources = engineSources();
+    const readers = sources.filter((f) => /stoppedAgents\.has\(agentId\)/.test(f.text)).map((f) => f.rel);
+    const retirers = sources.filter((f) => /stoppedAgents\.delete\(/.test(f.text)).map((f) => f.rel);
+    // Non-vacuity first: the three checkpoints are the pre-call gate, the
+    // model-call catch and the executor's batch loop.
+    expect(readers.length, 'the engine stopped checking the stop flag entirely').toBeGreaterThanOrEqual(3);
+    expect(retirers, 'a step retired the stop flag again — the drains cannot see a stop that is already gone').toEqual([]);
   });
 
   it('the preempt flag is NOT changed by this task — it is still consumed at its checkpoints', async () => {
     // Requirement preserved: a preempt exists so a QUEUED WAKEUP CAN FIRE. Its
     // consumption at the checkpoint is what lets that wakeup through, and the
-    // fix above must not have crept onto it.
-    const gates = fs.readFileSync(path.join(SRC_ROOT, 'agent/v2/steps/pre-call-gates/index.ts'), 'utf-8');
-    expect(gates).toMatch(/preemptedAgents\.delete\(agentId\)/);
-    const call = fs.readFileSync(path.join(SRC_ROOT, 'agent/v2/steps/call-llm/model-call.ts'), 'utf-8');
-    expect(call).toMatch(/preemptedAgents\.delete\(agentId\)/);
+    // fix above must not have crept onto it. Same shared corpus, same reason.
+    const { engineSources } = await import('../v2/__tests__/engine-sources.js');
+    const consumers = engineSources()
+      .filter((f) => /preemptedAgents\.delete\(agentId\)/.test(f.text))
+      .map((f) => f.rel);
+    expect(consumers.length, 'the preempt flag stopped being consumed at its checkpoints').toBeGreaterThanOrEqual(2);
   });
 });
 
