@@ -3249,6 +3249,20 @@
       "to": 178,
       "by": "UX-REPAIR T37 `f0e385d` — the stop button stops the agent again",
       "why": "+7 net (8 added / 1 removed; ZERO code lines added, one code line DELETED). Pure record. The only change to this file is that the stop gate no longer DELETES the flag it honours, and eight lines saying why: the drains that run after the loop breaks have to be able to see the stop, and the requirement the delete carried (chat.ts's 2026-06-02 note — no stale flag kills the NEXT turn) is kept, and kept more exactly, by the run's own exit path. UX-REPAIR T37 — the stop button. No gate, clause, threshold or whitelist is touched and no test is weakened; each file may only shrink from here."
+    },
+    {
+      "path": "packages/dashboard/src/lib/api.ts",
+      "from": 2361,
+      "to": 2366,
+      "by": "UX-REPAIR T38 `4c7a908` — an expired Plaud login tells the user",
+      "why": "+5 (1 code, 4 comment). The one code line is `reauthRequired: boolean` on `PlaudStatus`. It is here because THE WIRE TYPE MUST MATCH THE WIRE: the `.26` Health-page defect (T14) was a client surviving on a defensive remap of a shape it had guessed, and the fix for that one was to make `api.ts` declare exactly what the route serves and delete the remap. Re-deriving `reauthRequired` inside the component instead would have kept this file at its pin by putting the same guess back one layer down. The 4 comment lines say that, so the next reader does not \"simplify\" it away. UX-REPAIR T38 — no gate, clause, threshold or whitelist is touched, no test is weakened, and this file may only shrink from here."
+    },
+    {
+      "path": "packages/dashboard/src/components/PlaudSettings.tsx",
+      "from": null,
+      "to": 254,
+      "by": "UX-REPAIR T38 `4c7a908` — an expired Plaud login tells the user",
+      "why": "NOT A RAISE — A FIRST PIN, which is the stronger of the two remedies the growth detector offers for an unpinned file crossing 60% of the 400-line cap (215 -> 254), and it follows the `5546651` precedent for `services/format-time.ts`: pinning makes every future line argue for itself, where re-recording the baseline would absorb this growth silently. +25 code / +17 comment: the card gained the THIRD state it never had (an expired login rendered as \"Connected as … since 25 May\" forever) and the sentence the owner asked for — that signing in happens on the Mac that runs Dojo and has to be finished there. REFUSED: splitting the card. Its three states are one decision the user reads top to bottom, and a second component would put the expired branch somewhere the connected branch cannot be compared with it. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3260,12 +3274,13 @@
     "packages/dashboard/src/components/Dojo3Stage.tsx": 450,
     "packages/dashboard/src/components/ImportWizard.tsx": 712,
     "packages/dashboard/src/components/PermissionsEditor.tsx": 435,
+    "packages/dashboard/src/components/PlaudSettings.tsx": 254,
     "packages/dashboard/src/components/RouterConfig.tsx": 545,
     "packages/dashboard/src/components/SetupDeps.tsx": 672,
     "packages/dashboard/src/components/TechniqueSessionProvider.tsx": 533,
     "packages/dashboard/src/components/TwilioSettings.tsx": 563,
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
-    "packages/dashboard/src/lib/api.ts": 2361,
+    "packages/dashboard/src/lib/api.ts": 2366,
     "packages/dashboard/src/lib/voice/voice-client.ts": 873,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 438,
     "packages/dashboard/src/pages/Agents.tsx": 678,
@@ -3308,6 +3323,7 @@
     "packages/server/src/agent/tools/definitions.ts": 2832,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
+    "packages/server/src/agent/tools/gates.ts": 245,
     "packages/server/src/agent/tools/index.ts": 676,
     "packages/server/src/agent/tools/surface.ts": 657,
     "packages/server/src/agent/tools/types.ts": 338,
@@ -3428,6 +3444,7 @@
     "packages/server/src/memory/recall.ts": 510,
     "packages/server/src/memory/retrieval.ts": 591,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
+    "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 458,
     "packages/server/src/microsoft/auth.ts": 623,
     "packages/server/src/microsoft/tools-office.ts": 3508,
@@ -3482,6 +3499,7 @@
     "packages/server/src/work/ask-title.ts": 420,
     "packages/server/src/work/deliverable-declaration.ts": 320,
     "packages/server/src/work/join-drive.ts": 256,
+    "packages/server/src/work/obligation-memory.ts": 448,
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/store.ts": 1916,
@@ -3496,9 +3514,6 @@
     "packages/shared/src/visibility.ts": 945,
     "packages/shared/src/ws.ts": 1110,
     "watchdog/src/auto-rollback.ts": 333,
-    "watchdog/src/index.ts": 1217,
-    "packages/server/src/work/obligation-memory.ts": 448,
-    "packages/server/src/agent/tools/gates.ts": 245,
-    "packages/server/src/memory/summary-obligations.ts": 297
+    "watchdog/src/index.ts": 1217
   }
 }
