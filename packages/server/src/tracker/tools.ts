@@ -434,14 +434,19 @@ function closeRefusalText(taskId: string, r: WorkOutcome, wanted: string): strin
   // weak model is also an invitation to retry the thing that just worked, which is the
   // 189-call spin this tracker's forgiveness rules exist to prevent. So it reads as what it
   // is, and the text names WHO closes it and WHEN so the model stops rather than loops.
+  // UX-REPAIR T40 (conduct nit, text only). This used to promise an outcome the platform
+  // cannot guarantee at the moment it speaks — *"the engine closes it automatically"* — and
+  // the owner watched an agent repeat that promise to him about a task that then sat open.
+  // The tense is now honest: what is RECORDED is a fact; what happens next is described as
+  // the process it is. Everything else about this string's job is unchanged (it still reads
+  // as a success, still names who acts next, still tells the model to stop rather than loop).
   if (r.reason === 'requires-validation') {
     return (
       `[FILED] task_id=${taskId.slice(0, 8)} | your close request is recorded — this is the ` +
-      `normal way work finishes, not a failure. You do not close your own work: the engine ` +
-      `closes it automatically against the delivery you just made, and the PM validates it ` +
-      `against the goal. Nothing further is needed from you on this task; do NOT retry the ` +
-      `status change. If it genuinely needs to close a different way, say so in a note with ` +
-      `work_note.`
+      `normal way work finishes, not a failure. You do not close your own work: the PM ` +
+      `validates the request against the goal, which can take a few minutes. Nothing further ` +
+      `is needed from you on this task; do NOT retry the status change. If it genuinely needs ` +
+      `to close a different way, say so in a note with work_note.`
     );
   }
   if (r.reason === 'done-requires-delivery' || r.reason === 'delivery-unresolved') {
