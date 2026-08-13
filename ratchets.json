@@ -3305,6 +3305,41 @@
       "to": 1385,
       "by": "UX-REPAIR POST-.27 T40 — the Tomorrow-Brief close that no one validated",
       "why": "+1 code / +2 comment. One colour entry so a filed close renders in the activity log it was previously absent from. The event is not new; only the branch that shows it is."
+    },
+    {
+      "path": "packages/server/src/agent/v2/counterparty.ts",
+      "from": 943,
+      "to": 983,
+      "by": "UX-REPAIR T41 (option A) — the routed-channel person, declared once",
+      "why": "+40 (+40/-0; 28 comment, 2 blank, 10 code). The 10 code lines are TWO predicates and nothing else: RC-9's routed-human rule, MOVED here verbatim from its only reader (`post-call-classify/terminal-text.ts`, which loses five lines to the import — measure the PAIR, not the file), and the subset the engine can actually push an ack to. The comment is why the second predicate is narrower than the first, and it is a fact rather than an opinion: `preflight/turn-closures.ts`'s `deliverEngineUserAck` has exactly three push arms (imessage, phone, sms), so on email and Teams an early ack would be persisted and broadcast only — a dashboard bubble the channel never received, the F-22 shape RC-9's internal note exists to prevent. A reader who deletes that paragraph widens the set back and re-opens F-22. Both directions are pinned by test (`assemble/__tests__/the-texter-hears-something.test.ts`). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts",
+      "from": 180,
+      "to": 220,
+      "by": "UX-REPAIR T41 (option A) — the pre-call start-ack door gets its second opener",
+      "why": "+40 (+55/-15; 37 of the added and 9 of the deleted lines are comment, so the code is +6). The arming path was INLINE in the single opener and is now ONE closure both openers call, so the duplication a second door would have created is deleted before it is written and opener 1 is byte-identical in effect. The comment carries the measured incident the owner ruled on — notice at +30 s, steer armed at +84 s, the person's first word at +145 s, 4.8x the promise — and the two facts a later reader needs in order not to undo it: the gates the slow door leans on are DASHBOARD-shaped in their own words (\"the working dots cover the wait\"), and NO threshold moved. REFUSED: putting the opener in the wall-clock timer — the timer is precisely the mechanism that structurally cannot be early, which is the whole finding. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts",
+      "from": 112,
+      "to": 122,
+      "by": "UX-REPAIR T41 (option B) — the engine never asks for an ack it has already delivered",
+      "why": "+10 (+11/-1; 9 of the 11 added lines are comment). The code is ONE clause, `!engineStartAckDeliveredThisTurn`, and the `if` split across two lines to carry it. The comment is why the obvious guard does not already cover this: `startAckRepliedNow`'s probe requires `origin_intent IS NULL` and a delivered ack is stamped, so it cannot see one — without this clause the very next boundary hands the model a steer whose first words are \"the user has not heard anything from you yet this turn\" moments after they heard exactly that. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts",
+      "from": 227,
+      "to": 258,
+      "by": "UX-REPAIR T41 (option B) — the promotion window is OWED, not ARMED",
+      "why": "+31 (+37/-6; 33 of the added lines are comment, and the CODE SHRINKS by two: in go the guard's first clause, one log field and one import; out go five lines of inlined RC-9 predicate). The comment is the payload, because this is an owner RE-RULE of an owner ruling and the next reader must be able to tell them apart: it records what 2026-07-23 deleted (a branch that delivered whatever mid-work narration was lying around AS the ack and SHORT-CIRCUITED the steer, so the model was never asked) and the four properties that make this narrower (nothing fires before the threshold; the words are the model's own from the call that just returned; the steer is still asked for on the next boundary unless this delivery satisfied it; outside the window the 2026-07-23 rule stands byte-identical). Without that paragraph a later reader sees only a widened gate and restores the deleted branch by accident. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/finalize-record.ts",
+      "from": 337,
+      "to": 378,
+      "by": "UX-REPAIR T41 (the observability rider) — the ack that never arrived is on the record",
+      "why": "+41 (+42/-1; 18 comment, 24 code). It lives HERE because this file IS the turn boundary — the one place the two per-turn start-ack flags and the turn's own outcome are both readable, the same reason the untracked-debt clear, the deliver ladder's rung and the strike-0 close are here. The 24 code lines are one condition, one WARN carrying the turn's facts (owed via, channel, exit reason, answered, steers injected, ask id), and one `audit` marker written through the existing single writer onto the person's own ask. REFUSED: a new table or a new `work_events` kind — a migration to count a defect, when the marker shape `ask-settlement.ts` already uses answers it. REFUSED: a sweep — a sweep cannot know which turn just ended, and \"this turn ended owing an acknowledgment\" is the whole fact. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3375,7 +3410,7 @@
     "packages/server/src/agent/v2/ack-copy.ts": 303,
     "packages/server/src/agent/v2/answered-edge.ts": 703,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 502,
-    "packages/server/src/agent/v2/counterparty.ts": 943,
+    "packages/server/src/agent/v2/counterparty.ts": 983,
     "packages/server/src/agent/v2/loop.ts": 697,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 442,
@@ -3385,8 +3420,8 @@
     "packages/server/src/agent/v2/steer-queue.ts": 287,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
     "packages/server/src/agent/v2/steps/assemble/index.ts": 302,
-    "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts": 180,
-    "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 112,
+    "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts": 220,
+    "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 122,
     "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 222,
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 198,
     "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 338,
@@ -3427,7 +3462,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 286,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 367,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
-    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 227,
+    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 258,
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 235,
@@ -3448,7 +3483,7 @@
     "packages/server/src/agent/v2/steps/step-outcome.ts": 140,
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
     "packages/server/src/agent/v2/steps/teardown/conversation-tagging.ts": 70,
-    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 337,
+    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 378,
     "packages/server/src/agent/v2/steps/teardown/index.ts": 237,
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/costs/tracker.ts": 541,
