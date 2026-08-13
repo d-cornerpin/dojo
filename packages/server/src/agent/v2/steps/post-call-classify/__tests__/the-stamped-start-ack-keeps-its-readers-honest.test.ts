@@ -160,9 +160,18 @@ describe('reader 6: the F10 replied-check is unreachable on a turn that promoted
       .toContain('turnCtx.engineStartAckDeliveredThisTurn');
   });
 
+  // UX-REPAIR T41 (option B, owner ruling 2026-08-12) MOVED THE FIRST CLAUSE OF THIS GUARD
+  // and this clause moved with it, deliberately. The window the promotion opens on is now
+  // OWED (`armed || requested`) rather than ARMED — a whole model call sits between those
+  // two flags and the owner's incident happened inside it. What this clause asserts is
+  // UNCHANGED and is the only thing it ever asserted: whatever opens the guard, the
+  // delivered flag is tested BEFORE `startAckRepliedNow()`, so the F10 replied-check (whose
+  // `origin_intent IS NULL` predicate a stamped ack no longer satisfies) is unreachable on a
+  // turn that promoted a start line.
   it('terminal-text.ts: the promotion guard tests the delivered flag BEFORE the query', () => {
     const src = SRC('../terminal-text.ts');
-    const guard = /turnCtx\.startAckSteerArmedThisTurn &&[\s\S]*?!startAckRepliedNow\(\)/.exec(src)?.[0] ?? '';
+    const guard = /\(turnCtx\.startAckSteerArmedThisTurn \|\| turnCtx\.startAckSteerRequested\)[\s\S]*?!startAckRepliedNow\(\)/
+      .exec(src)?.[0] ?? '';
     expect(guard, 'the promotion guard').toBeTruthy();
     expect(guardsBefore(guard, '!startAckRepliedNow()'))
       .toContain('!turnCtx.engineStartAckDeliveredThisTurn');

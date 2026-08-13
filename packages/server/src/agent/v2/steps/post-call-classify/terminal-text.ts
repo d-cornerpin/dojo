@@ -19,6 +19,7 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent, START_ACK_ORIGIN_INTENT } from '../../../../memory/message-store.js';
 import { type AgentTurnState } from '../../state.js';
+import { isRoutedHumanCounterparty } from '../../counterparty.js';
 import { outputPersistenceClassifier, stripLeadingTimeStamp } from '../../classifiers/output.js';
 // T19 (D1): the closed, declared inventory of scheduled work that owes a person a message.
 // Asked, never re-typed — a fifth copy of "is this a reminder" is what the declaration exists
@@ -139,8 +140,36 @@ export async function runTerminalText(
       // model's own words at the moment they were said. Consumed so
       // nothing double-sends; the terminal reply still lands separately
       // when the work completes.
+      //
+      // ⚠ UX-REPAIR T41 (option B) — THE WINDOW IS **OWED**, NOT **ARMED**, AND THAT IS AN
+      // OWNER RE-RULE OF 2026-07-23, NARROWED TO THIS WINDOW AND NO WIDER (2026-08-12).
+      //
+      // The two flags are not the same instant. `startAckSteerRequested` is "the threshold
+      // passed and the person has heard NOTHING" — written by the wall-clock timer, the
+      // first-tool hook and the two tracker floors, each under that same condition.
+      // `startAckSteerArmedThisTurn` is "the steer has been INJECTED", which cannot happen
+      // until the next loop boundary, i.e. after the model call already in flight returns.
+      // A WHOLE MODEL CALL SITS BETWEEN THEM. On the owner's incident (W19, turn 4805) the
+      // engine recorded at +30 s that he had heard nothing; at +80 s the model produced a
+      // line addressed to him — TRUE ("the exact probes can't run: sleep is blocked by my
+      // sandbox") — and this arm, keyed on ARMED, let it fall through to the demotion below,
+      // where the RC-9 routed arm made it internal: it reached nobody. The line the steer
+      // extracted 65 seconds later was FALSE, because by then the model had been told to say
+      // it was starting work it already knew it could not run that way.
+      //
+      // WHAT THE 2026-07-23 RULING FORBADE, AND STILL FORBIDS. The deleted captured-narration
+      // branch (`preflight/start-ack.ts`, its comment survives) "delivered whatever mid-work
+      // narration was captured … AS the ack, SHORT-CIRCUITING THE STEER, so the model was
+      // never actually asked to address the user." That branch fired the moment the threshold
+      // passed, on whatever narration happened to be lying around, and it ran INSTEAD of
+      // asking. This does not: nothing here fires before the threshold, the words are the
+      // model's own from the call that just returned, and the steer is still asked for on the
+      // very next boundary unless this delivery satisfied it — `assemble/steer-checkpoint.ts`
+      // now checks the delivered flag for exactly that reason. Outside the owed window the
+      // 2026-07-23 ruling stands byte-identical: a mid-work line with no ack owed is a
+      // working note and is demoted below, exactly as it was yesterday.
       if (
-        turnCtx.startAckSteerArmedThisTurn &&
+        (turnCtx.startAckSteerArmedThisTurn || turnCtx.startAckSteerRequested) &&
         !turnCtx.engineStartAckDeliveredThisTurn &&
         turnCtx.deferredUserReplyWithTools &&
         !startAckRepliedNow()
@@ -168,6 +197,10 @@ export async function runTerminalText(
         await deliverEngineUserAck(startLine, START_ACK_ORIGIN_INTENT, null, 'agent-text');
         logger.info('v2 start-ack steer: model spoke its start line mid-work; delivered as the visible ack (streamed bubble promoted in place)', {
           agentId, turnNumber, preview: startLine.slice(0, 60),
+          // T41: WHICH half of the owed window this was, so the timeline can be read off the
+          // log alone. `steer-armed` is the 2026-07-22 path; `threshold-owed` is the owner's
+          // 2026-08-12 re-rule delivering the model's own line during the wait it names.
+          owedVia: turnCtx.startAckSteerArmedThisTurn ? 'steer-armed' : 'threshold-owed',
         }, agentId);
       }
     }
@@ -193,11 +226,9 @@ export async function runTerminalText(
         // INTERNAL: prefix them [working-note:internal] and flag the broadcast so the
         // dashboard hides them by default (shown only in wordy/verbose mode). Owner
         // dashboard/voice turns are unchanged (there is one lane, nothing to confuse).
-        const routedHumanChannel =
-          counterparty.kind === 'user' &&
-          (counterparty.relation === 'owner' || counterparty.relation === 'known_contact') &&
-          (counterparty.channel === 'imessage' || counterparty.channel === 'sms' ||
-           counterparty.channel === 'teams' || counterparty.channel === 'email');
+        // T41: the rule itself moved to `v2/counterparty.ts` — unchanged in every clause —
+        // because the assemble side now asks the same question and two copies drift.
+        const routedHumanChannel = isRoutedHumanCounterparty(counterparty);
         const notePrefix = routedHumanChannel ? INTERNAL_WORKING_NOTE_PREFIX : WORKING_NOTE_PREFIX;
         // Chat-native system note: prefix-marked, NO origin stamp, same
         // convention as routing markers and dividers. An origin_kind of

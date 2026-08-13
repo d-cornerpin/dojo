@@ -25,7 +25,7 @@ import { setAnswerMessageId } from '../../../../memory/message-store.js';
 import { clearUntrackedWorkAcrossTurnsForConversation } from '../../../turn-state.js';
 import { taskScope } from '../../../../work/tracker-view.js';
 import { setTrackerStatus, patchWork } from '../../../../work/tracker-store.js';
-import { joinState, noteUnsettled } from '../../../../work/store.js';
+import { appendWorkEvent, joinState, noteUnsettled } from '../../../../work/store.js';
 import { settleAsksAtTurnFinalize } from '../../../../work/ask-settlement.js';
 import { assembledContextAsks } from '../../counterparty.js';
 import {
@@ -187,6 +187,47 @@ export async function finalizeTurnRecord(
       try {
         clearUntrackedWorkAcrossTurnsForConversation(agentId, chosenConvKey);
       } catch { /* in-memory map; best effort like the rest of this arm */ }
+    }
+    // ── UX-REPAIR T41 (the observability rider) — "THE PERSON WAITED AND HEARD NOTHING" ──
+    //
+    // The mechanism could not report its own failure. "Threshold passed with nothing heard"
+    // is logged and "steer injected" is logged, but a turn that ENDED with the ack still
+    // owed and never delivered — the owner's 2026-08-12 incident exactly — wrote no line and
+    // no row. That is why three minutes of dead air on his phone could only be diagnosed
+    // from his pasted transcript, and why nobody could ask how often it happens.
+    //
+    // The question is asked of the two flags that already carry it and nothing else: the ack
+    // was OWED (the threshold passed with nothing heard, or a steer was armed for it) and
+    // `engineStartAckDeliveredThisTurn` is still false at the boundary. Both are per-turn
+    // and both are only ever set for a user counterparty, so no separate gate is needed.
+    //
+    // The durable half rides the person's own ask — the row they were waiting on — as an
+    // `audit` event with a MARKER, the shape `work/ask-settlement.ts` already uses for
+    // machine-readable engine observations. No new event kind, no new table, no schema
+    // change. When the turn served no ask (an engine or scheduler turn that still owed an
+    // ack) the log line stands alone and says so, rather than inventing a row to hang it on.
+    if ((turnCtx.startAckSteerRequested || turnCtx.startAckSteerArmedThisTurn)
+        && !turnCtx.engineStartAckDeliveredThisTurn) {
+      const owedVia = turnCtx.startAckSteerArmedThisTurn ? 'steer-armed' : 'threshold-owed';
+      const channel = counterparty.kind === 'user' ? counterparty.channel : null;
+      logger.warn('v2: the turn ended owing this person an acknowledgment and never delivered one — they waited and heard nothing from the agent until (if ever) the answer', {
+        agentId, turnNumber, owedVia, channel, exitReason,
+        answered: answerRow !== undefined, steersInjected: turnCtx.startAckSteersInjected,
+        askId: triggerWorkId,
+      }, agentId);
+      if (triggerWorkId) {
+        try {
+          appendWorkEvent(triggerWorkId, 'audit', 'start-ack', {
+            marker: 'start_ack_owed_undelivered',
+            turn_number: turnNumber, owed_via: owedVia, channel,
+            exit_reason: exitReason, answered: answerRow !== undefined,
+            steers_injected: turnCtx.startAckSteersInjected,
+            reason: 'the start-ack threshold passed with nothing heard, and the turn ended '
+              + 'without the agent ever addressing the person. Recorded here so this class '
+              + 'is countable instead of invisible.',
+          });
+        } catch { /* best effort, like every arm of this boundary */ }
+      }
     }
     // ── UX-REPAIR ROUND 4 T19 (D3) — THE DELIVER LADDER'S MISSING DRIVE TICK ──
     //

@@ -54,7 +54,17 @@ export function runSteerCheckpoint(stateIn: AgentTurnState, input: SteerCheckpoi
   // loop-synchronously. Re-checks startAckRepliedNow so a reply that landed
   // in flight quietly disarms it. (T6: the "another nudge occupies the slot, so defer"
   // half died with the flag — the queue retains both steers.)
-  if (turnCtx.startAckSteerRequested && !turnCtx.startAckSteerArmedThisTurn && !startAckRepliedNow()) {
+  //
+  // UX-REPAIR T41 (option B) — AND IT NEVER ASKS FOR AN ACK THAT HAS ALREADY BEEN
+  // DELIVERED. The owed window now has a second exit: the model's own line, spoken during
+  // the wait, can BE the acknowledgment (`post-call-classify/terminal-text.ts`). The
+  // request flag that opened the window stays set — it is a record of what the engine
+  // observed, not a to-do list — so without this clause the very next boundary would hand
+  // the model a steer whose first words are "the user has not heard anything from you yet
+  // this turn" moments after they heard exactly that. `startAckRepliedNow` cannot see it:
+  // its DB probe requires `origin_intent IS NULL` and the delivered ack is stamped.
+  if (turnCtx.startAckSteerRequested && !turnCtx.startAckSteerArmedThisTurn
+      && !engineStartAckDeliveredThisTurn && !startAckRepliedNow()) {
     turnCtx.startAckSteerArmedThisTurn = true;
     turnCtx.startAckSteersInjected = 1;
     turnCtx.startAckSteerInjectedAtLoop = state.loopCount;

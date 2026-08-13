@@ -759,6 +759,46 @@ export interface TurnCounterparty {
   senderIsAgent: boolean;
 }
 
+/**
+ * ── THE PERSON WHO IS NOT WATCHING THE DASHBOARD ──
+ *
+ * RC-9's rule, in ONE place. On a routed-channel human turn (iMessage / SMS / Teams /
+ * email) exactly ONE routing pass delivers exactly ONE string to the channel, while the
+ * dashboard live-mirrors EVERY iteration. So a line that is merely persisted and broadcast
+ * reaches nobody, and a line the dashboard shows that the channel never received reads as a
+ * second, contradictory reply (F-22). `post-call-classify/terminal-text.ts` computed this
+ * inline and was its only reader; UX-REPAIR T41 asks the same question on the ASSEMBLE side,
+ * and a second copy of a rule is how two copies come to disagree.
+ */
+export function isRoutedHumanCounterparty(counterparty: TurnCounterparty): boolean {
+  return counterparty.kind === 'user'
+    && (counterparty.relation === 'owner' || counterparty.relation === 'known_contact')
+    && (counterparty.channel === 'imessage' || counterparty.channel === 'sms'
+      || counterparty.channel === 'teams' || counterparty.channel === 'email');
+}
+
+/**
+ * ── AND THE SUBSET THE ENGINE CAN ACTUALLY REACH MID-TURN (UX-REPAIR T41, option A) ──
+ *
+ * The owner's ruling (2026-08-12) opens the pre-call start-ack door "for routed-channel
+ * asks, so the agent's own first sentence REACHES THE CHANNEL early". Whether it reaches
+ * the channel is a fact, not a preference: `preflight/turn-closures.ts`'s
+ * `deliverEngineUserAck` has exactly THREE push arms — `imessage`, `phone`, `sms` — and
+ * nothing else. On `email` and `teams` the ack is persisted and broadcast only, so opening
+ * the door there would buy the person nothing and would put a bubble on the dashboard that
+ * the channel never received: the F-22 shape RC-9's internal note exists to prevent.
+ * `phone` is deliberately OUT: it is a live voice session with its own delivery lane and
+ * its own ambient signal, not a text ask, and T41's incident and its drives are a texter's.
+ *
+ * DERIVED, NOT INVENTED: this set is `isRoutedHumanCounterparty` ∩ (the ack's own push
+ * arms). If a push arm is ever added for another routed channel, this predicate is where
+ * that channel joins.
+ */
+export function engineAckReachesTheirChannel(counterparty: TurnCounterparty): boolean {
+  return isRoutedHumanCounterparty(counterparty)
+    && (counterparty.channel === 'imessage' || counterparty.channel === 'sms');
+}
+
 /** RC-4.2: read the structured `senderIsAgent` flag off a trigger row's inbound_meta
  *  JSON (stamped by the iMessage bridge). Best-effort, defaults to false. */
 function readSenderIsAgent(inboundMeta: string | null | undefined): boolean {
