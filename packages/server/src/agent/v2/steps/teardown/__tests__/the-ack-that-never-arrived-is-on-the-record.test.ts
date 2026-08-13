@@ -55,6 +55,8 @@ const turnCtxFor = (over: Record<string, unknown> = {}): Bag => ({
   agentId: AGENT, root: undefined, servedWork: undefined, convKey: 'imessage:+1555',
   startAckSteerRequested: false, startAckSteerArmedThisTurn: false,
   engineStartAckDeliveredThisTurn: false, startAckSteersInjected: 0,
+  // The incident's own shape: the turn was WORK. The F10 gate's condition, carried here.
+  anyToolStartedThisTurn: true,
   toolPhaseEndedBySpinBrake: false, turnInjectedTechniqueId: null,
   lastAssembledAtIso: null, assemblerOverheadTokens: 0,
   ...over,
@@ -160,6 +162,18 @@ describe('and stays silent about turns that owed nothing or paid what they owed'
 
   it('CONTROL — an ordinary turn that was never owed an ack records nothing', async () => {
     const turnCtx = turnCtxFor();
+    await finalizeTurnRecord(state, ctxFor(turnCtx));
+    expect(riderWarns()).toEqual([]);
+    expect(markers()).toEqual([]);
+  });
+
+  // FOUND BY DRIVING, 2026-08-13. T41's pre-call door arms the ack before anyone can know
+  // whether the turn will use tools, so on a routed channel a plain "Hey dude!" — answered in
+  // 3.0 s, nobody kept waiting — ended with the ack technically owed and undelivered and wrote
+  // a row saying the person heard nothing. The record inherits the F10 gate's OWN condition
+  // ("the ack exists for WORK, not conversation") rather than a new one.
+  it('CONTROL — a CHAT-SHAPED turn records nothing: no tool ever started, so no ack was owed', async () => {
+    const turnCtx = turnCtxFor({ startAckSteerArmedThisTurn: true, anyToolStartedThisTurn: false });
     await finalizeTurnRecord(state, ctxFor(turnCtx));
     expect(riderWarns()).toEqual([]);
     expect(markers()).toEqual([]);

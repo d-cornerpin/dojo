@@ -190,24 +190,24 @@ export async function finalizeTurnRecord(
     }
     // ── UX-REPAIR T41 (the observability rider) — "THE PERSON WAITED AND HEARD NOTHING" ──
     //
-    // The mechanism could not report its own failure. "Threshold passed with nothing heard"
-    // is logged and "steer injected" is logged, but a turn that ENDED with the ack still
-    // owed and never delivered — the owner's 2026-08-12 incident exactly — wrote no line and
-    // no row. That is why three minutes of dead air on his phone could only be diagnosed
-    // from his pasted transcript, and why nobody could ask how often it happens.
+    // The mechanism could not report its own failure. "Threshold passed" and "steer injected"
+    // are logged; a turn ENDING with the ack still owed and undelivered — the owner's
+    // 2026-08-12 incident — wrote nothing, so three minutes of dead air on his phone was
+    // diagnosable only from his pasted transcript and countable by nobody.
     //
-    // The question is asked of the two flags that already carry it and nothing else: the ack
-    // was OWED (the threshold passed with nothing heard, or a steer was armed for it) and
-    // `engineStartAckDeliveredThisTurn` is still false at the boundary. Both are per-turn
-    // and both are only ever set for a user counterparty, so no separate gate is needed.
+    // Asked of flags that already carry it and nothing else: the ack was OWED (threshold
+    // passed with nothing heard, or a steer armed for it), never DELIVERED, and the turn was
+    // WORK — `anyToolStartedThisTurn` is the F10 gate's own condition ("the ack exists for
+    // WORK, not conversation", `preflight/start-ack.ts`), reused rather than re-invented.
+    // Without that third clause every quick chat reply on a routed channel counts, because
+    // T41's door arms before anyone can know whether the turn will use tools: driven
+    // 2026-08-13, "Hey dude!" answered in 3.0 s wrote a row saying the person heard nothing.
     //
-    // The durable half rides the person's own ask — the row they were waiting on — as an
-    // `audit` event with a MARKER, the shape `work/ask-settlement.ts` already uses for
-    // machine-readable engine observations. No new event kind, no new table, no schema
-    // change. When the turn served no ask (an engine or scheduler turn that still owed an
-    // ack) the log line stands alone and says so, rather than inventing a row to hang it on.
+    // The durable half rides the person's own ask as an `audit` MARKER — the shape
+    // `work/ask-settlement.ts` already uses for machine-readable observations, so no new event
+    // kind, table or migration. A turn with no ask keeps the log line alone, inventing no row.
     if ((turnCtx.startAckSteerRequested || turnCtx.startAckSteerArmedThisTurn)
-        && !turnCtx.engineStartAckDeliveredThisTurn) {
+        && !turnCtx.engineStartAckDeliveredThisTurn && turnCtx.anyToolStartedThisTurn) {
       const owedVia = turnCtx.startAckSteerArmedThisTurn ? 'steer-armed' : 'threshold-owed';
       const channel = counterparty.kind === 'user' ? counterparty.channel : null;
       logger.warn('v2: the turn ended owing this person an acknowledgment and never delivered one — they waited and heard nothing from the agent until (if ever) the answer', {
