@@ -154,10 +154,22 @@ describe('the declared precedence table', () => {
     // reply and answered with a silent retry: three full output budgets and a nudge naming
     // the wrong thing. THE COUNT WAS RAISED BECAUSE A FLOOR WAS ADDED — named here, so a
     // future +1 with no name beside it still fails.
-    expect(STEER_PRECEDENCE.length).toBe(29);
+    // HL4 STEP 2 (2d) SUBTRACTS THE FIRST ONE THIS TABLE HAS EVER LOST, and the rule
+    // this clause enforces runs in both directions: a count that moves without a name
+    // beside it fails, whether it moved up or down. `compaction-recap` is RETIRED —
+    // measured, not argued: it was filed by a step that ends the turn eleven statements
+    // later, so the drain could never run again, and a driven turn across the budget
+    // found its bytes in NO model request on any call (`integration.test.ts`, "DRIVEN:
+    // the mid-turn recap reaches NO model request"). Its requirement is re-homed onto
+    // the person's own receipt row and onto `sys.compaction-continuity`, both asserted
+    // there. Priority 60 stays RETIRED and is never reused — see the tombstone in the
+    // table itself.
+    expect(STEER_PRECEDENCE.length).toBe(28);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'output-grind').length).toBe(1);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'reminder-silence').length).toBe(1);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'uncommitted-promise').length).toBe(1);
+    // The retired number is a GAP, not a reallocation.
+    expect(STEER_PRECEDENCE.filter((f) => f.priority === 60)).toEqual([]);
   });
 
   it('PHASE-6 T-PROMISE: the promise guard sits in the TRUTH band, below the three sends and above every silence floor', () => {

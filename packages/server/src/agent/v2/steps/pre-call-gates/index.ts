@@ -102,10 +102,9 @@ export interface PreCallGatesContext {
    * reads; see the header for why it rides by value.
    */
   readonly assemblerOverheadTokens: number;
-  /** Mutable driver local, read once by the mid-turn recap. See the header. */
-  readonly engineStartAckDeliveredThisTurn: boolean;
-  /** Mutable driver local, read once by the mid-turn recap. See the header. */
-  readonly deferredDeliveredByAck: boolean;
+  // HL4 STEP 2 (2d): `engineStartAckDeliveredThisTurn` and `deferredDeliveredByAck` are
+  // REMOVED. Their one reader here was the retired `compaction-recap` steer's ack clause
+  // (tombstone in `turn-budget.ts`); the bag still carries them for `assemble`/`execute`.
   /**
    * The block's own "tell the user if this looks wrong" sentence. It stays defined in
    * the driver because four of its five readers are in the `execute` tranche; passing

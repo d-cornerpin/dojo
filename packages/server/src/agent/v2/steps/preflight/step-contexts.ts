@@ -128,8 +128,8 @@ export function runStepContexts(
   const preCallGatesContext = (): PreCallGatesContext => ({
     agentId, turnNumber, contextWindow, contextModelId, configuredModelId, isAutoRouted,
     counterparty, assemblerOverheadTokens: turnCtx.assemblerOverheadTokens,
-    engineStartAckDeliveredThisTurn: turnCtx.engineStartAckDeliveredThisTurn,
-    deferredDeliveredByAck: turnCtx.deferredDeliveredByAck,
+    // HL4 step 2 (2d): the ack-delivery pair is GONE from this closure — see the
+    // removal note on `PreCallGatesContext`, whose reader was the retired recap.
     engineBlockEscapeHatch: ENGINE_BLOCK_ESCAPE_HATCH,
     broadcast, setAgentStatus, stashContinuationIfHuman, detectTaskThrashing,
   });

@@ -352,7 +352,7 @@ vi.mock('../steer-queue.js', async () => {
 // Now import the module under test (after mocks are set up)
 // PHASE-6 GUARD-AUDIT 2026-08-04: `node:fs` / `node:path` / `fileURLToPath` went with the
 // hand-rolled engine walk below — the derivation lives in `engine-sources.ts` now.
-import { engineText } from './engine-sources.js';
+import { engineSources, engineText } from './engine-sources.js';
 import { runV2Turn } from '../loop.js';
 import { stoppedAgents, recoveryRunStreak, pendingWakeups, turnContinuationCounts } from '../../shared-state.js';
 import { turnContext } from '../../turn-context.js';
@@ -2542,24 +2542,28 @@ describe('F10: the wall-clock start-ack timer never outlives its turn', () => {
 // seven-apologies defect) asserted"), was untested. These clauses are GREEN on the
 // unmoved tree; the tranche moves the code under them.
 //
-// WHAT THE RECAP IS FOR, in the incident's own terms (2026-07-23, the owner's .19
+// WHAT THE RECAP WAS FOR, in the incident's own terms (2026-07-23, the owner's .19
 // transcript): a MID-TURN rebuild can evict the model's own in-turn speech while the
 // trigger message stays pinned, so every rebuilt context reads as "the user just said
 // this and I have not responded" and the model re-acknowledges from scratch — seven
-// near-identical apologies in one long turn. The recap is the engine handing over the
+// near-identical apologies in one long turn. The recap was the engine handing over the
 // receipts it holds: same turn, this many tool calls, and whether the person has
 // already been acknowledged.
 //
-// THE RECAP IS ALSO THIS TRANCHE'S CROSSING TEST, and it is deliberately split into
-// the half that can be DRIVEN and the half that can only be READ.
-//   · DRIVEN: the tool-call count comes off `state`, live. Two arms (one round vs
-//     two) fail on any relocation that hands the step a stale turn state.
-//   · READ: the ack sentence is chosen from three flags, two of which
-//     (`deferredDeliveredByAck`, `engineStartAckDeliveredThisTurn`) are mutable
-//     locals of the DRIVER that this span reads. Reaching their true arm needs the
-//     start-ack steer to have already fired mid-turn, which this fixture cannot
-//     stage honestly, so the true arm is held by a source clause over the ENGINE's
-//     own corpus instead — stated as such rather than dressed up as behaviour.
+// ⚠ HL4 STEP 2 (2d), 2026-08-15 — THE RECAP IS RETIRED, AND THIS BLOCK IS THE RECORD OF
+// WHY. W27's census marked its delivery UNKNOWN and named what would settle it. The
+// driven check below settled it: across a real turn over the budget, with every messages
+// array the model was handed recorded, the recap's bytes reach NO model request on any
+// call. Its carriers were closed by construction — the queue's only drain is the assemble
+// step, and the step that files the entry ends the turn before assemble can run again;
+// the row it also wrote is role='system', which `tailRender` never emits. The FOUR clauses
+// that pinned the recap's own wording are therefore GONE with their subject, and what
+// stands in their place are the driven measurement, the RED that keeps an undeliverable
+// entry from being filed again, and the two clauses pinning where the requirement went:
+// the person's own receipt row, and `sys.compaction-continuity` on the system prompt.
+//
+// The three clauses that were never about the recap — the positive control, the parking
+// behaviour and the continuation cap — are UNTOUCHED and still guard this branch.
 // ════════════════════════════════════════════════════════════════════════════════
 describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the turn its own receipts', () => {
   /**
@@ -2595,7 +2599,7 @@ describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the 
    * set before `runV2Turn` would be wiped before the gate ever read it.
    */
   async function runAcrossTheBudget(
-    opts: { batch?: number; continuationsAlready?: number } = {},
+    opts: { batch?: number; continuationsAlready?: number; extraMs?: number } = {},
   ): Promise<void> {
     const batch = opts.batch ?? 1;
     let call = 0;
@@ -2620,7 +2624,7 @@ describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the 
       }
       // The budget can only be crossed BETWEEN iterations — the gate is read once per
       // loop head — so the jump rides the LAST tool of the round.
-      if (executed === batch) clock.jump(TURN_TIME_BUDGET_MS + 60_000);
+      if (executed === batch) clock.jump(TURN_TIME_BUDGET_MS + 60_000 + (opts.extraMs ?? 0));
       return { toolCallId: toolCall.id, name: toolCall.name, content: 'file body', isError: false };
     });
     try {
@@ -2644,20 +2648,13 @@ describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the 
     expect(pendingWakeups.has('primary')).toBe(false);
   });
 
-  it('crossing the budget forces a compaction, recaps the SAME turn, and parks for a continuation', async () => {
+  it('crossing the budget forces a compaction and parks for a continuation', async () => {
     await runAcrossTheBudget();
 
-    // The rebuild really happened — the recap is a consequence of it, not of the clock.
+    // The rebuild really happened, and it is a consequence of the branch, not of the clock.
     expect(checkAndCompactSpy).toHaveBeenCalledWith(
       'primary', expect.any(String), expect.any(Number), expect.objectContaining({ force: true }),
     );
-
-    const r = recaps();
-    expect(r).toHaveLength(1);
-    // The three things the 2026-07-23 incident needed said, asserted rather than summarised.
-    expect(r[0]).toContain('memory was just compacted MID-TURN');
-    expect(r[0]).toContain('This is still the SAME turn');
-    expect(r[0]).toContain('Do NOT re-introduce yourself, re-acknowledge, or re-apologize');
 
     // The turn parks rather than dying: the person is told, and a wakeup is queued so
     // the work resumes on a fresh turn.
@@ -2668,12 +2665,34 @@ describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the 
     expect(pendingWakeups.has('primary')).toBe(true);
   });
 
-  it('the recap\'s tool-call number is read LIVE off the turn state', async () => {
-    // Two arms that differ only in the live turn state make a STALE state visible. A
-    // relocation that handed the gate a snapshot taken at turn start would report the same
-    // number twice.
-    await runAcrossTheBudget({ batch: 1 });
-    expect(recaps()[0]).toContain('made 1 tool call(s)');
+  // ══════════════════════════════════════════════════════════════════════════════
+  // HL4 STEP 2 (2d) — THE THREE CLAUSES THAT PINNED THE RETIRED RECAP'S WORDING, AND
+  // WHERE EACH ONE'S REQUIREMENT WENT. Nothing here was dropped silently.
+  //
+  //   1. "the recap's tool-call number is read LIVE off the turn state" — a CROSSING
+  //      test: two arms that differ only in live turn state make a stale snapshot
+  //      visible. The property is about the STEP, not about the recap, so it is
+  //      re-homed below onto `elapsedMin`, the one live-state number left in this
+  //      branch. A step handed a snapshot taken at turn start reports 0 on both arms.
+  //   2. "THE UNIT: a MULTI-BATCH turn counts the TURN, not the last batch" (T13, CUT
+  //      3's H1) — the number came off `state.toolResults`, the turn's own ledger, and
+  //      NOT off `state.toolCalls`, the last response's batch. The number survives the
+  //      retirement in the branch's log line, so the requirement is re-homed as a
+  //      SOURCE clause over the engine corpus and is stated as such rather than dressed
+  //      up as behaviour — the same disposition its sibling clause already used.
+  //   3. "the ack sentence is ABSENT / the engine reads exactly the three flags" — its
+  //      subject was one clause of the retired string, and it is GONE with it. What the
+  //      clause really guarded (two mutable driver locals surviving a relocation) is now
+  //      guarded by the compiler instead: `deferredDeliveredByAck` and
+  //      `engineStartAckDeliveredThisTurn` were removed from `PreCallGatesContext` in
+  //      the same commit, because this step was their only reader here.
+  // ══════════════════════════════════════════════════════════════════════════════
+  it('THE CROSSING TEST: the checkpoint reads LIVE turn state, not a snapshot taken at turn start', async () => {
+    await runAcrossTheBudget();
+    const firstArm = mockDb.current!
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .all() as Array<{ content: string }>;
+    expect(firstArm[0].content).toContain('This turn ran for 16 minutes');
 
     enqueueSteerSpy.mockClear();
     checkAndCompactSpy.mockClear();
@@ -2681,76 +2700,25 @@ describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the 
     turnContinuationCounts.clear();
     mockDb.current = setupTestDb();
 
-    await runAcrossTheBudget({ batch: 2 });
-    expect(recaps()[0]).toContain('made 2 tool call(s)');
+    await runAcrossTheBudget({ extraMs: 19 * 60 * 1000 });
+    const secondArm = mockDb.current!
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .all() as Array<{ content: string }>;
+    // A snapshot of `turnStartMs` taken before the loop would make both arms identical.
+    expect(secondArm[0].content).toContain('This turn ran for 35 minutes');
   });
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // PHASE-6 T13 — THE COUNT MEANS WHAT ITS OWN SENTENCE SAYS (CUT 3's H1).
-  //
-  // The recap reads "So far this turn you have made N tool call(s)" and N was
-  // `state.toolCalls.length` — the LAST model response's batch, which `callLLM` sets
-  // from `result.toolCalls` on every round. On a turn of two rounds of one tool each
-  // the sentence said "so far this turn" over the number 1. The single-round arms
-  // above could not see it: with one round the batch and the turn total are the same
-  // number, which is exactly how the defect survived being tested.
-  //
-  // A user-facing sentence that misstates its own number is an honesty defect, and the
-  // fix is the number, not the wording: the recap exists to hand the model the receipts
-  // of what THIS TURN already did (2026-07-23, the seven-apologies transcript), so the
-  // turn total is the number the sentence was always asking for. `state
-  // .toolCallsExecutedThisTurn` already IS that count — one owner, incremented once per
-  // executed call in `steps/execute/post-result.ts`, and bounds-checked by `state.ts`'s
-  // own runaway guard. Nothing new was declared to fix this.
-  // ══════════════════════════════════════════════════════════════════════════════
-  it('THE UNIT: on a MULTI-BATCH turn the recap counts the TURN, not the last batch', async () => {
-    // Two rounds of one tool each. The turn made 2 tool calls; the last batch was 1.
-    let call = 0;
-    callModelSpy.mockImplementation(async () => {
-      call++;
-      return call <= 2
-        ? {
-          content: '',
-          toolCalls: [{ id: `tc-r${call}`, name: 'file_read', arguments: { path: `/tmp/r${call}.txt` } }],
-          inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
-        }
-        : { content: 'done', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
-    });
-    const clock = controllableClock();
-    let executed = 0;
-    executeToolSpy.mockImplementation(async (_agentId: string, toolCall: ToolCall) => {
-      executed++;
-      // Cross the budget only after the SECOND round, so the gate meets a turn whose
-      // total (2) and whose last batch (1) are different numbers.
-      if (executed === 2) clock.jump(TURN_TIME_BUDGET_MS + 60_000);
-      return { toolCallId: toolCall.id, name: toolCall.name, content: 'file body', isError: false };
-    });
-    try {
-      await runV2Turn('primary');
-    } finally {
-      clock.restore();
-    }
-
-    expect(executed).toBe(2);
-    const r = recaps();
-    expect(r).toHaveLength(1);
-    // The sentence and the number are read together, in one assertion, because the
-    // defect was precisely that they disagreed.
-    expect(r[0]).toContain('So far this turn you have made 2 tool call(s)');
-    expect(r[0]).not.toContain('made 1 tool call(s)');
-  });
-
-  it('the ack sentence is ABSENT when nobody has acknowledged the person — and the engine reads exactly the three flags that could say otherwise', async () => {
-    await runAcrossTheBudget();
-    expect(recaps()[0]).not.toContain('ALREADY heard your acknowledgment');
-
-    // The TRUE arm is held here rather than driven, and the corpus is the ENGINE's own
-    // source (driver + every step package), so this keeps holding after the tranche moves.
-    // Two of the three are mutable locals of the DRIVER that this span only reads; a
-    // relocation that dropped them, or replaced one with a constant, fails this clause.
-    const cond = engineText().match(/state\.surfacedReplyThisTurn \|\| deferredDeliveredByAck \|\| engineStartAckDeliveredThisTurn/g) ?? [];
-    expect(cond).toHaveLength(1);
-    expect(engineText()).toContain('ALREADY heard your acknowledgment');
+  it('T13 (CUT 3\'s H1) SURVIVES ITS SUBJECT: the branch reports the TURN\'s ledger, never the last response\'s batch', () => {
+    // The recap's sentence is gone; the number is not. `state.toolResults` has ONE
+    // writer (`steps/execute/index.ts` concatenates the round's results once, after the
+    // batch settles), is never reset mid-turn, and is therefore immune to the parallel
+    // batch's last-writer-wins semantics — which is why it, and not `state.toolCalls`
+    // (the LAST response's batch, overwritten every round) is the number here.
+    const budget = engineSources().find((s) => s.rel.endsWith('pre-call-gates/turn-budget.ts'));
+    expect(budget, 'the turn-budget branch moved — re-point this clause at its new home').toBeTruthy();
+    const code = budget!.text.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    expect(code).toContain('toolCallsSoFar: state.toolResults.length');
+    expect(code).not.toContain('state.toolCalls.length');
   });
 
   it('a forced compaction that THROWS produces no recap — the receipts describe a rebuild that happened', async () => {

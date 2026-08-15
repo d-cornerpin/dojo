@@ -3,17 +3,17 @@
 //
 // Relocated verbatim from `agent/v2/loop.ts` (`:2912`–`:3013` at `c1ad4d5`).
 //
-// The turn does not HALT at 15 minutes — it checkpoints: force a compaction, hand
-// the rebuilt context this turn's own receipts, tell the person, and queue a wakeup
-// so the work resumes on a fresh turn. Three of those are separable and one is not:
-// the RECAP exists because a mid-turn rebuild can evict the model's own in-turn
-// speech while the trigger stays pinned, so every rebuilt context read as "the user
-// just said this and I have not responded" (2026-07-23, the owner's .19 transcript:
-// seven near-identical apologies in one long turn).
+// The turn does not HALT at 15 minutes — it checkpoints: force a compaction, tell the
+// person, and queue a wakeup so the work resumes on a fresh turn.
 //
-// Its requirement landed as a test BEFORE this file existed — six clauses in
-// `agent/v2/__tests__/integration.test.ts`, green on the unmoved tree, including
-// the positive control that a turn inside the budget recaps nothing.
+// HL4 STEP 2 (2d), 2026-08-15: there used to be a fourth thing here — an in-turn
+// `compaction-recap` STEER handing the rebuilt context this turn's own receipts. It is
+// RETIRED, with the driven measurement and the two homes its requirement moved to
+// written out in full at the tombstone below. Read that before adding anything back.
+//
+// The requirements of what remains landed as tests BEFORE this file existed, in
+// `agent/v2/__tests__/integration.test.ts`, including the positive control that a turn
+// inside the budget compacts nothing.
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
@@ -22,8 +22,7 @@ import { getContextWindow } from '../../../model.js';
 import { checkAndCompact } from '../../../../memory/compaction.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { turnContinuationCounts, queueSelfWake } from '../../../shared-state.js';
-import { advance, type AgentTurnState } from '../../state.js';
-import { persistEngineSteer } from '../../engine-steer.js';
+import { type AgentTurnState } from '../../state.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
 
@@ -43,7 +42,6 @@ export async function runTurnTimeBudget(
 ): Promise<StepOutcome> {
   const {
     agentId, turnNumber, configuredModelId, broadcast, stashContinuationIfHuman,
-    deferredDeliveredByAck, engineStartAckDeliveredThisTurn,
   } = ctx;
 
   // ── F10 note: the start-ack floor is the wall-clock timer armed at turn
@@ -98,42 +96,41 @@ export async function runTurnTimeBudget(
       const effectiveModel =
         state.modelId === '__auto__' ? configuredModelId : state.modelId;
       await checkAndCompact(agentId, effectiveModel, getContextWindow(effectiveModel), { force: true });
-      // In-turn recap after a MID-TURN compaction (2026-07-23, owner .19
-      // transcript: seven near-identical apologies in one long turn). A
-      // rebuild can evict the model's own in-turn speech (giant tool
-      // payloads eat the fresh tail) while the trigger stays pinned, so
-      // every rebuilt context read as "the user just said this and I have
-      // not responded", and the model re-acknowledged from scratch each
-      // time. The engine holds the receipts of what this turn already
-      // did; hand them over so the rebuilt context cannot forget.
-      // T6: slot-gate dead with the flag. §T0-PINS F's `:2871`, the named victim.
-      {
-        // PHASE-6 T13 (CUT 3's H1): the number is the TURN's, because the sentence says
-        // "so far this turn". It was `state.toolCalls.length` — the LAST model response's
-        // batch, which `callLLM` overwrites from `result.toolCalls` every round — so a turn
-        // of two rounds of one tool each said "so far this turn ... 1".
-        //
-        // `toolResults` is the turn's own ledger and it is the right number here for a
-        // measured reason, not an aesthetic one: it has ONE writer (`steps/execute/index.ts`
-        // concatenates the round's results once, AFTER the batch settles), it is never reset
-        // mid-turn, and it is therefore immune to the parallel-safe batch's known
-        // last-writer-wins semantics — which `toolCallsExecutedThisTurn` is NOT. Measured:
-        // one round of two parallel `file_read`s executes twice and leaves that counter at
-        // 1 (CUT 7's §13 note, and the span's own comment: those parallel writes "can
-        // silently fail to stick"). Swapping one wrong number for another is not a fix.
-        const recap =
-          `[Engine recap: memory was just compacted MID-TURN. This is still the SAME turn. So far this turn you have made ${state.toolResults.length} tool call(s)` +
-          (state.surfacedReplyThisTurn || deferredDeliveredByAck || engineStartAckDeliveredThisTurn
-            ? ' and the user has ALREADY heard your acknowledgment'
-            : '') +
-          '. Continue the work exactly where it stands. Do NOT re-introduce yourself, re-acknowledge, or re-apologize; pick up from the last tool result.]';
-        // HL3: the RC-19 door, and the sharpest case in the census — the recap exists
-        // because a rebuild evicts the turn's own history, and the recap was evicted with it.
-        state = persistEngineSteer(state, { agentId, content: recap, turnNumber, floor: 'compaction-recap', atLoop: state.loopCount }, { broadcast });
-        logger.info('v2 mid-turn compaction recap injected (turn continuity across the rebuild)', {
-          agentId, turnNumber, toolCallsSoFar: state.toolResults.length,
-        }, agentId);
-      }
+      // ════════════════════════════════════════════════════════════════════════════
+      // TOMBSTONE — THE `compaction-recap` STEER, RETIRED HL4 STEP 2 (2d), 2026-08-15.
+      //
+      // WHAT STOOD HERE: an in-turn recap enqueued after the forced compaction
+      // (2026-07-23, the owner's .19 transcript, seven near-identical apologies in one
+      // long turn), saying "This is still the SAME turn … Do NOT re-introduce yourself".
+      //
+      // WHY IT IS GONE — MEASURED, NOT ARGUED. W27's census could not tell whether it
+      // had ever reached a model and refused to guess (§6.1: "it needs a driven check,
+      // not a reading"). The check ran: a real turn across the budget with every
+      // messages array recorded, and the recap's bytes appear in NO request on any call
+      // (`__tests__/integration.test.ts`, "DRIVEN: the mid-turn recap reaches NO model
+      // request"). Both carriers were closed by construction and always were — the
+      // queue's only drain is `assemble/steer-checkpoint.ts` and this step exits the
+      // turn eleven statements below, while the queue is per-turn state so the
+      // continuation starts empty; and the row it also wrote is role='system', which
+      // `tailRender` never emits. It was filed to be abandoned.
+      //
+      // WHERE THE REQUIREMENT LIVES NOW, both asserted in `integration.test.ts`
+      // ("THE RE-HOME, half 1/2"): the PERSON's half is the `[System: This turn ran
+      // for N minutes …]` row below, unchanged — "pick up where you left off … do not
+      // start over" IS the recap's content, on a surface that reaches somebody; the
+      // MODEL's half is `sys.compaction-continuity` (`prompt/assembler.ts`), which
+      // rides the SYSTEM prompt for 24 h after any compaction and therefore reaches
+      // the continuation turn, the one thing this steer could never do; the OPERATOR's
+      // half is the log line below, whose number stays `toolResults` for T13 (CUT 3's
+      // H1)'s measured reason — one writer, never reset mid-turn.
+      //
+      // HANDED UP, NOT FIXED HERE: the retired sentence was also FALSE at this site —
+      // the turn does not continue, it parks. Rewording rather than retiring is an HL7
+      // pre-registered experiment, which this sitting forbids.
+      // ════════════════════════════════════════════════════════════════════════════
+      logger.info('v2 mid-turn forced compaction done; the turn parks for a continuation', {
+        agentId, turnNumber, toolCallsSoFar: state.toolResults.length,
+      }, agentId);
     } catch (compErr) {
       logger.warn('v2 forced compaction at turn-budget checkpoint failed', {
         agentId, error: compErr instanceof Error ? compErr.message : String(compErr),

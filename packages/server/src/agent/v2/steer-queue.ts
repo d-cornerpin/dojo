@@ -48,9 +48,9 @@
 // The ONE behaviour that was never staged, and is unchanged: the per-floor one-shot LATCH
 // is always on. Twenty-four of the twenty-six floors already had one; without it the queue
 // can accumulate duplicates of the same floor, which is a worse failure than the drop it
-// replaces. The two floors that gained one (`compaction-recap`, which had none, and
-// `a2a-missed-reply`'s no-assign-id branch, which had none) are named here rather than
-// discovered later.
+// replaces. The two floors that gained one (`compaction-recap`, which had none — RETIRED
+// HL4 step 2 (2d); see its tombstone in the table below — and `a2a-missed-reply`'s
+// no-assign-id branch, which had none) are named here rather than discovered later.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 /** Every floor that may steer the model. One id per floor — never two floors sharing one. */
@@ -61,7 +61,7 @@ export type SteerFloorId =
   | 'start-ack' | 'start-ack-reminder' | 'owed-interrupt' | 'promise-floor'
   | 'a2a-handoff-floor' | 'a2a-missed-reply' | 'going-idle-in-progress'
   | 'output-grind' | 'empty-response' | 'thrash-gate' | 'thrash-drift' | 'spinning'
-  | 'repetition' | 'no-results' | 'compaction-recap' | 'add-notes-stop'
+  | 'repetition' | 'no-results' | 'add-notes-stop'
   | 'tracker-stop-directive' | 'tracker-scaffold' | 'tracker-closeout' | 'hoarding-advisory';
 
 export interface SteerFloorSpec {
@@ -127,7 +127,10 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
 
   { id: 'repetition',            priority: 44, why: 'two identical responses in a row' },
   { id: 'no-results',            priority: 45, why: 'consecutive searches returning nothing' },
-  { id: 'compaction-recap',      priority: 60, why: 'memory was rebuilt mid-turn under the model' },
+  // TOMBSTONE — `compaction-recap` (60, the CONTINUITY band), RETIRED HL4 step 2 (2d):
+  // its filer ends the turn before the drain can run again, so it was filed to be
+  // abandoned. DRIVEN — measurement and both re-homes at `pre-call-gates/turn-budget.ts`.
+  // PRIORITY 60 STAYS RETIRED, never reused (`MessageSlot`'s discipline, same reason).
   { id: 'add-notes-stop',        priority: 61, why: 'went quiet after a note with the task still open' },
 
   { id: 'tracker-stop-directive', priority: 70, why: 'multi-step work with no tracker entry' },
