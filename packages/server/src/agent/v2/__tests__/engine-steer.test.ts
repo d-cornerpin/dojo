@@ -296,7 +296,18 @@ describe('RC-19: no bare-system imperative steer in tracker/ + scheduler/ (build
     // runner.ts (skipped-reminder owner heads-up). If this regex ever stops matching
     // them, the imperative scan above would silently pass. Lower this floor only if a
     // future phase legitimately migrates those sites off role='system'.
-    expect(systemInsertCount).toBeGreaterThanOrEqual(3);
+    //
+    // 3 → 1, HARNESS-LEARNINGS SITTING 0 (W24), and this is the sanctioned case the line
+    // above describes. BOTH `pm-agent.ts` sites — the two the comment names as "PM soul
+    // prompt, x2" — are GONE, not moved: they wrote the substituted PM soul into a
+    // `role='system'` row, and `tailRender` (`memory/assembler.ts:1174-1189`) emits only
+    // user/assistant/tool rows, so neither row could ever reach a model. The PM's identity
+    // is now the soul FILE that `sys.identity` actually renders (`prompt/assembler.ts`),
+    // which is why the writers could be deleted rather than migrated. What the floor still
+    // guards is unchanged in kind — `tracker/tools.ts`'s task-update notification is the
+    // remaining match, and if the regex ever stops finding IT, the imperative scan above is
+    // silently vacuous again.
+    expect(systemInsertCount).toBeGreaterThanOrEqual(1);
   });
 });
 

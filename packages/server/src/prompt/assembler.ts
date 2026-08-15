@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { DEFAULT_SOUL_MD, DEFAULT_USER_MD, DEFAULT_PM_SOUL_MD, DEFAULT_TRAINER_SOUL_MD } from './templates.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -34,6 +35,82 @@ import { getAgentAlwaysLoadedTools } from '../tools/tool-docs.js';
 
 const logger = createLogger('prompt-assembler');
 const PROMPTS_DIR = path.join(os.homedir(), '.dojo', 'prompts');
+const __assemblerDir = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * THE SHIPPED TEMPLATES DIRECTORY, IN BOTH LAYOUTS WE ACTUALLY SHIP (W24).
+ *
+ * `deploy/build-package.sh:70-71` copies `templates/*.md` to `<payload>/platform/templates`,
+ * and `deploy/install.sh:11-12` rsyncs `<payload>/platform/` to `~/.dojo/platform`. The
+ * server's own code lands at `platform/packages/server/dist/**`, which is the same depth
+ * below the root as `packages/server/src/**` is in the repo — so ONE relative hop resolves
+ * both, and the absolute installed path is listed after it as the belt to that braces.
+ *
+ * Exported so a test can assert the packaged layout is covered without a package build.
+ */
+export function platformTemplateSearchPaths(file: string): string[] {
+  return [
+    // repo:      <root>/templates/<file>   ·   package: ~/.dojo/platform/templates/<file>
+    path.resolve(__assemblerDir, '../../../../templates', file),
+    path.resolve(__assemblerDir, '../../../templates', file),
+    path.join(os.homedir(), '.dojo', 'platform', 'templates', file),
+  ];
+}
+
+/** The shipped template's bytes, or null when this box has no templates directory at all. */
+export function readPlatformTemplate(file: string): string | null {
+  for (const p of platformTemplateSearchPaths(file)) {
+    try {
+      if (fs.existsSync(p)) return fs.readFileSync(p, 'utf-8');
+    } catch {
+      // try the next layout
+    }
+  }
+  return null;
+}
+
+/** The three names every shipped soul template is written against. */
+function substitutePlatformNames(md: string): string {
+  return md
+    .replace(/\{\{pm_agent_name\}\}/g, getPMAgentName())
+    .replace(/\{\{primary_agent_name\}\}/g, getPrimaryAgentName())
+    .replace(/\{\{owner_name\}\}/g, getOwnerName());
+}
+
+/** A stored soul that still carries one of those placeholders was written by the engine's own
+ *  default-seeding and never passed through a substituting writer. Nobody authors this. */
+const UNSUBSTITUTED = /\{\{(?:pm_agent_name|primary_agent_name|owner_name)\}\}/;
+
+/**
+ * THE PROJECT MANAGER'S SHIPPED DOCTRINE — the seed `~/.dojo/prompts/PM-SOUL.md` is written
+ * from, and the bytes the model reads until an owner edits them (W24).
+ *
+ * Injected `read`/`warn` so the last-resort path is testable without deleting the repo's
+ * templates directory.
+ */
+export function pmSoulDefaultFrom(
+  read: (file: string) => string | null,
+  warn: (msg: string, meta?: Record<string, unknown>) => void,
+): string {
+  const shipped = read('PM-SOUL.md');
+  if (shipped) return substitutePlatformNames(shipped);
+  // LOUD, by instruction: this is the project manager validating everyone's work on a
+  // fraction of its doctrine, and the whole reason this task exists is that the condition
+  // was silent for months.
+  warn(
+    'PM-SOUL.md was not found in ANY templates directory — the project manager is falling back ' +
+      'to the in-code stub, which is a fraction of its doctrine (no skepticism block, no ' +
+      'dereference rule, no issue-type verb table). Check the platform install.',
+    { searched: platformTemplateSearchPaths('PM-SOUL.md') },
+  );
+  // The stub carries the same placeholders; an unsubstituted fallback is the defect wearing a
+  // smaller hat, so it is substituted too.
+  return substitutePlatformNames(DEFAULT_PM_SOUL_MD);
+}
+
+function pmSoulDefault(): string {
+  return pmSoulDefaultFrom(readPlatformTemplate, (msg, meta) => logger.error(msg, meta));
+}
 
 function ensurePromptsDir(): void {
   if (!fs.existsSync(PROMPTS_DIR)) {
@@ -103,11 +180,18 @@ export interface AgentSoulFile {
   readonly fallback: string;
   /** Whether the spawn-capability truth pass applies to this file's content. */
   readonly spawnTruth: boolean;
+  /**
+   * W24: when the STORED file still carries `{{…}}`, treat it as an engine-written default
+   * rather than an authored identity and re-seed it from `fallback`. Same door as the
+   * first-read seeding right below — a seed that landed WRONG is still the seed's business —
+   * and it is the only thing that reaches a box where the stub already sits on disk.
+   */
+  readonly reseedUnsubstituted?: boolean;
 }
 
 export function soulFileForAgent(agentId: string): AgentSoulFile | null {
   if (isPrimaryAgent(agentId)) return { file: 'SOUL.md', fallback: DEFAULT_SOUL_MD, spawnTruth: true };
-  if (isPMAgent(agentId)) return { file: 'PM-SOUL.md', fallback: DEFAULT_PM_SOUL_MD, spawnTruth: false };
+  if (isPMAgent(agentId)) return { file: 'PM-SOUL.md', fallback: pmSoulDefault(), spawnTruth: false, reseedUnsubstituted: true };
   if (isTrainerAgent(agentId)) return { file: 'TRAINER-SOUL.md', fallback: DEFAULT_TRAINER_SOUL_MD, spawnTruth: false };
   const perAgent = `${agentId.toUpperCase()}-SOUL.md`;
   if (fs.existsSync(path.join(PROMPTS_DIR, perAgent))) return { file: perAgent, fallback: '', spawnTruth: true };
@@ -116,8 +200,21 @@ export function soulFileForAgent(agentId: string): AgentSoulFile | null {
 
 /** Read a soul file's STORED bytes — what an editor edits, before any truth pass. */
 export function readSoulFile(soul: AgentSoulFile): string {
-  if (soul.fallback) return readPromptFile(soul.file, soul.fallback);
-  return fs.readFileSync(path.join(PROMPTS_DIR, soul.file), 'utf-8');
+  if (!soul.fallback) return fs.readFileSync(path.join(PROMPTS_DIR, soul.file), 'utf-8');
+  const stored = readPromptFile(soul.file, soul.fallback);
+  // W24 — THE WORN-IN BOX. `readPromptFile` seeds only when the file is ABSENT, so every box
+  // that ever booted the old code has the stub sitting on disk and would keep it forever. A
+  // stored soul containing `{{pm_agent_name}}` was written by that seeding and read by nothing
+  // that substitutes: it is not an owner's words, and it is not even coherent text to a model.
+  // An owner-authored soul has no placeholders in it, so it is never touched by this.
+  if (soul.reseedUnsubstituted && UNSUBSTITUTED.test(stored)) {
+    logger.warn('stored soul still carried unsubstituted template placeholders — re-seeding it from the shipped template', {
+      file: soul.file, storedChars: stored.length, seedChars: soul.fallback.length,
+    });
+    writeSoulFile(soul, soul.fallback);
+    return soul.fallback;
+  }
+  return stored;
 }
 
 /** Write a soul file's stored bytes. The one write door for every identity that lives in a file. */

@@ -1,9 +1,6 @@
-import fs from 'node:fs';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { turnContext } from '../agent/turn-context.js';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 // SWEEP CORE-2 item 2: the PM's one status write goes through the ONE writer.
@@ -33,18 +30,15 @@ import { getRecentObservations, getRecentTransitions, formatEntryLine, listTaskL
 import {
   deleteForAgentBefore,
   deleteNonSystemForAgent,
-  insertMessage,
-  insertMessageIfAbsent,
   insertEngineEventIfAbsent,
 } from '../memory/message-store.js';
-import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isPMEnabled, isSetupCompleted, getOwnerName, isSystemServiceAgent, isDreamerAgent } from '../config/platform.js';
+import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isPMEnabled, isSetupCompleted, isSystemServiceAgent, isDreamerAgent } from '../config/platform.js';
 import type { Message } from '@dojo/shared';
 import { workOperation, type WorkOp } from '../tools/work-verbs.js';
 import { isTerminalTaskStatus } from '../agent/tool-helpers.js';
 
 const logger = createLogger('pm-agent');
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ── Poke Thresholds (in seconds) ──
 
@@ -67,49 +61,24 @@ const POKE_INTERVAL_MS = 60_000; // 60 seconds
 
 let pokeLoopTimer: ReturnType<typeof setInterval> | null = null;
 
-// ── PM Agent System Prompt ──
-
-function loadPMSoulPrompt(): string {
-  const pmName = getPMAgentName();
-  const primaryName = getPrimaryAgentName();
-  const ownerName = getOwnerName();
-
-  // Try loading from templates directory
-  const templatePaths = [
-    path.resolve(__dirname, '../../../../templates/PM-SOUL.md'),
-    path.resolve(__dirname, '../../../templates/PM-SOUL.md'),
-    // RICK-SOUL.md removed, only PM-SOUL.md is used
-  ];
-
-  for (const templatePath of templatePaths) {
-    try {
-      if (fs.existsSync(templatePath)) {
-        let content = fs.readFileSync(templatePath, 'utf-8');
-        // Replace template variables
-        content = content.replace(/\{\{pm_agent_name\}\}/g, pmName);
-        content = content.replace(/\{\{primary_agent_name\}\}/g, primaryName);
-        content = content.replace(/\{\{owner_name\}\}/g, ownerName);
-        return content;
-      }
-    } catch {
-      // Try next path
-    }
-  }
-
-  // Fallback default
-  return `# Identity
-
-You are ${pmName}, the project manager for this agent platform. Your only job is to track tasks, poke agents that stall, and escalate when needed.
-
-# Rules
-
-- You do NOT execute tasks. You track them.
-- Check the project tracker on your poke schedule.
-- When poking an agent, include full task context so they can resume immediately.
-- Escalation chain: poke once -> poke with urgency -> escalate to ${primaryName} -> escalate to ${ownerName} via iMessage.
-- After a restart, the escalation ladder resumes itself from the work record — never re-send a poke you have already sent.
-- Keep messages short. You're a PM, not a novelist.`;
-}
+// ⟨TOMBSTONE⟩ HARNESS-LEARNINGS SITTING 0 (W24): `loadPMSoulPrompt()` LIVED HERE, and it was
+// the second reader of `templates/PM-SOUL.md` — the one that did the substitution correctly
+// and then wrote its output somewhere no model can see.
+//
+// It resolved the template, substituted `{{pm_agent_name}}`/`{{primary_agent_name}}`/
+// `{{owner_name}}`, and handed the result to `insertMessage(role:'system')` on boot and to
+// `insertMessageIfAbsent(role:'system')` at PM creation. `memory/assembler.ts`'s `tailRender`
+// emits ONLY `user`/`assistant`/`tool` rows, so a `role='system'` row cannot reach a model
+// request at all: every one of those writes was dead on arrival. Meanwhile the RUNTIME read
+// `~/.dojo/prompts/PM-SOUL.md`, seeded from the in-code stub and substituted by nothing, so
+// the project manager validated everyone's work on 961 bytes with literal `{{…}}` in them —
+// measured live at `07434e0`, 22,491-byte system prompt, four consecutive model calls.
+//
+// requirement preserved: "the PM's prompt stays in step with the shipped template" is now
+// `prompt/assembler.ts` — `pmSoulDefaultFrom` (the template IS the seed, substituted) plus the
+// `reseedUnsubstituted` repair that replaces a stub already sitting on a worn-in box. One
+// reader, one store, and it is the store the model reads and the Settings card edits (T40).
+// Asserted by `prompt/__tests__/a-project-manager-reads-its-whole-soul.test.ts`.
 
 // ── PM permission manifest ──
 // The PM is a narrow-purpose oversight agent. It gets read-only artifact
@@ -294,31 +263,16 @@ export function ensurePMAgentRunning(): void {
     // Sync BOTH tools_policy and permissions on every boot so an already-running
     // PM picks up the read-only file_read grant (C2) without needing a reactivate.
     db.prepare("UPDATE agents SET tools_policy = ?, permissions = ?, updated_at = datetime('now') WHERE id = ?").run(syncToolsPolicy, PM_PERMISSIONS_JSON, pmId);
-    // Phase B.1: also keep the PM-SOUL system message in sync with the
-    // template on every boot. Without this, the skepticism block (and any
-    // other prompt updates) never reach an already-running PM. We INSERT
-    // a fresh system message rather than mutating the original so the
-    // history audit trail is preserved; the runtime message-assembly path
-    // reads the LATEST system message for context.
-    try {
-      const freshPrompt = loadPMSoulPrompt();
-      const existing = db.prepare(`
-        SELECT content FROM messages
-        WHERE agent_id = ? AND role = 'system'
-        ORDER BY created_at DESC, rowid DESC LIMIT 1
-      `).get(pmId) as { content: string } | undefined;
-      if (!existing || existing.content !== freshPrompt) {
-        insertMessage({ id: uuidv4(), agentId: pmId, role: 'system', content: freshPrompt });
-        logger.info('PM system prompt refreshed from template', { pmId });
-      }
-    } catch (err) {
-      logger.warn('PM system prompt refresh failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
-    }
+    // ⟨TOMBSTONE⟩ W24: the Phase-B.1 "keep the PM-SOUL system message in sync on every boot"
+    // block stood here. Its comment claimed *"the runtime message-assembly path reads the
+    // LATEST system message for context"* — that was false when it was written and false
+    // every boot since (`tailRender` emits user/assistant/tool only), so this wrote a row
+    // nothing reads and reported success. The requirement it was reaching for — a prompt
+    // update actually arriving at an already-running PM — is met by the soul file being the
+    // one store both the runtime and the card read; see the tombstone above.
     startPokeLoop();
     return;
   }
-
-  const systemPrompt = loadPMSoulPrompt();
 
   // Get PM model: check saved setting first, fall back to primary agent's model
   const pmModelSetting = db.prepare("SELECT value FROM config WHERE key = 'pm_agent_model'").get() as { value: string } | undefined;
@@ -369,8 +323,9 @@ export function ensurePMAgentRunning(): void {
               ?, ?, NULL, datetime('now'), datetime('now'))
     `).run(pmId, pmName, modelId, primaryId, primaryId, pmPermissions, pmToolsPolicy);
 
-    insertMessageIfAbsent({ id: uuidv4(), agentId: pmId, role: 'system', content: systemPrompt });
-
+    // ⟨TOMBSTONE⟩ W24: the seed `role='system'` row went in here. A system row is not the
+    // PM's identity — `prompt/assembler.ts`'s soul file is, for a fresh PM and a worn one
+    // alike — and the message assembler cannot show a system row to a model in any case.
     logger.info('PM agent created', { pmId, pmName });
   }
 
