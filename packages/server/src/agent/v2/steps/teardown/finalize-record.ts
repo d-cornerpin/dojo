@@ -229,6 +229,58 @@ export async function finalizeTurnRecord(
         } catch { /* best effort, like every arm of this boundary */ }
       }
     }
+    // ── HL4 STEP 2 — "WRITTEN, NEVER SEEN BY THE MODEL" IS A FACT THE PLATFORM RECORDS ──
+    //
+    // W27's census, finding 4: *"`abandoned` has no reader. The queue records 'written,
+    // never delivered' and nothing reads it. HL3 gave every steer a durable row at
+    // INJECTION; non-delivery is still in-memory-only and dies with the turn state."*
+    //
+    // The queue has known the fact all along — `fired` minus `delivered` is exactly the
+    // thing its own header says the single slot destroyed. What it never had was anywhere
+    // to say it, so every hard investigation this month began by inferring from thinking
+    // dumps which steers had actually landed. This is HL3's mirror, in the same shape as
+    // the T41 rider immediately above: one WARN line, plus a durable `audit` marker on the
+    // person's own ask when there is one. No new event kind, no table, no schema change,
+    // and no second mechanism — this is a READER of state the queue already keeps.
+    //
+    // WHY THE BOUNDARY AND NOT THE DROP SITES. An entry leaves `pending` undelivered three
+    // ways: the delivery-attempt cap abandons it, a give-up rung's family-scoped clear
+    // abandons it, or the turn simply ends with it still waiting at the one-per-call drain
+    // — and the third is the largest class and the one no drop site can observe. One reader
+    // here catches all three and tells them apart; three readers at the drop sites would
+    // catch two and be three copies of one sentence.
+    const steerQueue = state.steerQueue;
+    const deliveredSeqs = new Set(steerQueue.delivered.map((e) => e.seq));
+    const undelivered = steerQueue.fired.filter((e) => !deliveredSeqs.has(e.seq));
+    if (undelivered.length > 0) {
+      // The abandoned COPY carries the attempt count (the `fired` copy is the entry as it
+      // was written), so "how" and "attempts" are both read from wherever the truth is.
+      const abandonedBySeq = new Map(steerQueue.abandoned.map((e) => [e.seq, e]));
+      const steers = undelivered.map((e) => ({
+        floor: e.floor,
+        priority: e.priority,
+        at_loop: e.atLoop,
+        attempts: abandonedBySeq.get(e.seq)?.attempts ?? e.attempts,
+        how: abandonedBySeq.has(e.seq) ? 'abandoned' : 'pending-at-turn-end',
+      }));
+      logger.warn('v2: steers were written this turn and never reached the model — the queue held them, the turn ran out of model calls or gave up, and nobody would have been able to count this', {
+        agentId, turnNumber, exitReason, undelivered: undelivered.length,
+        delivered: steerQueue.delivered.length, steers, askId: triggerWorkId,
+      }, agentId);
+      if (triggerWorkId) {
+        try {
+          appendWorkEvent(triggerWorkId, 'audit', 'steer-queue', {
+            marker: 'steer_written_never_delivered',
+            turn_number: turnNumber, exit_reason: exitReason,
+            undelivered: undelivered.length, delivered: steerQueue.delivered.length,
+            steers,
+            reason: 'these engine steers were filed this turn and confirmed in no model '
+              + 'request. HL3 records every injection; this is its mirror, so the class is '
+              + 'countable instead of invisible.',
+          });
+        } catch { /* best effort, like every arm of this boundary */ }
+      }
+    }
     // ── UX-REPAIR ROUND 4 T19 (D3) — THE DELIVER LADDER'S MISSING DRIVE TICK ──
     //
     // A scheduled run that owes a person a message is steered by the RETURN VALUE of the
