@@ -278,10 +278,19 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
   // but the LANE's ceiling is now the derived worst case (`recallLaneWorstCaseTokens`), which
   // is SMALLER than messageBudget + vaultBudget ever allowed and — unlike them — enforced.
   'lane.relevant-memory': {
-    rows: { recallWindow: 10, minTailForRecall: 5, minTailForVault: 5, recallPairs: 3 },
+    // HARNESS-LEARNINGS HL5 adds `snapshotCommitments` / `snapshotTitle`. 6 rows, because the
+    // block whose job this one takes over (`work/obligations.ts`, OPEN WORK) fits about that
+    // many inside its own 600-char budget, and because the snapshot's completeness claim is
+    // carried by its stated COUNT rather than by its length — a capped list with an honest
+    // "and N more" line is still a complete statement of what is owed. 120 chars is the
+    // longest commitment title on the worn-in dev body plus room (the Bob fixtures run 79).
+    rows: {
+      recallWindow: 10, minTailForRecall: 5, minTailForVault: 5, recallPairs: 3,
+      snapshotCommitments: 6,
+    },
     chars: {
       recallHead: 500, recallTail: 500, queryWords: 8, hitPreview: 300, vaultPreview: 300,
-      answerPreview: 220, quotedFloor: 40,
+      answerPreview: 220, quotedFloor: 40, snapshotTitle: 120,
     },
     tokens: { messageBudget: 1200, vaultBudget: 2000 },
     retrieval: {
@@ -451,12 +460,22 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
   {
     id: 'lane.relevant-memory',
     slot: MessageSlot.RecalledMemory,
-    reserveTokens: 1407,
+    reserveTokens: 1807,
     measured:
       'SWEEP CORE-2 item 4, DERIVED FROM THE GENERATOR, not guessed beside it: the worst case ' +
       '`memory/recall-lane.ts` can render under its own declared caps above — 3 answered ' +
       'pairs x (300-char ask + 220-char answer + frame) + 5 recalled lines x 300 chars + 5 ' +
       'vault lines x 300 chars + the three section headers + the truncation marker. ' +
+      'HARNESS-LEARNINGS HL5 raised it from 1,407 to 1,807, and the +400 is the SNAPSHOT at ' +
+      'its own declared cap: 6 rows x (printable id + 120-char title + state + relative age) ' +
+      'plus the superseding preamble, the elision line and the two rules. WHAT THE 400 COSTS ' +
+      'AND WHAT IT BUYS, stated rather than assumed: it leaves the content budget on every ' +
+      'assembly, and it buys the whole of what this agent owes, republished every time, ' +
+      'against a defect that survived three cheaper fixes — T20 a lane-header sentence, T28 ' +
+      'an appended per-line marker, T28b a front-loaded one; the floor model parroted the ' +
+      'dead line 2/2 after each of the last two. Part of it is also displacement rather than ' +
+      'growth: the obligation-shaped vault lines the snapshot withdraws were already inside ' +
+      'this reserve at up to 300 chars each, and unlike them a snapshot cannot be stale. ' +
       '`recall-lane.test.ts` calls `recallLaneWorstCaseTokens()` and pins this literal to it, ' +
       'so the declaration and the renderer cannot drift, and a second clause proves no input ' +
       'can exceed it. Like `lane.deliveries` this lane\'s content VARIES, so the reserve is ' +

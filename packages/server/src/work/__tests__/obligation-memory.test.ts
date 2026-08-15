@@ -225,10 +225,23 @@ describe('§3 the recall lane render', () => {
     expect(out).not.toContain('email the roof quote to Bob');
   });
 
-  it('a LIVE commitment recalls exactly as before — byte-identical line', () => {
+  // ── AMENDED BY HARNESS-LEARNINGS HL5, and the amendment is the point of that task ──
+  // This clause used to read "a LIVE commitment recalls exactly as before — byte-identical
+  // line", and it was right for T17: the lane's answer to "is this owed?" was the vault's own
+  // sentence, so a live one had to survive untouched. HL5 changes the QUESTION the lane
+  // answers — from "is THIS line still owed?" to "what is owed, all of it?" — and publishes a
+  // complete snapshot of the spine instead. Re-serving the vault's older sentence underneath
+  // that snapshot would be two answers to one question, which is the parallel memory T17
+  // itself exists to prevent, one noun over. So the REQUIREMENT is preserved and its carrier
+  // moved: the live commitment still reaches the model, from the spine, with its id and state.
+  // (The `unresolvable` clause below is unchanged and is the control — no commitment rows, no
+  // snapshot, T17's per-hit path byte-identical.)
+  it('a LIVE commitment reaches the model through the SNAPSHOT, and not twice', () => {
     seedCommitment({ id: 'cmt:cccccccccccc', title: 'Email the roof quote to Bob (promise-bmsbcibqqem).', state: 'open' });
     const out = laneWith([{ id: 'v1', type: 'note', content: BOB_ROOF }]);
-    expect(out).toContain(`- [vault:note] ${BOB_ROOF}`);
+    expect(out).toContain('[cmt:cccccccccccc]');
+    expect(out).toContain('Email the roof quote to Bob');
+    expect(out).not.toContain(`- [vault:note] ${BOB_ROOF}`);
     expect(out).not.toContain('no live commitment matches');
   });
 

@@ -446,3 +446,73 @@ export function idlessObligationVerdict(
 export function commitmentVocabularyFor(agentId: string): RowVocabulary[] {
   return commitmentVocabulary(agentId);
 }
+
+// ── 5. THE SET, NOT THE LINE (HARNESS-LEARNINGS HL5) ────────────────────────────
+//
+// §1–§4 all answer the same question: "is THIS line still owed?" — and they answer it
+// by marking the line where it sits. That is annotation, and the record says annotation
+// loses. T28 appended a terminal-state marker to twenty stored lines and the floor model
+// parroted "still parked, waiting on Bob's address" 2/2 (W11); T28b moved the same marker
+// to the front of the line and it parroted 2/2 again (W12) — both times while its own
+// OPEN WORK block was empty and its own `work_update(list)` had just answered "No active
+// tasks". Four driven runs across two sittings, zero behaviour change.
+//
+// dsh's rule is not a better marker (`deepseek-harness-findings.md` P2.2/P2.3, quoting
+// their own strings): state is RE-PUBLISHED as a whole superseding snapshot, with an
+// explicit sentence when the set is EMPTY, and it is never amended in place. So this
+// section answers the other question — "what is owed, all of it, right now?" — and the
+// recall lane publishes THAT instead of serving lines one at a time.
+//
+// IT LIVES HERE, beside the resolver, for the reason the resolver's own header gives:
+// "what does the spine say is owed" must keep having exactly one owner. The predicate is
+// §2's predicate, unchanged — `closed_at IS NULL`, which the schema's own CHECK makes the
+// definition of "still owed" — so a snapshot can never disagree with a per-line verdict.
+
+export interface LiveCommitment {
+  id: string;
+  title: string;
+  state: string;
+  openedAt: number;
+}
+
+/**
+ * Every commitment this agent still owes, newest first. The whole set — no age cutoff, no
+ * conversation scope, no state allowlist beyond the schema's own terminal predicate. A
+ * snapshot that quietly omitted a row would make "anything not listed is not owed" a lie,
+ * which is the one sentence this whole task turns on.
+ *
+ * Deliberately NOT `openObligations()` (`work/store.ts`): that reader serves the OPEN WORK
+ * block, and it is narrower in two ways that are correct there and wrong here — it drops
+ * rows past the ageing horizon (ageing demotes to the daily brief, requirement 4b) and it
+ * excludes `claimed`. Reusing it would make the snapshot's completeness claim false for an
+ * aged or in-flight commitment. One question, one predicate: the resolver's.
+ */
+export function liveCommitments(agentId: string): LiveCommitment[] {
+  return getDb().prepare(
+    `SELECT id, COALESCE(title, '') AS title, state, opened_at AS openedAt
+       FROM work
+      WHERE kind = 'commitment' AND agent_id = ? AND closed_at IS NULL
+      ORDER BY opened_at DESC`,
+  ).all(agentId) as LiveCommitment[];
+}
+
+/**
+ * Has this agent ever recorded a commitment? The snapshot's gate.
+ *
+ * MEASURED, not assumed: gating on RETRIEVAL would never fire on the case this exists for.
+ * §2 already tells the recall lane to DROP a closed obligation hit, so on the body this
+ * class was measured on — 136 commitment rows, every one terminal — an obligation-shaped
+ * hit reaches the render and is discarded before anything could gate on it. The spine is
+ * the gate instead: one indexed lookup, deterministic, and it is what makes the empty-set
+ * statement reachable at all.
+ *
+ * An agent that has never made a commitment publishes nothing, which is also correct: there
+ * is no earlier mention for a snapshot to supersede, and a lane that says "you owe nothing"
+ * to an agent with no history is noise.
+ */
+export function hasCommitmentHistory(agentId: string): boolean {
+  const row = getDb().prepare(
+    `SELECT 1 FROM work WHERE kind = 'commitment' AND agent_id = ? LIMIT 1`,
+  ).get(agentId);
+  return row !== undefined;
+}
