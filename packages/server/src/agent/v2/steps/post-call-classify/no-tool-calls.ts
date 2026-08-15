@@ -79,17 +79,17 @@ export interface TurnEndingFloor {
  * gate (the narrow detector disarms its broader sibling), which is the one place in the
  * tree where two floors' overlap was already written down rather than left to sequence.
  */
-export const TURN_ENDING_FAMILY: readonly TurnEndingFloor[] = Object.freeze([
+export const TURN_ENDING_FAMILY: readonly TurnEndingFloor[] = Object.freeze(([
   { floor: 'silent-closeout',        run: runSilentCloseout },
-  { floor: 'going-idle-in-progress', run: runGoingIdle },
   { floor: 'owed-interrupt',         run: runOwedInterrupt },
   { floor: 'promise-floor',          run: runPromiseFloor },
   { floor: 'a2a-handoff-floor',      run: runHandoffFloors },
   { floor: 'a2a-missed-reply',       run: runMissedReply },
+  { floor: 'going-idle-in-progress', run: runGoingIdle },
   { floor: 'tracker-closeout',       run: runTrackerCloseout },
-] as TurnEndingFloor[]);
+] as TurnEndingFloor[]).sort((a, b) => steerPriority(a.floor) - steerPriority(b.floor)));
 
-/** The turn-ending floor family, in the order the span ran it. */
+/** The turn-ending floor family, in the order the DECLARED TABLE ranks it. */
 export async function runNoToolCalls(
   state: AgentTurnState,
   ctx: PostCallClassifyContext,

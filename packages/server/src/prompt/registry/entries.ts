@@ -62,7 +62,6 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     id: 'sys.identity',
     target: 'system',
     slot: SystemSlot.Identity,
-    precedenceTier: 6,
     reason:
       'The agent persona: SOUL.md (PM/Trainer/sensei soul) or, for a spawned ' +
       'sub-agent, the synthesized identity + owner standing rules. Defines who ' +
@@ -82,7 +81,6 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     id: 'sys.techniques-index',
     target: 'system',
     slot: SystemSlot.TechniquesIndex,
-    precedenceTier: 2,
     reason:
       'The Available Techniques index (published techniques) so the agent can ' +
       'discover and use_technique() a matching procedure; ladder-anchored (the ' +
@@ -93,7 +91,6 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     id: 'sys.techniques-draft',
     target: 'system',
     slot: SystemSlot.TechniquesDraft,
-    precedenceTier: 2,
     reason:
       'Draft-technique context for build-squad members: a technique under ' +
       'evaluation the squad should follow but flag friction on.',
@@ -147,7 +144,6 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     id: 'sys.user-profile',
     target: 'system',
     slot: SystemSlot.UserProfile,
-    precedenceTier: 5,
     reason: 'USER.md owner profile/preferences (tier-5 standing preferences), when sharing is enabled.',
     render: (ctx) => renderUserProfile(ctx.agentId),
   },
@@ -164,7 +160,6 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     id: 'sys.pm-awareness',
     target: 'system',
     slot: SystemSlot.PmAwareness,
-    precedenceTier: 6,
     reason:
       'Primary only: names the PM agent + tracker-first guidance (the PM watches ' +
       'the tracker; schedule work there, do not spawn watcher agents).',
@@ -174,7 +169,6 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     id: 'sys.trainer-awareness',
     target: 'system',
     slot: SystemSlot.TrainerAwareness,
-    precedenceTier: 6,
     reason: 'Primary only: names the Trainer agent (owns save_technique/update_technique).',
     render: (ctx) => renderTrainerAwareness(ctx.agentId),
   },
@@ -182,7 +176,6 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     id: 'sys.healer-awareness',
     target: 'system',
     slot: SystemSlot.HealerAwareness,
-    precedenceTier: 6,
     reason: 'Primary only: names the Healer agent (auto-triages injured/stuck agents).',
     render: (ctx) => renderHealerAwareness(ctx.agentId),
   },
@@ -190,7 +183,6 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     id: 'sys.compaction-continuity',
     target: 'system',
     slot: SystemSlot.CompactionContinuity,
-    precedenceTier: 3,
     reason:
       'Persistent post-compaction signal (within 24h): tells the agent older ' +
       'history was summarized + the ordered recall sources if the live tail is unclear.',
@@ -227,7 +219,6 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     id: 'sys.techniques-equipped',
     target: 'system',
     slot: SystemSlot.TechniquesEquipped,
-    precedenceTier: 2,
     reason:
       'Full TECHNIQUE.md bodies for equipped techniques, pre-loaded; ladder-anchored ' +
       '(the live user message outranks a technique).',
@@ -237,7 +228,6 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     id: 'sys.reply-destination',
     target: 'system',
     slot: SystemSlot.ReplyDestination,
-    precedenceTier: 7,
     reason:
       'Primary only: the engine-resolved per-turn route + the voice to write in. ' +
       'Sole routing authority (C5). C28 Part 1: MOVED to the msg.turn-context tail ' +
@@ -249,7 +239,6 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     id: 'sys.channel-landscape',
     target: 'system',
     slot: SystemSlot.ChannelLandscape,
-    precedenceTier: 7,
     reason:
       'Primary, non-dashboard inbound: channel presence (C11). C28 Part 1: MOVED to ' +
       'the msg.turn-context tail message (volatile per channel). This entry emits nothing.',
@@ -259,7 +248,6 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     id: 'sys.phone-conduct',
     target: 'system',
     slot: SystemSlot.PhoneConduct,
-    precedenceTier: 6,
     reason:
       'Live phone-call conduct (C7). C28 Part 1: MOVED to the msg.turn-context tail ' +
       'message (present only on phone turns → volatile). This entry emits nothing.',
@@ -269,7 +257,6 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     id: 'sys.voice-conduct',
     target: 'system',
     slot: SystemSlot.VoiceConduct,
-    precedenceTier: 6,
     reason:
       'Generic voice-mode conduct on a voice (non-phone) turn; TTS-conditional ' +
       'filler advice (C6). Mutually exclusive with phone-conduct. FA-PT1 (C28): MOVED ' +
@@ -359,7 +346,6 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     id: 'msg.tool-note',
     target: 'messages',
     slot: MessageSlot.ToolNote,
-    precedenceTier: 7,
     reason:
       'A model without tool support must be told it can only respond with text ' +
       '(so it does not promise tool actions it cannot perform). The loop owns the ' +
@@ -371,7 +357,6 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     id: 'msg.pending-nudge',
     target: 'messages',
     slot: MessageSlot.PendingNudge,
-    precedenceTier: 7,
     reason:
       'Single-shot engine steering for the next iteration (set by the loop, e.g. ' +
       'a stop/redirect). The loop owns the alternation gate; the entry renders the nudge text.',
@@ -381,7 +366,6 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     id: 'msg.context-gap',
     target: 'messages',
     slot: MessageSlot.ContextGap,
-    precedenceTier: 7,
     reason:
       'Ask-when-stuck (Layer 2): when an attachment/ambiguous ask arrives with ' +
       'no instruction, nudge the agent to ask one specific question instead of ' +
@@ -418,7 +402,6 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     id: 'msg.delegation-hint',
     target: 'messages',
     slot: MessageSlot.DelegationHint,
-    precedenceTier: 7,
     reason:
       'F9: when the user EXPLICITLY routes work to the agent\'s own agents ("have ' +
       'one of your agents research it and report back to me"), the floor model was ' +
@@ -432,7 +415,6 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     id: 'msg.technique-strong',
     target: 'messages',
     slot: MessageSlot.TechniqueStrong,
-    precedenceTier: 2,
     reason:
       'Strong-match technique procedure injected as its OWN engine-marked message ' +
       'adjacent to the ask (C12), at technique-notes precedence, the live user ' +
@@ -444,7 +426,6 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     id: 'msg.technique-weak',
     target: 'messages',
     slot: MessageSlot.TechniqueWeak,
-    precedenceTier: 2,
     reason:
       'Weak-match "consider these techniques" hint. Was raw-appended to the system ' +
       'prompt (legacy), which broke prompt caching: the matched-strength wording ' +
@@ -461,7 +442,6 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     id: 'msg.turn-context',
     target: 'messages',
     slot: MessageSlot.TurnContext,
-    precedenceTier: 7,
     reason:
       'C28 Part 1: the per-turn volatile routing/presence block (reply destination, ' +
       'the sole routing authority C5, channel landscape, phone conduct, counterparty ' +
@@ -475,7 +455,6 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     id: 'msg.deliveries',
     target: 'messages',
     slot: MessageSlot.Deliveries,
-    precedenceTier: 7,
     reason:
       'PHASE-3 T7: THE DELIVERIES LANE — what this agent has already sent the ' +
       'counterparty, read from the `deliveries` rows (mig 121) by ' +
@@ -494,7 +473,6 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     id: 'msg.relevant-memory',
     target: 'messages',
     slot: MessageSlot.RecalledMemory,
-    precedenceTier: 7,
     reason:
       'SWEEP CORE-2 item 4 (SWEEP-C T4, owner-decided GO 2026-07-26): THE RECALL LANE — ' +
       'per-message semantic recall, and the conclusions it carries. It was a `fitLanes` ' +
@@ -512,7 +490,6 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     id: 'msg.peer-status',
     target: 'messages',
     slot: MessageSlot.PeerStatus,
-    precedenceTier: 7,
     reason:
       'Live group-peer statuses as a near-tail volatile message. The cached ' +
       'group roster (sys.group) carries member NAMES only; the idle/working ' +
@@ -528,7 +505,6 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     id: 'msg.current-time',
     target: 'messages',
     slot: MessageSlot.CurrentTime,
-    precedenceTier: 7,
     reason:
       'Precise clock time as the LAST (most volatile) message. The system prompt ' +
       'carries date-only (stable, cacheable); the per-minute clock time lives here ' +
