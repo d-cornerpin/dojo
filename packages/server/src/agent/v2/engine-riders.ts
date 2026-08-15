@@ -112,11 +112,11 @@ export const ENGINE_RIDER_INTENTS = [
 // `lane.events` on a LATER turn by `memory/assembler.ts`, ordered by recency, with no
 // priority and no budget of its own). Nothing dedups across them.
 //
-// THE PAIRING IS UNDECLARED TODAY. The set below is TRANSCRIBED from the inherited record —
-// the plan's own sentence ("Six queue floors write to BOTH channels") and W27's census §3 row,
-// which names six: `owed-interrupt`, `promise-floor`, `a2a-handoff-floor`, `reminder-silence`,
-// `thrash-*`, `tracker-scaffold`. It is transcribed before it is judged; the conformance
-// clause beside it re-derives the truth from the writers themselves.
+// THE PAIRING WAS UNDECLARED, AND THE INHERITED COUNT WAS WRONG. The plan and the census
+// both say SIX floors; re-derived from the writers at `e8b7b56` there are SEVEN — `thrash-*`
+// is two distinct floors with two distinct steers, not one. That is exactly why this belongs
+// in code beside the writers rather than in a report: a hand-counted set drifts, and the
+// conformance clause that reads this map fails the build when it does.
 //
 // WHAT IS DECLARED, AND IT IS THREE THINGS:
 //   1. THE PAIRING — which steer floor writes which rider intent, in one place.
@@ -171,6 +171,7 @@ export const QUEUE_PAIRED_RIDERS: Readonly<Record<string, QueuePairedRider>> = O
   // which is the same key its queue entry uses (`key: thrash.signature`). Same budget, one
   // fact per signature, reached through the state field the gate has always owned.
   'thrash-gate':       { intent: 'thrash_gate',             latch: 'state.thrashGatedSignatures.includes(thrash.signature)' },
+  'thrash-drift':      { intent: 'thrash_drift',            latch: "steerFired(state.steerQueue, 'thrash-drift')" },
   // The shared subsystem latch: either tracker floor speaking is enough, which is the
   // requirement the retired `nudgedForTrackerThisTurn` boolean carried beside its latch duty.
   'tracker-scaffold':  { intent: 'auto_scaffold',           latch: 'steerFiredAny(state.steerQueue, TRACKER_STEER_FLOORS)' },
