@@ -3340,6 +3340,13 @@
       "to": 378,
       "by": "UX-REPAIR T41 (the observability rider) — the ack that never arrived is on the record",
       "why": "+41 (+42/-1; 18 comment, 24 code). It lives HERE because this file IS the turn boundary — the one place the two per-turn start-ack flags and the turn's own outcome are both readable, the same reason the untracked-debt clear, the deliver ladder's rung and the strike-0 close are here. The 24 code lines are one condition, one WARN carrying the turn's facts (owed via, channel, exit reason, answered, steers injected, ask id), and one `audit` marker written through the existing single writer onto the person's own ask. REFUSED: a new table or a new `work_events` kind — a migration to count a defect, when the marker shape `ask-settlement.ts` already uses answers it. REFUSED: a sweep — a sweep cannot know which turn just ended, and \"this turn ended owing an acknowledgment\" is the whole fact. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/prompt/assembler.ts",
+      "from": 1528,
+      "to": 1625,
+      "by": "HARNESS-LEARNINGS Sitting 0 / W24 — the project manager gets its soul back",
+      "why": "+97 (+103/-6; 63 comment, 40 code). It lives HERE because this file already OWNS soul resolution: `soulFileForAgent` / `readSoulFile` / `writeSoulFile` are the one door T40 made the card and the runtime share, and the PM's default is the `fallback` field of that same declaration. Putting the template lookup anywhere else would re-create the exact defect being fixed — a SECOND reader of PM-SOUL.md, which is what `tracker/pm-agent.ts:loadPMSoulPrompt` was and why its 13.5 KB of doctrine reached no model. The 40 code lines are: the two-layout template search (repo + `~/.dojo/platform/templates`), the three-name substitution, the last-resort stub path with its loud log, and the `reseedUnsubstituted` clause. `tracker/pm-agent.ts` LOST 74 lines in the same commit (the retired duplicate), so the change is net-negative across the pair; this file is simply the side that gained."
     }
   ],
   "maxNewFileLines": 400,
@@ -3529,7 +3536,7 @@
     "packages/server/src/microsoft/tools-write.ts": 2131,
     "packages/server/src/migration/checks.ts": 537,
     "packages/server/src/migration/import.ts": 407,
-    "packages/server/src/prompt/assembler.ts": 1528,
+    "packages/server/src/prompt/assembler.ts": 1625,
     "packages/server/src/prompt/registry/entries.ts": 542,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
