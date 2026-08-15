@@ -37,7 +37,7 @@ import {
   type ToolResultRecord,
   type TurnPhase,
 } from '../../state.js';
-import { enqueueSteer, steerFired, steerFireCount } from '../../steer-queue.js';
+import { steerFired, steerFireCount } from '../../steer-queue.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { progressClassifier, buildSpinningNudge } from '../../classifiers/progress.js';
 import { agentCanSelfCompleteById } from '../../../tools/util.js';
@@ -87,18 +87,16 @@ export function runPostExecution(state: AgentTurnState, ctx: PostExecutionContex
       logger.warn('v2: agent repeating itself, nudging on next iteration', {
         loopCount: state.loopCount,
       }, agentId);
-      state = advance(state, {
-        steerQueue: enqueueSteer(state.steerQueue, {
-          floor: 'repetition', atLoop: state.loopCount,
-          // FN-8: complete_task is not available to every agent, so don't
-          // name it here where the filtered tool list isn't in scope. Point
-          // at work_update(action="status") (universally available) instead.
-          content:
-            '[System: You are repeating yourself, your last two responses were identical. ' +
-            'Try a different approach. If the task is complete, mark it done (e.g. work_update(action="status")) and stop. ' +
-            'If you need help, explain what you are stuck on.]',
-        }),
-      });
+      // HL3: the RC-19 door — the one the `spinning` floor below has always used.
+      // FN-8: complete_task is not available to every agent, so don't name it here where
+      // the filtered tool list isn't in scope. Point at work_update(action="status") instead.
+      state = persistEngineSteer(state, {
+        agentId, turnNumber, floor: 'repetition', atLoop: state.loopCount,
+        content:
+          '[System: You are repeating yourself, your last two responses were identical. ' +
+          'Try a different approach. If the task is complete, mark it done (e.g. work_update(action="status")) and stop. ' +
+          'If you need help, explain what you are stuck on.]',
+      }, { broadcast });
       return continueLoop(state);
     }
     logger.warn('v2: breaking tool loop, agent still repeating after nudge', {
@@ -146,15 +144,15 @@ export function runPostExecution(state: AgentTurnState, ctx: PostExecutionContex
           loopCount: state.loopCount,
           consecutiveNoResultTools: nextNoResultsCount,
         }, agentId);
-        state = advance(state, {
-          steerQueue: enqueueSteer(state.steerQueue, {
-            floor: 'no-results', atLoop: state.loopCount,
-            content:
-              '[System: Multiple searches returned no results. The information may not exist in memory. ' +
-              'Try responding based on what you already know, or ask the user for clarification.]',
-          }),
-          consecutiveNoResultTools: 0,
-        });
+        // HL3: the RC-19 door. The counter reset stays its own `advance`; the atomicity
+        // that matters (the steer and its LATCH) lives on the queue entry itself.
+        state = persistEngineSteer(state, {
+          agentId, turnNumber, floor: 'no-results', atLoop: state.loopCount,
+          content:
+            '[System: Multiple searches returned no results. The information may not exist in memory. ' +
+            'Try responding based on what you already know, or ask the user for clarification.]',
+        }, { broadcast });
+        state = advance(state, { consecutiveNoResultTools: 0 });
         return continueLoop(state);
       }
       // Already nudged, break with NO_RESULTS error

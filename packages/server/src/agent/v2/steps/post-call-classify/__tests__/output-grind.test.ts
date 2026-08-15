@@ -141,7 +141,25 @@ describe('TB8 JOB 1 — the grind rung: detect, steer once, then the existing su
     // OR2: it is a model-visible [System: ...] steer, never a line for the person.
     expect(next!.content.startsWith('[System:')).toBe(true);
     // Nothing was surfaced to the person on rung 1 — the retry is the agent's chance.
-    expect(broadcastSpy).not.toHaveBeenCalled();
+    //
+    // HL3 (2026-08-15): this used to be spelled `expect(broadcastSpy).not.toHaveBeenCalled()`,
+    // and that proxy stopped meaning what the sentence above says once the rung started
+    // writing its steer through `persistEngineSteer` — which broadcasts the DURABLE ROW so
+    // wordy mode does not become a reload-only view (T9's own finding). The row is
+    // `role='system'`: `classifyMessageForDisplay` tiers it `agent-only`, and the dashboard
+    // returns null for it outside wordy mode (`Chat.tsx:1960`). So the requirement is
+    // restated against what the person can actually see — a toast — and the receipt is
+    // asserted to BE a receipt rather than merely tolerated.
+    const personFacing = broadcastSpy.mock.calls
+      .map((c) => c[0] as { type: string })
+      .filter((e) => e.type === 'chat:error');
+    expect(personFacing).toEqual([]);
+    for (const call of broadcastSpy.mock.calls) {
+      const e = call[0] as { type: string; message?: { role: string; content: string } };
+      expect(e.type).toBe('chat:message');
+      expect(e.message?.role).toBe('system');          // agent-only tier, hidden in regular mode
+      expect(e.message?.content).toBe(next!.content);  // and it is the steer, byte for byte
+    }
     expect(reArmSpy).not.toHaveBeenCalled();
   });
 
@@ -170,9 +188,15 @@ describe('TB8 JOB 1 — the grind rung: detect, steer once, then the existing su
     expect(second.reason).toMatch(/grind/i);
     // The turn record says what happened, and the ask is re-armed rather than stranded.
     expect(reArmSpy).toHaveBeenCalledTimes(1);
-    expect(broadcastSpy).toHaveBeenCalledTimes(1);
-    const toast = broadcastSpy.mock.calls[0][0] as { type: string; code: string; error: string; retryable: boolean };
-    expect(toast.type).toBe('chat:error');
+    // HL3: the person-facing surface is the TOAST, and there is still exactly one of it.
+    // Rung 1's durable-row receipt also rides `broadcast` now (agent-only, wordy-only), so
+    // this clause selects the toast by kind instead of by position — position was only ever
+    // a proxy for "the one thing the person sees".
+    const toasts = broadcastSpy.mock.calls
+      .map((c) => c[0] as { type: string; code: string; error: string; retryable: boolean })
+      .filter((e) => e.type === 'chat:error');
+    expect(toasts).toHaveLength(1);
+    const toast = toasts[0];
     expect(toast.code).toBe('MODEL_FAILED');
     expect(toast.retryable).toBe(true);
     // BOUNDED: exactly two model calls were spent on the grind, never three.
@@ -228,8 +252,11 @@ describe('TB8 JOB 1 — the grind rung: detect, steer once, then the existing su
   it('THE CACHE TENET — the steer rides the tail, nothing enters the prompt prefix', () => {
     const src = readFileSync(path.resolve(__dirname, '../empty-response.ts'), 'utf8');
     // Steers are delivered as synthetic tail messages by the steer queue's own drain. This
-    // rung uses `enqueueSteer` and composes no system-prompt text of its own.
-    expect(src).toMatch(/enqueueSteer\(/);
+    // rung enqueues through `persistEngineSteer` (HL3, 2026-08-15 — the RC-19 door, which
+    // calls `enqueueSteer` itself and adds the durable role='system' row) and composes no
+    // system-prompt text of its own. The tenet is untouched by that change: a `role='system'`
+    // row is stripped from model context, so not one prompt byte moved in either direction.
+    expect(src).toMatch(/persistEngineSteer\(/);
     expect(src).not.toMatch(/systemPrompt|systemVolatile/);
   });
 });

@@ -451,8 +451,19 @@ describe('the steer queue is the SOLE steer writer (T6 exit clause, landed early
       const window = [l, lines[i + 1] ?? '', lines[i + 2] ?? ''].join('\n');
       if (!SANCTIONED.test(window)) writes.push(`${i + 1}: ${l.trim()}`);
     });
-    const total = lines.filter((l) => !isCommentLine(l) && /steerQueue:\s*/.test(l)).length;
-    expect(total).toBeGreaterThanOrEqual(20); // the scan finds the real population
+    // HL3 (2026-08-15): the population is BOTH shapes of steer write, and it has to be, or
+    // this floor punishes the direction it wants. Nine sites moved their raw
+    // `steerQueue: enqueueSteer(...)` INSIDE `persistEngineSteer` — writes going through the
+    // module even harder than before — and counting only the raw spelling read that as the
+    // population collapsing from 21 to 12. A door call IS a steerQueue write through the
+    // module; the declaration itself is not a write and is excluded by name.
+    const rawWrites = lines.filter((l) => !isCommentLine(l) && /steerQueue:\s*/.test(l)).length;
+    const doorWrites = lines.filter(
+      (l) => !isCommentLine(l) && /persistEngineSteer\(/.test(l) && !/function persistEngineSteer/.test(l),
+    ).length;
+    expect(rawWrites).toBeGreaterThanOrEqual(5);   // the raw spelling still has a real population
+    expect(doorWrites).toBeGreaterThanOrEqual(10); // …and so does the door
+    expect(rawWrites + doorWrites).toBeGreaterThanOrEqual(20); // the scan finds the real population
     expect(writes).toEqual([]);
   });
 

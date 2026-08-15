@@ -10,6 +10,8 @@ import { postAgentNotice } from './agent-notice.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getModelCapabilities } from '../services/capabilities.js';
+import { insertMessageIfAbsent } from '../memory/message-store.js';
+import { tagMessageLane } from '../memory/message-lane-tag.js';
 import { prepareImageForModel } from './image-prep.js';
 import { rectifyAttachment } from './input-rectification.js';
 import { runV2Turn } from './v2/loop.js';
@@ -312,8 +314,13 @@ export async function enforceModelCapabilities(
             `Do NOT try to describe the image. Do NOT continue any prior topic, respond ONLY about the image${imagesStripped === 1 ? '' : 's'} they just sent.]`
           );
         }
-        const sysMsg = { role: 'user' as const, content: nudge };
+        // HL3: the tree's ONE raw model-array insertion, and the only injection that reached
+        // a model with neither a lane tag nor a durable row. Fixed here rather than through
+        // `pushEngineMessage` because this one is POSITIONAL and that channel only appends.
+        // Zero prompt bytes: the tag is a symbol `JSON.stringify` drops, the row is stripped.
+        const sysMsg = tagMessageLane({ role: 'user' as const, content: nudge }, 'engine.vision-gate');
         messages.splice(lastTouchedUserIdx + 1, 0, sysMsg);
+        try { insertMessageIfAbsent({ id: uuidv4(), agentId, role: 'system', content: nudge, turnNumber: null }); } catch { /* best effort */ }
       }
 
       if (imagesStripped > 0) {

@@ -16,8 +16,9 @@
 import { getDb } from '../../../../db/connection.js';
 import { isDreamerAgent, isHealerAgent, isPMAgent } from '../../../../config/platform.js';
 import { taskScope } from '../../../../work/tracker-view.js';
+import { broadcast } from '../../../../gateway/ws.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { enqueueSteer } from '../../steer-queue.js';
+import { persistEngineSteer } from '../../engine-steer.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { engineAckReachesTheirChannel, type TurnCounterparty } from '../../counterparty.js';
 import { createLogger } from '../../../../logger.js';
@@ -27,6 +28,8 @@ const logger = createLogger('v2-loop');
 
 export interface MultistepInput {
   readonly agentId: string;
+  /** HL3: the turn the start-ack steer's durable row is stamped with. */
+  readonly turnNumber: number;
   readonly turnCtx: TurnContext;
   readonly db: import('better-sqlite3').Database;
   readonly counterparty: TurnCounterparty;
@@ -38,7 +41,7 @@ export interface MultistepInput {
 
 export async function detectMultistepAndScaffold(stateIn: AgentTurnState, input: MultistepInput): Promise<AgentTurnState> {
   const {
-    agentId, turnCtx, counterparty, counterpartyIsAgentSender, lastUserMessageContent,
+    agentId, turnNumber, turnCtx, counterparty, counterpartyIsAgentSender, lastUserMessageContent,
     engineStartAckDeliveredThisTurn,
   } = input;
   const STALE_TASK_WINDOW_MINUTES = input.staleTaskWindowMinutes;
@@ -63,7 +66,8 @@ export async function detectMultistepAndScaffold(stateIn: AgentTurnState, input:
     // PHASE-4 T3: the 27th steer site — §T0-PINS F derived by single-slot WRITER and this
     // one pushed straight into the array, the same floor through a second door. The drain
     // is still in THIS assemble phase.
-    return advance(s, { steerQueue: enqueueSteer(s.steerQueue, { floor: 'start-ack', content: START_ACK_STEER_TEXT, atLoop: s.loopCount }) });
+    // HL3: the RC-19 door, so BOTH start-ack doors leave the same durable row.
+    return persistEngineSteer(s, { agentId, content: START_ACK_STEER_TEXT, turnNumber, floor: 'start-ack', atLoop: s.loopCount }, { broadcast });
   };
 
   // ── Multi-step detection (v2.3.3) ──

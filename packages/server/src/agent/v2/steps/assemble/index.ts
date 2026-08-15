@@ -271,7 +271,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   await injectTechniqueAndGapHints(state, { agentId, turnCtx, lastUserMessageContent, mctx, messages });
 
   state = await detectMultistepAndScaffold(state, {
-    agentId, turnCtx, db, counterparty, counterpartyIsAgentSender, lastUserMessageContent,
+    agentId, turnNumber, turnCtx, db, counterparty, counterpartyIsAgentSender, lastUserMessageContent,
     engineStartAckDeliveredThisTurn, staleTaskWindowMinutes,
   });
 

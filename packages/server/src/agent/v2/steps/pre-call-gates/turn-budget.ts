@@ -23,7 +23,7 @@ import { checkAndCompact } from '../../../../memory/compaction.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { turnContinuationCounts, queueSelfWake } from '../../../shared-state.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { enqueueSteer } from '../../steer-queue.js';
+import { persistEngineSteer } from '../../engine-steer.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
 
@@ -127,7 +127,9 @@ export async function runTurnTimeBudget(
             ? ' and the user has ALREADY heard your acknowledgment'
             : '') +
           '. Continue the work exactly where it stands. Do NOT re-introduce yourself, re-acknowledge, or re-apologize; pick up from the last tool result.]';
-        state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'compaction-recap', content: recap, atLoop: state.loopCount }) });
+        // HL3: the RC-19 door, and the sharpest case in the census — the recap exists
+        // because a rebuild evicts the turn's own history, and the recap was evicted with it.
+        state = persistEngineSteer(state, { agentId, content: recap, turnNumber, floor: 'compaction-recap', atLoop: state.loopCount }, { broadcast });
         logger.info('v2 mid-turn compaction recap injected (turn continuity across the rebuild)', {
           agentId, turnNumber, toolCallsSoFar: state.toolResults.length,
         }, agentId);

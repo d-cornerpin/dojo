@@ -114,6 +114,8 @@ interface SteerSite {
   line: number;      // 1-based
   ident: string | null;
   paired: boolean;
+  /** `door` = through `persistEngineSteer`; `raw` = a hand-rolled `enqueueSteer`. */
+  shape: 'door' | 'raw';
 }
 
 function scanSteerSites(): SteerSite[] {
@@ -121,8 +123,23 @@ function scanSteerSites(): SteerSite[] {
   for (const { rel, text } of steerCorpus()) {
     const lines = text.split('\n');
     lines.forEach((l, i) => {
-      if (isCommentLine(l) || !l.includes('enqueueSteer(')) return;
+      if (isCommentLine(l)) return;
       if (/^\s*(import|export)\b/.test(l)) return;
+
+      // BOTH shapes are the population, and counting only one of them is how this scan would
+      // shrink itself into vacuity: the HL3 fix converts nine raw sites into door calls, and
+      // a census that stopped counting the converted ones would report a falling population
+      // as if steering were disappearing. A door call is paired BY CONSTRUCTION —
+      // `persistEngineSteer` writes the row and the queue entry from the one `content` — so
+      // it is recorded, not skipped.
+      if (l.includes('persistEngineSteer(')) {
+        out.push({
+          rel, line: i + 1, shape: 'door', paired: true,
+          ident: contentIdentifier(lines.slice(i, i + 13).join('\n')),
+        });
+        return;
+      }
+      if (!l.includes('enqueueSteer(')) return;
 
       // The call text: this line and the twelve below it (the formatter wraps these calls).
       const ident = contentIdentifier(lines.slice(i, i + 13).join('\n'));
@@ -140,7 +157,7 @@ function scanSteerSites(): SteerSite[] {
           if (new RegExp(`\\b${ident}\\b`).test(lines.slice(j, j + 13).join('\n'))) { paired = true; break; }
         }
       }
-      out.push({ rel, line: i + 1, ident, paired });
+      out.push({ rel, line: i + 1, ident, paired, shape: 'raw' });
     });
   }
   return out;
@@ -160,11 +177,15 @@ describe('HL3 clause 1: every steer the model can see is also a durable row', ()
   });
 
   it('the scan finds the real population of steer sites (guards against matching nothing)', () => {
-    // Non-vacuity, both directions. The floor is deliberately below the live count so a
-    // legitimate merger (HL4's job) does not fail this clause, and high enough that a scan
-    // which has lost its corpus does.
+    // Non-vacuity, three ways. The floors sit below the live counts so a legitimate merger
+    // (HL4's job) does not fail this clause, and high enough that a scan which has lost its
+    // corpus, or its second shape, does.
     const sites = scanSteerSites();
-    expect(sites.length).toBeGreaterThanOrEqual(15);
+    expect(sites.length).toBeGreaterThanOrEqual(25);
+    // Both shapes are really being seen — a regex that stopped matching either one would
+    // leave the other passing on its own and the census silently half-blind.
+    expect(sites.filter((s) => s.shape === 'door').length).toBeGreaterThanOrEqual(10);
+    expect(sites.filter((s) => s.shape === 'raw').length).toBeGreaterThanOrEqual(5);
     // …and the identifier extraction is doing work rather than returning null everywhere,
     // which would make the pairing check vacuously strict instead of vacuously loose.
     expect(sites.filter((s) => s.ident !== null).length).toBeGreaterThanOrEqual(10);

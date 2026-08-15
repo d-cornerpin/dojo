@@ -18,8 +18,10 @@
 import { injectRegistryMessage } from '../../../../prompt/registry/assembler.js';
 import type { AssemblyContext } from '../../../../prompt/registry/types.js';
 import type { AssembledContext } from '../../../../memory/assembler.js';
+import { broadcast } from '../../../../gateway/ws.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { enqueueSteer, markSteerAttempted, nextSteer, steerFiredAtLoop, type SteerEntry } from '../../steer-queue.js';
+import { persistEngineSteer } from '../../engine-steer.js';
+import { markSteerAttempted, nextSteer, steerFiredAtLoop, type SteerEntry } from '../../steer-queue.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { createLogger } from '../../../../logger.js';
 
@@ -68,7 +70,8 @@ export function runSteerCheckpoint(stateIn: AgentTurnState, input: SteerCheckpoi
     turnCtx.startAckSteerArmedThisTurn = true;
     turnCtx.startAckSteersInjected = 1;
     turnCtx.startAckSteerInjectedAtLoop = state.loopCount;
-    state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'start-ack', content: START_ACK_STEER_TEXT, atLoop: state.loopCount }) });
+    // HL3: through the RC-19 door — the row and the queue entry from one `content`.
+    state = persistEngineSteer(state, { agentId, content: START_ACK_STEER_TEXT, turnNumber, floor: 'start-ack', atLoop: state.loopCount }, { broadcast });
     logger.info('v2 start-ack steer injected; the model speaks the start line itself', {
       agentId, turnNumber,
     }, agentId);
@@ -88,10 +91,10 @@ export function runSteerCheckpoint(stateIn: AgentTurnState, input: SteerCheckpoi
     !startAckRepliedNow()
   ) {
     turnCtx.startAckSteersInjected = 2;
-    state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, {
-      floor: 'start-ack-reminder', atLoop: state.loopCount,
+    state = persistEngineSteer(state, {
+      agentId, turnNumber, floor: 'start-ack-reminder', atLoop: state.loopCount,
       content: '[Engine hint: reminder, the user has STILL heard nothing from you this turn. Before your next tool call, say one short line to them that you are on it. This is the last reminder.]',
-    }) });
+    }, { broadcast });
     logger.info('v2 start-ack steer reminder injected (first steer ignored, user still waiting)', {
       agentId, turnNumber,
     }, agentId);

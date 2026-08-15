@@ -14,8 +14,10 @@
 // ════════════════════════════════════════
 
 import { JOIN_TTL_MINUTES, openDelegationJoin, threadHopCount, type DelegationThread } from '../../../../work/store.js';
+import { broadcast } from '../../../../gateway/ws.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { enqueueSteer, steerFired } from '../../steer-queue.js';
+import { persistEngineSteer } from '../../engine-steer.js';
+import { steerFired } from '../../steer-queue.js';
 import { createLogger } from '../../../../logger.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { ExecuteContext } from './index.js';
@@ -136,7 +138,9 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
     ) {
       const exitSteer =
         '[Engine hint: you delegated work on the user\'s request and are about to end your turn without telling them anything. WRITE ONE short line to them first, directly in this conversation: if you already have their answer, give it now; otherwise say you have handed the pieces off and will report back when they return. Do NOT call imessage_send or any send tool (the engine routes your reply), and do not message any agent again this turn.]';
-      state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'delegation-exit', content: exitSteer, atLoop: state.loopCount }) });
+      // HL3: the RC-19 door — this exit bypasses every turn-ending floor, so nothing else
+      // on the turn records that the status line was asked for.
+      state = persistEngineSteer(state, { agentId, content: exitSteer, turnNumber, floor: 'delegation-exit', atLoop: state.loopCount }, { broadcast });
       logger.info('v2 delegation-exit steer: user-triggered hand-off ending silently; one steer for the status line before the async exit', {
         agentId, turnNumber,
       }, agentId);

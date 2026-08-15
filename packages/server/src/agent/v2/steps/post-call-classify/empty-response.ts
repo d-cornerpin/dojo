@@ -15,7 +15,8 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { contractForConfiguredModel } from '../../../model.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { clearSteerQueue, enqueueSteer, steerFired } from '../../steer-queue.js';
+import { persistEngineSteer } from '../../engine-steer.js';
+import { clearSteerQueue, steerFired } from '../../steer-queue.js';
 import { outputTruncationClassifier } from '../../classifiers/output.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext } from './index.js';
@@ -24,7 +25,7 @@ const logger = createLogger('v2-loop');
 
 /** The empty-response ladder. `proceed` means the response was not empty. */
 export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyContext): StepOutcome {
-  const { agentId, result, reArmIfStrandedNoAnswer } = ctx;
+  const { agentId, turnNumber, result, reArmIfStrandedNoAnswer } = ctx;
 
   // ════════════════════════════════════════════════════════════════════════════════════
   // SWEEP-A TB8 JOB 1 — THE GRIND RUNG. The owner's question, in his words: *"Should an
@@ -72,16 +73,16 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
         loopCount: state.loopCount, stopReason: result.stopReason,
         contentChars: result.content?.length ?? 0,
       }, agentId);
-      state = advance(state, {
-        steerQueue: enqueueSteer(state.steerQueue, {
-          floor: 'output-grind', atLoop: state.loopCount,
-          content:
-            '[System: Your last response used your ENTIRE output budget thinking and produced '
-            + 'no tool call and no answer, so none of it reached anyone. Do not plan further. '
-            + 'Take the single next concrete step now: make ONE tool call, or give the short '
-            + 'answer you already have. Keep it brief.]',
-        }),
-      });
+      // HL3: the RC-19 door — an unrecorded steer diagnosing an invisible failure class
+      // repeats the defect one level up.
+      state = persistEngineSteer(state, {
+        agentId, turnNumber, floor: 'output-grind', atLoop: state.loopCount,
+        content:
+          '[System: Your last response used your ENTIRE output budget thinking and produced '
+          + 'no tool call and no answer, so none of it reached anyone. Do not plan further. '
+          + 'Take the single next concrete step now: make ONE tool call, or give the short '
+          + 'answer you already have. Keep it brief.]',
+      }, { broadcast });
       return continueLoop(state);
     }
     // Rung 2: it happened again inside the same turn, after being told. Two full budgets is
@@ -205,12 +206,10 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
       logger.warn('v2: model returned empty after silent retry, nudging', {
         loopCount: state.loopCount, stopReason: result.stopReason,
       }, agentId);
-      state = advance(state, {
-        steerQueue: enqueueSteer(state.steerQueue, {
-          floor: 'empty-response', atLoop: state.loopCount,
-          content: "[System: You returned an empty response. Please respond to the user's last message or call a tool to continue your task. If you are finished, say so clearly.]",
-        }),
-      });
+      state = persistEngineSteer(state, {
+        agentId, turnNumber, floor: 'empty-response', atLoop: state.loopCount,
+        content: "[System: You returned an empty response. Please respond to the user's last message or call a tool to continue your task. If you are finished, say so clearly.]",
+      }, { broadcast });
       return continueLoop(state);
     }
     // Phase 3: give up, toast the user, no DB changes.
