@@ -177,12 +177,29 @@ describe('reader 6: the F10 replied-check is unreachable on a turn that promoted
       .toContain('!turnCtx.engineStartAckDeliveredThisTurn');
   });
 
-  it('steer-checkpoint.ts: both steer arms test a delivered/armed flag BEFORE the query', () => {
-    const src = SRC('../../assemble/steer-checkpoint.ts');
+  // ⚠ HL4 STEP 2 (2e), MERGER 1 — THE GUARD'S TARGET MOVED, SO THE GUARD MOVES WITH IT.
+  // The ack ladder left `assemble/steer-checkpoint.ts` for `assemble/start-ack-door.ts`,
+  // which now owns the text, the arming and the reminder rung for BOTH openers. This clause
+  // asserts exactly what it always asserted — a delivered/armed flag is tested BEFORE
+  // `startAckRepliedNow()`, so the F10 replied-check is unreachable on a turn that promoted
+  // a start line — and it now asserts one thing MORE, because the merger introduced an
+  // indirection this guard has to see through: `startAckDoorOpen` must really BE the two
+  // flag tests, or moving them behind a helper would hollow the guard out while it passed.
+  it('start-ack-door.ts: both steer arms test a delivered/armed flag BEFORE the query', () => {
+    const src = SRC('../../assemble/start-ack-door.ts');
+
+    // The shared gate is the two flags and nothing weaker.
+    const shared = /export function startAckDoorOpen\([\s\S]*?\n}/.exec(src)?.[0] ?? '';
+    expect(shared, 'the shared half of the door gate').toBeTruthy();
+    expect(shared).toContain('!turnCtx.startAckSteerArmedThisTurn');
+    expect(shared).toContain('!engineStartAckDeliveredThisTurn');
+
     const first = /if \(turnCtx\.startAckSteerRequested[\s\S]*?!startAckRepliedNow\(\)\) \{/.exec(src)?.[0] ?? '';
+    expect(first, 'the request opener').toBeTruthy();
     expect(guardsBefore(first, '!startAckRepliedNow()'))
-      .toContain('!turnCtx.startAckSteerArmedThisTurn');
+      .toContain('startAckDoorOpen(turnCtx, engineStartAckDeliveredThisTurn)');
     const reminder = /turnCtx\.startAckSteersInjected === 1 &&[\s\S]*?!startAckRepliedNow\(\)/.exec(src)?.[0] ?? '';
+    expect(reminder, 'the reminder rung').toBeTruthy();
     expect(guardsBefore(reminder, '!startAckRepliedNow()'))
       .toContain('!engineStartAckDeliveredThisTurn');
   });

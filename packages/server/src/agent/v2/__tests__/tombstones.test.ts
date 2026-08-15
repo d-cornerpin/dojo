@@ -531,9 +531,15 @@ describe('TOMBSTONE 8 — the engine-composed START ack and its RC-4.4 streaming
   });
 
   it('REPLACEMENT: the person still hears something while they wait, and the AGENT says it', () => {
-    // The steer that hands the model the mic, and its two live binding sites.
-    const checkpoint = engineFile('agent/v2/steps/assemble/steer-checkpoint.ts');
-    expect(checkpoint.code).toMatch(/export const START_ACK_STEER_TEXT/);
+    // The steer that hands the model the mic, and its live binding sites.
+    // ⚠ HL4 STEP 2 (2e), MERGER 1: the declaration moved from `steer-checkpoint.ts` to
+    // `start-ack-door.ts`, which now owns the text, the arming and the reminder for BOTH
+    // openers — one door, which is what W26 handed up. The requirement is unchanged and is
+    // the same one this clause has always carried: the ack floor is AGENT-VOICED, so the
+    // text must exist and must still be bound. A guard anchored on a moved file is a guard
+    // that passes by finding nothing, which is exactly the failure mode this file exists for.
+    const door = engineFile('agent/v2/steps/assemble/start-ack-door.ts');
+    expect(door.code).toMatch(/export const START_ACK_STEER_TEXT/);
     expect(
       engineMatches(/START_ACK_STEER_TEXT/).length,
       'the start-ack steer lost its binding sites — the ack floor would be silent, not '

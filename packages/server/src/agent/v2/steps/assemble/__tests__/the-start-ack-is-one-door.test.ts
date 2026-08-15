@@ -34,7 +34,7 @@ vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
 
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runSteerCheckpoint } from '../steer-checkpoint.js';
-import { START_ACK_STEER_TEXT } from '../steer-checkpoint.js';
+import { START_ACK_STEER_TEXT } from '../start-ack-door.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ENGINE = path.resolve(HERE, '../../..');

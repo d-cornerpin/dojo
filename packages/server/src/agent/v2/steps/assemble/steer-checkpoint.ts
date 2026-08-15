@@ -13,28 +13,26 @@
 // stack: `startAckSteerRequested` is written from the wall-clock TIMER, which is
 // the by-value test's own disqualifier, and the injected count is a bounded cap
 // (2) rather than a snapshot. See `turn-context.ts` for the family's reasoning.
+//
+// ── HL4 STEP 2 (2e), MERGER 1: THE ACK LADDER MOVED OUT, WHOLE ──
+// The first half of this file used to BE the ack ladder, in a second copy of a
+// three-flag write that `multistep-detection.ts` also carried. Both openers now
+// call one module (`start-ack-door.ts`), which owns the text, the arming and the
+// reminder rung; this file keeps its own opener's timing — the loop-synchronous
+// boundary — and the drain, which is what it was always for. `START_ACK_STEER_TEXT`
+// is re-exported here because the door is where it lives now and this is where
+// readers have always looked for it.
 // ════════════════════════════════════════
 
 import { injectRegistryMessage } from '../../../../prompt/registry/assembler.js';
 import type { AssemblyContext } from '../../../../prompt/registry/types.js';
 import type { AssembledContext } from '../../../../memory/assembler.js';
-import { broadcast } from '../../../../gateway/ws.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { persistEngineSteer } from '../../engine-steer.js';
-import { markSteerAttempted, nextSteer, steerFiredAtLoop, type SteerEntry } from '../../steer-queue.js';
+import { markSteerAttempted, nextSteer, type SteerEntry } from '../../steer-queue.js';
 import type { TurnContext } from '../../../turn-context.js';
-import { createLogger } from '../../../../logger.js';
+import { runStartAckLadder } from './start-ack-door.js';
 
-const logger = createLogger('v2-loop');
-
-// Owner ruling 2026-07-22 (engine detects, agent speaks): the start ack is no
-// longer engine-composed. This steer hands the mic to the model instead; the
-// capture-site delivery surfaces whatever the model says as the visible ack.
-// PHASE-6 T4 (CUT 6): moved here from `loop.ts` with the two sites that bind it —
-// this checkpoint and the multi-step scaffold's own arming path, both inside this
-// tranche's span. Exported for the second one, and for no other reader.
-export const START_ACK_STEER_TEXT =
-  '[Engine hint: the user has not heard anything from you yet this turn, and their request is being worked as a tracked job. In your next response, open with ONE short line in your own voice letting them know you are on it, then continue the work. Keep it to a single brief sentence; the full answer comes when the work is done.]';
+export { START_ACK_STEER_TEXT } from './start-ack-door.js';
 
 export interface SteerCheckpointInput {
   readonly agentId: string;
@@ -48,57 +46,15 @@ export interface SteerCheckpointInput {
 
 export function runSteerCheckpoint(stateIn: AgentTurnState, input: SteerCheckpointInput): { state: AgentTurnState; steerAwaitingConfirm: SteerEntry | null } {
   const { agentId, turnCtx, turnNumber, engineStartAckDeliveredThisTurn, startAckRepliedNow, mctx, messages } = input;
-  let state = stateIn;
-
 
   // Start-ack steer checkpoint (owner ruling 2026-07-22): the async timer /
   // first-tool hook only REQUEST the steer; the state write happens here,
-  // loop-synchronously. Re-checks startAckRepliedNow so a reply that landed
-  // in flight quietly disarms it. (T6: the "another nudge occupies the slot, so defer"
-  // half died with the flag — the queue retains both steers.)
-  //
-  // UX-REPAIR T41 (option B) — AND IT NEVER ASKS FOR AN ACK THAT HAS ALREADY BEEN
-  // DELIVERED. The owed window now has a second exit: the model's own line, spoken during
-  // the wait, can BE the acknowledgment (`post-call-classify/terminal-text.ts`). The
-  // request flag that opened the window stays set — it is a record of what the engine
-  // observed, not a to-do list — so without this clause the very next boundary would hand
-  // the model a steer whose first words are "the user has not heard anything from you yet
-  // this turn" moments after they heard exactly that. `startAckRepliedNow` cannot see it:
-  // its DB probe requires `origin_intent IS NULL` and the delivered ack is stamped.
-  if (turnCtx.startAckSteerRequested && !turnCtx.startAckSteerArmedThisTurn
-      && !engineStartAckDeliveredThisTurn && !startAckRepliedNow()) {
-    turnCtx.startAckSteerArmedThisTurn = true;
-    turnCtx.startAckSteersInjected = 1;
-    turnCtx.startAckSteerInjectedAtLoop = state.loopCount;
-    // HL3: through the RC-19 door — the row and the queue entry from one `content`.
-    state = persistEngineSteer(state, { agentId, content: START_ACK_STEER_TEXT, turnNumber, floor: 'start-ack', atLoop: state.loopCount }, { broadcast });
-    logger.info('v2 start-ack steer injected; the model speaks the start line itself', {
-      agentId, turnNumber,
-    }, agentId);
-  } else if (
-    // One bounded reminder, IGNORE-keyed not time-keyed (2026-07-23, chore
-    // battery attempt: the model tool-chained straight past the first
-    // steer, and a time-gated reminder only became eligible ~30s later,
-    // right when the final answer was landing anyway). The engine can SEE
-    // the ignore: the steer rode call N, call N's response is processed,
-    // and nothing was delivered. Remind on the very next boundary; after
-    // that the terminal reply is the only remaining voice (never spin).
-    turnCtx.startAckSteersInjected === 1 &&
-    !engineStartAckDeliveredThisTurn &&
-    // The loop the first steer rode is read off the QUEUE ENTRY that recorded it
-    // (falling back to the local for the pre-assemble arming path at :3489).
-    state.loopCount > (steerFiredAtLoop(state.steerQueue, 'start-ack') ?? turnCtx.startAckSteerInjectedAtLoop) &&
-    !startAckRepliedNow()
-  ) {
-    turnCtx.startAckSteersInjected = 2;
-    state = persistEngineSteer(state, {
-      agentId, turnNumber, floor: 'start-ack-reminder', atLoop: state.loopCount,
-      content: '[Engine hint: reminder, the user has STILL heard nothing from you this turn. Before your next tool call, say one short line to them that you are on it. This is the last reminder.]',
-    }, { broadcast });
-    logger.info('v2 start-ack steer reminder injected (first steer ignored, user still waiting)', {
-      agentId, turnNumber,
-    }, agentId);
-  }
+  // loop-synchronously, and the ladder re-checks `startAckRepliedNow` so a reply
+  // that landed in flight quietly disarms it. (T6: the "another nudge occupies the
+  // slot, so defer" half died with the flag — the queue retains both steers.)
+  let state = runStartAckLadder(stateIn, {
+    agentId, turnNumber, turnCtx, engineStartAckDeliveredThisTurn, startAckRepliedNow,
+  });
 
   // Drain the steer queue (synthetic user message, never persisted). NO tail-shape
   // gate: assembler.ts:301 appends a user-role engine line after an assistant

@@ -16,13 +16,11 @@
 import { getDb } from '../../../../db/connection.js';
 import { isDreamerAgent, isHealerAgent, isPMAgent } from '../../../../config/platform.js';
 import { taskScope } from '../../../../work/tracker-view.js';
-import { broadcast } from '../../../../gateway/ws.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { persistEngineSteer } from '../../engine-steer.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { engineAckReachesTheirChannel, type TurnCounterparty } from '../../counterparty.js';
 import { createLogger } from '../../../../logger.js';
-import { START_ACK_STEER_TEXT } from './steer-checkpoint.js';
+import { armStartAck, startAckDoorOpen } from './start-ack-door.js';
 
 const logger = createLogger('v2-loop');
 
@@ -47,28 +45,20 @@ export async function detectMultistepAndScaffold(stateIn: AgentTurnState, input:
   const STALE_TASK_WINDOW_MINUTES = input.staleTaskWindowMinutes;
   let state = stateIn;
 
-  // ── THE PRE-CALL START-ACK DOOR, AND THE TWO OPENERS THAT SHARE IT ──
-  // One arming path, asked twice. Both openers write the same three flags and enqueue the
-  // same steer at the same loop, so whichever opens first makes the other a no-op through
-  // `!turnCtx.startAckSteerArmedThisTurn` — exactly the "armed synchronously so a second
-  // site can never double-steer" property the single opener had, now that there are two.
-  // RC-4.2 lives in the gate: never start-ack an agent-flagged counterparty (ack ping-pong).
-  const startAckDoorOpen = (): boolean =>
+  // ── THIS OPENER'S OWN PREDICATE. THE DOOR ITSELF IS `start-ack-door.ts` ──
+  // HL4 step 2 (2e), merger 1: the flag triple, the text and the enqueue used to be a
+  // SECOND COPY here of what `steer-checkpoint.ts` also carried. They are one module now,
+  // and what stays here is the only thing that was ever different — WHEN this opener asks.
+  // RC-4.2 lives in that predicate: never start-ack an agent-flagged counterparty (ack
+  // ping-pong). The shared half (`startAckDoorOpen`) is the reason a second opener on the
+  // same turn is a no-op: "armed synchronously so a second site can never double-steer".
+  const thisOpenerMayArm = (): boolean =>
     counterparty.kind === 'user' && !counterpartyIsAgentSender
-    && !engineStartAckDeliveredThisTurn && !turnCtx.startAckSteerArmedThisTurn;
-  const armStartAckSteer = (s: AgentTurnState): AgentTurnState => {
-    // Owner ruling 2026-07-22 (engine detects, agent speaks): the steer rides THIS first
-    // model call (the messages array is mid-assembly here), so the model's very first
-    // response opens with its own start line.
-    turnCtx.startAckSteerArmedThisTurn = true;
-    turnCtx.startAckSteersInjected = 1;
-    turnCtx.startAckSteerInjectedAtLoop = s.loopCount;
-    // PHASE-4 T3: the 27th steer site — §T0-PINS F derived by single-slot WRITER and this
-    // one pushed straight into the array, the same floor through a second door. The drain
-    // is still in THIS assemble phase.
-    // HL3: the RC-19 door, so BOTH start-ack doors leave the same durable row.
-    return persistEngineSteer(s, { agentId, content: START_ACK_STEER_TEXT, turnNumber, floor: 'start-ack', atLoop: s.loopCount }, { broadcast });
-  };
+    && startAckDoorOpen(turnCtx, engineStartAckDeliveredThisTurn);
+  // The steer rides THIS first model call (the messages array is mid-assembly here), so
+  // the model's very first response opens with its own start line.
+  const arm = (s: AgentTurnState): AgentTurnState =>
+    armStartAck(s, { agentId, turnNumber, turnCtx, engineStartAckDeliveredThisTurn });
 
   // ── Multi-step detection (v2.3.3) ──
   // Engine-side detection of prompts that need a tracker project.
@@ -119,8 +109,8 @@ export async function detectMultistepAndScaffold(stateIn: AgentTurnState, input:
     // `decision.multistep` is no longer its only opener. The threshold is UNTOUCHED (#14):
     // the wall-clock timer still arms exactly as before for everyone this opener does not
     // cover, and on a covered turn it finds the steer already armed and stands down.
-    if (engineAckReachesTheirChannel(counterparty) && startAckDoorOpen()) {
-      state = armStartAckSteer(state);
+    if (engineAckReachesTheirChannel(counterparty) && thisOpenerMayArm()) {
+      state = arm(state);
       logger.info('v2 start-ack steer armed pre-call: the ask arrived on a routed channel, where nothing reaches the person but a routing pass', {
         agentId, channel: counterparty.kind === 'user' ? counterparty.channel : null,
       }, agentId);
@@ -203,8 +193,8 @@ export async function detectMultistepAndScaffold(stateIn: AgentTurnState, input:
             // OPENER 1 — START ACK (NEXT-WAVE item 1), unchanged in requirement and in
             // wording. On a turn opener 2 already armed this is a no-op by the same latch
             // that always made a second site one.
-            if (startAckDoorOpen()) {
-              state = armStartAckSteer(state);
+            if (thisOpenerMayArm()) {
+              state = arm(state);
             }
           }
         }
