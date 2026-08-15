@@ -332,17 +332,17 @@ const AssistantBubble = ({
   const spokenAloud = msg.source === 'voice';
   const hasToolUse = blocks?.some((b) => b.type === 'tool_use');
   const hasReasoning = !!(msg.reasoningContent && msg.reasoningContent.length > 0);
-  // Auto-expand while reasoning is actively streaming OR while no answer
-  // text has arrived yet. Auto-collapse once the final answer is showing.
-  const reasoningOpenDefault = hasReasoning && (msg.isReasoningStreaming || text.length === 0);
-  const [reasoningOpen, setReasoningOpen] = useState(reasoningOpenDefault);
-  // Re-sync when streaming flips off so the panel collapses once answer
-  // content takes over the bubble.
-  useEffect(() => {
-    if (!msg.isReasoningStreaming && text.length > 0) {
-      setReasoningOpen(false);
-    }
-  }, [msg.isReasoningStreaming, text.length]);
+  // ── HL8 (A) — THE PANEL BODY STARTS CLOSED (owner's ruling, 2026-08-15). ──
+  // What he saw — DeepSeek "writes the answer, collapses it, and rewrites it several
+  // times before the final answer lands" — was this, once per HOP: the body auto-OPENED
+  // while reasoning streamed (`reasoningOpenDefault`, deleted) and an effect slammed it
+  // shut on the first answer delta. Flash drafts inside its reasoning, so a five-hop turn
+  // painted five paragraphs of answer-shaped prose that each vanished.
+  // THE AUTO-COLLAPSE EFFECT IS DELETED, not disabled: it existed only to close a panel
+  // that had auto-opened, and with no auto-open its one remaining behaviour would be to
+  // shut a panel the reader deliberately expanded. Header, chevron, pulse dots and
+  // click-to-toggle untouched; regular mode has no panel; live and reloaded views agree.
+  const [reasoningOpen, setReasoningOpen] = useState(false);
 
   return (
     <div className="flex justify-start">
@@ -371,10 +371,10 @@ const AssistantBubble = ({
           </div>
         )}
         {/* Reasoning / "Thinking…" panel — appears above the answer text.
-            Live-streams while the model is thinking, collapses when the
-            final answer starts arriving. Click header to toggle later.
-            Wordy-mode only: in regular chat we just see the standard
-            three bouncing dots from the streaming bubble below. */}
+            The HEADER announces that thinking is happening (pulsing dots while it
+            streams); the BODY stays closed until the reader asks for it, and stays
+            open once they have. Wordy-mode only: in regular chat we just see the
+            standard three bouncing dots from the streaming bubble below. */}
         {hasReasoning && wordyMode && (
           <div className="mb-1.5 rounded-lg border border-ui/[0.06] bg-ui/[0.03] overflow-hidden">
             <button
