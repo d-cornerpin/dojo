@@ -54,7 +54,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { MessageSlot } from '../prompt/registry/types.js';
 import { getRecentMessages } from './store.js';
-import { estimateTokens, type contextWindowPolicy } from './budget.js';
+import { type contextWindowPolicy } from './budget.js';
 import {
   LANE_TRUNCATION_MARKER, laneLimit, renderTokens,
   type Lane, type LaneRender,

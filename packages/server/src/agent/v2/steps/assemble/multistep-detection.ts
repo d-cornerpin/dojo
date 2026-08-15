@@ -16,7 +16,7 @@
 import { getDb } from '../../../../db/connection.js';
 import { isDreamerAgent, isHealerAgent, isPMAgent } from '../../../../config/platform.js';
 import { taskScope } from '../../../../work/tracker-view.js';
-import { advance, type AgentTurnState } from '../../state.js';
+import { type AgentTurnState } from '../../state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { engineAckReachesTheirChannel, type TurnCounterparty } from '../../counterparty.js';
 import { createLogger } from '../../../../logger.js';

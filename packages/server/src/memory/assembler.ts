@@ -3,7 +3,7 @@ import { renderTaskStamps, renderStepFacts, type TaskStampFields } from '../trac
 import { getDb as getStampDb } from '../db/connection.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { taskScope, msToText, revertCountExpr, stampColumns } from '../work/tracker-view.js';
+import { taskScope, revertCountExpr, stampColumns } from '../work/tracker-view.js';
 import { type PromptTurnContext } from '../prompt/assembler.js';
 import { conversationKey, type TurnCounterparty } from '../agent/v2/counterparty.js';
 import { getContextWindow, getModelOutputCap } from '../agent/model.js';
