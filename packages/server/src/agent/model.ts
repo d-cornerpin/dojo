@@ -5,7 +5,7 @@ import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { createLogger } from '../logger.js';
 import { AgentError } from './errors.js';
-import { apiRootIsBareHost, contractForModel, type ModelContract } from './model-contract.js';
+import { apiRootIsBareHost, contractForModel, contractForModelId, type ModelContract } from './model-contract.js';
 import { classifyProviderError, isRetryableProviderClass } from './provider-error.js';
 import { scheduleRateLimitRetry } from './rate-limit-retry.js';
 import { toolDefinitions } from './tools/definitions.js';
@@ -340,6 +340,18 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
     numCtxOverride: typeof row.num_ctx_override === 'number' ? row.num_ctx_override : null,
     numCtxRecommended: typeof row.num_ctx_recommended === 'number' ? row.num_ctx_recommended : null,
   };
+}
+
+/**
+ * The declared capability contract for a CONFIGURED model id — the door the engine's own
+ * steps use (they hold a `modelId` string, never a `modelInfo` row).
+ *
+ * The registry lookup lives here because `getModelInfo` does; `model-contract.ts` stays a
+ * pure declaration site with no database in it, which is what makes its seeds cheap to
+ * test. Never throws: an unknown or unreadable model gets the conservative base contract.
+ */
+export function contractForConfiguredModel(modelId: string | null | undefined): ModelContract {
+  return contractForModelId(getModelInfo, modelId);
 }
 
 // ── Ollama Call Path (Native /api/chat API) ──

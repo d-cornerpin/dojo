@@ -13,6 +13,7 @@
 
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
+import { contractForConfiguredModel } from '../../../model.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { clearSteerQueue, enqueueSteer, steerFired } from '../../steer-queue.js';
 import { outputTruncationClassifier } from '../../classifiers/output.js';
@@ -118,6 +119,68 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
     }
     // Clean end-of-turn after tools, legitimate exit, no error.
     if (state.toolCallsExecutedThisTurn > 0) {
+      // ════════════════════════════════════════════════════════════════════════════════
+      // HL2 — THE ANSWER THAT WENT INTO THE WRONG CHANNEL.
+      //
+      // This exit is a DELIBERATE not-a-failure: v1 line 1167-1171, "the agent did work
+      // and has nothing more to say." It has never consulted `reasoning_content`, and
+      // that is the gap. DeepSeek's own harness says so in its source
+      // (`llm-deepseek/src/serialize.ts:88-95`): the model *"can answer entirely in the
+      // reasoning channel, e.g. a v4-flash greeting"* — and dsh treats a content-less
+      // completion as RETRYABLE. A turn that owes a person a reply, returns nothing
+      // visible, and leaves a body in its hidden channel did not have nothing to say. It
+      // said it into a channel nobody reads.
+      //
+      // NO NEW MECHANISM, NO NEW RUNG, NO NEW VOICE, NO NEW PREDICATE (the owner's
+      // census rule):
+      //   • the rung is the EXISTING silent retry twenty lines below, reached with the
+      //     SAME `retriedEmptyResponse` latch, so a turn still gets exactly ONE silent
+      //     re-run no matter which door asked for it;
+      //   • the owed test is the EXISTING start-ack owed pair and the EXISTING
+      //     unanswered-person flags, read, not re-derived;
+      //   • whether the model can even do this is a declared CONTRACT field
+      //     (`answersInReasoning`, HL1) — a non-thinking model can never take this branch;
+      //   • the bound is the contract's `emptyRetryBudget`, which is where the ladder's
+      //     "one silent retry" has always lived, now said out loud instead of implied by
+      //     a boolean.
+      //
+      // SUBSTANTIVE MEANS NON-BLANK, and that is deliberate rather than lazy. dsh retries
+      // on ANY content-less completion; this branch is already three predicates narrower
+      // (a person must be owed, the model must be one that answers in reasoning, and the
+      // turn must have run tools). A character threshold on top of that would be a number
+      // nobody could defend from the record.
+      //
+      // WHAT IS BYTE-IDENTICAL: a turn with nobody owed; a turn on a model whose contract
+      // says `answersInReasoning: false`; a turn whose reasoning channel is blank; and
+      // the `[no-reply]` sentinel, which is VISIBLE CONTENT by design and never reaches
+      // this guard at all.
+      // ════════════════════════════════════════════════════════════════════════════════
+      const contract = contractForConfiguredModel(ctx.configuredModelId);
+      const startAckOwed =
+        (ctx.turnCtx.startAckSteerRequested || ctx.turnCtx.startAckSteerArmedThisTurn)
+        && !ctx.turnCtx.engineStartAckDeliveredThisTurn;
+      const owesAPerson =
+        !ctx.isA2ATurn && !ctx.isEngineTurn && !ctx.counterpartyIsAgentSender
+        && (startAckOwed || ctx.hasUnansweredUser || ctx.triggerRow !== null);
+      const reasoningBody = (result.reasoningContent ?? '').trim();
+
+      if (
+        contract.answersInReasoning
+        && owesAPerson
+        && reasoningBody.length > 0
+        && !state.retriedEmptyResponse
+        && contract.emptyRetryBudget > 0
+      ) {
+        logger.warn('v2: answer-in-wrong-channel — this turn owed a person a reply, returned no visible content, and left a substantive body in the reasoning channel; spending the ladder\'s silent retry', {
+          reason: 'answer-in-wrong-channel',
+          loopCount: state.loopCount, stopReason: result.stopReason,
+          reasoningChars: reasoningBody.length,
+          owedVia: startAckOwed ? 'start-ack' : (ctx.hasUnansweredUser ? 'unanswered-user' : 'trigger-row'),
+          contract: contract.id, emptyRetryBudget: contract.emptyRetryBudget,
+        }, agentId);
+        state = advance(state, { retriedEmptyResponse: true });
+        return continueLoop(state);
+      }
       // v1 line 1167-1171: agent did work and has nothing more to say.
       return requestExit(state, 'empty-response-after-tools');
     }
@@ -125,7 +188,11 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
     // does a 3-phase fallback before giving up. Many empties are transient
     // (streaming hiccup, model hesitation) and resolve on a silent retry.
     // Phase 1: silent retry (no nudge, just re-run the model).
-    if (!state.retriedEmptyResponse) {
+    // HL1/HL2: how many silent re-runs a model may have is the contract's
+    // `emptyRetryBudget`. It is seeded at 1 for every configured model, which is exactly
+    // what this boolean latch has always meant — the field says it out loud so a model
+    // that must never be silently re-run can be declared instead of special-cased.
+    if (!state.retriedEmptyResponse && contractForConfiguredModel(ctx.configuredModelId).emptyRetryBudget > 0) {
       logger.warn('v2: model returned empty response, retrying silently', {
         loopCount: state.loopCount, stopReason: result.stopReason,
       }, agentId);

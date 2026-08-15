@@ -343,7 +343,17 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     // rung's steer-and-retry arm and nothing else. Unlike T-PROMISE's +1 the exit count
     // ALSO moved (7 -> 8) — both halves of one new rung, each named, so the pair moving
     // together is an accounted addition rather than a silent conversion.
-    expect(continueSites).toBe(19);
+    // ⚠ RE-DERIVED AGAIN (HARNESS-LEARNINGS HL2): NINETEEN -> TWENTY, and this one is
+    // T-PROMISE's shape, not TB8's. The +1 is the answer-in-wrong-channel door and
+    // nothing else: an owed turn that came back empty with a body in its reasoning
+    // channel takes the ladder's EXISTING silent-retry rung instead of the not-a-failure
+    // exit. **The exit count is UNCHANGED at eight** — the `empty-response-after-tools`
+    // exit is still there and still the default; the ladder's own suite proves it with
+    // seven controls (nobody owed · A2A · engine turn · agent sender · a contract with
+    // `answersInReasoning:false` · a blank reasoning channel · the shared latch already
+    // spent). A door in front of an exit is not a converted exit, and the two counts
+    // moving out of step is what says so.
+    expect(continueSites).toBe(20);
   });
 
   it('EXIT IS NOT SAYABLE WITHOUT A REASON, and the arms name their own', async () => {
