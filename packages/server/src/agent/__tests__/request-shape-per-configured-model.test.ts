@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import type Anthropic from '@anthropic-ai/sdk';
 import type OpenAI from 'openai';
 import { buildOpenAIMessages, resolveOpenAIBaseUrl, applyProviderRequestParams } from '../model.js';
+import { contractForModel } from '../model-contract.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GOLDEN = path.join(__dirname, '__goldens__', 'request-shape-per-configured-model.json');
@@ -88,21 +89,18 @@ const FIXTURE_MESSAGES: Array<{ role: 'user' | 'assistant'; content: string | An
 
 const SYSTEM_PROMPT = 'You are a test agent.\nBe brief.';
 
-// The two provider-name checks `callOpenAIModel` makes at HEAD, reproduced here so the
-// pin measures today's dispatcher. HL1's migration replaces both with one contract
-// lookup — and this golden is what proves the replacement changed nothing.
-const isDeepSeekAtHead = (b: string | null): boolean => (b ?? '').toLowerCase().includes('deepseek.com');
-const isOpenRouterAtHead = (b: string | null): boolean => (b ?? '').toLowerCase().includes('openrouter.ai');
-
+// Before HL1's migration this function reproduced `callOpenAIModel`'s own two
+// provider-name checks (`baseUrl.includes('deepseek.com')` /
+// `baseUrl.includes('openrouter.ai')`) and handed them to the builder as booleans; the
+// golden was recorded from THAT. It now takes the same two decisions through the
+// contract, and the golden file did not move — which is the whole claim of HL1.
 async function shapeFor(entry: RosterEntry): Promise<unknown> {
-  const isDeepSeek = isDeepSeekAtHead(entry.providerBaseUrl);
-  const isOpenRouter = isOpenRouterAtHead(entry.providerBaseUrl);
+  const contract = contractForModel(entry);
   const messages = await buildOpenAIMessages(
     SYSTEM_PROMPT,
     FIXTURE_MESSAGES,
     'test-agent',
-    isDeepSeek,
-    isOpenRouter,
+    contract,
     '',
   );
   const requestParams = {
@@ -110,9 +108,7 @@ async function shapeFor(entry: RosterEntry): Promise<unknown> {
     messages: [],
     stream: true,
   } as unknown as OpenAI.ChatCompletionCreateParams;
-  applyProviderRequestParams(requestParams, {
-    isDeepSeek,
-    isOpenRouter,
+  applyProviderRequestParams(requestParams, contract, {
     supportsThinking: entry.capabilities.includes('thinking'),
     thinkingEnabled: entry.thinkingEnabled,
   });

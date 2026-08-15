@@ -5,6 +5,7 @@ import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { createLogger } from '../logger.js';
 import { AgentError } from './errors.js';
+import { apiRootIsBareHost, contractForModel, type ModelContract } from './model-contract.js';
 import { classifyProviderError, isRetryableProviderClass } from './provider-error.js';
 import { scheduleRateLimitRetry } from './rate-limit-retry.js';
 import { toolDefinitions } from './tools/definitions.js';
@@ -852,33 +853,18 @@ async function callOllamaModel(
 
 const openaiClientCache = new Map<string, OpenAI>();
 
-// Hosts whose API is rooted at the bare domain (no `/v1` segment). The
-// OpenAI SDK calls paths like `/chat/completions` directly off the
-// configured baseURL, so for these hosts we DON'T append `/v1`. DeepSeek
-// is the canonical example: their docs put the chat endpoint at
-// https://api.deepseek.com/chat/completions, not /v1/chat/completions.
-const NO_V1_HOSTS = ['api.deepseek.com', 'deepseek.com'];
-
-function hostNeedsNoV1(baseUrl: string): boolean {
-  try {
-    const host = new URL(baseUrl).hostname.toLowerCase();
-    return NO_V1_HOSTS.some((h) => host === h || host.endsWith('.' + h));
-  } catch {
-    return false;
-  }
-}
-
 /**
  * The base URL the OpenAI SDK is pointed at, for a configured provider.
  *
- * HL1 PIN: extracted from `getOpenAIClient`'s inline IIFE byte-for-byte so the
- * request shape it decides can be pinned by a golden without standing up a
- * client or a credential. No behaviour change — the IIFE below became a call.
+ * HL1: the host list this used to carry (`NO_V1_HOSTS` + `hostNeedsNoV1`, deleted here)
+ * now lives at the capability contract's definition site, with every other provider name
+ * in the engine. The rule is unchanged: a provider whose chat endpoint sits at the bare
+ * host keeps its root, everyone else gets `/v1`.
  */
 export function resolveOpenAIBaseUrl(baseUrl?: string | null): string | undefined {
   if (!baseUrl) return undefined;
   const cleaned = baseUrl.replace(/\/+$/, '');
-  if (hostNeedsNoV1(cleaned)) return cleaned;
+  if (apiRootIsBareHost(cleaned)) return cleaned;
   return cleaned.endsWith('/v1') ? cleaned : cleaned + '/v1';
 }
 
@@ -920,8 +906,7 @@ export async function buildOpenAIMessages(
   systemPrompt: string,
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[]; reasoningContent?: string }>,
   agentId: string,
-  isDeepSeek = false,
-  isOpenRouter = false,
+  contract: ModelContract,
   systemVolatile = '',
 ): Promise<OpenAI.ChatCompletionMessageParam[]> {
   // OpenAI & DeepSeek auto-cache a stable system prefix with NO markup, so they
@@ -929,7 +914,8 @@ export async function buildOpenAIMessages(
   // OpenRouter is a proxy: Anthropic/Gemini-backed models behind it need an
   // explicit cache_control marker (OpenRouter's adopted convention), which it
   // ignores for backends that already auto-cache. So mark only for OpenRouter.
-  const systemMessage = (isOpenRouter
+  // HL1: which of those two a provider is, is a contract field now.
+  const systemMessage = (contract.systemPromptCacheMarker === 'explicit-ephemeral'
     ? { role: 'system', content: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }] }
     : { role: 'system', content: systemPrompt }) as OpenAI.ChatCompletionMessageParam;
   const openaiMessages: OpenAI.ChatCompletionMessageParam[] = [systemMessage];
@@ -1133,7 +1119,7 @@ export async function buildOpenAIMessages(
         const msg: OpenAI.ChatCompletionAssistantMessageParam = { role: 'assistant', content: m.content };
         if (m.reasoningContent) {
           (msg as unknown as Record<string, unknown>).reasoning_content = m.reasoningContent;
-        } else if (isDeepSeek) {
+        } else if (contract.requiresReasoningReplay) {
           // DeepSeek requires reasoning_content on every assistant turn in
           // thinking mode. Use empty string as a safe fallback when we don't
           // have stored reasoning (legacy rows, or empty thinking response).
@@ -1166,7 +1152,7 @@ export async function buildOpenAIMessages(
         // stored reasoning. Other providers ignore the unknown field.
         if (m.reasoningContent) {
           (assistantMsg as unknown as Record<string, unknown>).reasoning_content = m.reasoningContent;
-        } else if (isDeepSeek) {
+        } else if (contract.requiresReasoningReplay) {
           (assistantMsg as unknown as Record<string, unknown>).reasoning_content = '';
         }
 
@@ -1231,36 +1217,33 @@ export function repairToolCallArgs(raw: string): Record<string, unknown> | null 
 /**
  * The provider-shaped knobs on an OpenAI-compatible chat request.
  *
- * HL1 PIN: lifted out of `callOpenAIModel` byte-for-byte (both blocks in their
- * original order) so the request shape is pinnable by a golden without a
- * network call. Mutates `requestParams` in place exactly as the inline code did.
+ * HL1: was two provider-name branches inside `callOpenAIModel`; the branches now read the
+ * model's declared contract instead, and the blocks keep their original order. Mutates
+ * `requestParams` in place exactly as the inline code did.
  *
- * ── OpenRouter unified reasoning toggle ──
- * When the provider is OpenRouter (detected by base URL) and the model is
- * known to support thinking, honor the per-model thinking_enabled flag by
- * sending the `reasoning` parameter. OpenRouter translates this into each
- * upstream provider's convention (Anthropic thinking, o-series
- * reasoning_effort, Gemini thinkingBudget, DeepSeek R1, etc). For generic
- * openai-compatible providers we leave the request alone.
+ * `openrouter-reasoning` — the proxy's unified `reasoning` object, which it translates
+ * into each upstream provider's convention (Anthropic thinking, o-series
+ * reasoning_effort, Gemini thinkingBudget…). Only when the model can think at all.
  *
- * ── DeepSeek native thinking ──
- * DeepSeek v4-flash/v4-pro return reasoning as a sibling `reasoning_content`
- * field in stream deltas and on assistant messages, distinct from
- * Anthropic's thinking-block-inside-content pattern. Toggle is sent via
- * top-level `thinking: { type: 'enabled' | 'disabled' }`. v4-pro defaults
- * to thinking-on; we honor model.thinking_enabled here so the user has
- * explicit control via the Models page. Round-trip is handled by
- * (a) capturing delta.reasoning_content in the stream loop below and
- * (b) passing assistantMsg.reasoning_content on subsequent requests via
- * the message build path. Per DeepSeek docs we also avoid sending
- * temperature / top_p when thinking is enabled (they're rejected), the
- * current dispatch doesn't send those anyway, so no extra guard needed.
+ * `native-thinking-param` — a top-level `thinking: { type }`. The per-model
+ * `thinking_enabled` flag is honoured so the owner keeps control from the Models page;
+ * the round trip is (a) `delta.reasoning_content` captured in the stream loop below and
+ * (b) `reasoning_content` replayed by `buildOpenAIMessages`.
+ *
+ * `rejectsSamplingParamsWhenThinking` — temperature / top_p are refused by some models
+ * while thinking. Until HL1 that was a COMMENT asserting the dispatch happened not to
+ * send them: true about one day's code, and nothing a future caller would read. It is an
+ * enforced guard now. Nothing sets those keys at HEAD, so it removes nothing and the
+ * request shape is unmoved — asserted by the golden.
+ *
+ * Field definitions and their seeds: `model-contract.ts`.
  */
 export function applyProviderRequestParams(
   requestParams: OpenAI.ChatCompletionCreateParams,
-  opts: { isOpenRouter: boolean; isDeepSeek: boolean; supportsThinking: boolean; thinkingEnabled: boolean },
+  contract: ModelContract,
+  opts: { supportsThinking: boolean; thinkingEnabled: boolean },
 ): void {
-  if (opts.isOpenRouter && opts.supportsThinking) {
+  if (contract.thinkingToggle === 'openrouter-reasoning' && opts.supportsThinking) {
     // `extra_body` survives the OpenAI SDK's pass-through to non-standard
     // params. Use it so the unified reasoning object makes it into the
     // wire request untouched.
@@ -1270,10 +1253,17 @@ export function applyProviderRequestParams(
     };
   }
 
-  if (opts.isDeepSeek) {
+  const thinkingActive = opts.thinkingEnabled && opts.supportsThinking;
+  if (contract.thinkingToggle === 'native-thinking-param') {
     (requestParams as unknown as { thinking?: { type: string } }).thinking = {
-      type: opts.thinkingEnabled && opts.supportsThinking ? 'enabled' : 'disabled',
+      type: thinkingActive ? 'enabled' : 'disabled',
     };
+  }
+
+  if (contract.rejectsSamplingParamsWhenThinking && thinkingActive) {
+    const p = requestParams as unknown as Record<string, unknown>;
+    delete p.temperature;
+    delete p.top_p;
   }
 }
 
@@ -1286,9 +1276,9 @@ async function callOpenAIModel(
 
   const client = getOpenAIClient(modelInfo.providerId, modelInfo.providerBaseUrl);
 
-  const isDeepSeek = (modelInfo.providerBaseUrl ?? '').toLowerCase().includes('deepseek.com');
-  const isOpenRouter = (modelInfo.providerBaseUrl ?? '').toLowerCase().includes('openrouter.ai');
-  const openaiMessages = await buildOpenAIMessages(systemPrompt, messages, agentId, isDeepSeek, isOpenRouter, params.systemVolatile ?? '');
+  // HL1: the two provider-name checks that used to live here are the contract's business.
+  const contract = contractForModel(modelInfo);
+  const openaiMessages = await buildOpenAIMessages(systemPrompt, messages, agentId, contract, params.systemVolatile ?? '');
 
   // Build tools in OpenAI format (two-phase loading: only always-loaded + session-loaded)
   let openaiTools: OpenAI.ChatCompletionTool[] | undefined = undefined;
@@ -1453,23 +1443,25 @@ async function callOpenAIModel(
   };
 
   const supportsThinking = modelInfo.capabilities.includes('thinking');
-  applyProviderRequestParams(requestParams, {
-    isOpenRouter, isDeepSeek, supportsThinking, thinkingEnabled: modelInfo.thinkingEnabled,
+  applyProviderRequestParams(requestParams, contract, {
+    supportsThinking, thinkingEnabled: modelInfo.thinkingEnabled,
   });
 
   logger.info('Calling OpenAI model', {
     model: modelInfo.apiModelId,
     provider: modelInfo.providerId,
+    contract: contract.id,
     messageCount: openaiMessages.length,
     toolCount: openaiTools?.length ?? 0,
     maxOutputTokens: modelInfo.maxOutputTokens,
     thinkingEnabled: modelInfo.thinkingEnabled,
-    reasoningToggleApplied: isOpenRouter && supportsThinking,
+    reasoningToggleApplied: contract.thinkingToggle === 'openrouter-reasoning' && supportsThinking,
   }, agentId);
 
-  // DeepSeek-only diagnostic: log per-assistant-message reasoning_content
-  // presence so future "must be passed back" 400s can be diagnosed from logs.
-  if (isDeepSeek) {
+  // The replay diagnostic: log per-assistant-message reasoning_content presence so future
+  // "must be passed back" 400s can be diagnosed from logs. It exists for the models that
+  // require the passback, so that is the contract field it asks about.
+  if (contract.requiresReasoningReplay) {
     const assistantSummary = openaiMessages
       .map((m, i) => ({ m, i }))
       .filter(({ m }) => m.role === 'assistant')
@@ -1483,7 +1475,11 @@ async function callOpenAIModel(
           reasoningChars: typeof rc === 'string' ? rc.length : 0,
         };
       });
-    logger.info('DeepSeek request, assistant message reasoning round-trip', {
+    // HL1 renamed this label off the provider's name (it was "DeepSeek request, assistant
+    // message reasoning round-trip"): the diagnostic belongs to the CONTRACT FIELD, and any
+    // future model that requires the passback gets the same line. `contract` names which.
+    logger.info('reasoning replay round-trip, per assistant message', {
+      contract: contract.id,
       assistantMessages: assistantSummary,
     }, agentId);
   }
