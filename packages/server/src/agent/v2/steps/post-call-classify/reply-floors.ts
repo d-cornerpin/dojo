@@ -23,7 +23,7 @@
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { steerFired } from '../../steer-queue.js';
+import { steerFired, steerPriority, type SteerFloorId } from '../../steer-queue.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { channelLabel, findRecentDeliveries, findRecentDeliveriesKeyed, relativeTimeAgo } from '../../outbound-ledger.js';
 import { isNearDuplicateText } from '../../classifiers/loop.js';
@@ -37,6 +37,28 @@ import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
 const logger = createLogger('v2-loop');
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// HL4 STEP 2 (2e), MERGER 2 — THE FOUR TRUTH GUARDS, DECLARED.
+//
+// They ask one question with four nouns: *the reply asserts X, and the ledger says not-X.*
+// The blocks below still each carry their own copy of the shared prologue; this declaration
+// is the set the merger's loop consumes, and it is ORDERED BY THE TABLE rather than by the
+// order somebody typed — the same authority 2a made the turn-ending family derive from, so
+// the truth band's 10 → 11 → 12 → 13 cannot drift from the argument that ranks it.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** One truth guard: the floor it speaks as. */
+export interface TruthGuard {
+  readonly floor: SteerFloorId;
+}
+
+export const TRUTH_GUARDS: readonly TruthGuard[] = Object.freeze(([
+  { floor: 'ungrounded-claim' },
+  { floor: 'delivery-denial' },
+  { floor: 'failed-save-claim' },
+  { floor: 'uncommitted-promise' },
+] as TruthGuard[]).sort((a, b) => steerPriority(a.floor) - steerPriority(b.floor)));
 
 /** The floors that read the reply's own words against the ledger. */
 export function runReplyFloors(
