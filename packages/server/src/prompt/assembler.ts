@@ -69,17 +69,50 @@ export function readPlatformTemplate(file: string): string | null {
   return null;
 }
 
-/** The three names every shipped soul template is written against. */
+/** The names every shipped soul template is written against. */
 function substitutePlatformNames(md: string): string {
   return md
     .replace(/\{\{pm_agent_name\}\}/g, getPMAgentName())
+    .replace(/\{\{trainer_agent_name\}\}/g, getTrainerAgentName())
     .replace(/\{\{primary_agent_name\}\}/g, getPrimaryAgentName())
     .replace(/\{\{owner_name\}\}/g, getOwnerName());
 }
 
 /** A stored soul that still carries one of those placeholders was written by the engine's own
  *  default-seeding and never passed through a substituting writer. Nobody authors this. */
-const UNSUBSTITUTED = /\{\{(?:pm_agent_name|primary_agent_name|owner_name)\}\}/;
+const UNSUBSTITUTED = /\{\{(?:pm_agent_name|trainer_agent_name|primary_agent_name|owner_name)\}\}/;
+
+/**
+ * A shipped soul template, substituted — with the in-code stub as the LAST RESORT ONLY, and
+ * loud when it engages.
+ *
+ * W24 wrote this for the project manager; W25 lifted it to serve any platform soul, because
+ * `~/.dojo/prompts/TRAINER-SOUL.md` had the identical defect (3,023 stored bytes carrying a
+ * literal `{{trainer_agent_name}}`, against an 8,074-byte shipped template that reached no
+ * model on any box). The stub is substituted too: an unsubstituted fallback is the same
+ * defect in a smaller hat.
+ *
+ * `read`/`warn` are injected so the last-resort path is testable without deleting the repo's
+ * templates directory.
+ */
+function shippedSoulDefaultFrom(
+  file: string,
+  stub: string,
+  whatIsLost: string,
+  read: (file: string) => string | null,
+  warn: (msg: string, meta?: Record<string, unknown>) => void,
+): string {
+  const shipped = read(file);
+  if (shipped) return substitutePlatformNames(shipped);
+  // LOUD, by instruction: the whole reason this code exists is that the condition was
+  // silent for months on every box that had ever booted once.
+  warn(
+    `${file} was not found in ANY templates directory — this agent is falling back to the `
+      + `in-code stub, which is a fraction of its doctrine (${whatIsLost}). Check the platform install.`,
+    { searched: platformTemplateSearchPaths(file) },
+  );
+  return substitutePlatformNames(stub);
+}
 
 /**
  * THE PROJECT MANAGER'S SHIPPED DOCTRINE — the seed `~/.dojo/prompts/PM-SOUL.md` is written
@@ -92,24 +125,39 @@ export function pmSoulDefaultFrom(
   read: (file: string) => string | null,
   warn: (msg: string, meta?: Record<string, unknown>) => void,
 ): string {
-  const shipped = read('PM-SOUL.md');
-  if (shipped) return substitutePlatformNames(shipped);
-  // LOUD, by instruction: this is the project manager validating everyone's work on a
-  // fraction of its doctrine, and the whole reason this task exists is that the condition
-  // was silent for months.
-  warn(
-    'PM-SOUL.md was not found in ANY templates directory — the project manager is falling back ' +
-      'to the in-code stub, which is a fraction of its doctrine (no skepticism block, no ' +
-      'dereference rule, no issue-type verb table). Check the platform install.',
-    { searched: platformTemplateSearchPaths('PM-SOUL.md') },
+  return shippedSoulDefaultFrom(
+    'PM-SOUL.md', DEFAULT_PM_SOUL_MD,
+    'no skepticism block, no dereference rule, no issue-type verb table',
+    read, warn,
   );
-  // The stub carries the same placeholders; an unsubstituted fallback is the defect wearing a
-  // smaller hat, so it is substituted too.
-  return substitutePlatformNames(DEFAULT_PM_SOUL_MD);
+}
+
+/**
+ * W25 — THE TRAINER HAS THE IDENTICAL DEFECT, and this is the same door.
+ *
+ * Measured on the dev box before the fix: `~/.dojo/prompts/TRAINER-SOUL.md` was 3,023 bytes
+ * dated Jun 1, carrying a literal `{{trainer_agent_name}}`, while the shipped
+ * `templates/TRAINER-SOUL.md` is 8,074 bytes. Everything the stub is missing — the
+ * technique-authoring craft, the placeholder discipline, the import protocol — reached no
+ * model on any box.
+ */
+export function trainerSoulDefaultFrom(
+  read: (file: string) => string | null,
+  warn: (msg: string, meta?: Record<string, unknown>) => void,
+): string {
+  return shippedSoulDefaultFrom(
+    'TRAINER-SOUL.md', DEFAULT_TRAINER_SOUL_MD,
+    'a fraction of the technique-authoring craft it is supposed to teach',
+    read, warn,
+  );
 }
 
 function pmSoulDefault(): string {
   return pmSoulDefaultFrom(readPlatformTemplate, (msg, meta) => logger.error(msg, meta));
+}
+
+function trainerSoulDefault(): string {
+  return trainerSoulDefaultFrom(readPlatformTemplate, (msg, meta) => logger.error(msg, meta));
 }
 
 function ensurePromptsDir(): void {
@@ -192,7 +240,7 @@ export interface AgentSoulFile {
 export function soulFileForAgent(agentId: string): AgentSoulFile | null {
   if (isPrimaryAgent(agentId)) return { file: 'SOUL.md', fallback: DEFAULT_SOUL_MD, spawnTruth: true };
   if (isPMAgent(agentId)) return { file: 'PM-SOUL.md', fallback: pmSoulDefault(), spawnTruth: false, reseedUnsubstituted: true };
-  if (isTrainerAgent(agentId)) return { file: 'TRAINER-SOUL.md', fallback: DEFAULT_TRAINER_SOUL_MD, spawnTruth: false };
+  if (isTrainerAgent(agentId)) return { file: 'TRAINER-SOUL.md', fallback: trainerSoulDefault(), spawnTruth: false, reseedUnsubstituted: true };
   const perAgent = `${agentId.toUpperCase()}-SOUL.md`;
   if (fs.existsSync(path.join(PROMPTS_DIR, perAgent))) return { file: perAgent, fallback: '', spawnTruth: true };
   return null;

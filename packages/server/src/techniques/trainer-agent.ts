@@ -1,61 +1,36 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
-import { insertMessageIfAbsent, deleteAllForAgent } from '../memory/message-store.js';
+import { deleteAllForAgent } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
-import { getPrimaryAgentId, getPrimaryAgentName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, isSetupCompleted, getOwnerName } from '../config/platform.js';
+import { getPrimaryAgentId, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, isSetupCompleted } from '../config/platform.js';
 import { SEND_TO_PEOPLE } from '../agent/sensei-policy.js';
 import { googleReadToolDefinitions } from '../google/tools-read.js';
 import { microsoftReadToolDefinitions } from '../microsoft/tools-read.js';
 
+// W25: `node:fs`, `node:path`, `node:url`, `uuid`, `insertMessageIfAbsent`,
+// `getPrimaryAgentName` and `getOwnerName` all left with the dead reader below. This module
+// no longer touches the filesystem or the messages table at all.
 const logger = createLogger('trainer-agent');
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 // ── Trainer Agent System Prompt ──
-
-function loadTrainerSoulPrompt(): string {
-  const trainerName = getTrainerAgentName();
-  const primaryName = getPrimaryAgentName();
-  const ownerName = getOwnerName();
-
-  // Try loading from templates directory
-  const templatePaths = [
-    path.resolve(__dirname, '../../../../templates/TRAINER-SOUL.md'),
-    path.resolve(__dirname, '../../../templates/TRAINER-SOUL.md'),
-  ];
-
-  for (const templatePath of templatePaths) {
-    try {
-      if (fs.existsSync(templatePath)) {
-        let content = fs.readFileSync(templatePath, 'utf-8');
-        // Replace template variables
-        content = content.replace(/\{\{trainer_agent_name\}\}/g, trainerName);
-        content = content.replace(/\{\{primary_agent_name\}\}/g, primaryName);
-        content = content.replace(/\{\{owner_name\}\}/g, ownerName);
-        return content;
-      }
-    } catch {
-      // Try next path
-    }
-  }
-
-  // Fallback default
-  return `# Identity
-
-You are ${trainerName}, the technique trainer for the DOJO Agent Platform. Your job is to help create, refine, and maintain reusable techniques that all agents in the dojo can learn and use.
-
-# Rules
-
-- Always use the \`save_technique\` tool to create techniques, never just describe them
-- Include supporting files (scripts, templates) when they add value
-- Choose descriptive, lowercase-hyphenated names for techniques
-- Tag techniques accurately for discoverability
-- When updating a technique, explain what changed in the change summary
-- Keep instructions clear and actionable, other agents need to follow them exactly`;
-}
+//
+// ⚠ W25 TOMBSTONE — `loadTrainerSoulPrompt` IS DELETED, and so are both of its writes.
+//
+// It read `templates/TRAINER-SOUL.md`, substituted `{{trainer_agent_name}}` /
+// `{{primary_agent_name}}` / `{{owner_name}}` correctly, and wrote the result as a
+// `role='system'` message row. `memory/assembler.ts`'s `tailRender` emits only
+// `user`/`assistant`/`tool` rows, so EVERY ONE OF THOSE WRITES WAS DEAD ON ARRIVAL — the
+// same defect W24 found and deleted in `tracker/pm-agent.ts`, one agent over. Two readers
+// of one file name, and the one that did the work fed a store no model can see.
+//
+// WHERE THE REQUIREMENT NOW LIVES: `prompt/assembler.ts`. `soulFileForAgent` resolves the
+// trainer to `~/.dojo/prompts/TRAINER-SOUL.md` with `trainerSoulDefault()` — the shipped
+// template, substituted — as its seed, and `reseedUnsubstituted` replaces a stored soul
+// that still carries `{{…}}`, which is what reaches a box where the 3,023-byte stub is
+// already on disk. That file is the ONE store the runtime (`getSoulContent`) and the
+// Settings card (`prompt/agent-prompt-surface.ts`) both read, so "a prompt update actually
+// reaches an already-running Trainer" is met by the store rather than by a second writer.
+//
+// An OWNER-EDITED soul is never re-seeded: an owner's words have no placeholders in them.
 
 // ── Ensure Trainer Agent Running ──
 
@@ -173,8 +148,6 @@ export function ensureTrainerAgentRunning(): void {
     return;
   }
 
-  const systemPrompt = loadTrainerSoulPrompt();
-
   // Get Trainer model: check saved setting first, fall back to primary agent's model
   const trainerModelSetting = db.prepare("SELECT value FROM config WHERE key = 'trainer_agent_model'").get() as { value: string } | undefined;
   let modelId: string | null = trainerModelSetting?.value ?? null;
@@ -214,7 +187,8 @@ export function ensureTrainerAgentRunning(): void {
               ?, ?, NULL, datetime('now'), datetime('now'))
     `).run(trainerId, trainerName, modelId, primaryId, primaryId, trainerPermissions, trainerToolsPolicy);
 
-    insertMessageIfAbsent({ id: uuidv4(), agentId: trainerId, role: 'system', content: systemPrompt });
+    // W25: the dead `role='system'` soul write that stood here is deleted, not moved —
+    // see the tombstone at the top of this file.
 
     logger.info('Trainer agent created', { trainerId, trainerName });
   }
@@ -227,9 +201,9 @@ export function clearTrainerSession(): void {
 
   deleteAllForAgent(trainerId);
 
-  // Re-inject system prompt so the agent has its identity on next message
-  const systemPrompt = loadTrainerSoulPrompt();
-  insertMessageIfAbsent({ id: uuidv4(), agentId: trainerId, role: 'system', content: systemPrompt });
+  // W25: no soul re-injection. The identity is not in this table and never was — it is the
+  // `sys.identity` prompt entry, rendered from the soul FILE on every assembly, so a cleared
+  // session comes back with its whole doctrine rather than with a row nothing reads.
 
   logger.info('Trainer session cleared', { trainerId });
 }
