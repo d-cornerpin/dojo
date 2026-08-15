@@ -2,6 +2,41 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts",
+      "from": 165,
+      "to": 167,
+      "by": "HARNESS-LEARNINGS HL3 (W26) — every model-visible injection is a durable row",
+      "why": "+2 net (2 code, 2 comment, -2). One import swap and the door call. The sharpest case in the census: this recap exists BECAUSE a mid-turn compaction can evict the turn's own history out from under the model, and until now the engine's own account of what the turn had already done was evicted along with it — the one steer in the tree whose whole purpose is surviving a rebuild was the one with nothing that did. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts",
+      "from": 122,
+      "to": 125,
+      "by": "HARNESS-LEARNINGS HL3 (W26) — every model-visible injection is a durable row",
+      "why": "+3 net (7 code, 1 comment, -5). Two imports plus the two door calls replacing two raw enqueues, one of which was a five-line object literal. This file holds the start-ack pair — the two floors whose absence from the record cost the most investigation time this month, because `start-ack` is precisely the steer you go looking for when a person says they heard nothing. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/delegation-exit.ts",
+      "from": 149,
+      "to": 153,
+      "by": "HARNESS-LEARNINGS HL3 (W26) — every model-visible injection is a durable row",
+      "why": "+4 net (4 code, 2 comment, -2). Two imports, the door call, and its closing line. This exit path's own header says it \"bypasses every turn-ending floor\" — which makes it the worst site in the engine for an unrecorded injection: when the hand-off status line goes missing (run bmrx5kjitjq, the incident the steer was written for), there is no other floor on the turn whose record could show that the engine had asked for it. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts",
+      "from": 220,
+      "to": 224,
+      "by": "HARNESS-LEARNINGS HL3 (W26) — every model-visible injection is a durable row",
+      "why": "+4 net (5 code, 2 comment, -3). The code is the `broadcast` import, the `turnNumber` input the row write needs, its destructure, and the door call replacing the raw enqueue. This is the SECOND of two start-ack doors that enqueue the same text; the first is in `steer-checkpoint.ts`. A steer that can be injected from two sites and is recorded at only one of them is worse than one recorded at neither, because the record becomes silently conditional on which door opened first — so both doors move together or neither does. REFUSED: reading the turn off `turnCtx.turnNumber`, which is `number | undefined` and would have made the row's stamp a maybe; the step's caller has the real number and now passes it. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1521,
+      "to": 1528,
+      "by": "HARNESS-LEARNINGS HL3 (W26) — every model-visible injection is a durable row",
+      "why": "+7 (4 code, 4 comment, -1). The 4 code lines are the two imports the receipt needs, the `tagMessageLane(...)` wrapper on the nudge object, and the one-line persist. This is the tree's ONLY raw insertion into an in-flight model array and it was the only injection that reached a model with NEITHER a lane tag NOR a durable row: the receipt's classifier calls an unrecognised user-role message `organic`, so the vision nudge was recorded as something the person typed, and nothing anywhere recorded that the model had been told its images were gone. REFUSED: routing it through `pushEngineMessage` to buy the tag for free — that channel APPENDS, and this nudge is POSITIONAL (it must land immediately behind the user message whose images it describes, at `lastTouchedUserIdx + 1`); moving it to the tail would change what the model reads, which is exactly the byte-identity HL3 forbids itself. REFUSED: trimming the 4 comment lines to one — they carry WHY the two halves are done here rather than at the channel, and the proof that neither moves a prompt byte (a symbol key `JSON.stringify` drops; a `role='system'` row `tailRender` never emits). From here this file may only shrink."
+    },
+    {
       "path": "packages/server/src/agent/runtime.ts",
       "from": 1448,
       "to": 1487,
@@ -3414,7 +3449,7 @@
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 317,
-    "packages/server/src/agent/runtime.ts": 1521,
+    "packages/server/src/agent/runtime.ts": 1528,
     "packages/server/src/agent/shared-state.ts": 134,
     "packages/server/src/agent/spawner.ts": 1420,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
@@ -3448,14 +3483,14 @@
     "packages/server/src/agent/v2/steer-queue.ts": 287,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
     "packages/server/src/agent/v2/steps/assemble/index.ts": 302,
-    "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts": 220,
-    "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 122,
+    "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts": 224,
+    "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 125,
     "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 222,
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 198,
     "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 338,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 266,
-    "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 149,
+    "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 153,
     "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 225,
     "packages/server/src/agent/v2/steps/execute/index.ts": 289,
     "packages/server/src/agent/v2/steps/execute/post-result.ts": 351,
@@ -3497,7 +3532,7 @@
     "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 197,
     "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 178,
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 411,
-    "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 165,
+    "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 167,
     "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 238,
     "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts": 284,
     "packages/server/src/agent/v2/steps/preflight/inbound-and-abort.ts": 202,
