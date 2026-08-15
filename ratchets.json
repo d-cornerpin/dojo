@@ -3438,6 +3438,27 @@
       "to": 430,
       "by": "HARNESS-LEARNINGS HL4 step 2 (W28) — the one door, the declared authority, and the safe mergers",
       "why": "+52 net, +30 code (206 -> 236). The code is ONE reader: HL3's mirror, the record for a steer written this turn and confirmed in no model request. It sits at the boundary rather than at the three drop sites because the largest of the three classes — still pending when the turn ran out of model calls — is the one no drop site can observe, so one reader here replaces three there. It borrows the T41 rider's exact shape (a warn line plus an `audit` marker on the person's own ask) so it adds no event kind, no table and no schema. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/recall-lane.ts",
+      "from": 547,
+      "to": 665,
+      "by": "HARNESS-LEARNINGS HL5 — the recall lane publishes a superseding snapshot instead of serving obligations one hit at a time",
+      "why": "+118: 44 of code (the snapshot payload field, the renderer, the row build, the withdrawal clause in the vault loop, the truncation stage, the worst-case term) and 74 of comment. THE COMMENT HALF IS THE ARGUMENT THIS FILE CANNOT BE READ WITHOUT. Four things in it are decisions a later reader would otherwise undo: (a) the snapshot is emitted OUTSIDE the `RELEVANT MEMORY` frame, because that frame's own header says 'context only, not live conversation' and wrapping current state in it would undercut the one claim the block exists to make; (b) the stamp is an ISO instant and not a local clock, because `msg.current-time` is the one owner of what time it is and a second local rendering would be a second clock; (c) the per-hit obligation serving is WITHDRAWN while the snapshot renders, which reverses a T17 behaviour this same file records four lines above, so the reason has to travel with it or the next reader restores the double-serve; (d) the truncation puts the snapshot last, which contradicts the ordering rule stated at the top of `truncateRecallLane` ('the CONCLUSIONS are the last thing to go') and therefore has to say why. ALTERNATIVES MEASURED AND REFUSED. (i) Put the renderer in `work/obligation-memory.ts` (-40 here, +40 there): refused — that module owns the QUESTION ('what does the spine say is owed'), this lane owns the RENDER and its budget, and moving a render into the resolver is how the resolver acquires a second job. (ii) Make it a separate lane (+0 here): refused, and it is the expensive refusal — a new lane is a new reserve, a new slot, a new entry, a new truncate contract and a new row in every lane census, which is the adding-without-deleting disease in lane clothing; this is one more section of a lane that already exists. (iii) Drop the four comment blocks (+74): refused for the reason the T17 raise above refuses the same trade in the same words — this lane is recorded reasoning about position and cache safety, and a filter that silently withholds rows from the model's memory with no stated rule is the first thing a future reader deletes. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/obligation-memory.ts",
+      "from": 448,
+      "to": 518,
+      "by": "HARNESS-LEARNINGS HL5 — the set reader beside the line resolver",
+      "why": "+70: 14 of code (two SQL reads and their types) and 56 of header and doc comment. §1-§4 all answer 'is THIS line still owed?'; §5 answers 'what is owed, all of it?' and it lands HERE rather than anywhere else because this file's own header states the rule it is obeying — 'what does the spine say is owed' must keep having exactly one owner, and a snapshot that used a second predicate could disagree with a per-line verdict in the same request. THE COMMENT IS THE MEASUREMENT, NOT NARRATION, and two of its paragraphs are load-bearing. First, why the gate is the spine and not the retrieval: §2 already DROPS a closed obligation hit, so on the body this class was measured on (136 commitment rows, every one terminal) a retrieval-gated snapshot would never fire on the exact case it exists for — that is a fact about the code four sections up, invisible from §5, and without it the gate reads as over-broad. Second, why this is NOT `openObligations()` from `work/store.ts`: that reader drops rows past the ageing horizon and excludes `claimed`, both correct for the OPEN WORK block and both fatal here, because either omission makes 'anything not listed is not owed' a lie — and reusing it is the first thing a reader who has not measured it would try. ALTERNATIVES MEASURED AND REFUSED. (a) Add the reads to `work/store.ts` (+0 net across the tree): refused — `store.ts` is the spine's single WRITER plus its serving reads; this is the resolver's own question, and the resolver is this file. (b) Cut the header to four lines (-40): refused in the same words §4's own raise refuses it — a reader who does not know why the gate is not retrieval-shaped will make it retrieval-shaped, and that change would be silently correct-looking and silently dead. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/lanes.ts",
+      "from": 867,
+      "to": 886,
+      "by": "HARNESS-LEARNINGS HL5 — the snapshot's declared caps and the re-derived reserve",
+      "why": "+19: 3 lines of declaration (two new cap keys and the reformatting `laneLimit` forces, since it throws on an undeclared key) and 16 of `measured` prose on `lane.relevant-memory`. The prose is the entire content of this file's contract: `reserveTokens` moves 1,407 -> 1,807 and the number is PINNED to `recallLaneWorstCaseTokens()` by a suite that fails on drift, so what the raise buys is the DERIVATION beside the literal — 6 rows at their declared width plus the preamble and the elision line — and the honest statement of what 400 tokens off the top of every assembly costs and what it is being spent against (three cheaper fixes that were measured failing: T20's header sentence, T28's appended marker, T28b's front-loaded one). It also records the half that is displacement rather than growth: the obligation-shaped vault lines the snapshot withdraws were already inside the old reserve. ALTERNATIVES MEASURED AND REFUSED. (a) Raise the number without the prose (+3): refused — every other reserve in this file carries its derivation, and an undocumented reserve is one the next budget squeeze lowers by feel. (b) Keep the reserve at 1,407 by capping the snapshot at 2 rows (+0): refused, that is a product decision taken to satisfy a line count; a 2-row cap makes the elision line the common case on any worn-in board and turns a complete statement into a sample. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3613,9 +3634,9 @@
     "packages/server/src/memory/budget.ts": 442,
     "packages/server/src/memory/compaction.ts": 1442,
     "packages/server/src/memory/deliveries-lane.ts": 240,
-    "packages/server/src/memory/lanes.ts": 867,
+    "packages/server/src/memory/lanes.ts": 886,
     "packages/server/src/memory/message-store.ts": 1122,
-    "packages/server/src/memory/recall-lane.ts": 547,
+    "packages/server/src/memory/recall-lane.ts": 665,
     "packages/server/src/memory/recall.ts": 510,
     "packages/server/src/memory/retrieval.ts": 591,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
@@ -3674,7 +3695,7 @@
     "packages/server/src/work/ask-title.ts": 420,
     "packages/server/src/work/deliverable-declaration.ts": 320,
     "packages/server/src/work/join-drive.ts": 256,
-    "packages/server/src/work/obligation-memory.ts": 448,
+    "packages/server/src/work/obligation-memory.ts": 518,
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/store.ts": 1916,
