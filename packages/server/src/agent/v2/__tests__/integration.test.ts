@@ -2015,6 +2015,110 @@ describe('T1: engine steer delivery (the steer-queue drain)', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
+// HL3 — MODEL-VISIBLE MEANS LOGGED. The RUNTIME half of the invariant.
+//
+// dsh's rule, verbatim from their architecture doc: *"Anything that reaches a model request
+// must be reconstructable from the log, and a runtime invariant asserts it."* The source
+// half lives in `model-visible-means-logged.test.ts` (it catches the next injection before
+// it ships); this is the assertion itself, made against a real driven turn.
+//
+// The vehicle is the empty-response ladder, chosen because it was one of the eight ROW-LESS
+// floors the HL3 census found (`task-W26-report.md` section 1A, row 18): call 1 empty ->
+// silent retry, call 2 empty -> the steer is enqueued, call 3 CARRIES it. Before the fix
+// that steer reached the model and left no trace anywhere in the database — these clauses
+// were RED on exactly that, which is the recorded red for HL3.
+//
+// SCOPE, and it is the plan's own bound: the assertion covers the NON-PREFIX region. Below
+// `volatileFrom` sits the assembler's own output, which is a projection of `messages` rows
+// by construction (and is mocked here anyway); at and above it sit the loop's injections,
+// which are what HL3 is about.
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('HL3: model-visible means logged (the runtime invariant, driven)', () => {
+  let seenByModel: Array<Array<Record<string, unknown>>>;
+
+  const EMPTY = { content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' };
+  const DONE = { content: 'Done.', toolCalls: [], inputTokens: 50, outputTokens: 5, stopReason: 'end_turn' };
+
+  /** The prefix this turn's assembly produced — everything after it is a loop injection. */
+  function prefix(): Array<Record<string, unknown>> {
+    return toolResultTail();
+  }
+
+  beforeEach(() => {
+    seenByModel = [];
+    assembleContextMock.mockImplementation(async () => ({
+      systemPrompt: '<system prompt>',
+      messages: prefix(),
+    }));
+    callModelSpy.mockImplementation(async (args: { messages: unknown }) => {
+      seenByModel.push(JSON.parse(JSON.stringify(args.messages)));
+      return seenByModel.length <= 2 ? EMPTY : DONE;
+    });
+  });
+
+  /** Every durable row this agent holds — the "log" the invariant reads. */
+  function durableRows(): Array<{ content: string; role: string; turn_number: number | null }> {
+    return mockDb.current!
+      .prepare('SELECT content, role, turn_number FROM messages WHERE agent_id = ?')
+      .all('primary') as Array<{ content: string; role: string; turn_number: number | null }>;
+  }
+
+  it('the steer that reached the model is recoverable from a durable row, with its turn number', async () => {
+    await runV2Turn('primary');
+
+    // It reached the model: the third call carries it (T1's property, restated here because
+    // this clause is meaningless if the steer never actually shipped).
+    expect(seenByModel.length).toBeGreaterThanOrEqual(3);
+    const carried = seenByModel[2].some((m) => m.content === EMPTY_RESPONSE_NUDGE);
+    expect(carried, 'the steer never reached the model — this clause would be vacuous').toBe(true);
+
+    // …and it is IN THE LOG. Byte-identical: a row that paraphrases what the model saw is
+    // not a reconstruction of it.
+    const rows = durableRows().filter((r) => r.content === EMPTY_RESPONSE_NUDGE);
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+    expect(rows[0].turn_number).not.toBeNull();
+  });
+
+  it('every non-prefix message the model was handed is derivable from a durable row or a declared lane', async () => {
+    await runV2Turn('primary');
+
+    const prefixLen = prefix().length;
+    const logged = new Set(durableRows().map((r) => r.content));
+
+    // The lanes that are RENDERINGS of durable state rather than engine-composed directives.
+    // Each is a census row (`task-W26-report.md` section 1B) with its source named there; a
+    // message matching none of them and holding no row is precisely the failure this clause
+    // exists for. They are matched on their opening bytes, which their renderers fix.
+    const DERIVED_LANE_OPENERS = [
+      '[Turn context]',                         // msg.turn-context
+      '[Current time:',                         // msg.current-time
+      'RECENT OUTBOUND (engine-verified):',     // engine.recent-outbound
+      'RECENTLY ANSWERED in this conversation', // engine.recently-answered
+      'OPEN WORK',                              // engine.open-work
+      'Peers:',                                 // msg.peer-status
+      '## Possibly Relevant Techniques',        // msg.technique-weak
+      '## Other Techniques That Might Also Apply',
+    ];
+
+    const undecidable: string[] = [];
+    for (const call of seenByModel) {
+      call.slice(prefixLen).forEach((m, i) => {
+        const c = m.content;
+        if (typeof c !== 'string') return;           // tool-block carriers ride the prefix
+        if (logged.has(c)) return;                   // a durable row holds it verbatim
+        if (DERIVED_LANE_OPENERS.some((o) => c.trimStart().startsWith(o))) return;
+        undecidable.push(`[+${i}] ${c.slice(0, 120)}`);
+      });
+    }
+
+    // If this fails: a message reached the model that no row records and no declared lane
+    // renders. Either persist it (the fix HL3 asks for) or add it to the census with the
+    // durable state it is derived from written down beside it.
+    expect(undecidable).toEqual([]);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
 // PHASE-3 STRIP-3 — WHICH CONVERSATION IDENTITY THE TURN HANDS ITS CONSUMERS
 //
 // STRIP-2 enumerated the conv-KEY-passed-as-conversation-ID class tree-wide (13 signatures,
