@@ -3347,6 +3347,27 @@
       "to": 1625,
       "by": "HARNESS-LEARNINGS Sitting 0 / W24 — the project manager gets its soul back",
       "why": "+97 (+103/-6; 63 comment, 40 code). It lives HERE because this file already OWNS soul resolution: `soulFileForAgent` / `readSoulFile` / `writeSoulFile` are the one door T40 made the card and the runtime share, and the PM's default is the `fallback` field of that same declaration. Putting the template lookup anywhere else would re-create the exact defect being fixed — a SECOND reader of PM-SOUL.md, which is what `tracker/pm-agent.ts:loadPMSoulPrompt` was and why its 13.5 KB of doctrine reached no model. The 40 code lines are: the two-layout template search (repo + `~/.dojo/platform/templates`), the three-name substitution, the last-resort stub path with its loud log, and the `reseedUnsubstituted` clause. `tracker/pm-agent.ts` LOST 74 lines in the same commit (the retired duplicate), so the change is net-negative across the pair; this file is simply the side that gained."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/empty-response.ts",
+      "from": 174,
+      "to": 241,
+      "by": "HARNESS-LEARNINGS HL2 — an answer left in the reasoning channel is not a no-comment",
+      "why": "+67 (+68/-1; 40 comment, 27 code). It lives HERE because this file IS the empty-response ladder, and HL2's whole design is that it adds NO rung: the new door stands in front of the existing `empty-response-after-tools` exit and routes to the EXISTING silent-retry rung twenty lines below, sharing its `retriedEmptyResponse` latch so a turn still gets exactly one silent re-run whichever door asked. Putting the check anywhere else would be a second empty-response mechanism — precisely the disease the owner's 2026-08-15 census rule was written against. The 27 code lines are: one contract lookup, the owed test READ off the existing start-ack flags and the existing unanswered-person flags (no new predicate, no new state field), one non-blank reasoning test, one WARN carrying the turn's facts, and one `advance` onto the latch that was already there — plus the `emptyRetryBudget` gate on the pre-existing rung. The 40 comment lines are the dsh citation, the four no-new-mechanism clauses, the argument for why 'substantive' is non-blank rather than a threshold, and the list of what stays byte-identical. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/prompt/assembler.ts",
+      "from": 1625,
+      "to": 1673,
+      "by": "HARNESS-LEARNINGS Sitting 1 rider / W25 — the Trainer gets its soul back",
+      "why": "+48 (+64/-16; 25 comment, 36 code). Same argument W24 recorded one commit earlier, one agent over: this file OWNS soul resolution, and putting a second reader of TRAINER-SOUL.md anywhere else would re-create the exact defect being fixed. The 36 code lines are `shippedSoulDefaultFrom` (W24's `pmSoulDefaultFrom` GENERALISED, so the trainer's default costs a five-line wrapper instead of a second copy — `pmSoulDefaultFrom` shrank to a call), `trainerSoulDefaultFrom`, `trainerSoulDefault`, one placeholder added to the substituter and to the UNSUBSTITUTED test, and the one-line change to `soulFileForAgent`'s trainer branch. `techniques/trainer-agent.ts` LOST 26 lines in the same commit (235 -> 209: the retired duplicate reader, both dead writes, and seven imports), so the pair is +22, and this file is the side that gained."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 2680,
+      "to": 2718,
+      "by": "HARNESS-LEARNINGS HL1 + HL8 (C) — the capability contract, and the drop-on-plain replay rule",
+      "why": "+38 (+121/-83; 65 comment, 52 code). This is the file the whole of HL1 was about: it held EIGHT provider-name branches and now holds NONE — `grep -c 'deepseek.com|openrouter.ai|isDeepSeek|isOpenRouter'` returns 0, asserted by test. It grew anyway because the branches did not simply leave: `resolveOpenAIBaseUrl` and `applyProviderRequestParams` were EXTRACTED from inline code so the request shape could be pinned by a golden without a network call, and that extraction is what proves the migration moved zero bytes on the wire. 83 lines were deleted (NO_V1_HOSTS, hostNeedsNoV1, the two inline provider blocks, and HL8 (C)'s two plain-turn reasoning attachments). The new declared seam lives in `agent/model-contract.ts` — a NEW 201-line file, well under the 400-line cap and under the 240-line crossing threshold — which is where the eight branches actually went. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3388,7 +3409,7 @@
     "packages/server/src/agent/effects/scopes.ts": 349,
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 217,
-    "packages/server/src/agent/model.ts": 2680,
+    "packages/server/src/agent/model.ts": 2718,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
@@ -3457,7 +3478,7 @@
     "packages/server/src/agent/v2/steps/finalize/stranded-attachments.ts": 122,
     "packages/server/src/agent/v2/steps/post-call-classify/args-for-result.ts": 27,
     "packages/server/src/agent/v2/steps/post-call-classify/closeout-floors.ts": 196,
-    "packages/server/src/agent/v2/steps/post-call-classify/empty-response.ts": 174,
+    "packages/server/src/agent/v2/steps/post-call-classify/empty-response.ts": 241,
     "packages/server/src/agent/v2/steps/post-call-classify/going-idle.ts": 320,
     "packages/server/src/agent/v2/steps/post-call-classify/handoff-floors.ts": 209,
     "packages/server/src/agent/v2/steps/post-call-classify/index.ts": 246,
@@ -3536,7 +3557,7 @@
     "packages/server/src/microsoft/tools-write.ts": 2131,
     "packages/server/src/migration/checks.ts": 537,
     "packages/server/src/migration/import.ts": 407,
-    "packages/server/src/prompt/assembler.ts": 1625,
+    "packages/server/src/prompt/assembler.ts": 1673,
     "packages/server/src/prompt/registry/entries.ts": 542,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
