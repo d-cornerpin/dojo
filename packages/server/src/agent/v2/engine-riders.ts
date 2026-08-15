@@ -101,6 +101,81 @@ export const ENGINE_RIDER_INTENTS = [
   'hint', 'system',
 ] as const;
 
+// ════════════════════════════════════════════════════════════════════════════════════════
+// HL4 STEP 2 (2c) — THE SECOND CHANNEL, DECLARED.
+//
+// The list above governs ONE property of a rider: it must never drive a turn of its own.
+// W27's census (§5.7, "THE BIG ONE") found a second property nothing governed at all, and
+// called it the honest answer to *"is the queue the one door?"* — today it is not. Some
+// queue floors write their steer's text to BOTH channels: the queue (delivered inside this
+// turn, ordered by `STEER_PRECEDENCE`, latched per floor) and the events lane (lifted into
+// `lane.events` on a LATER turn by `memory/assembler.ts`, ordered by recency, with no
+// priority and no budget of its own). Nothing dedups across them.
+//
+// THE PAIRING IS UNDECLARED TODAY. The set below is TRANSCRIBED from the inherited record —
+// the plan's own sentence ("Six queue floors write to BOTH channels") and W27's census §3 row,
+// which names six: `owed-interrupt`, `promise-floor`, `a2a-handoff-floor`, `reminder-silence`,
+// `thrash-*`, `tracker-scaffold`. It is transcribed before it is judged; the conformance
+// clause beside it re-derives the truth from the writers themselves.
+//
+// WHAT IS DECLARED, AND IT IS THREE THINGS:
+//   1. THE PAIRING — which steer floor writes which rider intent, in one place.
+//   2. THE BUDGET — at most ONE paired rider per floor per turn. This is not a new bound:
+//      every one of the seven sites is already gated on the queue's own latch BEFORE it
+//      writes (`steerFired` / `steerFireCount` / the shared tracker latch), so the rider
+//      inherits the queue's budget by construction. Declaring it is what stops the eighth
+//      site from being written without one.
+//   3. THE CONTENT IDENTITY — the rider carries the steer's OWN bytes, so the two channels
+//      can never diverge into two different instructions about the same fact.
+//
+// ⚠ WHAT IS **NOT** DONE HERE, AND WHY — HANDED UP.
+// Step 2's brief says these floors should "stop double-writing". They are NOT stopped, and
+// the reason is a measurement rather than a preference: the queue is PER-TURN STATE, and its
+// only drain is the assemble step, so a steer filed on the last pass of a turn dies with the
+// turn. At all seven sites the events-lane row is the ONLY carrier that survives into the
+// next turn — the census's own hypothesis (b), *"a deliberate second delivery for a steer the
+// turn may not have room for"* — and every one of the seven says so in its own comment
+// (*"EVENTS lane surfaces it … PLUS a queue entry so the steer reaches the model on the very
+// next iteration"*). Deleting the rider write would therefore delete a cross-turn fallback
+// whose requirement has nowhere else to live, and the only re-home that would work — replay
+// the queue's UNDELIVERED entries as riders at turn end — is a new mechanism, which the
+// owner's 2026-08-15 rule forbids this wave from inventing.
+//
+// So the duplicate is real and it is bounded: on a turn that continues past the drain the
+// model sees the text twice, once as a steer now and once as an events line next turn. The
+// DESIGN CALL — fallback worth a duplicate, or duplicate worth losing the fallback — is
+// handed up with that measurement, per HL4's own STOP. It is not decided in a governance
+// commit, and the pairing below is what makes it decidable in one edit when it is.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** A steer floor that writes its text to the events lane as well as to the queue. */
+export interface QueuePairedRider {
+  /** The events-lane `originIntent` the floor writes beside its steer. */
+  readonly intent: string;
+  /**
+   * THE DECLARED BUDGET, as the exact guard the site is gated on — one paired rider per
+   * floor per turn (per KEY, where the latch is keyed). Four spellings exist and they are
+   * named rather than pattern-matched, because "some latch is nearby" is not a bound: the
+   * conformance clause requires THIS expression above THIS site.
+   */
+  readonly latch: string;
+}
+
+export const QUEUE_PAIRED_RIDERS: Readonly<Record<string, QueuePairedRider>> = Object.freeze({
+  'owed-interrupt':    { intent: 'owed_interrupt',          latch: "steerFired(state.steerQueue, 'owed-interrupt')" },
+  'promise-floor':     { intent: 'promise_floor',           latch: "steerFired(state.steerQueue, 'promise-floor')" },
+  'a2a-handoff-floor': { intent: 'a2a_handoff_floor',       latch: "steerFireCount(state.steerQueue, 'a2a-handoff-floor')" },
+  'reminder-silence':  { intent: 'reminder_silence_floor',  latch: "steerFireCount(state.steerQueue, 'reminder-silence')" },
+  // The one paired floor whose bound is NOT a queue read, and it is declared rather than
+  // excused: the gate latches per THRASHING SIGNATURE on `state.thrashGatedSignatures`,
+  // which is the same key its queue entry uses (`key: thrash.signature`). Same budget, one
+  // fact per signature, reached through the state field the gate has always owned.
+  'thrash-gate':       { intent: 'thrash_gate',             latch: 'state.thrashGatedSignatures.includes(thrash.signature)' },
+  // The shared subsystem latch: either tracker floor speaking is enough, which is the
+  // requirement the retired `nudgedForTrackerThisTurn` boolean carried beside its latch duty.
+  'tracker-scaffold':  { intent: 'auto_scaffold',           latch: 'steerFiredAny(state.steerQueue, TRACKER_STEER_FLOORS)' },
+});
+
 /** The rider exclusion as a SQL fragment, so the predicate and the writers cannot drift.
  *  Literal by construction — every element is a lowercase identifier from the frozen list
  *  above, so this is not an interpolation surface and `kit-schema-conformance`-style prepare
