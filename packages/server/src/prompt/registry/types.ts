@@ -350,28 +350,20 @@ interface BaseInjection {
    *  since most slots hold exactly one entry. */
   order?: number;
   // ── TOMBSTONE — `precedenceTier?: number`, DELETED HL4 step 2 (2a), 2026-08-15 ──
-  //
-  // It declared "1..7 from the Instruction Precedence ladder (1 = live user … 7 = engine
-  // hint)" and its own doc-comment admitted what it was: *"Informational metadata for
-  // governance/audit; the engine, not this number, enforces precedence."* 24 entries
-  // carried one. NOTHING read it — not the assembler, not the receipt, not a test, not
-  // the dashboard. W27's census (finding 8) counted it as the fourth of four orderings
-  // over the same subject, and the only one that was declared and inert.
-  //
-  // HL4 step 2's rule is one named authority with the others DERIVED from it and tested
-  // against it, so an ordering nobody enforces is either wired or removed — never left
-  // lying, because a number that looks authoritative and is not is worse than no number.
-  // Wiring was refused with a reason: the two enforced orderings answer different
-  // questions from this one (`MessageSlot` is a byte-equivalence contract over array
-  // POSITION; `STEER_PRECEDENCE` ranks steer DELIVERY), and re-pointing either at a
-  // 1..7 tier would move prompt bytes — a registered re-blessing, not a governance edit.
-  //
-  // THE REQUIREMENT IS NOT DELETED, because it never lived here. The Instruction
-  // Precedence ladder is a real, model-facing section of the system prompt
-  // (`prompt/assembler.ts` → `renderPrecedenceLadder`), and the model reading those
-  // words IS its enforcement — which is exactly why an unread copy of its numbers on
-  // entry definitions added nothing. The engine's own enforced authority over who speaks
-  // is `STEER_PRECEDENCE` (`agent/v2/steer-queue.ts`), asked through `steerPriority()`.
+  // "1..7 from the Instruction Precedence ladder", on 24 entries, and its own doc-comment
+  // admitted it: *"the engine, not this number, enforces precedence."* NOTHING read it —
+  // not the assembler, not the receipt, not a test. W27's census (finding 8) counted it as
+  // the fourth of four orderings over one subject and the only inert one, and step 2's rule
+  // is ONE authority with the rest derived from it: an ordering nobody enforces is wired or
+  // removed, never left lying, because a number that looks authoritative and is not is
+  // worse than no number. WIRING WAS REFUSED, argued: the two enforced orderings answer
+  // different questions (`MessageSlot` is a byte-equivalence contract over array POSITION;
+  // `STEER_PRECEDENCE` ranks steer DELIVERY), and re-pointing either at a 1..7 tier moves
+  // prompt bytes — a registered re-blessing, not a governance edit. THE REQUIREMENT NEVER
+  // LIVED HERE: the ladder is a real model-facing section of the system prompt
+  // (`prompt/assembler.ts` → `renderPrecedenceLadder`) and the model reading those words IS
+  // its enforcement, which is why an unread copy of its numbers added nothing. The engine's
+  // enforced authority over who speaks is `STEER_PRECEDENCE`, asked via `steerPriority()`.
   /** The REQUIREMENT this entry encodes (preserve-the-reason). Mandatory: no
    *  entry exists without a recorded reason. */
   reason: string;
