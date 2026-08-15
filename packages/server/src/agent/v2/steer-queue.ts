@@ -141,6 +141,26 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
 
 const BY_ID = new Map<SteerFloorId, SteerFloorSpec>(STEER_PRECEDENCE.map((f) => [f.id, f]));
 
+/**
+ * THE TABLE IS THE AUTHORITY (HL4 step 2, 2a). This is how anything else in the engine
+ * ASKS it, instead of keeping a second copy of the answer.
+ *
+ * W27's census found four orderings over the same subject and only two of them agreed:
+ * this table (declared, argued, enforced at the drain), the step sequence (enforced by
+ * early `return`, declared nowhere), `MessageSlot` (a byte-equivalence contract over
+ * array POSITION, a different question), and `precedenceTier` (declared and inert —
+ * deleted in the same commit as this export, with its tombstone). One authority means
+ * the others are DERIVED from it and tested against it; the first customer is the
+ * turn-ending family in `steps/post-call-classify/no-tool-calls.ts`, whose runtime order
+ * is now a sort over this function rather than a hand-written second list.
+ *
+ * The compiler refuses an undeclared id, so this cannot be asked about a floor the table
+ * does not rank.
+ */
+export function steerPriority(floor: SteerFloorId): number {
+  return BY_ID.get(floor)!.priority;
+}
+
 /** The floors that all nudge about the SAME subsystem, so one of them speaking is enough.
  *  This is the requirement the shared `nudgedForTrackerThisTurn` flag was carrying BESIDE
  *  its latch duty; splitting the latch per floor would have dropped it silently. */
