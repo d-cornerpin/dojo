@@ -1,0 +1,468 @@
+[
+  {
+    "label": "deepseek-v4-flash (thinking on)",
+    "baseUrl": "https://api.deepseek.com",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a test agent.\nBe brief."
+      },
+      {
+        "role": "user",
+        "content": "What is the weather and then summarise it?"
+      },
+      {
+        "role": "assistant",
+        "content": "On it — checking now.",
+        "reasoning_content": "R-PLAIN-STRING"
+      },
+      {
+        "role": "assistant",
+        "content": "A plain line with no stored reasoning at all.",
+        "reasoning_content": ""
+      },
+      {
+        "role": "assistant",
+        "content": "Looking it up.",
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "web_search",
+              "arguments": "{\"q\":\"weather\"}"
+            }
+          }
+        ],
+        "reasoning_content": "R-TOOLCALL"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "It is 18C and raining."
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_2",
+            "type": "function",
+            "function": {
+              "name": "get_current_time",
+              "arguments": "{}"
+            }
+          }
+        ],
+        "reasoning_content": ""
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_2",
+        "content": "12:05"
+      },
+      {
+        "role": "assistant",
+        "content": "Block content, text only, no tool call.",
+        "reasoning_content": "R-BLOCK-TEXT-ONLY"
+      },
+      {
+        "role": "user",
+        "content": "Thanks."
+      }
+    ],
+    "extras": {
+      "thinking": {
+        "type": "enabled"
+      }
+    }
+  },
+  {
+    "label": "deepseek-v4-pro (thinking off)",
+    "baseUrl": "https://api.deepseek.com",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a test agent.\nBe brief."
+      },
+      {
+        "role": "user",
+        "content": "What is the weather and then summarise it?"
+      },
+      {
+        "role": "assistant",
+        "content": "On it — checking now.",
+        "reasoning_content": "R-PLAIN-STRING"
+      },
+      {
+        "role": "assistant",
+        "content": "A plain line with no stored reasoning at all.",
+        "reasoning_content": ""
+      },
+      {
+        "role": "assistant",
+        "content": "Looking it up.",
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "web_search",
+              "arguments": "{\"q\":\"weather\"}"
+            }
+          }
+        ],
+        "reasoning_content": "R-TOOLCALL"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "It is 18C and raining."
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_2",
+            "type": "function",
+            "function": {
+              "name": "get_current_time",
+              "arguments": "{}"
+            }
+          }
+        ],
+        "reasoning_content": ""
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_2",
+        "content": "12:05"
+      },
+      {
+        "role": "assistant",
+        "content": "Block content, text only, no tool call.",
+        "reasoning_content": "R-BLOCK-TEXT-ONLY"
+      },
+      {
+        "role": "user",
+        "content": "Thanks."
+      }
+    ],
+    "extras": {
+      "thinking": {
+        "type": "disabled"
+      }
+    }
+  },
+  {
+    "label": "openrouter minimax/minimax-m2.7 (thinking capable)",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "messages": [
+      {
+        "role": "system",
+        "content": [
+          {
+            "type": "text",
+            "text": "You are a test agent.\nBe brief.",
+            "cache_control": {
+              "type": "ephemeral"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": "What is the weather and then summarise it?"
+      },
+      {
+        "role": "assistant",
+        "content": "On it — checking now.",
+        "reasoning_content": "R-PLAIN-STRING"
+      },
+      {
+        "role": "assistant",
+        "content": "A plain line with no stored reasoning at all."
+      },
+      {
+        "role": "assistant",
+        "content": "Looking it up.",
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "web_search",
+              "arguments": "{\"q\":\"weather\"}"
+            }
+          }
+        ],
+        "reasoning_content": "R-TOOLCALL"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "It is 18C and raining."
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_2",
+            "type": "function",
+            "function": {
+              "name": "get_current_time",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_2",
+        "content": "12:05"
+      },
+      {
+        "role": "assistant",
+        "content": "Block content, text only, no tool call.",
+        "reasoning_content": "R-BLOCK-TEXT-ONLY"
+      },
+      {
+        "role": "user",
+        "content": "Thanks."
+      }
+    ],
+    "extras": {
+      "extra_body": {
+        "reasoning": {
+          "enabled": true
+        }
+      }
+    }
+  },
+  {
+    "label": "openrouter google/gemini-2.5-flash-image (no thinking capability)",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "messages": [
+      {
+        "role": "system",
+        "content": [
+          {
+            "type": "text",
+            "text": "You are a test agent.\nBe brief.",
+            "cache_control": {
+              "type": "ephemeral"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": "What is the weather and then summarise it?"
+      },
+      {
+        "role": "assistant",
+        "content": "On it — checking now.",
+        "reasoning_content": "R-PLAIN-STRING"
+      },
+      {
+        "role": "assistant",
+        "content": "A plain line with no stored reasoning at all."
+      },
+      {
+        "role": "assistant",
+        "content": "Looking it up.",
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "web_search",
+              "arguments": "{\"q\":\"weather\"}"
+            }
+          }
+        ],
+        "reasoning_content": "R-TOOLCALL"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "It is 18C and raining."
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_2",
+            "type": "function",
+            "function": {
+              "name": "get_current_time",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_2",
+        "content": "12:05"
+      },
+      {
+        "role": "assistant",
+        "content": "Block content, text only, no tool call.",
+        "reasoning_content": "R-BLOCK-TEXT-ONLY"
+      },
+      {
+        "role": "user",
+        "content": "Thanks."
+      }
+    ],
+    "extras": {}
+  },
+  {
+    "label": "generic openai-compatible",
+    "baseUrl": "https://api.example.com/v1",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a test agent.\nBe brief."
+      },
+      {
+        "role": "user",
+        "content": "What is the weather and then summarise it?"
+      },
+      {
+        "role": "assistant",
+        "content": "On it — checking now.",
+        "reasoning_content": "R-PLAIN-STRING"
+      },
+      {
+        "role": "assistant",
+        "content": "A plain line with no stored reasoning at all."
+      },
+      {
+        "role": "assistant",
+        "content": "Looking it up.",
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "web_search",
+              "arguments": "{\"q\":\"weather\"}"
+            }
+          }
+        ],
+        "reasoning_content": "R-TOOLCALL"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "It is 18C and raining."
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_2",
+            "type": "function",
+            "function": {
+              "name": "get_current_time",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_2",
+        "content": "12:05"
+      },
+      {
+        "role": "assistant",
+        "content": "Block content, text only, no tool call.",
+        "reasoning_content": "R-BLOCK-TEXT-ONLY"
+      },
+      {
+        "role": "user",
+        "content": "Thanks."
+      }
+    ],
+    "extras": {}
+  },
+  {
+    "label": "openai default (no base url)",
+    "baseUrl": null,
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a test agent.\nBe brief."
+      },
+      {
+        "role": "user",
+        "content": "What is the weather and then summarise it?"
+      },
+      {
+        "role": "assistant",
+        "content": "On it — checking now.",
+        "reasoning_content": "R-PLAIN-STRING"
+      },
+      {
+        "role": "assistant",
+        "content": "A plain line with no stored reasoning at all."
+      },
+      {
+        "role": "assistant",
+        "content": "Looking it up.",
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "web_search",
+              "arguments": "{\"q\":\"weather\"}"
+            }
+          }
+        ],
+        "reasoning_content": "R-TOOLCALL"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "It is 18C and raining."
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_2",
+            "type": "function",
+            "function": {
+              "name": "get_current_time",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_2",
+        "content": "12:05"
+      },
+      {
+        "role": "assistant",
+        "content": "Block content, text only, no tool call.",
+        "reasoning_content": "R-BLOCK-TEXT-ONLY"
+      },
+      {
+        "role": "user",
+        "content": "Thanks."
+      }
+    ],
+    "extras": {}
+  }
+]

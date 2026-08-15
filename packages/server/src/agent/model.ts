@@ -868,6 +868,20 @@ function hostNeedsNoV1(baseUrl: string): boolean {
   }
 }
 
+/**
+ * The base URL the OpenAI SDK is pointed at, for a configured provider.
+ *
+ * HL1 PIN: extracted from `getOpenAIClient`'s inline IIFE byte-for-byte so the
+ * request shape it decides can be pinned by a golden without standing up a
+ * client or a credential. No behaviour change — the IIFE below became a call.
+ */
+export function resolveOpenAIBaseUrl(baseUrl?: string | null): string | undefined {
+  if (!baseUrl) return undefined;
+  const cleaned = baseUrl.replace(/\/+$/, '');
+  if (hostNeedsNoV1(cleaned)) return cleaned;
+  return cleaned.endsWith('/v1') ? cleaned : cleaned + '/v1';
+}
+
 function getOpenAIClient(providerId: string, baseUrl?: string | null): OpenAI {
   const cacheKey = `${providerId}:${baseUrl ?? 'default'}`;
   const cached = openaiClientCache.get(cacheKey);
@@ -881,13 +895,7 @@ function getOpenAIClient(providerId: string, baseUrl?: string | null): OpenAI {
     });
   }
 
-  const resolvedBaseUrl = baseUrl
-    ? (() => {
-        const cleaned = baseUrl.replace(/\/+$/, '');
-        if (hostNeedsNoV1(cleaned)) return cleaned;
-        return cleaned.endsWith('/v1') ? cleaned : cleaned + '/v1';
-      })()
-    : undefined;
+  const resolvedBaseUrl = resolveOpenAIBaseUrl(baseUrl);
 
   logger.info('Creating OpenAI-compatible client', { providerId, baseUrl, resolvedBaseUrl: resolvedBaseUrl ?? 'https://api.openai.com/v1 (default)' });
 
@@ -908,7 +916,7 @@ function getOpenAIClient(providerId: string, baseUrl?: string | null): OpenAI {
 // Any image/document blocks for models that LACK vision should already have
 // been stripped by `enforceModelCapabilities` in runtime.ts before this
 // function runs, this helper just translates whatever's left.
-async function buildOpenAIMessages(
+export async function buildOpenAIMessages(
   systemPrompt: string,
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[]; reasoningContent?: string }>,
   agentId: string,
@@ -1220,6 +1228,55 @@ export function repairToolCallArgs(raw: string): Record<string, unknown> | null 
   return null;
 }
 
+/**
+ * The provider-shaped knobs on an OpenAI-compatible chat request.
+ *
+ * HL1 PIN: lifted out of `callOpenAIModel` byte-for-byte (both blocks in their
+ * original order) so the request shape is pinnable by a golden without a
+ * network call. Mutates `requestParams` in place exactly as the inline code did.
+ *
+ * ── OpenRouter unified reasoning toggle ──
+ * When the provider is OpenRouter (detected by base URL) and the model is
+ * known to support thinking, honor the per-model thinking_enabled flag by
+ * sending the `reasoning` parameter. OpenRouter translates this into each
+ * upstream provider's convention (Anthropic thinking, o-series
+ * reasoning_effort, Gemini thinkingBudget, DeepSeek R1, etc). For generic
+ * openai-compatible providers we leave the request alone.
+ *
+ * ── DeepSeek native thinking ──
+ * DeepSeek v4-flash/v4-pro return reasoning as a sibling `reasoning_content`
+ * field in stream deltas and on assistant messages, distinct from
+ * Anthropic's thinking-block-inside-content pattern. Toggle is sent via
+ * top-level `thinking: { type: 'enabled' | 'disabled' }`. v4-pro defaults
+ * to thinking-on; we honor model.thinking_enabled here so the user has
+ * explicit control via the Models page. Round-trip is handled by
+ * (a) capturing delta.reasoning_content in the stream loop below and
+ * (b) passing assistantMsg.reasoning_content on subsequent requests via
+ * the message build path. Per DeepSeek docs we also avoid sending
+ * temperature / top_p when thinking is enabled (they're rejected), the
+ * current dispatch doesn't send those anyway, so no extra guard needed.
+ */
+export function applyProviderRequestParams(
+  requestParams: OpenAI.ChatCompletionCreateParams,
+  opts: { isOpenRouter: boolean; isDeepSeek: boolean; supportsThinking: boolean; thinkingEnabled: boolean },
+): void {
+  if (opts.isOpenRouter && opts.supportsThinking) {
+    // `extra_body` survives the OpenAI SDK's pass-through to non-standard
+    // params. Use it so the unified reasoning object makes it into the
+    // wire request untouched.
+    (requestParams as unknown as { extra_body?: Record<string, unknown> }).extra_body = {
+      ...((requestParams as unknown as { extra_body?: Record<string, unknown> }).extra_body ?? {}),
+      reasoning: { enabled: opts.thinkingEnabled },
+    };
+  }
+
+  if (opts.isDeepSeek) {
+    (requestParams as unknown as { thinking?: { type: string } }).thinking = {
+      type: opts.thinkingEnabled && opts.supportsThinking ? 'enabled' : 'disabled',
+    };
+  }
+}
+
 async function callOpenAIModel(
   params: ModelCallParams,
   modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[] },
@@ -1395,42 +1452,10 @@ async function callOpenAIModel(
     ...(openaiTools && openaiTools.length > 0 ? { tools: openaiTools } : {}),
   };
 
-  // ── OpenRouter unified reasoning toggle ──
-  // When the provider is OpenRouter (detected by base URL) and the model is
-  // known to support thinking, honor the per-model thinking_enabled flag by
-  // sending the `reasoning` parameter. OpenRouter translates this into each
-  // upstream provider's convention (Anthropic thinking, o-series
-  // reasoning_effort, Gemini thinkingBudget, DeepSeek R1, etc). For generic
-  // openai-compatible providers we leave the request alone.
-  // (isOpenRouter is declared once near the top of this function.)
   const supportsThinking = modelInfo.capabilities.includes('thinking');
-  if (isOpenRouter && supportsThinking) {
-    // `extra_body` survives the OpenAI SDK's pass-through to non-standard
-    // params. Use it so the unified reasoning object makes it into the
-    // wire request untouched.
-    (requestParams as unknown as { extra_body?: Record<string, unknown> }).extra_body = {
-      ...((requestParams as unknown as { extra_body?: Record<string, unknown> }).extra_body ?? {}),
-      reasoning: { enabled: modelInfo.thinkingEnabled },
-    };
-  }
-
-  // ── DeepSeek native thinking ──
-  // DeepSeek v4-flash/v4-pro return reasoning as a sibling `reasoning_content`
-  // field in stream deltas and on assistant messages, distinct from
-  // Anthropic's thinking-block-inside-content pattern. Toggle is sent via
-  // top-level `thinking: { type: 'enabled' | 'disabled' }`. v4-pro defaults
-  // to thinking-on; we honor model.thinking_enabled here so the user has
-  // explicit control via the Models page. Round-trip is handled by
-  // (a) capturing delta.reasoning_content in the stream loop below and
-  // (b) passing assistantMsg.reasoning_content on subsequent requests via
-  // the message build path. Per DeepSeek docs we also avoid sending
-  // temperature / top_p when thinking is enabled (they're rejected), the
-  // current dispatch doesn't send those anyway, so no extra guard needed.
-  if (isDeepSeek) {
-    (requestParams as unknown as { thinking?: { type: string } }).thinking = {
-      type: modelInfo.thinkingEnabled && supportsThinking ? 'enabled' : 'disabled',
-    };
-  }
+  applyProviderRequestParams(requestParams, {
+    isOpenRouter, isDeepSeek, supportsThinking, thinkingEnabled: modelInfo.thinkingEnabled,
+  });
 
   logger.info('Calling OpenAI model', {
     model: modelInfo.apiModelId,
