@@ -3403,6 +3403,41 @@
       "to": 2718,
       "by": "HARNESS-LEARNINGS HL1 + HL8 (C) — the capability contract, and the drop-on-plain replay rule",
       "why": "+38 (+121/-83; 65 comment, 52 code). This is the file the whole of HL1 was about: it held EIGHT provider-name branches and now holds NONE — `grep -c 'deepseek.com|openrouter.ai|isDeepSeek|isOpenRouter'` returns 0, asserted by test. It grew anyway because the branches did not simply leave: `resolveOpenAIBaseUrl` and `applyProviderRequestParams` were EXTRACTED from inline code so the request shape could be pinned by a golden without a network call, and that extraction is what proves the migration moved zero bytes on the wire. 83 lines were deleted (NO_V1_HOSTS, hostNeedsNoV1, the two inline provider blocks, and HL8 (C)'s two plain-turn reasoning attachments). The new declared seam lives in `agent/model-contract.ts` — a NEW 201-line file, well under the 400-line cap and under the 240-line crossing threshold — which is where the eight branches actually went. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts",
+      "from": 71,
+      "to": 104,
+      "by": "HARNESS-LEARNINGS HL4 step 2 (W28) — the one door, the declared authority, and the safe mergers",
+      "why": "+33 net and the CODE SHRANK BY 3 (47 -> 44). The whole raise is the declaration this task exists to produce: the turn-ending family is now a table-sorted list instead of a hand-written sequence, so a second ordering is no longer expressible here. The seven-call block became a five-line loop; what replaced the deleted lines is the header naming the authority, the census finding that made it necessary, and the `going-idle` inversion it fixes. A raise that buys FEWER executable lines is the shape this ratchet is meant to allow. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steer-queue.ts",
+      "from": 287,
+      "to": 335,
+      "by": "HARNESS-LEARNINGS HL4 step 2 (W28) — the one door, the declared authority, and the safe mergers",
+      "why": "+48 net, +8 code (157 -> 165). The code is `steerPriority()` — the one function through which anything else in the engine ASKS the table instead of keeping a second copy of the answer — and `clearSteerQueueFor`'s scoped filter, which is +4 over the unscoped clear it replaced. Everything else is argument: why the table is THE authority among the four orderings the census found, why a give-up rung may not burn a priority-10 truth guard (measured, with the abandoned list quoted), and the `compaction-recap` tombstone whose priority 60 stays retired. One floor was DELETED here in the same wave. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts",
+      "from": 367,
+      "to": 417,
+      "by": "HARNESS-LEARNINGS HL4 step 2 (W28) — the one door, the declared authority, and the safe mergers",
+      "why": "+50 net, +15 code (200 -> 215). The four truth guards were four blocks behind a byte-repeated prologue with four `continueLoop` exits and four door calls; they are one loop over four declared records with ONE of each. The +15 is the record scaffolding that four inline blocks did not need — the interface, the four `gate`/`decide` pairs' own signatures — against four deleted prologues. The comment half carries what the merger had to KEEP and say out loud: the claimed-delivery guard's row-keyed latch position, and the held merger candidate 3. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/empty-response.ts",
+      "from": 241,
+      "to": 252,
+      "by": "HARNESS-LEARNINGS HL4 step 2 (W28) — the one door, the declared authority, and the safe mergers",
+      "why": "+11 net, +2 code (127 -> 129). The two lines are the ladder's declared family (`EMPTY_LADDER_FAMILY`) and the type import that names it; the two give-up rungs' clears are re-pointed in place. The rest is why a rung that gives up on its own diagnosis has no standing to abandon a truth guard filed earlier in the same turn — the census's finding 3, driven, with the abandoned list quoted at the site. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/finalize-record.ts",
+      "from": 378,
+      "to": 430,
+      "by": "HARNESS-LEARNINGS HL4 step 2 (W28) — the one door, the declared authority, and the safe mergers",
+      "why": "+52 net, +30 code (206 -> 236). The code is ONE reader: HL3's mirror, the record for a steer written this turn and confirmed in no model request. It sits at the boundary rather than at the three drop sites because the largest of the three classes — still pending when the turn ran out of model calls — is the one no drop site can observe, so one reader here replaces three there. It borrows the T41 rider's exact shape (a warn line plus an `audit` marker on the person's own ask) so it adds no event kind, no table and no schema. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3480,7 +3515,7 @@
     "packages/server/src/agent/v2/recorded-commitment.ts": 209,
     "packages/server/src/agent/v2/recovery.ts": 605,
     "packages/server/src/agent/v2/state.ts": 668,
-    "packages/server/src/agent/v2/steer-queue.ts": 287,
+    "packages/server/src/agent/v2/steer-queue.ts": 335,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
     "packages/server/src/agent/v2/steps/assemble/index.ts": 302,
     "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts": 224,
@@ -3513,17 +3548,17 @@
     "packages/server/src/agent/v2/steps/finalize/stranded-attachments.ts": 122,
     "packages/server/src/agent/v2/steps/post-call-classify/args-for-result.ts": 27,
     "packages/server/src/agent/v2/steps/post-call-classify/closeout-floors.ts": 196,
-    "packages/server/src/agent/v2/steps/post-call-classify/empty-response.ts": 241,
+    "packages/server/src/agent/v2/steps/post-call-classify/empty-response.ts": 252,
     "packages/server/src/agent/v2/steps/post-call-classify/going-idle.ts": 320,
     "packages/server/src/agent/v2/steps/post-call-classify/handoff-floors.ts": 209,
     "packages/server/src/agent/v2/steps/post-call-classify/index.ts": 246,
     "packages/server/src/agent/v2/steps/post-call-classify/missed-reply.ts": 167,
     "packages/server/src/agent/v2/steps/post-call-classify/no-reply.ts": 359,
-    "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 71,
+    "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 104,
     "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 276,
     "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 323,
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 286,
-    "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 367,
+    "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 417,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
     "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 258,
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
@@ -3546,7 +3581,7 @@
     "packages/server/src/agent/v2/steps/step-outcome.ts": 140,
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
     "packages/server/src/agent/v2/steps/teardown/conversation-tagging.ts": 70,
-    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 378,
+    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 430,
     "packages/server/src/agent/v2/steps/teardown/index.ts": 237,
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/costs/tracker.ts": 541,
