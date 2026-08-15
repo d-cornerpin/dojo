@@ -439,7 +439,7 @@ describe('the steer queue is the SOLE steer writer (T6 exit clause, landed early
   it('EVERY steerQueue write goes through the module — no raw literal, no spread', () => {
     // A site that builds a queue by hand would bypass the latch AND the precedence table,
     // which is exactly how 26 sites came to own one string between them.
-    const SANCTIONED = /(enqueueSteer|markSteerDelivered|markSteerAttempted|clearSteerQueue|emptySteerQueue)\(/;
+    const SANCTIONED = /(enqueueSteer|markSteerDelivered|markSteerAttempted|clearSteerQueueFor|emptySteerQueue)\(/;
     const src = engineSrc();
     // A `steerQueue:` line either NAMES a module function on the same line, or opens a
     // multi-line call whose function is the line above it (`steerQueue: enqueueSteer({`

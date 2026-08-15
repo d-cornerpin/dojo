@@ -303,8 +303,33 @@ export function markSteerAttempted(q: SteerQueue, entry: SteerEntry): SteerQueue
   return { ...q, pending: q.pending.map((e) => (e.seq === entry.seq ? { ...e, attempts } : e)) };
 }
 
-/** Drop everything still waiting (the turn is giving up). Latches and records stand. */
-export function clearSteerQueue(q: SteerQueue): SteerQueue {
-  if (q.pending.length === 0) return q;
-  return { ...q, pending: [], abandoned: [...q.abandoned, ...q.pending] };
+/**
+ * Drop what a GIVING-UP LADDER still has waiting — its own entries and no one else's.
+ * Latches and records stand; an abandoned entry is a record, never a deletion.
+ *
+ * ── HL4 STEP 2 (2b): THE SCOPE IS THE FIX, AND THE UNSCOPED SPELLING IS GONE ──
+ * This was `clearSteerQueue(q)` and it dropped the WHOLE pending list. The two callers
+ * are the empty-response ladder's give-up rungs, and the drain is ONE ENTRY PER MODEL
+ * CALL — so a truth guard filed on pass N is ordinarily still pending while pass N+1 is
+ * in flight, and a later empty call abandoned it undelivered. Measured, not argued:
+ * `steps/post-call-classify/__tests__/a-give-up-rung-burns-only-its-own-family.test.ts`
+ * records `abandoned = ['ungrounded-claim', 'output-grind']` at `24c4133`.
+ *
+ * The two mechanisms are not evidence about each other. The guard's subject is something
+ * the person was already told and that is not true; the ladder's subject is that THIS
+ * call produced nothing. Burning the first for the second leaves the false claim standing
+ * — which is the exact destruction this queue was built to end ("a steer must not be
+ * silently destroyed by a peer firing in the same beat"), one rung down.
+ *
+ * The parameter is REQUIRED, and that is deliberate: a rung must name the family it is
+ * giving up on, so reach can never be re-acquired by leaving an argument off.
+ */
+export function clearSteerQueueFor(q: SteerQueue, floors: readonly SteerFloorId[]): SteerQueue {
+  const mine = q.pending.filter((e) => floors.includes(e.floor));
+  if (mine.length === 0) return q;
+  return {
+    ...q,
+    pending: q.pending.filter((e) => !floors.includes(e.floor)),
+    abandoned: [...q.abandoned, ...mine],
+  };
 }

@@ -19,7 +19,7 @@ import type { WsEvent } from '@dojo/shared';
 import { persistEngineSteer } from '../engine-steer.js';
 import { initState, type AgentTurnState } from '../state.js';
 import {
-  clearSteerQueue, emptySteerQueue, enqueueSteer, markSteerAttempted, markSteerDelivered,
+  clearSteerQueueFor, emptySteerQueue, enqueueSteer, markSteerAttempted, markSteerDelivered,
   nextSteer, steerFireCount, steerFired, steerFiredAny, steerFiredAtLoop,
   MAX_STEER_DELIVERY_ATTEMPTS, STEER_PRECEDENCE, TRACKER_STEER_FLOORS,
   type SteerQueue,
@@ -293,11 +293,29 @@ describe('delivered-to-model is RECORDED, not assumed', () => {
     expect(nextSteer(emptySteerQueue())).toBeNull();
   });
 
-  it('giving up on the turn abandons what is waiting, on the record', () => {
+  it('a ladder giving up abandons ITS OWN waiting entries, on the record', () => {
     let q = enqueueSteer(emptySteerQueue(), { floor: 'repetition', content: 'r', atLoop: 1 });
-    q = clearSteerQueue(q);
+    q = clearSteerQueueFor(q, ['repetition']);
     expect(q.pending).toEqual([]);
     expect(q.abandoned.map((e) => e.content)).toEqual(['r']);
+  });
+
+  it('HL4 2b: …and NOBODY ELSE\'S. The clear is scoped, and the unscoped spelling is gone', () => {
+    // The one property the give-up rungs were missing. A truth guard filed earlier in the
+    // turn and still waiting at the one-per-call drain is not the empty ladder's to burn.
+    let q = enqueueSteer(emptySteerQueue(), { floor: 'ungrounded-claim', content: 'g', key: 'ob-1', atLoop: 1 });
+    q = enqueueSteer(q, { floor: 'empty-response', content: 'e', atLoop: 2 });
+    q = clearSteerQueueFor(q, ['output-grind', 'empty-response']);
+    expect(q.pending.map((e) => e.floor)).toEqual(['ungrounded-claim']);
+    expect(q.abandoned.map((e) => e.floor)).toEqual(['empty-response']);
+    // The latch record is untouched: `fired` without `delivered` is still the honest
+    // "written, never seen by the model" the queue was built to keep.
+    expect(q.fired.map((e) => e.floor)).toEqual(['ungrounded-claim', 'empty-response']);
+  });
+
+  it('a scope that matches nothing pending is a no-op, not a rebuild', () => {
+    const q = enqueueSteer(emptySteerQueue(), { floor: 'repetition', content: 'r', atLoop: 1 });
+    expect(clearSteerQueueFor(q, ['spinning'])).toBe(q);
   });
 });
 

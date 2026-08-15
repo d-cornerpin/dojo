@@ -16,12 +16,23 @@ import { createLogger } from '../../../../logger.js';
 import { contractForConfiguredModel } from '../../../model.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
-import { clearSteerQueue, steerFired } from '../../steer-queue.js';
+import { clearSteerQueueFor, steerFired, type SteerFloorId } from '../../steer-queue.js';
 import { outputTruncationClassifier } from '../../classifiers/output.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext } from './index.js';
 
 const logger = createLogger('v2-loop');
+
+/**
+ * THE LADDER'S OWN FAMILY — the only entries its give-up rungs may abandon (HL4 2b).
+ *
+ * Two rungs, one ladder, and its own header already says why they are two rungs and not
+ * one (`:52-58`). What they share is a subject: THIS model call produced nothing usable.
+ * Every other floor in the queue is speaking about something else, and a rung that gives
+ * up on its own diagnosis has no standing to give up on theirs — a priority-10 truth
+ * guard filed earlier in the same turn was abandoned undelivered by exactly that reach.
+ */
+const EMPTY_LADDER_FAMILY: readonly SteerFloorId[] = ['output-grind', 'empty-response'];
 
 /** The empty-response ladder. `proceed` means the response was not empty. */
 export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyContext): StepOutcome {
@@ -91,7 +102,7 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
     logger.warn('v2: the output budget was spent grinding a SECOND time after the steer — giving up on this turn', {
       loopCount: state.loopCount, stopReason: result.stopReason,
     }, agentId);
-    state = advance(state, { steerQueue: clearSteerQueue(state.steerQueue) });
+    state = advance(state, { steerQueue: clearSteerQueueFor(state.steerQueue, EMPTY_LADDER_FAMILY) });
     broadcast({
       type: 'chat:error',
       agentId,
@@ -216,9 +227,10 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
     logger.warn('v2: model returned empty after nudge, breaking', {
       loopCount: state.loopCount, stopReason: result.stopReason,
     }, agentId);
-    // The turn is giving up: nothing still waiting can be delivered, so drop the
-    // queue. The entries are recorded as abandoned, never silently forgotten.
-    state = advance(state, { steerQueue: clearSteerQueue(state.steerQueue) });
+    // The turn is giving up on THIS LADDER, so its own entries are abandoned — recorded,
+    // never silently forgotten. HL4 2b: it no longer speaks for the rest of the queue. A
+    // guard about something the person was already told is not answered by an empty call.
+    state = advance(state, { steerQueue: clearSteerQueueFor(state.steerQueue, EMPTY_LADDER_FAMILY) });
     broadcast({
       type: 'chat:error',
       agentId,
