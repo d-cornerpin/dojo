@@ -1128,15 +1128,15 @@ export async function buildOpenAIMessages(
       }
     } else if (m.role === 'assistant') {
       if (typeof m.content === 'string') {
+        // HL8 (C) — A STRING-CONTENT ASSISTANT MESSAGE CAN NEVER CARRY TOOL CALLS, so it
+        // is a PLAIN turn and its reasoning is dropped. dsh's own rule, from the official
+        // passback guide (`llm-deepseek/src/serialize.ts:96-100`): reasoning_content must
+        // return on tool-call turns and is IGNORED on plain turns. Both branches that used
+        // to attach it here are deleted — the stored body AND the `''` fallback, which was
+        // introduced against a 400 that is a TOOL-CALL-turn constraint. Measured waste
+        // removed: 3,535 chars ≈ 884 tokens on a 32,367-token request (2.7%), and it grew
+        // without bound — 3,191 stored plain rows on the dev box carry reasoning.
         const msg: OpenAI.ChatCompletionAssistantMessageParam = { role: 'assistant', content: m.content };
-        if (m.reasoningContent) {
-          (msg as unknown as Record<string, unknown>).reasoning_content = m.reasoningContent;
-        } else if (contract.requiresReasoningReplay) {
-          // DeepSeek requires reasoning_content on every assistant turn in
-          // thinking mode. Use empty string as a safe fallback when we don't
-          // have stored reasoning (legacy rows, or empty thinking response).
-          (msg as unknown as Record<string, unknown>).reasoning_content = '';
-        }
         openaiMessages.push(msg);
       } else if (Array.isArray(m.content)) {
         const blocks = m.content as unknown as Array<Record<string, unknown>>;
@@ -1159,13 +1159,18 @@ export async function buildOpenAIMessages(
           }));
         }
 
-        // DeepSeek 400s if reasoning_content is missing on tool-call
-        // follow-ups. Always include it, empty string when we don't have
-        // stored reasoning. Other providers ignore the unknown field.
-        if (m.reasoningContent) {
-          (assistantMsg as unknown as Record<string, unknown>).reasoning_content = m.reasoningContent;
-        } else if (contract.requiresReasoningReplay) {
-          (assistantMsg as unknown as Record<string, unknown>).reasoning_content = '';
+        // HL8 (C) — REASONING RIDES TOOL-CALL TURNS ONLY, per dsh's official passback rule
+        // (`llm-deepseek/src/serialize.ts:96-100`): required on tool-call turns, IGNORED on
+        // plain ones. A block-content message with only text blocks is a plain turn.
+        // The `''` fallback is KEPT on tool-call turns: some providers 400 when the field is
+        // missing on a tool-call follow-up, dsh omits it there and we are strictly safer, and
+        // it costs zero tokens. After HL8 (B) it should almost never fire — that is the point.
+        if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
+          if (m.reasoningContent) {
+            (assistantMsg as unknown as Record<string, unknown>).reasoning_content = m.reasoningContent;
+          } else if (contract.requiresReasoningReplay) {
+            (assistantMsg as unknown as Record<string, unknown>).reasoning_content = '';
+          }
         }
 
         openaiMessages.push(assistantMsg);

@@ -13,13 +13,11 @@
       },
       {
         "role": "assistant",
-        "content": "On it — checking now.",
-        "reasoning_content": "R-PLAIN-STRING"
+        "content": "On it — checking now."
       },
       {
         "role": "assistant",
-        "content": "A plain line with no stored reasoning at all.",
-        "reasoning_content": ""
+        "content": "A plain line with no stored reasoning at all."
       },
       {
         "role": "assistant",
@@ -63,8 +61,7 @@
       },
       {
         "role": "assistant",
-        "content": "Block content, text only, no tool call.",
-        "reasoning_content": "R-BLOCK-TEXT-ONLY"
+        "content": "Block content, text only, no tool call."
       },
       {
         "role": "user",
@@ -91,13 +88,11 @@
       },
       {
         "role": "assistant",
-        "content": "On it — checking now.",
-        "reasoning_content": "R-PLAIN-STRING"
+        "content": "On it — checking now."
       },
       {
         "role": "assistant",
-        "content": "A plain line with no stored reasoning at all.",
-        "reasoning_content": ""
+        "content": "A plain line with no stored reasoning at all."
       },
       {
         "role": "assistant",
@@ -141,8 +136,7 @@
       },
       {
         "role": "assistant",
-        "content": "Block content, text only, no tool call.",
-        "reasoning_content": "R-BLOCK-TEXT-ONLY"
+        "content": "Block content, text only, no tool call."
       },
       {
         "role": "user",
@@ -177,8 +171,7 @@
       },
       {
         "role": "assistant",
-        "content": "On it — checking now.",
-        "reasoning_content": "R-PLAIN-STRING"
+        "content": "On it — checking now."
       },
       {
         "role": "assistant",
@@ -225,8 +218,7 @@
       },
       {
         "role": "assistant",
-        "content": "Block content, text only, no tool call.",
-        "reasoning_content": "R-BLOCK-TEXT-ONLY"
+        "content": "Block content, text only, no tool call."
       },
       {
         "role": "user",
@@ -263,8 +255,7 @@
       },
       {
         "role": "assistant",
-        "content": "On it — checking now.",
-        "reasoning_content": "R-PLAIN-STRING"
+        "content": "On it — checking now."
       },
       {
         "role": "assistant",
@@ -311,8 +302,7 @@
       },
       {
         "role": "assistant",
-        "content": "Block content, text only, no tool call.",
-        "reasoning_content": "R-BLOCK-TEXT-ONLY"
+        "content": "Block content, text only, no tool call."
       },
       {
         "role": "user",
@@ -335,8 +325,7 @@
       },
       {
         "role": "assistant",
-        "content": "On it — checking now.",
-        "reasoning_content": "R-PLAIN-STRING"
+        "content": "On it — checking now."
       },
       {
         "role": "assistant",
@@ -383,8 +372,7 @@
       },
       {
         "role": "assistant",
-        "content": "Block content, text only, no tool call.",
-        "reasoning_content": "R-BLOCK-TEXT-ONLY"
+        "content": "Block content, text only, no tool call."
       },
       {
         "role": "user",
@@ -407,8 +395,7 @@
       },
       {
         "role": "assistant",
-        "content": "On it — checking now.",
-        "reasoning_content": "R-PLAIN-STRING"
+        "content": "On it — checking now."
       },
       {
         "role": "assistant",
@@ -455,8 +442,7 @@
       },
       {
         "role": "assistant",
-        "content": "Block content, text only, no tool call.",
-        "reasoning_content": "R-BLOCK-TEXT-ONLY"
+        "content": "Block content, text only, no tool call."
       },
       {
         "role": "user",

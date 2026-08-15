@@ -15,6 +15,13 @@
 //                  key and the system message's cache marker.
 //   • `extras`   — the provider-shaped request knobs (`thinking`, `extra_body.reasoning`).
 //
+// THE GOLDEN HAS MOVED EXACTLY ONCE, and this is the record of it. HL8 (C) adopted dsh's
+// drop-on-plain replay rule, so every `reasoning_content` key on a PLAIN assistant message
+// (`tool_calls` empty) left the wire — 6,536 -> 6,028 bytes across the roster. Nothing else
+// changed on any row: same base URLs, same request knobs, same message count, and every
+// tool-call message kept its reasoning INCLUDING the `''` 400-guard. The golden is what
+// proved that scope rather than asserting it.
+//
 // THE ROSTER is every model class configured on a real box, taken from the dev box's
 // own `models` table (2026-08-15): DeepSeek Flash and Pro behind `api.deepseek.com`,
 // OpenRouter models with and without the `thinking` capability, a generic

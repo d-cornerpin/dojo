@@ -180,7 +180,17 @@ function scrubSummariesAgainstFreshTechniques<S extends SummaryLike>(
 
 // ── Context Assembly ──
 
-type LoopMsg = { role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] };
+// HL8 (B) — `reasoningContent` IS DECLARED HERE, AND THAT IS THE LOAD-BEARING EDIT.
+// It was declared at both ENDS of the chain — `LaneMessage` (`lanes.ts:71`) and
+// `ModelCallParams` (`model.ts:120`) — and nowhere in the middle, so it crossed assembly
+// as an UNDECLARED STRUCTURAL EXTRA that TypeScript could not see being dropped.
+// `mergeConsecutiveRoles` is where it was dropped, live-measured at 1,889 and 2,548
+// characters in one turn (W23). Declaring it is what turns that loss into a type error.
+type LoopMsg = {
+  role: 'user' | 'assistant';
+  content: string | Anthropic.ContentBlockParam[];
+  reasoningContent?: string;
+};
 
 // ── Per-message time stamps (time-awareness, owner ruled 2026-07-16) ──
 //
@@ -386,7 +396,10 @@ export interface AssembledContext {
   // cached prefix. EMPTY after P-1 (all volatile content moved to msg.turn-context);
   // the Part 3 determinism check asserts it stays empty.
   systemVolatile: string;
-  messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>;
+  // HL8 (B): the contract stops lying about what it returns. Reasoning has ALWAYS crossed
+  // this boundary (the model client reads it off these very messages); it was simply
+  // undeclared, which is how it could be dropped in the middle without a type error.
+  messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[]; reasoningContent?: string }>;
   /**
    * Registry path only: the entry id that produced each system-prompt part
    * (aligned to parts) / each message. Fed to the context receipt so it shows
@@ -2360,14 +2373,41 @@ function parseMessageContent(
   }
 }
 
-function mergeConsecutiveRoles(
-  messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
-): Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }> {
-  const merged: typeof messages = [];
+/**
+ * Fold consecutive same-role messages so the array alternates, as the providers require.
+ *
+ * ── HL8 (B) — REASONING SURVIVES THE FOLD. ──
+ * This function kept only the run's FIRST message's fields (`merged.push({ ...msg })`)
+ * and merged only `content` into it. On a live five-hop research turn that discarded
+ * 1,889 and 2,548 characters of `reasoning_content` from TOOL-CALL messages, which then
+ * reached DeepSeek with the `''` fallback and stayed corrupted on every later hop and
+ * every later turn — the rows are intact, the loss is at assembly (W23, measured).
+ *
+ * Two shapes trigger it and neither is exotic: a turn whose model call persisted as TWO
+ * rows (the text, then the `tool_use` blocks — the reasoning rides the second), and a
+ * turn whose predecessor's last row was a plain answer separated only by a `role='system'`
+ * row that `tailRender` does not emit.
+ *
+ * JOIN, not last-wins: it mirrors dsh's `serializeAssistant`, which joins every reasoning
+ * block of a message (`llm-deepseek/src/serialize.ts`), and it cannot lose a body when
+ * three assistants merge. Order is preserved — earlier thinking first.
+ */
+function mergeConsecutiveRoles(messages: LoopMsg[]): LoopMsg[] {
+  const merged: LoopMsg[] = [];
 
   for (const msg of messages) {
     if (merged.length > 0 && merged[merged.length - 1].role === msg.role) {
       const prev = merged[merged.length - 1];
+      // Reasoning belongs to the tool-call turn and is REQUIRED on it, so a merged run
+      // that contains a tool call must carry the reasoning of every message that
+      // contributed one, in order. Nothing is invented: a run where nobody had reasoning
+      // still comes out with the property absent, not with `''` (that fallback stays
+      // `model.ts`'s alone).
+      if (msg.reasoningContent) {
+        prev.reasoningContent = prev.reasoningContent
+          ? `${prev.reasoningContent}\n\n${msg.reasoningContent}`
+          : msg.reasoningContent;
+      }
       if (typeof prev.content === 'string' && typeof msg.content === 'string') {
         prev.content = prev.content + '\n\n' + msg.content;
       } else {
