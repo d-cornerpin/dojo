@@ -360,6 +360,10 @@ import { recordDelivery } from '../deliveries.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { claimAsk, askIdForMessage } from '../../../work/store.js';
+// HL4 step 2 (2d): the carrier the retired `compaction-recap` steer's model-facing
+// requirement re-homes onto. Imported (not mocked) so the re-home clause DRIVES the
+// real renderer against the real DB rather than reading its source.
+import { renderCompactionContinuity } from '../../../prompt/assembler.js';
 
 // ── Test helpers ──
 
@@ -2773,6 +2777,121 @@ describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the 
       .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
       .all() as Array<{ content: string }>;
     expect(sys[0].content).toMatch(/running for about 60 minutes without finishing/);
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // HL4 STEP 2 (2d) — THE DRIVEN CHECK THE CENSUS ASKED FOR, AND ITS ANSWER.
+  //
+  // W27's census left ONE mechanism marked UNKNOWN rather than verdicted: the
+  // `compaction-recap` floor enqueues at `turn-budget.ts` and the same step
+  // `requestExit`s the turn eleven statements later, so the census could see no path
+  // on which the drain runs again — but "I can see no path" is a reading, not a
+  // measurement, and the census said so in as many words (§6.1: *"it needs a driven
+  // check, not a reading"*).
+  //
+  // This is that driven check. It runs a REAL turn across the budget and records every
+  // messages array the model was handed, for the whole turn, and asks the only question
+  // that settles it: did the recap's bytes ever reach a model request?
+  //
+  // ANSWER, measured: NO — on any call, on any pass. Not because delivery is slow: the
+  // steer's ONLY carrier is the queue (`steer-queue.ts`), the queue's ONLY drain is the
+  // assemble step (`steer-checkpoint.ts:112-116`), and the step that files this entry
+  // ends the turn before assemble can run again. The queue is per-turn state
+  // (`state.ts:527` seeds `emptySteerQueue()`), so the continuation turn the checkpoint
+  // parks for starts with an empty one. The row the floor also writes is `role='system'`,
+  // which `tailRender` (`memory/assembler.ts:1191-1195`) never emits. Both carriers are
+  // closed. The recap has never reached a model and structurally cannot.
+  //
+  // The clause below it is the RED: a floor that cannot be delivered must not be FILED.
+  // ══════════════════════════════════════════════════════════════════════════════
+  /** Run across the budget while recording every messages array handed to the model. */
+  async function runAcrossTheBudgetRecording(): Promise<Array<Array<Record<string, unknown>>>> {
+    const seen: Array<Array<Record<string, unknown>>> = [];
+    let call = 0;
+    const clock = controllableClock();
+    callModelSpy.mockImplementation(async (args: { messages: unknown }) => {
+      seen.push(JSON.parse(JSON.stringify(args.messages)));
+      call++;
+      return call === 1
+        ? {
+          content: '',
+          toolCalls: [{ id: 'tc-0', name: 'file_read', arguments: { path: '/tmp/0.txt' } }],
+          inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
+        }
+        : { content: 'done', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
+    });
+    executeToolSpy.mockImplementation(async (_agentId: string, toolCall: ToolCall) => {
+      clock.jump(TURN_TIME_BUDGET_MS + 60_000);
+      return { toolCallId: toolCall.id, name: toolCall.name, content: 'file body', isError: false };
+    });
+    try {
+      await runV2Turn('primary');
+    } finally {
+      clock.restore();
+    }
+    return seen;
+  }
+
+  it('DRIVEN: the mid-turn recap reaches NO model request, on any call of the turn it is filed in', async () => {
+    const seen = await runAcrossTheBudgetRecording();
+
+    // The turn really crossed the budget and really compacted — without this the clause
+    // would pass on a turn where the branch never ran, which proves nothing.
+    expect(checkAndCompactSpy).toHaveBeenCalledWith(
+      'primary', expect.any(String), expect.any(Number), expect.objectContaining({ force: true }),
+    );
+    expect(seen.length).toBeGreaterThanOrEqual(1);
+
+    // Every message of every request, across the whole turn.
+    const everythingTheModelSaw = seen
+      .flat()
+      .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))
+      .join('\n---\n');
+    expect(everythingTheModelSaw).not.toContain('memory was just compacted MID-TURN');
+    expect(everythingTheModelSaw).not.toContain('Do NOT re-introduce yourself');
+  });
+
+  it('THE RED (HL4 2d): the turn-budget checkpoint files no steer, because a steer filed here can never be delivered', async () => {
+    // A floor that cannot reach a model is not a floor; it is a queue entry that exists
+    // to be abandoned. HL4's own rule — nothing is deleted without its requirement
+    // re-homed — is satisfied where the requirement actually lives and is asserted in
+    // the two clauses below this one.
+    await runAcrossTheBudget();
+    expect(recaps()).toEqual([]);
+  });
+
+  it('THE RE-HOME, half 1 — the PERSON still gets the whole receipt, in the bytes they already got', async () => {
+    // "Your earlier conversation has been summarized, pick up where you left off …
+    // do not start over" is the recap's own content, on the surface that actually
+    // reaches somebody. Unchanged by the retirement, and pinned here so it cannot
+    // quietly follow the recap out.
+    await runAcrossTheBudget();
+    const sys = mockDb.current!
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .all() as Array<{ content: string }>;
+    expect(sys[0].content).toContain('Your earlier conversation has been summarized, pick up where you left off');
+    expect(sys[0].content).toContain('do not start over');
+    expect(pendingWakeups.has('primary')).toBe(true);
+  });
+
+  it('THE RE-HOME, half 2 — the MODEL still gets the post-compaction signal, on the carrier that reaches it', () => {
+    // The recap's model-facing requirement ("history was rebuilt under you; do not guess
+    // what you were mid-doing") is owned by `sys.compaction-continuity`
+    // (`prompt/assembler.ts`, `SystemSlot.CompactionContinuity`), which rides the SYSTEM
+    // PROMPT for 24 h after a compaction and therefore actually reaches the model — the
+    // one thing the retired steer could never do. DRIVEN against the real renderer and
+    // the real DB, not read off the source: the negative arm proves the signal is gated
+    // rather than unconditional, and the positive arm proves it renders.
+    expect(renderCompactionContinuity('primary')).toBeNull();
+
+    mockDb.current!
+      .prepare('UPDATE agents SET config = ? WHERE id = ?')
+      .run(JSON.stringify({ continuityBriefAt: new Date().toISOString() }), 'primary');
+
+    const signal = renderCompactionContinuity('primary');
+    expect(signal).toContain('## Recent Memory Compaction');
+    expect(signal).toContain('Older raw messages were summarized');
+    expect(signal).toContain("If you can't tell what you're mid-doing from the live tail");
   });
 });
 
