@@ -39,26 +39,227 @@ import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 const logger = createLogger('v2-loop');
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// HL4 STEP 2 (2e), MERGER 2 — THE FOUR TRUTH GUARDS, DECLARED.
+// HL4 STEP 2 (2e), MERGER 2 — THE FOUR TRUTH GUARDS ARE ONE GUARD WITH FOUR PREDICATES.
 //
 // They ask one question with four nouns: *the reply asserts X, and the ledger says not-X.*
-// The blocks below still each carry their own copy of the shared prologue; this declaration
-// is the set the merger's loop consumes, and it is ORDERED BY THE TABLE rather than by the
-// order somebody typed — the same authority 2a made the turn-ending family derive from, so
-// the truth band's 10 → 11 → 12 → 13 cannot drift from the argument that ranks it.
+// They used to be four blocks behind a byte-repeated prologue, each with its own
+// `continueLoop` and its own door call. One prologue now, one loop, one exit — and four
+// records that keep everything that was ever different between them.
+//
+// ORDERED BY THE TABLE, not by the order somebody typed: the set is sorted by
+// `STEER_PRECEDENCE`, the same authority 2a made the turn-ending family derive from, so the
+// truth band's 10 → 11 → 12 → 13 cannot drift from the argument that ranks it.
+//
+// WHAT EACH RECORD KEEPS, and none of it is incidental:
+//   · its own EXTRA GATE beyond the shared prologue — one guard reads the counterparty,
+//     two carry their own one-shot latch read, one carries a prose narrowing regex;
+//   · its own LATCH POSITION. The claimed-delivery guard tests its latch AFTER deciding,
+//     because its decision is ROW-KEYED (`claim.latchKey`) and its stand-down log has to
+//     fire even on a turn where the row has already been steered about. Moving that read
+//     into the shared gate would silence a log line the ledger argument depends on, so the
+//     record's `gate` is `true` and the latch stays inside its own `decide`.
+//   · its own DECISION and its own STEER TEXT. Two delegate to a named module
+//     (`claimed-delivery.ts`, `recorded-commitment.ts`); two inline theirs. Unchanged.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-/** One truth guard: the floor it speaks as. */
-export interface TruthGuard {
-  readonly floor: SteerFloorId;
+/** What a guard files when it fires: the steer's content, and its latch key if it is keyed. */
+export interface TruthGuardVerdict {
+  readonly content: string;
+  readonly key?: string;
 }
 
-export const TRUTH_GUARDS: readonly TruthGuard[] = Object.freeze(([
-  { floor: 'ungrounded-claim' },
-  { floor: 'delivery-denial' },
-  { floor: 'failed-save-claim' },
-  { floor: 'uncommitted-promise' },
-] as TruthGuard[]).sort((a, b) => steerPriority(a.floor) - steerPriority(b.floor)));
+/** One truth guard: the floor it speaks as, the gate beyond the shared prologue, and its
+ *  decision. `decide` returns null when the ledger answers and the guard stands down. */
+export interface TruthGuard {
+  readonly floor: SteerFloorId;
+  readonly gate: (state: AgentTurnState, ctx: PostCallClassifyContext, reply: string) => boolean;
+  readonly decide: (
+    state: AgentTurnState,
+    ctx: PostCallClassifyContext,
+    reply: string,
+  ) => TruthGuardVerdict | null;
+}
+
+const TRUTH_GUARD_SET: TruthGuard[] = [
+  // ── 10 · CLAIMED-DELIVERY (OPEN-14, REKEYED PHASE-4 T4) ── Catch a fabricated completion
+  // BEFORE it is persisted: a terminal, user-facing reply that claims it already delivered
+  // something to a NAMED THIRD PARTY when the LEDGER says otherwise.
+  //
+  // ⚠ THE TRIGGER IS NO LONGER THE PROSE, and the owner is why. On 2026-08-01 this floor
+  // fired three times on the words "told Michael" quoted out of a wedding transcript he had
+  // asked about, each fire ordering "do it NOW" — double answers, a re-done delivery, and a
+  // false accusation made by a regex. `agent/v2/claimed-delivery.ts` is the rekey: the prose
+  // only NARROWS (which party does the reply name), and the FIRING is a row — an owed
+  // obligation with no delivery against it, or a delivery this turn whose own recorded
+  // outcome contradicts the claim. Receipt-keyed, never prose-keyed (research 21).
+  //
+  // This is not suppression: nothing is hidden, the steer re-enters so the agent either
+  // ACTUALLY sends or says so plainly. One steer per ROW (the queue entry's latch key is the
+  // obligation / delivery id), so the same claim cannot be hammered.
+  {
+    floor: 'ungrounded-claim',
+    gate: () => true,
+    decide: (state, ctx, reply) => {
+      const { agentId, counterparty, turnNumber } = ctx;
+      const claim = decideClaimedDelivery({
+        agentId,
+        turnNumber,
+        responseText: reply,
+        // C5: the CUMULATIVE tool activity across all iterations, not state.toolCalls
+        // (overwritten each iteration → always [] on this tool-less terminal iteration, so
+        // a real send made earlier in the turn was invisible and the guard false-fired into
+        // a DUPLICATE send). Errored calls are excluded here on purpose — a send the tool
+        // itself refused is not a delivery, and ARM B's ledger read is what judges the ones
+        // that ran and failed at the door.
+        toolCallsThisTurn: state.toolResults
+          .filter((r) => !r.isError)
+          .map((r) => ({ name: r.name })),
+        counterpartyName: counterparty.name,
+        // RC-12's durable suppressor, unchanged in meaning: a REAL send to the claimed
+        // recipient (this turn or within 24h) grounds the claim, so the floor never fires
+        // into a duplicate send. P6b-2 keyed consult first, receipts-alias as the legacy
+        // prong while pre-121 history ages out.
+        hasDeliveryReceipt: (recipient) =>
+          findRecentDeliveriesKeyed(agentId, recipient, 24).length > 0 ||
+          findRecentDeliveries(agentId, recipient, 24).length > 0,
+      });
+      if (!claim.fires && claim.recipient) {
+        logger.info('v2 claimed-delivery floor stood down; the ledger answered', {
+          agentId, recipient: claim.recipient, reason: claim.reason,
+        }, agentId);
+      }
+      // THE LATCH IS READ HERE, not in `gate`, and that is the record's one asymmetry: it is
+      // ROW-KEYED, and the stand-down log above must still fire on a turn whose row has
+      // already been steered about.
+      if (!claim.fires || steerFired(state.steerQueue, 'ungrounded-claim', claim.latchKey)) return null;
+      logger.info('v2 claimed-delivery floor fired on a LEDGER row, re-entering', {
+        agentId, recipient: claim.recipient, basis: claim.basis,
+        obligationId: claim.obligation?.id ?? null, failedDeliveryId: claim.failedDeliveryId,
+      }, agentId);
+      return { content: claimedDeliverySteer(claim), key: claim.latchKey };
+    },
+  },
+
+  // ── 11 · RC-12 DENIAL DIRECTION ── The inverse of the positive guard: the terminal reply
+  // DENIES a delivery ("Not yet", "sending now", "haven't sent it") that the engine receipt
+  // ledger proves already happened (F-5, F-22). The denial text detection is deliberately
+  // generous; the durable receipt is the true gate, so a steer only fires when a real send
+  // is on record. Steer with the receipt fact and re-enter once so the agent answers
+  // truthfully AND does not re-send.
+  {
+    floor: 'delivery-denial',
+    gate: (state) => !steerFired(state.steerQueue, 'delivery-denial'),
+    decide: (_state, ctx, reply) => {
+      const { agentId } = ctx;
+      const denial = detectDeliveryDenial({ responseText: reply });
+      if (!denial.denied) return null;
+      // Named recipient → 24h window (a specific past send); bare "not yet" → a short 1h
+      // window so an unrelated older send cannot spuriously ground it. P6b-2: keyed consult
+      // first, legacy alias prong second.
+      const keyedMatches = denial.recipient
+        ? findRecentDeliveriesKeyed(agentId, denial.recipient, 24)
+        : findRecentDeliveriesKeyed(agentId, null, 1);
+      const matches = keyedMatches.length > 0
+        ? keyedMatches
+        : denial.recipient
+          ? findRecentDeliveries(agentId, denial.recipient, 24)
+          : findRecentDeliveries(agentId, null, 1);
+      const receipt = matches[0];
+      if (!receipt) return null;
+      const who = receipt.recipient ?? denial.recipient ?? 'them';
+      logger.info('v2 delivery-denial guard fired, receipt contradicts denial, re-entering', {
+        agentId, recipient: who, channel: receipt.channel,
+      }, agentId);
+      return {
+        content:
+          `[Engine receipt: you DID send ${channelLabel(receipt.channel)} to ${who} ${relativeTimeAgo(receipt.createdAt)}. `
+          + `Answer truthfully; do not re-send.]`,
+      };
+    },
+  },
+
+  // ── 12 · RC-13.2 FAILED-SAVE-CLAIM ── The reply claims something was saved / stored /
+  // remembered, but every vault_remember THIS turn was REJECTED (isError, the RC-13 bounce
+  // fix) and nothing was stored. On the floor model, F-6's false "Saved." was the INSTRUCTED
+  // behavior (the bookkeeping nudge stapled "reply 'Saved.'" onto a rejection). Steer
+  // truthfully once so a rejected save can never masquerade as done.
+  {
+    floor: 'failed-save-claim',
+    gate: (state, _ctx, reply) =>
+      !steerFired(state.steerQueue, 'failed-save-claim') &&
+      /\b(saved|stored|remembered|noted it|added (it|that) to (memory|the vault)|put it in (memory|the vault))\b/i.test(reply),
+    decide: (state, ctx) => {
+      const { agentId } = ctx;
+      const vaultRemembers = state.toolResults.filter((r) => r.name === 'vault_remember');
+      const rejected = vaultRemembers.filter((r) => r.isError).length;
+      const succeeded = vaultRemembers.filter((r) => !r.isError).length;
+      if (!(succeeded === 0 && rejected >= 1)) return null;
+      logger.info('v2 RC-13.2 save-claim floor fired, all vault saves rejected this turn, re-entering', {
+        agentId, rejected,
+      }, agentId);
+      return {
+        content:
+          `You told the user you saved that, but all ${rejected} vault_remember call${rejected === 1 ? '' : 's'} this turn `
+          + `${rejected === 1 ? 'was' : 'were'} REJECTED and nothing was stored. Either retry with the correction the tool `
+          + `gave you, or tell the counterpart truthfully that it is not saved yet. Do not claim it was saved.`,
+      };
+    },
+  },
+
+  // ── 13 · PHASE-6 T-PROMISE, THE UNCOMMITTED-PROMISE FLOOR ── The reply tells the person
+  // the commitment is recorded, and the work ledger has nothing from this turn. It is the
+  // same guard as the three above it with the noun changed from a SEND to a PROMISE, which
+  // is what the kit scenario's own `knownFailing` and `task-T0C-report.md` §7 hand-up 4 both
+  // asked for in writing and neither had an owner for.
+  //
+  // Why it is here and not a prompt edit: measured at `b17b39b`, the scenario's turn-1 shape
+  // driven 12 times on the floor model opened a row on 3 — and NINE OF THE NINE MISSES
+  // CALLED NO TOOL AT ALL while telling the user it was recorded. There is no verb to
+  // consolidate when no verb was called; the only place the failure is visible is right
+  // here, after the model has spoken and before the turn ends.
+  //
+  // Receipt-keyed like its three siblings: `agent/v2/recorded-commitment.ts` holds the
+  // decision, the prose only NARROWS (the hit and the miss are the same sentence — proven by
+  // a clause), and the spine read is what fires. One steer per turn; across turns the ledger
+  // is the latch, because the moment the row exists the floor cannot fire again.
+  //
+  // ⚠ ITS STEP POSITION IS LOAD-BEARING AND IS NOT THIS MERGER'S TO MOVE. The census ranked
+  // folding it into the `promise-floor` family as merger candidate 3 and named the delta:
+  // merged, it would fire inside the turn-ending family, AFTER `silent-closeout`,
+  // `going-idle` and `owed-interrupt`. It is HELD, and `contract.test.ts` pins the sequence.
+  {
+    floor: 'uncommitted-promise',
+    gate: (state, ctx) =>
+      ctx.counterparty.kind === 'user' &&
+      !steerFired(state.steerQueue, 'uncommitted-promise'),
+    decide: (state, ctx, reply) => {
+      const { agentId, turnNumber, turnStartedAt } = ctx;
+      const turnStartedAtMs = tsToMs(turnStartedAt) ?? 0;
+      const promise = decideUncommittedPromise({
+        agentId,
+        responseText: reply,
+        // C5's rule, the same one the claimed-delivery floor states: the CUMULATIVE tool
+        // activity across every iteration. `result.toolCalls` is empty by the shared gate.
+        toolResultsThisTurn: state.toolResults,
+        openedWorkThisTurn: () => openedBoardWorkSince(agentId, turnStartedAtMs),
+      });
+      if (!promise.fires) {
+        logger.info('v2 uncommitted-promise floor stood down; the ledger answered', {
+          agentId, turnNumber, reason: promise.reason,
+        }, agentId);
+        return null;
+      }
+      logger.info('v2 uncommitted-promise floor fired: the reply claims a recorded commitment the ledger does not hold, re-entering', {
+        agentId, turnNumber, wentToMemory: promise.wentToMemory,
+      }, agentId);
+      return { content: uncommittedPromiseSteer(promise) };
+    },
+  },
+];
+
+export const TRUTH_GUARDS: readonly TruthGuard[] = Object.freeze(
+  TRUTH_GUARD_SET.sort((a, b) => steerPriority(a.floor) - steerPriority(b.floor)),
+);
 
 /** The floors that read the reply's own words against the ledger. */
 export function runReplyFloors(
@@ -69,208 +270,35 @@ export function runReplyFloors(
   const { agentId, counterparty, db, result, triggerRow, turnNumber, turnStartedAt } = ctx;
   const { deliberateSurfaceTurn, interAgentTurn } = sc;
   let { persistedContent } = sc;
-  // ── Claimed-delivery floor (OPEN-14, REKEYED PHASE-4 T4) ── Catch a fabricated
-  // completion BEFORE it is persisted: a terminal, user-facing reply that claims it
-  // already delivered something to a NAMED THIRD PARTY when the LEDGER says otherwise.
+  // ── THE TRUTH GUARDS, ONE PROLOGUE AND ONE LOOP (HL4 step 2, merger 2) ──
   //
-  // ⚠ THE TRIGGER IS NO LONGER THE PROSE, and the owner is why. On 2026-08-01 this floor
-  // fired three times on the words "told Michael" quoted out of a wedding transcript he
-  // had asked about, each fire ordering "do it NOW" — double answers, a re-done delivery,
-  // and a false accusation made by a regex. `agent/v2/claimed-delivery.ts` is the rekey:
-  // the prose only NARROWS (which party does the reply name), and the FIRING is a row —
-  // an owed obligation with no delivery against it, or a delivery this turn whose own
-  // recorded outcome contradicts the claim. Receipt-keyed, never prose-keyed (research 21).
+  // The prologue is the family's whole shared claim and it is written once: a TERMINAL
+  // reply (the model produced text and called no tools) on a turn that is not inter-agent.
+  // Each guard adds its own gate on top and returns either a steer to file or null, and
+  // the FIRST one to fire re-enters the loop so the agent can put the thing right — which
+  // is what `continueLoop` has always meant here, once instead of four times.
   //
-  // This is not suppression: nothing is hidden, the steer re-enters so the agent either
-  // ACTUALLY sends or says so plainly. One steer per ROW (the queue entry's latch key is
-  // the obligation / delivery id), so the same claim cannot be hammered.
-  if (
-    persistedContent &&
-    result.toolCalls.length === 0 &&
-    !interAgentTurn
-  ) {
-    const claim = decideClaimedDelivery({
-      agentId,
-      turnNumber,
-      responseText: persistedContent,
-      // C5: the CUMULATIVE tool activity across all iterations, not state.toolCalls
-      // (overwritten each iteration → always [] on this tool-less terminal iteration, so
-      // a real send made earlier in the turn was invisible and the guard false-fired into
-      // a DUPLICATE send). Errored calls are excluded here on purpose — a send the tool
-      // itself refused is not a delivery, and ARM B's ledger read is what judges the ones
-      // that ran and failed at the door.
-      toolCallsThisTurn: state.toolResults
-        .filter((r) => !r.isError)
-        .map((r) => ({ name: r.name })),
-      counterpartyName: counterparty.name,
-      // RC-12's durable suppressor, unchanged in meaning: a REAL send to the claimed
-      // recipient (this turn or within 24h) grounds the claim, so the floor never fires
-      // into a duplicate send. P6b-2 keyed consult first, receipts-alias as the legacy
-      // prong while pre-121 history ages out.
-      hasDeliveryReceipt: (recipient) =>
-        findRecentDeliveriesKeyed(agentId, recipient, 24).length > 0 ||
-        findRecentDeliveries(agentId, recipient, 24).length > 0,
-    });
-    if (!claim.fires && claim.recipient) {
-      logger.info('v2 claimed-delivery floor stood down; the ledger answered', {
-        agentId, recipient: claim.recipient, reason: claim.reason,
-      }, agentId);
-    }
-    if (claim.fires && !steerFired(state.steerQueue, 'ungrounded-claim', claim.latchKey)) {
-      // RC-19: deliver the correction via persistEngineSteer so it reaches the
-      // model (the steer queue) AND keeps the dashboard row. A bare role='system'
-      // row is stripped by the assembler, so pre-fix the agent re-entered without
-      // ever seeing the correction and re-posted the same false claim.
+  // The order is `STEER_PRECEDENCE`'s (see `TRUTH_GUARDS` above), so a re-rank in the
+  // table moves the family and the two orderings can never disagree.
+  if (persistedContent && result.toolCalls.length === 0 && !interAgentTurn) {
+    const reply = persistedContent;
+    for (const guard of TRUTH_GUARDS) {
+      if (!guard.gate(state, ctx, reply)) continue;
+      const verdict = guard.decide(state, ctx, reply);
+      if (!verdict) continue;
+      // RC-19: the correction goes through the door so it reaches the model (the steer
+      // queue) AND keeps its dashboard row. A bare role='system' row is stripped by the
+      // assembler, so pre-fix the agent re-entered without ever seeing the correction and
+      // re-posted the same false claim.
       state = persistEngineSteer(
         state,
         {
-          agentId, content: claimedDeliverySteer(claim), turnNumber,
-          floor: 'ungrounded-claim', atLoop: state.loopCount, key: claim.latchKey,
+          agentId, content: verdict.content, turnNumber,
+          floor: guard.floor, atLoop: state.loopCount, key: verdict.key,
         },
         { broadcast },
       );
-      logger.info('v2 claimed-delivery floor fired on a LEDGER row, re-entering', {
-        agentId, recipient: claim.recipient, basis: claim.basis,
-        obligationId: claim.obligation?.id ?? null, failedDeliveryId: claim.failedDeliveryId,
-      }, agentId);
-      return continueLoop(state); // re-enter so the agent actually sends or corrects the claim
-    }
-  }
-
-  // ── Boundary wrap-up (2026-07-22, consolidated) ── The duplicate
-  // wrap-up steer that briefly lived here is GONE: the going-idle nudge
-  // below is the one boundary mechanism (4-option menu on SILENT task-work
-  // stops; never a re-prompt when a reply exists, the v3.1.10 double-reply
-  // rule). For answered turns, the ticket STAMPS land at finalize and the
-  // tangible-gated ladder close-steer / strike-2 close the loop within one
-  // poke cycle; stacking a second steer here chained re-entries and ate
-  // final replies (battery catch).
-  // ── RC-12 DENIAL direction ── The inverse of the positive guard: the terminal
-  // reply DENIES a delivery ("Not yet", "sending now", "haven't sent it") that the
-  // engine receipt ledger proves already happened (F-5, F-22). The denial text
-  // detection is deliberately generous; the durable receipt is the true gate, so a
-  // steer only fires when a real send is on record. Steer with the receipt fact and
-  // re-enter once so the agent answers truthfully AND does not re-send.
-  if (
-    persistedContent &&
-    result.toolCalls.length === 0 &&
-    !interAgentTurn &&
-    !steerFired(state.steerQueue, 'delivery-denial')
-  ) {
-    const denial = detectDeliveryDenial({ responseText: persistedContent });
-    if (denial.denied) {
-      // Named recipient → 24h window (a specific past send); bare "not yet" → a
-      // short 1h window so an unrelated older send cannot spuriously ground it.
-      // P6b-2: keyed consult first, legacy alias prong second.
-      const keyedMatches = denial.recipient
-        ? findRecentDeliveriesKeyed(agentId, denial.recipient, 24)
-        : findRecentDeliveriesKeyed(agentId, null, 1);
-      const matches = keyedMatches.length > 0
-        ? keyedMatches
-        : denial.recipient
-          ? findRecentDeliveries(agentId, denial.recipient, 24)
-          : findRecentDeliveries(agentId, null, 1);
-      const receipt = matches[0];
-      if (receipt) {
-        const who = receipt.recipient ?? denial.recipient ?? 'them';
-        const nudgeText =
-          `[Engine receipt: you DID send ${channelLabel(receipt.channel)} to ${who} ${relativeTimeAgo(receipt.createdAt)}. ` +
-          `Answer truthfully; do not re-send.]`;
-        state = persistEngineSteer(
-          state,
-          { agentId, content: nudgeText, turnNumber, floor: 'delivery-denial', atLoop: state.loopCount },
-          { broadcast },
-        );
-        logger.info('v2 delivery-denial guard fired, receipt contradicts denial, re-entering', {
-          agentId, recipient: who, channel: receipt.channel,
-        }, agentId);
-        return continueLoop(state); // re-enter so the agent corrects the denial instead of re-sending
-      }
-    }
-  }
-
-  // ── RC-13.2 failed-save-claim floor ── The reply claims something was saved /
-  // stored / remembered, but every vault_remember THIS turn was REJECTED (isError,
-  // the RC-13 bounce fix) and nothing was stored. On the floor model, F-6's false
-  // "Saved." was the INSTRUCTED behavior (the bookkeeping nudge stapled "reply
-  // 'Saved.'" onto a rejection). Steer truthfully once so a rejected save can never
-  // masquerade as done.
-  if (
-    persistedContent &&
-    result.toolCalls.length === 0 &&
-    !interAgentTurn &&
-    !steerFired(state.steerQueue, 'failed-save-claim') &&
-    /\b(saved|stored|remembered|noted it|added (it|that) to (memory|the vault)|put it in (memory|the vault))\b/i.test(persistedContent)
-  ) {
-    const vaultRemembers = state.toolResults.filter((r) => r.name === 'vault_remember');
-    const rejected = vaultRemembers.filter((r) => r.isError).length;
-    const succeeded = vaultRemembers.filter((r) => !r.isError).length;
-    if (succeeded === 0 && rejected >= 1) {
-      const nudgeText =
-        `You told the user you saved that, but all ${rejected} vault_remember call${rejected === 1 ? '' : 's'} this turn ` +
-        `${rejected === 1 ? 'was' : 'were'} REJECTED and nothing was stored. Either retry with the correction the tool ` +
-        `gave you, or tell the counterpart truthfully that it is not saved yet. Do not claim it was saved.`;
-      state = persistEngineSteer(
-        state,
-        { agentId, content: nudgeText, turnNumber, floor: 'failed-save-claim', atLoop: state.loopCount },
-        { broadcast },
-      );
-      logger.info('v2 RC-13.2 save-claim floor fired, all vault saves rejected this turn, re-entering', {
-        agentId, rejected,
-      }, agentId);
-      return continueLoop(state); // re-enter so the agent retries the save or tells the truth
-    }
-  }
-
-  // ── PHASE-6 T-PROMISE: the UNCOMMITTED-PROMISE floor ── The reply tells the person
-  // the commitment is recorded, and the work ledger has nothing from this turn. It is the
-  // same guard as the three above it with the noun changed from a SEND to a PROMISE, which
-  // is what the kit scenario's own `knownFailing` and `task-T0C-report.md` §7 hand-up 4
-  // both asked for in writing and neither had an owner for.
-  //
-  // Why it is here and not a prompt edit: measured at `b17b39b`, the scenario's turn-1
-  // shape driven 12 times on the floor model opened a row on 3 — and NINE OF THE NINE
-  // MISSES CALLED NO TOOL AT ALL while telling the user it was recorded. There is no verb
-  // to consolidate when no verb was called; the only place the failure is visible is right
-  // here, after the model has spoken and before the turn ends.
-  //
-  // Receipt-keyed like its three siblings: `agent/v2/recorded-commitment.ts` holds the
-  // decision, the prose only NARROWS (the hit and the miss are the same sentence — proven
-  // by a clause), and the spine read is what fires. One steer per turn; across turns the
-  // ledger is the latch, because the moment the row exists the floor cannot fire again.
-  if (
-    persistedContent &&
-    result.toolCalls.length === 0 &&
-    !interAgentTurn &&
-    counterparty.kind === 'user' &&
-    !steerFired(state.steerQueue, 'uncommitted-promise')
-  ) {
-    const turnStartedAtMs = tsToMs(turnStartedAt) ?? 0;
-    const promise = decideUncommittedPromise({
-      agentId,
-      responseText: persistedContent,
-      // C5's rule, the same one the claimed-delivery floor states: the CUMULATIVE tool
-      // activity across every iteration. `result.toolCalls` is empty by the guard above.
-      toolResultsThisTurn: state.toolResults,
-      openedWorkThisTurn: () => openedBoardWorkSince(agentId, turnStartedAtMs),
-    });
-    if (!promise.fires) {
-      logger.info('v2 uncommitted-promise floor stood down; the ledger answered', {
-        agentId, turnNumber, reason: promise.reason,
-      }, agentId);
-    } else {
-      state = persistEngineSteer(
-        state,
-        {
-          agentId, content: uncommittedPromiseSteer(promise), turnNumber,
-          floor: 'uncommitted-promise', atLoop: state.loopCount,
-        },
-        { broadcast },
-      );
-      logger.info('v2 uncommitted-promise floor fired: the reply claims a recorded commitment the ledger does not hold, re-entering', {
-        agentId, turnNumber, wentToMemory: promise.wentToMemory,
-      }, agentId);
-      return continueLoop(state); // re-enter so the agent records the promise or says it is not tracked
+      return continueLoop(state); // re-enter so the agent corrects it or does the thing
     }
   }
 

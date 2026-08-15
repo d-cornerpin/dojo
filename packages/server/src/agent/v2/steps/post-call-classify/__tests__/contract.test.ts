@@ -353,7 +353,21 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     // `answersInReasoning:false` · a blank reasoning channel · the shared latch already
     // spent). A door in front of an exit is not a converted exit, and the two counts
     // moving out of step is what says so.
-    expect(continueSites).toBe(20);
+    //
+    // ⚠ RE-DERIVED DOWNWARD, AND IT IS THE FIRST TIME THIS NUMBER HAS FALLEN: TWENTY ->
+    // SEVENTEEN (HL4 step 2, merger 2). Every previous re-derivation on this clause added
+    // a rung and had to name it. This one REMOVES THREE CALL SITES WITHOUT REMOVING A
+    // FLOOR: `reply-floors.ts`'s four truth guards were four blocks behind a byte-repeated
+    // prologue, each with its own `continueLoop`, and they are now one loop over four
+    // declared records with ONE exit. −3 sites, 0 floors.
+    //
+    // The arithmetic is the proof, in both directions. The EXIT count is UNCHANGED at
+    // eight, so nothing was converted into a silent way out; and the four guards are still
+    // four, asserted by identity rather than by this count, in
+    // `__tests__/the-truth-guards-are-one-guard.test.ts` — the declared set IS the whole
+    // truth band (`priority < 20`), so a guard quietly dropped during the merge fails
+    // there. A future cut still cannot pass this clause by moving numbers in step.
+    expect(continueSites).toBe(17);
   });
 
   it('EXIT IS NOT SAYABLE WITHOUT A REASON, and the arms name their own', async () => {
