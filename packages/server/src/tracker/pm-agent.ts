@@ -135,6 +135,10 @@ const PM_PERMISSIONS_JSON = JSON.stringify({
 // is only what the advertised surface can express.
 export const PM_ALLOWED_WORK_OPS: readonly WorkOp[] = [
   'work_update:list', 'work_update:get',        // read-only inspection
+  // T60: the third read. The PM judges whether work was done; "what moved on this board
+  // over a window" is inspection of exactly the kind the two above already grant, and
+  // withholding it would leave the validator reading state with no history behind it.
+  'work_update:activity',
   'work_note',                                   // leave a note on a task
   'work_schedule:pause', 'work_schedule:resume',
   'work_validate:validate', 'work_validate:retask',

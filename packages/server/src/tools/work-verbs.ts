@@ -60,6 +60,12 @@ export const WORK_OPS = [
   'work_update:close_project',         // tracker_close_project
   'work_update:list',                  // tracker_list_active
   'work_update:get',                   // tracker_get_status
+  // UX-REPAIR ROUND 13 T60. The ONE operation on this list that absorbed no retired verb:
+  // it never existed. Round-13 S4 asked the board what had happened that day, got the
+  // list door's "what is open right now", and answered "quiet day" over 57 rows opened
+  // and closed. `__tests__/work-verbs.test.ts` names it as the post-collapse addition so
+  // the "every operation traces to a retired verb" proof stays honest instead of blanket.
+  'work_update:activity',              // (new — no retired verb; T60)
   'work_note',                         // tracker_add_notes
   'work_close_request:override',       // tracker_request_override
   'work_close_request:user_verdict',   // tracker_request_user_verdict
@@ -142,6 +148,11 @@ export function workOperation(name: string | undefined | null, args?: Args): Wor
       if (action === 'close_project' || action === 'close') return 'work_update:close_project';
       if (action === 'list') return 'work_update:list';
       if (action === 'get') return 'work_update:get';
+      // T60. Ahead of the shape ladder for the same reason every explicit discriminator is:
+      // an action the caller NAMED always wins. Without this arm the ladder's terminal
+      // `return 'work_update:list'` claims it, and the model that asked what CHANGED is
+      // silently handed what is OPEN — the S4 substitution, made by the router.
+      if (action === 'activity') return 'work_update:activity';
       // No action: the argument shape decides, most-specific first.
       if (has(args, 'status')) return 'work_update:status';
       if (has(args, 'assigned_to') || has(args, 'assigned_to_group')) return 'work_update:reassign';
@@ -248,11 +259,17 @@ export function isCommitmentOp(op: string | null): boolean {
 }
 
 /**
- * READ operations. Only these two are safe to run in parallel and only these
- * two never disarm the multi-step floor (the FN-9 invariant).
+ * READ operations. Only these are safe to run in parallel and only these never
+ * disarm the multi-step floor (the FN-9 invariant).
+ *
+ * T60 added the third, and it belongs here for the FN-9 reason and not by family
+ * resemblance: `work_update:activity` opens nothing, advances nothing and writes
+ * nothing (its own test counts `work`, `work_events` and `deliveries` before and
+ * after). An agent that reads its day has not started work, so treating the read as
+ * progress would let a board-read disarm the floor that exists to make it do some.
  */
 export function isWorkReadOp(op: string | null): boolean {
-  return op === 'work_update:list' || op === 'work_update:get';
+  return op === 'work_update:list' || op === 'work_update:get' || op === 'work_update:activity';
 }
 
 // ════════════════════════════════════════
@@ -323,6 +340,8 @@ export const CLOSE_OUT_WORK_OPS: ReadonlySet<string> = new Set([
   'work_update:close_project',   // bulk-resolve a whole stranded project
   'work_update:get',             // read-only allowed (investigate before resolving)
   'work_update:list',            // ditto
+  'work_update:activity',        // ditto (T60) — a read cannot resolve a dangling task, and
+                                 // refusing it would only blind the agent it is nagging
   'work_update:edit',            // editing the task counts as engagement
   'work_schedule:pause',
   'work_schedule:resume',

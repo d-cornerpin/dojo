@@ -115,11 +115,22 @@ describe('T8V — the collapse is total and reversible at the boundary', () => {
     expect(wrong, 'a retired verb no longer reaches its operation').toEqual([]);
   });
 
-  it('the 24 retired verbs cover all 23 operations, and every operation is reachable', () => {
-    const covered = new Set(RETIRED.map((r) => r.op));
-    expect([...WORK_OPS].filter((op) => !covered.has(op)), 'an operation no retired verb maps to').toEqual([]);
+  // ── THE POST-COLLAPSE ADDITIONS, NAMED ONE BY ONE ─────────────────────────────────────
+  // The collapse's proof is "every operation traces back to a retired verb, so nothing went
+  // dark". An operation that never HAD a verb cannot satisfy that and must not be excused by
+  // loosening the assertion: it is listed here by name, with its task, so the walk still
+  // refuses any operation that quietly appears without either a retired verb or an entry.
+  //   • work_update:activity — UX-REPAIR ROUND 13 T60. No predecessor: the platform served
+  //     "what is open now" and never served "what changed over a window", which is how the
+  //     S4 turn answered "quiet day" over 57 rows opened and closed the same day.
+  const POST_COLLAPSE_OPS = ['work_update:activity'];
+
+  it('every operation traces to a retired verb, or is a named post-collapse addition', () => {
+    const covered = new Set([...RETIRED.map((r) => r.op), ...POST_COLLAPSE_OPS]);
+    expect([...WORK_OPS].filter((op) => !covered.has(op)), 'an operation no retired verb maps to and no task named').toEqual([]);
     expect([...covered].filter((op) => !isWorkOp(op)), 'a phantom operation id in the retired table').toEqual([]);
-    expect(WORK_OPS).toHaveLength(23); // 24 verbs, two edits share one op
+    expect([...POST_COLLAPSE_OPS].filter((op) => RETIRED.some((r) => r.op === op)), 'a post-collapse op that DOES have a retired verb — move it out of the exemption').toEqual([]);
+    expect(WORK_OPS).toHaveLength(24); // 24 retired verbs → 23 ops (two edits share one), + activity
   });
 
   it('the missed-runs discriminator collision is broken, not papered over', () => {

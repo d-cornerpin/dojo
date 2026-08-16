@@ -248,6 +248,9 @@ export function getRegisteredMaxResultTokens(toolName: string): number | undefin
 export const WORK_OP_CONCURRENCY: Readonly<Record<string, ToolCategory>> = {
   'work_update:list': 'safe',
   'work_update:get': 'safe',
+  // UX-REPAIR ROUND 13 T60. Same class as its two siblings and for the same reason: it
+  // executes SELECTs and nothing else, so two of them cannot race each other or anything.
+  'work_update:activity': 'safe',
 };
 
 export function classifyConcurrency(toolName: string, args?: Record<string, unknown>): ToolCategory {

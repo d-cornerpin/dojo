@@ -48,7 +48,7 @@ import * as trackerMod from '../../../tracker/tools.js';
 import {
   trackerCreateProject, trackerCreateTask, reminderCreate, trackerUpdateStatus,
   trackerAddNotes, trackerEditTask, trackerEditProject, trackerGetStatus,
-  trackerListActive, trackerCompleteStep, trackerCloseProject,
+  trackerListActive, trackerActivity, trackerCompleteStep, trackerCloseProject,
   trackerPauseSchedule, trackerResumeSchedule,
   trackerRetask, trackerRequestOverride, trackerOverride, trackerRequestUserVerdict,
   trackerApplyUserVerdict, trackerApplyUserValidation, trackerResolveMissedRuns,
@@ -532,6 +532,20 @@ export const trackerHandlers: ToolHandlerMap = {
     }
     isError = content.startsWith('Error');
     return { content, isError };
+  },
+
+  // ── UX-REPAIR ROUND 13 T60 — WHAT CHANGED OVER A WINDOW ───────────────────────────────
+  // The sibling of `work_update:list`, and deliberately its own door rather than a flag on
+  // it: round-13 S4 read the list, was shown the three rows open at that instant, and told
+  // the owner "quiet day … nothing else changed on the tracker" over 57 rows opened AND
+  // closed the same day. NOW and OVER-A-WINDOW are different questions; a flag would have
+  // made them one answer with a switch, which is how the substitution happened in the first
+  // place. `verbose` is the ONE declared property this door forwards (it means the same
+  // thing here as on `list`: more rows, same counts) — the window itself is the renderer's
+  // argument, not the wire's, and `tracker/tools.ts`'s header records why.
+  async "work_update:activity"({ agentId, args }) {
+    const content = trackerActivity(agentId, { verbose: args.verbose === true });
+    return { content, isError: content.startsWith('Error') };
   },
 
   async "work_open:commitment"({ agentId, args }) {

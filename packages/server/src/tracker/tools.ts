@@ -62,7 +62,7 @@ import {
 import {
   nextRunDeliverRung, recordRunDeliverSteer, runDeliverSteerText,
 } from '../work/run-deliver-drive.js';
-import { calculateNextRun, normalizeDbTimestamp, parseDaysOfWeek, wallToInstant, getBoxTimeZone, type ScheduledTask, type WallClock } from '../scheduler/engine.js';
+import { calculateNextRun, normalizeDbTimestamp, parseDaysOfWeek, wallToInstant, instantToWall, getBoxTimeZone, type ScheduledTask, type WallClock } from '../scheduler/engine.js';
 import { onTaskRunComplete, terminateLiveScheduleOnFallen } from '../scheduler/runner.js';
 import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../gateway/ws.js';
@@ -3049,11 +3049,244 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
       }
     }
 
+    // ── UX-REPAIR ROUND 13 T60 — THE DECISION-MOMENT POINTER ────────────────────────────
+    // This door answers "what is open RIGHT NOW". Round-13 S4 asked it "what happened
+    // today", read the three open rows it returned, and answered "Quiet day so far …
+    // nothing else changed on the tracker" over 57 rows opened AND closed in that window.
+    // The list was not wrong; it was a different question, and nothing said so at the
+    // moment the model was choosing what to trust.
+    //
+    // It rides HERE, unconditionally — including the empty board, which is precisely the
+    // shape that produces the guess (an empty NOW reads as an empty DAY). Return value, so
+    // it moves no cached prefix byte; it is the same lane and the same reasoning as the HL6
+    // commitment line above.
+    parts.push('');
+    parts.push(ACTIVITY_POINTER);
+
     return parts.join('\n');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('trackerListActive failed', { error: msg }, agentId);
     return `Error listing active items: ${msg}`;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// ── trackerActivity — UX-REPAIR ROUND 13 T60 ────────────────────────────────────────────
+//
+// ── WHAT WAS MISSING, AND IT WAS NOT DATA ───────────────────────────────────────────────
+// Round-13 S4 (catalog §8.2–8.6): the owner asked what had happened today. The turn made
+// ONE read — `work_update(action="list")` — and wrote "Quiet day so far … nothing else
+// changed on the tracker." The recorder's independent count of the identical window: 57 work
+// rows OPENED and 57 CLOSED, 283 `work_events`, 142 deliveries, a delegated project run end
+// to end and PM-validated. Both sentences are marked UNBACKED.
+//
+// The list door answered its own question correctly (3 rows open now). The finding is that
+// "what is open" and "what changed over a window" are DIFFERENT QUANTITIES and only the
+// first had a door anywhere on the platform. The window's data was never missing:
+// `work.opened_at` / `work.closed_at`, `work_events.created_at`, `adjudications.created_at`
+// and `deliveries.created_at` are all timestamped and all were already on that box. The model
+// guessed because honesty was structurally impossible, which is the class this closes.
+//
+// ── CENSUS ROW, AND THE COLLISION ARGUED (mission rule: no new mechanism without one) ────
+// This is a READ-ONLY EXTENSION of the tracker door — a fifth reader over ledgers that four
+// existing readers already query, no new table, no new column, no new event kind, no write
+// path of any sort (pinned by a test that counts rows before and after).
+//   • vs `action="list"`  — NOW versus a WINDOW. They cannot answer each other, and each
+//     names its own scope in its own output, so a reader can never mistake one for the
+//     other. The list door gains one pointer sentence at the decision moment; this door's
+//     closing line points back. Two surfaces, two jobs, each saying which it is.
+//   • vs `action="get"`   — one row in full versus every row's shape over a window.
+//   • vs the HL5/T44 snapshot lane — that is OPEN COMMITMENTS, complete, injected. This is
+//     history, pulled, and never injected: it costs a prefix byte only if the agent asks.
+//
+// ── THE WINDOW, AND THE BOUND THIS ROUND ACCEPTS ────────────────────────────────────────
+// The window is the LOCAL DAY (since midnight in the box zone), which is the S4 question's
+// own window and the one an agent asked "what happened today" needs. `sinceMs` is a
+// parameter of the renderer, NOT of the wire: a declared `hours`/`since` property on
+// `work_update` would move the cached tools prefix, and T60 is a zero-prefix-byte task by its
+// own plan line while this round's ONE registered re-blessing is T61's conduct sentence.
+// Reading an UNDECLARED wire arg is worse than not offering one — the engine's own
+// unknown-argument census would tell the model the arg "was silently ignored" while this
+// function acted on it (`agent/tools/index.ts`'s census text), and a door that contradicts
+// the engine's warning about itself is not a door. So: the window is stated in the output,
+// the renderer takes it as an argument, and widening it to the wire is one declared property
+// on the next affordable prefix re-bless. Recorded here rather than left to be re-discovered.
+//
+// ── HONESTY IDIOM ───────────────────────────────────────────────────────────────────────
+// Counts first and complete; notable rows titled; the rest COUNTED behind an elision line
+// that restates the whole number — `memory/recall-lane.ts`'s snapshot rule ("an elision is
+// never silent"), because an activity report that silently truncated would reproduce the
+// exact defect it exists to close. Tool-result lane, engine-authored, agent-facing: it
+// composes nothing for the user and judges no prose (OR2 and the classification ban both
+// untouched — every line below is a COUNT or a stored title).
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** The list door's decision-moment pointer at the tracker's other read. One sentence,
+ *  exported so the test that pins "the list is otherwise byte-identical" can subtract it. */
+export const ACTIVITY_POINTER =
+  'For what CHANGED over a window rather than what is open right now — rows opened and '
+  + 'closed, schedules that fired, what reached a person — call work_update(action="activity"). '
+  + 'This list is a snapshot of the present and carries no history.';
+
+/** How many rows the report titles before it starts counting instead. */
+const ACTIVITY_ROW_CAP = 8;
+
+interface ActivityRow {
+  id: string;
+  kind: string;
+  title: string | null;
+  state: string;
+  opened_at: number;
+  closed_at: number | null;
+}
+
+/** Local midnight in the box's own zone, as epoch ms. The scheduler's zone rules, reused —
+ *  a second wall-clock implementation here is exactly the duplicate-mechanism disease. */
+function localMidnightMs(nowMs: number): number {
+  const tz = getBoxTimeZone();
+  const w = instantToWall(nowMs, tz);
+  return wallToInstant({ year: w.year, month: w.month, day: w.day, hour: 0, minute: 0, second: 0 }, tz).getTime();
+}
+
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/** The id as something the agent can actually pass back to `action="get"`.
+ *  The list door slices 8 characters because every row it shows is a bare UUID. This door
+ *  reports the WHOLE board — `ask:<uuid>` and `piece:ask:<uuid>:<uuid>` rows included — and
+ *  8 characters of those is `ask:f30b` / `piece:as`, which resolves to nothing. A truncated
+ *  id that cannot be looked up is worse than a long one, so namespaced ids print in full. */
+const activityRowId = (id: string): string => (id.includes(':') ? id : id.slice(0, 8));
+
+/**
+ * The window's own ledger, rendered. `sinceMs` defaults to local midnight (see the header
+ * for why it is not a wire parameter yet).
+ */
+export function trackerActivity(
+  agentId: string,
+  args: Record<string, unknown>,
+  sinceMs?: number,
+): string {
+  try {
+    const db = getDb();
+    const nowMs = Date.now();
+    const since = sinceMs ?? localMidnightMs(nowMs);
+    const verbose = args.verbose === true;
+    const rowCap = verbose ? ACTIVITY_ROW_CAP * 3 : ACTIVITY_ROW_CAP;
+
+    const windowLabel = sinceMs === undefined
+      ? `since local midnight (${formatTimeForAgent(new Date(since))})`
+      : `since ${formatTimeForAgent(new Date(since))}`;
+
+    // ── OPENED, by kind ──
+    const openedRows = db.prepare(
+      `SELECT kind, COUNT(*) AS n FROM work
+        WHERE agent_id = ? AND opened_at >= ? AND opened_at <= ?
+        GROUP BY kind ORDER BY n DESC, kind ASC`,
+    ).all(agentId, since, nowMs) as Array<{ kind: string; n: number }>;
+    const openedTotal = openedRows.reduce((a, r) => a + r.n, 0);
+
+    // ── CLOSED, by terminal outcome. The spine's own CHECK makes `closed_at` and a terminal
+    //    state one fact, so this cannot count a row that did not actually finish. ──
+    const closedRows = db.prepare(
+      `SELECT state, COUNT(*) AS n FROM work
+        WHERE agent_id = ? AND closed_at IS NOT NULL AND closed_at >= ? AND closed_at <= ?
+        GROUP BY state ORDER BY n DESC, state ASC`,
+    ).all(agentId, since, nowMs) as Array<{ state: string; n: number }>;
+    const closedTotal = closedRows.reduce((a, r) => a + r.n, 0);
+
+    // ── SCHEDULED RUNS THAT FIRED. The S4 reply asserted "Nothing scheduled fired today"
+    //    from a read that reports no fire history at all; it happened to be true. ──
+    const fired = (db.prepare(
+      `SELECT COUNT(*) AS n FROM work_events e JOIN work w ON w.id = e.work_id
+        WHERE w.agent_id = ? AND e.kind IN ('occurrence_fired','occurrence_released')
+          AND e.created_at >= ? AND e.created_at <= ?`,
+    ).get(agentId, since, nowMs) as { n: number }).n;
+
+    // ── PM RULINGS in the window, from the adjudication rows themselves. ──
+    const rulings = db.prepare(
+      `SELECT a.verdict AS verdict, COUNT(*) AS n FROM adjudications a JOIN work w ON w.id = a.work_id
+        WHERE w.agent_id = ? AND a.created_at >= ? AND a.created_at <= ?
+        GROUP BY a.verdict ORDER BY a.verdict ASC`,
+    ).all(agentId, since, nowMs) as Array<{ verdict: string; n: number }>;
+
+    // ── WHAT REACHED A PERSON. `a2a` is another agent, not a person, and is excluded by
+    //    name so the count means what it says. `deliveries.created_at` is a UTC datetime
+    //    string, so the bound is rendered in that shape rather than in epoch ms. ──
+    const sinceText = new Date(since).toISOString().replace('T', ' ').slice(0, 19);
+    const deliveries = db.prepare(
+      `SELECT channel, COUNT(*) AS n FROM deliveries
+        WHERE agent_id = ? AND channel <> 'a2a' AND created_at >= ?
+        GROUP BY channel ORDER BY n DESC, channel ASC`,
+    ).all(agentId, sinceText) as Array<{ channel: string; n: number }>;
+    const deliveredTotal = deliveries.reduce((a, r) => a + r.n, 0);
+
+    const parts: string[] = [];
+    parts.push(`Activity ${windowLabel} — the work ledger's own record, every kind of row on your board (asks, tasks, projects, commitments, scheduled occurrences).`);
+    parts.push('');
+
+    if (openedTotal === 0 && closedTotal === 0 && fired === 0 && deliveredTotal === 0) {
+      parts.push(
+        `For this window nothing is recorded: 0 rows opened, 0 rows closed, 0 scheduled runs fired, `
+        + `0 deliveries reached anyone. That is the ledger's complete answer for the window, not a sample of it.`,
+      );
+      parts.push('');
+      parts.push('For what is open RIGHT NOW (which this does not report): work_update(action="list").');
+      return parts.join('\n');
+    }
+
+    parts.push(openedTotal === 0
+      ? 'Opened (0): nothing was opened in this window.'
+      : `Opened (${openedTotal}): ${openedRows.map((r) => plural(r.n, r.kind)).join(', ')}`);
+    parts.push(closedTotal === 0
+      ? 'Closed (0): nothing reached a terminal state in this window.'
+      : `Closed (${closedTotal}): ${closedRows.map((r) => `${r.n} ${r.state}`).join(', ')}`);
+    parts.push(`Scheduled runs fired: ${fired}`);
+    if (rulings.length > 0) {
+      parts.push(`PM rulings: ${rulings.map((r) => `${r.n} ${r.verdict}`).join(', ')}`);
+    }
+    parts.push(deliveredTotal === 0
+      ? 'Delivered to people (0): nothing you sent reached a person in this window.'
+      : `Delivered to people (${deliveredTotal}): ${deliveries.map((d) => `${d.channel} ${d.n}`).join(', ')}`);
+
+    // ── THE ROWS THEMSELVES, newest movement first, capped and counted. ──
+    const rows = db.prepare(
+      `SELECT id, kind, title, state, opened_at, closed_at FROM work
+        WHERE agent_id = ?
+          AND ((opened_at >= ? AND opened_at <= ?) OR (closed_at IS NOT NULL AND closed_at >= ? AND closed_at <= ?))
+        ORDER BY COALESCE(closed_at, opened_at) DESC, id ASC
+        LIMIT ?`,
+    ).all(agentId, since, nowMs, since, nowMs, rowCap) as ActivityRow[];
+    const touched = (db.prepare(
+      `SELECT COUNT(*) AS n FROM work
+        WHERE agent_id = ?
+          AND ((opened_at >= ? AND opened_at <= ?) OR (closed_at IS NOT NULL AND closed_at >= ? AND closed_at <= ?))`,
+    ).get(agentId, since, nowMs, since, nowMs, ) as { n: number }).n;
+
+    if (rows.length > 0) {
+      parts.push('');
+      parts.push(`Rows that moved (${rows.length} of ${touched} shown, most recent movement first):`);
+      for (const r of rows) {
+        const title = r.title && r.title.trim() ? r.title.trim() : '(no title)';
+        const opened = r.opened_at >= since ? 'opened' : 'opened before this window';
+        const closed = r.closed_at !== null && r.closed_at >= since ? `, ${r.state}` : '';
+        parts.push(`  [${activityRowId(r.id)}] ${r.kind}: ${title} — ${opened}${closed}`);
+      }
+      const hidden = touched - rows.length;
+      if (hidden > 0) {
+        // The elision is never silent (the HL5 snapshot's rule): the number above is still
+        // the truth, and this says which part of it is on the page.
+        parts.push(`  … and ${plural(hidden, 'more row')} not listed here — the ${touched} above is the complete number for this window${verbose ? '' : ' (re-call with verbose=true for more rows)'}.`);
+      }
+    }
+
+    parts.push('');
+    parts.push('These counts are complete for the window stated above; rows not listed are counted, not missing. For what is open RIGHT NOW (which this does not report): work_update(action="list").');
+    return parts.join('\n');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('trackerActivity failed', { error: msg }, agentId);
+    return `Error reading activity: ${msg}`;
   }
 }
 
