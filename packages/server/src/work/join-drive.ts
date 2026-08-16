@@ -232,6 +232,24 @@ export function joinRedriveIsBlind(workId: string, turnNumber: number | null): b
  * said "verify each piece's ACTUAL content" made the floor model exec a blocked loop and spin
  * 45 tool calls (run bmrplgdg33l).
  *
+ * ── UX-REPAIR ROUND 11 T43b — "ARE THESE ACTUALLY THE DELIVERABLES?" ──
+ * Round-11 S5-A: kelly (the PM, no web tools) could not do her research stream, so she sent a
+ * HAND-OFF note naming kevin. A non-empty, non-FAIL terminal reply settles a piece, so the
+ * join completed with ONE research stream in hand and this steer told the model the pieces
+ * were back. ~6m20s from "pieces back" to answer, recovered only because the model improvised:
+ * it asked kevin directly and a redrive caught the result. The paragraph added below makes
+ * that improvised rescue the INSTRUCTED path.
+ *
+ * THE MODEL JUDGES DELIVERABLE-NESS. That is deliberate and it is the only allowed shape: the
+ * engine may count structure and may not classify reply prose (the round-11 NOT-DOING list
+ * names engine punt-detection as a banned class). And the verb fix — "only COMPLETE settles a
+ * piece" — was killed by measurement, not taste: `a2a_replies` intents are ANSWER 341 /
+ * DELIVERABLE 262 / COMPLETE 42 / FAIL 2, so that rule would break the dominant working flow.
+ *
+ * THE NO-TOOLS SENTENCE IS UNTOUCHED. The new paragraph names ITSELF as the single exception
+ * and bounds it to one `send_to_agent` in one situation, so bmrplgdg33l's lookup spiral has no
+ * reading under which it is licensed again.
+ *
  * `attempt` null = the steer issued at join completion, before any rung has been spent.
  */
 export function compileSteerText(p: {
@@ -250,6 +268,12 @@ export function compileSteerText(p: {
     + `text itself). Do NOT search, open files, run commands, or call any tools first — not the `
     + `tracker, not the vault, not a peer notification; everything you need is quoted below. `
     + `If a piece reads as a failure, say so honestly in the same reply.${attemptLine}\n\n`
+    + `First, check each piece below: is it the deliverable that stream was asked for, or is `
+    + `it a hand-off ("I passed this to X", "X is doing it") with no result in it? A hand-off `
+    + `means that deliverable is NOT back. In that case, and only in that case, send ONE `
+    + `send_to_agent message to the agent it names asking them for the result directly — the `
+    + `single exception to the no-tools rule above — and compile after it arrives. Do not `
+    + `present a hand-off note to the owner as if it were the answer.\n\n`
     + `Here is each piece's delivered content, verbatim:\n\n`
     + p.pieces.join('\n')
   );
