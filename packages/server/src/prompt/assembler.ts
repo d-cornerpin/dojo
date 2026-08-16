@@ -10,7 +10,7 @@ import { getFilteredTools } from '../agent/tools/surface.js';
 import { getAgentPermissions } from '../agent/manifest.js';
 import { isPrimaryAgent, isPMAgent, isTrainerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getHealerAgentId, getHealerAgentName } from '../config/platform.js';
 import type { TurnCounterparty } from '../agent/v2/counterparty.js';
-import { NO_REPLY_CLOSED_MARKER, type Channel } from '@dojo/shared';
+import { NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, type Channel } from '@dojo/shared';
 import { isWorkVerb } from '../tools/work-verbs.js';
 import { getAgentGoogleAccessLevel, getGoogleWorkspaceConfig, isGoogleConnected, isEmailMonitoringEnabled, isEmailSendingEnabled } from '../google/auth.js';
 import { getAgentMicrosoftAccessLevel, getMsAccountType, getMicrosoftWorkspaceConfig, isMicrosoftConnected, isMsEmailMonitoringEnabled, isMsEmailSendingEnabled } from '../microsoft/auth.js';
@@ -280,6 +280,18 @@ export function writeSoulFile(soul: AgentSoulFile, content: string): void {
  * copy of the literal. The marker is written as a `role='system'` row by the engine, and on
  * a legacy agent whose charter column is NULL it could stand in as the identity — the same
  * class of defect as the card's, one layer down. An engine marker is never an identity.
+ *
+ * UX-REPAIR T57 adds the WORKING NOTE to the same table, on the same argument and by the same
+ * parameter discipline. W25 measured it on the owner's box: the Healer's `charter` is NULL and
+ * its soul row had been pruned, so the earliest surviving `role='system'` row was 88 bytes of
+ * `[working-note] Two issues to address…` — and that note was the Healer's whole identity, on
+ * the runtime surface and on the Settings card alike. A working note is engine-authored by
+ * construction: the engine WRAPS the model's mid-turn narration in this prefix
+ * (`post-call-classify/closeout-floors.ts`, `terminal-text.ts`) and stores it `role='system'`
+ * so it can never re-enter model context. Nobody authors an identity beginning with it.
+ *
+ * Prefix match, not substring: doctrine that MENTIONS the marker (a soul telling its agent how
+ * the engine demotes narration) is a legitimate identity and still passes.
  */
 export function readStoredCharter(agentId: string): string {
   const db = getDb();
@@ -292,9 +304,15 @@ export function readStoredCharter(agentId: string): string {
     const charterRow = db.prepare(
       "SELECT content FROM messages WHERE agent_id = ? AND role = 'system' " +
         "AND content NOT LIKE '[SOURCE:%' AND content NOT LIKE '[System:%' AND content NOT LIKE '──%' " +
+        'AND content NOT LIKE ? AND content NOT LIKE ? ' +
         'AND TRIM(content) <> ? ' +
         'ORDER BY rowid ASC LIMIT 1',
-    ).get(agentId, NO_REPLY_CLOSED_MARKER) as { content: string } | undefined;
+    ).get(
+      agentId,
+      `${WORKING_NOTE_PREFIX}%`,
+      `${INTERNAL_WORKING_NOTE_PREFIX}%`,
+      NO_REPLY_CLOSED_MARKER,
+    ) as { content: string } | undefined;
     return charterRow?.content?.trim() ?? '';
   } catch {
     return '';
