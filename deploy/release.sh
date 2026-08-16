@@ -443,6 +443,19 @@ step "Upgrade-header auth-bypass gate (asked of the packaged artifact, live)"
 node "$SCRIPT_DIR/checks/check-upgrade-bypass.mjs" "$SMOKE_PORT" --require-live \
   || fail "Upgrade-header auth-bypass gate: the packaged build let an untokened request through, or no server answered. NOT publishing."
 
+# ── Blocking gate `shipped-souls`, declared post-smoke in gate-manifest.mjs ──
+# W24 and W25 measured the PM and the Trainer running the in-code STUB on a live
+# box while thousands of bytes of shipped doctrine reached no model anywhere. The
+# repair made the assembler resolve `templates/*-SOUL.md` out of the payload — so
+# it rests entirely on build-package.sh:69-71 copying those files to where the
+# COMPILED module looks. W35 proved that by replaying an install BY HAND and said
+# out loud that no gate checks it. This is that gate: it asks the unzipped
+# PACKAGED ARTIFACT, recomputing the assembler's own relative hop rather than
+# trusting the script text, and --require-artifact refuses a skip.
+step "Shipped-souls gate (the built artifact carries templates/*-SOUL.md where the code looks)"
+node "$SCRIPT_DIR/checks/check-shipped-souls.mjs" "$SMOKE_PLATFORM" --require-artifact \
+  || fail "Shipped-souls gate: the packaged build is missing a soul template, or ships one the compiled assembler cannot resolve. NOT publishing."
+
 # The smoke server has now answered every question we have for it. Stop it
 # BEFORE the prefix-determinism gate below, which opens the same sandbox
 # database from a second process; the trap above is the backstop, not the plan.

@@ -156,6 +156,18 @@ export const GATES = [
   },
 
   {
+    id: 'shipped-souls',
+    tier: 'blocking',
+    phase: 'post-smoke',
+    script: 'deploy/checks/check-shipped-souls.mjs',
+    args: [],
+    releaseArgs: ['"$SMOKE_PLATFORM"', '--require-artifact'],
+    title: 'Shipped-souls gate (the built artifact carries templates/*-SOUL.md where the code looks)',
+    fail: 'Shipped-souls gate: the packaged build is missing a soul template, or ships one the compiled assembler cannot resolve. NOT publishing.',
+    why: 'UX-REPAIR T55, and the gap it closes was found by hand twice. W24 and W25 measured the PM and the Trainer running the in-code STUB (961 B and 3,023 B) while 13,593 B and 8,074 B of shipped doctrine reached no model on any box; the repair made the assembler resolve `templates/*-SOUL.md` out of the payload. That repair rests entirely on `build-package.sh:69-71` copying those files to where the COMPILED module looks — and W35 (HU-1) proved it only by replaying an install by hand, saying out loud that no gate checks it. Drop those two lines and every PM and Trainer silently reverts to the stub with nothing failing. Post-smoke because it asks the unzipped PACKAGED ARTIFACT, not the script text: it recomputes `platformTemplateSearchPaths`\'s own relative hop from the artifact\'s `packages/server/dist/prompt/` and demands each soul be there, byte-identical to the repo template when the artifact is of this tree. Offline it SKIPS loudly, exactly like the upgrade-bypass gate; the release passes --require-artifact so a skip cannot stand in for an answer.',
+  },
+
+  {
     id: 'must-consume',
     tier: 'blocking',
     phase: 'pre-build',
