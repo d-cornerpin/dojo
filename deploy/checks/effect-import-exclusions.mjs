@@ -182,7 +182,6 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
   { file: 'prompt/assembler.ts', klass: 'platform-internal', why: 'reads the platform\'s own prompt-fragment files from the install tree.' },
   { file: 'providers/anthropic-sdk-auth.ts', klass: 'platform-internal', why: 'runs the provider CLI\'s own auth helper; no argument comes from a tool.' },
   { file: 'healer/healer-agent.ts', klass: 'platform-internal', why: 'the healer\'s own log and report files, at platform paths.' },
-  { file: 'imaginer/imaginer-agent.ts', klass: 'platform-internal', why: 'the retired Imaginer\'s own files; unreachable from the toolbox even in the import graph, measured.' },
   { file: 'techniques/share-export.ts', klass: 'platform-internal', why: 'the technique EXPORT half, driven by the dashboard route.' },
   { file: 'techniques/share-import.ts', klass: 'platform-internal', why: 'the technique package IMPORT half after SURFACE SPLIT 2 (T8G): its one production importer is gateway/routes/techniques.ts, the dashboard upload route. The tool-facing setup surface left for techniques/import-setup.ts, which reaches disk through the facade.' },
   { file: 'tools/index-generator.ts', klass: 'platform-internal', why: 'the boot-time tool-doc GENERATOR after SURFACE SPLIT 1 (T8F): its one production caller is the boot step in index.ts, before any agent exists. The dispatch-time READER left for tools/tool-doc-read.ts, which holds no restricted import.' },

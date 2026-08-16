@@ -3718,6 +3718,13 @@
       "to": 2724,
       "by": "UX-REPAIR ROUND 12 T56 (W40) — replayed reasoning becomes visible, and ages out",
       "why": "+6, and NOT ONE of them is new machinery: one import gains a name, one condition is re-pointed, and the other five say why. The condition `assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0` becomes `reasoningRidesThisTurn(m.content)` — the SAME question (both are 'this block array holds a tool_use'), asked through the one function that `memory/budget.ts` now also asks when it costs the row. That is the whole point of the re-point: while the replay site and the budget held two expressions of one rule, the budget could bill for bytes this site drops or miss bytes it sends, and it missed 3,806,926 of them on the dev body. HL8 (C)'s drop-on-plain rule and the `''` fallback are untouched, and the request-shape golden did not move. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/prompt/assembler.ts",
+      "from": 1691,
+      "to": 1787,
+      "by": "UX-REPAIR ROUND 12 T59 (W42) — the service agents get their souls",
+      "why": "+96. The THIRD raise on this file for the SAME reason, and the reason is the design: T40 made this module the ONE owner of soul resolution, so W24 (PM, 1528->1625), W25 (Trainer, 1625->1673) and now the Healer and the Imaginer all land here by construction. Putting the lookup anywhere else would re-create the two-stores defect all three tasks exist to close. WHAT THE 96 LINES ARE, counted: 44 are the two shipped-soul default wrappers over W25's `shippedSoulDefaultFrom` and their doc blocks; 30 are the argued header on `soulFileForAgent` that the T59 ruling REQUIRES in-file (T57's working-note refusal, the Dreamer's Step-0 stand-down with its measurement, and the per-agent-branch precedence); 12 are `PLATFORM_SOUL_PLACEHOLDERS` and the substituter's note; 2 are the branches themselves; 8 are imports and blank lines. NET ACROSS THE COMMIT IS SMALLER THAN THIS NUMBER: `healer/healer-agent.ts` fell 1186->1135 (-51) and `imaginer/imaginer-agent.ts` 217->194 (-23) in the same change, because both dead readers were DELETED rather than left beside the live one. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3907,7 +3914,7 @@
     "packages/server/src/microsoft/tools-write.ts": 2131,
     "packages/server/src/migration/checks.ts": 537,
     "packages/server/src/migration/import.ts": 407,
-    "packages/server/src/prompt/assembler.ts": 1691,
+    "packages/server/src/prompt/assembler.ts": 1787,
     "packages/server/src/prompt/registry/entries.ts": 542,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
