@@ -3494,6 +3494,27 @@
       "to": 892,
       "by": "UX-REPAIR ROUND 11 T44 — the re-derived reserve",
       "why": "+6, and every one of them is inside the `measured` string of `lane.relevant-memory`; no code line was added and no declared cap changed. The reserve literal moves 1,807 -> 1,911 on the line it already occupied, and the six new lines are the DERIVATION of the +104: the board-counts line at four numbers of five digits each (99,999 open rows on one agent, against a worn-in body whose largest per-agent count of any kind is three figures) plus the completeness sentence and the list-door pointer, carrying no row cap and no truncation rung because it renders no rows. REFUSED: moving the number and leaving the paragraph alone (+0). This table's own rule is that a reserve is DERIVED FROM THE GENERATOR and never guessed beside it — `recallLaneWorstCaseTokens()` is pinned to this literal by the suite — and a reserve that moved with no recorded derivation is precisely the drift that pin exists to catch. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/close-the-loop.ts",
+      "from": 94,
+      "to": 158,
+      "by": "UX-REPAIR ROUND 11 T42 — the completion report stops re-announcing an answer the owner already has",
+      "why": "+64, and 52 of them are the incident and the clause list. THE CODE IS 12 LINES: one import, a two-entry constant, a 10-line SQL helper and one `AND NOT` in the selector. The prose is the expensive part on purpose — it records the ledger rows that prove the defect (task `34519aca` closed 01:28:33; its receipt `1f03db51`, `channel='dashboard'`, `recipient_id='owner'`, `outcome='delivered'`, reached the owner at 01:25:51) and, clause by clause, WHY each narrowing is there. Two of those clauses are measurements a future reader cannot re-derive from the code: `work.conversation_id` is NULL on every task row on the dev body, which is why this scopes by CHANNEL and not by conversation; and 125 `done` one-shot rows point their receipt at a `tool-turn` chip, which is why the chip exclusion exists at all — without it the guard would suppress reports that really are owed, the opposite defect. REFUSED: (a) dropping the clause list to land at ~+20 — the next reader deletes the chip clause as decoration and re-opens the 125-row hole; (b) putting the predicate in `answered-edge.ts` beside its sibling `turnDeliveredToPerson` and importing it (would land this file at ~+15) — genuinely the better home, and OUT OF THIS WORKER'S FENCE, so it is recorded as a hand-up rather than taken. From here this file may only shrink, and the merge with `turnDeliveredToPerson` is where the shrink should come from."
+    },
+    {
+      "path": "packages/server/src/work/join-drive.ts",
+      "from": 256,
+      "to": 280,
+      "by": "UX-REPAIR ROUND 11 T43b — the compile steer tells the model to check the pieces are the deliverables",
+      "why": "+24: 7 lines of steer TEXT and 17 of reason. The text is the whole mechanism — this file exists to hold the wording beside the ladder that spends it, so a steer change IS a line change here and there is nowhere cheaper to put it. The 17 comment lines carry three things the code cannot say: the incident (kelly's hand-off note settled her piece, the join completed with one of two research streams in hand, ~6m20s lost), the MEASUREMENT that forbids the tempting alternative (`a2a_replies` intents ANSWER 341 / DELIVERABLE 262 / COMPLETE 42 / FAIL 2, so \"only COMPLETE settles a piece\" would break the dominant working flow), and why the new paragraph does not re-open run bmrplgdg33l's 45-tool-call spiral (it names ITSELF the single exception and bounds it to one `send_to_agent`). REFUSED: dropping the intent measurement to land at ~+16 — it is the only record of why the verb fix was killed, and without it the next round proposes it again. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/agents.ts",
+      "from": 1280,
+      "to": 1377,
+      "by": "UX-REPAIR ROUND 11 T43a — capability truth at the delegation door",
+      "why": "+97: 30 lines of code (two imports, a five-row capability table, a 6-line resolver, a 20-line clause builder, two call sites) and 67 of header. The header is doing work no line of code can: it records the STEP-0 measurement that licensed the whole task (per-agent grants read through `getFilteredTools` on the dev body — Kevin 407 tools, Healer 242, Ticky 241, BehaviorBot 240, Dreamer 168, Imaginer 156, KELLY 47, and Kelly holds nothing from `Web`, `Communication`, `Gmail` or `Google Calendar`), and it carries the CENSUS/COLLISION argument the mission rule requires for the one new declaration — why `TOOL_CATEGORIES`, sensei-policy's SEND_TO_PEOPLE and `RECEIPT_TOOLS` each answer a different question and none is displaced. REFUSED: (a) cutting the collision argument to land at ~+55 — the mission rule is that a new declaration ships WITH its collision argument or not at all, and a census kept in a commit message is a census nobody reads; (b) putting the clause builder in `agent/tools/surface.ts` beside the grant source it reads (would land this file at ~+35) — a defensible home and OUT OF THIS WORKER'S FENCE, recorded as a hand-up. This file is already 1,280 lines of relocated handlers and its own entry above says shaping code to fit a line count is the disease; the honest statement is that this door gained a capability it did not have and paid 30 lines for it. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3544,7 +3565,7 @@
     "packages/server/src/agent/shared-state.ts": 134,
     "packages/server/src/agent/spawner.ts": 1420,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
-    "packages/server/src/agent/tools/cat/agents.ts": 1280,
+    "packages/server/src/agent/tools/cat/agents.ts": 1377,
     "packages/server/src/agent/tools/cat/comms.ts": 854,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
@@ -3595,7 +3616,7 @@
     "packages/server/src/agent/v2/steps/execute/work-status.ts": 52,
     "packages/server/src/agent/v2/steps/execute/xml-fallback.ts": 155,
     "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 391,
-    "packages/server/src/agent/v2/steps/finalize/close-the-loop.ts": 94,
+    "packages/server/src/agent/v2/steps/finalize/close-the-loop.ts": 158,
     "packages/server/src/agent/v2/steps/finalize/completion-ack.ts": 154,
     "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts": 90,
     "packages/server/src/agent/v2/steps/finalize/index.ts": 171,
@@ -3729,7 +3750,7 @@
     "packages/server/src/work/ask-settlement.ts": 1294,
     "packages/server/src/work/ask-title.ts": 420,
     "packages/server/src/work/deliverable-declaration.ts": 320,
-    "packages/server/src/work/join-drive.ts": 256,
+    "packages/server/src/work/join-drive.ts": 280,
     "packages/server/src/work/obligation-memory.ts": 619,
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
