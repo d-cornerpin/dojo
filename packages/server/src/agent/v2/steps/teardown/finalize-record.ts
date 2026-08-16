@@ -106,6 +106,15 @@ export async function finalizeTurnRecord(
       // only when the turn produced no answer AND executed zero non-idempotent calls.
       state.nonIdempotentCallsThisTurn,
     );
+    // ── UX-REPAIR ROUND 13 T61(b), READ 1 of 2 — THE TRIGGER ASK, BEFORE SETTLEMENT ──
+    // Read HERE and not at the marker below because `settleAsksAtTurnFinalize` (the next
+    // statement) NULLS `claimed_by_turn` on every ask it hands back or closes. The marker's
+    // freshness clause is "this turn is the one that picked this ask up", and by the time it
+    // runs that column no longer says so. One SELECT, three columns, no judgment.
+    const triggerAsk = triggerWorkId
+      ? db.prepare('SELECT kind, requester, claimed_by_turn FROM work WHERE id = ?').get(triggerWorkId) as
+        { kind: string; requester: string; claimed_by_turn: number | null } | undefined
+      : undefined;
     // ── SWEEP-A TB1 — THE FINAL ADJUDICATOR OF EVERY OWNER ASK THIS TURN TOUCHED ──
     //
     // Invocation (b) of the settlement authority (`work/ask-settlement.ts`), and the moment
@@ -228,6 +237,66 @@ export async function finalizeTurnRecord(
           });
         } catch { /* best effort, like every arm of this boundary */ }
       }
+    }
+    // ── UX-REPAIR ROUND 13 T61(b) — "ANSWERED WITH NOTHING CONSULTED" BECOMES COUNTABLE ──
+    //
+    // Round-13 S1: a fresh owner ask answered in 5.2 seconds with ZERO tool calls, seven
+    // factual specifics in the reply (elevation, two distances, a pass requirement, a land
+    // manager, $30/year, $10/day) and — recorder-proven across `messages`, `summaries`,
+    // `vault_entries`, `briefings` and every uploaded file — no source for any of them
+    // anywhere on the box. The turn's own reasoning hedged wider than the reply did and the
+    // two prices appear in neither the reasoning nor any source.
+    //
+    // T61(a) is the conduct sentence, and the plan records honestly that it is the WEAK
+    // surface. THIS is the half that survives being ignored: the class becomes COUNTABLE, so
+    // a later round measures whether it persists instead of re-discovering it from a
+    // transcript. It STEERS NOTHING AND BLOCKS NOTHING — no refusal, no re-prompt, no
+    // change to what the model receives or what the person gets. Measurement only.
+    //
+    // THE SIGNATURE IS STRUCTURAL, EVERY CLAUSE A RECORD, and it must be: classifying "this
+    // ask needed sources" from the ask's text is the standing prose ban, so the engine counts
+    // shapes and never judges content.
+    //   1. an OWNER ASK on a person's turn — `kind='ask'`, `requester='owner'`, a `user`
+    //      counterparty, not a2a and not an engine wake;
+    //   2. FRESH — `claimed_by_turn` is THIS turn, i.e. this turn is the one that picked the
+    //      ask up (read above, before settlement clears it). A redrive of somebody else's
+    //      ask is a different animal and is not counted;
+    //   3. ZERO TOOL ROWS — the F10 first-tool latch never flipped AND the executed-call
+    //      count is 0. Both, because they are written by different spans and a marker that
+    //      disagreed with either would be measuring its own bookkeeping;
+    //   4. ZERO RECALL READS — `msg.relevant-memory` was confirmed in no request this turn
+    //      (`recallLaneReachedModelThisTurn`, latched off the delivered array);
+    //   5. ANSWERED — the truthful-answer key, so a silent turn is never counted.
+    // Together: the person asked something new, the agent consulted nothing at all, and
+    // answered. Whether the answer was RIGHT is not knowable here and is not claimed.
+    //
+    // It rides the person's own ask as an `audit` MARKER — the W20/T41 rider's shape, one
+    // file up — so there is no new event kind, no table and no migration. The delivery
+    // receipt rides along because "answered" and "it left the building" are two facts.
+    if (triggerWorkId && triggerAsk?.kind === 'ask' && triggerAsk.requester === 'owner'
+        && triggerAsk.claimed_by_turn === turnNumber
+        && counterparty.kind === 'user' && !isA2ATurn && !isEngineTurn
+        && !turnCtx.anyToolStartedThisTurn && state.toolCallsExecutedThisTurn === 0
+        && !state.recallLaneReachedModelThisTurn
+        && answerRow !== undefined) {
+      logger.info('v2: a fresh owner ask was answered with nothing consulted — no tool call and no recalled memory reached this turn (T61 measurement marker; not a fault, not a block)', {
+        agentId, turnNumber, askId: triggerWorkId,
+        channel: counterparty.channel ?? null, exitReason,
+        deliveredReceipt: terminalDeliveryId !== null,
+      }, agentId);
+      try {
+        appendWorkEvent(triggerWorkId, 'audit', 'unsourced-specifics', {
+          marker: 'answered_with_no_sources_consulted',
+          turn_number: turnNumber,
+          channel: counterparty.channel ?? null,
+          exit_reason: exitReason,
+          delivered_receipt: terminalDeliveryId !== null,
+          reason: 'this turn answered a fresh owner ask having made no tool call and having '
+            + 'been served no recalled memory, so every specific in the reply came from the '
+            + "model's own weights. Recorded so the class is countable instead of invisible; "
+            + 'it is a measurement, not a fault — the answer may well be correct.',
+        });
+      } catch { /* best effort, like every arm of this boundary */ }
     }
     // ── HL4 STEP 2 — "WRITTEN, NEVER SEEN BY THE MODEL" IS A FACT THE PLATFORM RECORDS ──
     //

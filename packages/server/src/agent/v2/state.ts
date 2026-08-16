@@ -399,6 +399,22 @@ export interface AgentTurnState {
    */
   lastContextRatio: number;
   /**
+   * UX-REPAIR ROUND 13 T61(b) — DID RECALLED MEMORY REACH THE MODEL THIS TURN.
+   *
+   * Latched true at the pre-call injection site the moment `msg.relevant-memory` is
+   * CONFIRMED IN the array the provider is handed — the same "delivered, recorded not
+   * assumed" reading the steer-delivery latch four lines below it takes, off the same
+   * `collectMessageLaneIds` result. A lane that was computed and then dropped by the
+   * budget is not a read the model had, and this must not say it was.
+   *
+   * It exists for ONE reader, at the turn boundary: the unsourced-specifics marker asks
+   * whether this turn answered a fresh owner ask having consulted NOTHING — no tool row
+   * and no recalled memory. Measurement only; nothing steers or refuses on it. Kept on
+   * the turn state rather than the turn's bag because it crosses no closure and no timer:
+   * one writer inside `call-llm`, one reader inside `teardown`, both on the same value.
+   */
+  recallLaneReachedModelThisTurn: boolean;
+  /**
    * v2.5.46, pre-turn close-out gate. At preflight we look up the
    * agent's in_progress tasks that were NOT touched in the previous
    * turn. If any exist, this list is populated. Until at least one of
@@ -583,6 +599,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     heavyLoadsThisTurn: 0,
     structuringToolCalledThisTurn: false,
     lastContextRatio: 0,
+    recallLaneReachedModelThisTurn: false,
     danglingTaskIds: [],
     closeOutGateSatisfied: false,
     nudgedForCloseOutThisTurn: false,

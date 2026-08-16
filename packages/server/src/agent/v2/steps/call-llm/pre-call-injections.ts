@@ -235,6 +235,15 @@ export async function injectAndRecord(
   // PHASE-4 T3: DELIVERED-TO-MODEL, RECORDED not assumed — the lane ids are read off the
   // array the provider is handed, so a steer pushed and then dropped is NOT delivered.
   const laneIdsForThisCall = collectMessageLaneIds(messages);
+  // ── UX-REPAIR ROUND 13 T61(b) — "RECALLED MEMORY REACHED THE MODEL", RECORDED HERE ──
+  // Off the SAME array read the steer-delivery latch below takes, and for the same reason:
+  // a lane the assembler computed and the budget then dropped is not a read the model had.
+  // The one reader is the turn-boundary marker that asks whether an answer to a fresh owner
+  // ask was produced having consulted NOTHING — no tool row, no recalled memory. It latches
+  // (never clears) because a later iteration without recall does not un-read an earlier one.
+  if (!state.recallLaneReachedModelThisTurn && laneIdsForThisCall.includes('msg.relevant-memory')) {
+    state = advance(state, { recallLaneReachedModelThisTurn: true });
+  }
   if (steerAwaitingConfirm) {
     state = advance(state, {
       steerQueue: laneIdsForThisCall.includes('msg.pending-nudge')

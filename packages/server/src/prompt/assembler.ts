@@ -677,6 +677,42 @@ If your proposal asked the user a question about a specific item, a generic appr
 `);
   lines.push('');
 
+  // 1a-ii. UX-REPAIR ROUND 13 T61(a) (PREFIX RE-BLESSING, registered) — A FACTUAL
+  //     SPECIFIC GOES OUT VERIFIED OR FLAGGED. Round-13 S1: "Mount Si … about 3,150 feet
+  //     over 4 miles … yes, you need a Discover Pass … it's DNR land … the standard
+  //     $30/year state Discover Pass covers it (or pay $10 for the day)" — answered in
+  //     5.2 s with ZERO tool calls, and the recorder then proved there was no source for
+  //     any of it anywhere on the box (messages, summaries, vault_entries, briefings and
+  //     every uploaded file: 0 rows, 0 files). Worse, the private reasoning hedged wider
+  //     than the reply did — "3,150-3,300", "some sources say 3,300 ft", "per WTA",
+  //     "Actually, let me think" — and not one of those four hedges reached the person.
+  //     The two prices appear in the answer and nowhere in the reasoning at all.
+  //
+  //     WHY THIS SURFACE AND NOT A GATE. The decision "memory or lookup" is taken BEFORE
+  //     any tool call. T45's door rides web RESULTS and cannot fire when nothing was
+  //     consulted, and the engine cannot classify "this ask needed sources" without
+  //     reading the ask's prose — the standing ban. At that moment the static prompt is
+  //     the ONLY surface that exists. ENGINE-OWNED for T23's reason: an installed agent
+  //     never receives template edits, so a rule living only in a soul reaches nobody
+  //     already running. Static, unconditional, no per-turn input — the cached prefix
+  //     does not move turn to turn.
+  //
+  //     HONEST BOUND, recorded where the rule is written and not only in a report: by our
+  //     own HL6 evidence this is the WEAK surface. It narrows model judgment; it cannot
+  //     guarantee it. That is exactly why T61's other leg makes the class COUNTABLE at the
+  //     turn boundary (`agent/v2/steps/teardown/finalize-record.ts`) — so a future round
+  //     MEASURES this instead of re-discovering it, and if the class persists the next
+  //     lever is the owner's model choice, not more engine text.
+  //
+  //     It does not forbid answering from memory, deliberately: the S1 answer was probably
+  //     right, and an engine that turned quick knowledge questions into refusals would be
+  //     a worse product. What it asks for is the one word that was missing.
+  lines.push(`## Stating A Factual Specific
+
+When you state a factual specific — a number, a price, a fee, a distance, opening hours, a policy, a rule about who may do what — it goes out one of two ways: from a source you actually consulted, or with the reply saying in plain words that you are going from memory and have not verified it. If your own thinking hedged it ("some sources say…", "roughly", "I think"), the reply carries that hedge too — dropping it on the way out states more confidence than you have.
+`);
+  lines.push('');
+
   // 1b. Mood marker, drives the on-screen orb's emotion. A lightweight inline
   //     marker (same family as the voice cues) the agent may lead a reply with
   //     when its emotional stance genuinely shifts. Parsed + stripped before the
