@@ -32,9 +32,13 @@
 //      `path.resolve(<artifact>/packages/server/dist/prompt, '../../../../templates', file)`
 //      — the FIRST entry of `platformTemplateSearchPaths()`, recomputed here rather than
 //      hard-coded, so "shipped somewhere" cannot pass for "shipped where the code looks";
-//   3. PM-SOUL.md and TRAINER-SOUL.md are additionally named as a FLOOR, because those two
-//      are the measured casualties and a `templates/` directory that lost exactly them must
-//      not pass on the strength of its siblings;
+//   3. every soul the platform SEEDS FROM is additionally named as a FLOOR, because a
+//      `templates/` directory that lost exactly those must not pass on the strength of its
+//      siblings. T59 widened that list from the two measured casualties to the full set: the
+//      Healer (0 bytes served live, against a 10,948-byte template) and the Imaginer (0 bytes,
+//      zero system rows) are now file-backed and seed from their templates exactly as the PM
+//      and Trainer do, and the Dreamer's template is read on every boot by
+//      `vault/maintenance.ts` to refresh its stored identity. All five are load-bearing;
 //   4. presence is not enough — a shipped soul must clear a byte floor, and when the artifact
 //      was built from THIS tree (its embedded version matches the repo's) it must be
 //      BYTE-IDENTICAL to the repo template. That is the clause that refuses a truncated,
@@ -76,9 +80,16 @@ const artifactArg = argv.find((a) => !a.startsWith('-'));
 // byte-identity clause below is what catches the rest.
 const MIN_SOUL_BYTES = 1024;
 
-// Named as a floor: the two measured casualties (W24 · W25). The rest of the list is
-// discovered, so this can only ever ADD certainty, never cap it.
-const REQUIRED_SOULS = ['PM-SOUL.md', 'TRAINER-SOUL.md'];
+// Named as a floor: EVERY soul the running platform seeds or refreshes from. W24 · W25
+// measured the first two reverting to an in-code stub; T59 measured the Healer and the
+// Imaginer serving ZERO bytes and moved both onto the same seeding door, and the Dreamer's
+// identity row is rewritten from its template on every boot check. The rest of the list is
+// still DISCOVERED from `templates/`, so this can only ever ADD certainty, never cap it — the
+// discovery is what covers a soul added tomorrow, and this list is what refuses the specific
+// deletion of one we know a live agent depends on.
+const REQUIRED_SOULS = [
+  'PM-SOUL.md', 'TRAINER-SOUL.md', 'HEALER-SOUL.md', 'IMAGINER-SOUL.md', 'DREAMER-SOUL.md',
+];
 
 let failed = false;
 const fail = (...lines) => { failed = true; for (const l of lines) console.error(l); };
