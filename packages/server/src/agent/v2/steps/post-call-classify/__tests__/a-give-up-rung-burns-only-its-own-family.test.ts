@@ -59,7 +59,6 @@ const PLAIN: ModelContract = {
   thinkingToggle: 'none',
   rejectsSamplingParamsWhenThinking: false,
   emptyRetryBudget: 1,
-  supportsParallelToolCalls: true,
   apiRootIsBareHost: false,
   systemPromptCacheMarker: 'none',
 } as unknown as ModelContract;

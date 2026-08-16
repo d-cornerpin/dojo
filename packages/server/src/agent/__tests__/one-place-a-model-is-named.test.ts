@@ -45,7 +45,6 @@ describe('HL1 — the capability contract is the only place a model or provider 
       thinkingToggle: 'native-thinking-param',
       rejectsSamplingParamsWhenThinking: true,
       emptyRetryBudget: 1,
-      supportsParallelToolCalls: true,
       apiRootIsBareHost: true,
       systemPromptCacheMarker: 'provider-auto',
     });
@@ -86,7 +85,6 @@ const FICTIONAL: ModelContract = {
   thinkingToggle: 'native-thinking-param',
   rejectsSamplingParamsWhenThinking: true,
   emptyRetryBudget: 3,
-  supportsParallelToolCalls: false,
   apiRootIsBareHost: true,
   systemPromptCacheMarker: 'explicit-ephemeral',
 };
@@ -99,7 +97,6 @@ const NOTHING: ModelContract = {
   thinkingToggle: 'none',
   rejectsSamplingParamsWhenThinking: false,
   emptyRetryBudget: 0,
-  supportsParallelToolCalls: true,
   apiRootIsBareHost: false,
   systemPromptCacheMarker: 'provider-auto',
 };
@@ -170,11 +167,24 @@ describe('HL1 — every declared field moves the request', () => {
   });
 
   // `emptyRetryBudget` is exercised by the empty-response ladder's own suite (HL2).
-  // `supportsParallelToolCalls` is DECLARED AND UNREAD at HEAD — said out loud in the
-  // module header and handed up, rather than counted as a migrated branch.
-  it('names the one field with no reader, so it cannot be forgotten', () => {
+
+  // T58 (owner ruling 12) — the one field that was DECLARED AND UNREAD is gone. HL1 shipped
+  // `supportsParallelToolCalls` flagged rather than hidden; the ruling was "clean up after
+  // doubly confirming unneeded", the confirmation came back with no reader in either tree,
+  // and the field was removed. This is the tombstone: the contract may not grow the field
+  // back without a reader arriving in the same change.
+  it('declares no field without a reader — the removed one stays removed', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'model-contract.ts'), 'utf-8');
-    expect(src).toContain('IS THE ONE UNREAD FIELD AND IT IS SAID OUT LOUD');
-    expect(FICTIONAL.supportsParallelToolCalls).toBe(false); // it is at least settable
+    const code = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    expect(code).not.toContain('supportsParallelToolCalls');
+    // The table above the code is where the removal is argued, so the tombstone must say so.
+    expect(src).toContain('TOMBSTONE: `supportsParallelToolCalls`, REMOVED');
+    // Every field the interface still declares is one the tests above move end-to-end.
+    const iface = src.slice(src.indexOf('export interface ModelContract'), src.indexOf('// ── THE DEFINITION SITE'));
+    for (const field of ['requiresReasoningReplay', 'answersInReasoning', 'thinkingToggle',
+      'rejectsSamplingParamsWhenThinking', 'emptyRetryBudget', 'apiRootIsBareHost',
+      'systemPromptCacheMarker']) {
+      expect(iface, `${field} must still be declared`).toContain(field);
+    }
   });
 });

@@ -33,20 +33,19 @@
 // | emptyRetryBudget                  | how many SILENT re-runs the empty-response ladder may spend    | the empty-   |
 // |                                   | before it nudges                                               | response     |
 // |                                   |                                                                | ladder       |
-// | supportsParallelToolCalls         | may a single assistant turn carry more than one tool call?     | NOBODY YET   |
-// |                                   | **Declared, not consulted at HEAD** — there is no branch in    | (declared    |
-// |                                   | the dispatcher to absorb, so this is the one field that is a   |  only, see   |
-// |                                   | declaration rather than a relocation. Its future reader is     |  the note    |
-// |                                   | `runtime.ts`'s `enforceModelCapabilities`. Flagged, not hidden.|  below)      |
 // | apiRootIsBareHost                 | is the chat endpoint at the bare host, with no `/v1` segment?  | model.ts     |
 // | systemPromptCacheMarker           | does the provider auto-cache a stable string system prefix, or | model.ts     |
 // |                                   | does it need the explicit `cache_control` block form?          |              |
 //
-// ⚠ `supportsParallelToolCalls` IS THE ONE UNREAD FIELD AND IT IS SAID OUT LOUD. The
-// plan named it in HL1's initial set; the dispatcher has no branch for it. It is seeded
-// from today's universal behaviour (every configured model may batch) so that when a
-// reader arrives it inherits a truthful value rather than a guess, and it is handed up
-// rather than quietly counted as a migrated branch.
+// ── TOMBSTONE: `supportsParallelToolCalls`, REMOVED 2026-08-16 (T58, owner ruling 12) ──
+// HL1's initial set named it and it landed DECLARED AND UNREAD: the dispatcher had no
+// branch for it to absorb, so it was a declaration rather than a relocation, flagged in
+// this header and handed up. The owner ruled "clean up after doubly confirming unneeded".
+// Confirmed: no reader in either tree (grep across `dojo/` and `dojo-test-kit/`; the only
+// mentions were this table, the seed below, and test fixtures repeating the seed), so the
+// field, its seed and its fixtures are gone. Every field in the table above now has a
+// named reader — that is the invariant the table exists to hold, and
+// `__tests__/one-place-a-model-is-named.test.ts` pins the tombstone.
 // ════════════════════════════════════════════════════════════════════════════════════
 
 /** How thinking is turned on and off on the wire, for models that have a toggle. */
@@ -74,7 +73,6 @@ export interface ModelContract {
   readonly thinkingToggle: ThinkingToggle;
   readonly rejectsSamplingParamsWhenThinking: boolean;
   readonly emptyRetryBudget: number;
-  readonly supportsParallelToolCalls: boolean;
   readonly apiRootIsBareHost: boolean;
   readonly systemPromptCacheMarker: SystemPromptCacheMarker;
 }
@@ -128,8 +126,6 @@ const BASE_CONTRACT: ModelContract = {
   // The ladder's silent-retry rung has been bounded at exactly one re-run since it was
   // written (`empty-response.ts`, `state.retriedEmptyResponse`). Seeded from that.
   emptyRetryBudget: 1,
-  // Declared, not consulted — see the header. Every configured model may batch today.
-  supportsParallelToolCalls: true,
   apiRootIsBareHost: false,
   systemPromptCacheMarker: 'provider-auto',
 };

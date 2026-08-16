@@ -47,7 +47,6 @@ const ANSWERS_IN_REASONING: ModelContract = {
   thinkingToggle: 'native-thinking-param',
   rejectsSamplingParamsWhenThinking: true,
   emptyRetryBudget: 1,
-  supportsParallelToolCalls: true,
   apiRootIsBareHost: true,
   systemPromptCacheMarker: 'provider-auto',
 };
