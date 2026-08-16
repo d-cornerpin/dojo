@@ -169,7 +169,14 @@ export interface QueuePairedRider {
 }
 
 export const QUEUE_PAIRED_RIDERS: Readonly<Record<string, QueuePairedRider>> = Object.freeze({
-  'owed-interrupt':    { intent: 'owed_interrupt',          latch: "steerFired(state.steerQueue, 'owed-interrupt')" },
+  // EMPTY, and that is T53's whole result: no steer floor writes the events lane any more.
+  // The type and the map STAY rather than being deleted with their last entry — this is the
+  // declaration an eighth double-writer has to fail against, and `the-second-channel-is-governed`
+  // derives the pairs from the writers and fails in both directions if one appears without a
+  // row here. A map that only exists while it is non-empty is a guard that disappears exactly
+  // when it is needed.
+  // RETIRED by T53: `owed-interrupt`. Its one-shot latch, its separate recording latch and the
+  // T31 grant are untouched; only the second copy is gone.
   // RETIRED by T53: `promise-floor`. Its one-shot latch is untouched — the floor still
   // stands down on a second promise ending and logs its tripwire instead of spinning.
   // RETIRED by T53: `a2a-handoff-floor`. Its counter latch is untouched — two attempts,

@@ -54,11 +54,17 @@ vi.mock('../../../../../db/connection.js', async () => {
 const broadcastSpy = vi.fn();
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: (...a: unknown[]) => broadcastSpy(...(a as [])) }));
 
-const engineEventSpy = vi.fn();
-vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  insertEngineEventIfAbsent: (...a: unknown[]) => engineEventSpy(...(a as [])),
-}));
+// T53 (owner ruling 5): the observation point moved with the carrier, and it moved to the
+// DELIVERY. This suite used to read the seam's events-lane row to find out what the model
+// was told; the seam now steers only through the queue, so these clauses read the queue
+// entry itself — the message `msg.pending-nudge` hands the model. The events-lane spy is
+// gone rather than re-pointed at `insertMessageIfAbsent`, deliberately: that writer is
+// shared with the §3 working-note demotion, and stubbing it would silently blank a clause
+// about a different mechanism.
+const steerOf = (out: { state: AgentTurnState }): string | null =>
+  nextSteer(out.state.steerQueue)?.content ?? null;
+const steersFiled = (out: { state: AgentTurnState }): number =>
+  out.state.steerQueue.fired.filter((e) => e.floor === 'owed-interrupt').length;
 
 const owedArrivals: { current: Array<{ id: string; content: string }> } = { current: [] };
 vi.mock('../../../counterparty.js', async (importOriginal) => ({
@@ -71,6 +77,8 @@ import path from 'node:path';
 import url from 'node:url';
 import { runMigrations } from '../../../../../db/migrations.js';
 import { initState, type AgentTurnState, type OwedInterruptGrant } from '../../../state.js';
+import { nextSteer } from '../../../steer-queue.js';
+import { laneLimit } from '../../../../../memory/lanes.js';
 import { runOwedInterrupt } from '../owed-interrupt.js';
 import { runCloseoutFloors } from '../closeout-floors.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
@@ -92,7 +100,6 @@ beforeEach(() => {
   d.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Kevin', 'idle', '1970-01-01')`).run(AGENT);
   d.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('conv-1', ?, 'dashboard', 'owner')`).run(AGENT);
   broadcastSpy.mockClear();
-  engineEventSpy.mockClear();
   owedArrivals.current = [];
 });
 
@@ -189,12 +196,12 @@ describe('§1 the owed-interrupt seam records the round it granted, by identity'
     const first = await runOwedInterrupt(
       freshState({ loopCount: 3 }), ctxFor(), scratchFor({ persistedContent: 'Answer.' }),
     );
-    engineEventSpy.mockClear();
+    expect(steersFiled(first), 'the first pass files exactly one').toBe(1);
     const second = await runOwedInterrupt(
       { ...first.state, loopCount: 4 } as AgentTurnState, ctxFor(), scratchFor({ persistedContent: 'More.' }),
     );
     expect(second.directive).toBe('proceed');
-    expect(engineEventSpy).not.toHaveBeenCalled();
+    expect(steersFiled(second), 'the latched seam files no second steer').toBe(1);
     expect((second.state.owedInterruptGrant as OwedInterruptGrant).atLoop).toBe(3);
   });
 });
@@ -206,9 +213,35 @@ describe('§1 the owed-interrupt seam records the round it granted, by identity'
 describe('§2 the steer text', () => {
   const steer = async (): Promise<string> => {
     owedArrivals.current = [{ id: 'm-b', content: 'Never mind, forget the earbuds — one good podcast?' }];
-    await runOwedInterrupt(freshState({ loopCount: 3 }), ctxFor(), scratchFor({ persistedContent: 'Answer.' }));
-    return (engineEventSpy.mock.calls[0][0] as { content: string }).content;
+    const out = await runOwedInterrupt(freshState({ loopCount: 3 }), ctxFor(), scratchFor({ persistedContent: 'Answer.' }));
+    return steerOf(out)!;
   };
+
+  // ── T53 (owner ruling 5): ONE MODEL-FACING CHANNEL ──────────────────────────────────
+  it('T53: the re-prompt reaches the model on the QUEUE only, and stays on the record', async () => {
+    owedArrivals.current = [{ id: 'm-b', content: 'Never mind, forget the earbuds — one good podcast?' }];
+    const out = await runOwedInterrupt(
+      freshState({ loopCount: 3 }), ctxFor(), scratchFor({ persistedContent: 'Answer.' }),
+    );
+    const text = steerOf(out)!;
+    // CHANNEL 1, the delivery, unchanged — including the sentence at the END of the text,
+    // which is the half a 400-char gist of this re-prompt would have cut. (The in-flight
+    // form's tail is the cancellation DOOR itself; both are past the cap.)
+    expect(text.length).toBeGreaterThan(laneLimit('lane.events', 'chars', 'gist'));
+    expect(text).toContain('stop that work now and record it; otherwise finish this turn without adding anything.');
+    // CHANNEL 2, gone.
+    const riders = mockDb.current!.prepare(
+      `SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND origin_intent = 'owed_interrupt'`,
+    ).get(AGENT) as { n: number };
+    expect(riders.n, 'the re-prompt must not reach the model a second time next turn').toBe(0);
+    // …and the record is kept, on the carrier RC-19 sanctions.
+    const durable = mockDb.current!.prepare(
+      `SELECT content FROM messages WHERE agent_id = ? AND role = 'system' AND content = ?`,
+    ).all(AGENT, text) as unknown[];
+    expect(durable.length, 'a removal is not a blind spot').toBe(1);
+    // The grant the round is FOR is untouched by the carrier change.
+    expect((out.state.owedInterruptGrant as OwedInterruptGrant).messageIds).toEqual(['m-b']);
+  });
 
   it('no longer asks the model to reply to the arrival — that sentence bought the duplicate', async () => {
     const t = await steer();

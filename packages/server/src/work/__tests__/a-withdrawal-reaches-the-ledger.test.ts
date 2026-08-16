@@ -234,9 +234,15 @@ describe('§2 the owed-interrupt gate splits, and T25\'s high water stays put', 
     expect(step()).toContain('if (!maySteer) return proceed(state);');
   });
 
-  it('STILL ONE STEER PER TURN AND ONE ENQUEUE SITE — bounded by the code, not by care', () => {
+  it('STILL ONE STEER PER TURN AND ONE FILING SITE — bounded by the code, not by care', () => {
+    // T53 (owner ruling 5) re-pointed the counter, and WIDENED it rather than moving it. The
+    // bound is "this step files at most one steer", and the step now files it through the
+    // RC-19 door (`persistEngineSteer`, which owns the enqueue and the durable row) instead
+    // of calling `enqueueSteer` itself. Counting only the old spelling would have let a
+    // second steer land through the other door without failing anything, which is the exact
+    // shape of hole this clause exists to close — so BOTH spellings are counted, together.
     const src = step();
-    expect((src.match(/enqueueSteer\(/g) ?? []).length).toBe(1);
+    expect((src.match(/(?:enqueueSteer|persistEngineSteer)\(/g) ?? []).length).toBe(1);
     expect(src).toContain('state.loopCount < MAX_TOOL_LOOPS');
   });
 });

@@ -10,11 +10,13 @@
 // is PASSED rather than moved: it has readers outside this span.
 // ════════════════════════════════════════
 
-import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../../../logger.js';
-import { insertEngineEventIfAbsent } from '../../../../memory/message-store.js';
+import { broadcast } from '../../../../gateway/ws.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { enqueueSteer, steerFired } from '../../steer-queue.js';
+import { persistEngineSteer } from '../../engine-steer.js';
+// T53: `enqueueSteer` is gone from this file — the re-prompt goes through the RC-19 door,
+// which owns the enqueue and the durable row.
+import { steerFired } from '../../steer-queue.js';
 import { getOwedMidTurnArrivals } from '../../counterparty.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
@@ -208,24 +210,6 @@ export async function runOwedInterrupt(
         `Whatever you say in your one reply this turn, do not deliver the cancelled task's answer as though they had not spoken.`
       );
       const rePrompt = hasReply ? afterReplyPrompt : inFlightPrompt;
-      const rePromptId = uuidv4();
-      if (maySteer) try {
-        // Model-visible engine channel, same pattern as the thrash steer and the
-        // auto-scaffold note: an origin_kind='engine' row (EVENTS lane surfaces
-        // it) with the 'engine-steer' conv_key sentinel so it can never be picked
-        // as a pending engine event, PLUS a queue entry so the steer reaches the
-        // model on the very next iteration. Label form ([System] body) so the
-        // events-lane leading-bracket strip keeps the body.
-        insertEngineEventIfAbsent({
-          work: null,
-          id: rePromptId,
-          agentId,
-          content: rePrompt,
-          sourceAgentId: null,
-          originIntent: 'owed_interrupt',
-          turnNumber,
-        });
-      } catch { /* best effort */ }
       // ── UX-REPAIR ROUND 6 T25 — THE KNOWLEDGE STOPS BEING THROWN AWAY ──
       // Everything above knows exactly which asks are still owed: `owed` holds their rows.
       // Until now the only thing that survived this block was the QUOTED PROSE inside the
@@ -251,8 +235,29 @@ export async function runOwedInterrupt(
         state = advance(state, { owedInterruptSubjectsRecorded: true });
       }
       if (!maySteer) return proceed(state);
+      // ── T53 (owner ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
+      // The paragraph that stood at the deleted write said the events row was the
+      // model-visible half and the queue entry reached "the model on the very next
+      // iteration". Only the second clause is true. The row could not reach that iteration
+      // (the tail query drops `role='user'` rows created after the turn boundary) and
+      // reached a LATER turn as a ≤400-char gist — under a header telling the model these
+      // are notices it is merely aware of. That framing is the exact opposite of this
+      // re-prompt's instruction, which is that the arrival is NOT this turn's to answer and
+      // that a cancellation must be recorded through a named door; and the door
+      // (`work_close_request(action="commitment", disposition="dropped", id=…)`) sits at the
+      // END of the text, where the cut lands. The old comment's "label form so the
+      // events-lane bracket strip keeps the body" note goes with the write it was about;
+      // the `[System]` label stays, because the queue delivers it verbatim and the model
+      // reads it as the engine speaking.
+      // `persistEngineSteer` files the same entry and writes the durable `role='system'`
+      // row, so the re-prompt is still on the record for the settlement investigation this
+      // step's own T25 note describes.
+      state = persistEngineSteer(
+        state,
+        { agentId, content: rePrompt, turnNumber, floor: 'owed-interrupt', atLoop: state.loopCount },
+        { broadcast },
+      );
       state = advance(state, {
-        steerQueue: enqueueSteer(state.steerQueue, { floor: 'owed-interrupt', content: rePrompt, atLoop: state.loopCount }),
         // T31: the seam writes down WHAT the round is for, beside the queue's record of THAT
         // it was bought. Everything downstream that has to tell the arrival's answer from the
         // turn's own answer reads this and nothing else.
