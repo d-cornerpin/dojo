@@ -3620,6 +3620,13 @@
       "to": 296,
       "by": "UX-REPAIR ROUND 12 T47 (W33) — the compile gate's section, called",
       "why": "+6 (2 code, 3 comment, 1 blank): one import and one call. This is the step's ENTRY POINT and RULING P6-R1 makes it the only place a section may be called from — a section wired in anywhere else would be a second composition order for one step. The 3 comment lines say the one thing the call cannot: that this gate sits immediately after the one it inherits BUG-2 from, shares its `triggerRow` ternary, and that the two allowed sets union so a turn armed by both always has a legal move — the pointer a reader needs at the composition site, where the temptation to reorder the two lives. REFUSED: calling `runCompileGate` from inside `closeout-gate.ts` to avoid touching this file — that hides one gate inside another's section, and the contract test's in-span `advance` census would have counted a state write it could not name. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/prompt/assembler.ts",
+      "from": 1673,
+      "to": 1691,
+      "by": "UX-REPAIR ROUND 12 T57 (W36) — the Healer's identity outranks a working note",
+      "why": "+18 net (20 added, 2 replaced; 6 code, 12 comment, 0 blank). THE 6 CODE LINES ARE ONE MORE ENTRY IN AN EXISTING TABLE: `readStoredCharter`'s refusal list gains `AND content NOT LIKE ? AND content NOT LIKE ?`, and the one-line `.get(agentId, NO_REPLY_CLOSED_MARKER)` becomes a five-line call carrying the two working-note prefixes as PARAMETERS. The import line is replaced in place, net zero. THIS IS WHERE IT BELONGS AND THERE IS NOWHERE ELSE: T40 moved this statement here precisely so the runtime and the Settings card could not resolve an identity two different ways, and W25 then measured the consequence of the table being one entry short — the Healer's `charter` is NULL, its soul row had been pruned, and the earliest surviving `role='system'` row was 88 bytes of `[working-note] Two issues to address…`, which BOTH surfaces then served as the Healer's whole identity. THE 12 COMMENT LINES ARE THE ARGUMENT FOR THE ENTRY, and this file's convention is that every refusal in that table carries the incident that put it there (the three prefixes above it each do). They record (i) the measurement, so a later reader does not re-derive it from a bug report, (ii) WHY a working note is engine-authored by construction rather than by taste — the engine wraps the model's mid-turn narration in the prefix at `closeout-floors.ts` / `terminal-text.ts` and stores it `role='system'` so it can never re-enter model context, which is exactly the property that makes it never an identity — and (iii) that the match is a PREFIX, so doctrine that MENTIONS the marker is still a valid soul. That last line is the one a sweep would otherwise turn into a substring match and quietly break. REFUSED: a new suppression pass over the returned charter — a second mechanism deciding what an identity is, which is the T40 defect rebuilt one layer up. REFUSED: deleting or rewriting the offending note row — this is READ precedence; a gate that edits history to win an argument is not a precedence rule, and a control pins the row untouched. REFUSED: a single `'[working-note%'` literal instead of the two shared constants — that is a third copy of a marker `@dojo/shared` already owns, and the marker-ownership rule exists because copies drift. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3809,7 +3816,7 @@
     "packages/server/src/microsoft/tools-write.ts": 2131,
     "packages/server/src/migration/checks.ts": 537,
     "packages/server/src/migration/import.ts": 407,
-    "packages/server/src/prompt/assembler.ts": 1673,
+    "packages/server/src/prompt/assembler.ts": 1691,
     "packages/server/src/prompt/registry/entries.ts": 542,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
