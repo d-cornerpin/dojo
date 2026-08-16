@@ -3459,6 +3459,20 @@
       "to": 886,
       "by": "HARNESS-LEARNINGS HL5 — the snapshot's declared caps and the re-derived reserve",
       "why": "+19: 3 lines of declaration (two new cap keys and the reformatting `laneLimit` forces, since it throws on an undeclared key) and 16 of `measured` prose on `lane.relevant-memory`. The prose is the entire content of this file's contract: `reserveTokens` moves 1,407 -> 1,807 and the number is PINNED to `recallLaneWorstCaseTokens()` by a suite that fails on drift, so what the raise buys is the DERIVATION beside the literal — 6 rows at their declared width plus the preamble and the elision line — and the honest statement of what 400 tokens off the top of every assembly costs and what it is being spent against (three cheaper fixes that were measured failing: T20's header sentence, T28's appended marker, T28b's front-loaded one). It also records the half that is displacement rather than growth: the obligation-shaped vault lines the snapshot withdraws were already inside the old reserve. ALTERNATIVES MEASURED AND REFUSED. (a) Raise the number without the prose (+3): refused — every other reserve in this file carries its derivation, and an undocumented reserve is one the next budget squeeze lowers by feel. (b) Keep the reserve at 1,407 by capping the snapshot at 2 rows (+0): refused, that is a product decision taken to satisfy a line count; a 2-row cap makes the elision line the common case on any worn-in board and turns a complete statement into a sample. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/obligation-memory.ts",
+      "from": 518,
+      "to": 556,
+      "by": "HARNESS-LEARNINGS HL6 — the same answer, said at the board-read door",
+      "why": "+38: 10 of code (one literal and one six-line function over the §5 reader) and 28 of comment. THE CODE COULD NOT BE SMALLER — it is `hasCommitmentHistory` for the gate, `liveCommitments` for the set, and three return branches — and it lands here rather than in `tracker/tools.ts` for the reason this whole file exists: the sentence the tool result prints and the sentence the snapshot prints must be ONE renderer over ONE reader, because two renderings of 'what do you owe' in one turn is the parallel memory §1's own header is written against. `the-door-text-audit.test.ts` pins that `tracker/tools.ts` contains the call and not the words. THE COMMENT IS THE INCIDENT, and it is the reason a later reader will not delete this as chatty tool output: in W8's driven replay the model DID ask the board, `work_update(action=\"list\")` answered 'No active tasks.', and the reply asserted three dead commitments four seconds later — because that tool lists tasks and projects and has never listed commitments at all. Without that paragraph the line reads as decoration; with it, it reads as the one place the model's own check was being answered incompletely. ALTERNATIVES MEASURED AND REFUSED. (a) Inline the three branches at the call site (+0 here, +12 there): refused — that is a second copy of the sentence, and the audit's own test forbids it. (b) Widen the existing `liveCommitments` export and let the caller phrase it (-20): refused for the same reason; phrasing IS the door text, and a door text assembled at two call sites drifts at one of them. (c) Cut the comment to two lines (-26): refused — an unexplained line in a tool result is the first thing a later size pass deletes, and the incident it closes took four rounds to find. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 4708,
+      "to": 4722,
+      "by": "HARNESS-LEARNINGS HL6 — the board-read result answers the question it was asked",
+      "why": "+14: 5 of code (one call, one guard, two pushes) and 9 of comment, in a 4,700-line file where the marginal cost of a line is highest and the marginal cost of an UNEXPLAINED line is higher still. The code is deliberately the thinnest possible seam — this file asks `work/obligation-memory.ts` for the sentence and prints it — so that nothing about what the spine says is owed is decided here. The 9-line comment carries the one thing the seam cannot: that this tool lists tasks and projects and never listed commitments, which is not a bug anybody introduced but IS what W8's replay cost (the model asked the board, was told 'No active tasks.', and asserted three dead commitments four seconds later). It also records that the line is a return value and therefore moves no cached prefix bytes, which is the property the audit's test pins in four prompt surfaces. ALTERNATIVES MEASURED AND REFUSED. (a) Put it in the trailer that already exists (-4): refused, the trailer is gated on `totalShown > 0` and W8's shape is precisely the empty board. (b) Drop the comment (-9): refused — in a file this size an unexplained push into `parts` is indistinguishable from padding, and this one is the whole of HL6's decision-moment half. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3675,7 +3689,7 @@
     "packages/server/src/tracker/pm-agent.ts": 2448,
     "packages/server/src/tracker/schema.ts": 1105,
     "packages/server/src/tracker/task-stamps.ts": 268,
-    "packages/server/src/tracker/tools.ts": 4708,
+    "packages/server/src/tracker/tools.ts": 4722,
     "packages/server/src/tracker/version-gap-reconcile.ts": 327,
     "packages/server/src/twilio/call-session.ts": 884,
     "packages/server/src/twilio/sms-inbound.ts": 406,
@@ -3695,7 +3709,7 @@
     "packages/server/src/work/ask-title.ts": 420,
     "packages/server/src/work/deliverable-declaration.ts": 320,
     "packages/server/src/work/join-drive.ts": 256,
-    "packages/server/src/work/obligation-memory.ts": 518,
+    "packages/server/src/work/obligation-memory.ts": 556,
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/store.ts": 1916,
