@@ -171,7 +171,14 @@ function sum(counts) {
   return Object.values(counts).reduce((a, n) => a + n, 0);
 }
 
-function writeBaseline(b) {
+/** The baseline rendered as the text that goes on disk.
+ *
+ *  `JSON.stringify` escapes control characters and nothing else, so every character above
+ *  ASCII comes out literal. This file's convention is pure ASCII, and its arguments are full
+ *  of em-dashes and middots stored as `\uXXXX`, so the escape is put back on the way out —
+ *  one code unit at a time, which is also correct for surrogate pairs. The result parses to
+ *  exactly the same value; only the bytes are the file's own. */
+function serializeBaseline(b) {
   // Totals are always derived from the pins so the file cannot drift internally.
   for (const section of ['eslint', 'unusedSymbols']) {
     const sorted = {};
@@ -180,10 +187,76 @@ function writeBaseline(b) {
     b[section].total = sum(sorted);
   }
   b.grandTotal = b.eslint.total + b.unusedSymbols.total;
-  fs.writeFileSync(BASELINE, JSON.stringify(b, null, 2) + '\n');
+  const json = JSON.stringify(b, null, 2).replace(
+    /[\u007f-\uffff]/g,
+    (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'),
+  );
+  return json + '\n';
+}
+
+function writeBaseline(b) {
+  fs.writeFileSync(BASELINE, serializeBaseline(b));
+}
+
+// ── The write path's own selftest: --tighten must not re-encode the file ──
+//
+// lint-baseline.json is pure ASCII and stores every em-dash, middot and section sign as a
+// `\uXXXX` escape. `JSON.parse` turns those into characters; `JSON.stringify` writes the
+// CHARACTER back, not the escape. So a `--tighten` that changed one number also rewrote
+// every argument line in the file as literal UTF-8. Four consecutive release workers
+// (.27/.28/.29 and W35) recorded this, refused to run the tool, and hand-edited the numbers
+// instead — a gate whose own maintenance tool cannot be trusted is a gate people route
+// around. Byte hygiene does NOT catch it: check-bytes forbids control bytes, not high ones.
+//
+// This runs on EVERY invocation, before anything is measured or written, because it is
+// pure string work and costs nothing.
+function encodingSelftest() {
+  // Clause 1: the REAL file. The exact corruption the release reports recorded, reproduced
+  // from the file itself rather than from a fixture that could drift away from it.
+  const real = serializeBaseline(loadBaseline());
+  const realBad = Buffer.from(real, 'utf8').filter((byte) => byte > 0x7e).length;
+  if (realBad) {
+    console.error(`✗ write-path encoding: serializing ${BASELINE_REL} produces ${realBad} non-ASCII byte(s).`);
+    console.error('  The file is pure ASCII with `\\uXXXX` escapes; --tighten would rewrite them as literal UTF-8');
+    console.error('  and land an encoding churn on top of whoever ran it. Escape on the way out.');
+    return false;
+  }
+
+  // Clause 2: the vocabulary, planted. Clause 1 can only see characters the file happens to
+  // hold today; this one names the shapes its argument prose actually uses, plus a surrogate
+  // pair, so the property is pinned rather than sampled.
+  const planted = {
+    eslint: { counts: { 'a-rule': 1 }, total: 0, $note: '— · ⛔ § ’ → ✓ 😀' },
+    unusedSymbols: { counts: { TS6133: 2 }, total: 0 },
+    typeAwareRules: [],
+    grandTotal: 0,
+  };
+  const text = serializeBaseline(planted);
+  const bad = Buffer.from(text, 'utf8').filter((byte) => byte > 0x7e).length;
+  if (bad) {
+    console.error(`✗ write-path encoding: a planted baseline round-trips to ${bad} non-ASCII byte(s).`);
+    return false;
+  }
+
+  // Clause 3: escaping must not change MEANING. Reading the text back gives the same string.
+  const back = JSON.parse(text);
+  if (back.eslint.$note !== planted.eslint.$note) {
+    console.error('✗ write-path encoding: the escape is lossy — the note did not survive the round trip.');
+    return false;
+  }
+  if (back.eslint.total !== 1 || back.unusedSymbols.total !== 2 || back.grandTotal !== 3) {
+    console.error('✗ write-path encoding: the derived totals no longer come out of the pins.');
+    return false;
+  }
+  return true;
 }
 
 // ════════════════════════════════════════
+
+if (!encodingSelftest()) {
+  console.error('✗ lint baseline: refusing. The tool that maintains the baseline would corrupt it.');
+  process.exit(1);
+}
 
 const baseline = loadBaseline();
 const tighten = process.argv.includes('--tighten');
@@ -379,5 +452,6 @@ const unusedCur = sum(measured.unusedSymbols);
 console.log(
   `✓ lint baseline clean — eslint ${eslintCur}/${baseline.eslint.total} across ${Object.keys(baseline.eslint.counts).length} pinned rule(s) ` +
     `over ${eslintRun.filesLinted} file(s); unused symbols ${unusedCur}/${baseline.unusedSymbols.total} across ` +
-    `${Object.keys(baseline.unusedSymbols.counts).length} pinned code(s); grand total ${grandCur}/${baseline.grandTotal}`,
+    `${Object.keys(baseline.unusedSymbols.counts).length} pinned code(s); grand total ${grandCur}/${baseline.grandTotal}; ` +
+    'write path ASCII-safe',
 );
