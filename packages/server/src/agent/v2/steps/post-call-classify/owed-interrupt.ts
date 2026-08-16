@@ -14,8 +14,7 @@ import { createLogger } from '../../../../logger.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
-// T53: `enqueueSteer` is gone from this file — the re-prompt goes through the RC-19 door,
-// which owns the enqueue and the durable row.
+// T53: the re-prompt goes through the RC-19 door, which owns the enqueue and the row.
 import { steerFired } from '../../steer-queue.js';
 import { getOwedMidTurnArrivals } from '../../counterparty.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
@@ -235,23 +234,18 @@ export async function runOwedInterrupt(
         state = advance(state, { owedInterruptSubjectsRecorded: true });
       }
       if (!maySteer) return proceed(state);
-      // ── T53 (owner ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
-      // The paragraph that stood at the deleted write said the events row was the
-      // model-visible half and the queue entry reached "the model on the very next
-      // iteration". Only the second clause is true. The row could not reach that iteration
-      // (the tail query drops `role='user'` rows created after the turn boundary) and
-      // reached a LATER turn as a ≤400-char gist — under a header telling the model these
-      // are notices it is merely aware of. That framing is the exact opposite of this
-      // re-prompt's instruction, which is that the arrival is NOT this turn's to answer and
-      // that a cancellation must be recorded through a named door; and the door
-      // (`work_close_request(action="commitment", disposition="dropped", id=…)`) sits at the
-      // END of the text, where the cut lands. The old comment's "label form so the
-      // events-lane bracket strip keeps the body" note goes with the write it was about;
-      // the `[System]` label stays, because the queue delivers it verbatim and the model
-      // reads it as the engine speaking.
-      // `persistEngineSteer` files the same entry and writes the durable `role='system'`
-      // row, so the re-prompt is still on the record for the settlement investigation this
-      // step's own T25 note describes.
+      // ── T53 (ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
+      // The deleted write's own paragraph called the events row the model-visible half and
+      // the queue entry the one reaching "the model on the very next iteration". Only the
+      // second clause is true: the row could not reach that iteration (the tail query drops
+      // `role='user'` rows created after the turn boundary) and reached a LATER turn as a
+      // ≤400-char gist, under a header framing it as a notice to be AWARE of — the opposite
+      // of this re-prompt, whose instruction is that the arrival is NOT this turn's to
+      // answer and whose cancellation door sits at the END of the text, where the cut lands.
+      // The `[System]` label stays (the queue delivers it verbatim); the note about the
+      // events-lane bracket strip goes with the write it was about. The door files the same
+      // entry and writes the durable `role='system'` row, so the re-prompt stays on the
+      // record for the settlement investigation this step's T25 note describes.
       state = persistEngineSteer(
         state,
         { agentId, content: rePrompt, turnNumber, floor: 'owed-interrupt', atLoop: state.loopCount },

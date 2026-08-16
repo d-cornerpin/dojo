@@ -13,7 +13,8 @@ import { classifyTool } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
 import { CLOSING_WORK_OPS, isWorkVerb, toolOpKey } from '../../../../tools/work-verbs.js';
 import { broadcast } from '../../../../gateway/ws.js';
-import { advance, type AgentTurnState } from '../../state.js';
+// T53: `advance` left with the events-lane write — the door returns the advanced state.
+import { type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 // T53: `enqueueSteer` is gone from this file — the floor's one steer goes through the
 // RC-19 door, which owns the enqueue and the durable row.

@@ -14,10 +14,9 @@
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { askIdForMessage } from '../../../../work/store.js';
-import { advance, type AgentTurnState } from '../../state.js';
+import { type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
-// T53: neither floor writes the events lane and neither calls `enqueueSteer` directly —
-// both steer through the RC-19 door, which owns the enqueue and the durable row.
+// T53: both floors steer through the RC-19 door, which owns the enqueue, the row, the advance.
 import { steerFireCount } from '../../steer-queue.js';
 import { turnDeliveredToPerson } from '../../answered-edge.js';
 import { MAX_FLOOR_STEER_ATTEMPTS, recordFloorGhost } from '../../floor-ghost.js';
@@ -91,14 +90,11 @@ export async function runHandoffFloors(
           `reply): report any results you already have, and say you have asked another agent for ` +
           `the rest and will report back when they answer. Do not message the other agent again.`
         );
-      // ── T53 (owner ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
-      // This floor's whole product is the EXTRA ROUND it buys with `continueLoop` below,
-      // and the events-lane row this site also wrote could not appear in it: the tail query
-      // drops `role='user'` rows created after the turn boundary, so the second copy landed
-      // a turn later, after the ladder had already spent its two attempts and recorded its
-      // ghost. `persistEngineSteer` files the same KEYED entry ('' then 'retry', so the
-      // counter still climbs to `MAX_FLOOR_STEER_ATTEMPTS`) and writes the durable
-      // `role='system'` row that keeps the steer on the record.
+      // ── T53 (ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
+      // This floor's product is the EXTRA ROUND `continueLoop` buys, and the events-lane row
+      // this site also wrote could not appear in it (the tail query drops `role='user'` rows
+      // created after the turn boundary): it landed a turn later, after the ladder had spent
+      // both attempts and its ghost. Same KEYED entry ('' then 'retry'), durable system row.
       state = persistEngineSteer(
         state,
         { agentId, content: steer, turnNumber, floor: 'a2a-handoff-floor', key: again ? 'retry' : '', atLoop: state.loopCount },
@@ -177,16 +173,12 @@ export async function runHandoffFloors(
               `conversation (do NOT call imessage_send or any send tool; the engine routes your ` +
               `reply). The reminder is: ${remText}`
             );
-          // ── T53 (owner ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
-          // Of the seven double-writers this is the site where the second channel was worst:
-          // the steer ends with the REMINDER'S OWN WORDS, and the events lane renders a
-          // ≤400-char gist, so past a 251-character prefix the copy that reached the model a
-          // turn later was a reminder with the reminder cut off. (Both arms of that boundary
-          // are driven in `the-second-channel-stops-double-writing.test.ts`.) OR2's whole
-          // point here is that the AGENT says the reminder in its own words; a truncated
-          // second copy on a later turn is not that, and it could not reach the round this
-          // floor buys in any case. `persistEngineSteer` files the same KEYED entry and
-          // writes the durable `role='system'` row.
+          // ── T53 (ruling 5) — the worst of the seven second channels, and why it is gone.
+          // This steer ends with the REMINDER'S OWN WORDS and the events lane renders a
+          // ≤400-char gist, so past a 251-char prefix the copy reaching the model a turn
+          // later was a reminder with the reminder cut off (both arms driven in
+          // `the-second-channel-stops-double-writing.test.ts`). OR2's point here is that the
+          // AGENT says it in its own words. Same KEYED entry, durable `role='system'` row.
           state = persistEngineSteer(
             state,
             { agentId, content: steer, turnNumber, floor: 'reminder-silence', key: remAttempts === 1 ? 'retry' : '', atLoop: state.loopCount },
