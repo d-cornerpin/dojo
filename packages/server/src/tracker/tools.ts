@@ -52,7 +52,7 @@ import {
 import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
 import { recordRemediation } from '../work/poke-ladder.js';
 import { injectTaskAssignmentNotification, claimAssignmentNoticeForTerminalTask } from './notify.js';
-import { writeTaskLog } from './task-log.js';
+import { writeTaskLog, listTaskLog, getRecentObservations } from './task-log.js';
 import { inFlightOccurrence, skipOpenOccurrencesAsComplete, runDeliverableEvidence } from '../work/occurrences.js';
 // SWEEP CORE-1 CT2: the deliverable declaration and the steer-to-deliver ladder.
 import {
@@ -2663,6 +2663,71 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
   }
 }
 
+// ══════════════════════════════════════════════════════════════════════════════════════
+// UX-REPAIR T49 — A REJECTION IS VISIBLE WHEREVER THE ROW IS (round-12 S4).
+//
+// The reply told the owner the notes-reorg deliverables "were delivered". The row's ledger
+// had said the opposite for a day: event 24599, `entry_kind='reject'`, complete → blocked,
+// "No summary file was ever delivered …". The agent ACTED on that rejection when it landed;
+// what failed is every LATER turn, because neither surface it reads carried the ruling or the
+// pause reason — `list` renders Blocked/Paused rows title-only and `get` renders a State line
+// with no adjudication at all. With no surface saying otherwise, stale self-narration was the
+// only account of the row on offer.
+//
+// Both halves below print THE ROW'S OWN RECORDED WORDS, truncated. The engine authors no
+// sentence about the work and classifies no prose: it takes the newest ledger entry that has
+// words and quotes a prefix of it. Both are tool-RESULT text, in no prompt surface, so this
+// moves 0 cached prefix bytes.
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+/** The row's own words, flattened to one line and cut. The `...` marker is the same one this
+ *  file already uses when it truncates a description on a verbose list row. */
+function recordedClause(text: string | null | undefined, max: number): string | null {
+  const flat = (text ?? '').replace(/\s+/g, ' ').trim();
+  if (!flat) return null;
+  return flat.length > max ? `${flat.slice(0, max).trimEnd()}...` : flat;
+}
+
+/** (a) The one clause a Blocked/Paused board row carries: the newest thing anyone WROTE about
+ *  it. `getRecentObservations` is the EXISTING reader for that set of kinds (observation /
+ *  directive / reject / legacy_note) — no new query, no new vocabulary, no new event. Spine
+ *  `transition` reasons are deliberately outside that set: on an agent-moved row the reason is
+ *  this tool's own echo of the call that moved it (`work_update(action="status") -> paused`),
+ *  which tells a later turn nothing the row does not already say in its status. */
+function recordedStopReason(taskId: string): string | null {
+  for (const e of getRecentObservations(taskId, 5)) {
+    const clause = recordedClause(e.note ?? e.reason, 140);
+    if (clause) return `      ^ recorded reason: ${clause}`;
+  }
+  return null;
+}
+
+/** (b) The last PM adjudication, rendered only while it is a REJECTION nothing has answered.
+ *
+ *  "Answered" is read off the ledger rather than guessed. An upheld CLOSE supersedes the
+ *  ruling — `claim_upheld` whose claim state is `done`, which the trail renders as `complete`
+ *  — and so does the row simply BEING complete, because T8T's Key-2-as-the-MOVE path validates
+ *  a close through `transition()` alone and writes no `claim_upheld` to find. A `claim_upheld`
+ *  on a PAUSE or a BLOCK is NOT an answer to the close: event 24602 is exactly that shape, and
+ *  the incident's own row would go dark here if it counted as one.
+ *
+ *  Only the PM's own `reject` entries qualify, because the sentence names the PM. The owner's
+ *  send-back rides the same entry kind with `fromEntity='user'` (`trackerApplyUserValidation`)
+ *  and is left for its own door rather than relabelled as something the PM said. */
+function lastPMRulingLine(taskId: string, status: string): string | null {
+  if (status === 'complete') return null;
+  for (const e of listTaskLog(taskId, { kinds: ['reject', 'claim_upheld'], limit: 20 })) {
+    if (e.entryKind === 'claim_upheld') {
+      if (e.toStatus === 'complete') return null;
+      continue;
+    }
+    if (e.fromEntity !== 'pm') continue;
+    const clause = recordedClause(e.reason ?? e.note, 300);
+    if (clause) return `Last PM ruling: REJECTED — ${clause}`;
+  }
+  return null;
+}
+
 // ── trackerGetStatus ──
 
 export function trackerGetStatus(agentId: string, args: Record<string, unknown>): string {
@@ -2735,6 +2800,12 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
             const steps = renderStepFacts(st);
             parts.push(`State: ${renderTaskStamps(st)}${steps ? ` | ${steps}` : ''}`);
           }
+        }
+        // T49(b): the adjudication belongs beside the state, because they answer the same
+        // question and the state line alone is what the S4 reply read as permission.
+        {
+          const ruling = lastPMRulingLine(task.id, task.status);
+          if (ruling) parts.push(ruling);
         }
         if (task.status === 'in_progress') {
           // Tangibility rule (battery catch 2026-07-22): the ALREADY-DELIVERED
@@ -2841,6 +2912,15 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
       return head;
     };
 
+    // T49(a): a STOPPED row states why in its own recorded words. Title-only is how a
+    // rejection and a wait both read as "still on the board, nothing to say" — and the S4
+    // reply, a day after the PM rejected the close, said the work "were delivered".
+    const stoppedRows = (rows: Array<Parameters<typeof taskRow>[0]>): string[] =>
+      rows.flatMap((t) => {
+        const why = recordedStopReason(t.id);
+        return why ? [taskRow(t), why] : [taskRow(t)];
+      });
+
     if (scope === 'projects' || scope === 'all') {
       const projects = listProjects({ status: 'active' });
       if (projects.length > 0) {
@@ -2874,7 +2954,12 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
         const filtered = listTasks({ status: filterStatus, assignedTo: filterAssignedTo });
         if (filtered.length > 0) {
           parts.push(`${filterStatus.replace('_', ' ')} Tasks (${filtered.length}):`);
-          for (const t of filtered) parts.push(taskRow(t as Parameters<typeof taskRow>[0]));
+          // T49(a): filtering to blocked/paused renders the SAME rows as the sections below,
+          // so this arm carries the same clause. A door that answers differently depending on
+          // which arm reached it is the blind spot this task closes, one arm over.
+          const rows = filtered as Array<Parameters<typeof taskRow>[0]>;
+          parts.push(...(filterStatus === 'blocked' || filterStatus === 'paused'
+            ? stoppedRows(rows) : rows.map((t) => taskRow(t))));
           totalShown += filtered.length;
         } else {
           parts.push(`No ${filterStatus} tasks.`);
@@ -2921,7 +3006,7 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
         if (blocked.length > 0) {
           parts.push('');
           parts.push(`Blocked Tasks (${blocked.length}):`);
-          for (const t of blocked) parts.push(taskRow(t as Parameters<typeof taskRow>[0]));
+          parts.push(...stoppedRows(blocked as Array<Parameters<typeof taskRow>[0]>));
           totalShown += blocked.length;
         }
 
@@ -2929,7 +3014,7 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
         if (paused.length > 0) {
           parts.push('');
           parts.push(`Paused Tasks (${paused.length}):`);
-          for (const t of paused) parts.push(taskRow(t as Parameters<typeof taskRow>[0]));
+          parts.push(...stoppedRows(paused as Array<Parameters<typeof taskRow>[0]>));
           totalShown += paused.length;
         }
 
