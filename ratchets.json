@@ -3522,6 +3522,48 @@
       "to": 1377,
       "by": "UX-REPAIR ROUND 11 T43a — capability truth at the delegation door",
       "why": "+97: 30 lines of code (two imports, a five-row capability table, a 6-line resolver, a 20-line clause builder, two call sites) and 67 of header. The header is doing work no line of code can: it records the STEP-0 measurement that licensed the whole task (per-agent grants read through `getFilteredTools` on the dev body — Kevin 407 tools, Healer 242, Ticky 241, BehaviorBot 240, Dreamer 168, Imaginer 156, KELLY 47, and Kelly holds nothing from `Web`, `Communication`, `Gmail` or `Google Calendar`), and it carries the CENSUS/COLLISION argument the mission rule requires for the one new declaration — why `TOOL_CATEGORIES`, sensei-policy's SEND_TO_PEOPLE and `RECEIPT_TOOLS` each answer a different question and none is displaced. REFUSED: (a) cutting the collision argument to land at ~+55 — the mission rule is that a new declaration ships WITH its collision argument or not at all, and a census kept in a commit message is a census nobody reads; (b) putting the clause builder in `agent/tools/surface.ts` beside the grant source it reads (would land this file at ~+35) — a defensible home and OUT OF THIS WORKER'S FENCE, recorded as a hand-up. This file is already 1,280 lines of relocated handlers and its own entry above says shaping code to fit a line count is the disease; the honest statement is that this door gained a capability it did not have and paid 30 lines for it. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 1916,
+      "to": 2050,
+      "by": "UX-REPAIR ROUND 11 T43c (W32) — a declared hand-off re-points the join edge",
+      "why": "+134 (85 code, 43 comment, 6 blank), all of it one exported writer, `repointJoinPieceToHandOff`, plus its two result types. The 85 code lines are six entitlement gates that each RETURN rather than throw — the discipline `transition` states for itself two hundred lines above — and one guarded UPDATE plus its audit event inside a single `withUnit`. The 43 comment lines are the ones a later reader cannot reconstruct: the incident (a PM with no web tools punted research and her hand-off note settled the piece), WHY the obvious fix is forbidden (the measured a2a_replies split ANSWER 341 / DELIVERABLE 262 / COMPLETE 42 / FAIL 2 — \"only COMPLETE settles\" breaks the dominant flow), and the CENSUS/COLLISION argument the mission rule requires: no new counter, no new state, no new lane, the chain bounded by the EXISTING THREAD_HOP_CAP over the piece's own hop_count. Above all the note on what does NOT move — the TTL — because \"the hand-off should buy more time\" is the first thing the next reader will want to change and the owner's deadline is about the work, not the worker. REFUSED: putting the writer in `a2a-transport.ts` where it is called from — `work/store.ts` is the ONE writer of a work row's state and identity, and a second module writing `root_id`/`assignee_agent` is precisely the split this spine exists to end. REFUSED: a new `work_events.kind` for the repoint — that owes a migration, a CHECK and a conformance row for a fact the audit lane already carries with a marker, exactly as `clearPhantomCountdowns` does. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 2414,
+      "to": 2542,
+      "by": "UX-REPAIR ROUND 11 T43c (W32) — a declared hand-off re-points the join edge",
+      "why": "+128 net (138 added, 10 replaced; 90 code, 42 comment, 6 blank). The code is `applyDeclaredHandOff` (the structural derivation of who the work went to, plus the five engine lines that report the outcome to the SENDER), `landReplyOnJoin`'s return widened from a bare boolean to `{handled, handOff}` at its six exits, the hand-off branch evaluated BEFORE the piece settles, and the ASSIGN footer's hand-off sentence. The 42 comment lines carry the three decisions that are invisible from the code: WHY the derivation reads the message rows rather than the reply's prose (a regex would silently aim the edge at nothing the day the wording changed — the same reason `delegation-exit.ts` derives its threads structurally), WHY a refused hand-off is not a hold (the reply falls through and settles exactly as today, so a mis-declared hand-off can never strand the person who asked), and WHY an applied hand-off withholds the assignee's Key-1 close request (they have not finished the work, they have passed it on — the owner ruling of 2026-07-19 assumes a terminal SUCCESS reply IS the delivery). REFUSED: forwarding the raw tool `args` bag into this module to avoid declaring the argument — W30 named that as evading a conformance gate while still shipping an undeclared model-facing parameter, and it is refused here on the same ground. REFUSED: making the hand-off an intent — the measured intent split forbids it and it would be a wire-format change for a platform fact. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/agents.ts",
+      "from": 1377,
+      "to": 1387,
+      "by": "UX-REPAIR ROUND 11 T43c (W32) — a declared hand-off re-points the join edge",
+      "why": "+10 (3 code, 7 comment). The 3 code lines are the whole handler half of the leg: read `args.hands_off_thread`, forward it, relay the transport's one-line outcome into the tool result beside every other outcome this tool already reports. The 7 comment lines say who owns what — the transport owns what the argument MEANS, the spine owns whether the sender is ENTITLED to it, and this file owns neither — and record that the argument is declared, which is what stops the engine answering a model that uses it with \"called with arg(s) not in its schema\". REFUSED: composing the outcome text here. The line states join facts (which thread the assignment now follows, who holds it, how many hops are left) that only the transport has; a copy here would be a second author for one sentence. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2832,
+      "to": 2836,
+      "by": "UX-REPAIR ROUND 11 T43c (W32) — the OPTIONAL hand-off argument is DECLARED",
+      "why": "+4 (4 code, 0 comment): one `hands_off_thread` property with its description. It is the smallest entry in this file and the most expensive one, because `input_schema` is passed to the provider verbatim — the measured cost is +466 bytes on every cached prefix forever, and it is the registered OR7 re-blessing of `checks/golden/cache-prefix.kevin.txt` (kit `84f5f40`, ONE insert opcode, nothing else moved). It is spent because W30 PROVED the free alternative does not work: an undeclared argument draws \"[Engine warning: … not in its schema … silently ignored]\" on the very call the footer instructs. REFUSED: carrying the affordance in the tool DESCRIPTION instead of the schema — same prefix cost, and the model would still have no declared field to pass. REFUSED: a second spelling/alias for the field (the `tz` ruling in this tree: a second declared spelling of one field costs cached-prefix bytes on every turn forever and tells the model nothing new). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/missed-reply.ts",
+      "from": 167,
+      "to": 176,
+      "by": "UX-REPAIR ROUND 11 T46 (W32) — the wrong-form note consults the receipt ledger",
+      "why": "+9 (3 code, 6 comment). The 3 code lines are one import and one input passed to the enforcer, on the same thread keys its sibling already uses. The 6 comment lines are why a SECOND evidence source exists for one predicate: `a2a_replies` is written only when the reply BINDS to the inbound assign, and that binding needs a `thread_id` the sender may omit — which is how a DELIVERED answer came to be called \"nothing\" five seconds later and was sent twice. Without that note the next reader deletes one of the two reads as a duplicate. REFUSED: replacing `hasPriorReplyOnThread` rather than adding beside it — the two ledgers answer the same question from different sides and neither is complete alone (a2a_replies covers replies whose receipt write failed; the receipt covers replies that never bound). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/outbound-ledger.ts",
+      "from": 355,
+      "to": 418,
+      "by": "UX-REPAIR ROUND 11 T46 (W32) — the receipt reader lives with the receipts",
+      "why": "NEW ENTRY, not a raise: this file was unlisted at 355 lines and crosses the 400-line new-file cap at 418, so it is pinned here with its current count and the argument for the crossing. +63 (37 code, 25 comment, 1 blank) for `hasVerifiedA2ASendOnThread`. The 37 code lines are three thread-keyed reads carrying `hasPriorReplyOnThread`'s FA-C2 discipline verbatim — the exact full-id match is authoritative, a genuinely-short legacy row matches exactly and only when no full-id row exists, and the leading-8 prefix match is reachable only on the legacy no-full-id path, because `makeThreadId` ids are almost all shared prefix and a prefix match would let an unrelated thread silence this thread's note. The 25 comment lines are the incident (a delivered ANSWER, an empty a2a_replies, a \"got nothing\" note five seconds later, the same answer delivered twice) and the argument that this is a WIDENED EVIDENCE SOURCE for an existing predicate rather than a new mechanism — the module's own header already declares it the durable cross-turn fact source over `tool_receipts`, and `reply-floors.ts` floor 11 already answers delivery denials from these very rows. REFUSED: putting the query in `missed-reply.ts`, which would have stayed inside the worker's fence and cost this entry — it puts receipt SQL in a v2 step file, a second home for ledger knowledge, which is the disease this tree gates against. REFUSED: reusing `findRecentDeliveries` — it is recipient-keyed and its row shape drops `thread_id`, so it would suppress the note on a send to the same peer on a DIFFERENT thread. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3551,7 +3593,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
-    "packages/server/src/agent/a2a-transport.ts": 2414,
+    "packages/server/src/agent/a2a-transport.ts": 2542,
     "packages/server/src/agent/agent-status.ts": 233,
     "packages/server/src/agent/brokers/deny.ts": 385,
     "packages/server/src/agent/brokers/grants.ts": 344,
@@ -3572,14 +3614,14 @@
     "packages/server/src/agent/shared-state.ts": 134,
     "packages/server/src/agent/spawner.ts": 1420,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
-    "packages/server/src/agent/tools/cat/agents.ts": 1377,
+    "packages/server/src/agent/tools/cat/agents.ts": 1387,
     "packages/server/src/agent/tools/cat/comms.ts": 854,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
     "packages/server/src/agent/tools/cat/media.ts": 897,
     "packages/server/src/agent/tools/cat/session.ts": 242,
     "packages/server/src/agent/tools/cat/tracker.ts": 975,
-    "packages/server/src/agent/tools/definitions.ts": 2832,
+    "packages/server/src/agent/tools/definitions.ts": 2836,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
     "packages/server/src/agent/tools/gates.ts": 245,
@@ -3636,7 +3678,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/going-idle.ts": 320,
     "packages/server/src/agent/v2/steps/post-call-classify/handoff-floors.ts": 209,
     "packages/server/src/agent/v2/steps/post-call-classify/index.ts": 246,
-    "packages/server/src/agent/v2/steps/post-call-classify/missed-reply.ts": 167,
+    "packages/server/src/agent/v2/steps/post-call-classify/missed-reply.ts": 176,
     "packages/server/src/agent/v2/steps/post-call-classify/no-reply.ts": 359,
     "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 104,
     "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 276,
@@ -3761,7 +3803,7 @@
     "packages/server/src/work/obligation-memory.ts": 619,
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
-    "packages/server/src/work/store.ts": 1916,
+    "packages/server/src/work/store.ts": 2050,
     "packages/server/src/work/tracker-store.ts": 602,
     "packages/server/src/work/tracker-view.ts": 622,
     "packages/server/src/work/validation-drive.ts": 615,
@@ -3773,6 +3815,7 @@
     "packages/shared/src/visibility.ts": 945,
     "packages/shared/src/ws.ts": 1115,
     "watchdog/src/auto-rollback.ts": 333,
-    "watchdog/src/index.ts": 1217
+    "watchdog/src/index.ts": 1217,
+    "packages/server/src/agent/v2/outbound-ledger.ts": 418
   }
 }
