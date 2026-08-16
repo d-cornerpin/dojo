@@ -46,7 +46,8 @@ import { settleAskOnJoin, priorEngineJoinRelay, joinDeliveryDetail } from '../wo
 // this, and what does it do when the drives are spent".
 import {
   JOIN_DRIVE_ENTRY, JOIN_REDRIVE_BOUND, nextJoinDriveRung, recordJoinDrive,
-  joinRedriveIsBlind, compileSteerText, type JoinDriveDecision,
+  joinRedriveIsBlind, compileSteerText, everyPieceLandedWithContent, engineRelayPreface,
+  type JoinDriveDecision,
 } from '../work/join-drive.js';
 import { currentTurnNumber } from './v2/turn-record.js';
 import { selfWakeStandDown } from '../work/work-reaper.js';
@@ -2012,7 +2013,15 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<Compi
       // stands down, which is the law obeyed rather than the drive abandoned.
       const { standDown, humanAsksOpen } = selfWakeStandDown(agentId);
 
-      const rung = nextJoinDriveRung(join.id);
+      // The pieces are read ONCE per pass and handed to every rung that needs them: the ladder's
+      // T48 condition, the relay's own body, and the stuck notice's count. One read, one truth.
+      const piecesNow = joinPieces(join.id);
+      const rung = nextJoinDriveRung(join.id, {
+        // The one-piece world is `resolveCompletedJoin`'s (D13's relay, and the wording SWEEP-A
+        // TB13 de-duplicated); this rung is fenced off it by the same split the compile path
+        // already makes — one piece relays, more than one compiles.
+        everyPieceLanded: join.total > 1 && everyPieceLandedWithContent(piecesNow),
+      });
       if (rung.rung === 'redrive') {
         // A REAL DRIVE: the owed step, with the join's own results in front of the model.
         //
@@ -2038,6 +2047,86 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<Compi
           agentId, work: join.id, attempt: rung.attempt, bound: rung.bound,
           turnNumber: turnKey, rungSpent: !blind,
           wakeQueued: !standDown, humanAsksOpen,
+        });
+        continue;
+      }
+
+      if (rung.rung === 'engine-relay') {
+        // ── UX-REPAIR ROUND 12 T48 — THE ENGINE SHIPS THE PIECES ITSELF ──
+        //
+        // MEASURED (round-12 S5, `round12/S5-catalog.md` §8.5–§8.8): three redrive steers each
+        // said "Do NOT search, open files, run commands, or call any tools first"; the model
+        // called `load_tool_docs`, `history_search`, `history_get`, `work_update` (errored ×2)
+        // and `history_get` across 12m26s and never compiled. The next rung was the STUCK
+        // NOTICE — the platform asking the agent to tell the owner the job could not be done —
+        // while both finished research streams sat in this join's landed pieces. Announcing a
+        // failure the platform is holding the cure for is the one shape the ladder's governing
+        // priority ("it never errs toward silence") cannot excuse.
+        //
+        // WHAT THE ENGINE COMPOSES: one preface line (`engineRelayPreface`) and nothing else.
+        // The pieces go VERBATIM — not the 600-char squeeze the end-of-ladder relay applies,
+        // because "here they are in full" has to be true, and because summarising them is the
+        // model's job (round-12 NOT-DOING). The only other bytes are the `From <name>:` label,
+        // carried from the relay below rather than invented here.
+        //
+        // COLLISIONS, argued: (a) SWEEP-A TB13 — the durable "have I already told them?" read
+        // runs FIRST, so a join whose earlier relay was never settled on is settled on THAT
+        // delivery instead of being told twice; (b) T42's completion report correctly excludes
+        // this close, because the receipt is owner-evidenced; (c) PM validation (Key-2)
+        // validates the close against this delivery exactly as it does the one-piece relay,
+        // same tool, same lane; (d) T47's compile gate re-reads `compile_pending` at the moment
+        // it would refuse, so the settle below disarms it, and no wake is asked for here — the
+        // duty is discharged, not deferred.
+        const already = priorEngineJoinRelay(join.id);
+        if (already) {
+          noteSettlementRefusal(settleAskOnJoin(join.id, {
+            agentId, deliveryId: already.id, basis: 'engine-relay',
+            reason: 'the engine had already relayed the delegated answer to the owner',
+          }), 'a2a: the relay rung settled on the relay the owner already got', join.id);
+          recordJoinDrive(join.id, JOIN_DRIVE_ENTRY.engineRelay, {
+            attempt: rung.attempt, bound: rung.bound,
+            note: 'the owner already held an engine relay of these pieces, so the rung settled on '
+              + 'that delivery rather than sending a second one',
+          });
+          out.drives++;
+          logger.info('compile drive: the owner already had these pieces; the relay rung settled on them', {
+            agentId, work: join.id, deliveryId: already.id, tool: already.tool,
+          });
+          continue;
+        }
+        const body = piecesNow
+          .map((p) => `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}:\n${
+            (p.content ?? '').trim()}`)
+          .join('\n\n');
+        const deliveryId = await deliverJoinResultToOwner(
+          join, `${engineRelayPreface(piecesNow.length)}\n\n${body}`,
+        );
+        recordJoinDrive(join.id, JOIN_DRIVE_ENTRY.engineRelay, {
+          attempt: rung.attempt, bound: rung.bound,
+          note: deliveryId
+            ? 'the drives were spent with every piece back, so the engine shipped the pieces to the owner verbatim'
+            : 'the engine tried to ship the pieces itself and no delivery could be recorded; the ladder carries on to the notice',
+        });
+        // A rung SPENT either way, and deliberately so. The end-of-ladder relay clears the
+        // compile flag when nothing could be recorded, because there is nothing after it; this
+        // rung has the whole telling half of the ladder below it, and clearing here would
+        // silence exactly the case that most needs the notice.
+        if (deliveryId) {
+          noteSettlementRefusal(settleAskOnJoin(join.id, {
+            agentId, deliveryId, basis: 'engine-relay',
+            reason: 'the engine shipped the landed pieces to the owner itself',
+          }), 'a2a: join settled on the engine relay of the landed pieces', join.id);
+        } else {
+          logger.warn('compile drive: the engine relay of the landed pieces recorded no delivery', {
+            agentId, work: join.id, pieces: piecesNow.length,
+          });
+        }
+        // NO WAKE IS ASKED FOR. The owner has the content; a wake here would only re-open the
+        // owed compile behind a delivery that already answered it (the double-answer shape).
+        out.drives++;
+        logger.info('compile drive: the drives were spent and every piece was back, so the engine shipped them', {
+          agentId, work: join.id, pieces: piecesNow.length, deliveryId,
+          redrives: rung.redrives, humanAsksOpen,
         });
         continue;
       }

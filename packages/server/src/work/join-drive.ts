@@ -12,7 +12,14 @@
 //                of it WITH the join's own results quoted. This is a REAL DRIVE, not a note
 //                filed somewhere: `resolveCompilePendingJoins` re-issues the compile steer
 //                and asks the runtime for a wakeup, so the model gets an actual turn.
-//   rungs N+1..M THE AGENT TELLS THE OWNER.  The drives are spent; the person who asked is
+//   rung  N+1    ENGINE RELAY (UX-REPAIR ROUND 12 T48).  The drives are spent AND every piece
+//                came back with content — so the deliverable the owner asked for is already in
+//                the platform's hands. Announcing failure while holding the answer is not
+//                honesty, it is a lie of omission. The engine ships the pieces VERBATIM under
+//                one preface line, through the door D13's one-piece relay already uses, and the
+//                ask closes on that delivery. Fires ONLY on that condition; a join still
+//                missing a deliverable falls straight through to the rung below, unchanged.
+//   rungs N+2..M THE AGENT TELLS THE OWNER.  The drives are spent; the person who asked is
 //                owed the truth that the job is stuck. THE AGENT SAYS IT, in its own words —
 //                the engine only steers, and VERIFIES via the delivery ledger. Retried to its
 //                own bound because one steer can be missed.
@@ -59,6 +66,14 @@ export const JOIN_REDRIVE_BOUND = 3;
  *  bounded-re-steer number, read from its own module so the two copies cannot drift. */
 export const STUCK_NOTICE_RETRY_BOUND = MAX_FLOOR_STEER_ATTEMPTS;
 
+/** How many times the engine ships the pieces itself. ONE, and the number is not a judgment
+ *  call: the relay is DETERMINISTIC (the same pieces produce the same delivery), so a second
+ *  attempt could only ever tell the owner the same thing twice — which is the defect SWEEP-A
+ *  TB13 spent a whole task removing. A relay that could not be delivered does not repeat; the
+ *  rung is spent and the ladder carries on to the notice, which is the direction that never
+ *  errs toward silence. */
+export const ENGINE_RELAY_BOUND = 1;
+
 /** The ladder's markers. Free strings inside the `audit` payload — see the header. */
 export const JOIN_DRIVE_ENTRY = {
   /** One real drive back to the owed compile, with the join's results in front of the model. */
@@ -67,6 +82,9 @@ export const JOIN_DRIVE_ENTRY = {
    *  turn since the last steer, so this pass is not a chance and does not spend one. Recorded
    *  so the deferral is a fact on the row rather than an absence in the log. */
   redriveDeferred: 'join_redrive_deferred',
+  /** T48: the drives were spent with every piece back, so the ENGINE shipped them to the owner
+   *  itself rather than announcing a failure it was holding the cure for. */
+  engineRelay: 'join_engine_relay',
   /** One steer asking the AGENT to tell the owner the job is stuck. */
   stuckNotice: 'join_stuck_notice',
   /** The agent could not deliver even the notice; the platform surface was handed the fault. */
@@ -75,7 +93,7 @@ export const JOIN_DRIVE_ENTRY = {
 
 export type JoinDriveEntry = (typeof JOIN_DRIVE_ENTRY)[keyof typeof JOIN_DRIVE_ENTRY];
 
-export type JoinDriveRung = 'redrive' | 'stuck-notice' | 'platform-trouble';
+export type JoinDriveRung = 'redrive' | 'engine-relay' | 'stuck-notice' | 'platform-trouble';
 
 export interface JoinDriveDecision {
   rung: JoinDriveRung;
@@ -139,16 +157,76 @@ export function recordJoinDrive(
 }
 
 /**
+ * IS EVERY PIECE OF THIS JOIN BACK, WITH SOMETHING IN IT? — the T48 rung's whole condition,
+ * and it is STRUCTURE.
+ *
+ * It reads two recorded facts per child: the piece SETTLED `done`, and its recorded result is
+ * not empty. It does not read the words. That boundary is the round-11 NOT-DOING list's ban on
+ * engine prose-classification, and it is not a compromise here: an outstanding hand-off — the
+ * case T48 must fall through on — is structurally visible without reading anything, because
+ * T43c re-points the join edge on a DECLARED hand-off, so the piece is not settled at all.
+ *
+ * A join with no children is not a join whose children are all back; `every` on an empty array
+ * is `true`, which would make the emptiest possible join the most eligible one.
+ */
+export function everyPieceLandedWithContent(
+  pieces: ReadonlyArray<{ state: string; content: string | null }>,
+): boolean {
+  if (pieces.length === 0) return false;
+  return pieces.every((p) => p.state === 'done' && (p.content ?? '').trim().length > 0);
+}
+
+/**
+ * THE ONE LINE THE ENGINE COMPOSES FOR THE T48 RELAY, and the whole of it.
+ *
+ * Everything after it is the peers' own delivered text, verbatim. Summarising the pieces is
+ * the MODEL's job — the job it just declined three times — and an engine summary of content
+ * it did not produce is the round-12 NOT-DOING list's own entry. So: one sentence, which says
+ * what happened (the results are in, the combining did not) and hands over.
+ *
+ * The quantifier is the only variable byte, and it varies for one reason: the sentence must be
+ * TRUE. "Both" is the measured S5 shape (two delegated research streams) and stands verbatim;
+ * past two the same sentence counts. The rung never sees one piece — `resolveCompletedJoin`'s
+ * own branch owns that world (D13's relay) and this rung is fenced off it by the same split.
+ *
+ * Owner-delivery lane: 0 prefix bytes, no engine tag, delivered in the agent's voice through
+ * the door the one-piece relay already uses.
+ */
+export function engineRelayPreface(total: number): string {
+  const quantifier = total === 2 ? 'Both' : `All ${total}`;
+  return `${quantifier} results are in as delivered by the helpers — I could not get them `
+    + `combined, so here they are in full:`;
+}
+
+/**
  * WHAT THE LADDER DOES NEXT for this row, read entirely from the row's own history.
  *
  * Pure: it decides, it never spends. The caller performs the rung and then records it, so a
  * drive that could not actually be issued does not burn the bound.
+ *
+ * `everyPieceLanded` is the ONLY fact the decision cannot read off the row's own event log, so
+ * it is passed rather than queried — the caller already holds the pieces. It defaults to
+ * absent, and the absent case is the pre-T48 ladder EXACTLY: a caller that names nothing
+ * cannot reach the relay rung.
  */
-export function nextJoinDriveRung(workId: string): JoinDriveDecision {
+export function nextJoinDriveRung(
+  workId: string, ctx: { everyPieceLanded?: boolean } = {},
+): JoinDriveDecision {
   const redrives = joinDriveCount(workId, JOIN_DRIVE_ENTRY.redrive);
   if (redrives < JOIN_REDRIVE_BOUND) {
     return {
       rung: 'redrive', attempt: redrives + 1, bound: JOIN_REDRIVE_BOUND,
+      redrives, stuckNotices: 0,
+    };
+  }
+  // T48. Between the drives and the notice, and only here: the drives are spent and the
+  // platform is holding every piece the owner asked for. `joinDriveCount` reports an unreadable
+  // counter as ALREADY AT the bound, so a ladder that cannot read its own history falls through
+  // to the notice rather than relaying — the same safe direction the rest of this file takes.
+  if (ctx.everyPieceLanded === true
+      && joinDriveCount(workId, JOIN_DRIVE_ENTRY.engineRelay) < ENGINE_RELAY_BOUND) {
+    return {
+      rung: 'engine-relay', attempt: 1, bound: ENGINE_RELAY_BOUND,
       redrives, stuckNotices: 0,
     };
   }

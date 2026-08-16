@@ -185,8 +185,15 @@ export interface SettlementContext {
    *                     is the ask's own arrival, exactly as the delivery arm uses it.
    *                     requirement preserved (PHASE-2 AUDIT-FIX): a late answer still reaches
    *                     the owner, ONCE, and the exactly-once guard is the `failed -> open`
-   *                     transition that precedes this call. */
-  basis?: 'compiled' | 'late-answer';
+   *                     transition that precedes this call.
+   *   * `engine-relay` — UX-REPAIR ROUND 12 T48. The same SHAPE as `compiled` in every respect
+   *                     that decides anything (the children must all have settled, the delivery
+   *                     must postdate `join_complete`, the delegating turn's own bubbles are
+   *                     still not the receipt) — it is a distinct WORD so the `compile_resolved`
+   *                     row says which hand composed the answer the ask closed on: the model's,
+   *                     or the ladder's relay of the peers' own text. The rule is shared below
+   *                     rather than copied, so the two cannot drift. */
+  basis?: 'compiled' | 'engine-relay' | 'late-answer';
 }
 
 interface AskRow {
@@ -965,8 +972,14 @@ function settleOnJoin(
   out: (v: AskSettlementVerdict, detail: string, deliveryId?: string | null) => AskSettlementOutcome,
 ): AskSettlementOutcome {
   const basis = ctx.basis ?? 'compiled';
+  // ONE completed-countdown rule, asked as "is this the late-answer arm?" rather than as a list
+  // of the arms that are not. T48 added a third basis, and a third `basis === 'compiled'` test
+  // at each of the three sites below would have silently routed it down the late-answer arm —
+  // boundary at the ask's own arrival, no delegating-turn constraint — which is a different
+  // rule wearing the same name.
+  const lateAnswer = basis === 'late-answer';
   let boundaryMs: number;
-  if (basis === 'compiled') {
+  if (!lateAnswer) {
     if ((ask.remaining_children ?? -1) !== 0) {
       return out('unchanged',
         `the children have not all settled (${ask.remaining_children ?? 'no join'} outstanding)`);
@@ -980,12 +993,12 @@ function settleOnJoin(
   // The late-answer arm has no delegating-turn constraint: its whole situation is that the
   // countdown never completed and an answer arrived out of band, on whatever turn carried it.
   const evidence = compiledDelivery(
-    ask, boundaryMs, ctx.deliveryId, basis === 'compiled' ? delegatingTurn(ask.id) : null,
+    ask, boundaryMs, ctx.deliveryId, lateAnswer ? null : delegatingTurn(ask.id),
   );
   if (!evidence) {
-    return out('unchanged', basis === 'compiled'
-      ? 'the compiled answer has not landed for the owner yet'
-      : 'the late answer produced no delivery that can be pointed at');
+    return out('unchanged', lateAnswer
+      ? 'the late answer produced no delivery that can be pointed at'
+      : 'the compiled answer has not landed for the owner yet');
   }
   const reason = ctx.reason ?? 'the compiled answer reached the owner';
   const r = transition(ask.id, {
@@ -1033,7 +1046,7 @@ export function settleAskOnJoin(
   parentWorkId: string,
   p: {
     agentId?: string; deliveryId?: string | null; reason: string; actorId?: string | null;
-    basis?: 'compiled' | 'late-answer';
+    basis?: 'compiled' | 'engine-relay' | 'late-answer';
   },
 ): AskSettlementOutcome {
   // `agentId` is SCOPE the join arm does not need — it reads the agent off the row it is

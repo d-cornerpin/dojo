@@ -63,6 +63,7 @@ vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: vi.fn
 import { runMigrations } from '../../db/migrations.js';
 import {
   openAsk, claimAsk, stampClaimingTurn, openDelegationJoin, landPiece, joinPieces,
+  settlePieceWithoutResult,
 } from '../../work/store.js';
 import { joinDeliveryDetail } from '../../work/ask-settlement.js';
 import { JOIN_REDRIVE_BOUND, STUCK_NOTICE_RETRY_BOUND } from '../../work/join-drive.js';
@@ -109,7 +110,8 @@ const drive = async (): Promise<void> => {
  * that speaks twice.
  */
 function seedCompletedOnePieceJoin(
-  msgId: string, opts: { conversationId?: string | null; children?: number } = {},
+  msgId: string,
+  opts: { conversationId?: string | null; children?: number; missingDeliverables?: number } = {},
 ): string {
   const db = mockDb.current!;
   const conversationId = opts.conversationId === undefined ? CONV : opts.conversationId;
@@ -132,7 +134,18 @@ function seedCompletedOnePieceJoin(
       threadId: `thread-${i}`, assigneeAgent: PEER, intent: 'ASSIGN' as const, hopCount: 0,
     })),
   });
+  // UX-REPAIR ROUND 12 T48 note: `missingDeliverables` settles that many trailing pieces with
+  // NO result. The join still completes (the countdown reaches zero either way), but a
+  // deliverable is missing — which is the population that still walks the full grind-vs-tell
+  // ladder. Without it, an all-landed multi-piece join now leaves at the engine-relay rung.
+  const missing = opts.missingDeliverables ?? 0;
   for (const [i, childId] of kids.entries()) {
+    if (i >= children - missing) {
+      settlePieceWithoutResult(childId, {
+        to: 'abandoned', reason: 'the assignee never came back', actorId: PEER,
+      });
+      continue;
+    }
     db.prepare(
       `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
        VALUES (?, ?, NULL, 'send_to_agent', 'a2a', 'delivered', datetime('now'))`,
@@ -141,7 +154,8 @@ function seedCompletedOnePieceJoin(
       deliveryId: `piece-d-${msgId}-${i}`, content: `ECHO-PW8D-3${i}`, messageId: null, actorId: PEER,
     });
   }
-  expect(joinPieces(askId).filter((p) => (p.content ?? '').trim().length > 0)).toHaveLength(children);
+  expect(joinPieces(askId).filter((p) => (p.content ?? '').trim().length > 0))
+    .toHaveLength(children - missing);
   return askId;
 }
 
@@ -273,13 +287,20 @@ describe('PRESERVED: the ladder still relays when the engine has said NOTHING', 
 
     const relays = relayRows(askId);
     expect(relays, 'the owner gets the pieces the model never compiled').toHaveLength(1);
-    expect(ownerFacing().some((m) => /All the delegated pieces are back/.test(m.content))).toBe(true);
+    // UX-REPAIR ROUND 12 T48: with EVERY piece back, the telling now happens one rung earlier —
+    // at the engine-relay rung rather than at the end of the ladder — and it carries T48's own
+    // preface instead of the end-of-ladder wording. The subject of this clause is untouched:
+    // the FIRST relay still always happens, and there is still exactly one of it.
+    expect(ownerFacing().some((m) => /results are in as delivered by the helpers/.test(m.content))).toBe(true);
     expect(workRow(askId).state).toBe('done');
   });
 
   it('the ladder still climbs when nothing was relayed: re-drives, stuck notices, then the '
     + 'platform surface — in that order, each bounded', async () => {
-    const askId = seedCompletedOnePieceJoin('m-1', { children: 2 });
+    // T48 rekey: the full climb belongs to a join that is genuinely stuck — one whose
+    // deliverable never came back. An all-landed join leaves at the engine-relay rung now, so
+    // seeding one here would measure the new rung and call it the old ladder.
+    const askId = seedCompletedOnePieceJoin('m-1', { children: 2, missingDeliverables: 1 });
 
     for (let i = 0; i < PASSES_TO_EXHAUST_THE_LADDER; i++) await drive();
 
