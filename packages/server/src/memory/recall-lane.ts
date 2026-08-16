@@ -389,7 +389,25 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
   // ── HL5: THE SNAPSHOT IS BUILT FIRST, because whether it renders decides whether the
   //    per-hit obligation serving below runs at all. Two answers to "what do I owe" in one
   //    message is the parallel memory T17 exists to prevent, said one noun over.
-  const snapshot = hasCommitmentHistory(ctx.agentId)
+  //
+  // ── T44 FOLLOW-UP: THE GATE IS THE WHOLE BOARD, NOT THE COMMITMENT PAST ALONE ──────────
+  // HL5's gate was `hasCommitmentHistory` and its stated job was render cost — one indexed
+  // lookup that spares an agent with nothing to publish. Once this block carries the BOARD
+  // counts, that gate holds back the case the counts exist for: an agent with open asks and
+  // no commitment past published nothing at all, which is round-11 S4's own gap re-created
+  // one agent over. The cost argument does not reach the counts — they are O(1) bytes, the
+  // same argument the reserve derivation makes — so the gate asks the wider question.
+  // For such an agent the commitments half says the true thing rather than being suppressed:
+  // it holds NO open commitments, and `SNAPSHOT_EMPTY_BODY` is exactly that sentence.
+  //
+  // IT IS STILL A GATE, and what it spares is the point: an agent with no commitment past
+  // AND nothing open on its board publishes nothing. There is no earlier mention for a
+  // snapshot to supersede and no board to count, so the block would be noise — HL5's own
+  // judgement, now made over the whole board instead of one kind of row. `board` is read
+  // ONCE and serves both the decision and the render; there is no second query.
+  const board = openBoardCounts(ctx.agentId);
+  const publishesSnapshot = hasCommitmentHistory(ctx.agentId) || board.asks > 0 || board.tracker > 0;
+  const snapshot = publishesSnapshot
     ? (() => {
         const rows: LiveCommitment[] = liveCommitments(ctx.agentId);
         return {
@@ -399,7 +417,7 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
             + `(${r.state}, opened ${relativeTimeAgo(new Date(r.openedAt).toISOString())})`),
           // T44: read at the same moment as the commitment set, from the same module and the
           // same `closed_at IS NULL` predicate, so the block cannot state two boards.
-          board: openBoardCounts(ctx.agentId),
+          board,
         };
       })()
     : null;

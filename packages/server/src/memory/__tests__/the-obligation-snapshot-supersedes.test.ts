@@ -583,6 +583,92 @@ describe('§6 the board counts are complete, and they agree with the spine at re
     expect(recallLaneWorstCaseTokens()).toBeGreaterThan(1807);
   });
 
+  // ── T44 FOLLOW-UP (orchestrator ruling on W31's hand-up 2, 2026-08-15) ─────────────────
+  //
+  // W31 shipped the board counts inside the HL5 block and handed up the hole they left: the
+  // block renders only when `hasCommitmentHistory` is true, so an agent with open ASKS and no
+  // commitment past published no counts at all — the exact S4 gap this task exists to close,
+  // re-created one agent over. That gate was W29's RENDER-COST guard, and the cost argument
+  // does not reach the counts: they are O(1) bytes, which is the same argument `lanes.ts`
+  // makes for why completeness is affordable here at all. So the gate widens to "this agent
+  // has a commitment past OR something open on its board", and the commitments half of the
+  // block simply says the true thing for such an agent — it holds NO open commitments.
+  //
+  // WHAT THE GATE STILL SPARES, and it is the whole reason it is not simply deleted: an agent
+  // with no history and nothing open publishes nothing. There is no earlier mention for a
+  // snapshot to supersede and no board to count, so the block would be noise — the same
+  // judgement `hasCommitmentHistory` was written to make, now made on the whole board.
+  describe('the gate is the whole board, not the commitment past alone', () => {
+    it('THE HOLE: open asks with NO commitment history now publish — at HEAD they published nothing', () => {
+      seedBoardRow({ id: 'ask:no-history-1', kind: 'ask', state: 'blocked' });
+      seedBoardRow({ id: 'ask:no-history-2', kind: 'ask', state: 'open' });
+      expect(hasCommitmentHistory(AGENT)).toBe(false);
+      const text = textOf(renderRecallLane(ctxWith()));
+      expect(text).toContain(SNAPSHOT_HEAD);
+      // The commitments half states the true thing rather than being suppressed.
+      expect(text).toContain(SNAPSHOT_EMPTY_BODY);
+      expect(text).toContain(snapshotBoardLine(spineBoard(AGENT)));
+      expect(text).toMatch(/2 open asks \(1 blocked\)/);
+    });
+
+    it('a tracker row alone opens the gate too — the board is the board', () => {
+      seedBoardRow({ id: 'trk-no-history', kind: 'task', state: 'blocked' });
+      expect(hasCommitmentHistory(AGENT)).toBe(false);
+      const text = textOf(renderRecallLane(ctxWith()));
+      expect(text).toContain(SNAPSHOT_HEAD);
+      expect(text).toMatch(/1 open tracker item/);
+    });
+
+    it('NEGATIVE CONTROL: no history and nothing open still renders NOTHING — truly empty agents are spared', () => {
+      const text = textOf(renderRecallLane(ctxWith({
+        vaultHits: [{ id: 'v-none', type: 'preference', content: 'David prefers dark mode.' }],
+      })));
+      expect(text).not.toContain(SNAPSHOT_HEAD);
+      expect(text).toContain('David prefers dark mode.');
+    });
+
+    it('NEGATIVE CONTROL: CLOSED board rows do not open the gate — a terminal row is not an open one', () => {
+      seedBoardRow({ id: 'ask:closed', kind: 'ask', state: 'abandoned' });
+      seedBoardRow({ id: 'trk-closed', kind: 'task', state: 'failed' });
+      expect(openBoardCounts(AGENT)).toEqual({ asks: 0, asksBlocked: 0, tracker: 0, trackerBlocked: 0 });
+      expect(textOf(renderRecallLane(ctxWith()))).not.toContain(SNAPSHOT_HEAD);
+    });
+
+    it('NEGATIVE CONTROL: a join PIECE does not open the gate — it is not a board row', () => {
+      seedBoardRow({ id: 'piece:gate', kind: 'task', state: 'open', rootKind: 'a2a_thread' });
+      expect(textOf(renderRecallLane(ctxWith()))).not.toContain(SNAPSHOT_HEAD);
+    });
+
+    it('the widened gate is AGENT-SCOPED — another agent\'s open ask opens nothing here', () => {
+      seedBoardRow({ id: 'ask:theirs-gate', kind: 'ask', state: 'blocked', agentId: OTHER });
+      expect(textOf(renderRecallLane(ctxWith()))).not.toContain(SNAPSHOT_HEAD);
+    });
+
+    it('the T17 per-hit path still owns the no-snapshot case, unchanged', () => {
+      // The withdrawal clause keys on `snapshot !== null`, so widening the gate moves rows out
+      // of T17's hands for agents that now publish. For an agent that still does not publish,
+      // every branch must behave exactly as it did before this task and before HL5.
+      const text = textOf(renderRecallLane(ctxWith({
+        vaultHits: [{ id: 'v-t17', type: 'note', content: 'Commitment: I will send the deck to Priya tomorrow.' }],
+      })));
+      expect(text).toContain(UNRESOLVED_OBLIGATION_MARK);
+      expect(text).toContain('I will send the deck to Priya tomorrow.');
+      expect(text).not.toContain(SNAPSHOT_HEAD);
+    });
+
+    it('the reserve argument is UNCHANGED — the widened gate renders no new shape', () => {
+      // The gate decides WHETHER the block renders, never how large it can be. The worst case
+      // is the same worst case, so `lanes.ts`'s derivation still holds and no pin moves for it.
+      const declared = POST_BUDGET_LANES.find((l) => l.id === RECALL_LANE_ID);
+      expect(declared?.reserveTokens).toBe(recallLaneWorstCaseTokens());
+      seedBoardRow({ id: 'ask:reserve', kind: 'ask', state: 'blocked' });
+      const render = renderRecallLane(ctxWith({
+        vaultHits: Array.from({ length: 12 }, (_, i) => ({ id: `vg${i}`, type: 'note', content: 'y'.repeat(600) })),
+      }));
+      expect(render!.tokens).toBeLessThanOrEqual(recallLaneWorstCaseTokens());
+    });
+  });
+
   it('ZERO PREFIX BYTES: no system-side registry entry carries a byte of the board line', () => {
     const line = snapshotBoardLine({ asks: 1, asksBlocked: 1, tracker: 1, trackerBlocked: 1 });
     const stem = line.slice(0, line.indexOf('1 open ask'));
