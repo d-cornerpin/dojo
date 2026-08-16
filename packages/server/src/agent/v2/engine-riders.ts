@@ -172,7 +172,8 @@ export const QUEUE_PAIRED_RIDERS: Readonly<Record<string, QueuePairedRider>> = O
   'owed-interrupt':    { intent: 'owed_interrupt',          latch: "steerFired(state.steerQueue, 'owed-interrupt')" },
   // RETIRED by T53: `promise-floor`. Its one-shot latch is untouched — the floor still
   // stands down on a second promise ending and logs its tripwire instead of spinning.
-  'a2a-handoff-floor': { intent: 'a2a_handoff_floor',       latch: "steerFireCount(state.steerQueue, 'a2a-handoff-floor')" },
+  // RETIRED by T53: `a2a-handoff-floor`. Its counter latch is untouched — two attempts,
+  // keyed '' then 'retry', then the ghost record.
   'reminder-silence':  { intent: 'reminder_silence_floor',  latch: "steerFireCount(state.steerQueue, 'reminder-silence')" },
   // RETIRED by T53, both thrash rungs: they now steer through `persistEngineSteer` and write
   // no events-lane row. Their intents stay excluded above; only the pairs are gone. The gate's

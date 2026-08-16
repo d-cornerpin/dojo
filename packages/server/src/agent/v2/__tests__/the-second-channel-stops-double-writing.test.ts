@@ -63,6 +63,9 @@ import { initState, type AgentTurnState } from '../state.js';
 import { nextSteer } from '../steer-queue.js';
 import { runThrashGate } from '../steps/pre-call-gates/thrash-gate.js';
 import type { PreCallGatesContext } from '../steps/pre-call-gates/index.js';
+import { runHandoffFloors } from '../steps/post-call-classify/handoff-floors.js';
+import type { PostCallClassifyContext, PostCallScratch } from '../steps/post-call-classify/index.js';
+import { openTrackerTask } from '../../../work/tracker-store.js';
 
 const AGENT = 'second-channel-agent';
 const MODEL = 'second-channel-model';
@@ -316,5 +319,76 @@ describe('§1 thrash-gate', () => {
     const written = rows();
     expect(written.filter((r) => r.origin_intent === 'thrash_gate')).toEqual([]);
     expect(written.filter((r) => r.role === 'system' && r.content === steer).length).toBe(1);
+  });
+});
+
+// ── The two delegation-and-delivery floors, driven ────────────────────────────────────────
+// Neither had a driven harness of its own, so one is built here rather than asserted from
+// source: both are one-more-round floors whose whole point is the extra model call, and that
+// is precisely the call the second channel could never reach.
+
+function classifyCtx(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext {
+  return {
+    agentId: AGENT,
+    turnNumber: TURN,
+    db: mockDb.current,
+    counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' } as unknown as PostCallClassifyContext['counterparty'],
+    counterpartyIsAgentSender: false,
+    chosenConvKey: 'ck-1',
+    isEngineTurn: false,
+    maxToolLoops: 75,
+    triggerRow: { id: 'trigger-1' },
+    turnCtx: { conversationId: 'conv-1', servedWork: null, root: null },
+    ...over,
+  } as unknown as PostCallClassifyContext;
+}
+
+const emptyReply = (): PostCallScratch => ({
+  persistedContent: '', interAgentTurn: false, deliberateSurfaceTurn: false,
+  deliveredAsStartLine: false, hasXmlFallbackTools: false, effectiveModelIdForPersist: MODEL,
+} as unknown as PostCallScratch);
+
+/** A turn that handed work to a peer and is about to end saying nothing. */
+function handoffState(): AgentTurnState {
+  return baseState({
+    loopCount: 3,
+    toolCalls: [{ id: 'tc-1', name: 'send_to_agent', arguments: {} }],
+    toolResults: [{ toolCallId: 'tc-1', name: 'send_to_agent', isError: false, content: 'sent' }],
+  } as unknown as Partial<AgentTurnState>);
+}
+
+describe('§1 a2a-handoff-floor', () => {
+  it('the queue still delivers the handoff steer, and the floor still buys its extra round', async () => {
+    const out = await runHandoffFloors(handoffState(), classifyCtx(), emptyReply());
+    expect(out.directive, 'the floor exists to re-enter the loop').toBe('continue');
+    const queued = nextSteer(out.state.steerQueue);
+    expect(queued!.floor).toBe('a2a-handoff-floor');
+    expect(queued!.key, 'rung 1 of the ladder').toBe('');
+    expect(queued!.content).toContain('You handed work to another agent');
+    expect(queued!.content).toContain('do NOT call imessage_send or any send tool');
+    expect(renderMessageEntry('msg.pending-nudge', { pendingSteer: queued!.content } as unknown as AssemblyContext)!.content)
+      .toBe(queued!.content);
+  });
+
+  it('the model receives NOTHING from the second channel on a later turn', async () => {
+    const out = await runHandoffFloors(handoffState(), classifyCtx(), emptyReply());
+    const body = nextSteer(out.state.steerQueue)!.content
+      .replace(/^\s*\[[^\]]*\]\s*/, '').replace(/\s+/g, ' ').trim();
+    expect(await riderLine('a2a_handoff_floor')).toBeNull();
+    expect(await whatTheModelReceives()).not.toContain(body.slice(0, 120));
+  });
+
+  it('the record survives the removal, and the SECOND rung is still a second fact', async () => {
+    const first = await runHandoffFloors(handoffState(), classifyCtx(), emptyReply());
+    expect(rows().filter((r) => r.origin_intent === 'a2a_handoff_floor')).toEqual([]);
+    expect(rows().filter((r) => r.role === 'system' && r.content === nextSteer(first.state.steerQueue)!.content).length).toBe(1);
+
+    // The ladder's own bound: rung 2 is keyed 'retry', so the counter still climbs to the cap.
+    const second = await runHandoffFloors(
+      { ...handoffState(), steerQueue: first.state.steerQueue } as AgentTurnState,
+      classifyCtx(), emptyReply(),
+    );
+    const fired = second.state.steerQueue.fired.filter((e) => e.floor === 'a2a-handoff-floor');
+    expect(fired.map((e) => e.key)).toEqual(['', 'retry']);
   });
 });

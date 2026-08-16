@@ -17,6 +17,7 @@ import { createLogger } from '../../../../logger.js';
 import { insertEngineEventIfAbsent } from '../../../../memory/message-store.js';
 import { askIdForMessage } from '../../../../work/store.js';
 import { advance, type AgentTurnState } from '../../state.js';
+import { persistEngineSteer } from '../../engine-steer.js';
 import { enqueueSteer, steerFireCount } from '../../steer-queue.js';
 import { turnDeliveredToPerson } from '../../answered-edge.js';
 import { MAX_FLOOR_STEER_ATTEMPTS, recordFloorGhost } from '../../floor-ghost.js';
@@ -90,19 +91,19 @@ export async function runHandoffFloors(
           `reply): report any results you already have, and say you have asked another agent for ` +
           `the rest and will report back when they answer. Do not message the other agent again.`
         );
-      const steerId = uuidv4();
-      try {
-        insertEngineEventIfAbsent({
-          work: null,
-          id: steerId,
-          agentId,
-          content: steer,
-          sourceAgentId: null,
-          originIntent: 'a2a_handoff_floor',
-          turnNumber,
-        });
-      } catch { /* best effort */ }
-      state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'a2a-handoff-floor', content: steer, key: again ? 'retry' : '', atLoop: state.loopCount }) });
+      // ── T53 (owner ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
+      // This floor's whole product is the EXTRA ROUND it buys with `continueLoop` below,
+      // and the events-lane row this site also wrote could not appear in it: the tail query
+      // drops `role='user'` rows created after the turn boundary, so the second copy landed
+      // a turn later, after the ladder had already spent its two attempts and recorded its
+      // ghost. `persistEngineSteer` files the same KEYED entry ('' then 'retry', so the
+      // counter still climbs to `MAX_FLOOR_STEER_ATTEMPTS`) and writes the durable
+      // `role='system'` row that keeps the steer on the record.
+      state = persistEngineSteer(
+        state,
+        { agentId, content: steer, turnNumber, floor: 'a2a-handoff-floor', key: again ? 'retry' : '', atLoop: state.loopCount },
+        { broadcast },
+      );
       logger.info('v2 a2a-handoff floor: user-facing turn ending silently after a handoff; steering the model to report to the user first', {
         agentId, turnNumber, convKey: chosenConvKey, attempt: handoffAttempts + 1,
       }, agentId);
