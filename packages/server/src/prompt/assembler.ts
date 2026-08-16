@@ -2,13 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_SOUL_MD, DEFAULT_USER_MD, DEFAULT_PM_SOUL_MD, DEFAULT_TRAINER_SOUL_MD } from './templates.js';
+import { DEFAULT_SOUL_MD, DEFAULT_USER_MD, DEFAULT_PM_SOUL_MD, DEFAULT_TRAINER_SOUL_MD, DEFAULT_HEALER_SOUL_MD, DEFAULT_IMAGINER_SOUL_MD } from './templates.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { toolDefinitions } from '../agent/tools/definitions.js';
 import { getFilteredTools } from '../agent/tools/surface.js';
 import { getAgentPermissions } from '../agent/manifest.js';
-import { isPrimaryAgent, isPMAgent, isTrainerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getHealerAgentId, getHealerAgentName } from '../config/platform.js';
+import { isPrimaryAgent, isPMAgent, isTrainerAgent, isHealerAgent, isImaginerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getHealerAgentId, getHealerAgentName, getImaginerAgentName } from '../config/platform.js';
 import type { TurnCounterparty } from '../agent/v2/counterparty.js';
 import { NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, type Channel } from '@dojo/shared';
 import { isWorkVerb } from '../tools/work-verbs.js';
@@ -69,18 +69,33 @@ export function readPlatformTemplate(file: string): string | null {
   return null;
 }
 
-/** The names every shipped soul template is written against. */
+/**
+ * The names every shipped soul template is written against.
+ *
+ * T59 adds `{{imaginer_agent_name}}`, which `templates/IMAGINER-SOUL.md` has used since it was
+ * written — by a SECOND substituter inside `imaginer/imaginer-agent.ts`, whose output reached
+ * no model. There is one substituter now. `PLATFORM_SOUL_PLACEHOLDERS` below is the same list
+ * said once, so a test can ask a shipped template whether every placeholder it uses is one this
+ * function knows — the guard that catches the next template written against a fifth name.
+ */
 function substitutePlatformNames(md: string): string {
   return md
     .replace(/\{\{pm_agent_name\}\}/g, getPMAgentName())
     .replace(/\{\{trainer_agent_name\}\}/g, getTrainerAgentName())
+    .replace(/\{\{imaginer_agent_name\}\}/g, getImaginerAgentName())
     .replace(/\{\{primary_agent_name\}\}/g, getPrimaryAgentName())
     .replace(/\{\{owner_name\}\}/g, getOwnerName());
 }
 
+/** Every placeholder `substitutePlatformNames` fills — declared once, so the substituter, the
+ *  re-seed detector and the template conformance test cannot disagree about the list. */
+export const PLATFORM_SOUL_PLACEHOLDERS = [
+  'pm_agent_name', 'trainer_agent_name', 'imaginer_agent_name', 'primary_agent_name', 'owner_name',
+] as const;
+
 /** A stored soul that still carries one of those placeholders was written by the engine's own
  *  default-seeding and never passed through a substituting writer. Nobody authors this. */
-export const UNSUBSTITUTED = /\{\{(?:pm_agent_name|trainer_agent_name|primary_agent_name|owner_name)\}\}/;
+export const UNSUBSTITUTED = new RegExp(`\\{\\{(?:${PLATFORM_SOUL_PLACEHOLDERS.join('|')})\\}\\}`);
 
 /**
  * A shipped soul template, substituted — with the in-code stub as the LAST RESORT ONLY, and
@@ -152,12 +167,61 @@ export function trainerSoulDefaultFrom(
   );
 }
 
+/**
+ * T59 — THE HEALER. Measured at `85537ff` on the owner's box, through the live surface:
+ * `GET /api/agents/healer/system-prompt` returned **0 bytes**, and `getSoulContent('healer')`
+ * fell all the way to the synthesized sub-agent identity ("You are **Healer**, a sensei agent
+ * in the DOJO Agent Platform"). All 30 of its `role='system'` rows are engine markers — the
+ * soul row `healer/healer-agent.ts` wrote once at creation had been pruned — so T57's widened
+ * refusal correctly returned '' and there was no identity left to serve.
+ *
+ * `templates/HEALER-SOUL.md` is 10,948 bytes: the diagnostic runbook, the database schema, the
+ * evidence discipline, the affordable-model philosophy, the never-do list. None of it reached
+ * any model on any box.
+ */
+export function healerSoulDefaultFrom(
+  read: (file: string) => string | null,
+  warn: (msg: string, meta?: Record<string, unknown>) => void,
+): string {
+  return shippedSoulDefaultFrom(
+    'HEALER-SOUL.md', DEFAULT_HEALER_SOUL_MD,
+    'no diagnostic runbook, no database schema, no evidence discipline, no affordable-model rule',
+    read, warn,
+  );
+}
+
+/**
+ * T59 — THE IMAGINER, the same shape one agent over. Measured at `85537ff`:
+ * `GET /api/agents/imaginer/system-prompt` returned **0 bytes** and the agent has **zero**
+ * `role='system'` rows at all — `imaginer/imaginer-agent.ts` writes one only at CREATE, and
+ * this box's Imaginer predates that write. Its 2,737-byte template, which is the only place
+ * the engine-handled `image_create` flow is ever explained to it, reached nothing.
+ */
+export function imaginerSoulDefaultFrom(
+  read: (file: string) => string | null,
+  warn: (msg: string, meta?: Record<string, unknown>) => void,
+): string {
+  return shippedSoulDefaultFrom(
+    'IMAGINER-SOUL.md', DEFAULT_IMAGINER_SOUL_MD,
+    'no account of how image_create actually runs, and no rule about which tools it must not call',
+    read, warn,
+  );
+}
+
 function pmSoulDefault(): string {
   return pmSoulDefaultFrom(readPlatformTemplate, (msg, meta) => logger.error(msg, meta));
 }
 
 function trainerSoulDefault(): string {
   return trainerSoulDefaultFrom(readPlatformTemplate, (msg, meta) => logger.error(msg, meta));
+}
+
+function healerSoulDefault(): string {
+  return healerSoulDefaultFrom(readPlatformTemplate, (msg, meta) => logger.error(msg, meta));
+}
+
+function imaginerSoulDefault(): string {
+  return imaginerSoulDefaultFrom(readPlatformTemplate, (msg, meta) => logger.error(msg, meta));
 }
 
 function ensurePromptsDir(): void {
@@ -237,10 +301,42 @@ export interface AgentSoulFile {
   readonly reseedUnsubstituted?: boolean;
 }
 
+/**
+ * ── T59: THE SERVICE AGENTS JOIN THE FILE-BACKED SET, AND THE THREE COLLISIONS, ARGUED ──
+ *
+ * **T57's working-note refusal.** Until now the Healer and the Imaginer resolved their identity
+ * through `readStoredCharter` — the charter column, else the earliest `role='system'` row that
+ * is not an engine marker. T57 fixed the WRONG-identity half of that (an 88-byte
+ * `[working-note]` was being served as the Healer's soul); it could not fix the NO-identity
+ * half, because there was no identity to find. A file branch answers that half: the Healer and
+ * the Imaginer never reach the charter path at all now, so a note can never stand in again.
+ * **T57's guard is not removed and not weakened — it is the backstop for every agent still on
+ * the charter path**, which is every ordinary sub-agent and the Dreamer (below).
+ *
+ * **THE DREAMER IS DELIBERATELY NOT HERE — Step-0 stand-down, recorded.** The T59 ruling covers
+ * the Dreamer only "if Step-0 proves its template equally unreached", and it does not.
+ * Measured at `85537ff` on the owner's box through the live surface:
+ * `GET /api/agents/dreamer/system-prompt` served **18,762 bytes byte-identical to
+ * `templates/DREAMER-SOUL.md`** — because `vault/maintenance.ts:875-895` REWRITES the
+ * Dreamer's earliest `role='system'` row from the template on every boot check, and that row
+ * is the one `readStoredCharter` returns. Its doctrine reaches its model today. Moving it onto
+ * a file would move a working agent's prompt bytes for no defect, so it is left exactly as it
+ * is, and the reason is written here rather than rediscovered.
+ *
+ * **The per-agent branch below.** `${agentId.toUpperCase()}-SOUL.md` already spells
+ * `HEALER-SOUL.md` for the default healer id, so a box that hand-made that file was already
+ * served by it — with `fallback: ''` (no seeding), `spawnTruth: true` and no re-seed clause.
+ * The explicit branches take precedence, which is the point: the file name stops depending on
+ * the agent's ID (`healer_agent_id` is configurable), the seed becomes the shipped template,
+ * and the stored bytes an owner authored are returned unchanged either way — `readSoulFile`
+ * only ever replaces content that still carries a `{{…}}`.
+ */
 export function soulFileForAgent(agentId: string): AgentSoulFile | null {
   if (isPrimaryAgent(agentId)) return { file: 'SOUL.md', fallback: DEFAULT_SOUL_MD, spawnTruth: true };
   if (isPMAgent(agentId)) return { file: 'PM-SOUL.md', fallback: pmSoulDefault(), spawnTruth: false, reseedUnsubstituted: true };
   if (isTrainerAgent(agentId)) return { file: 'TRAINER-SOUL.md', fallback: trainerSoulDefault(), spawnTruth: false, reseedUnsubstituted: true };
+  if (isHealerAgent(agentId)) return { file: 'HEALER-SOUL.md', fallback: healerSoulDefault(), spawnTruth: false, reseedUnsubstituted: true };
+  if (isImaginerAgent(agentId)) return { file: 'IMAGINER-SOUL.md', fallback: imaginerSoulDefault(), spawnTruth: false, reseedUnsubstituted: true };
   const perAgent = `${agentId.toUpperCase()}-SOUL.md`;
   if (fs.existsSync(path.join(PROMPTS_DIR, perAgent))) return { file: perAgent, fallback: '', spawnTruth: true };
   return null;

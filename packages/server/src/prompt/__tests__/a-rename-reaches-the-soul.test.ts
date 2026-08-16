@@ -73,6 +73,8 @@ const PROMPTS = path.join(HOME, '.dojo', 'prompts');
 const PRIMARY = 'kevin';
 const PM = 'kelly';
 const TRAINER = 'ticky';
+const HEALER = 'healer';
+const IMAGINER = 'imaginer';
 const SUB = 'maxbot';
 
 const soulPath = (f: string): string => path.join(PROMPTS, f);
@@ -111,12 +113,19 @@ beforeEach(async () => {
   setConfig('pm_agent_name', 'Kelly');
   setConfig('trainer_agent_id', TRAINER);
   setConfig('trainer_agent_name', 'Ticky');
+  // T59 (W42): two more file-backed souls to re-fill.
+  setConfig('healer_agent_id', HEALER);
+  setConfig('healer_agent_name', 'Healer');
+  setConfig('imaginer_agent_id', IMAGINER);
+  setConfig('imaginer_agent_name', 'Iris');
   setConfig('owner_name', 'David');
   const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();
   seedAgent(PRIMARY, 'Kevin');
   seedAgent(PM, 'Kelly');
   seedAgent(TRAINER, 'Ticky');
+  seedAgent(HEALER, 'Healer');
+  seedAgent(IMAGINER, 'Iris');
   seedAgent(SUB, 'Max');
 
   // The stored souls as a worn-in box carries them: SUBSTITUTED, no placeholders left.
@@ -128,6 +137,14 @@ beforeEach(async () => {
     '# Ticky — Trainer\n\nYou are Ticky, the technique trainer. Report to Kevin.\n');
   fs.writeFileSync(soulPath('MAXBOT-SOUL.md'),
     '# Max\n\nYou are Max. Max reviews the Maximum-effort queue with Maxwell, and never peaks at climax.\n');
+  // T59 (W42): the two souls this task made file-backed, in the shape their templates carry.
+  // HEALER-SOUL.md names its agent in PROSE ("You are the Healer") rather than through a
+  // placeholder, so the rename re-fill is the ONLY thing that can make a renamed Healer's own
+  // doctrine call it by its name.
+  fs.writeFileSync(soulPath('HEALER-SOUL.md'),
+    '# Identity\n\nYou are the Healer, the dojo\'s self-healing agent. Escalate to Kevin.\n');
+  fs.writeFileSync(soulPath('IMAGINER-SOUL.md'),
+    '# Identity\n\nYou are Iris, the image specialist. Ask Kevin to run image_create.\n');
 });
 
 afterEach(() => {
@@ -300,6 +317,87 @@ describe('the re-fill is exact', () => {
     renameAgent(PM, 'Karen');
     renameAgent(PRIMARY, 'Kev');
     expect(snapshot()).toEqual(before);
+  });
+});
+
+// ═══════════ T59 (W42): THE RE-FILL COVERS THE SOULS T59 ADDED ═══════════
+//
+// The T59 ruling says the rename door's re-fill must reach the new files, and that the
+// `readdir` FILTER be verified rather than assumed. It is `f === 'SOUL.md' || f.endsWith(
+// '-SOUL.md')` — `HEALER-SOUL.md` and `IMAGINER-SOUL.md` match the second arm — so this
+// needed no code change at all. That is exactly why it needs a test: a covered-by-accident
+// property with nothing asserting it is one refactor away from being covered by nothing.
+
+describe('the re-fill reaches the souls T59 made file-backed', () => {
+  it('THE CONFIG DOOR (Healer): healer_agent_name changes and the stored soul follows', async () => {
+    const { configRouter } = await import('../../gateway/routes/config.js');
+    const res = await configRouter.request('/settings/healer_agent_name', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ value: 'Medic' }),
+    });
+    expect(res.status).toBe(200);
+
+    expect(getConfig('healer_agent_name')).toBe('Medic');
+    expect(agentName(HEALER)).toBe('Medic');
+    expect(readSoul('HEALER-SOUL.md')).toContain('You are the Medic, the dojo');
+    expect(readSoul('HEALER-SOUL.md')).not.toContain('Healer');
+  });
+
+  it('THE CONFIG DOOR (Imaginer): imaginer_agent_name changes and the stored soul follows', async () => {
+    const { configRouter } = await import('../../gateway/routes/config.js');
+    await configRouter.request('/settings/imaginer_agent_name', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ value: 'Vega' }),
+    });
+
+    expect(agentName(IMAGINER)).toBe('Vega');
+    expect(readSoul('IMAGINER-SOUL.md')).toContain('You are Vega, the image specialist');
+    expect(readSoul('IMAGINER-SOUL.md')).not.toContain('Iris');
+  });
+
+  it('THE FILTER, ASSERTED: every file `soulFileForAgent` can name is one `storedSoulFiles` reaches', () => {
+    // Renaming the PRIMARY touches every soul that mentions it — which is how we see the whole
+    // set the readdir filter admits, in one call, without reaching into a private function.
+    const out = renameAgent(PRIMARY, 'Kev');
+    const touched = out.souls.map((s) => s.file).sort();
+
+    expect(touched).toEqual([
+      'HEALER-SOUL.md', 'IMAGINER-SOUL.md', 'PM-SOUL.md', 'SOUL.md', 'TRAINER-SOUL.md',
+    ]);
+    // MAXBOT-SOUL.md is absent because it never names the primary — the filter admits it, the
+    // no-write rule skips it. Both halves matter, so both are said here.
+    expect(touched).not.toContain('MAXBOT-SOUL.md');
+    // And the declared file for each platform soul is in that set — the pin the ruling asks for.
+    for (const id of [PM, TRAINER, HEALER, IMAGINER]) {
+      expect(touched).toContain(soulFileForAgent(id)!.file);
+    }
+  });
+
+  it('CONTROL: the word-boundary rule holds on the new files too — "Iris" never rewrites "Irish"', () => {
+    fs.writeFileSync(soulPath('IMAGINER-SOUL.md'),
+      '# Iris\n\nIris draws. Iris is not Irish, and Iris-adjacent is not Iris.\n');
+
+    const out = renameAgent(IMAGINER, 'Vega');
+    const soul = readSoul('IMAGINER-SOUL.md');
+
+    expect(soul).toContain('Vega is not Irish');
+    expect(soul).toContain('Vega-adjacent is not Vega');   // hyphen is not a letter/digit/underscore
+    expect(soul).not.toMatch(/\bIris\b/);
+    expect(out.souls.find((s) => s.file === 'IMAGINER-SOUL.md')?.replacements).toBe(5);
+  });
+
+  it('CONTROL: renaming the Healer leaves the Imaginer and the primary byte-identical, mtime included', () => {
+    const watched = ['IMAGINER-SOUL.md', 'SOUL.md', 'PM-SOUL.md', 'TRAINER-SOUL.md'];
+    const before = watched.map((f) => [fs.readFileSync(soulPath(f)), fs.statSync(soulPath(f)).mtimeMs] as const);
+
+    renameAgent(HEALER, 'Medic');
+
+    watched.forEach((f, i) => {
+      expect(fs.readFileSync(soulPath(f))).toEqual(before[i][0]);
+      expect(fs.statSync(soulPath(f)).mtimeMs).toBe(before[i][1]);
+    });
   });
 });
 

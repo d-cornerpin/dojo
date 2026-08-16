@@ -138,6 +138,36 @@ describe('the installer proves the souls shipped', () => {
     for (const f of shipped) expect(r.out).toContain(f);
   });
 
+  // ── T59 (W42): the NAMED FLOOR widens to the full set ──
+  // Discovery already covered these files; discovery cannot refuse their DELETION, because a
+  // repo with no `HEALER-SOUL.md` simply discovers one fewer soul and reports a clean sweep.
+  // The named floor is the half that bites, and T59 put three more live dependencies behind it.
+
+  it('RED: HEALER-SOUL.md missing from an otherwise complete artifact refuses', () => {
+    const r = runGate([buildArtifact('no-healer', { omit: ['HEALER-SOUL.md'] }), '--require-artifact']);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('HEALER-SOUL.md');
+  });
+
+  it('RED: IMAGINER-SOUL.md shipped as a stub refuses — presence is not enough', () => {
+    const r = runGate([buildArtifact('stub-imaginer', { truncate: ['IMAGINER-SOUL.md'] }), '--require-artifact']);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('IMAGINER-SOUL.md');
+  });
+
+  it('RED: a repo that DELETED a floor soul cannot pass on the strength of its siblings', () => {
+    // The failure discovery alone cannot see. Simulated by asking the gate about a repo whose
+    // templates directory is missing the file, which is what the named floor exists to catch.
+    const src = fs.readFileSync(path.join(REPO_ROOT, 'deploy/checks/check-shipped-souls.mjs'), 'utf8');
+    const floor = /const REQUIRED_SOULS = \[([\s\S]*?)\];/.exec(src)?.[1] ?? '';
+    for (const f of ['PM-SOUL.md', 'TRAINER-SOUL.md', 'HEALER-SOUL.md', 'IMAGINER-SOUL.md', 'DREAMER-SOUL.md']) {
+      expect(floor, `${f} must be a NAMED floor, not only discovered`).toContain(f);
+    }
+    // …and every named floor must actually be a file the repo ships, or the gate asserts a ghost.
+    const shipped = fs.readdirSync(REPO_TEMPLATES);
+    for (const m of floor.matchAll(/'([^']+)'/g)) expect(shipped).toContain(m[1]);
+  });
+
   it('CONTROL: the gate is declared in the manifest and invoked by release.sh', () => {
     const manifest = fs.readFileSync(path.join(REPO_ROOT, 'deploy/checks/gate-manifest.mjs'), 'utf8');
     const release = fs.readFileSync(path.join(REPO_ROOT, 'deploy/release.sh'), 'utf8');

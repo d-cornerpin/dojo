@@ -31,6 +31,22 @@
 //      its text (doctrine documenting the engine's own vocabulary) is still a valid identity,
 //      because the table matches PREFIXES;
 //   6. and the four refusals that were already there still refuse.
+//
+// ── T59 (W42): THE RULE IS UNCHANGED; WHO REACHES IT IS NOT ──
+// T59 gave the Healer a soul FILE (`~/.dojo/prompts/HEALER-SOUL.md`, seeded from the shipped
+// 10,948-byte template), because T57 could only fix the WRONG-identity half of the defect —
+// after the refusal landed, the Healer had NO identity at all: 0 bytes on the live surface and
+// 30 engine markers behind it. `getSoulContent`/`readAgentPromptSurface` therefore resolve the
+// Healer through `soulFileForAgent` now and never enter the charter path.
+//
+// Every `readStoredCharter` clause below is BYTE-UNCHANGED — that function is where T57's rule
+// lives and it is what still guards it. The two clauses that demonstrated the rule END-TO-END
+// through `getSoulContent` are re-homed onto an ORDINARY SUB-AGENT, in the identical shape, on
+// one argument: an end-to-end demonstration has to run through an agent that actually takes
+// that path, and after T59 the Healer does not. Every ordinary sub-agent still does, which is
+// most of the population, so the guard did not shrink — it moved to where it bites.
+// `prompt/__tests__/a-healer-reads-its-whole-soul.test.ts` carries the Healer's own version:
+// the note cannot become its identity there either, now for a second reason.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import realOs from 'node:os';
@@ -74,6 +90,9 @@ const PROMPTS = path.join(HOME, '.dojo', 'prompts');
 
 const PRIMARY = 'kevin';
 const HEALER = 'healer';
+// An ordinary sub-agent — the population that still resolves its identity through
+// `readStoredCharter`, and therefore the one the end-to-end clauses are demonstrated on.
+const WORKER = 'w1';
 
 // The measured row, to the byte class that was found: an 88-byte demoted narration.
 const THE_88_BYTE_NOTE =
@@ -148,26 +167,41 @@ describe('the Healers identity outranks a working note', () => {
     expect(readStoredCharter(HEALER)).toBe(HEALER_SOUL_ROW);
   });
 
+  // ── the two END-TO-END clauses, re-homed onto the charter path (T59 note in the header) ──
+
   it('BOTH SURFACES agree, because T40 bound them to one store', () => {
-    insertMessage({ id: 'n1', agentId: HEALER, role: 'system', content: THE_88_BYTE_NOTE });
-    insertMessage({ id: 's1', agentId: HEALER, role: 'system', content: HEALER_SOUL_ROW });
+    seedAgent(WORKER, 'Medic');
+    insertMessage({ id: 'n1', agentId: WORKER, role: 'system', content: THE_88_BYTE_NOTE });
+    insertMessage({ id: 's1', agentId: WORKER, role: 'system', content: HEALER_SOUL_ROW });
 
     // The Settings card.
-    expect(readAgentPromptSurface(HEALER)).toBe(HEALER_SOUL_ROW);
+    expect(readAgentPromptSurface(WORKER)).toBe(HEALER_SOUL_ROW);
     // The model's own `sys.identity`.
-    const soul = getSoulContent(HEALER);
+    const soul = getSoulContent(WORKER);
     expect(soul).toContain("You are the Healer, the dojo's self-healing agent");
     expect(soul).not.toContain('Two issues to address');
   });
 
   it('the model is never handed the note as its identity, even when nothing else survives', () => {
-    insertMessage({ id: 'n1', agentId: HEALER, role: 'system', content: THE_88_BYTE_NOTE });
+    seedAgent(WORKER, 'Medic');
+    insertMessage({ id: 'n1', agentId: WORKER, role: 'system', content: THE_88_BYTE_NOTE });
 
-    const soul = getSoulContent(HEALER);
+    const soul = getSoulContent(WORKER);
     expect(soul).not.toContain('Two issues to address');
     expect(soul).not.toContain('working-note');
     // It falls to the synthesized sub-agent identity, which at least names the agent truthfully.
-    expect(soul).toContain('You are **Healer**');
+    expect(soul).toContain('You are **Medic**');
+  });
+
+  it('T59 CONTROL: the Healer itself no longer takes this path at all — its soul is a FILE now', async () => {
+    const { soulFileForAgent } = await import('../assembler.js');
+    insertMessage({ id: 'n1', agentId: HEALER, role: 'system', content: THE_88_BYTE_NOTE });
+
+    // The rule below still answers for the Healer's ROWS…
+    expect(readStoredCharter(HEALER)).toBe('');
+    // …but nothing asks it any more: the file outranks the whole charter path.
+    expect(soulFileForAgent(HEALER)?.file).toBe('HEALER-SOUL.md');
+    expect(getSoulContent(HEALER)).toContain('# Diagnostic Runbook');
   });
 
   // ── controls ──

@@ -21,54 +21,33 @@
 // the actual image-producing model is picked from the image_generation
 // capability list in Settings → Dojo → Imaginer.
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
-import { insertMessageIfAbsent, deleteAllForAgent } from '../memory/message-store.js';
+import { deleteAllForAgent } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
 import {
   getPrimaryAgentId,
-  getPrimaryAgentName,
   getImaginerAgentId,
   getImaginerAgentName,
   isImaginerEnabled,
   isSetupCompleted,
-  getOwnerName,
 } from '../config/platform.js';
 
 const logger = createLogger('imaginer-agent');
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-// ── System prompt ─────────────────────────────────────────────────────
-
-function loadImaginerSoulPrompt(): string {
-  const imaginerName = getImaginerAgentName();
-  const primaryName = getPrimaryAgentName();
-  const ownerName = getOwnerName();
-
-  const templatePaths = [
-    path.resolve(__dirname, '../../../../templates/IMAGINER-SOUL.md'),
-    path.resolve(__dirname, '../../../templates/IMAGINER-SOUL.md'),
-  ];
-
-  for (const templatePath of templatePaths) {
-    try {
-      if (fs.existsSync(templatePath)) {
-        let content = fs.readFileSync(templatePath, 'utf-8');
-        content = content.replace(/\{\{imaginer_agent_name\}\}/g, imaginerName);
-        content = content.replace(/\{\{primary_agent_name\}\}/g, primaryName);
-        content = content.replace(/\{\{owner_name\}\}/g, ownerName);
-        return content;
-      }
-    } catch { /* try next path */ }
-  }
-
-  // Minimal fallback — production always has the template
-  return `You are ${imaginerName}, the DOJO's image generation specialist. When another agent calls image_create, the DOJO handles the entire image generation flow programmatically — your LLM does NOT run for those requests, and the DOJO delivers the finished image to the requester via send_to_agent automatically using your name as the sender. Your LLM only runs when someone messages you directly (e.g., follow-up questions about a generation). Be direct, brief, and useful. Do NOT try to call image_generate_internal — you don't have a working image-generation tool.`;
-}
+// ── W42 TOMBSTONE (UX-REPAIR T59): `loadImaginerSoulPrompt` IS GONE, AND SO ARE BOTH WRITES ──
+//
+// It read `templates/IMAGINER-SOUL.md`, substituted three names with its own private
+// `.replace` chain, and wrote the result as a `role='system'` message row — at agent CREATION
+// and again in `clearImaginerSession`. `tailRender` emits only user/assistant/tool rows, so
+// neither write could reach a model; the only reader was `readStoredCharter`'s legacy sniff,
+// and measured at `85537ff` this box's Imaginer has **zero** `role='system'` rows, so
+// `GET /api/agents/imaginer/system-prompt` served 0 bytes and the model ran on the synthesized
+// sub-agent identity.
+//
+// THE REQUIREMENT NOW LIVES IN ONE PLACE: `prompt/assembler.ts`'s `soulFileForAgent` declares
+// `IMAGINER-SOUL.md` with the shipped template as its seed, and `substitutePlatformNames` —
+// the ONE substituter — fills `{{imaginer_agent_name}}` there. Clearing the session no longer
+// has an identity to re-insert, which is the point: the identity is not in the session.
 
 // ── Ensure Imaginer running ───────────────────────────────────────────
 
@@ -159,8 +138,6 @@ export function ensureImaginerAgentRunning(): void {
     brainModelId = primary?.model_id ?? null;
   }
 
-  const systemPrompt = loadImaginerSoulPrompt();
-
   if (existing) {
     // Reactivating from terminated
     db.prepare(`
@@ -197,8 +174,8 @@ export function ensureImaginerAgentRunning(): void {
       IMAGINER_TOOLS_POLICY,
     );
 
-    insertMessageIfAbsent({ id: uuidv4(), agentId: imaginerId, role: 'system', content: systemPrompt });
-
+    // (No soul row is written here any more — see the W42 tombstone above. The identity is
+    // seeded into `~/.dojo/prompts/IMAGINER-SOUL.md` on the first read, by the one door.)
     logger.info('Imaginer agent created', { imaginerId, imaginerName });
   }
 }
@@ -210,8 +187,8 @@ export function clearImaginerSession(): void {
 
   deleteAllForAgent(imaginerId);
 
-  const systemPrompt = loadImaginerSoulPrompt();
-  insertMessageIfAbsent({ id: uuidv4(), agentId: imaginerId, role: 'system', content: systemPrompt });
-
+  // The identity is NOT re-inserted: it does not live in the session any more. `soulFileForAgent`
+  // resolves `IMAGINER-SOUL.md` on the next read, so a cleared Imaginer wakes with its whole soul
+  // instead of the row this function used to plant and nothing used to read.
   logger.info('Imaginer session cleared', { imaginerId });
 }

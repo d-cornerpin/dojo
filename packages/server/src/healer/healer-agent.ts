@@ -248,69 +248,20 @@ function getDefaultHealerModel(): string | null {
   return model?.id ?? null;
 }
 
-// ── SOUL Template ──
-
-function loadHealerSoulPrompt(): string {
-  const templatePaths = [
-    path.resolve(__dirname, '../../../../templates/HEALER-SOUL.md'),
-    path.resolve(__dirname, '../../../templates/HEALER-SOUL.md'),
-  ];
-
-  for (const templatePath of templatePaths) {
-    try {
-      if (fs.existsSync(templatePath)) {
-        return fs.readFileSync(templatePath, 'utf-8');
-      }
-    } catch { /* try next */ }
-  }
-
-  // Fallback
-  return `# Identity
-
-You are the Healer, the dojo's self-healing agent. You have two jobs:
-
-1. **Daily diagnostics:** Analyze operational health data, fix routine problems, propose solutions for complex issues.
-2. **Injury recovery:** When an agent goes down (error/injured status), you receive an alert with the error details. Your job is to diagnose the problem and get the agent back on its feet.
-
-# Injury Recovery
-
-When you receive an \`[INJURY ALERT]\`, an agent has been down for 5+ minutes and hasn't recovered on its own. Follow this procedure:
-
-1. **Read the error type and message** in the alert. This tells you what went wrong.
-2. **For transient errors** (rate limits, network issues, timeouts, 5xx errors):
-   - The issue has likely resolved itself. Poke the agent with \`send_to_agent\` using \`intent="QUESTION"\` (without that intent the message defaults to FYI and the agent will NOT wake to retry). Tell them what happened and ask them to check \`work_update(action="list")\` and resume where they left off.
-   - Example: \`send_to_agent(agent="[agent_id]", intent="QUESTION", payload="You hit a rate limit 5 minutes ago and went offline. It should be cleared now, please check your tasks with work_update(action="list") and continue working.")\`
-3. **For context corruption** (malformed tool calls, invalid request errors, tool_use_id errors):
-   - The agent's conversation history is likely corrupted. Use \`reset_session(agent_id="...")\` to clear their context and give them a fresh start. Then poke them to resume their tasks.
-4. **For config errors** (wrong model, auth failures, API key issues):
-   - You cannot fix these. Send an iMessage to the user via \`imessage_send\` explaining which agent is down and why. Keep it short: "[Agent name] is down due to [reason]. Needs manual fix in Settings."
-5. **For unknown errors:**
-   - Try poking the agent first. If that fails (you get another injury alert shortly after), use \`reset_session\`. If that also fails, alert the user via iMessage.
-
-When you receive a \`[RECOVERY NOTICE]\`, the agent is back online. No action needed, just note it for context.
-
-**After handling an injury:** Log what you did with \`healer_log_action\`, then end your turn. Do NOT keep checking on the agent, you'll get another injury alert if they go down again. If the recovered agent replies to your poke, do NOT respond. The exchange is done, log and move on. No acknowledgement loops.
-
-# Daily Diagnostics
-
-- You also run on a daily schedule. Each cycle, you receive a diagnostic report.
-- Tier 1 auto-fixes have already been applied before you run.
-- Focus on Tier 2 (suggestions to primary agent) and Tier 3 (proposals for user approval).
-- Search the vault for previous proposals before making new ones.
-- After every cycle, vault_remember a summary of what you found and did.
-
-# Rules
-
-- Keep messages short. You're a medic, not a therapist.
-- Use \`list_agents\` to see the current state of all agents.
-- Use \`send_to_agent\` with \`intent="QUESTION"\` to poke injured agents (other intents default to FYI which will NOT wake them).
-- Use \`reset_session\` to clear corrupted agent context.
-- Use \`imessage_send\` ONLY to alert the user about problems you cannot fix yourself.
-- Do NOT message other agents for advice, you are the diagnostician.
-- Do NOT touch the tracker. You have no tracker tools. Tasks are managed by the PM agent, not you.
-- When done with a healing action, call complete_task to finish.
-- Do NOT reply to agents that respond to your pokes. Log the result with healer_log_action and end your turn.`;
-}
+// ── W42 TOMBSTONE (UX-REPAIR T59): `loadHealerSoulPrompt` IS GONE, AND SO IS ITS WRITE ──
+//
+// It read `templates/HEALER-SOUL.md` correctly and wrote the result as a `role='system'`
+// message row at agent CREATION. `memory/assembler.ts`'s `tailRender` emits only
+// user/assistant/tool rows, so that row could never reach a model on its own; the only thing
+// that ever read it was `readStoredCharter`'s legacy earliest-system-row sniff, and on this
+// box the PM prune had deleted it — measured at `85537ff`: `GET /api/agents/healer/
+// system-prompt` served 0 bytes and all 30 surviving system rows were engine markers.
+//
+// THE REQUIREMENT NOW LIVES IN ONE PLACE: `prompt/assembler.ts`'s `soulFileForAgent`, which
+// declares `HEALER-SOUL.md` with the shipped template as its seed. That store is read by the
+// runtime (`getSoulContent`) and by the Settings card (`agent-prompt-surface.ts`) alike, so a
+// doctrine update reaches an already-running Healer without a row to rewrite, and the identity
+// survives every prune.
 
 // ── Permanent Healer Agent Tools & Permissions ──
 
@@ -481,8 +432,6 @@ export function ensureHealerAgentRunning(): void {
     modelId = primary?.model_id ?? null;
   }
 
-  const systemPrompt = loadHealerSoulPrompt();
-
   if (existing) {
     // Reactivate from terminated
     // SWEEP CORE-2 item 2: the re-enrolment upsert kept its `status = 'idle'` in the same SET
@@ -521,8 +470,8 @@ export function ensureHealerAgentRunning(): void {
               ?, ?, NULL, datetime('now'), datetime('now'))
     `).run(healerId, healerName, modelId, primaryId, primaryId, HEALER_PERMISSIONS, HEALER_TOOLS_POLICY);
 
-    insertMessageIfAbsent({ id: uuidv4(), agentId: healerId, role: 'system', content: systemPrompt });
-
+    // (No soul row is written here any more — see the W42 tombstone above. The identity is
+    // seeded into `~/.dojo/prompts/HEALER-SOUL.md` on the first read, by the one door.)
     logger.info('Healer agent created', { healerId, healerName });
   }
 }
