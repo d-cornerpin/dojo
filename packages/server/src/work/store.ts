@@ -1403,6 +1403,140 @@ export function settlePieceWithoutResult(
   return { result, join: joinAfter(childId) };
 }
 
+// ════════════════════════════════════════════════════════════════════════════════
+// UX-REPAIR ROUND 11 T43 leg (c) — THE JOIN EDGE FOLLOWS THE WORK
+// ════════════════════════════════════════════════════════════════════════════════
+//
+// THE INCIDENT. BehaviorBot delegated research to kelly, the PM, who holds no web tools.
+// Kelly punted it to kevin and replied with a hand-off note; `landPiece` settled her piece on
+// that note ("the delegated piece came back"), the countdown reached zero with ONE research
+// stream in hand, and the compile steer told the model the pieces were back.
+//
+// WHY NOT THE VERB FIX, which is the obvious one and is NOT-DOING: `a2a_replies` intents on
+// the dev body are ANSWER 341 · DELIVERABLE 262 · COMPLETE 42 · FAIL 2. "Only COMPLETE
+// settles" would break the dominant working flow. And the engine may not READ the reply to
+// decide whether it is a hand-off — prose classification is the round-11 banned class. So the
+// assignee DECLARES it, through the tool it is already using, and the engine only counts
+// structure.
+//
+// WHAT MOVES AND WHAT DOES NOT. The piece keeps its parent, its countdown slot, its reply
+// conversation and — the one that had to be argued — its TTL: the owner's deadline is about
+// the work, not about who is holding it. What moves is the EDGE: the thread the piece is
+// waiting on, the assignee it is waiting for, and the agent the reply will arrive to (the
+// hand-off sender, because the third agent replies to THEM, not to the delegator; that is
+// what `findJoinChildByThread` has to resolve when the real deliverable lands).
+//
+// CENSUS/COLLISION (mission rule). No new counter: the chain is bounded by the EXISTING
+// `THREAD_HOP_CAP` over the piece's own `hop_count`, which is D2's rekey of the transport's
+// per-thread count and is already continuous across a delegation. No new state, no new floor,
+// no new lane, no new steer. The redrive ladder keys on the join and is unaffected; the
+// empty-piece refusal and `settlePieceWithoutResult` are untouched.
+
+/** Why a repoint was refused. Each one is a fact the caller can state to the model. */
+export type HandOffRefusalReason =
+  | 'no-live-piece'      // no outstanding piece with this id (settled, or never existed)
+  | 'not-the-assignee'   // the sender is not the agent this piece is waiting for
+  | 'no-target'          // no hand-off thread given
+  | 'same-thread'        // the piece already sits on that thread
+  | 'thread-taken'       // another join's piece already roots on it
+  | 'hop-cap';           // the chain has reached THREAD_HOP_CAP
+
+export type HandOffOutcome =
+  | {
+      kind: 'repointed';
+      childId: string;
+      fromThreadId: string;
+      toThreadId: string;
+      newAssignee: string | null;
+      hopCount: number;
+    }
+  | { kind: 'refused'; reason: HandOffRefusalReason; detail: string };
+
+/**
+ * Re-point a live join piece at the thread its assignee handed the work off on.
+ *
+ * REFUSES BY RETURNING, never by throwing — the same discipline `transition` states for
+ * itself: a caller that ignores the result gets a value it did not use rather than an
+ * exception it swallowed. Every refusal leaves the row byte-identical, which is what lets the
+ * transport fall through and settle the reply exactly as it does today.
+ */
+export function repointJoinPieceToHandOff(p: {
+  childId: string;
+  /** Who is handing off. MUST be the piece's own assignee — a repoint writes on somebody
+   *  else's join, so the only agent entitled to move it is the one it is waiting for. */
+  handOffSender: string;
+  newThreadId: string;
+  /** The agent the work went to, derived structurally by the caller from the send itself. */
+  newAssignee: string | null;
+}): HandOffOutcome {
+  const db = getDb();
+  const target = (p.newThreadId ?? '').trim();
+  const refuse = (reason: HandOffRefusalReason, detail: string): HandOffOutcome =>
+    ({ kind: 'refused', reason, detail });
+
+  const r = db.prepare(`
+    SELECT id, root_id, state, assignee_agent, hop_count
+      FROM work
+     WHERE id = ? AND kind = 'task' AND root_kind = 'a2a_thread' AND parent_id IS NOT NULL
+       AND state IN ${CHILD_OPEN_STATES}
+  `).get(p.childId) as
+    | { id: string; root_id: string; state: WorkState; assignee_agent: string | null; hop_count: number | null }
+    | undefined;
+  if (!r) {
+    return refuse('no-live-piece', 'there is no outstanding delegated piece to re-point');
+  }
+  if (!r.assignee_agent || r.assignee_agent !== p.handOffSender) {
+    return refuse('not-the-assignee', 'only the agent this piece is waiting for can hand it on');
+  }
+  if (!target) return refuse('no-target', 'no hand-off thread was named');
+  if (target === r.root_id) {
+    return refuse('same-thread', 'the piece is already waiting on that thread');
+  }
+  const taken = db.prepare(
+    `SELECT id FROM work WHERE root_kind = 'a2a_thread' AND root_id = ? AND id != ? LIMIT 1`,
+  ).get(target, p.childId) as { id: string } | undefined;
+  if (taken) {
+    return refuse('thread-taken', 'that thread already carries delegated work of its own');
+  }
+  const nextHop = (r.hop_count ?? 0) + 1;
+  if (nextHop > THREAD_HOP_CAP) {
+    return refuse(
+      'hop-cap',
+      `this work has already been passed along ${THREAD_HOP_CAP} times and the chain stops here; `
+      + 'reply FAIL instead so the person who asked is told plainly',
+    );
+  }
+
+  const at = now();
+  withUnit(() => {
+    db.prepare(`
+      UPDATE work
+         SET root_id = ?, agent_id = ?, assignee_agent = ?, hop_count = ?, updated_at = ?
+       WHERE id = ? AND state IN ${CHILD_OPEN_STATES}
+    `).run(target, p.handOffSender, p.newAssignee ?? null, nextHop, at, p.childId);
+    // 'audit' with a marker, exactly like `clearPhantomCountdowns` — a repoint is not a
+    // state change and inventing a `work_events.kind` for it would owe a migration, a CHECK
+    // and a conformance row for a fact the audit lane already carries.
+    appendEvent(p.childId, 'audit', p.handOffSender, {
+      marker: 'join_edge_repointed',
+      from_thread: r.root_id,
+      to_thread: target,
+      new_assignee: p.newAssignee ?? null,
+      hop_count: nextHop,
+      reason: 'the assignee declared a hand-off, so the piece follows the work instead of '
+        + 'settling on their note',
+    }, at);
+  });
+  logger.info('join piece re-pointed to a declared hand-off', {
+    childId: p.childId, from: r.root_id, to: target,
+    handOffSender: p.handOffSender, newAssignee: p.newAssignee ?? null, hopCount: nextHop,
+  }, p.handOffSender);
+  return {
+    kind: 'repointed', childId: p.childId, fromThreadId: r.root_id, toThreadId: target,
+    newAssignee: p.newAssignee ?? null, hopCount: nextHop,
+  };
+}
+
 /** Joins whose deadline has passed and which have not settled. The reaper reads `ttl_at`
  *  and nothing else — no string scan, no LIKE, no age arithmetic in SQL text. */
 export function dueJoins(nowMs: number, limit = 25): JoinState[] {

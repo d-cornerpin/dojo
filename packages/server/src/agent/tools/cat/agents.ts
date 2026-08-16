@@ -433,6 +433,11 @@ export const agentsHandlers: ToolHandlerMap = {
               return { content, isError };
             }
             const threadId = args.thread_id as string | undefined;
+            // ROUND-11 T43 leg (c): the assignee's DECLARED hand-off. Read here and forwarded
+            // verbatim; the transport owns what it means, and the spine owns whether the
+            // sender is entitled to it. Declared on the tool, so a model that passes it is
+            // not met with the engine's unknown-argument warning.
+            const handsOffThread = (args.hands_off_thread as string | undefined)?.trim() || undefined;
             const rawAttachPaths = args.attach_paths;
             const attachPaths: string[] = Array.isArray(rawAttachPaths)
               ? rawAttachPaths.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
@@ -521,6 +526,7 @@ export const agentsHandlers: ToolHandlerMap = {
                 toAgent: agentRef,
                 fromAgent: agentId,
                 attachPaths: attachPaths.length > 0 ? attachPaths : undefined,
+                handsOffThread,
               });
 
               if (result.delivered) {
@@ -584,6 +590,10 @@ export const agentsHandlers: ToolHandlerMap = {
                     ? `\nTask ${taskShort} auto-created and assigned to "${agentRef}", track progress with work_update(action="get", task_id="${result.autoCreatedTaskId}"). You will be notified automatically when they mark it complete.`
                     : `\nContinuing on existing task ${taskShort} (created by an earlier ASSIGN on this thread).`;
                 }
+                // ROUND-11 T43 leg (c): whether the declared hand-off took, at the decision
+                // moment. Composed by the transport (which owns the join facts) and only
+                // relayed here, beside every other outcome this tool reports.
+                if (result.handOff) content += `\n${result.handOff.message}`;
               } else {
                 // Message was dropped by the protocol, log the reason but don't error
                 // (the protocol is doing its job, this is expected behavior)

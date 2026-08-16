@@ -885,6 +885,10 @@ export const toolDefinitions: ToolDefinition[] = [
           type: 'string',
           description: 'Thread ID to continue a conversation. Omit to start a new thread. Use the same thread_id from a received message to reply on that thread.',
         },
+        hands_off_thread: {
+          type: 'string',
+          description: 'Optional, and only when work was ASSIGNed to you and another agent is going to do it instead of you: send them the work FIRST, then reply on the original thread with this set to the thread id that send returned. The assignment then follows the work to them, and their deliverable closes it. Without it your reply is treated as the finished work. If the work cannot be done at all, reply with intent FAIL instead.',
+        },
         requires_response: {
           type: 'boolean',
           description: 'Optional override. By default the intent decides: QUESTION/ASSIGN/BLOCK/ANSWER/DELIVERABLE wake the receiver, FYI/STATUS/COMPLETE/FAIL do not. Only override when you have a specific reason, usually you should just pick the right intent.',

@@ -32,7 +32,8 @@ import { recordAtDoor, withOutboundAsync, recordedId } from './v2/outbound.js';
 import {
   JOIN_TTL_MINUTES, THREAD_HOP_CAP, isTerminal,
   findJoinChildByThread, findFailedJoinForThread, childrenForThread,
-  landPiece, settlePieceWithoutResult, joinState, joinPieces, dueJoins, openJoins,
+  landPiece, settlePieceWithoutResult, repointJoinPieceToHandOff,
+  joinState, joinPieces, dueJoins, openJoins,
   dueJoinsUnderClosedParent,
   compilePendingJoins, failJoinClosed, clearJoinCompilePending,
   claimFailedJoinForLateAnswer, threadHopCount, bumpThreadHopCount,
@@ -440,7 +441,22 @@ export interface A2ADeliveryResult {
    * was actually woken.
    */
   autoPromotedFromFyi?: boolean;
+  /**
+   * ROUND-11 T43 leg (c). Present only when the sender passed `hands_off_thread`. `applied`
+   * says whether the join edge actually moved; `message` is the one line the sender's tool
+   * result carries so the outcome is known AT the decision moment rather than inferred from
+   * silence. A refusal is never a hold — the reply still lands and settles as it would have.
+   */
+  handOff?: { applied: boolean; message: string };
 }
+
+/**
+ * ROUND-11 T43 leg (c): the sender's DECLARED hand-off, carried beside the envelope rather
+ * than inside it. `A2AEnvelope` is `@dojo/shared`'s wire shape for a message; which join edge
+ * a send re-points is a fact about the delegating platform, not about the message, and the
+ * only producer is `send_to_agent`'s own optional argument.
+ */
+export type A2ADeliveryOptions = A2AEnvelope & { handsOffThread?: string | null };
 
 /**
  * Central delivery point for ALL inter-agent messages. Enforces the full
@@ -449,7 +465,7 @@ export interface A2ADeliveryResult {
  *
  * Returns a result indicating whether the message was delivered or dropped.
  */
-export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliveryResult> {
+export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A2ADeliveryResult> {
   const db = getDb();
 
   // ── 1. Validate envelope ──
@@ -711,6 +727,19 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
         ? `\n[Tracker: task ${taskShort} was auto-created when ${senderName} assigned this work to you. Call work_update(action="status", task_id="${autoTask.taskId}", status="completed", notes="…") when you finish so ${senderName} gets the completion notice.]`
         : `\n[Tracker: continuing work on task ${taskShort} (assigned earlier on this thread by ${senderName}). Update status with work_update(action="status") when state changes.]`;
     }
+    if (effectiveIntent === 'ASSIGN') {
+      // ROUND-11 T43 leg (c) — THE DECISION MOMENT. This is the one text the assignee reads
+      // while deciding what to do with work it may not be able to do, and it is where the
+      // round-11 punt was decided. It states the affordance and the honest alternative; the
+      // ENGINE still classifies nothing, and a reply without the argument behaves exactly as
+      // it always has.
+      threadInfo +=
+        `\n[Handing this off? If another agent is going to do this instead of you, send it to `
+        + `them FIRST, then reply here with hands_off_thread set to the thread id that send `
+        + `returned — the assignment follows the work to them and their deliverable closes it. `
+        + `A plain reply is read as YOUR finished work. If it cannot be done at all, reply `
+        + `with intent FAIL.]`;
+    }
   } else if (effectiveIntent === 'ANSWER' || effectiveIntent === 'DELIVERABLE') {
     // Terminal but wake, receiver should USE the content (relay to user,
     // act on it) but the thread is closed; replying on it will fail with
@@ -813,12 +842,18 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   const isReplyIntent =
     effectiveIntent === 'ANSWER' || effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'COMPLETE' || effectiveIntent === 'FAIL';
   let handledByJoin = false;
+  // ROUND-11 T43 leg (c): the sender's declared hand-off outcome, surfaced to their tool
+  // result. Undefined unless they passed the argument.
+  let handOffReport: { applied: boolean; message: string } | undefined;
   if (isReplyIntent || joinHandlesDelivery) {
     try {
-      handledByJoin = await landReplyOnJoin({
+      const landed = await landReplyOnJoin({
         agentId: target.id, threadId, threadShort, payload: envelope.payload ?? '',
         fromAgent: envelope.fromAgent, intent: effectiveIntent, messageId: null, senderName,
+        handsOffThread: envelope.handsOffThread ?? null,
       });
+      handledByJoin = landed.handled;
+      handOffReport = landed.handOff;
     } catch (err) {
       // RULING 7 rider (b), PHASE-2 T10. This was a `warn` with the error string and nothing
       // else, and it is where the six-hour phantom-trigger incident hid: the join owns this
@@ -839,7 +874,13 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   // receipt itself (the weakest model delivers the work, then skips the
   // tracker form). Success intents only; FAIL leaves the task open for the PM
   // chase. Key 2 stays entirely with the PM.
-  if (effectiveIntent === 'ANSWER' || effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'COMPLETE') {
+  //
+  // ROUND-11 T43 leg (c): an APPLIED hand-off is not a delivery. The sender's own assignment
+  // task must stay open — they have not finished the work, they have passed it on — so the
+  // Key-1 request is not filed. A REFUSED hand-off files it exactly as today, because the
+  // reply settled exactly as today.
+  if (!handOffReport?.applied
+      && (effectiveIntent === 'ANSWER' || effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'COMPLETE')) {
     try {
       const { fileAssignDeliverableCloseRequest } = await import('../tracker/tools.js');
       await fileAssignDeliverableCloseRequest(envelope.fromAgent, threadId, envelope.payload ?? '');
@@ -1161,6 +1202,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
     autoCreatedTaskId: autoTask?.taskId,
     autoTaskIsNew: autoTask?.isNew,
     autoPromotedFromFyi,
+    handOff: handOffReport,
   };
 }
 
@@ -1707,9 +1749,32 @@ function steerModelToCompile(join: JoinState, rung?: { attempt: number; bound: n
 async function landReplyOnJoin(p: {
   agentId: string; threadId: string; threadShort: string; payload: string;
   fromAgent: string; intent: A2AIntent; messageId: string | null; senderName: string;
-}): Promise<boolean> {
+  handsOffThread?: string | null;
+}): Promise<{ handled: boolean; handOff?: { applied: boolean; message: string } }> {
   const child = findJoinChildByThread(p.agentId, p.threadId);
-  if (!child) return await deliverLateAnswerIfJoinFailedClosed(p);
+  if (!child) {
+    const handled = await deliverLateAnswerIfJoinFailedClosed(p);
+    return {
+      handled,
+      handOff: (p.handsOffThread ?? '').trim()
+        ? {
+          applied: false,
+          message:
+            `[Engine: no delegated assignment is tracked on thread ${p.threadShort}, so there `
+            + 'was nothing to hand off. Your reply was delivered as sent.]',
+        }
+        : undefined,
+    };
+  }
+
+  // ── ROUND-11 T43 leg (c): the DECLARED hand-off, evaluated BEFORE the piece settles ──
+  // A refusal is deliberately not a hold: the reply falls through and settles exactly as it
+  // does today, so a mis-declared hand-off can never strand the person who asked.
+  let handOff: { applied: boolean; message: string } | undefined;
+  if ((p.handsOffThread ?? '').trim()) {
+    handOff = applyDeclaredHandOff(child, p);
+    if (handOff.applied) return { handled: true, handOff };
+  }
 
   // Join hygiene (2026-07-23, run bmrwsrsi9gl): an EMPTY terminal reply is not a deliverable.
   // Advancing on one shipped "(no delivered content found)" into the compile steer 18 seconds
@@ -1730,7 +1795,7 @@ async function landReplyOnJoin(p: {
     logger.warn('join: the piece delivery could not be recorded; holding the piece rather than closing it unproven', {
       agentId: p.agentId, thread: p.threadShort,
     });
-    return true;
+    return { handled: true, handOff };
   } else {
     settle = landPiece(child.id, {
       deliveryId, content: p.payload, messageId: p.messageId, actorId: p.fromAgent,
@@ -1741,17 +1806,80 @@ async function landReplyOnJoin(p: {
       agentId: p.agentId, thread: p.threadShort, result: settle.result.kind,
       detail: settle.result.reason,
     });
-    return true;
+    return { handled: true, handOff };
   }
   const join = settle.join;
   if (!join.complete) {
     logger.info('join: piece landed, holding for the rest', {
       agentId: p.agentId, thread: p.threadShort, landed: join.landed, total: join.total,
     });
-    return true;
+    return { handled: true, handOff };
   }
   await resolveCompletedJoin(join, p.senderName);
-  return true;
+  return { handled: true, handOff };
+}
+
+/**
+ * ROUND-11 T43 leg (c) — THE DECLARED HAND-OFF, at the transport, which is the only layer
+ * that knows both the message rows and the join.
+ *
+ * TWO HALVES, DELIBERATELY SPLIT. The transport DERIVES (who did the work go to?) and the
+ * spine WRITES (`repointJoinPieceToHandOff`, which owns every entitlement gate). The
+ * derivation is STRUCTURAL — the same one `delegation-exit.ts` makes from the rows the sends
+ * created — never a regex over the reply's prose: if the wording changed, a prose derivation
+ * would silently aim the edge at nothing.
+ *
+ * A hand-off the sender cannot back with a real send of their own is refused. Otherwise
+ * `hands_off_thread` would be a way to point another agent's join at any thread at all.
+ */
+function applyDeclaredHandOff(
+  child: { id: string; threadId: string },
+  p: { threadShort: string; fromAgent: string; handsOffThread?: string | null },
+): { applied: boolean; message: string } {
+  const target = (p.handsOffThread ?? '').trim();
+  const refused = (why: string): { applied: boolean; message: string } =>
+    ({ applied: false, message: `[Engine: hand-off NOT applied — ${why}]` });
+
+  // The send this hand-off names has to be one the SENDER actually made, with a wake intent:
+  // that is what makes the third agent's reply arrive, and its recipient is the new assignee.
+  const sent = getDb().prepare(`
+    SELECT agent_id FROM messages
+     WHERE a2a_thread_id = ? AND source_agent_id = ?
+       AND a2a_intent IN ('QUESTION','ASSIGN','BLOCK')
+     ORDER BY created_at DESC, rowid DESC LIMIT 1
+  `).get(target, p.fromAgent) as { agent_id: string } | undefined;
+  if (!sent) {
+    return refused(
+      `you have not sent work to anyone on thread ${target.slice(0, A2A_THREAD_SHORT_LENGTH)}. `
+      + 'Send them the work first (QUESTION, ASSIGN or BLOCK), then reply here with the thread '
+      + 'id that send returned. Your reply was delivered as sent',
+    );
+  }
+
+  const out = repointJoinPieceToHandOff({
+    childId: child.id, handOffSender: p.fromAgent, newThreadId: target,
+    newAssignee: sent.agent_id,
+  });
+  if (out.kind === 'refused') {
+    logger.info('a2a: declared hand-off refused', {
+      thread: p.threadShort, fromAgent: p.fromAgent, target, reason: out.reason,
+    });
+    return refused(`${out.detail}. Your reply was delivered and settled as sent`);
+  }
+
+  const newName = resolveAgentDisplayName(out.newAssignee) ?? out.newAssignee ?? 'them';
+  logger.info('a2a: declared hand-off applied; the join edge follows the work', {
+    thread: p.threadShort, fromAgent: p.fromAgent, to: out.toThreadId,
+    newAssignee: out.newAssignee, hopCount: out.hopCount,
+  });
+  return {
+    applied: true,
+    message:
+      `[Engine: hand-off recorded. The assignment on thread ${p.threadShort} now follows `
+      + `${newName} on thread ${out.toThreadId.slice(0, A2A_THREAD_SHORT_LENGTH)} — your reply `
+      + `did NOT close it, and ${newName}'s deliverable will. You do not need to relay their `
+      + 'answer; the engine closes the loop when it arrives.]',
+  };
 }
 
 /**
