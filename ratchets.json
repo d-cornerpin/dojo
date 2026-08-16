@@ -3641,6 +3641,27 @@
       "to": 2037,
       "by": "UX-REPAIR ROUND 12 T54 (W38) — four display truths (owner ruling 6)",
       "why": "+7 (0 net code, 7 comment). THE CODE IS LINE-FOR-LINE REPLACEMENT, NOT ADDITION: the chip filter gained one argument (`classifyTool(b.name, b.input)`), and the two `summarizeToolTurn` call sites now map blocks to `{name, input}` instead of to a bare name — three edited lines, zero added. The 7 comment lines exist because this file holds the client's REAL regular-mode render rule, the one the 2026-08-09 UX review got wrong by reading a column instead, and a reader arriving at `classifyTool(b.name, b.input)` cannot otherwise know (a) that the second argument changes the class for exactly ONE operation (`work_open` with a reminder shape) and is inert for every other tool, so it is not a general behaviour change, and (b) that the write-time fold in @dojo/shared passes the same argument, and that the two are not independently editable — the row tier is re-derived client-side one step EARLIER in this same file, so an arg-aware filter over an arg-less tier draws nothing at all. That second fact is the trap: it looks like this line alone is the fix, and changing it alone is the null change. REFUSED: a bare `// T54(d)` pointer to the plan — the plan is not in the repo the next editor of this file will be reading. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/counterparty.ts",
+      "from": 983,
+      "to": 997,
+      "by": "UX-REPAIR ROUND 12 T51 — the ack fast door widens to Teams, and stops at email (owner ruling 3)",
+      "why": "+14 (+23/-9; 21 of the added and 8 of the deleted lines are comment, so the CODE IS +1: one channel in the predicate's disjunction, wrapped to a second line). It lives HERE because this is where T41 put the predicate precisely so it could not exist twice, and the change is the intersection MOVING, not a new rule. The comment is +13 net and it is the payload, for the reason the T41 raise already recorded about this same paragraph: the derivation is what makes the set honest, so a reader who deletes it widens the set back and re-opens F-22. Two facts had to be corrected rather than added to — the old paragraph asserted `deliverEngineUserAck` has exactly three push arms and that Teams is not one of them, which T51 made false in the same commit — and one had to be written: EMAIL IS REFUSED BY THE OWNER, not merely unimplemented, so the next reader who notices that a Teams arm was easy does not conclude that an email one is wanted. REFUSED: widening `isRoutedHumanCounterparty` instead — that is the RC-9 demotion rule and it already contains Teams; the two predicates are different questions and collapsing them would put email in the ack door by accident. Pinned both directions by `preflight/__tests__/the-ack-reaches-teams-and-never-email.test.ts`. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/preflight/turn-closures.ts",
+      "from": 426,
+      "to": 465,
+      "by": "UX-REPAIR ROUND 12 T51 — the ack REACHES a Teams chat (owner ruling 3)",
+      "why": "+39 (+39/-0; 19 comment, 20 code). It lives HERE because `deliverEngineUserAck` IS the ack's delivery site and its arms are what `v2/counterparty.ts`'s door predicate is DERIVED from — a Teams push written anywhere else would make that derivation a fiction and the fast door would arm on a channel nothing reaches. The 20 code lines are one `else if` in the existing arm chain, and they are `finalize/channel-push.ts`'s Teams branch and nothing else: the same synthetic `teams_send_message` through `executeTool` (so auth, retries and audit logging stay the dispatcher's), the same `chatId` off `inboundContext`, this door's own outbound identity, this door's own `persistRoutingMarker`, and a WARN on refusal. The 19 comment lines are the ordering argument (arm first, predicate second, and why the reverse order is the F-22 shape), the owner's ruling recorded at the site where email's absence is the whole of the refusal, and the note that a missing chat id fires nothing rather than claiming a delivery. REFUSED: importing `pushReplyToChannel` — that function is the end-of-turn reply router with its destination resolution, its settled-context hold and its five other arms; calling it for an ack would be a second reason for the reply router to run. REFUSED: an email arm 'while we are here' — the owner ruled NO, and a pin now fails if one appears. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts",
+      "from": 258,
+      "to": 377,
+      "by": "UX-REPAIR ROUND 12 T52 — the composed answer delivers the first time (owner ruling 4)",
+      "why": "+119 (+124/-5; 95 of the added lines are comment, so the CODE IS +29 and every line of it is one arm). It lives HERE and nowhere else: this file IS the decision that demoted the owner's answer, and the fix is that decision taking a third opener — moving it out would leave the demotion where it is and add a second authority over the same text, which is the disease this tree is being cleaned of. The 29 code lines are: the `stillCompileOwed` import, the `compileOwedNow` read (guarded so a turn with nothing armed asks the database nothing), the third clause in the existing opener disjunction, the promotion arm itself (trim, consume, mint the row id, deliver, stamp the truthful-answer key, one `advance` carrying three existing flags), one log line, one `let` and one clause on the demotion guard. THE 95 COMMENT LINES ARE THE PAYLOAD AND THEY ARE THE SAME KIND THIS FILE'S EXISTING RAISES BOUGHT: this is the third owner ruling layered onto one arm (2026-07-22, the 2026-07-23 deletion, T41's 2026-08-12 re-rule, now T52), and a reader who cannot tell them apart will collapse them. They record the incident READ OFF THE BODY row by row (seq 65933/65934/65939 and the two deliveries), the ROOT — that the demotion writes `role='system'`, which never enters model context, so the model composed again because from where it sat it never had — and the four facts that keep the arm from being widened by accident: the question asked is T47's armed state and nothing else, BUG-2 keeps it off conversation turns for free, `startAckRepliedNow()` is what makes it exactly-once from the record rather than a latch, and it delivers an ANSWER rather than an ack BECAUSE an ask cannot close on a start-ack. REFUSED: clearing `compile_pending` here — T47's predicate says the disarm is a READ, never a latch, and a second owner of that fact is how the flag comes to disagree with the ledger. REFUSED: any reading of the model's text (a length bound, a shape test) — the prose ban, and the structural facts are sufficient. REFUSED: folding the new flag into `deliveredAsStartLine` — they mean different things to the ack latch, the settlement exclusions and the steer stand-down. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3711,7 +3732,7 @@
     "packages/server/src/agent/v2/ack-copy.ts": 303,
     "packages/server/src/agent/v2/answered-edge.ts": 703,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 502,
-    "packages/server/src/agent/v2/counterparty.ts": 983,
+    "packages/server/src/agent/v2/counterparty.ts": 997,
     "packages/server/src/agent/v2/loop.ts": 697,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 442,
@@ -3763,7 +3784,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 286,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 417,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
-    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 258,
+    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 377,
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 235,
@@ -3779,7 +3800,7 @@
     "packages/server/src/agent/v2/steps/preflight/start-ack.ts": 176,
     "packages/server/src/agent/v2/steps/preflight/step-contexts.ts": 138,
     "packages/server/src/agent/v2/steps/preflight/turn-classification.ts": 381,
-    "packages/server/src/agent/v2/steps/preflight/turn-closures.ts": 426,
+    "packages/server/src/agent/v2/steps/preflight/turn-closures.ts": 465,
     "packages/server/src/agent/v2/steps/preflight/turn-trigger.ts": 312,
     "packages/server/src/agent/v2/steps/step-outcome.ts": 140,
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,

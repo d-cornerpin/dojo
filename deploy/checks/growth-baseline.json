@@ -320,7 +320,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 286,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 367,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
-    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 227,
+    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 377,
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 235,
