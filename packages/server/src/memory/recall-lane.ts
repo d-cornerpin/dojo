@@ -64,7 +64,8 @@ import {
 } from '../agent/v2/answered-edge.js';
 import { relativeTimeAgo } from '../agent/v2/outbound-ledger.js';
 import {
-  obligationVerdict, liveCommitments, hasCommitmentHistory, type LiveCommitment,
+  obligationVerdict, liveCommitments, hasCommitmentHistory, openBoardCounts,
+  type LiveCommitment, type BoardCounts,
 } from '../work/obligation-memory.js';
 import { parseDivider, NEW_SESSION_DIVIDER_LABEL } from '@dojo/shared';
 import { turnBoundary } from '../agent/turn-state.js';
@@ -188,8 +189,11 @@ export interface RecallLanePayload {
    * HL5: the COMPLETE live-commitment snapshot, or null when this agent has never recorded a
    * commitment. `total` is the whole set even when `rows` is capped — that is what keeps the
    * "anything not listed is not owed" sentence checkable rather than merely confident.
+   *
+   * T44: `board` is the REST of the board in four numbers, published in the same block for the
+   * same reason and never listed. See `snapshotBoardLine`.
    */
-  snapshot: { total: number; rows: string[] } | null;
+  snapshot: { total: number; rows: string[]; board: BoardCounts } | null;
 }
 
 const HEAD = '═══ RELEVANT MEMORY (retrieved by meaning, context only, not live conversation) ═══';
@@ -253,10 +257,41 @@ const snapshotOpenBody = (total: number): string =>
   + 'for you, listed below, and that is the whole of what is owed. Anything not listed here is '
   + 'not owed — do not report it as outstanding, parked, pending or waiting.';
 
-function renderSnapshot(s: { total: number; rows: string[] }): string {
+// ── UX-REPAIR ROUND 11 T44 — THE LINE THAT STATES THE REST OF THE BOARD ─────────────────
+//
+// Round-11 S4: "One thing's still on my plate", written over a board holding ten non-terminal
+// rows (six blocked asks, four tracker rows) by a turn that had made no board-wide read. The
+// count was not a lie the model told itself — nothing in its context stated one. The snapshot
+// above is commitments-only by charter, and `engine.open-work` is conversation-scoped, capped
+// at 600 chars, ageing-filtered and excludes `claimed`, so it cannot carry a whole-board
+// claim either (HL6's own migration argument, one noun over).
+//
+// This is the same charter — COMPLETE set-rendering of owed state — extended by one line, and
+// the design is entirely in what it does NOT do: it publishes COUNTS, never rows. Counts are
+// O(1) bytes, so this line needs no cap, no ageing horizon and no truncation rung; and a
+// count cannot be misread as a rival enumeration of the rows `engine.open-work` shows,
+// because it names itself the complete number and sends the model to the list door for the
+// rows. Two surfaces, two jobs, one of them saying which it is.
+//
+// THE DOOR IS NAMED WITHOUT BEING OVER-CLAIMED. `work_update(action="list")` lists the
+// tracker's tasks and projects — it has never listed asks, and HL6 §2 is the finding that it
+// says nothing about commitments either. A line that sent the model there "for the rows" and
+// let it believe the asks were in that list would be the same defect this task closes,
+// pointed at a tool result instead of a reply, so the sentence states the door's scope.
+export const snapshotBoardLine = (b: BoardCounts): string =>
+  `Beyond commitments, your work board holds ${b.asks} open ask${b.asks === 1 ? '' : 's'} `
+  + `(${b.asksBlocked} blocked) and ${b.tracker} open tracker `
+  + `item${b.tracker === 1 ? '' : 's'} — tasks and projects — of which `
+  + `${b.trackerBlocked} ${b.trackerBlocked === 1 ? 'is' : 'are'} blocked. Those two counts are `
+  + 'complete: they are the whole board, not a sample, so do not state a different number for '
+  + 'what you have open. For the rows themselves call work_update(action="list"), which lists '
+  + 'the tracker items — not the asks, and not the commitments above.';
+
+function renderSnapshot(s: { total: number; rows: string[]; board: BoardCounts }): string {
   const stamp = `${new Date().toISOString().slice(0, 16).replace('T', ' ')}Z`;
   const head = `${SNAPSHOT_HEAD}${stamp} ═══`;
-  if (s.total === 0) return `${head}\n${SNAPSHOT_EMPTY_BODY}\n${SNAPSHOT_TAIL}`;
+  const board = snapshotBoardLine(s.board);
+  if (s.total === 0) return `${head}\n${SNAPSHOT_EMPTY_BODY}\n${board}\n${SNAPSHOT_TAIL}`;
   const shown = s.rows.map((r, i) => `${i + 1}. ${r}`);
   const hidden = s.total - s.rows.length;
   // An elision is never silent: the count above is still the truth, and the line says which
@@ -265,7 +300,7 @@ function renderSnapshot(s: { total: number; rows: string[] }): string {
     ? `\n… and ${hidden} more open commitment${hidden === 1 ? '' : 's'} not listed `
       + `(the ${s.rows.length} newest are shown; the count above is the whole set)`
     : '';
-  return `${head}\n${snapshotOpenBody(s.total)}\n${shown.join('\n')}${tail}\n${SNAPSHOT_TAIL}`;
+  return `${head}\n${snapshotOpenBody(s.total)}\n${board}\n${shown.join('\n')}${tail}\n${SNAPSHOT_TAIL}`;
 }
 
 function renderPayload(p: RecallLanePayload): string | null {
@@ -362,6 +397,9 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
           rows: rows.slice(0, snapshotRowCap()).map((r) =>
             `[${r.id}] ${oneLine(r.title || '(no description)').slice(0, snapshotTitleChars())} `
             + `(${r.state}, opened ${relativeTimeAgo(new Date(r.openedAt).toISOString())})`),
+          // T44: read at the same moment as the commitment set, from the same module and the
+          // same `closed_at IS NULL` predicate, so the block cannot state two boards.
+          board: openBoardCounts(ctx.agentId),
         };
       })()
     : null;
@@ -512,6 +550,11 @@ export function recallLaneWorstCaseTokens(): number {
       total: snapshotRowCap() + 1,
       rows: Array.from({ length: snapshotRowCap() }, () =>
         `[cmt:000000000000] ${'x'.repeat(snapshotTitleChars())} (abandoned, opened 59 minutes ago)`),
+      // T44: the board line has no row cap because it renders no rows — its whole size is the
+      // four numbers, so its worst case is the widest number a board could plausibly reach.
+      // Five digits is 99,999 open rows on ONE agent; the worn-in dev body's largest per-agent
+      // count of any kind is three figures, and the plural branches are all taken here.
+      board: { asks: 99_999, asksBlocked: 99_999, tracker: 99_999, trackerBlocked: 99_999 },
     },
   });
   worstCase = render?.tokens ?? 0;

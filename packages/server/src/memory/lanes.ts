@@ -460,7 +460,7 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
   {
     id: 'lane.relevant-memory',
     slot: MessageSlot.RecalledMemory,
-    reserveTokens: 1807,
+    reserveTokens: 1911,
     measured:
       'SWEEP CORE-2 item 4, DERIVED FROM THE GENERATOR, not guessed beside it: the worst case ' +
       '`memory/recall-lane.ts` can render under its own declared caps above — 3 answered ' +
@@ -468,7 +468,13 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       'vault lines x 300 chars + the three section headers + the truncation marker. ' +
       'HARNESS-LEARNINGS HL5 raised it from 1,407 to 1,807, and the +400 is the SNAPSHOT at ' +
       'its own declared cap: 6 rows x (printable id + 120-char title + state + relative age) ' +
-      'plus the superseding preamble, the elision line and the two rules. WHAT THE 400 COSTS ' +
+      'plus the superseding preamble, the elision line and the two rules. ' +
+      'UX-REPAIR ROUND 11 T44 raised it again, 1,807 -> 1,911, and the +104 is the BOARD-COUNTS ' +
+      'line: four numbers at five digits each (99,999 open rows on one agent — the worn-in dev ' +
+      'body\'s largest per-agent count of any kind is three figures) plus the completeness ' +
+      'sentence and the list-door pointer. It carries NO row cap and no truncation rung ' +
+      'because it renders no rows: counts are O(1) bytes, which is exactly why completeness is ' +
+      'affordable here and is not affordable in `engine.open-work`. WHAT THE 400 COSTS ' +
       'AND WHAT IT BUYS, stated rather than assumed: it leaves the content budget on every ' +
       'assembly, and it buys the whole of what this agent owes, republished every time, ' +
       'against a defect that survived three cheaper fixes — T20 a lane-header sentence, T28 ' +

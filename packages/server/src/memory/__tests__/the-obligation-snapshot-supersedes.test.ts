@@ -61,13 +61,16 @@ import { runMigrations } from '../../db/migrations.js';
 import {
   RECALL_LANE_ID, renderRecallLane, recallLaneWorstCaseTokens, truncateRecallLane,
   SNAPSHOT_HEAD, SNAPSHOT_TAIL, SNAPSHOT_EMPTY_BODY, UNRESOLVED_OBLIGATION_MARK,
+  snapshotBoardLine,
   type RecallLaneContext, type RecallLanePayload,
 } from '../recall-lane.js';
 import { POST_BUDGET_LANES, laneLimit, type LaneRender } from '../lanes.js';
 import { MessageSlot } from '../../prompt/registry/types.js';
 import { getMessageEntries, getSystemEntries } from '../../prompt/registry/registry.js';
 import '../../prompt/registry/entries.js';
-import { liveCommitments, hasCommitmentHistory } from '../../work/obligation-memory.js';
+import {
+  liveCommitments, hasCommitmentHistory, openBoardCounts,
+} from '../../work/obligation-memory.js';
 
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8');
@@ -91,6 +94,49 @@ function seedCommitment(p: {
      VALUES (?, 'commitment', ?, 'agent', ?, 'commitment', ?, ?, 'commitment', 0, 0, ?, ?, ?, ?, 'live')`,
   ).run(p.id, p.agentId ?? AGENT, p.agentId ?? AGENT, `turn:${++seq}`, p.state, p.title, at, at,
     terminal ? at : null);
+}
+
+/** UX-REPAIR ROUND 11 T44 — a NON-commitment board row: an ask, or one of the tracker's own
+ *  two nouns. Same table, same agent scoping, same `closed_at` terminal predicate. */
+function seedBoardRow(p: {
+  id: string; kind: 'ask' | 'task' | 'project'; state: string;
+  rootKind?: string; title?: string; agentId?: string;
+}): void {
+  const db = mockDb.current!;
+  const terminal = ['done', 'failed', 'abandoned'].includes(p.state);
+  const at = Date.now();
+  const rootKind = p.rootKind ?? (p.kind === 'ask' ? 'ask' : 'tracker');
+  db.prepare(
+    `INSERT INTO work (id, kind, agent_id, requester, requester_id, root_kind, root_id,
+                       state, intent, wakes, closes_thread, title, opened_at, updated_at,
+                       closed_at, provenance)
+     VALUES (?, ?, ?, 'owner', 'owner', ?, ?, ?, 'action', 1, 0, ?, ?, ?, ?, 'live')`,
+  ).run(p.id, p.kind, p.agentId ?? AGENT, rootKind, `turn:${++seq}`, p.state,
+    p.title ?? `${p.kind} row`, at, at, terminal ? at : null);
+}
+
+/** The board truth read straight from the spine BY THE TEST, so the agreement clause is an
+ *  independent query rather than the renderer marking its own homework. */
+function spineBoard(agentId: string): {
+  asks: number; asksBlocked: number; tracker: number; trackerBlocked: number;
+} {
+  const db = mockDb.current!;
+  const one = (sql: string): number =>
+    (db.prepare(sql).get(agentId) as { n: number }).n;
+  return {
+    asks: one(`SELECT count(*) AS n FROM work
+                WHERE agent_id = ? AND kind = 'ask' AND closed_at IS NULL`),
+    asksBlocked: one(`SELECT count(*) AS n FROM work
+                       WHERE agent_id = ? AND kind = 'ask' AND closed_at IS NULL
+                         AND state = 'blocked'`),
+    tracker: one(`SELECT count(*) AS n FROM work
+                   WHERE agent_id = ? AND kind IN ('task','project') AND closed_at IS NULL
+                     AND root_kind IN ('legacy','tracker','engine_scaffold')`),
+    trackerBlocked: one(`SELECT count(*) AS n FROM work
+                          WHERE agent_id = ? AND kind IN ('task','project')
+                            AND closed_at IS NULL AND state = 'blocked'
+                            AND root_kind IN ('legacy','tracker','engine_scaffold')`),
+  };
 }
 
 function ctxWith(over: Partial<RecallLaneContext> = {}): RecallLaneContext {
@@ -364,5 +410,187 @@ describe('§5 the snapshot is tail-side, and nothing else moved', () => {
     const src = read('memory/summary-obligations.ts');
     expect(src).toContain('SUMMARY_OBLIGATION_MARK');
     expect(src).not.toContain('OPEN COMMITMENTS');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §6 — UX-REPAIR ROUND 11 T44: THE SNAPSHOT STATES THE WHOLE BOARD.
+//
+// THE INCIDENT (round-11 S4, catalog §8.3/§8.4). The catch-up reply said "One thing's still
+// on my plate". The live board at answer time held TEN non-terminal rows — six owner `ask`
+// rows in state `blocked` and four tracker `task` rows (one blocked, three `on_deck`) — and
+// the turn made no board-wide read at all (2× recall_recent_thread, calendar_agenda, and one
+// work row fetched by id). The recorder's verdict on that claim is UNBACKED as stated: not a
+// model ignoring its instruments, but a count nothing in its context could source.
+//
+// §1–§5 above are why: the snapshot is COMMITMENTS-only by charter, and the only other
+// board surface in the model's context (`engine.open-work`, `work/obligations.ts`) is
+// conversation-scoped, capped at 600 chars with a declared drop order, filtered to rows
+// inside the ageing horizon, and excludes `claimed` — HL6's own migration argument, one
+// noun over. No surface stated the whole board.
+//
+// So the snapshot's charter — COMPLETE set-rendering of owed state — is extended by ONE
+// LINE of COUNTS, not lists. Counts are O(1) bytes, so completeness costs nothing and needs
+// no cap, and a count cannot be read as a rival ENUMERATION of the rows `engine.open-work`
+// shows: the line names itself the complete count and points at the list door. The predicate
+// is §1's predicate — `closed_at IS NULL`, which the schema's own CHECK makes the definition
+// of "still owed" — read by the module that already owns "what does the spine say is owed",
+// so a board count can never disagree with a commitment verdict.
+//
+// It is a TRUTH argument, not a wording experiment: a complete count now exists where no
+// complete surface did. No behavioural claim is made here.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§6 the board counts are complete, and they agree with the spine at render time', () => {
+  /** The round-11 S4 board, verbatim from catalog §8.3, on an agent with commitment history. */
+  const seedS4Board = (): void => {
+    seedCommitment({ id: 'cmt:s4s4s4s4s4s4', title: 'A closed promise', state: 'abandoned' });
+    for (let i = 0; i < 6; i++) {
+      seedBoardRow({ id: `ask:blocked-${i}`, kind: 'ask', state: 'blocked' });
+    }
+    seedBoardRow({ id: 'trk-blocked', kind: 'task', state: 'blocked', title: 'Reorganize project notes' });
+    for (let i = 0; i < 3; i++) {
+      seedBoardRow({ id: `trk-ondeck-${i}`, kind: 'task', state: 'on_deck', title: `Reminder ${i}` });
+    }
+  };
+
+  it('THE S4 SHAPE: the board-wide counts are stated — six asks, four tracker items', () => {
+    seedS4Board();
+    const text = textOf(renderRecallLane(ctxWith()));
+    expect(text).toContain(SNAPSHOT_HEAD);
+    expect(text).toMatch(/6 open asks/);
+    expect(text).toMatch(/4 open tracker items/);
+    // The whole point of the incident: six of them were BLOCKED and the reply said "one".
+    expect(text).toMatch(/6 blocked/);
+    expect(text).toMatch(/1 is blocked/);
+  });
+
+  it('THE AGREEMENT CLAUSE: the rendered line is the count reader\'s, and the count reader is the spine\'s', () => {
+    seedS4Board();
+    // A second, independent query written in the test — not the reader's own SQL — is what
+    // makes this an agreement check rather than the renderer marking its own homework.
+    const spine = spineBoard(AGENT);
+    expect(openBoardCounts(AGENT)).toEqual(spine);
+    expect(textOf(renderRecallLane(ctxWith()))).toContain(snapshotBoardLine(spine));
+  });
+
+  it('the agreement holds as the board MOVES — a close, a new ask, a block lifted', () => {
+    seedS4Board();
+    const db = mockDb.current!;
+    const at = Date.now();
+    db.prepare(`UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = 'ask:blocked-0'`).run(at);
+    db.prepare(`UPDATE work SET state = 'open' WHERE id = 'trk-blocked'`).run();
+    seedBoardRow({ id: 'ask:fresh', kind: 'ask', state: 'open' });
+    const spine = spineBoard(AGENT);
+    expect(spine).toEqual({ asks: 6, asksBlocked: 5, tracker: 4, trackerBlocked: 0 });
+    expect(openBoardCounts(AGENT)).toEqual(spine);
+    expect(textOf(renderRecallLane(ctxWith()))).toContain(snapshotBoardLine(spine));
+  });
+
+  it('the terminal predicate is the SCHEMA\'S — `closed_at IS NULL`, not a state allowlist', () => {
+    seedCommitment({ id: 'cmt:predicate01', title: 'history', state: 'abandoned' });
+    for (const state of ['open', 'claimed', 'paused', 'blocked', 'on_deck']) {
+      seedBoardRow({ id: `ask:${state}`, kind: 'ask', state });
+    }
+    for (const state of ['done', 'failed', 'abandoned']) {
+      // `done` needs a delivery to point at; the two other terminal states do not.
+      if (state === 'done') continue;
+      seedBoardRow({ id: `ask:${state}`, kind: 'ask', state });
+    }
+    // Every non-terminal state counts, including `claimed` — the snapshot's completeness
+    // claim is the reason `openObligations`' narrower `OWED_STATES` set is NOT reused here.
+    expect(openBoardCounts(AGENT).asks).toBe(5);
+    const src = read('work/obligation-memory.ts');
+    const after = src.slice(src.indexOf('export function openBoardCounts'));
+    expect(after).toContain('closed_at IS NULL');
+    expect(after).not.toMatch(/'done'\s*,\s*'failed'\s*,\s*'abandoned'/);
+  });
+
+  it('is AGENT-SCOPED — another agent\'s open ask is never in this agent\'s counts', () => {
+    seedCommitment({ id: 'cmt:scoped00000', title: 'history', state: 'abandoned' });
+    seedBoardRow({ id: 'ask:theirs', kind: 'ask', state: 'blocked', agentId: OTHER });
+    seedBoardRow({ id: 'trk-theirs', kind: 'task', state: 'blocked', agentId: OTHER });
+    expect(openBoardCounts(AGENT)).toEqual({ asks: 0, asksBlocked: 0, tracker: 0, trackerBlocked: 0 });
+  });
+
+  it('JOIN PIECES ARE NOT BOARD ROWS — the count agrees with the door it names', () => {
+    // `store.ts:openDelegationJoin` opens countdown children as `kind='task'` with
+    // `root_kind='a2a_thread'`. `tracker-view.ts` calls them pieces of an ask, not board rows,
+    // and `work_update(action="list")` does not show them. A count that included them would
+    // send the model to a door that disagrees with it.
+    seedCommitment({ id: 'cmt:pieces00000', title: 'history', state: 'abandoned' });
+    seedBoardRow({ id: 'piece:1', kind: 'task', state: 'open', rootKind: 'a2a_thread' });
+    seedBoardRow({ id: 'board:1', kind: 'task', state: 'open', rootKind: 'tracker' });
+    seedBoardRow({ id: 'board:2', kind: 'project', state: 'open', rootKind: 'tracker' });
+    seedBoardRow({ id: 'board:3', kind: 'task', state: 'open', rootKind: 'legacy' });
+    seedBoardRow({ id: 'board:4', kind: 'task', state: 'open', rootKind: 'engine_scaffold' });
+    expect(openBoardCounts(AGENT).tracker).toBe(4);
+  });
+
+  it('THE EMPTY BOARD IS SAID OUT LOUD — zero is published, not omitted (dsh P2.3)', () => {
+    seedCommitment({ id: 'cmt:emptyboard0', title: 'A closed promise', state: 'abandoned' });
+    const text = textOf(renderRecallLane(ctxWith()));
+    expect(text).toContain(SNAPSHOT_EMPTY_BODY);
+    expect(text).toContain(snapshotBoardLine({ asks: 0, asksBlocked: 0, tracker: 0, trackerBlocked: 0 }));
+    expect(text).toMatch(/0 open asks/);
+  });
+
+  it('the line rides the OPEN COMMITMENTS block, immediately after the commitments statement', () => {
+    seedCommitment({ id: 'cmt:position000', title: 'A live promise', state: 'open' });
+    seedBoardRow({ id: 'ask:one', kind: 'ask', state: 'blocked' });
+    const text = textOf(renderRecallLane(ctxWith()));
+    const line = snapshotBoardLine(spineBoard(AGENT));
+    const head = text.indexOf(SNAPSHOT_HEAD);
+    const body = text.indexOf('and that is the whole of what is owed');
+    const board = text.indexOf(line);
+    const rows = text.indexOf('[cmt:position000]');
+    const tail = text.indexOf(SNAPSHOT_TAIL);
+    expect(head).toBeGreaterThanOrEqual(0);
+    expect(board).toBeGreaterThan(body);
+    expect(board).toBeLessThan(rows);
+    expect(board).toBeLessThan(tail);
+  });
+
+  it('THE COLLISION ARGUMENT, enforceable: the line calls itself complete and names the LIST door', () => {
+    seedCommitment({ id: 'cmt:collision00', title: 'history', state: 'abandoned' });
+    seedBoardRow({ id: 'ask:c1', kind: 'ask', state: 'blocked' });
+    const text = textOf(renderRecallLane(ctxWith()));
+    // Counts vs partial rows: `engine.open-work` enumerates SOME rows, this states ALL the
+    // numbers. The line has to say which it is, or the two surfaces read as rivals.
+    expect(text).toMatch(/complete/i);
+    expect(text).toContain('work_update(action="list")');
+    // And it must not over-claim the door it names: that tool lists the tracker's two nouns
+    // and has never listed asks or commitments (HL6 §2's measured finding).
+    expect(text).toMatch(/not (?:the )?asks/i);
+  });
+
+  it('the counts survive truncation with the preamble — they are the load, the rows are detail', () => {
+    seedCommitment({ id: 'cmt:squeeze0000', title: 'A live promise about the deck', state: 'open' });
+    seedBoardRow({ id: 'ask:squeeze', kind: 'ask', state: 'blocked' });
+    const render = renderRecallLane(ctxWith({
+      vaultHits: [{ id: 'v-9', type: 'preference', content: 'z'.repeat(280) }],
+    }));
+    const shrunk = truncateRecallLane(render!, 120);
+    expect(textOf(shrunk)).toContain(snapshotBoardLine(spineBoard(AGENT)));
+  });
+
+  it('the reserve still IS the generator\'s worst case, with the board line inside it', () => {
+    const declared = POST_BUDGET_LANES.find((l) => l.id === RECALL_LANE_ID);
+    expect(declared?.reserveTokens).toBe(recallLaneWorstCaseTokens());
+    // The literal the lane declared before T44. Equality would mean the line was added to the
+    // render and not to the derivation — the drift the "derived from the generator" rule exists
+    // to catch, caught once already at HL5 (§4 above).
+    expect(recallLaneWorstCaseTokens()).toBeGreaterThan(1807);
+  });
+
+  it('ZERO PREFIX BYTES: no system-side registry entry carries a byte of the board line', () => {
+    const line = snapshotBoardLine({ asks: 1, asksBlocked: 1, tracker: 1, trackerBlocked: 1 });
+    const stem = line.slice(0, line.indexOf('1 open ask'));
+    expect(stem.length).toBeGreaterThan(10);
+    for (const e of getSystemEntries()) {
+      expect(JSON.stringify(e.reason ?? '')).not.toContain(stem);
+    }
+    expect(read('prompt/registry/entries.ts')).not.toContain(stem);
+    expect(read('prompt/assembler.ts')).not.toContain(stem);
   });
 });

@@ -79,6 +79,9 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { markObsolete } from '../vault/store.js';
+// §7's board counts ask `tracker-view.ts` which rows are the tracker's, rather than re-typing
+// its three root kinds here. See the §7 header.
+import { taskScope, projectScope } from './tracker-view.js';
 
 const logger = createLogger('obligation-memory');
 
@@ -553,4 +556,64 @@ export function commitmentPositionLine(agentId: string): string | null {
   return `Commitments: ${live.length} open commitment${live.length === 1 ? '' : 's'} — `
     + 'the complete list is in the OPEN COMMITMENTS snapshot in your context; this tool lists '
     + 'tasks and projects only.';
+}
+
+// ── 7. THE REST OF THE BOARD, COUNTED (UX-REPAIR ROUND 11 T44) ──────────────────
+//
+// §5 answers "what commitments are owed, all of them, right now?" and the recall lane
+// publishes that set. Round-11 S4 is the same defect one noun over: the reply said "One
+// thing's still on my plate" while the live board held TEN non-terminal rows — six owner
+// `ask` rows in state `blocked` and four tracker `task` rows — and the turn had made no
+// board-wide read at all. Nothing in the model's context could source a count of any kind:
+// the snapshot is commitments-only by charter, and `engine.open-work` is
+// conversation-scoped, 600-char capped, ageing-filtered and excludes `claimed`.
+//
+// So this reader answers "how much else is on the board?" — COUNTS, never lists. That
+// distinction is the whole collision argument with `engine.open-work`: that block shows SOME
+// rows, this states ALL the numbers, and the line the lane renders says which it is and
+// points at the list door. A count is also O(1) bytes, so completeness here needs no cap and
+// no ageing horizon — the two things that make the other surface incomplete.
+//
+// IT LIVES HERE for §5's reason, restated: "what does the spine say is outstanding" keeps
+// exactly one owner. The predicate is §2's predicate unchanged — `closed_at IS NULL`, which
+// the schema's own CHECK makes the definition of terminal — and the scope is the agent's.
+//
+// WHICH ROWS ARE THE TRACKER'S is asked of `tracker-view.ts`, which owns that question
+// (`taskScope`/`projectScope`). Re-typing the three root kinds here would be a second
+// declaration of a fact that already has an owner, and it would also make this count
+// disagree with the door it sends the model to: T4's fan-out opens its countdown children as
+// `kind='task'` with `root_kind='a2a_thread'`, and those are pieces of an ask that
+// `work_update(action="list")` does not show.
+
+export interface BoardCounts {
+  /** Non-terminal `kind='ask'` rows: someone's unanswered request to this agent. */
+  asks: number;
+  asksBlocked: number;
+  /** Non-terminal tracker rows — the board's own two nouns, join pieces excluded. */
+  tracker: number;
+  trackerBlocked: number;
+}
+
+const TRACKER_ROWS = `((${taskScope('w')}) OR (${projectScope('w')}))`;
+
+/**
+ * The whole board, in four numbers. One statement, one pass, one predicate.
+ *
+ * Commitments are deliberately absent: §5 already renders that set completely and the line
+ * this feeds sits directly beneath it. Two answers to one question is the parallel memory
+ * this module exists to prevent.
+ */
+export function openBoardCounts(agentId: string): BoardCounts {
+  const row = getDb().prepare(
+    `SELECT
+       COALESCE(sum(CASE WHEN w.kind = 'ask' THEN 1 ELSE 0 END), 0) AS asks,
+       COALESCE(sum(CASE WHEN w.kind = 'ask' AND w.state = 'blocked' THEN 1 ELSE 0 END), 0)
+         AS asksBlocked,
+       COALESCE(sum(CASE WHEN ${TRACKER_ROWS} THEN 1 ELSE 0 END), 0) AS tracker,
+       COALESCE(sum(CASE WHEN ${TRACKER_ROWS} AND w.state = 'blocked' THEN 1 ELSE 0 END), 0)
+         AS trackerBlocked
+       FROM work w
+      WHERE w.agent_id = ? AND w.closed_at IS NULL`,
+  ).get(agentId) as BoardCounts;
+  return row;
 }
