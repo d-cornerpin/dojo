@@ -22,7 +22,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getVaultStats, getPoisonedArchiveStats } from '../vault/store.js';
 import { getUpdateCheckHealth } from '../gateway/routes/update.js';
 import { readMarker } from '../update-state.js';
-import { taskScope, projectScope, msToText } from '../work/tracker-view.js';
+import { taskScope, msToText } from '../work/tracker-view.js';
 // SWEEP CORE-2 item 3 — "what counts as orphaned" has ONE definition, shared with the
 // version-gap reconciliation pass that looks for the same two shapes on a different clock.
 import { ORPHANED_TASK_WHERE, ORPHANED_PROJECT_WHERE } from '../tracker/version-gap-reconcile.js';

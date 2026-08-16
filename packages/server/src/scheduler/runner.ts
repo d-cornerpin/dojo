@@ -18,7 +18,7 @@ import { HARD_STUCK_THRESHOLD_MINUTES } from '../agent/stuck-thresholds.js';
 import { withUnit } from '../db/unit.js';
 import {
   taskScope, dueScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
-  validatedExpr, awaitingUserVerdictExpr, pendingCloseRequestExpr, statusToState, type TrackerStatus,
+  awaitingUserVerdictExpr, pendingCloseRequestExpr, statusToState, type TrackerStatus,
 } from '../work/tracker-view.js';
 import { staleOverrideRequests, resolveOverrideRequest } from '../work/override-requests.js';
 import {
@@ -52,7 +52,7 @@ import { calculateNextRun, normalizeDbTimestamp, type ScheduledTask } from './en
 import { getAgentRuntime } from '../agent/runtime.js';
 import { sendAgentMessage } from '../agent/agent-bus.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
-import { insertEngineEventIfAbsent, insertMessage } from '../memory/message-store.js';
+import { insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { getPrimaryAgentId, getPMAgentId, getOwnerName } from '../config/platform.js';
 import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 

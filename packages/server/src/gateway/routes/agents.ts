@@ -1,8 +1,5 @@
 import { Hono } from 'hono';
 import { v4 as uuidv4 } from 'uuid';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import { getDb } from '../../db/connection.js';
 import { getAgentRuntime } from '../../agent/runtime.js';
 import { spawnAgent, terminateAgent } from '../../agent/spawner.js';
@@ -265,7 +262,6 @@ agentsRouter.post('/', async (c) => {
 // GET /:id/system-prompt — get agent's system prompt
 agentsRouter.get('/:id/system-prompt', (c) => {
   const id = c.req.param('id');
-  const db = getDb();
 
   // UX-REPAIR T40: ONE SURFACE. This used to be `SELECT ... role='system' ORDER BY rowid ASC
   // LIMIT 1` for every non-primary agent — the OLDEST system row, over a history the PM's own

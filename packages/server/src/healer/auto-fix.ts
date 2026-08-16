@@ -15,7 +15,7 @@ import { writeAgentStatus } from '../agent/agent-status.js';
 import { v4 as uuidv4 } from 'uuid';
 import { sanitizeMessagesOnModelChange } from '../agent/model-switch.js';
 import type { DiagnosticItem } from './diagnostic.js';
-import { taskScope, projectScope } from '../work/tracker-view.js';
+import { taskScope } from '../work/tracker-view.js';
 import { ORPHANED_PROJECT_WHERE } from '../tracker/version-gap-reconcile.js';
 import { setTrackerStatus, patchWork, deliveryForCompletedChildren } from '../work/tracker-store.js';
 import { workSettled, noteUnsettled } from '../work/store.js';

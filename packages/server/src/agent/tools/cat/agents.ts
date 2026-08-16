@@ -29,12 +29,10 @@
 //    than refusing when project-squad resolution fails.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../../db/connection.js';
 import { broadcast } from '../../../gateway/ws.js';
 import { writeAgentStatus } from '../../agent-status.js';
 import { isPrimaryAgent } from '../../../config/platform.js';
-import { insertMessageIfAbsent } from '../../../memory/message-store.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../../../prompt/agent-prompt-surface.js';
 import { renameAgent } from '../../../prompt/agent-rename.js';
 import { writeToolReceipt } from '../../../receipts/store.js';

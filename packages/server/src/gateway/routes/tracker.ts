@@ -31,7 +31,7 @@ import {
   overrideRollup as overrideRollupSince, type OverrideStatus,
 } from '../../work/override-requests.js';
 import {
-  patchWork, deleteTrackerRow, deliveryForTaskClose, deliveryForCompletedChildren,
+  deleteTrackerRow, deliveryForTaskClose, deliveryForCompletedChildren,
 } from '../../work/tracker-store.js';
 import { statusToState, tsToMs } from '../../work/tracker-view.js';
 import { deleteOccurrencesOf } from '../../work/occurrences.js';

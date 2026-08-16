@@ -55,7 +55,7 @@ export async function injectAndRecord(
   stateIn: AgentTurnState,
   input: PreCallInjectionInputs,
 ): Promise<{ state: AgentTurnState; useTools: boolean }> {
-  const { agentId, turnNumber, modelId, messages, systemPrompt, ctx, mctx, volatileFrom, counterparty, steerAwaitingConfirm, turnCtx, db } = input;
+  const { agentId, turnNumber, modelId, messages, systemPrompt, ctx, mctx, volatileFrom, counterparty, steerAwaitingConfirm, turnCtx } = input;
   let state = stateIn;
   // ── Pre-flight capability enforcement (matches v1 runtime.ts:995) ──
   // Routes images through the fallback vision model when configured

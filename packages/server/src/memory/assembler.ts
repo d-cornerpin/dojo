@@ -48,7 +48,7 @@ import { currentTurnNumber, readStoredTurnThreshold, CONTINUITY_BRIEF_HORIZON_TU
 import type { Summary } from './dag.js';
 import type { Message } from '@dojo/shared';
 // PHASE-3 T5 — the marker taxonomy. Four shapes this file used to spell itself.
-import { parseDivider, NEW_SESSION_DIVIDER_LABEL, A2A_INBOUND_RE, TECHNIQUE_FRESH_SENTINEL,
+import { A2A_INBOUND_RE, TECHNIQUE_FRESH_SENTINEL,
   parseA2AThreadShort, parseTechniqueFreshRead } from '@dojo/shared';
 
 const logger = createLogger('memory-assembler');

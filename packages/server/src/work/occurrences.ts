@@ -63,7 +63,7 @@ import { transition, appendWorkEvent, type WorkOutcome } from './store.js';
 import { NON_ANSWERING_DELIVERY_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from './ask-settlement.js';
 import { occurrenceOwesDeliverable } from './deliverable-declaration.js';
 import {
-  MAX_RUN_DELIVER_STEERS, RUN_STATUS_UNDELIVERED, RUN_DELIVER_STEER_MARKER,
+  RUN_STATUS_UNDELIVERED, RUN_DELIVER_STEER_MARKER,
   nextRunDeliverRung, recordRunDeliverStandDown, recordRunDeliverSteer, runDriveCount,
 } from './run-deliver-drive.js';
 
