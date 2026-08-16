@@ -616,7 +616,7 @@
     "packages/server/src/work/audit-trail.ts": 137,
     "packages/server/src/work/deliverable-declaration.ts": 320,
     "packages/server/src/work/event-kinds.ts": 105,
-    "packages/server/src/work/join-drive.ts": 256,
+    "packages/server/src/work/join-drive.ts": 358,
     "packages/server/src/work/next-run.ts": 175,
     "packages/server/src/work/obligation-memory.ts": 619,
     "packages/server/src/work/obligations.ts": 174,
