@@ -24,6 +24,7 @@ import { LOADING_GATE_THRESHOLD, isStructuringTool } from '../../classifiers/hoa
 import { canonicalToolSignature } from '../../classifiers/loop.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { closeOutGateDecision } from '../../stale-work-ids.js';
+import { compileOwedGateDecision } from '../../compile-owed-gate.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { steerFired } from '../../steer-queue.js';
 import { createLogger } from '../../../../logger.js';
@@ -325,6 +326,61 @@ export function runRefusalGates(
     } catch { /* best effort */ }
     logger.info('v2: close-out gate refused call', {
       agentId, tool: tc.name, danglingCount: closeOut.live.length,
+    }, agentId);
+    return { state, refusal: {
+      toolCallId: tc.id,
+      name: tc.name,
+      content: refusalText,
+      isError: true,
+    } };
+  }
+
+  // ── UX-REPAIR ROUND 12 T47 — THE PRE-TURN COMPILE GATE ──
+  //
+  // The owner is owed a compiled reply, every delegated piece is back, and the redrive ladder
+  // has already come back for it at least once. Round-12 S5: three steers each saying "Do NOT
+  // search, open files, run commands, or call any tools first" were answered with
+  // `load_tool_docs`, `history_search`, `history_get`, `work_update` (errored ×2) and
+  // `history_get`, across 12m26s, with no reply. Persuasion failed 3/3; this is the same duty
+  // made mechanical, in the shape of the gate directly above that already worked.
+  //
+  // IT SITS AFTER THE CLOSE-OUT GATE ON PURPOSE. When both are armed the agent should read the
+  // close-out gate's "tracker call first" instruction, and it does, because that gate speaks
+  // first. There is no deadlock in either order: `COMPILE_OWED_ALLOWED_OPS` is a SUBSET of
+  // `CLOSE_OUT_WORK_OPS`, so any call that satisfies the close-out gate also passes this one,
+  // and the owed compile is then discharged by TEXT, which neither gate blocks. That collision
+  // is argued in full at `compile-owed-gate.ts` and driven in `integration.test.ts`.
+  //
+  // The re-validation is the DISARM: the decision re-reads `compile_pending` at the moment it
+  // would refuse, so the model's own answer, T48's engine relay, a fail-closed notice and a
+  // bare flag clear all take the gate down without knowing it exists.
+  const compileOwed = compileOwedGateDecision(
+    state.compileOwedAskIds, state.compileGateSatisfied, toolOpKey(tc.name, tc.arguments),
+  );
+  if (compileOwed.live.length !== state.compileOwedAskIds.length) {
+    state = advance(state, { compileOwedAskIds: compileOwed.live });
+    logger.info('v2: compile gate dropped asks whose compile is no longer owed', {
+      agentId, remaining: compileOwed.live.length,
+    }, agentId);
+  }
+  if (compileOwed.refuse) {
+    const askListShort = compileOwed.live.slice(0, 3).map((id) => id.slice(0, 8)).join(', ');
+    const refusalText = (
+      `Refused: engine compile gate. The owner is owed the compiled reply for the work you delegated ` +
+      `(ask ${askListShort}${compileOwed.live.length > 3 ? '...' : ''}) — every piece is back and the ` +
+      `platform has already brought you to it. Compose it — the pieces are in the steer, quoted verbatim. ` +
+      `Write the combined reply now, as this turn's message; do not look anything up first. ` +
+      `Only two calls run while this is owed: ONE send_to_agent (if a piece is a hand-off rather than a ` +
+      `deliverable, ask that agent for the result directly), and a tracker close-out. ` +
+      `"${tc.name}" works normally again as soon as the reply lands.\n\n` +
+      ENGINE_BLOCK_ESCAPE_HATCH
+    );
+    try {
+      broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
+      broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: refusalText.slice(0, 500) });
+    } catch { /* best effort */ }
+    logger.info('v2: compile gate refused call', {
+      agentId, tool: tc.name, owedCount: compileOwed.live.length,
     }, agentId);
     return { state, refusal: {
       toolCallId: tc.id,

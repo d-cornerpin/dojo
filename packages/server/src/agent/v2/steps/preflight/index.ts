@@ -55,6 +55,7 @@ import { runCounterpartyAndRecord } from './counterparty-and-record.js';
 import { runTurnClosures } from './turn-closures.js';
 import { runStartAck } from './start-ack.js';
 import { runCloseoutGate } from './closeout-gate.js';
+import { runCompileGate } from './compile-gate.js';
 import { runRecallFlag } from './recall-flag.js';
 import { runStepContexts } from './step-contexts.js';
 import type { StepContextsOutputs } from './step-contexts.js';
@@ -259,6 +260,11 @@ export async function runPreflight(
   } = runStartAck(turnCtx, ctx, { db, counterparty, triggerRow, turnNumber });
 
   await runCloseoutGate(turnCtx, ctx, { db, triggerRow });
+
+  // T47's sibling gate, immediately after the one it inherits BUG-2 from — same lane
+  // separation, same `triggerRow` ternary, and their allowed sets union so a turn armed by
+  // both always has a legal move (`compile-owed-gate.ts` argues the collision).
+  runCompileGate(turnCtx, ctx, { triggerRow });
 
   runRecallFlag(turnCtx, ctx, { db });
 

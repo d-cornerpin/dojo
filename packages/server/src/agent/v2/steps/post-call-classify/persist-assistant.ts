@@ -26,6 +26,25 @@ import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
 const logger = createLogger('v2-loop');
 
+/**
+ * UX-REPAIR ROUND 12 T47 — THE OWED COMPILE IS DISCHARGED BY THE REPLY ITSELF.
+ *
+ * The compile gate refuses TOOL CALLS; the duty it enforces is satisfied by TEXT. When the
+ * model does both in one round — writes the combined answer and reaches for a tool with it —
+ * the answer has landed and the gate has nothing left to force, so it comes down for the rest
+ * of the turn.
+ *
+ * ERRING TOWARD DISARM IS THE POINT. A mid-turn caption that is not the compile also trips
+ * this, and that is the safe direction by BUG-2's own lesson: a gate that keeps refusing after
+ * a person's answer went out is the recorded failure, and the gate re-arms next turn from the
+ * spine if the compile is genuinely still pending. The reverse mistake has no such floor.
+ */
+function compileDutyDischarged(s: AgentTurnState): Partial<AgentTurnState> {
+  return s.compileOwedAskIds.length > 0 && !s.compileGateSatisfied
+    ? { compileGateSatisfied: true }
+    : {};
+}
+
 /** Persist the assistant's own row and everything that rides with it. No way out. */
 export async function runPersistAssistant(
   state: AgentTurnState,
@@ -222,7 +241,10 @@ export async function runPersistAssistant(
     // regardless of whether tools rode with it gives the routing
     // block the right value to deliver at end-of-turn.
     if (persistedContent && persistedContent.trim().length > 0) {
-      state = advance(state, { lastAssistantTextForIM: stripMoodMarker(persistedContent) });
+      state = advance(state, {
+        lastAssistantTextForIM: stripMoodMarker(persistedContent),
+        ...compileDutyDischarged(state),
+      });
     }
   } else if (persistedContent) {
     if (interAgentTurn) {
@@ -253,7 +275,10 @@ export async function runPersistAssistant(
       });
     }
     if (persistedContent.trim().length > 0) {
-      state = advance(state, { lastAssistantTextForIM: stripMoodMarker(persistedContent) });
+      state = advance(state, {
+        lastAssistantTextForIM: stripMoodMarker(persistedContent),
+        ...compileDutyDischarged(state),
+      });
       noteTerminalAnswer(messageId, 'a genuine terminal reply');
     }
     // T9 — THE TEXT-ONLY REPLY NOW GETS ITS CORRECTING chat:message, AND THAT IS

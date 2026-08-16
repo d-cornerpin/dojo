@@ -420,6 +420,26 @@ export interface AgentTurnState {
    * tell "gate is armed for this turn" from "no danglers."
    */
   nudgedForCloseOutThisTurn: boolean;
+  /**
+   * UX-REPAIR ROUND 12 T47, the compile gate's arming. At preflight we look up the asks whose
+   * delegated pieces are all back, whose compiled reply the owner has NOT had, and which the
+   * redrive ladder has already come back for at least once. While this list is non-empty the
+   * tool dispatcher refuses every call outside `COMPILE_OWED_ALLOWED_OPS` (the tracker
+   * close-outs plus `send_to_agent`).
+   *
+   * BUG-2 applies to this list exactly as it applies to `danglingTaskIds`: it is EMPTY on a
+   * turn a human is waiting on. The reasoning and the ternary are at
+   * `steps/preflight/compile-gate.ts`; the decision is at `compile-owed-gate.ts`.
+   */
+  compileOwedAskIds: readonly string[];
+  /**
+   * UX-REPAIR ROUND 12 T47. Flips true the moment this turn persists a user-facing reply —
+   * the owed compile IS a reply, so the act of writing one discharges the duty for the rest of
+   * the turn. Erring toward disarm is deliberate here: a gate that keeps refusing after the
+   * answer went out is BUG-2's failure arrived at from the other side, and the gate re-arms
+   * next turn from the spine if the compile is somehow still pending.
+   */
+  compileGateSatisfied: boolean;
 
   /*
    * UX-REPAIR T1: `autoScaffoldedTaskIdThisTurn` LIVED HERE and is deleted. It fed exactly
@@ -566,6 +586,8 @@ export function initState(params: InitStateParams): AgentTurnState {
     danglingTaskIds: [],
     closeOutGateSatisfied: false,
     nudgedForCloseOutThisTurn: false,
+    compileOwedAskIds: [],
+    compileGateSatisfied: false,
 
     awaitingPostCompactRecall: false,
     nudgedForPostCompactRecall: false,

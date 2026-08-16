@@ -359,7 +359,12 @@ import { turnContext } from '../../turn-context.js';
 import { recordDelivery } from '../deliveries.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
-import { claimAsk, askIdForMessage } from '../../../work/store.js';
+import {
+  claimAsk, askIdForMessage, openAsk, stampClaimingTurn, openDelegationJoin, landPiece,
+} from '../../../work/store.js';
+// T47's gate arms on a rung the ladder has already spent, so the fixture spends one
+// through the ladder's own writer rather than hand-rolling the audit row.
+import { JOIN_DRIVE_ENTRY, JOIN_REDRIVE_BOUND, recordJoinDrive } from '../../../work/join-drive.js';
 // HL4 step 2 (2d): the carrier the retired `compaction-recap` steer's model-facing
 // requirement re-homes onto. Imported (not mocked) so the re-home clause DRIVES the
 // real renderer against the real DB rather than reading its source.
@@ -3815,5 +3820,170 @@ describe('BUG-2: the pre-turn close-out gate never arms on a turn a human is wai
     // …and the gate still bit.
     expect(refusedCloseOut()).toBe(true);
     expect(executeToolSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// UX-REPAIR ROUND 12 T47 — THE SAME LANE SEPARATION, AT THE COMPILE GATE.
+//
+// The sibling gate. `agent/v2/compile-owed-gate.ts` refuses tool calls outside a closed
+// allowed set while the owner is owed a compiled reply the redrive ladder has already
+// come back for — round-12 S5, where three steers saying "Do NOT … call any tools first"
+// were answered with six tool calls across 12m26s and no reply.
+//
+// BUG-2 IS INHERITED VERBATIM AND ITS INVARIANT TEST IS EXTENDED HERE, which is the
+// condition the task was written under. The clauses below are the close-out gate's four,
+// re-derived for this gate: a POSITIVE CONTROL so a green BUG-2 clause cannot mean "the
+// gate never fires at all", the BUG-2 clause itself with an identical fixture and a human
+// waiting, and the two halves of the allowed set that must never be refused.
+//
+// They drive `runV2Turn` end to end and read the ENFORCEMENT, not the arming flag.
+// ════════════════════════════════════════════════════════════════════════════════
+describe('BUG-2, inherited: the compile gate never arms on a turn a human is waiting on', () => {
+  /** The S5 shape through the product's own writers: an owner ask, two delegated streams,
+   *  both back with content, the compile still pending — and one redrive rung already
+   *  spent, which is what the gate arms on. */
+  function seedOwedCompile(): string {
+    const db = mockDb.current!;
+    const openedAt = Date.now() - 20 * 60_000;
+    db.prepare(
+      `INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, created_at)
+       VALUES ('conv-join', 'primary', 'dashboard', NULL, 'owner', datetime('now'))`,
+    ).run();
+    db.prepare(
+      `INSERT INTO messages (id, agent_id, role, content, lane, channel, conversation_id, created_at, seq)
+       VALUES ('msg-join', 'primary', 'user', 'plan the trip', 'owner', 'dashboard', 'conv-join', ?, NULL)`,
+    ).run(openedAt);
+    db.prepare(
+      `INSERT INTO agents (id, name, model_id, status, config, classification)
+       VALUES ('kelly', 'Kelly', 'test-model', 'idle', '{}', 'worker')`,
+    ).run();
+    const askId = openAsk({
+      agentId: 'primary', messageId: 'msg-join', conversationId: 'conv-join',
+      requesterId: 'owner', openedAt, title: 'plan the trip',
+    });
+    claimAsk(askId, 'primary');
+    stampClaimingTurn(askId, 4900);
+    const kids = openDelegationJoin({
+      parentWorkId: askId, agentId: 'primary', replyConversationId: 'conv-join',
+      ttlAt: Date.now() + 60 * 60_000,
+      threads: [
+        { threadId: 'join-thread-a', assigneeAgent: 'kelly', intent: 'ASSIGN' as const, hopCount: 0 },
+        { threadId: 'join-thread-b', assigneeAgent: 'kelly', intent: 'ASSIGN' as const, hopCount: 0 },
+      ],
+    });
+    for (const [i, childId] of kids.entries()) {
+      db.prepare(
+        `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
+         VALUES (?, 'primary', NULL, 'send_to_agent', 'a2a', 'delivered', datetime('now'))`,
+      ).run(`join-piece-${i}`);
+      landPiece(childId, {
+        deliveryId: `join-piece-${i}`, content: `stream ${i} result`, messageId: null, actorId: 'kelly',
+      });
+    }
+    recordJoinDrive(askId, JOIN_DRIVE_ENTRY.redrive, {
+      attempt: 1, bound: JOIN_REDRIVE_BOUND, turnNumber: 4900,
+    });
+    return askId;
+  }
+
+  /** `load_tool_docs` is not a guess: it is the first call S5's model made instead of
+   *  composing, and it is in the CLOSE-OUT gate's allowlist — so a turn that lets it
+   *  through is measuring this gate and nothing else. */
+  function callsTheToolS5Called(): void {
+    const call: ToolCall = { id: 'tc-compile', name: 'load_tool_docs', arguments: { tool: 'work_update' } };
+    callModelSpy
+      .mockResolvedValueOnce({
+        content: '', toolCalls: [call], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
+      })
+      .mockResolvedValue({
+        content: 'here is the combined answer', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn',
+      });
+    executeToolSpy.mockResolvedValue({
+      toolCallId: 'tc-compile', name: 'load_tool_docs', content: 'schema', isError: false,
+    });
+  }
+
+  const refusedCompile = (): boolean => broadcastSpy.mock.calls.some((c) => {
+    const e = c[0] as { type?: string; result?: string };
+    return e.type === 'chat:tool_result' && typeof e.result === 'string'
+      && e.result.includes('Refused: engine compile gate');
+  });
+
+  it('POSITIVE CONTROL: on a background turn the gate ARMS and REFUSES the call S5 made', async () => {
+    // Nothing is waiting: the seeded ask is claimed, so this turn has no trigger row and is
+    // exactly the lane class the redrive steers arrive on (S5 turns 4900/4901 `a2a`, 4902
+    // engine). Without this control the BUG-2 clause below could mean "the gate never fires".
+    expect(claimAsk(askIdForMessage('msg-user-1'), 'primary').kind).toBe('applied');
+    seedOwedCompile();
+    callsTheToolS5Called();
+
+    await runV2Turn('primary');
+
+    expect(refusedCompile()).toBe(true);
+    expect(executeToolSpy).not.toHaveBeenCalled();
+  });
+
+  it('BUG-2: the SAME owed compile on a turn serving a waiting human neither arms nor refuses', async () => {
+    // The only difference from the control is that a person is waiting — the seeded ask is
+    // left unclaimed, so the turn picks it up and `triggerRow` is set. The owed compile is
+    // identical. This is the clause a tree without the ternary fails, and the failure it
+    // fails on is the recorded one: the reply deleted and the tools the answer needed refused.
+    seedOwedCompile();
+    callsTheToolS5Called();
+
+    await runV2Turn('primary');
+
+    expect(refusedCompile()).toBe(false);
+    expect(executeToolSpy).toHaveBeenCalledTimes(1);
+    expect((executeToolSpy.mock.calls[0][1] as ToolCall).name).toBe('load_tool_docs');
+  });
+
+  it('THE ALLOWED SET, HALF ONE: send_to_agent passes — the steer\'s own hand-off exception', async () => {
+    expect(claimAsk(askIdForMessage('msg-user-1'), 'primary').kind).toBe('applied');
+    seedOwedCompile();
+    const call: ToolCall = { id: 'tc-a2a', name: 'send_to_agent', arguments: { to_agent: 'kelly', message: 'do you have the result?' } };
+    callModelSpy
+      .mockResolvedValueOnce({ content: '', toolCalls: [call], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' })
+      .mockResolvedValue({ content: 'asked kelly', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' });
+    executeToolSpy.mockResolvedValue({ toolCallId: 'tc-a2a', name: 'send_to_agent', content: 'sent', isError: false });
+
+    await runV2Turn('primary');
+
+    expect(refusedCompile()).toBe(false);
+    expect(executeToolSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('THE ALLOWED SET, HALF TWO: a tracker close-out passes — so a turn armed by BOTH gates '
+    + 'can always satisfy both', async () => {
+    expect(claimAsk(askIdForMessage('msg-user-1'), 'primary').kind).toBe('applied');
+    seedOwedCompile();
+    const call: ToolCall = {
+      id: 'tc-tracker', name: 'work_update',
+      arguments: { action: 'status', id: 'w-x', status: 'complete', result: 'done' },
+    };
+    callModelSpy
+      .mockResolvedValueOnce({ content: '', toolCalls: [call], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' })
+      .mockResolvedValue({ content: 'closed it', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' });
+    executeToolSpy.mockResolvedValue({ toolCallId: 'tc-tracker', name: 'work_update', content: 'ok', isError: false });
+
+    await runV2Turn('primary');
+
+    expect(refusedCompile()).toBe(false);
+    expect(executeToolSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('DISARMED BY THE RELAY: with the compile no longer pending, the same turn runs free', async () => {
+    // T48's relay settles the ask; `clearJoinCompilePending` is the same disarm one step
+    // weaker. Either way the gate re-reads the spine and finds nothing owed.
+    expect(claimAsk(askIdForMessage('msg-user-1'), 'primary').kind).toBe('applied');
+    const askId = seedOwedCompile();
+    mockDb.current!.prepare('UPDATE work SET compile_pending = 0 WHERE id = ?').run(askId);
+    callsTheToolS5Called();
+
+    await runV2Turn('primary');
+
+    expect(refusedCompile()).toBe(false);
+    expect(executeToolSpy).toHaveBeenCalledTimes(1);
   });
 });

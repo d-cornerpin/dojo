@@ -276,15 +276,21 @@ describe('the step never writes `phase`', () => {
       .toEqual([]);
   });
 
-  it('and the two in-span `advance` calls write FIELDS, never `phase`', () => {
-    // The close-out gate and the recall flag each advance the state; neither relabels the
-    // turn. The census above starts at ZERO rather than needing CUT 8's repair because it
-    // was already true of the span.
+  it('and the three in-span `advance` calls write FIELDS, never `phase`', () => {
+    // The close-out gate, UX-REPAIR ROUND 12 T47's compile gate and the recall flag each
+    // advance the state; none relabels the turn. The census above starts at ZERO rather than
+    // needing CUT 8's repair because it was already true of the span.
+    //
+    // The number moved 2 -> 3 with T47, and moving it is the correct response rather than
+    // loosening the clause: this census exists so a NEW state write into the span is noticed
+    // and named, and it just did its job. Each of the three arms an enforcement or a flag that
+    // a later step reads, and the three are named above so a fourth cannot arrive unremarked.
     const advances = packageSources().flatMap(({ rel, text }) =>
       [...stripComments(text).matchAll(/turnCtx\.state = advance\(turnCtx\.state!, \{([^}]*)\}/g)]
         .map((m) => ({ rel, patch: m[1] })),
     );
-    expect(advances.length).toBe(2);
+    expect(advances.map((a) => a.rel).sort())
+      .toEqual(['closeout-gate.ts', 'compile-gate.ts', 'recall-flag.ts']);
     for (const a of advances) expect(a.patch).not.toMatch(/\bphase\b/);
   });
 });
