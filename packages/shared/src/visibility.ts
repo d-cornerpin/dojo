@@ -756,6 +756,27 @@ const TOOL_OVERRIDES: Readonly<Record<string, ToolDisplayClass>> = {
   transcribe_audio: 'bookkeeping',
   // effectful but the verb token is not in the list.
   exec: 'effectful-action',
+  // UX-REPAIR T54(a) (owner ruling 6, 2026-08-16): `shell` is `exec`'s own half — the two
+  // split from ONE door at PHASE-5 T3 and sensei-policy.ts still says so. It runs arbitrary
+  // zsh and drew NOTHING for one reason: "exec" had an override here and "shell" is in no
+  // verb set. A vocabulary accident, flagged with evidence by T5/W3 and ruled FIX. Note this
+  // class is read by five ENGINE sites too (loop thrash-progress, promise-floor,
+  // going-idle's countsAsTaskWork + its side-effect hint, execute/post-result), so a shell
+  // call now counts as real work in each, exactly as an exec call always has — that IS the
+  // parity, said out loud rather than discovered later.
+  shell: 'effectful-action',
+  // UX-REPAIR T54(b)+(c): the right-dock view surfaces, both hidden until now (118 stored
+  // canvas_render rows on the worn-in box drew nothing; open_browser has 0 rows, so (c) is
+  // correctness with no observed impact — recorded, not glossed).
+  //
+  // WHY `delivery` AND NOT `effectful-action`: the class means "renders content visibly",
+  // which is precisely what these two do, and W3's evidence already named canvas_render the
+  // nearest neighbour of its only member. It is user-visible at the badge tier and read by
+  // ZERO engine sites (the only server-side `'delivery'` comparisons belong to an unrelated
+  // SettlementMoment string), whereas `effectful-action` would have made showing the user a
+  // document count as task work in the five gates above — a change nobody ruled on.
+  canvas_render: 'delivery',
+  open_browser: 'delivery',
   // 'list'/'add'/'call'/'get' tokens would misfire; these are internal.
   add_safe_sender: 'bookkeeping',
   imessage_list_contacts: 'bookkeeping',
@@ -899,20 +920,27 @@ export function toolBadgeTier(cls: ToolDisplayClass): VisibilityTier {
 // reads still lies to every machine that reads it, and this is the machine-readable half of
 // the fix (the render half was already correct and is deliberately untouched).
 //
-// ONE RULE, NOT A SECOND COPY. This folds through `toolBadgeTier(classifyTool(name))` — the
-// same two functions the dashboard's own filter uses. `toolBadgeTier` had zero callers and
-// was dead; wiring it here is what makes the stored answer and the drawn answer impossible to
-// edit apart. It is deliberately ARG-LESS, because all four dashboard call sites are
-// (`Chat.tsx:576`, `tool-display.ts:164,167`, `ToolCallBlock.tsx:50`): the render rule never
-// sees a tool's arguments, so a tier computed WITH them would re-open the same gap from the
-// other side. The one consequence is recorded rather than hidden — `WORK_OP_DISPLAY_CLASS`'s
-// `work_open:reminder` promotion is unreachable on the render path and therefore here too.
+// ONE RULE, NOT A SECOND COPY. This folds through `toolBadgeTier(classifyTool(name, input))`
+// — the same two functions the dashboard's own filter uses. `toolBadgeTier` had zero callers
+// and was dead; wiring it here is what makes the stored answer and the drawn answer
+// impossible to edit apart.
+//
+// UX-REPAIR T54(d) (owner ruling 6, 2026-08-16) — THE ARGUMENTS NOW REACH BOTH SIDES. T5
+// wrote this fold ARG-LESS and said why: all four dashboard sites were, so a tier computed
+// WITH arguments would have re-opened the gap from the other side. It recorded the cost
+// instead of hiding it — `WORK_OP_DISPLAY_CLASS`'s `work_open:reminder` promotion was
+// unreachable, so setting a reminder drew nothing. The owner ruled the table is right; the
+// four client sites now pass `b.input` and so does this fold. T5's rule is unchanged, only
+// its inputs are complete. BOTH SIDES OR NEITHER is not a preference: the client re-derives
+// the row tier with this very function (`Chat.tsx:975` backfill, `:1870` render), so an
+// arg-aware chip filter over an arg-less tier draws nothing — the row is dropped one step
+// before the filter runs.
 //
 // EVERY BLOCK, OR THE ROW KEEPS ITS TIER. A non-`tool_use` block (text, image, thinking) is
 // something the chip filter does not govern, so its presence hands the row straight back to
 // `user-visible`; only a row that is tool calls and NOTHING else can be folded away. Measured
-// on the worn-in box: 0 of 8,626 stored assistant tool rows carry a text block, so this is a
-// guard against a shape that does not exist yet rather than a live branch.
+// on the worn-in box: 0 of 9,309 stored assistant tool rows carry a text block (re-counted
+// at T54), so this is a guard against a shape that does not exist yet, not a live branch.
 //
 // SERVING IS NOT TOUCHED. `gateway/routes/chat.ts:305-310` records why tier must never become
 // a server-side WHERE clause; the served set is byte-identical after this change and the
@@ -926,9 +954,13 @@ function toolTurnTier(rawBlocks: string): VisibilityTier {
   }
   if (!Array.isArray(parsed) || parsed.length === 0) return 'user-visible';
   for (const block of parsed) {
-    const b = block as { type?: unknown; name?: unknown } | null;
+    const b = block as { type?: unknown; name?: unknown; input?: unknown } | null;
     if (!b || b.type !== 'tool_use' || typeof b.name !== 'string') return 'user-visible';
-    if (toolBadgeTier(classifyTool(b.name)) === 'user-visible') return 'user-visible';
+    // The cast is safe for a malformed `input` of ANY shape: `workDisplayOp` reads it only
+    // through `?.` plus a `typeof`, so a string/array/null yields the same bookkeeping answer
+    // this fold gave every block before T54.
+    const args = b.input as Record<string, unknown> | undefined;
+    if (toolBadgeTier(classifyTool(b.name, args)) === 'user-visible') return 'user-visible';
   }
   return 'agent-only';
 }

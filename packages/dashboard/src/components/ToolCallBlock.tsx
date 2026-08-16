@@ -46,8 +46,10 @@ const CLASS_ICONS: Record<ReturnType<typeof classifyTool>, string> = {
   bookkeeping: '\u{2022}',        // dot: internal machinery
 };
 
-function iconFor(name: string): string {
-  return toolIcons[name] ?? CLASS_ICONS[classifyTool(name)];
+// UX-REPAIR T54(d): the bucket fallback reads the call's arguments, like every other
+// client site, so a reminder gets the effectful gear rather than the bookkeeping dot.
+function iconFor(name: string, input: Record<string, unknown>): string {
+  return toolIcons[name] ?? CLASS_ICONS[classifyTool(name, input)];
 }
 
 function toolSummary(name: string, input: Record<string, unknown>): string {
@@ -94,7 +96,7 @@ function toolSummary(name: string, input: Record<string, unknown>): string {
 
 export const ToolCallCard = ({ name, input }: ToolCallCardProps) => {
   const [showRaw, setShowRaw] = useState(false);
-  const icon = iconFor(name);
+  const icon = iconFor(name, input);
   const summary = toolSummary(name, input);
   // Same payload-derived headline the regular-mode pill chips use (exec -> the
   // base command, applescript_run -> the app), so both display modes agree.

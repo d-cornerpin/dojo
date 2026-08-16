@@ -20,11 +20,11 @@
 // untouched and is asserted untouched below.
 //
 // WHY RENDERING CANNOT MOVE, stated so the next reader does not have to re-derive it. In
-// regular mode an all-bookkeeping tool-turn row already renders NOTHING: `Chat.tsx:576`
+// regular mode an all-bookkeeping tool-turn row already renders NOTHING: `Chat.tsx:585`
 // drops every bookkeeping block, `ToolBadgeGroup` returns null on an empty set
 // (`ToolBadge.tsx:153`), and the pill-grouping walk classifies the same row `'hidden'` and
 // skips it, so it is never a group leader and never carries another row's chips. After this
-// change the row is dropped one step earlier, by the tier check at `Chat.tsx:1861`. Same
+// change the row is dropped one step earlier, by the tier check at `Chat.tsx:1870`. Same
 // pixels, one honest column.
 //
 // THE FIXTURES ARE THE REAL ROWS. Every block array below is the verbatim stored content of
@@ -66,11 +66,19 @@ const S1 = {
   58431: [tool('work_update', { action: 'status', status: 'complete', task_id: '11985f2e-b8b7-40df-a510-9512efc4c44b' })],
 };
 
-// The client's REAL regular-mode chip filter, `Chat.tsx:576`, transcribed as one expression.
-// Note the arg-less `classifyTool(b.name)`: all four dashboard call sites are arg-less, so
-// the render rule never sees a tool's arguments and neither may the stored tier.
-const chipsTheClientWouldDraw = (blocks: Array<{ type: string; name?: string }>) =>
-  blocks.filter((b) => b.type === 'tool_use' && b.name && classifyTool(b.name) !== 'bookkeeping');
+// The client's REAL regular-mode chip filter, transcribed as one expression.
+//
+// UPDATED BY UX-REPAIR T54(d) (2026-08-16, owner ruling 6). This used to read
+// `classifyTool(b.name)` and carried the note "all four dashboard call sites are arg-less, so
+// the render rule never sees a tool's arguments and neither may the stored tier." That is no
+// longer true and the change was the point of T54(d): the four client sites now pass
+// `b.input`, and so does the write-time fold, which makes `WORK_OP_DISPLAY_CLASS`'s
+// `work_open:reminder` promotion reachable instead of recorded-and-dead. T5's rule is
+// untouched — one classifier, one fold, one answer — only its inputs are complete. The
+// equivalence below is what actually matters and it is re-asserted with reminder, shell and
+// canvas cases added, so neither side can be edited apart.
+const chipsTheClientWouldDraw = (blocks: Array<{ type: string; name?: string; input?: Record<string, unknown> }>) =>
+  blocks.filter((b) => b.type === 'tool_use' && b.name && classifyTool(b.name, b.input) !== 'bookkeeping');
 
 describe('T5 — the stored tier tells the truth about a tool-turn row', () => {
   it('THE RED: S1 58421/58423/58431 are all bookkeeping and stamp agent-only', () => {
@@ -101,9 +109,12 @@ describe('T5 — the stored tier tells the truth about a tool-turn row', () => {
 
   it('THE ANTI-DRIFT PROPERTY: stored tier === "the client would draw at least one chip"', () => {
     // This is the whole point of the task stated as one equivalence. It holds by
-    // construction (both sides call the same arg-less `classifyTool`), and this asserts it
-    // so a future edit to either side cannot re-open the gap the UX review fell into.
-    const cases: Array<Array<{ type: string; name?: string }>> = [
+    // construction (both sides call the same `classifyTool` with the same arguments), and
+    // this asserts it so a future edit to either side cannot re-open the gap the UX review
+    // fell into. The last four cases are UX-REPAIR T54's four rulings run through the SAME
+    // equivalence: each one moved the drawn answer and the stored answer together, which is
+    // the only way any of them was allowed to move.
+    const cases: Array<Array<{ type: string; name?: string; input?: Record<string, unknown> }>> = [
       ...Object.values(S1) as never,
       [tool('work_update', { action: 'list' })],
       [tool('web_search', { query: 'x' })],
@@ -111,6 +122,12 @@ describe('T5 — the stored tier tells the truth about a tool-turn row', () => {
       [tool('show_to_user', {})],
       [tool('load_tool_docs', {}), tool('list_agents', {}), tool('vault_search', {})],
       [tool('load_tool_docs', {}), tool('exec', { cmd: 'ls' })],
+      // T54(d): the promotion, and its own control one line down.
+      [tool('work_open', { kind: 'reminder', what: 'call mum', when: '2026-08-17T09:00' })],
+      [tool('work_open', { kind: 'task', title: 'Research note-taking apps' })],
+      // T54(a)/(b)/(c): shell beside its sibling, and the two right-dock view surfaces.
+      [tool('shell', { script: 'ls ~/notes | wc -l' })],
+      [tool('canvas_render', { path: '/x/report.md' }), tool('open_browser', { url: 'https://example.com' })],
     ];
     for (const blocks of cases) {
       const tier = classifyMessageForDisplay(row(blocks)).tier;

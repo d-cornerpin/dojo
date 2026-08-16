@@ -156,17 +156,34 @@ export interface ToolTurnSummary {
   label: string;
 }
 
+// One tool call as the badge path reads it: the name, plus the arguments that
+// decide its class for the one operation where they do (see below).
+export interface ToolTurnCall {
+  name: string;
+  input?: Record<string, unknown>;
+}
+
 // Summarize a tool-only turn for the regular-mode badge. Bookkeeping tools are
 // dropped; if nothing visible remains the turn is hidden (returns null). The
-// delivery primitive (show_to_user) counts as a visible action here; V2d will
-// render the delivered content itself rather than a badge.
-export function summarizeToolTurn(toolNames: string[]): ToolTurnSummary | null {
-  const visible = toolNames.filter((n) => classifyTool(n) !== 'bookkeeping');
+// delivery primitive (show_to_user, and since UX-REPAIR T54 the two right-dock
+// view surfaces canvas_render / open_browser) counts as a visible action here;
+// V2d will render the delivered content itself rather than a badge.
+//
+// UX-REPAIR T54(d): this takes CALLS, not names. `classifyTool` has accepted a
+// call's arguments since PHASE-2 T8V for the single operation whose display
+// class they change (`work_open` with a reminder shape is effectful; its 23
+// sibling ops are bookkeeping), and every client site passed the name alone, so
+// the promotion was unreachable. Passing the name alone here would also put this
+// badge path out of step with the chip filter in Chat.tsx and with the row tier
+// in @dojo/shared — a reminder turn the tier calls user-visible would be
+// classed 'hidden' by the pill grouping and skipped.
+export function summarizeToolTurn(calls: ToolTurnCall[]): ToolTurnSummary | null {
+  const visible = calls.filter((c) => classifyTool(c.name, c.input) !== 'bookkeeping');
   if (visible.length === 0) return null;
-  const badgeClassOf = (n: string): 'effectful-action' | 'retrieval' =>
-    classifyTool(n) === 'retrieval' ? 'retrieval' : 'effectful-action';
+  const badgeClassOf = (c: ToolTurnCall): 'effectful-action' | 'retrieval' =>
+    classifyTool(c.name, c.input) === 'retrieval' ? 'retrieval' : 'effectful-action';
   if (visible.length === 1) {
-    return { primaryClass: badgeClassOf(visible[0]), label: toolFriendlyLabel(visible[0]) };
+    return { primaryClass: badgeClassOf(visible[0]), label: toolFriendlyLabel(visible[0].name) };
   }
   const classes = new Set(visible.map(badgeClassOf));
   const primaryClass: ToolBadgeClass = classes.size === 1 ? [...classes][0] : 'mixed';

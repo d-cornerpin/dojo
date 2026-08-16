@@ -494,11 +494,13 @@ const toolBadgeItems = (
       // Background/engine run: drop its badge in regular mode (chips-only rule;
       // its surfaced text still renders). Wordy mode keeps everything.
       if (!wordyMode && isBackgroundTurnRow(m)) return null;
-      const names = (parseMessageContent(m.content).blocks ?? [])
+      // UX-REPAIR T54(d): the badge path gets each call's arguments too, so a reminder
+      // turn is not classed hidden here while the row tier calls it user-visible.
+      const calls = (parseMessageContent(m.content).blocks ?? [])
         .filter((b) => b.type === 'tool_use')
         .filter((b) => wordyMode || !isErroredToolResult(b.id ? resultById.get(b.id) : undefined))
-        .map((b) => b.name ?? '');
-      const summary = summarizeToolTurn(names);
+        .map((b) => ({ name: b.name ?? '', input: b.input }));
+      const summary = summarizeToolTurn(calls);
       return summary ? { id: m.id, summary } : null;
     })
     .filter((x): x is { id: string; summary: ToolTurnSummary } => x !== null);
@@ -573,7 +575,12 @@ const toolChips = (
     (!wordyMode && isBackgroundTurnRow(m) && !(liveCutoff && m.createdAt >= liveCutoff))
       ? []
     : (parseMessageContent(m.content).blocks ?? [])
-      .filter((b) => b.type === 'tool_use' && b.name && classifyTool(b.name) !== 'bookkeeping')
+      // UX-REPAIR T54(d): the call's own ARGUMENTS are passed. `classifyTool` has taken them
+      // since PHASE-2 T8V for the one operation whose class they change (`work_open` with a
+      // reminder shape is effectful; its 23 sibling ops are bookkeeping), and this filter never
+      // supplied them, so setting a reminder drew nothing. The @dojo/shared row-tier fold now
+      // passes them too — both sides move together or the row is dropped before this runs.
+      .filter((b) => b.type === 'tool_use' && b.name && classifyTool(b.name, b.input) !== 'bookkeeping')
       .filter((b) => wordyMode || !isErroredToolResult(b.id ? resultById.get(b.id) : undefined))
       .map((b, i): ToolChipData => {
         const res = b.id ? resultById.get(b.id) : undefined;
@@ -1640,7 +1647,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
         ? toolResultErrorById.get(channelSend.id) === true
         : false;
       if (channelSend && !channelSendErrored) return null;
-      return summarizeToolTurn(toolUses.map(b => b.name ?? '')) ? 'visible' : 'hidden';
+      return summarizeToolTurn(toolUses.map(b => ({ name: b.name ?? '', input: b.input }))) ? 'visible' : 'hidden';
     };
     let currentGroup: ChatMessage[] = [];
     const closeGroup = () => {
