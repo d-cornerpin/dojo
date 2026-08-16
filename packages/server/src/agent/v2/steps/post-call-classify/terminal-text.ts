@@ -11,15 +11,27 @@
 // `turnCtx.deferredDeliveredByAck` are set HERE and read by the wall-clock timer,
 // by the redundant-closeout floor and by the next iteration's gates. Handed back by
 // value the timer would ack a person who has already been acked.
+//
+// ⚠ AND SINCE UX-REPAIR ROUND 12 T52 THIS IS ALSO WHERE AN OWED COMPILED ANSWER IS
+// DELIVERED. The suppression arm's promotion family now has two members, and they are
+// different KINDS of delivery on purpose: a start line (not an answer — no ask closes on
+// it) and a compiled answer (the ask closes on it, and T48's relay stands down because of
+// it). Both exist for the same reason — text the model addressed to a person, riding with
+// a tool call, must not be demoted into a `role='system'` note that reaches neither the
+// person nor the model. The compile arm's whole argument is at its own site.
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
-import { INTERNAL_WORKING_NOTE_PREFIX, WORKING_NOTE_PREFIX } from '@dojo/shared';
+import { INTERNAL_WORKING_NOTE_PREFIX, WORKING_NOTE_PREFIX, stripMoodMarker } from '@dojo/shared';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent, START_ACK_ORIGIN_INTENT } from '../../../../memory/message-store.js';
-import { type AgentTurnState } from '../../state.js';
+import { advance, type AgentTurnState } from '../../state.js';
 import { isRoutedHumanCounterparty } from '../../counterparty.js';
+// T52: the owed compile's own "is it STILL owed?" question, asked at the second reader
+// rather than re-derived. One predicate, T47's, and every road out of the duty goes
+// through it.
+import { stillCompileOwed } from '../../compile-owed-gate.js';
 import { outputPersistenceClassifier, stripLeadingTimeStamp } from '../../classifiers/output.js';
 // T19 (D1): the closed, declared inventory of scheduled work that owes a person a message.
 // Asked, never re-typed — a fifth copy of "is this a reminder" is what the declaration exists
@@ -39,7 +51,7 @@ export async function runTerminalText(
 ): Promise<StepOutcome> {
   const {
     agentId, counterparty, deliverEngineUserAck, hasUnansweredUser, messageId,
-    result, startAckRepliedNow, turnCtx, turnNumber,
+    noteTerminalAnswer, result, startAckRepliedNow, turnCtx, turnNumber,
   } = ctx;
   const { interAgentTurn } = sc;
   const persistenceDecision = outputPersistenceClassifier({
@@ -95,6 +107,12 @@ export async function runTerminalText(
   // send_to_agent/broadcast-only suppression. Deterministic engine enforcement,
   // not prompt-hope (the weak-model correctness floor).
   let deliveredAsStartLine = false;
+  // T52's sibling of `deliveredAsStartLine`, and a SEPARATE flag on purpose: the two mean
+  // different things to everything downstream. A start line is not an answer (the ack latch,
+  // the settlement exclusions, the steer stand-down all turn on that); a promoted compile IS
+  // one. Folding them would make one of those readers wrong. Both say the same thing to the
+  // demotion below and nothing else.
+  let deliveredAsCompiledAnswer = false;
   if (persistedContent && result.toolCalls.length > 0) {
     // GOVERNING RULE (comms-audit G-SUP-2): on a turn a HUMAN is waiting on,
     // this text MIGHT be the genuine answer the weak model paired with a
@@ -132,8 +150,106 @@ export async function runTerminalText(
     const userDeliverableRunTurn =
       turnCtx.root?.kind === 'occurrence' &&
       DELIVERABLE_OWING_TASK_KINDS.includes(turnCtx.servedWork?.taskKind ?? '');
-    if ((hasUnansweredUser || userDeliverableRunTurn) && !interAgentTurn) {
+    // ⚠ UX-REPAIR ROUND 12 T52 — AND AN OWED COMPILE IS A THIRD WAITING PERSON THIS ARM
+    // COULD NOT SEE. Owner ruling 4 (2026-08-16): the dimmed-note double-render is fixed at
+    // the ROOT, not suppressed. This is the root.
+    //
+    // MEASURED (round-12 S5, §8.5/§8.11, and re-read off the body row by row): turn 4902,
+    // 07:17:03Z, the model composed the whole 3878-character combined day plan AND called
+    // `work_update` in the same round. All three openers above were false — no unanswered
+    // chat row (the ack had been paid sixteen minutes earlier and the turn carried no
+    // trigger), no deliverable-owing run, no owed ack — so the text fell through to the
+    // demotion below and became `[working-note]` seq 65933. Fourteen seconds later the model
+    // composed the same plan again and THAT one was delivered (seq 65939), and the ask closed
+    // on it. The owner was shown his answer twice, once collapsed and once for real, and
+    // waited a whole extra model call for it.
+    //
+    // WHY THE SECOND COMPOSE HAPPENED, which is the part that makes this a root and not a
+    // symptom: the demotion writes `role='system'`, and that row NEVER ENTERS MODEL CONTEXT
+    // by its own contract; `persistedContent` is then nulled, so the assistant row carries
+    // the `tool_use` blocks and not the text. The model's own answer was erased from the only
+    // record the model reads — while the compile order ("Compose ONE reply to the owner now",
+    // quoted verbatim by the redrive rung) still stood in front of it. It composed again
+    // because, from where it sat, it never had.
+    //
+    // THE QUESTION ASKED IS T47's OWN ARMED STATE AND NOTHING ELSE — a join whose pieces are
+    // all back, whose owner has not been answered, and which the redrive ladder has already
+    // spent a rung on — re-validated on the spine at the instant it matters through the ONE
+    // predicate `stillCompileOwed`, never a flag and never a reading of the text (the prose
+    // ban is untouched: no clause below looks at a single character the model wrote).
+    // Nothing is armed ⇒ nothing is asked of the database, which is
+    // `compileOwedGateDecision`'s own discipline kept at its second reader.
+    //
+    // BUG-2 RIDES ALONG FOR FREE: `compileOwedAskIds` is EMPTY on a turn a human is waiting
+    // on (`preflight/compile-gate.ts`'s ternary), so this opener cannot fire on a
+    // conversation turn — the exact separation that keeps the close-out gate honest.
+    //
+    // `startAckRepliedNow()` is the ledger-backed "have they heard the model this turn"
+    // question the start-ack family already owns, and it does two jobs here: it stands the
+    // promotion down when the turn has already spoken, and — because the promoted row is an
+    // ordinary assistant row with no origin stamp — it is what makes the promotion
+    // EXACTLY-ONCE inside a turn, from the record rather than from a latch.
+    const compileOwedNow =
+      !interAgentTurn && state.compileOwedAskIds.length > 0 && !startAckRepliedNow()
+        ? stillCompileOwed(state.compileOwedAskIds)
+        : [];
+    if ((hasUnansweredUser || userDeliverableRunTurn || compileOwedNow.length > 0) && !interAgentTurn) {
       turnCtx.deferredUserReplyWithTools = persistedContent;
+      // ── T52's PROMOTION, AND IT IS DELIBERATELY NOT THE ACK LANE ──
+      //
+      // It runs FIRST and the ack arm is its `else`, because the two deliver different KINDS
+      // of thing and only one of them can close an ask. `engine-ack` is excluded from every
+      // settlement by name — "a start-ack is not an answer" is written three times over in
+      // `work/ask-settlement.ts` — so promoting the compiled answer through the ack lane
+      // would leave the ask open, the ladder running, and T48's relay free to ship the same
+      // pieces a second time. Delivered as an ANSWER it is an ordinary `agent-text` row with
+      // no origin stamp, on the same door the model's own reply uses, and it settles the ask
+      // by the ordinary road.
+      //
+      // T48's RELAY IS DISARMED EXACTLY LIKE A DELIVERED ANSWER, and by the same read. T47's
+      // predicate says it in its own words — "THE DISARM IS A READ, NEVER A LATCH ... every
+      // road out of the duty comes through this one predicate" — so nothing here clears a
+      // flag. The turn-end compile drain's step 1 (`settleAskOnJoin`) finds this delivery on
+      // the ledger, closes the ask, and the ladder never reaches the relay rung. Driven end
+      // to end in `work/__tests__/a-promoted-compose-disarms-the-relay.test.ts`.
+      //
+      // WHICH IS WHY `noteTerminalAnswer` IS NOT OPTIONAL. The SIXTH narrowing (the
+      // superseded-bubble rule) refuses an `agent-text` bubble on an ENDED turn unless the
+      // turn's own answer key names it. The truthful-answer key has one setter and this is a
+      // genuine terminal reply, so it is stamped here — and the id has to be ours to stamp,
+      // which is why the row id is minted here and handed to the delivery rather than left
+      // to the closure. A FRESH id on purpose, for the start-ack arm's own recorded reason:
+      // `messageId` is about to hold this iteration's `tool_use` row, and reusing it would
+      // make that INSERT a no-op and lose the tool calls.
+      //
+      // T31 (the arrival-once demotion) does not collide: it is keyed on the owed-interrupt
+      // GRANT and fires in `closeout-floors.ts` on a tool-LESS reply, a different opener on a
+      // different flag. A turn that is both — an arrival granted a round AND an owed compile —
+      // still ends with exactly one bubble per authority: this one delivers the compile, and
+      // T31's hold still demotes the arrival's own second answer, which is a different ask.
+      if (compileOwedNow.length > 0) {
+        const answer = turnCtx.deferredUserReplyWithTools.trim();
+        turnCtx.deferredUserReplyWithTools = null;
+        deliveredAsCompiledAnswer = true;
+        const answerId = uuidv4();
+        await deliverEngineUserAck(answer, null, answerId, 'agent-text');
+        noteTerminalAnswer(answerId, 'the owed compiled answer, delivered from the round it was composed in');
+        // The three facts the rest of the turn reads, all of them the ordinary ones a
+        // terminal reply sets: the channel router's text (so a routed-channel owner gets it
+        // too, and `finalize/deferred-recovery.ts` cannot send it again), the respond-once
+        // floor's arm, and T47's own duty-discharged flag — reached exactly as
+        // `persist-assistant.ts` reaches it, since the owed compile IS a reply.
+        state = advance(state, {
+          lastAssistantTextForIM: stripMoodMarker(answer),
+          surfacedReplyThisTurn: true,
+          compileGateSatisfied: true,
+        });
+        logger.info('v2 T52: the owed compiled answer rode with a tool call; delivered as the answer now instead of demoted to a note the model itself could not see', {
+          agentId, turnNumber, owed: compileOwedNow.length,
+          asks: compileOwedNow.slice(0, 3).map((id) => id.slice(0, 12)),
+          answerId, chars: answer.length, preview: answer.slice(0, 60),
+        }, agentId);
+      } else
       // Steered start line (owner ruling 2026-07-22): the start-ack steer
       // asked the model to speak and this is its next text riding with
       // tool calls. Surface it NOW as the user-visible start line, the
@@ -214,7 +330,10 @@ export async function runTerminalText(
     // turns keep the hard suppression: their narration never streamed to the
     // user (chat:chunk is suppressed on those turns), so there is nothing on
     // screen to demote.
-    if (!interAgentTurn && !deliveredAsStartLine) {
+    // T52: a promoted compile leaves nothing to demote for the same reason a promoted start
+    // line does — the text went out WHOLE, so a note beside it would be the second copy this
+    // task exists to remove.
+    if (!interAgentTurn && !deliveredAsStartLine && !deliveredAsCompiledAnswer) {
       try {
         const noteId = uuidv4();
         // RC-9: channel-aware demotion. On a ROUTED-channel human turn (iMessage /

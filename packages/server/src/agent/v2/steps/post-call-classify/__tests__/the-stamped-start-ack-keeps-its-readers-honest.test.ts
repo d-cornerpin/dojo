@@ -110,12 +110,23 @@ beforeEach(() => {
 describe('the promotion call carries BOTH the stamp and the explicit display kind', () => {
   it('terminal-text.ts passes the start-ack intent and an explicit agent-text kind', () => {
     const src = SRC('../terminal-text.ts');
-    const call = /await deliverEngineUserAck\(([^;]*?)\);/s.exec(src)?.[1] ?? '';
-    expect(call, 'the promotion call').toContain('START_ACK_ORIGIN_INTENT');
-    expect(call, 'the promotion call').toContain("'agent-text'");
+    // UX-REPAIR ROUND 12 T52 gave this file a SECOND promotion — the owed compiled answer —
+    // so "the promotion call" is now a census rather than a single match. What this clause
+    // asserts is unchanged and is strictly better stated: EXACTLY ONE call carries the
+    // start-ack stamp, and every call declares its display kind explicitly.
+    const calls = [...src.matchAll(/await deliverEngineUserAck\(([^;]*?)\);/gs)].map((m) => m[1]);
+    expect(calls.length, 'promotion calls').toBeGreaterThan(0);
+    for (const call of calls) expect(call, 'every promotion call').toContain("'agent-text'");
+    const stamped = calls.filter((c) => c.includes('START_ACK_ORIGIN_INTENT'));
+    expect(stamped, 'exactly one call is the START-ACK').toHaveLength(1);
+    // AND THE OTHER ONE DELIBERATELY IS NOT, which is T52's own load-bearing fact: an ask
+    // cannot close on a start-ack, so the compiled answer must not be delivered as one.
+    for (const c of calls.filter((x) => !x.includes('START_ACK_ORIGIN_INTENT'))) {
+      expect(c, 'the non-ack promotion passes a null origin intent').toMatch(/,\s*null\s*,/);
+    }
     // The knowledge was in-process at this instant all along: the flag is set BEFORE the call.
     expect(src.indexOf('engineStartAckDeliveredThisTurn = true'))
-      .toBeLessThan(src.indexOf('await deliverEngineUserAck('));
+      .toBeLessThan(src.lastIndexOf('await deliverEngineUserAck('));
   });
 
   it('the writer and the authority read ONE constant, so they cannot drift apart', () => {
