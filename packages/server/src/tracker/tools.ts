@@ -27,6 +27,7 @@ import {
 } from '../work/tracker-store.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
 import { setNextRun } from '../work/next-run.js';
+import { commitmentPositionLine } from '../work/obligation-memory.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, findTaskOriginChain, renderTaskOriginChain } from './delivery-evidence.js';
 import { renderTaskStamps, renderStepFacts, isTangibleDeliverySummary, type TaskStampFields } from './task-stamps.js';
 import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
@@ -2937,6 +2938,19 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
           parts.push('No active tasks.');
         }
       }
+    }
+
+    // ── HARNESS-LEARNINGS HL6 — THE BOARD-READ DOOR ANSWERS THE QUESTION IT WAS ASKED ──
+    // This tool lists tasks and projects. It has never listed commitments, and W8's driven
+    // replay is what that costs: the model asked the board, was told "No active tasks.", and
+    // asserted three dead commitments four seconds later. One line, from the one reader that
+    // owns "what does the spine say is owed" (`work/obligation-memory.ts`), said at the
+    // moment the model is actually checking. It is a return value, so it moves no cached
+    // prefix bytes.
+    const commitmentPosition = commitmentPositionLine(agentId);
+    if (commitmentPosition) {
+      parts.push('');
+      parts.push(commitmentPosition);
     }
 
     // Trailer: always tell the agent how to drill in. In compact mode also

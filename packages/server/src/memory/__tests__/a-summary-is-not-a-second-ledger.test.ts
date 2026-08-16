@@ -241,7 +241,19 @@ describe('the summaries lane header says which block is current', () => {
     const src = fs.readFileSync(path.resolve(here, '../assembler.ts'), 'utf8');
     const lane = src.slice(src.indexOf("id: 'lane.summaries'"), src.indexOf("id: 'lane.attempt-ledger'"));
     expect(lane).toContain('═══ COMPRESSED HISTORY (summaries of earlier messages, not live conversation) ═══');
-    expect(lane).toContain('OPEN WORK');
+    // ── AMENDED BY HARNESS-LEARNINGS HL6, and the amendment is the audit's one migration ──
+    // This clause read `toContain('OPEN WORK')`, and it was right for T20: at the time, the
+    // OPEN WORK block was the only surface that carried live owed-ness, so pointing at it was
+    // the truest thing the header could say. It is no longer true. OPEN WORK is
+    // conversation-scoped, capped at 600 chars with a declared drop order, filtered to rows
+    // inside the ageing horizon, and excludes `claimed` (`work/obligations.ts`,
+    // `work/store.ts` `openObligations`) — a correct set for its own job and NOT "the current
+    // record of what is owed". HL5's snapshot is that record, complete by construction. So
+    // the sentence keeps its first clause (obligation lines are historical) and its pointer
+    // moves to the block that can carry the claim. The requirement — the header names which
+    // block is current — is unchanged; only the answer moved.
+    expect(lane).toContain('OPEN COMMITMENTS');
+    expect(lane).not.toContain('the OPEN WORK block is the current record of what is owed');
     // it is STATIC — no interpolation joined the header, so the prefix stays byte-stable
     const header = lane.slice(lane.indexOf('═══ COMPRESSED HISTORY'), lane.indexOf('${summaryText}'));
     expect(header.length).toBeGreaterThan(200);

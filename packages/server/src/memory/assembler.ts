@@ -931,7 +931,7 @@ function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unk
         if (chosen.length === 0) return null;
         const summaryText = chosen.map((s) => formatSummaryXml(s)).join('\n\n');
         return textRender(
-          `═══ COMPRESSED HISTORY (summaries of earlier messages, not live conversation) ═══\nThe following are compressed summaries of older conversation history. These capture key facts and decisions but are NOT live messages. Do not respond to them directly, they are context only. Any "couldn't do X" / "not supported" noted here may be outdated (the platform gains tools over time); check your current tool list before repeating it. Obligation lines here are HISTORICAL — the OPEN WORK block is the current record of what is owed, whatever tense a summary uses.\n\n${summaryText}\n\n═══ END COMPRESSED HISTORY ═══`,
+          `═══ COMPRESSED HISTORY (summaries of earlier messages, not live conversation) ═══\nThe following are compressed summaries of older conversation history. These capture key facts and decisions but are NOT live messages. Do not respond to them directly, they are context only. Any "couldn't do X" / "not supported" noted here may be outdated (the platform gains tools over time); check your current tool list before repeating it. Obligation lines here are HISTORICAL — the OPEN COMMITMENTS snapshot below is the complete current record of what is owed, whatever tense a summary uses.\n\n${summaryText}\n\n═══ END COMPRESSED HISTORY ═══`,
         );
       },
     },

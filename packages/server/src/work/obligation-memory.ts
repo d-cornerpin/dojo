@@ -516,3 +516,41 @@ export function hasCommitmentHistory(agentId: string): boolean {
   ).get(agentId);
   return row !== undefined;
 }
+
+// ── 6. THE SAME ANSWER, AT THE DOOR (HARNESS-LEARNINGS HL6) ─────────────────────
+//
+// The sharpest datum in this whole class is W8's driven replay, because in it the model did
+// the RIGHT thing: asked before speaking. `work_update(action="list")` answered "No active
+// tasks." and, four seconds later, the reply asserted the dead Bob quotes as still parked.
+// That is not a model ignoring its instruments. That tool lists TASKS and PROJECTS and has
+// never listed commitments at all, so a model that checks its board is told the truth about
+// two thirds of it and left to infer the third — and inferring from an older summary is the
+// rational move when nothing contradicts it.
+//
+// dsh's F4 in one sentence: "a static instruction does not reliably reach the retry decision,
+// while the error message is present exactly when the model must act." The decision moment
+// here is the board read. So the answer goes there, in the same words the snapshot uses,
+// FROM THE SAME READER — one owner of "what does the spine say is owed", now rendered at two
+// surfaces instead of answered by two mechanisms.
+//
+// It is a tool RESULT, so it costs zero cached prefix bytes — the [FILED] precedent (W17),
+// verified the same way at W18's release check.
+
+/** The whole-board statement when nothing is open. One literal, so the tool result, the test
+ *  and any future reader all read the same bytes and cannot drift. */
+export const COMMITMENT_POSITION_NONE =
+  'Commitments: none open. Every commitment on your board is closed, so nothing is owed — '
+  + 'whatever an older summary or note still says in the present tense.';
+
+/**
+ * One line for a board-read result, or null when this agent has no commitment history at all
+ * (the same gate the snapshot uses, for the same reason: nothing to correct, so no noise).
+ */
+export function commitmentPositionLine(agentId: string): string | null {
+  if (!hasCommitmentHistory(agentId)) return null;
+  const live = liveCommitments(agentId);
+  if (live.length === 0) return COMMITMENT_POSITION_NONE;
+  return `Commitments: ${live.length} open commitment${live.length === 1 ? '' : 's'} — `
+    + 'the complete list is in the OPEN COMMITMENTS snapshot in your context; this tool lists '
+    + 'tasks and projects only.';
+}
