@@ -3210,13 +3210,19 @@ export function trackerActivity(
         GROUP BY a.verdict ORDER BY a.verdict ASC`,
     ).all(agentId, since, nowMs) as Array<{ verdict: string; n: number }>;
 
-    // ── WHAT REACHED A PERSON. `a2a` is another agent, not a person, and is excluded by
-    //    name so the count means what it says. `deliveries.created_at` is a UTC datetime
-    //    string, so the bound is rendered in that shape rather than in epoch ms. ──
+    // ── WHAT REACHED A PERSON. Three narrowings, each load-bearing:
+    //    • `outcome = 'delivered'` — the ledger also carries `failed`, `suppressed`, `held`
+    //      and `owner_closed` rows. A count that swept those in would report attempts and
+    //      the owner's own close receipt as things that reached him, which is the exact
+    //      class of overclaim this door exists to end. `agent/v2/__tests__/owner-close-
+    //      receipt.test.ts` walks every production reader of this table for this filter.
+    //    • `channel <> 'a2a'` — a peer agent is not a person.
+    //    • `created_at` is a UTC datetime STRING here, not epoch ms, so the bound is
+    //      rendered in that shape. ──
     const sinceText = new Date(since).toISOString().replace('T', ' ').slice(0, 19);
     const deliveries = db.prepare(
       `SELECT channel, COUNT(*) AS n FROM deliveries
-        WHERE agent_id = ? AND channel <> 'a2a' AND created_at >= ?
+        WHERE agent_id = ? AND outcome = 'delivered' AND channel <> 'a2a' AND created_at >= ?
         GROUP BY channel ORDER BY n DESC, channel ASC`,
     ).all(agentId, sinceText) as Array<{ channel: string; n: number }>;
     const deliveredTotal = deliveries.reduce((a, r) => a + r.n, 0);

@@ -90,11 +90,11 @@ function seedWork(over: {
   );
 }
 
-function seedDelivery(id: string, channel: string, agent = AGENT): void {
+function seedDelivery(id: string, channel: string, agent = AGENT, outcome = 'delivered'): void {
   mockDb.current!.prepare(
     `INSERT INTO deliveries (id, agent_id, tool, channel, outcome, created_at)
-     VALUES (?, ?, 'chat', ?, 'sent', datetime('now'))`,
-  ).run(id, agent, channel);
+     VALUES (?, ?, 'chat', ?, ?, datetime('now'))`,
+  ).run(id, agent, channel, outcome);
 }
 
 beforeEach(() => {
@@ -202,6 +202,16 @@ describe('T60 — the activity door renders the window\'s own ledger', () => {
     expect(out).toMatch(/imessage 2/);
     expect(out).toMatch(/dashboard 1/);
     expect(out).not.toMatch(/a2a/);
+  });
+
+  it('an ATTEMPT is not an arrival — failed, suppressed, held and the owner\'s own close receipt do not count', () => {
+    seedDelivery('ok-1', 'imessage');
+    for (const [i, outcome] of ['failed', 'suppressed', 'held', 'owner_closed'].entries()) {
+      seedDelivery(`no-${i}`, 'imessage', AGENT, outcome);
+    }
+    const out = trackerActivity(AGENT, {});
+    expect(out).toMatch(/Delivered to people \(1\)/);
+    expect(out).toMatch(/imessage 1/);
   });
 
   it('another agent\'s rows are not this agent\'s activity', () => {
