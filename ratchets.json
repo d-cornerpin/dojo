@@ -3683,6 +3683,41 @@
       "to": 1392,
       "by": "UX-REPAIR ROUND 12 T50 (W36) — the tool rename door calls the one door",
       "why": "+5 (1 code replaced, 4 comment). THE CODE IS A SWAP, NOT AN ADDITION: the inline `UPDATE agents SET name = ?, updated_at` becomes `renameAgent(target.id, trimmedName)`. Everything around it is byte-identical on purpose — the same guard (non-empty, different from current), the same `finalName`, and the same reported `name: \"old\" → \"new\"` change line, because this file's contract with the model is its output string and a merger must not reword it. THE 4 COMMENT LINES SAY THE THING THE CALL CANNOT: that this was one of THREE such writes and that none of them touched the stored soul, which is why a call replaced a statement. Without it the next reader sees a needless indirection and inlines the UPDATE back. REFUSED: routing the tool through the settings route to avoid a third caller — an HTTP hop inside a tool handler for the sake of a line count. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/budget.ts",
+      "from": 442,
+      "to": 522,
+      "by": "UX-REPAIR ROUND 12 T56 (W40) — replayed reasoning becomes visible, and ages out",
+      "why": "+80, of which 25 are executable and 55 are the measurement that authorises them. THE CODE: `reasoningRidesThisTurn` (the ONE expression for dsh's passback rule, now asked by BOTH the replay site in `agent/model.ts` and the arithmetic here), `tryParseBlocks`, `StoredRowCostInput`, `replayedReasoningTokens`, and `storedRowCost` — which is NOT new here, it MOVED from `memory/assembler.ts` (-19 there) because `memory/compaction.ts`'s gate spent the same unit while holding its own copy of the expression, with `??` where the assembler had `||`. Two spellings of one cost is the disease this overhaul exists to delete, and the gate's copy was the one that billed a stored `token_count` of 0 as free. THE COMMENT HALF IS THE STEP-0 MEASUREMENT, and it cannot live anywhere else because it is the reason the number changed: 7,575 replayable rows on the dev body carrying 3,806,926 reasoning tokens against the 690,900 content tokens counted for the same rows; the worst single row budgeted at 35 tokens while carrying 14,310; and 37,872 sliding 40-row windows of real history whose mean UNCOUNTED cost was 3,981 tokens against a mean counted 6,025, max 78,909. ALTERNATIVES REFUSED: (i) leave `storedRowCost` in the assembler and add a second reasoning-aware helper to compaction (+0 here, +~12 there) — that is the two-spellings defect with an extra step; (ii) drop the measurement paragraph (-30) — refused for the reason the T4 entry above refuses the same trade: a later reader who cannot see that the tail was mis-costed by 40% will read the extra term as caution and delete it. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1442,
+      "to": 1494,
+      "by": "UX-REPAIR ROUND 12 T56 (W40) — replayed reasoning becomes visible, and ages out",
+      "why": "+52, of which 12 are executable. THE CODE: `ageOutReplayedReasoning` (9 lines — read the active turn, call the writer, log what moved) and the two guarded call sites, one per compaction arm, each `if (leafCreated > 0)`. The WRITE itself is not here: it is `retireReplayedReasoningBeforeTurn` in `memory/message-store.ts`, because that module is the single writer of `messages` and `__tests__/single-writer-conformance.test.ts` caught the first draft that spelled the UPDATE here. What stays here is WHEN, and the 40 comment lines are that argument: why a compaction that created a leaf summary is the ONE instant at which retiring reasoning costs no cache reuse (the summaries lane sits ahead of the fresh tail, so the cached prefix is re-formed from the summary onward regardless), why `leafCreated > 0` and not merely 'a compaction ran' (the background gap-drain is fire-and-forget and can overlap a live turn; a run that summarised nothing rewrites no prefix and may move no byte), and why the cut is the TURN rather than a row count (the provider needs reasoning for the ACTIVE tool chain and nothing else — dsh's serialiser omits `reasoning_content` entirely on a tool-call turn that has none — and a turn is a structural boundary rather than an invented threshold, #14). The gate's own cost expression SHRANK by two lines in the same commit by calling the shared `storedRowCost`. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/message-store.ts",
+      "from": 1122,
+      "to": 1153,
+      "by": "UX-REPAIR ROUND 12 T56 (W40) — replayed reasoning becomes visible, and ages out",
+      "why": "+31, of which 11 are executable: `retireReplayedReasoningBeforeTurn`, one statement. It is here and nowhere else because this module is the declared single writer of `messages` and the conformance test refuses a second one — the first draft of this task put the UPDATE in `memory/compaction.ts` and went red, correctly. The 20 comment lines carry the three things a later reader has to be told at the site: that ONE column moves (`reasoning_aged_out`, 0 -> 1, one-way) and that `content` and `reasoning_content` are BOTH untouched — the cache law for the first, and the dashboard's 'Thinking…' panel for the second, which is the difference between retiring the text from the WIRE and erasing it from the RECORD; that `activeTurn` is protected rather than stamped, because that is the live tool chain; and that a caller who cannot name the active turn passes 0, which retires nothing. From here this file may only shrink."
+    },
+    {
+      "path": "packages/shared/src/types.ts",
+      "from": 545,
+      "to": 552,
+      "by": "UX-REPAIR ROUND 12 T56 (W40) — replayed reasoning becomes visible, and ages out",
+      "why": "+7: one optional field on `Message` (`reasoningAgedOut`) and the six lines that say what it means. The field is not decoration — it is the durable half of the age-out, and it is what makes a row's rendered form STABLE between two compactions. A retirement computed at render time ('older than N turns') would move prefix bytes on every turn, which is the one thing this task may not do, so the fact has to be a property of the row and therefore a property of the type. The comment says that the TEXT survives and only the replay stops, because the next reader of a boolean named `reasoningAgedOut` will otherwise assume the body was deleted."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 2718,
+      "to": 2724,
+      "by": "UX-REPAIR ROUND 12 T56 (W40) — replayed reasoning becomes visible, and ages out",
+      "why": "+6, and NOT ONE of them is new machinery: one import gains a name, one condition is re-pointed, and the other five say why. The condition `assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0` becomes `reasoningRidesThisTurn(m.content)` — the SAME question (both are 'this block array holds a tool_use'), asked through the one function that `memory/budget.ts` now also asks when it costs the row. That is the whole point of the re-point: while the replay site and the budget held two expressions of one rule, the budget could bill for bytes this site drops or miss bytes it sends, and it missed 3,806,926 of them on the dev body. HL8 (C)'s drop-on-plain rule and the `''` fallback are untouched, and the request-shape golden did not move. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3724,7 +3759,7 @@
     "packages/server/src/agent/effects/scopes.ts": 349,
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 217,
-    "packages/server/src/agent/model.ts": 2718,
+    "packages/server/src/agent/model.ts": 2724,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
@@ -3855,11 +3890,11 @@
     "packages/server/src/memory/assembler.ts": 2615,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
-    "packages/server/src/memory/budget.ts": 442,
-    "packages/server/src/memory/compaction.ts": 1442,
+    "packages/server/src/memory/budget.ts": 522,
+    "packages/server/src/memory/compaction.ts": 1494,
     "packages/server/src/memory/deliveries-lane.ts": 240,
     "packages/server/src/memory/lanes.ts": 892,
-    "packages/server/src/memory/message-store.ts": 1122,
+    "packages/server/src/memory/message-store.ts": 1153,
     "packages/server/src/memory/recall-lane.ts": 726,
     "packages/server/src/memory/recall.ts": 510,
     "packages/server/src/memory/retrieval.ts": 591,
@@ -3930,7 +3965,7 @@
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
-    "packages/shared/src/types.ts": 545,
+    "packages/shared/src/types.ts": 552,
     "packages/shared/src/visibility.ts": 977,
     "packages/shared/src/ws.ts": 1115,
     "watchdog/src/auto-rollback.ts": 333,
