@@ -178,9 +178,10 @@ export const QUEUE_PAIRED_RIDERS: Readonly<Record<string, QueuePairedRider>> = O
   // entry recorded the one bound that was NOT a queue read — the per-SIGNATURE latch on
   // `state.thrashGatedSignatures` — and that latch is untouched by the removal: it is still
   // the gate's own guard, and the queue entry it files is still keyed by `thrash.signature`.
-  // The shared subsystem latch: either tracker floor speaking is enough, which is the
-  // requirement the retired `nudgedForTrackerThisTurn` boolean carried beside its latch duty.
-  'tracker-scaffold':  { intent: 'auto_scaffold',           latch: 'steerFiredAny(state.steerQueue, TRACKER_STEER_FLOORS)' },
+  // RETIRED by T53: `tracker-scaffold`. Its shared subsystem latch (either tracker floor
+  // speaking is enough — the requirement the retired `nudgedForTrackerThisTurn` boolean
+  // carried) is untouched: it still gates the floor, and both tracker floors now steer
+  // through the same door.
 });
 
 /** The rider exclusion as a SQL fragment, so the predicate and the writers cannot drift.

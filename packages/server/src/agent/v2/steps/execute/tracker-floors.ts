@@ -10,14 +10,14 @@
 // touched then and none is touched here.
 // ════════════════════════════════════════
 
-import { v4 as uuidv4 } from 'uuid';
 import { isDreamerAgent, isHealerAgent, isPMAgent } from '../../../../config/platform.js';
-import { insertEngineEventIfAbsent } from '../../../../memory/message-store.js';
 import { clearUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns } from '../../../turn-state.js';
 import { ENGINE_SCAFFOLD_ROOT_KIND } from '../../../../work/tracker-view.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { TRACKER_STEER_FLOORS, enqueueSteer, steerFiredAny } from '../../steer-queue.js';
+// T53: `enqueueSteer` and the events-lane writer are gone from this file. Both tracker
+// floors steer through `persistEngineSteer`, which owns the enqueue and the durable row.
+import { TRACKER_STEER_FLOORS, steerFiredAny } from '../../steer-queue.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 
@@ -176,14 +176,19 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
           rootKind: ENGINE_SCAFFOLD_ROOT_KIND,
           origin: { kind: 'engine_scaffold', sourceMessageId: state.lastUserMessageId, turn: turnNumber, convKey: chosenConvKey },
         });
-        // F2.2: scaffold note on the model-visible steer channel. The old
-        // role='system' row was stripped by the assembler, so a continuing
-        // agent never learned the engine had opened the task (it then drifted
-        // and the PM later re-delivered the old answer). Persist as an
-        // origin_kind='engine' row (EVENTS lane surfaces it) AND a queue entry
-        // so the continuing agent sees the task id + how to close it THIS turn.
-        // Label form ([System] body) so the events-lane leading-bracket strip
-        // keeps the body. conv_key sentinel keeps it un-selectable as an event.
+        // F2.2: scaffold note on the model-visible steer channel — the QUEUE, and since
+        // T53 (owner ruling 5) only the queue. F2.2's own finding is why: a bare
+        // role='system' row is stripped by the assembler, so a continuing agent never
+        // learned the engine had opened the task. That finding is satisfied by the queue
+        // entry, which delivers the whole note on the very next iteration; the events-lane
+        // row this site also wrote was a SECOND model-facing copy a turn later, rendered as
+        // a ≤400-char gist — and this note's operative half ("close it with
+        // work_update(action=\"status\", complete) plus result/evidence") is at the END,
+        // exactly what the cut drops. `persistEngineSteer` (the RC-19 door) files the same
+        // entry and writes the durable `role='system'` row, so the note is still recorded
+        // and classified identically for the dashboard (`agent-only`/`engine-note`).
+        // Driven before/after in `execute/__tests__/answered-turns-clear-untracked-debt.test.ts`
+        // and `agent/v2/__tests__/the-second-channel-stops-double-writing.test.ts`.
         // UX-REPAIR T1 (observability): the note used to print ONLY `nonTrackerToolCalls`,
         // the PER-TURN counter — the one that did not decide anything. The gate reads
         // `effectiveUntracked`. Printing one while gating on the other is how a firing could
@@ -197,18 +202,11 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
           `untracked multi-step work drifts and the PM cannot monitor it). ` +
           `Keep working; update it with work_note as you go and close it with work_update(action="status", complete) plus result/evidence when done.`
         );
-        const autoNoteId = uuidv4();
-        try {
-          insertEngineEventIfAbsent({
-            work: null,
-            id: autoNoteId,
-            agentId,
-            content: autoNoteText,
-            sourceAgentId: null,
-            originIntent: 'auto_scaffold',
-            turnNumber,
-          });
-        } catch { /* best effort */ }
+        state = persistEngineSteer(
+          state,
+          { agentId, content: autoNoteText, turnNumber, floor: 'tracker-scaffold', atLoop: state.loopCount },
+          { broadcast },
+        );
         // The floor just OPENED a work row, so set both flags to disarm the gate
         // above and stop it re-entering on later iterations —
         // `workRowOpenedThisTurn` is the one the floor tier itself reads now (D4).
@@ -228,7 +226,6 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
           trackerToolCalledThisTurn: true,
           trackerWriteThisTurn: true,
           workRowOpenedThisTurn: true,
-          steerQueue: enqueueSteer(state.steerQueue, { floor: 'tracker-scaffold', content: autoNoteText, atLoop: state.loopCount }),
         });
         // RC-19 item 3: the floor just tracked the work, so reset
         // the cross-turn untracked-work total. This is an engine-side tracker

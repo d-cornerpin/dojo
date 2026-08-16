@@ -58,6 +58,7 @@ import {
   untrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns,
 } from '../../../../turn-state.js';
 import { initState, advance, type AgentTurnState } from '../../../state.js';
+import { nextSteer } from '../../../steer-queue.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
 import { countTrackerWorkThisIteration } from '../tracker-counting.js';
 import { runTrackerFloors } from '../tracker-floors.js';
@@ -176,7 +177,7 @@ function seedTurnRow(turnNumber: number): void {
 async function runTurn(
   turnNumber: number,
   opts: { calls: number; prompt: string | null; answered: boolean },
-): Promise<{ scaffoldsAfter: number }> {
+): Promise<{ scaffoldsAfter: number; steer: string | null }> {
   const turnCtx = openTurnContext(AGENT);
   turnCtx.convKey = CONV;
   turnCtx.conversationId = CONVERSATION_ID;
@@ -200,7 +201,9 @@ async function runTurn(
   const n = db().prepare(
     `SELECT COUNT(*) AS n FROM work WHERE root_kind = 'engine_scaffold' AND agent_id = ?`,
   ).get(AGENT) as { n: number };
-  return { scaffoldsAfter: n.n };
+  // T53: the queue is the floor's one model-facing channel, so the turn hands back what it
+  // filed there — the clauses below read the delivery instead of inferring it from a row.
+  return { scaffoldsAfter: n.n, steer: nextSteer(state.steerQueue)?.content ?? null };
 }
 
 const scaffoldRows = (): Array<{ id: string; title: string }> =>
@@ -208,9 +211,16 @@ const scaffoldRows = (): Array<{ id: string; title: string }> =>
     `SELECT id, title FROM work WHERE root_kind = 'engine_scaffold' AND agent_id = ?`,
   ).all(AGENT) as Array<{ id: string; title: string }>;
 
+/** The floor's scaffold note as it is RECORDED.
+ *
+ *  T53 (owner ruling 5) re-pointed this reader. It used to read the events-lane row the
+ *  floor wrote beside its steer — the second model-facing channel, which the floor no longer
+ *  writes. The note is still recorded, in the durable `role='system'` row `persistEngineSteer`
+ *  writes, and every assertion below is about the note's WORDS, so they are unchanged. */
 const engineNote = (): string | null => {
   const r = db().prepare(
-    `SELECT content FROM messages WHERE agent_id = ? AND origin_intent = 'auto_scaffold'
+    `SELECT content FROM messages WHERE agent_id = ? AND role = 'system'
+        AND content LIKE '[System] The engine opened tracker task%'
       ORDER BY rowid DESC LIMIT 1`,
   ).get(AGENT) as { content: string } | undefined;
   return r?.content ?? null;
@@ -283,6 +293,33 @@ describe('T1 — an answered, delivered turn clears its untracked-work debt', ()
     // beside a printed counter is how the two strings contradicted each other.
     expect(rename).not.toMatch(/6\+ work calls/);
     expect(rename).toMatch(/7/);
+  });
+
+  // ── T53 (owner ruling 5): ONE MODEL-FACING CHANNEL ──────────────────────────────────
+  // The floor used to hand the note to the model twice: the queue entry (this turn, verbatim)
+  // and an events-lane row lifted into `lane.events` a turn LATER as a <=400-char gist. The
+  // gist is where `task_id` survives and the closing instruction does not, which is the half
+  // of the note a continuing agent actually needs. The queue keeps the whole note; the second
+  // channel is gone; the record is the durable `role='system'` row asserted above.
+  it('T53: the scaffold note reaches the model on the QUEUE, and no events-lane row is written', async () => {
+    const { scaffoldsAfter, steer } = await runTurn(5003, {
+      calls: 7, prompt: 'build me a comparison write-up', answered: true,
+    });
+    expect(scaffoldsAfter, 'the floor fired, or this clause proves nothing').toBe(1);
+
+    // CHANNEL 1, unchanged: the model gets the whole note, on the very next iteration.
+    expect(steer, 'the floor still files its steer').not.toBeNull();
+    expect(steer).toContain('[System] The engine opened tracker task');
+    expect(steer).toMatch(/task_id: /);
+    expect(steer).toContain('close it with work_update(action="status", complete)');
+    // …and it IS the recorded note, byte for byte, so record and delivery cannot drift.
+    expect(steer).toBe(engineNote());
+
+    // CHANNEL 2, gone.
+    const riders = db().prepare(
+      `SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND origin_intent = 'auto_scaffold'`,
+    ).get(AGENT) as { n: number };
+    expect(riders.n, 'the scaffold note must not reach the model a second time next turn').toBe(0);
   });
 
   it('anti-dodge control (RC-19 item 3 preserved): turns that EXIT WITHOUT ANSWERING keep accumulating, and the floor fires at the 6th', async () => {
