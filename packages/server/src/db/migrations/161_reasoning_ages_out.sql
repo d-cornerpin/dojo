@@ -1,0 +1,31 @@
+-- 161 (UX-REPAIR ROUND 12 T56, leg (b)): REPLAYED REASONING AGES OUT — AT A COMPACTION
+-- BOUNDARY, AND NOWHERE ELSE.
+--
+-- Stored `reasoning_content` rides back to the provider on every assistant row that carries
+-- a tool call (`agent/model.ts`'s replay site; dsh's official passback rule). It is never
+-- re-read after the tool chain it belonged to is finished, and it accumulates without bound:
+-- on the dev body, 7,575 replayable rows carrying 3,806,926 tokens of it, and a single
+-- 40-row live window carrying as much as 78,909 tokens nobody was counting.
+--
+-- WHY A FLAG AND NOT A DELETE. The dashboard renders this text — it is the "Thinking…"
+-- panel above the assistant bubble (`Chat.tsx`), the user's only view of what the agent was
+-- reasoning about. Retiring it from the WIRE must not erase it from the RECORD, so the text
+-- stays on the row and this column says whether the assembler may still send it.
+--
+-- WHY A ROW FLAG AND NOT A WATERMARK. The value must be STABLE: between two compactions a
+-- given row has to render byte-identically or the cacheable prefix moves on a turn that
+-- changed nothing. A per-row, one-way stamp written at the boundary is stable by
+-- construction; anything computed at render time ("older than N turns") moves every turn.
+--
+-- WHO WRITES IT. `memory/compaction.ts`'s `ageOutReplayedReasoning`, called only after a run
+-- that actually created a leaf summary — i.e. only when compaction has ALREADY rewritten
+-- that prefix region, so the age-out costs no cache reuse of its own. Rows of the agent's
+-- CURRENT turn are never stamped: that is the active tool chain, and its reasoning is the
+-- one thing the provider contract asks for.
+--
+-- DEFAULT 0 = "still replays", which is exactly today's behaviour for every existing row.
+-- No backfill: a stamp is a record of a boundary that happened, and inventing one for
+-- history would be a claim about compactions that never ran.
+
+ALTER TABLE messages ADD COLUMN reasoning_aged_out INTEGER NOT NULL DEFAULT 0
+  CHECK (reasoning_aged_out IN (0, 1));

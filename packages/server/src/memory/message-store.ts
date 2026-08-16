@@ -851,6 +851,37 @@ export function setAnswerMessageId(
 }
 
 /**
+ * T56 leg (b) — RETIRE THE REPLAYED REASONING OF EVERY ROW OLDER THAN THE ACTIVE TURN.
+ *
+ * The WRITE lives here because this module is the single writer of `messages`
+ * (`__tests__/single-writer-conformance.test.ts`); the POLICY — when it may run at all, and
+ * what makes that moment a boundary — lives with the boundary, in `memory/compaction.ts`,
+ * which is the only caller and carries the argument in full.
+ *
+ * ONE COLUMN: `reasoning_aged_out`, 0 -> 1, one-way. `content` is NOT touched (the cache law,
+ * OR7) and neither is `reasoning_content`: the text stays on the row because the dashboard
+ * renders it as the "Thinking…" panel. What changes is only whether the assembler may replay
+ * it to the provider — and therefore whether it still costs the context budget.
+ *
+ * `activeTurn` is protected, never stamped: that is the live tool chain, and its reasoning is
+ * the one thing the provider contract asks for. A caller that cannot name the active turn
+ * passes 0, which retires nothing — the fail-safe direction.
+ *
+ * Returns the number of rows retired, for the caller's log line.
+ */
+export function retireReplayedReasoningBeforeTurn(
+  p: { agentId: string; activeTurn: number },
+): number {
+  return getDb().prepare(
+    `UPDATE messages SET reasoning_aged_out = 1
+      WHERE agent_id = @agentId
+        AND reasoning_aged_out = 0
+        AND reasoning_content IS NOT NULL AND reasoning_content <> ''
+        AND turn_number IS NOT NULL AND turn_number < @activeTurn`,
+  ).run(p).changes;
+}
+
+/**
  * SWEEP CORE-2 item 7 — RE-CLASSIFY A FINISHED TURN'S DRAFT BUBBLES INTO THE WORKING-NOTE
  * LANE. The turn-end half of the demotion `post-call-classify/terminal-text.ts` has done at
  * MID-turn since 2026-07-10, and the reason it has to be a second site rather than the same

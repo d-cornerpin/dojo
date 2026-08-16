@@ -5,8 +5,8 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
 import { getMessagesOutsideFreshTail, getRecentMessages } from './store.js';
-import { estimateTokens, getFreshTailCount, contextWindowPolicy, CONTEXT_THRESHOLD, CONTEXT_WARN_THRESHOLD } from './budget.js';
-import { insertMessageIfAbsent } from './message-store.js';
+import { estimateTokens, getFreshTailCount, contextWindowPolicy, storedRowCost, CONTEXT_THRESHOLD, CONTEXT_WARN_THRESHOLD } from './budget.js';
+import { insertMessageIfAbsent, retireReplayedReasoningBeforeTurn } from './message-store.js';
 import {
   createLeafSummary,
   createCondensedSummary,
@@ -125,11 +125,14 @@ export async function estimateAssembledTokens(
   const rawSummaryTokens = summaries.reduce((sum, s) => sum + (s.tokenCount ?? 0), 0);
 
   const freshTail = getRecentMessages(agentId, policy.freshTailCount);
+  // T56 leg (a): `storedRowCost` is the assembler's own unit, now shared (it used to be
+  // re-spelled here as `?? estimateTokens(…)`, which billed a stored `token_count` of 0 as
+  // free). It includes the `reasoning_content` the replay site will actually send, so
+  // "should this agent summarise" stops being decided against a number that omitted, on the
+  // dev body, an average of 3,981 tokens per 40-row window. The per-row cap is unchanged and
+  // still applies to the whole row, exactly as it does to an oversized tool result.
   const freshTailTokens = freshTail.reduce(
-    (sum, m) => {
-      const raw = m.tokenCount ?? estimateTokens(m.content);
-      return sum + Math.min(raw, policy.gateMessageCap);
-    },
+    (sum, m) => sum + Math.min(storedRowCost(m), policy.gateMessageCap),
     0,
   );
 
@@ -690,6 +693,10 @@ async function runCheckAndCompact(
       ? 0
       : await runCondensation(agentId, modelId, DEFAULTS.incrementalMaxDepth);
     rebuildContextItems(agentId);
+    // T56 leg (b): the prefix has just been rewritten, so this is the one instant at which
+    // retiring reasoning costs no cache reuse. Gated on a summary actually having been
+    // created — see the header above `ageOutReplayedReasoning`.
+    if (leafCreated > 0) ageOutReplayedReasoning(agentId);
 
     const tokensAfter = (await estimateAssembledTokens(agentId, contextWindow, modelId)).total;
     const tokensReclaimed = tokensBefore - tokensAfter;
@@ -775,6 +782,8 @@ async function runCheckAndCompact(
 
     const leafCreated = await withCompactionActivity(agentId, () => runLeafCompaction(agentId, modelId, contextWindow));
     rebuildContextItems(agentId);
+    // T56 leg (b), same boundary rule as the reactive arm above.
+    if (leafCreated > 0) ageOutReplayedReasoning(agentId);
 
     const result = { leafCreated, condensedCreated: 0, tokensReclaimed: 0 };
 
@@ -798,6 +807,49 @@ async function runCheckAndCompact(
   }
 
   return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
+}
+
+// ── T56 leg (b) — the age-out, and the boundary it may never cross ──────────────────────
+//
+// THE COST. Stored `reasoning_content` replays on every assistant row that carries a tool
+// call, for as long as that row is in the live tail. It is the model's thinking about a tool
+// chain that finished, and nothing re-reads it once the chain is done — but on the dev body
+// a single 40-row window carried up to 78,909 tokens of it, and the 80-row window of the
+// primary agent carried 17,513, of which ZERO belonged to the turn in progress.
+//
+// THE BOUNDARY, and why this is cache-safe rather than cache-costly. Dropping reasoning from
+// a row changes bytes the provider has already cached, so it may happen ONLY at an instant
+// when the prefix is being rewritten anyway. A compaction that created a leaf summary is
+// exactly that instant: the summaries lane (slot 300) sits ahead of the fresh tail, so the
+// cached prefix is re-formed from the summary onward regardless. `leafCreated > 0` is the
+// gate; a run that summarised nothing moves nothing (and the background gap-drain, which is
+// fire-and-forget and CAN overlap a live turn, is bound by the same rule).
+//
+// THE CUT, chosen from the measurement and not from taste. The provider needs reasoning for
+// the ACTIVE tool chain and nothing else: dsh's own serialiser omits `reasoning_content`
+// entirely on a tool-call turn that has none (`llm-deepseek/src/serialize.ts:96-100`), and
+// our `requiresReasoningReplay` contract is satisfied by the `''` fallback that already
+// ships on every reasoning-less tool-call row today. So the cut is the TURN: rows of the
+// agent's current turn keep their reasoning; everything older is retired. `turn_number` is
+// never null on a replayable row (measured: 0 of 7,575 on the dev body), and a
+// `currentTurnNumber` that fails answers 0, which retires nothing — the fail-safe direction.
+
+/**
+ * Retire the reasoning of every row older than the ACTIVE turn. One-way, durable, and only
+ * ever called from a compaction that has already rewritten this agent's prefix.
+ *
+ * Returns the number of rows retired, for the caller's log line.
+ */
+export function ageOutReplayedReasoning(agentId: string): number {
+  const activeTurn = currentTurnNumber(agentId);
+  // The write itself belongs to the single writer of `messages`; this function owns WHEN.
+  const rowsRetired = retireReplayedReasoningBeforeTurn({ agentId, activeTurn });
+  if (rowsRetired > 0) {
+    logger.info('Retired replayed reasoning at a compaction boundary', {
+      rowsRetired, activeTurnProtected: activeTurn,
+    }, agentId);
+  }
+  return rowsRetired;
 }
 
 // ── Leaf Compaction ──

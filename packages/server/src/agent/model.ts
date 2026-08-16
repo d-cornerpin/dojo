@@ -12,7 +12,7 @@ import { toolDefinitions } from './tools/definitions.js';
 import { getFilteredTools } from './tools/surface.js';
 import type { ToolDefinition } from './tools/types.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
-import { estimateTokens } from '../memory/budget.js';
+import { estimateTokens, reasoningRidesThisTurn } from '../memory/budget.js';
 import { validateAtProviderBoundary, AssemblyValidationError } from '../memory/assembly-validation.js';
 import { repairToolPairing } from './tool-pairing.js';
 import { collectMessageLaneIds } from '../memory/message-lane-tag.js';
@@ -1165,7 +1165,13 @@ export async function buildOpenAIMessages(
         // The `''` fallback is KEPT on tool-call turns: some providers 400 when the field is
         // missing on a tool-call follow-up, dsh omits it there and we are strictly safer, and
         // it costs zero tokens. After HL8 (B) it should almost never fire — that is the point.
-        if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
+        //
+        // T56: the CONDITION is now `memory/budget.ts`'s `reasoningRidesThisTurn`, which is
+        // the same predicate the token arithmetic asks. It answers identically to the
+        // `tool_calls.length > 0` test it replaces (both are "this block array holds a
+        // tool_use"), and having ONE expression is what stops the budget from billing for
+        // bytes this site drops, or missing bytes it sends.
+        if (reasoningRidesThisTurn(m.content)) {
           if (m.reasoningContent) {
             (assistantMsg as unknown as Record<string, unknown>).reasoning_content = m.reasoningContent;
           } else if (contract.requiresReasoningReplay) {

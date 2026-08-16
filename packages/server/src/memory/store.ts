@@ -96,7 +96,7 @@ export function createdAtText(col = 'created_at', alias = 'created_at'): string 
 /** Every loader below projects exactly this list, so `rowToMessage` never has to ask whether
  *  a column happened to be selected. `seq` is projected as itself: it IS the rowid. */
 const SELECT_COLS = `seq, id, agent_id, role, content, token_count, model_id, cost,
-  latency_ms, ${createdAtText()}, turn_number, reasoning_content, lane, channel, source_agent_id,
+  latency_ms, ${createdAtText()}, turn_number, reasoning_content, reasoning_aged_out, lane, channel, source_agent_id,
   a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, origin_intent, conversation_id`;
 
 export interface MessageRow {
@@ -113,6 +113,8 @@ export interface MessageRow {
   created_at: string;
   turn_number: number | null;
   reasoning_content: string | null;
+  /** T56 leg (b): 1 once a compaction boundary retired this row's reasoning from the wire. */
+  reasoning_aged_out: number | null;
   /** The stamped-at-ingest lane (OR4). Origin is PROJECTED from it — never re-parsed. */
   lane: string;
   channel: string | null;
@@ -155,6 +157,10 @@ export function rowToMessage(row: MessageRow): Message {
     // Reasoning content from thinking-mode providers (DeepSeek native,
     // OpenRouter unified reasoning, etc.). Migration 040.
     reasoningContent: row.reasoning_content,
+    // T56 leg (b), migration 161. The text above stays for the dashboard; this says whether
+    // the assembler may still replay it to the provider (and therefore whether it still
+    // costs the context budget).
+    reasoningAgedOut: row.reasoning_aged_out === 1,
     // ── Attribution ──
     source: legacy.source,
     sourceAgentId: row.source_agent_id,

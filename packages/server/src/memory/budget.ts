@@ -95,6 +95,86 @@ export function estimateStoredTokens(text: string): number {
   return Math.max(1, estimateTokens(text));
 }
 
+// ── The replayed-reasoning half of a row's cost (T56 leg (a)) ────────────────────────────
+//
+// A STORED ROW COSTS WHAT THE WIRE WILL CARRY, and until T56 every arithmetic here counted
+// its `content` and stopped. Assistant rows that carry a tool call ALSO ship their stored
+// `reasoning_content` back to the provider (`agent/model.ts`'s replay site, dsh's own
+// passback rule), and those tokens were spent by every request and billed to no budget:
+//
+//   • 7,575 replayable rows on the dev body carried 3,806,926 reasoning tokens against the
+//     690,900 content tokens the assembler counted for the same rows — 5.5x.
+//   • the worst single row (`d68a9576…`) was budgeted at 35 tokens and carried 14,310.
+//   • across 37,872 sliding 40-row windows of that body: mean counted 6,025, mean UNCOUNTED
+//     3,981, max uncounted 78,909. Eviction and the compaction gate were both deciding
+//     against a number that was ~60% of the truth.
+//
+// This changes NO REQUEST BYTE. The same rows render the same way; only the count that
+// decides how many of them fit is now the count of what is actually sent.
+
+/**
+ * THE REPLAY RULE, in one place. Reasoning rides an assistant turn if and only if that turn
+ * carries a tool call — dsh's official passback rule (`llm-deepseek/src/serialize.ts:96-100`:
+ * "reasoning_content must return on tool-call turns; it is ignored on plain turns"), adopted
+ * at HL8 (C). The replay site in `agent/model.ts` and the token arithmetic here ask the SAME
+ * question through this function, so the budget can never bill for bytes the serialiser drops
+ * (or miss bytes it sends).
+ *
+ * Takes either a parsed block array or a stored row's JSON text; a plain-text row can never
+ * carry a tool call, which is why the parse failure arm is `false` rather than an error.
+ */
+export function reasoningRidesThisTurn(content: unknown): boolean {
+  const blocks = typeof content === 'string' ? tryParseBlocks(content) : content;
+  return Array.isArray(blocks)
+    && blocks.some((b) => (b as { type?: unknown } | null)?.type === 'tool_use');
+}
+
+function tryParseBlocks(content: string): unknown {
+  if (content.length === 0 || content[0] !== '[') return null;
+  try {
+    return JSON.parse(content);
+  } catch {
+    return null;
+  }
+}
+
+/** The fields a row's cost is computed from. Structural on purpose: the assembler holds a
+ *  `Message`, the compaction gate holds the same rows, and neither has to hand this module
+ *  a database type it would then have to import. */
+export interface StoredRowCostInput {
+  role: string;
+  content: string;
+  tokenCount?: number | null;
+  reasoningContent?: string | null;
+  /** T56 leg (b): a row whose reasoning was retired at a compaction boundary no longer
+   *  replays it, so it no longer costs anything either. */
+  reasoningAgedOut?: boolean | null;
+}
+
+/** What this row's `reasoning_content` will cost on the wire — 0 when nothing replays it. */
+export function replayedReasoningTokens(m: StoredRowCostInput): number {
+  if (m.role !== 'assistant' || !m.reasoningContent || m.reasoningAgedOut) return 0;
+  return reasoningRidesThisTurn(m.content) ? estimateTokens(m.reasoningContent) : 0;
+}
+
+/**
+ * COST OF CARRYING ONE STORED ROW. One owner for the expression the assembler's fresh-tail
+ * lane, `budgetFreshTail` and the compaction gate all spend.
+ *
+ * The content half is `memory/assembler.ts`'s own `storedRowCost`, moved here unchanged and
+ * with its history intact — PHASE-3 T3 found it written `msg.tokenCount ?? estimateTokens(…)`,
+ * and `0 ?? x` is **0**, so a row whose stored `token_count` was 0 was FREE TO CARRY (§T0-D
+ * measured 116 such rows before migration `150` re-computed every row to `MAX(1, …)`; any
+ * writer bypassing `memory/message-store.ts` — the kit's own golden fixture is one — brings
+ * it straight back). `||` not `??`, deliberately: a stored 0 is not a measurement, it is a
+ * missing one. The compaction gate's copy used `??` and now shares this one.
+ *
+ * The reasoning half is T56 leg (a), above.
+ */
+export function storedRowCost(m: StoredRowCostInput): number {
+  return Math.max(1, m.tokenCount || estimateTokens(m.content)) + replayedReasoningTokens(m);
+}
+
 // ── The image estimator (PHASE-6 T4-CAP) ────────────────────────────────────────────────
 //
 // AN IMAGE IS NOT TEXT AND MUST NOT BE BILLED AS TEXT. Everything above answers "what does

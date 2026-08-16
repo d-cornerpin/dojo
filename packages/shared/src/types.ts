@@ -231,6 +231,13 @@ export interface Message {
    * type:"thinking" content blocks) and DON'T populate this field.
    */
   reasoningContent?: string | null;
+  /**
+   * T56 leg (b). True once a compaction boundary RETIRED this row's reasoning from the
+   * wire: the text above is kept (the dashboard still renders it) but the assembler stops
+   * replaying it, and it stops costing the context budget. One-way and durable, which is
+   * what makes a row's rendered form stable between compactions — see migration 161.
+   */
+  reasoningAgedOut?: boolean;
   attachments?: Array<{
     fileId: string;
     filename: string;

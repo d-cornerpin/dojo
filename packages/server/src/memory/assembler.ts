@@ -12,7 +12,9 @@ import { getContextWindow, getModelOutputCap } from '../agent/model.js';
 import { repairToolPairing, type PairedMessage } from '../agent/tool-pairing.js';
 import { measureAgentToolPayloadTokens } from '../tools/tool-docs.js';
 import { getRecentMessages } from './store.js';
-import { estimateTokens, contextWindowPolicy, assertSystemPromptFits, SUMMARY_SHARE } from './budget.js';
+import {
+  estimateTokens, contextWindowPolicy, assertSystemPromptFits, SUMMARY_SHARE, storedRowCost,
+} from './budget.js';
 import {
   fitLanes,
   laneLimit,
@@ -815,25 +817,10 @@ const MIN_LANE_FLOOR_TOKENS = 64;
 
 type TailPayload = { rows: Message[]; agentId: string; dropped: number };
 
-/**
- * COST OF CARRYING ONE STORED ROW. One owner for the expression `budgetFreshTail` and the
- * fresh-tail lane both spend, with the floor the write path has always applied.
- *
- * PHASE-3 T3, found by the allocator on its first live run: the expression was
- * `msg.tokenCount ?? estimateTokens(msg.content)`, and `0 ?? x` is **0** — so a row whose
- * stored `token_count` is 0 was FREE TO CARRY. `memory/budget.ts:estimateStoredTokens`
- * already carries the floor ("a row that costs nothing to carry does not exist") and the
- * READ side never applied it. §T0-D measured 116 such rows on this body before T2's
- * migration `150` re-computed every row to `MAX(1, …)`; the defect is latent on a migrated
- * body and immediate for any writer that bypasses `memory/message-store.ts` — the kit's own
- * golden fixture is one, and it is how this surfaced (six rows, all `token_count = 0`, a
- * whole fresh tail costed at zero).
- *
- * `||` not `??`, deliberately: a stored 0 is not a measurement, it is a missing one.
- */
-function storedRowCost(m: Message): number {
-  return Math.max(1, m.tokenCount || estimateTokens(m.content));
-}
+// STRIP (T56): `storedRowCost` MOVED to `memory/budget.ts`, with its PHASE-3 T3 history
+// attached, because the compaction gate spends the same unit and held its own copy of the
+// expression (`??` where this one had `||`). One owner now answers "what does carrying this
+// row cost", and the answer includes the `reasoning_content` the replay site will send.
 
 /** Cost of carrying stored rows, the unit `budgetFreshTail` spends (canonical since T2). */
 function rowTokens(rows: Message[]): number {
@@ -1194,7 +1181,14 @@ function tailRender(payload: TailPayload): LaneRender<TailPayload> {
       messages.push({ role: 'user', content: parsed as Anthropic.ContentBlockParam[] });
     } else if (msg.role === 'user' || msg.role === 'assistant') {
       const out: LaneMessage = { role: msg.role, content: stampTextContent(parsed, msg.createdAt) };
-      if (msg.role === 'assistant' && msg.reasoningContent) out.reasoningContent = msg.reasoningContent;
+      // T56 leg (b): a row whose reasoning was RETIRED at a compaction boundary renders
+      // without it, for ever after. The stamp is durable and one-way, which is what makes
+      // this stable: between two compactions the same row renders byte-identically, so no
+      // prefix byte moves except at a boundary a compaction has already rewritten. The text
+      // itself is kept on the row — the dashboard's "Thinking…" panel still reads it.
+      if (msg.role === 'assistant' && msg.reasoningContent && !msg.reasoningAgedOut) {
+        out.reasoningContent = msg.reasoningContent;
+      }
       messages.push(out);
     }
   }
