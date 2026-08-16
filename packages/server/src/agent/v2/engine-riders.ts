@@ -173,13 +173,11 @@ export const QUEUE_PAIRED_RIDERS: Readonly<Record<string, QueuePairedRider>> = O
   'promise-floor':     { intent: 'promise_floor',           latch: "steerFired(state.steerQueue, 'promise-floor')" },
   'a2a-handoff-floor': { intent: 'a2a_handoff_floor',       latch: "steerFireCount(state.steerQueue, 'a2a-handoff-floor')" },
   'reminder-silence':  { intent: 'reminder_silence_floor',  latch: "steerFireCount(state.steerQueue, 'reminder-silence')" },
-  // The one paired floor whose bound is NOT a queue read, and it is declared rather than
-  // excused: the gate latches per THRASHING SIGNATURE on `state.thrashGatedSignatures`,
-  // which is the same key its queue entry uses (`key: thrash.signature`). Same budget, one
-  // fact per signature, reached through the state field the gate has always owned.
-  'thrash-gate':       { intent: 'thrash_gate',             latch: 'state.thrashGatedSignatures.includes(thrash.signature)' },
-  // RETIRED by T53: `thrash-drift` — the drift rung now steers through `persistEngineSteer`
-  // and writes no events-lane row. Its intent stays excluded above; only the pair is gone.
+  // RETIRED by T53, both thrash rungs: they now steer through `persistEngineSteer` and write
+  // no events-lane row. Their intents stay excluded above; only the pairs are gone. The gate's
+  // entry recorded the one bound that was NOT a queue read — the per-SIGNATURE latch on
+  // `state.thrashGatedSignatures` — and that latch is untouched by the removal: it is still
+  // the gate's own guard, and the queue entry it files is still keyed by `thrash.signature`.
   // The shared subsystem latch: either tracker floor speaking is enough, which is the
   // requirement the retired `nudgedForTrackerThisTurn` boolean carried beside its latch duty.
   'tracker-scaffold':  { intent: 'auto_scaffold',           latch: 'steerFiredAny(state.steerQueue, TRACKER_STEER_FLOORS)' },

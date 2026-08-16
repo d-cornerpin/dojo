@@ -30,7 +30,10 @@ import { taskScope, ENGINE_SCAFFOLD_ROOT_KIND } from '../../../../work/tracker-v
 import { setTrackerStatus, upholdClaim } from '../../../../work/tracker-store.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
-import { enqueueSteer, steerFired } from '../../steer-queue.js';
+// T53: `enqueueSteer` is no longer imported here. Both of this file's steers go through
+// `persistEngineSteer`, which owns the enqueue — the ladder cannot file a steer without
+// leaving a durable row again.
+import { steerFired } from '../../steer-queue.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
 
@@ -342,60 +345,31 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
         `  (d) Call work_update(action="status", status='blocked') if you genuinely cannot proceed.\n` +
         `  (e) Send the user a specific question if you need clarification.\n\n` +
         `If you keep hitting refused signatures the engine will auto-block this task to stop the loop.`;
-      const steerMsgId = uuidv4();
-      try {
-        // Persist as role='user' so the assembler picks it up next time
-        // and the dashboard shows it inline as the engine's voice. Stamp the
-        // structured engine origin (mig 075) so it's attributed as an EVENT,
-        // not parsed from the [Engine thrash gate] prose.
-        // An engine steer is platform coordination, so it lands on lane='events'.
-        // conv_key 'engine-steer' (below) keeps it un-selectable as a pending
-        // event; the EVENTS lane still surfaces it to the model.
-        insertEngineEventIfAbsent({
-          work: null,
-          id: steerMsgId,
-          agentId,
-          content: steerMsg,
-          sourceAgentId: null,
-          originIntent: 'thrash_gate',
-          turnNumber,
-        });
-        // C6 (as it was): stamp a non-NULL conv_key sentinel ('engine-steer'), because
-        // getPendingEngineEvent selected conv_key-NULL engine rows and would otherwise
-        // return this steer → the drain fires an engine turn → which can mint ANOTHER
-        // steer → unbounded thrash-steer loop.
-        //
-        // ⚠ PHASE-2 T10H — C6'S REQUIREMENT NOW LIVES SOMEWHERE THAT SURVIVES THE COLUMN.
-        // T9 moved the pending-event claim onto `served_by_turn`, which left this sentinel
-        // excluding nothing at NINE steer sites plus every awareness notice — silently,
-        // because the drain's engine arm logs nothing and only the wake-budget breaker at
-        // 30 ever spoke. The exclusion is `ENGINE_RIDER_INTENTS` now (see
-        // `memory/message-store.ts`), read off THIS row's `origin_intent`, complete by
-        // measurement and enforced against these very writers by
-        // `agent/v2/__tests__/engine-rider-never-drives-a-turn.test.ts`.
-        //
-        // The `convKey: 'engine-steer'` writes at all nine sites are RESIDUE for this job
-        // and were kept ONLY because `re-answer-guard.ts` and the dashboard's
-        // `isBackgroundTurnRow` still read the sentinels for a DIFFERENT job (engine
-        // chatter vs a human conversation). Both readers are now settled: T10I re-pointed
-        // them onto `conversation_id` / `lane`, and PHASE-3 T7 Step 2 DELETED
-        // `re-answer-guard.ts` outright, so one of the two named readers no longer exists.
-        // The steer still reaches the model (the EVENTS/awareness lane filters on `lane`,
-        // not `conv_key`) and still renders in the dashboard.
-      } catch { /* best effort */ }
       logger.warn('v2: thrash gate activated for signature', {
         toolName: thrash.toolName, signature: thrash.signature,
         count: thrash.count, loopCount: state.loopCount,
       }, agentId);
+      // ── T53 (owner ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
+      // Same removal as the drift rung above, and this site is where the old paragraph was
+      // most confident: it said the events row meant "any next assemble cycle keeps seeing
+      // it". Driven against the real assembler, what the next assemble cycle sees is a
+      // 400-CHAR GIST — this steer is 794 characters and the cut lands inside option (b),
+      // so the (c)/(d)/(e) doors and the auto-block warning are exactly what the second
+      // channel loses. The queue delivers all 794 bytes on the very next model call, KEYED
+      // on the signature so a second gated signature is still a second fact.
+      //
+      // C6's requirement is untouched by this: it was that a steer row must never be
+      // pickable as a pending engine event, and it lives on `ENGINE_RIDER_INTENTS` read off
+      // `origin_intent` (`memory/message-store.ts`). A site that writes NO events row cannot
+      // drive a turn with one — the intent stays in that list for the rows already on disk.
+      state = persistEngineSteer(
+        state,
+        { agentId, content: steerMsg, turnNumber, floor: 'thrash-gate', key: thrash.signature, atLoop: state.loopCount },
+        { broadcast },
+      );
       state = advance(state, {
         thrashGatedSignatures: [...state.thrashGatedSignatures, thrash.signature],
         thrashGateActivatedAtLoopCount: state.thrashGateActivatedAtLoopCount ?? state.loopCount,
-        // Also enqueue the steer so it reaches the model on the very NEXT iteration
-        // even if the assembler hasn't seen the persisted user message yet. KEYED on
-        // the signature: a second gated signature is a second fact, not a repeat.
-        steerQueue: enqueueSteer(state.steerQueue, {
-          floor: 'thrash-gate', content: steerMsg, key: thrash.signature, atLoop: state.loopCount,
-        }),
       });
       try {
         broadcast({

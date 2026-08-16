@@ -111,8 +111,11 @@ describe('§1 the pairing is DECLARED, and derived from the writers rather than 
     // finding events-lane writes, or it is measuring the wrong thing and every clause below
     // it is vacuous. That number cannot fall to zero — the events lane keeps its genuine
     // riders (`thrash_block`, `delegation_hint`, `fanout_join`, every awareness notice).
+    // The floor is the engine's GENUINE riders, the ones T53 never touches: the thrash
+    // ladder's terminal block (which files no steer at all), the delegation hint, the
+    // scaffold-title note and the close-the-loop notice.
     expect(eventWrites().length, 'the walk found no events-lane writes — it is measuring the wrong thing')
-      .toBeGreaterThan(9);
+      .toBeGreaterThanOrEqual(4);
 
     const undeclared = derived.filter((p) => QUEUE_PAIRED_RIDERS[p.floor]?.intent !== p.intent);
     // If this fails: a steer floor is writing a SECOND model-facing channel and nothing says
