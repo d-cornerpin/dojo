@@ -3662,6 +3662,27 @@
       "to": 377,
       "by": "UX-REPAIR ROUND 12 T52 — the composed answer delivers the first time (owner ruling 4)",
       "why": "+119 (+124/-5; 95 of the added lines are comment, so the CODE IS +29 and every line of it is one arm). It lives HERE and nowhere else: this file IS the decision that demoted the owner's answer, and the fix is that decision taking a third opener — moving it out would leave the demotion where it is and add a second authority over the same text, which is the disease this tree is being cleaned of. The 29 code lines are: the `stillCompileOwed` import, the `compileOwedNow` read (guarded so a turn with nothing armed asks the database nothing), the third clause in the existing opener disjunction, the promotion arm itself (trim, consume, mint the row id, deliver, stamp the truthful-answer key, one `advance` carrying three existing flags), one log line, one `let` and one clause on the demotion guard. THE 95 COMMENT LINES ARE THE PAYLOAD AND THEY ARE THE SAME KIND THIS FILE'S EXISTING RAISES BOUGHT: this is the third owner ruling layered onto one arm (2026-07-22, the 2026-07-23 deletion, T41's 2026-08-12 re-rule, now T52), and a reader who cannot tell them apart will collapse them. They record the incident READ OFF THE BODY row by row (seq 65933/65934/65939 and the two deliveries), the ROOT — that the demotion writes `role='system'`, which never enters model context, so the model composed again because from where it sat it never had — and the four facts that keep the arm from being widened by accident: the question asked is T47's armed state and nothing else, BUG-2 keeps it off conversation turns for free, `startAckRepliedNow()` is what makes it exactly-once from the record rather than a latch, and it delivers an ANSWER rather than an ack BECAUSE an ask cannot close on a start-ack. REFUSED: clearing `compile_pending` here — T47's predicate says the disarm is a READ, never a latch, and a second owner of that fact is how the flag comes to disagree with the ledger. REFUSED: any reading of the model's text (a length bound, a shape test) — the prose ban, and the structural facts are sufficient. REFUSED: folding the new flag into `deliveredAsStartLine` — they mean different things to the ack latch, the settlement exclusions and the steer stand-down. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/agents.ts",
+      "from": 842,
+      "to": 847,
+      "by": "UX-REPAIR ROUND 12 T50 (W36) — the settings rename door calls the one door",
+      "why": "+5 (1 code, 4 comment). THE CODE IS A NET DELETION AT THIS SITE: the inline `updates.push('name = ?')` + `params.push(...)` pair is GONE, replaced by one `renameAgent(id, body.name.trim())` call, and the batch UPDATE below no longer carries the name. This file went from OWNING a rename to CALLING one — the same trade `agent-status.ts` made when five status writes became `writeAgentStatus`. THE 4 COMMENT LINES ARE THE ONLY PLACE ONE FACT IS WRITTEN DOWN: that the dashboard card used to make a SECOND call of its own (`api.setSetting('pm_agent_name', …)` in AgentConfigPanel.tsx) to keep the platform role name in sync, i.e. the invariant lived in the CLIENT where it could drift, and now rides the door. A reader who deletes that note will not know why the client call is redundant rather than missing. REFUSED: leaving the name in the batch and calling the door afterwards — two writers for one column, one of which skips the re-fill, is the defect this task exists to end. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/config.ts",
+      "from": 2530,
+      "to": 2550,
+      "by": "UX-REPAIR ROUND 12 T50 (W36) — the DECISIVE rename door, which never touched agents.name",
+      "why": "+20 (9 code, 10 comment, 1 blank). THE 9 CODE LINES ARE THE WHOLE POINT OF THE TASK: `<role>_agent_name` IS the display name for the primary / PM / trainer / imaginer / healer / dreamer — `config/platform.ts`'s getters read this key and NOT the agents row, and `substitutePlatformNames` bakes the result into the stored soul at seed time — so a write here renamed the agent everywhere that mattered while the row and every soul kept the old name. The lines resolve the role's id through the declared `ROLE_NAME_TO_ID_KEY` map, confirm the agent exists, and call the one door. IT HAS TO BE HERE because this generic key-value handler is the only code that sees the key. THE 10 COMMENT LINES CARRY THE ARGUMENT A READER CANNOT RECONSTRUCT: why a config write is a rename at all (the getter/soul chain, named), and why the generic upsert below is deliberately left to run — it rewrites the same value, so every other key, and a role key set during SETUP before the agent row exists, behaves byte-identically. That second half is exactly the line a later cleanup would delete as redundant, breaking setup. REFUSED: replacing the generic upsert with a branch — it makes one handler two, and the setup ordering falls out of the seam. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/agents.ts",
+      "from": 1387,
+      "to": 1392,
+      "by": "UX-REPAIR ROUND 12 T50 (W36) — the tool rename door calls the one door",
+      "why": "+5 (1 code replaced, 4 comment). THE CODE IS A SWAP, NOT AN ADDITION: the inline `UPDATE agents SET name = ?, updated_at` becomes `renameAgent(target.id, trimmedName)`. Everything around it is byte-identical on purpose — the same guard (non-empty, different from current), the same `finalName`, and the same reported `name: \"old\" → \"new\"` change line, because this file's contract with the model is its output string and a merger must not reword it. THE 4 COMMENT LINES SAY THE THING THE CALL CANNOT: that this was one of THREE such writes and that none of them touched the stored soul, which is why a call replaced a statement. Without it the next reader sees a needless indirection and inlines the UPDATE back. REFUSED: routing the tool through the settings route to avoid a third caller — an HTTP hop inside a tool handler for the sake of a line count. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3712,7 +3733,7 @@
     "packages/server/src/agent/shared-state.ts": 134,
     "packages/server/src/agent/spawner.ts": 1420,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
-    "packages/server/src/agent/tools/cat/agents.ts": 1387,
+    "packages/server/src/agent/tools/cat/agents.ts": 1392,
     "packages/server/src/agent/tools/cat/comms.ts": 854,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
@@ -3812,9 +3833,9 @@
     "packages/server/src/credentials/secret-fields.ts": 241,
     "packages/server/src/db/migration-backup.ts": 365,
     "packages/server/src/db/migration-checksums.ts": 270,
-    "packages/server/src/gateway/routes/agents.ts": 842,
+    "packages/server/src/gateway/routes/agents.ts": 847,
     "packages/server/src/gateway/routes/chat.ts": 492,
-    "packages/server/src/gateway/routes/config.ts": 2530,
+    "packages/server/src/gateway/routes/config.ts": 2550,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/setup-deps.ts": 513,
     "packages/server/src/gateway/routes/tracker.ts": 959,

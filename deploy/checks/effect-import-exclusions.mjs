@@ -107,6 +107,12 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
     why: 'the update state file, a fixed platform path. No argument reaches it.',
   },
   {
+    file: 'prompt/agent-rename.ts',
+    klass: 'agent-triggered',
+    why: 'UX-REPAIR T50, the one rename door. It re-fills the STORED souls after a display name changes, and the file set is not an argument: it is `readdirSync(~/.dojo/prompts)` filtered to `SOUL.md` and `*-SOUL.md`, the same directory and the same naming rule `prompt/assembler.ts` already holds a platform-internal exclusion for (it is that file\'s `writeSoulFile` one layer up, and `update_agent` could already reach that through `writeAgentPromptSurface`). An agent CAN trigger it — `update_agent` renames a sub-agent — but the only thing an agent supplies is the new display NAME, which becomes file CONTENT through a word-boundary replacement of the old name. No argument forms a path, no path is joined from input, and no file outside the prompts directory is opened. Routing it through the facade would record an agent-facing fs site whose resource is a fixed platform directory, which is the thing the classification exists to stop being blurred.',
+    residual: 'the stored soul an agent-triggered rename rewrites is a platform file, not a resource the agent named — the write is gate-DECIDED at the rename door and not facade-carried.',
+  },
+  {
     file: 'update/artifact-integrity.ts',
     klass: 'agent-triggered',
     why: 'streams the downloaded update artifact through sha256 before anything is rsynced over the running install. The path is the platform\'s own download location; routing it through an agent-facing broker would record an agent-facing fs site that does not exist (the $raise-no-restricted-imports-t6b record measured the three alternatives).',
