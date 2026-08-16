@@ -69,6 +69,7 @@ vi.mock('../../db/connection.js', async () => {
 import { runMigrations } from '../../db/migrations.js';
 import { trackerListActive } from '../../tracker/tools.js';
 import { COMMITMENT_POSITION_NONE, commitmentPositionLine } from '../../work/obligation-memory.js';
+import { engineFileWithBoth } from '../../agent/v2/__tests__/engine-sources.js';
 
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8');
@@ -194,18 +195,24 @@ describe('§3 the audit\'s KEEP verdicts are pinned, not asserted', () => {
     expect(read('prompt/templates.ts')).toContain('generic approval');
   });
 
+  // The two steer texts are located through `engine-sources.ts`, never by a path of our own:
+  // PHASE-6's guard-corpus census refuses a second hand-rolled walk of `agent/v2/steps`, and
+  // it is right to — a pin that names a file directly stops seeing its subject silently the
+  // day a tranche moves it, which is precisely how a KEEP verdict would rot into drift.
   it('T33 — the standing-promise steer text is unchanged', () => {
-    const floor = read('agent/v2/steps/post-call-classify/promise-floor.ts');
-    expect(floor).toContain('Your reply made a STANDING promise to the user');
-    expect(floor).toContain('A promise that lives only in this conversation does not survive a ');
-    expect(floor).toContain('Do not repeat the promise without recording it.');
+    const floor = engineFileWithBoth(
+      'Your reply made a STANDING promise to the user',
+      'Do not repeat the promise without recording it.',
+    );
+    expect(floor.text).toContain('A promise that lives only in this conversation does not survive a ');
   });
 
   it('T36 — the standing-state steer text is unchanged, bounded retry included', () => {
-    const floor = read('agent/v2/steps/post-call-classify/promise-floor.ts');
-    expect(floor).toContain('Your reply told the user what is currently scheduled or owed');
-    expect(floor).toContain('This round is for ');
-    expect(floor).toContain('do not pick up new work you were not asked for.');
+    const floor = engineFileWithBoth(
+      'Your reply told the user what is currently scheduled or owed',
+      'do not pick up new work you were not asked for.',
+    );
+    expect(floor.text).toContain('This round is for ');
   });
 
   it('T33/T36 keep the capability half AT the door, where T29 put it', () => {
