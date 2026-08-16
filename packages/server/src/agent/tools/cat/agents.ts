@@ -58,6 +58,11 @@ import { resolveTaskId, getTask } from '../../../tracker/schema.js';
 import { sanitizeMessagesOnModelChange } from '../../model-switch.js';
 import { updateGroup as doUpdateGroup, SYSTEM_GROUP_ID as SYS_GROUP_U, getGroupDetail, getGroups as listAllGroups, deleteGroup as doDeleteGroup, SYSTEM_GROUP_ID as SYS_GROUP } from '../../groups.js';
 import { writeTaskLog } from '../../../tracker/task-log.js';
+// T43a: the two EXISTING authorities the capability clause is derived from — the advertised
+// per-agent tool grant (`surface.ts`, a leaf `cat/` may import; `cat/meta.ts` already does)
+// and the declared tool-name grouping that backs the prompt's tool index.
+import { getFilteredTools } from '../surface.js';
+import { TOOL_CATEGORIES } from '../../../tools/categories.js';
 import type { ToolHandlerMap } from '../handler.js';
 
 // ── P4: mandatory squad resolution for agent spawns ──
@@ -124,6 +129,93 @@ async function resolveSpawnSquad(opts: {
   const callerName = caller?.name ?? 'Agent';
   const group = createGroup(`${callerName}'s squad`, `Ad-hoc squad for agents spawned by ${callerName}.`, opts.callerAgentId);
   return { groupId: group.id, squadName: group.name, note: '' };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// UX-REPAIR ROUND 11 T43a — CAPABILITY TRUTH AT THE DELEGATION DOOR
+// ════════════════════════════════════════════════════════════════════════════
+//
+// THE INCIDENT (round-11 S5-A). BehaviorBot called `list_agents` before delegating. The door
+// answered name / status / classification / group / activity and NOTHING about what any of
+// them can DO, so it handed a WEB RESEARCH assignment to kelly — the PM, who holds no web
+// tools. She could only punt it to kevin, and the punt then satisfied her piece of the join
+// (that half is T43b/c). The one fact the choice needed was the one fact the door withheld.
+//
+// SAME FAMILY AS T29's CHANNEL-DOOR TRUTH: the surface the agent reads AT the decision moment
+// states what the platform already knows, and the agent stops guessing. Nothing is added to
+// the prompt; this is a tool RESULT.
+//
+// STEP-0 (the task's own STOP gate: "derive from the REAL tool-grant source, do not
+// hard-code; STOP if per-agent grants are not derivable") — PASSED, measured through that
+// source on the dev body 2026-08-15: Kevin 407 granted tools, Healer 242, Ticky 241,
+// BehaviorBot 240, Dreamer 168, Imaginer 156, KELLY 47 — and Kelly holds nothing from `Web`,
+// `Communication`, `Gmail`, `Google Calendar` or `Google Drive / Docs / Sheets`. The
+// incident's premise is a property of the grants, and the grants are readable.
+//
+// THE TWO SOURCES, BOTH EXISTING, NEITHER RETYPED:
+//   * `getFilteredTools(agentId)` — `agent/tools/surface.ts`, THE advertised-surface
+//     authority: the permissions manifest, `tools_policy` allow/deny, account connectivity
+//     and the FA-TS2 strip, i.e. exactly the list that agent is told it has. It is memoized
+//     per agent behind a generation + row fingerprint, so this door pays a real recompute at
+//     most once per agent per policy change, and `list_agents` is a deliberate, rare call.
+//   * `TOOL_CATEGORIES` — `tools/categories.ts`, the DECLARED grouping of tool names that
+//     already backs the prompt's tool index. No tool name is typed here.
+//
+// CENSUS / COLLISION (the mission rule). The one new declaration is the five-row table below:
+// which capabilities a delegator actually chooses an assignee FOR, each defined by pointing
+// at existing category labels. Collisions examined: `TOOL_CATEGORIES` itself answers "how is
+// the tool index grouped for MY prompt", not "what can THAT agent be asked to do";
+// `sensei-policy`'s SEND_TO_PEOPLE is a security domain; `RECEIPT_TOOLS` is a verification
+// tier. None of the three answers the delegation question, and none is displaced. The list is
+// bounded on purpose: the plan asks for ONE line per agent, and dumping all 38 categories
+// would bury the fact that made the incident.
+const DELEGABLE_CAPABILITIES: ReadonlyArray<{ label: string; categories: readonly string[] }> = [
+  { label: 'web research', categories: ['Web'] },
+  { label: 'email', categories: ['Gmail', 'Outlook'] },
+  { label: 'calendar', categories: ['Google Calendar', 'Microsoft Calendar'] },
+  { label: 'files', categories: ['Google Drive / Docs / Sheets', 'OneDrive', 'SharePoint', 'Office Documents'] },
+  { label: 'messaging people', categories: ['Communication', 'Twilio (SMS + Voice phone calls)', 'Microsoft Teams'] },
+];
+
+/** capability label -> the tool names that provide it, resolved from the declared categories.
+ *  A referenced label that no longer exists resolves to NO tools, which would read as "this
+ *  agent cannot" for everyone — so the conformance clause in
+ *  `__tests__/the-delegation-door-states-capability.test.ts` asserts every label resolves. */
+const capabilityToolSets = (): Map<string, Set<string>> => {
+  const byLabel = new Map(TOOL_CATEGORIES.map((c) => [c.label, c.tools] as const));
+  return new Map(DELEGABLE_CAPABILITIES.map((cap) => [
+    cap.label,
+    new Set(cap.categories.flatMap((label) => byLabel.get(label) ?? [])),
+  ]));
+};
+
+/**
+ * ONE LINE of capability truth for an agent, both directions, always stated.
+ *
+ * Silence-means-capable was the shape that produced the incident: a reader cannot tell "this
+ * agent can" from "the platform did not say". So the clause always names what the agent CAN
+ * be asked for and what it CANNOT, and never omits both.
+ */
+export function capabilityClause(agentId: string): string {
+  let granted: Set<string>;
+  try {
+    granted = new Set(getFilteredTools(agentId).map((t) => t.name));
+  } catch (err) {
+    logger.warn('list_agents: capability read failed (non-fatal, clause omitted)', {
+      agentId, error: err instanceof Error ? err.message : String(err),
+    });
+    return '';
+  }
+  const sets = capabilityToolSets();
+  const can: string[] = [];
+  const cannot: string[] = [];
+  for (const { label } of DELEGABLE_CAPABILITIES) {
+    const tools = sets.get(label);
+    ([...(tools ?? [])].some((t) => granted.has(t)) ? can : cannot).push(label);
+  }
+  if (cannot.length === 0) return `can: ${can.join(', ')}`;
+  if (can.length === 0) return `no: ${cannot.join(', ')}`;
+  return `can: ${can.join(', ')}; no: ${cannot.join(', ')}`;
 }
 
 export const agentsHandlers: ToolHandlerMap = {
@@ -1062,7 +1154,9 @@ export const agentsHandlers: ToolHandlerMap = {
           activityStr = ', no activity';
           dormant = true;
         }
-        let line = `- ${a.name} (ID: ${a.id}), ${labelForStatus(a.status as string, false)}, ${a.classification}${a.group_name ? `, group: ${a.group_name}` : ''}${activityStr}`;
+        // T43a: capability truth, at the door the delegator actually reads.
+        const caps = capabilityClause(a.id as string);
+        let line = `- ${a.name} (ID: ${a.id}), ${labelForStatus(a.status as string, false)}, ${a.classification}${a.group_name ? `, group: ${a.group_name}` : ''}${activityStr}${caps ? ` — ${caps}` : ''}`;
         if ((a.status === 'error' || a.status === 'paused') && a.last_error) {
           const errorSnippet = (a.last_error as string).slice(0, 150);
           line += `\n    Last error: ${errorSnippet}`;
@@ -1078,7 +1172,10 @@ export const agentsHandlers: ToolHandlerMap = {
       // still flagged loudly because that's load-bearing operational info.
       lines = agentRows.map(a => {
         const groupSuffix = a.group_name ? `, group: ${a.group_name}` : '';
-        return `- ${a.name} (${a.id}), ${labelForStatus(a.status as string, true)}, ${a.classification}${groupSuffix}`;
+        // T43a: capability truth in BOTH modes — the compact mode is the one an agent
+        // reaches for before delegating, which is the call the incident was made from.
+        const caps = capabilityClause(a.id as string);
+        return `- ${a.name} (${a.id}), ${labelForStatus(a.status as string, true)}, ${a.classification}${groupSuffix}${caps ? ` — ${caps}` : ''}`;
       });
     }
 
