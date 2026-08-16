@@ -3592,6 +3592,34 @@
       "to": 1307,
       "by": "UX-REPAIR ROUND 12 T48 (W33) — the `compile_resolved` row names the hand that composed the answer",
       "why": "+13 net (21 added, 8 replaced; 8 code, 13 comment). THE 8 CODE LINES ADD NO CODE PATH: `basis` gains a third value `'engine-relay'` in two type declarations, and the THREE `basis === 'compiled'` tests inside `settleOnJoin` become ONE `lateAnswer` binding used three times. That is a net simplification of the decision — the arm that differs is the late-answer arm, and asking for it by name is the only spelling under which a fourth basis cannot silently inherit the wrong boundary. The rule itself is UNCHANGED and shared, not copied: children all settled, boundary at `join_complete`, the delegating turn's own bubbles still not the receipt. THE 13 COMMENT LINES ARE THE TWO THINGS THE DIFF HIDES. (i) WHAT THE NEW BASIS MEANS AND WHAT IT DOES NOT: it is a WORD on the `compile_resolved` row saying which hand composed the answer the ask closed on — the model's, or the ladder's relay of the peers' own text — and it decides nothing else, which is why it shares the compiled arm rather than forking it. (ii) WHY THE THREE TESTS COLLAPSED INTO ONE: a third `basis === 'compiled'` test at each site would have routed the new basis down the late-answer arm — boundary at the ask's own arrival, no delegating-turn constraint — which is a different rule wearing the same name, and it would have gone unnoticed because both arms close the ask. REFUSED: reusing `'compiled'` for the relay and letting the `reason` string carry the distinction — reasons are free prose and `compile_resolved.basis` is the field every reader of this history keys on; a fact worth recording belongs in the field, not in a sentence. REFUSED: recording the relay basis with a second `appendWorkEvent` beside the authority's own — that is a second writer for one fact, which is the shape this module exists to end. FENCE NOTE: this file is outside W33's written fence and the edit is named in the T48 commit body for that reason; it is the settlement AUTHORITY, and the alternative was for the transport to write the ask's history itself. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/refusal-gates.ts",
+      "from": 337,
+      "to": 393,
+      "by": "UX-REPAIR ROUND 12 T47 (W33) — the owed compile is enforced, not requested",
+      "why": "+56 (36 code, 19 comment, 1 blank; 56 added, 0 deleted). THIS FILE IS WHERE THE ENGINE REFUSES A CALL BEFORE IT RUNS, by its own header, and a sixth gate belongs in it for the same reason the fifth does: `runRefusalGates` is the ONE function `run-one.ts` consults before dispatch, and a gate anywhere else would be a second refusal door the next reader has to discover. THE 36 CODE LINES ARE THE MINIMUM SHAPE THE PRECEDENT ALREADY SETS, copied deliberately from the close-out gate twenty lines above: one `compileOwedGateDecision` call, one `advance` that drops asks whose compile is no longer owed, one refusal built and broadcast, one return. The decision, the allowed set and both spine reads are NOT here — they are in `agent/v2/compile-owed-gate.ts`, a new 150-line module that needs no pin, which is where the shrink was taken. THE 19 COMMENT LINES CARRY THE THREE THINGS THE BRANCH CANNOT SAY FOR ITSELF. (i) THE MEASURED INCIDENT: round-12 S5, three steers each saying \"Do NOT search, open files, run commands, or call any tools first\", answered with `load_tool_docs`, `history_search`, `history_get`, `work_update` (errored ×2) and `history_get` across 12m26s with no reply — persuasion failed 3/3, which is the whole justification for a refusal existing at all. (ii) WHY IT SITS AFTER THE CLOSE-OUT GATE AND WHY THAT IS NOT ARBITRARY: when both are armed the agent should read \"tracker call first\" from the gate whose own text says it, and there is no deadlock in either order because this gate's allowed set is a SUBSET of that gate's — the collision the task required argued, recorded at the site where a later reader would reorder the two. (iii) WHY THE RE-VALIDATION IS THE DISARM: the decision re-reads `compile_pending` at the moment it would refuse, so the model's own answer, T48's engine relay, a fail-closed notice and a bare flag clear all take the gate down without knowing it exists. REFUSED: folding the new branch into the close-out gate's own `if` to save lines — their arming conditions, their allowed sets and their refusal texts all differ, and a shared branch would have made the union that prevents the deadlock invisible. REFUSED: putting the refusal TEXT in the gate module — every other refusal in this file is composed at its own site with the tool name in it, and one text living somewhere else would break that reading. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/state.ts",
+      "from": 668,
+      "to": 690,
+      "by": "UX-REPAIR ROUND 12 T47 (W33) — two turn-state fields for the compile gate",
+      "why": "+22 (4 code, 18 comment). THE 4 CODE LINES ARE THE WHOLE ADDITION: `compileOwedAskIds` and `compileGateSatisfied` in the interface, and their two defaults in `initState`. It is exactly the close-out gate's own two-field shape (`danglingTaskIds` / `closeOutGateSatisfied`, declared forty lines above), because an enforcement armed at preflight and spent at dispatch needs precisely those two facts and no third. THE 18 COMMENT LINES ARE THIS FILE'S OWN CONVENTION, not decoration: every field here carries the incident and the rule that put it there, and a bare field with no doc block is the shape the deleted `autoScaffoldedTaskIdThisTurn` note (still in this file, forty lines below) records as \"worse than no field: the next reader's wrong mental model\". What they record is (i) that `compileOwedAskIds` is EMPTY on a turn a human is waiting on — BUG-2, inherited, and the one property a later reader must not optimise away — and (ii) why `compileGateSatisfied` errs toward disarm, which is the judgement a reader would otherwise read as a bug. REFUSED: reusing `danglingTaskIds` for both gates. Two enforcements with different arming conditions, different allowed sets and different disarms sharing one list would make each gate able to silence the other, and the union argument that prevents their deadlock would have nowhere to live. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts",
+      "from": 323,
+      "to": 348,
+      "by": "UX-REPAIR ROUND 12 T47 (W33) — the owed compile is discharged by the reply itself",
+      "why": "+25 net (27 added, 2 replaced; 11 code, 13 comment, 1 blank). THE 11 CODE LINES ARE ONE FOUR-LINE HELPER AND ITS TWO USES: the helper answers \"is the compile duty outstanding, and is this the moment it stops being?\", and it is spread into the two `advance` calls this file already makes when it persists assistant text. IT LIVES HERE BECAUSE THIS IS WHERE THE REPLY LANDS — the file's own subject is persisting what the model said, and \"the owed reply landed\" is that event and no other. The two call sites are the two arms this file already has (text-with-tools, and text-only), so the addition is one line each rather than a new branch. THE 13 COMMENT LINES ARE ONE JUDGEMENT AND IT IS THE KIND A LATER SWEEP DELETES AS A BUG: the helper fires on ANY persisted assistant text, including a mid-turn caption that is not the compile at all. That is deliberate and the comment is the only place the argument exists — erring toward DISARM is the safe direction by BUG-2's own lesson (a gate still refusing after a person's answer went out is the recorded failure), and the gate re-arms next turn from the spine if the compile is genuinely still pending, so the loose direction has a floor and the tight one does not. REFUSED: satisfying the gate at `noteTerminalAnswer` instead, which is the tighter-looking hook — it is called only on the text-ONLY arm, so the text-with-tools round, which is the exact shape that traps the turn, would never have satisfied the gate. REFUSED: doing without the within-turn disarm and relying on the next turn's spine read alone — that leaves the model refused on the very round it complied. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/preflight/index.ts",
+      "from": 290,
+      "to": 296,
+      "by": "UX-REPAIR ROUND 12 T47 (W33) — the compile gate's section, called",
+      "why": "+6 (2 code, 3 comment, 1 blank): one import and one call. This is the step's ENTRY POINT and RULING P6-R1 makes it the only place a section may be called from — a section wired in anywhere else would be a second composition order for one step. The 3 comment lines say the one thing the call cannot: that this gate sits immediately after the one it inherits BUG-2 from, shares its `triggerRow` ternary, and that the two allowed sets union so a turn armed by both always has a legal move — the pointer a reader needs at the composition site, where the temptation to reorder the two lives. REFUSED: calling `runCompileGate` from inside `closeout-gate.ts` to avoid touching this file — that hides one gate inside another's section, and the contract test's in-span `advance` census would have counted a state write it could not name. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3668,7 +3696,7 @@
     "packages/server/src/agent/v2/receipt.ts": 442,
     "packages/server/src/agent/v2/recorded-commitment.ts": 209,
     "packages/server/src/agent/v2/recovery.ts": 605,
-    "packages/server/src/agent/v2/state.ts": 668,
+    "packages/server/src/agent/v2/state.ts": 690,
     "packages/server/src/agent/v2/steer-queue.ts": 335,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
     "packages/server/src/agent/v2/steps/assemble/index.ts": 302,
@@ -3683,7 +3711,7 @@
     "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 225,
     "packages/server/src/agent/v2/steps/execute/index.ts": 289,
     "packages/server/src/agent/v2/steps/execute/post-result.ts": 351,
-    "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 337,
+    "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 393,
     "packages/server/src/agent/v2/steps/execute/result-notes.ts": 152,
     "packages/server/src/agent/v2/steps/execute/run-one.ts": 280,
     "packages/server/src/agent/v2/steps/execute/scaffold-title.ts": 149,
@@ -3710,7 +3738,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/no-reply.ts": 359,
     "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 104,
     "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 276,
-    "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 323,
+    "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 348,
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 286,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 417,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
@@ -3725,7 +3753,7 @@
     "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 238,
     "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts": 284,
     "packages/server/src/agent/v2/steps/preflight/inbound-and-abort.ts": 202,
-    "packages/server/src/agent/v2/steps/preflight/index.ts": 290,
+    "packages/server/src/agent/v2/steps/preflight/index.ts": 296,
     "packages/server/src/agent/v2/steps/preflight/recall-flag.ts": 102,
     "packages/server/src/agent/v2/steps/preflight/start-ack.ts": 176,
     "packages/server/src/agent/v2/steps/preflight/step-contexts.ts": 138,
