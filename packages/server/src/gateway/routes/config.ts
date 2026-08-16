@@ -13,6 +13,7 @@ import { DEFAULT_SOUL_MD as DEFAULT_SOUL, DEFAULT_USER_MD as DEFAULT_USER } from
 import { getOllamaModelInfo } from '../../services/ollama.js';
 import type { Provider, Model } from '@dojo/shared';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
+import { renameAgent, roleNameKeyToIdKey } from '../../prompt/agent-rename.js';
 
 // ── Model Usage Helper ──
 
@@ -1903,6 +1904,25 @@ configRouter.put('/settings/:key', async (c) => {
   if (!body || typeof body.value !== 'string') {
     return c.json({ ok: false, error: 'value string is required' }, 400);
   }
+
+  // UX-REPAIR T50 — THE DECISIVE RENAME DOOR, and the one nobody would guess.
+  // `<role>_agent_name` IS the display name for the primary / PM / trainer / imaginer / healer /
+  // dreamer: `config/platform.ts`'s getters read this key, not the `agents` row, and
+  // `substitutePlatformNames` bakes the result INTO the stored soul at seed time. So a write
+  // here renamed the agent everywhere that matters while `agents.name` and every stored soul
+  // kept the old one. Route it through the one door, which writes the row, writes this key, and
+  // re-fills the souls. The generic upsert below still runs and is idempotent: it rewrites the
+  // same value, so every other key — and a role key whose agent does not exist yet, during
+  // setup — behaves exactly as it did.
+  const roleIdKey = roleNameKeyToIdKey(key);
+  if (roleIdKey) {
+    const idRow = db.prepare('SELECT value FROM config WHERE key = ?').get(roleIdKey) as { value: string } | undefined;
+    const targetId = idRow?.value;
+    if (targetId && db.prepare('SELECT id FROM agents WHERE id = ?').get(targetId)) {
+      renameAgent(targetId, body.value);
+    }
+  }
+
   db.prepare(`
     INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')

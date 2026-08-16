@@ -80,7 +80,7 @@ function substitutePlatformNames(md: string): string {
 
 /** A stored soul that still carries one of those placeholders was written by the engine's own
  *  default-seeding and never passed through a substituting writer. Nobody authors this. */
-const UNSUBSTITUTED = /\{\{(?:pm_agent_name|trainer_agent_name|primary_agent_name|owner_name)\}\}/;
+export const UNSUBSTITUTED = /\{\{(?:pm_agent_name|trainer_agent_name|primary_agent_name|owner_name)\}\}/;
 
 /**
  * A shipped soul template, substituted — with the in-code stub as the LAST RESORT ONLY, and

@@ -36,6 +36,7 @@ import { writeAgentStatus } from '../../agent-status.js';
 import { isPrimaryAgent } from '../../../config/platform.js';
 import { insertMessageIfAbsent } from '../../../memory/message-store.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../../../prompt/agent-prompt-surface.js';
+import { renameAgent } from '../../../prompt/agent-rename.js';
 import { writeToolReceipt } from '../../../receipts/store.js';
 import { taskScope, projectScope, STATE_TO_STATUS_SQL } from '../../../work/tracker-view.js';
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../../../work/tracker-store.js';
@@ -848,7 +849,11 @@ export const agentsHandlers: ToolHandlerMap = {
         }
         if (typeof newName === 'string' && newName.trim() && newName.trim() !== target.name) {
           const trimmedName = newName.trim();
-          db.prepare("UPDATE agents SET name = ?, updated_at = datetime('now') WHERE id = ?").run(trimmedName, target.id);
+          // UX-REPAIR T50: ONE RENAME DOOR. This was an inline `UPDATE agents SET name`, one of
+          // three in the tree, and none of them touched the stored soul that had the old name
+          // baked into it. `renameAgent` writes the row, carries the platform role name with it,
+          // and re-fills the souls. The reported `changes` line is unchanged.
+          renameAgent(target.id, trimmedName);
           changes.push(`name: "${target.name}" → "${trimmedName}"`);
           finalName = trimmedName;
         }

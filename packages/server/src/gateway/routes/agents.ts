@@ -22,6 +22,7 @@ import { deriveOrigin, legacyOriginInputs, NEW_SESSION_DIVIDER} from '@dojo/shar
 import { noteRouteFailure } from './route-failure.js';
 import { resolveChildScope } from '../../agent/scope.js';
 import { getAgentPermissions } from '../../agent/permissions.js';
+import { renameAgent } from '../../prompt/agent-rename.js';
 
 const logger = createLogger('agents-routes');
 const agentsRouter = new Hono();
@@ -298,8 +299,12 @@ agentsRouter.put('/:id', async (c) => {
   const params: unknown[] = [];
 
   if (typeof body.name === 'string' && body.name.trim()) {
-    updates.push('name = ?');
-    params.push(body.name.trim());
+    // UX-REPAIR T50: ONE RENAME DOOR. This was an inline `name = ?` in the batch below, one of
+    // THREE places the tree changed a display name — and a stored soul seeded with the old name
+    // stayed stale after every one of them. `renameAgent` writes the row, carries the platform
+    // role name with it (this card's own `saveName` used to make that second call itself, in
+    // the dashboard, where it could drift), and re-fills the souls that named the agent.
+    renameAgent(id, body.name.trim());
   }
 
   if (typeof body.modelId === 'string') {
