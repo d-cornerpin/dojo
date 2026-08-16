@@ -3725,6 +3725,62 @@
       "to": 1787,
       "by": "UX-REPAIR ROUND 12 T59 (W42) — the service agents get their souls",
       "why": "+96. The THIRD raise on this file for the SAME reason, and the reason is the design: T40 made this module the ONE owner of soul resolution, so W24 (PM, 1528->1625), W25 (Trainer, 1625->1673) and now the Healer and the Imaginer all land here by construction. Putting the lookup anywhere else would re-create the two-stores defect all three tasks exist to close. WHAT THE 96 LINES ARE, counted: 44 are the two shipped-soul default wrappers over W25's `shippedSoulDefaultFrom` and their doc blocks; 30 are the argued header on `soulFileForAgent` that the T59 ruling REQUIRES in-file (T57's working-note refusal, the Dreamer's Step-0 stand-down with its measurement, and the per-agent-branch precedence); 12 are `PLATFORM_SOUL_PLACEHOLDERS` and the substituter's note; 2 are the branches themselves; 8 are imports and blank lines. NET ACROSS THE COMMIT IS SMALLER THAN THIS NUMBER: `healer/healer-agent.ts` fell 1186->1135 (-51) and `imaginer/imaginer-agent.ts` 217->194 (-23) in the same change, because both dead readers were DELETED rather than left beside the live one. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 4807,
+      "to": 5046,
+      "by": "UX-REPAIR ROUND 13 T60 (W43) — activity over a window becomes readable",
+      "why": "+239 (79 code, 137 comment, 23 blank). THE CODE IS THE NEW DOOR AND NOTHING ELSE: `trackerActivity` — five GROUP BY reads over ledgers that already existed (work.opened_at / closed_at, the occurrence events, adjudications, deliveries), the row list with its cap, and the elision line — plus two three-line helpers (local midnight through the scheduler's own zone rules, and the row-id renderer) and two lines on the list door's footer. THE COMMENT IS 137 LINES AND EVERY BLOCK OF IT IS LOAD-BEARING: the incident (round-13 S4 answered \"quiet day … nothing else changed on the tracker\" over 57 rows opened AND closed, catalog §8.5 UNBACKED), the CENSUS ROW the mission rule demands with its three collision arguments (vs list = now versus a window · vs get = one row versus every row · vs the HL5 snapshot lane = injected commitments versus pulled history), the three narrowings on the deliveries query with the tree-walk that caught the missing one (`owner-close-receipt.test.ts` refuses any reader that would count an attempt or the owner's own close receipt as an arrival), and — the paragraph a later reader most needs — WHY THE WINDOW IS NOT A WIRE PARAMETER: declaring `hours`/`since` on `work_update` would move the cached tools prefix, and reading them undeclared would have the engine's own unknown-argument census tell the model the arg \"was silently ignored\" while this function acted on it. REFUSED: a flag on `action=\"list\"` (+0 here) — a switch between \"now\" and \"over a window\" on one answer is exactly the substitution that produced the incident. REFUSED: cutting the census/collision comment (-40) — it is the one thing the mission rule requires in-file and the first thing a size pass would delete. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/finalize-record.ts",
+      "from": 430,
+      "to": 499,
+      "by": "UX-REPAIR ROUND 13 T61(b) (W43) — \"answered with nothing consulted\" becomes countable",
+      "why": "+69 (24 code, 41 comment, 4 blank). The code is one SELECT of three columns, one five-clause predicate, one log line and one `appendWorkEvent` — the W20/T41 rider's shape, in the same file, twenty lines below it, deliberately: this boundary is where \"what did this turn actually do\" is already known, and a second module asking the same five questions would be the parallel-mechanism disease. The 41 comment lines are (a) the incident with its recorder-proven no-source-anywhere finding, (b) each of the five clauses and why it is a RECORD rather than a judgment — the engine may not classify \"this ask needed sources\" from the ask's prose, so it counts shapes — and (c) the ordering note that is the sharpest thing here: the trigger row is read BEFORE `settleAsksAtTurnFinalize` because settlement NULLS `claimed_by_turn`, which is the freshness clause, and a regression there would silently stop the marker forever with nothing failing. REFUSED: a new module (+0 here, +80 there) — it would re-read state this function already holds. REFUSED: dropping the ordering paragraph (-8) — it is the only warning against a silent, permanent regression. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/prompt/assembler.ts",
+      "from": 1787,
+      "to": 1823,
+      "by": "UX-REPAIR ROUND 13 T61(a) (W43) — a factual specific goes out verified or flagged",
+      "why": "+36 (4 code, 30 comment, 2 blank). The 4 code lines are one `lines.push` of a two-line section and one `lines.push('')` — T23's block, one section down, in the file T23 chose for the reason it chose it: an installed agent never receives template edits, so a conduct rule living only in a soul reaches nobody already running. THE 30 COMMENT LINES ARE THE HONEST ROOT STATEMENT AND ITS BOUND, and the bound is why they cannot be cut: the plan requires it recorded WHERE THE RULE IS WRITTEN that this is the WEAK surface by our own HL6 evidence — it narrows model judgment, it cannot guarantee it — and that the measurement half lives at `teardown/finalize-record.ts`, so a later round measures the class instead of re-discovering it. Without that paragraph the next reader either trusts the sentence to have fixed the class or deletes it as decoration. The incident (S1: seven specifics, 5.2 s, zero tools, zero sources anywhere on the box, four hedges present in the reasoning and absent from the reply) is the evidence for both. REFUSED: also folding the sentence into `DEFAULT_SOUL_MD` as T23 did (+0 here) — it would widen the registered delta beyond the one sentence this round blessed. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tools/work-verbs.ts",
+      "from": 373,
+      "to": 392,
+      "by": "UX-REPAIR ROUND 13 T60 (W43) — the tracker door's third read operation",
+      "why": "+19 (4 code, 15 comment). The code is the WORK_OPS member, the router arm, the `isWorkReadOp` disjunct and the close-out allowlist member. The comments are the four things this file exists to stop being re-derived wrongly: WHY the router arm sits ahead of the shape ladder (without it the ladder's terminal `return 'work_update:list'` claims the call, and the model that asked what CHANGED is handed what is OPEN by the router itself — the incident, committed by the code); WHY the op belongs in the READ carve-out on the FN-9 argument rather than by family resemblance (it opens nothing and advances nothing, so treating the read as progress would let a board-read disarm the floor that exists to make the agent do some); WHY the close-out allowlist admits it; and — the one this file most needs — that it is the single member of WORK_OPS with NO retired verb, so the collapse's \"nothing went dark\" proof is kept honest by naming it in the test rather than by loosening the assertion. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/state.ts",
+      "from": 690,
+      "to": 707,
+      "by": "UX-REPAIR ROUND 13 T61(b) (W43) — did recalled memory reach the model this turn",
+      "why": "+17 (2 code, 15 comment). Two code lines: the field and its initializer. The 15 comment lines are this file's own house style and are the reason a later reader will not re-point the latch at the assembler: it is written where the lane is CONFIRMED IN the array the provider is handed — the same \"delivered, recorded not assumed\" reading the steer-delivery latch takes off the same `collectMessageLaneIds` result — because a lane computed and then dropped by the budget is not a read the model had, and a marker built on the assembler's intention rather than the provider's array would undercount the very class it exists to count. The block also records that it has ONE reader, crosses no closure and no timer, and steers nothing. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/tracker.ts",
+      "from": 975,
+      "to": 989,
+      "by": "UX-REPAIR ROUND 13 T60 (W43) — the activity door's dispatch",
+      "why": "+14 (4 code, 9 comment, 1 blank). The code is a four-line handler: one call, one return. The 9 comment lines carry the one decision that is invisible from it — WHY this is its own door and not a flag on `work_update:list`. \"Now\" and \"over a window\" are different questions; a flag would have made them one answer with a switch, which is precisely how the S4 turn came to read three currently-open rows as a quiet day. It also records that `verbose` is the ONE declared property forwarded here and that the window is the renderer's argument rather than the wire's, with the pointer to where that is argued. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/delegation-exit.ts",
+      "from": 153,
+      "to": 165,
+      "by": "UX-REPAIR ROUND 13 T62 (W43) — the swapped-helpers ack, recorded as NOT-DOING",
+      "why": "+12, ALL TWELVE COMMENT, ZERO CODE. The hint string, the predicate and the steer are byte-identical; nothing executes differently. This is the whole deliverable of T62: a ruling that must not be silently re-litigated, parked at the one site a future reader chasing \"why did the hand-off line name the wrong helper\" will land on. It carries the Step-0 evidence re-queried from the turn record (the model's own `send_to_agent` row holds agent and brief adjacent; the results came back in the same order bound by `tool_use_id`, so a positional swap is structurally impossible; the piece rows confirm the work went where the owner asked) and the reason there is nothing to build: any fix would be the engine reading the model's sentence and judging its content, which is the standing prose-classification ban. Twelve lines is what stops the next round spending a task re-deriving that. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts",
+      "from": 266,
+      "to": 275,
+      "by": "UX-REPAIR ROUND 13 T61(b) (W43) — the recall-lane delivery latch",
+      "why": "+9 (3 code, 6 comment). The three code lines are an `if` over the array read that is ALREADY taken one line above (`collectMessageLaneIds(messages)`, the steer-delivery check's own input) and one `advance`. It lands here and not in the assembler for the reason the six comment lines state: this file is OR7 ground and the only place where \"what the provider was actually handed\" is known, and a latch set on the assembler's intention would count a lane the budget then dropped as a read the model had — which would make the T61 marker undercount exactly the turns it exists to count. Nothing about the array changes; the latch is a symbol-free boolean on the turn state. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3781,7 +3837,7 @@
     "packages/server/src/agent/tools/cat/healer.ts": 288,
     "packages/server/src/agent/tools/cat/media.ts": 897,
     "packages/server/src/agent/tools/cat/session.ts": 242,
-    "packages/server/src/agent/tools/cat/tracker.ts": 975,
+    "packages/server/src/agent/tools/cat/tracker.ts": 989,
     "packages/server/src/agent/tools/definitions.ts": 2836,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
@@ -3801,7 +3857,7 @@
     "packages/server/src/agent/v2/receipt.ts": 442,
     "packages/server/src/agent/v2/recorded-commitment.ts": 209,
     "packages/server/src/agent/v2/recovery.ts": 605,
-    "packages/server/src/agent/v2/state.ts": 690,
+    "packages/server/src/agent/v2/state.ts": 707,
     "packages/server/src/agent/v2/steer-queue.ts": 335,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
     "packages/server/src/agent/v2/steps/assemble/index.ts": 302,
@@ -3811,8 +3867,8 @@
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 198,
     "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 338,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
-    "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 266,
-    "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 153,
+    "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 275,
+    "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 165,
     "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 225,
     "packages/server/src/agent/v2/steps/execute/index.ts": 289,
     "packages/server/src/agent/v2/steps/execute/post-result.ts": 351,
@@ -3868,7 +3924,7 @@
     "packages/server/src/agent/v2/steps/step-outcome.ts": 140,
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
     "packages/server/src/agent/v2/steps/teardown/conversation-tagging.ts": 70,
-    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 430,
+    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 499,
     "packages/server/src/agent/v2/steps/teardown/index.ts": 237,
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/costs/tracker.ts": 541,
@@ -3914,7 +3970,7 @@
     "packages/server/src/microsoft/tools-write.ts": 2131,
     "packages/server/src/migration/checks.ts": 537,
     "packages/server/src/migration/import.ts": 407,
-    "packages/server/src/prompt/assembler.ts": 1787,
+    "packages/server/src/prompt/assembler.ts": 1823,
     "packages/server/src/prompt/registry/entries.ts": 542,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
@@ -3936,12 +3992,12 @@
     "packages/server/src/techniques/tools.ts": 892,
     "packages/server/src/tools/tool-docs.ts": 572,
     "packages/server/src/tools/unified-read.ts": 761,
-    "packages/server/src/tools/work-verbs.ts": 373,
+    "packages/server/src/tools/work-verbs.ts": 392,
     "packages/server/src/tracker/delivery-evidence.ts": 320,
     "packages/server/src/tracker/pm-agent.ts": 2448,
     "packages/server/src/tracker/schema.ts": 1105,
     "packages/server/src/tracker/task-stamps.ts": 268,
-    "packages/server/src/tracker/tools.ts": 4807,
+    "packages/server/src/tracker/tools.ts": 5046,
     "packages/server/src/tracker/version-gap-reconcile.ts": 327,
     "packages/server/src/twilio/call-session.ts": 884,
     "packages/server/src/twilio/sms-inbound.ts": 406,
