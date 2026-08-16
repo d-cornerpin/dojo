@@ -136,6 +136,18 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
       !steerFired(state.steerQueue, 'delegation-exit') &&
       state.loopCount < MAX_TOOL_LOOPS
     ) {
+      // ── UX-REPAIR ROUND 13 T62 — NOT-DOING, RULED, so it is not silently re-litigated ──
+      // Round-13 S5: the line this hint asks for came back with the two helpers' names
+      // SWAPPED ("Ticky's on real 3-year cost … Healer's on food quality") while the work
+      // itself was assigned exactly right. Step-0 re-queried the turn record directly (turn
+      // 4946, dev body): the model's own `send_to_agent` row (seq 66563) carries agent and
+      // brief ADJACENT in one object — call_00 healer/COST, call_01 ticky/FOOD QUALITY — and
+      // the results (seq 66566) came back in the same order, each bound by `tool_use_id`, so
+      // a positional swap is structurally impossible at that seam; the piece rows confirm
+      // healer=cost, ticky=food. The model had the truth in context, 7 seconds old, and
+      // misspoke anyway. NO structural contributor exists, so there is nothing to fix here:
+      // any "fix" would be the engine reading the model's sentence and judging its content,
+      // which is the standing prose-classification ban. Recorded, not forgotten.
       const exitSteer =
         '[Engine hint: you delegated work on the user\'s request and are about to end your turn without telling them anything. WRITE ONE short line to them first, directly in this conversation: if you already have their answer, give it now; otherwise say you have handed the pieces off and will report back when they return. Do NOT call imessage_send or any send tool (the engine routes your reply), and do not message any agent again this turn.]';
       // HL3: the RC-19 door — this exit bypasses every turn-ending floor, so nothing else
