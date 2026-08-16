@@ -38,10 +38,17 @@ vi.mock('../../../../../db/connection.js', async () => {
 });
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: () => {} }));
 
-const insertEngineEventIfAbsentSpy = vi.fn();
+// T53 (owner ruling 5): the observation point moved with the carrier. The floor used to
+// write its steer to the events lane as well as the queue, and these clauses watched that
+// events-lane write to read what the model was told. The floor now steers through the RC-19
+// door, so the durable record is a `role='system'` row and the model-facing delivery is the
+// queue entry — both carrying the SAME bytes. Watching the row keeps every assertion below
+// about the steer's WORDS exactly as it was; the clause that pins the two together against
+// drift is in `agent/v2/__tests__/the-second-channel-stops-double-writing.test.ts`.
+const steerRowSpy = vi.fn();
 vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  insertEngineEventIfAbsent: (...a: unknown[]) => insertEngineEventIfAbsentSpy(...(a as [])),
+  insertMessageIfAbsent: (...a: unknown[]) => steerRowSpy(...(a as [])),
 }));
 
 import { runMigrations } from '../../../../../db/migrations.js';
@@ -132,7 +139,7 @@ describe('T22: a promise backed by a future-scheduled row is not an empty promis
     seedOpenedThisTurn({ scheduledStartMs: Date.now() + FIFTEEN_MIN });
     const out = runPromiseFloor(withWorkOpen(stateWith()), ctxFor(), scratch(S1_PROMISE));
     expect(out.directive, 'the user said "in 15 minutes"; the floor must not order the work done NOW').toBe('proceed');
-    expect(insertEngineEventIfAbsentSpy).not.toHaveBeenCalled();
+    expect(steerRowSpy).not.toHaveBeenCalled();
   });
 
   it('a recurring row whose next fire is in the future counts the same', () => {
@@ -146,11 +153,11 @@ describe('T22 controls: the 2026-07-08 case this floor was built for stays red',
   it('THE PIN: a promise with NO tool work at all is still steered', () => {
     const out = runPromiseFloor(stateWith(), ctxFor(), scratch(EMPTY_PROMISE));
     expect(out.directive).toBe('continue');
-    expect(insertEngineEventIfAbsentSpy).toHaveBeenCalledTimes(1);
-    expect((insertEngineEventIfAbsentSpy.mock.calls[0][0] as { originIntent: string }).originIntent)
-      .toBe('promise_floor');
+    expect(steerRowSpy).toHaveBeenCalledTimes(1);
+    expect((steerRowSpy.mock.calls[0][0] as { role: string }).role)
+      .toBe('system');
     // the steer text is byte-identical for the cases that still deserve it
-    expect((insertEngineEventIfAbsentSpy.mock.calls[0][0] as { content: string }).content)
+    expect((steerRowSpy.mock.calls[0][0] as { content: string }).content)
       .toContain('Do the work NOW with tool calls and deliver the result.');
   });
 

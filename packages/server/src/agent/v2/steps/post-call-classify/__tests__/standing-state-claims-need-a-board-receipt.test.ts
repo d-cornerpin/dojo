@@ -52,10 +52,17 @@ vi.mock('../../../../../db/connection.js', async () => {
 });
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: () => {} }));
 
-const insertEngineEventIfAbsentSpy = vi.fn();
+// T53 (owner ruling 5): the observation point moved with the carrier. The floor used to
+// write its steer to the events lane as well as the queue, and these clauses watched that
+// events-lane write to read what the model was told. The floor now steers through the RC-19
+// door, so the durable record is a `role='system'` row and the model-facing delivery is the
+// queue entry — both carrying the SAME bytes. Watching the row keeps every assertion below
+// about the steer's WORDS exactly as it was; the clause that pins the two together against
+// drift is in `agent/v2/__tests__/the-second-channel-stops-double-writing.test.ts`.
+const steerRowSpy = vi.fn();
 vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  insertEngineEventIfAbsent: (...a: unknown[]) => insertEngineEventIfAbsentSpy(...(a as [])),
+  insertMessageIfAbsent: (...a: unknown[]) => steerRowSpy(...(a as [])),
 }));
 
 import { runMigrations } from '../../../../../db/migrations.js';
@@ -140,7 +147,7 @@ function withToolCall(state: AgentTurnState, name: string, args: Record<string, 
   });
 }
 
-const steerText = () => (insertEngineEventIfAbsentSpy.mock.calls[0][0] as { content: string }).content;
+const steerText = () => (steerRowSpy.mock.calls[0][0] as { content: string }).content;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -156,8 +163,8 @@ describe('T36: a reply that asserts standing state without reading the board is 
   it('THE S5 REPLAY: the week recap, zero tool calls → one steer', () => {
     const out = runPromiseFloor(stateWith(), ctxFor(), scratch(S5_RECAP));
     expect(out.directive, 'a recap that asserts what is scheduled and owed must not end the turn unchecked').toBe('continue');
-    expect(insertEngineEventIfAbsentSpy).toHaveBeenCalledTimes(1);
-    expect((insertEngineEventIfAbsentSpy.mock.calls[0][0] as { originIntent: string }).originIntent).toBe('promise_floor');
+    expect(steerRowSpy).toHaveBeenCalledTimes(1);
+    expect((steerRowSpy.mock.calls[0][0] as { role: string }).role).toBe('system');
   });
 
   it('the steer names the door that answers the question, and never speaks to the user', () => {
@@ -230,7 +237,7 @@ describe('T36: the exemption is a BOARD RECEIPT, never prose', () => {
     const out = runPromiseFloor(
       withToolCall(stateWith(), 'work_update', { action: 'list' }), ctxFor(), scratch(S5_RECAP));
     expect(out.directive).toBe('proceed');
-    expect(insertEngineEventIfAbsentSpy).not.toHaveBeenCalled();
+    expect(steerRowSpy).not.toHaveBeenCalled();
   });
 
   it('a work_update get on one row is a read too', () => {
@@ -277,7 +284,7 @@ describe('T36 controls: the recognizer stays conservative (a false positive cost
     vi.clearAllMocks();
     const out = runPromiseFloor(stateWith(), ctxFor(), scratch(text));
     expect(out.directive, `should not steer on: ${text.slice(0, 80)}`).toBe('proceed');
-    expect(insertEngineEventIfAbsentSpy).not.toHaveBeenCalled();
+    expect(steerRowSpy).not.toHaveBeenCalled();
   };
 
   it('a past-work recap with no standing claim is left alone', () => {
@@ -337,7 +344,7 @@ describe('T36 controls: every UNTOUCHED bound still bounds the floor', () => {
     });
     const out = runPromiseFloor(st, ctxFor(), scratch(S5_RECAP));
     expect(out.directive).toBe('proceed');
-    expect(insertEngineEventIfAbsentSpy).not.toHaveBeenCalled();
+    expect(steerRowSpy).not.toHaveBeenCalled();
   });
 
   it('the MAX_TOOL_LOOPS proximity skip is unchanged', () => {

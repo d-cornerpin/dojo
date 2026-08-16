@@ -9,13 +9,15 @@
 // `argsForResult` MOVED with the code, measured `out=0` first.
 // ════════════════════════════════════════
 
-import { v4 as uuidv4 } from 'uuid';
 import { classifyTool } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
-import { insertEngineEventIfAbsent } from '../../../../memory/message-store.js';
 import { CLOSING_WORK_OPS, isWorkVerb, toolOpKey } from '../../../../tools/work-verbs.js';
+import { broadcast } from '../../../../gateway/ws.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { enqueueSteer, steerFired } from '../../steer-queue.js';
+import { persistEngineSteer } from '../../engine-steer.js';
+// T53: `enqueueSteer` is gone from this file — the floor's one steer goes through the
+// RC-19 door, which owns the enqueue and the durable row.
+import { steerFired } from '../../steer-queue.js';
 import { isForwardPromiseReply, isStandingPromiseReply, standingStateClaimSentence } from '../../ack-copy.js';
 import { argsForResult } from './args-for-result.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
@@ -251,25 +253,22 @@ export function runPromiseFloor(
           `was about to end with no work done. Do the work NOW with tool calls and deliver the ` +
           `result. Do not narrate what you are about to do again.`
         );
-        const steerId = uuidv4();
-        try {
-          // Model-visible engine channel, same pattern as the owed-interrupt
-          // re-prompt: an origin_kind='engine' row on the 'engine-steer' conv_key
-          // sentinel (never pickable as a pending event), PLUS a queue entry so the
-          // steer reaches the model on the next iteration. The promise text row the
-          // user already saw is KEPT visible (never delete a user-visible row); the
-          // follow-through lands after it.
-          insertEngineEventIfAbsent({
-            work: null,
-            id: steerId,
-            agentId,
-            content: steer,
-            sourceAgentId: null,
-            originIntent: 'promise_floor',
-            turnNumber,
-          });
-        } catch { /* best effort */ }
-        state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'promise-floor', content: steer, atLoop: state.loopCount }) });
+        // ── T53 (owner ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
+        // This site used to write the steer to the events lane as well, and its own
+        // comment named the queue as the delivery "on the next iteration" — which is
+        // exactly right, and is the whole argument. The events row could not reach that
+        // iteration (the tail query drops `role='user'` rows created after the turn
+        // boundary) and reached a LATER turn as a ≤400-char gist. All three of this
+        // floor's steers quote the user's own words back at the model and then name the
+        // door to use; the gist keeps the quote and cuts the door.
+        // `persistEngineSteer` files the same entry and writes the durable `role='system'`
+        // row. The promise text row the user already saw is untouched, as before — this
+        // floor has never deleted a user-visible row and still does not.
+        state = persistEngineSteer(
+          state,
+          { agentId, content: steer, turnNumber, floor: 'promise-floor', atLoop: state.loopCount },
+          { broadcast },
+        );
         // The message names the CLASS because there are three of them now and the old wording
         // ("reply was a forward promise") has been false for two of them since T33.
         logger.info('v2 promise floor: the reply cleared none of this class\'s receipts; steering the model', {

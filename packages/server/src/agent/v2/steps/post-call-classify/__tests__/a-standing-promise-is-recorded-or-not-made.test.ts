@@ -50,16 +50,23 @@ vi.mock('../../../../../db/connection.js', async () => {
 });
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: () => {} }));
 
-const insertEngineEventIfAbsentSpy = vi.fn();
+// T53 (owner ruling 5): the observation point moved with the carrier. The floor used to
+// write its steer to the events lane as well as the queue, and these clauses watched that
+// events-lane write to read what the model was told. The floor now steers through the RC-19
+// door, so the durable record is a `role='system'` row and the model-facing delivery is the
+// queue entry — both carrying the SAME bytes. Watching the row keeps every assertion below
+// about the steer's WORDS exactly as it was; the clause that pins the two together against
+// drift is in `agent/v2/__tests__/the-second-channel-stops-double-writing.test.ts`.
+const steerRowSpy = vi.fn();
 vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  insertEngineEventIfAbsent: (...a: unknown[]) => insertEngineEventIfAbsentSpy(...(a as [])),
+  insertMessageIfAbsent: (...a: unknown[]) => steerRowSpy(...(a as [])),
 }));
 
 import { runMigrations } from '../../../../../db/migrations.js';
 import { openTrackerTask, patchWork } from '../../../../../work/tracker-store.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
-import { enqueueSteer } from '../../../steer-queue.js';
+import { enqueueSteer, nextSteer } from '../../../steer-queue.js';
 import { runPromiseFloor } from '../promise-floor.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
 
@@ -124,7 +131,7 @@ function seedRowOpenedThisTurn(o: { scheduledStartMs?: number | null; turn?: num
   return id;
 }
 
-const steerText = () => (insertEngineEventIfAbsentSpy.mock.calls[0][0] as { content: string }).content;
+const steerText = () => (steerRowSpy.mock.calls[0][0] as { content: string }).content;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -140,8 +147,8 @@ describe('T33: a standing promise with nothing behind it is steered once', () =>
   it('THE S5 REPLAY: zero tool calls, zero durable writes → one steer', () => {
     const out = runPromiseFloor(stateWith(), ctxFor(), scratch(S5_STANDING_PROMISE));
     expect(out.directive, 'a standing promise backed by nothing must not end the turn unchallenged').toBe('continue');
-    expect(insertEngineEventIfAbsentSpy).toHaveBeenCalledTimes(1);
-    expect((insertEngineEventIfAbsentSpy.mock.calls[0][0] as { originIntent: string }).originIntent).toBe('promise_floor');
+    expect(steerRowSpy).toHaveBeenCalledTimes(1);
+    expect((steerRowSpy.mock.calls[0][0] as { role: string }).role).toBe('system');
   });
 
   it('the steer names the durable doors that exist, and never speaks to the user', () => {
@@ -156,6 +163,23 @@ describe('T33: a standing promise with nothing behind it is steered once', () =>
     expect(text).not.toContain('Do the work NOW with tool calls and deliver the result.');
   });
 
+  // ── T53 (owner ruling 5): the floor speaks ONCE, on the channel that carries it ──
+  it('T53: the steer reaches the model on the QUEUE only — no events-lane second copy', () => {
+    const out = runPromiseFloor(stateWith(), ctxFor(), scratch(S5_STANDING_PROMISE));
+    const queued = nextSteer(out.state.steerQueue);
+    // CHANNEL 1, the delivery: the whole steer, on the very next iteration.
+    expect(queued!.floor).toBe('promise-floor');
+    expect(queued!.content).toContain('vault_remember');
+    expect(queued!.content).toContain('Do not repeat the promise without recording it.');
+    // …and the durable record carries the SAME bytes, so the two cannot drift.
+    expect((steerRowSpy.mock.calls[0][0] as { content: string }).content).toBe(queued!.content);
+    // CHANNEL 2, gone: nothing is written to the events lane for this floor.
+    const riders = mockDb.current!.prepare(
+      `SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND origin_intent = 'promise_floor'`,
+    ).get(AGENT) as { n: number };
+    expect(riders.n, 'the steer must not reach the model a second time next turn').toBe(0);
+  });
+
   it('the standing promise is quoted back to the model so the steer is about THIS reply', () => {
     runPromiseFloor(stateWith(), ctxFor(), scratch(S5_STANDING_PROMISE));
     expect(steerText()).toContain('From now on, when a reminder fires');
@@ -168,7 +192,7 @@ describe('T33: the exemption is a RECEIPT, never prose', () => {
       withToolCall(stateWith(), 'vault_remember', { verbatim: true, pin: true, content: 'text my phone as a backup' }),
       ctxFor(), scratch(S5_STANDING_PROMISE));
     expect(out.directive).toBe('proceed');
-    expect(insertEngineEventIfAbsentSpy).not.toHaveBeenCalled();
+    expect(steerRowSpy).not.toHaveBeenCalled();
   });
 
   it('a FAILED vault_remember is not a receipt — the floor still fires', () => {
@@ -215,7 +239,7 @@ describe('T33 controls: the recognizer stays conservative', () => {
   const quiet = (text: string) => {
     const out = runPromiseFloor(stateWith(), ctxFor(), scratch(text));
     expect(out.directive, `should not steer on: ${text}`).toBe('proceed');
-    expect(insertEngineEventIfAbsentSpy).not.toHaveBeenCalled();
+    expect(steerRowSpy).not.toHaveBeenCalled();
   };
 
   it('a standing scope with no first-person commitment is not a promise', () => {
@@ -259,7 +283,7 @@ describe('T33 controls: every UNTOUCHED bound still bounds the floor', () => {
     });
     const out = runPromiseFloor(st, ctxFor(), scratch(S5_STANDING_PROMISE));
     expect(out.directive).toBe('proceed');
-    expect(insertEngineEventIfAbsentSpy).not.toHaveBeenCalled();
+    expect(steerRowSpy).not.toHaveBeenCalled();
   });
 
   it('the MAX_TOOL_LOOPS proximity skip is unchanged', () => {
