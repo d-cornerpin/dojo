@@ -166,7 +166,11 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
   { file: 'db/migrations.ts', klass: 'platform-internal', why: 'the pre-migration online backup and the migration chain, both on the database\'s own path.' },
   { file: 'db/migration-backup.ts', klass: 'platform-internal', why: 'the pre-migration restore point, taken at boot on the database\'s OWN path (db.name) and written to the backups directory beside it. Nothing an agent can reach runs at that moment: this is called from runMigrations, before the port binds. The one path it touches that is not derived from the connection is the override FILE it checks and consumes in the same directory, which is the point of it -- it has to be readable on a box whose server will not start.' },
   { file: 'gateway/server.ts', klass: 'platform-internal', why: 'the HTTP server\'s own static serving, from platform directories.' },
-  { file: 'gateway/routes/agents.ts', klass: 'platform-internal', why: 'the dashboard own agents route: an HTTP handler the operator drives from the UI, reading and writing agent soul and avatar files at paths the route itself builds. No tool dispatches it.' },
+  // 'gateway/routes/agents.ts' was here (platform-internal). T58 leg C deleted its last
+  // restricted import: the route's file work now goes through prompt/agent-prompt-surface.ts,
+  // and the orphaned `node:fs` import went with the T40 reader that used it. Entry removed
+  // because the list must be EXACTLY the measured set -- a stale exclusion is a permission
+  // nobody argued for. It comes back the day the file holds one again, with a fresh reason.
   { file: 'gateway/routes/config.ts', klass: 'platform-internal', why: 'the dashboard own config route: an HTTP handler reading and writing the platform config and model files at their fixed paths, driven by the settings UI. No tool dispatches it.' },
   { file: 'gateway/routes/migration.ts', klass: 'platform-internal', why: 'the dashboard\'s migration import/export route; the operator drives it from the UI, no tool dispatches it.' },
   { file: 'gateway/routes/services.ts', klass: 'platform-internal', why: 'the dashboard\'s own service-control route: an HTTP handler starting, stopping and inspecting platform services at platform-named paths, driven by the operator. No tool dispatches it.' },
