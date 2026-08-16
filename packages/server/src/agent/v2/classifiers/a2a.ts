@@ -57,6 +57,21 @@ export interface A2AReplyEnforcerInput {
    * message, and writes another summary trying to clarify.
    */
   priorReplyOnSameThread?: boolean;
+  /**
+   * ROUND-11 T46 — the SECOND evidence source for the SAME fact, and the reason it exists.
+   *
+   * `priorReplyOnSameThread` is sourced from `a2a_replies`, whose row is written only when the
+   * reply BINDS to an inbound assign message — a binding that needs a `thread_id` the sender
+   * may omit. On 2026-08-15 a DELIVERED ANSWER left no row, this input was false, and the
+   * fresh-miss text below told the agent his peer "got nothing" five seconds after it landed;
+   * he re-sent, and the same answer was delivered twice.
+   *
+   * This one is the engine's own VERIFIED `send_to_agent` receipt for the thread — the ledger
+   * the platform already answers delivery-denials from. Either evidence means the same thing
+   * ("you have already replied on this thread"), so both feed the same branch and neither
+   * changes a word of either text.
+   */
+  verifiedSendReceiptOnThread?: boolean;
 }
 
 export type A2AReplyDecision =
@@ -90,7 +105,11 @@ export function a2aReplyEnforcer(input: A2AReplyEnforcerInput): A2AReplyDecision
   const threadShort = input.threadShort ?? 'unknown';
 
   let nudgeText: string;
-  if (input.priorReplyOnSameThread) {
+  // ROUND-11 T46: EITHER evidence of a prior reply on this thread — the a2a_replies row, or
+  // the engine's own verified send receipt — takes this branch. The fresh-miss text below is
+  // reachable only when the platform holds NO record of the reply at all, which is the only
+  // state in which "they got nothing" is a true sentence.
+  if (input.priorReplyOnSameThread || input.verifiedSendReceiptOnThread) {
     // The agent already sent send_to_agent on this thread in a prior
     // handleMessage invocation. They handled the inbound — they're now
     // just writing a trailing summary which the user can see but the

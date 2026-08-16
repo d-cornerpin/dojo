@@ -22,6 +22,7 @@ import { steerFired } from '../../steer-queue.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { a2aReplyEnforcer } from '../../classifiers/a2a.js';
 import { hasPriorReplyOnThread } from '../../../a2a-replies.js';
+import { hasVerifiedA2ASendOnThread } from '../../outbound-ledger.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
@@ -137,6 +138,14 @@ export function runMissedReply(
     // dissonance that drove the loop.txt spiral.
     priorReplyOnSameThread:
       !!a2aReplyContext?.threadShort && hasPriorReplyOnThread(agentId, a2aReplyContext.threadShort, unrepliedAssign?.threadId ?? null),
+    // ROUND-11 T46: the a2a_replies row above is written only when the reply BOUND to the
+    // inbound assign, and that binding needs a thread_id the sender may omit. The receipt
+    // ledger holds the same fact unconditionally — the engine writes a VERIFIED send_to_agent
+    // receipt at every successful delivery — so the enforcer consults it before telling an
+    // agent that a reply the platform itself recorded delivering "got nothing". Same thread
+    // keys as above, same FA-C2 exact-match discipline inside the reader.
+    verifiedSendReceiptOnThread:
+      !!a2aReplyContext?.threadShort && hasVerifiedA2ASendOnThread(agentId, a2aReplyContext.threadShort, unrepliedAssign?.threadId ?? null),
   });
   if (replyDecision.decision === 'nudge') {
     // RC-19: via persistEngineSteer so the retry nudge reaches the model

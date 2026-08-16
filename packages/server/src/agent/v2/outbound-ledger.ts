@@ -178,6 +178,69 @@ export function mostRecentDeliveryTo(
   return findRecentDeliveries(agentId, recipientHint, windowHours)[0] ?? null;
 }
 
+/**
+ * ROUND-11 T46 — DID THIS AGENT ALREADY REPLY ON THIS A2A THREAD, per the receipt ledger?
+ *
+ * The missed-reply enforcer's "you already replied" evidence was `a2a_replies` alone, and
+ * `recordA2AReply` writes a row ONLY when the reply BINDS to an inbound assign message
+ * (`findInboundAssignByThread`) — a binding that needs a `thread_id` the sender may omit. On
+ * 2026-08-15 kevin's ANSWER to BehaviorBot was DELIVERED and left no `a2a_replies` row, so the
+ * enforcer told him the peer "got nothing" five seconds later and he re-sent the same answer.
+ *
+ * The fact was already here, in the ledger this module exists to read: a VERIFIED,
+ * engine-written `send_to_agent` receipt carrying the thread id. Nothing about the predicate
+ * changes — it is still "has this agent already replied on this thread" — only its evidence
+ * widens to the source the platform already trusts on the other side of the same exchange
+ * (`reply-floors.ts` floor 11 answers a denial from these very rows).
+ *
+ * FA-C2 discipline, carried over verbatim from `hasPriorReplyOnThread`: the EXACT full-id
+ * match is authoritative, a genuinely-short legacy row (`length = 8`) is accepted exactly and
+ * only when no full-id row exists, and the leading-8 prefix match is reachable ONLY on the
+ * legacy caller path that has no full id — `makeThreadId` ids are almost all shared prefix, so
+ * a prefix match over full ids would let an unrelated thread silence THIS thread's note.
+ */
+export function hasVerifiedA2ASendOnThread(
+  agentId: string,
+  threadShort: string,
+  fullThreadId: string | null = null,
+): boolean {
+  if (!threadShort || threadShort.length < 8) return false;
+  try {
+    const db = getDb();
+    // `verified = 1` and nothing else: an unverified receipt is the engine recording that it
+    // TRIED, and a note about an undelivered reply is exactly the note that should still fire.
+    if (fullThreadId) {
+      const exact = db.prepare(
+        `SELECT 1 FROM tool_receipts
+          WHERE agent_id = ? AND tool = 'send_to_agent' AND verified = 1 AND thread_id = ?
+          LIMIT 1`,
+      ).get(agentId, fullThreadId);
+      if (exact) return true;
+      const legacy = db.prepare(
+        `SELECT 1 FROM tool_receipts
+          WHERE agent_id = ? AND tool = 'send_to_agent' AND verified = 1
+            AND length(thread_id) = 8 AND thread_id = ?
+          LIMIT 1`,
+      ).get(agentId, threadShort);
+      return !!legacy;
+    }
+    const row = db.prepare(
+      `SELECT 1 FROM tool_receipts
+        WHERE agent_id = ? AND tool = 'send_to_agent' AND verified = 1
+          AND substr(thread_id, 1, 8) = ?
+        LIMIT 1`,
+    ).get(agentId, threadShort);
+    return !!row;
+  } catch (err) {
+    // Best effort, and the failure direction is the SAFE one: with no evidence the enforcer
+    // keeps today's behaviour and still nudges.
+    logger.warn('hasVerifiedA2ASendOnThread failed (non-fatal)', {
+      agentId, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+    return false;
+  }
+}
+
 /** One deliveries row joined to its receipt for the sent text. */
 interface DeliveryJoinRow {
   tool: string;
