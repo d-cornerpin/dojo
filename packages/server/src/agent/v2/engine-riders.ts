@@ -128,24 +128,31 @@ export const ENGINE_RIDER_INTENTS = [
 //   3. THE CONTENT IDENTITY — the rider carries the steer's OWN bytes, so the two channels
 //      can never diverge into two different instructions about the same fact.
 //
-// ⚠ WHAT IS **NOT** DONE HERE, AND WHY — HANDED UP.
-// Step 2's brief says these floors should "stop double-writing". They are NOT stopped, and
-// the reason is a measurement rather than a preference: the queue is PER-TURN STATE, and its
-// only drain is the assemble step, so a steer filed on the last pass of a turn dies with the
-// turn. At all seven sites the events-lane row is the ONLY carrier that survives into the
-// next turn — the census's own hypothesis (b), *"a deliberate second delivery for a steer the
-// turn may not have room for"* — and every one of the seven says so in its own comment
-// (*"EVENTS lane surfaces it … PLUS a queue entry so the steer reaches the model on the very
-// next iteration"*). Deleting the rider write would therefore delete a cross-turn fallback
-// whose requirement has nowhere else to live, and the only re-home that would work — replay
-// the queue's UNDELIVERED entries as riders at turn end — is a new mechanism, which the
-// owner's 2026-08-15 rule forbids this wave from inventing.
+// ⚠ WHAT WAS NOT DONE HERE, AND WHO DECIDED IT — T53 (owner ruling 5, 2026-08-16).
+// Step 2 declared the pairing and handed the design call up: *fallback worth a duplicate, or
+// duplicate worth losing the fallback?* The owner ruled CLEAN UP, with absolute care, and the
+// measurement that settled WHICH channel goes is driven in
+// `agent/v2/__tests__/the-second-channel-stops-double-writing.test.ts`:
 //
-// So the duplicate is real and it is bounded: on a turn that continues past the drain the
-// model sees the text twice, once as a steer now and once as an events line next turn. The
-// DESIGN CALL — fallback worth a duplicate, or duplicate worth losing the fallback — is
-// handed up with that measurement, per HL4's own STOP. It is not decided in a governance
-// commit, and the pairing below is what makes it decidable in one edit when it is.
+//   * THE RIDER IS ABSENT FROM THE TURN ITS FLOOR FIRES. The tail query drops `role='user'`
+//     rows created after the turn boundary (`memory/store.ts`), and an events row is
+//     `role='user'` by construction. The "cross-turn fallback" reading was right that the row
+//     outlives the turn and wrong that it stands in for the steer: it cannot reach the extra
+//     model call the floor's own `continueLoop` was spent to buy.
+//   * WHAT IT DELIVERS LATER IS A TRUNCATED ECHO. `lane.events` renders a ≤400-char gist with
+//     the leading bracket stripped, under a header framing it as something the agent is merely
+//     AWARE of. The queue delivers the steer's own bytes, verbatim, in-turn.
+//
+// So the queue was always the carrier, and each retired site keeps it: `persistEngineSteer`
+// (the RC-19 door) files the SAME entry and writes the durable `role='system'` row that used
+// to be the events row — same bytes, same display classification (`agent-only`/`engine-note`),
+// no model-facing second copy. The map below is the LEDGER of what has not been cleaned yet;
+// a site leaves it in the same commit that stops its write, and `the-second-channel-is-governed`
+// fails the build in both directions if the two disagree.
+//
+// THE INTENTS THEMSELVES STAY IN `ENGINE_RIDER_INTENTS` ABOVE, with no live writer, for the
+// reason that list already states: rows stamped with them exist on every box, and removing a
+// value from a live exclusion ADMITS those rows as turn drivers.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 /** A steer floor that writes its text to the events lane as well as to the queue. */
@@ -171,7 +178,8 @@ export const QUEUE_PAIRED_RIDERS: Readonly<Record<string, QueuePairedRider>> = O
   // which is the same key its queue entry uses (`key: thrash.signature`). Same budget, one
   // fact per signature, reached through the state field the gate has always owned.
   'thrash-gate':       { intent: 'thrash_gate',             latch: 'state.thrashGatedSignatures.includes(thrash.signature)' },
-  'thrash-drift':      { intent: 'thrash_drift',            latch: "steerFired(state.steerQueue, 'thrash-drift')" },
+  // RETIRED by T53: `thrash-drift` — the drift rung now steers through `persistEngineSteer`
+  // and writes no events-lane row. Its intent stays excluded above; only the pair is gone.
   // The shared subsystem latch: either tracker floor speaking is enough, which is the
   // requirement the retired `nudgedForTrackerThisTurn` boolean carried beside its latch duty.
   'tracker-scaffold':  { intent: 'auto_scaffold',           latch: 'steerFiredAny(state.steerQueue, TRACKER_STEER_FLOORS)' },

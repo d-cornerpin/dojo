@@ -231,13 +231,26 @@ describe('PHASE-2 T10H — the rider set is COMPLETE, enforced against the write
     };
     for (const r of roots) walk(path.join(REPO, r));
 
-    // Non-vacuity, both ways: the walk must find the writers, AND it must find the nine steer
-    // sites specifically — the ones the deleted anchor used to name.
+    // Non-vacuity, both ways: the walk must find the writers, AND it must find the steer
+    // sites that still write this lane — the ones the deleted anchor used to name.
     expect(sites.length, 'the walk must find events-lane writers, or it is vacuous').toBeGreaterThan(9);
-    const STEER_INTENTS = ['thrash_gate', 'thrash_drift', 'thrash_block', 'delegation_hint',
+    const STEER_INTENTS = ['thrash_gate', 'thrash_block', 'delegation_hint',
       'owed_interrupt', 'promise_floor', 'a2a_handoff_floor', 'auto_scaffold', 'fanout_join'];
     for (const intent of STEER_INTENTS) {
       expect(sites.map((s) => s.intent), `steer site '${intent}' is no longer written anywhere — either it moved (re-point this map) or a rider lost its writer`).toContain(intent);
+    }
+
+    // ── T53 (owner ruling 5): INTENTS WHOSE WRITER WAS RETIRED ON PURPOSE ──
+    // A steer floor that stopped writing the events lane keeps its intent in
+    // `ENGINE_RIDER_INTENTS` and loses it here, and the asymmetry is the point. The
+    // exclusion list is read against ROWS, and every box already holds rows stamped with
+    // these intents; dropping a value from a live exclusion ADMITS those rows as turn
+    // drivers, which is the failure `engine-riders.ts` was written to end. So the value
+    // stays excluded and only the "someone still writes it" clause is retired, per site.
+    const WRITER_RETIRED_BY_T53 = ['thrash_drift'];
+    for (const intent of WRITER_RETIRED_BY_T53) {
+      expect(ENGINE_RIDER_INTENTS as readonly string[], `'${intent}' must stay excluded: rows on disk still carry it`).toContain(intent);
+      expect(sites.map((s) => s.intent), `'${intent}' is written again — a retired second channel came back`).not.toContain(intent);
     }
 
     // ONE site passes its intent as a VARIABLE (`opts.intent ?? 'agent_notice'`), and it is

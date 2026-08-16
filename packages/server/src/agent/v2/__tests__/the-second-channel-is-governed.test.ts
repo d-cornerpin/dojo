@@ -7,16 +7,21 @@
 // takes rows by recency (`memory/assembler.ts`), so an engine directive reaches the model
 // once as a steer this turn and again as an events line next turn, and nothing dedups.
 //
-// THIS SUITE DOES NOT STOP THE SECOND WRITE. It makes the pairing DECLARED, BOUNDED and
-// CONTENT-IDENTICAL, so the design call the census handed up is one edit away instead of
+// THIS SUITE DID NOT STOP THE SECOND WRITE; it made the pairing DECLARED, BOUNDED and
+// CONTENT-IDENTICAL, so the design call the census handed up was one edit away instead of
 // seven — and so an eighth double-writer cannot land unnoticed, which is the whole disease.
-// The reason the writes stay is written at the declaration and is a measurement, not a
-// preference: the queue is per-turn state, so at all seven sites the rider is the only
-// carrier that survives into the next turn.
 //
-// RED at `e8b7b56`: §1 fails. The inherited count is SIX (the plan's own sentence, and the
-// census's list) and the tree carries SEVEN — `thrash-*` is two floors with two steers.
+// RED at `e8b7b56`: §1 failed. The inherited count was SIX (the plan's own sentence, and the
+// census's list) and the tree carried SEVEN — `thrash-*` is two floors with two steers.
 // A hand-counted set drifts; this clause is what stops it.
+//
+// ── T53 (owner ruling 5, 2026-08-16): THE DESIGN CALL CAME BACK, AND IT IS "CLEAN UP" ──
+// The pairs are being retired one site at a time, each in its own commit. `QUEUE_PAIRED_RIDERS`
+// is the LEDGER of what is left: a site that stops writing the events lane must leave the map
+// in the same commit (the second direction below fails otherwise), and a site that keeps the
+// pair must stay declared (the first direction). The suite's own job is unchanged — it is what
+// makes a new double-writer impossible — and the argument for which channel goes is measured
+// in `the-second-channel-stops-double-writing.test.ts`, not asserted here.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
@@ -99,9 +104,15 @@ function derivedPairs(): Array<{ where: string; floor: string; intent: string; c
 describe('§1 the pairing is DECLARED, and derived from the writers rather than hand-counted', () => {
   it('every floor that writes BOTH channels is in `QUEUE_PAIRED_RIDERS`, and nothing else is', () => {
     const derived = derivedPairs();
-    // Non-vacuity first: a scan that finds nothing would pass this whole file.
-    expect(derived.length, 'the walk found no double-writers — it is measuring the wrong thing')
-      .toBeGreaterThanOrEqual(7);
+    // Non-vacuity, and T53 moved where it has to live. It used to be a floor on the PAIR
+    // count (`>= 7`), which was right while seven was the answer; the owner's ruling 5 is
+    // that the pairs go, one site at a time, so a floor on them would forbid the cleanup
+    // this file exists to police. The floor is on the WALK instead: the scan must still be
+    // finding events-lane writes, or it is measuring the wrong thing and every clause below
+    // it is vacuous. That number cannot fall to zero — the events lane keeps its genuine
+    // riders (`thrash_block`, `delegation_hint`, `fanout_join`, every awareness notice).
+    expect(eventWrites().length, 'the walk found no events-lane writes — it is measuring the wrong thing')
+      .toBeGreaterThan(9);
 
     const undeclared = derived.filter((p) => QUEUE_PAIRED_RIDERS[p.floor]?.intent !== p.intent);
     // If this fails: a steer floor is writing a SECOND model-facing channel and nothing says

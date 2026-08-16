@@ -29,6 +29,7 @@ import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../../../../me
 import { taskScope, ENGINE_SCAFFOLD_ROOT_KIND } from '../../../../work/tracker-view.js';
 import { setTrackerStatus, upholdClaim } from '../../../../work/tracker-store.js';
 import { advance, type AgentTurnState } from '../../state.js';
+import { persistEngineSteer } from '../../engine-steer.js';
 import { enqueueSteer, steerFired } from '../../steer-queue.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
@@ -94,28 +95,32 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
         `varying your tool calls without recording progress. If you ARE making progress, record it with ` +
         `work_update(action="status") (or work_note), then continue. If you are stuck, wrap up and tell ` +
         `the user where things stand. ${ENGINE_BLOCK_ESCAPE_HATCH}`;
-      const driftNudgeId = uuidv4();
-      try {
-        // Model-visible steer channel. A role='system' row would be stripped
-        // by the assembler (dashboard-only theater), so this ladder rung would
-        // never reach the model. Persist on the EVENTS lane (it surfaces next
-        // turn) AND enqueue the steer so
-        // the model receives it on the very next iteration. conv_key sentinel
-        // 'engine-steer' keeps it un-selectable as a pending event (see the
-        // thrash-steer C6 note below).
-        insertEngineEventIfAbsent({
-          work: null,
-          id: driftNudgeId,
-          agentId,
-          content: driftNudge,
-          sourceAgentId: null,
-          originIntent: 'thrash_drift',
-          turnNumber,
-        });
-      } catch { /* best effort */ }
+      // ── T53 (owner ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
+      // This rung used to write the nudge TWICE: an events-lane row (lifted into
+      // `lane.events` on a LATER turn) beside the queue entry. The paragraph that
+      // stood here argued the events row was the model-visible half; measured
+      // against the real assembler it is neither the same shape nor the same turn.
+      //   * The tail query drops `role='user'` rows created after the turn boundary
+      //     (`memory/store.ts`), so the row is INVISIBLE on the turn this rung fires —
+      //     the one turn the nudge is about.
+      //   * On a later turn `lane.events` renders it as a ≤400-char gist with the
+      //     leading bracket stripped, under a header that frames it as something the
+      //     agent is merely AWARE of. The queue delivers the nudge verbatim, now.
+      // So the queue was always the carrier and the row was a delayed partial copy of
+      // it. `persistEngineSteer` is the RC-19 door the other steer sites already use:
+      // the SAME queue entry, plus a durable `role='system'` row carrying the same
+      // bytes — which `packages/shared/src/visibility.ts` classifies exactly as the
+      // events row was (`{ tier: 'agent-only', kind: 'engine-note' }`), so the
+      // dashboard record does not move. Driven before/after in
+      // `agent/v2/__tests__/the-second-channel-stops-double-writing.test.ts`.
+      //
       // One-shot nudge only, the drift window is deliberately NOT reset (a
       // signature-varying spiral must keep accruing drift to the hard limit).
-      state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'thrash-drift', content: driftNudge, atLoop: state.loopCount }) });
+      state = persistEngineSteer(
+        state,
+        { agentId, content: driftNudge, turnNumber, floor: 'thrash-drift', atLoop: state.loopCount },
+        { broadcast },
+      );
       logger.info('v2: thrash drift nudge (one-shot; drift keeps accruing to the hard limit)', {
         agentId, drift, loopCount: state.loopCount,
       }, agentId);
