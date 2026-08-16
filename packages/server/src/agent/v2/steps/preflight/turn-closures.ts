@@ -381,6 +381,45 @@ export function runTurnClosures(
           async () => sendResponseViaIMessage(text, agentId, counterparty.senderId!, false),
         );
         if (delivered) persistRoutingMarker(`iMessage to ${delivered.name}`);
+      } else if (counterparty.kind === 'user' && counterparty.channel === 'teams' && turnCtx.state!.inboundContext?.chatId) {
+        // ⚠ UX-REPAIR ROUND 12 T51 — TEAMS YES (owner ruling 3, 2026-08-16). EMAIL NO, and
+        // its absence below is the whole of the refusal.
+        //
+        // WHY THE ARM COMES FIRST AND THE PREDICATE SECOND. `v2/counterparty.ts`'s
+        // `engineAckReachesTheirChannel` is DERIVED from this list — "the ack's own push
+        // arms" — so widening the fast door without widening the ack would have made the
+        // derivation false and armed a steer whose delivery reaches nobody: a bubble the
+        // dashboard shows and the channel never got, which is the F-22 shape RC-9's internal
+        // note exists to prevent. The two moved together, and the test that pins them
+        // (`__tests__/the-ack-reaches-teams-and-never-email.test.ts`) reads BOTH.
+        //
+        // NOTHING NEW IS INVENTED HERE. This is `finalize/channel-push.ts`'s Teams branch,
+        // the send the end-of-turn router already uses for a Teams reply — a synthetic
+        // `teams_send_message` through `executeTool`, so auth, retries and audit logging are
+        // the dispatcher's exactly as they are there — moved under this door's own outbound
+        // identity (`engine-ack`/`teams`) and this door's own routing marker. Group chats are
+        // the resolver's business, not this one's: the ack rides the chat the ask ARRIVED on
+        // (`inboundContext.chatId`), and with no chat id there is nothing to push to and the
+        // arm does not fire rather than claiming a delivery it did not make.
+        const chatId = turnCtx.state!.inboundContext.chatId;
+        const { executeTool } = await import('../../../tools/index.js');
+        const result = await withOutboundAsync(
+          {
+            agentId, tool: 'engine-ack', channel: 'teams',
+            recipientId: chatId, threadRoot: chatId,
+            conversationId: turnCtx.root?.conversationId ?? null,
+          },
+          () => executeTool(agentId, {
+            id: uuidv4(), name: 'teams_send_message',
+            arguments: { chat_id: chatId, message: text },
+          }),
+        );
+        if (result.kind === 'applied') persistRoutingMarker(`Teams to chat ${chatId.slice(0, 8)}…`);
+        else {
+          logger.warn('v2: engine user-ack Teams push refused (non-fatal; the ack still stands in chat)', {
+            agentId, why: result.reason,
+          }, agentId);
+        }
       } else if (counterparty.kind === 'user' && counterparty.channel === 'phone' && turnCtx.state!.inboundContext?.phoneCallSid) {
         const { getCallSession } = await import('../../../../twilio/call-session.js');
         const session = getCallSession(turnCtx.state!.inboundContext.phoneCallSid);

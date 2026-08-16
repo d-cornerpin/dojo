@@ -17,13 +17,23 @@
 // new prose, no new mechanism: the door, the steer and the delivery all already exist.
 //
 // WHAT THIS FILE PINS, in both directions:
-//   * the door opens where the ack can REACH the person (iMessage, SMS);
+//   * the door opens where the ack can REACH the person (iMessage, SMS — and, since
+//     UX-REPAIR ROUND 12 T51, Teams);
 //   * it stays shut everywhere it would buy nothing — the dashboard (dots and a live
-//     stream), email/teams (no push arm exists in `deliverEngineUserAck`, so an early row
-//     would be a bubble the channel never got: the F-22 shape RC-9 exists to prevent), an
-//     unknown sender, an agent-flagged sender (RC-4.2), and any loop but the first;
+//     stream), email (no push arm exists in `deliverEngineUserAck`, so an early row would be
+//     a bubble the channel never got: the F-22 shape RC-9 exists to prevent), an unknown
+//     sender, an agent-flagged sender (RC-4.2), and any loop but the first;
 //   * opener 1 (`decision.multistep`) is byte-identical in effect, and two open doors still
 //     produce exactly ONE steer.
+//
+// ⚠ ONE CONTROL BELOW MOVED, AND THE OWNER MOVED IT. T51 (ruling 3, 2026-08-16) is
+// "TEAMS YES, EMAIL NO". Teams was shut here for a REASON THAT WAS TRUE AT THE TIME — the ack
+// had no Teams push arm — and T51 gave it one, so the clause that read "email and Teams stay
+// shut" is now false about Teams and still exactly true about email. It is narrowed to email
+// rather than deleted, and the ruling's own file
+// (`preflight/__tests__/the-ack-reaches-teams-and-never-email.test.ts`) owns the positive
+// Teams clauses and the push-arm derivation. What this file asserts is unchanged: the door
+// opens where the ack can reach the person and nowhere else.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -157,17 +167,20 @@ describe('and stays shut everywhere it would buy nothing', () => {
     expect(turnCtx.startAckSteerArmedThisTurn).toBe(false);
   });
 
-  it('CONTROL — email and Teams stay shut: `deliverEngineUserAck` has no push arm for them, so an early row would be a bubble the channel never received (F-22)', async () => {
-    for (const channel of ['email', 'teams'] as const) {
-      const { turnCtx } = await assembleLoop({ counterparty: person({ channel }) });
-      expect(turnCtx.startAckSteerArmedThisTurn, channel).toBe(false);
-    }
+  it('CONTROL — email stays shut: `deliverEngineUserAck` has no push arm for it, so an early row would be a bubble the channel never received (F-22) — and T51 ruled it stays that way', async () => {
+    const { turnCtx } = await assembleLoop({ counterparty: person({ channel: 'email' }) });
+    expect(turnCtx.startAckSteerArmedThisTurn).toBe(false);
     // The claim above is a FACT about the delivery site, not an opinion — pinned so a new
     // push arm and this door cannot drift apart.
     const closures = SRC('../../preflight/turn-closures.ts');
     const ackFn = closures.slice(closures.indexOf('const deliverEngineUserAck'));
     for (const has of ["channel === 'imessage'", "channel === 'sms'"]) expect(ackFn).toContain(has);
-    for (const hasNot of ["channel === 'email'", "channel === 'teams'"]) expect(ackFn).not.toContain(hasNot);
+    expect(ackFn).not.toContain("channel === 'email'");
+  });
+
+  it('T51 — and Teams is now on the OTHER side of that same fact: it has an arm, so the door opens', async () => {
+    const { turnCtx } = await assembleLoop({ counterparty: person({ channel: 'teams' }) });
+    expect(turnCtx.startAckSteerArmedThisTurn).toBe(true);
   });
 
   it('CONTROL — RC-4.2: an agent-flagged sender never gets an ack (ack ping-pong)', async () => {

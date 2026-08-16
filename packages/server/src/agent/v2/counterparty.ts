@@ -783,20 +783,34 @@ export function isRoutedHumanCounterparty(counterparty: TurnCounterparty): boole
  * The owner's ruling (2026-08-12) opens the pre-call start-ack door "for routed-channel
  * asks, so the agent's own first sentence REACHES THE CHANNEL early". Whether it reaches
  * the channel is a fact, not a preference: `preflight/turn-closures.ts`'s
- * `deliverEngineUserAck` has exactly THREE push arms — `imessage`, `phone`, `sms` — and
- * nothing else. On `email` and `teams` the ack is persisted and broadcast only, so opening
- * the door there would buy the person nothing and would put a bubble on the dashboard that
- * the channel never received: the F-22 shape RC-9's internal note exists to prevent.
- * `phone` is deliberately OUT: it is a live voice session with its own delivery lane and
- * its own ambient signal, not a text ask, and T41's incident and its drives are a texter's.
+ * `deliverEngineUserAck` is the only pusher, and a channel it has no arm for gets an ack
+ * that is persisted and broadcast only — which buys the person nothing and puts a bubble on
+ * the dashboard that the channel never received: the F-22 shape RC-9's internal note exists
+ * to prevent. `phone` HAS an arm and is still deliberately OUT: it is a live voice session
+ * with its own delivery lane and its own ambient signal, not a text ask, and T41's incident
+ * and its drives are a texter's.
+ *
+ * ⚠ UX-REPAIR ROUND 12 T51 — TEAMS JOINS, EMAIL DOES NOT, AND THAT IS AN OWNER RULING
+ * (2026-08-16, ruling 3 of twelve: "TEAMS YES, EMAIL NO").
+ *
+ * W20 recorded the widening as "one predicate and one test row" and it is deliberately not
+ * only that, because the derivation below has to stay TRUE: opening this door for a channel
+ * the ack cannot push to would be the F-22 shape arrived at from the other side. So T51 gave
+ * `deliverEngineUserAck` a Teams arm first — the same synthetic `teams_send_message` send
+ * `finalize/channel-push.ts` already routes a Teams reply through — and the intersection
+ * moved with it. EMAIL IS REFUSED, not deferred: it gains no arm and joins no set, and
+ * `preflight/__tests__/the-ack-reaches-teams-and-never-email.test.ts` pins BOTH halves so the
+ * ruling cannot drift back in through either one.
  *
  * DERIVED, NOT INVENTED: this set is `isRoutedHumanCounterparty` ∩ (the ack's own push
- * arms). If a push arm is ever added for another routed channel, this predicate is where
- * that channel joins.
+ * arms) ∖ {phone}. If a push arm is ever added for another routed channel, this predicate is
+ * where that channel joins — and for email that addition is the owner's to make, not a
+ * maintainer's.
  */
 export function engineAckReachesTheirChannel(counterparty: TurnCounterparty): boolean {
   return isRoutedHumanCounterparty(counterparty)
-    && (counterparty.channel === 'imessage' || counterparty.channel === 'sms');
+    && (counterparty.channel === 'imessage' || counterparty.channel === 'sms'
+      || counterparty.channel === 'teams');
 }
 
 /** RC-4.2: read the structured `senderIsAgent` flag off a trigger row's inbound_meta
