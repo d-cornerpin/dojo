@@ -248,7 +248,7 @@ describe('PHASE-2 T10H — the rider set is COMPLETE, enforced against the write
     // drivers, which is the failure `engine-riders.ts` was written to end. So the value
     // stays excluded and only the "someone still writes it" clause is retired, per site.
     const WRITER_RETIRED_BY_T53 = ['thrash_drift', 'thrash_gate', 'auto_scaffold', 'promise_floor',
-      'a2a_handoff_floor'];
+      'a2a_handoff_floor', 'reminder_silence_floor'];
     for (const intent of WRITER_RETIRED_BY_T53) {
       expect(ENGINE_RIDER_INTENTS as readonly string[], `'${intent}' must stay excluded: rows on disk still carry it`).toContain(intent);
       expect(sites.map((s) => s.intent), `'${intent}' is written again — a retired second channel came back`).not.toContain(intent);

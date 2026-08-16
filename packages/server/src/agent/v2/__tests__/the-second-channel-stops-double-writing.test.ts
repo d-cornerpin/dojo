@@ -392,3 +392,79 @@ describe('§1 a2a-handoff-floor', () => {
     expect(fired.map((e) => e.key)).toEqual(['', 'retry']);
   });
 });
+
+describe('§1 reminder-silence', () => {
+  /** An everyday reminder: long enough that the lane's 400-char cut reaches it, which is
+   *  the point — this steer puts the reminder's own words LAST. */
+  const REMINDER =
+    "Call the vet about Luna's follow-up and ask whether the antibiotics need refilling";
+
+  function reminderTurn(text: string = REMINDER): { state: AgentTurnState; ctx: PostCallClassifyContext } {
+    const taskId = openTrackerTask({
+      title: 'Reminder', description: text, status: 'in_progress',
+      assignedTo: AGENT, createdBy: AGENT,
+      origin: { kind: 'agent', sourceMessageId: null, turn: TURN, convKey: 'ck-1' },
+    });
+    return {
+      state: baseState({ loopCount: 3 }),
+      ctx: classifyCtx({
+        turnCtx: {
+          conversationId: 'conv-1', root: null,
+          servedWork: { taskKind: 'reminder', taskId },
+        },
+      } as unknown as Partial<PostCallClassifyContext>),
+    };
+  }
+
+  it('the queue still delivers the reminder steer WITH the reminder in it', async () => {
+    const { state, ctx } = reminderTurn();
+    const out = await runHandoffFloors(state, ctx, emptyReply());
+    expect(out.directive, 'the floor exists to re-enter the loop').toBe('continue');
+    const queued = nextSteer(out.state.steerQueue);
+    expect(queued!.floor).toBe('reminder-silence');
+    expect(queued!.content).toContain('This turn is delivering a reminder');
+    expect(queued!.content).toContain(`The reminder is: ${REMINDER}`);
+    expect(renderMessageEntry('msg.pending-nudge', { pendingSteer: queued!.content } as unknown as AssemblyContext)!.content)
+      .toBe(queued!.content);
+  });
+
+  it('THE SECOND CHANNEL\'S COST, MEASURED AT ITS OWN BOUNDARY, not asserted in general', async () => {
+    // This site is where truncation stops being merely lossy. The steer ends with the
+    // reminder's OWN WORDS, so the ≤400-char gist keeps the instruction and drops the thing
+    // the turn exists to say — but only past a boundary, and the honest clause names it:
+    // the steer's fixed prefix is 251 characters, so a reminder longer than that remainder
+    // is cut, and a short one is not. Both arms are driven, so neither the claim nor its
+    // limit is inherited.
+    const cap = laneLimit('lane.events', 'chars', 'gist');
+    const gistOf = (steer: string): string =>
+      steer.replace(/^\s*\[[^\]]*\]\s*/, '').replace(/\s+/g, ' ').trim().slice(0, cap);
+
+    const short = await runHandoffFloors(...(() => {
+      const t = reminderTurn(REMINDER);
+      return [t.state, t.ctx, emptyReply()] as const;
+    })());
+    const shortSteer = nextSteer(short.state.steerQueue)!.content;
+    expect(gistOf(shortSteer), 'an 81-char reminder still fits inside the cap').toContain(REMINDER);
+
+    const LONG_REMINDER = REMINDER
+      + ', and check whether the Thursday 4pm slot still works before you confirm it with Dad';
+    const long = await runHandoffFloors(...(() => {
+      const t = reminderTurn(LONG_REMINDER);
+      return [t.state, t.ctx, emptyReply()] as const;
+    })());
+    const longSteer = nextSteer(long.state.steerQueue)!.content;
+    expect(longSteer).toContain(LONG_REMINDER);
+    expect(gistOf(longSteer), 'the second channel would deliver a reminder with the reminder cut off')
+      .not.toContain(LONG_REMINDER);
+  });
+
+  it('the model receives NOTHING from the second channel, and the record survives', async () => {
+    const { state, ctx } = reminderTurn();
+    const out = await runHandoffFloors(state, ctx, emptyReply());
+    const steer = nextSteer(out.state.steerQueue)!.content;
+    expect(await riderLine('reminder_silence_floor')).toBeNull();
+    expect(await whatTheModelReceives()).not.toContain(steer.slice(10, 120));
+    expect(rows().filter((r) => r.origin_intent === 'reminder_silence_floor')).toEqual([]);
+    expect(rows().filter((r) => r.role === 'system' && r.content === steer).length).toBe(1);
+  });
+});

@@ -11,14 +11,14 @@
 // is the cap and it is carried verbatim.
 // ════════════════════════════════════════
 
-import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
-import { insertEngineEventIfAbsent } from '../../../../memory/message-store.js';
 import { askIdForMessage } from '../../../../work/store.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
-import { enqueueSteer, steerFireCount } from '../../steer-queue.js';
+// T53: neither floor writes the events lane and neither calls `enqueueSteer` directly —
+// both steer through the RC-19 door, which owns the enqueue and the durable row.
+import { steerFireCount } from '../../steer-queue.js';
 import { turnDeliveredToPerson } from '../../answered-edge.js';
 import { MAX_FLOOR_STEER_ATTEMPTS, recordFloorGhost } from '../../floor-ghost.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
@@ -177,14 +177,21 @@ export async function runHandoffFloors(
               `conversation (do NOT call imessage_send or any send tool; the engine routes your ` +
               `reply). The reminder is: ${remText}`
             );
-          const steerId = uuidv4();
-          try {
-            insertEngineEventIfAbsent({
-              work: null, id: steerId, agentId, content: steer,
-              sourceAgentId: null, originIntent: 'reminder_silence_floor', turnNumber,
-            });
-          } catch { /* best effort */ }
-          state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'reminder-silence', content: steer, key: remAttempts === 1 ? 'retry' : '', atLoop: state.loopCount }) });
+          // ── T53 (owner ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
+          // Of the seven double-writers this is the site where the second channel was worst:
+          // the steer ends with the REMINDER'S OWN WORDS, and the events lane renders a
+          // ≤400-char gist, so past a 251-character prefix the copy that reached the model a
+          // turn later was a reminder with the reminder cut off. (Both arms of that boundary
+          // are driven in `the-second-channel-stops-double-writing.test.ts`.) OR2's whole
+          // point here is that the AGENT says the reminder in its own words; a truncated
+          // second copy on a later turn is not that, and it could not reach the round this
+          // floor buys in any case. `persistEngineSteer` files the same KEYED entry and
+          // writes the durable `role='system'` row.
+          state = persistEngineSteer(
+            state,
+            { agentId, content: steer, turnNumber, floor: 'reminder-silence', key: remAttempts === 1 ? 'retry' : '', atLoop: state.loopCount },
+            { broadcast },
+          );
           logger.info('v2 reminder silence floor: reminder turn about to end silently; steering the model to say it', {
             agentId, turnNumber, taskId: servedRem.taskId, attempt: remAttempts + 1,
           }, agentId);

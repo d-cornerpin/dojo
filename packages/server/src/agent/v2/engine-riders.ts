@@ -174,7 +174,9 @@ export const QUEUE_PAIRED_RIDERS: Readonly<Record<string, QueuePairedRider>> = O
   // stands down on a second promise ending and logs its tripwire instead of spinning.
   // RETIRED by T53: `a2a-handoff-floor`. Its counter latch is untouched — two attempts,
   // keyed '' then 'retry', then the ghost record.
-  'reminder-silence':  { intent: 'reminder_silence_floor',  latch: "steerFireCount(state.steerQueue, 'reminder-silence')" },
+  // RETIRED by T53: `reminder-silence`. Its counter latch and its ghost record are
+  // untouched; what is gone is a second copy that arrived a turn late with the reminder
+  // itself cut off by the lane's gist.
   // RETIRED by T53, both thrash rungs: they now steer through `persistEngineSteer` and write
   // no events-lane row. Their intents stay excluded above; only the pairs are gone. The gate's
   // entry recorded the one bound that was NOT a queue read — the per-SIGNATURE latch on
