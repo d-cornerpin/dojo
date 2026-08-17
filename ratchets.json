@@ -3816,6 +3816,83 @@
       "to": 6535,
       "by": "UX-REPAIR T63 (W45) — the picker choice: \"Manual OpenAI API\"",
       "why": "+107 for the choice the owner asked for by name, in the file where every other provider choice already lives. The breakdown: 21 lines are `BEHAVES_LIKE_CHOICES` — three options each carrying the plain-language sentence that says what picking it changes, which is the only thing standing between the owner and a guess; ~60 are the three manual fields (base URL, behaves-like select, optional key) with their help text; the rest is the `isManual` branch in `presetConfig`/submit and the `canSubmit` expression. `canSubmit` REPLACES a submit predicate that was written out twice (form guard and button `disabled`) and had already drifted in shape between the two copies, so the form now has one answer to \"is this submittable\". SPLITTING `AddProviderForm` INTO ITS OWN FILE WAS CONSIDERED AND REFUSED for this task: it is a real cleanup worth doing on its own evidence, and doing it inside a task whose whole risk is \"did the four existing presets change\" would hide that answer in a move diff. Recorded here so the next Settings task can take it. This file remains the tree's largest and every future addition to it should be asked the same question; from here it may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/join-drive.ts",
+      "from": 358,
+      "to": 480,
+      "by": "UX-REPAIR ROUND 14 T66 (W47) — the relay closes the model's own scaffold card",
+      "why": "+122, of which 63 are the argument and 59 the two functions. The argument is the expensive part and it is worth every line: it records WHICH lineage column the tie uses and, more usefully, that every other one is EMPTY on the measured row (`source_message_id`, `origin_conv_key`, `parent_id`, `a2a_thread_id`, `conversation_id` all NULL, `root_id` itself) — so the next reader does not re-derive that from a live database. It also carries the DEEPER ROOT, named and deliberately not fixed here: the missing `source_message_id` edge, whose gap-filler only matches `state='claimed'` while an ask held behind a join is `blocked`. A future task will delete most of this comment when it fixes that. Placement here rather than in `a2a-transport.ts` was chosen because this module already owns the rung records the tie is read from, and because that file is 2,645 lines. From here it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/receipt.ts",
+      "from": 442,
+      "to": 543,
+      "by": "UX-REPAIR ROUND 14 T67 (W47) — the instrument says whether it is running",
+      "why": "+101, of which 47 are one comment block and ~54 the three answers (a mode resolver split from the announcing front door, `receiptStatus`, and two log-level corrections). The comment is the round's actual finding and it is why the block is long: the premise handed to this task was that the writer had DIED, and the evidence says it never did — the config row's `updated_at` is seven seconds after the last receipt because the kit's prefix gate borrowed the switch and restored it. Recording that at the module means the next round does not spend itself re-discovering it. REFUSED here: a turn-boundary 'no receipt this turn' counter, because this writer has exactly one call site and would be measuring what it already knows; the argument is in the block. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/finalize-record.ts",
+      "from": 499,
+      "to": 546,
+      "by": "UX-REPAIR ROUND 14 T64 (W47) — the zero-read counter counts",
+      "why": "+47 and only THREE are code: one clause deleted, one payload field added, one log field added. The other 44 are the two findings, because this marker had written 0 rows in its whole life and the reason was invisible in both halves — a column that is NULL by the time this boundary reads it, and a clause that vetoed on an engine PUSH as though it were the agent's own act. Both are recorded with their driven turn numbers and the honest bound that the count is an UPPER bound on the class. A comment that stops the next reader re-driving four turns to learn this is cheaper than the lines it costs. From here it may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 2050,
+      "to": 2076,
+      "by": "UX-REPAIR ROUND 14 T64 (W47) — one owner for 'which turn claimed this row'",
+      "why": "+26 net for a function that REPLACES TWO COPIES of its own query: `ask-settlement.ts` and `ask-remediation.ts` each kept a private SELECT of the `claim_turn` event, and a third reader asked `work.claimed_by_turn` instead and was answered NULL on every turn that ever ran. The read now lives beside the event's writer with the reason it must be the event and never the column, stated once instead of twice-and-a-half. Both former copies became one-line aliases, so the tree is 12 lines lighter in those two files than the +26 suggests. From here this file may only shrink."
+    },
+    {
+      "path": "packages/shared/src/types.ts",
+      "from": 559,
+      "to": 581,
+      "by": "UX-REPAIR ROUND 14 T67 (W47) — the health wire reports the receipt instrument",
+      "why": "+22: one optional block on `HealthData` (six fields) and the comment saying why it is on the WIRE and drawn by NO card — receipts are off on every shipped box, so a permanent 'disabled' row on the owner's Health page would be noise, and the health-page truth test refuses rows with nothing behind them. That refusal is the load-bearing part: without it the next reader adds the card. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 5046,
+      "to": 5067,
+      "by": "UX-REPAIR ROUND 14 T65 (W47) — the activity door takes a window",
+      "why": "+21 net: `activityWindowStart` (5 code lines) plus its refusal rule, and the file's window header REWRITTEN rather than appended to — T60's 'why this is not a wire parameter yet' paragraph is gone, replaced by what the wire now carries and what round-14 S2 measured the deferral to cost. The refusal rule is stated because it is the whole safety of the property: an unusable `hours` resolves to the DEFAULT window, never a guess, and the report states the window it measured so a refusal is visible in the answer. From here it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2836,
+      "to": 2855,
+      "by": "UX-REPAIR ROUND 14 T65 (W47) — `hours` declared on work_update (registered re-blessing)",
+      "why": "+19 for ONE declared property: 1 line of schema and 18 of re-blessing note. The note is the OR7 record in the file the bytes actually ship from — the +312 chars, why `hours` and not `since`, and that the action enum was deliberately NOT touched so the golden delta is exactly one property. The same 312 is pinned twice more, in `work-verb-schema.test.ts` and in the kit golden, so this file's note is the reason and not the proof. From here it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 2631,
+      "to": 2645,
+      "by": "UX-REPAIR ROUND 14 T66 (W47) — the relay's disarm walk reaches the card",
+      "why": "+14 at the relay rung: 8 lines of call and log, 6 of pointer comment naming the measured row. The MECHANISM went to `work/join-drive.ts` deliberately — this file is the tree's second largest and that module already owns the rung records the tie is read from — so what lands here is the call and the row number a future reader will search for. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/tracker.ts",
+      "from": 989,
+      "to": 996,
+      "by": "UX-REPAIR ROUND 14 T65 (W47) — the activity door forwards the window",
+      "why": "+7: the two-property forward and the comment saying the window is now the wire's, replacing T60's sentence that said it was not. Both properties stay HAND-PICKED rather than passed through, which is this file's standing rule and what the door census checks. From here it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/state.ts",
+      "from": 707,
+      "to": 714,
+      "by": "UX-REPAIR ROUND 14 T64 (W47) — the recall latch is a recorded fact, not a veto",
+      "why": "+7 net on a field's own doc: the four lines describing it as a marker CLAUSE are gone and eleven replace them, saying what it is now (a payload field) and why it stopped being a predicate — vetoing on an unconditional engine push attributed the engine's act to the agent. The field's meaning changed, so its declaration had to; a stale doc here is what produced the defect. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tools/work-verbs.ts",
+      "from": 392,
+      "to": 399,
+      "by": "UX-REPAIR ROUND 14 T65 (W47) — a bare `hours` routes to the activity door",
+      "why": "+7: one router arm and six lines of reason. The reason is T60's own defect one field over — without the arm the ladder's terminal `list` claims the call and a model that asked what CHANGED is handed what is OPEN, which is the exact substitution T60's explicit-action arm exists to stop. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3845,7 +3922,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
-    "packages/server/src/agent/a2a-transport.ts": 2631,
+    "packages/server/src/agent/a2a-transport.ts": 2645,
     "packages/server/src/agent/agent-status.ts": 233,
     "packages/server/src/agent/brokers/deny.ts": 385,
     "packages/server/src/agent/brokers/grants.ts": 344,
@@ -3873,8 +3950,8 @@
     "packages/server/src/agent/tools/cat/healer.ts": 288,
     "packages/server/src/agent/tools/cat/media.ts": 897,
     "packages/server/src/agent/tools/cat/session.ts": 242,
-    "packages/server/src/agent/tools/cat/tracker.ts": 989,
-    "packages/server/src/agent/tools/definitions.ts": 2836,
+    "packages/server/src/agent/tools/cat/tracker.ts": 996,
+    "packages/server/src/agent/tools/definitions.ts": 2855,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
     "packages/server/src/agent/tools/gates.ts": 245,
@@ -3890,10 +3967,10 @@
     "packages/server/src/agent/v2/counterparty.ts": 997,
     "packages/server/src/agent/v2/loop.ts": 697,
     "packages/server/src/agent/v2/outbound.ts": 462,
-    "packages/server/src/agent/v2/receipt.ts": 442,
+    "packages/server/src/agent/v2/receipt.ts": 543,
     "packages/server/src/agent/v2/recorded-commitment.ts": 209,
     "packages/server/src/agent/v2/recovery.ts": 605,
-    "packages/server/src/agent/v2/state.ts": 707,
+    "packages/server/src/agent/v2/state.ts": 714,
     "packages/server/src/agent/v2/steer-queue.ts": 335,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
     "packages/server/src/agent/v2/steps/assemble/index.ts": 302,
@@ -3960,7 +4037,7 @@
     "packages/server/src/agent/v2/steps/step-outcome.ts": 140,
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
     "packages/server/src/agent/v2/steps/teardown/conversation-tagging.ts": 70,
-    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 499,
+    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 546,
     "packages/server/src/agent/v2/steps/teardown/index.ts": 237,
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/costs/tracker.ts": 541,
@@ -4028,12 +4105,12 @@
     "packages/server/src/techniques/tools.ts": 892,
     "packages/server/src/tools/tool-docs.ts": 572,
     "packages/server/src/tools/unified-read.ts": 761,
-    "packages/server/src/tools/work-verbs.ts": 392,
+    "packages/server/src/tools/work-verbs.ts": 399,
     "packages/server/src/tracker/delivery-evidence.ts": 320,
     "packages/server/src/tracker/pm-agent.ts": 2448,
     "packages/server/src/tracker/schema.ts": 1105,
     "packages/server/src/tracker/task-stamps.ts": 268,
-    "packages/server/src/tracker/tools.ts": 5046,
+    "packages/server/src/tracker/tools.ts": 5067,
     "packages/server/src/tracker/version-gap-reconcile.ts": 327,
     "packages/server/src/twilio/call-session.ts": 884,
     "packages/server/src/twilio/sms-inbound.ts": 406,
@@ -4052,11 +4129,11 @@
     "packages/server/src/work/ask-settlement.ts": 1307,
     "packages/server/src/work/ask-title.ts": 420,
     "packages/server/src/work/deliverable-declaration.ts": 320,
-    "packages/server/src/work/join-drive.ts": 358,
+    "packages/server/src/work/join-drive.ts": 480,
     "packages/server/src/work/obligation-memory.ts": 619,
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
-    "packages/server/src/work/store.ts": 2050,
+    "packages/server/src/work/store.ts": 2076,
     "packages/server/src/work/tracker-store.ts": 602,
     "packages/server/src/work/tracker-view.ts": 622,
     "packages/server/src/work/validation-drive.ts": 615,
@@ -4064,7 +4141,7 @@
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
-    "packages/shared/src/types.ts": 559,
+    "packages/shared/src/types.ts": 581,
     "packages/shared/src/visibility.ts": 977,
     "packages/shared/src/ws.ts": 1115,
     "watchdog/src/auto-rollback.ts": 333,
