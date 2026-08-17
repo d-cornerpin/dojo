@@ -53,7 +53,8 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { MAX_FLOOR_STEER_ATTEMPTS } from '../agent/v2/floor-ghost.js';
 import { AUDIT_KIND } from './audit-trail.js';
-import { appendWorkEvent } from './store.js';
+import { appendWorkEvent, type WorkState } from './store.js';
+import { setTrackerStatus } from './tracker-store.js';
 
 const logger = createLogger('join-drive');
 
@@ -196,6 +197,127 @@ export function engineRelayPreface(total: number): string {
   const quantifier = total === 2 ? 'Both' : `All ${total}`;
   return `${quantifier} results are in as delivered by the helpers — I could not get them `
     + `combined, so here they are in full:`;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// UX-REPAIR ROUND 14 / T66 — THE RELAY CLOSES THE MODEL'S OWN SCAFFOLD CARD.
+//
+// ── THE MEASURED SHAPE (orchestrator-verified, re-verified here row by row) ──
+// `ask:64b85330-f08c-49ba-930a-7d2238711015` ("Anniversary dinner outing and at-home backup")
+// was claimed by turn 4984, opened a two-piece join, and went `blocked` on the hold. Both
+// pieces landed. Three redrives were spent (turns 4985, 4986 — plus one deferred — and 4987),
+// then `join_engine_relay 1/1` shipped the pieces and the ask closed `done` on delivery
+// `9b15cc2f` with `compile_resolved`. The disarm walk reached the ask, the compile flag, the
+// adjudication and the doorbell — and left the model's own card for the same job, task
+// `708985b4` "Combine anniversary dinner plan and deliver to David", sitting `blocked` and
+// PM-upheld, which by `pm-agent.ts`'s own queue rules is never re-adjudicated and surfaces
+// only as a 30-minute `BLOCKED:` notice about work that was finished an hour ago.
+//
+// ── THE TIE IS STRUCTURAL, AND HERE IS EXACTLY WHICH ONE, BECAUSE MOST OF THEM ARE EMPTY ──
+// Read off the live row: `source_message_id` NULL, `origin_conv_key` NULL, `parent_id` NULL,
+// `a2a_thread_id` NULL, `conversation_id` NULL, `root_id` = itself. The ONE lineage column
+// that carries anything is `origin_turn` = 4985 (with `origin_kind` = `model`).
+//
+// So the tie is: THE CARD WAS OPENED ON A TURN THIS VERY ASK'S LADDER WAS DRIVING. Those turn
+// numbers are on the ask's own ledger — every rung this module records carries `turn_number` —
+// which makes the walk one read of the spine the relay is already writing to. Turn 4985 is
+// `join_redrive 1/3` for this ask, and 4985 is where the card came from. No title is read; no
+// prose is touched.
+//
+// ⚠ THE DEEPER ROOT, NAMED AND NOT FIXED HERE. The card SHOULD have carried
+// `source_message_id` — the real task->ask edge — and does not, because the gap-filler that
+// supplies it (`tracker-store.ts` `askSourceMessageForCreatingTurn`) looks for an ask that is
+// `state='claimed' AND claimed_by_turn=<turn>`, and an ask held behind a join is `blocked`. So
+// every card the model opens while serving a delegated ask is born with no edge to it. Widening
+// that predicate changes what EVERY model-created task records and has readers in
+// delivery-evidence, task-stamps, the tracker door and the spawner — a blast radius this task
+// is not scoped for. It is handed up as its own task, and this comment is where the next reader
+// finds it.
+//
+// HONEST BOUND: a card opened on a turn where no rung fired is NOT reached, deliberately. When
+// the relay fires, at least one rung turn exists by construction (the drives are spent), so the
+// measured shape is covered; a card born on the join-complete turn before any redrive is not,
+// and that is stated rather than guessed at with a wider net.
+//
+// COLLISIONS, argued: (a) the close goes through `setTrackerStatus` by:'engine' with the
+// relay's own delivery as BOTH evidence and receipt — the exact family
+// `tracker/tools.ts`'s ASSIGN-deliverable close and the project rollup already use, so Key-1
+// and the two-key gate are satisfied the same way and PM validation reads the same receipt;
+// (b) it can never touch an ask, a piece or an engine scaffold: `kind='task'`,
+// `root_kind='tracker'` and `origin_kind='model'` are all required, so pieces
+// (`root_kind='a2a_thread'`) and the >=6 floor's rows (`origin_kind='engine_scaffold'`) are
+// out by construction; (c) already-terminal cards are not touched, so a second pass over the
+// same relay closes nothing twice; (d) T48's rung accounting is untouched — this spends no
+// rung and records no ladder entry, it only reads their turn numbers.
+// ════════════════════════════════════════════════════════════════════════════════
+
+/** The turns this row's ladder has been driven on, from the rungs' own records. Distinct, and
+ *  nulls dropped: the relay itself records `turn_number: null` (it is not issued from a turn),
+ *  which is a real answer and not a turn to match against. */
+export function joinDriveTurns(workId: string): number[] {
+  try {
+    const rows = getDb().prepare(
+      `SELECT DISTINCT json_extract(payload, '$.turn_number') AS t FROM work_events
+        WHERE work_id = ? AND kind = ? AND json_extract(payload, '$.turn_number') IS NOT NULL`,
+    ).all(workId, AUDIT_KIND) as Array<{ t: number | null }>;
+    return rows.map((r) => r.t).filter((t): t is number => typeof t === 'number');
+  } catch (err) {
+    // A read that fails closes NOTHING. Every other direction risks closing a card that is
+    // genuinely still owed, which is the one outcome worse than leaving this one open.
+    logger.warn('join drive: could not read the turns this ladder drove; no scaffold card is released', {
+      workId, error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+}
+
+/**
+ * The relay's disarm walk, extended to the cards the MODEL opened for the job the engine just
+ * finished. Returns what it closed, for the caller's log.
+ *
+ * Called ONLY after a relay that recorded a delivery — the receipt is what makes the close
+ * honest and what the two-key gate is satisfied by.
+ */
+export function releaseScaffoldCardsAfterRelay(input: {
+  workId: string; agentId: string; deliveryId: string;
+}): Array<{ id: string; from: string; title: string }> {
+  const turns = joinDriveTurns(input.workId);
+  if (turns.length === 0) return [];
+  let candidates: Array<{ id: string; state: string; title: string; origin_turn: number }>;
+  try {
+    candidates = getDb().prepare(
+      `SELECT id, state, title, origin_turn FROM work
+        WHERE kind = 'task' AND root_kind = 'tracker' AND origin_kind = 'model'
+          AND agent_id = ? AND state NOT IN ('done','failed','abandoned')
+          AND origin_turn IN (${turns.map(() => '?').join(',')})
+        ORDER BY opened_at ASC`,
+    ).all(input.agentId, ...turns) as typeof candidates;
+  } catch (err) {
+    logger.warn('join drive: could not look for the scaffold cards this relay discharged', {
+      workId: input.workId, error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+  const released: Array<{ id: string; from: string; title: string }> = [];
+  for (const card of candidates) {
+    const res = setTrackerStatus(card.id, 'complete', {
+      by: 'engine', actorId: 'engine',
+      expectedState: card.state as WorkState,
+      evidenceRef: input.deliveryId, resultDeliveryId: input.deliveryId,
+      reason: 'the engine delivered the compiled result of the delegated work this card was '
+        + "opened to combine and deliver, so this card's purpose is discharged; the owner's own "
+        + 'delivery receipt is its evidence',
+    });
+    if (res.kind === 'applied') released.push({ id: card.id, from: card.state, title: card.title });
+    else {
+      // A refusal is a fact, not a retry: the gates that refuse a close are the same ones that
+      // protect a card that is genuinely still owed.
+      logger.warn('join drive: the relay could not release a scaffold card it had discharged', {
+        workId: input.workId, card: card.id, from: card.state, outcome: res,
+      });
+    }
+  }
+  return released;
 }
 
 /**

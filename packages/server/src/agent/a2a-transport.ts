@@ -47,6 +47,7 @@ import { settleAskOnJoin, priorEngineJoinRelay, joinDeliveryDetail } from '../wo
 import {
   JOIN_DRIVE_ENTRY, JOIN_REDRIVE_BOUND, nextJoinDriveRung, recordJoinDrive,
   joinRedriveIsBlind, compileSteerText, everyPieceLandedWithContent, engineRelayPreface,
+  releaseScaffoldCardsAfterRelay,
   type JoinDriveDecision,
 } from '../work/join-drive.js';
 import { currentTurnNumber } from './v2/turn-record.js';
@@ -2116,6 +2117,19 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<Compi
             agentId, deliveryId, basis: 'engine-relay',
             reason: 'the engine shipped the landed pieces to the owner itself',
           }), 'a2a: join settled on the engine relay of the landed pieces', join.id);
+          // ── UX-REPAIR ROUND 14 T66 — THE WALK REACHES THE MODEL'S OWN CARD ──
+          // The disarm above discharges the ASK and the compile duty. Measured on
+          // `ask:64b85330`: it left task `708985b4` "Combine anniversary dinner plan and deliver
+          // to David" — the card the model opened on turn 4985, which is `join_redrive 1/3` for
+          // this very ask — sitting `blocked` and PM-upheld over work the engine had finished.
+          // The tie, the honest bound and every collision are argued at the function.
+          const released = releaseScaffoldCardsAfterRelay({ workId: join.id, agentId, deliveryId });
+          if (released.length > 0) {
+            logger.info('compile drive: the relay discharged the cards the model had opened for the same job', {
+              agentId, work: join.id, deliveryId,
+              cards: released.map((r) => ({ id: r.id, from: r.from, title: r.title })),
+            });
+          }
         } else {
           logger.warn('compile drive: the engine relay of the landed pieces recorded no delivery', {
             agentId, work: join.id, pieces: piecesNow.length,
