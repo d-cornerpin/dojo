@@ -118,7 +118,23 @@ const T5_BASELINE_CHARS = { work_open: 6327, work_update: 7311 };
 // THE GUARD BELOW STILL HOLDS: the property count is unchanged and the ENUM is unchanged —
 // not one new value, not one new property. The bytes are the meaning of values that were
 // already declared.
-const BASELINE_CHARS = { work_open: 6327, work_update: 7606 };
+const T18_BASELINE_CHARS = { work_open: 6327, work_update: 7606 };
+
+// ── UX-REPAIR ROUND 14 T65 — THE ACTIVITY WINDOW, AND IT COSTS 312 CHARS ────────────────
+// The round's ONE registered prefix re-blessing (OR7), and unlike T5 and T18 this one DOES
+// add a capability, deliberately and by exactly one property. Measured, not estimated:
+//   work_open   6,327 → 6,327  (+0 — untouched; this edit is `work_update` only)
+//   work_update 7,606 → 7,918  (+312)
+// The same 312 measured a second, independent way: `dojo-test-kit/checks/golden/
+// cache-prefix.kevin.txt`'s tools half moved 72,304 → 72,616 across the re-bless, and the
+// previous golden with ONLY this property inserted equals the new one byte-for-byte.
+// WHAT THE 312 BUY: T60 built the activity door with its window as a renderer argument and
+// recorded that widening it to the wire was "one declared property on the next affordable
+// prefix re-bless". Round-14 S2 priced the deferral — the owner asked what had changed
+// "since yesterday morning", the door covered today, 61 ledger rows were outside it and the
+// reply disclosed none of them. So `hours` is declared, and the guard below is the inverse of
+// T5's and T18's: this edit must add EXACTLY ONE property and must not touch an enum.
+const BASELINE_CHARS = { work_open: 6327, work_update: 7918 };
 
 describe('S2 + N1 — the shared declaration, and the wording said once', () => {
   const open = schemaOf('work_open');
@@ -161,15 +177,42 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     expect(taskId).toMatch(/NEVER invent an id/);
   });
 
+  it('UX-REPAIR ROUND 14 T65 — the +312 is ONE declared window property, and the enums hold', () => {
+    // The inverse of the two guards above: T5 and T18 had to add NO capability to earn their
+    // bytes, and this one had to add EXACTLY ONE property — so a rewording nobody approved
+    // cannot hide inside the move, and neither can a second property.
+    expect(BASELINE_CHARS.work_open - T18_BASELINE_CHARS.work_open).toBe(0);
+    expect(BASELINE_CHARS.work_update - T18_BASELINE_CHARS.work_update).toBe(312);
+    const pu = (upd as { properties: Record<string, unknown> }).properties;
+    expect(Object.keys(pu)).toHaveLength(33);
+    expect(Object.keys(pu)).toContain('hours');
+    const hours = pu.hours as { type: string; description: string };
+    expect(hours.type).toBe('number');
+    expect(hours.description).toMatch(/how many hours back the window covers/);
+    expect(hours.description, 'the door states the window it measured, and the declaration says so')
+      .toMatch(/states the window it actually measured/);
+    // NO ENUM MOVED. `activity` stays advertised in the list door's own tool result, where T60
+    // put it — declaring it here would have been a second delta on the same re-blessing.
+    expect((pu.action as { enum: string[] }).enum).toEqual(
+      ['status', 'edit', 'reassign', 'complete_step', 'close_project', 'list', 'get'],
+    );
+    expect((pu.status as { enum: string[] }).enum).toEqual(
+      ['on_deck', 'in_progress', 'complete', 'blocked', 'fallen', 'paused', 'cancelled'],
+    );
+    // And `work_open` did not move at all: the whole delta is on this one verb.
+    expect(JSON.stringify(open).length).toBe(T18_BASELINE_CHARS.work_open);
+  });
+
   it('UX-REPAIR ROUND 3 T18 — the +295 is the status vocabulary and nothing else', () => {
     // Same inverted guard, one re-blessing later: this edit also has to add NO capability.
-    expect(BASELINE_CHARS.work_open - T5_BASELINE_CHARS.work_open).toBe(0);
-    expect(BASELINE_CHARS.work_update - T5_BASELINE_CHARS.work_update).toBe(295);
+    expect(T18_BASELINE_CHARS.work_open - T5_BASELINE_CHARS.work_open).toBe(0);
+    expect(T18_BASELINE_CHARS.work_update - T5_BASELINE_CHARS.work_update).toBe(295);
     const po = (open as { properties: Record<string, unknown> }).properties;
     const pu = (upd as { properties: Record<string, unknown> }).properties;
-    // No capability rode in on the bytes: the property rosters are still exactly T0C-W's.
+    // No capability rode in on T18's bytes: `work_open` is still exactly T0C-W's roster, and
+    // `work_update`'s is T0C-W's plus T65's one declared window property, counted below.
     expect(Object.keys(po)).toHaveLength(25);
-    expect(Object.keys(pu)).toHaveLength(32);
+    expect(Object.keys(pu)).toHaveLength(33);
     // Nor did the ENUM move: `cancelled` was always advertised. What changed is that it now
     // MEANS something the tool honours.
     const status = pu.status as { enum: string[]; description: string };
