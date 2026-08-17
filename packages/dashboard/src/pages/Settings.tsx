@@ -1755,7 +1755,11 @@ const ProvidersTab = () => {
               <div>
                 <h3 className="text-sm font-medium text-ui">{provider.name}</h3>
                 <p className="text-xs text-ui/40 mt-0.5">
-                  {provider.type} &middot; {provider.authType === 'agent-sdk' ? 'Agent SDK' : provider.authType === 'oauth' ? 'OAuth' : 'API Key'} {provider.isValidated ? '(validated)' : '(not validated)'}
+                  {/* T63: 'none' is a real stored auth type (Ollama has always used it, and a
+                      manual local server now does too). It used to render as "API Key",
+                      which was the one thing it is not. */}
+                  {provider.type} &middot; {provider.authType === 'agent-sdk' ? 'Agent SDK' : provider.authType === 'oauth' ? 'OAuth' : provider.authType === 'none' ? 'No key' : 'API Key'}
+                  {provider.behavesLike ? ` · behaves like ${provider.behavesLike}` : ''} {provider.isValidated ? '(validated)' : '(not validated)'}
                 </p>
               </div>
               <div className="flex items-center gap-3">
@@ -1800,18 +1804,50 @@ const ProvidersTab = () => {
   );
 };
 
+// T63 — the dialects a MANUAL endpoint can declare it behaves like.
+//
+// The values are the capability-contract profile ids (`agent/model-contract.ts`'s
+// `BEHAVES_LIKE_PROFILES`), and the create route validates against that same list, so a
+// label added here can never invent a profile the engine cannot resolve. The choice exists
+// because a URL like `http://localhost:8000/v1` says nothing about the dialect behind it —
+// which is precisely the case the manual option is for.
+const BEHAVES_LIKE_CHOICES = [
+  {
+    value: 'generic-openai-compatible',
+    label: 'Generic OpenAI-compatible',
+    hint: 'Plain chat completions. Pick this unless the model below is listed.',
+  },
+  {
+    value: 'deepseek-native',
+    label: 'DeepSeek (e.g. a local DeepSeek V4)',
+    hint: "Hands the model its own reasoning back on tool-call turns, sends DeepSeek's thinking switch, and drops temperature/top-p while it is thinking.",
+  },
+  {
+    value: 'openrouter-proxy',
+    label: 'OpenRouter-style proxy',
+    hint: 'A gateway in front of other models: unified reasoning switch, explicit prompt-cache marker.',
+  },
+] as const;
+
 const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel: () => void }) => {
   const [name, setName] = useState('');
   // The dropdown 'preset' is a UI-only label. Several presets (deepseek,
-  // openrouter) all map to the same backend type 'openai-compatible' but
-  // with different default base URLs and seeded model catalogs. The
+  // openrouter, manual) all map to the same backend type 'openai-compatible'
+  // but with different default base URLs and seeded model catalogs. The
   // mapping happens at submit time below.
   const [preset, setPreset] = useState('anthropic');
   const [authType, setAuthType] = useState<'api_key' | 'oauth' | 'agent-sdk'>('api_key');
   const [credential, setCredential] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
+  // T63: only the manual choice carries one. Every preset sends nothing and is resolved
+  // from its URL exactly as before.
+  const [behavesLike, setBehavesLike] = useState<string>('generic-openai-compatible');
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'saving' | 'validating' | 'valid' | 'invalid'>('idle');
+
+  // T63 — the manual choice: the owner types the URL, the key is OPTIONAL (a local
+  // ollama / vLLM / LM Studio server usually has none), and the dialect is declared.
+  const isManual = preset === 'manual';
 
   // Translate UI preset → backend (type, default baseUrl, suggested name).
   const presetConfig = (() => {
@@ -1821,6 +1857,7 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
       case 'openrouter':  return { backendType: 'openai-compatible',  defaultBaseUrl: 'https://openrouter.ai/api',   suggestedName: 'OpenRouter' };
       case 'deepseek':    return { backendType: 'openai-compatible',  defaultBaseUrl: 'https://api.deepseek.com',    suggestedName: 'DeepSeek' };
       case 'ollama':      return { backendType: 'ollama',             defaultBaseUrl: 'http://localhost:11434',      suggestedName: 'Ollama' };
+      case 'manual':      return { backendType: 'openai-compatible',  defaultBaseUrl: undefined,                     suggestedName: 'Local Model' };
       default:            return { backendType: 'anthropic',          defaultBaseUrl: undefined,                     suggestedName: 'Anthropic' };
     }
   })();
@@ -1831,16 +1868,29 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
   useEffect(() => {
     setName((current) => {
       const isAutoFilled = current === '' ||
-        ['Anthropic', 'OpenAI', 'OpenRouter', 'DeepSeek', 'Ollama'].includes(current);
+        ['Anthropic', 'OpenAI', 'OpenRouter', 'DeepSeek', 'Ollama', 'Local Model'].includes(current);
       return isAutoFilled ? presetConfig.suggestedName : current;
     });
   }, [preset, presetConfig.suggestedName]);
 
+  // What the form needs before it will submit. Manual asks for a URL instead of a key,
+  // because that is the field it cannot guess; everything else is unchanged.
+  const canSubmit = Boolean(name.trim()) && (
+    isManual
+      ? Boolean(baseUrl.trim())
+      : preset === 'ollama' || authType === 'agent-sdk' || Boolean(credential.trim())
+  );
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || (preset !== 'ollama' && authType !== 'agent-sdk' && !credential.trim())) return;
+    if (!canSubmit) return;
     setStatus('saving');
     setError(null);
+
+    // A manual endpoint with no key typed DECLARES it has no auth ('none'), which is what
+    // lets validation and browsing reach it at all. Type a key and it is stored and sent
+    // through exactly the same path every other provider's key uses.
+    const manualAuthType = credential.trim() ? 'api_key' : 'none';
 
     const id = name.toLowerCase().replace(/[^a-z0-9]/g, '-');
     const result = await api.createProvider({
@@ -1848,8 +1898,11 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
       name,
       type: presetConfig.backendType,
       baseUrl: baseUrl.trim() || presetConfig.defaultBaseUrl,
-      authType: preset === 'ollama' ? 'none' : authType,
-      credential: preset === 'ollama' || authType === 'agent-sdk' ? undefined : credential,
+      authType: isManual ? manualAuthType : preset === 'ollama' ? 'none' : authType,
+      credential: isManual
+        ? (credential.trim() || undefined)
+        : preset === 'ollama' || authType === 'agent-sdk' ? undefined : credential,
+      ...(isManual ? { behavesLike } : {}),
     });
 
     if (!result.ok) {
@@ -1896,9 +1949,63 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
             <option value="openrouter">OpenRouter</option>
             <option value="deepseek">DeepSeek</option>
             <option value="ollama">Ollama</option>
+            <option value="manual">Manual OpenAI API</option>
           </select>
         </div>
       </div>
+
+      {/* T63 — the manual choice: a URL the owner types, an optional key, and the
+          dialect declared, because none of the three can be guessed from the others. */}
+      {isManual && (
+        <>
+          <div>
+            <label className="flabel">Base URL</label>
+            <input
+              type="text"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="http://localhost:8000/v1"
+              className="finput"
+            />
+            <p className="text-[11px] text-ui/40 mt-1">
+              Any server that speaks the OpenAI API — a local DeepSeek, vLLM, LM Studio, or a
+              gateway on your network. Paste the URL the server prints; with or without the
+              trailing <span className="font-mono">/v1</span> both work.
+            </p>
+          </div>
+
+          <div>
+            <label className="flabel">Behaves like</label>
+            <select
+              value={behavesLike}
+              onChange={(e) => setBehavesLike(e.target.value)}
+              className="finput field--select"
+            >
+              {BEHAVES_LIKE_CHOICES.map(choice => (
+                <option key={choice.value} value={choice.value}>{choice.label}</option>
+              ))}
+            </select>
+            <p className="text-[11px] text-ui/40 mt-1">
+              {BEHAVES_LIKE_CHOICES.find(ch => ch.value === behavesLike)?.hint}
+            </p>
+          </div>
+
+          <div>
+            <label className="flabel">API Key <span className="text-ui/40">(optional)</span></label>
+            <input
+              type="password"
+              value={credential}
+              onChange={(e) => setCredential(e.target.value)}
+              placeholder="Leave blank if the server needs no key"
+              className="finput"
+            />
+            <p className="text-[11px] text-ui/40 mt-1">
+              Most local servers accept anything here — leave it blank. A key you do type is
+              stored the same way every other provider's key is.
+            </p>
+          </div>
+        </>
+      )}
 
       {preset === 'ollama' && (
         <div>
@@ -1925,7 +2032,7 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
         </div>
       )}
 
-      {preset !== 'ollama' && (
+      {preset !== 'ollama' && !isManual && (
         <>
           {preset === 'anthropic' && (
             <div>
@@ -2044,7 +2151,7 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
       <div className="srow">
         <button
           type="submit"
-          disabled={status === 'saving' || status === 'validating' || status === 'valid' || !name.trim() || (preset !== 'ollama' && authType !== 'agent-sdk' && !credential.trim())}
+          disabled={status === 'saving' || status === 'validating' || status === 'valid' || !canSubmit}
           className="btn btn--primary btn--sm"
         >
           {status === 'saving' ? 'Adding...' : status === 'validating' ? 'Validating...' : 'Add & Validate'}
