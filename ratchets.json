@@ -3781,6 +3781,41 @@
       "to": 275,
       "by": "UX-REPAIR ROUND 13 T61(b) (W43) — the recall-lane delivery latch",
       "why": "+9 (3 code, 6 comment). The three code lines are an `if` over the array read that is ALREADY taken one line above (`collectMessageLaneIds(messages)`, the steer-delivery check's own input) and one `advance`. It lands here and not in the assembler for the reason the six comment lines state: this file is OR7 ground and the only place where \"what the provider was actually handed\" is known, and a latch set on the assembler's intention would count a lane the budget then dropped as a read the model had — which would make the T61 marker undercount exactly the turns it exists to count. Nothing about the array changes; the latch is a symbol-free boolean on the turn state. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model-contract.ts",
+      "from": 197,
+      "to": 279,
+      "by": "UX-REPAIR T63 (W45) — a provider may declare the dialect it speaks",
+      "why": "+82 (197 -> 279), which crosses the growth detector's 240-line threshold, so the file is pinned DECREASE-ONLY in `files` from here — that visibility is the point of the threshold and this entry is the argument it asks for. It is the same trade HL1's own entry made: 22 of the 70 are the header paragraph that states the new input and, more importantly, the ONE thing it may not touch (`apiRootIsBareHost` is a fact about the URL, not a declaration — `getOpenAIClient` reads it off the base URL before any model is in hand, so a contract that answered it from a declaration could disagree with the base URL the SDK was actually pointed at). The rest is `BEHAVES_LIKE_PROFILES` + `declaredProfile` + `profileContract`, which is the three inline branches of the old `contractForModel` LIFTED into one switch so a profile can be selected by name instead of only by URL sniffing. That lift is why the seeds provably do not move: each arm is the object its branch returned before, and the two facts a profile is not allowed to invent are passed in. ALTERNATIVE REFUSED: a second resolver keyed on the declaration, leaving the sniffing one intact (+~25 here) — two functions that each believe they know what a provider is, which is the drift this file exists to prevent. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 2724,
+      "to": 2745,
+      "by": "UX-REPAIR T63 (W45) — a provider may declare the dialect it speaks",
+      "why": "+21, of which 8 are executable and the file names no provider still (the HL1 containment test is green). The 8: two columns added to `getModelInfo`'s SELECT and return (`p.auth_type`, `p.behaves_like` — one JOIN that was already being read, no new query), the keyless arm of `getOpenAIClient` (a provider that DECLARES `auth_type='none'` is not a provider missing its key; the OpenAI SDK requires an apiKey string, so it gets a named placeholder instead of a throw), and the two signature lines that carry both facts to `callOpenAIModel`. The 13 comment lines are the placeholder's own doc — what it is, that it is never stored or logged as a credential, and that it is only reachable when the row itself says no credential exists — which is the paragraph a future security reader must find AT the constant rather than in a commit. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/config.ts",
+      "from": 2550,
+      "to": 2589,
+      "by": "UX-REPAIR T63 (W45) — the manual door: no key, no double /v1",
+      "why": "+39 and the executable half is a DELETION of duplicated rules, not an addition: `openAiCompatibleApiRoot` (3 lines) replaces the hand-built `${baseUrl}/v1/models` template AND its inline DeepSeek exception at BOTH sites by deferring to `resolveOpenAIBaseUrl` — the rule the model client itself uses — and `openAiCompatibleAuthHeaders` (3 lines) replaces two copies of a header template that produced `Bearer null` for a keyless provider. Net executable across the two call sites is roughly flat; what grew is the 25-line comment block that records WHY a URL rule may not be spelled twice (the presets were unaffected, so the second copy was invisible until a base URL that already ends in `/v1` asked for `…/v1/v1/models`) plus the two-line `behaves_like` write/read and the `auth_type='none'` clause with the sentence saying that value has been legal since migration 005 and nothing outside the Ollama branch ever read it. ALTERNATIVE REFUSED: a shared http helper module for these two routes (+a file, -15 here) — 6 lines of URL and header shaping do not carry a module, and the whole point is that the ANSWER lives in the model client, not in a third place. From here this file may only shrink."
+    },
+    {
+      "path": "packages/shared/src/types.ts",
+      "from": 552,
+      "to": 559,
+      "by": "UX-REPAIR T63 (W45) — a provider may declare the dialect it speaks",
+      "why": "+7: one field on `Provider` (`behavesLike`) and six lines saying what it means. One of the seven is a CORRECTION rather than an addition — `authType` gained `'none'`, which every Ollama row on every box has stored since migration 005 while this union said it could not exist. The comment states that null is the normal answer (every preset, every provider created before T63) and that the legal values are the contract ids in `agent/model-contract.ts`, because the next reader of a free-form string field named `behavesLike` will otherwise invent a value the resolver silently ignores. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/pages/Settings.tsx",
+      "from": 6428,
+      "to": 6535,
+      "by": "UX-REPAIR T63 (W45) — the picker choice: \"Manual OpenAI API\"",
+      "why": "+107 for the choice the owner asked for by name, in the file where every other provider choice already lives. The breakdown: 21 lines are `BEHAVES_LIKE_CHOICES` — three options each carrying the plain-language sentence that says what picking it changes, which is the only thing standing between the owner and a guess; ~60 are the three manual fields (base URL, behaves-like select, optional key) with their help text; the rest is the `isManual` branch in `presetConfig`/submit and the `canSubmit` expression. `canSubmit` REPLACES a submit predicate that was written out twice (form guard and button `disabled`) and had already drifted in shape between the two copies, so the form now has one answer to \"is this submittable\". SPLITTING `AddProviderForm` INTO ITS OWN FILE WAS CONSIDERED AND REFUSED for this task: it is a real cleanup worth doing on its own evidence, and doing it inside a task whose whole risk is \"did the four existing presets change\" would hide that answer in a move diff. Recorded here so the next Settings task can take it. This file remains the tree's largest and every future addition to it should be asked the same question; from here it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3806,7 +3841,7 @@
     "packages/dashboard/src/pages/Costs.tsx": 686,
     "packages/dashboard/src/pages/Health.tsx": 651,
     "packages/dashboard/src/pages/Memory.tsx": 499,
-    "packages/dashboard/src/pages/Settings.tsx": 6428,
+    "packages/dashboard/src/pages/Settings.tsx": 6535,
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
@@ -3822,7 +3857,8 @@
     "packages/server/src/agent/effects/scopes.ts": 349,
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 217,
-    "packages/server/src/agent/model.ts": 2724,
+    "packages/server/src/agent/model-contract.ts": 279,
+    "packages/server/src/agent/model.ts": 2745,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
@@ -3933,7 +3969,7 @@
     "packages/server/src/db/migration-checksums.ts": 270,
     "packages/server/src/gateway/routes/agents.ts": 847,
     "packages/server/src/gateway/routes/chat.ts": 492,
-    "packages/server/src/gateway/routes/config.ts": 2550,
+    "packages/server/src/gateway/routes/config.ts": 2589,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/setup-deps.ts": 513,
     "packages/server/src/gateway/routes/tracker.ts": 959,
@@ -4028,7 +4064,7 @@
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
-    "packages/shared/src/types.ts": 552,
+    "packages/shared/src/types.ts": 559,
     "packages/shared/src/visibility.ts": 977,
     "packages/shared/src/ws.ts": 1115,
     "watchdog/src/auto-rollback.ts": 333,
