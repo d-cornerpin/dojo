@@ -46,6 +46,9 @@ export interface CreateProviderRequest {
   baseUrl?: string;
   authType: string;
   credential?: string;
+  // T63 — one of `BEHAVES_LIKE_PROFILES` (`agent/model-contract.ts`), sent only by the
+  // manual OpenAI-compatible choice. Omitted means "sniff the URL as always".
+  behavesLike?: string;
 }
 
 export type ProvidersListResponse = Provider[];

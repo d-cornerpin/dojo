@@ -1,0 +1,38 @@
+-- 162 (UX-REPAIR T63): A PROVIDER MAY DECLARE THE DIALECT IT SPEAKS.
+--
+-- Owner order, 2026-08-16: "I need a 'Manual OpenAI API' provider option such that I can add
+-- an OpenAI API manually such as a local ds4 install."
+--
+-- WHY A COLUMN AT ALL. `agent/model-contract.ts` resolves a model's capability contract by
+-- SNIFFING the provider's base URL: bare-host `api.deepseek.com` → the DeepSeek profile,
+-- `openrouter.ai` → the proxy profile, anything else → generic. That works for hosted APIs,
+-- whose dialect and whose hostname are the same fact. It cannot work for a LOCAL install:
+-- `http://localhost:8000/v1` says nothing about whether the thing behind it wants its own
+-- `reasoning_content` handed back on tool-call turns. Nothing in the schema could say so, so
+-- a local DeepSeek V4 silently got the generic profile — no reasoning replay, no thinking
+-- toggle — which is the one combination that misbehaves for that model.
+--
+-- WHY ON `providers` AND NOT ON `models`. The dialect is a property of the SERVING ENDPOINT,
+-- not of a model row: one local server speaks one wire dialect for everything it serves.
+-- Putting it on `models` would store one endpoint's fact once per model, require a write at
+-- every model-insert site (browse-add, the OpenAI seed, the DeepSeek seed, Ollama discovery)
+-- and let two rows on one endpoint contradict each other about what that endpoint accepts.
+-- The one contract field that IS a claim about the model rather than the endpoint
+-- (`answersInReasoning`, keyed on the api model id) stays model-derived and is untouched.
+--
+-- NULL = "resolve exactly as before". Every existing row is NULL and no backfill is written:
+-- the sniffed answer for a hosted provider is already right, and inventing a declaration for
+-- a row whose owner never made one would be a claim nobody made. `contractForModel` reads the
+-- column only when it is set, so every configured provider's contract is byte-identical —
+-- pinned by `agent/__tests__/a-local-install-behaves-like-what-it-is.test.ts`.
+--
+-- NO CHECK CONSTRAINT. The legal set is the contract profile ids, which live in
+-- `model-contract.ts` and are validated at the write door (`config/schema.ts`'s
+-- `CreateProviderSchema`). A CHECK here would be a second, staler copy of that list, and the
+-- resolver already treats an unrecognised value as "not declared" rather than throwing.
+--
+-- NEXT-RELEASE AUDIT NOTE: this is the one schema addition T63 makes. `providers.behaves_like`
+-- has exactly one reader (`agent/model.ts`'s `getModelInfo`, into `contractForModel`) and one
+-- writer (`POST /config/providers`).
+
+ALTER TABLE providers ADD COLUMN behaves_like TEXT;

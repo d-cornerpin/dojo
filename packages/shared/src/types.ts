@@ -10,7 +10,14 @@ export interface Provider {
   name: string;
   type: 'anthropic' | 'openai' | 'openai-compatible' | 'ollama';
   baseUrl: string | null;
-  authType: 'api_key' | 'oauth' | 'agent-sdk';
+  authType: 'api_key' | 'oauth' | 'agent-sdk' | 'none';
+  // T63 — the capability-contract profile the owner declared this endpoint behaves like, or
+  // null when it declared nothing (every preset, and every provider created before T63). Only
+  // the manual OpenAI-compatible choice sets it: a local server's URL cannot say whether the
+  // thing behind it wants DeepSeek's reasoning passback. The legal values are the contract
+  // ids in `agent/model-contract.ts` — `BEHAVES_LIKE_PROFILES` — which is what the create
+  // door validates against.
+  behavesLike: string | null;
   isValidated: boolean;
   validatedAt: string | null;
   // User-entered host machine RAM in GB. Only relevant for remote Ollama

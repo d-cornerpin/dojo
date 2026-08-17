@@ -275,10 +275,10 @@ function sanitizeOrphanToolBlocks(
   }
 }
 
-function getModelInfo(modelId: string): { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null } {
+function getModelInfo(modelId: string): { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; providerAuthType: string; providerBehavesLike: string | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null } {
   const db = getDb();
   const row = db.prepare(`
-    SELECT m.provider_id, m.api_model_id, m.context_window, m.max_output_tokens, m.thinking_enabled, m.num_ctx_override, m.num_ctx_recommended, m.capabilities, p.type as provider_type, p.base_url as provider_base_url
+    SELECT m.provider_id, m.api_model_id, m.context_window, m.max_output_tokens, m.thinking_enabled, m.num_ctx_override, m.num_ctx_recommended, m.capabilities, p.type as provider_type, p.base_url as provider_base_url, p.auth_type as provider_auth_type, p.behaves_like as provider_behaves_like
     FROM models m
     JOIN providers p ON p.id = m.provider_id
     WHERE m.id = ?
@@ -293,6 +293,8 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
     capabilities: string | null;
     provider_type: string;
     provider_base_url: string | null;
+    provider_auth_type: string | null;
+    provider_behaves_like: string | null;
   } | undefined;
 
   if (!row) {
@@ -330,6 +332,11 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
     maxOutputTokens: row.max_output_tokens ?? getMaxOutputTokens(row.api_model_id, row.provider_type),
     providerType: row.provider_type,
     providerBaseUrl: row.provider_base_url,
+    // T63: how this provider authenticates, and what dialect its owner declared it speaks.
+    // `auth_type='none'` is the local-server case — a real, long-legal value (migration 005)
+    // that nothing outside the Ollama branch used to read.
+    providerAuthType: row.provider_auth_type ?? 'api_key',
+    providerBehavesLike: row.provider_behaves_like,
     // Default ON, matches migration default and the UX the user asked for.
     thinkingEnabled: row.thinking_enabled === null || row.thinking_enabled === undefined
       ? true
@@ -880,13 +887,27 @@ export function resolveOpenAIBaseUrl(baseUrl?: string | null): string | undefine
   return cleaned.endsWith('/v1') ? cleaned : cleaned + '/v1';
 }
 
-function getOpenAIClient(providerId: string, baseUrl?: string | null): OpenAI {
+/**
+ * T63 — the stand-in key for a provider that declares `auth_type='none'`.
+ *
+ * A local OpenAI-compatible server (ollama / vLLM / LM Studio) checks no key, and the owner
+ * has none to type. The OpenAI SDK still requires an `apiKey` string and will refuse to
+ * construct without one, so a keyless provider gets this visible placeholder rather than a
+ * throw. It is sent as `Authorization: Bearer` to a server that ignores the header; it is
+ * never stored, never logged as a credential, and is only ever reached when the provider row
+ * itself says no credential exists.
+ */
+const NO_AUTH_PLACEHOLDER_KEY = 'dojo-provider-declares-no-auth';
+
+function getOpenAIClient(providerId: string, baseUrl?: string | null, authType?: string | null): OpenAI {
   const cacheKey = `${providerId}:${baseUrl ?? 'default'}`;
   const cached = openaiClientCache.get(cacheKey);
   if (cached) return cached;
 
   const credential = getProviderCredential(providerId);
-  if (!credential) {
+  // T63: a provider that declares no auth is not a provider that is missing its key.
+  const declaresNoAuth = authType === 'none';
+  if (!credential && !declaresNoAuth) {
     throw new AgentError(`No credential found for OpenAI provider: ${providerId}`, '', {
       code: 'NO_API_KEY',
       retryable: false,
@@ -895,10 +916,10 @@ function getOpenAIClient(providerId: string, baseUrl?: string | null): OpenAI {
 
   const resolvedBaseUrl = resolveOpenAIBaseUrl(baseUrl);
 
-  logger.info('Creating OpenAI-compatible client', { providerId, baseUrl, resolvedBaseUrl: resolvedBaseUrl ?? 'https://api.openai.com/v1 (default)' });
+  logger.info('Creating OpenAI-compatible client', { providerId, baseUrl, resolvedBaseUrl: resolvedBaseUrl ?? 'https://api.openai.com/v1 (default)', declaresNoAuth });
 
   const client = new OpenAI({
-    apiKey: credential,
+    apiKey: credential ?? NO_AUTH_PLACEHOLDER_KEY,
     ...(resolvedBaseUrl ? { baseURL: resolvedBaseUrl } : {}),
   });
 
@@ -1292,12 +1313,12 @@ export function applyProviderRequestParams(
 
 async function callOpenAIModel(
   params: ModelCallParams,
-  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[] },
+  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; providerAuthType: string; providerBehavesLike: string | null; thinkingEnabled: boolean; capabilities: string[] },
 ): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
   const startTime = Date.now();
 
-  const client = getOpenAIClient(modelInfo.providerId, modelInfo.providerBaseUrl);
+  const client = getOpenAIClient(modelInfo.providerId, modelInfo.providerBaseUrl, modelInfo.providerAuthType);
 
   // HL1: the two provider-name checks that used to live here are the contract's business.
   const contract = contractForModel(modelInfo);

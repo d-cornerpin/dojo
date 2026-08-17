@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { getDb } from '../../db/connection.js';
 import { getProviderCredential, setProviderCredential, clearSecretsCache, getSearchApiKey, getSearchProvider, setSearchConfig } from '../../config/loader.js';
-import { clearClientCache } from '../../agent/model.js';
+import { clearClientCache, resolveOpenAIBaseUrl } from '../../agent/model.js';
 import { CreateProviderSchema, EnableModelsSchema } from '../../config/schema.js';
 import { createLogger } from '../../logger.js';
 import { DEFAULT_SOUL_MD as DEFAULT_SOUL, DEFAULT_USER_MD as DEFAULT_USER } from '../../prompt/templates.js';
@@ -236,6 +236,34 @@ function isDeepSeekProvider(baseUrl: string | null | undefined): boolean {
 }
 
 /**
+ * T63 — where an OpenAI-compatible provider's API actually is, by the ONE rule the model
+ * client itself uses (`resolveOpenAIBaseUrl`, `agent/model.ts`): bare-host providers keep
+ * their root, everyone else gets `/v1`, and a base URL that ALREADY ends in `/v1` is left
+ * alone.
+ *
+ * These two routes used to build `${baseUrl}/v1/models` by hand with one inline exception for
+ * DeepSeek. That is byte-identical for the presets — `https://openrouter.ai/api` →
+ * `…/api/v1/models`, `https://api.deepseek.com` → `…/models` — and WRONG for the case T63
+ * exists for: the base URL a local server prints for you to paste already ends in `/v1`, so
+ * the hand-rolled version asked for `…/v1/v1/models` and got a 404 the owner would read as
+ * "my server is broken". Two copies of a URL rule is one copy too many; this defers to the
+ * copy that has to be right for the actual chat call.
+ */
+function openAiCompatibleApiRoot(baseUrl: string): string {
+  return resolveOpenAIBaseUrl(baseUrl) ?? baseUrl;
+}
+
+/**
+ * T63 — the auth header, when there is auth. A local server that checks nothing is handed
+ * nothing: `Authorization: Bearer null` is what the old template produced for a keyless
+ * provider, which means nothing to a server that ignores the header and breaks one that
+ * doesn't. Providers with a credential are unchanged.
+ */
+function openAiCompatibleAuthHeaders(credential: string | null | undefined): Record<string, string> {
+  return credential ? { 'Authorization': `Bearer ${credential}` } : {};
+}
+
+/**
  * Idempotent DeepSeek model seed. Inserts the reference catalog AND
  * any non-deprecated model IDs DeepSeek's live /models endpoint reports
  * — but only those that aren't already in the database for this provider.
@@ -456,16 +484,16 @@ configRouter.post('/providers', async (c) => {
     return c.json({ ok: false, error: parsed.error.issues.map(i => i.message).join(', ') }, 400);
   }
 
-  const { id, name, type, baseUrl, authType, credential } = parsed.data;
+  const { id, name, type, baseUrl, authType, credential, behavesLike } = parsed.data;
   const db = getDb();
 
   // If provider already exists, update it instead of erroring
   const existing = db.prepare('SELECT id FROM providers WHERE id = ?').get(id);
   if (existing) {
     db.prepare(`
-      UPDATE providers SET name = ?, type = ?, base_url = ?, auth_type = ?, updated_at = datetime('now')
+      UPDATE providers SET name = ?, type = ?, base_url = ?, auth_type = ?, behaves_like = ?, updated_at = datetime('now')
       WHERE id = ?
-    `).run(name, type, baseUrl ?? null, authType, id);
+    `).run(name, type, baseUrl ?? null, authType, behavesLike ?? null, id);
 
     if (credential) {
       setProviderCredential(id, credential, authType as 'api_key' | 'oauth');
@@ -489,11 +517,16 @@ configRouter.post('/providers', async (c) => {
     logger.info('No credential to store (local provider)', { providerId: id });
   }
 
-  // Insert provider into DB
+  // Insert provider into DB.
+  // T63: `behaves_like` is the owner's declaration of the dialect behind the URL (migration
+  // 162). NULL for every preset — a hosted provider's URL already identifies it, and the
+  // resolver falls back to exactly the sniffing it always did. Note the re-POST arm above
+  // rewrites it along with name/type/base_url/auth_type: this door has always treated a POST
+  // over an existing id as a full replace of the identity fields, and the declaration is one.
   db.prepare(`
-    INSERT INTO providers (id, name, type, base_url, auth_type, is_validated, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
-  `).run(id, name, type, baseUrl ?? null, authType);
+    INSERT INTO providers (id, name, type, base_url, auth_type, behaves_like, is_validated, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+  `).run(id, name, type, baseUrl ?? null, authType, behavesLike ?? null);
 
   // Auto-insert models for Anthropic providers (dynamically fetched, with fallback)
   if (type === 'anthropic') {
@@ -670,7 +703,12 @@ configRouter.post('/providers/:id/validate', async (c) => {
     credentialLength: credential ? credential.length : 0, // never log secret bytes (audit finding 8/21)
   });
 
-  if (!credential && provider.type !== 'ollama' && provider.authType !== 'agent-sdk') {
+  // T63: `auth_type='none'` is a provider that DECLARES it has no key — a local
+  // OpenAI-compatible server (ollama / vLLM / LM Studio). It has been a legal value since
+  // migration 005 and, until T63, only the Ollama branch read it, so a manually-added local
+  // server could never be validated at all. A provider that claims a key and has none is
+  // still refused, unchanged.
+  if (!credential && provider.type !== 'ollama' && provider.authType !== 'agent-sdk' && provider.authType !== 'none') {
     return c.json({ ok: false, error: 'No credential found for this provider' }, 400);
   }
 
@@ -855,17 +893,14 @@ configRouter.post('/providers/:id/validate', async (c) => {
       // before this preset existed).
       const baseUrl = (provider.baseUrl || 'https://openrouter.ai/api').replace(/\/+$/, '');
       const isDeepSeek = isDeepSeekProvider(baseUrl);
-      // DeepSeek's models endpoint is at /models (not /v1/models like
-      // OpenRouter and most other openai-compatible providers).
-      const modelsListPath = isDeepSeek ? '/models' : '/v1/models';
       if (isDeepSeek) {
         await seedDeepSeekModels(db, id, baseUrl, credential ?? undefined);
       }
       logger.info('Provider validation: checking OpenAI-compatible API', { providerId: id, baseUrl });
 
-      const modelsResponse = await fetch(`${baseUrl}${modelsListPath}`, {
+      const modelsResponse = await fetch(`${openAiCompatibleApiRoot(baseUrl)}/models`, {
         headers: {
-          'Authorization': `Bearer ${credential}`,
+          ...openAiCompatibleAuthHeaders(credential),
           'HTTP-Referer': 'https://dojo.dev',
         },
         signal: AbortSignal.timeout(15000),
@@ -1181,9 +1216,12 @@ configRouter.get('/providers/:id/browse-models', async (c) => {
   }
 
   const credential = getProviderCredential(providerId);
-  if (!credential) return c.json({ ok: false, error: 'No credential found' }, 400);
+  // T63: same rule as validation — a provider that declares no auth is not one that is
+  // missing its key, and browsing is how a model gets attached to a local server at all.
+  if (!credential && provider.authType !== 'none') return c.json({ ok: false, error: 'No credential found' }, 400);
 
   const baseUrl = (provider.baseUrl || 'https://openrouter.ai/api').replace(/\/+$/, '');
+  const apiRoot = openAiCompatibleApiRoot(baseUrl);
 
   // OpenRouter's /v1/models defaults to output_modalities=text, so image /
   // video / audio-only generators (flux, seedance, etc.) are absent unless we
@@ -1191,13 +1229,13 @@ configRouter.get('/providers/:id/browse-models', async (c) => {
   // search can surface media-generation models, not just chat/LLMs. Harmless
   // for plain OpenAI-compatible providers, but only OpenRouter honours it.
   const modelsUrl = baseUrl.includes('openrouter.ai')
-    ? `${baseUrl}/v1/models?output_modalities=text,image,audio,video`
-    : `${baseUrl}/v1/models`;
+    ? `${apiRoot}/models?output_modalities=text,image,audio,video`
+    : `${apiRoot}/models`;
 
   try {
     const response = await fetch(modelsUrl, {
       headers: {
-        'Authorization': `Bearer ${credential}`,
+        ...openAiCompatibleAuthHeaders(credential),
         'HTTP-Referer': 'https://dojo.dev',
       },
       signal: AbortSignal.timeout(15000),
@@ -2206,6 +2244,7 @@ function rowToProvider(row: Record<string, unknown>): Provider {
     type: row.type as Provider['type'],
     baseUrl: row.base_url as string | null,
     authType: row.auth_type as Provider['authType'],
+    behavesLike: (row.behaves_like ?? null) as Provider['behavesLike'],
     isValidated: Boolean(row.is_validated),
     validatedAt: row.validated_at as string | null,
     hostRamGb: typeof row.host_ram_gb === 'number' ? row.host_ram_gb : null,

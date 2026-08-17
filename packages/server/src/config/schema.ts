@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { BEHAVES_LIKE_PROFILES } from '../agent/model-contract.js';
 
 // ── Secrets.yaml Schema ──
 export const SecretsSchema = z.object({
@@ -28,6 +29,10 @@ export const CreateProviderSchema = z.object({
   baseUrl: z.string().url().optional().nullable(),
   authType: z.enum(['api_key', 'oauth', 'none', 'agent-sdk']),
   credential: z.string().optional(),
+  // T63: the dialect the owner declares this endpoint speaks. Validated against the contract
+  // profile list itself, so a name that cannot be resolved can never be stored — the manual
+  // picker's whole value is that this field is TRUE about the server behind the URL.
+  behavesLike: z.enum(BEHAVES_LIKE_PROFILES).optional().nullable(),
 });
 
 export type CreateProviderInput = z.infer<typeof CreateProviderSchema>;
