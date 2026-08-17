@@ -293,3 +293,112 @@ describe('T60 CONTROLS — the list door is untouched but for one sentence, and 
     expect(classifyConcurrency('work_update', { action: 'activity' })).toBe('safe');
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// UX-REPAIR ROUND 14 / T65 — THE ACTIVITY DOOR TAKES A WINDOW.
+//
+// ── THE COST OF T60's DEFERRAL, NOW MEASURED (round-14 S2) ──────────────────────────────
+// The owner asked what had happened "since yesterday morning". The door covered since local
+// midnight only — T60's argued deferral, recorded at `trackerActivity` — so 61 ledger rows
+// outside today were invisible to it and the reply disclosed none of them. T60's own words
+// were "widening it to the wire is one declared property on the next affordable prefix
+// re-bless". This is that property, and it is exactly one: `hours`.
+//
+// WHY `hours` AND NOT `since`. The smallest honest shape. A number needs no parsing, no
+// timezone resolution and no ambiguity about which day a bare date means, and the model
+// already holds the current instant (`msg.current-time`) to count back from. The output
+// continues to state the window it measured verbatim, so the model can check its own
+// arithmetic against the answer instead of trusting it.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('T65 — the window is a declared property, and the door honours it', () => {
+  it('RED→GREEN: `hours` is DECLARED, so the unknown-argument census no longer calls it silently ignored', async () => {
+    const { unknownArgsAgainstSchema } = await import('../../agent/tools/index.js');
+    const { extras } = unknownArgsAgainstSchema('work_update', { action: 'activity', hours: 36 });
+    expect(
+      extras,
+      'at HEAD the engine told the model this arg "was silently ignored" — which is why T60 refused to read it undeclared',
+    ).toEqual([]);
+  });
+
+  it('RED→GREEN: the S2 shape — a row from yesterday is INVISIBLE to the default window and COUNTED with hours=36', () => {
+    const yesterdayMorning = localMidnightMs() - 15 * 3_600_000;
+    seedWork({
+      id: 'y1', kind: 'ask', state: 'done', title: 'Yesterday morning ask',
+      openedAt: yesterdayMorning, closedAt: yesterdayMorning + 60_000,
+    });
+
+    const today = trackerActivity(AGENT, {});
+    expect(today, 'premise: the default window cannot see it — the measured blindness').not.toContain('Yesterday morning ask');
+
+    const wide = trackerHandlers['work_update:activity'];
+    expect(wide).toBeDefined();
+  });
+
+  it('RED→GREEN: the DOOR forwards the window — the wire value reaches the renderer', async () => {
+    const yesterdayMorning = localMidnightMs() - 15 * 3_600_000;
+    seedWork({
+      id: 'y2', kind: 'ask', state: 'done', title: 'Yesterday morning ask',
+      openedAt: yesterdayMorning, closedAt: yesterdayMorning + 60_000,
+    });
+    const res = await trackerHandlers['work_update:activity']!({
+      agentId: AGENT, args: { action: 'activity', hours: 36, verbose: true },
+    } as never);
+    const out = String((res as { content: string }).content);
+    expect(out, 'the row from yesterday is inside a 36-hour window and must be counted').toContain('Opened (1): 1 ask');
+    expect(out).toContain('Yesterday morning ask');
+    expect(out, 'and the window it measured is stated, not the default').toMatch(/^Activity since (?!local midnight)/m);
+  });
+
+  it('the output STATES the window it measured, so the model can check its own arithmetic', () => {
+    const wide = trackerActivity(AGENT, {}, Date.now() - 36 * 3_600_000);
+    expect(wide).toMatch(/^Activity since /m);
+    expect(wide).not.toMatch(/since local midnight/);
+    const today = trackerActivity(AGENT, {});
+    expect(today).toMatch(/since local midnight/);
+  });
+
+  it('a window of 0, a negative, a NaN or an absurd one is refused into the DEFAULT — never into a wrong window', async () => {
+    const base = localMidnightMs() + 60_000;
+    seedWork({ id: 'w9', kind: 'ask', state: 'done', title: 'todays row', openedAt: base, closedAt: base + 5 });
+    const call = async (hours: unknown): Promise<string> => String(((await trackerHandlers['work_update:activity']!(
+      { agentId: AGENT, args: { action: 'activity', hours } } as never,
+    )) as { content: string }).content);
+    const dflt = trackerActivity(AGENT, {});
+    for (const bad of [0, -12, Number.NaN, 'yesterday', null, 10_000_000]) {
+      expect(await call(bad), `hours=${String(bad)} must fall back to the stated default window`)
+        .toContain('since local midnight');
+    }
+    expect(await call(undefined)).toBe(dflt);
+  });
+});
+
+describe('T65 CONTROLS — a call without the window is what it always was', () => {
+  it('the no-arg door output is BYTE-IDENTICAL to the renderer\'s own default', async () => {
+    const base = localMidnightMs() + 60_000;
+    seedWork({ id: 'c1', kind: 'task', state: 'done', title: 'A closed task', openedAt: base, closedAt: base + 10 });
+    const res = await trackerHandlers['work_update:activity']!({
+      agentId: AGENT, args: { action: 'activity' },
+    } as never);
+    expect(String((res as { content: string }).content)).toBe(trackerActivity(AGENT, {}));
+  });
+
+  it('the window declares ONE property and the action enum is untouched — the golden delta is exactly that', async () => {
+    const { toolDefinitionsByName } = await import('../../agent/tools/definitions.js');
+    const def = toolDefinitionsByName().get('work_update');
+    const props = (def!.input_schema as { properties: Record<string, unknown> }).properties;
+    expect(Object.keys(props)).toContain('hours');
+    // The re-bless is ONE property. `activity` stays out of the enum, exactly as T60 left it:
+    // the pointer sentence in the list door's own result is where the action is advertised.
+    const action = props.action as { enum: string[] };
+    expect(action.enum).toEqual(['status', 'edit', 'reassign', 'complete_step', 'close_project', 'list', 'get']);
+  });
+
+  it('no OTHER action reads the window — it is the activity door\'s property alone', async () => {
+    const before = trackerListActive(AGENT, { scope: 'all' });
+    const res = await trackerHandlers['work_update:list']!({
+      agentId: AGENT, args: { action: 'list', hours: 36 },
+    } as never);
+    expect(String((res as { content: string }).content)).toBe(before);
+  });
+});

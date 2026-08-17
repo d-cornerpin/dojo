@@ -48,7 +48,7 @@ import * as trackerMod from '../../../tracker/tools.js';
 import {
   trackerCreateProject, trackerCreateTask, reminderCreate, trackerUpdateStatus,
   trackerAddNotes, trackerEditTask, trackerEditProject, trackerGetStatus,
-  trackerListActive, trackerActivity, trackerCompleteStep, trackerCloseProject,
+  trackerListActive, trackerActivity, activityWindowStart, trackerCompleteStep, trackerCloseProject,
   trackerPauseSchedule, trackerResumeSchedule,
   trackerRetask, trackerRequestOverride, trackerOverride, trackerRequestUserVerdict,
   trackerApplyUserVerdict, trackerApplyUserValidation, trackerResolveMissedRuns,
@@ -540,11 +540,18 @@ export const trackerHandlers: ToolHandlerMap = {
   // the owner "quiet day … nothing else changed on the tracker" over 57 rows opened AND
   // closed the same day. NOW and OVER-A-WINDOW are different questions; a flag would have
   // made them one answer with a switch, which is how the substitution happened in the first
-  // place. `verbose` is the ONE declared property this door forwards (it means the same
-  // thing here as on `list`: more rows, same counts) — the window itself is the renderer's
-  // argument, not the wire's, and `tracker/tools.ts`'s header records why.
+  // place. `verbose` means the same thing here as on `list`: more rows, same counts.
+  //
+  // T65: and the WINDOW is now the wire's too. T60 left it as the renderer's argument because
+  // declaring it moves the cached tools prefix; round-14 S2 measured what that cost (an ask
+  // about "since yesterday morning" answered from a since-midnight window, 61 rows outside
+  // it) and the property was declared in one registered re-blessing. Two declared properties
+  // forwarded, both hand-picked rather than passed through — `activityWindowStart` owns what
+  // an unusable `hours` means, and the report states the window it really measured either way.
   async "work_update:activity"({ agentId, args }) {
-    const content = trackerActivity(agentId, { verbose: args.verbose === true });
+    const content = trackerActivity(
+      agentId, { verbose: args.verbose === true }, activityWindowStart(args.hours),
+    );
     return { content, isError: content.startsWith('Error') };
   },
 

@@ -154,6 +154,13 @@ export function workOperation(name: string | undefined | null, args?: Args): Wor
       // silently handed what is OPEN — the S4 substitution, made by the router.
       if (action === 'activity') return 'work_update:activity';
       // No action: the argument shape decides, most-specific first.
+      // T65: `hours` is the activity door's own declared property and no other operation reads
+      // it, so its presence names the operation — the same absorb-don't-refuse reading the
+      // ladder makes of `status`, `assigned_to` and the rest. Without this arm a model that
+      // passes a window and forgets the discriminator falls to the terminal `list` and is
+      // handed what is OPEN, which is the exact substitution T60's own router arm exists to
+      // stop, arriving one field over.
+      if (has(args, 'hours')) return 'work_update:activity';
       if (has(args, 'status')) return 'work_update:status';
       if (has(args, 'assigned_to') || has(args, 'assigned_to_group')) return 'work_update:reassign';
       // A project id with no task id and a `reason` is a close; with edit

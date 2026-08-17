@@ -3100,18 +3100,22 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
 //   • vs the HL5/T44 snapshot lane — that is OPEN COMMITMENTS, complete, injected. This is
 //     history, pulled, and never injected: it costs a prefix byte only if the agent asks.
 //
-// ── THE WINDOW, AND THE BOUND THIS ROUND ACCEPTS ────────────────────────────────────────
-// The window is the LOCAL DAY (since midnight in the box zone), which is the S4 question's
-// own window and the one an agent asked "what happened today" needs. `sinceMs` is a
-// parameter of the renderer, NOT of the wire: a declared `hours`/`since` property on
-// `work_update` would move the cached tools prefix, and T60 is a zero-prefix-byte task by its
-// own plan line while this round's ONE registered re-blessing is T61's conduct sentence.
-// Reading an UNDECLARED wire arg is worse than not offering one — the engine's own
+// ── THE WINDOW: DEFERRED BY T60, SPENT BY T65 ───────────────────────────────────────────
+// T60 shipped this door with the window as a RENDERER argument and the wire covering the
+// LOCAL DAY only. Its recorded reason: a declared `hours`/`since` property moves the cached
+// tools prefix, and reading one UNDECLARED is worse than not offering it — the engine's own
 // unknown-argument census would tell the model the arg "was silently ignored" while this
-// function acted on it (`agent/tools/index.ts`'s census text), and a door that contradicts
-// the engine's warning about itself is not a door. So: the window is stated in the output,
-// the renderer takes it as an argument, and widening it to the wire is one declared property
-// on the next affordable prefix re-bless. Recorded here rather than left to be re-discovered.
+// function acted on it (`agent/tools/index.ts`), and a door that contradicts the engine's
+// warning about itself is not a door. Its own closing words: "widening it to the wire is one
+// declared property on the next affordable prefix re-bless."
+//
+// ROUND-14 S2 PRICED THE DEFERRAL. The owner asked what had happened "since yesterday
+// morning"; the door covered today; 61 ledger rows sat outside it; the reply disclosed none of
+// them. So T65 spends it: `hours` is DECLARED on `work_update` (definitions.ts carries the
+// re-blessing note), the door forwards it through `activityWindowStart` below, and the output
+// goes on stating the window it actually measured — which is what lets a model check its own
+// arithmetic instead of trusting it. The action enum was NOT touched, so the golden delta is
+// exactly one property.
 //
 // ── HONESTY IDIOM ───────────────────────────────────────────────────────────────────────
 // Counts first and complete; notable rows titled; the rest COUNTED behind an elision line
@@ -3159,8 +3163,25 @@ const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' 
 const activityRowId = (id: string): string => (id.includes(':') ? id : id.slice(0, 8));
 
 /**
- * The window's own ledger, rendered. `sinceMs` defaults to local midnight (see the header
- * for why it is not a wire parameter yet).
+ * T65 — THE WIRE'S `hours` AS THE RENDERER'S WINDOW START, or `undefined` for the default.
+ *
+ * Every unusable value resolves to the DEFAULT window rather than to a guess, and the caller
+ * is not left wondering which it got: the report states the window it measured on its first
+ * line, so a refused `hours` is visible in the answer itself.
+ *
+ * The only bound is a real one, not an invented ceiling (#14): a window cannot begin before
+ * time was counted, so an `hours` that reaches back past the epoch is not a window. Nothing
+ * here caps how far back a legitimate question may look.
+ */
+export function activityWindowStart(hours: unknown, nowMs: number = Date.now()): number | undefined {
+  if (typeof hours !== 'number' || !Number.isFinite(hours) || hours <= 0) return undefined;
+  const start = nowMs - hours * 3_600_000;
+  return start >= 0 ? start : undefined;
+}
+
+/**
+ * The window's own ledger, rendered. `sinceMs` defaults to local midnight; the wire's own
+ * window arrives through `activityWindowStart` (T65).
  */
 export function trackerActivity(
   agentId: string,

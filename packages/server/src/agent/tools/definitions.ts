@@ -1174,6 +1174,25 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         filter: { type: 'string', enum: ['all', 'mine', 'blocked', 'overdue'], description: 'action="list": filter to apply (default: all). "overdue" = scheduled to have run by now and still waiting (not paused).' },
         verbose: { type: 'boolean', description: 'action="list": if true, include each task\'s description (truncated to 200 chars). Default false (compact rows).' },
+        // ── UX-REPAIR ROUND 14 T65 — THE ACTIVITY WINDOW, ON THE WIRE ─────────────────
+        // THE ONE PROPERTY OF THIS ROUND'S REGISTERED PREFIX RE-BLESSING (OR7). T60 built
+        // the activity door with its window as a RENDERER argument and recorded why:
+        // declaring it would move the cached tools prefix, and reading it UNDECLARED would
+        // have the engine's own unknown-argument census tell the model the arg "was silently
+        // ignored" while the function acted on it. Its own words were "widening it to the
+        // wire is one declared property on the next affordable prefix re-bless".
+        //
+        // Round-14 S2 measured the deferral's cost: the owner asked what had happened "since
+        // yesterday morning", the door covered since-local-midnight only, 61 ledger rows were
+        // invisible to it and the reply disclosed none of them. This is that one property.
+        //
+        // `hours` AND NOT `since`, and the reason is smallness: a number needs no parsing, no
+        // timezone resolution and no ruling about which day a bare date means, and the model
+        // already holds the current instant (`msg.current-time`) to count back from. The
+        // action enum is NOT touched — `activity` stays advertised where T60 put it, in the
+        // list door's own result — so the golden delta is exactly this property and nothing
+        // else. Static text: the prefix stays byte-stable after the re-bless.
+        hours: { type: 'number', description: 'action="activity": how many hours back the window covers — e.g. 36 for "since yesterday morning", 168 for the past week. Omit for today so far (since local midnight). The result always states the window it actually measured, so check that line rather than assuming.' },
       },
       required: [],
     },

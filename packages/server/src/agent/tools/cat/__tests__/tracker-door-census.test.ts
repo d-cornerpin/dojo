@@ -147,6 +147,7 @@ const SPECS: DoorSpec[] = [
       assigned_to_group: 'action="reassign"',
       filter: 'action="list" — a query parameter, not a field on a row',
       verbose: 'action="list" — a rendering parameter, not a field on a row',
+      hours: 'action="activity" (T65) — the WINDOW of the activity report, a query parameter over the ledger. Nothing on a task row is an hour count, and the activity door is the only reader; `work-verbs.ts` also routes a bare `hours` there rather than letting it fall to the list',
     },
   },
 ];
