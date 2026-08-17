@@ -361,6 +361,18 @@ describe('the marker measures and does nothing else', () => {
     expect(kinds.map((k) => k.kind).filter((k) => k !== 'audit' && k !== 'transition' && k !== 'claim_turn')).toEqual([]);
   });
 
+  it('T64 HONEST BOUND: a GREETING counts too, and the count is therefore an upper bound', async () => {
+    // Driven t4998, "Quick one — say hi." — a marker row, because that is this exact shape.
+    // Pinned rather than papered over: telling a greeting from a factual ask means reading the
+    // ask (the standing prose ban), and any length or word threshold would be invented (#14).
+    // A reader of these counts must treat them as an UPPER BOUND on unsourced specifics. If a
+    // future round wants the class narrowed, this clause is where the argument re-opens.
+    seedAsk();
+    mockDb.current!.prepare('UPDATE work SET title = ? WHERE id = ?').run('Quick one — say hi.', ASK);
+    await finalizeTurnRecord(s1State(), ctxFor(turnCtxFor()));
+    expect(markers()).toHaveLength(1);
+  });
+
   it('it reads no prose — the ask\'s own text is never touched by the predicate', async () => {
     // The same shape with a title that has no factual specifics in it at all still counts:
     // the engine is counting a SHAPE, which is the whole reason this is allowed to exist.

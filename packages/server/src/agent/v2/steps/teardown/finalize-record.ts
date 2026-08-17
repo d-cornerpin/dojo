@@ -305,6 +305,16 @@ export async function finalizeTurnRecord(
     // fact stays countable and sliceable by a later round, which is this marker's whole
     // charter, rather than silently holding the class at zero. Nothing else moves: no steer,
     // no block, no change to what the model receives or what the person gets.
+    //
+    // ⚠ HONEST BOUND, MEASURED THE HOUR THIS LANDED. The class now includes ORDINARY CHAT:
+    // driven t4998, "Quick one — say hi.", wrote a marker, because a greeting answered with no
+    // tool call has exactly this shape. Telling a greeting from a factual ask means reading the
+    // ask, which is the standing prose ban, and no length or word threshold would be anything
+    // but invented (#14). So the count is an UPPER BOUND on the unsourced-specifics class and
+    // must be read as one; the reply text sits on the answer row for a human to slice by hand.
+    // The T41 rider two blocks up faced the same problem from the other side and solved it with
+    // `anyToolStartedThisTurn` — the discriminator this marker must have inverted, so it cannot
+    // borrow the same escape.
     if (triggerWorkId && triggerAsk?.kind === 'ask' && triggerAsk.requester === 'owner'
         && triggerAskClaimingTurn === turnNumber
         && counterparty.kind === 'user' && !isA2ATurn && !isEngineTurn
