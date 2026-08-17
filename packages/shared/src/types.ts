@@ -326,6 +326,28 @@ export interface HealthData {
     used: number;
     total: number;
   };
+  /**
+   * UX-REPAIR ROUND 14 / T67 — WHETHER THE CONTEXT-RECEIPT INSTRUMENT IS RUNNING.
+   *
+   * Receipts record what each model call was actually sent. The switch is global, off by
+   * default, process-cached, and borrowed-then-restored by the kit's prefix gate — and until
+   * this block existed nothing anywhere reported which way it was set, so a whole review round
+   * ran unrecorded before the question could even be asked (`agent/v2/receipt.ts` carries the
+   * incident). Reported on the wire, drawn by NO card: this is a debug instrument that is off
+   * on every shipped box, and a permanent "disabled" row on the owner's Health page would be
+   * noise rather than health.
+   */
+  receipts?: {
+    mode: 'off' | 'meta' | 'full';
+    /** `env` when `DOJO_RECEIPT_MODE` is set on the process, else the config row. */
+    source: 'env' | 'config';
+    /** Zeroed by a restart, which is itself the honest answer for a fresh process. */
+    writtenThisProcess: number;
+    lastWriteAt: string | null;
+    /** Non-null means the instrument is ON and LOSING records. */
+    lastError: string | null;
+    root: string;
+  };
 }
 
 export interface SetupStatus {

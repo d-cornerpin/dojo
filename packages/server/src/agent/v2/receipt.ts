@@ -101,12 +101,69 @@ let cachedMode: ReceiptMode = 'off';
 let cachedModeAt = 0;
 let writesSinceSweep = 0;
 
-export function getReceiptMode(): ReceiptMode {
+// ════════════════════════════════════════════════════════════════════════════════════════
+// UX-REPAIR ROUND 14 / T67 — THE INSTRUMENT SAYS WHETHER IT IS RUNNING.
+//
+// ── WHAT ACTUALLY HAPPENED (W47's Step-0, and it is NOT what the round assumed) ─────────
+// Receipts "stopped" at `t4978`, `2026-08-17T03:12:14Z`, and the round-14 review then ran
+// completely unrecorded — round-14 S1 could not observe its own turn's context because no
+// receipt for t4979 exists. The round read that as a writer that had died.
+//
+// THE WRITER NEVER DIED. `config.context_receipt_mode` on that box reads `off`, and its
+// `updated_at` is `2026-08-17 03:12:21` — SEVEN SECONDS after that last receipt. The kit's
+// own prefix gate (`dojo-test-kit/checks/check-message-prefix.mjs`) turns the mode to `meta`
+// for the four turns it drives and RESTORES the prior value on every path, which is correct
+// behaviour and is why the last four receipts on the box are its drive (t4975–t4978, 8s
+// apart) and the "stop" is its restore. Nothing crashed. The mode was `off` for the rounds,
+// as it has been by default since 2026-06-12.
+//
+// SO THE ROOT IS THE SILENCE, NOT A CRASH: this switch is global, process-cached for 30s,
+// flipped and un-flipped by tooling under the operator's feet, and NOTHING ANYWHERE SAYS
+// WHICH WAY IT IS SET. Two facts were unobtainable — "are receipts on?" and "is the writer
+// working?" — so a whole review round was spent before anyone could ask. Three small
+// answers, no new mechanism, no new config key, no new table:
+//   1. every TRANSITION of the resolved mode logs, naming the new mode and where it came
+//      from. This one line is the thing that did not exist at 03:12:21;
+//   2. the writer's own failures move from `debug` (a level nobody reads) to `warn` — the
+//      literal "cannot die silently";
+//   3. `receiptStatus()` reports mode, source, count and last error, and `/health` carries
+//      it, so the question is ASKABLE instead of requiring a sqlite3 session.
+//
+// WHY NOTHING WATCHES "A TURN FINISHED WITH NO RECEIPT" SEPARATELY. `writeContextReceipt`
+// has exactly ONE production call site — immediately before every provider call
+// (`steps/call-llm/pre-call-injections.ts`) — so a turn that called a model attempted a
+// receipt by construction, and a turn that called no model has no receipt to be missing. The
+// only silent deaths left are a failed write (now loud, (2)) and a mode that changed under
+// the turn (now loud, (1)). A turn-boundary counter would be a second mechanism measuring
+// what the writer itself already knows, which is the disease this phase exists to remove.
+//
+// COLLISIONS ARGUED. The watchdog card watches AGENTS stalling, not platform instruments,
+// and its alert lane is the owner's. The dashboard Health page is the OWNER'S surface and
+// gets no card here: receipts are off on every shipped box, so a card would draw a permanent
+// "disabled" row for a debug tool the owner never uses — and `the-health-page-tells-the-
+// truth.test.ts` refuses rows with nothing behind them. The `/health` wire is the diagnostic
+// surface the kit and any worker already curl, and it carries the block with no card claiming
+// it. The receipt FILES themselves cannot serve this: a missing file is exactly the state
+// that has to be explained.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** Where the resolved mode came from — the env override wins, else the config row. */
+type ReceiptModeSource = 'env' | 'config';
+
+let lastAnnouncedMode: ReceiptMode | null = null;
+let receiptsWritten = 0;
+let lastWriteAt: string | null = null;
+let lastWriteError: string | null = null;
+
+/** The resolved mode plus where it came from. `getReceiptMode` is the one-value front door. */
+function resolveReceiptMode(): { mode: ReceiptMode; source: ReceiptModeSource } {
   const envMode = process.env.DOJO_RECEIPT_MODE;
-  if (envMode === 'off' || envMode === 'meta' || envMode === 'full') return envMode;
+  if (envMode === 'off' || envMode === 'meta' || envMode === 'full') {
+    return { mode: envMode, source: 'env' };
+  }
 
   const now = Date.now();
-  if (now - cachedModeAt < MODE_CACHE_MS) return cachedMode;
+  if (now - cachedModeAt < MODE_CACHE_MS) return { mode: cachedMode, source: 'config' };
   cachedModeAt = now;
   try {
     const row = getDb()
@@ -116,7 +173,45 @@ export function getReceiptMode(): ReceiptMode {
   } catch {
     cachedMode = 'off';
   }
-  return cachedMode;
+  return { mode: cachedMode, source: 'config' };
+}
+
+export function getReceiptMode(): ReceiptMode {
+  const { mode, source } = resolveReceiptMode();
+  // (1) THE EDGE, ANNOUNCED. Once per change, never per call — the 30s cache above already
+  // throttles the read, and this only speaks when the answer is different from last time.
+  if (mode !== lastAnnouncedMode) {
+    const from = lastAnnouncedMode;
+    lastAnnouncedMode = mode;
+    if (mode === 'off') {
+      logger.info('context receipts are OFF — no record of what any model is being sent will be written from here on. Nothing is broken; this is the shipped default and the state a tool that borrowed the switch restores it to', {
+        from, source,
+      });
+    } else {
+      logger.info('context receipts are ON — every model call from here on records what the model was sent', {
+        from, mode, source, root: receiptsRoot(),
+      });
+    }
+  }
+  return mode;
+}
+
+/**
+ * (3) THE ASKABLE ANSWER: is this instrument running, and is it working? Read by `/health`.
+ * Counters are per-process and say so — a restart zeroes them, which is itself the honest
+ * report ("this process has written none").
+ */
+export function receiptStatus(): {
+  mode: ReceiptMode; source: ReceiptModeSource; writtenThisProcess: number;
+  lastWriteAt: string | null; lastError: string | null; root: string;
+} {
+  const { mode, source } = resolveReceiptMode();
+  return {
+    mode, source,
+    writtenThisProcess: receiptsWritten,
+    lastWriteAt, lastError: lastWriteError,
+    root: receiptsRoot(),
+  };
 }
 
 // PHASE-3 T2: was an independent re-declaration of the /4 estimator (§T0-C #4). The
@@ -404,6 +499,9 @@ export function writeContextReceipt(input: ReceiptInput): void {
       .mkdir(dir, { recursive: true })
       .then(() => fs.promises.writeFile(file, JSON.stringify(record, null, 2), 'utf-8'))
       .then(() => {
+        receiptsWritten += 1;
+        lastWriteAt = new Date().toISOString();
+        lastWriteError = null;
         writesSinceSweep += 1;
         if (writesSinceSweep >= 20) {
           writesSinceSweep = 0;
@@ -411,17 +509,20 @@ export function writeContextReceipt(input: ReceiptInput): void {
         }
         return undefined;
       })
+      // T67 (2): WARN, not debug. Receipts stay fire-and-forget — the turn is untouched — but
+      // an ENABLED instrument that is writing nothing is exactly the silence this task exists
+      // to end, and `debug` is a level nobody reads. The file it could not write is named.
       .catch((err) => {
-        logger.debug('receipt write failed', {
-          agentId: input.agentId,
-          error: err instanceof Error ? err.message : String(err),
+        lastWriteError = err instanceof Error ? err.message : String(err);
+        logger.warn('context receipts are ON and this receipt COULD NOT BE WRITTEN — the record of what the model was sent is being lost for every call while this persists', {
+          agentId: input.agentId, mode, file, error: lastWriteError,
         });
       });
   } catch (err) {
-    // Receipts must never affect the turn.
-    logger.debug('receipt build failed', {
-      agentId: input.agentId,
-      error: err instanceof Error ? err.message : String(err),
+    // Receipts must never affect the turn — but they must not fail invisibly either (T67).
+    lastWriteError = err instanceof Error ? err.message : String(err);
+    logger.warn('context receipts are ON and this receipt COULD NOT BE BUILT — the record of what the model was sent is being lost for every call while this persists', {
+      agentId: input.agentId, error: lastWriteError,
     });
   }
 }
