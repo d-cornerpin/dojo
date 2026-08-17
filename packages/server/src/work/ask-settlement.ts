@@ -54,7 +54,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { recordServingTurnByRowid, START_ACK_ORIGIN_INTENT } from '../memory/message-store.js';
 import {
-  appendWorkEvent, askIdForMessage, claimFailedJoinForLateAnswer, isTerminal,
+  appendWorkEvent, askIdForMessage, claimFailedJoinForLateAnswer, claimingTurnOf, isTerminal,
   revertAskClaimOnAbort, transition,
   type WorkState,
 } from './store.js';
@@ -844,13 +844,11 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
  * negative control this clause was built for (`bmsg278e0k2`'s late status line) is re-driven
  * beside the new positive in `work/__tests__/join-settlement.test.ts` §(ii-b).
  */
-function delegatingTurn(workId: string): number | null {
-  const r = getDb().prepare(
-    `SELECT json_extract(payload, '$.turn_number') AS t FROM work_events
-      WHERE work_id = ? AND kind = 'claim_turn' ORDER BY id DESC LIMIT 1`,
-  ).get(workId) as { t: number | null } | undefined;
-  return r?.t ?? null;
-}
+// T64: the read itself now has ONE owner, beside the event's writer (`store.ts`
+// `claimingTurnOf`) — this file, `ask-remediation.ts` and the T61(b) marker had three copies
+// of the same SELECT, and the one that instead asked `work.claimed_by_turn` was wrong for the
+// reason all three comments already knew. The rule this doc states is unchanged.
+const delegatingTurn = claimingTurnOf;
 
 
 /** The `detail` the join relay stamps on its delivery row — ONE derivation, imported by the

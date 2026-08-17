@@ -38,7 +38,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { askAnswerEvidence, settleAsk, NON_ANSWERING_DELIVERY_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from './ask-settlement.js';
-import { appendWorkEvent, clearJoinCompilePending, transition } from './store.js';
+import { appendWorkEvent, claimingTurnOf, clearJoinCompilePending, transition } from './store.js';
 
 const logger = createLogger('ask-remediation');
 
@@ -71,14 +71,10 @@ const emptyReport = (): AskRemediationReport => ({
 
 /** The turn that picked the ask up, from the row's own event — `work.claimed_by_turn` is
  *  CLEARED by any terminal move, so a row that was closed or written off no longer carries
- *  it, and the evidence read needs it. */
-function claimingTurn(workId: string): number | null {
-  const r = getDb().prepare(
-    `SELECT json_extract(payload, '$.turn_number') AS t FROM work_events
-      WHERE work_id = ? AND kind = 'claim_turn' ORDER BY id DESC LIMIT 1`,
-  ).get(workId) as { t: number | null } | undefined;
-  return r?.t ?? null;
-}
+ *  it, and the evidence read needs it. T64: this file's private copy of that SELECT is gone;
+ *  the read has ONE owner beside the event's writer, and this comment is why it must be the
+ *  event and never the column. */
+const claimingTurn = claimingTurnOf;
 
 /**
  * A TRIAGE READ, and it is deliberately NOT a settlement rule.

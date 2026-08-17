@@ -407,11 +407,18 @@ export interface AgentTurnState {
    * `collectMessageLaneIds` result. A lane that was computed and then dropped by the
    * budget is not a read the model had, and this must not say it was.
    *
-   * It exists for ONE reader, at the turn boundary: the unsourced-specifics marker asks
-   * whether this turn answered a fresh owner ask having consulted NOTHING — no tool row
-   * and no recalled memory. Measurement only; nothing steers or refuses on it. Kept on
+   * It exists for ONE reader, at the turn boundary: the unsourced-specifics marker. Kept on
    * the turn state rather than the turn's bag because it crosses no closure and no timer:
    * one writer inside `call-llm`, one reader inside `teardown`, both on the same value.
+   *
+   * ── UX-REPAIR ROUND 14 / T64 — IT IS A RECORDED FACT, NOT A VETO ─────────────────────
+   * It was a CLAUSE of that marker's predicate ("and no recalled memory reached the model")
+   * and it held the marker at zero rows for its whole life, because this lane is an
+   * unconditional engine PUSH: nobody consults it, it is retrieved against a blob of the
+   * recent human rows, and it is injected on every counterparty. Vetoing on it attributed
+   * the ENGINE's act to the AGENT. It now rides the marker's PAYLOAD (`recall_lane_reached`)
+   * so the fact stays countable without deciding anything. `finalize-record.ts` carries the
+   * driven evidence.
    */
   recallLaneReachedModelThisTurn: boolean;
   /**

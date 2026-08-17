@@ -708,6 +708,32 @@ export function stampClaimingTurn(workId: string, turnNumber: number): number {
 }
 
 /**
+ * WHICH TURN PICKED THIS ROW UP — the reader of the event `stampClaimingTurn` writes, and the
+ * ONE copy of that read.
+ *
+ * ⚠ `work.claimed_by_turn` IS NOT THE PLACE TO ASK. `transition()` sets that column to NULL on
+ * every move out of `claimed` — including the mid-turn `claimed -> done` an ordinary answered
+ * ask takes the moment its reply is delivered — so by the time a turn-boundary reader looks,
+ * the column no longer says who claimed it. Two modules had already learned this the hard way
+ * and each kept its own private copy of this query (`ask-settlement.ts`'s delegating-turn read
+ * and `ask-remediation.ts`'s evidence read, whose comment states the clearing outright); a
+ * third reader — UX-REPAIR T61(b)'s unsourced-specifics marker — asked the column instead and
+ * was answered NULL on every single turn, which is why it wrote 0 rows in its whole life
+ * (T64; driven at HEAD 2026-08-17, probe on t4996: `claimedByTurn: null`, `turnNumber: 4996`).
+ *
+ * The event is the immutable record and outlives every state move, so it is the only honest
+ * answer to the question. `ORDER BY id DESC` is the LATEST claim, so a re-claimed row reports
+ * the turn holding it now.
+ */
+export function claimingTurnOf(workId: string): number | null {
+  const r = getDb().prepare(
+    `SELECT json_extract(payload, '$.turn_number') AS t FROM work_events
+      WHERE work_id = ? AND kind = 'claim_turn' ORDER BY id DESC LIMIT 1`,
+  ).get(workId) as { t: number | null } | undefined;
+  return r?.t ?? null;
+}
+
+/**
  * P6b, the whole rule in one function.
  *
  * A turn that ended with no answer and NO effectful call may hand its ask back: the person

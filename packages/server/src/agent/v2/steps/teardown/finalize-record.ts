@@ -25,7 +25,7 @@ import { setAnswerMessageId } from '../../../../memory/message-store.js';
 import { clearUntrackedWorkAcrossTurnsForConversation } from '../../../turn-state.js';
 import { taskScope } from '../../../../work/tracker-view.js';
 import { setTrackerStatus, patchWork } from '../../../../work/tracker-store.js';
-import { appendWorkEvent, joinState, noteUnsettled } from '../../../../work/store.js';
+import { appendWorkEvent, claimingTurnOf, joinState, noteUnsettled } from '../../../../work/store.js';
 import { settleAsksAtTurnFinalize } from '../../../../work/ask-settlement.js';
 import { assembledContextAsks } from '../../counterparty.js';
 import {
@@ -106,15 +106,26 @@ export async function finalizeTurnRecord(
       // only when the turn produced no answer AND executed zero non-idempotent calls.
       state.nonIdempotentCallsThisTurn,
     );
-    // ── UX-REPAIR ROUND 13 T61(b), READ 1 of 2 — THE TRIGGER ASK, BEFORE SETTLEMENT ──
-    // Read HERE and not at the marker below because `settleAsksAtTurnFinalize` (the next
-    // statement) NULLS `claimed_by_turn` on every ask it hands back or closes. The marker's
-    // freshness clause is "this turn is the one that picked this ask up", and by the time it
-    // runs that column no longer says so. One SELECT, three columns, no judgment.
+    // ── UX-REPAIR ROUND 13 T61(b), READ 1 of 2 — THE TRIGGER ASK ──
+    // Two columns and no judgment, for the marker below.
+    //
+    // ⚠ T64 — `claimed_by_turn` IS NOT READ HERE, AND THAT WAS THE OTHER HALF OF THE ZERO.
+    // The original read took the column from this row and placed itself one statement above
+    // `settleAsksAtTurnFinalize` to beat the NULLing that authority does. It was beaten
+    // already: `transition()` NULLs the column on EVERY move out of `claimed`, and an
+    // ordinary answered ask takes `claimed -> done` MID-TURN, the moment its reply is
+    // delivered — long before teardown. Driven at HEAD (W47, 2026-08-17, probe on t4996):
+    // `claimedByTurn: null` against `turnNumber: 4996`, on the exact shape the marker is for.
+    // The freshness clause therefore failed on every turn that ever ran, alongside the recall
+    // clause below — two independent zeroes, either one of them fatal.
+    // The immutable record is the `claim_turn` EVENT, and `store.ts`'s `claimingTurnOf` is its
+    // one reader (two other modules had already discovered the same thing and each kept a
+    // private copy of that SELECT; there is now one).
     const triggerAsk = triggerWorkId
-      ? db.prepare('SELECT kind, requester, claimed_by_turn FROM work WHERE id = ?').get(triggerWorkId) as
-        { kind: string; requester: string; claimed_by_turn: number | null } | undefined
+      ? db.prepare('SELECT kind, requester FROM work WHERE id = ?').get(triggerWorkId) as
+        { kind: string; requester: string } | undefined
       : undefined;
+    const triggerAskClaimingTurn = triggerWorkId ? claimingTurnOf(triggerWorkId) : null;
     // ── SWEEP-A TB1 — THE FINAL ADJUDICATOR OF EVERY OWNER ASK THIS TURN TOUCHED ──
     //
     // Invocation (b) of the settlement authority (`work/ask-settlement.ts`), and the moment
@@ -258,31 +269,52 @@ export async function finalizeTurnRecord(
     // shapes and never judges content.
     //   1. an OWNER ASK on a person's turn — `kind='ask'`, `requester='owner'`, a `user`
     //      counterparty, not a2a and not an engine wake;
-    //   2. FRESH — `claimed_by_turn` is THIS turn, i.e. this turn is the one that picked the
-    //      ask up (read above, before settlement clears it). A redrive of somebody else's
-    //      ask is a different animal and is not counted;
+    //   2. FRESH — the ask's `claim_turn` event names THIS turn, i.e. this turn is the one
+    //      that picked the ask up. A redrive of somebody else's ask is a different animal and
+    //      is not counted;
     //   3. ZERO TOOL ROWS — the F10 first-tool latch never flipped AND the executed-call
     //      count is 0. Both, because they are written by different spans and a marker that
     //      disagreed with either would be measuring its own bookkeeping;
-    //   4. ZERO RECALL READS — `msg.relevant-memory` was confirmed in no request this turn
-    //      (`recallLaneReachedModelThisTurn`, latched off the delivered array);
-    //   5. ANSWERED — the truthful-answer key, so a silent turn is never counted.
+    //   4. ANSWERED — the truthful-answer key, so a silent turn is never counted.
     // Together: the person asked something new, the agent consulted nothing at all, and
     // answered. Whether the answer was RIGHT is not knowable here and is not claimed.
     //
-    // It rides the person's own ask as an `audit` MARKER — the W20/T41 rider's shape, one
-    // file up — so there is no new event kind, no table and no migration. The delivery
-    // receipt rides along because "answered" and "it left the building" are two facts.
+    // ── UX-REPAIR ROUND 14 / T64 — THE FIFTH CLAUSE IS GONE, AND WHY ─────────────────────
+    // This counter wrote ZERO ROWS EVER, round-14 S1 included — the exact shape it was built
+    // for. The clause that killed it read `!state.recallLaneReachedModelThisTurn` ("no
+    // recalled memory reached the model"), and the defect is a MISATTRIBUTION, not a
+    // threshold: `msg.relevant-memory` is an UNCONDITIONAL ENGINE PUSH. Nothing consults it.
+    // It is retrieved against a 500-char blob of the recent human rows and injected on every
+    // counterparty (`steps/call-llm/pre-call-injections.ts`, the recall-lane block), so "the
+    // lane reached the model" is very nearly a constant — and the clause vetoed the marker on
+    // the ENGINE'S act while claiming to measure the AGENT'S.
+    //
+    // DRIVEN AT HEAD (W47, 2026-08-17, dev box, receipts on for the drive): t4992 "what year
+    // did the Alaskan Way Viaduct come down…" and t4993 "how tall is the Space Needle…" —
+    // both `kind='user'`, `exit_reason='answered'`, `effectful_calls=0`, each on a fresh owner
+    // ask claimed by that very turn. Zero markers. Both iterations of both turns carried
+    // `msg.relevant-memory` ADMITTED at 725 tokens, and in `full` mode its body was three of
+    // the agent's OWN previously-answered questions plus four vault notes — an airport parking
+    // spot, a gym locker code, a phrase to remember, a hosting decision — and the obligations
+    // snapshot. None of it could be the source of the Space Needle's height, and the engine
+    // MAY NOT read prose to say so (the standing ban), which is exactly why no narrower
+    // version of this clause is honest either.
+    //
+    // So the agent's own consulting is its TOOL CALLS — clause 3, already exact — and the
+    // engine's push becomes a PAYLOAD FIELD (`recall_lane_reached`) instead of a veto: the
+    // fact stays countable and sliceable by a later round, which is this marker's whole
+    // charter, rather than silently holding the class at zero. Nothing else moves: no steer,
+    // no block, no change to what the model receives or what the person gets.
     if (triggerWorkId && triggerAsk?.kind === 'ask' && triggerAsk.requester === 'owner'
-        && triggerAsk.claimed_by_turn === turnNumber
+        && triggerAskClaimingTurn === turnNumber
         && counterparty.kind === 'user' && !isA2ATurn && !isEngineTurn
         && !turnCtx.anyToolStartedThisTurn && state.toolCallsExecutedThisTurn === 0
-        && !state.recallLaneReachedModelThisTurn
         && answerRow !== undefined) {
-      logger.info('v2: a fresh owner ask was answered with nothing consulted — no tool call and no recalled memory reached this turn (T61 measurement marker; not a fault, not a block)', {
+      logger.info('v2: a fresh owner ask was answered with nothing consulted — the agent made no tool call this turn (T61 measurement marker; not a fault, not a block)', {
         agentId, turnNumber, askId: triggerWorkId,
         channel: counterparty.channel ?? null, exitReason,
         deliveredReceipt: terminalDeliveryId !== null,
+        recallLaneReached: state.recallLaneReachedModelThisTurn,
       }, agentId);
       try {
         appendWorkEvent(triggerWorkId, 'audit', 'unsourced-specifics', {
@@ -291,10 +323,15 @@ export async function finalizeTurnRecord(
           channel: counterparty.channel ?? null,
           exit_reason: exitReason,
           delivered_receipt: terminalDeliveryId !== null,
-          reason: 'this turn answered a fresh owner ask having made no tool call and having '
-            + 'been served no recalled memory, so every specific in the reply came from the '
-            + "model's own weights. Recorded so the class is countable instead of invisible; "
-            + 'it is a measurement, not a fault — the answer may well be correct.',
+          // T64: the engine's own recall push, RECORDED rather than vetoed on. It is what the
+          // engine placed in front of the model unasked, not something the agent consulted;
+          // a later round can slice the class on it without this marker having to pretend it
+          // knows whether the model used it.
+          recall_lane_reached: state.recallLaneReachedModelThisTurn,
+          reason: 'this turn answered a fresh owner ask having made no tool call at all, so '
+            + "every specific in the reply came from the model's own weights or from whatever "
+            + 'the engine pushed at it unasked. Recorded so the class is countable instead of '
+            + 'invisible; it is a measurement, not a fault — the answer may well be correct.',
         });
       } catch { /* best effort, like every arm of this boundary */ }
     }
