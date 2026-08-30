@@ -3900,6 +3900,13 @@
       "to": 399,
       "by": "UPDATE-INTEGRITY U0 (W53) — 3.1.18: snapshot retention can never evict the episode's own baseline",
       "why": "+34 net (26 code, 16 comment, -8). The whole of it is the pin: the snapshot list now carries the `from`/`to` levels parsed out of the name the namer above wrote, and the prune skips the lowest-`from` snapshot sharing the current target. It is here because keep-newest-2 was measured DELETING the only pre-update restore point under exactly the failure it exists for — W52 watched a KeepAlive crash loop evict `dojo-pre-109-to-900` in about thirty seconds and leave a user holding two 1.57 GB copies of the broken state. The comment half is the measurement, kept at the site because the next person to shrink this file needs to know which two lines are load-bearing. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/db/migration-checksums.ts",
+      "from": 270,
+      "to": 277,
+      "by": "UPDATE-INTEGRITY U0 (W53) — 3.1.18: 135b's amendment is adjudicated in the shipped ledger",
+      "why": "+7 net (6 data, 1 punctuation, -0). One KNOWN_DIVERGENCES entry and nothing else. Demoting `park_namespace_empty` means every box in the field that already applied `135b` diverges from the file it applied, and the alternative to an entry here is a MIGRATION DIVERGENCE error on every boot of every updated box for ever — the instrument-rot shape this ledger was built to end. The entry is data, it names both hashes so it cannot pre-approve a future edit, and the file hash is machine-checked against the tree by migration-checksums.test.ts. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -4050,7 +4057,7 @@
     "packages/server/src/costs/tracker.ts": 541,
     "packages/server/src/credentials/secret-fields.ts": 241,
     "packages/server/src/db/migration-backup.ts": 399,
-    "packages/server/src/db/migration-checksums.ts": 270,
+    "packages/server/src/db/migration-checksums.ts": 277,
     "packages/server/src/gateway/routes/agents.ts": 847,
     "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2589,
