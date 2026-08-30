@@ -92,11 +92,23 @@ SELECT
 --   `join-piece:%` rows, all harness debris on a finished fan-out; a2a_threads survives
 --   this phase (143 shrinks it, nothing drops it) so there is nothing to preserve, and
 --   490 non-terminal threads would become 490 obligations nobody asked for.
---   THE RULE IS KEPT AT ZERO ROWS. If a future body disagrees, these two counts move and
---   the decision is made deliberately instead of inherited:
+--   THE RULE WAS KEPT AT ZERO ROWS, AND THAT WAS A MEASUREMENT WEARING AN INVARIANT'S
+--   CLOTHES. 3.1.18 (UPDATE-INTEGRITY U0): a user took the .16 → .17 update with one agent
+--   waiting on another, and `park_namespace_empty` aborted 135b, the chain and the boot —
+--   permanently, because a park is consumed only by the running platform and the platform
+--   could no longer run. `a2a-transport.ts` at .16 writes `park:<thread>` (and the fan-out
+--   form `park:~<t1>|<t2>#<remaining>`) every time an agent delegates and waits, so the
+--   count is normal product state, not a corruption. The chain already said so twelve files
+--   later: `147_conversation_identity_backfill.sql` lists `park:%` among the LEGACY SIGILS
+--   it skips. Nothing downstream needs the zero — `148` drops the column outright.
+--   So the count is REPORTED (ok=1), exactly like its sibling below, and the open
+--   delegations it counts are closed by `135c_stable_close_open_parks.sql` in the product's
+--   own fail-closed vocabulary. The refusal MECHANISM is untouched: the other thirteen
+--   assertions still abort on `CHECK (ok = 1)`.
 INSERT INTO _bridge_assert (name, ok, detail) VALUES
-  ('park_namespace_empty',
-   (SELECT count(*) FROM messages WHERE conv_key LIKE 'park:%') = 0, 'park: keys found'),
+  ('park_namespace_empty', 1,
+   'park: keys found: ' || (SELECT count(*) FROM messages
+                             WHERE conv_key LIKE 'park:%')),
   -- DEVIATION (d), FORCED AND MEASURED by SHIP-PREP's rehearsal 2026-07-30: the ledger reads
   -- this count `FROM inter_agent_messages`, and `133_drop_dead_stores_and_promote_seq.sql:114`
   -- DROPS that table — 133 sorts BEFORE 135b. Observed, not reasoned: the chain aborted at
