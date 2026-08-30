@@ -199,16 +199,50 @@ function takeSnapshot(
       dbBytes,
     };
 
-    // Prune: keep only the newest 2 restore points.
+    // ── Prune: the newest 2 restore points, AND NEVER THIS EPISODE'S BASELINE ──
+    //
+    // Keeping the newest 2 by mtime is safe right up until the chain starts failing,
+    // and then it eats the one file it exists for. Measured (W52, on the reproduced
+    // incident body): the first boot wrote the genuine restore point — the body BEFORE
+    // the chain touched it — the chain aborted, launchd's KeepAlive restarted the
+    // process every ten seconds, and each retry wrote another snapshot OF THE ALREADY-
+    // BROKEN STATE. The third one pushed the good file out. About thirty seconds, and
+    // the user was left holding two 1.57 GB copies of the state he needed to escape.
+    //
+    // So the episode's BASELINE is pinned: of the snapshots taken on the way to the same
+    // TARGET level, the one taken from the lowest applied level — the furthest back this
+    // box can still go. Retention becomes "the newest 2 plus one pinned baseline", which
+    // is three files rather than two: still a bounded cap, still one number, and the pin
+    // selects exactly one file no matter how long the crash loop runs. It releases itself
+    // when a later release moves the target, because that is a different episode with a
+    // baseline of its own. A file whose name does not parse is never pinned and never
+    // protects anything — the pin is derived from what the namer above wrote, not guessed.
+    const KEEP_NEWEST = 2;
     try {
       const backups = fs.readdirSync(backupsDir)
         .filter(f => f.startsWith('dojo-pre-') && f.endsWith('.db'))
         .map(f => {
           const full = path.join(backupsDir, f);
-          return { full, mtimeMs: fs.statSync(full).mtimeMs };
+          const named = /^dojo-pre-(\d+)-to-(\d+)-/.exec(f);
+          return {
+            full,
+            from: named ? Number(named[1]) : null,
+            to: named ? Number(named[2]) : null,
+            mtimeMs: fs.statSync(full).mtimeMs,
+          };
         })
         .sort((a, b) => b.mtimeMs - a.mtimeMs);
-      for (const stale of backups.slice(2)) {
+      const baseline = backups
+        .filter(b => b.to === target && b.from !== null)
+        .reduce<(typeof backups)[number] | null>(
+          (lowest, b) => (
+            !lowest || b.from! < lowest.from!
+              || (b.from === lowest.from && b.mtimeMs < lowest.mtimeMs)
+          ) ? b : lowest,
+          null,
+        );
+      for (const stale of backups.slice(KEEP_NEWEST)) {
+        if (baseline && stale.full === baseline.full) continue;
         try { fs.rmSync(stale.full, { force: true }); }
         catch (err) {
           logger.debug('Failed to prune old pre-migration backup', {
