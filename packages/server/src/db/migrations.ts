@@ -112,6 +112,45 @@ export function runMigrations(): void {
   logger.info('Database migrations completed');
 }
 
+// ── A REPAIR FILE WHOSE SUBJECT MAY ALREADY BE GONE (UPDATE-INTEGRITY U0) ──
+//
+// A migration added to fix an OLD defect sorts into the chain where the damage happens, so
+// a body that stopped short of that point gets the repair on its next boot. But a body that
+// already ran past that point has the file PENDING too — and by then the thing the repair
+// operates on can be gone. `135c_stable_close_open_parks.sql` is the case that forced this:
+// it rewrites `messages.conv_key`, and `148` DROPS that column, so on every box that
+// completed the 3.1.17 chain the file would be prepared against a column that no longer
+// exists and throw `no such column: conv_key` — the same bricked boot the repair exists to
+// end, moved thirteen files down the chain.
+//
+// The guard cannot live in the SQL. SQLite resolves column names when a statement is
+// PREPARED, not when it runs, so `WHERE EXISTS (SELECT … FROM pragma_table_info(…))` never
+// gets the chance to be false; measured, including the strongest form available (a TEMP
+// TRIGGER body that is never fired still fails at prepare — the probe is kept as a test in
+// `an-open-park-is-closed-by-the-chain.test.ts`).
+//
+// So a file may DECLARE what it needs, on one line the runner reads:
+//
+//     -- REQUIRES-COLUMN: <table>.<column>
+//
+// When the column is absent the file is RECORDED AS RUN WITHOUT EXECUTING. Recorded, not
+// re-tried, because the condition is permanent: a dropped column does not come back, and a
+// file retried every boot forever is a crash loop with extra steps. Its checksum is stored
+// like any other, so the boot divergence audit still describes the exact text this database
+// adjudicated. Deliberately ONE form and not a general expression language: the question a
+// repair file needs to ask is "is my subject still here", and a directive that could ask
+// anything would become a place to put logic that belongs in the file.
+const REQUIRES_COLUMN = /^--[ \t]*REQUIRES-COLUMN:[ \t]*([A-Za-z_]\w*)\.([A-Za-z_]\w*)[ \t]*$/m;
+
+/** The `<table>.<column>` a migration declared and this database does not have, or null. */
+function unmetRequirement(db: ReturnType<typeof getDb>, sqlText: string): string | null {
+  const declared = REQUIRES_COLUMN.exec(sqlText);
+  if (!declared) return null;
+  const [, table, column] = declared;
+  const present = db.prepare('SELECT 1 FROM pragma_table_info(?) WHERE name = ?').get(table, column);
+  return present ? null : `${table}.${column}`;
+}
+
 function runSqlMigrations(db: ReturnType<typeof getDb>): void {
   // Ensure migration tracking table exists
   db.exec(`
@@ -203,6 +242,15 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
   const chainStart = Date.now();
   for (const file of pending) {
     const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
+    const missing = unmetRequirement(db, sql);
+    if (missing) {
+      // The subject of this file is already gone. Record it as run and move on — see
+      // `unmetRequirement` for why this is a skip and not a failure.
+      logger.info(`Migration not applicable to this database; recording as run: ${file}`, { missing });
+      db.prepare('INSERT INTO _migrations (name, checksum) VALUES (?, ?)')
+        .run(file, migrationChecksum(sql));
+      continue;
+    }
     logger.info(`Running migration: ${file}`);
     const started = Date.now();
     try {

@@ -1,0 +1,52 @@
+-- ══════════════════════════════════════════════════════════════════════════════════════
+-- 135c_stable_close_open_parks.sql — AN OPEN DELEGATION IS CLOSED BY THE CHAIN, NOT
+--                                    STRANDED BY IT.  3.1.18, UPDATE-INTEGRITY U0.
+--
+-- ── WHAT A `park:` KEY IS ──────────────────────────────────────────────────────────────
+-- v3.1.16's `agent/a2a-transport.ts` parks a delegation by REWRITING the owner message's
+-- `conv_key`: `park:<thread>` for one delegate, `park:~<t1>|<t2>|<t3>#<remaining>` for a
+-- fan-out whose countdown is the text after the '#'. The key is cleared only by rewriting
+-- it again — `consumeParkAndDeliver` (`a2a-transport.ts:1523`) sets `relayed:<thread>` when
+-- the answer lands, and `relayed:failed:<thread>` when the sweeper closes a park that never
+-- got one (`:1517`, `{ failedClosed: true }`). So `park:%` means EXACTLY ONE thing: a
+-- delegation that is still open.
+--
+-- ── WHY THE CHAIN HAS TO CLOSE THEM ────────────────────────────────────────────────────
+-- A park can only be consumed by the running platform. A box that crosses this bridge is by
+-- definition not the box that opened the park: the process is gone, the fan-out countdown
+-- has no reader, and `135`/`135b` deliberately map NOTHING from the park machine onto the
+-- work spine ("NOTHING IS MAPPED", 135b §2/3). Thirteen files later `148` drops
+-- `messages.conv_key` outright, and after that the row's key — and with it the only record
+-- that a question was ever asked — is gone with no successor. Leaving the key as `park:`
+-- until then records an OPEN delegation that nothing can ever close. That is not a state
+-- the product has a word for; `relayed:failed:` is.
+--
+-- ── THE REWRITE IS THE PRODUCT'S OWN VOCABULARY, NOT AN INVENTION ──────────────────────
+-- `park:<rest>` → `relayed:failed:<rest>` is byte-for-byte what `consumeParkAndDeliver`
+-- writes when it fails a park closed. It keeps the row and its content, it matches every
+-- `relayed:%` guard, and `147_conversation_identity_backfill.sql` skips `relayed:%` for
+-- exactly the same reason it skips `park:%` — both are LEGACY SIGILS, not identities. So
+-- this file changes which of two legacy sigils a row carries and nothing else: no row is
+-- created, none is deleted, no other column moves. Validated end-to-end by W52 on a
+-- reproduced 135-era body (single park, three parks, and the fan-out form, alongside
+-- pre-existing `relayed:` and `relayed:failed:` rows that must not be disturbed).
+--
+-- ── WHY THE GUARD LINE BELOW ───────────────────────────────────────────────────────────
+-- This file is a REPAIR, so it sorts into the chain at the point where the damage happens —
+-- immediately after `135b`, twelve files before `147` reads the column and thirteen before
+-- `148` drops it. But a body that already completed the .17 chain has no `messages.conv_key`
+-- at all, and on that body this file is PENDING and would be prepared against a column that
+-- no longer exists: `no such column: conv_key`, i.e. the same bricked boot in a new place.
+-- SQLite resolves column names when a statement is PREPARED, so no amount of `WHERE EXISTS`
+-- inside the SQL can make the reference conditional (measured, not assumed: a TEMP TRIGGER
+-- whose body is never fired still fails at prepare). The runner therefore reads the
+-- REQUIRES-COLUMN line below and, when the column is absent, records this file as run
+-- WITHOUT executing it — see `migrations.ts`. On such a body there is provably nothing to
+-- repair: the column that held the park keys is gone.
+--
+-- REQUIRES-COLUMN: messages.conv_key
+-- ══════════════════════════════════════════════════════════════════════════════════════
+
+UPDATE messages
+   SET conv_key = 'relayed:failed:' || substr(conv_key, 6)
+ WHERE conv_key LIKE 'park:%';
