@@ -230,10 +230,19 @@ describe('divergence adjudication', () => {
     expect(audit.adjudicated).toBe(0);
   });
 
-  it('THE DEV BOX\'s TWO ARE IN THE SHIPPED LEDGER, dated, with their measured reason', async () => {
+  it('EVERY SHIPPED ADJUDICATION IS NAMED, dated, and carries its measured reason', async () => {
+    // The dev box's two (144/146, hotfix 54c7f73), plus the one 3.1.18 creates on every
+    // box in the field: `135b` was amended to demote `park_namespace_empty` to report
+    // tier, so a box that already crossed the bridge diverges from the file it applied.
+    // The list is pinned rather than counted: a new entry is a new claim about somebody
+    // else's database, and it should have to be typed here to ship.
     const { KNOWN_DIVERGENCES } = await import('../migration-checksums.js');
     const files = KNOWN_DIVERGENCES.map(d => d.file).sort();
-    expect(files).toEqual(['144_task_runs_absorbed.sql', '146_task_log_absorbed.sql']);
+    expect(files).toEqual([
+      '135b_stable_work_spine.sql',
+      '144_task_runs_absorbed.sql',
+      '146_task_log_absorbed.sql',
+    ]);
     for (const d of KNOWN_DIVERGENCES) {
       expect(d.appliedChecksum).toMatch(/^[0-9a-f]{64}$/);
       expect(d.fileChecksum).toMatch(/^[0-9a-f]{64}$/);

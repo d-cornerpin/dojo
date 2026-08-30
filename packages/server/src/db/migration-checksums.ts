@@ -128,6 +128,13 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
     since: '2026-08-09',
     reason: 'Amended by hotfix 54c7f73 after this box applied it. DDL is BYTE-IDENTICAL between the two versions; the amendment only stops an unreadable task_log instant aborting the file, dating the entry at its work row\'s opened_at instead. This box had no unreadable instants (the pre-hotfix file committed here), so no row differs either.',
   },
+  {
+    file: '135b_stable_work_spine.sql',
+    appliedChecksum: '7924a3cbb448798b6ec6ba4a45ca876628126fc8bd88763a961f22ff25dc2370',
+    fileChecksum: '0e2be0af69eac0cc1c19226d69d694f46547501b4d0d567a09746c586eeed7f3',
+    since: '2026-08-30',
+    reason: '3.1.18, UPDATE-INTEGRITY U0: `park_namespace_empty` was demoted from refusal tier to report tier, because it asserted an environmental precondition ("no agent is mid-delegation") that one user\'s box did not meet — and the boot died there, permanently. The applied checksum is the ONE historical version of this file across every published tag (v3.1.17 and v3.1.17-preflight.23..33 all carry blob 862d3ff; measured, not assumed). What changed is one _bridge_assert ROW and its comment: `ok` is now the constant 1 and the count moved into `detail`. _bridge_assert is a TEMP table this file creates and drops, so the PERSISTENT SCHEMA and every row this file writes to a real table are byte-for-byte what a box on the amended file would produce. The only behavioural delta is the one intended: a body with open `park:%` keys no longer aborts. Any box carrying this checksum already crossed the bridge with zero parks, so on that box the two versions are not merely equivalent in schema, they took the identical branch.',
+  },
 ];
 
 type Db = ReturnType<typeof getDb>;
