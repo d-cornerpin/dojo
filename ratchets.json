@@ -3893,6 +3893,13 @@
       "to": 399,
       "by": "UX-REPAIR ROUND 14 T65 (W47) — a bare `hours` routes to the activity door",
       "why": "+7: one router arm and six lines of reason. The reason is T60's own defect one field over — without the arm the ladder's terminal `list` claims the call and a model that asked what CHANGED is handed what is OPEN, which is the exact substitution T60's explicit-action arm exists to stop. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/db/migration-backup.ts",
+      "from": 365,
+      "to": 399,
+      "by": "UPDATE-INTEGRITY U0 (W53) — 3.1.18: snapshot retention can never evict the episode's own baseline",
+      "why": "+34 net (26 code, 16 comment, -8). The whole of it is the pin: the snapshot list now carries the `from`/`to` levels parsed out of the name the namer above wrote, and the prune skips the lowest-`from` snapshot sharing the current target. It is here because keep-newest-2 was measured DELETING the only pre-update restore point under exactly the failure it exists for — W52 watched a KeepAlive crash loop evict `dojo-pre-109-to-900` in about thirty seconds and leave a user holding two 1.57 GB copies of the broken state. The comment half is the measurement, kept at the site because the next person to shrink this file needs to know which two lines are load-bearing. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -4042,7 +4049,7 @@
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/costs/tracker.ts": 541,
     "packages/server/src/credentials/secret-fields.ts": 241,
-    "packages/server/src/db/migration-backup.ts": 365,
+    "packages/server/src/db/migration-backup.ts": 399,
     "packages/server/src/db/migration-checksums.ts": 270,
     "packages/server/src/gateway/routes/agents.ts": 847,
     "packages/server/src/gateway/routes/chat.ts": 492,
