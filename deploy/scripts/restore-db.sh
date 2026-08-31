@@ -235,8 +235,8 @@ fi
 
 # ── 5. Copy the PRESENT aside before recovering the past ──
 # Deliberately NOT named dojo-pre-*: the platform's own prune keeps only the newest two
-# files with that prefix, and the copy of the state you are leaving must not be evicted
-# by the next update's snapshot.
+# files with that prefix (plus the pinned episode baseline, 3.1.18), and the copy of the
+# state you are leaving must not be evicted by the next update's snapshot.
 mkdir -p "$AUTO_BACKUPS"
 SAFETY=""
 if [ -f "$DB" ]; then
