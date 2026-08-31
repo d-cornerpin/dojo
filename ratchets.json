@@ -3942,6 +3942,13 @@
       "to": 590,
       "by": "UX-REPAIR T64b (W55) — a provider declares its own patience (migration 163)",
       "why": "+9. Two fields on `Provider` and the seven-line comment that is the only place a reader of the type learns what the standard bounds are, why a local server needs more, and why the two are separate. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 2772,
+      "to": 2848,
+      "by": "UX-REPAIR T65b (W57) — a stall is never shipped as an answer",
+      "why": "+76, and 62 of them are comment. THE CODE IS 14 LINES: a four-line exported predicate (streamWasCutByWatchdog), two three-line guards at the two stream-consume seams, and the two catch sites re-expressed through the predicate instead of repeating it longhand (net zero there). The comment weight is the whole reason this defect lived as long as it did and is therefore deliberate: the OpenAI seam block quotes openai@6.32.0 core/streaming.js:74-76 verbatim, because nothing in this file could otherwise explain why a  ending means two opposite things, and a later reader who deletes the guard as redundant re-ships the truncation; the Anthropic block records that its guard is UNREACHABLE at @anthropic-ai/sdk 0.110.0 and why it is there anyway (the SDK’s post-loop re-check is the dependency’s promise, not ours) — an undocumented unreachable branch is exactly what gets deleted next; and the watchdog header’s 2026-07-10 claim that “a mid-stream stall dies at the idle bound” is corrected in place, since it had been false on this transport for its entire life. Splitting was considered and refused: the predicate reads StreamWatchdog and the guards sit inside the two transport functions, so a new module would be one import of one boolean and two files to keep in step. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3984,7 +3991,7 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 217,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 2772,
+    "packages/server/src/agent/model.ts": 2848,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
