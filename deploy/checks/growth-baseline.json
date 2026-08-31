@@ -361,7 +361,7 @@
     "packages/server/src/agent/work-verb-schema.ts": 201,
     "packages/server/src/config/loader.ts": 215,
     "packages/server/src/config/platform.ts": 301,
-    "packages/server/src/config/schema.ts": 82,
+    "packages/server/src/config/schema.ts": 128,
     "packages/server/src/config/setup-state.ts": 84,
     "packages/server/src/contacts/from-safe-senders.ts": 151,
     "packages/server/src/contacts/resolve-recipient.ts": 111,

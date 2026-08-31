@@ -3907,6 +3907,41 @@
       "to": 277,
       "by": "UPDATE-INTEGRITY U0 (W53) — 3.1.18: 135b's amendment is adjudicated in the shipped ledger",
       "why": "+7 net (6 data, 1 punctuation, -0). One KNOWN_DIVERGENCES entry and nothing else. Demoting `park_namespace_empty` means every box in the field that already applied `135b` diverges from the file it applied, and the alternative to an entry here is a MIGRATION DIVERGENCE error on every boot of every updated box for ever — the instrument-rot shape this ledger was built to end. The entry is data, it names both hashes so it cannot pre-approve a future edit, and the file hash is machine-checked against the tree by migration-checksums.test.ts. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/pages/Settings.tsx",
+      "from": 6535,
+      "to": 6738,
+      "by": "UX-REPAIR T64b (W55) — a provider declares its own patience (migration 163)",
+      "why": "+203 (all additive; nothing removed). Two surfaces and their shared parts: `PatienceFields` (the two inputs plus their plain-language help, defined ONCE so the add form and the per-provider editor cannot drift), `ProviderPatienceRow` (the edit, on a provider that already exists), the seconds<->milliseconds parse, and the advanced fold on the manual form. The editor is the load-bearing half: the owner's slow box is ALREADY a configured provider, so a pair settable only at create time would not reach the machine the task exists for. The help text is a real share of the count and is deliberate — this is the one setting whose whole difficulty is that a user cannot tell a slow machine from a broken one, and the field that does not explain that is a field nobody will find. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/config.ts",
+      "from": 2589,
+      "to": 2640,
+      "by": "UX-REPAIR T64b (W55) — a provider declares its own patience (migration 163)",
+      "why": "+51 net. One new narrow route (`PATCH /providers/:id/response-patience`, ~30 lines incl. its set-vs-clear reasoning), the two columns joining the create/replace writes, two lines in `rowToProvider`, and the header argument for why the door is narrow rather than a re-POST — a re-POST full-replaces the identity fields, so editing a timeout through it could rewrite a base URL. Mirrors `PATCH /providers/:id/host-ram` directly above it. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 2745,
+      "to": 2772,
+      "by": "UX-REPAIR T64b (W55) — a provider declares its own patience (migration 163)",
+      "why": "+27 net (the two constants LEFT, replaced by an import + re-export; the rest is comment). `getModelInfo` selects and returns the two columns, and both `makeStreamWatchdog` sites arm from the resolver. The comment share is high on purpose: each arm site states why a provider-declared bound is not a loosening of the 2026-07-10 watchdog but the thing that lets it stay tight for hosted providers while being honest about a local one. The numbers themselves MOVED OUT of this file into `stream-patience.ts`, so the arithmetic here is smaller than the diff looks. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/lib/api.ts",
+      "from": 2366,
+      "to": 2380,
+      "by": "UX-REPAIR T64b (W55) — a provider declares its own patience (migration 163)",
+      "why": "+14. One client function (`updateProviderResponsePatience`) and the four lines saying why it is its own route rather than a re-POST of the provider. From here this file may only shrink."
+    },
+    {
+      "path": "packages/shared/src/types.ts",
+      "from": 581,
+      "to": 590,
+      "by": "UX-REPAIR T64b (W55) — a provider declares its own patience (migration 163)",
+      "why": "+9. Two fields on `Provider` and the seven-line comment that is the only place a reader of the type learns what the standard bounds are, why a local server needs more, and why the two are separate. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -3924,7 +3959,7 @@
     "packages/dashboard/src/components/TechniqueSessionProvider.tsx": 533,
     "packages/dashboard/src/components/TwilioSettings.tsx": 563,
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
-    "packages/dashboard/src/lib/api.ts": 2366,
+    "packages/dashboard/src/lib/api.ts": 2380,
     "packages/dashboard/src/lib/voice/voice-client.ts": 873,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 438,
     "packages/dashboard/src/pages/Agents.tsx": 678,
@@ -3932,7 +3967,7 @@
     "packages/dashboard/src/pages/Costs.tsx": 686,
     "packages/dashboard/src/pages/Health.tsx": 651,
     "packages/dashboard/src/pages/Memory.tsx": 499,
-    "packages/dashboard/src/pages/Settings.tsx": 6535,
+    "packages/dashboard/src/pages/Settings.tsx": 6738,
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
@@ -3949,7 +3984,7 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 217,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 2745,
+    "packages/server/src/agent/model.ts": 2772,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
@@ -4060,7 +4095,7 @@
     "packages/server/src/db/migration-checksums.ts": 277,
     "packages/server/src/gateway/routes/agents.ts": 847,
     "packages/server/src/gateway/routes/chat.ts": 492,
-    "packages/server/src/gateway/routes/config.ts": 2589,
+    "packages/server/src/gateway/routes/config.ts": 2640,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/setup-deps.ts": 513,
     "packages/server/src/gateway/routes/tracker.ts": 959,
@@ -4155,7 +4190,7 @@
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
-    "packages/shared/src/types.ts": 581,
+    "packages/shared/src/types.ts": 590,
     "packages/shared/src/visibility.ts": 977,
     "packages/shared/src/ws.ts": 1115,
     "watchdog/src/auto-rollback.ts": 333,
