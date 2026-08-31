@@ -21,14 +21,13 @@ const logger = createLogger('vault-retrieval');
 // is unpinned by the Dreamer during its nightly cycle.
 export const MAX_PINNED_ENTRIES = 20;
 
-// ── Model-Dependent Budgets ──
+// ── T67b: `getVaultBudget` IS GONE ──────────────────────────────────────────────────────
+// Its four window tiers rationed the SEMANTIC half of the context pull against the pinned
+// half, inside `retrieveForContext`. That half is `memory/recall-lane.ts`'s now, under that
+// lane's own derived reserve — one budget, one owner — and the pinned half it used to share
+// with is bounded by `MAX_PINNED_ENTRIES`, not by tokens. A tier table with no reader left
+// is a number waiting to be wrong.
 
-function getVaultBudget(contextWindow: number): { maxTokens: number; maxEntries: number } {
-  if (contextWindow >= 200000) return { maxTokens: 2000, maxEntries: 10 };
-  if (contextWindow >= 128000) return { maxTokens: 1500, maxEntries: 7 };
-  if (contextWindow >= 32000) return { maxTokens: 1000, maxEntries: 5 };
-  return { maxTokens: 500, maxEntries: 3 };
-}
 
 // ── Format Entries for System Prompt ──
 

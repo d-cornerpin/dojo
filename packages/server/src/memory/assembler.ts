@@ -33,7 +33,7 @@ import {
 } from './lanes.js';
 import { tagMessageLane, tagMessageLanes, collectMessageLaneIds } from './message-lane-tag.js';
 import { getContextSummaries } from './dag.js';
-import { buildPerTurnRecallQuery, buildRecallLaneMessage } from './recall-lane.js';
+import { buildRecallLaneMessage } from './recall-lane.js';
 import { getLatestBriefing } from './briefing.js';
 import { pinnedContextSection } from '../vault/retrieval.js';
 import { isPMAgent } from '../config/platform.js';
@@ -48,8 +48,7 @@ import { currentTurnNumber, readStoredTurnThreshold, CONTINUITY_BRIEF_HORIZON_TU
 import type { Summary } from './dag.js';
 import type { Message } from '@dojo/shared';
 // PHASE-3 T5 — the marker taxonomy. Four shapes this file used to spell itself.
-import { A2A_INBOUND_RE, TECHNIQUE_FRESH_SENTINEL,
-  parseA2AThreadShort, parseTechniqueFreshRead } from '@dojo/shared';
+import { A2A_INBOUND_RE, parseA2AThreadShort, parseTechniqueFreshRead } from '@dojo/shared';
 
 const logger = createLogger('memory-assembler');
 
@@ -1892,15 +1891,12 @@ export function selectSummariesForPrefix(summaries: Summary[], budget: number): 
  * v2, Detect "session start" turns: turns where scaffolding (briefing,
  * vault, active tasks, continuity brief) should be re-injected.
  *
- * Definition: an agent is at session-start if either:
- *   1. session_started_at is set AND no assistant message exists since then
- *      (true first turn after a session reset / new session), OR
- *   2. there are zero assistant messages for the agent at all (brand new agent).
- *
- * This matches the existing "── New Session ──" detection at the bottom
- * of assembleContext for v1, just lifted into a reusable helper.
- *
- * Mid-session turns return false → no scaffolding cost.
+ * T67b: `isV2SessionStart` IS GONE with the scaffolding gate that was its only reader.
+ * Its definition — "no assistant message since `session_started_at`, or none at all" — is
+ * still LIVE, inline, at the [New Session] prefix below, which is where it started and which
+ * is the one place the answer is still used. Three prefix lanes were gated on it and all
+ * three render unconditionally now (see the gate's own note), so keeping a helper for a
+ * question nobody asks would be the shape this task exists to remove.
  */
 /**
  * Stub-and-store (Part XVIII §E). Replace tool_result content older than
@@ -1989,31 +1985,6 @@ export function stubOldToolResults(messages: Message[], agentId: string): Messag
   return stubbed;
 }
 
-function isV2SessionStart(agentId: string): boolean {
-  try {
-    const db = getDb();
-    const sessionRow = db.prepare(
-      'SELECT session_started_at FROM agents WHERE id = ?',
-    ).get(agentId) as { session_started_at: string | null } | undefined;
-    const sessionStarted = sessionRow?.session_started_at ?? null;
-    let cnt: number;
-    if (sessionStarted) {
-      cnt = (db.prepare(
-        "SELECT COUNT(*) as cnt FROM messages WHERE agent_id = ? AND role = 'assistant' AND created_at >= (unixepoch(?) * 1000)",
-      ).get(agentId, sessionStarted) as { cnt: number }).cnt;
-    } else {
-      cnt = (db.prepare(
-        "SELECT COUNT(*) as cnt FROM messages WHERE agent_id = ? AND role = 'assistant'",
-      ).get(agentId) as { cnt: number }).cnt;
-    }
-    return cnt === 0;
-  } catch {
-    // If detection fails, default to NOT-session-start so we don't burn
-    // tokens on scaffolding mid-conversation. Better to undershoot scaffolding
-    // than overshoot.
-    return false;
-  }
-}
 
 /**
  * v2, Cap the text content of tool_result blocks at V2_MAX_TOOL_RESULT_TOKENS.
