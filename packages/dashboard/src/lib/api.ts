@@ -4,6 +4,8 @@ import type {
   AuthMeResponse,
   SetupStatusResponse,
   CreateProviderRequest,
+  EditProviderRequest,
+  EditProviderResponse,
   ProviderResponse,
   ProvidersListResponse,
   ProviderModelsResponse,
@@ -333,6 +335,23 @@ export const updateModelNumCtx = async (
     method: 'PATCH',
     body: JSON.stringify({ override }),
   });
+};
+
+// T66b — edit a provider that already exists. ONLY the fields present are changed, which is
+// the whole reason this is not `createProvider` over the same id: that door full-replaces the
+// identity fields, so an edit form built on it would clear a dialect declaration or a patience
+// pair for anyone who did not re-send them. `credential` omitted or blank keeps the stored key
+// (it is never sent to the client, so a form cannot round-trip it). The answer carries
+// `revalidationRequired`, which is the caller's cue to run `validateProvider` — the same
+// two-step the add form has always used after a create.
+export const updateProvider = async (
+  providerId: string,
+  edit: EditProviderRequest,
+): Promise<EditProviderResponse> => {
+  return await request<ProviderResponse>(`/config/providers/${providerId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(edit),
+  }) as EditProviderResponse;
 };
 
 // T64b — set or clear how long this provider's streaming calls may wait. Null on a field

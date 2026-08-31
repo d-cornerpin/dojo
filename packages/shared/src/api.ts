@@ -55,6 +55,23 @@ export interface CreateProviderRequest {
   streamIdleTimeoutMs?: number | null;
 }
 
+// T66b — the edit. Every field optional, and only the ones present are written: the create
+// door over an existing id is a full replace, so this is a different request shape and not a
+// partial `CreateProviderRequest`. `credential` blank or absent means keep the stored key —
+// the stored key is never sent to the client, so a form can never round-trip it.
+export interface EditProviderRequest {
+  name?: string;
+  baseUrl?: string | null;
+  behavesLike?: string | null;
+  credential?: string;
+}
+
+// The edit route answers the standard envelope PLUS one flag: true when the base URL or the
+// credential moved, i.e. when the stored "validated" badge no longer describes anything that
+// has been tried. The caller then runs `POST /providers/:id/validate` — the existing route,
+// which is also what the add form runs straight after a create.
+export type EditProviderResponse = ApiResponse<Provider> & { revalidationRequired?: boolean };
+
 export type ProvidersListResponse = Provider[];
 export type ProviderResponse = Provider;
 export type ProviderModelsResponse = Model[];

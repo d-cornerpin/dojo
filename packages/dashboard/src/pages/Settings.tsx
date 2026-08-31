@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useSearchParams } from 'react-router-dom';
-import type { Provider, Model, GenerationParamSpec, VoiceOption } from '@dojo/shared';
+import type { Provider, Model, GenerationParamSpec, VoiceOption, EditProviderRequest } from '@dojo/shared';
 import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
 import { RouterConfig, SystemModelConfig, VoiceOpenerModelConfig } from '../components/RouterConfig';
@@ -1707,6 +1707,9 @@ const ProvidersTab = () => {
   }, []);
 
   const [syncing, setSyncing] = useState<string | null>(null);
+  // T66b — one provider is open for editing at a time. Held here rather than inside the row
+  // so that opening a second edit closes the first, instead of leaving two half-typed forms.
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const handleDelete = async (id: string) => {
     // Fetch models for this provider to check usage
@@ -1749,8 +1752,10 @@ const ProvidersTab = () => {
         <div className="space-y-3">
           {providers.map((provider) => (
             <div key={provider.id} className="tile">
-            <div className="flex items-center justify-between">
-              <div>
+            <div className="flex items-start justify-between gap-3">
+              {/* min-w-0 / shrink-0: the meta line wraps under itself instead of pushing into
+                  the buttons now that the buttons are pills rather than bare text. */}
+              <div className="min-w-0">
                 <h3 className="text-sm font-medium text-ui">{provider.name}</h3>
                 <p className="text-xs text-ui/40 mt-0.5">
                   {/* T63: 'none' is a real stored auth type (Ollama has always used it, and a
@@ -1758,27 +1763,57 @@ const ProvidersTab = () => {
                       which was the one thing it is not. */}
                   {provider.type} &middot; {provider.authType === 'agent-sdk' ? 'Agent SDK' : provider.authType === 'oauth' ? 'OAuth' : provider.authType === 'none' ? 'No key' : 'API Key'}
                   {provider.behavesLike ? ` · behaves like ${provider.behavesLike}` : ''} {provider.isValidated ? '(validated)' : '(not validated)'}
+                  {/* T66b — patience was only readable by opening its own fold. It stays
+                      readable at a glance now that the fold has moved inside Edit. */}
+                  {(provider.firstChunkTimeoutMs !== null || provider.streamIdleTimeoutMs !== null) && (
+                    <span className="text-cp-teal">
+                      {' '}· waits {msToSecInput(provider.firstChunkTimeoutMs) || STANDARD_FIRST_CHUNK_SEC}s for the
+                      first word, {msToSecInput(provider.streamIdleTimeoutMs) || STANDARD_IDLE_SEC}s during
+                    </span>
+                  )}
                 </p>
               </div>
-              <div className="flex items-center gap-3">
+              {/* T66b — the row's actions are real buttons. They were text: "Sync Models and
+                  Pricing" and "Delete" read as links, and the patience fold below them was
+                  dim grey and read as a caption — the owner reported not realising the
+                  patience editor was clickable at all. `btn btn--sm` is the page's own pill
+                  (cursor, hover lift, focus ring), so nothing new is invented here; the
+                  controls just stop pretending to be prose. */}
+              <div className="flex items-center gap-2 shrink-0">
                 <button
-                  onClick={() => handleSyncModels(provider.id)}
-                  disabled={syncing === provider.id}
-                  className="text-xs text-cp-teal hover:text-cp-teal/80 disabled:text-ui/25 transition-colors"
+                  type="button"
+                  onClick={() => setEditingId(editingId === provider.id ? null : provider.id)}
+                  className="btn btn--sm"
+                  aria-expanded={editingId === provider.id}
                 >
-                  {syncing === provider.id ? 'Syncing...' : 'Sync Models and Pricing'}
+                  {editingId === provider.id ? 'Close' : 'Edit'}
                 </button>
                 <button
+                  type="button"
+                  onClick={() => handleSyncModels(provider.id)}
+                  disabled={syncing === provider.id}
+                  className="btn btn--sm"
+                >
+                  {syncing === provider.id ? 'Syncing…' : 'Sync Models and Pricing'}
+                </button>
+                <button
+                  type="button"
                   onClick={() => handleDelete(provider.id)}
-                  className="text-sm text-cp-coral hover:text-cp-coral/80 transition-colors"
+                  className="btn btn--sm btn--danger"
                 >
                   Delete
                 </button>
               </div>
             </div>
-            {/* T64b — the edit. The owner's slow box is ALREADY a provider; he is not going
-                to delete and re-add it to change one number. */}
-            <ProviderPatienceRow provider={provider} onChange={loadProviders} />
+            {/* T66b — the edit. The owner's box is ALREADY a provider; he is not going to
+                delete and re-add it to change its name, its URL or one timeout. */}
+            {editingId === provider.id && (
+              <ProviderEditForm
+                provider={provider}
+                onSaved={() => { loadProviders(); setEditingId(null); }}
+                onCancel={() => setEditingId(null)}
+              />
+            )}
             </div>
           ))}
         </div>
@@ -1907,85 +1942,219 @@ const PatienceFields = ({
   </>
 );
 
-// T64b — the per-provider editor: "response patience" on a provider that already exists.
+// T66b — THE PER-PROVIDER EDITOR.
 //
-// Shown only where the bounds are actually read. The stream watchdog arms on the
-// OpenAI-compatible path and the Anthropic-direct path; Ollama bounds its call a different
-// way (a single 5-minute fetch timeout) and the Agent SDK transport has no watchdog at all,
-// so offering the pair there would be a control that does nothing.
-const ProviderPatienceRow = ({ provider, onChange }: { provider: Provider; onChange: () => void }) => {
+// The owner: "at the very least change the name and the patience settings". Patience had its
+// own editor from T64b; nothing else could be changed at all, and the only door that could
+// change a name — `POST /providers` over the existing id — is a FULL REPLACE, so a form built
+// on it would clear a base URL or a dialect declaration for anyone who did not re-send them.
+// `PATCH /providers/:id` writes only the fields it is given, and this form only gives it the
+// fields the user actually altered.
+//
+// TWO DOORS, ONE SAVE. Patience keeps its own narrow route (T64b) and the identity fields have
+// theirs; each owns its properties so neither can rewrite the other's. The user sees one Save.
+//
+// WHAT IS NOT HERE. `type` cannot be edited — an Anthropic provider that becomes an Ollama one
+// is a different provider, with different models, a different credential and a different
+// dialect. The server refuses it by name; the form says so in plain words rather than
+// offering a control that would be rejected.
+const ProviderEditForm = ({ provider, onSaved, onCancel }: {
+  provider: Provider; onSaved: () => void; onCancel: () => void;
+}) => {
+  // T64b's rule, unchanged: the pair is offered only where the stream watchdog actually arms.
+  // Ollama bounds its call a different way (a single 5-minute fetch timeout) and the Agent SDK
+  // transport has no watchdog at all, so the fields would be a control that does nothing.
   const armsTheWatchdog = provider.type !== 'ollama' && provider.authType !== 'agent-sdk';
-  const declared = provider.firstChunkTimeoutMs !== null || provider.streamIdleTimeoutMs !== null;
+  // The dialect is only ambiguous behind an OpenAI-compatible URL — which is the whole reason
+  // T63 made it declarable. Anthropic, OpenAI and Ollama each speak one known dialect.
+  const canDeclareDialect = provider.type === 'openai-compatible';
+  // A provider with no base URL of its own (Anthropic direct) has nothing to point elsewhere.
+  const hasEndpoint = provider.type !== 'anthropic' || provider.baseUrl !== null;
+  // Ollama takes no key, and the Agent SDK signs in through the CLI rather than a stored one.
+  const canRotateKey = provider.type !== 'ollama' && provider.authType !== 'agent-sdk';
 
-  const [open, setOpen] = useState(false);
+  const [name, setName] = useState(provider.name);
+  const [baseUrl, setBaseUrl] = useState(provider.baseUrl ?? '');
+  // '' is "declare nothing and go back to reading the URL", which is what the column's NULL
+  // means and what every provider created before T63 holds.
+  const [behavesLike, setBehavesLike] = useState(provider.behavesLike ?? '');
+  // Never pre-filled: the server does not send the stored key to the client and must not.
+  // Blank therefore means KEEP, and the help text under the field says exactly that.
+  const [credential, setCredential] = useState('');
+  const [showPatience, setShowPatience] = useState(
+    provider.firstChunkTimeoutMs !== null || provider.streamIdleTimeoutMs !== null,
+  );
   const [firstChunkSec, setFirstChunkSec] = useState(msToSecInput(provider.firstChunkTimeoutMs));
   const [idleSec, setIdleSec] = useState(msToSecInput(provider.streamIdleTimeoutMs));
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [status, setStatus] = useState<'idle' | 'saving' | 'validating' | 'valid' | 'invalid'>('idle');
   const [error, setError] = useState<string | null>(null);
 
-  if (!armsTheWatchdog) return null;
+  const busy = status === 'saving' || status === 'validating';
 
   const handleSave = async (): Promise<void> => {
     setError(null);
+    if (!name.trim()) { setError('A provider needs a name'); return; }
+
     const first = parsePatienceSeconds(firstChunkSec, 'The wait for the first word');
     const idle = parsePatienceSeconds(idleSec, 'The wait during an answer');
-    if (!first.ok) { setError(first.error); return; }
-    if (!idle.ok) { setError(idle.error); return; }
+    if (!first.ok) { setError(first.error); setShowPatience(true); return; }
+    if (!idle.ok) { setError(idle.error); setShowPatience(true); return; }
 
-    setSaving(true);
-    const result = await api.updateProviderResponsePatience(provider.id, {
-      firstChunkTimeoutMs: first.ms,
-      streamIdleTimeoutMs: idle.ms,
-    });
-    setSaving(false);
-    if (result.ok) {
-      setSaved(true);
-      setTimeout(() => setSaved(false), 1500);
-      onChange();
+    // ONLY WHAT MOVED. This is the client half of the anti-trap: a field the user did not
+    // touch is not mentioned, so there is no request in which it could be cleared.
+    const edit: EditProviderRequest = {};
+    if (name.trim() !== provider.name) edit.name = name.trim();
+    if (hasEndpoint && (baseUrl.trim() || null) !== provider.baseUrl) {
+      edit.baseUrl = baseUrl.trim() || null;
+    }
+    if (canDeclareDialect && (behavesLike || null) !== provider.behavesLike) {
+      edit.behavesLike = behavesLike || null;
+    }
+    if (canRotateKey && credential.trim()) edit.credential = credential.trim();
+
+    const patienceMoved = armsTheWatchdog && (
+      first.ms !== provider.firstChunkTimeoutMs || idle.ms !== provider.streamIdleTimeoutMs
+    );
+
+    if (Object.keys(edit).length === 0 && !patienceMoved) { onCancel(); return; }
+
+    setStatus('saving');
+    if (patienceMoved) {
+      const p = await api.updateProviderResponsePatience(provider.id, {
+        firstChunkTimeoutMs: first.ms, streamIdleTimeoutMs: idle.ms,
+      });
+      if (!p.ok) { setError(p.error); setStatus('idle'); return; }
+    }
+
+    let revalidationRequired = false;
+    if (Object.keys(edit).length > 0) {
+      const result = await api.updateProvider(provider.id, edit);
+      if (!result.ok) { setError(result.error); setStatus('idle'); return; }
+      revalidationRequired = result.revalidationRequired === true;
+    }
+
+    // The badge the server just cleared is a claim about a connection nobody has tried yet, so
+    // the same two-step the add form uses after a create: save, then run the EXISTING validate
+    // route. It is a separate call on purpose — a write door that reached out to a local box
+    // would hold the user's Save open for as long as that box takes to time out.
+    if (!revalidationRequired) { onSaved(); return; }
+    setStatus('validating');
+    const valResult = await api.validateProvider(provider.id);
+    if (valResult.ok && valResult.data.valid) {
+      setStatus('valid');
+      setTimeout(() => onSaved(), 800);
     } else {
-      setError(result.error ?? 'Save failed');
+      setStatus('invalid');
+      setError(`Saved, but the connection did not answer: ${!valResult.ok ? valResult.error : 'unexpected result'}`);
     }
   };
 
   return (
-    <div className="mt-2">
-      <button
-        type="button"
-        onClick={() => setOpen(v => !v)}
-        className="text-xs text-ui/40 hover:text-ui/70 transition-colors"
-      >
-        {open ? '▾' : '▸'} Response patience
-        {declared && !open && (
-          <span className="ml-1 text-cp-teal">
-            · {msToSecInput(provider.firstChunkTimeoutMs) || STANDARD_FIRST_CHUNK_SEC}s first word,{' '}
-            {msToSecInput(provider.streamIdleTimeoutMs) || STANDARD_IDLE_SEC}s during
-          </span>
-        )}
-      </button>
-      {open && (
-        <div className="glass-nested rounded-xl p-3 mt-2 space-y-2">
-          <PatienceFields
-            firstChunkSec={firstChunkSec}
-            idleSec={idleSec}
-            onFirstChunk={setFirstChunkSec}
-            onIdle={setIdleSec}
-            disabled={saving}
+    <div className="glass-nested rounded-xl p-3 mt-3 space-y-3">
+      <div className="fgrid" style={{ marginBottom: 0 }}>
+        <div>
+          <label className="flabel">Name</label>
+          <input
+            type="text" value={name} onChange={(e) => setName(e.target.value)}
+            disabled={busy} className="finput disabled:opacity-60"
           />
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={saving}
-              className="btn btn--primary text-xs disabled:opacity-60"
-            >
-              {saving ? 'Saving…' : 'Save'}
-            </button>
-            {saved && <span className="text-xs text-cp-teal">Saved</span>}
-            {error && <span className="text-xs text-cp-coral">{error}</span>}
-          </div>
+          <p className="text-[11px] text-ui/40 mt-1">
+            What you call it. Nothing else uses it — models, keys and assignments all follow the
+            provider itself, so renaming is safe.
+          </p>
+        </div>
+        <div>
+          <label className="flabel">Type</label>
+          <input type="text" value={provider.type} disabled readOnly className="finput opacity-60" />
+          <p className="text-[11px] text-ui/40 mt-1">
+            Can't be changed — a different type is a different provider. Delete this one and add
+            it again.
+          </p>
+        </div>
+      </div>
+
+      {hasEndpoint && (
+        <div>
+          <label className="flabel">Base URL</label>
+          <input
+            type="text" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder="http://localhost:8000/v1"
+            disabled={busy} className="finput disabled:opacity-60"
+          />
+          <p className="text-[11px] text-ui/40 mt-1">
+            Change this if the machine moved. Saving a new URL re-checks the connection.
+          </p>
         </div>
       )}
+
+      {canDeclareDialect && (
+        <div>
+          <label className="flabel">Behaves like</label>
+          <select
+            value={behavesLike} onChange={(e) => setBehavesLike(e.target.value)}
+            disabled={busy} className="finput field--select disabled:opacity-60"
+          >
+            <option value="">Decide from the URL (default)</option>
+            {BEHAVES_LIKE_CHOICES.map(choice => (
+              <option key={choice.value} value={choice.value}>{choice.label}</option>
+            ))}
+          </select>
+          <p className="text-[11px] text-ui/40 mt-1">
+            {BEHAVES_LIKE_CHOICES.find(ch => ch.value === behavesLike)?.hint
+              ?? 'Reads the dialect off the address, which is right for every hosted service. Declare one when the address cannot say — a local server.'}
+          </p>
+        </div>
+      )}
+
+      {canRotateKey && (
+        <div>
+          <label className="flabel">API Key</label>
+          <input
+            type="password" value={credential} onChange={(e) => setCredential(e.target.value)}
+            placeholder="Leave blank to keep the key you already saved"
+            disabled={busy} className="finput disabled:opacity-60"
+          />
+          <p className="text-[11px] text-ui/40 mt-1">
+            A saved key is never shown back to you. Leave this empty and it stays exactly as it
+            is; type a new one to replace it, and the connection is re-checked.
+          </p>
+        </div>
+      )}
+
+      {armsTheWatchdog && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowPatience(v => !v)}
+            className="btn btn--sm"
+            aria-expanded={showPatience}
+          >
+            {showPatience ? '▾' : '▸'} Response patience (advanced)
+          </button>
+          {showPatience && (
+            <div className="mt-2 space-y-2">
+              <PatienceFields
+                firstChunkSec={firstChunkSec}
+                idleSec={idleSec}
+                onFirstChunk={setFirstChunkSec}
+                onIdle={setIdleSec}
+                disabled={busy}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="flex items-center gap-3">
+        <button type="button" onClick={handleSave} disabled={busy} className="btn btn--sm btn--primary">
+          {status === 'saving' ? 'Saving…' : status === 'validating' ? 'Checking the connection…' : 'Save'}
+        </button>
+        <button type="button" onClick={onCancel} disabled={busy} className="btn btn--sm">
+          Cancel
+        </button>
+        {status === 'valid' && <span className="text-xs text-cp-teal">Saved and connected</span>}
+        {error && <span className="text-xs text-cp-coral">{error}</span>}
+      </div>
     </div>
   );
 };
@@ -2192,7 +2361,8 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
             <button
               type="button"
               onClick={() => setShowPatience(v => !v)}
-              className="text-xs text-cp-teal hover:text-cp-teal/80 transition-colors"
+              className="btn btn--sm"
+              aria-expanded={showPatience}
             >
               {showPatience ? '▾' : '▸'} Response patience (advanced)
             </button>
