@@ -41,6 +41,12 @@ const logger = createLogger('model');
 // the user's stop button (timedOut()), and the v2 loop grants one same-model
 // retry on the translated timeout error.
 //
+// T65b: the sentence above — "a mid-stream stall dies at the idle bound" — was a claim this
+// file could not keep on the OpenAI transport for the whole of its life, because the SDK
+// swallowed the watchdog's abort and the half-answer was returned as a finished one. It is
+// true now; the check that makes it true, and why it is a throw rather than a second
+// translation, is at the consume seam in `callOpenAIModel`.
+//
 // T64b: the two numbers now live in `stream-patience.ts` beside the rule for when a provider
 // replaces them, because the write door has to validate against the same pair and cannot
 // import this module to get them. Re-exported here, so every existing importer of these two
@@ -86,6 +92,26 @@ export function makeStreamWatchdog(
 
 /** The loop matches on this exact phrase to grant a single same-model retry. */
 export const STREAM_IDLE_TIMEOUT_ERROR = 'model stream idle timeout';
+
+/**
+ * T65b — THE ONE TRUTH CHECK: did the WATCHDOG cut this stream, or did the user?
+ *
+ * The distinction is the whole reason `StreamWatchdog` reports `timedOut()` separately from
+ * its abort signal, and the two answers are opposites: a watchdog cut means the provider
+ * stopped talking and whatever arrived is NOT an answer; a stop-button abort means the person
+ * asked for it to end, and the partial text they already watched arrive is theirs to keep.
+ *
+ * It was written out longhand at the two `catch` sites and nowhere else, which is how the
+ * defect below survived: the sentence existed, but only on the path where the SDK raised.
+ * One expression, four call sites (both consume seams, both catches), so the two transports
+ * cannot come to disagree about what a stalled stream is.
+ */
+export function streamWasCutByWatchdog(
+  watchdog: StreamWatchdog,
+  external: AbortSignal | undefined,
+): boolean {
+  return watchdog.timedOut() && !external?.aborted;
+}
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // SWEEP-A TB8 JOB 1 — THE STOP REASON STOPS BEING FABRICATED.
@@ -1617,6 +1643,43 @@ async function callOpenAIModel(
       }
     }
 
+    // ════════════════════════════════════════════════════════════════════════════════════
+    // T65b (2026-08-31) — A STALL IS NEVER SHIPPED AS AN ANSWER.
+    //
+    // The loop above ends two ways and they mean opposite things. Either the provider
+    // finished, or the watchdog cut it off and `openai@6.32.0` did not say so:
+    //
+    //     // core/streaming.js:74-76
+    //     catch (e) {
+    //       // If the user calls `stream.controller.abort()`, we should exit without throwing.
+    //       if (isAbortError(e)) return;
+    //
+    // A mid-answer stall therefore looked, from here down, exactly like a completed call. It
+    // was costed, audit-logged `result='success'`, given the synthesised `end_turn` — "the
+    // model finished normally" — and RETURNED, so the owner got half an answer with nothing
+    // anywhere saying it was half. The `catch` below is the only reader of `timedOut()` on
+    // this path and it was never entered, which also made the v2 loop's one same-model retry
+    // unreachable for the whole class: it matches on a phrase that was never thrown. The
+    // first-chunk case escaped this only by accident of WHERE the abort lands — on the
+    // awaited `create()`, which does reject.
+    //
+    // So the engine raises what the SDK dropped. Deliberately a throw into this function's
+    // OWN catch rather than a second translation: the catch's watchdog branch is already the
+    // one place that decides what a watchdog abort means, and routing through it means the
+    // swallowed abort and the raised one produce the same `AgentError`, the same provider
+    // health record and the same log line — with no second copy to drift. The message below
+    // is a fallback that only surfaces if the user's stop lands in the microseconds between
+    // this check and the catch's; it carries the retry phrase so even that reads correctly.
+    //
+    // SCOPE, stated so it is not mistaken for more: this speaks for the WATCHDOG's abort and
+    // nothing else. A server that closes the connection mid-answer still ends the loop
+    // normally with partial text, exactly as it did before — that is a different signal with
+    // a different fix, and inventing a bound for it here would be guessing.
+    // ════════════════════════════════════════════════════════════════════════════════════
+    if (streamWasCutByWatchdog(watchdog, params.abortSignal)) {
+      throw new Error(`${STREAM_IDLE_TIMEOUT_ERROR}: the stream ended on the watchdog's abort, which the SDK did not raise`);
+    }
+
     // Finalize tool calls
     for (const [, acc] of toolCallAccumulator) {
       let parsedArgs: Record<string, unknown> = {};
@@ -1906,7 +1969,7 @@ async function callOpenAIModel(
     };
   } catch (err) {
     watchdog.finish();
-    if (watchdog.timedOut() && !params.abortSignal?.aborted) {
+    if (streamWasCutByWatchdog(watchdog, params.abortSignal)) {
       // The WATCHDOG aborted (never the user's stop; that leaves timedOut()
       // false or shows on the external signal). Translate to the retryable
       // phrase the v2 loop matches for its single same-model retry.
@@ -2517,6 +2580,19 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     });
 
     const finalMessage = await stream.finalMessage();
+
+    // T65b: the same truth check as the OpenAI seam, on the other transport that arms this
+    // watchdog. At `@anthropic-ai/sdk@0.110.0` it is unreachable, and that is worth saying
+    // exactly: `MessageStream._createMessage` re-checks its controller after its own
+    // `for await` and throws `APIUserAbortError`, so the abort arrives at the catch below on
+    // its own (probed against the real SDK and a real stalling server; T65b report). That is
+    // the DEPENDENCY's promise, not one anybody made to us, and a guarantee this engine only
+    // holds while a third party keeps a post-loop guard is not a guarantee. The two seams
+    // must also not come to disagree about whether a stalled stream is an answer, which is
+    // precisely the state T65b found them in.
+    if (streamWasCutByWatchdog(anthWatchdog, params.abortSignal)) {
+      throw new Error(`${STREAM_IDLE_TIMEOUT_ERROR}: the stream ended on the watchdog's abort, which the SDK did not raise`);
+    }
     anthWatchdog.finish();
 
     const latencyMs = Date.now() - startTime;
@@ -2629,7 +2705,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     };
   } catch (err) {
     anthWatchdog.finish();
-    if (anthWatchdog.timedOut() && !params.abortSignal?.aborted) {
+    if (streamWasCutByWatchdog(anthWatchdog, params.abortSignal)) {
       const msg = `${STREAM_IDLE_TIMEOUT_ERROR}: no data from provider for too long (elapsed ${anthWatchdog.elapsedMs()}ms)`;
       logger.warn(`Anthropic call aborted by stream watchdog: ${msg}`, {}, agentId);
       throw new AgentError(msg, agentId, { code: 'stream_idle_timeout', retryable: true });

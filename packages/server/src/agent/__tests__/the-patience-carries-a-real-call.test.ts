@@ -63,6 +63,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { clearSecretsCache } from '../../config/loader.js';
 import { callModel, clearClientCache, STREAM_IDLE_TIMEOUT_ERROR, STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, type ModelCallResult } from '../model.js';
 import { resolveStreamPatience } from '../stream-patience.js';
+import { AgentError } from '../errors.js';
 
 // Real sockets, a real migration chain per case, and two cases that deliberately wait out a
 // bound. Well inside the default 5 s per case, but the margin is stated rather than assumed.
@@ -198,43 +199,48 @@ describe('T64b — the first-token bound is the provider\'s to declare', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════
-// THE IDLE BOUND — AND A PRE-EXISTING DEFECT THESE CASES UNCOVERED, PINNED NOT FIXED.
+// THE IDLE BOUND — AND THE DEFECT THESE CASES UNCOVERED, NOW FIXED (T65b, 2026-08-31).
 //
-// A mid-stream stall does NOT raise `STREAM_IDLE_TIMEOUT_ERROR`. It returns the partial text
-// as if it were the whole answer. That is true at HEAD, has nothing to do with T64b, and is
-// not this task's to change (doing so would move behaviour on every provider that declares
-// nothing, which is the one thing T64b's controls forbid). It is pinned here so it is a
-// recorded fact rather than a surprise, and handed up in the task report.
+// WHAT THESE CASES ASSERTED WHEN THEY WERE WRITTEN: that a mid-stream stall did NOT raise
+// `STREAM_IDLE_TIMEOUT_ERROR` — it returned the partial text as if it were the whole answer,
+// carrying the synthesised `end_turn` that says "the model finished normally". That was true
+// at HEAD, had nothing to do with T64b, and was pinned rather than fixed here because the
+// remedy moves behaviour for every provider that declares nothing, which is the one thing
+// T64b's controls forbid. It was handed up in the T64b report and became T65b.
 //
-// The cause, read at the source and confirmed by a standalone probe against the real SDK
+// The cause, read at the source and confirmed by standalone probes against the real SDK
 // (`openai@6.32.0`, `core/streaming.js:74-76`):
 //
 //     catch (e) {
 //       // If the user calls `stream.controller.abort()`, we should exit without throwing.
 //       if (isAbortError(e)) return;
 //
-// So when the watchdog aborts DURING iteration, the `for await` in `callOpenAIModel` simply
-// ends. Nothing after that loop consults `watchdog.timedOut()` — the only reader is the
-// `catch`, which this path never enters — so the function falls through to its success
-// return. The first-chunk case behaves differently and correctly only by accident of timing:
-// there the abort lands on the awaited `create()`, which does reject.
+// When the watchdog aborted DURING iteration, the `for await` in `callOpenAIModel` simply
+// ended and nothing after it consulted `watchdog.timedOut()`, so the function fell through
+// to its success return. The first-chunk case escaped only by accident of timing: there the
+// abort lands on the awaited `create()`, which does reject.
 //
-// Two consequences worth stating plainly: the v2 loop's one same-model retry is unreachable
-// for a mid-stream stall (it matches on an error phrase that is never thrown), and a stall
-// after partial text yields SILENT TRUNCATION — a half-answer delivered as a whole one.
+// WHAT T65b CHANGED: `callOpenAIModel` now asks `streamWasCutByWatchdog` the moment the loop
+// ends and raises what the SDK dropped, so a stall reaches the same translated
+// `stream_idle_timeout` error the first-chunk case has always produced — which also makes
+// the v2 loop's one same-model retry reachable for this shape at last. The full RED-first
+// record of that fix, its controls (the stop button still keeps its partial text) and the
+// Anthropic seam are in `a-stall-is-never-shipped-as-an-answer.test.ts`.
 //
-// What T64b is nonetheless entitled to prove, and does below: the DECLARED idle bound is the
-// one actually armed. The stream is cut at the declared moment rather than at the standing
-// 60 s, and that is directly observable in what comes back.
+// THE CASES BELOW ARE UPDATED, NOT DELETED, AND THEY STILL PROVE T64b'S OWN CLAIM: the
+// DECLARED idle bound is the one actually armed. The observable moved from "a truncated
+// success comes back" to "the timeout is raised" — and the argument is the same one, because
+// under the standing 60 s bound a 1,200 ms stall is not a stall at all and the full answer
+// would have arrived.
 // ════════════════════════════════════════════════════════════════════════════════════
 describe('T64b — the idle bound is separately the provider\'s to declare', () => {
   it('a short declared idle bound cuts the stream at that bound', async () => {
     behaviour.midStreamStallMs = 1_200;
     seedProvider(6_000, 300);
-    const result = await call();
-    // Cut before the content chunk. Under the standing 60 s bound this would have been the
-    // full answer, so the declared 300 ms is demonstrably the number in force.
-    expect(result.content).toBe('');
+    // Cut before the content chunk. Under the standing 60 s bound the stub's 1,200 ms pause
+    // would have passed unnoticed and this would be 'It is done.', so the declared 300 ms is
+    // demonstrably the number in force.
+    await expect(call()).rejects.toThrow(STREAM_IDLE_TIMEOUT_ERROR);
   });
 
   it('GREEN: the same stall, on the same server, carried by a longer declared idle bound', async () => {
@@ -251,25 +257,24 @@ describe('T64b — the idle bound is separately the provider\'s to declare', () 
     behaviour.preFirstChunkMs = 400;
     behaviour.midStreamStallMs = 1_200;
     seedProvider(6_000, 300);
-    const result = await call();
-    expect(result.content).toBe('');
+    await expect(call()).rejects.toThrow(STREAM_IDLE_TIMEOUT_ERROR);
   });
 
-  it('PINNED (pre-existing, not T64b\'s): a mid-stream stall truncates SILENTLY', async () => {
-    // The finding above, as an assertion, so it cannot change without someone noticing.
-    // Nothing about this case is desirable; it is here because it is TRUE.
+  it('WAS PINNED AS A DEFECT, NOW ASSERTS THE FIX: a mid-stream stall is raised, not shipped', async () => {
+    // This case used to read `expect(result.content).toBe('')` and
+    // `expect(result.stopReason).toBe('end_turn')` — a truncated answer, reported as a
+    // normal completion, returned as a success — with a note saying that when it started
+    // failing because the call rejected instead, the defect had been fixed and the case
+    // should become the timeout assertion. T65b fixed it; this is that assertion.
     behaviour.midStreamStallMs = 1_200;
     seedProvider(6_000, 300);
-    const result = await call();
-    expect(result.content).toBe('');          // a truncated answer …
-    // … reported as `end_turn`. The provider never sent a finish_reason (it was still
-    // stalled when the watchdog cut it), so the synthesis supplies the default and the engine
-    // is told the model FINISHED NORMALLY. That is precisely the fabricated stop reason TB8
-    // job 1 set out to end, surviving on the abort path.
-    expect(result.stopReason).toBe('end_turn');
-    // … returned as a success. When this line starts failing because the call rejects
-    // instead, the defect has been fixed and this case should become the timeout assertion.
-    await expect(call()).resolves.toBeDefined();
+    const err = await call().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).code).toBe('stream_idle_timeout');
+    expect((err as AgentError).retryable).toBe(true);
+    // And no fabricated stop reason survives on the abort path: there is no result at all to
+    // carry one. That was the last place TB8 job 1's `end_turn` was still being invented.
+    expect((err as AgentError).message).toContain(STREAM_IDLE_TIMEOUT_ERROR);
   });
 });
 
