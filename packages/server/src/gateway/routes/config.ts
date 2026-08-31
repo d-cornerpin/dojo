@@ -7,7 +7,7 @@ import * as os from 'node:os';
 import { getDb } from '../../db/connection.js';
 import { getProviderCredential, setProviderCredential, clearSecretsCache, getSearchApiKey, getSearchProvider, setSearchConfig } from '../../config/loader.js';
 import { clearClientCache, resolveOpenAIBaseUrl } from '../../agent/model.js';
-import { CreateProviderSchema, EnableModelsSchema } from '../../config/schema.js';
+import { CreateProviderSchema, EnableModelsSchema, ProviderPatienceSchema } from '../../config/schema.js';
 import { createLogger } from '../../logger.js';
 import { DEFAULT_SOUL_MD as DEFAULT_SOUL, DEFAULT_USER_MD as DEFAULT_USER } from '../../prompt/templates.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
@@ -484,16 +484,16 @@ configRouter.post('/providers', async (c) => {
     return c.json({ ok: false, error: parsed.error.issues.map(i => i.message).join(', ') }, 400);
   }
 
-  const { id, name, type, baseUrl, authType, credential, behavesLike } = parsed.data;
+  const { id, name, type, baseUrl, authType, credential, behavesLike, firstChunkTimeoutMs, streamIdleTimeoutMs } = parsed.data;
   const db = getDb();
 
   // If provider already exists, update it instead of erroring
   const existing = db.prepare('SELECT id FROM providers WHERE id = ?').get(id);
   if (existing) {
     db.prepare(`
-      UPDATE providers SET name = ?, type = ?, base_url = ?, auth_type = ?, behaves_like = ?, updated_at = datetime('now')
+      UPDATE providers SET name = ?, type = ?, base_url = ?, auth_type = ?, behaves_like = ?, first_chunk_timeout_ms = ?, stream_idle_timeout_ms = ?, updated_at = datetime('now')
       WHERE id = ?
-    `).run(name, type, baseUrl ?? null, authType, behavesLike ?? null, id);
+    `).run(name, type, baseUrl ?? null, authType, behavesLike ?? null, firstChunkTimeoutMs ?? null, streamIdleTimeoutMs ?? null, id);
 
     if (credential) {
       setProviderCredential(id, credential, authType as 'api_key' | 'oauth');
@@ -523,10 +523,14 @@ configRouter.post('/providers', async (c) => {
   // resolver falls back to exactly the sniffing it always did. Note the re-POST arm above
   // rewrites it along with name/type/base_url/auth_type: this door has always treated a POST
   // over an existing id as a full replace of the identity fields, and the declaration is one.
+  //
+  // T64b: the patience pair joins that same replace set, for the same reason and with the
+  // same consequence — a re-POST that omits it clears it. The dashboard therefore edits
+  // patience through `PATCH /providers/:id/response-patience` and never a re-POST.
   db.prepare(`
-    INSERT INTO providers (id, name, type, base_url, auth_type, behaves_like, is_validated, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
-  `).run(id, name, type, baseUrl ?? null, authType, behavesLike ?? null);
+    INSERT INTO providers (id, name, type, base_url, auth_type, behaves_like, first_chunk_timeout_ms, stream_idle_timeout_ms, is_validated, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+  `).run(id, name, type, baseUrl ?? null, authType, behavesLike ?? null, firstChunkTimeoutMs ?? null, streamIdleTimeoutMs ?? null);
 
   // Auto-insert models for Anthropic providers (dynamically fetched, with fallback)
   if (type === 'anthropic') {
@@ -1484,6 +1488,49 @@ configRouter.patch('/providers/:id/host-ram', async (c) => {
   return c.json({ ok: true, data: rowToProvider(row), recomputed: recomputeSummary });
 });
 
+// PATCH /providers/:id/response-patience — set or clear how long this provider's streaming
+// calls may wait, in milliseconds. Body: { firstChunkTimeoutMs?: number | null,
+// streamIdleTimeoutMs?: number | null }. Null on a field means "use the standard bound".
+//
+// T64b. The owner's local DeepSeek box is ALREADY a configured provider — he is not going to
+// delete and re-create it to change one number — so the pair has to be editable in place. It
+// is its own narrow door rather than a re-POST because `POST /providers` over an existing id
+// full-replaces the identity fields, and a timeout edit must not be able to rewrite a base
+// URL. It changes these two columns and nothing else, which the door test asserts column by
+// column.
+configRouter.patch('/providers/:id/response-patience', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => null);
+  const parsed = ProviderPatienceSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ ok: false, error: parsed.error.issues.map(i => i.message).join(', ') }, 400);
+  }
+
+  const db = getDb();
+  const existing = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  if (!existing) return c.json({ ok: false, error: 'Provider not found' }, 404);
+
+  // A field the body did not name keeps its stored value; a field named as null is cleared.
+  // Those are different requests and the schema's `.optional().nullable()` is what keeps them
+  // distinguishable — collapsing them would make "set the first bound" silently clear the
+  // second.
+  const nextFirst = parsed.data.firstChunkTimeoutMs === undefined
+    ? existing.first_chunk_timeout_ms ?? null
+    : parsed.data.firstChunkTimeoutMs;
+  const nextIdle = parsed.data.streamIdleTimeoutMs === undefined
+    ? existing.stream_idle_timeout_ms ?? null
+    : parsed.data.streamIdleTimeoutMs;
+
+  db.prepare("UPDATE providers SET first_chunk_timeout_ms = ?, stream_idle_timeout_ms = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(nextFirst, nextIdle, id);
+
+  const row = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as Record<string, unknown>;
+  logger.info('Provider response patience updated', {
+    providerId: id, firstChunkTimeoutMs: nextFirst, streamIdleTimeoutMs: nextIdle,
+  });
+  return c.json({ ok: true, data: rowToProvider(row) });
+});
+
 // PATCH /models/:id/num-ctx — set or clear the per-model Ollama num_ctx
 // override. Body: { override: number | null }. Null (or missing field)
 // clears the override and reverts to Ollama's Modelfile default.
@@ -2245,6 +2292,10 @@ function rowToProvider(row: Record<string, unknown>): Provider {
     baseUrl: row.base_url as string | null,
     authType: row.auth_type as Provider['authType'],
     behavesLike: (row.behaves_like ?? null) as Provider['behavesLike'],
+    // T64b: read back as stored. A pre-163 row read through an old path has neither column,
+    // and `?? null` says "declared nothing" rather than inventing a number.
+    firstChunkTimeoutMs: typeof row.first_chunk_timeout_ms === 'number' ? row.first_chunk_timeout_ms : null,
+    streamIdleTimeoutMs: typeof row.stream_idle_timeout_ms === 'number' ? row.stream_idle_timeout_ms : null,
     isValidated: Boolean(row.is_validated),
     validatedAt: row.validated_at as string | null,
     hostRamGb: typeof row.host_ram_gb === 'number' ? row.host_ram_gb : null,

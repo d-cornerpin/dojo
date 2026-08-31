@@ -335,6 +335,20 @@ export const updateModelNumCtx = async (
   });
 };
 
+// T64b — set or clear how long this provider's streaming calls may wait. Null on a field
+// means "use the standard bound". Its own narrow route rather than a re-POST of the provider:
+// `POST /config/providers` over an existing id full-replaces the identity fields, so editing
+// a timeout through it could rewrite a base URL.
+export const updateProviderResponsePatience = async (
+  providerId: string,
+  patience: { firstChunkTimeoutMs?: number | null; streamIdleTimeoutMs?: number | null },
+): Promise<ApiResponse<ProviderResponse>> => {
+  return request<ProviderResponse>(`/config/providers/${providerId}/response-patience`, {
+    method: 'PATCH',
+    body: JSON.stringify(patience),
+  });
+};
+
 export const updateProviderHostRam = async (
   providerId: string,
   ramGb: number | null,

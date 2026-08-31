@@ -1,0 +1,55 @@
+-- 163 (UX-REPAIR T64b): A PROVIDER MAY DECLARE HOW LONG IT IS WORTH WAITING FOR.
+--
+-- Owner incident, 2026-08-31: his local DeepSeek V4 box times out during PROMPT PROCESSING.
+--
+-- WHY A COLUMN AT ALL. `agent/model.ts` bounds every streaming call with two module
+-- constants — `STREAM_FIRST_CHUNK_TIMEOUT_MS = 90_000` and `STREAM_IDLE_TIMEOUT_MS = 60_000`
+-- (:40-41). `makeStreamWatchdog` has taken both as parameters since it was written, so the
+-- seam was always there; nothing on any call path ever passed anything but the defaults.
+--
+-- Those numbers were derived from HOSTED behaviour, and for hosted APIs they are right: a
+-- remote endpoint that has accepted a request and said nothing for ninety seconds is a dead
+-- connection, and the 602-second hang that put the watchdog there (DOJO-ISSUES-LOG
+-- 2026-07-10) is exactly that shape. A LOCAL server is a different machine. It reads the
+-- whole prompt before it can emit token 1, and a 35k-character prompt on consumer hardware
+-- legitimately spends more than ninety seconds doing so. The stream did not stall — it had
+-- not started, and a constant cannot tell those two apart. The only thing that knows is the
+-- endpoint's owner, and until now the schema gave him nowhere to say it.
+--
+-- WHY ON `providers` AND NOT ON `models`. Patience is a property of the SERVING MACHINE, not
+-- of a model row: it is set by that box's hardware and its queue, and every model it serves
+-- waits behind the same processor. This is the same argument migration 162 made for
+-- `behaves_like`, and it rides the same single `models JOIN providers` read in `getModelInfo`
+-- at zero extra query cost. On `models` it would be one machine's fact stored once per model,
+-- written at four separate insert sites, and free to contradict itself.
+--
+-- WHY TWO COLUMNS AND NOT ONE. The two bounds answer different questions. The first is "how
+-- long may this machine think before it speaks", which is prompt-processing time and is the
+-- owner's incident. The second is "how long may it go quiet once it has started", which is
+-- the dead-connection detector and has nothing to do with prompt length. Collapsing them
+-- would mean buying patience for a stuck stream every time you buy patience for a long
+-- prompt — the failure the watchdog exists to catch, widened by a knob meant for something
+-- else. They are independent, and `a-provider-declares-its-own-patience.test.ts` pins that.
+--
+-- NULL = "exactly today's two constants". Every existing row is NULL and no backfill is
+-- written: the standing bounds are already right for every provider configured today, all of
+-- which are hosted, and writing a number into a row whose owner never chose one would be a
+-- claim nobody made. `resolveStreamPatience` reads a column only when it holds a trustworthy
+-- value, so every configured provider's call is bounded byte-identically — pinned by the
+-- NULL-row controls in `the-patience-carries-a-real-call.test.ts`.
+--
+-- NO CHECK CONSTRAINT. The legal range (10 s – 30 min) lives in `agent/stream-patience.ts` as
+-- `STREAM_PATIENCE_MIN_MS` / `STREAM_PATIENCE_MAX_MS`, and BOTH the write door and the reader
+-- enforce it from that one pair. A CHECK here would be a third, staler copy — and it would be
+-- the wrong instrument besides: the reader must survive a value this schema never approved
+-- (a hand-edited DB, a restored backup, a future writer), and it does that by falling back to
+-- the default rather than by trusting a constraint to have held.
+--
+-- NEXT-RELEASE AUDIT NOTE: this is the one schema addition T64b makes.
+-- `providers.first_chunk_timeout_ms` and `providers.stream_idle_timeout_ms` have exactly one
+-- reader (`agent/stream-patience.ts`'s `resolveStreamPatience`, called from `agent/model.ts`
+-- at both `makeStreamWatchdog` sites) and two writers (`POST /config/providers` and
+-- `PATCH /config/providers/:id/response-patience`).
+
+ALTER TABLE providers ADD COLUMN first_chunk_timeout_ms INTEGER;
+ALTER TABLE providers ADD COLUMN stream_idle_timeout_ms INTEGER;

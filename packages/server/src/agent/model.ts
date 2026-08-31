@@ -7,6 +7,9 @@ import { createLogger } from '../logger.js';
 import { AgentError } from './errors.js';
 import { apiRootIsBareHost, contractForModel, contractForModelId, type ModelContract } from './model-contract.js';
 import { classifyProviderError, isRetryableProviderClass } from './provider-error.js';
+import {
+  resolveStreamPatience, STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS,
+} from './stream-patience.js';
 import { scheduleRateLimitRetry } from './rate-limit-retry.js';
 import { toolDefinitions } from './tools/definitions.js';
 import { getFilteredTools } from './tools/surface.js';
@@ -37,8 +40,12 @@ const logger = createLogger('model');
 // stall dies at the idle bound. The watchdog's abort is distinguishable from
 // the user's stop button (timedOut()), and the v2 loop grants one same-model
 // retry on the translated timeout error.
-export const STREAM_FIRST_CHUNK_TIMEOUT_MS = 90_000;
-export const STREAM_IDLE_TIMEOUT_MS = 60_000;
+//
+// T64b: the two numbers now live in `stream-patience.ts` beside the rule for when a provider
+// replaces them, because the write door has to validate against the same pair and cannot
+// import this module to get them. Re-exported here, so every existing importer of these two
+// names is unaffected.
+export { STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS };
 
 export interface StreamWatchdog {
   /** Combined signal: fires on watchdog timeout OR the external (stop) signal. */
@@ -275,10 +282,10 @@ function sanitizeOrphanToolBlocks(
   }
 }
 
-function getModelInfo(modelId: string): { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; providerAuthType: string; providerBehavesLike: string | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null } {
+function getModelInfo(modelId: string): { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; providerAuthType: string; providerBehavesLike: string | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null } {
   const db = getDb();
   const row = db.prepare(`
-    SELECT m.provider_id, m.api_model_id, m.context_window, m.max_output_tokens, m.thinking_enabled, m.num_ctx_override, m.num_ctx_recommended, m.capabilities, p.type as provider_type, p.base_url as provider_base_url, p.auth_type as provider_auth_type, p.behaves_like as provider_behaves_like
+    SELECT m.provider_id, m.api_model_id, m.context_window, m.max_output_tokens, m.thinking_enabled, m.num_ctx_override, m.num_ctx_recommended, m.capabilities, p.type as provider_type, p.base_url as provider_base_url, p.auth_type as provider_auth_type, p.behaves_like as provider_behaves_like, p.first_chunk_timeout_ms as provider_first_chunk_timeout_ms, p.stream_idle_timeout_ms as provider_stream_idle_timeout_ms
     FROM models m
     JOIN providers p ON p.id = m.provider_id
     WHERE m.id = ?
@@ -295,6 +302,8 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
     provider_base_url: string | null;
     provider_auth_type: string | null;
     provider_behaves_like: string | null;
+    provider_first_chunk_timeout_ms: number | null;
+    provider_stream_idle_timeout_ms: number | null;
   } | undefined;
 
   if (!row) {
@@ -337,6 +346,11 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
     // that nothing outside the Ollama branch used to read.
     providerAuthType: row.provider_auth_type ?? 'api_key',
     providerBehavesLike: row.provider_behaves_like,
+    // T64b: how long this endpoint is worth waiting for, as its owner declared it (migration
+    // 163). NULL on every provider that has never said — which is all of them until someone
+    // does — and `resolveStreamPatience` turns NULL back into the standing constants.
+    firstChunkTimeoutMs: row.provider_first_chunk_timeout_ms,
+    streamIdleTimeoutMs: row.provider_stream_idle_timeout_ms,
     // Default ON, matches migration default and the UX the user asked for.
     thinkingEnabled: row.thinking_enabled === null || row.thinking_enabled === undefined
       ? true
@@ -1313,7 +1327,7 @@ export function applyProviderRequestParams(
 
 async function callOpenAIModel(
   params: ModelCallParams,
-  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; providerAuthType: string; providerBehavesLike: string | null; thinkingEnabled: boolean; capabilities: string[] },
+  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; providerAuthType: string; providerBehavesLike: string | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; thinkingEnabled: boolean; capabilities: string[] },
 ): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
   const startTime = Date.now();
@@ -1530,7 +1544,14 @@ async function callOpenAIModel(
 
   // Stream idle watchdog: bounds connect/first-token and inter-chunk gaps;
   // combined with the stop-button signal so user aborts still work unchanged.
-  const watchdog = makeStreamWatchdog(params.abortSignal);
+  //
+  // T64b: the bounds come from the PROVIDER now. This is the path the owner's local DeepSeek
+  // box runs on, and a machine that reads a 35k-character prompt before it can emit token 1
+  // is not a hung connection — but the standing 90s bound had no way to tell those apart.
+  // A provider that declares nothing resolves to exactly the two constants this line has
+  // passed implicitly since 2026-07-10.
+  const patience = resolveStreamPatience(modelInfo);
+  const watchdog = makeStreamWatchdog(params.abortSignal, patience.firstChunkMs, patience.idleMs);
   try {
     const requestOptions = { signal: watchdog.signal };
     // .withResponse() hands back both the parsed stream and the raw Response so
@@ -2454,7 +2475,13 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
 
   const startTime = Date.now();
 
-  const anthWatchdog = makeStreamWatchdog(params.abortSignal);
+  // T64b: the same provider-declared bounds as the OpenAI path. The owner's incident is a
+  // local OpenAI-compatible box, but the declaration lives on the PROVIDER row, and a pair of
+  // columns that silently did nothing on one of the two transports that arm this watchdog
+  // would be a form that lies. NULL — every provider today — is the two standing constants,
+  // so this line's behaviour is unchanged for everything currently configured.
+  const anthPatience = resolveStreamPatience(modelInfo);
+  const anthWatchdog = makeStreamWatchdog(params.abortSignal, anthPatience.firstChunkMs, anthPatience.idleMs);
   try {
     // Stream idle watchdog (see makeStreamWatchdog): bounds first-token and
     // inter-event gaps; the stop button rides the combined signal unchanged.

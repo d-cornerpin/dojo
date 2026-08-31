@@ -18,6 +18,15 @@ export interface Provider {
   // ids in `agent/model-contract.ts` — `BEHAVES_LIKE_PROFILES` — which is what the create
   // door validates against.
   behavesLike: string | null;
+  // T64b — how long this endpoint's streaming calls may wait, in milliseconds, as its owner
+  // declared it. Null on every provider that has declared nothing, which means the standard
+  // bounds (90 s to the first token, 60 s between chunks). Only a local inference server
+  // normally needs more: it reads the whole prompt before it can emit token 1, and on a long
+  // prompt that read alone can outlast the standard first-token bound. The two are separate
+  // because patience for prompt processing is not patience for a stalled stream. Legal range
+  // 10 s – 30 min, enforced at the write door and again by the reader.
+  firstChunkTimeoutMs: number | null;
+  streamIdleTimeoutMs: number | null;
   isValidated: boolean;
   validatedAt: string | null;
   // User-entered host machine RAM in GB. Only relevant for remote Ollama

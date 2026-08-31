@@ -1748,10 +1748,8 @@ const ProvidersTab = () => {
       ) : (
         <div className="space-y-3">
           {providers.map((provider) => (
-            <div
-              key={provider.id}
-              className="tile flex items-center justify-between"
-            >
+            <div key={provider.id} className="tile">
+            <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-medium text-ui">{provider.name}</h3>
                 <p className="text-xs text-ui/40 mt-0.5">
@@ -1777,6 +1775,10 @@ const ProvidersTab = () => {
                   Delete
                 </button>
               </div>
+            </div>
+            {/* T64b — the edit. The owner's slow box is ALREADY a provider; he is not going
+                to delete and re-add it to change one number. */}
+            <ProviderPatienceRow provider={provider} onChange={loadProviders} />
             </div>
           ))}
         </div>
@@ -1829,6 +1831,165 @@ const BEHAVES_LIKE_CHOICES = [
   },
 ] as const;
 
+// T64b — RESPONSE PATIENCE.
+//
+// The server's own bounds (`agent/stream-patience.ts`), restated here in the unit the field
+// is typed in. The form talks in SECONDS because nobody thinks about a timeout in
+// milliseconds; the column stores milliseconds because everything else in the engine does.
+const PATIENCE_MIN_SEC = 10;
+const PATIENCE_MAX_SEC = 30 * 60;
+const STANDARD_FIRST_CHUNK_SEC = 90;
+const STANDARD_IDLE_SEC = 60;
+
+/** Typed seconds → milliseconds for the wire. `''` is "declare nothing" (null). */
+type PatienceParse = { ok: true; ms: number | null } | { ok: false; error: string };
+const parsePatienceSeconds = (raw: string, label: string): PatienceParse => {
+  const trimmed = raw.trim();
+  if (trimmed === '') return { ok: true, ms: null };
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) {
+    return { ok: false, error: `${label} must be a whole number of seconds` };
+  }
+  if (n < PATIENCE_MIN_SEC || n > PATIENCE_MAX_SEC) {
+    return { ok: false, error: `${label} must be between ${PATIENCE_MIN_SEC} seconds and ${PATIENCE_MAX_SEC / 60} minutes` };
+  }
+  return { ok: true, ms: n * 1000 };
+};
+
+const msToSecInput = (ms: number | null): string => (ms === null ? '' : String(Math.round(ms / 1000)));
+
+/** The two fields, shared by the add form and the per-provider editor so they cannot drift. */
+const PatienceFields = ({
+  firstChunkSec, idleSec, onFirstChunk, onIdle, disabled,
+}: {
+  firstChunkSec: string; idleSec: string;
+  onFirstChunk: (v: string) => void; onIdle: (v: string) => void; disabled?: boolean;
+}) => (
+  <>
+    <div className="fgrid" style={{ marginBottom: 0 }}>
+      <div>
+        <label className="flabel">Wait for the first word</label>
+        <input
+          type="number" step="1" min={PATIENCE_MIN_SEC} max={PATIENCE_MAX_SEC}
+          placeholder={`${STANDARD_FIRST_CHUNK_SEC} (standard)`}
+          value={firstChunkSec}
+          onChange={(e) => onFirstChunk(e.target.value)}
+          disabled={disabled}
+          className="finput disabled:opacity-60"
+        />
+        <p className="text-[11px] text-ui/40 mt-1">
+          Seconds. A model running on your own machine reads the whole prompt before it can say
+          anything, and on a long one that can take several minutes — far past the{' '}
+          {STANDARD_FIRST_CHUNK_SEC}-second standard, which was set for services on the
+          internet. Raise this if long messages fail but short ones work.
+        </p>
+      </div>
+      <div>
+        <label className="flabel">Wait during an answer</label>
+        <input
+          type="number" step="1" min={PATIENCE_MIN_SEC} max={PATIENCE_MAX_SEC}
+          placeholder={`${STANDARD_IDLE_SEC} (standard)`}
+          value={idleSec}
+          onChange={(e) => onIdle(e.target.value)}
+          disabled={disabled}
+          className="finput disabled:opacity-60"
+        />
+        <p className="text-[11px] text-ui/40 mt-1">
+          Seconds of silence allowed <em>after</em> the answer has started. This one catches a
+          dead connection, so leave it alone unless a slow machine is stopping mid-answer.
+        </p>
+      </div>
+    </div>
+    <p className="text-[11px] text-ui/25 italic">
+      Leave both blank to use the standard {STANDARD_FIRST_CHUNK_SEC}s / {STANDARD_IDLE_SEC}s.
+      Anything from {PATIENCE_MIN_SEC} seconds to {PATIENCE_MAX_SEC / 60} minutes is allowed.
+    </p>
+  </>
+);
+
+// T64b — the per-provider editor: "response patience" on a provider that already exists.
+//
+// Shown only where the bounds are actually read. The stream watchdog arms on the
+// OpenAI-compatible path and the Anthropic-direct path; Ollama bounds its call a different
+// way (a single 5-minute fetch timeout) and the Agent SDK transport has no watchdog at all,
+// so offering the pair there would be a control that does nothing.
+const ProviderPatienceRow = ({ provider, onChange }: { provider: Provider; onChange: () => void }) => {
+  const armsTheWatchdog = provider.type !== 'ollama' && provider.authType !== 'agent-sdk';
+  const declared = provider.firstChunkTimeoutMs !== null || provider.streamIdleTimeoutMs !== null;
+
+  const [open, setOpen] = useState(false);
+  const [firstChunkSec, setFirstChunkSec] = useState(msToSecInput(provider.firstChunkTimeoutMs));
+  const [idleSec, setIdleSec] = useState(msToSecInput(provider.streamIdleTimeoutMs));
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!armsTheWatchdog) return null;
+
+  const handleSave = async (): Promise<void> => {
+    setError(null);
+    const first = parsePatienceSeconds(firstChunkSec, 'The wait for the first word');
+    const idle = parsePatienceSeconds(idleSec, 'The wait during an answer');
+    if (!first.ok) { setError(first.error); return; }
+    if (!idle.ok) { setError(idle.error); return; }
+
+    setSaving(true);
+    const result = await api.updateProviderResponsePatience(provider.id, {
+      firstChunkTimeoutMs: first.ms,
+      streamIdleTimeoutMs: idle.ms,
+    });
+    setSaving(false);
+    if (result.ok) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+      onChange();
+    } else {
+      setError(result.error ?? 'Save failed');
+    }
+  };
+
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        className="text-xs text-ui/40 hover:text-ui/70 transition-colors"
+      >
+        {open ? '▾' : '▸'} Response patience
+        {declared && !open && (
+          <span className="ml-1 text-cp-teal">
+            · {msToSecInput(provider.firstChunkTimeoutMs) || STANDARD_FIRST_CHUNK_SEC}s first word,{' '}
+            {msToSecInput(provider.streamIdleTimeoutMs) || STANDARD_IDLE_SEC}s during
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="glass-nested rounded-xl p-3 mt-2 space-y-2">
+          <PatienceFields
+            firstChunkSec={firstChunkSec}
+            idleSec={idleSec}
+            onFirstChunk={setFirstChunkSec}
+            onIdle={setIdleSec}
+            disabled={saving}
+          />
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving}
+              className="btn btn--primary text-xs disabled:opacity-60"
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+            {saved && <span className="text-xs text-cp-teal">Saved</span>}
+            {error && <span className="text-xs text-cp-coral">{error}</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel: () => void }) => {
   const [name, setName] = useState('');
   // The dropdown 'preset' is a UI-only label. Several presets (deepseek,
@@ -1842,6 +2003,11 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
   // T63: only the manual choice carries one. Every preset sends nothing and is resolved
   // from its URL exactly as before.
   const [behavesLike, setBehavesLike] = useState<string>('generic-openai-compatible');
+  // T64b — the advanced patience pair, in SECONDS in the UI and milliseconds on the wire.
+  // Empty string means "declare nothing", which is what every provider does today.
+  const [showPatience, setShowPatience] = useState(false);
+  const [firstChunkSec, setFirstChunkSec] = useState('');
+  const [idleSec, setIdleSec] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'saving' | 'validating' | 'valid' | 'invalid'>('idle');
 
@@ -1892,6 +2058,17 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
     // through exactly the same path every other provider's key uses.
     const manualAuthType = credential.trim() ? 'api_key' : 'none';
 
+    // T64b: validated here in the unit the user typed, so the message names seconds rather
+    // than the millisecond bound the server would have reported.
+    const first = parsePatienceSeconds(firstChunkSec, 'The wait for the first word');
+    const idle = parsePatienceSeconds(idleSec, 'The wait during an answer');
+    if (!first.ok || !idle.ok) {
+      setError(!first.ok ? first.error : (idle as { ok: false; error: string }).error);
+      setShowPatience(true);
+      setStatus('idle');
+      return;
+    }
+
     const id = name.toLowerCase().replace(/[^a-z0-9]/g, '-');
     const result = await api.createProvider({
       id,
@@ -1903,6 +2080,10 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
         ? (credential.trim() || undefined)
         : preset === 'ollama' || authType === 'agent-sdk' ? undefined : credential,
       ...(isManual ? { behavesLike } : {}),
+      // Sent only when actually declared, so a preset's create body is byte-identical to
+      // what it has always been.
+      ...(first.ms === null ? {} : { firstChunkTimeoutMs: first.ms }),
+      ...(idle.ms === null ? {} : { streamIdleTimeoutMs: idle.ms }),
     });
 
     if (!result.ok) {
@@ -2003,6 +2184,28 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
               Most local servers accept anything here — leave it blank. A key you do type is
               stored the same way every other provider's key is.
             </p>
+          </div>
+
+          {/* T64b — response patience. Folded away because the standard bounds are right for
+              almost everything; opened by the one person whose machine they are wrong for. */}
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowPatience(v => !v)}
+              className="text-xs text-cp-teal hover:text-cp-teal/80 transition-colors"
+            >
+              {showPatience ? '▾' : '▸'} Response patience (advanced)
+            </button>
+            {showPatience && (
+              <div className="mt-2 space-y-2">
+                <PatienceFields
+                  firstChunkSec={firstChunkSec}
+                  idleSec={idleSec}
+                  onFirstChunk={setFirstChunkSec}
+                  onIdle={setIdleSec}
+                />
+              </div>
+            )}
           </div>
         </>
       )}

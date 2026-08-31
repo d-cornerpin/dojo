@@ -49,6 +49,10 @@ export interface CreateProviderRequest {
   // T63 — one of `BEHAVES_LIKE_PROFILES` (`agent/model-contract.ts`), sent only by the
   // manual OpenAI-compatible choice. Omitted means "sniff the URL as always".
   behavesLike?: string;
+  // T64b — the advanced patience pair, in milliseconds. Omitted (the normal case) means the
+  // provider declares nothing and the standard bounds apply.
+  firstChunkTimeoutMs?: number | null;
+  streamIdleTimeoutMs?: number | null;
 }
 
 export type ProvidersListResponse = Provider[];
