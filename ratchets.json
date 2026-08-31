@@ -4047,6 +4047,27 @@
       "to": 308,
       "by": "UX-REPAIR T68b (W62) \u2014 the compile order arrives whole",
       "why": "UX-REPAIR T68b. +6 (2 code, 4 comment). One `advance` carrying `compileOrderIntact` into turn state, at the only point in the turn where the assembly's own answer exists. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 308."
+    },
+    {
+      "path": "packages/dashboard/src/pages/Settings.tsx",
+      "from": 6738,
+      "to": 6908,
+      "by": "UX-REPAIR T66b (W59) \u2014 a provider can be edited (no migration; every column already exists)",
+      "why": "+170 net (the 84-line `ProviderPatienceRow` it REPLACES is gone; the editor that supersedes it is 213). The whole of it is the affordance the owner asked for: a per-provider Edit form pre-filled from the row, covering name, base URL, declared dialect and API-key rotation, with the patience pair embedded through the EXISTING shared `PatienceFields` rather than a second copy. It is here rather than in a new file for the reason W45 recorded when it declined to split `AddProviderForm` out: the risk in this task is 'did the four existing presets change', and a move diff would bury that answer. The extraction of the whole providers tab is still owed and is still the right cleanup \u2014 it is a task, not a rider on this one. The help text is a real share of the count and is deliberate: 'leave blank to keep the key you already saved' is the sentence that stops a user erasing their own credential, and a field that does not say it is a field that will. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/config.ts",
+      "from": 2640,
+      "to": 2763,
+      "by": "UX-REPAIR T66b (W59) \u2014 a provider can be edited (no migration; every column already exists)",
+      "why": "+123 net. ONE new route (`PATCH /providers/:id`) and nothing else \u2014 no helper moved, no existing handler touched. Roughly half is the argument, and it is load-bearing in a way the code cannot be: the door exists BECAUSE `POST /providers` over an existing id is a full replace, so a reader who does not know that will one day 'simplify' this into a re-POST and re-ship the clears-on-omit trap. The `clearClientCache` block is four lines of code under twelve of comment for the same reason \u2014 the cache key is `providerId:baseUrl`, so a credential rotation on an unchanged URL is invisible to it, and a line whose necessity is invisible gets deleted. It sits directly above its two siblings, `host-ram` and `response-patience`, which is where the family reads. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/lib/api.ts",
+      "from": 2380,
+      "to": 2399,
+      "by": "UX-REPAIR T66b (W59) \u2014 a provider can be edited (no migration; every column already exists)",
+      "why": "+19. One client function (`updateProvider`) and the comment saying why it is not `createProvider` over the same id \u2014 that door full-replaces, and an edit form built on it clears whatever the user did not re-send. Same shape and same reason as `updateProviderResponsePatience` directly below it. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -4064,7 +4085,7 @@
     "packages/dashboard/src/components/TechniqueSessionProvider.tsx": 533,
     "packages/dashboard/src/components/TwilioSettings.tsx": 563,
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
-    "packages/dashboard/src/lib/api.ts": 2380,
+    "packages/dashboard/src/lib/api.ts": 2399,
     "packages/dashboard/src/lib/voice/voice-client.ts": 873,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 438,
     "packages/dashboard/src/pages/Agents.tsx": 678,
@@ -4072,7 +4093,7 @@
     "packages/dashboard/src/pages/Costs.tsx": 686,
     "packages/dashboard/src/pages/Health.tsx": 651,
     "packages/dashboard/src/pages/Memory.tsx": 499,
-    "packages/dashboard/src/pages/Settings.tsx": 6738,
+    "packages/dashboard/src/pages/Settings.tsx": 6908,
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
@@ -4200,7 +4221,7 @@
     "packages/server/src/db/migration-checksums.ts": 277,
     "packages/server/src/gateway/routes/agents.ts": 847,
     "packages/server/src/gateway/routes/chat.ts": 492,
-    "packages/server/src/gateway/routes/config.ts": 2640,
+    "packages/server/src/gateway/routes/config.ts": 2763,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/setup-deps.ts": 513,
     "packages/server/src/gateway/routes/tracker.ts": 959,
