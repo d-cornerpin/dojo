@@ -1123,6 +1123,27 @@ function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unk
       minTokens: 0,
       maxTokens: Infinity,
       truncate: truncateTextLane,
+      // ── T67b CENSUS — THE ONE BOUNDED FLAP THIS TASK KEPT, AND WHY ────────────────────
+      //
+      // Classified honestly: this lane APPEARS at a compaction (which writes the brief and
+      // the threshold) and VANISHES `CONTINUITY_BRIEF_HORIZON_TURNS` turns later, which is a
+      // prefix shape change that is NOT at a compaction boundary — the same class §2 deleted
+      // from briefing / vault / active-tasks.
+      //
+      // IT IS KEPT, and the argument is that removing the gate would resurrect the incident
+      // the gate exists for. `lane.continuity` is the LAST reader of T6's whole mechanism
+      // (`readStoredTurnThreshold` + `CONTINUITY_BRIEF_HORIZON_TURNS` +
+      // `continuityBriefValidUntilTurn`), and T6's finding was a threshold from an older
+      // numbering era sitting PERMANENTLY IN THE FUTURE — a brief written at turn 264 with
+      // `validUntil` 1598. An ungated brief is that state by construction, not by accident.
+      //
+      // WHAT MAKES IT TOLERABLE, stated in the terms the invariance gate uses: the flap is
+      // BOUNDED, ONE-WAY and AT MOST ONCE PER BRIEF. It costs one prefix rebuild per
+      // compaction cycle — a cycle that already rebuilds the prefix at its start, three turns
+      // earlier — where the lanes §2 fixed cost one per conversation and one per session.
+      // `check-prefix-holds-still.mjs` REFUSES a pair that contains this transition (reading
+      // the lane's own grant, the way it reads `lane.new-session`'s) rather than judging it,
+      // because a declared bounded event is not the unlawful rewrite that gate is for.
       render: (ctx) => {
         try {
           const db = getDb();
