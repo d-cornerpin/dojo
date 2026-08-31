@@ -28,7 +28,7 @@ import {
   __resetAssemblyValidationCounters,
   type ValidatedMessage,
 } from '../assembly-validation.js';
-import { LANE_PRIORITY } from '../lanes.js';
+import { LANE_PRIORITY, isProtectedLaneId } from '../lanes.js';
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────────
 
@@ -156,22 +156,28 @@ describe('validateAssembly — same validator for every agent type (C9, no PM by
 describe('repairAssembly — C10, priority order and not one message older', () => {
   // The array in EMISSION (slot) order, which is how the assembler builds it and therefore
   // what a front-trimmer sees. That order is NOT priority order, and the gap between them
-  // is the defect: `lane.scratchpad` (priority 20) and `lane.directive` (priority 10) —
-  // the two highest-priority lanes there are — sit AHEAD of events, the ack and the fresh
-  // tail in slot order, so an oldest-first trimmer reaches them FOURTH and THIRD while a
-  // priority-ordered one reaches them LAST. Seven messages, each 6 tokens per repeat unit.
+  // is the defect: `lane.scratchpad` (priority 20) — the highest-priority lane there is —
+  // sits AHEAD of events, the ack and the fresh tail in slot order, so an oldest-first
+  // trimmer reaches it THIRD while a priority-ordered one reaches it LAST.
+  //
+  // T67b §7: the `lane.directive` row LEFT this fixture with the lane. It is a post-budget
+  // tail lane now (`MessageSlot.ActiveDirectiveTail = 1890`) with a reserve off the top, so
+  // `isProtectedLaneId` refuses to drop it — a row for it here would be testing a rung the
+  // ladder no longer has, and the drop-list assertions below would read as failures of the
+  // repair rather than as the fixture describing a lane table that has moved on. The
+  // protection itself is asserted in its own clause below. Same exit `lane.relevant-memory`
+  // made at CORE-2 item 4. Six messages, each 6 tokens per repeat unit.
   const laneArray = (): { messages: ValidatedMessage[]; laneIds: (string | null)[] } => ({
     messages: [
       user('BRIEFING '.repeat(100)),   // 0  slot ~100   priority 110  (lowest)
       user('VAULT '.repeat(100)),      // 1  slot ~200   priority 100
-      user('SCRATCHPAD '.repeat(100)), // 2  slot ~1000  priority 20
-      user('DIRECTIVE '.repeat(100)),  // 3  slot ~1100  priority 10   (highest)
-      user('EVENTS '.repeat(100)),     // 4  slot 1050   priority 40
-      user('FRESHTAIL '.repeat(100)),  // 5  slot ~1200  priority 30
-      user('the live question'),       // 6  newest, no lane: the loop's tail-append
+      user('SCRATCHPAD '.repeat(100)), // 2  slot ~1000  priority 20   (highest)
+      user('EVENTS '.repeat(100)),     // 3  slot 1050   priority 40
+      user('FRESHTAIL '.repeat(100)),  // 4  slot ~1200  priority 30
+      user('the live question'),       // 5  newest, no lane: the loop's tail-append
     ],
     laneIds: [
-      'lane.briefing', 'lane.vault', 'lane.scratchpad', 'lane.directive',
+      'lane.briefing', 'lane.vault', 'lane.scratchpad',
       'lane.events', 'lane.fresh-tail', null,
     ],
   });
@@ -189,8 +195,8 @@ describe('repairAssembly — C10, priority order and not one message older', () 
 
   it('drops in DESCENDING priority order when one lane is not enough', () => {
     const { messages, laneIds } = laneArray();
-    // Room for the three highest-priority lanes plus the tail-append, and no more.
-    const budget = cost([messages[2], messages[3], messages[5], messages[6]]) + 5;
+    // Room for the two highest-priority lanes plus the tail-append, and no more.
+    const budget = cost([messages[2], messages[4], messages[5]]) + 5;
     const r = repairAssembly(messages, { budgetTokens: budget, laneIds });
     expect(r.droppedLaneIds).toEqual(['lane.briefing', 'lane.vault', 'lane.events']);
     // …which is exactly descending priority, and NOT array order.
@@ -201,13 +207,13 @@ describe('repairAssembly — C10, priority order and not one message older', () 
 
   it('THE INVERSION, KILLED — and the front-trimmer arithmetic reproduced beside it', () => {
     const { messages, laneIds } = laneArray();
-    const budget = cost([messages[2], messages[3], messages[5], messages[6]]) + 5;
+    const budget = cost([messages[2], messages[4], messages[5]]) + 5;
 
-    // NEW: priority order. Scratchpad, directive and the live question survive.
+    // NEW: priority order. The scratchpad, the fresh tail and the live question survive.
     const repaired = repairAssembly(messages, { budgetTokens: budget, laneIds });
     const kept = repaired.messages.map((m) => String(m.content).split(' ')[0]);
-    expect(kept).toContain('DIRECTIVE');
     expect(kept).toContain('SCRATCHPAD');
+    expect(kept).toContain('FRESHTAIL');
     expect(kept).toContain('the');
 
     // THE ORDERING IS TOTAL, not anecdotal: nothing dropped may outrank anything kept.
@@ -254,8 +260,27 @@ describe('repairAssembly — C10, priority order and not one message older', () 
       // rather than reaching for the newest message.
       expect(err.droppedLaneIds).toEqual([
         'lane.briefing', 'lane.vault', 'lane.events', 'lane.fresh-tail',
-        'lane.scratchpad', 'lane.directive',
+        'lane.scratchpad',
       ]);
+    }
+  });
+
+  it('T67b: `lane.directive` is PROTECTED now — the repair may not drop the pin', () => {
+    // Its old guarantee was priority 10, which the fit could still outbid under enough
+    // pressure. Its guarantee now is a declared reserve taken off the top, and the repair
+    // recognises the lane without being allowed to drop it — strictly stronger, and the
+    // reason the move out of the fit is not a demotion.
+    expect(isProtectedLaneId('lane.directive')).toBe(true);
+    const messages: ValidatedMessage[] = [
+      user('BRIEFING '.repeat(200)),
+      user('DIRECTIVE '.repeat(200)),
+      user('the live question'),
+    ];
+    const laneIds = ['lane.briefing', 'lane.directive', null];
+    try {
+      repairAssembly(messages, { budgetTokens: 1, laneIds });
+    } catch (e) {
+      expect((e as AssemblyValidationError).droppedLaneIds).toEqual(['lane.briefing']);
     }
   });
 

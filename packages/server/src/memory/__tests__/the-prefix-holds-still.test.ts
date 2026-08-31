@@ -186,9 +186,26 @@ function seedVault(): void {
 
 const clone = (m: unknown) => JSON.parse(JSON.stringify(m)) as unknown[];
 
+/** The rendered text of an assembly, for clauses about WORDS rather than about shape. */
+const textOf = (msgs: Array<{ content: unknown }>): string =>
+  msgs.map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content))).join('\n');
+
+/** `lane.engine-end-of-history` is the integrity pass's trailing marker. It is framing for
+ *  the newest exchange, not history, and it necessarily moves to the new end of the array —
+ *  so it is dropped from the EARLIER side before the comparison rather than exempted inside
+ *  it, which would be a hole every future lane could climb through. */
+const END_OF_HISTORY = '[Engine: end of recorded history.';
+function withoutTrailingMarker(msgs: Array<{ content: unknown }>): Array<{ content: unknown }> {
+  const last = msgs[msgs.length - 1];
+  return typeof last?.content === 'string' && last.content.startsWith(END_OF_HISTORY)
+    ? msgs.slice(0, -1) : msgs;
+}
+
 /** THE ASSERTION. History is append-only: the earlier array is a byte-exact prefix of the
  *  later one. Nothing above the newest exchange moved. */
-function expectAppendOnly(before: unknown[], after: unknown[]): void {
+function expectAppendOnly(beforeIn: unknown[], afterIn: unknown[]): void {
+  const before = withoutTrailingMarker(beforeIn as Array<{ content: unknown }>);
+  const after = afterIn as Array<{ content: unknown }>;
   expect(after.length).toBeGreaterThanOrEqual(before.length);
   expect(JSON.stringify(after.slice(0, before.length))).toBe(JSON.stringify(before));
 }
@@ -230,7 +247,7 @@ describe('T67b §1 — the briefing stamp is the ROW\'s date, never the assembly
     row('user', 'what is on for today', 1);
     vi.setSystemTime(Date.parse('2026-09-05T12:00:00Z'));
 
-    const text = JSON.stringify((await assembleContext(AGENT, MODEL)).messages);
+    const text = textOf((await assembleContext(AGENT, MODEL)).messages);
     expect(text).toContain('generated="2026-08-30"');
     expect(text).not.toContain('generated="2026-09-05"');
   });
@@ -342,16 +359,25 @@ describe('T67b §7 — the directive pin is volatile by construction and rides t
     const ask1 = `Please work out ${'x'.repeat(220)} the porch light wiring order`;
     row('user', ask1, 1);
 
-    const first = clone((await assembleContext(AGENT, MODEL)).messages);
-    expect(JSON.stringify(first)).toContain('ACTIVE USER DIRECTIVE');
+    const a1 = await assembleContext(AGENT, MODEL);
+    const first = clone(a1.messages);
+    // It LEFT the cacheable region and it is CARRIED, not deleted — both halves asserted,
+    // because a lane that quietly stopped rendering would satisfy the invariance clause below
+    // while costing the model the pin.
+    expect(textOf(a1.messages)).not.toContain('ACTIVE USER DIRECTIVE');
+    expect(a1.directiveLane).toContain('ACTIVE USER DIRECTIVE');
+    expect(a1.directiveLane).toContain('the porch light wiring order');
 
     row('assistant', 'on it', 1);
     seedTurn(2);
     const ask2 = `And separately ${'y'.repeat(220)} chase the invoice with Kevin`;
     row('user', ask2, 2);
-    const second = clone((await assembleContext(AGENT, MODEL)).messages);
+    const a2 = await assembleContext(AGENT, MODEL);
 
-    expectAppendOnly(first, second);
+    expectAppendOnly(first, clone(a2.messages));
+    // The pin itself DID move — it is the newest ask — which is exactly why it may not sit
+    // in the prefix. Volatility is not the defect; volatility AHEAD OF THE TAIL is.
+    expect(a2.directiveLane).toContain('chase the invoice with Kevin');
   });
 });
 

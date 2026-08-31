@@ -211,10 +211,6 @@ export async function injectAndRecord(
   // that may not sit in the cached prefix — it sat at slot 400, ahead of the fresh tail, until
   // this task. Injected for EVERY counterparty, not only human turns: the per-turn recall query
   // has an A2A/engine branch of its own and recall on those turns is the reason it has one.
-  // Position 1870: after deliveries (1860), before peer-status (1875).
-  mctx.recallLane = ctx.recallLane ?? null;
-  injectRegistryMessage('msg.relevant-memory', messages, mctx);
-
   // ── RULING P3-R1 (PHASE-3 T3): msg.peer-status, RESTORED. ──
   // The entry has been registered at MessageSlot.PeerStatus (1875) since `5cb1758` and
   // NO injection site has ever existed, so the live idle/working state the 2026-07-16
@@ -225,6 +221,29 @@ export async function injectAndRecord(
   // contract (this phase's Global Constraints): after msg.turn-context, before
   // msg.current-time, behind the cache boundary by construction.
   injectRegistryMessage('msg.peer-status', messages, mctx);
+
+  // ── THE RECALL LANE (SWEEP CORE-2 item 4; `SWEEP-C.md` T4, owner GO 2026-07-26) ──
+  // Per-message semantic recall, and the conclusions it carries from the answer stamps. The
+  // assembler computed and fitted it (`ctx.recallLane`); this is where it enters the array,
+  // past `volatileFrom`, because its content is retrieved against the LIVE ASK and a lane like
+  // that may not sit in the cached prefix — it sat at slot 400, ahead of the fresh tail, until
+  // that task. Injected for EVERY counterparty, not only human turns: the per-turn recall query
+  // has an A2A/engine branch of its own and recall on those turns is the reason it has one.
+  // T67b moved it 1870 -> 1880, i.e. BEHIND peer-status: this block moves with every ask and
+  // a peer's idle/working flip is rare, so most-stable-first puts peer-status ahead of it.
+  mctx.recallLane = ctx.recallLane ?? null;
+  injectRegistryMessage('msg.relevant-memory', messages, mctx);
+
+  // ── THE ACTIVE USER DIRECTIVE (T67b §7), at 1890 ──
+  // It was `lane.directive` at MessageSlot.ActiveDirective = 900 — inside the cacheable
+  // prefix — while its content IS the newest unanswered user ask, so every substantive user
+  // turn rewrote the front of the message array and re-billed the whole history behind it.
+  // The assembler computes it (`ctx.directiveLane`) because the pin is scoped to this turn's
+  // counterparty and conversation; it enters the array HERE, last before the clock, which is
+  // both the most-volatile-last position the tail's ordering rule asks for and the
+  // recency-salient one a pin wants.
+  mctx.directiveLane = ctx.directiveLane ?? null;
+  injectRegistryMessage('msg.directive', messages, mctx);
 
   injectRegistryMessage('msg.current-time', messages, mctx);
 

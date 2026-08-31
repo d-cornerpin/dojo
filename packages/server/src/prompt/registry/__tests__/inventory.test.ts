@@ -67,15 +67,24 @@ const EXPECTED_MESSAGE = [
   // cross-conversation echo ROW duplication that push used to defer to (T7 Step 2 strips
   // the rows). Volatile by shape, so it sits past the 1850 boundary and before peer-status.
   'msg.deliveries',
-  // SWEEP CORE-2 item 4: THE RECALL LANE, slot 1870 — per-message semantic recall and the
-  // conclusions it carries from the migration-113 answer stamps (`memory/recall-lane.ts`).
-  // It was a `fitLanes` candidate at MessageSlot.RelevantMemory = 400 with no registry entry
-  // at all, which is how a lane whose content changes with the live ask came to sit ahead of
-  // the fresh tail. Between deliveries and peer-status, past the 1850 boundary.
-  'msg.relevant-memory',
   // Live peer statuses in the volatile lane (2026-07-16 cache finding): the
   // cached group roster carries names only; idle/working churn lands here.
   'msg.peer-status',
+  // SWEEP CORE-2 item 4: THE RECALL LANE — per-message semantic recall and the conclusions it
+  // carries from the migration-113 answer stamps (`memory/recall-lane.ts`). It was a
+  // `fitLanes` candidate at MessageSlot.RelevantMemory = 400 with no registry entry at all,
+  // which is how a lane whose content changes with the live ask came to sit ahead of the
+  // fresh tail.
+  // T67b: 1870 -> 1880, i.e. BEHIND peer-status. The tail's ordering rule is
+  // most-stable-first and this block moves with EVERY ask while a peer's idle/working flip is
+  // rare — the same test its own header applied to put it after deliveries.
+  'msg.relevant-memory',
+  // T67b §7: THE ACTIVE USER DIRECTIVE, slot 1890 — the newest unanswered user ask, pinned.
+  // It was `lane.directive` at MessageSlot.ActiveDirective = 900 with priority 10, i.e. the
+  // earliest-emitted block of the assembly, while its content changed on every substantive
+  // user turn: the largest single term in the owner's 2026-08-31 per-turn recompute. Second
+  // to last, ahead of the clock only.
+  'msg.directive',
   'msg.current-time',
 ];
 

@@ -26,7 +26,7 @@ import { NON_ANSWERING_DISPLAY_KINDS } from '../work/ask-settlement.js';
 
 const logger = createLogger('task-stamps');
 
-function relAgo(sqliteUtc: string | null): string {
+function relAgoFromNow(sqliteUtc: string | null): string {
   if (!sqliteUtc) return '';
   const ms = Date.parse(sqliteUtc.replace(' ', 'T') + 'Z');
   if (!Number.isFinite(ms)) return '';
@@ -37,6 +37,15 @@ function relAgo(sqliteUtc: string | null): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+
+/** The same fact with no clock in it: the recorded instant, minute precision, UTC. Pure in
+ *  its argument, which is the whole point — see `renderTaskStamps`' header. */
+function absInstant(sqliteUtc: string | null): string {
+  if (!sqliteUtc) return '';
+  const ms = Date.parse(sqliteUtc.replace(' ', 'T') + 'Z');
+  if (!Number.isFinite(ms)) return '';
+  return `at ${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')}Z`;
 }
 
 /**
@@ -219,9 +228,28 @@ export interface TaskStampFields {
   id?: string;
 }
 
+/**
+ * T67b — THE AGE IS RELATIVE FOR A TOOL RESULT AND AN INSTANT FOR THE PREFIX.
+ *
+ * `relAgo` is a clock read, so a caller that renders this line INSIDE the cacheable message
+ * region re-bills every cached token behind it once a minute with no tracker row changed —
+ * `lane.active-tasks` (MessageSlot.ActiveTasks = 600) was doing exactly that. It passes
+ * `{ relative: false }` and gets the recorded instant instead. Every other caller here is a
+ * tool result or a PM report — 0 prefix bytes — and keeps the relative form, which is the
+ * more readable one and the reason it exists.
+ *
+ * The instant form is the HL5 snapshot's own answer to this question (`memory/recall-lane.ts`:
+ * "an ISO instant is unambiguous, costs six words, and cannot disagree with the clock lane").
+ */
+export interface TaskStampOptions {
+  /** false renders the recorded instant instead of "10m ago". Default true. */
+  relative?: boolean;
+}
+
 /** The one compact stamp line the model reads (<=~90 chars typical).
  *  Owner ruling: facts PLUS instruction on answered tickets. */
-export function renderTaskStamps(t: TaskStampFields): string {
+export function renderTaskStamps(t: TaskStampFields, opts?: TaskStampOptions): string {
+  const relAgo = opts?.relative === false ? absInstant : relAgoFromNow;
   if (t.last_answered_turn !== null && t.last_answered_at) {
     // The CLOSE instruction requires a TANGIBLE handover on record, the same
     // standard as the strike-2 engine close. A reply without a recorded

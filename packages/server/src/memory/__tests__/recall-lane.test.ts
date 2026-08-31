@@ -148,9 +148,16 @@ describe('§1 the recall lane rides the tail', () => {
     expect(RECALL_LANE.slot).toBe(declared!.slot);
   });
 
-  it('sits between the deliveries lane and peer-status, renumbering nothing', () => {
+  it('sits in the tail, most-volatile-late, renumbering nothing', () => {
+    // T67b moved it 1870 -> 1880, i.e. from BEFORE peer-status to AFTER it. The rule is this
+    // lane's own, quoted from its header — "it goes AFTER deliveries because it is the more
+    // volatile of the two" — applied one comparison further along: a peer's idle/working flip
+    // is rare, and this block moves with EVERY ask. The near-tail contract 1850 -> ... -> 1900
+    // is untouched and a number between two existing ones renumbers nothing.
     expect(RECALL_LANE.slot).toBeGreaterThan(MessageSlot.Deliveries);
-    expect(RECALL_LANE.slot).toBeLessThan(MessageSlot.PeerStatus);
+    expect(RECALL_LANE.slot).toBeGreaterThan(MessageSlot.PeerStatus);
+    expect(RECALL_LANE.slot).toBeLessThan(MessageSlot.ActiveDirectiveTail);
+    expect(RECALL_LANE.slot).toBeLessThan(MessageSlot.CurrentTime);
   });
 
   it('MessageSlot 400 is RETIRED, not reused — a per-ask lane may never sit there again', () => {
@@ -168,21 +175,23 @@ describe('§1 the recall lane rides the tail', () => {
     expect(LANE_LADDER_LABEL[RECALL_LANE_ID]).toBeUndefined();
   });
 
-  it('THE GOLDEN FIXTURE\'S ACK IS BYTE-UNMOVED (assembled-context.json, cell "baseline")', () => {
-    // 419 chars, sha `ace5b4b4…` in `checks/golden/assembled-context.json`. The ack filters by
-    // ADMITTED ids and that fixture never admits the recall lane, so dropping the lane's two
-    // labels cannot move a byte of it. Pinned here so the golden is not the only thing that
-    // would notice.
-    const ack = renderScaffoldingAck(['lane.directive', 'lane.fresh-tail']);
+  it('THE ACK IS PINNED HERE TOO, and T67b moved it — one registered change, stated', () => {
+    // CORE-2 item 4 pinned this string at 419 chars so the assembled-array golden would not be
+    // the only thing that noticed the recall lane's two labels leaving. T67b moves it for a
+    // DIFFERENT lane and the same reason: `lane.directive` left the fit, so the ack — which
+    // closes the scaffolding block at slot 1000 — can no longer name it as a section, print
+    // it in the ladder, or claim it as "the WHAT". That sentence's job is done by the pin's
+    // own frame and by its tail position now.
+    const ack = renderScaffoldingAck(['lane.scratchpad', 'lane.fresh-tail']);
     expect(ack).toBe(
-      'Understood, I have reviewed my background context (active user directive). Source ' +
-      'priority for this turn: active user directive > live conversation below. When sources ' +
-      'disagree, trust the most recent and most specific. The active user directive is the ' +
-      'WHAT, never lose it. The scratchpad is my own working outline; I maintain it via ' +
-      'scratchpad_set as I make progress and read from it when I need to remember where I am.',
+      'Understood, I have reviewed my background context (scratchpad). Source ' +
+      'priority for this turn: my scratchpad > live conversation below. When sources ' +
+      'disagree, trust the most recent and most specific. The scratchpad is my own working ' +
+      'outline; I maintain it via scratchpad_set as I make progress and read from it when I ' +
+      'need to remember where I am.',
     );
-    expect(ack!.length).toBe(419);
     expect(ack).not.toContain('relevant memory');
+    expect(ack).not.toContain('active user directive');
   });
 
   it('is protected from the repair, and its entry is attributed to it', () => {
@@ -206,7 +215,12 @@ describe('§1 the recall lane rides the tail', () => {
     const at = (id: string) => home.text.indexOf(`injectRegistryMessage('${id}'`);
     expect(at(RECALL_LANE_ENTRY_ID)).toBeGreaterThan(-1);
     expect(at('msg.turn-context')).toBeLessThan(at(RECALL_LANE_ENTRY_ID));
-    expect(at(RECALL_LANE_ENTRY_ID)).toBeLessThan(at('msg.peer-status'));
+    // T67b: peer-status now injects BEFORE this lane (most-stable-first) and the directive
+    // pin after it — the injection order and the slot numbers say the same thing, which is
+    // what makes either one auditable.
+    expect(at('msg.peer-status')).toBeLessThan(at(RECALL_LANE_ENTRY_ID));
+    expect(at(RECALL_LANE_ENTRY_ID)).toBeLessThan(at('msg.directive'));
+    expect(at('msg.directive')).toBeLessThan(at('msg.current-time'));
   });
 
   it('ENABLED: no flag can switch per-message recall off (owner decision 2026-07-26)', () => {

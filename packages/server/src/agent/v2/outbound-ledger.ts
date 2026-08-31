@@ -386,16 +386,23 @@ export function findRecentDeliveriesKeyed(
 }
 
 /** Compact "N minutes/hours ago" for a SQLite UTC timestamp ("YYYY-MM-DD HH:MM:SS"). */
-export function relativeTimeAgo(at: string | number): string {
+export function relativeTimeAgo(at: string | number, nowMs: number = Date.now()): string {
   // ⚠ SWEEP CORE-2 item 4. This took a SQLite datetime STRING only, and `messages.created_at`
   // became an epoch-ms INTEGER at migration 131. Every caller that passed a `messages` row's
   // timestamp threw `sqliteUtc.replace is not a function` — `engine.recently-answered` did
   // exactly that, inside a swallowing catch, on every turn since 131 (see the note in
   // `answered-edge.ts`). `deliveries.created_at` is still TEXT, so BOTH shapes are real and
   // the conversion belongs here, once, rather than at each site guessing its column's type.
+  //
+  // T67b: `nowMs` is a PARAMETER, defaulting to the clock so every existing caller is
+  // byte-unchanged. The HL5 snapshot passes the board's own LAST-CHANGE instant instead:
+  // that block renders inside a lane whose bytes are re-billed whenever they move, and an
+  // age measured from `Date.now()` moves once a minute with nothing in the world changing.
+  // Measured from the instant the header already states, the whole block is a pure function
+  // of board state — which is what makes "as of X" and the ages under it agree.
   const ms = typeof at === 'number' ? at : Date.parse(at.replace(' ', 'T') + 'Z');
   if (!Number.isFinite(ms)) return 'recently';
-  const deltaSec = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  const deltaSec = Math.max(0, Math.floor((nowMs - ms) / 1000));
   if (deltaSec < 60) return 'just now';
   const mins = Math.floor(deltaSec / 60);
   if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`;

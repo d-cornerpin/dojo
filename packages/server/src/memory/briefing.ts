@@ -142,20 +142,36 @@ Do NOT include preamble like "Here is your briefing" — start directly with the
 
 // ── Get Latest Briefing ──
 
-export function getLatestBriefing(agentId: string): { content: string; tokenCount: number } | null {
+/**
+ * T67b — `generatedAt` IS RETURNED, AND THAT IS THE LOAD-BEARING PART.
+ *
+ * `lane.briefing` stamped its block `generated="${new Date()...}"` — THE ASSEMBLY CLOCK —
+ * from inside the cacheable message region. The owner's local-DS4 trace found the prefix
+ * diverging at token ~33,600 ON A DATE, with ~14,200 tokens re-prefilled every turn. A
+ * briefing has exactly one generation date and the row has always recorded it; the lane was
+ * simply reading the wrong clock. Returning the column is what lets the block state the
+ * truth AND hold still between two assemblies of the same row.
+ *
+ * Format is the column's own (`datetime('now')` -> `YYYY-MM-DD HH:MM:SS`, or an ISO string
+ * from `updateBriefing`'s manual path); the lane takes the leading date and nothing else.
+ */
+export function getLatestBriefing(
+  agentId: string,
+): { content: string; tokenCount: number; generatedAt: string | null } | null {
   const db = getDb();
   const row = db.prepare(`
-    SELECT content, token_count FROM briefings
+    SELECT content, token_count, generated_at FROM briefings
     WHERE agent_id = ?
     ORDER BY generated_at DESC
     LIMIT 1
-  `).get(agentId) as { content: string; token_count: number } | undefined;
+  `).get(agentId) as { content: string; token_count: number; generated_at: string | null } | undefined;
 
   if (!row) return null;
 
   return {
     content: row.content,
     tokenCount: row.token_count,
+    generatedAt: row.generated_at,
   };
 }
 

@@ -7,6 +7,9 @@ import { broadcast } from '../gateway/ws.js';
 import { getMessagesOutsideFreshTail, getRecentMessages } from './store.js';
 import { estimateTokens, getFreshTailCount, contextWindowPolicy, storedRowCost, CONTEXT_THRESHOLD, CONTEXT_WARN_THRESHOLD } from './budget.js';
 import { insertMessageIfAbsent, retireReplayedReasoningBeforeTurn } from './message-store.js';
+// T67b: the stub distance is DECLARED by the assembler, which renders it, and READ here,
+// which decides when it applies. One number, two readers — never a second literal.
+import { V2_STUB_AFTER_TURNS } from './assembler.js';
 import {
   createLeafSummary,
   createCondensedSummary,
@@ -696,7 +699,7 @@ async function runCheckAndCompact(
     // T56 leg (b): the prefix has just been rewritten, so this is the one instant at which
     // retiring reasoning costs no cache reuse. Gated on a summary actually having been
     // created — see the header above `ageOutReplayedReasoning`.
-    if (leafCreated > 0) ageOutReplayedReasoning(agentId);
+    if (leafCreated > 0) { ageOutReplayedReasoning(agentId); stubOldToolResultsAtBoundary(agentId); }
 
     const tokensAfter = (await estimateAssembledTokens(agentId, contextWindow, modelId)).total;
     const tokensReclaimed = tokensBefore - tokensAfter;
@@ -783,7 +786,7 @@ async function runCheckAndCompact(
     const leafCreated = await withCompactionActivity(agentId, () => runLeafCompaction(agentId, modelId, contextWindow));
     rebuildContextItems(agentId);
     // T56 leg (b), same boundary rule as the reactive arm above.
-    if (leafCreated > 0) ageOutReplayedReasoning(agentId);
+    if (leafCreated > 0) { ageOutReplayedReasoning(agentId); stubOldToolResultsAtBoundary(agentId); }
 
     const result = { leafCreated, condensedCreated: 0, tokensReclaimed: 0 };
 
@@ -850,6 +853,56 @@ export function ageOutReplayedReasoning(agentId: string): number {
     }, agentId);
   }
   return rowsRetired;
+}
+
+// ── T67b — THE TOOL-RESULT STUB CROSSES THE SAME BOUNDARY, FOR THE SAME REASON ──────────
+//
+// `stubOldToolResults` (`memory/assembler.ts`) replaced the content of every tool_result
+// older than `V2_STUB_AFTER_TURNS` with a short stub. Correct in intent — context stays
+// roughly flat as the agent works — but it RE-DERIVED the decision from the LIVE TURN
+// COUNTER on every assembly, so on a 200K window (80 tail rows, ~15-20 turns) a row twelve
+// turns back flipped from full to stubbed MID-SESSION, rewriting bytes in the middle of the
+// history with no compaction anywhere near it. That is precisely what T56 leg (b)'s
+// boundary rule forbids, one column over, and the note above states the rule in full: a byte
+// the provider has already cached may move only at an instant when the prefix is being
+// rewritten anyway.
+//
+// So the DECISION moves here and becomes a durable watermark. The rule itself is unchanged —
+// the same `V2_STUB_AFTER_TURNS` distance from the same active turn — and the watermark is
+// monotonic (`Math.max` against what is already recorded), so a row that has been stubbed
+// stays stubbed and no row is ever stubbed twice at two different widths.
+//
+// WHERE IT LIVES: `agents.config.toolResultsStubbedBeforeTurn`, an integer. No migration:
+// this is a per-agent scalar of exactly the kind that column already holds
+// (`continuityBriefValidUntilTurn` is its neighbour and its precedent), and the assembler
+// reads it on a path that already reads this config. The read stays PURE (PHASE-3 S3) —
+// assembly never writes it.
+//
+// WHAT IT COSTS, stated rather than discovered: between two compactions, tool results older
+// than twelve turns are now REPLAYED instead of stubbed. They are still capped per row by
+// `capLargeToolResultStrings` and still evictable by `budgetFreshTail`, so the window is
+// protected by the two mechanisms that were always protecting it; what changes is that the
+// growth is paid in cached tokens rather than in a prefix rewrite every single turn.
+
+export function stubOldToolResultsAtBoundary(agentId: string): number {
+  const activeTurn = currentTurnNumber(agentId);
+  const before = activeTurn - V2_STUB_AFTER_TURNS;
+  if (!Number.isFinite(before)) return 0;
+  const db = getDb();
+  const row = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as
+    { config: string | null } | undefined;
+  let cfg: Record<string, unknown> = {};
+  try { cfg = row?.config ? JSON.parse(row.config) as Record<string, unknown> : {}; } catch { cfg = {}; }
+  const prior = typeof cfg.toolResultsStubbedBeforeTurn === 'number'
+    ? cfg.toolResultsStubbedBeforeTurn : Number.NEGATIVE_INFINITY;
+  const next = Math.max(prior, before);
+  if (!(next > prior)) return 0;
+  cfg.toolResultsStubbedBeforeTurn = next;
+  db.prepare('UPDATE agents SET config = ? WHERE id = ?').run(JSON.stringify(cfg), agentId);
+  logger.info('Advanced the tool-result stub watermark at a compaction boundary', {
+    watermarkTurn: next, activeTurn,
+  }, agentId);
+  return next;
 }
 
 // ── Leaf Compaction ──

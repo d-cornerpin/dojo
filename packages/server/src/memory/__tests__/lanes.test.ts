@@ -94,8 +94,13 @@ describe('the lane table declares priority as data, independent of position', ()
 
   it("keeps the owner-facing ladder the ack has always printed, in that exact order", () => {
     // research 06 §2 quotes it verbatim from `assembler.ts:1118`.
+    // T67b §7: `'lane.directive'` LEFT this list with the lane. Its rung read 10 — the top —
+    // and a priority rung is a statement about what to DROP under budget pressure; the pin is
+    // a post-budget tail lane now (`MessageSlot.ActiveDirectiveTail = 1890`) with a reserve
+    // off the top, which is a stronger guarantee than any priority, because a reserve cannot
+    // be outbid. Same exit `lane.relevant-memory` made at CORE-2 item 4. The ladder the ack
+    // prints is unchanged for every rung that remains, in the same relative order.
     const prose = [
-      'lane.directive',
       'lane.scratchpad',
       'lane.fresh-tail',
       'lane.active-tasks',
@@ -109,8 +114,11 @@ describe('the lane table declares priority as data, independent of position', ()
 
   it('separates priority from position — the briefing is emitted first and drops first', () => {
     // Emission (slot) order and survival (priority) order are OPPOSITE for these two,
-    // which is exactly the separation that could not be expressed before.
-    expect(LANE_PRIORITY['lane.briefing']).toBeGreaterThan(LANE_PRIORITY['lane.directive']);
+    // which is exactly the separation that could not be expressed before. T67b swapped the
+    // low-priority end of the pair from `lane.directive` (which left the fit entirely) to
+    // `lane.scratchpad`, which is the highest-priority scaffolding lane now; the property
+    // being pinned is the separation itself and it is untouched.
+    expect(LANE_PRIORITY['lane.briefing']).toBeGreaterThan(LANE_PRIORITY['lane.scratchpad']);
   });
 });
 
@@ -147,19 +155,22 @@ describe('every lane implements truncate() — no all-or-nothing drops', () => {
 describe('the two-pass fit reserves minimums by priority, then distributes the remainder', () => {
   it('pass 1 gives a high-priority lane its floor even when a bigger lane rendered first', () => {
     const briefing = textLane('lane.briefing', LANE_PRIORITY['lane.briefing'], 100);
-    const directive = textLane('lane.directive', LANE_PRIORITY['lane.directive'], 900, { minTokens: 64 });
+    // T67b: the high-priority stand-in is `lane.scratchpad` (20) — the top of the fit now
+    // that the directive is a reserved tail lane. The mechanic being pinned is unchanged:
+    // a lane RENDERED SECOND still gets its floor reserved FIRST.
+    const directive = textLane('lane.scratchpad', LANE_PRIORITY['lane.scratchpad'], 800, { minTokens: 64 });
     // Deliberately in BUILD order (briefing first) — the order the old arithmetic consumed.
     const { report } = fitLanes([candidate(briefing, 900), candidate(directive, 200)], 1000);
     expect(report.reservedTokens).toBe(64);
-    const d = report.grants.find((g) => g.id === 'lane.directive')!;
+    const d = report.grants.find((g) => g.id === 'lane.scratchpad')!;
     expect(d.status).toBe('admitted');
     expect(d.granted).toBe(200);
   });
 
   it('pass 2 never spends a reservation still owed to a lane below it', () => {
     const tail = textLane('lane.fresh-tail', LANE_PRIORITY['lane.fresh-tail'], 1100, { minTokens: 64 });
-    const directive = textLane('lane.directive', LANE_PRIORITY['lane.directive'], 900, { minTokens: 64 });
-    // The directive is greedy (cost 5,000) but must leave the tail its 64-token floor.
+    const directive = textLane('lane.scratchpad', LANE_PRIORITY['lane.scratchpad'], 800, { minTokens: 64 });
+    // The higher-priority lane is greedy (cost 5,000) but must leave the tail its 64-token floor.
     const { report } = fitLanes([candidate(directive, 5000), candidate(tail, 5000)], 1000);
     const t = report.grants.find((g) => g.id === 'lane.fresh-tail')!;
     expect(t.granted).toBeGreaterThanOrEqual(64);
@@ -180,7 +191,7 @@ describe('the two-pass fit reserves minimums by priority, then distributes the r
     const lanes = [
       candidate(textLane('lane.briefing', LANE_PRIORITY['lane.briefing'], 100), 4000),
       candidate(textLane('lane.vault', LANE_PRIORITY['lane.vault'], 200), 4000),
-      candidate(textLane('lane.directive', LANE_PRIORITY['lane.directive'], 900, { minTokens: 64 }), 100),
+      candidate(textLane('lane.scratchpad', LANE_PRIORITY['lane.scratchpad'], 800, { minTokens: 64 }), 100),
     ];
     const { report } = fitLanes(lanes, 500);
     expect(report.grants).toHaveLength(3);
@@ -252,12 +263,12 @@ describe('the two-pass fit reserves minimums by priority, then distributes the r
 
   it('emits in SLOT order while spending in PRIORITY order', () => {
     const lanes = [
-      candidate(textLane('lane.directive', LANE_PRIORITY['lane.directive'], 900), 50),
+      candidate(textLane('lane.scratchpad', LANE_PRIORITY['lane.scratchpad'], 800), 50),
       candidate(textLane('lane.briefing', LANE_PRIORITY['lane.briefing'], 100), 50),
       candidate(textLane('lane.vault', LANE_PRIORITY['lane.vault'], 200), 50),
     ];
     const { emitted } = fitLanes(lanes, 100000);
-    expect(emitted.map((e) => e.id)).toEqual(['lane.briefing', 'lane.vault', 'lane.directive']);
+    expect(emitted.map((e) => e.id)).toEqual(['lane.briefing', 'lane.vault', 'lane.scratchpad']);
   });
 });
 
@@ -279,8 +290,13 @@ describe('THE INVERSION, killed and pinned: a forced 8K budget', () => {
     ['lane.attempt-ledger', 500, 800, 0],
     ['lane.active-tasks', 600, 900, 0],
     ['lane.continuity', 700, 1500, 0],
-    ['lane.scratchpad', 800, 400, 0],
-    ['lane.directive', 900, 200, 64],
+    // T67b §7: `['lane.directive', 900, 200, 64]` LEFT this fixture with the lane, for the
+    // same reason the recall lane's row left it above — it is post-budget at slot 1890 now,
+    // reserved off the top and never ranked, so a row here would test a rung that does not
+    // exist and would read `LANE_PRIORITY['lane.directive']` as `undefined`. `lane.scratchpad`
+    // (priority 20) is the smallest-and-highest-priority lane the fit still ranks, so it
+    // carries the floor this fixture uses to pin the inversion.
+    ['lane.scratchpad', 800, 400, 64],
     ['lane.fresh-tail', 1100, 5000, 64],
   ];
   const FORCED_BUDGET = 8000;
@@ -291,12 +307,12 @@ describe('THE INVERSION, killed and pinned: a forced 8K budget', () => {
     );
   }
 
-  it('the DIRECTIVE survives', () => {
+  it('the SMALLEST, HIGHEST-PRIORITY lane survives (it was the directive; T67b made it the scratchpad)', () => {
     const { report } = fitLanes(build(), FORCED_BUDGET);
-    const d = report.grants.find((g) => g.id === 'lane.directive')!;
+    const d = report.grants.find((g) => g.id === 'lane.scratchpad')!;
     expect(d.status).toBe('admitted');
-    expect(d.granted).toBe(200);
-    expect(report.admittedIds).toContain('lane.directive');
+    expect(d.granted).toBe(400);
+    expect(report.admittedIds).toContain('lane.scratchpad');
   });
 
   it('the BRIEFING drops first', () => {
@@ -333,14 +349,14 @@ describe('THE INVERSION, killed and pinned: a forced 8K budget', () => {
     for (const [id, , cost] of SIZES) {
       if (used + cost < max) { admitted.push(id); used += cost; }
     }
-    expect(admitted).toContain('lane.briefing');       // survived, at priority 110
-    expect(admitted).not.toContain('lane.directive');  // dropped, at priority 10
+    expect(admitted).toContain('lane.briefing');        // survived, at priority 110
+    expect(admitted).not.toContain('lane.scratchpad');  // dropped, at priority 20
   });
 });
 
 describe('the scaffolding ack is GENERATED and BYTE-STABLE', () => {
   it('is a pure function of the admitted lane ids', () => {
-    const ids = ['lane.briefing', 'lane.directive', 'lane.scratchpad'];
+    const ids = ['lane.briefing', 'lane.summaries', 'lane.scratchpad'];
     const a = renderScaffoldingAck(ids);
     const b = renderScaffoldingAck([...ids].reverse());
     expect(a).toBe(b);
@@ -348,11 +364,22 @@ describe('the scaffolding ack is GENERATED and BYTE-STABLE', () => {
   });
 
   it('cannot claim a section the budget dropped', () => {
-    const ack = renderScaffoldingAck(['lane.directive'])!;
-    expect(ack).toContain('active user directive');
+    const ack = renderScaffoldingAck(['lane.scratchpad'])!;
+    expect(ack).toContain('scratchpad');
     expect(ack).not.toContain('briefing');
     expect(ack).not.toContain('vault');
     expect(ack).not.toContain('continuity brief');
+  });
+
+  it('T67b: the ack no longer names the ACTIVE USER DIRECTIVE at all', () => {
+    // The ack closes the SCAFFOLDING BLOCK it sits inside (slot 1000) and the directive is
+    // not in that block any more — it is a tail lane at 1890. An ack naming a section that
+    // is not there is the exact defect this generator exists to make impossible.
+    const ack = renderScaffoldingAck(Object.keys(LANE_SECTION_LABEL))!;
+    expect(ack).not.toContain('active user directive');
+    expect(LANE_PRIORITY['lane.directive']).toBeUndefined();
+    expect(LANE_SECTION_LABEL['lane.directive']).toBeUndefined();
+    expect(LANE_LADDER_LABEL['lane.directive']).toBeUndefined();
   });
 
   it('carries NOTHING volatile — no clock, no counts, no percentages, no ids', () => {
@@ -380,9 +407,9 @@ describe('the scaffolding ack is GENERATED and BYTE-STABLE', () => {
   });
 
   it('prints the ladder in declared priority order', () => {
-    const ack = renderScaffoldingAck(['lane.briefing', 'lane.directive', 'lane.vault'])!;
+    const ack = renderScaffoldingAck(['lane.briefing', 'lane.scratchpad', 'lane.vault'])!;
     const ladder = ack.slice(ack.indexOf('Source priority for this turn: '));
-    expect(ladder.indexOf('active user directive')).toBeLessThan(ladder.indexOf('live conversation'));
+    expect(ladder.indexOf('my scratchpad')).toBeLessThan(ladder.indexOf('live conversation'));
     expect(ladder.indexOf('live conversation')).toBeLessThan(ladder.indexOf('vault entries'));
     expect(ladder.indexOf('vault entries')).toBeLessThan(ladder.indexOf('briefing'));
   });

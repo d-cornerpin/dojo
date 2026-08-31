@@ -175,8 +175,14 @@ export interface Lane<C = unknown, P = unknown> {
 // dropped is a lie, and one that drops while sections survive leaves an unclosed block.
 // Its reservation is taken off the top (see `SCAFFOLDING_ACK_RESERVE_TOKENS`), so its
 // priority only decides whether it renders at all.
+// T67b §7: `lane.directive` LEFT this table. Its rung read 10 — the highest priority in the
+// assembly — and a priority rung is a statement about what to DROP under budget pressure. A
+// lane the fit never ranks has nothing to say there: it is a post-budget tail lane now
+// (`MessageSlot.ActiveDirectiveTail = 1890`) with a reserve taken off the top, which is
+// STRONGER than priority 10 — the reserve cannot be outbid, where a priority can. Same shape
+// as `lane.relevant-memory`'s exit at CORE-2 item 4, and for the same reason: its content is
+// the newest unanswered user ask, so it may not sit ahead of the cache boundary at all.
 export const LANE_PRIORITY: Record<string, number> = {
-  'lane.directive': 10,
   'lane.scratchpad': 20,
   'lane.fresh-tail': 30,
   'lane.scaffolding-ack': 35,
@@ -195,7 +201,6 @@ export const LANE_PRIORITY: Record<string, number> = {
  * exactly how they came to disagree in the first place.
  */
 export const LANE_LADDER_LABEL: Record<string, string> = {
-  'lane.directive': 'active user directive',
   'lane.scratchpad': 'my scratchpad',
   'lane.fresh-tail': 'live conversation below',
   'lane.events': 'events & notices',
@@ -216,7 +221,6 @@ export const LANE_SECTION_LABEL: Record<string, string> = {
   'lane.active-tasks': 'active tasks',
   'lane.continuity': 'continuity brief',
   'lane.scratchpad': 'scratchpad',
-  'lane.directive': 'active user directive',
 };
 
 // ── The declared numbers ────────────────────────────────────────────────────────────────
@@ -242,17 +246,27 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
   // §T0-B C `:681`(10) — the PM tail is its own lane and its own row cap.
   'lane.pm-tail': { rows: { tail: 10 } },
 
-  // §T0-B C `:787`(3), D `:788`(0,500) — the vault query is built from the last 3 rows,
-  // sliced to 500 chars. F `:792` → `vault/retrieval.ts:27-32`'s four tiers stay in the
-  // retrieval module (they are that module's declaration, not this lane's).
-  'lane.vault': { rows: { queryMessages: 3 }, chars: { query: 500 } },
+  // T67b: `queryMessages` and `query` are GONE with the retrieval they sized. This lane
+  // built a query from the last 3 messages, sliced to 500 chars, and ran a semantic search
+  // with it from slot 200 — ahead of the whole prefix. The retrieval is
+  // `memory/recall-lane.ts`'s now (tail, past `volatileFrom`), so the caps that shaped its
+  // query moved out of this record with it rather than lingering as numbers nobody reads.
+  // What is left is the PINNED half, bounded by `vault/retrieval.ts`'s MAX_PINNED_ENTRIES,
+  // which is that module's declaration and not this lane's.
+  'lane.vault': {},
 
   // §T0-B C `:840`(30) — the fresh-technique scrub window. E `:1587`/`:1588`/`:1595`/`:1637`
   // — the relevance budget, the recency floor, and the share of what remains.
+  //
+  // T67b: `retrieval.limit` / `retrieval.minSimilarity` are RETIRED with the vector ranking
+  // they parameterised — this lane sits ahead of the tail and no longer asks what the live
+  // ask is (see `selectSummariesForPrefix`). `relevanceBudget` keeps its name and its job:
+  // it is the lane's token CEILING and always was. `scrubWindow` keeps its number and gains
+  // a new meaning stated where it is read — the cap on tool rows scanned SINCE SESSION START,
+  // rather than a scrolling last-N window whose exit re-wrote the lane.
   'lane.summaries': {
     rows: { scrubWindow: 30 },
     tokens: { relevanceBudget: 6000, recencyFloor: 2 },
-    retrieval: { limit: 12, minSimilarity: 0.3 },
   },
 
   // §T0-B E `:1646`/`:1647`, F `:1755`(8/0.35), `:1758`(fts 8), `:1805`(6/0.45),
@@ -305,13 +319,15 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
     rows: { tasks: 2, observations: 4, transitions: 4, entries: 6 },
     tokens: { cap: 800 },
   },
+  // T67b: `recentMentionWindow` is GONE with the suppression it sized. The lane dropped
+  // itself when the last 6 rows happened to name its task ids — a decision derived from a
+  // SCROLLING WINDOW, so the block came back unprompted as those rows aged out and rewrote
+  // bytes ahead of the tail. It saved this lane's own few hundred tokens and spent every
+  // cached token behind it.
   'lane.active-tasks': {
-    rows: { tasks: 5, recentMentionWindow: 6 },
+    rows: { tasks: 5 },
     chars: { description: 300, lastNote: 200 },
   },
-
-  // §T0-B C `:932`(6) — the "already mentioned recently" window. Declared on the lane that
-  // reads it (active-tasks), above.
 
   // §T0-B C `:1185`(−10), D `:1205`(0,400) — the awareness lane's row cap and gist slice.
   'lane.events': { rows: { events: 10 }, chars: { gist: 400 } },
@@ -458,9 +474,31 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       'truncated because it is indistinguishable from history.',
   },
   {
+    id: 'lane.directive',
+    slot: MessageSlot.ActiveDirectiveTail,
+    reserveTokens: 2081,
+    measured:
+      'T67b §7, DERIVED FROM THE GENERATOR: the worst case `memory/directive.ts` can render '
+      + 'under its own declared cap — `formatDirectiveBlock` at DIRECTIVE_MAX_CHARS = 8,000 '
+      + 'body chars, plus the two frame lines and the `history_get` truncation pointer with a '
+      + 'full 36-char message id = 8,321 chars = 2,081 tokens. '
+      + 'WHY IT IS A RESERVE AT ALL, stated rather than assumed: this lane was a `fitLanes` '
+      + 'candidate at MessageSlot.ActiveDirective = 900 with PRIORITY 10 — the highest in the '
+      + 'assembly — while its content IS the newest unanswered user ask. So it changed on '
+      + 'every substantive user turn, at the FRONT of the cacheable region, re-billing the '
+      + 'whole message history behind it: the largest single term in the owner\'s measured '
+      + '~14,200-tokens-per-turn recompute (2026-08-31). Priority 10 said "never drop this"; '
+      + 'a reserve says it more strongly, because a reserve cannot be outbid where a priority '
+      + 'can. Same disposition as `lane.relevant-memory`, whose exit from the fit at CORE-2 '
+      + 'item 4 is the precedent this follows. '
+      + 'WHAT IT COSTS: 2,081 tokens leave the content budget on every assembly. What it '
+      + 'replaces spent the SAME tokens — it just spent them from inside the prefix, where '
+      + 'they were re-billed with everything behind them on every turn instead of once.',
+  },
+  {
     id: 'lane.relevant-memory',
     slot: MessageSlot.RecalledMemory,
-    reserveTokens: 1911,
+    reserveTokens: 2179,
     measured:
       'SWEEP CORE-2 item 4, DERIVED FROM THE GENERATOR, not guessed beside it: the worst case ' +
       '`memory/recall-lane.ts` can render under its own declared caps above — 3 answered ' +
@@ -482,6 +520,13 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       'dead line 2/2 after each of the last two. Part of it is also displacement rather than ' +
       'growth: the obligation-shaped vault lines the snapshot withdraws were already inside ' +
       'this reserve at up to 300 chars each, and unlike them a snapshot cannot be stale. ' +
+      'T67b raised it again, 1,911 -> 2,179, and the +268 is the FN-1 UNFILED-ARCHIVE BRIDGE ' +
+      'at its own declared caps (`vault/retrieval.ts`: 3 snippets x 300 chars, each in its ' +
+      '`- [<stamp>] ` frame, plus the shared label). The bridge did not grow — it MOVED. It ' +
+      'ran inside `retrieveForContext`, which `lane.vault` rendered from MessageSlot.VaultPull ' +
+      '= 200, and it searches the just-archived-but-unfiled session BY THE QUERY, so it was ' +
+      'one of the per-ask retrievals rewriting the cacheable prefix on every turn. Its whole ' +
+      'cost is visible here now instead of being spent unbudgeted up there. ' +
       '`recall-lane.test.ts` calls `recallLaneWorstCaseTokens()` and pins this literal to it, ' +
       'so the declaration and the renderer cannot drift, and a second clause proves no input ' +
       'can exceed it. Like `lane.deliveries` this lane\'s content VARIES, so the reserve is ' +
@@ -527,6 +572,8 @@ export const POST_BUDGET_ENTRY_LANE: Record<string, string> = {
   'msg.deliveries': 'lane.deliveries',
   // SWEEP CORE-2 item 4: the recall lane, same split for the same reason.
   'msg.relevant-memory': 'lane.relevant-memory',
+  // T67b §7: the directive pin, same split for the same reason — it declares its own reserve.
+  'msg.directive': 'lane.directive',
   // The three engine-side injections that still push directly (`pre-call-injections.ts`).
   'engine.open-work': 'lane.loop-tail',
   'engine.recent-outbound': 'lane.loop-tail',
@@ -579,11 +626,17 @@ export function isProtectedLaneId(id: string): boolean {
 
 const ACK_HEAD = 'Understood, I have reviewed my background context (';
 const ACK_MID = '). Source priority for this turn: ';
+// T67b: the sentence "The active user directive is the WHAT, never lose it." LEFT this
+// string. The ack closes the SCAFFOLDING BLOCK it sits inside, and the directive is no
+// longer in that block — it is a tail lane at 1890 now. An ack that names a section the
+// array does not contain at this position is the exact defect this generator was built to
+// make impossible (research 06 §2: the ack's prose and the budget's order disagreeing). The
+// sentence itself is not lost: `formatDirectiveBlock` carries the pin's own framing, and the
+// tail position states the same primacy by construction.
 const ACK_TAIL =
-  '. When sources disagree, trust the most recent and most specific. The active user ' +
-  'directive is the WHAT, never lose it. The scratchpad is my own working outline; I ' +
-  'maintain it via scratchpad_set as I make progress and read from it when I need to ' +
-  'remember where I am.';
+  '. When sources disagree, trust the most recent and most specific. The scratchpad is my ' +
+  'own working outline; I maintain it via scratchpad_set as I make progress and read from ' +
+  'it when I need to remember where I am.';
 
 /**
  * Generate the ack from the admitted lane ids. Pure: same ids in, same bytes out.

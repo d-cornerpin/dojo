@@ -35,7 +35,7 @@ import { tagMessageLane, tagMessageLanes, collectMessageLaneIds } from './messag
 import { getContextSummaries } from './dag.js';
 import { buildPerTurnRecallQuery, buildRecallLaneMessage } from './recall-lane.js';
 import { getLatestBriefing } from './briefing.js';
-import { retrieveForContext } from '../vault/retrieval.js';
+import { pinnedContextSection } from '../vault/retrieval.js';
 import { isPMAgent } from '../config/platform.js';
 import { buildAssemblyContext, assembleSystemFromRegistry } from '../prompt/registry/assembler.js';
 import { MessageSlot, type AssemblyTurnState } from '../prompt/registry/types.js';
@@ -147,6 +147,36 @@ function extractFreshlyReadTechniques(messages: Message[]): Set<string> {
     }
   }
   return names;
+}
+
+/**
+ * T67b — the technique-scrub's input, read over THE SESSION rather than a scrolling window.
+ *
+ * Tool rows only (that is all `extractFreshlyReadTechniques` inspects), since
+ * `session_started_at` when one is set, capped by a declared row limit so a runaway session
+ * cannot turn this into an unbounded scan. Monotonic within a session by construction: rows
+ * are only ever added, so a technique that has been read stays read and the summaries lane
+ * cannot un-scrub itself because the tail moved on.
+ */
+function sessionToolRows(agentId: string): Message[] {
+  const db = getDb();
+  const sessionRow = db.prepare('SELECT session_started_at FROM agents WHERE id = ?')
+    .get(agentId) as { session_started_at: string | null } | undefined;
+  const cap = laneLimit('lane.summaries', 'rows', 'scrubWindow');
+  const boundary = sessionRow?.session_started_at ?? null;
+  const rows = boundary
+    ? db.prepare(
+        `SELECT id, content FROM messages
+          WHERE agent_id = ? AND role = 'tool' AND created_at >= (unixepoch(?) * 1000)
+          ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+      ).all(agentId, boundary, cap)
+    : db.prepare(
+        `SELECT id, content FROM messages
+          WHERE agent_id = ? AND role = 'tool'
+          ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+      ).all(agentId, cap);
+  return (rows as Array<{ id: string; content: string }>)
+    .map((r) => ({ ...r, role: 'tool' })) as unknown as Message[];
 }
 
 interface SummaryLike { id: string; content: string; tokenCount: number; }
@@ -451,6 +481,18 @@ export interface AssembledContext {
    * It also keeps the dev context-dump able to show content the assembler no longer emits.
    */
   recallLane?: string | null;
+  /**
+   * T67b §7 — THE ACTIVE USER DIRECTIVE, COMPUTED HERE AND EMITTED BY THE LOOP.
+   *
+   * Same split as `recallLane`, for the same reason one noun over. This assembly owns the
+   * read (the pin is scoped to the turn's counterparty and conversation — comms-audit T-1 —
+   * and nothing else knows that scoping), but the block's CONTENT IS THE NEWEST UNANSWERED
+   * USER ASK, so it cannot sit in `messages`: everything in that array is the cacheable
+   * region by definition. The loop appends it past the boundary as `msg.directive`
+   * (slot 1890). It was `MessageSlot.ActiveDirective = 900` until this task, where every
+   * substantive user turn rewrote the front of the prefix.
+   */
+  directiveLane?: string | null;
 }
 
 /** One-shot agent-config markers an assembly consumed; the turn clears them (S3). */
@@ -805,7 +847,6 @@ interface LaneRenderCtx {
   contextWindow: number;
   policy: ReturnType<typeof contextWindowPolicy>;
   turnContext?: PromptTurnContext;
-  shouldFireScaffolding: boolean;
   /** Scoped live tail + the awareness rows lifted out of it. Computed once. */
   tail: () => { freshTail: Message[]; awarenessEvents: Message[] };
   /** Scrubbed context summaries. Computed once. */
@@ -856,13 +897,26 @@ function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unk
       minTokens: 0,
       maxTokens: Infinity,
       truncate: truncateTextLane,
+      // ── T67b §1 + §2 ──────────────────────────────────────────────────────────────────
+      // TWO defects, one lane, both inside the cacheable region:
+      //   (a) the stamp was `new Date()` AT ASSEMBLY. A briefing has ONE generation date and
+      //       the row records it; reading the wall clock made the first message of every
+      //       context change at midnight for no content reason. This is the byte the owner's
+      //       DS4 trace diverged on.
+      //   (b) the lane rendered only on `shouldFireScaffolding`, so the block was PRESENT on
+      //       a session-start turn and ABSENT on the next one — message 0 moving one turn
+      //       into every conversation, which re-bills the whole prefix behind it. The gate
+      //       is gone: a briefing row that exists is session-stable content and belongs in
+      //       the cached prefix on every turn. It costs its own tokens once and is a cache
+      //       HIT thereafter; a lane that appears and disappears costs the whole history
+      //       every time it moves. `fitLanes` still ranks it last (priority 110), so under
+      //       real pressure it is still the first thing dropped.
       render: (ctx) => {
-        if (!ctx.shouldFireScaffolding) return null;
         const briefing = getLatestBriefing(ctx.agentId);
         if (!briefing) return null;
-        return textRender(
-          `<briefing generated="${new Date().toISOString().split('T')[0]}">\n${briefing.content}\n</briefing>`,
-        );
+        const day = (briefing.generatedAt ?? '').slice(0, 10);
+        const stamp = /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : 'unrecorded';
+        return textRender(`<briefing generated="${stamp}">\n${briefing.content}\n</briefing>`);
       },
     },
     {
@@ -872,21 +926,38 @@ function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unk
       minTokens: 0,
       maxTokens: Infinity,
       truncate: truncateTextLane,
+      // ── T67b §4 — THE SPLIT. THE STATIC HALF STAYED; THE RETRIEVAL LEFT. ───────────────
+      //
+      // This lane used to build a query FROM THE RECENT MESSAGES and run a semantic search
+      // with it, from slot 200 — ahead of everything. That is the exact shape roadmap
+      // non-negotiable #10 forbids and that SWEEP CORE-2 item 4 moved `lane.relevant-memory`
+      // out of position for: *"a lane whose content changes with the live ask CANNOT sit at
+      // its current position; the front-position lane may hold only session-stable content."*
+      // It also ran `updateRetrievalStats` — a WRITE from the assembly read path, the same
+      // impurity PHASE-3 S3 removed everywhere else.
+      //
+      // WHAT MOVED, and where it went, because nothing may be deleted in silence:
+      //   • the semantic hits -> `memory/recall-lane.ts`, which ALREADY performed exactly
+      //     this search (same `semanticSearch`, same `personalOnly`, same agent scope) and
+      //     already excluded the pinned set to avoid double-rendering this lane. Its
+      //     `includeVault` gate — false on scaffolding turns, precisely because THIS lane
+      //     fired there — is therefore always true now. One retrieval, one owner, in the
+      //     tail where a per-ask retrieval belongs.
+      //   • the FN-1 unfiled-archive bridge -> the same lane, for the same reason: it
+      //     searches archives BY THE QUERY.
+      //
+      // WHAT STAYED is what was always session-stable: the PINNED and PERMANENT entries
+      // (they change when the user pins, not when the ask moves) and the `session_context`
+      // tagged entries. No query, no clock, no write.
       render: async (ctx) => {
-        if (!ctx.shouldFireScaffolding) return null;
         try {
-          const recentForQuery = getRecentMessages(ctx.agentId, lim('lane.vault', 'rows', 'queryMessages'));
-          let queryText = recentForQuery.map((m) => m.content).join(' ').slice(0, lim('lane.vault', 'chars', 'query'));
-          if (queryText.length <= 10) {
-            queryText = 'current projects active tasks recent work status updates decisions';
-          }
-          const vaultResult = await retrieveForContext(queryText, ctx.contextWindow, ctx.agentId);
           const sections: string[] = [];
-          if (vaultResult.section) sections.push(vaultResult.section);
+          const pinned = pinnedContextSection(ctx.agentId);
+          if (pinned.section) sections.push(pinned.section);
           try {
             const { getSessionContextEntries } = await import('../vault/store.js');
             const sessionCtx = getSessionContextEntries(ctx.agentId);
-            const alreadyIncluded = new Set(vaultResult.entryIds);
+            const alreadyIncluded = new Set(pinned.entryIds);
             const fresh = sessionCtx.filter((e) => !alreadyIncluded.has(e.id));
             if (fresh.length > 0) {
               const lines = fresh.map((e) => `[${e.type}] ${e.content}`);
@@ -911,10 +982,30 @@ function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unk
       minTokens: 0,
       maxTokens: summariesCeiling,
       truncate: truncateTextLane,
+      // ── T67b §4 — THE SELECTION STOPS ASKING WHAT THE LIVE ASK IS ─────────────────────
+      // `selectSummariesByRelevance` ranked this block by vector similarity to
+      // `buildPerTurnRecallQuery` — the live ask — from MessageSlot.Summaries = 300, ahead of
+      // the whole conversation. A new question therefore re-picked the set and rewrote
+      // history above itself, and because summaries render with `earliest="…"` date
+      // attributes, the first byte to differ is a DATE. That is the shape of the owner's own
+      // trace. The rule is roadmap non-negotiable #10's and it is not re-argued here: a lane
+      // ahead of the tail may hold only session-stable content.
+      //
+      // WHAT REPLACES IT is deterministic and content-driven: newest-first under the SAME
+      // ceiling, emitted chronologically. The set changes when a summary is WRITTEN — a real
+      // content-change event, which the invariance gate permits exactly once — and at no
+      // other time.
+      //
+      // WHAT IS NOT LOST, stated rather than assumed: the ask-responsive surface still
+      // exists and is stronger than this ranking was. `memory/recall-lane.ts` retrieves raw
+      // MESSAGES and VAULT entries by meaning against the live ask on every turn, from the
+      // tail; `history_search` reaches the summaries themselves on demand. What is given up
+      // is an OLD summary being auto-hoisted into the prefix because it matched today's
+      // question — and it was being paid for with the entire prefix behind it.
       render: async (ctx) => {
         const summaries = ctx.summaries();
         if (summaries.length === 0) return null;
-        const chosen = await selectSummariesByRelevance(summaries, summariesCeiling, ctx.agentId);
+        const chosen = selectSummariesForPrefix(summaries, summariesCeiling);
         if (chosen.length === 0) return null;
         const summaryText = chosen.map((s) => formatSummaryXml(s)).join('\n\n');
         return textRender(
@@ -973,19 +1064,28 @@ function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unk
       minTokens: 0,
       maxTokens: Infinity,
       truncate: truncateTextLane,
+      // ── T67b §2 + §3 — THREE VOLATILITIES REMOVED FROM ONE LANE ───────────────────────
+      //  (a) the `shouldFireScaffolding` gate: present on a session-start turn, absent on the
+      //      next one. A block ahead of the tail that appears and disappears costs the whole
+      //      prefix behind it every time it moves; the tracker rows it states are ground
+      //      truth on every turn, not only on the first.
+      //  (b) the RECENT-MENTION suppression: it dropped the lane when the last few turns
+      //      happened to name the task ids — a decision derived from a SCROLLING WINDOW, so
+      //      the block reappeared unprompted as those rows aged out, rewriting history. What
+      //      it saved was this lane's own tokens; what it spent was every cached token behind
+      //      it. Deleted, with its `recentMentionWindow` declaration.
+      //  (c) the STAMP TICKED. `renderTaskStamps` renders `relAgo(...)` — "10m ago" becomes
+      //      "20m ago" with no tracker row changed — so this lane re-billed the prefix on a
+      //      clock. It is called with `relative: false` here and renders the recorded INSTANT
+      //      instead. That is the HL5 snapshot's own resolution of the same question, quoted
+      //      from `memory/recall-lane.ts`: "an ISO instant is unambiguous, costs six words,
+      //      and cannot disagree with the clock lane about anything". Every other reader of
+      //      `renderTaskStamps` is a tool result (0 prefix bytes) and keeps "10m ago".
       render: async (ctx) => {
-        if (!ctx.shouldFireScaffolding) return null;
         try {
           const { listTasks } = await import('../tracker/schema.js');
           const activeTasks = listTasks({ status: 'in_progress', assignedTo: ctx.agentId });
           if (activeTasks.length === 0) return null;
-          // Skip if the last few turns already mention these task IDs.
-          const recent = getRecentMessages(ctx.agentId, lim('lane.active-tasks', 'rows', 'recentMentionWindow'));
-          const recentText = recent.map((m) => m.content).join(' ');
-          const allMentionedRecently = activeTasks.every((t) =>
-            recentText.includes(t.id) || recentText.includes(t.id.slice(0, 8)),
-          );
-          if (allMentionedRecently) return null;
           const stampStmt = getStampDb().prepare(
             `SELECT w.id AS id, ${stampColumns('w')},
                     w.step_number AS step_number, w.total_steps AS total_steps,
@@ -999,7 +1099,7 @@ function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unk
             try {
               const st = stampStmt.get(t.id) as TaskStampFields | undefined;
               if (st) {
-                const stamp = renderTaskStamps(st);
+                const stamp = renderTaskStamps(st, { relative: false });
                 const steps = renderStepFacts(st);
                 line += `\n  State: ${stamp}${steps ? ` | ${steps}` : ''}`;
               }
@@ -1073,37 +1173,24 @@ function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unk
         }
       },
     },
-    {
-      id: 'lane.directive',
-      slot: MessageSlot.ActiveDirective,
-      priority: LANE_PRIORITY['lane.directive'],
-      // THE INVERSION, in one field. This lane used to be tested LAST against a budget nine
-      // sections had already eaten (`:1098`). It is priority 10 and it reserves a floor.
-      minTokens: MIN_LANE_FLOOR_TOKENS,
-      maxTokens: Infinity,
-      truncate: truncateTextLane,
-      render: async (ctx) => {
-        try {
-          const { getActiveUserDirective, formatDirectiveBlock } = await import('./directive.js');
-          const cp = ctx.turnContext?.counterparty;
-          const stampedConversationId = liveTurnContext(ctx.agentId)?.conversationId;
-          const directiveConversationId =
-            (ctx.turnContext?.isEngineTurn || cp?.kind === 'agent')
-              ? '__none__'
-              : (cp && cp.kind === 'user' ? (stampedConversationId ?? null) : null);
-          const directive = getActiveUserDirective(ctx.agentId, {
-            excludeEngine: !ctx.turnContext?.isEngineTurn,
-            conversationId: directiveConversationId,
-          });
-          return directive ? textRender(formatDirectiveBlock(directive)) : null;
-        } catch (err) {
-          logger.warn('Active directive injection failed', {
-            error: err instanceof Error ? err.message : String(err),
-          }, ctx.agentId);
-          return null;
-        }
-      },
-    },
+    // ── T67b §7: `lane.directive` LEFT this candidate list ────────────────────────────────
+    //
+    // It was `MessageSlot.ActiveDirective = 900` with priority 10 — the highest-priority,
+    // earliest-emitted block of the whole assembly — and its CONTENT IS THE NEWEST UNANSWERED
+    // USER ASK. So it changed on every substantive user turn and it changed at the FRONT of
+    // the cacheable region, which re-billed the entire message history behind it, every turn,
+    // forever. That is the single largest term in the owner's ~14,200-tokens-per-turn
+    // recompute, and this census is where it was first named.
+    //
+    // The move is `lane.relevant-memory`'s (CORE-2 item 4) and HL5's, one noun over, and the
+    // rule is the same one: a lane whose content is a function of the live ask may not sit
+    // ahead of the cache boundary. It is a post-budget tail lane now — `renderDirectiveLane`
+    // below, `MessageSlot.ActiveDirectiveTail = 1890` — appended by the loop past
+    // `volatileFrom`, one position ahead of `msg.current-time`.
+    //
+    // ITS SALIENCE DOES NOT DROP, it rises: the pin now sits AFTER the live conversation
+    // instead of before it, in the recency-salient position the tail exists to give, which is
+    // the same argument `memory/recall-lane.ts` makes for the HL5 snapshot's placement.
     {
       id: 'lane.events',
       slot: MessageSlot.Events,
@@ -1278,34 +1365,27 @@ async function assembleMessageContext(
     };
   }
 
-  // ── v2 scaffolding gating (Part V + Part XVIII §C; v2.9.20 post-compaction re-fire) ──
-  // Scaffolding injects on session-start turns and for a window after each compaction; the
-  // agent retrieves anything else on demand. (Mike's 2026-06-06 photo-album incident: after
-  // compaction the live tail can lose enough procedural context that the agent does not
-  // realise it should re-establish.)
-  const isSessionStartTurn = isV2SessionStart(agentId);
-  const isWithinPostCompactionScaffoldingWindow = (() => {
-    try {
-      const configRow = getDb().prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
-      if (!configRow?.config) return false;
-      const cfg = JSON.parse(configRow.config) as Record<string, unknown>;
-      const currentTurn = currentTurnNumber(agentId);   // G24
-      const validUntil = readStoredTurnThreshold(   // T6: same upper bound as the brief lane
-        cfg.continuityBriefValidUntilTurn, currentTurn, CONTINUITY_BRIEF_HORIZON_TURNS,
-      );
-      if (validUntil === null) return false;
-      // The brief itself injects through `validUntil`; the wider scaffolding re-fires for
-      // 5 turns past that, giving ~8 turns of full context to re-establish.
-      const SCAFFOLDING_EXTRA_TURNS = 5;
-      return currentTurn < validUntil + SCAFFOLDING_EXTRA_TURNS;
-    } catch {
-      return false;
-    }
-  })();
-  const shouldFireScaffolding = isSessionStartTurn || isWithinPostCompactionScaffoldingWindow;
-  if (isWithinPostCompactionScaffoldingWindow && !isSessionStartTurn) {
-    logger.info('Re-firing scaffolding within post-compaction window', { agentId }, agentId);
-  }
+  // ── T67b: THE SCAFFOLDING GATE IS GONE, AND THAT IS THE FLAP HALF OF THIS TASK ─────────
+  //
+  // WHAT IT WAS: `shouldFireScaffolding = isV2SessionStart(agentId) || <5 turns past the
+  // continuity-brief horizon>`, and three lanes ahead of the fresh tail rendered ONLY when it
+  // was true — `lane.briefing` (100), `lane.vault` (200), `lane.active-tasks` (600). So the
+  // message prefix had TWO SHAPES and alternated between them one turn into every
+  // conversation, and again at the far edge of every post-compaction window. A block that
+  // appears and disappears at position ~0 costs the entire cached history behind it EVERY
+  // TIME IT MOVES; that is the same bill as a byte changing there, paid twice.
+  //
+  // WHAT REPLACES IT: nothing, because the lanes render unconditionally now. That is
+  // STRICTLY MORE scaffolding than the gate ever granted, so Mike's 2026-06-06 photo-album
+  // incident — the reason the post-compaction re-fire exists at all, an agent that could not
+  // tell it should re-establish procedural context — is covered a fortiori rather than
+  // weakened. The tokens are real and they are paid ONCE: after the first turn they are
+  // cache HITS, which is precisely the trade the owner's incident is about. `fitLanes` still
+  // ranks all three below the live conversation, so genuine budget pressure still drops them
+  // first, in priority order, with a recorded grant.
+  //
+  // `isV2SessionStart` survives as the reader of `session_started_at` for the [New Session]
+  // prefix below; the continuity-brief horizon survives as `lane.continuity`'s own gate.
 
   // ── The lane render context ──
   let tailCache: { freshTail: Message[]; awarenessEvents: Message[] } | null = null;
@@ -1316,17 +1396,23 @@ async function assembleMessageContext(
     contextWindow,
     policy,
     turnContext,
-    shouldFireScaffolding,
     summaries: () => {
       if (summaryCache) return summaryCache;
       const rawSummaries = getContextSummaries(agentId);
       // v2.7.7: scrub summaries that describe an EARLIER version of a technique the agent
       // has freshly re-read this session — the path by which an agent references a script
       // that no longer exists.
+      //
+      // T67b: THE WINDOW IS THE SESSION, NOT THE LAST N ROWS. The scrub read
+      // `getRecentMessages(scrubWindow)`, so a technique read 30 messages ago SCROLLED OUT
+      // of the window and the scrubbed summary came BACK — a lane ahead of the tail
+      // rewriting itself because the tail moved, which is the class this task closes. The
+      // rule's own words are "freshly re-read THIS SESSION", and reading the session says
+      // exactly that: monotonic while the session lasts, so the set only ever grows, and it
+      // grows on a real event (a technique read) rather than on the tail scrolling.
       let freshlyReadTechniques: Set<string> = new Set();
       try {
-        const recentForScrub = getRecentMessages(agentId, laneLimit('lane.summaries', 'rows', 'scrubWindow'));
-        freshlyReadTechniques = extractFreshlyReadTechniques(recentForScrub);
+        freshlyReadTechniques = extractFreshlyReadTechniques(sessionToolRows(agentId));
       } catch { /* best effort, fall back to no scrub */ }
       summaryCache = scrubSummariesAgainstFreshTechniques(rawSummaries, freshlyReadTechniques);
       return summaryCache;
@@ -1623,9 +1709,15 @@ async function assembleMessageContext(
   // fired — this lane, unlike `lane.deliveries`, is READ here even though it is EMITTED there.
   let recallLane: string | null = null;
   try {
+    // T67b: `includeVault` is unconditionally TRUE now. It was `!shouldFireScaffolding`
+    // because `lane.vault` ran the identical `semanticSearch` from slot 200 on scaffolding
+    // turns and quoting it twice was the double-injection this flag prevented. That prefix
+    // retrieval is gone (see the lane's own note), so this lane is the ONE owner of the
+    // vault pull, on every turn, from the tail — and the double-injection it guarded against
+    // is now impossible rather than merely avoided.
     recallLane = await buildRecallLaneMessage(
       agentId,
-      !shouldFireScaffolding,
+      true,
       policy,
       liveTurnContext(agentId)?.conversationId ?? null,
     );
@@ -1635,6 +1727,34 @@ async function assembleMessageContext(
     }, agentId);
   }
   if (recallLane) postBudget.push('lane.relevant-memory');
+
+  // ── THE ACTIVE USER DIRECTIVE (T67b §7) ─────────────────────────────────────────────────
+  // Read HERE and emitted by the loop past `volatileFrom`, the same split `lane.relevant-
+  // memory` uses and for the same reason: the pin is scoped to the turn's counterparty and
+  // conversation (comms-audit T-1) and only the assembler holds that scoping, while the
+  // block's content is the newest unanswered ask and may therefore never sit in the prefix.
+  // Best-effort in exactly the way the lane render was: a failed read costs the pin, never
+  // the assembly.
+  let directiveLane: string | null = null;
+  try {
+    const { getActiveUserDirective, formatDirectiveBlock } = await import('./directive.js');
+    const cp = turnContext?.counterparty;
+    const stampedConversationId = liveTurnContext(agentId)?.conversationId;
+    const directiveConversationId =
+      (turnContext?.isEngineTurn || cp?.kind === 'agent')
+        ? '__none__'
+        : (cp && cp.kind === 'user' ? (stampedConversationId ?? null) : null);
+    const directive = getActiveUserDirective(agentId, {
+      excludeEngine: !turnContext?.isEngineTurn,
+      conversationId: directiveConversationId,
+    });
+    directiveLane = directive ? formatDirectiveBlock(directive) : null;
+  } catch (err) {
+    logger.warn('Active directive injection failed', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+  if (directiveLane) postBudget.push('lane.directive');
 
   // Record the post-budget lanes that actually fired, against their declared reserves.
   // T1 2b checked this derived `empty` too: these lanes are inline pushes onto `postBudget`,
@@ -1681,6 +1801,7 @@ async function assembleMessageContext(
     allocation: report,
     consumedOneShotFlags,
     recallLane,
+    directiveLane,
   };
 }
 
@@ -1692,69 +1813,50 @@ ${summary.content}
 </summary>`;
 }
 
-// ── Summary selection (remediation Phase 2, Invariant II) ──
-// Summaries are selected by MEANING under a hard cap, not packed to fill the
-// window. The old recency packer loaded ~50K tokens of mostly-irrelevant
-// history on every turn of a large-window model; relevance preserves the
-// reasons recency encoded, continuity (the newest summaries always ride
-// along) and window safety (hard budget), without the bloat. budgetSummaries
-// survives as the internal fallback when relevance scoring can't run (see
-// selectSummariesByRelevance), never as a window-filling default.
-
+// ── SUMMARY SELECTION (T67b §4 rewrites the rule this block declares) ───────────────────
+//
+// THE OLD RULE, and why it could not stay. Remediation Phase 2 replaced a recency packer
+// that loaded ~50K tokens of mostly-irrelevant history with a MEANING-ranked selection under
+// a hard cap, and the cap is what made that a real improvement. But the ranking query was
+// `buildPerTurnRecallQuery` — THE LIVE ASK — and this lane sits at MessageSlot.Summaries =
+// 300, ahead of the entire conversation. So the lane re-picked its set on every turn and
+// rewrote bytes the provider had already cached, which is the class T67b exists to close and
+// which SWEEP CORE-2 item 4 had already settled for `lane.relevant-memory`: a lane ahead of
+// the tail may hold only session-stable content.
+//
+// THE RULE NOW: newest-first under the SAME declared ceiling, emitted chronologically, with
+// no query of any kind. `selectSummariesForPrefix` is that rule, and it subsumes
+// `budgetSummaries` — the old internal fallback — so there is ONE selector rather than a
+// primary and a shadow. It is a pure function of (the summary set, the ceiling), so two
+// assemblies with no summary written between them are byte-identical here.
+//
 // PHASE-3 T3: `SUMMARY_RELEVANCE_BUDGET_TOKENS = 6000` and `SUMMARY_RECENCY_FLOOR = 2`
-// (§T0-B E `:1587`/`:1588`) are lane declarations now — `LANE_LIMITS['lane.summaries']` —
-// and the caller passes the lane's own granted ceiling instead of this function re-deriving
-// a share of a budget the gates had already eaten.
+// (§T0-B E `:1587`/`:1588`) are lane declarations — `LANE_LIMITS['lane.summaries']` — and the
+// caller passes the lane's own granted ceiling rather than re-deriving a share here. The
+// recency floor survives as a FLOOR: the newest N summaries are the compressed tail of the
+// live thread and ride along even when the ceiling is too small to hold them by cost alone.
 
-async function selectSummariesByRelevance(
-  summaries: Summary[],
-  budget: number,
-  agentId: string,
-): Promise<Summary[]> {
-  // Continuity floor: the newest summaries are the compressed tail of the
-  // live thread and always ride along.
-  const floor = summaries.slice(-laneLimit('lane.summaries', 'tokens', 'recencyFloor'));
-  const picked = new Set(floor.map((s) => s.id));
-  let used = floor.reduce((t, s) => t + s.tokenCount, 0);
+export function selectSummariesForPrefix(summaries: Summary[], budget: number): Summary[] {
+  if (summaries.length === 0) return [];
+  const floorCount = laneLimit('lane.summaries', 'tokens', 'recencyFloor');
+  const picked = new Set<string>();
+  let used = 0;
 
-  // Rank the remainder by similarity to the live ask. D4: use the unified
-  // per-turn recall query so this also works on A2A/engine turns and survives
-  // mid-tool-iteration rebuilds (the old last-3-user-rows derivation went empty
-  // on those and gave zero relevance ranking).
-  const queryText = buildPerTurnRecallQuery(agentId);
-
-  if (queryText.trim().length > 10) {
-    try {
-      const { vectorSearch } = await import('./vector-search.js');
-      const hits = await vectorSearch(queryText, agentId, {
-        sourceType: 'summary',
-        limit: laneLimit('lane.summaries', 'retrieval', 'limit'),
-        minSimilarity: laneLimit('lane.summaries', 'retrieval', 'minSimilarity'),
-      });
-      const byId = new Map(summaries.map((s) => [s.id, s]));
-      for (const hit of hits) {
-        if (picked.has(hit.sourceId)) continue;
-        const s = byId.get(hit.sourceId);
-        if (!s) continue;
-        if (used + s.tokenCount > budget) continue;
-        picked.add(s.id);
-        used += s.tokenCount;
-      }
-    } catch (err) {
-      logger.debug('relevance summary selection failed; using floor only', {
-        agentId,
-        error: err instanceof Error ? err.message : String(err),
-      }, agentId);
-    }
+  // The continuity floor first, oldest-of-the-floor first so its cost is spent in the same
+  // order every time (a set built in two different orders can hold two different sets when
+  // the ceiling bites mid-way).
+  for (const s of summaries.slice(-floorCount)) {
+    picked.add(s.id);
+    used += s.tokenCount;
   }
-
-  // If even the floor overflows the budget (oversized summaries), fall back
-  // to the recency packer under the SAME tight budget, never the full window.
-  if (used > budget) {
-    return budgetSummaries(summaries, Math.floor(budget / SUMMARY_SHARE));
+  // Then the rest, newest-first, while they fit. Chronological on the way out.
+  for (let i = summaries.length - 1; i >= 0; i--) {
+    const s = summaries[i];
+    if (picked.has(s.id)) continue;
+    if (used + s.tokenCount > budget) continue;
+    picked.add(s.id);
+    used += s.tokenCount;
   }
-
-  // Chronological order in output, same as the recency path.
   return summaries.filter((s) => picked.has(s.id));
 }
 
@@ -1767,46 +1869,9 @@ async function selectSummariesByRelevance(
 // added: the position (past `msg.turn-context`, because the content changes with the live
 // ask) and the ANSWERED PAIRS read off the migration-113 stamps.
 //
-// `buildPerTurnRecallQuery` is imported back for `selectSummariesByRelevance` above, which
-// has always shared the same query — one derivation, two readers, exactly as before.
-
-function budgetSummaries(summaries: Summary[], availableTokens: number): Summary[] {
-  // Reserve at least 30% of available tokens for fresh tail
-  const summaryBudget = Math.floor(availableTokens * SUMMARY_SHARE);
-  let usedTokens = 0;
-
-  // Include from newest to oldest (reverse), since newest summaries are most relevant
-  // But we want chronological order in output, so collect indices
-  const included: Summary[] = [];
-
-  // First pass: try to include all
-  for (const summary of summaries) {
-    if (usedTokens + summary.tokenCount <= summaryBudget) {
-      included.push(summary);
-      usedTokens += summary.tokenCount;
-    }
-  }
-
-  // If all fit, return them all (already in chronological order)
-  if (included.length === summaries.length) {
-    return included;
-  }
-
-  // Otherwise, drop oldest first until we fit
-  const reversed = [...summaries].reverse();
-  const keptFromNewest: Summary[] = [];
-  usedTokens = 0;
-
-  for (const summary of reversed) {
-    if (usedTokens + summary.tokenCount <= summaryBudget) {
-      keptFromNewest.push(summary);
-      usedTokens += summary.tokenCount;
-    }
-  }
-
-  // Return in chronological order
-  return keptFromNewest.reverse();
-}
+// T67b: `buildPerTurnRecallQuery` is no longer imported back for the summaries lane. That
+// lane was its second reader and the reason it reached into the cacheable region at all; the
+// recall lane is its ONE owner now, in the tail, where a per-ask derivation belongs.
 
 /**
  * Walk the assembled messages newest-first and replace image / document
@@ -1852,10 +1917,30 @@ function budgetSummaries(summaries: Summary[], availableTokens: number): Summary
  * results, the intended behavior per spec.
  */
 export function stubOldToolResults(messages: Message[], agentId: string): Message[] {
-  // G24: the turn the agent is ON, read from the `turns` record. The comment that used to
-  // stand here — "same logic v2/loop.ts uses" — stopped being true at PHASE-2 T2, when the
-  // loop moved onto the allocator; it is deleted with the query it described.
-  const currentTurn = currentTurnNumber(agentId);
+  // ── T67b — THE WATERMARK DECIDES, NOT THE LIVE CLOCK ─────────────────────────────────
+  //
+  // This read `currentTurnNumber(agentId)` and compared it to each row's turn on EVERY
+  // assembly, so a tool_result twelve turns back flipped from full to stubbed mid-session
+  // and rewrote bytes in the middle of the cached history with no compaction anywhere near
+  // it. T56 leg (b) settled that question for `reasoning_content` — a byte the provider has
+  // cached may move only at an instant when the prefix is being rewritten anyway — and this
+  // is the same question one column over.
+  //
+  // The DECISION now lives at the compaction boundary (`compaction.ts
+  // stubOldToolResultsAtBoundary`), which advances a monotonic watermark in the agent's
+  // config; this function only RENDERS it. The rule and the distance are unchanged. The read
+  // is pure: assembly never advances the watermark.
+  //
+  // A missing watermark stubs NOTHING — the fail-safe direction, and the same disposition
+  // `currentTurnNumber`'s own failure path takes.
+  let watermark = Number.NEGATIVE_INFINITY;
+  try {
+    const row = getDb().prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as
+      { config: string | null } | undefined;
+    const cfg = row?.config ? JSON.parse(row.config) as Record<string, unknown> : {};
+    if (typeof cfg.toolResultsStubbedBeforeTurn === 'number') watermark = cfg.toolResultsStubbedBeforeTurn;
+  } catch { /* no watermark: stub nothing */ }
+  if (watermark === Number.NEGATIVE_INFINITY) return messages;
 
   let stubbedCount = 0;
 
@@ -1864,8 +1949,7 @@ export function stubOldToolResults(messages: Message[], agentId: string): Messag
     // turn_number can be NULL for very old / non-v2-written messages.
     // Treat NULL as -infinity so it's always older than the threshold.
     const msgTurn = msg.turnNumber ?? -Infinity;
-    const turnAge = currentTurn - msgTurn;
-    if (turnAge < V2_STUB_AFTER_TURNS) return msg;
+    if (!(msgTurn < watermark)) return msg;
 
     let blocks: unknown;
     try {
@@ -1897,7 +1981,7 @@ export function stubOldToolResults(messages: Message[], agentId: string): Messag
     logger.debug('v2 stubOldToolResults: stubbed old tool results', {
       agentId,
       stubbedCount,
-      currentTurn,
+      watermarkTurn: watermark,
       stubAfterTurns: V2_STUB_AFTER_TURNS,
     }, agentId);
   }

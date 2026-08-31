@@ -156,11 +156,24 @@ export enum MessageSlot {
   // volatile of the two — so the preserved near-tail order 1850 -> 1875 -> 1900 is untouched
   // and adding a number BETWEEN two existing ones renumbers nothing (same move as Events=1050
   // and Deliveries=1860).
-  RecalledMemory = 1870,
+  // T67b tail-hygiene rider: 1870 -> 1880, i.e. AFTER peer-status rather than before it.
+  // The tail's own ordering rule is most-stable-first, and this lane's own header states it:
+  // "It goes AFTER deliveries because it is the more volatile of the two." By that same test
+  // it belongs after peer-status too — a peer's idle/working flip is rare, this block moves
+  // with EVERY ask. The near-tail contract 1850 -> ... -> 1900 is untouched and a number
+  // between two existing ones renumbers nothing.
+  RecalledMemory = 1880,
   // Live peer statuses (2026-07-16 cache finding): the group roster in the
   // cached prefix carries NAMES only; the volatile idle/working state renders
   // here so a peer's status flip never invalidates the cached prefix.
   PeerStatus = 1875,
+  // T67b §7: THE ACTIVE USER DIRECTIVE, MOVED OUT OF THE CACHED PREFIX.
+  // It was `ActiveDirective = 900`, ahead of the fresh tail, while its content IS the newest
+  // unanswered user ask — so every substantive user message rewrote the front of the message
+  // array and re-billed the whole history behind it. Second-to-last on purpose: it is the
+  // most volatile block that carries content (only the clock is more so), and the position
+  // after the live conversation is the recency-salient one, which is what a pin wants.
+  ActiveDirectiveTail = 1890,
   CurrentTime = 1900, // precise clock time, most volatile, always last (cache tail)
 }
 
@@ -245,6 +258,13 @@ export interface AssemblyContext {
    *  `volatileFrom`, which is the deliveries split in mirror image. Volatile by construction:
    *  its content is retrieved against the live ask, so it may never sit in the cached prefix. */
   recallLane?: string | null;
+  /** T67b §7: the ACTIVE USER DIRECTIVE block (`memory/directive.ts`), rendered by the
+   *  assembler — it owns the counterparty/conversation scoping the pin is subject to — and
+   *  appended by the loop past `volatileFrom`. Volatile by construction in the strongest
+   *  sense of the phrase: its content IS the newest unanswered user ask, so it changes on
+   *  every substantive user turn and may never sit in the cached prefix. It was
+   *  `MessageSlot.ActiveDirective = 900` until this task. */
+  directiveLane?: string | null;
 }
 
 // ───────────────────────────────────────────────────────────────────────────

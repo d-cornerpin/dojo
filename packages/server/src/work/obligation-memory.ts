@@ -603,6 +603,30 @@ const TRACKER_ROWS = `((${taskScope('w')}) OR (${projectScope('w')}))`;
  * this feeds sits directly beneath it. Two answers to one question is the parallel memory
  * this module exists to prevent.
  */
+/**
+ * T67b tail-hygiene rider — WHEN THIS AGENT'S BOARD LAST CHANGED, in epoch ms.
+ *
+ * The HL5 snapshot stamped itself `as of <new Date()>` and dated its rows `opened <N> ago`
+ * off the same clock, so an IDENTICAL board rendered different bytes once a minute — a tail
+ * lane diverging for no content reason, which pushes the provider's cache break earlier in
+ * the tail than it needs to be. The header now states this instant and the row ages are
+ * measured from it, so the whole block is a pure function of board state and moves only when
+ * the board does.
+ *
+ * `updated_at` is maintained on every write to a row and `opened_at` covers a row that has
+ * never been updated; a CLOSE bumps `updated_at` too, so a row leaving the set advances this
+ * exactly like a row joining it. Falls back to the clock for an agent with no work rows at
+ * all — that agent has no snapshot to stamp (`hasCommitmentHistory` and the board counts are
+ * both empty), so the fallback is unreachable from the render and is here for total honesty
+ * about the function's domain rather than as a live path.
+ */
+export function boardLastChangedAt(agentId: string): number {
+  const row = getDb().prepare(
+    `SELECT MAX(COALESCE(w.updated_at, w.opened_at)) AS at FROM work w WHERE w.agent_id = ?`,
+  ).get(agentId) as { at: number | null } | undefined;
+  return typeof row?.at === 'number' ? row.at : Date.now();
+}
+
 export function openBoardCounts(agentId: string): BoardCounts {
   const row = getDb().prepare(
     `SELECT

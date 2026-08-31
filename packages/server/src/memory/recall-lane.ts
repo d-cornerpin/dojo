@@ -64,9 +64,10 @@ import {
 } from '../agent/v2/answered-edge.js';
 import { relativeTimeAgo } from '../agent/v2/outbound-ledger.js';
 import {
-  obligationVerdict, liveCommitments, hasCommitmentHistory, openBoardCounts,
+  obligationVerdict, liveCommitments, hasCommitmentHistory, openBoardCounts, boardLastChangedAt,
   type LiveCommitment, type BoardCounts,
 } from '../work/obligation-memory.js';
+import { UNFILED_ARCHIVE_LABEL, unfiledArchiveWorstCaseLines } from '../vault/retrieval.js';
 import { parseDivider, NEW_SESSION_DIVIDER_LABEL } from '@dojo/shared';
 import { turnBoundary } from '../agent/turn-state.js';
 
@@ -175,6 +176,8 @@ export interface RecallLaneContext {
   vaultHits: RecallVaultHit[];
   /** Asks `engine.recently-answered` is already naming this turn. One statement, one owner. */
   alreadyAnsweredAskIds: Set<string>;
+  /** T67b: FN-1 unfiled-archive snippets, already capped by `unfiledArchiveBridgeLines`. */
+  bridgeLines?: string[];
 }
 
 export interface RecallLanePayload {
@@ -183,6 +186,16 @@ export interface RecallLanePayload {
   /** Raw recalled lines that are not part of a pair, chronological. */
   msgLines: string[];
   vaultLines: string[];
+  /**
+   * T67b — THE FN-1 UNFILED-ARCHIVE BRIDGE, MOVED HERE WITH THE RETRIEVAL IT BELONGS TO.
+   *
+   * It peeks at the agent's newest still-unfiled conversation archives so a fact told just
+   * before a session reset stays recallable until the Dreamer files it. It lived inside
+   * `vault/retrieval.ts`'s `retrieveForContext`, which `lane.vault` rendered from slot 200 —
+   * and it searches BY THE QUERY, so it was one of the per-ask retrievals rewriting the
+   * cacheable prefix. Its caps are unchanged (`UNFILED_*`, 200 tokens); only its position is.
+   */
+  bridgeLines: string[];
   /** True when a row was dropped or a quote shortened relative to the read. */
   cut: boolean;
   /**
@@ -193,7 +206,7 @@ export interface RecallLanePayload {
    * T44: `board` is the REST of the board in four numbers, published in the same block for the
    * same reason and never listed. See `snapshotBoardLine`.
    */
-  snapshot: { total: number; rows: string[]; board: BoardCounts } | null;
+  snapshot: { total: number; rows: string[]; board: BoardCounts; asOfMs: number } | null;
 }
 
 const HEAD = '═══ RELEVANT MEMORY (retrieved by meaning, context only, not live conversation) ═══';
@@ -287,8 +300,18 @@ export const snapshotBoardLine = (b: BoardCounts): string =>
   + 'what you have open. For the rows themselves call work_update(action="list"), which lists '
   + 'the tracker items — not the asks, and not the commitments above.';
 
-function renderSnapshot(s: { total: number; rows: string[]; board: BoardCounts }): string {
-  const stamp = `${new Date().toISOString().slice(0, 16).replace('T', ' ')}Z`;
+// T67b: THE STAMP IS THE BOARD'S LAST-CHANGE INSTANT, NOT THE ASSEMBLY CLOCK.
+// The note above already ruled that this is an INSTANT rather than a clock reading; what it
+// did not settle is WHICH instant, and `new Date()` was the wrong answer for the same reason
+// the briefing's `generated=` was: an identical board rendered different bytes once a minute,
+// so this lane diverged from the previous turn's for no content reason and pushed the
+// provider's cache break earlier into the tail than the content required. `boardLastChangedAt`
+// advances on every open, update and close of any of this agent's work rows — so it moves
+// exactly when the snapshot's subject moves, and never otherwise. The row ages below are
+// measured from the SAME instant, so the header and the rows cannot state two different
+// nows.
+function renderSnapshot(s: { total: number; rows: string[]; board: BoardCounts; asOfMs: number }): string {
+  const stamp = `${new Date(s.asOfMs).toISOString().slice(0, 16).replace('T', ' ')}Z`;
   const head = `${SNAPSHOT_HEAD}${stamp} ═══`;
   const board = snapshotBoardLine(s.board);
   if (s.total === 0) return `${head}\n${SNAPSHOT_EMPTY_BODY}\n${board}\n${SNAPSHOT_TAIL}`;
@@ -310,6 +333,7 @@ function renderPayload(p: RecallLanePayload): string | null {
   }
   if (p.msgLines.length > 0) parts.push(`${MSG_HEAD}\n${p.msgLines.join('\n')}`);
   if (p.vaultLines.length > 0) parts.push(`${VAULT_HEAD}\n${p.vaultLines.join('\n')}`);
+  if (p.bridgeLines.length > 0) parts.push(`${UNFILED_ARCHIVE_LABEL}\n${p.bridgeLines.join('\n')}`);
   const recalled = parts.length > 0
     ? `${HEAD}\n${parts.join('\n\n')}${p.cut ? LANE_TRUNCATION_MARKER : ''}\n${TAIL}`
     : null;
@@ -407,14 +431,16 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
   // ONCE and serves both the decision and the render; there is no second query.
   const board = openBoardCounts(ctx.agentId);
   const publishesSnapshot = hasCommitmentHistory(ctx.agentId) || board.asks > 0 || board.tracker > 0;
+  const asOfMs = publishesSnapshot ? boardLastChangedAt(ctx.agentId) : 0;
   const snapshot = publishesSnapshot
     ? (() => {
         const rows: LiveCommitment[] = liveCommitments(ctx.agentId);
         return {
+          asOfMs,
           total: rows.length,
           rows: rows.slice(0, snapshotRowCap()).map((r) =>
             `[${r.id}] ${oneLine(r.title || '(no description)').slice(0, snapshotTitleChars())} `
-            + `(${r.state}, opened ${relativeTimeAgo(new Date(r.openedAt).toISOString())})`),
+            + `(${r.state}, opened ${relativeTimeAgo(new Date(r.openedAt).toISOString(), asOfMs)})`),
           // T44: read at the same moment as the commitment set, from the same module and the
           // same `closed_at IS NULL` predicate, so the block cannot state two boards.
           board,
@@ -459,6 +485,7 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
     pairs: pairRows,
     msgLines: msgCandidates.map((c) => c.line),
     vaultLines,
+    bridgeLines: ctx.bridgeLines ?? [],
     cut: false,
     snapshot,
   });
@@ -486,6 +513,15 @@ export const truncateRecallLane: Lane<RecallLaneContext, RecallLanePayload>['tru
     return r && r.tokens <= maxTokens ? r : null;
   };
   const state: RecallLanePayload = { ...p, cut: true };
+
+  // T67b: the FN-1 bridge goes FIRST. It is a stopgap over raw un-distilled conversation —
+  // the least curated material in the lane, and the only part of it the Dreamer will file
+  // into real vault entries within hours anyway.
+  while (state.bridgeLines.length > 0) {
+    state.bridgeLines = state.bridgeLines.slice(0, -1);
+    const r = attempt(state);
+    if (r) return r;
+  }
 
   while (state.vaultLines.length > 0) {
     state.vaultLines = state.vaultLines.slice(0, -1);
@@ -559,6 +595,10 @@ export function recallLaneWorstCaseTokens(): number {
       `- [2026-08-09 12:00:00] assistant: ${'x'.repeat(askChars())}`),
     vaultLines: Array.from({ length: vaultRowCap() }, () =>
       `- [vault:preference] ${'x'.repeat(vaultChars())}`),
+    // T67b: the FN-1 bridge at ITS OWN declared cap (`vault/retrieval.ts`'s UNFILED_*), read
+    // from the module that owns those caps rather than copied here — the same rule the rest
+    // of this derivation follows.
+    bridgeLines: unfiledArchiveWorstCaseLines(),
     // `cut: true` so the truncation marker is inside the worst case rather than able to push a
     // truncated render back OVER the reserve that authorised the truncation.
     cut: true,
@@ -573,6 +613,10 @@ export function recallLaneWorstCaseTokens(): number {
       // Five digits is 99,999 open rows on ONE agent; the worn-in dev body's largest per-agent
       // count of any kind is three figures, and the plural branches are all taken here.
       board: { asks: 99_999, asksBlocked: 99_999, tracker: 99_999, trackerBlocked: 99_999 },
+      // A fixed instant: the stamp is 16 chars wide for every value it can take, so any
+      // instant produces the same worst case. Chosen rather than `Date.now()` so this
+      // derivation is itself a pure function (the reserve it feeds is a committed literal).
+      asOfMs: Date.parse('2026-08-31T12:00:00Z'),
     },
   });
   worstCase = render?.tokens ?? 0;
@@ -711,8 +755,21 @@ export async function buildRecallLaneMessage(
         : [],
     );
 
+    // T67b: the FN-1 unfiled-archive bridge, run HERE now. It searches the agent's newest
+    // still-unfiled conversation archives BY THE QUERY, which is why it could not stay inside
+    // `retrieveForContext` at `MessageSlot.VaultPull = 200`. Same caps, same label, same
+    // deterministic matcher — only the position changed, and it changed to the one every
+    // per-ask retrieval in this codebase already occupies.
+    let bridgeLines: string[] = [];
+    if (includeVault) {
+      try {
+        const { unfiledArchiveBridgeLines } = await import('../vault/retrieval.js');
+        bridgeLines = unfiledArchiveBridgeLines(agentId, queryText);
+      } catch { /* best effort: a failed bridge costs the bridge, never the lane */ }
+    }
+
     const render = renderRecallLane({
-      agentId, includeVault, excludeIds, msgHits, vaultHits, alreadyAnsweredAskIds,
+      agentId, includeVault, excludeIds, msgHits, vaultHits, alreadyAnsweredAskIds, bridgeLines,
     });
     block = render ? (render.messages[0]?.content as string) : null;
   } catch (err) {

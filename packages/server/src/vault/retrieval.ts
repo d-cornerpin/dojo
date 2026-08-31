@@ -6,10 +6,9 @@
 import { createLogger } from '../logger.js';
 import { estimateTokens } from '../memory/budget.js';
 import { getDreamerAgentId } from '../config/platform.js';
+import { listTasks } from '../tracker/schema.js';
 import {
-  semanticSearch,
   getPinnedEntries,
-  updateRetrievalStats,
   getUnfiledArchivesForAgent,
   formatCitationSuffix,
   type VaultEntry,
@@ -244,24 +243,90 @@ export function searchUnfiledArchives(
   return snippets;
 }
 
-export async function retrieveForContext(
-  query: string,
-  contextWindow: number,
-  agentId?: string,
-): Promise<{ section: string; entryIds: string[] }> {
-  const budget = getVaultBudget(contextWindow);
+/**
+ * ════════════════════════════════════════════════════════════════════════════════════════
+ * T67b — THE PREFIX HALF OF THE VAULT PULL. NO QUERY, NO CLOCK, NO WRITE.
+ * ════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * `retrieveForContext` was ONE function doing two jobs with two different volatilities, and
+ * `lane.vault` rendered both from MessageSlot.VaultPull = 200 — ahead of the entire message
+ * prefix. The semantic half re-ranked against a query built from the recent messages, so a
+ * new question rewrote history above itself on every turn; and the function ran
+ * `updateRetrievalStats` from that same read path, which is a WRITE inside assembly
+ * (PHASE-3 S3's own finding, one module over).
+ *
+ * This is the half that is genuinely session-stable and may therefore stay in the cached
+ * prefix: the PINNED and PERMANENT entries, under the same budget, with the same header, and
+ * with the SAME active-task topic suppression the old function applied to them. The
+ * semantic half and the FN-1 unfiled-archive bridge went to `memory/recall-lane.ts` — the
+ * tail lane that already ran the identical `semanticSearch` and already excluded this
+ * pinned set so the two could not double-render.
+ *
+ * PURE. It bumps no retrieval stats: pinned/permanent rows are exempt from every hygiene arm
+ * in `vault/maintenance.ts` by construction (`is_pinned = 0 AND is_permanent = 0` is on each
+ * of them), so the bookkeeping this drops could never have decided their fate, and
+ * `work/obligation-memory.ts` already records auto-recall inflation making rows immune to
+ * hygiene as a defect rather than a service.
+ */
+export function pinnedContextSection(
+  agentId: string | undefined,
+): { section: string; entryIds: string[] } {
+  const suppress = activeTaskSuppressor(agentId);
 
-  // ── Active-task topic suppression ──
-  // If the agent has in-progress tracker tasks, drop any vault entries
-  // of type 'procedure' or 'event' that substantially overlap a task's
-  // topic. Those entries are about work currently in flight — they
-  // duplicate the tracker (and often contradict it, since vault entries
-  // get written before the work is done). The tracker is the source of
-  // truth for active state; vault is for durable past facts.
+  let pinned = getPinnedEntries(agentId);
+  if (pinned.length > MAX_PINNED_ENTRIES) {
+    pinned.sort((a, b) => {
+      if (a.isPermanent && !b.isPermanent) return -1;
+      if (!a.isPermanent && b.isPermanent) return 1;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+    pinned = pinned.slice(0, MAX_PINNED_ENTRIES);
+  }
+
+  const lines: string[] = [];
+  const includedIds: string[] = [];
+  for (const entry of pinned) {
+    if (suppress(entry).suppressed) continue;
+    lines.push(formatEntryForPrompt(entry));
+    includedIds.push(entry.id);
+  }
+  if (lines.length === 0) return { section: '', entryIds: [] };
+  // No token budget is applied and that is deliberate, not an omission: the pinned/permanent
+  // set is bounded by `MAX_PINNED_ENTRIES` (20) and the Dreamer unpins the overflow nightly.
+  // `getVaultBudget`'s token ceiling existed to ration the SEMANTIC half against it, and that
+  // half is `memory/recall-lane.ts`'s now, under that lane's own derived reserve.
+  return { section: `${VAULT_SECTION_HEAD}\n${lines.join('\n')}\n${VAULT_SECTION_TAIL}`, entryIds: includedIds };
+}
+
+/** The vault section's frame, named once so the prefix half and any future reader render
+ *  the identical wrapper. Bytes unchanged from the string `retrieveForContext` built. */
+const VAULT_SECTION_HEAD = `## Vault -- What You Remember
+
+The following are facts and knowledge from your long-term memory vault:
+`;
+const VAULT_SECTION_TAIL =
+  '\nYou can search for more memories with vault_search. You can save new knowledge with '
+  + 'vault_remember. (These notes can be stale. For what tools/capabilities you have RIGHT '
+  + 'NOW, trust your live tool list, not a memory like "I can\'t do X".)';
+
+/**
+ * The active-task topic suppressor, lifted out of `retrieveForContext` unchanged so the
+ * prefix half and the tail half apply the SAME rule rather than two copies of it.
+ *
+ * If the agent has in-progress tracker tasks, drop any vault entries of type 'procedure' or
+ * 'event' that substantially overlap a task's topic. Those entries are about work currently
+ * in flight — they duplicate the tracker (and often contradict it, since vault entries get
+ * written before the work is done). The tracker is the source of truth for active state;
+ * vault is for durable past facts.
+ */
+export function activeTaskSuppressor(
+  agentId: string | undefined,
+): (entry: VaultEntry) => { suppressed: boolean; taskId?: string } {
   const activeTaskTopics: Array<{ id: string; topic: Set<string> }> = [];
   if (agentId) {
     try {
-      const { listTasks } = await import('../tracker/schema.js');
+      // `listTasks` is a synchronous read; the dynamic import the async caller used is not
+      // available here, so the module is required through the same path the tracker uses.
       const tasks = listTasks({ status: 'in_progress', assignedTo: agentId });
       for (const t of tasks) {
         const topicText = `${t.title} ${t.description ?? ''}`;
@@ -269,8 +334,7 @@ export async function retrieveForContext(
       }
     } catch { /* tracker not available */ }
   }
-
-  const isSuppressed = (entry: VaultEntry): { suppressed: boolean; taskId?: string } => {
+  return (entry: VaultEntry) => {
     if (activeTaskTopics.length === 0) return { suppressed: false };
     if (entry.type !== 'procedure' && entry.type !== 'event') return { suppressed: false };
     if (entry.isPermanent) return { suppressed: false }; // permanent entries are USER.md-grade — never suppress
@@ -282,169 +346,62 @@ export async function retrieveForContext(
     }
     return { suppressed: false };
   };
-
-  // Get pinned entries, capped at MAX_PINNED_ENTRIES.
-  // Permanent entries get priority, then sort by recency.
-  // W3-4: scoped to the requesting agent's own vault (per-agent by design).
-  let pinned = getPinnedEntries(agentId);
-  if (pinned.length > MAX_PINNED_ENTRIES) {
-    pinned.sort((a, b) => {
-      // Permanent first
-      if (a.isPermanent && !b.isPermanent) return -1;
-      if (!a.isPermanent && b.isPermanent) return 1;
-      // Then by most recent
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-    });
-    pinned = pinned.slice(0, MAX_PINNED_ENTRIES);
-    logger.info(`Pinned entries exceed cap (${pinned.length + (getPinnedEntries(agentId).length - MAX_PINNED_ENTRIES)} total), capped at ${MAX_PINNED_ENTRIES}`);
-  }
-
-  // Semantic search for relevant entries
-  let relevant: Array<VaultEntry & { similarity: number }> = [];
-  try {
-    // FA-V6: personalOnly:true so semantic personal recall matches exact mode's
-    // existing contract (listEntries defaults to namespace IS NULL). Without it,
-    // an agent's own squad-namespaced entries leaked into PERSONAL recall while
-    // exact mode filtered them out. Squad recall still flows via squad_recall.
-    // Still correct under D-A: household sharing is BUILT and LIVE (resolveRecallScope
-    // in vault/store.js), but it is a separate AXIS, it widens which author ids are in
-    // scope, not which namespaces. Squad namespaces stay opt-in, so keeping them out
-    // of personal recall is the right default regardless of the household flip.
-    relevant = await semanticSearch(query, { limit: budget.maxEntries + 5, agentId, personalOnly: true }); // extra for filtering
-  } catch (err) {
-    logger.warn('Vault semantic search failed, using pinned entries only', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-
-  // Remove pinned entries from relevant (they're already included separately)
-  const pinnedIds = new Set(pinned.map(e => e.id));
-  relevant = relevant.filter(e => !pinnedIds.has(e.id));
-
-  // Prioritize: permanent > high confidence > recently retrieved > by similarity
-  relevant.sort((a, b) => {
-    // Permanent first
-    if (a.isPermanent && !b.isPermanent) return -1;
-    if (!a.isPermanent && b.isPermanent) return 1;
-    // Then by confidence
-    if (a.confidence !== b.confidence) return b.confidence - a.confidence;
-    // Then by similarity (already sorted, but just in case)
-    return b.similarity - a.similarity;
-  });
-
-  // Build the section within token budget
-  const lines: string[] = [];
-  const includedIds: string[] = [];
-  let usedTokens = 0;
-  let suppressedCount = 0;
-
-  // Add pinned entries first (always included unless they overlap an
-  // active task's topic — see isSuppressed comment).
-  for (const entry of pinned) {
-    const sup = isSuppressed(entry);
-    if (sup.suppressed) {
-      suppressedCount++;
-      logger.debug('Vault entry suppressed (overlaps active task)', {
-        entryId: entry.id, taskId: sup.taskId, type: entry.type,
-      });
-      continue;
-    }
-    const line = formatEntryForPrompt(entry);
-    const tokens = estimateTokens(line);
-    lines.push(line);
-    includedIds.push(entry.id);
-    usedTokens += tokens;
-  }
-
-  // Add relevant entries up to budget
-  for (const entry of relevant) {
-    if (includedIds.length - pinned.length >= budget.maxEntries) break;
-    const sup = isSuppressed(entry);
-    if (sup.suppressed) {
-      suppressedCount++;
-      logger.debug('Vault entry suppressed (overlaps active task)', {
-        entryId: entry.id, taskId: sup.taskId, type: entry.type,
-      });
-      continue;
-    }
-    const line = formatEntryForPrompt(entry);
-    const tokens = estimateTokens(line);
-    if (usedTokens + tokens > budget.maxTokens && includedIds.length > pinned.length) break;
-    lines.push(line);
-    includedIds.push(entry.id);
-    usedTokens += tokens;
-  }
-  if (suppressedCount > 0) {
-    logger.info(`Suppressed ${suppressedCount} vault entries that overlapped active tracker tasks`, { agentId });
-  }
-
-  // Update retrieval stats (async, non-blocking). Only real entries were
-  // included; the bridge below never touches includedIds (retrieval bookkeeping
-  // is for distilled vault_entries only).
-  if (lines.length > 0) {
-    try { updateRetrievalStats(includedIds); } catch { /* best effort */ }
-  }
-
-  const sectionParts: string[] = [];
-
-  if (lines.length > 0) {
-    sectionParts.push(`## Vault -- What You Remember
-
-The following are facts and knowledge from your long-term memory vault:
-
-${lines.join('\n')}
-
-You can search for more memories with vault_search. You can save new knowledge with vault_remember. (These notes can be stale. For what tools/capabilities you have RIGHT NOW, trust your live tool list, not a memory like "I can't do X".)`);
-  }
-
-  // ── FN-1 bridge: surface the just-archived-but-unfiled session ──
-  // Runs even when there are no vault_entries yet (a fact told right before a
-  // reset produces exactly that: an unfiled archive and an empty entries set).
-  // Capped small, dated, and clearly labeled; no active-task suppression is run
-  // on these snippets (that guard is for stale procedure/event ENTRIES, not raw
-  // recent conversation). Bridge ids are never added to includedIds.
-  if (agentId) {
-    try {
-      const remaining = budget.maxTokens - usedTokens;
-      if (remaining > 0) {
-        const snippets = searchUnfiledArchives(agentId, query, { mode: 'token' });
-        if (snippets.length > 0) {
-          const cap = Math.min(UNFILED_BRIDGE_MAX_TOKENS, remaining);
-          const kept: string[] = [];
-          let bridgeTokens = estimateTokens(UNFILED_ARCHIVE_LABEL);
-          for (const snip of snippets) {
-            const line = `- [${snip.latestAt}] ${snip.text}`;
-            const t = estimateTokens(line);
-            if (bridgeTokens + t > cap) break;
-            kept.push(line);
-            bridgeTokens += t;
-          }
-          if (kept.length > 0) {
-            sectionParts.push(`${UNFILED_ARCHIVE_LABEL}\n${kept.join('\n')}`);
-            usedTokens += bridgeTokens;
-            logger.debug('Vault unfiled-archive bridge injected', {
-              agentId, snippets: kept.length, bridgeTokens,
-            });
-          }
-        }
-      }
-    } catch (err) {
-      logger.debug('Vault unfiled-archive bridge failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  if (sectionParts.length === 0) {
-    return { section: '', entryIds: includedIds };
-  }
-
-  logger.debug('Vault context injection', {
-    pinnedCount: pinned.length,
-    relevantCount: includedIds.length - pinned.length,
-    totalTokens: usedTokens,
-    budget: budget.maxTokens,
-  });
-
-  return { section: sectionParts.join('\n\n'), entryIds: includedIds };
 }
+
+/**
+ * T67b — THE FN-1 BRIDGE, EXPORTED SO ITS NEW HOME CAN CALL IT.
+ *
+ * It surfaces the just-archived-but-unfiled session, searched BY THE QUERY, which is why it
+ * left the prefix with the rest of the retrieval. `memory/recall-lane.ts` renders it now,
+ * under the same 200-token cap it always had, past `volatileFrom`.
+ */
+export function unfiledArchiveBridgeLines(
+  agentId: string,
+  query: string,
+  maxTokens: number = UNFILED_BRIDGE_MAX_TOKENS,
+): string[] {
+  const snippets = searchUnfiledArchives(agentId, query, { mode: 'token' });
+  if (snippets.length === 0) return [];
+  const cap = Math.min(UNFILED_BRIDGE_MAX_TOKENS, maxTokens);
+  const kept: string[] = [];
+  let bridgeTokens = estimateTokens(UNFILED_ARCHIVE_LABEL);
+  for (const snip of snippets) {
+    const line = `- [${snip.latestAt}] ${snip.text}`;
+    const t = estimateTokens(line);
+    if (bridgeTokens + t > cap) break;
+    kept.push(line);
+    bridgeTokens += t;
+  }
+  return kept;
+}
+
+/** The bridge's own worst case as the LINES it would emit, DERIVED from its caps rather than
+ *  guessed beside them: `UNFILED_MAX_SNIPPETS` snippets at `UNFILED_SNIPPET_CHARS`, each in
+ *  its `- [<stamp>] ` frame. `memory/recall-lane.ts`'s reserve derivation feeds these through
+ *  the real renderer, so the declaration and the render cannot drift.
+ *
+ *  Note the 200-token `UNFILED_BRIDGE_MAX_TOKENS` cap binds FIRST at runtime; these lines are
+ *  the shape the cap is applied to, and the reserve is deliberately derived from the shape so
+ *  a future loosening of the token cap cannot silently exceed a reserve derived from it. */
+export function unfiledArchiveWorstCaseLines(): string[] {
+  const stampFrame = '- [2026-08-31T12:00:00.000Z] ';
+  return Array.from({ length: UNFILED_MAX_SNIPPETS }, () => stampFrame + 'x'.repeat(UNFILED_SNIPPET_CHARS));
+}
+
+// ── T67b — `retrieveForContext` IS GONE, AND BOTH OF ITS HALVES HAVE A HOME ─────────────
+//
+// It was the ONE reader of the vault for context injection, and it mixed two volatilities:
+// a PINNED set that changes when the user pins, and a SEMANTIC SEARCH that changes with
+// every ask — rendered together from `MessageSlot.VaultPull = 200`, ahead of the whole
+// message prefix, with an `updateRetrievalStats` write inside the assembly read path.
+//
+//   the pinned half   -> `pinnedContextSection` above (prefix, pure, no query)
+//   the semantic half -> `memory/recall-lane.ts` (tail, past `volatileFrom`) — which was
+//                        ALREADY running the identical `semanticSearch` with the identical
+//                        scope and already subtracting this pinned set so the two could not
+//                        double-render. Its `includeVault` gate existed only because THIS
+//                        function fired on scaffolding turns; it is always on now.
+//   the FN-1 bridge   -> `unfiledArchiveBridgeLines` above, called from the same tail lane.
+//
+// Deleted rather than left beside its replacements: a second, unreferenced path into the
+// vault is how the double-injection gate it once needed came to exist.

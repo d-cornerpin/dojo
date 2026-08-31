@@ -482,9 +482,29 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
       'peer-status. It also carries what the agent ALREADY ANSWERED, resolved through ' +
       '`answered-edge.ts` from the migration-113 answer stamps — never from prose — so an ' +
       'ask recalled by meaning arrives with its conclusion instead of on its own. The ' +
-      'assembler computes it (it owns the window policy and the scaffolding gate); the loop ' +
-      'appends it past `volatileFrom`.',
+      'assembler computes it (it owns the window policy); the loop appends it past ' +
+      '`volatileFrom`. T67b moved it 1870 -> 1880, behind peer-status: the tail orders ' +
+      'most-stable-first and a peer status flip is rarer than a new ask.',
     render: (ctx) => (ctx.recallLane ? { role: 'user', content: ctx.recallLane } : null),
+  },
+  {
+    id: 'msg.directive',
+    target: 'messages',
+    slot: MessageSlot.ActiveDirectiveTail,
+    reason:
+      'T67b §7: THE ACTIVE USER DIRECTIVE. It was a `fitLanes` candidate at ' +
+      'MessageSlot.ActiveDirective = 900 with priority 10 — the earliest-emitted, ' +
+      'highest-priority block of the assembly — while its CONTENT IS THE NEWEST UNANSWERED ' +
+      'USER ASK. So every substantive user turn rewrote the front of the cacheable message ' +
+      'region and re-billed the whole history behind it: the largest single term in the ' +
+      'owner\'s measured ~14,200-tokens-per-turn recompute, and the same shape roadmap ' +
+      'non-negotiable #10 forbids and CORE-2 item 4 already moved `lane.relevant-memory` ' +
+      'out of position for. It rides the tail at 1890, one place ahead of the clock. The ' +
+      'ASSEMBLER computes it because the pin is scoped to the turn\'s counterparty and ' +
+      'conversation (comms-audit T-1) and only the assembler holds that; the loop appends ' +
+      'it past `volatileFrom`. Its salience RISES with the move: after the live ' +
+      'conversation is the recency-salient position, which is what a pin wants.',
+    render: (ctx) => (ctx.directiveLane ? { role: 'user', content: ctx.directiveLane } : null),
   },
   {
     id: 'msg.peer-status',
