@@ -5,7 +5,8 @@
 // ── Why this exists ─────────────────────────────────────────────────────
 // The kit checks on the REQUIRED roster below read the live server through the dev
 // instruments: check-cache-prefix, check-prompt-inventory, check-steer-delivery,
-// check-message-prefix, check-assembled-context, check-reanswer-ghost.
+// check-message-prefix, check-prefix-holds-still, check-assembled-context,
+// check-reanswer-ghost.
 // (The count is not written in this prose. It was typed as "four" and again as
 // "five" while the arrays held different numbers — the hand-typed-N drift T8G
 // removed from the two gate lists. The REQUIRED array is the count.)
@@ -98,6 +99,10 @@ const HEAD = arg('--head', execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROO
 const REQUIRED = [
   'check-cache-prefix', 'check-prompt-inventory', 'check-steer-delivery',
   'check-message-prefix', 'check-assembled-context', 'check-reanswer-ghost',
+  // UX-REPAIR T67b (2026-08-31): cross-turn message-prefix invariance across N DIFFERENT
+  // asks. `check-message-prefix` guards the same region with a FIXED ask by design, which is
+  // a strictly weaker statement than the one a real conversation makes.
+  'check-prefix-holds-still',
   'check-roster-conformance',
 ];
 
