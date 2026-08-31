@@ -64,6 +64,28 @@ function localMidnightMs(): number {
   return d.getTime();
 }
 
+/**
+ * An instant that is unambiguously YESTERDAY — so the default "since local midnight" window
+ * cannot see it — AND unambiguously inside a 36-hour window, so the `hours: 36` case must
+ * count it. True at every hour of the day.
+ *
+ * It used to be `localMidnightMs() - 15h` (yesterday 09:00) on its own, and that is only
+ * inside a 36-hour window while the run STARTS BEFORE 21:00 local. The window opens at
+ * `now - 36h`, so once more than 21 hours have elapsed since local midnight, yesterday 09:00
+ * has fallen out of it and the case goes red on completely unchanged code. The suite was
+ * therefore red every night between 21:00 and midnight — a clock-dependent test, not a defect
+ * in the door, and it blocked a release cut in the evening (W56).
+ *
+ * The clamp keeps the original instant whenever the clock allows it, so the S2 narrative is
+ * unchanged for most of the day, and never lets the row drift outside the window under test.
+ * `now - 30h` is always before local midnight too (at most ~25 hours elapse between local
+ * midnight and any later instant, even across a fall-back DST day), so the "invisible to the
+ * default window" premise holds at the same time.
+ */
+function yesterdayInsideA36HourWindow(): number {
+  return Math.max(localMidnightMs() - 15 * 3_600_000, Date.now() - 30 * 3_600_000);
+}
+
 function seedWork(over: {
   id: string; kind: string; agent?: string; state?: string; title?: string | null;
   openedAt?: number; closedAt?: number | null;
@@ -322,7 +344,7 @@ describe('T65 — the window is a declared property, and the door honours it', (
   });
 
   it('RED→GREEN: the S2 shape — a row from yesterday is INVISIBLE to the default window and COUNTED with hours=36', () => {
-    const yesterdayMorning = localMidnightMs() - 15 * 3_600_000;
+    const yesterdayMorning = yesterdayInsideA36HourWindow();
     seedWork({
       id: 'y1', kind: 'ask', state: 'done', title: 'Yesterday morning ask',
       openedAt: yesterdayMorning, closedAt: yesterdayMorning + 60_000,
@@ -336,7 +358,7 @@ describe('T65 — the window is a declared property, and the door honours it', (
   });
 
   it('RED→GREEN: the DOOR forwards the window — the wire value reaches the renderer', async () => {
-    const yesterdayMorning = localMidnightMs() - 15 * 3_600_000;
+    const yesterdayMorning = yesterdayInsideA36HourWindow();
     seedWork({
       id: 'y2', kind: 'ask', state: 'done', title: 'Yesterday morning ask',
       openedAt: yesterdayMorning, closedAt: yesterdayMorning + 60_000,
