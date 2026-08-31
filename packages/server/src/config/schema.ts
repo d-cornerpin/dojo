@@ -78,6 +78,38 @@ export const ProviderPatienceSchema = z.object(streamPatienceFields).strict()
 
 export type ProviderPatienceInput = z.infer<typeof ProviderPatienceSchema>;
 
+// ── Provider Edit Schema (T66b) ──
+//
+// The identity fields, editable in place, in the same narrow shape as the two doors above.
+// Every field is OPTIONAL and only what the body names is written — which is the whole point:
+// `POST /providers` over an existing id is a FULL REPLACE (W45 recorded it, T64b built around
+// it), so an edit form routed through it would clear the base URL of anyone who opened it to
+// change a name. `.strict()` refuses a body carrying a field this door does not own, so a
+// caller aiming at the patience pair is told to use the patience door rather than having the
+// value silently dropped.
+//
+// `credential` is a rotation, not a column: it goes to `setProviderCredential`, the same
+// writer the create door uses. Blank means KEEP — a form that (rightly) cannot pre-fill a
+// password field must not read as an instruction to erase one. `.min(1)` refuses only the
+// empty-string-as-the-whole-request case, which is a caller mistake rather than a keep.
+//
+// NOT here, deliberately: `type`, `id` and `authType`. A provider that speaks a different API
+// or authenticates a different way is a different provider — the route refuses those three by
+// name, with a message that says delete-and-re-add, because `.strict()`'s "unrecognized key"
+// is true but useless to the person reading it.
+export const EditProviderSchema = z.object({
+  name: z.string().min(1, '`name` cannot be empty').max(128, '`name` must be at most 128 characters').optional(),
+  baseUrl: z.string().url('`baseUrl` must be a URL').nullable().optional(),
+  behavesLike: z.enum(BEHAVES_LIKE_PROFILES).nullable().optional(),
+  credential: z.string().min(1, '`credential` must be a key, or omitted to keep the stored one').optional(),
+}).strict()
+  .refine(
+    b => Object.keys(b).length > 0,
+    { message: 'Body must name at least one of `name`, `baseUrl`, `behavesLike` or `credential`' },
+  );
+
+export type EditProviderInput = z.infer<typeof EditProviderSchema>;
+
 // ── Model Schema ──
 export const ModelDataSchema = z.object({
   id: z.string(),

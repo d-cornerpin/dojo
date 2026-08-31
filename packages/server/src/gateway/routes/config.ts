@@ -7,7 +7,7 @@ import * as os from 'node:os';
 import { getDb } from '../../db/connection.js';
 import { getProviderCredential, setProviderCredential, clearSecretsCache, getSearchApiKey, getSearchProvider, setSearchConfig } from '../../config/loader.js';
 import { clearClientCache, resolveOpenAIBaseUrl } from '../../agent/model.js';
-import { CreateProviderSchema, EnableModelsSchema, ProviderPatienceSchema } from '../../config/schema.js';
+import { CreateProviderSchema, EditProviderSchema, EnableModelsSchema, ProviderPatienceSchema } from '../../config/schema.js';
 import { createLogger } from '../../logger.js';
 import { DEFAULT_SOUL_MD as DEFAULT_SOUL, DEFAULT_USER_MD as DEFAULT_USER } from '../../prompt/templates.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
@@ -1437,6 +1437,129 @@ configRouter.post('/providers/:id/add-model', async (c) => {
   logger.info('Model added from catalog', { providerId, apiModelId: body.apiModelId });
 
   return c.json({ ok: true, data: rowToModel(row) }, 201);
+});
+
+// PATCH /providers/:id — edit a provider that already exists. Body: any of
+// { name, baseUrl, behavesLike, credential }; ONLY what the body names is changed.
+//
+// T66b. Until now a provider's name, base URL and dialect were create-only: the sole way to
+// change one was `POST /providers` over the existing id, and that door is a FULL REPLACE of
+// the identity fields (documented at the insert above, and by W45 before it). So an edit form
+// built on the re-POST would clear a dialect declaration, or a patience pair, or a base URL,
+// for anyone who opened it to change a name and did not happen to re-send everything else.
+// This door cannot: an absent field is not a request.
+//
+// It is the fourth of the same narrow family — `host-ram`, `response-patience`, and this. Each
+// owns its own properties, so no door is ever in a position to rewrite one it was not asked
+// about. PATIENCE STAYS AT ITS OWN DOOR for that reason; the dashboard's one Save calls both.
+//
+// THREE FIELDS ARE REFUSED BY NAME. A provider's `type` and `id` identify what it IS — a
+// different type is a different provider, and the id is the key that `models.provider_id`,
+// `~/.dojo/secrets.yaml` and every cache resolve through. `authType` changes how the
+// credential is read and stored, which is the same kind of claim. Delete and re-add is the
+// correct move for all three, and the message says so; `.strict()` would have refused them
+// too, but "Unrecognized key(s)" is not an answer a person can act on.
+configRouter.patch('/providers/:id', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => null);
+
+  const raw = (body ?? {}) as Record<string, unknown>;
+  const identity = ['type', 'id', 'authType'].filter(k => k in raw);
+  if (identity.length > 0) {
+    return c.json({
+      ok: false,
+      error: `A provider's ${identity.join(', ')} cannot be edited — a provider that speaks a different API, or authenticates a different way, is a different provider. Delete this one and add it again. This door edits name, baseUrl, behavesLike and credential.`,
+    }, 400);
+  }
+
+  // The patience pair has its own door and keeps it. Named here rather than left to
+  // `.strict()` because "Unrecognized key(s)" tells a caller that the field is wrong without
+  // telling them where the right one is.
+  const patience = ['firstChunkTimeoutMs', 'streamIdleTimeoutMs'].filter(k => k in raw);
+  if (patience.length > 0) {
+    return c.json({
+      ok: false,
+      error: `${patience.join(' and ')} belong to PATCH /providers/:id/response-patience, which is where this provider's streaming bounds are set`,
+    }, 400);
+  }
+
+  const parsed = EditProviderSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ ok: false, error: parsed.error.issues.map(i => i.message).join(', ') }, 400);
+  }
+
+  // The engine's own sentinel. `GET /providers` has always filtered it out of the list
+  // (`id != '__system__'` above), so it never reaches the UI, but nothing refused it at a
+  // write door — and this is the door that rewrites identity, with the router's 'auto'
+  // pointer hanging off that row. Refused here; the older doors are left exactly as they are,
+  // which is a measured asymmetry rather than an oversight.
+  if (id === '__system__') {
+    return c.json({ ok: false, error: 'The System provider is part of the engine and cannot be edited' }, 400);
+  }
+
+  const db = getDb();
+  const existing = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  if (!existing) return c.json({ ok: false, error: 'Provider not found' }, 404);
+
+  const { name, baseUrl, behavesLike, credential } = parsed.data;
+  // A blank key is an untouched password field, not an erasure.
+  const rotatedCredential = credential?.trim() ? credential.trim() : null;
+
+  const nextName = name === undefined ? existing.name : name;
+  const nextBaseUrl = baseUrl === undefined ? existing.base_url ?? null : baseUrl;
+  const nextBehavesLike = behavesLike === undefined ? existing.behaves_like ?? null : behavesLike;
+
+  // `is_validated` is a claim about a CONNECTION: this base URL, with this key, answered. A
+  // rename does not touch that, and neither does declaring a dialect (nothing in the validate
+  // route reads `behaves_like`). Resetting on those would teach the owner to ignore the badge.
+  const baseUrlChanged = nextBaseUrl !== (existing.base_url ?? null);
+  const connectionChanged = baseUrlChanged || rotatedCredential !== null;
+
+  if (rotatedCredential) {
+    logger.info('Rotating provider credential', {
+      providerId: id,
+      credentialLength: rotatedCredential.length, // never log secret bytes (audit finding 8/21)
+    });
+    // The existing store, and the provider's OWN auth type picks the slot, so an OAuth
+    // provider's token does not land in the api_key field and read back as the wrong kind.
+    setProviderCredential(id, rotatedCredential, existing.auth_type === 'oauth' ? 'oauth' : 'api_key');
+  }
+
+  db.prepare(`
+    UPDATE providers SET name = ?, base_url = ?, behaves_like = ?,
+      is_validated = ?, validated_at = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(
+    nextName, nextBaseUrl, nextBehavesLike,
+    connectionChanged ? 0 : existing.is_validated,
+    connectionChanged ? null : existing.validated_at,
+    id,
+  );
+
+  // THE STALE CLIENT. `getOpenAIClient` caches on `${providerId}:${baseUrl}` and closes over
+  // the credential it read when it built the client, and `setProviderCredential` writes
+  // through `saveSecrets`, which records its own mtime — so the loader's "the file changed
+  // under us" invalidation (config/loader.ts) deliberately does not fire for our own write.
+  // Rotate a key without this line and the base URL is unchanged, so the cache key is
+  // unchanged, so every later call keeps sending the key the owner just replaced. The create
+  // door has always cleared by hand for the same reason. Proved on the wire in
+  // `agent/__tests__/an-edited-provider-is-the-one-that-gets-called.test.ts`.
+  if (connectionChanged) clearClientCache(id);
+
+  const row = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as Record<string, unknown>;
+  logger.info('Provider edited', {
+    providerId: id,
+    changed: Object.keys(parsed.data).filter(k => k !== 'credential'),
+    credentialRotated: rotatedCredential !== null,
+    connectionChanged,
+  });
+
+  // `revalidationRequired` is the caller's cue to run `POST /providers/:id/validate` — the
+  // existing route, unchanged, which is also what the add form runs straight after a create.
+  // Kept as two calls rather than validating inside this handler: a DB write door that makes
+  // a network call to a possibly-unreachable local box would take the user's Save hostage for
+  // as long as that box takes to time out.
+  return c.json({ ok: true, data: rowToProvider(row), revalidationRequired: connectionChanged });
 });
 
 // PATCH /providers/:id/host-ram — set or clear the manually-entered RAM
