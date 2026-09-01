@@ -603,29 +603,16 @@ const TRACKER_ROWS = `((${taskScope('w')}) OR (${projectScope('w')}))`;
  * this feeds sits directly beneath it. Two answers to one question is the parallel memory
  * this module exists to prevent.
  */
-/**
- * T67b tail-hygiene rider — WHEN THIS AGENT'S BOARD LAST CHANGED, in epoch ms.
- *
- * The HL5 snapshot stamped itself `as of <new Date()>` and dated its rows `opened <N> ago`
- * off the same clock, so an IDENTICAL board rendered different bytes once a minute — a tail
- * lane diverging for no content reason, which pushes the provider's cache break earlier in
- * the tail than it needs to be. The header now states this instant and the row ages are
- * measured from it, so the whole block is a pure function of board state and moves only when
- * the board does.
- *
- * `updated_at` is maintained on every write to a row and `opened_at` covers a row that has
- * never been updated; a CLOSE bumps `updated_at` too, so a row leaving the set advances this
- * exactly like a row joining it. Falls back to the clock for an agent with no work rows at
- * all — that agent has no snapshot to stamp (`hasCommitmentHistory` and the board counts are
- * both empty), so the fallback is unreachable from the render and is here for total honesty
- * about the function's domain rather than as a live path.
- */
-export function boardLastChangedAt(agentId: string): number {
-  const row = getDb().prepare(
-    `SELECT MAX(COALESCE(w.updated_at, w.opened_at)) AS at FROM work w WHERE w.agent_id = ?`,
-  ).get(agentId) as { at: number | null } | undefined;
-  return typeof row?.at === 'number' ? row.at : Date.now();
-}
+// ── T69b: `boardLastChangedAt` IS DELETED, not parked beside its replacement ─────────────
+// T67b added it so HL5's snapshot could stamp itself with the board's last change instead of
+// the wall clock. T69b removed the stamp entirely — measured on the dev box (`7c95ab5`, four
+// consecutive quiet turns), NO definition of "when the board last changed" can be stable on a
+// conversational agent, because serving a turn OPENS AN ASK ROW that is open while the turn is
+// assembled and is counted by the block itself. Every variant lands on the current turn, and
+// the `as of` minute was the only byte that differed in the whole 995-char snapshot on every
+// judged pair. The block states what it PRINTS and nothing else now (`memory/recall-lane.ts`,
+// SNAPSHOT_HEAD), so this function had exactly zero callers left and is gone rather than left
+// as a second, unreferenced way to ask a question nothing asks.
 
 export function openBoardCounts(agentId: string): BoardCounts {
   const row = getDb().prepare(

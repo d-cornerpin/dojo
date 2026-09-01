@@ -62,10 +62,9 @@ import {
 import {
   answeredPairsForMessages, recentlyAnsweredAsks, RECENTLY_ANSWERED_LIMIT, type AnsweredPair,
 } from '../agent/v2/answered-edge.js';
-import { relativeTimeAgo } from '../agent/v2/outbound-ledger.js';
 import { recordedInstant } from './message-stamp.js';
 import {
-  obligationVerdict, liveCommitments, hasCommitmentHistory, openBoardCounts, boardLastChangedAt,
+  obligationVerdict, liveCommitments, hasCommitmentHistory, openBoardCounts,
   type LiveCommitment, type BoardCounts,
 } from '../work/obligation-memory.js';
 import { UNFILED_ARCHIVE_LABEL, unfiledArchiveWorstCaseLines } from '../vault/retrieval.js';
@@ -214,7 +213,7 @@ export interface RecallLanePayload {
    * T44: `board` is the REST of the board in four numbers, published in the same block for the
    * same reason and never listed. See `snapshotBoardLine`.
    */
-  snapshot: { total: number; rows: string[]; board: BoardCounts; asOfMs: number } | null;
+  snapshot: { total: number; rows: string[]; board: BoardCounts } | null;
 }
 
 const HEAD = '═══ RELEVANT MEMORY (retrieved by meaning, context only, not live conversation) ═══';
@@ -258,11 +257,27 @@ export const UNRESOLVED_OBLIGATION_MARK =
 // parked", "waiting on Bob's address", "pending", "outstanding", "on deck"), so the negative
 // instruction names those words.
 //
-// THE STAMP IS AN INSTANT, NOT A CLOCK. `msg.current-time` is the one owner of what time it
-// is for this agent, in its local zone, with its legend. A second local-time rendering here
-// would be a second clock; an ISO instant is unambiguous, costs six words, and cannot
-// disagree with the clock lane about anything.
-export const SNAPSHOT_HEAD = '═══ OPEN COMMITMENTS — COMPLETE SNAPSHOT as of ';
+// ── T69b: THE HEADER STAMP IS GONE, AND ITS ROW AGES WITH IT ────────────────────────────
+// HL5 ruled "the stamp is an INSTANT, not a clock", and T67b then keyed that instant to the
+// board's last change so an identical board stopped ticking once a minute. Both were right
+// and neither was enough, because of a fact only the dev box could show (`7c95ab5`, four
+// consecutive quiet turns): SERVING A TURN OPENS AN ASK ROW, that row is open while the turn
+// is assembled, and it is counted by this very block — so ANY definition of "when the board
+// last changed" lands on the current turn. Measured: across three consecutive judged pairs
+// the ONLY byte that differed in the whole 995-char block was the `as of` MINUTE, and it put
+// 995 chars back into the re-billed region on every single turn.
+//
+// So the stamp is removed rather than re-keyed, and the row ages become RECORDED INSTANTS
+// like every other time term T69b touched. What remains is a pure function of what the block
+// PRINTS — the open commitments and the four board counts — which is the property the whole
+// task is about: this block is byte-identical until what it says changes.
+//
+// NOTHING IS LOST. The snapshot's authority was never in the stamp; it is in the completeness
+// claim and the superseding sentence, both untouched. The block is rebuilt on every assembly,
+// so there is no version of it that could be stale, and `msg.current-time` is the LAST message
+// in the tail with the legend that reads these stamps ("subtract from the current time"). The
+// six words the stamp cost bought a date the model had no use for and a cache break it did.
+export const SNAPSHOT_HEAD = '═══ OPEN COMMITMENTS — COMPLETE SNAPSHOT ═══';
 export const SNAPSHOT_TAIL = '═══ END OPEN COMMITMENTS ═══';
 
 const SNAPSHOT_SUPERSEDES =
@@ -313,19 +328,9 @@ export const snapshotBoardLine = (b: BoardCounts): string =>
   + 'what you have open. For the rows themselves call work_update(action="list"), which lists '
   + 'the tracker items — not the asks, and not the commitments above.';
 
-// T67b: THE STAMP IS THE BOARD'S LAST-CHANGE INSTANT, NOT THE ASSEMBLY CLOCK.
-// The note above already ruled that this is an INSTANT rather than a clock reading; what it
-// did not settle is WHICH instant, and `new Date()` was the wrong answer for the same reason
-// the briefing's `generated=` was: an identical board rendered different bytes once a minute,
-// so this lane diverged from the previous turn's for no content reason and pushed the
-// provider's cache break earlier into the tail than the content required. `boardLastChangedAt`
-// advances on every open, update and close of any of this agent's work rows — so it moves
-// exactly when the snapshot's subject moves, and never otherwise. The row ages below are
-// measured from the SAME instant, so the header and the rows cannot state two different
-// nows.
-function renderSnapshot(s: { total: number; rows: string[]; board: BoardCounts; asOfMs: number }): string {
-  const stamp = `${new Date(s.asOfMs).toISOString().slice(0, 16).replace('T', ' ')}Z`;
-  const head = `${SNAPSHOT_HEAD}${stamp} ═══`;
+// T69b: no stamp to compute — the header IS the header. See SNAPSHOT_HEAD's note.
+function renderSnapshot(s: { total: number; rows: string[]; board: BoardCounts }): string {
+  const head = SNAPSHOT_HEAD;
   const board = snapshotBoardLine(s.board);
   if (s.total === 0) return `${head}\n${SNAPSHOT_EMPTY_BODY}\n${board}\n${SNAPSHOT_TAIL}`;
   const shown = s.rows.map((r, i) => `${i + 1}. ${r}`);
@@ -494,16 +499,17 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
   // ONCE and serves both the decision and the render; there is no second query.
   const board = openBoardCounts(ctx.agentId);
   const publishesSnapshot = hasCommitmentHistory(ctx.agentId) || board.asks > 0 || board.tracker > 0;
-  const asOfMs = publishesSnapshot ? boardLastChangedAt(ctx.agentId) : 0;
   const snapshot = publishesSnapshot
     ? (() => {
         const rows: LiveCommitment[] = liveCommitments(ctx.agentId);
         return {
-          asOfMs,
           total: rows.length,
           rows: rows.slice(0, snapshotRowCap()).map((r) =>
             `[${r.id}] ${oneLine(r.title || '(no description)').slice(0, snapshotTitleChars())} `
-            + `(${r.state}, opened ${relativeTimeAgo(new Date(r.openedAt).toISOString(), asOfMs)})`),
+            // T69b: the RECORDED INSTANT, like every other time term in the tail. It was
+            // `relativeTimeAgo(..., asOfMs)`, which needed the header stamp as its reference
+            // — and the stamp is gone because nothing could key it to this block's content.
+            + `(${r.state}, opened ${recordedInstant(r.openedAt)})`),
           // T44: read at the same moment as the commitment set, from the same module and the
           // same `closed_at IS NULL` predicate, so the block cannot state two boards.
           board,
@@ -697,16 +703,13 @@ export function recallLaneWorstCaseTokens(): number {
     snapshot: {
       total: snapshotRowCap() + 1,
       rows: Array.from({ length: snapshotRowCap() }, () =>
-        `[cmt:000000000000] ${'x'.repeat(snapshotTitleChars())} (abandoned, opened 59 minutes ago)`),
+        // T69b: the widest recorded instant, replacing the widest relative age.
+        `[cmt:000000000000] ${'x'.repeat(snapshotTitleChars())} (abandoned, opened ${longest})`),
       // T44: the board line has no row cap because it renders no rows — its whole size is the
       // four numbers, so its worst case is the widest number a board could plausibly reach.
       // Five digits is 99,999 open rows on ONE agent; the worn-in dev body's largest per-agent
       // count of any kind is three figures, and the plural branches are all taken here.
       board: { asks: 99_999, asksBlocked: 99_999, tracker: 99_999, trackerBlocked: 99_999 },
-      // A fixed instant: the stamp is 16 chars wide for every value it can take, so any
-      // instant produces the same worst case. Chosen rather than `Date.now()` so this
-      // derivation is itself a pure function (the reserve it feeds is a committed literal).
-      asOfMs: Date.parse('2026-08-31T12:00:00Z'),
     },
   });
   worstCase = render?.tokens ?? 0;

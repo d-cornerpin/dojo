@@ -27,10 +27,14 @@
 // Every differing line was named and classified. The classification is what this file
 // encodes, and it has exactly two verdicts:
 //
-//   DELIBERATE — `msg.relevant-memory` (retrieved against the LIVE ASK: roadmap #10 is the
-//                reason it rides the tail at all), `msg.directive` (its content IS the newest
-//                ask) and `msg.current-time` (its content IS the clock). These three are
-//                REGISTERED below, by id, and are the only exemptions this gate grants.
+//   DELIBERATE — `engine.recently-answered` (its source is the last three answered asks of
+//                THIS conversation, and a turn answers one), `msg.relevant-memory` (retrieved
+//                against the LIVE ASK: roadmap #10 is the reason it rides the tail at all),
+//                `msg.directive` (its content IS the newest ask) and `msg.current-time` (its
+//                content IS the clock). These four are REGISTERED in §4 below, by id, and are
+//                the only exemptions this gate grants. The first was added AFTER the fix was
+//                measured, not before it: at `2557747` it was also a clock reader and it also
+//                sat ahead of every stable block, and both of those are gone.
 //   DEFECT     — everything else, and there were four kinds:
 //                  (a) relative ages read off `Date.now()` in four blocks;
 //                  (b) the HL5 board snapshot glued to the BACK of the per-ask retrieval, so
@@ -371,13 +375,40 @@ describe('T69b §3 — the board snapshot is its own block, ahead of everything 
     expect(ask2.messages[1].content).not.toBe(ask1.messages[1].content); // the ask did
   });
 
-  it('CONTROL — a board change DOES move the snapshot', () => {
+  it('an ask OPENED AND CLOSED inside the turn does not move the snapshot', () => {
+    // The measured one. Serving a turn writes an ask row and closes it in the same turn, so
+    // `boardLastChangedAt` scoped to EVERY work row advanced on every single turn — and on the
+    // dev box at `7c95ab5` the `as of` MINUTE was the only byte that differed in the whole
+    // 995-char block. The block reports open commitments and open-row counts; a row that is
+    // neither open nor a commitment when it is read appears in nothing it prints.
+    const before = renderCommitmentsBlock(renderRecallLane(recallCtx())!.payload!);
+    vi.setSystemTime(DAY_ONE + 3 * MIN);
+    seedWork('ask:transient', 'ask', 'the turn\'s own ask', DAY_ONE + 2 * MIN, {
+      updated_at: DAY_ONE + 2 * MIN + 500, closed_at: DAY_ONE + 2 * MIN + 900,
+      // `state='done'` needs a delivery id (the schema's own CHECK); `abandoned` is the
+      // terminal state a settled probe ask actually reaches and needs none.
+      state: 'abandoned',
+    });
+    expect(renderCommitmentsBlock(renderRecallLane(recallCtx())!.payload!)).toBe(before);
+  });
+
+  it('CONTROL — a board change DOES move the snapshot, opened AND closed', () => {
     const before = renderCommitmentsBlock(renderRecallLane(recallCtx())!.payload!);
     vi.setSystemTime(DAY_ONE + 5 * MIN);
     seedWork('cmt:t69by', 'commitment', 'Post the parcel', DAY_ONE + 4 * MIN);
-    const after = renderCommitmentsBlock(renderRecallLane(recallCtx())!.payload!);
-    expect(after).not.toBe(before);
-    expect(after).toContain('Post the parcel');
+    const opened = renderCommitmentsBlock(renderRecallLane(recallCtx())!.payload!);
+    expect(opened).not.toBe(before);
+    expect(opened).toContain('Post the parcel');
+
+    // and CLOSING a commitment moves it too — that is the event the superseding sentence is
+    // for, and it is why the scope is not simply "rows that are open now".
+    vi.setSystemTime(DAY_ONE + 9 * MIN);
+    mockDb.current!.prepare(
+      "UPDATE work SET closed_at = ?, updated_at = ?, state = 'abandoned' WHERE id = 'cmt:t69by'",
+    ).run(DAY_ONE + 8 * MIN, DAY_ONE + 8 * MIN);
+    const closed = renderCommitmentsBlock(renderRecallLane(recallCtx())!.payload!);
+    expect(closed).not.toBe(opened);
+    expect(closed).not.toContain('Post the parcel');
   });
 
   it('an agent with nothing on its board still publishes no snapshot, and the lane is ONE message', () => {
@@ -400,8 +431,20 @@ describe('T69b §3 — the board snapshot is its own block, ahead of everything 
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('T69b §4 — the tail is ordered most-stable-first and the deliberate lanes sit last', () => {
-  /** The three lanes whose churn is REGISTERED as deliberate, and the reason each is granted. */
+  /**
+   * The lanes whose churn is REGISTERED as deliberate, and the reason each is granted. They
+   * are the LAST FOUR messages of the tail, in this order, so what each costs is itself.
+   *
+   * `engine.recently-answered` earns its place by MEASUREMENT, not by assumption: after the
+   * order fix the dev box showed it still moving on every judged pair, and the diff says why —
+   * a new answer stamp enters the top-three and the oldest falls out. Its source is "the last
+   * three answered asks of THIS conversation", and a conversational turn answers one. That is
+   * per-turn material by construction, the same class as the directive pin; what T69b removed
+   * from it was the WALL-CLOCK read on top of that (§1) and its position in FRONT of every
+   * block that changes rarely (below).
+   */
   const DELIBERATE: ReadonlyArray<readonly [string, string]> = [
+    ['engine.recently-answered', 'its source IS the last three answered asks of THIS conversation, and a conversational turn answers one — per-turn material by construction, not a clock read'],
     ['msg.relevant-memory', 'retrieved against the LIVE ASK — roadmap #10 is why it rides the tail'],
     ['msg.directive', 'its content IS the newest unanswered ask (T67b §7)'],
     ['msg.current-time', 'its content IS the clock'],
@@ -425,9 +468,9 @@ describe('T69b §4 — the tail is ordered most-stable-first and the deliberate 
     return ids;
   };
 
-  it('the three deliberate lanes are the LAST three, in that order', () => {
+  it('the deliberate lanes are the LAST ones, in that order', () => {
     const order = injectionOrder();
-    expect(order.slice(-3)).toEqual(DELIBERATE.map(([id]) => id));
+    expect(order.slice(-DELIBERATE.length)).toEqual(DELIBERATE.map(([id]) => id));
   });
 
   it('every block that changes every turn sits BEHIND every block that changes rarely', () => {
@@ -466,6 +509,6 @@ describe('T69b §4 — the tail is ordered most-stable-first and the deliberate 
     for (const [id, why] of DELIBERATE) {
       expect(why.length, `${id} is exempt with no reason recorded`).toBeGreaterThan(20);
     }
-    expect(DELIBERATE).toHaveLength(3);
+    expect(DELIBERATE).toHaveLength(4);
   });
 });

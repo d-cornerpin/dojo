@@ -506,18 +506,23 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
   {
     id: 'lane.relevant-memory',
     slot: MessageSlot.RecalledMemory,
-    // T69b: 2,179 -> 2,194, and the lane now renders TWO messages rather than one.
-    // The +15 is two changes, both re-derived by CALLING the generator:
+    // T69b: 2,179 -> 2,203, and the lane now renders TWO messages rather than one.
+    // The +24 is three changes, all re-derived by CALLING the generator:
     //   +14  the three answered pairs' time terms, `59 minutes ago` (14 chars) -> the widest
     //        recorded instant `[Sep 30, 2026, 11:41 PM]` (24 chars), twice per pair = 60 chars.
     //   +1   the second message's own frame in `renderTokens` (the HL5 snapshot is its own
     //        message now instead of two newlines inside the recall string).
+    //   +9   the snapshot's six row ages, same substitution as the pairs (60 chars), MINUS the
+    //        `as of <16-char stamp> ` the header no longer carries. The header stamp went
+    //        because no definition of "when the board last changed" is stable on a
+    //        conversational agent — serving a turn opens an ask row this block counts — so the
+    //        block states what it PRINTS and nothing else (see SNAPSHOT_HEAD's note).
     // NOTHING ELSE ABOUT THE BUDGET MOVED. Both halves are still this ONE lane's, still under
     // this ONE reserve, and `recallLaneWorstCaseTokens()` still renders BOTH through the real
     // renderer — `recall-lane.test.ts` pins the literal to it. The split is about ORDER inside
     // the tail (the snapshot is emitted FIRST, ahead of everything retrieved against the live
     // ask, so an ask no longer re-bills ~1,400 chars of board state), not about size.
-    reserveTokens: 2194,
+    reserveTokens: 2203,
     measured:
       'SWEEP CORE-2 item 4, DERIVED FROM THE GENERATOR, not guessed beside it: the worst case ' +
       '`memory/recall-lane.ts` can render under its own declared caps above — 3 answered ' +
