@@ -4005,6 +4005,48 @@
       "to": 414,
       "by": "UX-REPAIR T67b (W60) \u2014 the prefix holds still",
       "why": "NEW LISTING, not a raise of an existing pin: this file crossed the 400-line new-file cap for the first time at 414. +14 (4 code, 10 comment) \u2014 MessageSlot.ActiveDirectiveTail = 1890, RecalledMemory 1870 -> 1880, and the directiveLane context field, each with the reason its number is what it is. This file IS the slot contract; a slot number moved without its argument is the thing every reader of it has to trust. Added in the same gate-side commit as the raises, so the addition is seen and argued with, which is the point of the cap."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2517,
+      "to": 2642,
+      "by": "UX-REPAIR T68b (W62) \u2014 the compile order arrives whole",
+      "why": "UX-REPAIR T68b. +125 (12 code, 113 comment). TWO SEAMS AND ONE CHECKER. (a) `isFanoutJoinImperative` names T10's exemption ONCE, so the awareness partition and `scopeToA2AThread` can no longer hold two different ideas of it \u2014 that drift IS the defect: T10 kept the compile order in the scoped tail and the partition two hundred lines below reclassified it into a 400-char gist, 3,660 chars in and 400 out, cut mid-word before every quoted piece. (b) `compileOrderReachedTheModel` is the fact the compile gate had been ASSERTING to the model without ever reading an assembled context. NO ALTERNATIVE IS SMALLER AND STILL TRUE: rendering the order ungisted inside `lane.events` keeps it at slot 1050, AHEAD of the fresh tail, so every arrival rewrites a block the whole tail is billed behind \u2014 a prefix cost this same overhaul's T67b exists to remove; and no module other than this one holds both the row and the emitted array, so the verification cannot live anywhere else. THE COMMENT RATIO IS THE POINT: both changes are one-line predicates whose entire risk is a future reader not knowing what the 400-char cut cost (three full 16,384-token output budgets in twelve minutes, 6 of 6 recorded grinds). THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2642."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 2645,
+      "to": 2675,
+      "by": "UX-REPAIR T68b (W62) \u2014 the compile order arrives whole",
+      "why": "UX-REPAIR T68b. +30 (4 code, 26 comment). `JOIN_STEER_LABEL`, applied at the three `fanout_join` rungs and REPLACING one site's hand-rolled `[System] `, so the ladder has one voice instead of two spellings. WHY IT IS NEEDED AT ALL: these rows used to be attributed by the events-lane header that also truncated them (the model's own recorded reasoning quotes `[fanout_join]` by name); on the fresh tail they are bare `role='user'` rows, and `mergeConsecutiveRoles` can fold an unlabelled engine imperative into the same message as the owner's own words \u2014 the conflation the attribution redesign exists to kill. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2675."
+    },
+    {
+      "path": "packages/server/src/work/join-drive.ts",
+      "from": 480,
+      "to": 498,
+      "by": "UX-REPAIR T68b (W62) \u2014 the compile order arrives whole",
+      "why": "UX-REPAIR T68b. +18 (2 code, 16 comment). `COMPILE_ORDER_PIECES_MARKER` extracted from the steer's own body so the WRITER and the CHECKER are one string. NO ALTERNATIVE EXISTS that is not worse: a literal in the checker is a fingerprint whose two ends can drift, and the day someone rewords the steer the check stops checking in silence \u2014 which is precisely how the gate's sentence became a lie in the first place. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 498."
+    },
+    {
+      "path": "packages/server/src/agent/v2/state.ts",
+      "from": 714,
+      "to": 730,
+      "by": "UX-REPAIR T68b (W62) \u2014 the compile order arrives whole",
+      "why": "UX-REPAIR T68b. +16 (2 code, 14 comment). `compileOrderReachedModel`: the assembly's verdict carried to the gate that speaks about it. The doc block states that it is re-derived every iteration and never latched, because a latched version of this field is the next bug \u2014 the same discipline `compileOwedGateDecision` already states for the owed list. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 730."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/refusal-gates.ts",
+      "from": 393,
+      "to": 404,
+      "by": "UX-REPAIR T68b (W62) \u2014 the compile order arrives whole",
+      "why": "UX-REPAIR T68b. +11 (7 code, 4 comment). The stand-down arm and its WARN. Reaching that log means the ENGINE wrote a compile order that did not arrive, which is a defect that deserves a line rather than a silent no-refusal; without it a gate that armed and never bit is indistinguishable from a gate that was never armed. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 404."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/assemble/index.ts",
+      "from": 302,
+      "to": 308,
+      "by": "UX-REPAIR T68b (W62) \u2014 the compile order arrives whole",
+      "why": "UX-REPAIR T68b. +6 (2 code, 4 comment). One `advance` carrying `compileOrderIntact` into turn state, at the only point in the turn where the assembly's own answer exists. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 308."
     }
   ],
   "maxNewFileLines": 400,
@@ -4034,7 +4076,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
-    "packages/server/src/agent/a2a-transport.ts": 2645,
+    "packages/server/src/agent/a2a-transport.ts": 2675,
     "packages/server/src/agent/agent-status.ts": 233,
     "packages/server/src/agent/brokers/deny.ts": 385,
     "packages/server/src/agent/brokers/grants.ts": 344,
@@ -4082,10 +4124,10 @@
     "packages/server/src/agent/v2/receipt.ts": 543,
     "packages/server/src/agent/v2/recorded-commitment.ts": 209,
     "packages/server/src/agent/v2/recovery.ts": 605,
-    "packages/server/src/agent/v2/state.ts": 714,
+    "packages/server/src/agent/v2/state.ts": 730,
     "packages/server/src/agent/v2/steer-queue.ts": 335,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
-    "packages/server/src/agent/v2/steps/assemble/index.ts": 302,
+    "packages/server/src/agent/v2/steps/assemble/index.ts": 308,
     "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts": 224,
     "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 125,
     "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 222,
@@ -4097,7 +4139,7 @@
     "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 225,
     "packages/server/src/agent/v2/steps/execute/index.ts": 289,
     "packages/server/src/agent/v2/steps/execute/post-result.ts": 351,
-    "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 393,
+    "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 404,
     "packages/server/src/agent/v2/steps/execute/result-notes.ts": 152,
     "packages/server/src/agent/v2/steps/execute/run-one.ts": 280,
     "packages/server/src/agent/v2/steps/execute/scaffold-title.ts": 149,
@@ -4175,7 +4217,7 @@
     "packages/server/src/healer/healer-agent.ts": 1186,
     "packages/server/src/healer/injury-recovery.ts": 831,
     "packages/server/src/index.ts": 1256,
-    "packages/server/src/memory/assembler.ts": 2517,
+    "packages/server/src/memory/assembler.ts": 2642,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
     "packages/server/src/memory/budget.ts": 522,
@@ -4241,7 +4283,7 @@
     "packages/server/src/work/ask-settlement.ts": 1307,
     "packages/server/src/work/ask-title.ts": 420,
     "packages/server/src/work/deliverable-declaration.ts": 320,
-    "packages/server/src/work/join-drive.ts": 480,
+    "packages/server/src/work/join-drive.ts": 498,
     "packages/server/src/work/obligation-memory.ts": 643,
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
