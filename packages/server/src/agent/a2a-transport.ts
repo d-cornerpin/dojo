@@ -1624,6 +1624,28 @@ function failClosedNotice(join: JoinState, askedNameHint?: string | null): strin
 }
 
 /**
+ * WHO IS SPEAKING, stamped into the bytes — T68b's rider on the join ladder's three steers.
+ *
+ * Until 2026-09-01 every `fanout_join` row was rendered by `lane.events`, which prints its own
+ * attribution ("• [Aug 31, 2026, 04:38 PM][fanout_join] …") and, on the way, cut the row to
+ * 400 chars. The cut is what W61 chased; the label was the part that WORKED — the model's
+ * recorded reasoning quotes it by name: *"The fanout_join notice says 'carries each piece's
+ * content exactly as delivered below'."*
+ *
+ * T68b sends these rows down the FRESH TAIL instead, whole, and the fresh tail prints a stored
+ * `role='user'` row with a time stamp and nothing else. `mergeConsecutiveRoles` then joins a
+ * run of user rows into one message, so an unlabelled engine imperative can end up sitting
+ * inside the same message as the owner's own words — the exact conflation the attribution
+ * redesign exists to kill ("[SOURCE: IMESSAGE FROM a contact] dinner? <the owner's question>"
+ * as one message). One label keeps the delivery honest without the truncation coming with it.
+ *
+ * ONE prefix for all three rungs, so the ladder speaks with one voice: the compile order, the
+ * stuck steer, and the never-came-back notice (whose hand-rolled `[System] ` this replaces —
+ * two spellings of "the platform is talking to you" was one too many).
+ */
+const JOIN_STEER_LABEL = '[Engine]';
+
+/**
  * OR2's other half at this seam: THE AGENT IS TOLD, and decides whether to speak.
  *
  * The platform states the fact to the person (above) because a person who asked a question is
@@ -1639,7 +1661,7 @@ function tellAgentTheJoinFailed(join: JoinState, what: string): void {
       id: uuidv4(),
       agentId: join.agentId,
       content:
-        `[System] A piece of work you delegated never came back: ${what} The platform has told the `
+        `${JOIN_STEER_LABEL} A piece of work you delegated never came back: ${what} The platform has told the `
         + `user that plainly, in its own voice, so they are not left waiting. If the user should `
         + `know more — what you were after, whether it is worth another try — WRITE it to them in `
         + `your own words on your next turn, directly in the conversation.`,
@@ -1723,6 +1745,13 @@ function steerModelToCompile(join: JoinState, rung?: { attempt: number; bound: n
   // moved the ORDER ahead of the quotes — the events lane renders this row as a 400-char gist,
   // and the instruction used to sit past the cut. Byte-identical re-sends were the other half:
   // the model was never told this was attempt 2 or 3 (measured, PC2).
+  //
+  // T68b, and it is the reason that "T10 moved the ORDER ahead of the quotes" line above is now
+  // history rather than a live constraint: the row no longer goes through the gist at all. The
+  // whole 3,660 chars — order, hand-off check, and every piece quoted verbatim — reach the
+  // model through the fresh tail (`memory/assembler.ts isFanoutJoinImperative`). The ordering
+  // inside the text is kept exactly as it is: it was right for its own sake, and re-shuffling
+  // it now would churn bytes for no reason.
   const steer = compileSteerText({
     total: join.total, pieces: rendered,
     attempt: rung?.attempt ?? null, bound: rung?.bound ?? JOIN_REDRIVE_BOUND,
@@ -1733,7 +1762,7 @@ function steerModelToCompile(join: JoinState, rung?: { attempt: number; bound: n
   // it to the model. T10 made the second half of that sentence true on an A2A wake as well
   // (`memory/assembler.ts` scopeToA2AThread's one exemption).
   insertEngineEventIfAbsent({
-    work: null, id: uuidv4(), agentId: join.agentId, content: steer,
+    work: null, id: uuidv4(), agentId: join.agentId, content: `${JOIN_STEER_LABEL} ${steer}`,
     sourceAgentId: null, originIntent: 'fanout_join',
   });
   logger.info('join complete: steered the model to compile the combined reply', {
@@ -2274,7 +2303,8 @@ function steerAgentToTellOwnerStuck(join: JoinState, rung: JoinDriveDecision): v
   const pieces = joinPieces(join.id);
   const back = pieces.filter((p) => (p.content ?? '').trim().length > 0).length;
   const steer =
-    `The owner is still waiting on the request you delegated, and the platform has brought you back to it `
+    `${JOIN_STEER_LABEL} `
+    + `The owner is still waiting on the request you delegated, and the platform has brought you back to it `
     + `${rung.redrives} time(s) without a reply reaching them. ${back} of ${join.total} delegated piece(s) `
     + `came back. TELL THE OWNER NOW, in your own words, directly in this conversation: what you asked for, `
     + `what came back, and — plainly — that you have not finished it. If you can give them the combined `

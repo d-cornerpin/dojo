@@ -76,6 +76,38 @@ export function getActiveUserDirective(
   if (opts?.excludeEngine) {
     baseClauses.push("lane <> 'events'");
   }
+  // ── T68b (2026-09-01) — C16'S OWN SENTENCE, FINALLY IMPLEMENTED. ────────────────────────
+  //
+  // The sentinel branch above says it "stops an A2A inbound from being pinned as the ACTIVE
+  // USER DIRECTIVE", and it only ever did so on turns that carried `'__none__'`. On a wake
+  // whose counterparty never resolved — `turns.kind` NULL, `conv_key` NULL, which is what
+  // BehaviorBot's turns 5121 and 5122 were — the pin ran UNSCOPED, and the newest
+  // substantive unanswered row in a fan-out is whichever helper answered LAST.
+  //
+  // What that produced, measured (W61 §2b, and the store's seqs 70613 / 70633 / 70654 /
+  // 70662): the pin OSCILLATED. Healer answers, the block holds Healer's piece; Ticky
+  // delivers, it holds Ticky's and Healer's is gone; the agent re-asks Healer, it flips
+  // back. Every recovery attempt destroyed the piece the previous attempt recovered, so the
+  // agent could never hold both, so it could never compile, so the engine redrove and it
+  // ground again. The model's own recorded words for the state: "I keep going in circles."
+  //
+  // The clause is one line because the fact is one fact: `lane='a2a'` is stamped at ingest
+  // and means AGENT TRAFFIC ("agent traffic must be declared, never assumed",
+  // `message-store.ts`). A row on that lane is by construction not the user, and this block
+  // is the ACTIVE **USER** DIRECTIVE — its header tells the model it holds "the user's most
+  // recent substantive ask". Pinning a helper's deliverable there was the block lying about
+  // its own contents.
+  //
+  // UNCONDITIONAL, not gated on `excludeEngine`, and that is deliberate: on an ENGINE turn
+  // the directive is the engine event (OPEN-11) and a newer A2A deliverable out-competing it
+  // is the same lie from the other side. There is no turn kind on which an A2A inbound is
+  // the user's directive.
+  //
+  // WHAT THIS DOES **NOT** DO, stated so no one reads it as the whole fix: it does not
+  // deliver the pieces. The pieces ride the fan-out compile order, which reaches the model
+  // whole through the fresh tail (`memory/assembler.ts`, `isFanoutJoinImperative`). This
+  // clause stops the oscillation and stops the block misdescribing what it holds.
+  baseClauses.push("lane <> 'a2a'");
   // T-1: scope to the current conversation. The current ask carries its `conversation_id`
   // from ingest (and the turn re-stamps it at pickup if no producer did), so it matches; a
   // DIFFERENT human's ask carries a different conversation and is excluded from the pin.

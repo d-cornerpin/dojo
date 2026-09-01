@@ -46,7 +46,7 @@ import { turnBoundary } from '../agent/turn-state.js';
 import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 import { currentTurnNumber, readStoredTurnThreshold, CONTINUITY_BRIEF_HORIZON_TURNS } from '../agent/v2/turn-record.js';   // G24
 import type { Summary } from './dag.js';
-import type { Message } from '@dojo/shared';
+import type { Message, MessageOrigin } from '@dojo/shared';
 // PHASE-3 T5 — the marker taxonomy. Four shapes this file used to spell itself.
 import { A2A_INBOUND_RE, parseA2AThreadShort, parseTechniqueFreshRead } from '@dojo/shared';
 
@@ -712,9 +712,31 @@ export function scopeToA2AThread(tail: Message[], threadId: string | null): Mess
     // other engine intent stays excluded, and `__tests__/a-compile-order-the-model-can-see`
     // enumerates `ENGINE_RIDER_INTENTS` so a new rider is excluded by default and a future
     // widening has to come here and argue for itself.
-    if (o.kind === 'engine' && o.intent === 'fanout_join') return true;
+    if (isFanoutJoinImperative(m)) return true;
     return false;                                          // exclude human + engine
   });
+}
+
+/**
+ * T10's exemption, named once so the TWO seams that must honour it cannot drift apart.
+ *
+ * ── WHY THIS FUNCTION EXISTS AT ALL (T68b, 2026-09-01) ──
+ * T10 spelled its carve-out as a bare `o.intent === 'fanout_join'` inside `scopeToA2AThread`,
+ * and the carve-out was then NULLIFIED two hundred lines below by the awareness partition,
+ * which reclassified the very row T10 had just kept and rendered it as a 400-char gist. The
+ * exemption was a literal in one filter instead of a property of the row, so the second
+ * filter never knew it existed. Both seams call this now; a third one will find it here.
+ *
+ * ── WHAT MAKES THIS INTENT DIFFERENT, AND WHY IT IS NOT A CLASS ──
+ * `fanout_join` is the only engine intent that is an IMPERATIVE ADDRESSED TO THIS AGENT
+ * carrying content the agent cannot obtain any other way: the compile order quotes its own
+ * children's delivered pieces verbatim (`work/join-drive.ts compileSteerText`), and the
+ * stuck-steer and the never-came-back notice are the same ladder's later rungs. Every other
+ * engine row on this lane is AMBIENT AWARENESS — "this happened, you may want to mention it"
+ * — which is exactly what a gist is for, and every one of them stays gisted.
+ */
+export function isFanoutJoinImperative(m: { origin?: MessageOrigin | null }): boolean {
+  return m.origin?.kind === 'engine' && m.origin?.intent === 'fanout_join';
 }
 
 /**
@@ -1453,10 +1475,50 @@ async function assembleMessageContext(
       // EVENTS / awareness lane: engine notices AND unauthorized human inbound — things the
       // agent should be AWARE of but is NOT in conversation with. An action-required
       // engine-origin A2A stays FULL in the live tail on its engine turn.
+      //
+      // ── T68b (2026-09-01): THE FAN-OUT COMPILE ORDER IS NOT AN AWARENESS EVENT. ────────
+      //
+      // THE DEFECT, MEASURED (W61, verdict A, driven byte-identically at two commits).
+      // The order is 3,660 chars and quotes both delegated pieces verbatim. It is filed
+      // `lane='events'` (`agent/a2a-transport.ts steerModelToCompile`), `origin.ts` turns
+      // that into `originKind='engine'`, this filter swept it into the awareness set, and
+      // the lane below rendered it whitespace-collapsed and sliced to 400 chars. What
+      // reached the model was:
+      //     "• [Aug 31, 2026, 04:38 PM][fanout_join] All 2 delegated pieces … do not trust
+      //      a tracker row that says "complete" over the delivered text itself). Do NOT
+      //      search, op"
+      // — the exact half that PROMISES the pieces and FORBIDS looking for them, with
+      // "Here is each piece's delivered content, verbatim:" and both pieces cut off. The
+      // model then spent three entire 16,384-token output budgets in twelve minutes
+      // searching its own context for content the platform had removed, wrote
+      // "I'm fabricating… I keep going in circles", and never compiled. Six recorded
+      // grinds on this agent, six inside an owed fan-out arc.
+      //
+      // WHY HERE AND NOT AT THE LANE. T10 already ruled that this row must reach the model
+      // (`isFanoutJoinImperative`, `scopeToA2AThread` above) and this line silently
+      // overrode that ruling. The fix is to stop making the claim twice: a row T10 keeps is
+      // not an awareness event, so it never enters the set the gist owns.
+      //
+      // WHY THE FRESH TAIL IS THE RIGHT HOME, not "the events lane but ungisted".
+      //   * CACHE (the binding tenet, and this task is tail-side by construction): the
+      //     events block is `MessageSlot.Events = 1050`, AHEAD of `FreshTail = 1100`.
+      //     Adding a bullet there rewrites a message the whole tail sits behind, re-billing
+      //     it. Landing the row in the fresh tail is a pure APPEND — zero prefix bytes move,
+      //     which is what keeps `__tests__/the-prefix-holds-still` green.
+      //   * APPEND-ONLY, and it is why the rule is unconditional. "Keep only the NEWEST
+      //     order whole and gist the older ones" would move an already-emitted row from the
+      //     tail into a block ahead of it the moment a redrive lands — a mid-session prefix
+      //     rewrite outside a compaction boundary, which is exactly what T56/T67b forbid.
+      //   * The row is `display_tier='agent-only'`, so nothing here reaches a human.
+      //
+      // THE CHARTER IS UNCHANGED FOR EVERYTHING ELSE. One intent, the one T10 already
+      // enumerated; every other engine notice and every unauthorized human inbound still
+      // gists at 400. `__tests__/a-compile-order-the-model-can-see` §T68b §2 is that control.
       const keepFullId = turnContext?.engineEventKeepFullId ?? null;
       const awarenessEvents = scopedTail.filter((m) =>
         m.role === 'user' &&
         (keepFullId ? m.id !== keepFullId : true) &&
+        !isFanoutJoinImperative(m) &&
         (m.origin?.kind === 'engine' || (m.origin?.kind === 'user' && m.origin?.authorized === false)),
       );
       const awarenessIds = new Set(awarenessEvents.map((m) => m.id));
