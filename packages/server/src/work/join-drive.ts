@@ -452,6 +452,24 @@ export function joinRedriveIsBlind(workId: string, turnNumber: number | null): b
  *
  * `attempt` null = the steer issued at join completion, before any rung has been spent.
  */
+/**
+ * THE HEADER THE PIECES SIT UNDER — one constant, because two modules now depend on it.
+ *
+ * T68b: the compile gate's refusal used to ASSERT "the pieces are in the steer, quoted
+ * verbatim" without ever reading the assembled context, and in all six recorded grinds the
+ * sentence was FALSE — the assembler had cut the order at 400 chars, before this line. The
+ * gate verifies before it says it now (`memory/assembler.ts`, `compileOrderIntact`), and this
+ * is what it looks for: the boundary between the ORDER and the PAYLOAD. A row that carries
+ * this string is a compile order rather than one of the ladder's other `fanout_join` rungs,
+ * and a row whose bytes survive INTO the emitted messages carried its pieces with it.
+ *
+ * It is a constant rather than a literal in the checker for the one reason that matters: the
+ * writer and the reader of a fingerprint must be the same string, or the check silently stops
+ * checking the day someone rewords the steer. `__tests__/the-compile-steer-checks-the-pieces`
+ * pins that this text still appears in the generated steer.
+ */
+export const COMPILE_ORDER_PIECES_MARKER = "Here is each piece's delivered content, verbatim:";
+
 export function compileSteerText(p: {
   total: number; pieces: string[]; attempt: number | null; bound: number;
 }): string {
@@ -474,7 +492,7 @@ export function compileSteerText(p: {
     + `send_to_agent message to the agent it names asking them for the result directly — the `
     + `single exception to the no-tools rule above — and compile after it arrives. Do not `
     + `present a hand-off note to the owner as if it were the answer.\n\n`
-    + `Here is each piece's delivered content, verbatim:\n\n`
+    + `${COMPILE_ORDER_PIECES_MARKER}\n\n`
     + p.pieces.join('\n')
   );
 }

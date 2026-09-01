@@ -201,20 +201,20 @@ describe('T47: the allowed set is closed, named, and cannot deadlock the close-o
     const askId = seedCompileOwedJoin();
     spendARedrive(askId);
     for (const name of ['load_tool_docs', 'history_search', 'history_get', 'file_read', 'web_search']) {
-      expect(compileOwedGateDecision([askId], false, toolOpKey(name)).refuse,
+      expect(compileOwedGateDecision([askId], false, toolOpKey(name), true).refuse,
         `${name} is what the model reached for instead of composing`).toBe(true);
     }
     // `load_tool_docs` and the tracker READS are in the close-out gate's allowlist and are NOT
     // in this one: reading a tool's schema is not composing the owner's reply.
     expect(CLOSE_OUT_WORK_OPS.has('load_tool_docs')).toBe(true);
     expect(COMPILE_OWED_ALLOWED_OPS.has('load_tool_docs')).toBe(false);
-    expect(compileOwedGateDecision([askId], false, toolOpKey('work_update', { action: 'get', id: 'x' })).refuse).toBe(true);
+    expect(compileOwedGateDecision([askId], false, toolOpKey('work_update', { action: 'get', id: 'x' }), true).refuse).toBe(true);
   });
 
   it('send_to_agent PASSES — the steer\'s own hand-off-fetch exception, kept open', () => {
     const askId = seedCompileOwedJoin();
     spendARedrive(askId);
-    expect(compileOwedGateDecision([askId], false, toolOpKey('send_to_agent', { to_agent: 'kayla' })).refuse).toBe(false);
+    expect(compileOwedGateDecision([askId], false, toolOpKey('send_to_agent', { to_agent: 'kayla' }), true).refuse).toBe(false);
   });
 
   it('the tracker close-outs PASS', () => {
@@ -226,7 +226,7 @@ describe('T47: the allowed set is closed, named, and cannot deadlock the close-o
       ['work_update', { action: 'close_project' }],
       ['work_note', {}],
     ] as Array<[string, Record<string, unknown>]>) {
-      expect(compileOwedGateDecision([askId], false, toolOpKey(name, args)).refuse,
+      expect(compileOwedGateDecision([askId], false, toolOpKey(name, args), true).refuse,
         `${name} ${JSON.stringify(args)} must pass`).toBe(false);
     }
   });
@@ -235,18 +235,75 @@ describe('T47: the allowed set is closed, named, and cannot deadlock the close-o
     + 'nothing and refuses nothing', () => {
     const askId = seedCompileOwedJoin();
     spendARedrive(askId);
-    expect(compileOwedGateDecision([], false, 'file_read').refuse).toBe(false);
-    expect(compileOwedGateDecision([askId], true, 'file_read').refuse).toBe(false);
+    expect(compileOwedGateDecision([], false, 'file_read', true).refuse).toBe(false);
+    expect(compileOwedGateDecision([askId], true, 'file_read', true).refuse).toBe(false);
   });
 
   it('the decision hands back the LIVE list, so a resolved ask stops being named in a refusal', () => {
     const askId = seedCompileOwedJoin();
     spendARedrive(askId);
-    const d = compileOwedGateDecision(['ask:never-existed', askId], false, 'file_read');
+    const d = compileOwedGateDecision(['ask:never-existed', askId], false, 'file_read', true);
     expect(d.live).toEqual([askId]);
     expect(d.refuse).toBe(true);
-    const gone = compileOwedGateDecision(['ask:never-existed'], false, 'file_read');
+    const gone = compileOwedGateDecision(['ask:never-existed'], false, 'file_read', true);
     expect(gone.live).toEqual([]);
     expect(gone.refuse, 'nothing is owed any more, so nothing is refused').toBe(false);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// T68b — THE GATE MAY NOT ASSERT WHAT IT HAS NOT VERIFIED.
+//
+// The refusal this gate authorises says, verbatim: "Compose it — the pieces are in the steer,
+// quoted verbatim. Write the combined reply now, as this turn's message; do not look anything
+// up first." W61 measured that sentence FALSE in 6 of 6 recorded grinds: the assembler had cut
+// the compile order to 400 chars, so the pieces were nowhere in the context, and the gate
+// refused the two lookups (`vault_search` at seq 70645, `recall_recent_thread` at 70665) that
+// were the model correctly hunting for what the platform had removed.
+//
+// The trap, closed on all four sides: the order says the content is below, the assembler
+// removes it, the gate refuses the tools that would retrieve it, the redrive re-poses the same
+// impossible task. Three full 16,384-token output budgets, twelve minutes, no reply.
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('T68b: the compile gate stands down when the pieces did not reach the model', () => {
+  it('RED: the SAME owed compile that refuses a lookup when the order arrived whole '
+    + 'refuses NOTHING when it did not', () => {
+    const askId = seedCompileOwedJoin();
+    spendARedrive(askId);
+
+    const verified = compileOwedGateDecision([askId], false, 'vault_search', true);
+    const unverified = compileOwedGateDecision([askId], false, 'vault_search', false);
+
+    expect(verified.refuse, 'unchanged: T47 enforces when the pieces are genuinely there').toBe(true);
+    expect(unverified.refuse, 'the model may go and find what the platform lost').toBe(false);
+  });
+
+  it('standing down is REPORTED, not silent — the duty is still owed and still named', () => {
+    const askId = seedCompileOwedJoin();
+    spendARedrive(askId);
+
+    const d = compileOwedGateDecision([askId], false, 'recall_recent_thread', false);
+    expect(d.standDownUnverified, 'the loop logs an ENGINE defect on this').toBe(true);
+    expect(d.live, 'the ask is still owed; only the refusal stops').toEqual([askId]);
+  });
+
+  it('a stand-down is never confused with "nothing was owed"', () => {
+    // Both arms refuse nothing. Only one of them means the engine failed to deliver, and the
+    // difference has to survive into the caller or the log cannot tell the owner why a gate
+    // that armed never bit.
+    const askId = seedCompileOwedJoin();
+    spendARedrive(askId);
+
+    expect(compileOwedGateDecision([], false, 'file_read', false).standDownUnverified).toBe(false);
+    expect(compileOwedGateDecision([askId], true, 'file_read', false).standDownUnverified).toBe(false);
+    expect(compileOwedGateDecision([askId], false, toolOpKey('send_to_agent', { to_agent: 'kayla' }), false)
+      .standDownUnverified, 'an ALLOWED call is not a stand-down').toBe(false);
+    expect(compileOwedGateDecision([askId], false, 'file_read', false).standDownUnverified).toBe(true);
+  });
+
+  it('an ask that is no longer owed does not stand down either — it is simply resolved', () => {
+    const gone = compileOwedGateDecision(['ask:never-existed'], false, 'file_read', false);
+    expect(gone.refuse).toBe(false);
+    expect(gone.standDownUnverified).toBe(false);
   });
 });

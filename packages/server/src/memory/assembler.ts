@@ -35,6 +35,7 @@ import { tagMessageLane, tagMessageLanes, collectMessageLaneIds } from './messag
 import { getContextSummaries } from './dag.js';
 import { buildRecallLaneMessage } from './recall-lane.js';
 import { getLatestBriefing } from './briefing.js';
+import { COMPILE_ORDER_PIECES_MARKER } from '../work/join-drive.js';
 import { pinnedContextSection } from '../vault/retrieval.js';
 import { isPMAgent } from '../config/platform.js';
 import { buildAssemblyContext, assembleSystemFromRegistry } from '../prompt/registry/assembler.js';
@@ -492,6 +493,16 @@ export interface AssembledContext {
    * substantive user turn rewrote the front of the prefix.
    */
   directiveLane?: string | null;
+  /**
+   * T68b — WHETHER THE FAN-OUT COMPILE ORDER ARRIVED WHOLE, decided by the only module that
+   * can decide it: the one that built the array.
+   *
+   * `null` when this turn's tail holds no compile order. `false` when it holds one whose bytes
+   * are not intact in `messages`. The pre-turn compile gate refuses the model's tool calls
+   * only on `true` — before this field the refusal asserted "the pieces are in the steer,
+   * quoted verbatim" as an article of faith, and W61 found it false in 6 of 6 recorded grinds.
+   */
+  compileOrderIntact?: boolean | null;
 }
 
 /** One-shot agent-config markers an assembly consumed; the turn clears them (S3). */
@@ -1857,8 +1868,22 @@ async function assembleMessageContext(
   }
   report.grants.sort((a, b) => a.slot - b.slot);
 
+  // ── T68b — THE ONE FACT A GATE DOWNSTREAM IS NOT ALLOWED TO GUESS. ─────────────────────
+  //
+  // `steps/execute/refusal-gates.ts` refuses the model's reads while a compile is owed, and
+  // its refusal SAYS: "Compose it — the pieces are in the steer, quoted verbatim." That is a
+  // claim about the assembled context, made by a module that has never read one. In all six
+  // recorded grinds it was FALSE, and a refusal that misinforms the model is worse than no
+  // refusal: it is what turned a missing piece into three exhausted output budgets.
+  //
+  // Only this function knows the answer, so this is where it is answered — after the
+  // integrity pass, off the array that is actually returned, not off the intent to build it.
+  // The gate reads the verdict and enforces only on `true` (`compile-owed-gate.ts`).
+  const compileOrderIntact = compileOrderReachedTheModel(laneCtx.tail().freshTail, merged);
+
   logger.info('Context assembled', {
     systemPromptTokens: systemTokens,
+    compileOrderIntact,
     contentBudget,
     reservedOffTheTop: offTheTop,
     spentTokens: report.spentTokens,
@@ -1884,10 +1909,56 @@ async function assembleMessageContext(
     consumedOneShotFlags,
     recallLane,
     directiveLane,
+    compileOrderIntact,
   };
 }
 
 // ── Helpers ──
+
+/**
+ * DID THE FAN-OUT COMPILE ORDER — ALL OF IT — REACH THE EMITTED MESSAGES? (T68b)
+ *
+ * `null` = there is no compile order in this turn's tail, so there is nothing to assert about.
+ * `false` = there is one and its bytes are NOT intact in what the model will be handed.
+ * `true`  = at least one compile order arrived whole, pieces included.
+ *
+ * ── STRUCTURAL, NOT PROSE-READING, AND THE DISTINCTION IS THE WHOLE POINT ──
+ * The prose-classification ban forbids the engine deciding what a message MEANS. This decides
+ * nothing about meaning: it asks whether a byte string the PLATFORM ITSELF wrote is present in
+ * an array the platform itself just built. Both ends of the comparison are ours.
+ *   * which rows are compile orders: `origin.kind==='engine' && origin.intent==='fanout_join'`
+ *     — stamped columns — narrowed to the rung that carries a payload by
+ *     `COMPILE_ORDER_PIECES_MARKER`, the constant `compileSteerText` emits. The ladder's other
+ *     two `fanout_join` rungs (the stuck steer, the never-came-back notice) quote no pieces,
+ *     so they can neither satisfy nor fail this question.
+ *   * did it arrive: the row's OWN stored content is a substring of the emitted text. Whole,
+ *     contiguous, unedited. A gist, a truncation, a budget eviction or a merge that dropped it
+ *     all answer `false` without any of them having to know this check exists.
+ *
+ * It reads `freshTail` and not the raw tail on purpose: after T68b that is where the order
+ * lives, and if some future change puts it back on a lane that truncates, the row will be
+ * absent from `freshTail` and this returns `false` — the gate stops enforcing and the log says
+ * why, instead of the model being told a falsehood and refused its tools for believing itself.
+ *
+ * Exported for `__tests__/a-compile-order-the-model-can-see` §T68b §4, which drives the
+ * TRUNCATED input directly: the shape the product must never produce again is the one shape a
+ * seeded assembly cannot be made to produce once the fix is in.
+ */
+export function compileOrderReachedTheModel(
+  freshTail: Message[],
+  emitted: Array<{ content: string | Anthropic.ContentBlockParam[] }>,
+): boolean | null {
+  const orders = freshTail.filter(
+    (m) => isFanoutJoinImperative(m)
+      && typeof m.content === 'string'
+      && m.content.includes(COMPILE_ORDER_PIECES_MARKER),
+  );
+  if (orders.length === 0) return null;
+  const text = emitted
+    .map((m) => (typeof m.content === 'string' ? m.content : ''))
+    .join('\n');
+  return orders.some((m) => text.includes(m.content as string));
+}
 
 function formatSummaryXml(summary: Summary): string {
   return `<summary id="${summary.id}" depth="${summary.depth}" kind="${summary.kind}" tokens="${summary.tokenCount}" earliest="${summary.earliestAt}" latest="${summary.latestAt}">

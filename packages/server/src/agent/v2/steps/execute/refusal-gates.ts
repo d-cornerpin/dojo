@@ -356,11 +356,22 @@ export function runRefusalGates(
   // bare flag clear all take the gate down without knowing it exists.
   const compileOwed = compileOwedGateDecision(
     state.compileOwedAskIds, state.compileGateSatisfied, toolOpKey(tc.name, tc.arguments),
+    state.compileOrderReachedModel,
   );
   if (compileOwed.live.length !== state.compileOwedAskIds.length) {
     state = advance(state, { compileOwedAskIds: compileOwed.live });
     logger.info('v2: compile gate dropped asks whose compile is no longer owed', {
       agentId, remaining: compileOwed.live.length,
+    }, agentId);
+  }
+  // T68b: armed, genuinely owed, and the assembly could NOT confirm the pieces are in front
+  // of the model. The refusal below would tell the model they are, which is the sentence that
+  // burned three full output budgets on 2026-08-31, so the call runs. Logged at WARN because
+  // reaching here means an ENGINE defect: the compile order was written and did not arrive.
+  if (compileOwed.standDownUnverified) {
+    logger.warn('v2: compile gate stood down — the compile order did not reach the model whole', {
+      agentId, tool: tc.name, owedCount: compileOwed.live.length,
+      sample: compileOwed.live.slice(0, 3).map((id) => id.slice(0, 8)),
     }, agentId);
   }
   if (compileOwed.refuse) {

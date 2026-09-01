@@ -128,6 +128,13 @@ export interface CompileOwedGateDecision {
   readonly live: string[];
   /** True only when a call is refused BECAUSE a compile is still genuinely owed. */
   readonly refuse: boolean;
+  /**
+   * T68b: the gate is armed and the compile is genuinely owed, but the assembly could NOT
+   * confirm the pieces are in front of the model — so nothing is refused. Distinguished from
+   * the ordinary "not refused" so the loop can log the engine defect instead of silently
+   * standing down.
+   */
+  readonly standDownUnverified: boolean;
 }
 
 /**
@@ -138,13 +145,36 @@ export interface CompileOwedGateDecision {
  * compile asks the database nothing. Only the branch that was about to refuse pays a query.
  * That is `closeOutGateDecision`'s shape and it is copied on purpose: two gates that answer
  * "may this call run?" should not have two different ideas of when to consult the spine.
+ *
+ * ── T68b — THE FOURTH CONDITION: THE GATE MAY NOT ASSERT WHAT IT HAS NOT VERIFIED. ──────
+ *
+ * `orderReachedModel` is the assembly's own verdict on whether the fan-out compile order
+ * arrived in the emitted messages WHOLE (`memory/assembler.ts compileOrderIntact` — a
+ * substring test on the platform's own bytes, not a reading of prose).
+ *
+ * The refusal this decision authorises says, in its own words, *"the pieces are in the steer,
+ * quoted verbatim"*, and W61 measured that sentence FALSE in six recorded grinds out of six.
+ * The trap it made was closed on all four sides: the order said the content was below, the
+ * assembler had removed it, the gate refused the tools that would have retrieved it, and the
+ * redrive ladder re-posed the same impossible task. The model — correctly — reasoned until its
+ * entire output budget was gone, three times in twelve minutes, and wrote "I'm fabricating…
+ * I keep going in circles" on the way.
+ *
+ * So: when the pieces are NOT confirmed present, the gate does not forbid retrieval. It is
+ * still armed, the compile is still owed, the ladder still redrives and T48's relay still
+ * ships the pieces itself if none of that works — the ONE thing that stops is refusing a
+ * model's lookup on the strength of a claim nobody checked. This is deliberately the LAST
+ * condition tested: an unverified order costs a spine read before it stands down, because
+ * "is the duty real" is still the more important question and the answer feeds the caller's
+ * list either way.
  */
 export function compileOwedGateDecision(
-  ids: readonly string[], satisfied: boolean, opKey: string,
+  ids: readonly string[], satisfied: boolean, opKey: string, orderReachedModel: boolean,
 ): CompileOwedGateDecision {
   if (ids.length === 0 || satisfied || COMPILE_OWED_ALLOWED_OPS.has(opKey)) {
-    return { live: [...ids], refuse: false };
+    return { live: [...ids], refuse: false, standDownUnverified: false };
   }
   const live = stillCompileOwed(ids);
-  return { live, refuse: live.length > 0 };
+  const owed = live.length > 0;
+  return { live, refuse: owed && orderReachedModel, standDownUnverified: owed && !orderReachedModel };
 }

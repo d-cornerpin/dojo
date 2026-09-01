@@ -41,7 +41,7 @@ import type { AssemblyContext } from '../../../../prompt/registry/types.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { clearConsumedOneShotFlags } from '../../../runtime.js';
 import { complexityClassifier } from '../../classifiers/complexity.js';
-import type { AgentTurnState } from '../../state.js';
+import { advance, type AgentTurnState } from '../../state.js';
 import type { SteerEntry } from '../../steer-queue.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { TurnCounterparty } from '../../counterparty.js';
@@ -178,6 +178,12 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   // made any probe, retry or dry-run silently consume a marker the user had earned. The
   // assembler now REPORTS what it consumed and the turn clears it, once, here.
   clearConsumedOneShotFlags(agentId, ctx.consumedOneShotFlags);
+  // T68b: the assembly's verdict on whether the fan-out compile order arrived WHOLE, carried
+  // to the gate whose refusal text asserts that it did. Re-derived from THIS iteration's
+  // array, never latched — the same discipline `compileOwedGateDecision` states for the owed
+  // list itself. `null` (no compile order in the tail) and `false` (there is one and it was
+  // cut) are the same answer to the only question the gate asks, so both land as `false`.
+  state = advance(state, { compileOrderReachedModel: ctx.compileOrderIntact === true });
   // PHASE-3 T3: THE VOLATILE BOUNDARY, recorded for the prefix gate. Everything the
   // ALLOCATOR produced is the cacheable region; everything the LOOP appends below this
   // point is the tail-append (`lane.loop-tail`) — the technique hints, the context-gap

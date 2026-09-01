@@ -364,7 +364,7 @@ import {
 } from '../../../work/store.js';
 // T47's gate arms on a rung the ladder has already spent, so the fixture spends one
 // through the ladder's own writer rather than hand-rolling the audit row.
-import { JOIN_DRIVE_ENTRY, JOIN_REDRIVE_BOUND, recordJoinDrive } from '../../../work/join-drive.js';
+import { JOIN_DRIVE_ENTRY, JOIN_REDRIVE_BOUND, compileSteerText, recordJoinDrive } from '../../../work/join-drive.js';
 // HL4 step 2 (2d): the carrier the retired `compaction-recap` steer's model-facing
 // requirement re-homes onto. Imported (not mocked) so the re-home clause DRIVES the
 // real renderer against the real DB rather than reading its source.
@@ -3887,6 +3887,35 @@ describe('BUG-2, inherited: the compile gate never arms on a turn a human is wai
     return askId;
   }
 
+  /** T68b — THE PRECONDITION THE REFUSAL HAS ALWAYS CLAIMED AND NEVER CHECKED.
+   *
+   *  The gate's refusal tells the model "the pieces are in the steer, quoted verbatim", and it
+   *  may now only say that on a turn whose assembly CONFIRMED it (`AssembledContext
+   *  .compileOrderIntact`, a substring test on the order's own bytes against the emitted
+   *  array). The assembler is mocked in this file — the delivery half is driven for real in
+   *  `memory/__tests__/a-compile-order-the-model-can-see` — so here the fixture states the
+   *  verdict, and the order's real bytes ride along so the mock cannot drift into asserting a
+   *  shape the product does not produce.
+   *
+   *  The default assembly says nothing, which is the honest default: no compile order was
+   *  delivered, so the gate must not claim one was. */
+  function theAssemblyConfirmsTheOrderArrived(): void {
+    const order = `[Engine] ${compileSteerText({
+      total: 2,
+      pieces: [
+        'Piece 1 (from Kelly, thread join-thr): "stream 0 result"',
+        'Piece 2 (from Kelly, thread join-thr): "stream 1 result"',
+      ],
+      attempt: 1,
+      bound: JOIN_REDRIVE_BOUND,
+    })}`;
+    assembleContextMock.mockImplementation(async () => ({
+      systemPrompt: '<system prompt>',
+      messages: [{ role: 'user', content: order }] as Array<Record<string, unknown>>,
+      compileOrderIntact: true,
+    }));
+  }
+
   /** `load_tool_docs` is not a guess: it is the first call S5's model made instead of
    *  composing, and it is in the CLOSE-OUT gate's allowlist — so a turn that lets it
    *  through is measuring this gate and nothing else. */
@@ -3916,12 +3945,28 @@ describe('BUG-2, inherited: the compile gate never arms on a turn a human is wai
     // engine). Without this control the BUG-2 clause below could mean "the gate never fires".
     expect(claimAsk(askIdForMessage('msg-user-1'), 'primary').kind).toBe('applied');
     seedOwedCompile();
+    theAssemblyConfirmsTheOrderArrived();
     callsTheToolS5Called();
 
     await runV2Turn('primary');
 
     expect(refusedCompile()).toBe(true);
     expect(executeToolSpy).not.toHaveBeenCalled();
+  });
+
+  it('T68b: the SAME owed compile refuses NOTHING when the order never reached the model', async () => {
+    // Identical to the control in every respect but one: no compile order is in front of the
+    // model. Before T68b this refused anyway, and told the model "the pieces are in the steer,
+    // quoted verbatim" while they were nowhere in its context — the sentence that turned one
+    // missing piece into three exhausted 16,384-token output budgets on 2026-08-31.
+    expect(claimAsk(askIdForMessage('msg-user-1'), 'primary').kind).toBe('applied');
+    seedOwedCompile();
+    callsTheToolS5Called();
+
+    await runV2Turn('primary');
+
+    expect(refusedCompile(), 'the model may go and look for what the platform lost').toBe(false);
+    expect(executeToolSpy).toHaveBeenCalled();
   });
 
   it('BUG-2: the SAME owed compile on a turn serving a waiting human neither arms nor refuses', async () => {

@@ -80,10 +80,10 @@ vi.mock('../vector-search.js', () => ({
   vectorSearch: async () => [],
 }));
 
-import { assembleContext, scopeToA2AThread } from '../assembler.js';
+import { assembleContext, compileOrderReachedTheModel, scopeToA2AThread } from '../assembler.js';
 import { runMigrations } from '../../db/migrations.js';
 import { ENGINE_RIDER_INTENTS } from '../../agent/v2/engine-riders.js';
-import { compileSteerText, JOIN_REDRIVE_BOUND } from '../../work/join-drive.js';
+import { COMPILE_ORDER_PIECES_MARKER, compileSteerText, JOIN_REDRIVE_BOUND } from '../../work/join-drive.js';
 
 const THREAD = '1a952a39-1111-2222-3333-444444444444';
 const OTHER_THREAD = '34430191-9999-8888-7777-666666666666';
@@ -392,5 +392,56 @@ describe('T68b §3 — the ACTIVE USER DIRECTIVE pins the ASK, never a helper\'s
     expect(second).toBe(first);
     expect(third).toBe(first);
     expect(first).toContain(ASK_FP);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §T68b §4 — THE VERDICT THE GATE IS ALLOWED TO SPEAK FROM.
+//
+// `refusal-gates.ts` refuses the model's lookups while a compile is owed and TELLS IT WHY:
+// "the pieces are in the steer, quoted verbatim". W61 measured that false 6/6. The assembler
+// is the only module that can answer the question, so it answers it here and the gate reads
+// the answer (`state.compileOrderReachedModel` → `compileOwedGateDecision`).
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('T68b §4 — the assembly VERIFIES the pieces before the gate asserts them', () => {
+  it('the marker the checker looks for is the marker the steer writes', () => {
+    // Writer and reader are one constant. If a future reword splits them, this goes red here
+    // rather than going quiet in production, which is how the original sentence became a lie.
+    expect(compileOrderContent()).toContain(COMPILE_ORDER_PIECES_MARKER);
+  });
+
+  it('an assembled turn carrying the whole order reports TRUE', async () => {
+    insertRow({ role: 'user', content: compileOrderContent(), lane: 'events', originIntent: 'fanout_join' });
+    expect((await assembleContext(AGENT, MODEL)).compileOrderIntact).toBe(true);
+  });
+
+  it('a turn with no compile order at all reports NULL — there is nothing to assert', async () => {
+    expect((await assembleContext(AGENT, MODEL)).compileOrderIntact).toBeNull();
+  });
+
+  it('the ladder\'s OTHER fanout_join rungs are not compile orders and report NULL', async () => {
+    // The stuck steer and the never-came-back notice ride the same intent and quote no pieces.
+    // Neither can satisfy the gate's sentence, so neither may answer its question.
+    insertRow({
+      role: 'user', lane: 'events', originIntent: 'fanout_join',
+      content: '[Engine] A piece of work you delegated never came back: the itinerary stream.',
+    });
+    expect((await assembleContext(AGENT, MODEL)).compileOrderIntact).toBeNull();
+  });
+
+  it('RED-BY-CONSTRUCTION: the 400-char gist, fed to the checker, reports FALSE', () => {
+    // The exact bytes the awareness lane produced on 2026-08-31 — the order collapsed and
+    // sliced at 400 chars, ending mid-word. This is the input the product can no longer build,
+    // so it is driven straight at the predicate instead. If this ever reports true, the check
+    // has stopped checking.
+    const order = compileOrderContent();
+    const gist = `• [Aug 31, 2026, 04:38 PM][fanout_join] ${order.replace(/\s+/g, ' ').trim().slice(0, 400)}`;
+    const row = { origin: { kind: 'engine', intent: 'fanout_join' }, content: order } as never;
+
+    expect(gist).toMatch(GIST_CUT);
+    expect(gist).not.toContain(PIECE2_FP);
+    expect(compileOrderReachedTheModel([row], [{ content: gist }])).toBe(false);
+    expect(compileOrderReachedTheModel([row], [{ content: `[stamp] ${order}` }])).toBe(true);
   });
 });

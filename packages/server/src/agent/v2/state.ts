@@ -463,6 +463,21 @@ export interface AgentTurnState {
    * next turn from the spine if the compile is somehow still pending.
    */
   compileGateSatisfied: boolean;
+  /**
+   * UX-REPAIR T68b — WHAT THE ASSEMBLER SAW, carried to the gate that speaks about it.
+   *
+   * True only when this turn's assembly verified that a fan-out compile order reached the
+   * emitted messages WHOLE — pieces included (`memory/assembler.ts compileOrderIntact`). The
+   * compile gate refuses the model's tool calls only while this holds, because its refusal
+   * text asserts "the pieces are in the steer, quoted verbatim" and that sentence has to be
+   * true when it is said. W61 measured it false in 6 of 6 recorded grinds: the order was cut
+   * to 400 chars by the awareness lane, the model correctly went looking for the missing
+   * piece, the gate refused the lookup on the strength of a claim nobody had checked, and the
+   * redrive re-posed the same impossible task until three whole output budgets were gone.
+   *
+   * Re-derived every iteration from that iteration's own assembly — never latched.
+   */
+  compileOrderReachedModel: boolean;
 
   /*
    * UX-REPAIR T1: `autoScaffoldedTaskIdThisTurn` LIVED HERE and is deleted. It fed exactly
@@ -612,6 +627,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     nudgedForCloseOutThisTurn: false,
     compileOwedAskIds: [],
     compileGateSatisfied: false,
+    compileOrderReachedModel: false,
 
     awaitingPostCompactRecall: false,
     nudgedForPostCompactRecall: false,
