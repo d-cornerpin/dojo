@@ -52,6 +52,9 @@ import { MessageSlot } from '../../prompt/registry/types.js';
 import { getMessageEntries } from '../../prompt/registry/registry.js';
 import '../../prompt/registry/entries.js';
 import { estimateTokens } from '../budget.js';
+// T69b: the stamp the lane renders, imported from the module that renders it rather than
+// re-typed here — a literal in this file would be a second formatter to drift from.
+import { recordedInstant } from '../message-stamp.js';
 
 const AGENT = 'p3t7-deliveries';
 const CONV = 'conv-owner-im';
@@ -183,7 +186,18 @@ describe('the one-row render is RC-1\'s header, byte for byte', () => {
     seedSend('the only question', 2);
     // The literal from `loop.ts` pre-T7 (`engine.pending-question`), reproduced here so a
     // wording change to the common case cannot happen silently.
-    expect(text()).toBe('[Your most recent message to Dave, sent 2 hours ago: "the only question"]');
+    //
+    // T69b RE-BLESS, and it is the ONE substitution inside the frame, not the frame: `sent 2
+    // hours ago` -> `sent <the row's recorded instant>`. The age was read off `Date.now()`, so
+    // this lane emitted different bytes once an hour with no delivery having changed and
+    // re-billed every token behind it in the tail each time. The words either side are
+    // byte-unchanged, and the stamp is the one the fresh tail above already prefixes every
+    // message with — `msg.current-time`, the last message in the tail, tells the model to
+    // subtract it. The expectation is BUILT from the same seed instant this test wrote rather
+    // than typed as a literal, because a literal here would be a second clock.
+    expect(text()).toBe(
+      `[Your most recent message to Dave, sent ${recordedInstant(rel(2))}: "the only question"]`,
+    );
   });
 });
 
@@ -368,7 +382,7 @@ describe('the receipt attributes the lane to itself, measured', () => {
     expect(del.status).toBe('admitted');
     expect(del.granted).toBeGreaterThan(50);
     expect(del.reason).toContain('deliveries lane, MEASURED');
-    expect(del.reason).toContain('316-token reserve');
+    expect(del.reason).toContain('323-token reserve'); // T69b: 316 -> 323, the wider time term
     // The same tokens must not also be billed to the loop tail's 900.
     expect(tail.reason).toContain('msg.turn-context');
     expect(tail.reason).not.toContain('msg.deliveries');
@@ -396,9 +410,22 @@ describe('the lane sits past the volatile boundary, in the preserved near-tail o
     expect(entry!.slot).toBe(DELIVERIES_LANE.slot);
   });
 
-  it('carries a volatile SHAPE, which is what forces it past the boundary', () => {
+  it('is CONVERSATION-SCOPED, which is what forces it past the boundary', () => {
     seedSend('why this cannot sit in the cached prefix', 2);
-    // The kit's assembled-context gate refuses this shape ahead of MessageSlot.TurnContext.
-    expect(text()!).toMatch(/\b\d+\s+(?:seconds?|minutes?|hours?)\s+ago\b/);
+    // T69b RE-BLESS. This clause used to assert a RELATIVE TIME (`/\d+ (minutes|hours) ago/`)
+    // as the property that forces the lane past the volatile boundary. That property is gone
+    // ON PURPOSE — a relative time is a wall-clock read, and this lane sits at 1860 with every
+    // per-ask block behind it, so it re-billed all of them once a minute for nothing.
+    //
+    // The position argument was never only about the time term. This lane quotes THIS
+    // conversation's deliveries and nothing else, so its content changes with the counterparty
+    // being served; that is what the cached prefix may not hold, and it is what the clause
+    // asserts now. The reverse is also asserted, because it is the thing T69b changed: the
+    // render carries NO relative age.
+    const out = text()!;
+    expect(out).toContain('to Dave');
+    expect(out).not.toMatch(/\b\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago\b/);
+    expect(out).not.toContain('just now');
+    expect(out).toContain(recordedInstant(rel(2)));
   });
 });

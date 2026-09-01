@@ -27,8 +27,10 @@
 // strip possible.
 //
 // ── WHERE IT SITS, AND WHY THAT IS FORCED ───────────────────────────────────────────────
-// It carries RELATIVE TIMES ("sent 5 minutes ago") and it is scoped to the conversation
-// being served this turn, so it is volatile by shape and by content. The cache-prefix law
+// It is scoped to the conversation being served this turn, so it is volatile by content.
+// (It USED to be volatile by shape as well — "sent 5 minutes ago", read off `Date.now()`.
+// T69b replaced that with the row's recorded instant: the position below is unchanged and
+// still forced by the conversation scoping, but the lane no longer moves on the clock.) The cache-prefix law
 // (roadmap #10, OR7) puts volatile content past `MessageSlot.TurnContext`, and the kit's
 // assembled-context gate enforces exactly that: a "relative time" shape ahead of the
 // volatile boundary is a violation, and every message from the boundary on must declare a
@@ -52,7 +54,8 @@
 // the declaration and the code cannot drift.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { recentDeliveriesToConversation, mostRecentDeliveryTo, relativeTimeAgo, type OutboundDelivery } from '../agent/v2/outbound-ledger.js';
+import { recentDeliveriesToConversation, mostRecentDeliveryTo, type OutboundDelivery } from '../agent/v2/outbound-ledger.js';
+import { recordedInstant } from './message-stamp.js';
 import { MessageSlot } from '../prompt/registry/types.js';
 import {
   LANE_TRUNCATION_MARKER, laneLimit, renderTokens,
@@ -80,35 +83,46 @@ export interface DeliveriesLaneContext {
 }
 
 export interface DeliveriesLanePayload {
-  /** The rows behind this render, newest first — what `truncate` shrinks. */
-  rows: Array<{ ago: string; text: string }>;
+  /** The rows behind this render, newest first — what `truncate` shrinks.
+   *
+   *  T69b: the field was `ago` and held `relativeTimeAgo(d.createdAt)`, read off `Date.now()`.
+   *  It is `at` and holds the row's RECORDED INSTANT: an identical set of deliveries used to
+   *  emit different bytes at every bucket boundary, and this lane sits at 1860, ahead of every
+   *  per-ask block in the tail, so each tick re-billed all of them. The name changed with the
+   *  meaning rather than being left lying about what it holds. */
+  rows: Array<{ at: string; text: string }>;
   counterpartyName: string;
   /** True when at least one row was dropped or shortened relative to the read. */
   cut: boolean;
 }
 
 // ── The fixed frames. Both are the RC-1 wording, preserved. ─────────────────────────────
-const ONE_HEAD = (name: string, ago: string) => `[Your most recent message to ${name}, sent ${ago}: "`;
+// T69b: the ONE substitution inside each frame changed from an AGE to the RECORDED INSTANT
+// (`sent 5 minutes ago` -> `sent [Sep 1, 2026, 07:09 AM]`). The frames' words are untouched,
+// and the stamp is the same one the fresh tail above already prefixes every message with —
+// `msg.current-time`, the LAST message in the tail, tells the model to subtract it from the
+// current time, so nothing is lost and the lane stops moving on the clock.
+const ONE_HEAD = (name: string, at: string) => `[Your most recent message to ${name}, sent ${at}: "`;
 const ONE_TAIL = '"]';
 const MANY_HEAD = (name: string) => `[Your recent messages to ${name}, most recent first (engine record, read from the delivery rows — these are messages YOU sent that are not in the conversation above):`;
-const MANY_ROW = (ago: string, text: string) => `\n- sent ${ago}: "${text}"`;
+const MANY_ROW = (at: string, text: string) => `\n- sent ${at}: "${text}"`;
 const MANY_TAIL = '\n]';
 
-function renderRows(rows: Array<{ ago: string; text: string }>, name: string, cut: boolean): string | null {
+function renderRows(rows: Array<{ at: string; text: string }>, name: string, cut: boolean): string | null {
   if (rows.length === 0) return null;
   // ONE row renders the RC-1 header byte-for-byte, so the common case the header already
   // served is unchanged in the model's eyes. `deliveries-lane.test.ts` pins that literally.
   // The one-row frame is used whenever ONE row survives, truncation included: carrying the
   // list frame for a single row spends ~110 chars of a budget that just proved to be tight.
   if (rows.length === 1) {
-    return `${ONE_HEAD(name, rows[0].ago)}${rows[0].text}${ONE_TAIL}${cut ? LANE_TRUNCATION_MARKER : ''}`;
+    return `${ONE_HEAD(name, rows[0].at)}${rows[0].text}${ONE_TAIL}${cut ? LANE_TRUNCATION_MARKER : ''}`;
   }
-  const body = rows.map((r) => MANY_ROW(r.ago, r.text)).join('');
+  const body = rows.map((r) => MANY_ROW(r.at, r.text)).join('');
   return `${MANY_HEAD(name)}${body}${cut ? LANE_TRUNCATION_MARKER : ''}${MANY_TAIL}`;
 }
 
 function toLaneRender(
-  rows: Array<{ ago: string; text: string }>,
+  rows: Array<{ at: string; text: string }>,
   counterpartyName: string,
   cut: boolean,
 ): LaneRender<DeliveriesLanePayload> | null {
@@ -148,12 +162,12 @@ export function readDeliveriesLaneRows(ctx: DeliveriesLaneContext): OutboundDeli
 export function renderDeliveriesLane(ctx: DeliveriesLaneContext): LaneRender<DeliveriesLanePayload> | null {
   const quoted = quotedChars();
   const probe = probeChars();
-  const rows: Array<{ ago: string; text: string }> = [];
+  const rows: Array<{ at: string; text: string }> = [];
   for (const d of readDeliveriesLaneRows(ctx)) {
     const text = (d.sentText ?? '').trim();
     if (!text) continue;
     if (ctx.alreadyVisible(text.slice(0, probe))) continue;
-    rows.push({ ago: relativeTimeAgo(d.createdAt), text: text.slice(0, quoted) });
+    rows.push({ at: recordedInstant(d.createdAt), text: text.slice(0, quoted) });
   }
   return toLaneRender(rows, ctx.counterpartyName, false);
 }
@@ -186,10 +200,10 @@ export const truncateDeliveriesLane: Lane<DeliveriesLaneContext, DeliveriesLaneP
   // In production this branch cannot fire: the reserve IS the worst case (see
   // `deliveriesLaneWorstCaseTokens`), so `maxTokens` always covers a whole row.
   const only = rows[0];
-  const frame = (renderRows([{ ago: only.ago, text: '' }], payload.counterpartyName, true) ?? '').length;
+  const frame = (renderRows([{ at: only.at, text: '' }], payload.counterpartyName, true) ?? '').length;
   const room = Math.max(quotedFloor(), maxTokens * 4 - frame);
   const shortened = toLaneRender(
-    [{ ago: only.ago, text: only.text.slice(0, room) }],
+    [{ at: only.at, text: only.text.slice(0, room) }],
     payload.counterpartyName,
     true,
   );
@@ -202,8 +216,11 @@ export const truncateDeliveriesLane: Lane<DeliveriesLaneContext, DeliveriesLaneP
  */
 export function deliveriesLaneWorstCaseTokens(): number {
   const rows = Array.from({ length: rowCap() }, () => ({
-    // The longest label `relativeTimeAgo` can return, and a quote at the declared cap.
-    ago: '59 minutes ago',
+    // T69b: the widest stamp `recordedInstant` can return, and a quote at the declared cap.
+    // en-US short-month + 2-digit day + 4-digit year + 2-digit clock + AM/PM is fixed-width
+    // apart from the month name; September is the longest of the twelve at 3 chars because
+    // the format is `month: 'short'`, so any instant produces this width.
+    at: '[Sep 30, 2026, 11:41 PM]',
     text: 'x'.repeat(quotedChars()),
   }));
   // `cut: true` so the truncation marker is inside the worst case rather than able to push

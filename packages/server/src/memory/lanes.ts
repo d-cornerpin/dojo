@@ -451,7 +451,15 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
   {
     id: 'lane.deliveries',
     slot: MessageSlot.Deliveries,
-    reserveTokens: 316,
+    // T69b: 316 -> 323. The lane's time term changed from the widest AGE `relativeTimeAgo`
+    // could return (`59 minutes ago`, 14 chars) to the widest RECORDED INSTANT
+    // `recordedInstant` can return (`[Sep 30, 2026, 11:41 PM]`, 24 chars), so the worst case
+    // grew by 3 rows x 10 chars = 30 chars = 7 tokens. Re-derived by CALLING the generator,
+    // exactly as before; `deliveries-lane.test.ts` still pins this literal to
+    // `deliveriesLaneWorstCaseTokens()`. WHAT THE 7 BUY: the lane stops being a function of
+    // the wall clock, so an identical set of deliveries no longer re-bills every token behind
+    // it in the tail once a minute.
+    reserveTokens: 323,
     measured:
       'PHASE-3 T7, DERIVED FROM THE GENERATOR, not guessed beside it: the worst case ' +
       '`memory/deliveries-lane.ts` can render under its own declared caps above — ' +
@@ -498,7 +506,18 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
   {
     id: 'lane.relevant-memory',
     slot: MessageSlot.RecalledMemory,
-    reserveTokens: 2179,
+    // T69b: 2,179 -> 2,194, and the lane now renders TWO messages rather than one.
+    // The +15 is two changes, both re-derived by CALLING the generator:
+    //   +14  the three answered pairs' time terms, `59 minutes ago` (14 chars) -> the widest
+    //        recorded instant `[Sep 30, 2026, 11:41 PM]` (24 chars), twice per pair = 60 chars.
+    //   +1   the second message's own frame in `renderTokens` (the HL5 snapshot is its own
+    //        message now instead of two newlines inside the recall string).
+    // NOTHING ELSE ABOUT THE BUDGET MOVED. Both halves are still this ONE lane's, still under
+    // this ONE reserve, and `recallLaneWorstCaseTokens()` still renders BOTH through the real
+    // renderer — `recall-lane.test.ts` pins the literal to it. The split is about ORDER inside
+    // the tail (the snapshot is emitted FIRST, ahead of everything retrieved against the live
+    // ask, so an ask no longer re-bills ~1,400 chars of board state), not about size.
+    reserveTokens: 2194,
     measured:
       'SWEEP CORE-2 item 4, DERIVED FROM THE GENERATOR, not guessed beside it: the worst case ' +
       '`memory/recall-lane.ts` can render under its own declared caps above — 3 answered ' +
@@ -572,6 +591,13 @@ export const POST_BUDGET_ENTRY_LANE: Record<string, string> = {
   'msg.deliveries': 'lane.deliveries',
   // SWEEP CORE-2 item 4: the recall lane, same split for the same reason.
   'msg.relevant-memory': 'lane.relevant-memory',
+  // T69b: the STATE half of the same lane — HL5's OPEN COMMITMENTS snapshot — emitted as its
+  // OWN message so the loop can order it ahead of the per-ask half (it was glued to the back
+  // of the recall string and re-billed by every ask). ONE lane, ONE reserve, TWO entries:
+  // `recallLaneWorstCaseTokens` still derives `lane.relevant-memory`'s 2,179 by rendering
+  // BOTH halves through the real renderer, so nothing about the budget changed — only the
+  // position in the array, and the fact that the receipt can now price the two separately.
+  'engine.open-commitments': 'lane.relevant-memory',
   // T67b §7: the directive pin, same split for the same reason — it declares its own reserve.
   'msg.directive': 'lane.directive',
   // The three engine-side injections that still push directly (`pre-call-injections.ts`).

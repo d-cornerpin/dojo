@@ -259,41 +259,16 @@ type LoopMsg = {
  *  byte-identical, pinned in `__tests__/message-time-stamps.test.ts`. The floor is
  *  `sent_at`'s own CHECK from migration 127 — same quantity, same rejections — so epoch
  *  SECONDS, 0 and negatives render unstamped instead of as a confident wrong date. */
-function normalizeCreatedAtUtc(createdAt: string | number): string | null {
-  if (typeof createdAt === 'number') {
-    return Number.isFinite(createdAt) && createdAt >= 1600000000000
-      ? new Date(createdAt).toISOString() : null;
-  }
-  let s = createdAt.trim();
-  if (!s.includes('T')) s = s.replace(' ', 'T');
-  if (!/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s)) s += 'Z';
-  return s;
-}
-
-/**
- * Render a message's recorded time as a compact, deterministic stamp in the
- * box's local timezone: `[Jul 16, 2026, 11:41 AM]`. Same en-US 12-hour family
- * as renderCurrentTimeMessage so the model compares like with like. Returns
- * null for missing/unparseable timestamps (row renders unstamped, never throws).
- */
-export function renderMessageTimeStamp(createdAt: string | number | null | undefined): string | null {
-  if (!createdAt) return null;
-  const iso = normalizeCreatedAtUtc(createdAt);
-  if (iso === null) return null;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return null;
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const localStr = d.toLocaleString('en-US', {
-    timeZone: tz,
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: true,
-  });
-  return `[${localStr}]`;
-}
+// T69b: `normalizeCreatedAtUtc` + `renderMessageTimeStamp` MOVED to `memory/message-stamp.ts`
+// and are re-exported here, byte-unchanged, so every existing import site is untouched. They
+// moved because T69b needs the same formatter in `agent/v2/outbound-ledger.ts`,
+// `work/obligations.ts` and `memory/deliveries-lane.ts` — all three UPSTREAM of this module,
+// so importing it from here would close an import cycle. See that file's header for what the
+// stamp is for; in one line: a tail block that says "3 hours ago" is a function of the wall
+// clock and re-bills every token behind it once an hour, a block that states the recorded
+// instant is a pure function of its rows.
+import { renderMessageTimeStamp } from './message-stamp.js';
+export { renderMessageTimeStamp };
 
 /**
  * Prefix a plain-text message body with its time stamp. Array content
@@ -481,6 +456,17 @@ export interface AssembledContext {
    * It also keeps the dev context-dump able to show content the assembler no longer emits.
    */
   recallLane?: string | null;
+  /**
+   * T69b — HL5's OPEN COMMITMENTS SNAPSHOT, THE OTHER HALF OF THE SAME RETRIEVAL.
+   *
+   * It rode inside `recallLane`'s string, appended AFTER the retrieved half. The two have
+   * different sources — this one is a pure function of the work board, that one is fetched
+   * against the live ask — so a new ask re-billed ~1,400 chars of board state on every turn
+   * (measured, `2557747`, three consecutive quiet turns). It is a separate block now and the
+   * loop injects it FIRST, in front of the divergence rather than behind it. Same lane, same
+   * reserve, same single read: only the position in the array changed.
+   */
+  openCommitmentsLane?: string | null;
   /**
    * T67b §7 — THE ACTIVE USER DIRECTIVE, COMPUTED HERE AND EMITTED BY THE LOOP.
    *
@@ -1801,6 +1787,9 @@ async function assembleMessageContext(
   // the assembly. Computed BEFORE the post-budget report below so the grant states whether it
   // fired — this lane, unlike `lane.deliveries`, is READ here even though it is EMITTED there.
   let recallLane: string | null = null;
+  // T69b: HL5's OPEN COMMITMENTS snapshot, returned as its OWN block by the same single
+  // retrieval, so the loop can inject it AHEAD of the per-ask half instead of behind it.
+  let openCommitmentsLane: string | null = null;
   try {
     // T67b: `includeVault` is unconditionally TRUE now. It was `!shouldFireScaffolding`
     // because `lane.vault` ran the identical `semanticSearch` from slot 200 on scaffolding
@@ -1808,18 +1797,23 @@ async function assembleMessageContext(
     // retrieval is gone (see the lane's own note), so this lane is the ONE owner of the
     // vault pull, on every turn, from the tail — and the double-injection it guarded against
     // is now impossible rather than merely avoided.
-    recallLane = await buildRecallLaneMessage(
+    const blocks = await buildRecallLaneMessage(
       agentId,
       true,
       policy,
       liveTurnContext(agentId)?.conversationId ?? null,
     );
+    recallLane = blocks.recall;
+    openCommitmentsLane = blocks.commitments;
   } catch (err) {
     logger.debug('recall lane failed', {
       error: err instanceof Error ? err.message : String(err),
     }, agentId);
   }
-  if (recallLane) postBudget.push('lane.relevant-memory');
+  // ONE lane, ONE reserve: both halves are `lane.relevant-memory`'s and always were, and
+  // `recallLaneWorstCaseTokens` still derives the reserve by rendering both through the real
+  // renderer. Either half firing is the lane firing.
+  if (recallLane || openCommitmentsLane) postBudget.push('lane.relevant-memory');
 
   // ── THE ACTIVE USER DIRECTIVE (T67b §7) ─────────────────────────────────────────────────
   // Read HERE and emitted by the loop past `volatileFrom`, the same split `lane.relevant-
@@ -1908,6 +1902,7 @@ async function assembleMessageContext(
     allocation: report,
     consumedOneShotFlags,
     recallLane,
+    openCommitmentsLane,
     directiveLane,
     compileOrderIntact,
   };

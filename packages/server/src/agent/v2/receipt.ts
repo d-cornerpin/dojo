@@ -343,8 +343,11 @@ function summarizeMessage(msg: LoopMessage, mode: ReceiptMode, laneId: string | 
  *  which declares its own reserve, and not to the loop tail it sits inside. */
 const DELIVERIES_ENTRY_ID = 'msg.deliveries';
 /** SWEEP CORE-2 item 4: the recall lane, the same split for the same reason — it declares its
- *  own reserve, so its tokens belong to it and not to the loop tail it sits inside. */
-const RECALL_ENTRY_ID = 'msg.relevant-memory';
+ *  own reserve, so its tokens belong to it and not to the loop tail it sits inside.
+ *  T69b: the lane emits TWO messages — the HL5 snapshot first, the per-ask retrieval second —
+ *  so BOTH entry ids are the recall lane's, and the measurement below sums them. Reading only
+ *  the first would price a 2,179-token reserve against half its content. */
+const RECALL_ENTRY_IDS = new Set(['msg.relevant-memory', 'engine.open-commitments']);
 
 /**
  * `lane.loop-tail` is DECLARED by the assembler and FILLED by the loop, so the assembler's
@@ -372,7 +375,7 @@ function withMeasuredLoopTail(input: ReceiptInput): AllocationReport['grants'] {
   // against two different reserves, and the receipt's whole job is that a number in it is
   // the number that happened.
   const isDeliveries = (i: number) => tailIds[i] === DELIVERIES_ENTRY_ID;
-  const isRecall = (i: number) => tailIds[i] === RECALL_ENTRY_ID;
+  const isRecall = (i: number) => RECALL_ENTRY_IDS.has(tailIds[i] ?? '');
   const isOwnReserve = (i: number) => isDeliveries(i) || isRecall(i);
   const deliveries = tail.filter((_, i) => isDeliveries(i));
   const recall = tail.filter((_, i) => isRecall(i));
@@ -403,7 +406,7 @@ function withMeasuredLoopTail(input: ReceiptInput): AllocationReport['grants'] {
       return { ...g, ...measured('lane.deliveries', deliveries, [DELIVERIES_ENTRY_ID], 'deliveries lane') };
     }
     if (g.id === 'lane.relevant-memory' && recall.length > 0) {
-      return { ...g, ...measured('lane.relevant-memory', recall, [RECALL_ENTRY_ID], 'recall lane') };
+      return { ...g, ...measured('lane.relevant-memory', recall, tailIds.filter((_, i) => isRecall(i)), 'recall lane') };
     }
     return g;
   });

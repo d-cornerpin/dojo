@@ -44,6 +44,7 @@ import { askIdForMessage, type WorkState } from '../../work/store.js';
 import { NON_ANSWERING_DISPLAY_KINDS } from '../../work/ask-settlement.js';
 import { taskScope, tsToMs, type TrackerStatus } from '../../work/tracker-view.js';
 import { setTrackerStatus } from '../../work/tracker-store.js';
+import { recordedInstant } from '../../memory/message-stamp.js';
 
 const logger = createLogger('answered-edge');
 
@@ -241,6 +242,45 @@ export function recentlyAnsweredAsks(
       ORDER BY created_at DESC LIMIT ?`,
   ).all(agentId, conversationId, limit) as Array<{ id: string; content: string; created_at: number }>;
   return rows.map((r) => ({ askId: r.id, askContent: r.content, askAt: r.created_at }));
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// T69b — THE RECENTLY-ANSWERED BLOCK, A PURE FUNCTION OF ITS ROWS.
+//
+// It was an inline `.map()` in `steps/call-llm/pre-call-injections.ts` — the same shape, and
+// the same consequence, as the hand-written JOIN this file's header names as the disease. Two
+// things come with the move, and neither is cosmetic:
+//
+//  1. THE CLOCK LEAVES IT. It rendered `relativeTimeAgo(a.askAt)`, off `Date.now()`, so a
+//     byte-identical set of settled asks emitted different bytes at every bucket boundary —
+//     "just now" → "1 minute ago" → … — and this block sits AHEAD of the whole per-ask half
+//     of the tail, so each tick re-billed everything behind it. It states the RECORDED
+//     INSTANT now, in the one stamp format the fresh tail above it already uses and
+//     `msg.current-time` below it already explains ("subtract from the current time").
+//     Measured on the dev box at `2557747`, three consecutive quiet turns: this block was the
+//     FIRST divergence in the tail on every one of them.
+//
+//  2. IT IS TESTABLE. "identical rows ⇒ identical bytes" cannot be asserted about a `.map()`
+//     that only exists inside a 240-line async injection function holding an `AgentTurnState`.
+//
+// The excerpt slice, the frame and the wording are carried verbatim; only the time term moved.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** How much of the ask is quoted. Carried verbatim from the deleted inline render. */
+const ANSWERED_EXCERPT_CHARS = 90;
+
+export const RECENTLY_ANSWERED_HEAD =
+  'RECENTLY ANSWERED in this conversation (engine record; do NOT re-execute this work. If '
+  + "asked about it again, a brief restatement of the answer's content is fine, or point at "
+  + 'the earlier answer; never silence, and never re-run the work itself):';
+
+export function renderRecentlyAnsweredBlock(asks: readonly AnsweredAsk[]): string | null {
+  if (asks.length === 0) return null;
+  const lines = asks.map((a) => {
+    const excerpt = a.askContent.replace(/^\[[^\]]*\]\s*/g, '').trim().slice(0, ANSWERED_EXCERPT_CHARS);
+    return `- answered ${recordedInstant(a.askAt)}: "${excerpt}"`;
+  });
+  return `${RECENTLY_ANSWERED_HEAD}\n${lines.join('\n')}`;
 }
 
 /** An ask and the reply that answered it, as one fact. */

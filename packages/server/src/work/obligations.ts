@@ -23,6 +23,7 @@
 
 import { getOwnerName } from '../config/platform.js';
 import { agedObligations, openObligations, type Obligation } from './store.js';
+import { recordedInstant } from '../memory/message-stamp.js';
 
 /** Injection budget: cap the whole block so it never crowds the volatile lane on a floor
  *  model. Carried verbatim from the deleted `INJECTION_MAX_CHARS = 600`. */
@@ -32,15 +33,28 @@ const INJECTION_MAX_CHARS = 600;
  *  Carried verbatim from the deleted `CROSS_CONV_OVERFLOW_MAX = 3`. */
 const CROSS_CONV_OVERFLOW_MAX = 3;
 
-function relativeAge(openedAtMs: number): string {
-  const sec = Math.max(0, Math.floor((Date.now() - openedAtMs) / 1000));
-  if (sec < 60) return 'just now';
-  const mins = Math.floor(sec / 60);
-  if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
-  const days = Math.floor(hours / 24);
-  return `${days} day${days === 1 ? '' : 's'} ago`;
+// ── T69b: THE CLOCK LEAVES THE OPEN-WORK BLOCK ──────────────────────────────────────────
+// `relativeAge` was `Date.now() - openedAt` bucketed to minutes/hours/days, so an IDENTICAL
+// set of open obligations rendered different bytes at every bucket boundary — and this block
+// rides the tail AHEAD of the per-ask material, so each tick re-billed every token behind it
+// for no content reason. It states the row's RECORDED INSTANT now, in the one stamp format
+// the fresh tail already uses and `msg.current-time` already explains ("Bracketed times …
+// subtract from the current time"). The block becomes a pure function of its rows: it moves
+// when an obligation is opened, closed or re-titled, and never otherwise.
+//
+// The lengths are close (`3 hours ago` = 11 chars, `[Sep 1, 2026, 07:09 AM]` = 23), so the
+// 600-char `INJECTION_MAX_CHARS` budget binds very slightly earlier. That is the budget doing
+// its declared job on real content, not a new cap, and the elision line already SAYS how many
+// rows it did not show (SWEEP-A TB4).
+//
+// ⚠ THE AGEING WINDOW STAYS, AND IT IS DECLARED RATHER THAN FIXED. `openObligations` filters
+// on `agingCutoff()` = `Date.now() - COMMITMENT_AGING_DAYS`, so a row leaves this block when
+// the clock passes its horizon with nothing having changed. That is 4b's ageing rule — the
+// row DEMOTES to the daily brief — and pinning the cutoff to a fixed instant would break it.
+// Bounded, one-way, at most ONCE PER ROW; the defect removed above fired every minute, for
+// every row, forever. Same disposition T67b gave `lane.continuity`'s horizon.
+function openedStamp(openedAtMs: number): string {
+  return recordedInstant(openedAtMs);
 }
 
 /**
@@ -113,7 +127,7 @@ export function buildOpenWorkInjection(agentId: string, currentConversationId: s
 
   const what = (o: Obligation): string => (o.kind === 'ask' ? 'they asked' : 'you promised');
   const body = (o: Obligation, crossConv: boolean): string =>
-    `[${o.id}] ${what(o)}: ${o.title ?? '(no description)'} (${party(o)}, ${relativeAge(o.openedAt)})${crossConv ? ' [other conversation]' : ''}`;
+    `[${o.id}] ${what(o)}: ${o.title ?? '(no description)'} (${party(o)}, opened ${openedStamp(o.openedAt)})${crossConv ? ' [other conversation]' : ''}`;
 
   // Candidates in DISPLAY order (current conversation first, each oldest→newest), paired with
   // the order they GIVE WAY in: cross-conversation overflow first, then the oldest current rows.

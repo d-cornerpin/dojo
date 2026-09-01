@@ -395,12 +395,18 @@ describe('T67b §6 — the tail diverges as LATE as it can', () => {
     ).run(AGENT, DAY_ONE - 7_200_000, DAY_ONE - 7_200_000);
 
     const policy = contextWindowPolicy(CONTEXT_WINDOW, { toolPayloadTokens: 1000, maxOutputTokens: 4096 });
+    // T69b RE-BLESS OF THE CALL, NOT OF THE CLAUSE: `buildRecallLaneMessage` returns the
+    // lane's two halves separately now (`{ commitments, recall }`) so the loop can inject the
+    // board-state half AHEAD of the per-ask half. The property this clause asserts is
+    // unchanged and is asserted over BOTH halves — an identical board and an identical query,
+    // 37 minutes apart, must produce identical bytes.
     const first = await buildRecallLaneMessage(AGENT, true, policy, null);
-    expect(first).toContain('OPEN COMMITMENTS');
+    expect(first.commitments).toContain('OPEN COMMITMENTS');
 
     vi.setSystemTime(DAY_ONE + 37 * 60_000);
     const second = await buildRecallLaneMessage(AGENT, true, policy, null);
 
-    expect(second).toBe(first);
+    expect(second.commitments).toBe(first.commitments);
+    expect(second.recall).toBe(first.recall);
   });
 });

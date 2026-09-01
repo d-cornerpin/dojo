@@ -63,6 +63,7 @@ import {
   answeredPairsForMessages, recentlyAnsweredAsks, RECENTLY_ANSWERED_LIMIT, type AnsweredPair,
 } from '../agent/v2/answered-edge.js';
 import { relativeTimeAgo } from '../agent/v2/outbound-ledger.js';
+import { recordedInstant } from './message-stamp.js';
 import {
   obligationVerdict, liveCommitments, hasCommitmentHistory, openBoardCounts, boardLastChangedAt,
   type LiveCommitment, type BoardCounts,
@@ -181,8 +182,15 @@ export interface RecallLaneContext {
 }
 
 export interface RecallLanePayload {
-  /** Answered pairs: what this agent already concluded, newest LAST. */
-  pairs: Array<{ ask: string; answer: string; askAgo: string; answerAgo: string }>;
+  /**
+   * Answered pairs: what this agent already concluded, newest LAST.
+   *
+   * T69b: `askAgo`/`answerAgo` were `relativeTimeAgo(...)` off `Date.now()`, so a pair set
+   * that had not changed emitted different bytes at every bucket boundary. They are `askAt`
+   * / `answerAt` and hold the RECORDED INSTANT, in the stamp the fresh tail already uses.
+   * `answerAtMs` is the ORDERING key and is never rendered — see the sort below.
+   */
+  pairs: Array<{ ask: string; answer: string; askAt: string; answerAt: string; answerAtMs: number }>;
   /** Raw recalled lines that are not part of a pair, chronological. */
   msgLines: string[];
   vaultLines: string[];
@@ -215,8 +223,8 @@ const PAIRS_HEAD =
   'Questions you have ALREADY ANSWERED (engine record, read from the answer stamps — the ' +
   'question was asked and you answered it. Do NOT re-run the work: restate what you ' +
   'concluded, or point at the earlier answer):';
-const PAIR_ROW = (askAgo: string, ask: string, answerAgo: string, answer: string) =>
-  `\n- ${askAgo} you were asked: "${ask}"\n  → you answered ${answerAgo}: "${answer}"`;
+const PAIR_ROW = (askAt: string, ask: string, answerAt: string, answer: string) =>
+  `\n- ${askAt} you were asked: "${ask}"\n  → you answered ${answerAt}: "${answer}"`;
 // Carried verbatim from the block this replaces: the framing states the precedence
 // deterministically, because conflict arbitration is the engine's job, not the model's.
 const MSG_HEAD =
@@ -235,8 +243,13 @@ export const UNRESOLVED_OBLIGATION_MARK =
 // only, not live conversation" because that is what it is. The snapshot is the opposite —
 // it is CURRENT STATE, read from the spine at assembly time — and putting it inside a frame
 // whose own header says "context only" would undercut the one claim it exists to make. So it
-// is emitted as its own block after `END RELEVANT MEMORY`, in the same message, and it is
-// the last thing in the lane because that is the recency-salient position.
+// is emitted as its own block, outside the `END RELEVANT MEMORY` frame.
+//
+// T69b MOVED IT FROM LAST TO FIRST, and it is now its OWN MESSAGE rather than a second half
+// of the recall message. The position sentence that stood here ("the last thing in the lane
+// because that is the recency-salient position") was written against the retrieved half only
+// and was costing a full re-bill of this block on every ask; `toLaneRender` below carries the
+// measurement and the re-decision.
 //
 // The three parts are dsh's (`deepseek-harness-findings.md` P2.3, from their shipped
 // strings): (i) a COMPLETE replacement, (ii) an explicit statement that earlier versions no
@@ -326,26 +339,75 @@ function renderSnapshot(s: { total: number; rows: string[]; board: BoardCounts; 
   return `${head}\n${snapshotOpenBody(s.total)}\n${board}\n${shown.join('\n')}${tail}\n${SNAPSHOT_TAIL}`;
 }
 
-function renderPayload(p: RecallLanePayload): string | null {
+/** The RETRIEVED half: everything fetched by meaning against THIS TURN'S ask. */
+export function renderRecalledBlock(p: RecallLanePayload): string | null {
   const parts: string[] = [];
   if (p.pairs.length > 0) {
-    parts.push(PAIRS_HEAD + p.pairs.map((x) => PAIR_ROW(x.askAgo, x.ask, x.answerAgo, x.answer)).join(''));
+    parts.push(PAIRS_HEAD + p.pairs.map((x) => PAIR_ROW(x.askAt, x.ask, x.answerAt, x.answer)).join(''));
   }
   if (p.msgLines.length > 0) parts.push(`${MSG_HEAD}\n${p.msgLines.join('\n')}`);
   if (p.vaultLines.length > 0) parts.push(`${VAULT_HEAD}\n${p.vaultLines.join('\n')}`);
   if (p.bridgeLines.length > 0) parts.push(`${UNFILED_ARCHIVE_LABEL}\n${p.bridgeLines.join('\n')}`);
-  const recalled = parts.length > 0
+  return parts.length > 0
     ? `${HEAD}\n${parts.join('\n\n')}${p.cut ? LANE_TRUNCATION_MARKER : ''}\n${TAIL}`
     : null;
-  const snapshot = p.snapshot ? renderSnapshot(p.snapshot) : null;
-  if (recalled === null && snapshot === null) return null;
-  return [recalled, snapshot].filter((x): x is string => x !== null).join('\n\n');
 }
 
+/** The STATE half: the HL5 snapshot, a pure function of the work board. */
+export function renderCommitmentsBlock(p: RecallLanePayload): string | null {
+  return p.snapshot ? renderSnapshot(p.snapshot) : null;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// T69b — TWO MESSAGES, SNAPSHOT FIRST. THE ONE CHANGE THAT MOVES THE MOST BYTES.
+//
+// ── THE MEASUREMENT (dev box, `2557747`, three consecutive quiet turns, full receipts) ──
+// This lane emitted ONE message of ~3,900 chars carrying two things with completely
+// different sources:
+//
+//   the RETRIEVED half   — answered pairs, recalled rows, vault hits, the FN-1 bridge.
+//                          Retrieved against the LIVE ASK, so it changes on every turn
+//                          BY DESIGN (roadmap #10; it is why this lane rides the tail).
+//   the STATE half (HL5) — OPEN COMMITMENTS, ~1,400 chars of it, read from the work board
+//                          and stamped with the board's own last-change instant.
+//
+// They were joined with `'\\n\\n'` and the STATE half was SECOND, so on every single turn the
+// per-ask half changed and re-billed the whole snapshot behind it. A provider's prefix cache
+// breaks at the first differing token and never recovers, so the ORDER inside the string was
+// the whole cost: 1,400 chars of board state, re-processed on every ask, forever.
+//
+// Emitting them as TWO messages with the STATE half FIRST puts the tail's own ordering rule
+// — most-stable-first — inside the lane that was breaking it. The snapshot now sits in front
+// of the divergence instead of behind it, and it stays cached until the BOARD moves.
+//
+// ── WHY THIS AND NOT A NEW LANE, ARGUED RATHER THAN ASSUMED ─────────────────────────────
+// A separate `MessageSlot` + registry entry + reserve would say the same thing and cost a
+// renumbering, a reserve re-derivation and a golden. It would buy nothing the provider can
+// see: prompt caching matches a TOKEN PREFIX, not a message boundary, so what pays is the
+// snapshot being EARLIER — which two messages in the right order already achieve. The two
+// halves keep ONE reserve because they always had one and the derivation
+// (`recallLaneWorstCaseTokens`) still feeds both through the real renderer; and they get
+// DISTINCT lane tags at the injection site (`engine.open-commitments` / `msg.relevant-memory`)
+// so the receipt and the cross-turn gate can judge them separately, which is the only thing
+// a split slot would have added.
+//
+// ── HL5's OWN POSITION ARGUMENT, RE-DECIDED IN THE OPEN ─────────────────────────────────
+// The snapshot's note says it is last in the lane "because that is the recency-salient
+// position". That argument was made against the RETRIEVED half only, and it is now paid for
+// in cache on every turn. It is overturned here, narrowly: the snapshot moves ahead of a
+// block whose own header calls itself "context only, not live conversation", and it is still
+// inside the volatile tail, still after the entire conversation, and still ahead of only
+// ~2,500 chars. The two things the salience argument actually protects it from — an EARLIER
+// mention of what is owed, and a rival enumeration — are both still behind it or suppressed
+// (`renderRecallLane` drops obligation-shaped vault hits while the snapshot publishes).
+// ════════════════════════════════════════════════════════════════════════════════════════
 function toLaneRender(p: RecallLanePayload): LaneRender<RecallLanePayload> | null {
-  const content = renderPayload(p);
-  if (content === null) return null;
-  const messages = [{ role: 'user' as const, content }];
+  const commitments = renderCommitmentsBlock(p);
+  const recalled = renderRecalledBlock(p);
+  const messages = [commitments, recalled]
+    .filter((c): c is string => c !== null)
+    .map((content) => ({ role: 'user' as const, content }));
+  if (messages.length === 0) return null;
   return { messages, tokens: renderTokens(messages), payload: p };
 }
 
@@ -387,8 +449,9 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
       pairRows.push({
         ask: oneLine(pair.askContent).slice(0, askChars()),
         answer: oneLine(pair.answerContent).slice(0, answerChars()),
-        askAgo: relativeTimeAgo(pair.askAt),
-        answerAgo: relativeTimeAgo(pair.answerAt),
+        askAt: recordedInstant(pair.askAt),
+        answerAt: recordedInstant(pair.answerAt),
+        answerAtMs: pair.answerAt,
       });
       continue;
     }
@@ -477,10 +540,32 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
       const line = `- [vault:${e.type}] ${oneLine(e.content).slice(0, vaultChars())}`;
       vaultLines.push(verdict.kind === 'unresolvable' ? `${line} ${UNRESOLVED_OBLIGATION_MARK}` : line);
     }
+    // ── T69b: DETERMINISTIC PRESENTATION, THE SAME RULE THE RAW LINES ALREADY OBEY ────────
+    // `msgCandidates` are sorted (chronologically) two blocks above, for a stated reason: the
+    // vector search's own ordering "once put a stale statement of a since-corrected fact FIRST
+    // and the weakest floor model echoed it". The vault lines were left in SIMILARITY-RANK
+    // order, so the same SET of entries — the common case turn to turn — rendered in a
+    // different order whenever the ask nudged the ranking, and the lane's bytes moved with no
+    // entry having changed. Measured on the dev box at `2557747`: turn 2 -> 3, three vault
+    // lines, one genuinely new, and the other two simply swapped.
+    //
+    // Sorted on the ENTRY ID rather than on a date: a `vault_entries` row has `created_at` but
+    // this render does not read it, and inventing a chronology the block does not carry would
+    // be a claim rather than an ordering. The id is stable, total and says nothing.
+    vaultLines.sort();
   }
 
-  // Oldest pair first, so the newest conclusion sits in the recency-salient position.
-  pairRows.reverse();
+  // ── T69b: OLDEST PAIR FIRST — BY ANSWER TIME, WHICH IS WHAT THE SENTENCE ALWAYS CLAIMED ──
+  // This was `pairRows.reverse()`, and the array it reversed was in SIMILARITY-RANK order (the
+  // `ids` loop above walks the vector search's own ranking). So the comment said chronological
+  // and the code said "least similar first", two different things, and neither the model's
+  // recency salience nor byte-stability got what it was promised: the SAME three pairs
+  // retrieved with a slightly different ranking — which is what a different ask produces —
+  // rendered in a different ORDER, so this lane's bytes moved for a reason that was not a
+  // content change. Sorting on `answerAtMs` makes the sentence true and makes the block a pure
+  // function of its SET rather than of the ranking that found it. Ties break on the answer's
+  // own text so the order is total, never the insertion order of a Map iteration.
+  pairRows.sort((a, b) => a.answerAtMs - b.answerAtMs || a.answer.localeCompare(b.answer));
   const render = toLaneRender({
     pairs: pairRows,
     msgLines: msgCandidates.map((c) => c.line),
@@ -583,13 +668,18 @@ export const truncateRecallLane: Lane<RecallLaneContext, RecallLanePayload>['tru
 let worstCase: number | null = null;
 export function recallLaneWorstCaseTokens(): number {
   if (worstCase !== null) return worstCase;
-  const longest = '59 minutes ago';
+  // T69b: the widest stamp `recordedInstant` can return, replacing the widest label
+  // `relativeTimeAgo` could. en-US `month: 'short'` + 2-digit day + 4-digit year + 2-digit
+  // clock + AM/PM is fixed-width apart from the month name, and every short month is 3 chars,
+  // so ANY instant produces this width — the derivation stays a pure function.
+  const longest = '[Sep 30, 2026, 11:41 PM]';
   const render = toLaneRender({
-    pairs: Array.from({ length: pairCap() }, () => ({
+    pairs: Array.from({ length: pairCap() }, (_unused, i) => ({
       ask: 'x'.repeat(askChars()),
       answer: 'x'.repeat(answerChars()),
-      askAgo: longest,
-      answerAgo: longest,
+      askAt: longest,
+      answerAt: longest,
+      answerAtMs: i,
     })),
     msgLines: Array.from({ length: msgRowCap() }, () =>
       `- [2026-08-09 12:00:00] assistant: ${'x'.repeat(askChars())}`),
@@ -643,10 +733,25 @@ export const RECALL_LANE: Lane<RecallLaneContext, RecallLanePayload> = {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 const RELEVANT_MEMORY_CACHE_MS = 60_000;
+
+/**
+ * T69b: the lane's two halves, returned separately so the LOOP can put the STATE half ahead
+ * of the per-ask half in the tail (see `toLaneRender`'s note). One retrieval, one render, two
+ * messages — never two reads.
+ */
+export interface RecallLaneBlocks {
+  /** HL5's OPEN COMMITMENTS snapshot: a pure function of the work board. Injected FIRST. */
+  commitments: string | null;
+  /** Everything retrieved by meaning against this turn's ask. Injected SECOND. */
+  recall: string | null;
+}
+
+const EMPTY_BLOCKS: RecallLaneBlocks = { commitments: null, recall: null };
+
 // Derived-data cache only (loss = recompute); keyed by (agent, includeVault), validated by
 // query text, so N tool iterations of one turn run vector search (and one query embed) at
 // most once.
-const recallCache = new Map<string, { at: number; queryText: string; block: string | null }>();
+const recallCache = new Map<string, { at: number; queryText: string; blocks: RecallLaneBlocks }>();
 
 // D4: warn at most once per outage window when the query embedding is unavailable and we
 // degrade to FTS, so a chronic embed outage is visible without spamming every turn.
@@ -674,14 +779,19 @@ export async function buildRecallLaneMessage(
   includeVault: boolean,
   policy: ReturnType<typeof contextWindowPolicy>,
   conversationId: string | null,
-): Promise<string | null> {
+): Promise<RecallLaneBlocks> {
   const queryText = buildPerTurnRecallQuery(agentId);
-  if (queryText.trim().length <= 10) return null;
+  // ⚠ T69b, STATED BECAUSE IT IS A REAL BOUND AND IT PRE-DATES THIS TASK: with no usable
+  // query there is no retrieval AND no snapshot, because the snapshot has always been built
+  // inside this lane. That is unchanged here — the split is about ORDER in the tail, not
+  // about giving the snapshot a second door — but it is why the block is `null` on a turn
+  // whose newest row is ten characters or fewer.
+  if (queryText.trim().length <= 10) return EMPTY_BLOCKS;
 
   const cacheKey = `${agentId}::${includeVault ? 'v' : 'm'}::${conversationId ?? '-'}`;
   const cached = recallCache.get(cacheKey);
   if (cached && cached.queryText === queryText && Date.now() - cached.at < RELEVANT_MEMORY_CACHE_MS) {
-    return cached.block;
+    return cached.blocks;
   }
 
   // D4 step 2: embed the recall query ONCE; share it across the message + vault lanes so a
@@ -700,7 +810,7 @@ export async function buildRecallLaneMessage(
     }
   }
 
-  let block: string | null = null;
+  let blocks: RecallLaneBlocks = EMPTY_BLOCKS;
   try {
     // The fresh tail already includes these; this lane is only for what fell out.
     // `getRecentMessages` is session-aware, so a fact taught just before a reset stays
@@ -771,13 +881,18 @@ export async function buildRecallLaneMessage(
     const render = renderRecallLane({
       agentId, includeVault, excludeIds, msgHits, vaultHits, alreadyAnsweredAskIds, bridgeLines,
     });
-    block = render ? (render.messages[0]?.content as string) : null;
+    // Read off the PAYLOAD the fitted render carries, not off `messages[0]` by position: after
+    // `truncate` has run the array may hold one message or two, and which one it is depends on
+    // which half survived. The payload is the render's own record of what it decided.
+    blocks = render
+      ? { commitments: renderCommitmentsBlock(render.payload!), recall: renderRecalledBlock(render.payload!) }
+      : EMPTY_BLOCKS;
   } catch (err) {
     logger.debug('recall lane retrieval failed', {
       error: err instanceof Error ? err.message : String(err),
     }, agentId);
   }
 
-  recallCache.set(cacheKey, { at: Date.now(), queryText, block });
-  return block;
+  recallCache.set(cacheKey, { at: Date.now(), queryText, blocks });
+  return blocks;
 }

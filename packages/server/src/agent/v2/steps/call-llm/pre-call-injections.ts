@@ -10,6 +10,33 @@
 // cache-prefix matrix — ran before the commit that moved it and both reference
 // files are byte-unmoved. Nothing here was reordered; the comments that explain
 // each position moved with the line they explain.
+//
+// ── T69b: THE ORDER IS THE CONTRACT, AND THIS TASK CHANGED IT ON PURPOSE ────────────────
+// The rule the contract encodes is MOST-STABLE-FIRST: a provider's prefix cache breaks at
+// the first differing token and never recovers, so every byte behind the earliest-changing
+// block is re-billed on every turn. Two blocks were in the wrong places and the dev box
+// measured the cost (`2557747`, three consecutive quiet turns, full receipts): the FIRST
+// divergence in the tail landed at `engine.recently-answered` on all three pairs, and
+// ~1,400 chars of board state sat behind the per-ask retrieval where every ask re-billed it.
+//
+// The tail's order, and what makes each position true:
+//
+//   msg.pending-nudge          one-shot steer; absent on almost every turn
+//   msg.turn-context           routing/presence; moves when the CHANNEL or the wait count does
+//   engine.recent-outbound     receipts; moves when the agent SENDS
+//   msg.deliveries             deliveries into this conversation; moves when the agent SENDS
+//   engine.open-work           obligations; moves when the BOARD does
+//   engine.open-commitments    HL5 snapshot; moves when the BOARD does            ← T69b
+//   msg.peer-status            one line; moves when a peer flips idle/working
+//   engine.recently-answered   moves on EVERY answered turn                       ← T69b
+//   msg.relevant-memory        retrieved against the LIVE ASK: moves every turn, BY DESIGN
+//   msg.directive              IS the newest ask: moves every turn, BY DESIGN
+//   msg.current-time           the clock: moves every call, BY DESIGN
+//
+// The last three are the DELIBERATE churn — registered as such in
+// `memory/__tests__/the-tail-holds-still.test.ts`, which is the gate that judges this order.
+// Everything above them is required to be byte-identical between two turns that changed no
+// source data, and every one of them had a wall-clock read in it before this task.
 // ════════════════════════════════════════
 
 import type { ModelCallParams } from '../../../model.js';
@@ -23,8 +50,10 @@ import type { AssembledContext } from '../../../../memory/assembler.js';
 import { collectMessageLaneIds } from '../../../../memory/message-lane-tag.js';
 import { renderDeliveriesLaneMessage } from '../../../../memory/deliveries-lane.js';
 import { buildOpenWorkInjection } from '../../../../work/obligations.js';
-import { getRecentOutbound, relativeTimeAgo, channelLabel } from '../../outbound-ledger.js';
-import { recentlyAnsweredAsks, RECENTLY_ANSWERED_LIMIT } from '../../answered-edge.js';
+import { getRecentOutbound, renderRecentOutboundBlock } from '../../outbound-ledger.js';
+import {
+  recentlyAnsweredAsks, renderRecentlyAnsweredBlock, RECENTLY_ANSWERED_LIMIT,
+} from '../../answered-edge.js';
 import { pushEngineMessage } from '../../engine-message.js';
 import { markSteerAttempted, markSteerDelivered } from '../../steer-queue.js';
 import { writeContextReceipt } from '../../receipt.js';
@@ -98,12 +127,12 @@ export async function injectAndRecord(
       // RECENT OUTBOUND (RC-12 item 7): the last N sends in 24h, engine-verified.
       // Survives scoping (receipts are not conversation rows), so a denial or a
       // "did you send it" is answerable from fact, not scoped-away memory.
-      const recentOut = getRecentOutbound(agentId, 24, 5);
-      if (recentOut.length > 0) {
-        const outLines = recentOut.map(
-          (d) => `${relativeTimeAgo(d.createdAt)} ${channelLabel(d.channel)} -> ${d.recipient ?? 'unknown'}`,
-        );
-        pushEngineMessage(messages, `RECENT OUTBOUND (engine-verified):\n${outLines.join('\n')}`, 'engine.recent-outbound'); // registry-exempt(2026-07-16): RC-12 receipts block reads per-iteration ledger state; migrate with the volatile-injection registry refactor
+      // T69b: the RENDER moved to `outbound-ledger.ts` (`renderRecentOutboundBlock`), which
+      // owns the read. It was five lines of `.map()` here with `relativeTimeAgo(...)` inside
+      // — a wall-clock read in the tail, untestable where it sat.
+      const outBlock = renderRecentOutboundBlock(getRecentOutbound(agentId, 24, 5));
+      if (outBlock) {
+        pushEngineMessage(messages, outBlock, 'engine.recent-outbound'); // registry-exempt(2026-07-16): RC-12 receipts block reads per-iteration ledger state; migrate with the volatile-injection registry refactor
       }
 
       // ── THE DELIVERIES LANE (PHASE-3 T7 Step 1, research 18 §open-1) ──
@@ -173,35 +202,19 @@ export async function injectAndRecord(
       }, agentId);
     }
 
-    // RECENTLY ANSWERED (ticket-stamps plan A4, owner-approved): the
-    // last few asks of THIS conversation that already have answers,
-    // read from the per-ask answer stamps (mig 113), so answered-ness
-    // survives compaction structurally and the model never re-answers
-    // a settled question. Bounded: 3 lines; human turns; volatile lane.
-    //
-    // ⚠ SWEEP CORE-2 item 4 — THIS BLOCK WAS DEAD, AND IT IS THE OWNER'S 2026-08-09 INCIDENT.
-    // The read was a hand-written join right here, typed `created_at: string`, handed to
-    // `relativeTimeAgo` — and `messages.created_at` became an epoch-ms INTEGER at migration
-    // 131. Every render threw `sqliteUtc.replace is not a function` on its FIRST row, into the
-    // `catch { /* best effort */ }` below. Measured on the owner's own body at `d07c2aa`:
-    // 3,181 answered-stamped rows, block built for none of them. The engine's only standing
-    // "do NOT re-execute this work" has not reached a model since 131 landed. The read moved
-    // to `answered-edge.ts` (this file's own header names the hand-written join as the disease)
-    // and the timestamp shape is that module's problem now, once, for every caller.
-    if (turnCtx.conversationId) {
-      try {
-        const answeredAsks = recentlyAnsweredAsks(
-          agentId, turnCtx.conversationId, RECENTLY_ANSWERED_LIMIT,
-        );
-        if (answeredAsks.length > 0) {
-          const lines = answeredAsks.map((a) => {
-            const excerpt = a.askContent.replace(/^\[[^\]]*\]\s*/g, '').trim().slice(0, 90);
-            return `- answered ${relativeTimeAgo(a.askAt)}: "${excerpt}"`;
-          });
-          pushEngineMessage(messages, `RECENTLY ANSWERED in this conversation (engine record; do NOT re-execute this work. If asked about it again, a brief restatement of the answer's content is fine, or point at the earlier answer; never silence, and never re-run the work itself):\n${lines.join('\n')}`, 'engine.recently-answered'); // registry-exempt(2026-07-22): reads per-iteration conv-scoped answer stamps; migrate with the volatile-injection registry refactor
-        }
-      } catch { /* best effort */ }
-    }
+  }
+
+  // ── T69b: HL5's OPEN COMMITMENTS SNAPSHOT, AHEAD OF EVERYTHING PER-ASK ─────────────────
+  // The assembler computes it inside the recall lane's single retrieval (`ctx.openCommitments
+  // Lane`); it enters the array HERE, in front of `msg.relevant-memory` instead of glued to
+  // the back of it. It is a pure function of the WORK BOARD — read through `boardLastChanged
+  // At`, whose instant the block's own header states — so on a turn that changed no work row
+  // it is byte-identical, and the provider's cache reaches through it. Behind the per-ask
+  // half it was re-billed by every ask, which is the whole of what this move fixes.
+  // Injected for EVERY counterparty, exactly as the lane it came from is: what an agent owes
+  // does not stop being true because the turn is an A2A or an engine one.
+  if (ctx.openCommitmentsLane) {
+    pushEngineMessage(messages, ctx.openCommitmentsLane, 'engine.open-commitments'); // registry-exempt(2026-09-01): the STATE half of lane.relevant-memory, computed by the assembler and ordered by the loop; migrate with the volatile-injection registry refactor
   }
 
   // ── THE RECALL LANE (SWEEP CORE-2 item 4; `SWEEP-C.md` T4, owner GO 2026-07-26) ──
@@ -221,6 +234,42 @@ export async function injectAndRecord(
   // contract (this phase's Global Constraints): after msg.turn-context, before
   // msg.current-time, behind the cache boundary by construction.
   injectRegistryMessage('msg.peer-status', messages, mctx);
+
+  // ── RECENTLY ANSWERED (ticket-stamps plan A4, owner-approved) ─────────────────────────
+  // The last few asks of THIS conversation that already have answers, read from the per-ask
+  // answer stamps (mig 113), so answered-ness survives compaction structurally and the model
+  // never re-answers a settled question. Bounded: 3 lines; human turns; volatile lane.
+  //
+  // ⚠ SWEEP CORE-2 item 4 — THIS BLOCK WAS DEAD, AND IT IS THE OWNER'S 2026-08-09 INCIDENT.
+  // The read was a hand-written join right here, typed `created_at: string`, handed to
+  // `relativeTimeAgo` — and `messages.created_at` became an epoch-ms INTEGER at migration
+  // 131. Every render threw `sqliteUtc.replace is not a function` on its FIRST row, into a
+  // `catch { /* best effort */ }`. Measured on the owner's own body at `d07c2aa`: 3,181
+  // answered-stamped rows, block built for none of them. The read moved to
+  // `answered-edge.ts` and the timestamp shape is that module's problem now, once.
+  //
+  // ── T69b MOVED IT HERE, AND MOVED ITS RENDER OUT ─────────────────────────────────────
+  // POSITION. It used to be pushed inside the human-turn block above — ahead of peer-status,
+  // ahead of the snapshot, ahead of everything. Its content changes on EVERY answered turn
+  // (a new stamp lands, the oldest of three falls off), which makes it one of the two most
+  // volatile blocks that carry content — and it was sitting in front of the stablest ones.
+  // The tail orders most-stable-first, so it belongs down here with the per-ask material.
+  // Measured on the dev box at `2557747`: on all three judged consecutive-turn pairs this
+  // block was the FIRST divergence in the tail, and everything behind it — the snapshot, the
+  // recall lane, the pin, the clock — was re-billed because of where it sat.
+  // RENDER. `renderRecentlyAnsweredBlock` lives beside the read now. The `.map()` that stood
+  // here called `relativeTimeAgo(a.askAt)` off the wall clock, so the block moved at every
+  // bucket boundary as well; it states the recorded instant now.
+  if (counterparty.kind === 'user' && turnCtx.conversationId) {
+    try {
+      const answeredBlock = renderRecentlyAnsweredBlock(
+        recentlyAnsweredAsks(agentId, turnCtx.conversationId, RECENTLY_ANSWERED_LIMIT),
+      );
+      if (answeredBlock) {
+        pushEngineMessage(messages, answeredBlock, 'engine.recently-answered'); // registry-exempt(2026-07-22): reads per-iteration conv-scoped answer stamps; migrate with the volatile-injection registry refactor
+      }
+    } catch { /* best effort */ }
+  }
 
   // ── THE RECALL LANE (SWEEP CORE-2 item 4; `SWEEP-C.md` T4, owner GO 2026-07-26) ──
   // Per-message semantic recall, and the conclusions it carries from the answer stamps. The

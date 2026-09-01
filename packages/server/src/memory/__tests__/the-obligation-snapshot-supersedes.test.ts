@@ -151,8 +151,18 @@ function ctxWith(over: Partial<RecallLaneContext> = {}): RecallLaneContext {
   };
 }
 
+// T69b RE-BLESS: the lane emits TWO messages now — HL5's snapshot FIRST, the per-ask
+// retrieval SECOND — so this helper joins them instead of reading `messages[0]`. Every clause
+// in this file asks what the model was HANDED by the lane, and it is handed both; reading only
+// the first would silently start asserting about the snapshot alone. The join is `'\n\n'`,
+// which is the separator the two halves had inside the single string until this task, so every
+// existing expectation over the concatenated text is byte-unchanged.
+//
+// WHY THE SPLIT: the two halves have different sources (the work board vs the live ask) and
+// the STATE half was second, so every ask re-billed ~1,400 chars of board state. See
+// `recall-lane.ts toLaneRender`.
 const textOf = (r: LaneRender<RecallLanePayload> | null): string =>
-  (r?.messages?.[0]?.content as string | undefined) ?? '';
+  (r?.messages ?? []).map((m) => m.content as string).join('\n\n');
 
 /** The three live vault entries the round-3 incident measured, verbatim. */
 const BOB_VAULT = [

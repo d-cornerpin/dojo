@@ -28,6 +28,7 @@ import { channelOfSendTool, type ChannelKind } from '@dojo/shared';
 import { findMatchingContact } from '../../contacts/store.js';
 import { recipientIdsMatch } from '../recipient-identity.js';
 import type { ToolReceiptRow } from '../../receipts/store.js';
+import { recordedInstant } from '../../memory/message-stamp.js';
 
 const logger = createLogger('outbound-ledger');
 
@@ -410,6 +411,38 @@ export function relativeTimeAgo(at: string | number, nowMs: number = Date.now())
   if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
   const days = Math.floor(hours / 24);
   return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// T69b — THE RECENT-OUTBOUND BLOCK, A PURE FUNCTION OF ITS ROWS.
+//
+// It was five lines of `.map()` inline in `steps/call-llm/pre-call-injections.ts`, which is
+// why nothing could test it and why its clock read went unnoticed: `relativeTimeAgo(...)`
+// off `Date.now()`, so an IDENTICAL set of receipts emitted different bytes once a minute
+// and re-billed every token behind it in the tail. The render moves to the module that owns
+// the read, states the RECORDED INSTANT instead of an age, and takes its rows as an
+// argument — so the property "identical rows ⇒ identical bytes" is expressible.
+//
+// The rows arrive newest-first from `getRecentOutbound`'s own `ORDER BY created_at DESC`;
+// the order is the query's, not this function's, and it is deterministic.
+//
+// ⚠ THE SCROLLING WINDOW STAYS, AND IT IS DECLARED RATHER THAN FIXED. `getRecentOutbound`
+// selects `created_at >= datetime('now','-24 hours')`, so a receipt leaves this block when
+// the wall clock passes its 24-hour mark with nothing having changed. That is a real change
+// of CONTENT — the block's own header claims a 24-hour window — and pinning the window edge
+// to a fixed instant would make the claim false. It is bounded, one-way and at most ONCE PER
+// ROW, which is the same disposition T67b gave `lane.continuity`'s horizon; the defect this
+// function removes fired every minute, for every row, forever.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+export const RECENT_OUTBOUND_HEAD = 'RECENT OUTBOUND (engine-verified):';
+
+export function renderRecentOutboundBlock(rows: readonly OutboundDelivery[]): string | null {
+  if (rows.length === 0) return null;
+  const lines = rows.map(
+    (d) => `${recordedInstant(d.createdAt)} ${channelLabel(d.channel)} -> ${d.recipient ?? 'unknown'}`,
+  );
+  return `${RECENT_OUTBOUND_HEAD}\n${lines.join('\n')}`;
 }
 
 /** Short channel label for the RECENT OUTBOUND block + steer copy. */
