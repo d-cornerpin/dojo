@@ -17,7 +17,7 @@
 // 2. **The delivery IIFE's own shape.** `void (async () => { … })()` runs after
 //    the handler has already answered; its `while` loops, its status writes and
 //    its failure path are untouched. A handler returns to the executor's tail
-//    exactly where the case `break`ed, so the ack still reaches the user while
+//    exactly where the case `break`ed, so the tool RESULT reaches the model while
 //    generation continues in the background.
 // 3. **The generation-job lifecycle** (queued → running → succeeded/failed) that
 //    the dashboard's ActiveJobsIndicator reads is driven from inside these
@@ -29,6 +29,46 @@
 // anything from the toolbox, so not one broke a cycle. Four were the inline
 // `(await import('…')).fn()` form and become ordinary named imports. RULING
 // P5-R9's arbiter — the unit suite — stayed green.
+//
+// ── THE SECOND ACK AUTHORITY IS GONE (UX-REPAIR T71b, owner report 2026-09-05) ──
+// Three of these bodies used to open with a "synthetic acknowledgment": an
+// assistant-role row written and broadcast on the SYNCHRONOUS path of every call,
+// v2.10.3's answer to the silence between the tool pill and the finished asset.
+// It is deleted, in all three, and none of it is replaced.
+//
+//   1. IT WAS N BUBBLES, NOT ONE, ON TOP OF THE REAL ACK. The executor runs a
+//      `safe` batch through `Promise.all` (`v2/steps/execute/index.ts:204`), and
+//      there was no latch of any kind — not per turn, not per batch, not per
+//      phrase. Driven at `63b9064` on the floor model, a three-headshot ask: row
+//      71934 is the DESIGNED ack (`origin_intent=engine_start_ack`, the model's
+//      own "Generating all three headshots now — chef, pilot, and librarian.")
+//      and then 71936/71937/71938 are "Checking on that." / "Looking into it." /
+//      "Checking.", three independent draws from the voice-mode filler pool in
+//      one instant. Four bubbles where the design says one.
+//   2. IT BROKE A WRITTEN INVARIANT. `v2/loop.ts` (Part XIX, sharpened): *never
+//      insert any persisted message between an assistant `tool_use` and its
+//      matching `tool_result` … a transient indicator must be broadcast-only,
+//      never written to the messages table.* Those three rows sat at 71936-71938,
+//      between the `tool_use` row 71935 and the `tool_result` row 71939.
+//   3. IT COULD NOT DISCHARGE THE ACK DUTY IT CLAIMED. The row was written with no
+//      `turnNumber`, so `startAckRepliedNow`'s probe (`v2/steps/preflight/
+//      start-ack.ts`, `turn_number = ?`) could not see it and the start-ack door
+//      stayed open — the engine then steered the model to say "on it" moments
+//      after the handler had already said it N times. A handler has no route to
+//      the flag that would close the door: `ToolHandlerContext` carries no
+//      `TurnContext` and no turn number, by design.
+//   4. A CANNED ENGINE LINE IS THE THING OR2 FORBIDS. Owner ruling 2026-07-22:
+//      the engine DETECTS, the agent SPEAKS; the engine never composes the ack
+//      itself. The F10/T41 start-ack door is that one authority and it hands the
+//      model the mic (`v2/steps/assemble/start-ack-door.ts`).
+//
+// So this is a deletion and not a latch: a latch would have turned three junk
+// bubbles into one junk bubble and left (2), (3) and (4) all standing. What the
+// deferred delivery IIFE writes later — the caption plus the attachment, and the
+// failure notice — is the PAYLOAD, lands after the turn rather than between the
+// pair, and is untouched. `__tests__/media-posts-no-ack-row.test.ts` holds the
+// requirement at zero rows on the synchronous path, per generator and for a
+// three-call batch.
 // ════════════════════════════════════════════════════════════════════════════
 
 import path from 'node:path';
@@ -55,7 +95,6 @@ import { getModelVoiceCatalog, defaultVoiceCatalogFor, isKnownVoice, formatVoice
 import { getPresence } from '../../../services/presence.js';
 import { getTurnScopedImRecipient, sendIMessageWithAttachment, getDefaultSender } from '../../../services/imessage-bridge.js';
 import { isPrimaryAgent } from '../../../config/platform.js';
-import { pickFillerPhrase } from '../../../voice/filler-phrases.js';
 import { postAgentNotice } from '../../agent-notice.js';
 import { recordCost } from '../../../costs/tracker.js';
 import { resolveAttachmentPath, fetchAudioUrl, transcribeAudio } from '../../../services/transcription.js';
@@ -153,39 +192,6 @@ const handlers = {
     auditLog(agentId, 'image_create', null, 'success',
       `Request ${requestId} queued (aspect ${aspectRatio}${styleHint ? `, style ${styleHint}` : ''})`,
     );
-
-    // v2.10.3, synthetic acknowledgment. Image generation takes
-    // 10-60 s; without an immediate user-visible ack, the user
-    // sees their request, the agent's tool-call pill, and then a
-    // long silence before the image arrives. Inject a short
-    // assistant-role ack from the calling agent right now so the
-    // user always sees "On it." / "Working on it." / etc. as
-    // soon as image_create fires. Uses the existing voice-mode
-    // filler pool for variety so it doesn't always say the same
-    // thing.
-    try {
-      const ackPhrase = pickFillerPhrase();
-      const ackMsgId = uuidv4();
-      insertMessageIfAbsent({ id: ackMsgId, agentId, role: 'assistant', content: ackPhrase });
-      broadcast({
-        type: 'chat:message', agentId,
-        message: {
-          id: ackMsgId, agentId, role: 'assistant' as const, content: ackPhrase,
-          tokenCount: null, modelId: null, cost: null, latencyMs: null,
-          createdAt: new Date().toISOString(),
-        },
-      });
-      broadcast({
-        type: 'chat:chunk', agentId,
-        messageId: ackMsgId, content: '', done: true, modelId: null,
-      });
-    } catch (ackErr) {
-      // Best effort, if the ack injection fails, the rest of the
-      // flow still works, just with no immediate ack visible.
-      logger.warn('image_create: synthetic ack injection failed (non-fatal)', {
-        requestId, error: ackErr instanceof Error ? ackErr.message : String(ackErr),
-      });
-    }
 
     // ── Async background generation, fire and forget ──
     // The tool returns the ack text below IMMEDIATELY. The generation
@@ -508,7 +514,7 @@ const handlers = {
       ? `When the image is ready in 10-60 s, the engine will post it to the dashboard AND text it to the person who asked over iMessage, no second turn from you. If you do write a line, do not tell them to "check the dashboard" (they are on iMessage and will receive the image itself), just say it is on the way.`
       : `When the image is ready in 10-60 s, the engine will post it directly to the chat with a short caption, no second turn from you.`;
     content =
-      `Image generation kicked off (request_id: ${requestId}). The engine has already posted a brief acknowledgment to the user; you do NOT need to write any text. ${deliveryClause} ` +
+      `Image generation kicked off (request_id: ${requestId}). ${deliveryClause} ` +
       `End your turn now.` +
       visionTail;
     return { content, isError };
@@ -569,32 +575,10 @@ const handlers = {
     auditLog(agentId, name, null, 'success',
       `Job ${jobId} queued (${kind}, ${promptText.length} chars)`);
 
-    // Synthetic "started" ack. The worker delivers the asset later.
-    try {
-      const ackMsgId = uuidv4();
-      const ackPhrase = isMusic
-        ? "On it, composing that now. I'll send it over when it's ready."
-        : "On it, I'll send the audio over in a moment.";
-      insertMessageIfAbsent({ id: ackMsgId, agentId, role: 'assistant', content: ackPhrase });
-      broadcast({
-        type: 'chat:message', agentId,
-        message: {
-          id: ackMsgId, agentId, role: 'assistant' as const, content: ackPhrase,
-          tokenCount: null, modelId: null, cost: null, latencyMs: null,
-          createdAt: new Date().toISOString(),
-        },
-      });
-      broadcast({ type: 'chat:chunk', agentId, messageId: ackMsgId, content: '', done: true, modelId: null });
-    } catch (ackErr) {
-      logger.warn(`${name}: ack injection failed (non-fatal)`, {
-        jobId, error: ackErr instanceof Error ? ackErr.message : String(ackErr),
-      });
-    }
-
     enqueueAudioOrMusicJob(jobId);
 
     content =
-      `${isMusic ? 'Music' : 'Audio'} generation started (job_id: ${jobId}). The engine has already posted a "started" acknowledgment to the user and is generating the asset in the background. When it's ready the engine will post it directly to the chat. You do NOT get a second turn and must NOT call ${name} again. End your turn now without writing any further text.`;
+      `${isMusic ? 'Music' : 'Audio'} generation started (job_id: ${jobId}). The engine is generating the asset in the background. When it's ready the engine will post it directly to the chat. You do NOT get a second turn and must NOT call ${name} again. End your turn now without writing any further text.`;
     return { content, isError };
   },
 
@@ -681,27 +665,6 @@ const handlers = {
     auditLog(agentId, 'video_create', null, 'success',
       `Job ${submit.jobId} queued (provider ${submit.providerJobId})`);
 
-    // Synthetic "started" ack, video takes minutes, so the user needs
-    // to know it's in progress. Mirrors image_create's ack injection.
-    try {
-      const ackMsgId = uuidv4();
-      const ackPhrase = "I've started the video, this usually takes a few minutes. I'll send it as soon as it's ready.";
-      insertMessageIfAbsent({ id: ackMsgId, agentId, role: 'assistant', content: ackPhrase });
-      broadcast({
-        type: 'chat:message', agentId,
-        message: {
-          id: ackMsgId, agentId, role: 'assistant' as const, content: ackPhrase,
-          tokenCount: null, modelId: null, cost: null, latencyMs: null,
-          createdAt: new Date().toISOString(),
-        },
-      });
-      broadcast({ type: 'chat:chunk', agentId, messageId: ackMsgId, content: '', done: true, modelId: null });
-    } catch (ackErr) {
-      logger.warn('video_create: ack injection failed (non-fatal)', {
-        jobId: submit.jobId, error: ackErr instanceof Error ? ackErr.message : String(ackErr),
-      });
-    }
-
     // Broadcast the initial queued state so the dashboard indicator
     // appears immediately, then start polling.
     try {
@@ -723,7 +686,7 @@ const handlers = {
     }
 
     content =
-      `Video generation started (job_id: ${submit.jobId}). The engine has already posted a "started" acknowledgment to the user and is generating the video in the background (1 to 10 min). When it's ready the engine will post it directly to the chat, you do NOT get a second turn and must NOT call video_create again. End your turn now without writing any further text.`;
+      `Video generation started (job_id: ${submit.jobId}). The engine is generating the video in the background (1 to 10 min). When it's ready the engine will post it directly to the chat, you do NOT get a second turn and must NOT call video_create again. End your turn now without writing any further text.`;
     return { content, isError };
   },
 

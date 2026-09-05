@@ -17,7 +17,6 @@
 //   ✓ Cost recording + embedding queueing preserved
 //   ✓ chat:tool_call / chat:tool_result / chat:message broadcasts preserved
 //   ✓ Synthetic Cancelled tool results when stopped mid-batch
-//   ✓ Engine-injected ack (via ackInjector)
 //   ✓ Tool partitioning (safe → parallel, others → serial)
 //   ✓ Loop break detection (via loopDetector)
 //   ✓ Permission denial nudging (via permissionAlternativeFinder)
@@ -70,8 +69,6 @@ import { getAgentRuntime } from '../runtime.js';
 
 import { advance } from './state.js';
 import { canonicalToolSignature } from './classifiers/loop.js';
-// ackInjector intentionally NOT imported, engine ack disabled per invariant
-// review (see "Engine-injected ack, DISABLED" comment below).
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
 // PHASE-6 T8: the first step cut out of this driver. `steps/step-outcome.ts`
 // carries the contract every step package shares, including the exit-request
@@ -545,7 +542,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       } = classified;
 
 
-      // ── Engine-injected ack, DISABLED ──
+      // ── Engine-injected ack, GONE ──
       //
       // The v2 plan called for an engine-written ack ("Working on it…") to fire
       // when the agent goes straight to a tool call without text. In practice
@@ -566,8 +563,11 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       // ever want a transient "thinking" indicator, it must be broadcast-only,
       // never written to the messages table.
       //
-      // The `ackInjector` classifier (agent/v2/classifiers/ack.ts) and its
-      // tests are kept for potential future use as a broadcast-only path.
+      // UX-REPAIR T71b: `ackInjector` and its `SELF_ACKNOWLEDGING_TOOLS` set are
+      // DELETED, not kept "for potential future use" — in the four months they sat
+      // disabled the media handlers built the very thing they warned against (a
+      // canned ack, persisted, between the pair). One door survives: the F10/T41
+      // start-ack steer, where the engine detects and the AGENT speaks (OR2).
 
       // Engine-side tracker enforcement lives in the runtime nudge + engine
       // floor below (search "Runtime tracker nudge"); the v2.0.0-era classifier

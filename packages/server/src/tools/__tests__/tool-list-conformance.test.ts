@@ -42,7 +42,6 @@ import {
 import { STRUCTURING_OPS } from '../../agent/v2/classifiers/hoarding.js';
 import { TOOL_CATEGORY, WORK_OP_CONCURRENCY } from '../../agent/v2/classifiers/concurrency.js';
 import { isWorkOp } from '../work-verbs.js';
-import { SELF_ACKNOWLEDGING_TOOLS } from '../../agent/v2/classifiers/ack.js';
 import { RECEIPT_TOOLS, RECEIPT_EXEMPT } from '../../receipts/store.js';
 import { SEND_TO_PEOPLE, SEND_TO_PEOPLE_NA, USER_TWINNED_SEND_PREFIXES } from '../../agent/sensei-policy.js';
 
@@ -82,7 +81,12 @@ const HAND_LISTS: Array<{ label: string; names: string[] }> = [
   { label: 'hoarding.STRUCTURING_OPS', names: [...STRUCTURING_OPS] },
   { label: 'concurrency.TOOL_CATEGORY (keys)', names: Object.keys(TOOL_CATEGORY) },
   { label: 'concurrency.WORK_OP_CONCURRENCY (keys)', names: Object.keys(WORK_OP_CONCURRENCY) },
-  { label: 'ack.SELF_ACKNOWLEDGING_TOOLS', names: [...SELF_ACKNOWLEDGING_TOOLS] },
+  // `ack.SELF_ACKNOWLEDGING_TOOLS` was a hand list here until UX-REPAIR T71b.
+  // It and its only reader, `ackInjector`, are DELETED: the classifier was
+  // disabled 2026-05-04 (`v2/loop.ts` said so in as many words) and nothing but
+  // this line and its own unit test had imported either since — so the set was a
+  // second ack authority that could suppress nothing and a phantom-guard for a
+  // list no live code read.
   { label: 'receipts.RECEIPT_TOOLS (keys)', names: Object.keys(RECEIPT_TOOLS) },
   { label: 'sensei.SEND_TO_PEOPLE', names: [...SEND_TO_PEOPLE] },
 ];
