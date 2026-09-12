@@ -347,6 +347,67 @@ function getClient(providerId: string): CachedClient {
   return entry;
 }
 
+/**
+ * ════════════════════════════════════════════════════════════════════════════════════════
+ * T72b claim 1 — HOW MUCH ROOM AN ANSWER GETS, AND WHY THERE ARE TWO FLOORS.
+ * ════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * `max_tokens` on the wire is `min(the model's own cap, what the window can spare)`. The
+ * second term is DERIVED — 25% of the context window, or whatever is left after the prompt,
+ * whichever is smaller — and it carried a floor of 1024 so it could never go to zero or
+ * negative.
+ *
+ * That floor was not a floor. It was the answer, in two situations a local box hits
+ * constantly:
+ *
+ *   1. `contextWindow <= 4096` (llama.cpp's default `n_ctx` is 4096, and our provider
+ *      validate writes whatever the endpoint reports) makes `floor(cw * 0.25) <= 1024`, so
+ *      the min collapses onto the floor whatever the model's cap says;
+ *   2. the prompt is within ~2 K tokens of the declared window — including the very common
+ *      case where the declared window is simply WRONG, because a manual provider's
+ *      /v1/models reports no `context_length` and the box accepts a prompt the guess cannot
+ *      hold. Then the headroom term is negative and the floor is, again, the answer.
+ *
+ * 1024 tokens is a workable last resort for a model that starts writing immediately. For a
+ * model with thinking enabled it is a GUARANTEED empty answer: the reasoning spends the
+ * budget, the provider returns `finish_reason: 'length'`, and no visible word is ever
+ * written. The owner's DS4 box reported exactly that — "gen=1024 finish=length" — and the
+ * engine's own grind classifier had already measured the population without naming the
+ * cause (17 of 19,124 calls reaching their cap with nothing to show,
+ * `post-call-classify/empty-response.ts`).
+ *
+ * So the floor is thinking-aware. It governs ONLY the derived term: a `max_output_tokens`
+ * someone put in a row is their number and is never overridden here. The matching write-side
+ * repair is in the provider-validate path, which used to persist `min(floor(cw / 4), 16384)`
+ * — exactly 1024 for a 4096-window model.
+ */
+export const OUTPUT_FLOOR_TOKENS = 1024;
+export const THINKING_OUTPUT_FLOOR_TOKENS = 4096;
+
+/** What `max_tokens` will be for this model on this prompt. Pure, so it can be argued with. */
+export function resolveOutputBudget(
+  modelInfo: {
+    contextWindow: number;
+    maxOutputTokens: number;
+    thinkingEnabled: boolean;
+    capabilities: string[];
+  },
+  inputEstimate: number,
+): number {
+  // Thinking has to be both DECLARED by the model and left ON by the owner. A capability the
+  // Models page switched off spends no output tokens, so it earns no extra room.
+  const thinkingActive = modelInfo.thinkingEnabled && modelInfo.capabilities.includes('thinking');
+  const floor = thinkingActive ? THINKING_OUTPUT_FLOOR_TOKENS : OUTPUT_FLOOR_TOKENS;
+
+  // Reserve at most 25% of context for output, or whatever's left after input.
+  const maxOutputBudget = Math.floor(modelInfo.contextWindow * 0.25);
+  const availableForOutput = Math.max(
+    floor,
+    Math.min(maxOutputBudget, modelInfo.contextWindow - inputEstimate - 1000),
+  );
+  return Math.min(modelInfo.maxOutputTokens, availableForOutput);
+}
+
 // Determine max output tokens based on model family
 function getMaxOutputTokens(apiModelId: string, providerType: string): number {
   if (providerType === 'ollama') return 8192; // Ollama models typically support 8k output
@@ -1475,14 +1536,15 @@ async function callOpenAIModel(
   // Measured before deleting: day-0 detect run 73 calls / **0 budget violations**; the driven
   // pre-flip arm at `1d112ad` **checked=63 diverged=0**. The trimmer had nothing to trim.
 
-  // Reserve at most 25% of context for output, or whatever's left after input
+  // Reserve at most 25% of context for output, or whatever's left after input.
+  // The arithmetic (and the two floors it rests on) is `resolveOutputBudget` above — pulled
+  // out of this function by T72b claim 1 so it could be argued with in a test instead of
+  // only observed on a wire.
   const finalInputEstimate = openaiMessages.reduce((sum, m) => {
     const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
     return sum + estimateTokens(content);
   }, 0) + estimateTokens(JSON.stringify(openaiTools ?? []));
-  const maxOutputBudget = Math.floor(modelInfo.contextWindow * 0.25);
-  const availableForOutput = Math.max(1024, Math.min(maxOutputBudget, modelInfo.contextWindow - finalInputEstimate - 1000));
-  const effectiveMaxTokens = Math.min(modelInfo.maxOutputTokens, availableForOutput);
+  const effectiveMaxTokens = resolveOutputBudget(modelInfo, finalInputEstimate);
 
   // v2.7.27: belt-and-suspenders tool_call/tool_result pair sanitizer.
   // The trimming logic earlier only fires when input exceeds the context
@@ -2574,7 +2636,15 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
   // its stated reason went away is exactly the inference roadmap #15 forbids.
   sanitizeOrphanToolBlocks(anthropicMessages as unknown as Array<{ role: string; content: unknown }>, agentId);
 
-  const anthropicAvailable = Math.max(1024, modelInfo.contextWindow - inputEstimate - 500);
+  // T72b claim 1: the same thinking-aware floor as the OpenAI path. The two transports
+  // deliberately keep their different headroom reserves (500 here, 1000 there) and the 25%
+  // window rule stays OpenAI-side only — those differences predate this task and changing
+  // them is not this task's business. The floor is not a difference, it is a bug either
+  // transport can have: 1024 tokens is a guaranteed empty answer for a thinking model.
+  const anthropicFloor = modelInfo.thinkingEnabled && modelInfo.capabilities.includes('thinking')
+    ? THINKING_OUTPUT_FLOOR_TOKENS
+    : OUTPUT_FLOOR_TOKENS;
+  const anthropicAvailable = Math.max(anthropicFloor, modelInfo.contextWindow - inputEstimate - 500);
   const anthropicMaxTokens = Math.min(modelInfo.maxOutputTokens, anthropicAvailable);
 
   const requestParams: Anthropic.MessageCreateParams = {

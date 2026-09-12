@@ -3270,12 +3270,119 @@ const ModelRow = ({
         </div>
       )}
 
+      <ModelLimitsEditor model={model} onSaved={onPricingChange} />
+
       {supportsVideoGen && (
         <GenerationParamsEditor model={model} onSaved={onPricingChange} />
       )}
 
       {supportsAudioGen && (
         <VoiceCatalogEditor model={model} onSaved={onPricingChange} />
+      )}
+    </div>
+  );
+};
+
+// ── Model Limits Editor (T72b/1) ──
+//
+// `max output` and `context` decide what `max_tokens` goes on every request to this model.
+// For a manual provider both are OUR GUESSES — browse-add stores nothing (no local server
+// reports OpenRouter's `top_provider` block), validate stores `context_length ?? 128000` and
+// a cap derived from it, and neither vLLM's `max_model_len` nor LM Studio's
+// `max_context_length` is read. Until this editor existed there was no way to correct either
+// one: every other writer of those columns is a discovery sync, and deleting and re-adding
+// the model writes nothing again.
+//
+// The visible consequence, and the reason this shipped: a guessed window small enough (or a
+// prompt large enough) collapses the derived output budget onto its floor, and for a model
+// with thinking enabled that floor was a guaranteed empty answer — the reasoning spent the
+// budget, the provider returned `finish_reason: length`, and no words were ever written.
+//
+// Blank means "let discovery decide" and is a real, restorable state, not a mistake.
+const ModelLimitsEditor = ({ model, onSaved }: { model: Model; onSaved: () => void }) => {
+  const [maxOut, setMaxOut] = useState(
+    model.maxOutputTokens === null || model.maxOutputTokens === undefined ? '' : String(model.maxOutputTokens),
+  );
+  const [ctx, setCtx] = useState(
+    model.contextWindow === null || model.contextWindow === undefined ? '' : String(model.contextWindow),
+  );
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async (
+    field: 'maxOutputTokens' | 'contextWindow',
+    raw: string,
+    current: number | null | undefined,
+  ) => {
+    setError(null);
+    const trimmed = raw.trim();
+    const next = trimmed === '' ? null : Number(trimmed);
+    if (next !== null && (!Number.isInteger(next) || next <= 0)) {
+      setError('Must be a whole number of tokens, or blank');
+      return;
+    }
+    if (next === (current ?? null)) return; // no change
+    setSaving(true);
+    const result = await api.updateModelLimits(model.id, { [field]: next });
+    setSaving(false);
+    if (result.ok) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+      onSaved();
+    } else {
+      setError(result.error ?? 'Save failed');
+    }
+  };
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-4">
+      <div className="flex items-center gap-2">
+        <label
+          className="text-xs text-ui/40 w-20"
+          title="The most tokens this model may generate in one reply. Models that think before they answer spend this budget on reasoning first, so a low value can produce an empty reply. Blank = let discovery decide."
+        >
+          Max output
+        </label>
+        <input
+          type="number"
+          step="1"
+          min="1"
+          placeholder="auto"
+          value={maxOut}
+          onChange={(e) => setMaxOut(e.target.value)}
+          onBlur={() => save('maxOutputTokens', maxOut, model.maxOutputTokens)}
+          disabled={saving}
+          className="glass-input w-28 font-mono text-right disabled:opacity-60"
+        />
+        <span className="text-[10px] text-ui/25">tokens</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <label
+          className="text-xs text-ui/40"
+          title="How much this model can read in one call, prompt and reply together. Set it to what your server is actually configured for — a wrong value here shrinks the room left for the reply."
+        >
+          Context
+        </label>
+        <input
+          type="number"
+          step="1"
+          min="1"
+          placeholder="auto"
+          value={ctx}
+          onChange={(e) => setCtx(e.target.value)}
+          onBlur={() => save('contextWindow', ctx, model.contextWindow)}
+          disabled={saving}
+          className="glass-input w-28 font-mono text-right disabled:opacity-60"
+        />
+        <span className="text-[10px] text-ui/25">tokens</span>
+      </div>
+      {saved && <span className="text-xs text-cp-teal">Saved</span>}
+      {error && <span className="text-xs text-cp-coral">{error}</span>}
+      {!saved && !error && (
+        <span className="text-[10px] text-ui/25 italic">
+          blank = discovered automatically
+        </span>
       )}
     </div>
   );

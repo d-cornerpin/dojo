@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { getDb } from '../../db/connection.js';
 import { getProviderCredential, setProviderCredential, clearSecretsCache, getSearchApiKey, getSearchProvider, setSearchConfig } from '../../config/loader.js';
-import { clearClientCache, resolveOpenAIBaseUrl } from '../../agent/model.js';
+import { clearClientCache, resolveOpenAIBaseUrl, THINKING_OUTPUT_FLOOR_TOKENS } from '../../agent/model.js';
 import { CreateProviderSchema, EditProviderSchema, EnableModelsSchema, ProviderPatienceSchema } from '../../config/schema.js';
 import { createLogger } from '../../logger.js';
 import { DEFAULT_SOUL_MD as DEFAULT_SOUL, DEFAULT_USER_MD as DEFAULT_USER } from '../../prompt/templates.js';
@@ -961,7 +961,15 @@ configRouter.post('/providers/:id/validate', async (c) => {
           const apiModel = apiMap.get(existing.api_model_id);
           if (apiModel) {
             const contextWindow = apiModel.context_length ?? apiModel.top_provider?.context_length ?? 128000;
-            const maxOutputTokens = apiModel.top_provider?.max_completion_tokens ?? Math.min(Math.floor(contextWindow / 4), 16384);
+            // T72b claim 1, the write side. `floor(cw / 4)` is exactly 1024 for a
+            // 4096-window model — llama.cpp's default `n_ctx` — and a stored cap of 1024 is
+            // a guaranteed empty answer for anything that reasons before it writes. When the
+            // provider states its own `max_completion_tokens` we take it verbatim, as
+            // before; it is OUR OWN GUESS that must not be allowed below the floor. A
+            // provider that genuinely cannot produce this much will say so, which is
+            // information; silently persisting an unusable cap is not.
+            const maxOutputTokens = apiModel.top_provider?.max_completion_tokens
+              ?? Math.max(THINKING_OUTPUT_FLOOR_TOKENS, Math.min(Math.floor(contextWindow / 4), 16384));
             const inputCostPerM = parsePrice(apiModel.pricing?.prompt);
             const outputCostPerM = parsePrice(apiModel.pricing?.completion);
             updateModel.run(contextWindow, maxOutputTokens, inputCostPerM, outputCostPerM, existing.id);
@@ -1924,6 +1932,65 @@ configRouter.patch('/models/:id/num-ctx', async (c) => {
 
   const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
   logger.info('Model num_ctx override updated', { modelId: id, override });
+  return c.json({ ok: true, data: rowToModel(row) });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════
+// PATCH /models/:id/limits — the two numbers that decide how much answer fits (T72b/1)
+//
+// Body: { maxOutputTokens?: number | null, contextWindow?: number | null }
+//
+// `max_output_tokens` and `context_window` set `max_tokens` on every request through
+// `resolveOutputBudget`, and for a manual provider both are GUESSES: browse-add stores NULL
+// for both (no local server reports OpenRouter's `top_provider`), provider-validate stores
+// `context_length ?? 128000` and a cap derived from it, and vLLM's `max_model_len` /
+// LM Studio's `max_context_length` are not read at all. Same provider, two different answers
+// depending on which button was pressed last — and until this door there was no way to
+// correct either one short of editing SQLite, because every other writer of these columns is
+// a discovery sync and re-adding the model writes NULL again.
+//
+// PARTIAL by construction, in the shape `/models/:id/num-ctx` established: only the fields
+// present in the body move. `POST /providers` is a full replace with a documented
+// clears-on-omit trap, and repeating that trap on a model row would mean an owner correcting
+// their output cap silently wiped their context window. NULL is accepted and is NOT the
+// same as absent: it is how a person hands the field back to discovery.
+configRouter.patch('/models/:id/limits', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => null) as Record<string, unknown> | null;
+  const names = ['maxOutputTokens', 'contextWindow'] as const;
+  if (!body || !names.some((n) => n in body)) {
+    return c.json({ ok: false, error: 'Request body must include `maxOutputTokens` and/or `contextWindow` (integer or null)' }, 400);
+  }
+
+  // One ceiling per field, generous on purpose: this door exists because our own guesses were
+  // wrong, so it is not the place to hold an opinion about what hardware can do. It refuses
+  // only what cannot be a bound at all.
+  const CEILINGS: Record<string, number> = { maxOutputTokens: 1_000_000, contextWindow: 2_097_152 };
+  const updates: Array<[string, number | null]> = [];
+  for (const name of names) {
+    if (!(name in body)) continue;
+    const v = body[name];
+    if (v === null) { updates.push([name, null]); continue; }
+    if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0 || v > CEILINGS[name]) {
+      return c.json({ ok: false, error: `\`${name}\` must be a positive integer up to ${CEILINGS[name]}, or null` }, 400);
+    }
+    updates.push([name, v]);
+  }
+
+  const db = getDb();
+  const model = db.prepare('SELECT id FROM models WHERE id = ?').get(id);
+  if (!model) return c.json({ ok: false, error: 'Model not found' }, 404);
+
+  const COLUMN: Record<string, string> = {
+    maxOutputTokens: 'max_output_tokens',
+    contextWindow: 'context_window',
+  };
+  const sets = updates.map(([name]) => `${COLUMN[name]} = ?`).join(', ');
+  db.prepare(`UPDATE models SET ${sets}, updated_at = datetime('now') WHERE id = ?`)
+    .run(...updates.map(([, v]) => v), id);
+
+  const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
+  logger.info('Model limits updated', { modelId: id, ...Object.fromEntries(updates) });
   return c.json({ ok: true, data: rowToModel(row) });
 });
 

@@ -337,6 +337,19 @@ export const updateModelNumCtx = async (
   });
 };
 
+// T72b/1 — the two numbers that decide how much answer fits. PARTIAL: only the fields passed
+// are changed, so correcting an output cap cannot silently wipe a context window. `null` is a
+// real value and means "let discovery decide"; omit a field to leave it alone.
+export const updateModelLimits = async (
+  modelId: string,
+  limits: { maxOutputTokens?: number | null; contextWindow?: number | null },
+): Promise<ApiResponse<unknown>> => {
+  return request(`/config/models/${modelId}/limits`, {
+    method: 'PATCH',
+    body: JSON.stringify(limits),
+  });
+};
+
 // T66b — edit a provider that already exists. ONLY the fields present are changed, which is
 // the whole reason this is not `createProvider` over the same id: that door full-replaces the
 // identity fields, so an edit form built on it would clear a dialect declaration or a patience
