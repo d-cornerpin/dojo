@@ -45,8 +45,12 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     target: 'system',
     slot: SystemSlot.Time,
     reason:
-      'Temporal anchor: every agent must know the current date/time from turn 1 ' +
-      'without a tool call, to judge the age and relevance of any context.',
+      'Temporal INSTRUCTION, carrying no date: it tells the agent where the ' +
+      'clock lives (msg.current-time, the volatile tail) and how to use it to ' +
+      'judge the age of context. The date itself used to be here and rolled at ' +
+      'midnight — as the first slot of the system prompt it invalidated the ' +
+      'whole system+tools prefix nightly, so it moved to the tail message that ' +
+      'already renders it (T72b claim 4).',
     render: () => renderTimeHeader(),
   },
   {

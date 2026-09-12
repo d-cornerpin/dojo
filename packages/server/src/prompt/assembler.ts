@@ -1217,24 +1217,27 @@ function buildMyChannelsSummary(
 }
 
 /**
- * The `time` slot text, DATE ONLY (no time-of-day). Date is stable across the
- * whole day, so it stays byte-identical turn-to-turn and the system prompt
- * remains prompt-cacheable (a minute-precision timestamp here was breaking the
- * cache every minute, poisoning the entire system+tools prefix). The precise
- * clock time is injected separately as a volatile tail message via
- * renderCurrentTimeMessage(), where per-call churn costs no cache.
+ * The `time` slot text. CARRIES NO DATE — it is the standing INSTRUCTION for
+ * how to use the clock, and nothing else.
+ *
+ * History, so nobody re-adds the date a third time: this slot began as a
+ * minute-precision timestamp, which broke the cache every minute; that was
+ * relocated to renderCurrentTimeMessage() (the volatile tail) and the slot was
+ * narrowed to date-only on the theory that a date is "stable across the whole
+ * day". It is not stable — it rolls at midnight, and because this is the FIRST
+ * slot of the system prompt, one character at offset ~15 invalidated the entire
+ * system + tools prefix every night. Our own records caught it twice without
+ * naming it (W54/W56/W58 35,725 chars -> W63 35,724, `Aug 31` -> `Sep 1`; the
+ * release determinism gate 23,846 -> 23,845 the same night), because the
+ * cache-prefix check normalizes the date away before comparing (declared
+ * exemption, check-cache-prefix.mjs 'sys.time' varies:'field').
+ *
+ * The date is NOT lost to the model: renderCurrentTimeMessage() already renders
+ * weekday, month, day and year alongside the clock time, in the volatile tail,
+ * where its churn costs nothing. T72b claim 4.
  */
 export function renderTimeHeader(): string {
-  const now = new Date();
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const localStr = now.toLocaleString('en-US', {
-    timeZone: tz,
-    weekday: 'short',
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
-  return `**Current date: ${localStr}**\n\nUse this to judge the age and relevance of any context, vault entries, or summaries you see. Recent information is more reliable than old information. (The precise clock time appears in a note at the end of this context.)`;
+  return `**Judging the age of what you see:** the current date and clock time are in the [Current time: ...] note at the end of this context. Read them from there, and use them to judge the age and relevance of any context, vault entries, or summaries you see. Recent information is more reliable than old information.`;
 }
 
 /**
