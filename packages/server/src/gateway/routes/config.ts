@@ -1655,6 +1655,15 @@ configRouter.patch('/providers/:id/response-patience', async (c) => {
   db.prepare("UPDATE providers SET first_chunk_timeout_ms = ?, stream_idle_timeout_ms = ?, updated_at = datetime('now') WHERE id = ?")
     .run(nextFirst, nextIdle, id);
 
+  // T73b: THIS DOOR NOW HAS A CACHED CLIENT TO INVALIDATE. Until T73b these two columns were
+  // read fresh on every call and no client was built from them, so an edit took effect on the
+  // next request with nothing to clear. The HTTP client's own clock is derived from them now —
+  // a declaration past the standing 300 s gets an undici dispatcher built to carry it — so a
+  // cached client would keep serving this provider on the patience it used to declare, and the
+  // owner would raise the number on the Providers page and see no change until a restart. The
+  // same sentence the edit door at `:1555` writes for a rotated credential, for the same reason.
+  clearClientCache(id);
+
   const row = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as Record<string, unknown>;
   logger.info('Provider response patience updated', {
     providerId: id, firstChunkTimeoutMs: nextFirst, streamIdleTimeoutMs: nextIdle,

@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
+import { Agent } from 'undici';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
@@ -8,7 +9,8 @@ import { AgentError } from './errors.js';
 import { apiRootIsBareHost, contractForModel, contractForModelId, type ModelContract } from './model-contract.js';
 import { classifyProviderError, isRetryableProviderClass } from './provider-error.js';
 import {
-  resolveStreamPatience, STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS,
+  resolveStreamPatience, resolveTransportTimeouts,
+  STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS,
   type StreamPatience,
 } from './stream-patience.js';
 import { scheduleRateLimitRetry } from './rate-limit-retry.js';
@@ -105,6 +107,35 @@ export interface StreamWatchdog {
  * `bump()` re-arms whichever one is current. The 602-second hang the watchdog was built for
  * (DOJO-ISSUES-LOG 2026-07-10) stays caught: the first-chunk bound is still a bound, it is
  * simply no longer surrendered to a frame carrying nothing.
+ *
+ * ── T73b: SSE KEEPALIVE COMMENTS (`: ping`) DO NOT BUMP THIS, AND THAT IS THE ANSWER ──
+ * W69 handed up that a `: ping` line never reaches the consume loop, so a server that pings
+ * politely while emitting nothing is treated as dead. Both halves of that are true —
+ * `openai@6.32.0`'s `SSEDecoder.decode` returns `null` for any line starting with `:`
+ * (`core/streaming.js`), so comments are discarded a layer below this file — and it was
+ * considered and REFUSED here rather than left unexamined. Three reasons, in order of weight:
+ *
+ *   1. IT IS THE ACK FRAME AGAIN, POINTING THE OTHER WAY. T72b's whole finding is that a frame
+ *      carrying no generated output proves the socket is open, which was never in doubt, and
+ *      must not be allowed to decide how long the machine may stay silent. A `: ping` carries
+ *      strictly less than the ack frame does. Honouring one after refusing the other would
+ *      leave this file holding two opposite rules about the same evidence.
+ *
+ *   2. THE EXTENSION IS UNBOUNDED AND THE REMOTE PARTY CONTROLS IT. Bumping on a heartbeat
+ *      hands the provider an unlimited renewal of its own leash: a wedged server that keeps
+ *      its ping timer alive is never cut at all. That is precisely the 602-second hang this
+ *      watchdog exists to end, wearing a heartbeat. Every bound above is finite on purpose.
+ *
+ *   3. THE DAMAGE W69 SAW WAS THE TRANSPORT'S, NOT THIS TIMER'S. A ping is bytes on the wire,
+ *      so it always reset undici's `bodyTimeout` — pings were the accidental reason some long
+ *      prefills survived the 300 s ceiling at all. T73b lifts that ceiling from the declared
+ *      patience instead, which is the bound a person can see, argue with and edit. A provider
+ *      that needs longer says so on its row; it does not earn it by pinging.
+ *
+ * If this is ever revisited, the shape it would need is a BOUNDED extension (a ping buys one
+ * further grant, a fixed number of times) and a place to hook it that is not this loop, since
+ * the SDK eats the comment lines. Neither is free, and neither is warranted by a bound that
+ * now covers the prefill it was always supposed to cover.
  */
 export function makeStreamWatchdog(
   external?: AbortSignal,
@@ -295,6 +326,61 @@ function getProviderAuthType(providerId: string): 'api_key' | 'oauth' | 'agent-s
   return (row?.auth_type === 'oauth' ? 'oauth' : 'api_key');
 }
 
+// ════════════════════════════════════════════════════════════════════════════════════════
+// T73b — THE HTTP CLIENT IS TOLD WHAT THE PROVIDER DECLARED.
+// ════════════════════════════════════════════════════════════════════════════════════════
+//
+// The derivation and the whole argument are in `stream-patience.ts`; this is the one place
+// that turns those numbers into something a Stainless client will accept. Two facts make the
+// shape what it is:
+//
+//   1. `undici`'s `Agent` is the only way to move `headersTimeout`/`bodyTimeout`. Node's
+//      built-in fetch reads `init.dispatcher` and duck-types it, so an Agent from the npm
+//      package governs the built-in fetch's clock — which is why `undici` is now a declared
+//      dependency of this package rather than a thing we hope Node exposes. (It does not:
+//      there is no accessor for the global dispatcher and no constructor to reach.)
+//
+//   2. Both SDKs take `fetchOptions` — merged into the `RequestInit` they hand `fetch` — and
+//      a `timeout` of their own. A provider that needs more than the defaults gets both set;
+//      a provider that does not gets NEITHER OPTION PASSED AT ALL, so its client object is
+//      constructed from exactly the arguments it was constructed from yesterday.
+//
+// The agents are cached BY THEIR TIMEOUTS, not by provider: two providers that need the same
+// clock share one connection pool, and re-reading a provider row cannot leak a pool per read.
+// A pool per distinct clock is the smallest number of pools that can express the requirement.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+const transportAgentCache = new Map<string, Agent>();
+
+interface TransportClientOptions {
+  fetchOptions: { dispatcher: Agent };
+  timeout: number;
+  /** Cache-key fragment, so a client built for one clock is never reused under another. */
+  key: string;
+}
+
+/**
+ * The client options this provider's declared patience requires, or `null` for "nothing to
+ * configure" — which is every provider that has ever existed here until one declares a bound
+ * past the transport's standing 300 s.
+ */
+function transportClientOptions(patience: StreamPatience): TransportClientOptions | null {
+  const t = resolveTransportTimeouts(patience);
+  if (!t) return null;
+  const key = `${t.headersTimeoutMs}/${t.bodyTimeoutMs}/${t.requestTimeoutMs}`;
+  let agent = transportAgentCache.get(key);
+  if (!agent) {
+    agent = new Agent({ headersTimeout: t.headersTimeoutMs, bodyTimeout: t.bodyTimeoutMs });
+    transportAgentCache.set(key, agent);
+    logger.info('Transport clock lifted for a provider-declared patience', {
+      headersTimeoutMs: t.headersTimeoutMs,
+      bodyTimeoutMs: t.bodyTimeoutMs,
+      requestTimeoutMs: t.requestTimeoutMs,
+    });
+  }
+  return { fetchOptions: { dispatcher: agent }, timeout: t.requestTimeoutMs, key };
+}
+
 interface CachedClient {
   client: Anthropic;
   isOAuth: boolean;
@@ -302,8 +388,13 @@ interface CachedClient {
 
 const clientCache = new Map<string, CachedClient>();
 
-function getClient(providerId: string): CachedClient {
-  const cached = clientCache.get(providerId);
+function getClient(providerId: string, patience: StreamPatience): CachedClient {
+  // T73b: the cache key carries the transport clock, because the same provider row edited to
+  // declare more patience must not be answered out of the cache by a client still wired to the
+  // old one. `clearClientCache` deletes by the same prefix, so an edit clears every variant.
+  const transport = transportClientOptions(patience);
+  const cacheKey = `${providerId}:${transport?.key ?? 'transport-default'}`;
+  const cached = clientCache.get(cacheKey);
   if (cached) return cached;
 
   const credential = getProviderCredential(providerId);
@@ -327,6 +418,13 @@ function getClient(providerId: string): CachedClient {
     credentialLength: credential.length, // never log secret bytes (audit finding 8/21)
   });
 
+  // T73b: spread, not set. When nothing is declared this object has exactly the keys it had
+  // before this task, which is what makes the control arm a fact about the construction site
+  // rather than a claim about behaviour.
+  const transportOpts = transport
+    ? { fetchOptions: transport.fetchOptions, timeout: transport.timeout }
+    : {};
+
   let client: Anthropic;
   if (useOAuth) {
     // OAuth: Authorization: Bearer header + required beta headers
@@ -336,14 +434,15 @@ function getClient(providerId: string): CachedClient {
         'anthropic-beta': OAUTH_BETAS.join(','),
         'User-Agent': 'dojo-platform',
       },
+      ...transportOpts,
     });
   } else {
     // API Key: standard x-api-key header
-    client = new Anthropic({ apiKey: credential });
+    client = new Anthropic({ apiKey: credential, ...transportOpts });
   }
 
   const entry: CachedClient = { client, isOAuth: useOAuth };
-  clientCache.set(providerId, entry);
+  clientCache.set(cacheKey, entry);
   return entry;
 }
 
@@ -844,6 +943,14 @@ async function callOllamaModel(
     // Combine external abort (from stop button) with internal 5-min timeout.
     // Node 22+ AbortSignal.any returns a signal that aborts when EITHER
     // input signal aborts.
+    //
+    // T73b, STATED SO IT IS NOT MISTAKEN FOR COVERED: this transport is NOT the one T73b
+    // lifted. It arms no `makeStreamWatchdog`, reads neither patience column, and bounds the
+    // whole call with the flat 300 s below — a ceiling of its own making that happens to land
+    // on the same number as undici's. `callOpenAIModel` and the Anthropic-direct path derive
+    // their transport clock from the provider row; this one does not, and making it do so is
+    // extending T64b to a third transport rather than removing a ceiling that contradicted a
+    // stored value. Ollama's own server has no equivalent declaration to honour today.
     const timeoutSignal = AbortSignal.timeout(300000);
     const signal = params.abortSignal
       ? AbortSignal.any([timeoutSignal, params.abortSignal])
@@ -1076,8 +1183,15 @@ export function resolveOpenAIBaseUrl(baseUrl?: string | null): string | undefine
  */
 const NO_AUTH_PLACEHOLDER_KEY = 'dojo-provider-declares-no-auth';
 
-function getOpenAIClient(providerId: string, baseUrl?: string | null, authType?: string | null): OpenAI {
-  const cacheKey = `${providerId}:${baseUrl ?? 'default'}`;
+function getOpenAIClient(
+  providerId: string,
+  patience: StreamPatience,
+  baseUrl?: string | null,
+  authType?: string | null,
+): OpenAI {
+  // T73b: the declared patience is part of the client's identity — see `transportClientOptions`.
+  const transport = transportClientOptions(patience);
+  const cacheKey = `${providerId}:${baseUrl ?? 'default'}:${transport?.key ?? 'transport-default'}`;
   const cached = openaiClientCache.get(cacheKey);
   if (cached) return cached;
 
@@ -1098,6 +1212,9 @@ function getOpenAIClient(providerId: string, baseUrl?: string | null, authType?:
   const client = new OpenAI({
     apiKey: credential ?? NO_AUTH_PLACEHOLDER_KEY,
     ...(resolvedBaseUrl ? { baseURL: resolvedBaseUrl } : {}),
+    // T73b: absent unless the provider declared patience the standing transport clock cannot
+    // honour. The owner's DS4 box is the one that does.
+    ...(transport ? { fetchOptions: transport.fetchOptions, timeout: transport.timeout } : {}),
   });
 
   openaiClientCache.set(cacheKey, client);
@@ -1495,7 +1612,12 @@ async function callOpenAIModel(
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
   const startTime = Date.now();
 
-  const client = getOpenAIClient(modelInfo.providerId, modelInfo.providerBaseUrl, modelInfo.providerAuthType);
+  // T73b: resolved HERE rather than at the watchdog below, because the HTTP client is built
+  // from it too. One read, one answer, two consumers — the watchdog and the socket underneath
+  // it — which is the only arrangement in which the transport cannot be less patient than the
+  // bound it is supposed to be carrying.
+  const patience = resolveStreamPatience(modelInfo);
+  const client = getOpenAIClient(modelInfo.providerId, patience, modelInfo.providerBaseUrl, modelInfo.providerAuthType);
 
   // HL1: the two provider-name checks that used to live here are the contract's business.
   const contract = contractForModel(modelInfo);
@@ -1714,7 +1836,14 @@ async function callOpenAIModel(
   // is not a hung connection — but the standing 90s bound had no way to tell those apart.
   // A provider that declares nothing resolves to exactly the two constants this line has
   // passed implicitly since 2026-07-10.
-  const patience = resolveStreamPatience(modelInfo);
+  //
+  // T73b: `patience` is resolved at the top of this function now, because the client above was
+  // built from the same answer. The watchdog is the BINDING bound by construction — the
+  // transport underneath was given the same numbers plus a margin — so a cut stream is one
+  // this file decided to cut, and `streamTimeoutPhrase` speaks for every timeout a caller can
+  // see. Before T73b a declaration past 300 s produced an undici abort instead: the watchdog
+  // never fired, `timedOut()` stayed false, and the loop's one same-model retry was lost to a
+  // transport error rather than withheld by T72b's rule.
   const watchdog = makeStreamWatchdog(params.abortSignal, patience.firstChunkMs, patience.idleMs);
   try {
     const requestOptions = { signal: watchdog.signal };
@@ -2550,7 +2679,12 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     return callAnthropicSdkModel(params, modelInfo);
   }
 
-  const { client, isOAuth } = getClient(modelInfo.providerId);
+  // T73b: the same argument T64b made for arming this path's watchdog from the provider row
+  // applies one layer down. A declaration this transport's socket could not honour would be
+  // the same form telling the same lie, one level quieter. `anthPatience` below reads the same
+  // resolver on the same `modelInfo`; this is the client built from it.
+  const anthPatience = resolveStreamPatience(modelInfo);
+  const { client, isOAuth } = getClient(modelInfo.providerId, anthPatience);
 
   const anthropicMessages: Anthropic.MessageParam[] = messages.map(m => ({
     role: m.role,
@@ -2703,7 +2837,9 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
   // columns that silently did nothing on one of the two transports that arm this watchdog
   // would be a form that lies. NULL — every provider today — is the two standing constants,
   // so this line's behaviour is unchanged for everything currently configured.
-  const anthPatience = resolveStreamPatience(modelInfo);
+  //
+  // T73b moved the resolution up to the client construction site; this arms from the same
+  // value rather than reading the row a second time.
   const anthWatchdog = makeStreamWatchdog(params.abortSignal, anthPatience.firstChunkMs, anthPatience.idleMs);
   try {
     // Stream idle watchdog (see makeStreamWatchdog): bounds first-token and
@@ -2979,7 +3115,13 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
 
 export function clearClientCache(providerId?: string): void {
   if (providerId) {
-    clientCache.delete(providerId);
+    // T73b: both caches are keyed `providerId:...` now — the Anthropic one gained the
+    // transport clock, so a bare `delete(providerId)` would leave the edited provider being
+    // answered by a client wired to the patience it used to declare. Prefix deletion is the
+    // only spelling that survives another key fragment being added later.
+    for (const key of clientCache.keys()) {
+      if (key.startsWith(`${providerId}:`)) clientCache.delete(key);
+    }
     // Also clear OpenAI client cache entries for this provider
     for (const key of openaiClientCache.keys()) {
       if (key.startsWith(`${providerId}:`)) openaiClientCache.delete(key);

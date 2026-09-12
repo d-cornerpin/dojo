@@ -118,3 +118,117 @@ export function resolveStreamPatience(declared?: DeclaredPatience | null): Strea
     firstChunkDeclared: isCoherent(declared?.firstChunkTimeoutMs),
   };
 }
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// T73b — THE TRANSPORT HAS A CLOCK TOO, AND IT WAS THE SHORTER ONE.
+// ════════════════════════════════════════════════════════════════════════════════════════
+//
+// Everything above decides what the WATCHDOG is armed with. Underneath the watchdog sits an
+// HTTP client with its own timers, and until T73b nobody had told it anything. Node's
+// built-in `fetch` is undici, and an unconfigured undici dispatcher carries:
+//
+//     headersTimeout: 300_000    request sent  ->  response headers
+//     bodyTimeout:    300_000    inter-chunk gap on the response body
+//
+// `STREAM_PATIENCE_MAX_MS` is thirty minutes, so the door above would store — and the reader
+// above would honour, and the watchdog would arm — any bound up to 1,800,000 ms, while the
+// socket underneath died at 300,000. A value that is storable and unhonourable at the same
+// time is the exact defect this module's header says it exists to prevent; it simply had the
+// wrong floor in view. THE OWNER'S STAKES, measured: cold prefill on his DS4 box runs about
+// 200 tok/s, so a 300-second ceiling caps him at roughly 55K prompt tokens. His conversations
+// run 42–52K. He is inside the ceiling by a margin that a single long day erases.
+//
+// And when the undici timer is the one that fires, the abort is not ours: the watchdog never
+// ran, `timedOut()` is false, and the error is a transport error carrying NEITHER of the two
+// phrases the v2 loop reads — so the single same-model retry T65b grants is not withheld on
+// purpose (T72b's rule) but lost by accident. Deriving the transport's clock from the declared
+// patience is what makes the watchdog the binding bound again, and therefore what puts the
+// retry decision back in the hands of the code that reasons about it.
+//
+// ── WHY A MARGIN, AND WHY IT IS THE WATCHDOG THAT MUST WIN ──
+// These two clocks must never be equal. The bounds above have meanings — "prompt processing",
+// "the connection is dead" — and produce an error that names which one fired, whether the
+// retry is granted, and what the owner reads. A transport timeout has none of that. So the
+// transport is always given strictly more rope than the watchdog, and the margin is the
+// distance by which the watchdog is guaranteed to get there first.
+//
+// ── WHY THE DEFAULT IS NOT SIMPLY REPLACED ──
+// A provider that declares nothing, and a provider whose declaration already fits inside the
+// standing transport bounds, get `null` here: no dispatcher is built, no client option is set,
+// and their calls go out on the shared global pool byte-for-byte as they did yesterday. That
+// is not caution, it is the control — the thing that makes "existing providers are unchanged"
+// a fact about the code rather than a hope, exactly as the NULL row is for the two bounds
+// above. We only ever LIFT: the derived numbers are floored at the standing defaults, so no
+// declaration can make the transport LESS patient than it is today.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * undici's unconfigured `headersTimeout` and `bodyTimeout`, which are the same number. This is
+ * a fact about Node's built-in `fetch`, not a choice of ours, and it is written here rather
+ * than read from anywhere because there is nothing to read it from: Node exposes no accessor
+ * for the global dispatcher's options.
+ */
+export const TRANSPORT_DEFAULT_TIMEOUT_MS = 300_000;
+
+/**
+ * The Stainless clients (`openai`, `@anthropic-ai/sdk`) arm one more timer of their own around
+ * the `fetch` call, defaulting to ten minutes. It is cleared the moment the response headers
+ * land — it bounds time-to-headers only, never the streamed body — but it is still a ceiling,
+ * and a provider allowed thirty minutes to think would hit it on a server that withholds its
+ * headers until the first token.
+ */
+export const TRANSPORT_REQUEST_TIMEOUT_DEFAULT_MS = 600_000;
+
+/**
+ * How much longer the transport waits than the watchdog does.
+ *
+ * Thirty seconds, and the size is chosen so the ORDER of the two timers is not a close-run
+ * thing. Both clocks start at roughly the same instant but not the same one — the watchdog is
+ * armed before `create()` is called, the transport's timers start when the socket is written
+ * — and undici's timer wheel is coarse (it fires in ~1-second buckets, which the driven test
+ * in `the-transport-honours-the-declared-patience.test.ts` shows as a 1.5 s bound firing at
+ * ~2.0 s). A margin of a second or two would be inside that noise. Thirty is far outside it,
+ * costs nothing when the watchdog fires as intended, and is the only amount of extra hang a
+ * wedged provider can buy with it.
+ */
+export const TRANSPORT_MARGIN_MS = 30_000;
+
+/** What the HTTP client is configured with, when the declared patience needs more than today's. */
+export interface TransportTimeouts {
+  /** undici `headersTimeout`: request written -> response headers. */
+  headersTimeoutMs: number;
+  /** undici `bodyTimeout`: the gap between two bytes of the response body. */
+  bodyTimeoutMs: number;
+  /** The SDK's own per-request timer, which bounds time-to-headers. */
+  requestTimeoutMs: number;
+}
+
+/**
+ * The transport clock that this patience requires, or `null` when today's defaults already
+ * cover it and nothing should be configured at all.
+ *
+ * WHY `headersTimeout` IS THE FIRST-CHUNK BOUND AND `bodyTimeout` IS BOTH: whether a long
+ * prefill is spent waiting for headers or waiting for the first body byte is the SERVER's
+ * choice, not ours. llama.cpp, vLLM and LM Studio flush the SSE headers as soon as the request
+ * is accepted, which puts the whole prefill in the body gap; a reverse proxy that buffers, or
+ * a server that writes its status only once it has something to say, puts the same wait in
+ * front of the headers. Both are ordinary, so both bounds have to carry the first-chunk
+ * grant — and `bodyTimeout` additionally has to carry the idle grant, because after the first
+ * token every remaining gap is a body gap.
+ *
+ * Pure, and deliberately so: the undici `Agent` these numbers configure is built in
+ * `model.ts` beside the client caches, so the arithmetic can be argued with in a test instead
+ * of only observed on a socket.
+ */
+export function resolveTransportTimeouts(patience: StreamPatience): TransportTimeouts | null {
+  const headersNeeded = patience.firstChunkMs + TRANSPORT_MARGIN_MS;
+  const bodyNeeded = Math.max(patience.firstChunkMs, patience.idleMs) + TRANSPORT_MARGIN_MS;
+  if (headersNeeded <= TRANSPORT_DEFAULT_TIMEOUT_MS && bodyNeeded <= TRANSPORT_DEFAULT_TIMEOUT_MS) {
+    return null;
+  }
+  return {
+    headersTimeoutMs: Math.max(TRANSPORT_DEFAULT_TIMEOUT_MS, headersNeeded),
+    bodyTimeoutMs: Math.max(TRANSPORT_DEFAULT_TIMEOUT_MS, bodyNeeded),
+    requestTimeoutMs: Math.max(TRANSPORT_REQUEST_TIMEOUT_DEFAULT_MS, headersNeeded),
+  };
+}
