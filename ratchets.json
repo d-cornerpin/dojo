@@ -4117,6 +4117,55 @@
       "to": 546,
       "by": "T69b (W64) — the tail holds still: every tail block is a pure function of its own source",
       "why": "+3. The recall lane emits two messages now, so the receipt's measurement reads a SET of entry ids instead of one — reading only the first would price a 2,203-token reserve against half its content. Two lines of code and the sentence that says why. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 2848,
+      "to": 3019,
+      "by": "T72b (W69) — the four DS4-server fixes",
+      "why": "+171. Three mechanisms, each carrying the record of the defect it fixes: the stream watchdog gains its two phases (a content-free ack frame no longer spends the declared first-chunk grant — the owner's 166s abort under a 200s bound), STREAM_FIRST_CHUNK_TIMEOUT_ERROR plus streamTimeoutPhrase so a declared first-chunk timeout cannot collect the cold-restart retry, and resolveOutputBudget lifted OUT of callOpenAIModel as a pure function so the 1024 arithmetic can be argued with in a test instead of only observed on a wire. Roughly two thirds of the addition is the three doctrine blocks: what the bound meant, why T64b's own stated rule was not implemented, and why 1024 is a guaranteed empty answer for a thinking model. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/pages/Settings.tsx",
+      "from": 6908,
+      "to": 7015,
+      "by": "T72b (W69) — the four DS4-server fixes",
+      "why": "+107. ModelLimitsEditor: the Max output / Context pair on the model row. These two numbers decide max_tokens on every request and were unreachable from the UI — every other writer of those columns is a discovery sync and re-adding a model writes NULL again, so the only remedies were hand-editing SQLite or nothing. The component is ~75 lines; the rest is the note recording why a manual provider's limits are guesses and what the guess cost. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/config.ts",
+      "from": 2763,
+      "to": 2830,
+      "by": "T72b (W69) — the four DS4-server fixes",
+      "why": "+67. PATCH /models/:id/limits — the partial-update door for max_output_tokens and context_window (only fields present move, so correcting a cap cannot wipe a window; NULL stays expressible and means let discovery decide), plus the write-side floor on our own derived cap, which used to persist exactly 1024 for a 4096-window model. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tools/tool-docs.ts",
+      "from": 572,
+      "to": 595,
+      "by": "T72b (W69) — the four DS4-server fixes",
+      "why": "+23, and the code is SHORTER — the tail became a map over the load-ordered session set instead of a filter over the registry. The lines are the argument: registry order bought determinism but not append-only, so a second load whose tool sat earlier in the registry INSERTED ahead of the first and moved it, re-billing everything behind it on a strictly-prefix server. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/lib/api.ts",
+      "from": 2399,
+      "to": 2412,
+      "by": "T72b (W69) — the four DS4-server fixes",
+      "why": "+13. updateModelLimits, the client half of the new partial door, with the note that omitting a field is not the same as sending null. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/model-call.ts",
+      "from": 338,
+      "to": 350,
+      "by": "T72b (W69) — the four DS4-server fixes",
+      "why": "+12. ZERO code change — the retry grant is untouched. The lines state what deliberately does NOT match it now and why, so that a first-chunk timeout falling through to the rethrow reads as the intended behaviour rather than an accident of string matching. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/prompt/assembler.ts",
+      "from": 1823,
+      "to": 1826,
+      "by": "T72b (W69) — the four DS4-server fixes",
+      "why": "+3. renderTimeHeader lost its date (it was the first line of the system prompt and rolled at midnight, flushing the whole system+tools prefix nightly) and gained the history of why the date has now been removed from this slot twice. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -4134,7 +4183,7 @@
     "packages/dashboard/src/components/TechniqueSessionProvider.tsx": 533,
     "packages/dashboard/src/components/TwilioSettings.tsx": 563,
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
-    "packages/dashboard/src/lib/api.ts": 2399,
+    "packages/dashboard/src/lib/api.ts": 2412,
     "packages/dashboard/src/lib/voice/voice-client.ts": 873,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 438,
     "packages/dashboard/src/pages/Agents.tsx": 678,
@@ -4142,7 +4191,7 @@
     "packages/dashboard/src/pages/Costs.tsx": 686,
     "packages/dashboard/src/pages/Health.tsx": 651,
     "packages/dashboard/src/pages/Memory.tsx": 499,
-    "packages/dashboard/src/pages/Settings.tsx": 6908,
+    "packages/dashboard/src/pages/Settings.tsx": 7015,
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
@@ -4159,7 +4208,7 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 217,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 2848,
+    "packages/server/src/agent/model.ts": 3019,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
@@ -4202,7 +4251,7 @@
     "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 125,
     "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 222,
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 198,
-    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 338,
+    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 350,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 343,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 165,
@@ -4270,7 +4319,7 @@
     "packages/server/src/db/migration-checksums.ts": 277,
     "packages/server/src/gateway/routes/agents.ts": 847,
     "packages/server/src/gateway/routes/chat.ts": 492,
-    "packages/server/src/gateway/routes/config.ts": 2763,
+    "packages/server/src/gateway/routes/config.ts": 2830,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/setup-deps.ts": 513,
     "packages/server/src/gateway/routes/tracker.ts": 959,
@@ -4307,7 +4356,7 @@
     "packages/server/src/microsoft/tools-write.ts": 2131,
     "packages/server/src/migration/checks.ts": 537,
     "packages/server/src/migration/import.ts": 407,
-    "packages/server/src/prompt/assembler.ts": 1823,
+    "packages/server/src/prompt/assembler.ts": 1826,
     "packages/server/src/prompt/registry/entries.ts": 542,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
@@ -4327,7 +4376,7 @@
     "packages/server/src/techniques/share-import.ts": 311,
     "packages/server/src/techniques/store.ts": 546,
     "packages/server/src/techniques/tools.ts": 892,
-    "packages/server/src/tools/tool-docs.ts": 572,
+    "packages/server/src/tools/tool-docs.ts": 595,
     "packages/server/src/tools/unified-read.ts": 761,
     "packages/server/src/tools/work-verbs.ts": 399,
     "packages/server/src/tracker/delivery-evidence.ts": 320,
