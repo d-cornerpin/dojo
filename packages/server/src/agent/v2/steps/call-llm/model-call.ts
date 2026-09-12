@@ -258,6 +258,18 @@ export async function callWithRetryAndFallback(
       // Fixed-model path: the ONLY error that earns the second attempt is
       // the stream-idle watchdog abort (same model, fresh connection).
       // Everything else rethrows immediately, exactly as before.
+      //
+      // T72b claim 2 — WHAT DELIBERATELY DOES NOT MATCH HERE. A first-chunk timeout on a
+      // provider that DECLARED its first-chunk patience throws
+      // `STREAM_FIRST_CHUNK_TIMEOUT_ERROR` instead, and that phrase does not contain this
+      // one, so it falls through to the rethrow below. That is the intended behaviour, not
+      // an accident of string matching: this retry re-dials COLD with the same messages, so
+      // a local box restarts the entire prompt-processing run it was most of the way
+      // through, dies at the same declared bound again, and the user waits twice as long for
+      // the same error. A provider whose owner stated how long it needs before token 1, and
+      // which then exceeded that, has already answered the question a retry asks. Providers
+      // that declared nothing still throw the idle phrase and still get their one retry —
+      // cloud behaviour is the untouched control.
       if (!isAutoRouted) {
         const msg = err instanceof Error ? err.message : String(err);
         if (attempt < maxAttempts - 1 && msg.includes(STREAM_IDLE_TIMEOUT_ERROR)) {

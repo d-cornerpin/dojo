@@ -35,12 +35,30 @@ describe('stream idle watchdog', () => {
   });
 
   it('fires on a mid-stream stall after healthy chunks', async () => {
+    // T72b claim 2: "healthy chunks" means chunks that CARRIED SOMETHING. The watchdog now
+    // distinguishes a frame landing (`bump`) from generation beginning (`contentStarted`),
+    // because a content-free ack frame was ending the prompt-processing grant. The property
+    // under test — a stream that started and then stalled is cut at the idle bound — is
+    // unchanged, and is asserted below exactly as before.
     const w = makeStreamWatchdog(undefined, FIRST, IDLE);
     w.bump();
+    w.contentStarted();
     w.bump();
     await sleep(IDLE + 30);
     expect(w.timedOut()).toBe(true);
     expect(w.signal.aborted).toBe(true);
+    w.finish();
+  });
+
+  it('does NOT fire at the idle bound while the machine is still reading the prompt', async () => {
+    // The sibling case, and the one the owner's DS4 box hit: frames arrive (an ack, a
+    // keepalive-shaped delta) but nothing has been generated yet. The first-chunk bound
+    // governs until content actually starts.
+    const w = makeStreamWatchdog(undefined, FIRST, IDLE);
+    w.bump();
+    w.bump();
+    await sleep(IDLE + 30);
+    expect(w.timedOut()).toBe(false);
     w.finish();
   });
 

@@ -111,11 +111,34 @@ describe('S1 — the tools array is a declared prefix lane', () => {
     const a = JSON.stringify(partitionToolsForApiCall(AGENT, PERMITTED, ALWAYS).tools);
     const b = JSON.stringify(partitionToolsForApiCall(AGENT, PERMITTED, ALWAYS).tools);
     expect(a).toBe(b);
-    // And the ORDER of the load does not change the array — the tail follows registry
-    // order, not the order the session happened to fetch them in.
+
+    // ── T72b claim 3: THE SECOND HALF OF THIS CLAUSE WAS OVERTURNED, ON PURPOSE ────────
+    // It used to read: "the ORDER of the load does not change the array — the tail follows
+    // registry order, not the order the session happened to fetch them in", and it asserted
+    // that loading [zzz, aaa] produced the same bytes as loading [aaa, zzz].
+    //
+    // THE REQUIREMENT S1 RECORDED IS PRESERVED and is asserted above: determinism — the
+    // same session state renders byte-identical tools, never a function of Set iteration
+    // over a set the session mutated. That is what S1 needed and it still holds.
+    //
+    // WHAT CHANGED: registry order made the tail deterministic but NOT append-only. A
+    // second load whose tool sits earlier in the registry INSERTED ahead of the first and
+    // moved it, re-billing everything behind it on a strictly-prefix server. Load order is
+    // equally deterministic (a Set preserves insertion order) and is additionally
+    // append-only, so it is strictly stronger. The property now lives in
+    // `the-tools-lane-is-append-only.test.ts`; here we pin the consequence — the tail is
+    // the load sequence, so a DIFFERENT load sequence is allowed to differ.
     clearSessionLoadedTools(AGENT);
     markToolsLoaded(AGENT, ['zzz_session_only', 'aaa_session_only']);
-    expect(JSON.stringify(partitionToolsForApiCall(AGENT, PERMITTED, ALWAYS).tools)).toBe(a);
+    const reversed = partitionToolsForApiCall(AGENT, PERMITTED, ALWAYS);
+    expect(reversed.sessionExtras.map((t) => t.name)).toEqual(['zzz_session_only', 'aaa_session_only']);
+    // Membership is identical either way; only the tail's order follows the session.
+    expect(reversed.tools.map((t) => t.name).sort())
+      .toEqual((JSON.parse(a) as Array<{ name: string }>).map((t) => t.name).sort());
+    // And the CACHED HEAD is byte-identical regardless of load sequence — the thing that
+    // actually has to hold still.
+    expect(JSON.stringify(reversed.tools.slice(0, reversed.cacheBreakpointIndex + 1)))
+      .toBe(JSON.stringify((JSON.parse(a) as unknown[]).slice(0, reversed.cacheBreakpointIndex + 1)));
   });
 
   it('a tool that is BOTH always-loaded and session-loaded stays in the head, once', () => {

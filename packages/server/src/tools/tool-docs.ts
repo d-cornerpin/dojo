@@ -305,6 +305,12 @@ export function rehydrateSessionToolsFromHistory(agentId: string, recentLimit = 
       "SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' ORDER BY created_at DESC, rowid DESC LIMIT ?",
     ).all(agentId, recentLimit) as Array<{ content: string }>;
     const seen = new Set<string>();
+    // OLDEST FIRST. The query reads newest-first (it is a LIMITed recency window), but the
+    // set it fills is now the tools lane's ORDER, not just its membership (T72b claim 3),
+    // so it must approximate the order the agent originally loaded them in. Walking the
+    // window backwards makes a restart reproduce the pre-restart array instead of reversing
+    // it, which would re-bill the whole tail on the first post-restart call.
+    rows.reverse();
     for (const r of rows) {
       if (typeof r.content !== 'string' || !r.content.includes('tool_use')) continue;
       try {
@@ -413,8 +419,25 @@ export function partitionToolsForApiCall(
   }
   const head = headNames.map((n) => byName.get(n) as ToolDefinition);
 
-  // The tail: everything else the session loaded, in registry order.
-  const tail = allPermittedTools.filter((t) => !seen.has(t.name) && loaded.has(t.name));
+  // The tail: everything else the session loaded, in LOAD order.
+  //
+  // T72b claim 3. This used to be `allPermittedTools.filter(...)` — REGISTRY order — which
+  // bought DETERMINISM (same state, same bytes) and that is what S1 needed. It did not buy
+  // APPEND-ONLY, and those are different properties. Loading `work_update` on turn 3 and
+  // `calendar_create` on turn 7 produced the tail `[calendar_create, work_update]`, because
+  // calendar_create sits earlier in the registry: the second load did not append, it
+  // INSERTED, and all ~13K chars of the first schema moved. A provider's prefix cache
+  // breaks at the first differing token and never recovers, so on a strictly-prefix server
+  // that shifts the rest of the tools array, the whole system prompt and the whole
+  // conversation behind it — the owner's "block around 17-22K rewritten irregularly" (the
+  // tools array is ~18.2K tokens, and its tail is exactly where 17-22K lands).
+  //
+  // Load order is every bit as deterministic — a JS Set preserves insertion order — and it
+  // is the only order in which a load can never move a tool that was already declared. Same
+  // sentence the message region has obeyed since T67b, one region over.
+  const tail = [...loaded]
+    .filter((name) => !seen.has(name) && byName.has(name))
+    .map((name) => byName.get(name) as ToolDefinition);
 
   return {
     tools: [...head, ...tail],

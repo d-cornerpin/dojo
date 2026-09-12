@@ -48,6 +48,18 @@ export interface StreamPatience {
   firstChunkMs: number;
   /** How long it may go quiet AFTER it has started. The dead-connection detector. */
   idleMs: number;
+  /**
+   * True iff `firstChunkMs` came from the PROVIDER's own coherent declaration rather than
+   * the standing default.
+   *
+   * T72b claim 2. This exists for exactly one decision: whether a first-chunk timeout may
+   * collect the loop's single same-model retry. A provider whose owner declared how long it
+   * needs before token 1, and which then blew through that bound, has already answered the
+   * question the retry would be asking — and the retry re-dials COLD, so it restarts the
+   * whole prompt-processing run it was most of the way through. A provider that declared
+   * nothing has said nothing, so it keeps the retry it has always had; that is the control.
+   */
+  firstChunkDeclared: boolean;
 }
 
 /**
@@ -77,10 +89,14 @@ export interface StreamPatience {
  * come through the door (a hand-edited database, a restored backup, a writer that does not
  * exist yet).
  */
+function isCoherent(stored: unknown): stored is number {
+  if (typeof stored !== 'number' || !Number.isInteger(stored)) return false;
+  if (stored <= 0 || stored > STREAM_PATIENCE_MAX_MS) return false;
+  return true;
+}
+
 function honour(stored: unknown, standing: number): number {
-  if (typeof stored !== 'number' || !Number.isInteger(stored)) return standing;
-  if (stored <= 0 || stored > STREAM_PATIENCE_MAX_MS) return standing;
-  return stored;
+  return isCoherent(stored) ? stored : standing;
 }
 
 /**
@@ -99,5 +115,6 @@ export function resolveStreamPatience(declared?: DeclaredPatience | null): Strea
   return {
     firstChunkMs: honour(declared?.firstChunkTimeoutMs, STREAM_FIRST_CHUNK_TIMEOUT_MS),
     idleMs: honour(declared?.streamIdleTimeoutMs, STREAM_IDLE_TIMEOUT_MS),
+    firstChunkDeclared: isCoherent(declared?.firstChunkTimeoutMs),
   };
 }

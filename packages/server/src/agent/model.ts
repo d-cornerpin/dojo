@@ -9,6 +9,7 @@ import { apiRootIsBareHost, contractForModel, contractForModelId, type ModelCont
 import { classifyProviderError, isRetryableProviderClass } from './provider-error.js';
 import {
   resolveStreamPatience, STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS,
+  type StreamPatience,
 } from './stream-patience.js';
 import { scheduleRateLimitRetry } from './rate-limit-retry.js';
 import { toolDefinitions } from './tools/definitions.js';
@@ -56,16 +57,55 @@ export { STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS };
 export interface StreamWatchdog {
   /** Combined signal: fires on watchdog timeout OR the external (stop) signal. */
   signal: AbortSignal;
-  /** Call on every received chunk/event; re-arms the idle bound. */
+  /**
+   * Call on every received chunk/event. Re-arms the CURRENT bound: the first-chunk bound
+   * until `contentStarted()` has been called, the idle bound after it. A frame proves the
+   * socket is alive, which is what this re-arm is for; it does not prove the machine has
+   * begun generating, which is what `contentStarted()` is for.
+   */
   bump: () => void;
+  /**
+   * Call the first time the stream carries GENERATED CONTENT — a text delta, a reasoning
+   * delta, or a tool-call delta. This is the moment the provider proves it can emit, and it
+   * is the moment the dead-connection detector (`idleMs`) takes over from prompt-processing
+   * patience (`firstChunkMs`). Idempotent.
+   */
+  contentStarted: () => void;
   /** Call when the stream finishes (success or failure); disarms the timer. */
   finish: () => void;
   /** True iff the WATCHDOG fired (never true for a user stop). */
   timedOut: () => boolean;
+  /** True iff the watchdog fired BEFORE any generated content arrived. */
+  firstChunkTimedOut: () => boolean;
   /** Milliseconds since the watchdog was armed. */
   elapsedMs: () => number;
 }
 
+/**
+ * ════════════════════════════════════════════════════════════════════════════════════════
+ * T72b claim 2 — THE FIRST-CHUNK GRANT IS NOT SPENT ON AN ACK FRAME.
+ * ════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * `bump()` used to re-arm with `idleMs` unconditionally, starting with the very first bump.
+ * The OpenAI-compatible consume loop bumps as the FIRST statement of its body — before the
+ * `if (!delta) continue` guard and before any look at what the frame carried — so the first
+ * SSE frame of any kind spent the entire first-chunk grant: the content-free
+ * `delta: {"role":"assistant"}` ack that llama.cpp, vLLM, LM Studio and LiteLLM all emit as
+ * soon as generation is queued; a zero-choice frame; the `include_usage` frame.
+ *
+ * From that instant the bound was `idleMs`, which nobody raises when buying patience for a
+ * long PREFILL. The owner's incident is that arithmetic exactly: a declared
+ * `first_chunk_timeout_ms` of 200 s, an ack frame at ~106 s, the standing 60 s idle bound,
+ * and an abort at ~166 s with the 200 s bound never consulted again.
+ *
+ * T64b wrote the correct rule in `stream-patience.ts` and this function did not implement
+ * it: "Declaring that a machine may think for six minutes before it speaks says nothing
+ * about how long it may go silent ONCE IT HAS PROVEN IT CAN EMIT." An empty ack frame
+ * proves the socket is open, which was never in doubt. So there are two phases now, and
+ * `bump()` re-arms whichever one is current. The 602-second hang the watchdog was built for
+ * (DOJO-ISSUES-LOG 2026-07-10) stays caught: the first-chunk bound is still a bound, it is
+ * simply no longer surrendered to a frame carrying nothing.
+ */
 export function makeStreamWatchdog(
   external?: AbortSignal,
   firstChunkMs: number = STREAM_FIRST_CHUNK_TIMEOUT_MS,
@@ -74,6 +114,7 @@ export function makeStreamWatchdog(
   const controller = new AbortController();
   const startedAt = Date.now();
   let fired = false;
+  let contentSeen = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const arm = (ms: number): void => {
     if (timer) clearTimeout(timer);
@@ -83,15 +124,50 @@ export function makeStreamWatchdog(
   arm(firstChunkMs);
   return {
     signal: external ? AbortSignal.any([controller.signal, external]) : controller.signal,
-    bump: () => arm(idleMs),
+    bump: () => arm(contentSeen ? idleMs : firstChunkMs),
+    contentStarted: () => {
+      if (contentSeen) return;
+      contentSeen = true;
+      arm(idleMs);
+    },
     finish: () => { if (timer) { clearTimeout(timer); timer = null; } },
     timedOut: () => fired,
+    firstChunkTimedOut: () => fired && !contentSeen,
     elapsedMs: () => Date.now() - startedAt,
   };
 }
 
 /** The loop matches on this exact phrase to grant a single same-model retry. */
 export const STREAM_IDLE_TIMEOUT_ERROR = 'model stream idle timeout';
+
+/**
+ * The phrase for a first-chunk timeout on a provider that DECLARED its first-chunk patience.
+ * Deliberately does NOT contain `STREAM_IDLE_TIMEOUT_ERROR`, because the loop's single
+ * same-model retry matches on that substring and this case must not collect it.
+ *
+ * T72b claim 2, second half. Both bounds used to throw the same phrase, so a first-chunk
+ * timeout was indistinguishable from a mid-answer stall and took the retry. That retry
+ * re-dials COLD with the identical messages, so a local box restarts the whole prompt
+ * processing it was most of the way through — and dies at the same bound again, having spent
+ * twice the wall clock to produce one error. The owner's word for it was "cannibalises".
+ *
+ * A provider whose owner declared how long it needs before token 1, and which then blew
+ * through that declaration, has already answered the question a retry would ask. The honest
+ * outcome is the error, with the bound named in it. Providers that declared nothing are
+ * unchanged in every respect — same abort, same phrase, same one retry.
+ */
+export const STREAM_FIRST_CHUNK_TIMEOUT_ERROR = 'model first-chunk timeout';
+
+/**
+ * Which timeout phrase this abort deserves. The one decision point, so the four throw sites
+ * across both transports cannot come to disagree — the same discipline
+ * `streamWasCutByWatchdog` applies to "was this the watchdog or the user".
+ */
+export function streamTimeoutPhrase(watchdog: StreamWatchdog, patience: StreamPatience): string {
+  return watchdog.firstChunkTimedOut() && patience.firstChunkDeclared
+    ? STREAM_FIRST_CHUNK_TIMEOUT_ERROR
+    : STREAM_IDLE_TIMEOUT_ERROR;
+}
 
 /**
  * T65b — THE ONE TRUTH CHECK: did the WATCHDOG cut this stream, or did the user?
@@ -1608,6 +1684,20 @@ async function callOpenAIModel(
       const delta = chunk.choices[0]?.delta;
       if (!delta) continue;
 
+      // T72b claim 2: the moment this provider proves it can EMIT, which is what ends
+      // prompt-processing patience and starts the dead-connection bound. A delta carrying
+      // text, reasoning or a tool call is generated output; `delta: {"role":"assistant"}`
+      // — the frame llama.cpp/vLLM/LM Studio send the instant generation is queued — is not,
+      // and it must not buy the machine a shorter leash while it is still reading the prompt.
+      if (
+        delta.content
+        || delta.tool_calls
+        || (delta as unknown as { reasoning_content?: string }).reasoning_content
+        || (delta as unknown as { reasoning?: string }).reasoning
+      ) {
+        watchdog.contentStarted();
+      }
+
       // Reasoning content (DeepSeek-style sibling field). Stream it through
       // a separate callback so the dashboard renders it in a collapsible
       // "Thinking…" section that's distinct from the final answer text.
@@ -1677,7 +1767,7 @@ async function callOpenAIModel(
     // a different fix, and inventing a bound for it here would be guessing.
     // ════════════════════════════════════════════════════════════════════════════════════
     if (streamWasCutByWatchdog(watchdog, params.abortSignal)) {
-      throw new Error(`${STREAM_IDLE_TIMEOUT_ERROR}: the stream ended on the watchdog's abort, which the SDK did not raise`);
+      throw new Error(`${streamTimeoutPhrase(watchdog, patience)}: the stream ended on the watchdog's abort, which the SDK did not raise`);
     }
 
     // Finalize tool calls
@@ -1974,7 +2064,7 @@ async function callOpenAIModel(
       // false or shows on the external signal). Translate to the retryable
       // phrase the v2 loop matches for its single same-model retry.
       recordProviderError(modelInfo.providerId);
-      const msg = `${STREAM_IDLE_TIMEOUT_ERROR}: no data from provider for too long (elapsed ${watchdog.elapsedMs()}ms)`;
+      const msg = `${streamTimeoutPhrase(watchdog, patience)}: no data from provider for too long (elapsed ${watchdog.elapsedMs()}ms)`;
       logger.warn(`OpenAI call aborted by stream watchdog: ${msg}`, {
         model: modelInfo.apiModelId, providerId: modelInfo.providerId,
       }, agentId);
@@ -2553,7 +2643,17 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     // Bump on EVERY SSE event, not just text: an extended-thinking phase emits
     // non-text events for long stretches, and those prove the connection is
     // alive just as well as words do.
-    stream.on('streamEvent', () => anthWatchdog.bump());
+    //
+    // T72b claim 2: a bump proves the connection is alive; it does not prove generation has
+    // BEGUN, and only the latter should end prompt-processing patience. A
+    // `content_block_delta` is the first event carrying generated output — text, thinking or
+    // tool-input JSON — so that is where the idle bound takes over. `message_start` and
+    // `content_block_start` are the Anthropic-side equivalents of the OpenAI ack frame and
+    // deliberately do not qualify.
+    stream.on('streamEvent', (event) => {
+      anthWatchdog.bump();
+      if (event.type === 'content_block_delta') anthWatchdog.contentStarted();
+    });
 
     let fullText = '';
     const toolCalls: ToolCall[] = [];
@@ -2563,6 +2663,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
 
     stream.on('text', (text) => {
       anthWatchdog.bump();
+      anthWatchdog.contentStarted();
       fullText += text;
       if (onChunk) {
         onChunk(text);
@@ -2591,7 +2692,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     // must also not come to disagree about whether a stalled stream is an answer, which is
     // precisely the state T65b found them in.
     if (streamWasCutByWatchdog(anthWatchdog, params.abortSignal)) {
-      throw new Error(`${STREAM_IDLE_TIMEOUT_ERROR}: the stream ended on the watchdog's abort, which the SDK did not raise`);
+      throw new Error(`${streamTimeoutPhrase(anthWatchdog, anthPatience)}: the stream ended on the watchdog's abort, which the SDK did not raise`);
     }
     anthWatchdog.finish();
 
@@ -2706,7 +2807,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
   } catch (err) {
     anthWatchdog.finish();
     if (streamWasCutByWatchdog(anthWatchdog, params.abortSignal)) {
-      const msg = `${STREAM_IDLE_TIMEOUT_ERROR}: no data from provider for too long (elapsed ${anthWatchdog.elapsedMs()}ms)`;
+      const msg = `${streamTimeoutPhrase(anthWatchdog, anthPatience)}: no data from provider for too long (elapsed ${anthWatchdog.elapsedMs()}ms)`;
       logger.warn(`Anthropic call aborted by stream watchdog: ${msg}`, {}, agentId);
       throw new AgentError(msg, agentId, { code: 'stream_idle_timeout', retryable: true });
     }

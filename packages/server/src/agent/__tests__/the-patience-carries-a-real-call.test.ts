@@ -61,7 +61,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 
 import { runMigrations } from '../../db/migrations.js';
 import { clearSecretsCache } from '../../config/loader.js';
-import { callModel, clearClientCache, STREAM_IDLE_TIMEOUT_ERROR, STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, type ModelCallResult } from '../model.js';
+import { callModel, clearClientCache, STREAM_IDLE_TIMEOUT_ERROR, STREAM_FIRST_CHUNK_TIMEOUT_ERROR, STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, type ModelCallResult } from '../model.js';
 import { resolveStreamPatience } from '../stream-patience.js';
 import { AgentError } from '../errors.js';
 
@@ -76,7 +76,7 @@ const FAKE_DOJO = path.join(realOs.tmpdir(), 'dojo-t64b-patience', '.dojo');
 // `preFirstChunkMs` is prompt-processing time: headers go out at once (exactly as
 // llama.cpp / vLLM / LM Studio do), then silence. `midStreamStallMs` is a stall AFTER the
 // first token, which is the other bound's case.
-const behaviour = { preFirstChunkMs: 0, midStreamStallMs: 0 };
+const behaviour = { preFirstChunkMs: 0, midStreamStallMs: 0, ackOnlyBeforeStall: false };
 
 let server: http.Server;
 let stubUrl = '';
@@ -114,7 +114,10 @@ beforeAll(async () => {
       // Headers are out. From the client's point of view the call has connected and
       // nothing has been said — the owner's box, mid prompt-processing.
       const finish = (): void => {
-        res.write(chunk({ content: 'It is done.' }));
+        // The answer arrives in one piece normally, and in two when the stub is asked to
+        // stall MID-stream (see `afterFirst`) — either way the client accumulates exactly
+        // 'It is done.', so every assertion below reads the same.
+        res.write(chunk({ content: behaviour.midStreamStallMs > 0 ? 'is done.' : 'It is done.' }));
         res.write(chunk({}, 'stop'));
         res.write(sse({
           id: 'chatcmpl-t64b', object: 'chat.completion.chunk', created: 0, model: 'local-ds4',
@@ -123,9 +126,24 @@ beforeAll(async () => {
         res.end('data: [DONE]\n\n');
       };
       const afterFirst = (): void => {
+        // The CONTENT-FREE ack frame: `delta: {"role":"assistant","content":""}`, which is
+        // what llama.cpp, vLLM, LM Studio and LiteLLM send the instant generation is queued.
+        // It proves the socket is open and nothing else.
         res.write(chunk({ role: 'assistant', content: '' }));
-        if (behaviour.midStreamStallMs > 0) setTimeout(finish, behaviour.midStreamStallMs);
-        else finish();
+        if (behaviour.ackOnlyBeforeStall) {
+          // Owner's shape (T72b claim 2): the ack lands, then the machine goes on reading
+          // the prompt. Nothing has been GENERATED, so prompt-processing patience is still
+          // the bound that applies.
+          setTimeout(finish, behaviour.midStreamStallMs);
+          return;
+        }
+        if (behaviour.midStreamStallMs > 0) {
+          // A GENUINE mid-stream stall: real generated text, then silence. Until T72b this
+          // stub never emitted a token before its "mid-stream" pause, so the cases below
+          // were really testing a first-chunk gap and pinning the defect as the contract.
+          res.write(chunk({ content: 'It ' }));
+          setTimeout(finish, behaviour.midStreamStallMs);
+        } else finish();
       };
       if (behaviour.preFirstChunkMs > 0) setTimeout(afterFirst, behaviour.preFirstChunkMs);
       else afterFirst();
@@ -174,6 +192,7 @@ beforeEach(() => {
   runMigrations();
   behaviour.preFirstChunkMs = 0;
   behaviour.midStreamStallMs = 0;
+  behaviour.ackOnlyBeforeStall = false;
   requests = 0;
 });
 
@@ -186,8 +205,28 @@ describe('T64b — the first-token bound is the provider\'s to declare', () => {
   it('RED: a bound shorter than the server\'s prompt processing kills the call', async () => {
     behaviour.preFirstChunkMs = 1_200;
     seedProvider(300, null);
-    await expect(call()).rejects.toThrow(STREAM_IDLE_TIMEOUT_ERROR);
-    expect(requests).toBe(1); // callModel itself does not retry; the v2 loop's one grant is untouched
+    // T72b claim 2: this provider DECLARED its first-chunk bound and then exceeded it, so
+    // the error now names that bound instead of borrowing the idle one. The phrase change is
+    // the mechanism by which the v2 loop's cold-restart retry is withheld for this shape —
+    // re-dialling would restart the whole prompt-processing run the box was most of the way
+    // through, to fail at the same declared number again.
+    await expect(call()).rejects.toThrow(STREAM_FIRST_CHUNK_TIMEOUT_ERROR);
+    await expect(call()).rejects.not.toThrow(STREAM_IDLE_TIMEOUT_ERROR);
+    expect(requests).toBe(2); // callModel itself never retries; one request per call, as before
+  });
+
+  it('T72b: an ACK frame does not spend the declared prompt-processing grant', async () => {
+    // THE OWNER'S SHAPE, end to end through the real transport. The server sends
+    // `delta:{"role":"assistant","content":""}` at once — which is what put his abort at
+    // ~166 s: the ack landed, the 200 s declared bound was replaced by the 60 s idle bound,
+    // and the machine was still reading the prompt. Here: the ack is immediate, the real
+    // tokens are 1,200 ms behind it, the declared idle bound is a tenth of that, and the
+    // declared first-chunk bound covers it. At HEAD the idle bound would have cut this.
+    behaviour.ackOnlyBeforeStall = true;
+    behaviour.midStreamStallMs = 1_200;
+    seedProvider(6_000, 120);
+    const result = await call();
+    expect(result.content).toBe('is done.');
   });
 
   it('GREEN: the SAME wait, on the SAME server, carried by a longer declared bound', async () => {
@@ -286,7 +325,14 @@ describe('T64b — CONTROL: a provider that declares nothing is untouched', () =
     ).get('local') as { f: number | null; i: number | null };
     expect(row).toEqual({ f: null, i: null });
     expect(resolveStreamPatience({ firstChunkTimeoutMs: row.f, streamIdleTimeoutMs: row.i }))
-      .toEqual({ firstChunkMs: STREAM_FIRST_CHUNK_TIMEOUT_MS, idleMs: STREAM_IDLE_TIMEOUT_MS });
+      .toEqual({
+        firstChunkMs: STREAM_FIRST_CHUNK_TIMEOUT_MS,
+        idleMs: STREAM_IDLE_TIMEOUT_MS,
+        // T72b claim 2: "declared nothing" is now a fact the resolver states, because it is
+        // what decides whether a first-chunk timeout keeps the loop's retry. A NULL row
+        // declares nothing, so this provider keeps every behaviour it had.
+        firstChunkDeclared: false,
+      });
   });
 
   it('and its call round-trips exactly as it always did', async () => {

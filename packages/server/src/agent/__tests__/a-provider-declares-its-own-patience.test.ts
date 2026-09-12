@@ -50,31 +50,31 @@ describe('T64b — what HEAD bounded a stream by, pinned', () => {
 
   it('t64b-red-2: a provider that declares nothing gets exactly those two numbers', () => {
     expect(resolveStreamPatience({ firstChunkTimeoutMs: null, streamIdleTimeoutMs: null }))
-      .toEqual({ firstChunkMs: STREAM_FIRST_CHUNK_TIMEOUT_MS, idleMs: STREAM_IDLE_TIMEOUT_MS });
+      .toMatchObject({ firstChunkMs: STREAM_FIRST_CHUNK_TIMEOUT_MS, idleMs: STREAM_IDLE_TIMEOUT_MS });
   });
 });
 
 describe('T64b — the declaration is the knob', () => {
   it('a declared first-chunk bound is honoured verbatim', () => {
     expect(resolveStreamPatience({ firstChunkTimeoutMs: 600_000, streamIdleTimeoutMs: null }))
-      .toEqual({ firstChunkMs: 600_000, idleMs: STREAM_IDLE_TIMEOUT_MS });
+      .toMatchObject({ firstChunkMs: 600_000, idleMs: STREAM_IDLE_TIMEOUT_MS });
   });
 
   it('a declared idle bound is honoured verbatim, and says nothing about the first', () => {
     expect(resolveStreamPatience({ firstChunkTimeoutMs: null, streamIdleTimeoutMs: 300_000 }))
-      .toEqual({ firstChunkMs: STREAM_FIRST_CHUNK_TIMEOUT_MS, idleMs: 300_000 });
+      .toMatchObject({ firstChunkMs: STREAM_FIRST_CHUNK_TIMEOUT_MS, idleMs: 300_000 });
   });
 
   it('both declared are both honoured', () => {
     expect(resolveStreamPatience({ firstChunkTimeoutMs: 420_000, streamIdleTimeoutMs: 120_000 }))
-      .toEqual({ firstChunkMs: 420_000, idleMs: 120_000 });
+      .toMatchObject({ firstChunkMs: 420_000, idleMs: 120_000 });
   });
 
   it('the exact bounds are legal on both ends', () => {
     expect(resolveStreamPatience({
       firstChunkTimeoutMs: STREAM_PATIENCE_MIN_MS,
       streamIdleTimeoutMs: STREAM_PATIENCE_MAX_MS,
-    })).toEqual({ firstChunkMs: STREAM_PATIENCE_MIN_MS, idleMs: STREAM_PATIENCE_MAX_MS });
+    })).toMatchObject({ firstChunkMs: STREAM_PATIENCE_MIN_MS, idleMs: STREAM_PATIENCE_MAX_MS });
   });
 
   it('the bounds are the pair the plan named: ten seconds to thirty minutes', () => {
@@ -108,18 +108,18 @@ describe('T64b — a stored value that is not a coherent bound is not a declarat
       expect(resolveStreamPatience({
         firstChunkTimeoutMs: value as number | null,
         streamIdleTimeoutMs: value as number | null,
-      })).toEqual({ firstChunkMs: STREAM_FIRST_CHUNK_TIMEOUT_MS, idleMs: STREAM_IDLE_TIMEOUT_MS });
+      })).toMatchObject({ firstChunkMs: STREAM_FIRST_CHUNK_TIMEOUT_MS, idleMs: STREAM_IDLE_TIMEOUT_MS });
     });
   }
 
   it('a whole missing row resolves to the defaults', () => {
     expect(resolveStreamPatience(undefined))
-      .toEqual({ firstChunkMs: STREAM_FIRST_CHUNK_TIMEOUT_MS, idleMs: STREAM_IDLE_TIMEOUT_MS });
+      .toMatchObject({ firstChunkMs: STREAM_FIRST_CHUNK_TIMEOUT_MS, idleMs: STREAM_IDLE_TIMEOUT_MS });
   });
 
   it('one junk field does not poison the other', () => {
     expect(resolveStreamPatience({ firstChunkTimeoutMs: -5, streamIdleTimeoutMs: 200_000 }))
-      .toEqual({ firstChunkMs: STREAM_FIRST_CHUNK_TIMEOUT_MS, idleMs: 200_000 });
+      .toMatchObject({ firstChunkMs: STREAM_FIRST_CHUNK_TIMEOUT_MS, idleMs: 200_000 });
   });
 
   it('a sub-floor bound IS honoured by the reader — the floor is the door\'s rule, not this one', () => {
@@ -129,7 +129,7 @@ describe('T64b — a stored value that is not a coherent bound is not a declarat
     expect(resolveStreamPatience({
       firstChunkTimeoutMs: STREAM_PATIENCE_MIN_MS - 1,
       streamIdleTimeoutMs: 300,
-    })).toEqual({ firstChunkMs: STREAM_PATIENCE_MIN_MS - 1, idleMs: 300 });
+    })).toMatchObject({ firstChunkMs: STREAM_PATIENCE_MIN_MS - 1, idleMs: 300 });
   });
 });
 
@@ -160,10 +160,32 @@ describe('T64b — the resolved numbers are what the watchdog is armed with', ()
     // Patience for prompt processing is not patience for a stalled stream: once the first
     // token has arrived the machine has proven it can emit, and the idle bound is the one
     // that governs from there.
+    //
+    // T72b claim 2: THE REQUIREMENT IS UNCHANGED — a generous first-chunk bound must never
+    // silently widen the idle bound, and that is still exactly what this asserts. What
+    // changed is what counts as "the first token has arrived". This clause used to say it
+    // with `bump()`, which in the one-phase watchdog meant both "a frame landed" and "the
+    // machine is generating". Those are different events, and conflating them is the defect:
+    // the content-free `delta:{"role":"assistant"}` ack every OpenAI-compatible server sends
+    // at queue time was spending the whole prompt-processing grant. `contentStarted()` is
+    // the sentence this comment was always making.
+    const w = makeStreamWatchdog(undefined, DECLARED, STANDING);
+    w.bump();
+    w.contentStarted();
+    await sleep(700);
+    expect(w.timedOut()).toBe(true);
+    expect(w.firstChunkTimedOut()).toBe(false); // the IDLE bound fired, which is the point
+    w.finish();
+  });
+
+  it('and a content-free frame does NOT end the declared prompt-processing grant', async () => {
+    // The other half of the same sentence, added by T72b claim 2: bumping without content
+    // keeps the declared bound. Without this, "the idle bound governs once it can emit"
+    // silently became "the idle bound governs once the socket says anything".
     const w = makeStreamWatchdog(undefined, DECLARED, STANDING);
     w.bump();
     await sleep(700);
-    expect(w.timedOut()).toBe(true);
+    expect(w.timedOut()).toBe(false);
     w.finish();
   });
 });
