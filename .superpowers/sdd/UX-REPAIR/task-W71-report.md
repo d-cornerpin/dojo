@@ -271,9 +271,11 @@ measured from what was not:
 merge-base = itself), so Procedure D was a clean fast-forward with no conflicts.
 
 ```
-Preflight  63b9064  →  7c75565      pushed
+Preflight  63b9064  →  main's head      pushed
 ```
 
-`Preflight` = `origin/Preflight` = `main` = `origin/main` = `7c75565`, which is this report
-committed on top of tag `v3.1.22` = `7f4538f`. Working tree clean, kit clean, nothing stashed,
-no processes left running.
+`Preflight` = `origin/Preflight` = `main` = `origin/main`, all four at the head of main, which
+is this report committed on top of tag `v3.1.22` = `7f4538f`. (The head sha is deliberately not
+written here: it is this file's own commit, and any value printed would be the sha of the
+version before the correction.) Working tree clean, kit clean, nothing stashed, no processes
+left running.
