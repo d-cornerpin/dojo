@@ -4166,6 +4166,20 @@
       "to": 1826,
       "by": "T72b (W69) — the four DS4-server fixes",
       "why": "+3. renderTimeHeader lost its date (it was the first line of the system prompt and rolled at midnight, flushing the whole system+tools prefix nightly) and gained the history of why the date has now been removed from this slot twice. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 3019,
+      "to": 3161,
+      "by": "T73b (W70) — the undici ceiling lift",
+      "why": "+142, of which the executable part is about 30 lines: the `undici` import, `transportClientOptions` (a cache lookup and an `Agent` construction), a fourth parameter on each of the two client factories, and the prefix deletion in `clearClientCache`. The rest is argument, and three pieces of it cannot live anywhere else. (1) The construction site's own note: why an `Agent` from the npm package is the only way to move `headersTimeout`/`bodyTimeout` (Node exposes neither an accessor for the global dispatcher nor a constructor), why the options are SPREAD rather than set so a provider that declares nothing is constructed from exactly the arguments it was constructed from before, and why the pools are cached by clock rather than by provider. (2) The REFUSAL of W69's ping hand-up, written at `makeStreamWatchdog` because that is the function it would have changed: a `: ping` carries strictly less than the ack frame T72b just refused, honouring it hands the remote party an unbounded renewal of its own leash, and the damage it was blamed for was the transport's ceiling — which this task removes from the declaration instead. A refusal that is not written at the site it refuses is a decision a later worker re-litigates from scratch. (3) The note on `callOllamaModel` stating that its flat 300 s is NOT what this task lifted, so a reader cannot mistake the third transport for covered. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/config.ts",
+      "from": 2830,
+      "to": 2839,
+      "by": "T73b (W70) — the undici ceiling lift",
+      "why": "+9, of which ONE is code: `clearClientCache(id)` in the response-patience door. The other eight say why the line did not exist before and must now — until T73b these two columns were read fresh on every call and no client was built from them, so the door correctly had nothing to invalidate; the HTTP client's clock is derived from them now, so without this line the owner raises the number on the Providers page and sees no change until a restart. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -4208,7 +4222,7 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 217,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 3019,
+    "packages/server/src/agent/model.ts": 3161,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
@@ -4319,7 +4333,7 @@
     "packages/server/src/db/migration-checksums.ts": 277,
     "packages/server/src/gateway/routes/agents.ts": 847,
     "packages/server/src/gateway/routes/chat.ts": 492,
-    "packages/server/src/gateway/routes/config.ts": 2830,
+    "packages/server/src/gateway/routes/config.ts": 2839,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/setup-deps.ts": 513,
     "packages/server/src/gateway/routes/tracker.ts": 959,
