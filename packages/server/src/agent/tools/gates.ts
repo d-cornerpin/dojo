@@ -36,6 +36,7 @@ import { workOperation } from '../../tools/work-verbs.js';
 import { effectsFor } from './registry.js';
 import { getSmsReachability, describeSmsRecipients } from '../../services/capability-registry.js';
 import type { EffectKind } from './types.js';
+import type { AccessChannel } from '@dojo/shared';
 
 /**
  * OWNER-FACING PLATFORM / SESSION / GROUP CONTROLS.
@@ -80,8 +81,25 @@ export type ToolGate =
   | { readonly kind: 'net'; readonly subAgentsOnly?: true; readonly row: string }
   /** Branch 4 — `can_spawn_agents`. */
   | { readonly kind: 'spawn'; readonly row: string }
-  /** Branches 7, 8p, 9, 13 — the primary-only wall. */
+  /** Branches 8p, 9, 13 — the primary-only wall. */
   | { readonly kind: 'primary_only'; readonly message: string; readonly row: string }
+  /**
+   * Row 7, RE-KEYED (UX-ACCESS A1). It was `primary_only`, which is the census's
+   * §0 finding stated as code: exactly one agent on the box could reach a human.
+   * It now names the CHANNEL and asks that agent's grant. Post-migration only the
+   * primary holds one, so it refuses exactly who it refused — with the same
+   * message, which is deliberately unchanged here (A3 owns the wording once the
+   * owner has a panel that can make the sentence false).
+   */
+  | { readonly kind: 'channel'; readonly channel: AccessChannel; readonly message: string; readonly row: string }
+  /**
+   * Row 16 — the credential store. NEW, and the one refusal A1 adds: the five
+   * credential tools declare `secrets` and `gatesForCall` minted nothing, so the
+   * effect landed in `ungatedEffectKinds` and any agent could delete any row
+   * (census C3). `service` is null for `credential_list`, which names none and
+   * therefore gates on holding ANY grant.
+   */
+  | { readonly kind: 'credential'; readonly service: string | null; readonly row: string }
   /** Branch 10 — primary OR the Healer. */
   | { readonly kind: 'primary_or_healer'; readonly row: string }
   /** Branch 8 — the PM allowlist, keyed on the OPERATION not the name. */
@@ -105,6 +123,7 @@ const FS_READ_TOOLS = new Set(['file_read', 'file_list']);
 const FS_WRITE_TOOLS = new Set(['file_write', 'file_append', 'file_patch']);
 const OWNER_FACING_TOOLS = new Set(['dreamer_run_now', 'cost_summary']);
 const IMESSAGE_PRIMARY_ONLY = new Set(['imessage_send', 'imessage_list_contacts']);
+const CREDENTIAL_TOOLS = new Set(['credential_list', 'credential_get', 'credential_add', 'credential_update', 'credential_delete']);
 
 /**
  * THE FIFTEEN ROWS, as a list of gates for THIS call.
@@ -141,10 +160,17 @@ export function gatesForCall(name: string, args: Record<string, unknown>): ToolG
   // that would actually open. `sms_send` is primary-only too (`cat/comms.ts`), so this is not
   // an offer of a tool it may call — it is the fact the primary needs to hear. Nothing live:
   // the sentence is the one that has always been here, byte for byte.
+  //
+  // UX-ACCESS A1: the KIND is `channel` now — the requirement is "holds the
+  // iMessage grant", not "is the role singleton". The sentence below is
+  // unchanged byte for byte, because post-migration the only agent holding that
+  // grant IS the primary and a refusal that started describing a grant nobody
+  // can see yet would be worse guidance, not better.
   if (IMESSAGE_PRIMARY_ONLY.has(name)) {
     const sms = getSmsReachability();
     gates.push({
-      kind: 'primary_only',
+      kind: 'channel',
+      channel: 'imessage',
       row: '7',
       message: `Permission denied: only the primary agent can call ${name}.`
         + (sms.live
@@ -214,6 +240,14 @@ export function gatesForCall(name: string, args: Record<string, unknown>): ToolG
   const controlCategory = SYSTEM_CONTROL_CATEGORY[name];
   if (controlCategory === 'applescript') gates.push({ kind: 'applescript', row: '15' });
   else if (controlCategory) gates.push({ kind: 'system_control', category: controlCategory, row: '15' });
+  // 16 — the credential store (UX-ACCESS A1). The sixteenth row, and the first
+  // added since the ladder was declared: `ungatedEffectKinds` has been RECORDING
+  // `secrets` on every one of these calls since T2, which is the enumeration
+  // RULING P5-R5 said to decide from. The owner decided.
+  if (CREDENTIAL_TOOLS.has(name)) {
+    const service = typeof args.service_name === 'string' ? args.service_name : null;
+    gates.push({ kind: 'credential', service, row: '16' });
+  }
 
   return gates;
 }
@@ -238,6 +272,7 @@ export function ungatedEffectKinds(name: string, gates: readonly ToolGate[]): Ef
     else if (g.kind === 'applescript') gated.add('applescript');
     else if (g.kind === 'net') gated.add('net');
     else if (g.kind === 'spawn') gated.add('spawn');
+    else if (g.kind === 'credential') gated.add('secrets');
   }
   const out: EffectKind[] = [];
   for (const e of declared) if (!gated.has(e.kind) && !out.includes(e.kind)) out.push(e.kind);

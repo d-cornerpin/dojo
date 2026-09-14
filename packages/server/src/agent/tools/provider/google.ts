@@ -22,7 +22,11 @@ import { getDb } from '../../../db/connection.js';
 import { executeGoogleReadTool } from '../../../google/tools-read.js';
 import { executeGoogleWriteTool } from '../../../google/tools-write.js';
 import { prependMailboxOwnerHeader } from './mailbox-banner.js';
-import { isPrimaryAgent } from '../../../config/platform.js';
+// UX-ACCESS A1: the walls below kept their position, message and audit row; the
+// PREDICATE moved off `isPrimaryAgent` onto this agent's own per-ACCOUNT
+// Workspace grant (plus, for a send, its channel grant). Post-migration every
+// agent is refused exactly what it was refused before — see `access/workspace.ts`.
+import { mayReadWorkspace, mayWriteWorkspace } from '../../access/workspace.js';
 import { auditLog } from '../util.js';
 import type { ToolHandler, ToolHandlerMap } from '../handler.js';
 
@@ -36,6 +40,10 @@ const handlers = {
     // it was removed — and PHASE-5 T3 Step 3 finished the same job for the
     // per-dispatcher copy that replaced it. The schema is the single source
     // of truth, and base + user_ variants take the same validated path.
+    if (!mayReadWorkspace(agentId, name, 'google')) {
+      auditLog(agentId, name, null, 'denied', 'Google account not in this agent\'s grants');
+      return { content: 'Permission denied: that Google account is not in this agent\'s grants.', isError: true, errorCode: 'PERMISSION_DENIED' as const };
+    }
     const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
     content = await executeGoogleReadTool(name, args, agentId, agentRow?.name ?? agentId);
     content = prependMailboxOwnerHeader(content, name, args);
@@ -47,7 +55,7 @@ const handlers = {
     let content = '';
     let isError = false;
     // Double-check: only primary agent can use write tools (belt + suspenders)
-    if (!isPrimaryAgent(agentId)) {
+    if (!mayWriteWorkspace(agentId, name, 'google')) {
       content = 'Permission denied: only the primary agent can use Google Workspace write tools.';
       isError = true;
       auditLog(agentId, name, null, 'denied', 'Google write tool restricted to primary agent');

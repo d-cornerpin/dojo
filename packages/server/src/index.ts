@@ -405,6 +405,21 @@ async function main(): Promise<void> {
     logger.warn('Startup recovery sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
   }
 
+  // 3a-. UX-ACCESS A1: every agent's effective access, DECLARED. The snapshot is
+  //      already what `getAccessGrants` answers with for a row that has none, so
+  //      this changes no verdict — it writes the value down so the owner has
+  //      something to edit and the four retired boot rewriters have nothing to
+  //      revert. Idempotent; a second boot writes zero rows. Before the service
+  //      ensures below, so they see rows that already carry grants.
+  try {
+    const { materializeAccessGrants } = await import('./agent/access/materialize.js');
+    materializeAccessGrants();
+  } catch (err) {
+    logger.warn('Access-grant materialization failed (non-fatal; agents keep answering from the snapshot)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   // 3a0. Seed Workspace account rows from legacy per-key config (Path B,
   //      layer 1). Idempotent: only copies existing gws_*/gws_user_* into
   //      position-1 rows once; leaves the legacy keys in place.

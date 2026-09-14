@@ -868,9 +868,17 @@ export function ensureDreamerAgentRunning(): void {
 
   if (existing && existing.status !== 'terminated') {
     logger.info('Dreamer agent already running', { status: existing.status });
-    db.prepare(
-      "UPDATE agents SET tools_policy = ?, permissions = ?, updated_at = datetime('now') WHERE id = ?",
-    ).run(DREAMER_TOOLS_POLICY, dreamerPermissions, dreamerId);
+    // ⟨RETIRED — UX-ACCESS A1, owner ruling 3⟩ The per-boot rewrite of the
+    // Dreamer's `tools_policy` + `permissions` stood here, and it is the FIFTH
+    // of the four the census named: `.superpowers/sdd/UX-REPAIR/task-W72-report.md`
+    // §7.3 lists the Dreamer among the five machine-written policy rows, and C8
+    // names only pm/trainer/healer/imaginer as the writers. Found by driving the
+    // migration on the owner's own box — the Dreamer's row was the ONE of 111
+    // whose grants did not survive, because this line overwrote the whole blob
+    // 82 seconds after they were written. Same reasoning as the other four: the
+    // channel invariant is now held at the doors by the grant, and the create /
+    // reactivate paths below still write the policy because they mint a row
+    // rather than revert a live one.
 
     // Refresh the system prompt from the (potentially updated) DREAMER-SOUL.md
     // template. Pre-2026-04-30 the prompt was inserted once on agent creation

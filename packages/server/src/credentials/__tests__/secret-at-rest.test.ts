@@ -17,12 +17,12 @@
 //      set of the agent-facing store is pinned and a new importer has to argue
 //      with clause 5.
 //
-//  (3) RECORDED BEHAVIOUR, not a new refusal (RULING P5-R5): today, any agent
-//      can read any row of `agent_credentials` by name. Clause 6 asserts that
-//      as an ALLOW with its reason, because changing it would be a NEW REFUSAL
-//      on something that works today — the owner's decision, never a worker's.
-//      If the owner decides to scope it, clause 6 is meant to be flipped
-//      deliberately and visibly, not quietly deleted.
+//  (3) ⚠ FLIPPED BY THE OWNER (UX-ACCESS, 2026-09-13). This used to record that
+//      any agent could read any row of `agent_credentials` by name, as an ALLOW
+//      with its reason, because changing it would be a NEW REFUSAL — *"the
+//      owner's decision, never a worker's"* — and it said the flip must be
+//      deliberate and visible. The owner decided: credential access is scoped to
+//      the agent's granted integrations. Clause 6 now measures the scope.
 //
 //  (4) The set of columns that hold a credential IN THE CLEAR is enumerated and
 //      pinned, and the code that touches the live ones is a named seam rather
@@ -158,32 +158,43 @@ describe('PHASE-5 T6C (2): a platform secret does not move into the agent-reacha
   });
 });
 
-describe('PHASE-5 T6C (3): RECORDED BEHAVIOUR — the agent credential store is ungated today', () => {
-  // These clauses assert what the platform DOES, not what it should do. They
-  // exist so the fact is measured rather than assumed, and so that a decision
-  // to change it is taken deliberately. OWNER: whether reads of the agent
-  // credential store should be scoped to the agent that stored them.
+describe('PHASE-5 T6C (3): THE OWNER DECIDED — the agent credential store is SCOPED', () => {
+  // ⚠ CLAUSE 6 WAS FLIPPED, DELIBERATELY AND VISIBLY, WHICH IS WHAT IT ASKED FOR.
+  //
+  // The header's clause (3) recorded the ungated behaviour as an ALLOW and named
+  // the open question: *"OWNER: whether reads of the agent credential store
+  // should be scoped to the agent that stored them"*, adding that the clause is
+  // *"meant to be flipped deliberately and visibly, not quietly deleted"*. The
+  // owner answered it in the UX-ACCESS design (2026-09-13): *"credential access
+  // scoped to granted integrations (fixes any-agent-deletes-any-credential)"*.
+  //
+  // The scope is NOT "the agent that stored it" — that was the shape the question
+  // guessed at. It is the agent's GRANT: `permissions.grants.integrations
+  // .credentials`, a list of service names or `'*'`. Every agent alive at the
+  // migration carries `'*'`, so this flip refused nothing that worked the day it
+  // landed; what it ends is that a NEW agent inherits the whole vault.
+  //
+  // The four clauses below are the same four facts, re-measured.
 
-  it('no gate row names any credential tool — every agent may call all five', () => {
+  it('gate row 16 names every credential tool — the ungated ledger is empty here', () => {
     for (const name of ['credential_list', 'credential_get', 'credential_add', 'credential_update', 'credential_delete']) {
-      expect(gatesForCall(name, { service_name: 'anything' })).toEqual([]);
+      const gates = gatesForCall(name, { service_name: 'anything' });
+      expect(gates.some((g) => g.kind === 'credential' && g.row === '16'), name).toBe(true);
     }
   });
 
-  it('the credential tools reach every agent unconditionally', () => {
-    // Read from the surface's own source: the push sits in the function body at
-    // two-space indentation, i.e. NOT inside a connected-provider condition the
-    // way the Google/Microsoft/Plaud blocks are. If this clause fails because
-    // the line moved deeper, someone put the store behind a condition — read
-    // clause 6 again before re-indenting anything.
+  it('the credential tools reach an agent that holds a grant, and no other', () => {
+    // The push is now inside a condition — which is precisely what the clause
+    // this replaced forbade, and why flipping it had to be an edit here.
     const surface = fs.readFileSync(path.join(SRC, 'agent/tools/surface.ts'), 'utf-8');
-    expect(surface).toMatch(/^ {2}filtered\.push\(\.\.\.credentialsToolDefinitions\);$/m);
+    expect(surface).toMatch(/if \(holdsCredentialGrant\(agentId\)\) filtered\.push\(\.\.\.credentialsToolDefinitions\);/);
   });
 
-  it('a stored row is addressed by name alone — nothing in the read path compares owners', async () => {
-    // The store's read signature takes the accessing agent for BOOKKEEPING
-    // (last_accessed_by / access_count), not for authorisation. Asserted on the
-    // source so that adding an ownership check has to come here and say so.
+  it('the STORE still addresses a row by name alone — the scope is the door, not the query', async () => {
+    // Unchanged, and the distinction matters: `created_by_agent_id` is still
+    // bookkeeping, not a predicate. Ownership was never the rule the owner
+    // wanted; the GRANT is, and it is answered above the store at row 16, where
+    // the refusal can carry a message and an audit row.
     const store = fs.readFileSync(path.join(SRC, 'credentials/store.ts'), 'utf-8');
     expect(store).toMatch(/SET last_accessed_at = datetime\('now'\),\s*\n\s*last_accessed_by_agent_id = \?/);
     expect(store).not.toMatch(/WHERE service_name = \? AND created_by_agent_id/);

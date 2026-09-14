@@ -25,6 +25,8 @@ import { isSenderAuthorized } from './v2/channel-auth.js';
 // path beside the compose branches. `config/platform.ts` imports only `db/connection.js`,
 // so there is no cycle to buy with the dynamic form the older call sites in this file use.
 import { isPrimaryAgent } from '../config/platform.js';
+import { mayUseChannel } from './access/read.js';
+import { ACCESS_CHANNELS, type AccessChannel } from '@dojo/shared';
 import { type DeliveryInput } from './v2/deliveries.js';
 import { recordAtDoor, withOutboundAsync, recordedId } from './v2/outbound.js';
 // PHASE-2 T4: the join lives in `work`. Everything below is transport — it lands pieces and
@@ -1323,7 +1325,12 @@ export interface OwnerChannelRelayRefusal {
 export function ownerChannelRelayRefusal(
   agentId: string, channel: string, tool: string,
 ): OwnerChannelRelayRefusal | null {
-  if (isPrimaryAgent(agentId)) return null;
+  // UX-ACCESS A1: still ONE predicate and still the same one the four doors ask —
+  // it is `mayUseChannel` now, on this agent's own channel grant. A channel the
+  // relay does not name (a future fifth) has no grant and is refused, which is
+  // the fail-closed direction.
+  const known = (ACCESS_CHANNELS as readonly string[]).includes(channel);
+  if (known && mayUseChannel(agentId, channel as AccessChannel)) return null;
   return {
     channel, tool,
     why: 'only the primary agent may send on the owner\'s channels, and this join belongs to '

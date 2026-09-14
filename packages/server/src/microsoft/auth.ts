@@ -11,6 +11,7 @@
 import crypto from 'node:crypto';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
+import { widestIntegrationLevel } from '../agent/access/read.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 import { classifyTokenRefreshFailure } from '../services/oauth-refresh-classify.js';
 import {
@@ -613,11 +614,11 @@ export function disconnectMicrosoftAccount(accountId: string): void {
 
 // ── Access Level ──
 
-export function getAgentMicrosoftAccessLevel(_agentId: string, isPrimary: boolean, isPM: boolean): 'full' | 'read' | 'none' {
+export function getAgentMicrosoftAccessLevel(agentId: string, _isPrimary: boolean, _isPM: boolean): 'full' | 'read' | 'none' {
+  // UX-ACCESS A1 — the same change as the Google twin, for the same reason
+  // (census C4). Connectivity still wins; the tier is this agent's grant.
   const anyEnabled = isMicrosoftEnabled('agent') || isMicrosoftEnabled('user');
   const anyConnected = isMicrosoftConnected('agent') || isMicrosoftConnected('user');
   if (!anyEnabled || !anyConnected) return 'none';
-  if (isPM) return 'none';
-  if (isPrimary) return 'full';
-  return 'read';
+  return widestIntegrationLevel(agentId, 'microsoft');
 }

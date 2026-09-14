@@ -6,3 +6,4 @@ export * from './visibility.js';
 export * from './origin.js';
 export * from './markers.js';
 export * from './outcome.js';
+export * from './access.js';

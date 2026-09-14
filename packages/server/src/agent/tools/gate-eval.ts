@@ -25,6 +25,7 @@ import {
   grantFor, type Verdict,
 } from '../brokers/index.js';
 import { EFFECT_FROM_ARGS, EFFECT_FROM_FIXED, type EffectKind } from './types.js';
+import { mayUseChannel, mayTouchCredential, holdsCredentialGrant } from '../access/read.js';
 import type { ToolGate } from './gates.js';
 
 /** What a gate answered, plus enough to audit and render it. */
@@ -214,6 +215,45 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
             errorCode: gate.row === '9' ? null : 'PERMISSION_DENIED',
             auditAs: name,
           };
+
+    // ── Row 7: THE CHANNEL DOOR TAKES AGENT IDENTITY (UX-ACCESS A1) ──
+    // Where this used to read `isPrimaryAgent(agentId)` it now reads the agent's
+    // own channel grant. Post-migration the primary is the only holder, so the
+    // set of agents refused here is identical; what changed is that the set can
+    // now be CHANGED — owner ruling 1's master switch and per-channel tiers are
+    // beneath `mayUseChannel`, not beside it.
+    case 'channel':
+      return mayUseChannel(agentId, gate.channel)
+        ? skip(gate)
+        : {
+            gate,
+            verdict: denied(`channel:${gate.channel}`, `${name} is restricted to the primary agent only`, gate.message),
+            resource: gate.channel,
+            errorCode: 'PERMISSION_DENIED',
+            auditAs: name,
+          };
+
+    // ── Row 16: the credential store, scoped at last ──
+    // `service === null` is `credential_list`, which names no service and is
+    // therefore asking "may this agent see the vault at all".
+    case 'credential': {
+      const ok = gate.service === null
+        ? holdsCredentialGrant(agentId)
+        : mayTouchCredential(agentId, gate.service);
+      return ok ? skip(gate) : {
+        gate,
+        verdict: denied(
+          'credential-not-granted',
+          gate.service === null
+            ? 'this agent holds no credential grant'
+            : `credential "${gate.service}" is not granted to this agent`,
+          `Permission denied: ${gate.service === null ? 'the credential store is' : `the credential "${gate.service}" is`} not in this agent's grants. The request was not performed. Ask the primary agent to grant it if this needs to happen.`,
+        ),
+        resource: gate.service,
+        errorCode: 'PERMISSION_DENIED',
+        auditAs: name,
+      };
+    }
 
     case 'primary_or_healer':
       return isPrimaryAgent(agentId) || isHealerAgent(agentId)

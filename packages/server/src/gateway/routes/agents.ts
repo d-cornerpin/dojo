@@ -325,8 +325,22 @@ agentsRouter.put('/:id', async (c) => {
   }
 
   if (body.permissions !== undefined) {
+    // UX-ACCESS A1: `permissions` is a JSON DOCUMENT carrying the manifest AND
+    // the access grants. Today's only writer of this field is the permissions
+    // editor, which knows nothing about grants — so a save would have DELETED
+    // them, silently, and every door would fall back to the snapshot. The stored
+    // object is carried forward unless the caller sent one of its own; A3's panel
+    // sends it, and that write wins.
+    const incoming = (body.permissions ?? {}) as Record<string, unknown>;
+    if (incoming.grants === undefined) {
+      const prior = db.prepare('SELECT permissions FROM agents WHERE id = ?').get(id) as { permissions: string | null } | undefined;
+      try {
+        const priorGrants = (JSON.parse(prior?.permissions || '{}') as { grants?: unknown }).grants;
+        if (priorGrants !== undefined) incoming.grants = priorGrants;
+      } catch { /* an unparseable prior blob carries nothing forward */ }
+    }
     updates.push('permissions = ?');
-    params.push(JSON.stringify(body.permissions));
+    params.push(JSON.stringify(incoming));
   }
 
   if (body.classification !== undefined && ['ronin', 'apprentice'].includes(body.classification)) {

@@ -45,7 +45,7 @@ function covers(row: string, gates: ToolGate[]): ToolGate {
   return gate as ToolGate;
 }
 
-describe('the fifteen rows, one clause each', () => {
+describe('the sixteen rows, one clause each', () => {
   it('row 1 — file_read / file_list: manifest file-read scope on args.path', () => {
     for (const name of ['file_read', 'file_list']) {
       const g = covers('1', rowsFor(name, { path: '/tmp/x' }));
@@ -105,10 +105,18 @@ describe('the fifteen rows, one clause each', () => {
     expect(g.kind).toBe('net');
   });
 
-  it('row 7 — imessage_send / imessage_list_contacts: the primary-only wall', () => {
+  // UX-ACCESS A1 RE-KEYED THIS ROW, AND THE REQUIREMENT IS UNCHANGED. It was
+  // `primary_only`, which encoded the census's §0 finding as code: exactly one
+  // agent on the box could reach a human. The requirement — "an agent that may
+  // not reach the owner on iMessage is refused here, at this row, with this
+  // message" — now reads the agent's CHANNEL GRANT, which the migration seeded
+  // so that only the primary holds one. Same refusals, same words; the answer
+  // is a row an owner can edit instead of the identity of one agent.
+  it('row 7 — imessage_send / imessage_list_contacts: the iMessage channel wall', () => {
     for (const name of ['imessage_send', 'imessage_list_contacts']) {
       const g = covers('7', rowsFor(name, {}));
-      expect(g.kind).toBe('primary_only');
+      expect(g.kind).toBe('channel');
+      expect(g.kind === 'channel' && g.channel).toBe('imessage');
     }
   });
 
@@ -214,9 +222,25 @@ describe('the fifteen rows, one clause each', () => {
     expect(rowsFor('applescript_run', { script: 'x' }).map((r) => r.row)).toEqual(['15']);
   });
 
-  it('ALL FIFTEEN ROWS ARE ACCOUNTED — no more, no fewer (row 3 now has two doors)', () => {
+  // THE SIXTEENTH ROW (UX-ACCESS A1). The header's own promise — *"a sixteenth
+  // requirement cannot be added without being covered"* — did its job: the
+  // credential store's gate had to come here to land. It is the first row added
+  // since the ladder was declared, and it is exactly what RULING P5-R5 said the
+  // `ungatedEffectKinds` ledger was FOR: `secrets` had been recorded on every
+  // credential call since T2 and refused by nothing (census C3, and a dev box
+  // carrying `stripe_live`, `twilio_token`, `github_pat` any agent could delete).
+  it('row 16 — the credential store: a service the agent was not granted', () => {
+    const g = covers('16', rowsFor('credential_delete', { service_name: 'stripe_live' }));
+    expect(g.kind).toBe('credential');
+    expect(g.kind === 'credential' && g.service).toBe('stripe_live');
+    // `credential_list` names no service: it gates on holding ANY grant.
+    const list = covers('16', rowsFor('credential_list', {}));
+    expect(list.kind === 'credential' && list.service).toBeNull();
+  });
+
+  it('ALL SIXTEEN ROWS ARE ACCOUNTED — no more, no fewer (row 3 has two doors)', () => {
     expect([...covered].sort()).toEqual(
-      ['1', '10', '11', '12', '13', '14a', '14b', '15', '2', '3', '3s', '4', '5', '6', '7', '8', '9'],
+      ['1', '10', '11', '12', '13', '14a', '14b', '15', '16', '2', '3', '3s', '4', '5', '6', '7', '8', '9'],
     );
   });
 });

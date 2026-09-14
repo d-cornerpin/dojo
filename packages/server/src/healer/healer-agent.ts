@@ -413,10 +413,22 @@ export function ensureHealerAgentRunning(): void {
 
   if (existing && existing.status !== 'terminated') {
     logger.info('Healer agent already running', { status: existing.status });
-    // Keep tools/permissions current on every boot
-    db.prepare(
-      "UPDATE agents SET tools_policy = ?, permissions = ?, updated_at = datetime('now') WHERE id = ?",
-    ).run(HEALER_TOOLS_POLICY, HEALER_PERMISSIONS, healerId);
+    // ⟨RETIRED — UX-ACCESS A1, owner ruling 3⟩ The per-boot rewrite of this
+    // agent's `tools_policy` + `permissions` stood here. Census C8: it was one of
+    // four sites that overwrote a live row on EVERY restart, which meant an owner
+    // edit to this agent was silently reverted — the exact defect ruling 3 names
+    // ("the boot rewriter retires so edits stop silently reverting").
+    //
+    // WHAT STILL HOLDS THE INVARIANT IT WAS PROTECTING. The frozen deny/allow list
+    // was never the real wall: a sensei that is not the primary now carries
+    // `channels.master = null` and no channel grant at all, so every tool on the
+    // build-checked `SEND_TO_PEOPLE` surface is refused AT THE DOOR by
+    // `mayUseChannel` — including one added after this boot, which a frozen list
+    // of names could never have covered. The declared grants are seeded once, from
+    // this row's own values, by `agent/access/materialize.ts`.
+    //
+    // The CREATE and REACTIVATE paths below still write the policy: those mint a
+    // row rather than overwrite a live one, so they revert nobody.
     return;
   }
 

@@ -39,8 +39,8 @@
 
 import type { ToolDefinition } from './types.js';
 import { getDb } from '../../db/connection.js';
-import { resolveToolAlias } from '../../tools/aliases.js';
 import { getAgentPermissions } from '../permissions.js';
+import { toolGrantsFor, toolCategoryGranted, mayUsePlaud, holdsCredentialGrant, integrationLevelFor } from '../access/read.js';
 import { PRIMARY_ONLY_TOOLS } from './gates.js';
 import { agentCanSelfComplete } from './util.js';
 import { toolDefinitions } from './definitions.js';
@@ -170,29 +170,17 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   return tools;
 }
 
-/**
- * FU-4: the SINGLE parser for a stored tools_policy, used by BOTH the
- * advertised-surface strip (computeFilteredTools) and the executor-side deny
- * re-check (getAgentDenySet / executeToolInner), so the two cannot drift.
- * Alias-maps old/renamed names to canonical (C27 hook 4) so allow/deny still bind
- * to the new tool after a rename; tombstoned names are left as-is (match nothing).
- */
-function parseToolsPolicy(rawToolsPolicy: string | null | undefined): { allow: string[]; deny: string[] } {
-  let allow: string[] = [];
-  let deny: string[] = [];
-  if (rawToolsPolicy) {
-    try {
-      const parsed = JSON.parse(rawToolsPolicy);
-      if (Array.isArray(parsed.allow)) allow = parsed.allow;
-      if (Array.isArray(parsed.deny)) deny = parsed.deny;
-    } catch { /* ignore malformed policy */ }
-  }
-  const canon = (n: string): string => {
-    const r = resolveToolAlias(n, {});
-    return r.tombstone ? n : r.name;
-  };
-  return { allow: allow.map(canon), deny: deny.map(canon) };
-}
+// FU-4's SINGLE tools-policy parser moved to `agent/access/tools-policy.ts` in
+// UX-ACCESS A1 and gained a second caller (the access snapshot, which migrates a
+// stored policy into `permissions.grants.tools`). Its reason for being one
+// function is unchanged: the surface strip and the executor deny re-check must
+// read the same canonicalized names or they drift, permissively and silently.
+//
+// WHAT CHANGED IS THE SOURCE, NOT THE SEMANTICS. Both sites below now read the
+// policy out of the agent's GRANTS (`toolGrantsFor`), which answers with the
+// stored object when there is one and with the column when there is not — so a
+// box that has not materialized yet behaves identically, and one that has stops
+// having its policy rewritten under it every boot (census C8).
 
 // ── Executor-side tools_policy.deny memo (FU-4) ──
 // computeFilteredTools strips a denied tool from the ADVERTISED surface, but per
@@ -217,10 +205,7 @@ export function getAgentDenySet(agentId: string): Set<string> {
   if (cached && cached.generation === generation && cached.fingerprint === fingerprint) {
     return cached.deny;
   }
-  const row = getDb()
-    .prepare('SELECT tools_policy FROM agents WHERE id = ?')
-    .get(agentId) as { tools_policy: string | null } | undefined;
-  const deny = new Set(parseToolsPolicy(row?.tools_policy).deny);
+  const deny = new Set(toolGrantsFor(agentId).deny);
   agentDenySetCache.delete(agentId); // re-insert at the tail so FIFO stays honest
   agentDenySetCache.set(agentId, { generation, fingerprint, deny });
   if (agentDenySetCache.size > FILTERED_TOOLS_CACHE_MAX) {
@@ -239,9 +224,7 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
   // Get tools policy from DB
   const db = getDb();
   const agentRow = db.prepare('SELECT tools_policy, group_id, classification, task_id FROM agents WHERE id = ?').get(agentId) as { tools_policy: string; group_id: string | null; classification: string | null; task_id: string | null } | undefined;
-  // FU-4: one shared parser (also used by the executor deny re-check) so the
-  // surface strip and the executor gate read the SAME canonicalized allow/deny.
-  const toolsPolicy = parseToolsPolicy(agentRow?.tools_policy);
+  const toolsPolicy = toolGrantsFor(agentId);
 
   // Base toolkit includes the static `toolDefinitions` plus the PDF
   // creation/manipulation tools, which require no external auth and
@@ -447,6 +430,7 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
     const canonical = isUserKind ? toolName.slice('user_'.length) : toolName;
     const kind = isUserKind ? 'user' : 'agent';
     if (!(isUserKind ? userKindConnected : agentKindConnected)) return false;
+    if (integrationLevelFor(agentId, 'google', kind) === 'none') return false;
     for (const [service, prefixes] of Object.entries(serviceToolPrefixes)) {
       if (prefixes.some(p => canonical.startsWith(p))) {
         return googleServiceFlags[kind][service as Parameters<typeof isGoogleServiceEnabledForKind>[1]];
@@ -520,6 +504,7 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
     const canonical = isUserKind ? toolName.slice('user_'.length) : toolName;
     const kind = isUserKind ? 'user' : 'agent';
     if (!(isUserKind ? userSlotMsConnected : agentSlotMsConnected)) return false;
+    if (integrationLevelFor(agentId, 'microsoft', kind) === 'none') return false;
     for (const [service, patterns] of Object.entries(msServiceToolPrefixes)) {
       if (patterns.some(p => canonical.startsWith(p) || canonical === p)) {
         return msServiceFlags[kind][service as Parameters<typeof isMsServiceEnabledForKind>[1]];
@@ -591,7 +576,11 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
   // Read-only across the board. No slot model (single account per Dojo
   // install) and no service-level toggles, if the user connected Plaud,
   // every agent that has integration access sees the full tool set.
-  if (isPlaudConnected()) {
+  // UX-ACCESS A1: connectivity AND the agent's grant. Census C13 — this push had
+  // no identity check at all, so even the PM (explicitly `none` for both
+  // Workspace providers) received the full Plaud set. Every migrated agent
+  // carries `plaud: true`, so nothing moves until an owner turns one off.
+  if (isPlaudConnected() && mayUsePlaud(agentId)) {
     filtered.push(...plaudReadToolDefinitions);
   }
 
@@ -601,7 +590,11 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
   // Separate from secrets.yaml (platform-managed) and vault entries
   // (knowledge that decays). Encrypted at rest with a master key in
   // secrets.yaml.
-  filtered.push(...credentialsToolDefinitions);
+  // UX-ACCESS A1: "always available to every agent" is now "available to an agent
+  // that holds a credential grant" — and every migrated agent holds `'*'`, so the
+  // list is unchanged. An agent granted NOTHING is not shown a vault it may not
+  // open; one granted a SUBSET keeps the tools and is refused per service at row 16.
+  if (holdsCredentialGrant(agentId)) filtered.push(...credentialsToolDefinitions);
 
   // ── Multi-account description annotation ──
   // Every Google/Microsoft tool gets its description prefixed with
@@ -630,6 +623,15 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
     ...microsoftReadToolDefinitions.map(t => t.name),
     ...microsoftWriteToolDefinitions.map(t => t.name),
   ]);
+
+  // ── THE POSITIVE CATEGORY GRANT (UX-ACCESS A1) ──
+  // The last filter, and deliberately last: every strip and every append above
+  // has already run, so this reads the surface the agent would have had and
+  // keeps only what its grants name. Every migrated agent carries `'*'` — no
+  // mechanism at HEAD withheld a category, so the honest snapshot withholds
+  // none — which is what makes A1 invisible while A3's panel has something real
+  // to switch. A tool in no category is never refused here (`read.ts`).
+  filtered = filtered.filter(t => toolCategoryGranted(agentId, t.name));
 
   const annotated = filtered.map(t => {
     // F4: `calendar_agenda` is the MERGED cross-account view, not routed to a

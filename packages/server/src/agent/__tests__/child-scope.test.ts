@@ -126,10 +126,17 @@ describe('A — messaging/outbound-send: the danger class already withheld, held
   // work today, which is the owner's decision (P5-R5). It is already withheld
   // from every sub-agent at four walls, and these clauses are what keep it that
   // way, so the default's claim is held by something that can fail.
-  it('`imessage_send` is primary-only, by a DECLARED gate', async () => {
+  // UX-ACCESS A1: the gate's KIND changed and the REQUIREMENT this clause holds
+  // did not — `imessage_send` is still withheld from every default sub-agent,
+  // still by a declared gate, still at row 7. It asks the agent's channel grant
+  // now, and a default sub-agent's snapshot carries `master:false` and no
+  // channel, so the answer is the same one.
+  it('`imessage_send` is withheld from a default sub-agent, by a DECLARED gate', async () => {
     const { gatesForCall } = await import('../tools/gates.js');
     const gates = gatesForCall('imessage_send', {});
-    expect(gates.some((g) => g.kind === 'primary_only' && g.row === '7')).toBe(true);
+    expect(gates.some((g) => g.kind === 'channel' && g.row === '7')).toBe(true);
+    const { MOST_RESTRICTIVE_GRANTS, mayReachChannel } = await import('@dojo/shared');
+    expect(mayReachChannel(MOST_RESTRICTIVE_GRANTS, 'imessage')).toBe(false);
   });
 
   it('the three Twilio verbs are primary-only, by their own handler walls', async () => {

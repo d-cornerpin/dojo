@@ -24,7 +24,10 @@ import { getDb } from '../../../db/connection.js';
 import { executeMicrosoftReadTool } from '../../../microsoft/tools-read.js';
 import { executeMicrosoftWriteTool } from '../../../microsoft/tools-write.js';
 import { prependMailboxOwnerHeader } from './mailbox-banner.js';
-import { isPrimaryAgent } from '../../../config/platform.js';
+// UX-ACCESS A1 — same change as `provider/google.ts`, same reasoning: position,
+// message and audit row unchanged; the predicate is this agent's per-ACCOUNT
+// Microsoft grant, and a send additionally needs its channel grant.
+import { mayReadWorkspace, mayWriteWorkspace } from '../../access/workspace.js';
 import { auditLog } from '../util.js';
 import type { ToolHandler, ToolHandlerMap } from '../handler.js';
 
@@ -32,6 +35,10 @@ const handlers = {
   async "outlook_search"({ agentId, name, args }) {
     let content = '';
     let isError = false;
+    if (!mayReadWorkspace(agentId, name, 'microsoft')) {
+      auditLog(agentId, name, null, 'denied', 'Microsoft account not in this agent\'s grants');
+      return { content: 'Permission denied: that Microsoft account is not in this agent\'s grants.', isError: true, errorCode: 'PERMISSION_DENIED' as const };
+    }
     const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
     content = await executeMicrosoftReadTool(name, args, agentId, agentRow?.name ?? agentId);
     content = prependMailboxOwnerHeader(content, name, args);
@@ -42,7 +49,7 @@ const handlers = {
   async "outlook_send"({ agentId, name, args }) {
     let content = '';
     let isError = false;
-    if (!isPrimaryAgent(agentId)) {
+    if (!mayWriteWorkspace(agentId, name, 'microsoft')) {
       content = 'Permission denied: only the primary agent can use Microsoft 365 write tools.';
       isError = true;
       auditLog(agentId, name, null, 'denied', 'Microsoft write tool restricted to primary agent');

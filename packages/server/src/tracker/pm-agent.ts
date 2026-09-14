@@ -260,13 +260,22 @@ export function ensurePMAgentRunning(): void {
 
   if (pm && pm.status !== 'terminated') {
     logger.info('PM agent already running', { status: pm.status });
-    // Ensure permissions are up to date on every boot. Allow-list from the single
-    // source (PM_ALLOWED_TOOLS) so the surface strip never drifts from the
-    // executor gate.
-    const syncToolsPolicy = JSON.stringify({ allow: [...PM_ALLOWED_TOOLS] });
-    // Sync BOTH tools_policy and permissions on every boot so an already-running
-    // PM picks up the read-only file_read grant (C2) without needing a reactivate.
-    db.prepare("UPDATE agents SET tools_policy = ?, permissions = ?, updated_at = datetime('now') WHERE id = ?").run(syncToolsPolicy, PM_PERMISSIONS_JSON, pmId);
+    // ⟨RETIRED — UX-ACCESS A1, owner ruling 3⟩ The per-boot rewrite of this
+    // agent's `tools_policy` + `permissions` stood here. Census C8: it was one of
+    // four sites that overwrote a live row on EVERY restart, which meant an owner
+    // edit to this agent was silently reverted — the exact defect ruling 3 names
+    // ("the boot rewriter retires so edits stop silently reverting").
+    //
+    // WHAT STILL HOLDS THE INVARIANT IT WAS PROTECTING. The frozen deny/allow list
+    // was never the real wall: a sensei that is not the primary now carries
+    // `channels.master = null` and no channel grant at all, so every tool on the
+    // build-checked `SEND_TO_PEOPLE` surface is refused AT THE DOOR by
+    // `mayUseChannel` — including one added after this boot, which a frozen list
+    // of names could never have covered. The declared grants are seeded once, from
+    // this row's own values, by `agent/access/materialize.ts`.
+    //
+    // The CREATE and REACTIVATE paths below still write the policy: those mint a
+    // row rather than overwrite a live one, so they revert nobody.
     // ⟨TOMBSTONE⟩ W24: the Phase-B.1 "keep the PM-SOUL system message in sync on every boot"
     // block stood here. Its comment claimed *"the runtime message-assembly path reads the
     // LATEST system message for context"* — that was false when it was written and false

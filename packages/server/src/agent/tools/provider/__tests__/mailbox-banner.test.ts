@@ -35,7 +35,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../../../db/connection.js', () => ({
   getDb: () => ({ prepare: () => ({ get: () => ({ name: 'kevin' }), run: () => undefined }) }),
 }));
-vi.mock('../../../../config/platform.js', () => ({ isPrimaryAgent: () => true, getOwnerName: () => 'David' }));
+vi.mock('../../../../config/platform.js', () => ({ isPrimaryAgent: () => true, isPMAgent: () => false, getOwnerName: () => 'David' }));
 vi.mock('../../util.js', () => ({ auditLog: () => undefined }));
 
 // The header resolves the address through the SAME resolver the tool used, so

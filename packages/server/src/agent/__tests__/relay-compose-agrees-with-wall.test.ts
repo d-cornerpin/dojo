@@ -110,11 +110,15 @@ describe('the compose path is scoped to the agents the handlers will serve', () 
     const gate = read('agent/a2a-transport.ts');
     const at = gate.indexOf('export function ownerChannelRelayRefusal');
     expect(at).toBeGreaterThan(-1);
-    // The predicate IS `isPrimaryAgent` — the same function `provider/microsoft.ts`,
-    // `provider/google.ts` and `cat/comms.ts` each call, and the same one gate ladder row 7
-    // resolves for `imessage_send`. A second spelling of "who may send on the owner's
-    // channels" is the disagreement this task exists to end.
-    expect(gate.slice(at, gate.indexOf('\n}\n', at))).toMatch(/isPrimaryAgent\(/);
+    // The predicate IS the one the doors ask — the same function
+    // `provider/microsoft.ts`, `provider/google.ts` and `cat/comms.ts` each call, and the
+    // same one gate ladder row 7 resolves for `imessage_send`. A second spelling of "who may
+    // send on the owner's channels" is the disagreement this task exists to end.
+    //
+    // UX-ACCESS A1 moved that ONE function from `isPrimaryAgent` to `mayUseChannel`, at every
+    // door in the same change. The agreement requirement is untouched; only the predicate's
+    // name is new, and it is still asserted here so a second spelling still reds.
+    expect(gate.slice(at, gate.indexOf('\n}\n', at))).toMatch(/mayUseChannel\(/);
   });
 
   // ⚠ THIS CLAUSE WAS WEAK AS FIRST WRITTEN AND IS RECORDED RATHER THAN QUIETLY FIXED.

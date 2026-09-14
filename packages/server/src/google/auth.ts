@@ -18,6 +18,7 @@
 // ════════════════════════════════════════
 
 import crypto from 'node:crypto';
+import { widestIntegrationLevel } from '../agent/access/read.js';
 import {
   countGoogleAccounts,
   deleteGoogleAccount,
@@ -758,14 +759,18 @@ export function disconnectGoogleAccount(accountId: string): void {
 
 // ── Access Level ──
 
-export function getAgentGoogleAccessLevel(_agentId: string, isPrimary: boolean, isPM: boolean): 'full' | 'read' | 'none' {
-  // Access level is computed per AGENT (primary/PM/etc.) not per slot.
-  // If EITHER slot is enabled+connected, the agent has some level of
-  // Google access. Slot routing happens at tool-call time.
+export function getAgentGoogleAccessLevel(agentId: string, _isPrimary: boolean, _isPM: boolean): 'full' | 'read' | 'none' {
+  // UX-ACCESS A1 — THE UNDERSCORE MOVED, AND THAT IS THE WHOLE CHANGE.
+  // Census C4 read this signature as "the code admitting it": the agent id was
+  // unused and the tier came from a role ladder (`isPM → none`, `isPrimary →
+  // full`, else `read`). The ladder is now the agent's own grant, which the
+  // migration seeded with exactly those three answers — so every box answers
+  // what it answered before, and "read work mail but not personal mail" finally
+  // has a place to be written. CONNECTIVITY still wins: an account that is not
+  // connected or a provider that is disabled is `none` whatever the grant says,
+  // because that is a fact about the box and not a permission.
   const anyEnabled = isGoogleEnabled('agent') || isGoogleEnabled('user');
   const anyConnected = isGoogleConnected('agent') || isGoogleConnected('user');
   if (!anyEnabled || !anyConnected) return 'none';
-  if (isPM) return 'none';
-  if (isPrimary) return 'full';
-  return 'read';
+  return widestIntegrationLevel(agentId, 'google');
 }

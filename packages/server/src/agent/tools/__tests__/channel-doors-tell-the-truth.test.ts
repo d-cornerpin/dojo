@@ -166,11 +166,16 @@ describe('the imessage-disabled door', () => {
 describe('the sub-agent permission wall', () => {
   const row7 = () => gatesForCall('imessage_send', {}).find((g) => g.row === '7');
 
-  it('still fires, still primary_only, for both walled tools', () => {
+  // UX-ACCESS A1 re-keyed row 7 from `primary_only` to `channel` — the same
+  // refusal, asked of the agent's own iMessage grant rather than of the role
+  // singleton. The message below is still asserted byte-for-byte, which is the
+  // half this file exists for.
+  it('still fires, for both walled tools, now keyed on the channel', () => {
     for (const tool of ['imessage_send', 'imessage_list_contacts']) {
       const g = gatesForCall(tool, {}).find((x) => x.row === '7');
       expect(g, tool).toBeDefined();
-      expect(g!.kind).toBe('primary_only');
+      expect(g!.kind).toBe('channel');
+      expect(g!.kind === 'channel' && g!.channel).toBe('imessage');
     }
   });
 

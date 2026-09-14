@@ -82,6 +82,7 @@ import { prependMailboxOwnerHeader } from './provider/mailbox-banner.js';
 import { auditLog, agentCanSelfCompleteById, permissionDeniedMessage, openFileInCanvas } from './util.js';
 import { evaluateGate } from './gate-eval.js';
 import { openCallCapability } from '../effects/scopes.js';
+import { mayWriteWorkspace } from '../access/workspace.js';
 import { isPrimaryAgent, isPMAgent } from '../../config/platform.js';
 // Single source of truth for the PM overseer allow-list; re-checked at the
 // executor chokepoint (demolition Phase 1.7 PM verb enforcement).
@@ -526,7 +527,10 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
       // The switch's `default:` arm, and its guard early-exit written as the
       // condition it always was: `if (write) { if (!primary) { …break; } }` had
       // nothing after the inner `if`, so this is the same branch.
-      (GOOGLE_WRITE_TOOL_NAMES.has(name) || MS_WRITE_TOOL_NAMES.has(name)) && !isPrimaryAgent(agentId)
+      // UX-ACCESS A1: the predicate is this agent's per-ACCOUNT Workspace grant
+      // (and, for a send, its channel grant). Message and audit row unchanged.
+      (GOOGLE_WRITE_TOOL_NAMES.has(name) || MS_WRITE_TOOL_NAMES.has(name))
+      && !mayWriteWorkspace(agentId, name, GOOGLE_WRITE_TOOL_NAMES.has(name) ? 'google' : 'microsoft')
     ) {
       content = 'Permission denied: only the primary agent can use Workspace write tools.';
       isError = true;

@@ -49,7 +49,13 @@ import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import type { ToolErrorCode } from '@dojo/shared';
 import { getDb } from '../../../db/connection.js';
-import { isPrimaryAgent } from '../../../config/platform.js';
+// UX-ACCESS A1: the four outbound-send walls below (`sms_send`, `voice_call`,
+// `voice_call_end`, `voice_call_status`) kept their position, their message and
+// their audit row; only the PREDICATE moved, from `isPrimaryAgent(agentId)` to
+// this agent's own channel grant. Post-migration the primary is the only holder,
+// so the same agents are refused — but the answer is now a row an owner can
+// edit rather than the identity of one agent on the box (census C1).
+import { mayUseChannel } from '../../access/read.js';
 import { writeToolReceipt } from '../../../receipts/store.js';
 import { checkPermission } from '../../permissions.js';
 import { sharePathGuard } from '../../path-guards.js';
@@ -754,7 +760,7 @@ export const commsHandlers: ToolHandlerMap = {
   async "sms_send"({ agentId, args }) {
     let content = '';
     let isError = false;
-    if (!isPrimaryAgent(agentId)) {
+    if (!mayUseChannel(agentId, 'sms')) {
       content = 'Permission denied: only the primary agent can use sms_send.';
       isError = true;
       auditLog(agentId, 'sms_send', null, 'denied', 'sms_send restricted to primary agent');
@@ -790,7 +796,7 @@ export const commsHandlers: ToolHandlerMap = {
   async "voice_call"({ agentId, args }) {
     let content = '';
     let isError = false;
-    if (!isPrimaryAgent(agentId)) {
+    if (!mayUseChannel(agentId, 'voice')) {
       content = 'Permission denied: only the primary agent can use voice_call.';
       isError = true;
       auditLog(agentId, 'voice_call', null, 'denied', 'voice_call restricted to primary agent');
@@ -824,7 +830,7 @@ export const commsHandlers: ToolHandlerMap = {
   async "voice_call_end"({ agentId, args }) {
     let content = '';
     let isError = false;
-    if (!isPrimaryAgent(agentId)) {
+    if (!mayUseChannel(agentId, 'voice')) {
       content = 'Permission denied: only the primary agent can use voice_call_end.';
       isError = true;
       return { content, isError };
@@ -839,7 +845,7 @@ export const commsHandlers: ToolHandlerMap = {
   async "voice_call_status"({ agentId, args }) {
     let content = '';
     let isError = false;
-    if (!isPrimaryAgent(agentId)) {
+    if (!mayUseChannel(agentId, 'voice')) {
       content = 'Permission denied: only the primary agent can use voice_call_status.';
       isError = true;
       return { content, isError };
