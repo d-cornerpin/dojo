@@ -88,8 +88,10 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     reason:
       'The Available Techniques index (published techniques) so the agent can ' +
       'discover and use_technique() a matching procedure; ladder-anchored (the ' +
-      'live user message outranks a technique).',
-    render: () => generateTechniqueIndex(),
+      'live user message outranks a technique). UX-ACCESS A4: it takes ctx.agentId ' +
+      'now — the index is filtered to the agent\'s technique grant, so it can no ' +
+      'longer advertise a procedure the use_technique door would refuse.',
+    render: (ctx) => generateTechniqueIndex(ctx.agentId),
   },
   {
     id: 'sys.techniques-draft',

@@ -94,7 +94,7 @@ import { getModelGenerationParams, defaultVideoSpecFor, validateCanonicalParams,
 import { getModelVoiceCatalog, defaultVoiceCatalogFor, isKnownVoice, formatVoiceCatalog } from '../../../services/voice-catalog.js';
 import { getPresence } from '../../../services/presence.js';
 import { getTurnScopedImRecipient, sendIMessageWithAttachment, getDefaultSender } from '../../../services/imessage-bridge.js';
-import { isPrimaryAgent } from '../../../config/platform.js';
+import { mayUseChannel } from '../../access/read.js';
 import { postAgentNotice } from '../../agent-notice.js';
 import { recordCost } from '../../../costs/tracker.js';
 import { resolveAttachmentPath, fetchAudioUrl, transcribeAudio } from '../../../services/transcription.js';
@@ -414,7 +414,18 @@ const handlers = {
 
         // Send via iMessage if user is away or request came from iMessage
         try {
-          if (isPrimaryAgent(agentId)) {
+          // UX-ACCESS A4: the LAST outbound-to-human door still wearing the role
+          // singleton. The census classified it correctly — this reaches a real
+          // person's phone with an attachment, so "is it the primary" was a
+          // channel question in a role predicate's clothing. `mayUseChannel` is
+          // the same reader ladder row 7, the `comms.ts` walls and the engine
+          // auto-route now ask.
+          //
+          // EMPTY-DIFF BY CONSTRUCTION, and measurably so: post-migration the
+          // primary is the only agent holding `imessage`, so the predicate
+          // answers what `isPrimaryAgent` answered for all 111 rows — which is
+          // what makes this the one auto-route door A4 can close for free.
+          if (mayUseChannel(agentId, 'imessage')) {
             let shouldSendViaIMessage = triggeredByIMessage;
             if (!shouldSendViaIMessage) {
               try {

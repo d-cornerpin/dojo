@@ -40,7 +40,8 @@
 import type { ToolDefinition } from './types.js';
 import { getDb } from '../../db/connection.js';
 import { getAgentPermissions } from '../permissions.js';
-import { toolGrantsFor, toolCategoryGranted, mayUsePlaud, holdsCredentialGrant, integrationLevelFor } from '../access/read.js';
+import { toolGrantsFor, toolCategoryGranted, mayUsePlaud, holdsCredentialGrant, integrationLevelFor, mayUseChannel } from '../access/read.js';
+import { channelForTool } from '../access/channels.js';
 import { PRIMARY_ONLY_TOOLS } from './gates.js';
 import { agentCanSelfComplete } from './util.js';
 import { toolDefinitions } from './definitions.js';
@@ -632,6 +633,34 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
   // none — which is what makes A1 invisible while A3's panel has something real
   // to switch. A tool in no category is never refused here (`read.ts`).
   filtered = filtered.filter(t => toolCategoryGranted(agentId, t.name));
+
+  // ── SURFACE TRUTH FOR THE CHANNEL TOOLS (UX-ACCESS A4) — A1 §6.5, closed ──
+  //
+  // A1 moved every channel DOOR onto the grant and left the ADVERTISEMENT where
+  // it was, deliberately: stripping these names would have moved ~110 agents'
+  // tool indexes, and A1 was committed to moving no prompt byte. It handed the
+  // question here — *"A4 owns prompt/capability truth"* — and this is it.
+  //
+  // MEASURED on the owner's box at `ac945a99`, before the filter existed: 105 of
+  // 111 agents were advertised exactly six tools they hold no grant for —
+  // `imessage_send`, `imessage_list_contacts`, `sms_send`, `voice_call`,
+  // `voice_call_end`, `voice_call_status` — and every one of the six is refused
+  // for those agents at a door that already reads `mayUseChannel` (ladder row 7
+  // for the two iMessage names, the `cat/comms.ts` handler walls for the other
+  // four). So this strips nothing an agent could do; it stops the prompt saying
+  // it could. That is the `can_spawn_agents` shape exactly: the tool leaves the
+  // list when the authority says no, and `generateToolsGuidance_v2`'s per-tool
+  // blocks — the `## iMessage` paragraph among them — are keyed on the list, so
+  // the guidance stops claiming the capability WITHOUT a second rule being
+  // written anywhere.
+  //
+  // The channel map is `channelForTool`, derived from the build-checked
+  // `SEND_TO_PEOPLE` surface, so a send tool added tomorrow is covered the day
+  // it lands. A tool that reaches nobody answers `null` and is never touched.
+  filtered = filtered.filter(t => {
+    const channel = channelForTool(t.name);
+    return channel === null || mayUseChannel(agentId, channel);
+  });
 
   const annotated = filtered.map(t => {
     // F4: `calendar_agenda` is the MERGED cross-account view, not routed to a

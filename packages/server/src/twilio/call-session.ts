@@ -44,7 +44,8 @@ import { getTwilioVoiceSafeCallers } from '../services/channel-safe-senders.js';
 import { addressesMatch } from '../services/imessage-bridge.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 import { insertInboundMessageIfAbsent } from '../work/ask-title.js';
-import { recordAtDoor, recordedId } from '../agent/v2/outbound.js';
+import { recordAtDoor, recordedId, recordHeld } from '../agent/v2/outbound.js';
+import { mayUseChannel } from '../agent/access/read.js';
 
 const logger = createLogger('twilio-call-session');
 
@@ -569,6 +570,34 @@ export class CallSession {
     if (this.ended) return;
     const trimmed = text.trim();
     if (!trimmed) return;
+    // ── THE VOICE CHANNEL GRANT, AT THE DOOR (UX-ACCESS A4) ──
+    // The census found FIVE callers pushing speech into a live call and not one
+    // of them asked anything: the two auto-route arms, the engine ack, the
+    // sentence-by-sentence streaming push in `call-llm/model-call.ts` and the
+    // pre-tool filler in `post-call-classify/persist-assistant.ts`. The last two
+    // reach the caller MID-TURN, ahead of every end-of-turn arm, so a guard on
+    // the arms would have left the loudest two open.
+    //
+    // It belongs here for the same reason the fs broker owns the path check: one
+    // transport, one door. `this.agentId` is `getPrimaryAgentId()` for every
+    // session the platform opens (:174), and the primary holds `voice` after the
+    // A1 migration, so this refuses nobody alive today — the empty-diff half of
+    // the same change whose auto-route half is a measured narrowing.
+    //
+    // A `null` agent is the PLATFORM speaking (a session that has not resolved an
+    // agent yet), not an agent reaching a human on its own account, and a grant
+    // has no opinion about it — the same `null`-means-no-opinion posture
+    // `channelForTool` and `channelForDestination` both take.
+    if (this.agentId && !mayUseChannel(this.agentId, 'voice')) {
+      recordedId(recordHeld({
+        agentId: this.agentId, tool: 'speech-out', channel: 'phone',
+        recipientId: this.fromNumber,
+      }, 'withheld: this agent holds no voice channel grant'), 'twilio: call speech-out withheld', { callSid: this.callSid });
+      logger.warn('Phone speech-out withheld: the speaking agent holds no voice channel grant', {
+        callSid: this.callSid, agentId: this.agentId,
+      });
+      return;
+    }
     this.transcript.push({ at: new Date().toISOString(), speaker: 'agent', text: trimmed });
     // PHASE-2 T5: THE PHONE SPEECH-OUT DOOR. Research 03: "every spoken utterance in
     // call-session.ts" recorded nothing. Inside an outbound scope (the auto-route reply, the

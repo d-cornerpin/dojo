@@ -113,6 +113,13 @@ export function deriveGrantsFromRow(
       microsoft: { agent: tier, user: tier },
     },
     channels: channelSnapshot(primary, sensei),
+    // UX-ACCESS A4. `'*'` is a measurement, not a policy: `checkTechniqueAccess`
+    // (techniques/tools.ts:543) refuses on STATE and squad membership and takes
+    // no agent id at all, the published index takes none either, and the matcher
+    // offers `listTechniques({state:'published'})` to every non-PM agent. So at
+    // HEAD every agent may run every published technique, and the snapshot says
+    // so. What is new is that an owner can now narrow it.
+    techniques: '*',
   };
 }
 

@@ -30,6 +30,7 @@ import type { TurnContext } from '../../../turn-context.js';
 import { type RepeatCallState } from '../../identical-call-brake.js';
 import type { TurnCounterparty } from '../../counterparty.js';
 import { withOutboundAsync } from '../../outbound.js';
+import { engineMayRouteTo } from '../../../access/engine-route.js';
 import type { PreflightContext, PreflightScratch } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -370,6 +371,20 @@ export function runTurnClosures(
       // two `NON_ANSWERING_*` sets still exclude it (`answered-edge.ts`, `work/ask-settlement.ts`) —
       // not because the engine spoke, but because a start-ack is not an ANSWER, and closing
       // an ask on one would mark a question answered before anybody looked at it.
+      // THE ENGINE'S CHANNEL DOOR (UX-ACCESS A4) — one guard for all four arms
+      // below, for the same reason `channel-push.ts` has one: three of the four
+      // (iMessage, phone TTS, SMS) reach a person through a bridge, a live call
+      // or Twilio, never through `executeTool`, so `mayUseChannel` was asked on
+      // exactly one of them (Teams, and only because its arm synthesizes a tool
+      // call). The ack itself is already persisted and broadcast ABOVE this
+      // block, so a withheld push costs the owner the channel hop and never the
+      // line — which is what makes the guard a `return` rather than a throw.
+      if (counterparty.kind === 'user' && !engineMayRouteTo(agentId, counterparty.channel)) {
+        logger.warn('v2: engine user-ack channel push withheld (the sending agent holds no grant on this channel; the ack stands in chat)', {
+          agentId, channel: counterparty.channel,
+        }, agentId);
+        return;
+      }
       if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
         const { sendResponseViaIMessage } = await import('../../../../services/imessage-bridge.js');
         const delivered = await withOutboundAsync(

@@ -1424,6 +1424,8 @@ export interface AccessCatalog {
   categories: Array<{ label: string; tools: number }>;
   presets: Array<{ id: string; label: string; description: string; grants: AccessGrants }>;
   channelGroups: Record<string, string[]>;
+  /** UX-ACCESS A4: the published techniques the grant section draws from. */
+  techniques: Array<{ id: string; name: string }>;
 }
 
 export const getAccessCatalog = async (): Promise<ApiResponse<AccessCatalog>> => {

@@ -99,6 +99,28 @@ export interface AccessGrants {
   tools: ToolGrants;
   integrations: IntegrationGrants;
   channels: ChannelGrants;
+  /**
+   * THE FOURTH SECTION (UX-ACCESS A4) — which techniques this agent may run.
+   * `'*'` = every published technique, which is what every agent alive before
+   * A4 held (nothing anywhere asked). Technique IDs, the same strings
+   * `agents.equipped_techniques` stores.
+   *
+   * ── WHY THIS IS A GRANT AND `equipped_techniques` IS NOT ──
+   * They answer different questions and the census found only one of them
+   * wired: `equipped_techniques` is a PRE-LOAD list (inline these bodies into
+   * the prompt), and it was never consulted by any access decision. The grant is
+   * the access decision, and it governs all four places a technique reaches an
+   * agent: the published index it is advertised in, the matcher that injects a
+   * body unasked, the `use_technique` / `technique_read` door, and the equipped
+   * pre-load. Equipping something ungranted therefore loads nothing rather than
+   * quietly widening the grant.
+   *
+   * OPTIONAL ON THE WIRE, and that is the migration. A1 materialized 111 rows
+   * with three sections; a reader that demanded a fourth would have thrown every
+   * one of them back to the derivation. `techniqueGrantOf` reads an absent
+   * section as `'*'` — the pre-A4 fact — so no stored row has to be rewritten.
+   */
+  techniques?: string[] | '*';
 }
 
 // ── Readers. Every consumer goes through these, so the master-switch rule and
@@ -158,6 +180,30 @@ export function categoryGranted(grants: AccessGrants, label: string): boolean {
 }
 
 /**
+ * The technique grant, with the ABSENT case answered once (UX-ACCESS A4).
+ *
+ * A stored object written before A4 carries no `techniques` key, and the honest
+ * reading of that absence is the fact that was true when it was written: every
+ * published technique was reachable by every agent. Answering `[]` instead would
+ * silently strip 111 rows the moment this code shipped.
+ */
+export function techniqueGrantOf(grants: AccessGrants): string[] | '*' {
+  return grants.techniques ?? '*';
+}
+
+/** May this agent run the technique stored under `techniqueId`? */
+export function techniqueGranted(grants: AccessGrants, techniqueId: string): boolean {
+  const t = techniqueGrantOf(grants);
+  return t === '*' || t.includes(techniqueId);
+}
+
+/** Does this agent hold ANY technique grant (i.e. is the index worth rendering)? */
+export function holdsAnyTechniqueGrant(grants: AccessGrants): boolean {
+  const t = techniqueGrantOf(grants);
+  return t === '*' || t.length > 0;
+}
+
+/**
  * MOST RESTRICTIVE (owner ruling 2): files + scratchpad only, no channels, no
  * integrations, no credentials.
  *
@@ -201,6 +247,11 @@ export const MOST_RESTRICTIVE_GRANTS: AccessGrants = {
     microsoft: { agent: 'none', user: 'none' },
   },
   channels: { master: false, imessage: 'none', sms: 'none', voice: 'none', email: 'none', teams: 'none' },
+  // UX-ACCESS A4: no technique either. A technique is a standing procedure the
+  // agent follows without being asked — the matcher injects a strong match's
+  // whole body before the agent says anything — so it is exactly the class
+  // ruling 2 says is granted explicitly, never by default.
+  techniques: [],
 };
 
 /** Deep structural copy — grants are stored, edited and diffed, never aliased. */

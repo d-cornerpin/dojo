@@ -49,7 +49,7 @@ import { z } from 'zod';
 import type { AccessGrants, ChannelTier, IntegrationLevel, ProviderGrants } from '@dojo/shared';
 import {
   ACCESS_CHANNELS, MOST_RESTRICTIVE_GRANTS, channelTierOf, cloneGrants,
-  providerLevelOf, stableGrantsText,
+  providerLevelOf, stableGrantsText, techniqueGrantOf,
 } from '@dojo/shared';
 
 // ── The schema ──
@@ -99,6 +99,10 @@ export const grantsPatchSchema = z.object({
     email: tierSchema.optional(),
     teams: tierSchema.optional(),
   }).strict().optional(),
+  // UX-ACCESS A4 — the fourth section. Same `nameList` shape as `categories`
+  // and `credentials`, so `nameSubset` already answers the no-escalation
+  // question for it and there is one subset rule in this file, not three.
+  techniques: nameList.optional(),
 }).strict();
 
 export type GrantsPatch = z.infer<typeof grantsPatchSchema>;
@@ -233,6 +237,15 @@ export function grantExcesses(
     }
   }
 
+  if (patch.techniques !== undefined) {
+    const { ok, extra } = nameSubset(patch.techniques, techniqueGrantOf(holder));
+    if (!ok) {
+      out.push(extra[0] === '*'
+        ? 'techniques: cannot grant every technique — your own grant names a bounded list'
+        : `techniques: cannot grant ${extra.map((t) => `"${t}"`).join(', ')} — ${extra.length > 1 ? 'they are' : 'it is'} not in your technique grant`);
+    }
+  }
+
   return out;
 }
 
@@ -264,6 +277,9 @@ export function mergeGrants(base: AccessGrants, patch: GrantsPatch): AccessGrant
       const want = patch.channels[channel];
       if (want !== undefined) g.channels[channel] = want;
     }
+  }
+  if (patch.techniques !== undefined) {
+    g.techniques = patch.techniques === '*' ? '*' : [...patch.techniques];
   }
   return g;
 }
@@ -305,6 +321,12 @@ export function clampGrantsTo(grants: AccessGrants, holder: AccessGrants): Acces
   for (const channel of ACCESS_CHANNELS) {
     const cap = channelTierOf(holder, channel);
     if (tierRank(g.channels[channel]) > tierRank(cap)) g.channels[channel] = cap;
+  }
+  const heldTechniques = techniqueGrantOf(holder);
+  if (heldTechniques !== '*') {
+    const held = new Set(heldTechniques);
+    const mine = techniqueGrantOf(g);
+    g.techniques = mine === '*' ? [...heldTechniques] : mine.filter((t) => held.has(t));
   }
   return g;
 }
@@ -412,6 +434,9 @@ export function grantsDelta(before: AccessGrants, after: AccessGrants): string {
   for (const channel of ACCESS_CHANNELS) {
     cmp(`channels.${channel}`, before.channels[channel], after.channels[channel]);
   }
+  // Through `techniqueGrantOf` on both sides, so an object written before A4
+  // (no key) compares as the `'*'` it means and a no-op edit stays a no-op.
+  cmp('techniques', techniqueGrantOf(before), techniqueGrantOf(after));
   return rows.join('; ');
 }
 

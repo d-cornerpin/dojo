@@ -12,6 +12,7 @@
 
 import { isPMAgent } from '../../../../config/platform.js';
 import { listTechniques } from '../../../../techniques/store.js';
+import { mayUseTechnique } from '../../../access/read.js';
 import { SEMANTIC_STRONG_THRESHOLD, buildTechniqueMatchQuery, semanticTechniqueMatches } from '../../classifiers/technique.js';
 import { injectRegistryMessage } from '../../../../prompt/registry/assembler.js';
 import type { AssemblyContext } from '../../../../prompt/registry/types.js';
@@ -50,12 +51,22 @@ export async function injectTechniqueAndGapHints(state: AgentTurnState, input: T
   //     don't need technique hints injected on every poke tick).
   if (state.loopCount === 1 && lastUserMessageContent && !isPMAgent(agentId)) {
     try {
-      const techniques = listTechniques({ state: 'published' }).map((t) => ({
-        id: t.id,
-        name: t.name,
-        description: t.description ?? undefined,
-        tags: t.tags,
-      }));
+      // UX-ACCESS A4 — THE CANDIDATE SET IS THE AGENT'S GRANT, NOT THE BOX'S.
+      //
+      // This is the loudest of the four technique seams and the reason the grant
+      // could not be advertisement-only: a STRONG match inlines the whole
+      // TECHNIQUE.md as its own message and calls `recordTechniqueUsage` below —
+      // the agent runs a standing procedure it never asked for and never saw a
+      // door for. Filtering here is the door, and it is the same predicate the
+      // index and `checkTechniqueAccess` ask.
+      const techniques = listTechniques({ state: 'published' })
+        .filter((t) => mayUseTechnique(agentId, t.id))
+        .map((t) => ({
+          id: t.id,
+          name: t.name,
+          description: t.description ?? undefined,
+          tags: t.tags,
+        }));
       // Match the ask against technique-intent embeddings (remediation
       // Phase 2). Semantic matching went GREEN on the floor model in
       // S5.4/S5.5 (0.56/0.68/0.72 strong matches on zero-overlap

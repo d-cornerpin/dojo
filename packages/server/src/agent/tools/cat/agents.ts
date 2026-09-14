@@ -68,7 +68,7 @@ import { TOOL_CATEGORIES } from '../../../tools/categories.js';
 import { resolveUpdateGrants, grantsDelta, GrantRefusedError } from '../../access/authorize.js';
 import { getAccessGrants, readStoredGrants, mayUseChannel, channelTierFor } from '../../access/read.js';
 import { writeGrants } from '../../access/materialize.js';
-import { ACCESS_CHANNELS, MOST_RESTRICTIVE_GRANTS } from '@dojo/shared';
+import { ACCESS_CHANNELS, MOST_RESTRICTIVE_GRANTS, techniqueGrantOf } from '@dojo/shared';
 import type { AccessChannel, AccessGrants } from '@dojo/shared';
 import type { ToolHandlerMap } from '../handler.js';
 
@@ -288,6 +288,10 @@ export function accessLine(agentId: string): string {
   parts.push(`integrations: ${integrations.length ? integrations.join(', ') : 'none'}`);
   const creds = g.integrations.credentials;
   parts.push(`credentials: ${creds === '*' ? 'all' : creds.length === 0 ? 'none' : creds.join(', ')}`);
+  // UX-ACCESS A4. Through `techniqueGrantOf`, so a row written before A4 reads
+  // as the `'*'` it means rather than as an empty section.
+  const techs = techniqueGrantOf(g);
+  parts.push(`techniques: ${techs === '*' ? 'all' : techs.length === 0 ? 'none' : techs.join(', ')}`);
   return `\nAccess: ${parts.join(' | ')}`;
 }
 

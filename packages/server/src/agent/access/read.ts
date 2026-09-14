@@ -20,7 +20,7 @@
 import type { AccessChannel, AccessGrants, AccountKind, IntegrationLevel, ToolGrants } from '@dojo/shared';
 import {
   channelTierOf, mayReachChannel, mayTouchCredentialIn, holdsAnyCredentialGrant,
-  categoryGranted, providerLevelOf,
+  categoryGranted, providerLevelOf, techniqueGrantOf, techniqueGranted, holdsAnyTechniqueGrant,
 } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { TOOL_CATEGORIES } from '../../tools/categories.js';
@@ -208,4 +208,29 @@ export function toolCategoryGranted(agentId: string, tool: string): boolean {
   if (labels.length === 0) return true;
   const grants = getAccessGrants(agentId);
   return labels.some((l) => categoryGranted(grants, l));
+}
+
+// ── Techniques (UX-ACCESS A4) ──
+
+/** The technique grant this agent holds — `'*'` or an explicit id list. */
+export function techniqueGrantFor(agentId: string): string[] | '*' {
+  return techniqueGrantOf(getAccessGrants(agentId));
+}
+
+/**
+ * May this agent run this technique? THE ONE technique predicate.
+ *
+ * Asked by all four places a technique reaches an agent (the published index,
+ * the matcher's candidate set, the `use_technique` / `technique_read` door, and
+ * the equipped pre-load), for the same reason `toolCategoryGranted` is asked by
+ * both the surface strip and row 17: a second copy of the rule is how
+ * "advertised" and "permitted" drift apart.
+ */
+export function mayUseTechnique(agentId: string, techniqueId: string): boolean {
+  return techniqueGranted(getAccessGrants(agentId), techniqueId);
+}
+
+/** Does this agent hold any technique at all? */
+export function holdsTechniqueGrant(agentId: string): boolean {
+  return holdsAnyTechniqueGrant(getAccessGrants(agentId));
 }

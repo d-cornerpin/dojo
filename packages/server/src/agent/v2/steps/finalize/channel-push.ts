@@ -28,6 +28,7 @@ import type { PresenceStatus } from '../../../../services/presence.js';
 import type { sendResponseViaIMessage as SendViaIMessage } from '../../../../services/imessage-bridge.js';
 import type { ReplyDestination } from '../../reply-destination.js';
 import { withOutboundAsync, recordHeld, recordedId } from '../../outbound.js';
+import { engineMayRouteTo, engineRouteRefusalReason } from '../../../access/engine-route.js';
 import { outboundRoot, describeOutboundRoot } from '../../outbound-root.js';
 import type { AgentTurnState } from '../../state.js';
 import type { FinalizeContext } from './index.js';
@@ -108,6 +109,32 @@ export async function pushReplyToChannel(
     logger.warn('settled-context hold: withheld auto-route channel push (no affirmative root); reply stays visible in dashboard', {
       agentId, turnNumber, destination, presence: presenceNow,
       outboundRoot: routeRoot.root,
+    }, agentId);
+  } else if (destination !== 'dashboard' && !engineMayRouteTo(agentId, destination)) {
+    // THE ENGINE'S CHANNEL DOOR (UX-ACCESS A4) — one guard for all five arms
+    // below, placed here because every one of them reaches a human and four of
+    // the five (iMessage, SMS, and both phone-TTS arms) do it through a bridge,
+    // through Twilio or into a live call rather than through `executeTool`,
+    // where `mayUseChannel` would already have been asked.
+    //
+    // AFTER the settled-context hold and not before it, deliberately: a turn
+    // that is already being held is held for its own recorded reason, and
+    // re-labelling those rows would change the ledger for a class this gate is
+    // not about. This arm fires only where a push would otherwise have HAPPENED.
+    //
+    // Recorded as `held`, which is the honest outcome word: no transport was
+    // reached. The reply itself is already persisted and broadcast to the
+    // dashboard above, so the owner loses the channel hop and never the answer.
+    recordedId(recordHeld(
+      {
+        agentId, tool: 'auto-route', channel: destination,
+        conversationId: turnCtx.root?.conversationId ?? null,
+      },
+      engineRouteRefusalReason(destination),
+    ), 'v2: auto-route withheld (no channel grant)', { agentId, turnNumber, destination });
+    persistRoutingMarker('held (no channel grant)');
+    logger.warn('auto-route withheld: the sending agent holds no grant on this channel', {
+      agentId, turnNumber, destination,
     }, agentId);
   } else if (destination === 'imessage' && !state.repliedToCounterpartyThisTurn.imessage && isImessageConfigured()) {
     // Label the badge with the recipient the bridge ACTUALLY delivered

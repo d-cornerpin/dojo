@@ -157,6 +157,13 @@ export const ACCESS_PRESETS: readonly AccessPreset[] = [
       g.integrations.microsoft = { agent: 'full', user: 'full' };
       g.channels.master = true;
       for (const channel of ACCESS_CHANNELS) g.channels[channel] = 'all';
+      // UX-ACCESS A4: the only preset that names `'*'`. The other three leave
+      // `techniques: []` (the constant's own value), because a technique is a
+      // standing procedure the matcher can inject unasked and none of the three
+      // narrower profiles is about running the owner's procedures. The owner
+      // ticks the ones he wants — which is the point of the section being a
+      // grant rather than a default.
+      g.techniques = '*';
     },
   ),
 ];

@@ -768,11 +768,12 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         grants: {
           type: 'object',
-          description: 'What this sub-agent may REACH beyond its own files. Every new agent starts MOST RESTRICTIVE (files, its scratchpad, and the verbs it needs to report to you and finish), so name here only what the job actually needs. YOU CAN ONLY GRANT WHAT YOU HOLD: anything beyond your own access is refused, named, and written to the audit log. All three sections are optional; use update_agent to widen or narrow later.',
+          description: 'What this sub-agent may REACH beyond its own files. Every new agent starts MOST RESTRICTIVE (files, its scratchpad, and the verbs it needs to report to you and finish), so name here only what the job actually needs. YOU CAN ONLY GRANT WHAT YOU HOLD: anything beyond your own access is refused, named, and written to the audit log. All four sections are optional; use update_agent to widen or narrow later.',
           properties: {
             tools: { type: 'object', description: 'Tool access by category: {"categories": ["Web", "Gmail", ...]} or {"categories": "*"}, using the labels from your tool index.' },
             integrations: { type: 'object', description: 'Connected services: {"plaud": bool, "credentials": ["service_name", ...] or "*", "google": {"agent": "none"|"read"|"full", "user": same}, "microsoft": same as google}. agent and user are the two connected account slots (the work/personal split).' },
             channels: { type: 'object', description: 'Reaching humans: {"master": bool, "imessage"/"sms"/"voice"/"email"/"teams": "none"|"owner" (the owner only)|"all" (any approved contact)}. master is "allowed to talk to humans at all" — every per-channel value is inert without it, and ONLY the primary agent may set it.' },
+            techniques: { type: 'array', items: { type: 'string' }, description: 'Technique IDs this agent may run, or "*" for every published technique. A technique it does not hold is not advertised in its index, is never auto-injected when its ask matches, and is refused at use_technique. Default: none.' },
           },
         },
         timeout_minutes: {
@@ -1496,6 +1497,7 @@ export const toolDefinitions: ToolDefinition[] = [
             tools: { type: 'object', description: 'Tool access by category: {"categories": ["Web", ...]} or {"categories": "*"}.' },
             integrations: { type: 'object', description: 'Connected services: {"plaud": bool, "credentials": [...] or "*", "google"/"microsoft": {"agent": "none"|"read"|"full", "user": same}}.' },
             channels: { type: 'object', description: 'Reaching humans: {"master": bool, "imessage"/"sms"/"voice"/"email"/"teams": "none"|"owner"|"all"}. Only the primary agent may set master.' },
+            techniques: { type: 'array', items: { type: 'string' }, description: 'Technique IDs this agent may run, or "*" for all published ones.' },
           },
         },
       },

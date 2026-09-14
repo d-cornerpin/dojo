@@ -8,9 +8,18 @@ interface TechniqueOption {
 interface TechniqueSelectorProps {
   selected: string[];
   onChange: (techniques: string[]) => void;
+  /**
+   * UX-ACCESS A4 — the technique IDs this agent is GRANTED, when the caller
+   * knows them. Equipping is a pre-load, not a grant: the server's renderer
+   * skips an equipped-but-ungranted id, so a picker that still offers one is
+   * offering something that will load nothing. Omitted (the create-agent form,
+   * which has no agent to read a grant from) means "no opinion" and the list is
+   * the published set exactly as before.
+   */
+  only?: string[];
 }
 
-export const TechniqueSelector = ({ selected, onChange }: TechniqueSelectorProps) => {
+export const TechniqueSelector = ({ selected, onChange, only }: TechniqueSelectorProps) => {
   const [techniques, setTechniques] = useState<TechniqueOption[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -25,8 +34,9 @@ export const TechniqueSelector = ({ selected, onChange }: TechniqueSelectorProps
     }).catch(() => setLoading(false));
   }, []);
 
-  const available = techniques.filter(t => !selected.includes(t.id));
-  const selectedTechniques = selected.map(id => techniques.find(t => t.id === id)).filter(Boolean) as TechniqueOption[];
+  const grantable = only ? techniques.filter(t => only.includes(t.id)) : techniques;
+  const available = grantable.filter(t => !selected.includes(t.id));
+  const selectedTechniques = selected.map(id => grantable.find(t => t.id === id)).filter(Boolean) as TechniqueOption[];
 
   const handleAdd = (id: string) => {
     onChange([...selected, id]);
@@ -38,7 +48,7 @@ export const TechniqueSelector = ({ selected, onChange }: TechniqueSelectorProps
   };
 
   if (loading) return <p className="text-xs text-ui/25">Loading techniques...</p>;
-  if (techniques.length === 0) return null;
+  if (grantable.length === 0) return null;
 
   return (
     <div className="space-y-1.5">

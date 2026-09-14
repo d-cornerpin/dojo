@@ -7,8 +7,9 @@ import { useToast } from '../hooks/useToast';
 import { TechniqueSelector } from './TechniqueSelector';
 import {
   accountLevel, categoryChecked, clone, credentialChecked, grantsEveryCategory, grantsEveryCredential,
-  grantsPatch, hasMaster, inertChannels, isDirty, masterOn, setAccountLevel, setCategory, setChannelTier,
-  setCredential, setEveryCategory, setEveryCredential, setKindLevel, setMaster, setPlaud,
+  grantsEveryTechnique, grantsPatch, hasMaster, inertChannels, isDirty, masterOn, setAccountLevel,
+  setCategory, setChannelTier, setCredential, setEveryCategory, setEveryCredential, setEveryTechnique,
+  setKindLevel, setMaster, setPlaud, setTechnique, techniqueChecked,
   type AccountRow, type Provider,
 } from '../lib/access-edits';
 
@@ -118,6 +119,12 @@ export const AccessPanel = ({ agent, onUpdated }: { agent: AgentDetail; onUpdate
   }, []);
 
   const labels = useMemo(() => (catalog?.categories ?? []).map((c) => c.label), [catalog]);
+  const techniqueCatalog = useMemo(() => catalog?.techniques ?? [], [catalog]);
+  const techniqueIds = useMemo(() => techniqueCatalog.map((t) => t.id), [techniqueCatalog]);
+  const grantedTechniqueIds = useMemo(
+    () => (draft ? techniqueIds.filter((id) => techniqueChecked(draft, id)) : []),
+    [draft, techniqueIds],
+  );
   const edit = useCallback((next: AccessGrants) => setDraft(next), []);
 
   const save = async () => {
@@ -326,21 +333,54 @@ export const AccessPanel = ({ agent, onUpdated }: { agent: AgentDetail; onUpdate
         )}
       </Section>
 
-      {/* ── 4. Techniques ── */}
-      <Section title="Techniques" desc="Procedures this agent follows when a task matches one. These save as soon as you change them.">
-        <TechniqueSelector
-          selected={agent.equippedTechniques ?? []}
-          onChange={async (updated) => {
-            const result = await api.updateAgentConfig(agent.id, { equippedTechniques: updated } as Record<string, unknown>);
-            if (result.ok) { toast.success('Techniques updated'); onUpdated(); }
-            else { toast.error(result.error || 'Could not update techniques.'); }
-          }}
-        />
-        {/* `TechniqueSelector` renders nothing at all when the box has no
-            published techniques — which, on a fresh dojo, is an empty section
-            with no explanation. One line, always true, so the section is never
-            a dead end. */}
-        <div className="fhelp">Techniques you publish on the Techniques page can be equipped here.</div>
+      {/* ── 4. Techniques (UX-ACCESS A4: a real grant, plus the equip list) ──
+          A3 moved the existing equip control in here verbatim and said so: the
+          section was "the existing control, not a grant". It is one now, and the
+          two halves answer different questions, which is why both are drawn:
+            MAY RUN   — the grant. Governs the agent's technique index, the
+                        matcher that would otherwise inject a body unasked, and
+                        the use_technique door. Saved with the rest of the panel.
+            PRE-LOAD  — equipping. Inlines the whole TECHNIQUE.md into the
+                        prompt every turn. Saves on change, as it always did.
+          The grant list gates the equip list on screen for the same reason the
+          renderer gates it on the server: equipping something ungranted loads
+          nothing, and a control that offers it is lying to the owner. */}
+      <Section title="Techniques" desc="Procedures this agent may run when a task matches one.">
+        {techniqueCatalog.length === 0 ? (
+          <div className="fhelp">No published techniques on this dojo yet. Publish one on the Techniques page and it will appear here.</div>
+        ) : (
+          <>
+            <Check
+              label="Every technique — including ones published later"
+              checked={grantsEveryTechnique(draft)}
+              onChange={(v) => edit(setEveryTechnique(draft, v, techniqueIds))}
+            />
+            <div className="acx-grid">
+              {techniqueCatalog.map((t) => (
+                <Check
+                  key={t.id}
+                  label={t.name}
+                  hint={t.id}
+                  checked={techniqueChecked(draft, t.id)}
+                  onChange={(v) => edit(setTechnique(draft, t.id, v, techniqueIds))}
+                />
+              ))}
+            </div>
+            <div className="acx-sub">
+              <div className="acx-sub__title">Pre-load into every prompt</div>
+              <TechniqueSelector
+                selected={(agent.equippedTechniques ?? []).filter((id) => techniqueChecked(draft, id))}
+                only={grantedTechniqueIds}
+                onChange={async (updated) => {
+                  const result = await api.updateAgentConfig(agent.id, { equippedTechniques: updated } as Record<string, unknown>);
+                  if (result.ok) { toast.success('Techniques updated'); onUpdated(); }
+                  else { toast.error(result.error || 'Could not update techniques.'); }
+                }}
+              />
+              <div className="fhelp">Equipping inlines the full procedure into every turn. Granting alone is enough for the agent to find and use one on its own; this saves as soon as you change it.</div>
+            </div>
+          </>
+        )}
       </Section>
 
       <div className="srow" style={{ justifyContent: 'flex-end', marginTop: 16, gap: 8 }}>

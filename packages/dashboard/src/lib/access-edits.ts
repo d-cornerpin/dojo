@@ -25,7 +25,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import type { AccessChannel, AccessGrants, ChannelTier, IntegrationLevel } from '@dojo/shared';
-import { ACCESS_CHANNELS, cloneGrants, providerLevelOf, stableGrantsText } from '@dojo/shared';
+import { ACCESS_CHANNELS, cloneGrants, providerLevelOf, stableGrantsText, techniqueGrantOf } from '@dojo/shared';
 
 export type Provider = 'google' | 'microsoft';
 
@@ -44,6 +44,37 @@ export const grantsEveryCategory = (g: AccessGrants): boolean => g.tools.categor
 
 export const categoryChecked = (g: AccessGrants, label: string): boolean =>
   g.tools.categories === '*' || g.tools.categories.includes(label);
+
+// ── Techniques (UX-ACCESS A4) ──
+//
+// The SAME `'*'`-is-a-promise rule as the tool groups, and for the same reason:
+// unticking one technique under `'*'` must not silently keep a grant for a
+// technique the Trainer publishes next week. `techniqueGrantOf` is what makes a
+// row written before A4 (no `techniques` key) read as the `'*'` it means.
+
+export const grantsEveryTechnique = (g: AccessGrants): boolean => techniqueGrantOf(g) === '*';
+
+export const techniqueChecked = (g: AccessGrants, id: string): boolean => {
+  const t = techniqueGrantOf(g);
+  return t === '*' || t.includes(id);
+};
+
+export function setTechnique(g: AccessGrants, id: string, on: boolean, allIds: string[]): AccessGrants {
+  const next = clone(g);
+  const current = techniqueGrantOf(next);
+  const list = current === '*' ? [...allIds] : [...current];
+  next.techniques = on
+    ? (list.includes(id) ? list : [...list, id])
+    : list.filter((t) => t !== id);
+  return next;
+}
+
+export function setEveryTechnique(g: AccessGrants, on: boolean, allIds: string[]): AccessGrants {
+  const next = clone(g);
+  next.techniques = on ? '*' : [];
+  void allIds;
+  return next;
+}
 
 /** Tick or untick one group. Under `'*'`, unticking EXPANDS to today's list
  *  minus that group rather than quietly keeping tomorrow's. */
@@ -225,6 +256,13 @@ export function grantsPatch(original: AccessGrants, draft: AccessGrants): Patch 
       if (original.channels[channel] !== draft.channels[channel]) channels[channel] = draft.channels[channel];
     }
     if (Object.keys(channels).length > 0) patch.channels = channels;
+  }
+
+  // A4: compared through `techniqueGrantOf` on BOTH sides, so opening the panel
+  // on a pre-A4 row and pressing Save without touching the section sends
+  // nothing — the absence and the `'*'` it means are the same value here.
+  if (moved(techniqueGrantOf(original), techniqueGrantOf(draft))) {
+    patch.techniques = techniqueGrantOf(draft);
   }
 
   return patch;

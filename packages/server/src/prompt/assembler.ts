@@ -17,6 +17,7 @@ import { getAgentMicrosoftAccessLevel, getMsAccountType, getMicrosoftWorkspaceCo
 import { getChannelCapabilities, listIntegrationStatuses } from '../services/capability-registry.js';
 import { assembleGroupContext as _assembleGroupContext } from '../agent/groups.js';
 import { generateTechniqueIndex, generateDraftTechniqueContext } from '../techniques/index-builder.js';
+import { mayUseTechnique } from '../agent/access/read.js';
 import { getContextWindow } from '../agent/model.js';
 import { getModelCapabilities } from '../services/capabilities.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
@@ -424,7 +425,7 @@ export function getSoulContent(agentId: string): string {
       // The reachable half of the SOUL claim: a per-agent soul file is the one
       // way the default SOUL's `## Capabilities` list lands on an agent that is
       // not the primary, and such an agent runs on the sub-agent manifest.
-      return soulFile.spawnTruth ? applySpawnCapabilityTruth(stored, agentId) : stored;
+      return soulFile.spawnTruth ? applySoulCapabilityTruth(stored, agentId) : stored;
     } catch {
       // Fall through
     }
@@ -862,16 +863,72 @@ Tools default to **compact**: focused summaries, not raw dumps. The engine caps 
 // the string back BY IDENTITY — its prefix bytes cannot move.
 const SOUL_SPAWN_CAPABILITY_LINE = '- You can manage sub-agents for specialized tasks.\n';
 
-export function applySpawnCapabilityTruth(soul: string, agentId: string): string {
-  if (!soul.includes(SOUL_SPAWN_CAPABILITY_LINE)) return soul;
-  try {
-    if (getAgentPermissions(agentId).can_spawn_agents) return soul;
-  } catch {
-    // A manifest that cannot be read is not evidence of absence (#15): leave
-    // the soul exactly as authored rather than editing on a guess.
-    return soul;
+// UX-ACCESS A4 — THE PATTERN GENERALIZES, AS A REGISTER RATHER THAN A SECOND `if`.
+//
+// T3 answered ONE line to ONE authority. The `## Capabilities` list has five, and
+// the census (task-W76) found the other four unconditional — including *"You can
+// execute shell commands."*, which is false for any agent whose manifest withholds
+// exec and which the executor refuses at ladder row 3. Writing a second bespoke
+// function per line is how five claims become five places to forget one, so the
+// claims are a TABLE: the exact shipped bytes, and the door that already answers
+// for them.
+//
+// THREE PROPERTIES, each load-bearing and each a test:
+//   • EXACT BYTES. Every entry matches the platform's OWN shipped line, never a
+//     reading of the owner's prose. A soul that does not carry the line is
+//     returned unchanged — `~/.dojo/prompts/SOUL.md` on the owner's box carries
+//     none of them, so his primary's prefix cannot move whatever he is granted.
+//   • BY IDENTITY FOR A HOLDER. An agent that holds the capability gets the same
+//     string object back. A prefix byte can only ever move for an agent the
+//     claim was FALSE for, which is what makes this cache-safe by construction.
+//   • ABSENCE IS NOT EVIDENCE (#15). A door that throws leaves the line alone.
+//     We remove a claim when we can prove it false, never when we cannot read.
+interface SoulCapabilityClaim {
+  /** The exact line, trailing newline included, as `templates.ts` ships it. */
+  readonly line: string;
+  /** The door that answers it. Throwing means "unknown", not "no". */
+  readonly holds: (agentId: string) => boolean;
+}
+
+export const SOUL_CAPABILITY_CLAIMS: readonly SoulCapabilityClaim[] = [
+  {
+    // UX-REPAIR T3's line, unchanged, moved into the register it always wanted.
+    line: SOUL_SPAWN_CAPABILITY_LINE,
+    holds: (agentId) => getAgentPermissions(agentId).can_spawn_agents,
+  },
+  {
+    // The exec claim. The authority is the manifest's own exec grant, which is
+    // what `gatesForCall` row 3 hands to `brokers/grants.ts` — an agent with an
+    // empty `exec_allow` is refused every command it names, so the sentence has
+    // no true reading for it. A1 drove exactly this refusal (§4, `exec_allow: []`
+    // → `PERMISSION_DENIED`) while the soul went on claiming the capability.
+    line: '- You can execute shell commands.\n',
+    holds: (agentId) => getAgentPermissions(agentId).exec_allow.length > 0,
+  },
+];
+
+/** Strip every `## Capabilities` claim this agent cannot make. */
+export function applySoulCapabilityTruth(soul: string, agentId: string): string {
+  let out = soul;
+  for (const claim of SOUL_CAPABILITY_CLAIMS) {
+    if (!out.includes(claim.line)) continue;
+    let held: boolean;
+    try {
+      held = claim.holds(agentId);
+    } catch {
+      // A manifest that cannot be read is not evidence of absence (#15): leave
+      // the soul exactly as authored rather than editing on a guess.
+      continue;
+    }
+    if (!held) out = out.split(claim.line).join('');
   }
-  return soul.split(SOUL_SPAWN_CAPABILITY_LINE).join('');
+  return out;
+}
+
+/** The T3 name, kept because four test files and `templates.ts`'s own note point
+ *  at it. It is the register applied to one agent — there is no second rule. */
+export function applySpawnCapabilityTruth(soul: string, agentId: string): string {
+  return applySoulCapabilityTruth(soul, agentId);
 }
 
 // ── Check if agent should receive USER.md ──
@@ -1574,6 +1631,14 @@ export function renderEquippedTechniques(agentId: string): string | null {
       if (techniqueIds.length > 0) {
         const equippedParts: string[] = ['## Equipped Techniques\nYou have equipped techniques (specialized procedures). When a task matches one, follow its steps in order rather than improvising. The user\'s live message outranks a technique: if they conflict, follow the user.\n'];
         for (const techId of techniqueIds) {
+          // UX-ACCESS A4 — the fourth seam. Equipping is a PRE-LOAD, not a
+          // grant: `equipped_techniques` is written by the dashboard, by
+          // `POST /api/agents`, by the spawner and by `spawn_agent(techniques:)`
+          // and none of those four validated an id against anything. So an
+          // equipped-but-ungranted technique must load nothing here, or every
+          // rule the other three seams added would be one `update_agent` call
+          // away from being bypassed.
+          if (!mayUseTechnique(agentId, techId)) continue;
           const technique = db.prepare('SELECT id, name, directory_path FROM techniques WHERE id = ? AND state = \'published\' AND enabled = 1').get(techId) as { id: string; name: string; directory_path: string } | undefined;
           if (technique) {
             try {

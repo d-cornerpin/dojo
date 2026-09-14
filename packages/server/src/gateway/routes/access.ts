@@ -18,10 +18,12 @@
 import { Hono } from 'hono';
 import { TOOL_CATEGORIES } from '../../tools/categories.js';
 import { ACCESS_PRESETS, channelToolGroupMap } from '../../agent/access/presets.js';
+import { listTechniques } from '../../techniques/store.js';
 
 export const accessRouter = new Hono();
 
-// GET /catalog — the tool groups, the presets, and the channel⇄group coupling.
+// GET /catalog — the tool groups, the presets, the channel⇄group coupling, and
+// (A4) the published techniques the grant section draws checkboxes from.
 accessRouter.get('/catalog', (c) => {
   return c.json({
     ok: true,
@@ -34,6 +36,14 @@ accessRouter.get('/catalog', (c) => {
         id: p.id, label: p.label, description: p.description, grants: p.grants,
       })),
       channelGroups: channelToolGroupMap(),
+      // UX-ACCESS A4. The panel's Techniques section needs two things the
+      // dashboard cannot derive: which techniques EXIST to be granted, and
+      // their names. It rides this route rather than `GET /api/techniques`
+      // because the panel already fetches this one and the grant control and
+      // the equip control must be drawn from the SAME list — offering an agent
+      // a technique to equip that the grant section does not list is how the
+      // two halves of one section start disagreeing.
+      techniques: listTechniques({ state: 'published' }).map((t) => ({ id: t.id, name: t.name })),
     },
   });
 });

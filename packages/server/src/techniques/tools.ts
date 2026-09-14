@@ -30,6 +30,7 @@ import {
   emptyDependencyManifest,
 } from './dependencies.js';
 import { getTrainerAgentId, getTrainerAgentName, isTrainerAgent, isTrainerEnabled } from '../config/platform.js';
+import { mayUseTechnique } from '../agent/access/read.js';
 // (getDb is already imported above)
 
 const logger = createLogger('technique-tools');
@@ -200,14 +201,13 @@ export function executeUseTechnique(agentId: string, agentName: string, agentGro
   const technique = getTechniqueDetail(resolved.id);
   if (!technique) return `Error: Technique "${name}" not found.`;
 
-  // Check access
-  if (technique.state === 'published' && technique.enabled) {
-    // Everyone can use published techniques
-  } else if ((technique.state === 'draft' || technique.state === 'review') && technique.buildSquadId === agentGroupId) {
-    // Squad members can access draft/review techniques
-  } else {
-    return `Error: Technique "${name}" is not available (state: ${technique.state}). Only published techniques can be used.`;
-  }
+  // UX-ACCESS A4: this was a HAND-INLINED COPY of `checkTechniqueAccess` — the
+  // same three branches, one sentence apart ("can be used" vs "can be read by
+  // agents outside the build squad"). A4 adds a grant to the door, and a second
+  // copy of a door is a second place for the grant to be missing, so the copy
+  // folds onto the function. The wording the agent reads is the door's.
+  const accessErr = checkTechniqueAccess(technique, agentGroupId, agentId);
+  if (accessErr) return accessErr;
 
   // Log usage
   recordTechniqueUsage(technique.id, agentId, agentName);
@@ -243,11 +243,14 @@ export function executeListTechniques(agentId: string, classification: string, a
   const includeDrafts = (args.include_drafts as boolean) && classification === 'sensei';
   const verbose = args.verbose as boolean | undefined;
 
+  // UX-ACCESS A4: the browse verb answers with what this agent may RUN. The
+  // same predicate the door asks — a list that offers what `use_technique` then
+  // refuses is the advertised-vs-permitted drift in miniature.
   const techniques = listTechniques({
     tag,
     includeDrafts,
     state: includeDrafts ? undefined : 'published',
-  });
+  }).filter((t) => mayUseTechnique(agentId, t.id));
 
   if (techniques.length === 0) {
     return 'No techniques available.' + (includeDrafts ? '' : ' Try include_drafts=true to see drafts (Sensei only).');
@@ -540,10 +543,29 @@ function parseSections(content: string): SectionEntry[] {
   return sections;
 }
 
+/**
+ * THE TECHNIQUE DOOR.
+ *
+ * UX-ACCESS A4 gave it an agent id. Until now it took only the squad: the rule
+ * was `published ⇒ everybody`, written in the file as *"// Everyone can use
+ * published techniques"*, so nothing anywhere asked WHICH agent was reading.
+ * `agents.equipped_techniques` existed and was a pre-load list, never an
+ * allow-list.
+ *
+ * The GRANT is asked FIRST, and the order is the message the agent reads: a
+ * technique it may not run is refused for that reason whatever its state, and
+ * only then does the state/squad rule (unchanged, byte for byte) answer. Every
+ * agent alive before A4 holds `'*'` — the measured pre-A4 fact — so this refuses
+ * nobody until an owner narrows it.
+ */
 function checkTechniqueAccess(
-  technique: { state: string; enabled: boolean; buildSquadId: string | null; name: string },
+  technique: { id: string; state: string; enabled: boolean; buildSquadId: string | null; name: string },
   agentGroupId: string | null,
+  agentId: string,
 ): string | null {
+  if (!mayUseTechnique(agentId, technique.id)) {
+    return `Error: Technique "${technique.name}" is not in this agent's technique grants. The request was not performed. Ask the primary agent to grant it if this needs to happen.`;
+  }
   if (technique.state === 'published' && technique.enabled) return null;
   if ((technique.state === 'draft' || technique.state === 'review') && technique.buildSquadId === agentGroupId) return null;
   return `Error: Technique "${technique.name}" is not available (state: ${technique.state}). Only published techniques can be read by agents outside the build squad.`;
@@ -788,7 +810,7 @@ export function executeTechniqueRead(
   const technique = getTechniqueDetail(resolved.id);
   if (!technique) return `Error: Technique "${name}" not found.`;
 
-  const accessErr = checkTechniqueAccess(technique, agentGroupId);
+  const accessErr = checkTechniqueAccess(technique, agentGroupId, agentId);
   if (accessErr) return accessErr;
 
   // Outline doesn't count as "usage" — it's introspection. Section/search/read_file
