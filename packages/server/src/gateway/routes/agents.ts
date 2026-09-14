@@ -20,6 +20,12 @@ import { noteRouteFailure } from './route-failure.js';
 import { resolveChildScope } from '../../agent/scope.js';
 import { getAgentPermissions } from '../../agent/permissions.js';
 import { renameAgent } from '../../prompt/agent-rename.js';
+// UX-ACCESS A2: the owner-side half of the grant door — same resolver, same
+// schema, same merge as `spawn_agent` / `update_agent` use.
+import { resolveSpawnGrants, resolveUpdateGrants, grantsDelta } from '../../agent/access/authorize.js';
+import { getAccessGrants } from '../../agent/access/read.js';
+import { writeGrants } from '../../agent/access/materialize.js';
+import { auditLog } from '../../agent/tools/util.js';
 
 const logger = createLogger('agents-routes');
 const agentsRouter = new Hono();
@@ -53,7 +59,17 @@ agentsRouter.get('/:id', (c) => {
   // present — so nobody has to reconstruct it from three files to answer the
   // question. Additive: `permissions` still carries the stored blob byte for
   // byte, because a reader that wants to know what was WRITTEN still can.
-  return c.json({ ok: true, data: { ...agent, effectiveScope: getAgentPermissions(id) } });
+  // ── UX-ACCESS A2: the ACCESS half of the same question ──
+  // `effectiveScope` answers "what may this agent do to the box". `effectiveGrants`
+  // answers "what may it REACH" — categories, integrations, credentials, channels
+  // — and it is the object A3's Access panel binds to. It comes from
+  // `getAccessGrants`, so an agent whose row predates the A1 materializer answers
+  // with its measured access rather than with a hole, and the panel never has to
+  // know which of the two it is looking at.
+  return c.json({
+    ok: true,
+    data: { ...agent, effectiveScope: getAgentPermissions(id), effectiveGrants: getAccessGrants(id) },
+  });
 });
 
 // PATCH /:id/model - set agent's model
@@ -147,6 +163,26 @@ agentsRouter.post('/', async (c) => {
       return c.json({ ok: false, error: `Agent not created — ${scope.reason}` }, 400);
     }
 
+    // ── THE ACCESS GRANTS, BY THE SAME RULE THE TOOL USES (UX-ACCESS A2) ──
+    // Owner ruling 2 says ALL new agents, and this route creates one, so it gets
+    // the same most-restrictive default a spawn does — through the same resolver,
+    // so there is one answer to "what does a new agent start with" rather than
+    // two that drift. The ceiling is the primary's own grants for the same reason
+    // the manifest's is: the route is the owner acting, and the owner's agent is
+    // the ceiling. That also makes `granterIsPrimary` true here, which is what
+    // lets an owner switch a new agent's human-channel master on from the
+    // dashboard — the one thing a non-primary AGENT may never do.
+    const grantScope = resolveSpawnGrants(
+      body.grants,
+      getAccessGrants(getPrimaryAgentId()),
+      true,
+      body.toolsPolicy,
+    );
+    if (!grantScope.ok) {
+      logger.warn('Dashboard agent creation refused invalid grants', { reason: grantScope.reason });
+      return c.json({ ok: false, error: `Agent not created — ${grantScope.reason}` }, 400);
+    }
+
     const resolvedModelId = body.modelId || null;
     const config = JSON.stringify({
       shareUserProfile: body.shareUserProfile || undefined,
@@ -181,7 +217,7 @@ agentsRouter.post('/', async (c) => {
       groupId,
       timeoutSeconds,
       timeoutAt,
-      JSON.stringify(scope.manifest),
+      JSON.stringify({ ...scope.manifest, grants: grantScope.grants }),
       JSON.stringify(body.toolsPolicy ?? {}),
       JSON.stringify(body.equippedTechniques ?? []),
       body.taskId ?? null,
@@ -341,6 +377,35 @@ agentsRouter.put('/:id', async (c) => {
     }
     updates.push('permissions = ?');
     params.push(JSON.stringify(incoming));
+  }
+
+  // ── UX-ACCESS A2: OWNER-SIDE PARITY WITH THE TOOL DOOR ──
+  // Whatever `update_agent({grants})` can set, this can set — same schema, same
+  // merge-over-current semantics, same audit row. Two differences, both
+  // deliberate: the refusal is a 400 rather than a tool result, and there is no
+  // no-escalation check to fail, because the ceiling passed in IS the primary's
+  // grants and this route is the owner acting through it. A3's panel is the
+  // caller; nothing in the UI changes this phase.
+  //
+  // Top-level `grants` wins over `permissions.grants` (which A1's carry-forward
+  // above still honours for the old permissions editor), because this is the
+  // validated door and that one is a passthrough.
+  if (body.grants !== undefined) {
+    const current = getAccessGrants(id);
+    const resolution = resolveUpdateGrants(body.grants, current, getAccessGrants(getPrimaryAgentId()), true);
+    if (!resolution.ok) {
+      logger.warn('Agent grant update refused', { agentId: id, reason: resolution.reason });
+      return c.json({ ok: false, error: resolution.reason }, 400);
+    }
+    const delta = grantsDelta(current, resolution.grants);
+    if (delta) {
+      writeGrants(id, resolution.grants);
+      // Ruling 4's audit row, owner-side. `audit_log.agent_id` has a foreign key
+      // to `agents`, and the owner has no agent row — so the row is filed on the
+      // agent whose access moved, which is also where anybody asking "why can
+      // this agent do that" would look, and the ACTOR is named in the detail.
+      auditLog(id, 'update_agent', id, 'success', `grants set by owner (dashboard): ${delta}`);
+    }
   }
 
   if (body.classification !== undefined && ['ronin', 'apprentice'].includes(body.classification)) {

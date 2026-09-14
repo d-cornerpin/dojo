@@ -161,15 +161,39 @@ export function categoryGranted(grants: AccessGrants, label: string): boolean {
  * MOST RESTRICTIVE (owner ruling 2): files + scratchpad only, no channels, no
  * integrations, no credentials.
  *
- * NOT the default for agents created today — applying it in A1 would narrow
- * every sub-agent the platform spawns, and A1's bar is byte-equivalence. It is
- * the shape A2's `spawn_agent`/`update_agent` grant arguments start FROM, and
- * it is exported here so the two phases cannot write two versions of "most
- * restrictive".
+ * UX-ACCESS A2 wires this as THE default for a newly spawned agent, which is
+ * what A1 declared it was for ("the shape A2's `spawn_agent`/`update_agent`
+ * grant arguments start FROM") and deliberately did not do, because narrowing
+ * before the grant door existed would have been a platform that cannot delegate.
+ *
+ * ── WHY THE THIRD LABEL, AND WHY IT IS A MEASUREMENT ──
+ * A1 wrote `['Meta', 'File & System']`. Driven at `53955b0b` against the real
+ * category index, that pair STRIPS `complete_task` and `send_to_agent` from the
+ * advertised surface — both live in `Managing Other Agents` — and those two are
+ * the sub-agent's own lifecycle, not a reach outside the dojo:
+ *   · `tools/tool-docs.ts` declares `complete_task` on EVERY agent's
+ *     always-loaded list with the reason "complete_task is how sub-agents signal
+ *     they are done", and the spawn contract's initial message instructs the new
+ *     agent to call it;
+ *   · `send_to_agent` is how a sub-agent answers the creator that spawned it.
+ * A default that makes both unreachable is not a restriction, it is a broken
+ * spawn: the agent would be handed an always-loaded list of tools it does not
+ * hold, and could neither report nor end.
+ *
+ * The rest of that label is walled elsewhere and independently, so granting it
+ * widens nothing that was closed: `spawn_agent` / `kill_agent` /
+ * `spawn_timeout_decision` by the manifest's `can_spawn_agents` (surface strip +
+ * ladder row 4), `update_agent` / `get_agent_profile` / the four group verbs by
+ * `PRIMARY_ONLY_TOOLS` (surface strip + ladder row 9), `reset_session` by row 10,
+ * and `complete_task` itself by `agentCanSelfComplete` (FN-8). What a
+ * default-spawned agent actually gains is `list_agents`, `list_models`,
+ * `send_to_agent`, `broadcast_to_group` and `complete_task` — intra-dojo
+ * coordination and its own lifecycle. Nothing here reaches a human, an
+ * integration, a credential or the network.
  */
 export const MOST_RESTRICTIVE_GRANTS: AccessGrants = {
   v: 1,
-  tools: { categories: ['Meta', 'File & System'], allow: [], deny: [] },
+  tools: { categories: ['Meta', 'File & System', 'Managing Other Agents'], allow: [], deny: [] },
   integrations: {
     plaud: false,
     credentials: [],

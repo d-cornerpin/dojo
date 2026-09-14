@@ -22,17 +22,30 @@
 // reverting the owner. A second run of this function writes zero rows.
 // ════════════════════════════════════════════════════════════════════════════
 
+import type { AccessGrants } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { deriveLegacyGrants } from './derive.js';
-import { forgetAccessGrants } from './read.js';
+import { forgetAccessGrants, readStoredGrants } from './read.js';
 
 const logger = createLogger('access/materialize');
 
-/** Merge `grants` into one agent's `permissions` document, preserving every
- *  manifest field already there. Returns the text written, or null if the row
- *  already declares grants (never overwritten — see the header). */
-export function writeGrantsIfAbsent(agentId: string): string | null {
+/**
+ * THE ONE WRITE DOOR for an agent's grants (UX-ACCESS A2 promoted this out of
+ * `writeGrantsIfAbsent`, which is now its only other caller).
+ *
+ * It MERGES into the `permissions` document rather than replacing it, because
+ * that column carries the `PermissionManifest` too and a grants save that
+ * dropped the manifest would re-scope the agent as a side effect — the exact
+ * defect A1 found on the owner-side route and closed from the other direction.
+ * Every writer goes through here, so there is one place that knows the column is
+ * a document and not a field.
+ *
+ * Returns the text written, or null if the row is gone or its blob does not
+ * parse — see `writeGrantsIfAbsent`'s note on why an unparseable blob is left
+ * exactly as it is.
+ */
+export function writeGrants(agentId: string, grants: AccessGrants): string | null {
   const db = getDb();
   const row = db.prepare('SELECT permissions FROM agents WHERE id = ?').get(agentId) as
     { permissions: string | null } | undefined;
@@ -52,14 +65,21 @@ export function writeGrantsIfAbsent(agentId: string): string | null {
       return null;
     }
   }
-  if (doc.grants) return null;
-
-  doc.grants = deriveLegacyGrants(agentId);
+  doc.grants = grants;
   const text = JSON.stringify(doc);
   db.prepare("UPDATE agents SET permissions = ?, updated_at = datetime('now') WHERE id = ?")
     .run(text, agentId);
   forgetAccessGrants(agentId);
   return text;
+}
+
+/** The migration's write: the DERIVED snapshot, and only where none is declared.
+ *  Returns the text written, or null if the row already declares grants (never
+ *  overwritten — see the header). */
+export function writeGrantsIfAbsent(agentId: string): string | null {
+  const declared = readStoredGrants(agentId);
+  if (declared) return null;
+  return writeGrants(agentId, deriveLegacyGrants(agentId));
 }
 
 /**

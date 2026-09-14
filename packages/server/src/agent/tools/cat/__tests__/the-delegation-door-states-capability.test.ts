@@ -57,6 +57,7 @@ vi.mock('../../../../logger.js', () => ({
 
 import { agentsHandlers } from '../agents.js';
 import { TOOL_CATEGORIES } from '../../../../tools/categories.js';
+import { forgetAccessGrants } from '../../../access/read.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const AGENTS_SRC = fs.readFileSync(path.resolve(HERE, '../agents.ts'), 'utf8');
@@ -84,7 +85,8 @@ beforeEach(() => {
   db.exec(`
     CREATE TABLE agents (
       id TEXT PRIMARY KEY, name TEXT, status TEXT, classification TEXT,
-      group_id TEXT, last_error TEXT, last_error_at TEXT, created_at TEXT
+      group_id TEXT, last_error TEXT, last_error_at TEXT, created_at TEXT,
+      permissions TEXT DEFAULT '{}', tools_policy TEXT DEFAULT '{}'
     );
     CREATE TABLE agent_groups (id TEXT PRIMARY KEY, name TEXT);
     CREATE TABLE messages (id TEXT PRIMARY KEY, agent_id TEXT, created_at INTEGER);
@@ -98,7 +100,33 @@ beforeEach(() => {
     'send_to_agent', 'work_open', 'web_search', 'web_fetch', 'gmail_send',
     'calendar_create', 'drive_list', 'imessage_send',
   ]);
+  // UX-ACCESS A2. The `messaging people` row is the one capability whose wall is
+  // a CHANNEL GRANT rather than the advertised surface, so the fixture has to
+  // state it — which is the point, not an inconvenience: before A2 this file
+  // could say Kevin "can: messaging people" using nothing but a tool name, and
+  // the door that actually runs `imessage_send` would have refused him.
+  forgetAccessGrants();
+  setChannels(WORKER, true);
 });
+
+/** Write (or clear) the human-channel grant for one agent, through the stored
+ *  object every door reads. */
+function setChannels(agentId: string, on: boolean): void {
+  mockDb.current!.prepare('UPDATE agents SET permissions = ? WHERE id = ?').run(
+    JSON.stringify({
+      grants: {
+        v: 1,
+        tools: { categories: '*', allow: [], deny: [] },
+        integrations: { plaud: true, credentials: '*', google: { agent: 'full', user: 'full' }, microsoft: { agent: 'full', user: 'full' } },
+        channels: on
+          ? { master: true, imessage: 'all', sms: 'all', voice: 'all', email: 'all', teams: 'all' }
+          : { master: false, imessage: 'none', sms: 'none', voice: 'none', email: 'none', teams: 'none' },
+      },
+    }),
+    agentId,
+  );
+  forgetAccessGrants();
+}
 
 // ════════════════════════════════════════════════════════════════════════
 // 1 — THE DOOR SAYS WHAT THE ASSIGNEE CAN DO. BOTH MODES.
@@ -158,6 +186,37 @@ describe('the line is derived from the real grant source', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════
+// 2b — UX-ACCESS A2: THE LINE MATCHES THE WALL, NOT JUST THE SURFACE.
+// ════════════════════════════════════════════════════════════════════════
+//
+// A1 left the channel walls reading grants while the ADVERTISED surface still
+// offers `imessage_send` to every agent (its §6.5: stripping it by grant would
+// have moved ~110 tool indexes, a prompt change A1 would not make). So a clause
+// derived from the surface alone told a delegator "can: messaging people" about
+// an agent the door refuses — the T43a incident with the sign flipped, and the
+// reason A2 owns "capability lines derive from GRANTS".
+
+describe('a capability the door gates on a CHANNEL needs the channel grant', () => {
+  it('⚠ ADVERTISED `imessage_send` + NO CHANNEL GRANT READS AS CANNOT', async () => {
+    setChannels(WORKER, false);
+    const kevin = lineFor(await listAgents(false), 'Kevin');
+    expect(kevin, 'the surface still advertises it').toContain('Kevin');
+    expect(kevin).toMatch(/no:[^\n]*messaging people/);
+    expect(kevin, 'and the surface-derived capabilities are unaffected').toMatch(/can:[^\n]*web research/);
+  });
+
+  it('the grant flips it back, with no change to the advertised list', async () => {
+    setChannels(WORKER, true);
+    expect(lineFor(await listAgents(false), 'Kevin')).toMatch(/can:[^\n]*messaging people/);
+  });
+
+  it('THE CONTROL: the grant alone is not enough — the tool must be advertised too', async () => {
+    setChannels(PM, true);
+    expect(lineFor(await listAgents(false), 'Kelly')).toMatch(/no:[^\n]*messaging people/);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
 // 3 — CONFORMANCE: the table points at REAL declared categories.
 // ════════════════════════════════════════════════════════════════════════
 //
@@ -196,6 +255,8 @@ describe('every category the capability table points at still exists', () => {
         files: 'onedrive_list', 'messaging people': 'sms_send',
       };
       grants.set(PM, [rep[capLabel]]);
+      // A2: `messaging people` also needs the channel grant its wall reads.
+      if (capLabel === 'messaging people') setChannels(PM, true);
       const kelly = lineFor(await listAgents(false), 'Kelly');
       expect(kelly, `${capLabel} via ${rep[capLabel]}`).toMatch(
         new RegExp(`can: ${capLabel.replace(/ /g, ' ')}(;|$)`),

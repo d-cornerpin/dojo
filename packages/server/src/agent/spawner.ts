@@ -5,6 +5,8 @@ import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
 import { getAgentPermissions, checkPermission } from './permissions.js';
 import { resolveChildScope } from './scope.js';
+import { resolveSpawnGrants, GrantRefusedError } from './access/authorize.js';
+import { getAccessGrants } from './access/read.js';
 import { inheritedCreatorKind } from './created-by-kind.js';
 import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
 import { sendAgentMessage } from './agent-bus.js';
@@ -87,6 +89,14 @@ export interface SpawnParams {
   modelId?: string;
   permissions?: PermissionManifest;
   toolsPolicy?: { allow: string[]; deny: string[] };
+  /**
+   * UX-ACCESS A2 (owner ruling 4): the ACCESS grants this spawn asks for —
+   * categories, integrations, credentials, channels. Unvalidated on purpose:
+   * `resolveSpawnGrants` is the one place it is judged, exactly as `permissions`
+   * is judged by `resolveChildScope`, so every caller of this function gets the
+   * same schema check and the same no-escalation rule.
+   */
+  grants?: unknown;
   timeout?: number;
   taskId?: string;
   contextHints?: string[];
@@ -121,6 +131,7 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     modelId,
     permissions,
     toolsPolicy,
+    grants,
     timeout,
     taskId,
     contextHints,
@@ -278,7 +289,35 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   if (!scope.ok) {
     throw new Error(`Spawn denied: ${scope.reason}`);
   }
-  const permissionsJson = JSON.stringify(scope.manifest);
+
+  // ── THE CHILD'S ACCESS (UX-ACCESS A2, owner rulings 2 + 4) ──
+  // The manifest above says what the child may do to the BOX. This says what it
+  // may REACH: categories, integrations, credentials, channels.
+  //
+  // Ruling 2 lands here and only here: a spawn that names no grants gets
+  // `MOST_RESTRICTIVE_GRANTS`, not the A1 snapshot. Until A2 there was no way to
+  // grant access back, so applying it would have been a narrowing with no door —
+  // which is exactly why A1 shipped the constant unused (§6.1).
+  //
+  // PROSPECTIVE, NEVER RETROSPECTIVE, the same way `defaultChildScope` is: this
+  // decides what a NEW child receives. No agent alive today is re-scoped, and
+  // the A1 materializer still answers for every row that predates this.
+  //
+  // Here rather than at the tool, for the structural reason the spawn gate is
+  // here: `spawnAgent` writes the row and has callers that never enter the
+  // executor (`vault/maintenance.ts`). A default that is not on every path is
+  // not a default.
+  const grantResolution = resolveSpawnGrants(
+    grants,
+    getAccessGrants(parentId),
+    isPrimaryAgent(parentId),
+    toolsPolicy,
+  );
+  if (!grantResolution.ok) {
+    throw new GrantRefusedError(grantResolution.reason);
+  }
+
+  const permissionsJson = JSON.stringify({ ...scope.manifest, grants: grantResolution.grants });
   const toolsPolicyJson = JSON.stringify(toolsPolicy ?? {});
 
   db.prepare(`

@@ -766,6 +766,15 @@ export const toolDefinitions: ToolDefinition[] = [
             },
           },
         },
+        grants: {
+          type: 'object',
+          description: 'What this sub-agent may REACH beyond its own files. Every new agent starts MOST RESTRICTIVE (files, its scratchpad, and the verbs it needs to report to you and finish), so name here only what the job actually needs. YOU CAN ONLY GRANT WHAT YOU HOLD: anything beyond your own access is refused, named, and written to the audit log. All three sections are optional; use update_agent to widen or narrow later.',
+          properties: {
+            tools: { type: 'object', description: 'Tool access by category: {"categories": ["Web", "Gmail", ...]} or {"categories": "*"}, using the labels from your tool index.' },
+            integrations: { type: 'object', description: 'Connected services: {"plaud": bool, "credentials": ["service_name", ...] or "*", "google": {"agent": "none"|"read"|"full", "user": same}, "microsoft": same as google}. agent and user are the two connected account slots (the work/personal split).' },
+            channels: { type: 'object', description: 'Reaching humans: {"master": bool, "imessage"/"sms"/"voice"/"email"/"teams": "none"|"owner" (the owner only)|"all" (any approved contact)}. master is "allowed to talk to humans at all" — every per-channel value is inert without it, and ONLY the primary agent may set it.' },
+          },
+        },
         timeout_minutes: {
           type: 'number',
           description: 'REQUIRED for non-ronin sub-agents: how many minutes this sub-agent may run before YOU (its creator) are asked to extend it or let it stop. There is no default. When it is reached the sub-agent is NOT killed, you are notified and must call spawn_timeout_decision. Size it to the task (a quick lookup ~5, a longer build ~30-60). Omit only for classification="ronin", which has no timeout and is dismissed only by the user.',
@@ -1480,6 +1489,15 @@ export const toolDefinitions: ToolDefinition[] = [
         model_id: { type: 'string', description: 'New model ID to assign, or "auto" for auto-routing. Call list_models for valid IDs. Omit to keep the current model.' },
         permissions: { type: 'object', description: 'Permission fields to MERGE (only include what changes): file_read/file_write ("*" or path array), file_delete, exec_allow/exec_deny (command arrays), network_domains ("*"|"none"|array), max_processes, can_spawn_agents, can_assign_permissions, system_control (array of "mouse"/"keyboard"/"screen"/"applescript"/"web_browse" or ["*"]). Requires can_assign_permissions.' },
         tools: { type: 'object', description: 'Tool-access policy to MERGE: { allow?: string[], deny?: string[] } of tool names. Requires can_assign_permissions.' },
+        grants: {
+          type: 'object',
+          description: 'Access to MERGE, same shape as spawn_agent\'s grants. Only the sections you name change; everything else the agent holds is left alone. Call get_agent_profile first to see what it has now. YOU CAN ONLY GRANT WHAT YOU HOLD — anything beyond your own access is refused, named, and audited.',
+          properties: {
+            tools: { type: 'object', description: 'Tool access by category: {"categories": ["Web", ...]} or {"categories": "*"}.' },
+            integrations: { type: 'object', description: 'Connected services: {"plaud": bool, "credentials": [...] or "*", "google"/"microsoft": {"agent": "none"|"read"|"full", "user": same}}.' },
+            channels: { type: 'object', description: 'Reaching humans: {"master": bool, "imessage"/"sms"/"voice"/"email"/"teams": "none"|"owner"|"all"}. Only the primary agent may set master.' },
+          },
+        },
       },
       required: ['agent_id'],
     },

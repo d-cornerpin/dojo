@@ -56,6 +56,21 @@ function storedGrants(raw: string | null): AccessGrants | null {
   }
 }
 
+/**
+ * The grants this agent DECLARES, or null if it declares none (UX-ACCESS A2).
+ *
+ * The other question, and the reason it is not `getAccessGrants`: that one never
+ * answers null, because a row with no stored object falls back to the measured A1
+ * snapshot so every DOOR has something to read. An EDIT needs to know whether
+ * there is a declaration here at all, and answering it with the derivation would
+ * quietly promote a snapshot to a declaration.
+ */
+export function readStoredGrants(agentId: string): AccessGrants | null {
+  const raw = (getDb().prepare('SELECT permissions FROM agents WHERE id = ?').get(agentId) as
+    { permissions: string | null } | undefined)?.permissions ?? null;
+  return storedGrants(raw);
+}
+
 /** THE grants for this agent: stored if declared, else today's measured access. */
 export function getAccessGrants(agentId: string): AccessGrants {
   let raw: string | null = null;

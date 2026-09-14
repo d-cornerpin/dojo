@@ -62,6 +62,14 @@ import { writeTaskLog } from '../../../tracker/task-log.js';
 // and the declared tool-name grouping that backs the prompt's tool index.
 import { getFilteredTools } from '../surface.js';
 import { TOOL_CATEGORIES } from '../../../tools/categories.js';
+// UX-ACCESS A2: the grant door. `authorize.ts` owns the schema, the
+// no-escalation rule and the one write; this module owns the wording a model
+// reads and the audit row ruling 4 requires.
+import { resolveUpdateGrants, grantsDelta, GrantRefusedError } from '../../access/authorize.js';
+import { getAccessGrants, readStoredGrants, mayUseChannel, channelTierFor } from '../../access/read.js';
+import { writeGrants } from '../../access/materialize.js';
+import { ACCESS_CHANNELS, MOST_RESTRICTIVE_GRANTS } from '@dojo/shared';
+import type { AccessChannel, AccessGrants } from '@dojo/shared';
 import type { ToolHandlerMap } from '../handler.js';
 
 // ── P4: mandatory squad resolution for agent spawns ──
@@ -168,12 +176,37 @@ async function resolveSpawnSquad(opts: {
 // tier. None of the three answers the delegation question, and none is displaced. The list is
 // bounded on purpose: the plan asks for ONE line per agent, and dumping all 38 categories
 // would bury the fact that made the incident.
-const DELEGABLE_CAPABILITIES: ReadonlyArray<{ label: string; categories: readonly string[] }> = [
+//
+// ── UX-ACCESS A2: `channels`, AND WHY ONLY ONE ROW CARRIES IT ──
+// The advertised surface `getFilteredTools` answers with is ALREADY grant-aware
+// after A1: the category grant, the Plaud grant, the credential grant and the
+// per-kind Workspace tier all filter it, so four of the five rows below read the
+// grants simply by reading that list. The fifth does not, and A1 says why in its
+// own words (§6.5): *"Every agent is still ADVERTISED `imessage_send` and refused
+// at the door, as at HEAD. Stripping it by grant would move ~110 agents' tool
+// indexes — a prompt change A1 is committed to not making."*
+//
+// So the surface still advertises `imessage_send` to an agent that holds no
+// channel, and a clause derived from the surface alone would tell a delegator
+// "can: messaging people" about an agent the door refuses. That is the T43a
+// incident with the sign flipped — a capability line that is confidently wrong
+// instead of silently absent — and it is what "the capability truth helpers see
+// must match the walls A1 enforces" means. `channels` names the grant the wall
+// actually reads, and the clause requires BOTH: an advertised tool AND the grant.
+const DELEGABLE_CAPABILITIES: ReadonlyArray<{
+  label: string;
+  categories: readonly string[];
+  channels?: readonly AccessChannel[];
+}> = [
   { label: 'web research', categories: ['Web'] },
   { label: 'email', categories: ['Gmail', 'Outlook'] },
   { label: 'calendar', categories: ['Google Calendar', 'Microsoft Calendar'] },
   { label: 'files', categories: ['Google Drive / Docs / Sheets', 'OneDrive', 'SharePoint', 'Office Documents'] },
-  { label: 'messaging people', categories: ['Communication', 'Twilio (SMS + Voice phone calls)', 'Microsoft Teams'] },
+  {
+    label: 'messaging people',
+    categories: ['Communication', 'Twilio (SMS + Voice phone calls)', 'Microsoft Teams'],
+    channels: ['imessage', 'sms', 'voice', 'teams'],
+  },
 ];
 
 /** capability label -> the tool names that provide it, resolved from the declared categories.
@@ -208,13 +241,54 @@ export function capabilityClause(agentId: string): string {
   const sets = capabilityToolSets();
   const can: string[] = [];
   const cannot: string[] = [];
-  for (const { label } of DELEGABLE_CAPABILITIES) {
+  for (const { label, channels } of DELEGABLE_CAPABILITIES) {
     const tools = sets.get(label);
-    ([...(tools ?? [])].some((t) => granted.has(t)) ? can : cannot).push(label);
+    const hasTool = [...(tools ?? [])].some((t) => granted.has(t));
+    // A2: a capability the door gates on a CHANNEL needs the grant as well as
+    // the tool. `mayUseChannel` is the same predicate `comms.ts` and gate row 7
+    // ask, so this line cannot drift from the wall it describes.
+    const hasChannel = !channels || channels.some((c) => mayUseChannel(agentId, c));
+    (hasTool && hasChannel ? can : cannot).push(label);
   }
   if (cannot.length === 0) return `can: ${can.join(', ')}`;
   if (can.length === 0) return `no: ${cannot.join(', ')}`;
   return `can: ${can.join(', ')}; no: ${cannot.join(', ')}`;
+}
+
+/**
+ * ONE LINE of ACCESS truth: what this agent may reach beyond its own files.
+ *
+ * Rendered from the grants object rather than from the surface, because that is
+ * the thing an owner and a granting agent now edit. `spawn_agent` appends it so
+ * a caller sees what the most-restrictive default actually produced — ruling 2's
+ * narrowing is only humane if the narrowing is visible at the moment it happens.
+ */
+export function accessLine(agentId: string): string {
+  let g: AccessGrants;
+  try {
+    g = getAccessGrants(agentId);
+  } catch (err) {
+    logger.warn('access line: grant read failed (non-fatal, line omitted)', {
+      agentId, error: err instanceof Error ? err.message : String(err),
+    });
+    return '';
+  }
+  const parts: string[] = [];
+  parts.push(`tools: ${g.tools.categories === '*' ? 'every category' : `${g.tools.categories.length} categor${g.tools.categories.length === 1 ? 'y' : 'ies'} (${g.tools.categories.join(', ')})`}`);
+  const channels = ACCESS_CHANNELS.filter((c) => mayUseChannel(agentId, c));
+  parts.push(`humans: ${g.channels.master === null
+    ? 'through the main agent'
+    : channels.length === 0 ? 'none' : channels.map((c) => `${c}:${channelTierFor(agentId, c)}`).join(', ')}`);
+  const integrations: string[] = [];
+  if (g.integrations.plaud) integrations.push('plaud');
+  for (const which of ['google', 'microsoft'] as const) {
+    const p = g.integrations[which];
+    if (p.agent !== 'none' || p.user !== 'none') integrations.push(`${which} ${p.agent}/${p.user}`);
+  }
+  parts.push(`integrations: ${integrations.length ? integrations.join(', ') : 'none'}`);
+  const creds = g.integrations.credentials;
+  parts.push(`credentials: ${creds === '*' ? 'all' : creds.length === 0 ? 'none' : creds.join(', ')}`);
+  return `\nAccess: ${parts.join(' | ')}`;
 }
 
 export const agentsHandlers: ToolHandlerMap = {
@@ -281,6 +355,11 @@ export const agentsHandlers: ToolHandlerMap = {
         persist: args.persist as boolean | undefined,
         classification: spawnClassification,
         shareUserProfile: args.share_user_profile as boolean | undefined,
+        // UX-ACCESS A2 (ruling 4): forwarded RAW. `resolveSpawnGrants` inside
+        // `spawnAgent` is the one place it is validated and bounded, so the
+        // dashboard's create route and the engine's own spawns get the same
+        // rule without this handler owning a copy of it.
+        grants: args.grants,
         groupId: squad.groupId,
         initialMessage: args.initial_message as string | undefined,
         equippedTechniques: args.techniques as string[] | undefined,
@@ -320,8 +399,30 @@ export const agentsHandlers: ToolHandlerMap = {
           }, agentId);
         }
       }
-      content = `Agent spawned successfully.\nAgent ID: ${result.agentId}\nName: ${result.name}\nStatus: ${result.status}\nPersistent: ${result.persist ? 'yes' : 'no'}\nSquad: ${squad.squadName}${squad.note}${reassignNote}`;
+      // ── UX-ACCESS A2 (ruling 4): every model-made grant change is AUDITED ──
+      // Actor, target, delta. The delta is measured against the most restrictive
+      // object every new agent now starts from, so the row says what this spawn
+      // ADDED rather than restating the whole grant; a spawn that named nothing
+      // extra produces an empty delta and no row, which is what makes "a grant
+      // change wrote a row" a fact rather than a habit.
+      const spawnedGrants = readStoredGrants(result.agentId);
+      if (spawnedGrants) {
+        const delta = grantsDelta(MOST_RESTRICTIVE_GRANTS, spawnedGrants);
+        if (delta) auditLog(agentId, 'spawn_agent', result.agentId, 'success', `grants: ${delta}`);
+      }
+      content = `Agent spawned successfully.\nAgent ID: ${result.agentId}\nName: ${result.name}\nStatus: ${result.status}\nPersistent: ${result.persist ? 'yes' : 'no'}\nSquad: ${squad.squadName}${squad.note}${reassignNote}${accessLine(result.agentId)}`;
     } catch (err) {
+      // A refused GRANT is not a database error and must not be translated as
+      // one: the reason names the field the caller has to fix, and ruling 4
+      // requires the attempt itself to land in the audit log.
+      if (err instanceof GrantRefusedError) {
+        auditLog(agentId, 'spawn_agent', args.name as string | null, 'denied', err.plainReason.slice(0, 400));
+        // PERMISSION_DENIED, not a bare error: `classifyToolResult` reads the
+        // CODE, never the prose, and an access refusal that arrives as `failed`
+        // tells the engine the tool CRASHED — so the loop treats a settled "no"
+        // as worth retrying. Measured on the dev box before this line existed.
+        return { content: err.plainReason, isError: true, errorCode: 'PERMISSION_DENIED' as const };
+      }
       const msg = err instanceof Error ? err.message : String(err);
       // FK constraint failure usually means a bad model_id, group_id,
       // or task_id reference. Make that explicit instead of leaking
@@ -826,8 +927,9 @@ export const agentsHandlers: ToolHandlerMap = {
       const newModelId = args.model_id as string | undefined;
       const newPerms = args.permissions as Record<string, unknown> | undefined;
       const newTools = args.tools as Record<string, unknown> | undefined;
-      if (newName === undefined && newPrompt === undefined && newModelId === undefined && newPerms === undefined && newTools === undefined) {
-        content = 'Error: provide at least one of name, system_prompt, model_id, permissions, or tools to update.';
+      const newGrants = args.grants;
+      if (newName === undefined && newPrompt === undefined && newModelId === undefined && newPerms === undefined && newTools === undefined && newGrants === undefined) {
+        content = 'Error: provide at least one of name, system_prompt, model_id, permissions, tools, or grants to update.';
         isError = true;
         return { content, isError };
       }
@@ -888,6 +990,30 @@ export const agentsHandlers: ToolHandlerMap = {
           db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?").run(model.id, target.id);
           const { collapsed } = sanitizeMessagesOnModelChange(target.id);
           changes.push(`model: ${target.model_id ?? 'auto'} → ${model.name}${collapsed > 0 ? ` (${collapsed} tool msg(s) sanitized)` : ''}`);
+        }
+      }
+
+      // ── UX-ACCESS A2 (ruling 4): THE EDIT DOOR FOR ACCESS ──
+      // Separate from the manifest block below on purpose. `can_assign_permissions`
+      // gates handing out MANIFEST scope; the no-escalation rule is what bounds a
+      // GRANT, and it bounds it against the caller's own holdings rather than
+      // against a boolean — which is the whole content of ruling 4. A caller
+      // holding `can_assign_permissions` still cannot grant a channel it does not
+      // hold, and a caller without it can still be refused for the same reason.
+      if (newGrants !== undefined) {
+        const targetGrants = getAccessGrants(target.id);
+        const resolution = resolveUpdateGrants(
+          newGrants, targetGrants, getAccessGrants(agentId), isPrimaryAgent(agentId),
+        );
+        if (!resolution.ok) {
+          auditLog(agentId, 'update_agent', target.id, 'denied', resolution.reason.slice(0, 400));
+          return { content: resolution.reason, isError: true, errorCode: 'PERMISSION_DENIED' as const };
+        }
+        const delta = grantsDelta(targetGrants, resolution.grants);
+        if (delta) {
+          writeGrants(target.id, resolution.grants);
+          auditLog(agentId, 'update_agent', target.id, 'success', `grants: ${delta}`);
+          changes.push(`access grants: ${delta}`);
         }
       }
 
@@ -1003,6 +1129,18 @@ export const agentsHandlers: ToolHandlerMap = {
         '',
         '── Permissions ──',
         permissionsText,
+        '',
+        // UX-ACCESS A2: the profile printed the stored `permissions` blob, which
+        // since A1 CONTAINS the grants — as raw JSON, and only for an agent whose
+        // row had already been materialized. Both halves were wrong for the one
+        // question this door is read for before `update_agent`: what does this
+        // agent actually hold. `getAccessGrants` answers for every agent
+        // (declared or derived), the capability clause is the same line
+        // `list_agents` prints, and the access line is the same one `spawn_agent`
+        // reports — one wording, three doors.
+        '── Access ──',
+        `Capability: ${capabilityClause(target.id) || '(unavailable)'}`,
+        accessLine(target.id).trim() || 'Access: (unavailable)',
       ].join('\n');
 
       logger.info('Agent profile read via tool', { callerAgentId: agentId, targetAgentId: target.id }, agentId);
