@@ -3763,9 +3763,50 @@
    hover — the owner's standing note. */
 .dojo3-stage .acx { max-width: 56rem; }
 .dojo3-stage .acx-presets { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
-.dojo3-stage .acx-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid rgba(152,126,92,.18); }
-.dojo3-stage .acx-section__title { font: 600 12.5px/1.2 var(--dojo3-font-ui); color: var(--dojo3-ink); letter-spacing: .01em; }
-.dojo3-stage .acx-section__desc { margin: 5px 0 12px; font: 400 11px/1.55 var(--dojo3-font-body); color: var(--dojo3-ink-3); }
+
+/* ⚰ .acx-section / __title / __desc DELETED (UX-ACCESS A6). The four titled
+   sections became five FOLDED QUESTION ROWS, so a heading that is always open
+   above a body that is always drawn no longer exists on this card. */
+
+/* ── A6: one row per question ──
+   The whole header is the click target (a real <button>, so it is keyboard- and
+   screen-reader-reachable), the question sits left, the row's own state sits
+   right beside the chevron, and every row is the same height whatever it holds.
+   A shut row still answers the question it asks, which is the point of drawing
+   the state on the header at all. */
+.dojo3-stage .acx-row { margin-top: 10px; border-radius: 14px; box-shadow: inset 0 0 0 1px rgba(152,126,92,.2); background: rgba(255,253,248,.44); overflow: hidden; }
+.dojo3-stage .acx-row__head { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 48px; padding: 0 14px; border: 0; background: transparent; cursor: pointer; text-align: left; transition: background .15s ease; }
+.dojo3-stage .acx-row__head:hover { background: rgba(250,233,202,.34); }
+.dojo3-stage .acx-row__head:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: -2px; }
+.dojo3-stage .acx-row__q { flex: 0 0 auto; font: 600 12.5px/1.2 var(--dojo3-font-ui); color: var(--dojo3-ink); letter-spacing: .01em; }
+.dojo3-stage .acx-row__state { flex: 1 1 auto; min-width: 0; text-align: right; font: 400 11px/1.4 var(--dojo3-font-body); color: var(--dojo3-ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dojo3-stage .acx-row__chev { flex: 0 0 auto; color: var(--dojo3-ink-4); }
+.dojo3-stage .acx-row__body { padding: 4px 14px 14px; border-top: 1px solid rgba(152,126,92,.16); }
+
+/* ── A6: one item, one height ──
+   Name and its single line of help on the left, the control on the right,
+   anything the control reveals beneath. `is-risk` is the ONE warning tint every
+   consequential grant wears, so "this one is serious" looks the same wherever
+   the owner meets it. */
+.dojo3-stage .acx-item { padding: 4px 0; border-bottom: 1px solid rgba(152,126,92,.1); }
+.dojo3-stage .acx-item:last-child { border-bottom: 0; }
+.dojo3-stage .acx-item__main { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 46px; padding: 0 9px; border-radius: 10px; }
+.dojo3-stage .acx-item__body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dojo3-stage .acx-item__name { font: 500 12px/1.35 var(--dojo3-font-ui); color: var(--dojo3-ink); }
+.dojo3-stage .acx-item__help { font: 400 10px/1.4 var(--dojo3-font-body); color: var(--dojo3-ink-4); }
+.dojo3-stage .acx-item__control { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.dojo3-stage .acx-item__more { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 2px 0 10px; padding-left: 21px; border-left: 2px solid rgba(217,165,92,.35); }
+.dojo3-stage .acx-item.is-risk .acx-item__main { background: rgba(224,138,86,.09); box-shadow: inset 0 0 0 1px rgba(200,110,60,.22); }
+.dojo3-stage .acx-item.is-risk .acx-item__name::after { content: " ⚠"; color: rgba(186,96,46,.85); font-size: 10px; }
+.dojo3-stage .acx-list { width: auto; flex: 1 1 240px; min-width: 180px; height: 30px; font-size: 11.5px; font-family: var(--dojo3-font-mono); }
+.dojo3-stage .acx-count { width: 74px; height: 30px; font-size: 11.5px; }
+
+/* The advanced disclosure at the foot of "What it may manage": the raw fields a
+   toggle cannot express, shut until asked for. */
+.dojo3-stage .acx-adv { margin-top: 12px; }
+.dojo3-stage .acx-adv__toggle { border: 0; background: transparent; cursor: pointer; padding: 4px 0; font: 500 10.5px/1 var(--dojo3-font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--dojo3-ink-4); }
+.dojo3-stage .acx-adv__toggle:hover { color: var(--dojo3-ink-3); }
+.dojo3-stage .acx-adv__body { margin-top: 6px; padding-left: 12px; border-left: 2px solid rgba(152,126,92,.22); }
 .dojo3-stage .acx-sub { margin: 14px 0 7px; font: 500 9.5px/1 var(--dojo3-font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--dojo3-ink-4); }
 .dojo3-stage .acx-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: 2px 14px; margin-top: 8px; }
 .dojo3-stage .acx-check { display: flex; align-items: flex-start; gap: 10px; padding: 7px 9px; border-radius: 10px; cursor: pointer; transition: background .15s ease; }

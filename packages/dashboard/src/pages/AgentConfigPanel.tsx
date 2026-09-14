@@ -1,9 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import type { AgentDetail as AgentDetailType, Model, PermissionManifest } from '@dojo/shared';
+import type { AgentDetail as AgentDetailType, Model } from '@dojo/shared';
 import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
-import { PermissionsEditor } from '../components/PermissionsEditor';
 import { AccessPanel } from '../components/AccessPanel';
 import { useActiveAgent } from '../components/ActiveAgentProvider';
 
@@ -36,14 +35,23 @@ const CLASSIFICATION_LABELS: Record<string, string> = {
   apprentice: 'Apprentice',
 };
 
-// ⚰ THE "EQUIPPED TECHNIQUES" CARD MOVED (UX-ACCESS A3). It is the fourth
-// section of the Access panel now — the plan's four sections are tools,
-// integrations, channels and TECHNIQUES, and two controls for one field is the
-// drift this overhaul exists to end. The behaviour is carried verbatim: the same
-// `TechniqueSelector`, the same `updateAgentConfig({equippedTechniques})`, the
-// same save-on-change (the panel's Save button governs the GRANTS; techniques
-// are a list on the agent row, not a grant, and A4 owns wiring them into the
-// object).
+// ⚰ THE "EQUIPPED TECHNIQUES" CARD MOVED (UX-ACCESS A3). It is inside the Access
+// panel now — two controls for one field is the drift this overhaul exists to
+// end. The behaviour is carried verbatim: the same `TechniqueSelector`, the same
+// `updateAgentConfig({equippedTechniques})`, the same save-on-change.
+//
+// ⚰ AND THE "PERMISSIONS" CARD IS GONE (UX-ACCESS A6). Its toggles are rows two
+// and five of the Access panel — "What it can reach" and "What it may manage" —
+// and its storage is untouched: the same `permissions` blob, the same
+// `tools_policy` column, the same `config.shareUserProfile`, written through the
+// same PUT. Two cards answering overlapping questions, neither of which
+// mentioned the other, is exactly the drift this overhaul exists to end; the
+// card that survives is the one the owner can read.
+//
+// What the card ALSO carried was the rule that a platform agent's manifest is
+// not editable here. That rule is unchanged and now rides one prop
+// (`manifestEditable`), decided HERE — the page knows which agent is the main
+// one — so the panel never has to learn a rank to draw itself.
 
 // ── Memory card ──
 //
@@ -119,16 +127,6 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
     agent.modelId === 'auto' ? 'auto' : (agent.modelId ?? ''),
   );
 
-  const [editedPerms, setEditedPerms] = useState<Partial<PermissionManifest>>(
-    agent.permissions as Partial<PermissionManifest>,
-  );
-  const [editedToolsPolicy, setEditedToolsPolicy] = useState<{ allow: string[]; deny: string[] }>(
-    (agent.toolsPolicy as { allow: string[]; deny: string[] }) ?? { allow: [], deny: [] },
-  );
-  const [editedShareProfile, setEditedShareProfile] = useState<boolean>(
-    (agent.config as Record<string, unknown>)?.shareUserProfile === true,
-  );
-
   useEffect(() => {
     const load = async () => {
       const [promptResult, modelsResult, providersResult] = await Promise.all([
@@ -194,28 +192,6 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
     else { toast.error(result.error || 'Could not save system prompt.'); }
   };
 
-  const handlePermsChange = (
-    perms: Partial<PermissionManifest>,
-    tools: { allow: string[]; deny: string[] },
-    shareProfile: boolean,
-  ) => {
-    setEditedPerms(perms);
-    setEditedToolsPolicy(tools);
-    setEditedShareProfile(shareProfile);
-  };
-
-  const savePermissions = async () => {
-    const existingConfig = (agent.config as Record<string, unknown>) ?? {};
-    const updatedConfig = { ...existingConfig, shareUserProfile: editedShareProfile };
-    const result = await api.updateAgentConfig(agent.id, {
-      permissions: editedPerms as Record<string, unknown>,
-      toolsPolicy: editedToolsPolicy,
-      config: updatedConfig,
-    } as Record<string, unknown>);
-    if (result.ok) { toast.success('Permissions saved'); onUpdated(); }
-    else { toast.error(result.error || 'Could not save permissions.'); }
-  };
-
   if (loading) {
     return <div className="stub"><p className="stub__line">Loading config...</p></div>;
   }
@@ -224,12 +200,19 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
 
   return (
     <>
-    {/* ── ACCESS (UX-ACCESS A3) ──
-        Full width rather than a masonry sibling: the tools section alone is 38
-        checkboxes, and a 310px column would make the owner's most consequential
-        card the hardest one to read. Everything else keeps its column. */}
+    {/* ── ACCESS (UX-ACCESS A3, one panel since A6) ──
+        Full width rather than a masonry sibling: one row alone is 38 checkboxes,
+        and a 310px column would make the owner's most consequential card the
+        hardest one to read. Everything else keeps its column. */}
     <div style={{ maxWidth: '56rem', marginBottom: 14 }}>
-      <AccessPanel agent={agent} onUpdated={onUpdated} />
+      <AccessPanel
+        agent={agent}
+        onUpdated={onUpdated}
+        manifestEditable={!isSensei}
+        manifestNote={isThisPrimary
+          ? 'This is your main agent. It already has full access to your files, commands and system controls, and that is not changed from here.'
+          : 'This is one of the dojo’s built-in agents. Its file, command and system-control settings are set by the dojo and are not changed from here.'}
+      />
     </div>
 
     <div className="scards">
@@ -355,49 +338,6 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
 
       {/* Memory */}
       <MemoryCard agent={agent} onUpdated={onUpdated} />
-
-      {/* Permissions */}
-      <div className="tile">
-        <div className="scard__title">Permissions</div>
-        {isSensei ? (
-          // ── THE NOTE WAS FALSE FOR MOST OF THE AGENTS IT WAS SHOWN TO ──
-          // It read "This Sensei agent has full access to all files, commands,
-          // tools, and system controls" for EVERY sensei. Measured on the owner's
-          // box: of the five senseis that are not the primary, three (the PM, the
-          // Imaginer and the Dreamer) carry `exec_allow: []` — no commands at all.
-          // And "tools" has not been the manifest's business since UX-ACCESS A1;
-          // the Access panel below is where that answer lives now. So the claim
-          // is made only where it is true, and the other senseis get a statement
-          // of fact instead of a promise the row contradicts.
-          isThisPrimary ? (
-            <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal', marginBottom: 0 }}>
-              This is the main agent. It has full access to all files, commands, and system controls.
-              What it may reach — tools, integrations, channels — is in the Access panel below.
-            </div>
-          ) : (
-            <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal', marginBottom: 0 }}>
-              This is a platform Sensei. Its file, command and system-control permissions are set by the
-              platform and are not editable here. What it may reach — tools, integrations, channels — is in
-              the Access panel below, and that IS editable.
-            </div>
-          )
-        ) : (
-          <>
-            <div className="scard__desc">What this agent is allowed to touch. Save to apply.</div>
-            <PermissionsEditor
-              permissions={agent.permissions as Partial<PermissionManifest>}
-              toolsPolicy={(agent.toolsPolicy as { allow: string[]; deny: string[] }) ?? undefined}
-              shareUserProfile={(agent.config as Record<string, unknown>)?.shareUserProfile === true}
-              onChange={handlePermsChange}
-            />
-            <div className="srow" style={{ justifyContent: 'flex-end', marginTop: 14 }}>
-              <button type="button" onClick={savePermissions} className="btn btn--primary btn--sm">
-                Save Permissions
-              </button>
-            </div>
-          </>
-        )}
-      </div>
     </div>
     </>
   );

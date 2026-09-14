@@ -290,7 +290,10 @@ describe('each section shows only what its switch governs', () => {
 
   it('⚠ CREDENTIALS: one control, with the owner\'s words', () => {
     const src = panel();
-    expect(src).toContain('Access to stored credentials');
+    // A5's label was "Access to stored credentials"; A6's language pass renames
+    // it to the words the owner used. ONE control over the whole field is the
+    // requirement, and it is unchanged — what moved is the sentence on it.
+    expect(src).toContain('Use stored keys & logins');
     // The per-credential rows are gone, and with them the reason the panel had to
     // fetch the vault's contents at all. (The tombstone comment naming the
     // deleted call stays — that is what a grep for the old behaviour should
@@ -301,7 +304,9 @@ describe('each section shows only what its switch governs', () => {
 
   it('⚠ TECHNIQUES: a switch, and the list beneath it', () => {
     const src = panel();
-    expect(src).toContain('Technique access');
+    // "Technique access" became "Can use techniques" in A6's language pass. The
+    // switch, the list it reveals and the predicate behind both are unchanged.
+    expect(src).toContain('Can use techniques');
     expect(src).toMatch(/techniqueAccessOn\(draft\)/);
   });
 

@@ -34,7 +34,15 @@ import { TOOL_CATEGORIES } from '../../tools/categories.js';
 export interface AccessPreset {
   readonly id: 'most_restrictive' | 'reader' | 'operator' | 'full_trust';
   readonly label: string;
-  /** One line, owner-facing: what this profile lets the agent do. */
+  /**
+   * One line, owner-facing, in plain words (UX-ACCESS A6's language pass).
+   *
+   * ONE OF THEM WAS FALSE AND IS FIXED HERE. "Operator" said *"Runs commands on
+   * this Mac and can iMessage you"*, and a preset is a GRANTS object: it cannot
+   * grant `exec_allow`, which lives in the permission manifest, so the first
+   * half of that sentence was never true of the profile the button applied. The
+   * grants did not move — only the sentence beside them.
+   */
   readonly description: string;
   readonly grants: AccessGrants;
 }
@@ -121,13 +129,13 @@ export const ACCESS_PRESETS: readonly AccessPreset[] = [
   preset(
     'most_restrictive',
     'Most restrictive',
-    'Files and scratchpad only. No channels, no integrations, no credentials. This is what every new agent starts as.',
+    'Its own files and nothing else. No people, no accounts, no keys. Every new agent starts here.',
     () => { /* the constant itself — ruling 2's default, unmodified */ },
   ),
   preset(
     'reader',
     'Reader',
-    'Reads Plaud recordings, mail and calendar. Cannot send anything and cannot reach a person.',
+    'Looks at things, touches nothing, stays quiet — your recordings, mail and calendar, read only.',
     (g) => {
       g.tools.categories = [...FLOOR, PLAUD, ...MAIL_AND_CALENDAR, 'Conversation Recall', 'Vault (Long-Term Memory)'];
       g.integrations.plaud = true;
@@ -138,7 +146,7 @@ export const ACCESS_PRESETS: readonly AccessPreset[] = [
   preset(
     'operator',
     'Operator',
-    'Runs commands on this Mac and can iMessage you — only you, nobody else on the contact list.',
+    'Can text you on iMessage — you and nobody else on the contact list.',
     (g) => {
       g.tools.categories = [...FLOOR, COMMUNICATION];
       g.channels.master = true;
@@ -147,8 +155,8 @@ export const ACCESS_PRESETS: readonly AccessPreset[] = [
   ),
   preset(
     'full_trust',
-    'Full trust (primary-like)',
-    'Everything the main agent holds: every tool group, every integration, every credential, every channel, everyone.',
+    'Full trust (like your main agent)',
+    'Everything your main agent holds: every tool, every account, your keys, every channel, everyone.',
     (g) => {
       g.tools.categories = '*';
       g.integrations.plaud = true;

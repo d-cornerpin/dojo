@@ -351,19 +351,36 @@ describe('the Access panel is bound to the real object, both directions', () => 
   it('⚠ IT READS `effectiveGrants` FROM A2\'S GET AND WRITES `grants` THROUGH A2\'S PUT', () => {
     const src = panel();
     expect(src, 'reads the effective object, never the raw permissions blob').toContain('effectiveGrants');
-    expect(src, 'writes through the validated grant door').toMatch(/grants:/);
+    // A6 sends one PUT carrying up to two halves, so the grant patch is a named
+    // field of a body rather than an inline literal. The requirement is the same
+    // one: the panel writes the grants THROUGH A2's validated door and nowhere
+    // else, and it sends only the patch `grantsPatch` computed.
+    expect(src, 'writes through the validated grant door').toMatch(/body\.grants = patch/);
+    expect(src, 'and the patch is the one the pure module computed').toMatch(/grantsPatch\(stored, draft\)/);
   });
 
-  it('the four sections the plan names are all present', () => {
+  it('the sections the plan names are all present — as the owner\'s five questions', () => {
+    // A3 drew four titled sections (Tools / Integrations / Channels /
+    // Techniques). A6 replaces the titles with the QUESTIONS a person asks, and
+    // adds the fifth the folded permission toggles answer. Every section the
+    // plan named still exists; each is now named by what it is for.
     const src = panel();
-    for (const section of ['Tools', 'Integrations', 'Channels', 'Techniques']) {
-      expect(src, `the ${section} section`).toContain(section);
+    for (const question of [
+      'What it can do',        // tools
+      'What it can reach',     // integrations
+      'Who it can talk to',    // channels
+      'What it knows',         // techniques
+      'What it may manage',    // the folded permission card
+    ]) {
+      expect(src, `the "${question}" row`).toContain(question);
     }
   });
 
   it('⚠ THE ÜBER-TOGGLE GATES ITS CHILDREN — they do not exist beneath a false master', () => {
     const src = panel();
-    expect(src).toContain('Allowed to talk to humans');
+    // "Allowed to talk to humans" in A5; "Can talk to people" after A6's
+    // language pass. Same switch, same children, same rule.
+    expect(src).toContain('Can talk to people');
     // A3 drew the children DISABLED and dimmed; the owner's A5 order hides them
     // instead, which is strictly stronger — there is no control to reach at all.
     // The requirement is unchanged and still lives in `channelTierOf`: owner
@@ -380,7 +397,11 @@ describe('the Access panel is bound to the real object, both directions', () => 
     // would otherwise lose its switch to a label.
     expect(src).toContain('hasMaster(');
     expect(src, 'the panel never decides access from the classification').not.toContain('classification');
-    expect(src).toMatch(/through the main agent/i);
+    // A6's language rule: the note says what the arrangement MEANS instead of
+    // naming the rank. The sentence is addressed to the owner now — "your main
+    // agent" — and the rank word is gone from it entirely.
+    expect(src).toMatch(/talks through your main agent/i);
+    expect(src.toLowerCase()).not.toContain('sensei agents');
   });
 
   it('the panel never sends a channel section for an agent that has no master', () => {
