@@ -342,6 +342,7 @@ route,DELETE /api/voice/custom-voices/:id,packages/server/src/voice/voice-routes
 route,DELETE /api/voice/hume/key,packages/server/src/voice/voice-routes.ts:305,built,
 route,DELETE /api/voice/models/:kind/:id,packages/server/src/voice/voice-routes.ts:195,built,
 route,GET *,packages/server/src/gateway/server.ts:307,built,
+route,GET /api/access/catalog,packages/server/src/gateway/routes/access.ts:25,built,
 route,GET /api/agents,packages/server/src/gateway/routes/agents.ts:28,built,
 route,GET /api/agents/:id,packages/server/src/gateway/routes/agents.ts:37,built,
 route,GET /api/agents/:id/agent-messages,packages/server/src/gateway/routes/agents.ts:698,built,

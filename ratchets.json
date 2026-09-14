@@ -4180,6 +4180,55 @@
       "to": 2839,
       "by": "T73b (W70) — the undici ceiling lift",
       "why": "+9, of which ONE is code: `clearClientCache(id)` in the response-patience door. The other eight say why the line did not exist before and must now — until T73b these two columns were read fresh on every call and no client was built from them, so the door correctly had nothing to invalidate; the HTTP client's clock is derived from them now, so without this line the owner raises the number on the Providers page and sees no change until a restart. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/agents.ts",
+      "from": 922,
+      "to": 962,
+      "by": "UX-ACCESS A3 — the Access panel's write door, and an ordering defect fixed",
+      "why": "+40 (21 code, 19 comment). Two changes, one of them a fix nobody asked for and everybody needed. (1) THE ORDERING: A2's grant write ran BEFORE the `UPDATE agents SET ...` batch at the foot of the handler, and that batch re-writes `permissions` from a value read before the grant resolution — so a PUT carrying both `permissions` and `grants` silently reverted the grant half. That is the live shape: the old permissions editor sends `permissions`+`toolsPolicy` in one body while the new panel sends `grants`. The resolution and its 400 stay where they were (a bad body still writes nothing); only the WRITE moved past the batch, which costs the `pendingGrants` variable and its guard. (2) THE FOLD: A1 moved the authority for the per-agent tool allow/deny out of the `tools_policy` COLUMN into the grants object, and `spawn_agent` was taught to carry its `tools` argument across (A2 §5) — this route was not, so the dashboard's Web Search / Web Browsing toggles have been writing to a field no door reads. Same fold, verbatim. REFUSED: putting the fold in `authorize.ts` — it is a route-body concern, and `resolveSpawnGrants` already carries the identical one for the tool door. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/gate-eval.ts",
+      "from": 344,
+      "to": 370,
+      "by": "UX-ACCESS A3 rider — row 17 is ANSWERED here (the executor's category gate)",
+      "why": "+26 (16 code, 10 comment). One `case 'category'` arm and its import. A2 §6.1 measured the hole it closes: `toolCategoryGranted` had exactly ONE caller, the surface strip, and per Architecture Rule 1 the strip is advice — the floor model parses tool calls out of free text, so an agent holding a CHANNEL but not the tool's GROUP reached the iMessage bridge while its own capability line read `no: … messaging people`. The arm asks the SAME predicate the strip asks, so `advertised` and `permitted` cannot drift apart again. REFUSED: inlining `toolCategoryLabels` into the message — the refusal has to name the group the owner would tick, and the index is the only honest source for that name. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/gates.ts",
+      "from": 280,
+      "to": 286,
+      "by": "UX-ACCESS A3 rider — row 17 is DECLARED here",
+      "why": "+6 (3 code, 3 comment), and SIX is not a style choice — it is the whole room the growth detector leaves. gates.ts stood at 280 against a baseline of 229 recorded 2026-08-10; the detector refuses above +25%, i.e. 286. So row 17's declaration is three lines and its argument lives where it can be checked rather than merely read: `access/__tests__/the-category-gate.test.ts` (why the row exists, that it is LAST, that an un-indexed tool mints nothing, and the measured proof that every agent alive holds `'*'`) and the `case 'category'` arm in gate-eval.ts. HAND-UP: this file is now AT its ceiling. The next task that adds a row must shrink it or re-record the baseline, and re-recording widens the tolerance for all 640 files at once — an owner-visible gate-side decision, not a worker's."
+    },
+    {
+      "path": "packages/dashboard/src/lib/api.ts",
+      "from": 2412,
+      "to": 2428,
+      "by": "UX-ACCESS A3 — the Access catalog call",
+      "why": "+16 (11 code, 5 comment). `AccessCatalog` + `getAccessCatalog`, plus `grants` on `updateAgentConfig`'s argument type. The comment says why the catalog is FETCHED rather than declared in the dashboard: the 38 tool groups, the four presets and the channel/group coupling are all derived from `TOOL_CATEGORIES`, a server module, and a copy here would be a second truth that drifts the first time a tool is re-filed. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/pages/AgentConfigPanel.tsx",
+      "from": 438,
+      "to": 452,
+      "by": "UX-ACCESS A3 — the Access panel is mounted, and three card claims stop lying",
+      "why": "+14 net, and it is +42/-28: the 28 are the Equipped Techniques CARD, DELETED (it is the Access panel's fourth section now — two controls for one field is the drift this overhaul exists to end). The additions are the panel mount and the honesty fixes the census forced: `isPrimary` was the CLASSIFICATION under a name that claimed otherwise, and two cards keyed claims about 'the primary agent' off it. Measured on the owner's box: of the five senseis that are NOT the primary, three (PM, Imaginer, Dreamer) carry `exec_allow: []`, so the card's 'full access to all files, commands, tools, and system controls' was false for most of the agents it was shown to; the System Prompt card told them their edits rewrite SOUL.md, which is the primary's file. The real primary now comes from `useActiveAgent().primaryId`, the same source the agent card uses. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/components/PermissionsEditor.tsx",
+      "from": 435,
+      "to": 448,
+      "by": "UX-ACCESS A3 — the 'Send iMessages' toggle is DELETED, with its tombstone",
+      "why": "+13 net, and it is -7 code / +20 comment: the toggle, its state, its deny-push and its seeded default are gone, and what replaced them is the account of why. Census §9.1 G1: it wrote `tools_policy.deny += imessage_send` when off and removed it when on, but turning it ON GRANTED NOTHING because the channel door refused every non-primary agent regardless — 'the current UI actively misrepresents it', shown on every agent's editor, a no-op on all of them. A deletion that cannot state its requirement does not merge (non-negotiable #9), and the requirement it encoded now lives in the Access panel's Channels section, which writes the grant the door actually reads. From here this file may only shrink."
+    },
+    {
+      "path": "packages/shared/src/types.ts",
+      "from": 590,
+      "to": 601,
+      "by": "UX-ACCESS A3 — `AgentDetail.effectiveGrants`, declared",
+      "why": "+11 (2 code, 9 comment). A2 put `effectiveGrants` on `GET /agents/:id` and nothing declared it, so the panel would have had to cast. The comment states the two facts a reader needs and cannot guess: it rides the DETAIL route only (the list route does not compute it), and it is the EFFECTIVE object — an agent whose row predates A1's materializer answers with its measured access rather than a hole, which is why the panel binds to it and never to `permissions` (`'{}'` for a third of the agents on a worn-in box). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -4190,16 +4239,16 @@
     "packages/dashboard/src/components/Dojo3Composer.tsx": 723,
     "packages/dashboard/src/components/Dojo3Stage.tsx": 450,
     "packages/dashboard/src/components/ImportWizard.tsx": 712,
-    "packages/dashboard/src/components/PermissionsEditor.tsx": 435,
+    "packages/dashboard/src/components/PermissionsEditor.tsx": 448,
     "packages/dashboard/src/components/PlaudSettings.tsx": 254,
     "packages/dashboard/src/components/RouterConfig.tsx": 545,
     "packages/dashboard/src/components/SetupDeps.tsx": 672,
     "packages/dashboard/src/components/TechniqueSessionProvider.tsx": 533,
     "packages/dashboard/src/components/TwilioSettings.tsx": 563,
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
-    "packages/dashboard/src/lib/api.ts": 2412,
+    "packages/dashboard/src/lib/api.ts": 2428,
     "packages/dashboard/src/lib/voice/voice-client.ts": 873,
-    "packages/dashboard/src/pages/AgentConfigPanel.tsx": 438,
+    "packages/dashboard/src/pages/AgentConfigPanel.tsx": 452,
     "packages/dashboard/src/pages/Agents.tsx": 678,
     "packages/dashboard/src/pages/Chat.tsx": 2037,
     "packages/dashboard/src/pages/Costs.tsx": 686,
@@ -4240,8 +4289,8 @@
     "packages/server/src/agent/tools/cat/tracker.ts": 996,
     "packages/server/src/agent/tools/definitions.ts": 2873,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
-    "packages/server/src/agent/tools/gate-eval.ts": 344,
-    "packages/server/src/agent/tools/gates.ts": 280,
+    "packages/server/src/agent/tools/gate-eval.ts": 370,
+    "packages/server/src/agent/tools/gates.ts": 286,
     "packages/server/src/agent/tools/index.ts": 680,
     "packages/server/src/agent/tools/surface.ts": 659,
     "packages/server/src/agent/tools/types.ts": 338,
@@ -4331,7 +4380,7 @@
     "packages/server/src/credentials/secret-fields.ts": 241,
     "packages/server/src/db/migration-backup.ts": 399,
     "packages/server/src/db/migration-checksums.ts": 277,
-    "packages/server/src/gateway/routes/agents.ts": 922,
+    "packages/server/src/gateway/routes/agents.ts": 962,
     "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2839,
     "packages/server/src/gateway/routes/memory.ts": 632,
@@ -4428,13 +4477,14 @@
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
-    "packages/shared/src/types.ts": 590,
+    "packages/shared/src/types.ts": 601,
     "packages/shared/src/visibility.ts": 977,
     "packages/shared/src/ws.ts": 1115,
     "watchdog/src/auto-rollback.ts": 333,
     "watchdog/src/index.ts": 1217,
     "packages/server/src/agent/v2/outbound-ledger.ts": 459,
     "packages/server/src/prompt/registry/types.ts": 414,
-    "packages/server/src/agent/access/authorize.ts": 423
+    "packages/server/src/agent/access/authorize.ts": 423,
+    "packages/dashboard/src/components/AccessPanel.tsx": 356
   }
 }
