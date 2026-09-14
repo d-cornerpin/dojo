@@ -73,7 +73,7 @@ import { runMigrations } from '../../../db/migrations.js';
 // `engineFileContaining` follows the site instead of going quiet when it moves.
 import { engineFileContaining, engineText } from '../../v2/__tests__/engine-sources.js';
 import { channelForDestination, engineMayRouteTo, engineRouteRefusalReason } from '../engine-route.js';
-import { forgetAccessGrants, mayUseChannel } from '../read.js';
+import { forgetAccessGrants, mayUseChannel, mayReachOthersOn } from '../read.js';
 import { deriveLegacyGrants } from '../derive.js';
 import { ACCESS_CHANNELS } from '@dojo/shared';
 import type { AccessGrants, Channel } from '@dojo/shared';
@@ -256,7 +256,53 @@ describe('the sites the census named', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
-// 4 · WHAT IT COSTS — stated as a test rather than only in a report
+// 4 · THE ME-VS-OTHERS TIER GETS ITS FIRST READER
+// ════════════════════════════════════════════════════════════════════════════════
+
+describe('the tier is enforced, not merely declared', () => {
+  it('⚠ `mayReachOthersOn` HAS A SERVER-SIDE CALLER NOW — it had none', () => {
+    // A1 declared the tier, A2 taught the no-escalation ladder to compare it, A3
+    // drew it in the panel, and the predicate had ZERO callers whole-tree: a
+    // declared field with no reader, which is the shape this overhaul exists to
+    // end. It was the owner's own "Operator: exec + iMessage-ME" exemplar that
+    // had no wall.
+    const src = read('agent/tools/cat/comms.ts');
+    expect(src).toContain("mayReachOthersOn(agentId, 'imessage')");
+  });
+
+  it('the tier answers `owner` vs `all` through the ONE reader', () => {
+    agent('owner-only', (g) => { g.channels.master = true; g.channels.imessage = 'owner'; });
+    agent('anyone', (g) => { g.channels.master = true; g.channels.imessage = 'all'; });
+    expect(mayUseChannel('owner-only', 'imessage')).toBe(true);
+    expect(mayReachOthersOn('owner-only', 'imessage')).toBe(false);
+    expect(mayReachOthersOn('anyone', 'imessage')).toBe(true);
+  });
+
+  it('the master switch governs the tier too — `all` under a false master is nothing', () => {
+    agent('muted-all', (g) => { g.channels.master = false; g.channels.imessage = 'all'; });
+    expect(mayReachOthersOn('muted-all', 'imessage')).toBe(false);
+  });
+
+  it('⚠ THE PERMISSION CHECK OUTRANKS THE TRANSPORT CHECK', () => {
+    // Found by the exemplar acceptance, driven on the owner's box: with the
+    // bridge off, "iMessage the owner" and "iMessage someone else" came back
+    // IDENTICAL — a fact about the BOX masking a fact about PERMISSION, and an
+    // agent that may not reach that person being handed SMS as an alternative.
+    // The bridge check now sits BELOW the recipient resolution and the tier.
+    const src = read('agent/tools/cat/comms.ts');
+    const tierAt = src.indexOf("mayReachOthersOn(agentId, 'imessage')");
+    const bridgeAt = src.indexOf('iMessage bridge is currently disabled');
+    expect(tierAt).toBeGreaterThan(-1);
+    expect(bridgeAt).toBeGreaterThan(-1);
+    expect(tierAt, 'the tier wall is evaluated before the bridge-state refusal').toBeLessThan(bridgeAt);
+    // And the allowlist gate is above them both: a refusal by tier means the
+    // recipient was real and approved, and still not this agent's to reach.
+    expect(src.indexOf('is not on the safe-sender allowlist')).toBeLessThan(tierAt);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// 5 · WHAT IT COSTS — stated as a test rather than only in a report
 // ════════════════════════════════════════════════════════════════════════════════
 
 describe('the narrowing, stated honestly', () => {

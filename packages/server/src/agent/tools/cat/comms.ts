@@ -55,7 +55,7 @@ import { getDb } from '../../../db/connection.js';
 // this agent's own channel grant. Post-migration the primary is the only holder,
 // so the same agents are refused — but the answer is now a row an owner can
 // edit rather than the identity of one agent on the box (census C1).
-import { mayUseChannel } from '../../access/read.js';
+import { mayUseChannel, mayReachOthersOn } from '../../access/read.js';
 import { writeToolReceipt } from '../../../receipts/store.js';
 import { checkPermission } from '../../permissions.js';
 import { sharePathGuard } from '../../path-guards.js';
@@ -467,34 +467,6 @@ export const commsHandlers: ToolHandlerMap = {
       ? (args.attachments as unknown[]).filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
       : [];
 
-    // v2.3.19 - fail loudly when the iMessage bridge is OFF. Pre-spec
-    // the tool returned "iMessage sent to X" regardless of bridge
-    // state, which left the agent confidently claiming delivery to
-    // the user when nothing was actually sent. Now the agent gets a
-    // clear error so it can tell the user the bridge is disabled
-    // and use the dashboard chat instead.
-    // UX-REPAIR ROUND 7 T29 — the door was right about iMessage and wrong about the
-    // alternative. Round-7 S3: it prescribed the dashboard while SMS was enabled and approved
-    // on the same box, and the user's text was never sent on any channel. The alternative is
-    // now READ from live config at the moment of refusal; when nothing else is live the
-    // sentence below is the one that has always been here, byte for byte.
-    const bridgeStatus = getIMBridgeStatus();
-    if (!bridgeStatus.running) {
-      const sms = getSmsReachability();
-      content =
-        'iMessage bridge is currently disabled, so this message was NOT sent. ' +
-        (sms.live
-          ? `SMS IS live on this server (approved: ${describeSmsRecipients(sms)}) — send it with `
-            + 'sms_send instead. Only if that fails too should you tell the user and answer in '
-            + 'the dashboard chat. '
-          : 'Tell the user that iMessage is turned off on this server and respond to them in the dashboard chat instead. ') +
-        (bridgeStatus.enabled
-          ? 'To re-enable iMessage delivery, the user can start it from Settings → Channels (iMessage card).'
-          : 'The user can enable iMessage by adding an approved sender in Settings → Channels (iMessage card).');
-      isError = true;
-      auditLog(agentId, 'imessage_send', recipient ?? '(no recipient)', 'denied', 'bridge disabled');
-      return { content, isError };
-    }
 
     // ── Recipient resolution + allowlist gate ────────────────────
     // Two-stage. First, figure out the intended recipient (explicit
@@ -573,6 +545,88 @@ export const commsHandlers: ToolHandlerMap = {
     }
 
     const recipientRecord = findSafeSenderByAddress(safeRecords, recipient);
+
+    // ── THE ME-VS-OTHERS TIER, AT ITS FIRST READER (UX-ACCESS A4) ──
+    //
+    // Owner ruling 1 asks for *"granular per-channel grants (and me-vs-other-
+    // people tiers)"*. A1 declared the tier, A2 taught the no-escalation ladder
+    // to compare it, A3 drew it in the panel — and `mayReachOthersOn` had ZERO
+    // callers whole-tree. A declared field with no reader is the disease this
+    // overhaul exists to cure, and it was the owner's own "Operator: exec +
+    // iMessage-ME" exemplar that had no wall.
+    //
+    // HERE and not at a declared gate, because the question needs the RESOLVED
+    // recipient: `owner` vs `all` is a fact about WHO, and the ladder evaluates
+    // before dispatch with only `args`, where the recipient may be absent (the
+    // turn-scoped default) or an un-canonicalized alias. It is the same class as
+    // the four A1 walls above it and it sits at the same place they do — after
+    // the allowlist gate, before any byte leaves — so a refusal here means the
+    // recipient was real, approved, and still not this agent's to reach.
+    //
+    // THE OWNER IS `is_primary` on the safe-sender list, which is the same flag
+    // the bridge's own owner-bound redirect reads; there is no second notion of
+    // "the owner" being invented here. A record we cannot resolve is treated as
+    // NOT the owner: at a tier wall the unknown case must be the narrow one.
+    //
+    // EMPTY-DIFF: post-migration the only agent holding any channel is the
+    // primary, at tier `all`, so this refuses nobody alive today.
+    if (!mayReachOthersOn(agentId, 'imessage') && recipientRecord?.is_primary !== true) {
+      const ownerRecord = safeRecords.find((s) => s.is_primary);
+      content =
+        `Permission denied: this agent may only iMessage ${ownerRecord?.name ?? 'the owner'}, `
+        + `and "${recipientRecord?.name ?? recipient}" is someone else. The message was NOT sent. `
+        + 'Ask the primary agent to widen this agent\'s iMessage grant to "anyone approved" if this needs to happen.';
+      isError = true;
+      auditLog(agentId, 'imessage_send', recipient, 'denied', 'channel tier is owner-only; recipient is not the owner');
+      return { content, isError, errorCode: 'PERMISSION_DENIED' as ToolErrorCode };
+    }
+
+    // ── THE TRANSPORT CHECK COMES AFTER THE PERMISSION CHECKS (UX-ACCESS A4) ──
+    //
+    // It used to be FIRST, and the exemplar acceptance is what found that: driven on
+    // the owner's box with the bridge off, the Operator's "message the owner" and its
+    // "message someone else" attempts came back IDENTICAL — both stopped at the bridge,
+    // so the me-vs-others tier could not be observed to work at all, and an agent that
+    // was not permitted to reach that person was handed guidance to reach them on SMS
+    // instead. A fact about the BOX was masking a fact about PERMISSION, and answering
+    // "the transport is down" to a request that was never allowed is the wrong answer
+    // in the one direction that matters.
+    //
+    // Nothing between here and the top reads bridge state — the safe-sender list, the
+    // turn-scoped default and the allowlist gate are all config reads — so the move is
+    // an ordering change and not a rewrite. What it costs is stated rather than hidden:
+    // with the bridge off, a call that named NO recipient (and has no inbound to default
+    // to) or named someone off the allowlist now reads that more specific error instead
+    // of the bridge one, and the audit target is the canonicalized address rather than
+    // the raw argument. Both are the more useful answer; neither is silent.
+    // v2.3.19 - fail loudly when the iMessage bridge is OFF. Pre-spec
+    // the tool returned "iMessage sent to X" regardless of bridge
+    // state, which left the agent confidently claiming delivery to
+    // the user when nothing was actually sent. Now the agent gets a
+    // clear error so it can tell the user the bridge is disabled
+    // and use the dashboard chat instead.
+    // UX-REPAIR ROUND 7 T29 — the door was right about iMessage and wrong about the
+    // alternative. Round-7 S3: it prescribed the dashboard while SMS was enabled and approved
+    // on the same box, and the user's text was never sent on any channel. The alternative is
+    // now READ from live config at the moment of refusal; when nothing else is live the
+    // sentence below is the one that has always been here, byte for byte.
+    const bridgeStatus = getIMBridgeStatus();
+    if (!bridgeStatus.running) {
+      const sms = getSmsReachability();
+      content =
+        'iMessage bridge is currently disabled, so this message was NOT sent. ' +
+        (sms.live
+          ? `SMS IS live on this server (approved: ${describeSmsRecipients(sms)}) — send it with `
+            + 'sms_send instead. Only if that fails too should you tell the user and answer in '
+            + 'the dashboard chat. '
+          : 'Tell the user that iMessage is turned off on this server and respond to them in the dashboard chat instead. ') +
+        (bridgeStatus.enabled
+          ? 'To re-enable iMessage delivery, the user can start it from Settings → Channels (iMessage card).'
+          : 'The user can enable iMessage by adding an approved sender in Settings → Channels (iMessage card).');
+      isError = true;
+      auditLog(agentId, 'imessage_send', recipient ?? '(no recipient)', 'denied', 'bridge disabled');
+      return { content, isError };
+    }
 
     // v2.9.15, removed the "dashboard-active" channel-context guard
     // that used to refuse imessage_send when the most recent user-role

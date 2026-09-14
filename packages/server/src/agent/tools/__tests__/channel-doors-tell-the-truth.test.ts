@@ -65,6 +65,7 @@ import { gatesForCall } from '../gates.js';
 import { commsHandlers } from '../cat/comms.js';
 import { getSmsReachability, describeSmsRecipients } from '../../../services/capability-registry.js';
 import { originHasNoRelayDoor } from '../../a2a-transport.js';
+import { reloadApprovedSenders } from '../../../services/imessage-bridge.js';
 
 const AGENT = 'sub-agent-1';
 const db = (): Database.Database => mockDb.current!;
@@ -132,6 +133,29 @@ describe('the imessage-disabled door', () => {
   const send = () => commsHandlers['imessage_send']!(
     { agentId: AGENT, args: { recipient: '+15550200', message: 'hi' } } as never,
   );
+
+  // UX-ACCESS A4 — THE FIXTURE GAINED AN APPROVED SENDER, AND THAT IS THE POINT.
+  //
+  // The bridge check used to be the FIRST statement in the handler, so a call
+  // with no allowlist at all still read the bridge sentence. A4 moved it BELOW
+  // the recipient resolution and the permission checks, because the exemplar
+  // acceptance found a fact about the BOX masking a fact about PERMISSION: with
+  // the bridge off, "iMessage the owner" and "iMessage someone else" came back
+  // identical, and an agent that was not permitted to reach that person was
+  // handed guidance to reach them on SMS instead.
+  //
+  // The requirement these two clauses hold is UNCHANGED and is re-stated here:
+  // when the bridge is down, the refusal names `sms_send` FIRST if SMS is live
+  // and the dashboard only as the fallback, and with nothing else live it is the
+  // sentence HEAD shipped, byte for byte. What changed is that the call now has
+  // to be one the door would otherwise have PERFORMED — which is the honest
+  // precondition for "the transport was the only thing stopping it".
+  beforeEach(() => {
+    db().prepare(
+      "INSERT OR REPLACE INTO config (key, value) VALUES ('imessage_approved_senders', ?)",
+    ).run(JSON.stringify([{ name: 'David', address: '+15550200', is_primary: true }]));
+    reloadApprovedSenders();
+  });
 
   it('names sms_send FIRST when SMS is live, with the dashboard as the last resort', async () => {
     enableTwilioSms([{ name: 'David', address: '+15550200' }]);

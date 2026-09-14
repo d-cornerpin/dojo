@@ -21,6 +21,7 @@ import type { AccessChannel, AccessGrants, AccountKind, IntegrationLevel, ToolGr
 import {
   channelTierOf, mayReachChannel, mayTouchCredentialIn, holdsAnyCredentialGrant,
   categoryGranted, providerLevelOf, techniqueGrantOf, techniqueGranted, holdsAnyTechniqueGrant,
+  mayReachOthersOn as mayReachOthersOnIn,
 } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { TOOL_CATEGORIES } from '../../tools/categories.js';
@@ -104,6 +105,20 @@ export function mayUseChannel(agentId: string, channel: AccessChannel): boolean 
 /** The tier — `none` / `owner` / `all` — this agent holds on this channel. */
 export function channelTierFor(agentId: string, channel: AccessChannel) {
   return channelTierOf(getAccessGrants(agentId), channel);
+}
+
+/**
+ * May this agent reach a NON-OWNER recipient on this channel? (UX-ACCESS A4.)
+ *
+ * The me-vs-others half of owner ruling 1. A1 declared the tier,
+ * A2 taught the no-escalation ladder to compare it and A3 drew it in the panel,
+ * and until A4 the shared `mayReachOthersOn` predicate had no server-side caller
+ * at all — a declared field with no reader, which is the shape this overhaul
+ * exists to end. Its first door is `imessage_send`'s, beside the four walls A1
+ * wrote in the same file.
+ */
+export function mayReachOthersOn(agentId: string, channel: AccessChannel): boolean {
+  return mayReachOthersOnIn(getAccessGrants(agentId), channel);
 }
 
 /** Does this agent have the human-channel master switch at all? (`null` = a
