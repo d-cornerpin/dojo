@@ -14,8 +14,8 @@ import { createLogger } from '../../logger.js';
 import { broadcast } from '../ws.js';
 import { isPrimaryAgent, getPrimaryAgentId, getHealerAgentId, getDreamerAgentId, getImaginerAgentId } from '../../config/platform.js';
 import { sanitizeMessagesOnModelChange } from '../../agent/model-switch.js';
-import type { AgentDetail, Model, Message, AgentMessage } from '@dojo/shared';
-import { deriveOrigin, legacyOriginInputs, NEW_SESSION_DIVIDER} from '@dojo/shared';
+import type { AccessGrants, AgentDetail, Model, Message, AgentMessage } from '@dojo/shared';
+import { cloneGrants, deriveOrigin, legacyOriginInputs, NEW_SESSION_DIVIDER} from '@dojo/shared';
 import { noteRouteFailure } from './route-failure.js';
 import { resolveChildScope } from '../../agent/scope.js';
 import { getAgentPermissions } from '../../agent/permissions.js';
@@ -384,28 +384,29 @@ agentsRouter.put('/:id', async (c) => {
   // merge-over-current semantics, same audit row. Two differences, both
   // deliberate: the refusal is a 400 rather than a tool result, and there is no
   // no-escalation check to fail, because the ceiling passed in IS the primary's
-  // grants and this route is the owner acting through it. A3's panel is the
-  // caller; nothing in the UI changes this phase.
+  // grants and this route is the owner acting through it. A3's Access panel is
+  // the caller.
   //
   // Top-level `grants` wins over `permissions.grants` (which A1's carry-forward
   // above still honours for the old permissions editor), because this is the
   // validated door and that one is a passthrough.
+  //
+  // ── A3: THE WRITE IS DEFERRED PAST THE COLUMN BATCH, AND THAT IS A FIX ──
+  // It used to happen HERE, before `UPDATE agents SET …` ran at the end of this
+  // handler — and that batch re-writes `permissions` from a value read BEFORE
+  // this write, so a body carrying both `permissions` and `grants` silently
+  // reverted the grant half. The old permissions editor sends `permissions` and
+  // `toolsPolicy` in one body and the Access panel sends `grants`, so the shape
+  // is live, not contrived. Validation and its 400 stay here (nothing is written
+  // when the body is bad); only the WRITE moves after the batch.
+  let pendingGrants: { grants: AccessGrants; source: string } | null = null;
   if (body.grants !== undefined) {
-    const current = getAccessGrants(id);
-    const resolution = resolveUpdateGrants(body.grants, current, getAccessGrants(getPrimaryAgentId()), true);
+    const resolution = resolveUpdateGrants(body.grants, getAccessGrants(id), getAccessGrants(getPrimaryAgentId()), true);
     if (!resolution.ok) {
       logger.warn('Agent grant update refused', { agentId: id, reason: resolution.reason });
       return c.json({ ok: false, error: resolution.reason }, 400);
     }
-    const delta = grantsDelta(current, resolution.grants);
-    if (delta) {
-      writeGrants(id, resolution.grants);
-      // Ruling 4's audit row, owner-side. `audit_log.agent_id` has a foreign key
-      // to `agents`, and the owner has no agent row — so the row is filed on the
-      // agent whose access moved, which is also where anybody asking "why can
-      // this agent do that" would look, and the ACTOR is named in the detail.
-      auditLog(id, 'update_agent', id, 'success', `grants set by owner (dashboard): ${delta}`);
-    }
+    pendingGrants = { grants: resolution.grants, source: 'grants set by owner (dashboard)' };
   }
 
   if (body.classification !== undefined && ['ronin', 'apprentice'].includes(body.classification)) {
@@ -424,6 +425,26 @@ agentsRouter.put('/:id', async (c) => {
   if (body.toolsPolicy !== undefined) {
     updates.push('tools_policy = ?');
     params.push(JSON.stringify(body.toolsPolicy));
+    // ── UX-ACCESS A3: THE FOLD, AND WHY IT IS A LIE BEING FIXED ──
+    // A1 moved the authority for the per-agent tool allow/deny OUT of this
+    // column and INTO the grants object: `surface.ts` filters on
+    // `toolGrantsFor(agentId)` and the executor's FU-4 re-check asks the same
+    // reader. `spawn_agent` was taught to carry its `tools` argument into the
+    // grants for exactly that reason (A2 §5, "a spawn that stores grants must
+    // carry args.tools into them or the argument silently stops working"). This
+    // route — the dashboard's own permissions editor — was not, so its Web
+    // Search / Web Browsing toggles have been writing to a field no door reads.
+    // Same fold, verbatim, same reason; the column keeps its value because it is
+    // still the legacy record other readers display.
+    const tp = body.toolsPolicy as { allow?: unknown; deny?: unknown } | null;
+    const base = pendingGrants?.grants ?? getAccessGrants(id);
+    const folded = cloneGrants(base);
+    if (Array.isArray(tp?.allow)) folded.tools.allow = (tp!.allow as unknown[]).filter((t): t is string => typeof t === 'string');
+    if (Array.isArray(tp?.deny)) folded.tools.deny = (tp!.deny as unknown[]).filter((t): t is string => typeof t === 'string');
+    pendingGrants = {
+      grants: folded,
+      source: pendingGrants ? pendingGrants.source : 'tools policy set by owner (dashboard)',
+    };
   }
 
   if (body.equippedTechniques !== undefined) {
@@ -459,6 +480,25 @@ agentsRouter.put('/:id', async (c) => {
     updates.push("updated_at = datetime('now')");
     params.push(id);
     db.prepare(`UPDATE agents SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  }
+
+  // ── THE ACCESS WRITE, LAST (UX-ACCESS A3) ──
+  // After the column batch, so nothing above can re-write `permissions` from a
+  // value read before the grant resolution. The delta is computed against the
+  // object as it stands NOW for the same reason — the batch may have carried a
+  // prior grants blob forward — which is also what keeps "a grant change wrote
+  // an audit row" a fact rather than a habit: no delta, no write, no row.
+  if (pendingGrants) {
+    const current = getAccessGrants(id);
+    const delta = grantsDelta(current, pendingGrants.grants);
+    if (delta) {
+      writeGrants(id, pendingGrants.grants);
+      // Ruling 4's audit row, owner-side. `audit_log.agent_id` has a foreign key
+      // to `agents`, and the owner has no agent row — so the row is filed on the
+      // agent whose access moved, which is also where anybody asking "why can
+      // this agent do that" would look, and the ACTOR is named in the detail.
+      auditLog(id, 'update_agent', id, 'success', `${pendingGrants.source}: ${delta}`);
+    }
   }
 
   logger.info('Agent config updated', { agentId: id, fields: Object.keys(body) });

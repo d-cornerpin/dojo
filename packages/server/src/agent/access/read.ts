@@ -172,6 +172,20 @@ function categoriesOf(tool: string): string[] {
 }
 
 /**
+ * The `TOOL_CATEGORIES` labels this tool is filed under; empty for a tool the
+ * index does not name.
+ *
+ * Exported for the EXECUTOR's row-17 gate (UX-ACCESS A3): the declaration in
+ * `gates.ts` asks whether the tool is categorised at all, and the refusal names
+ * the group the owner would have to grant. Both answers have to come from this
+ * index and not from a second list, which is the same reason the surface strip
+ * and the gate share `toolCategoryGranted` below.
+ */
+export function toolCategoryLabels(tool: string): string[] {
+  return [...categoriesOf(tool)];
+}
+
+/**
  * Is this tool inside a granted CATEGORY?
  *
  * A tool in NO category (the `user_` twins, the Office set, anything newly
@@ -179,6 +193,15 @@ function categoriesOf(tool: string): string[] {
  * over the 38 declared groups, not an allow-list of every name the platform can
  * mint, and treating an unlisted name as denied would refuse tools the owner
  * never saw a control for.
+ *
+ * ── ONE PREDICATE, TWO LAYERS (UX-ACCESS A3) ──
+ * This is the surface strip's filter (`surface.ts`) AND the executor's row-17
+ * gate. Architecture Rule 1: the strip is advice — the floor model parses tool
+ * calls out of free text and can emit a name it was never advertised — so until
+ * A3 an agent granted a channel but not the tool's group passed the permission
+ * door while its own capability line said it could not (A2 §6.1, measured).
+ * Asking the same function at both layers is what stops "advertised" and
+ * "permitted" from drifting apart again.
  */
 export function toolCategoryGranted(agentId: string, tool: string): boolean {
   const labels = categoriesOf(tool);

@@ -25,7 +25,10 @@ import {
   grantFor, type Verdict,
 } from '../brokers/index.js';
 import { EFFECT_FROM_ARGS, EFFECT_FROM_FIXED, type EffectKind } from './types.js';
-import { mayUseChannel, mayTouchCredential, holdsCredentialGrant } from '../access/read.js';
+import {
+  mayUseChannel, mayTouchCredential, holdsCredentialGrant,
+  toolCategoryGranted, toolCategoryLabels,
+} from '../access/read.js';
 import type { ToolGate } from './gates.js';
 
 /** What a gate answered, plus enough to audit and render it. */
@@ -250,6 +253,29 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
           `Permission denied: ${gate.service === null ? 'the credential store is' : `the credential "${gate.service}" is`} not in this agent's grants. The request was not performed. Ask the primary agent to grant it if this needs to happen.`,
         ),
         resource: gate.service,
+        errorCode: 'PERMISSION_DENIED',
+        auditAs: name,
+      };
+    }
+
+    // ── Row 17: the positive category grant, AT THE EXECUTOR (A3 rider) ──
+    // The same predicate `surface.ts` filters the advertised list with. The strip
+    // is advice; this is the wall. A tool in more than one group passes on any
+    // one of them, and a tool in none is never refused here — both rules live in
+    // `toolCategoryGranted`, asked rather than re-implemented.
+    case 'category': {
+      if (toolCategoryGranted(agentId, name)) return skip(gate);
+      const labels = toolCategoryLabels(name);
+      const named = labels.length === 1 ? `"${labels[0]}"` : labels.map((l) => `"${l}"`).join(' or ');
+      return {
+        gate,
+        verdict: denied(
+          `category-not-granted:${labels[0]}`,
+          `${name} is in the ${named} tool group, which is not in this agent's grants`,
+          `Permission denied: ${name} is in the ${named} tool group, which is not in this agent's grants.`
+            + ' The request was not performed. Ask the primary agent to grant that group if this needs to happen.',
+        ),
+        resource: labels[0],
         errorCode: 'PERMISSION_DENIED',
         auditAs: name,
       };

@@ -100,9 +100,25 @@ describe('the two handler-body permission checks — the demolition list’s thi
     // never ladder rows, so no declared gate answers for their paths. If a later
     // task DOES declare one, this clause fails and whoever wrote it must decide
     // deliberately which mechanism owns the refusal — never both, never neither.
-    expect(gatesForCall('show_to_user', { file_paths: ['/tmp/x.png'] })).toEqual([]);
+    //
+    // ── THE DELIBERATE DECISION THIS CLAUSE ASKED FOR (UX-ACCESS A3) ──
+    // A later task DID declare a row for these tools: row 17, the owner's
+    // positive CATEGORY grant, which `show_to_user` (Communication) and the
+    // office family (Office Documents) both carry. It is NOT a duplicate and
+    // the two mechanisms own different questions, which is exactly the
+    // distinction this clause exists to force somebody to state:
+    //   · row 17 asks "may this agent use tools in this GROUP at all" — an
+    //     owner-set grant, defaulting to `'*'` for every agent that exists;
+    //   · the handler-body `checkPermission` asks "may it write THIS PATH" —
+    //     the resource the agent chose, which row 17 never looks at.
+    // So the file-write refusal still has exactly one owner, and the clause's
+    // requirement — no declared gate answers for these RESOURCES — is asserted
+    // below with the category row filtered out rather than weakened.
+    const resourceGates = (name: string, args: Record<string, unknown>) =>
+      gatesForCall(name, args).filter((g) => g.kind !== 'category');
+    expect(resourceGates('show_to_user', { file_paths: ['/tmp/x.png'] })).toEqual([]);
     for (const name of ['office_create_document', 'office_edit_document', 'office_create_spreadsheet']) {
-      expect(gatesForCall(name, { path: '/tmp/x.docx' }), `${name} has no declared gate row`).toEqual([]);
+      expect(resourceGates(name, { path: '/tmp/x.docx' }), `${name} has no declared resource gate`).toEqual([]);
     }
   });
 

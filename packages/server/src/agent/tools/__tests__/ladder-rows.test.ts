@@ -1,15 +1,16 @@
 // ════════════════════════════════════════════════════════════════════════════
-// ALL FIFTEEN LADDER ROWS, ACCOUNTED (PHASE-5 T2 Step 3).
+// ALL SEVENTEEN LADDER ROWS, ACCOUNTED (PHASE-5 T2 Step 3).
 //
 // §T0-PINS P1 tabled the fifteen branches `executeToolInner` carried and the
 // requirement each one encoded. This file is the receipt: every row has a
 // clause, the clause names the row, and the LAST clause asserts that the set of
-// rows this file covers is exactly `1..15` — so a sixteenth requirement cannot
-// be added without being covered, and a row cannot be dropped without failing
-// here first.
+// rows this file covers is exactly the declared set — so a new requirement
+// cannot be added without being covered, and a row cannot be dropped without
+// failing here first. It has now done that twice: UX-ACCESS A1 added row 16
+// (the credential store) and A3 added row 17 (the positive category grant).
 //
 // Non-negotiable #9: *a removal that cannot state its requirement does not
-// merge.* Fifteen requirements, fifteen statements, one enumeration.
+// merge.* One statement per requirement, one enumeration over all of them.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi } from 'vitest';
@@ -38,6 +39,21 @@ function rowsFor(name: string, args: Record<string, unknown> = {}): ToolGate[] {
   return gatesForCall(name, args);
 }
 
+/**
+ * The rows a call produces, WITHOUT row 17.
+ *
+ * UX-ACCESS A3 added the owner's positive CATEGORY grant as the last row on
+ * every tool the index names — the same gate, on every one of them. The clauses
+ * below that COUNT a tool's gates are each asking about its EFFECT doors ("exec
+ * and shell are disjoint", "web_browse holds two", "applescript_run is one class
+ * and not a system_control category"), and row 17 is orthogonal to all of them.
+ * Filtering it here keeps every clause asking its own question instead of
+ * re-asserting A3's, which its own clause above already holds.
+ */
+function effectRows(name: string, args: Record<string, unknown> = {}): string[] {
+  return rowsFor(name, args).filter((g) => g.kind !== 'category').map((g) => g.row);
+}
+
 function covers(row: string, gates: ToolGate[]): ToolGate {
   covered.add(row);
   const gate = gates.find((g) => g.row === row);
@@ -45,7 +61,7 @@ function covers(row: string, gates: ToolGate[]): ToolGate {
   return gate as ToolGate;
 }
 
-describe('the sixteen rows, one clause each', () => {
+describe('the seventeen rows, one clause each', () => {
   it('row 1 — file_read / file_list: manifest file-read scope on args.path', () => {
     for (const name of ['file_read', 'file_list']) {
       const g = covers('1', rowsFor(name, { path: '/tmp/x' }));
@@ -75,15 +91,15 @@ describe('the sixteen rows, one clause each', () => {
     expect(g.kind).toBe('proc');
     // The gate exists even for a MALFORMED call — the shape is refused at the
     // gate, never skipped into the handler. (P5-R3's empty-string class.)
-    expect(rowsFor('exec', {}).map((r) => r.row)).toEqual(['3']);
+    expect(effectRows('exec', {})).toEqual(['3']);
   });
 
   it('row 3s — shell({script}): the shell grant, the /bin/zsh door', () => {
     const g = covers('3s', rowsFor('shell', { script: 'ls | wc -l' }));
     expect(g.kind).toBe('shell');
     // The two doors are DISJOINT: neither tool picks up the other's gate.
-    expect(rowsFor('exec', { argv: ['ls'] }).map((r) => r.row)).toEqual(['3']);
-    expect(rowsFor('shell', { script: 'ls' }).map((r) => r.row)).toEqual(['3s']);
+    expect(effectRows('exec', { argv: ['ls'] })).toEqual(['3']);
+    expect(effectRows('shell', { script: 'ls' })).toEqual(['3s']);
   });
 
   it('row 4 — spawn_agent: can_spawn_agents', () => {
@@ -171,7 +187,7 @@ describe('the sixteen rows, one clause each', () => {
     expect(g.kind === 'creator_only' && g.entity).toBe('group');
     // delete_group is ALSO in PRIMARY_ONLY_TOOLS, so it carries both rows — the
     // ladder ran both too, in this order.
-    expect(rowsFor('delete_group', { group_id: 'g1' }).map((x) => x.row)).toEqual(['9', '12']);
+    expect(effectRows('delete_group', { group_id: 'g1' })).toEqual(['9', '12']);
   });
 
   it('row 13 — dreamer_run_now / cost_summary: owner-facing', () => {
@@ -192,10 +208,9 @@ describe('the sixteen rows, one clause each', () => {
     expect(b.kind === 'net' && b.subAgentsOnly).toBe(true);
 
     // Not navigating → the second gate does not exist, exactly as before.
-    const clicking = rowsFor('web_browse', { action: 'click' });
-    expect(clicking.map((g) => g.row)).toEqual(['14a']);
+    expect(effectRows('web_browse', { action: 'click' })).toEqual(['14a']);
     // Navigating with no url → likewise.
-    expect(rowsFor('web_browse', { action: 'navigate' }).map((g) => g.row)).toEqual(['14a']);
+    expect(effectRows('web_browse', { action: 'navigate' })).toEqual(['14a']);
   });
 
   it('row 15 — the HID / screen family, with the CATEGORY derived', () => {
@@ -219,7 +234,7 @@ describe('the sixteen rows, one clause each', () => {
     const g = covers('15', rowsFor('applescript_run', { script: 'display dialog "hi"' }));
     expect(g.kind).toBe('applescript');
     // and it is still exactly one gate, not two
-    expect(rowsFor('applescript_run', { script: 'x' }).map((r) => r.row)).toEqual(['15']);
+    expect(effectRows('applescript_run', { script: 'x' })).toEqual(['15']);
   });
 
   // THE SIXTEENTH ROW (UX-ACCESS A1). The header's own promise — *"a sixteenth
@@ -238,21 +253,45 @@ describe('the sixteen rows, one clause each', () => {
     expect(list.kind === 'credential' && list.service).toBeNull();
   });
 
-  it('ALL SIXTEEN ROWS ARE ACCOUNTED — no more, no fewer (row 3 has two doors)', () => {
+  // THE SEVENTEENTH ROW (UX-ACCESS A3 rider). The enumeration below did its job
+  // a second time: the category gate had to be covered here to land. A1 put the
+  // positive category grant on the ADVERTISED SURFACE only; A2 measured what
+  // that costs (§6.1) — the strip is advice, the floor model free-texts tool
+  // calls, so an agent holding a channel but not the tool's group reached the
+  // bridge while its own capability line said it could not. The plan's design
+  // section names the executor gate; this row is it.
+  it('row 17 — the positive category grant: a tool in a group the agent was not granted', () => {
+    const g = covers('17', rowsFor('imessage_send', {}));
+    expect(g.kind).toBe('category');
+    // A tool the index does not name mints NO gate — the grant is a positive
+    // layer over the 38 declared groups, not an allow-list of every name.
+    expect(rowsFor('user_gmail_inbox', {}).some((x) => x.row === '17')).toBe(false);
+  });
+
+  it('ALL SEVENTEEN ROWS ARE ACCOUNTED — no more, no fewer (row 3 has two doors)', () => {
     expect([...covered].sort()).toEqual(
-      ['1', '10', '11', '12', '13', '14a', '14b', '15', '16', '2', '3', '3s', '4', '5', '6', '7', '8', '9'],
+      ['1', '10', '11', '12', '13', '14a', '14b', '15', '16', '17', '2', '3', '3s', '4', '5', '6', '7', '8', '9'],
     );
   });
 });
 
 describe('P5-R5 — what the loop deliberately does NOT gate', () => {
-  it('a tool with no ladder row gets no gate, however many effects it declares', () => {
+  it('a tool with no ladder row gets no EFFECT-derived gate, however many effects it declares', () => {
     // `image_create` writes into the calling agent's uploads directory and
     // declares `fs_write`; nothing gated it before T2, so nothing gates it now.
     // Wiring "declared ⇒ granted" would narrow what the owner's agents can do,
     // which the phase's posture makes an owner decision.
+    //
+    // UX-ACCESS A3 — WHAT MOVED AND WHAT DID NOT. Row 17 is the owner's positive
+    // CATEGORY grant, and all four of these tools are filed in the index, so each
+    // now carries one. The requirement this clause exists for is untouched: a
+    // DECLARED EFFECT still mints nothing. Row 17 is not derived from an effect
+    // and refuses nobody alive today (every existing agent's snapshot is `'*'`);
+    // it is the ruling stated precisely, not loosened.
     for (const name of ['image_create', 'send_to_agent', 'work_update', 'vault_remember']) {
-      expect(rowsFor(name, { path: '/tmp/x', url: 'https://example.com', command: 'ls', argv: ['ls'], script: 'ls' })).toEqual([]);
+      const gates = rowsFor(name, { path: '/tmp/x', url: 'https://example.com', command: 'ls', argv: ['ls'], script: 'ls' });
+      expect(gates.filter((g) => g.kind !== 'category'), `${name} mints no effect-derived gate`).toEqual([]);
+      expect(gates.every((g) => g.row === '17'), `${name}'s only gate is the category grant`).toBe(true);
     }
   });
 

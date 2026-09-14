@@ -212,8 +212,18 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
   const [keyboardOn, setKeyboardOn] = useState(hasSysControl(permissions, 'keyboard'));
   const [applescriptOn, setApplescriptOn] = useState(hasSysControl(permissions, 'applescript'));
 
-  // ── Communication & Delegation ──
-  const [imessageOn, setImessageOn] = useState(hasToolAccess(toolsPolicy, 'imessage_send'));
+  // ── Delegation ──
+  //
+  // ⚰ "SEND iMESSAGES" IS DELETED (UX-ACCESS A3). Census §9.1 G1: it wrote
+  // `tools_policy.deny += imessage_send` when off and removed it when on — but
+  // turning it ON GRANTED NOTHING, because the channel door refused every
+  // non-primary agent regardless of any tool policy. It was shown on every
+  // agent's editor and was a no-op on all of them, and the census's own words
+  // are that "the current UI actively misrepresents it". The control that can
+  // actually grant iMessage is the Channels section of the Access panel, which
+  // writes the channel grant the door reads. An agent that already carries the
+  // deny keeps it: the Advanced "Denied Tools (raw)" field is seeded from the
+  // stored policy and still carries it through a save.
   const [spawnOn, setSpawnOn] = useState(permissions.can_spawn_agents ?? false);
   const [assignPermsOn, setAssignPermsOn] = useState(permissions.can_assign_permissions ?? false);
   const [shareProfile, setShareProfile] = useState(initialShareProfile ?? false);
@@ -266,7 +276,6 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
     const toolsDeny: string[] = [];
     if (!webSearchOn) { toolsDeny.push('web_search', 'web_fetch'); }
     if (!webBrowseOn) { toolsDeny.push('web_browse'); }
-    if (!imessageOn) { toolsDeny.push('imessage_send'); }
 
     // Merge with raw advanced overrides
     const advAllow = rawToolsAllow.split(',').map(s => s.trim()).filter(Boolean);
@@ -277,7 +286,7 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
   }, [
     readOn, readAll, readList, writeOn, writeAll, writeList, deleteOn, deleteAll, deleteList,
     execOn, execAll, execList, execDeny, webSearchOn, webBrowseOn, webDomainsAll, webDomainsList,
-    screenOn, mouseOn, keyboardOn, applescriptOn, imessageOn, spawnOn, assignPermsOn,
+    screenOn, mouseOn, keyboardOn, applescriptOn, spawnOn, assignPermsOn,
     maxProcesses, rawToolsAllow, rawToolsDeny, shareProfile,
   ]);
 
@@ -335,9 +344,8 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
         <PermRow label="Run AppleScripts" description="Automate macOS apps and system features" enabled={applescriptOn} onToggle={setApplescriptOn} warning />
       </Section>
 
-      {/* ── Communication & Delegation ── */}
-      <Section title="Communication & Delegation">
-        <PermRow label="Send iMessages" description="Send messages via iMessage to approved contacts" enabled={imessageOn} onToggle={setImessageOn} />
+      {/* ── Delegation ── */}
+      <Section title="Delegation">
         <PermRow label="Create Sub-Agents" description="Spawn new agents to delegate work" enabled={spawnOn} onToggle={setSpawnOn} />
         <PermRow label="Assign Permissions" description="Set and change permissions for other agents it creates or manages" enabled={assignPermsOn} onToggle={setAssignPermsOn} />
         <PermRow label="Share User Profile" description="Include your profile (About You) in this agent's context so it knows who you are" enabled={shareProfile} onToggle={setShareProfile} />
@@ -429,7 +437,12 @@ export const DEFAULT_SUBAGENT_PERMISSIONS: Partial<PermissionManifest> = {
   system_control: [],
 };
 
+// The `imessage_send` deny is gone from here for the same reason the toggle is
+// (UX-ACCESS A3): it read as the thing that withheld iMessage from a new
+// sub-agent, and it never was — the channel door refuses an agent that holds no
+// channel grant, and ruling 2's most-restrictive default gives a new agent none.
+// A deny that duplicates a wall is a second authority for one fact.
 export const DEFAULT_SUBAGENT_TOOLS_POLICY = {
   allow: [] as string[],
-  deny: ['web_browse', 'imessage_send'] as string[],
+  deny: ['web_browse'] as string[],
 };

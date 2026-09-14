@@ -38,6 +38,7 @@ import type {
   GenerationParamSpec,
   VoiceOption,
   InterAgentMessage,
+  AccessGrants,
 } from '@dojo/shared';
 
 const BASE_URL = '/api';
@@ -1414,9 +1415,24 @@ export const getAgentSystemPrompt = async (id: string): Promise<ApiResponse<{ co
   return request<{ content: string }>(`/agents/${id}/system-prompt`);
 };
 
+// UX-ACCESS A3: the Access panel's catalog — the tool groups it draws
+// checkboxes for, the four presets, and which tool group each channel's send
+// tool lives in (so the panel can say when a channel grant would be inert).
+// Served from the server's own index; a copy in the dashboard would be a second
+// truth that drifts the first time a tool is re-filed.
+export interface AccessCatalog {
+  categories: Array<{ label: string; tools: number }>;
+  presets: Array<{ id: string; label: string; description: string; grants: AccessGrants }>;
+  channelGroups: Record<string, string[]>;
+}
+
+export const getAccessCatalog = async (): Promise<ApiResponse<AccessCatalog>> => {
+  return request<AccessCatalog>('/access/catalog');
+};
+
 export const updateAgentConfig = async (
   id: string,
-  updates: { modelId?: string; systemPrompt?: string; permissions?: Record<string, unknown>; toolsPolicy?: { allow: string[]; deny: string[] }; dreamerIgnore?: boolean; config?: Record<string, unknown> },
+  updates: { modelId?: string; systemPrompt?: string; permissions?: Record<string, unknown>; toolsPolicy?: { allow: string[]; deny: string[] }; dreamerIgnore?: boolean; config?: Record<string, unknown>; grants?: Record<string, unknown> },
 ): Promise<ApiResponse<AgentDetailResponse>> => {
   return request<AgentDetailResponse>(`/agents/${id}`, {
     method: 'PUT',

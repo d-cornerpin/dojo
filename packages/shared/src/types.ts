@@ -4,6 +4,7 @@
 
 import type { MessageOrigin } from './origin.js';
 import type { DisplayKind } from './visibility.js';
+import type { AccessGrants } from './access.js';
 
 export interface Provider {
   id: string;
@@ -186,6 +187,16 @@ export interface AgentDetail extends Agent {
   messageCount: number;
   uptime: number; // seconds since last start
   model: Model | null;
+  /**
+   * THE ACCESS GRANTS AS THE DOORS SEE THEM (UX-ACCESS A2/A3).
+   *
+   * Present on `GET /agents/:id` only — the list route does not compute it — and
+   * it is the EFFECTIVE object, so an agent whose row predates the A1
+   * materializer answers with its measured access rather than with a hole. The
+   * Access panel binds to this and never to `permissions`, which is the stored
+   * blob and is `'{}'` for a third of the agents on a worn-in box.
+   */
+  effectiveGrants?: AccessGrants;
   /** When true, the agent's conversations are skipped by the vault archive
    * layer entirely — Dreamer never sees them. Toggleable on the agent
    * detail page. Falls through from the group's flag if either is set. */

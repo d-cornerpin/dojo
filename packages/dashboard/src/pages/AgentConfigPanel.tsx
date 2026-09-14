@@ -4,7 +4,8 @@ import type { AgentDetail as AgentDetailType, Model, PermissionManifest } from '
 import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
 import { PermissionsEditor } from '../components/PermissionsEditor';
-import { TechniqueSelector } from '../components/TechniqueSelector';
+import { AccessPanel } from '../components/AccessPanel';
+import { useActiveAgent } from '../components/ActiveAgentProvider';
 
 // Agent config overlay. This is the element for the /agents/:id route and
 // renders as a self-headered dojo3 panel (an overlay over the chat in the
@@ -35,35 +36,14 @@ const CLASSIFICATION_LABELS: Record<string, string> = {
   apprentice: 'Apprentice',
 };
 
-// ── Equipped Techniques card ──
-//
-// Mirrors AgentDetail's EquippedTechniquesSection: TechniqueSelector saves
-// on change via updateAgentConfig({ equippedTechniques }).
-const EquippedTechniquesCard = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: () => void }) => {
-  const [equipped, setEquipped] = useState<string[]>(agent.equippedTechniques ?? []);
-  const toast = useToast();
-
-  useEffect(() => {
-    setEquipped(agent.equippedTechniques ?? []);
-  }, [agent.equippedTechniques]);
-
-  const handleChange = async (updated: string[]) => {
-    setEquipped(updated);
-    const result = await api.updateAgentConfig(agent.id, { equippedTechniques: updated } as Record<string, unknown>);
-    if (result.ok) {
-      toast.success('Techniques updated');
-      onUpdated();
-    }
-  };
-
-  return (
-    <div className="tile">
-      <div className="scard__title">Equipped Techniques</div>
-      <div className="scard__desc">Skills this agent can draw on. Changes save immediately.</div>
-      <TechniqueSelector selected={equipped} onChange={handleChange} />
-    </div>
-  );
-};
+// ⚰ THE "EQUIPPED TECHNIQUES" CARD MOVED (UX-ACCESS A3). It is the fourth
+// section of the Access panel now — the plan's four sections are tools,
+// integrations, channels and TECHNIQUES, and two controls for one field is the
+// drift this overhaul exists to end. The behaviour is carried verbatim: the same
+// `TechniqueSelector`, the same `updateAgentConfig({equippedTechniques})`, the
+// same save-on-change (the panel's Save button governs the GRANTS; techniques
+// are a list on the agent row, not a grant, and A4 owns wiring them into the
+// object).
 
 // ── Memory card ──
 //
@@ -120,7 +100,14 @@ const MemoryCard = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
 // state / handlers / API calls from AgentDetail's ConfigTab.
 const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: () => void }) => {
   const toast = useToast();
-  const isPrimary = agent.classification === 'sensei';
+  // `isSensei` was called `isPrimary` and meant neither: it is the CLASSIFICATION,
+  // and six agents on the owner's box carry it while exactly one of them is the
+  // primary. Three cards keyed claims about "the primary agent" off it and two of
+  // those claims were false for five of the six (UX-ACCESS A3). The real primary
+  // comes from the platform, through the provider the agent card already uses.
+  const isSensei = agent.classification === 'sensei';
+  const { primaryId } = useActiveAgent();
+  const isThisPrimary = primaryId != null && agent.id === primaryId;
 
   const [models, setModels] = useState<Model[]>([]);
   const [providerNameById, setProviderNameById] = useState<Record<string, string>>({});
@@ -236,6 +223,15 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
   const modelDirty = selectedModelId !== (agent.modelId === 'auto' ? 'auto' : (agent.modelId ?? ''));
 
   return (
+    <>
+    {/* ── ACCESS (UX-ACCESS A3) ──
+        Full width rather than a masonry sibling: the tools section alone is 38
+        checkboxes, and a 310px column would make the owner's most consequential
+        card the hardest one to read. Everything else keeps its column. */}
+    <div style={{ maxWidth: '56rem', marginBottom: 14 }}>
+      <AccessPanel agent={agent} onUpdated={onUpdated} />
+    </div>
+
     <div className="scards">
       {/* Name */}
       <div className="tile">
@@ -257,7 +253,7 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
             Save
           </button>
         </div>
-        {isPrimary && (
+        {isSensei && (
           <div className="fhelp">Changing a Sensei's name updates the platform config.</div>
         )}
       </div>
@@ -303,7 +299,7 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
       {/* Classification */}
       <div className="tile">
         <div className="scard__title">Classification</div>
-        {isPrimary ? (
+        {isSensei ? (
           <>
             <div className="scard__desc">
               A Sensei's classification is locked. Cannot be dismissed or deleted. Set programmatically.
@@ -330,18 +326,17 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
         )}
       </div>
 
-      {/* Equipped Techniques */}
-      <EquippedTechniquesCard agent={agent} onUpdated={onUpdated} />
-
       {/* System Prompt */}
       <div className="tile">
         <div className="scard__title">
-          System Prompt{isPrimary ? ' (SOUL.md)' : ''}
+          System Prompt{isThisPrimary ? ' (SOUL.md)' : ''}
         </div>
         <div className="scard__desc">
-          {isPrimary
+          {isThisPrimary
             ? "The primary agent's soul. Edits here rewrite SOUL.md."
-            : 'Instructions that shape how this agent behaves.'}
+            : isSensei
+              ? "This Sensei's stored soul. Edits here rewrite the file the model actually reads."
+              : 'Instructions that shape how this agent behaves.'}
         </div>
         <textarea
           className="finput"
@@ -364,10 +359,28 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
       {/* Permissions */}
       <div className="tile">
         <div className="scard__title">Permissions</div>
-        {isPrimary ? (
-          <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal', marginBottom: 0 }}>
-            This Sensei agent has full access to all files, commands, tools, and system controls.
-          </div>
+        {isSensei ? (
+          // ── THE NOTE WAS FALSE FOR MOST OF THE AGENTS IT WAS SHOWN TO ──
+          // It read "This Sensei agent has full access to all files, commands,
+          // tools, and system controls" for EVERY sensei. Measured on the owner's
+          // box: of the five senseis that are not the primary, three (the PM, the
+          // Imaginer and the Dreamer) carry `exec_allow: []` — no commands at all.
+          // And "tools" has not been the manifest's business since UX-ACCESS A1;
+          // the Access panel below is where that answer lives now. So the claim
+          // is made only where it is true, and the other senseis get a statement
+          // of fact instead of a promise the row contradicts.
+          isThisPrimary ? (
+            <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal', marginBottom: 0 }}>
+              This is the main agent. It has full access to all files, commands, and system controls.
+              What it may reach — tools, integrations, channels — is in the Access panel below.
+            </div>
+          ) : (
+            <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal', marginBottom: 0 }}>
+              This is a platform Sensei. Its file, command and system-control permissions are set by the
+              platform and are not editable here. What it may reach — tools, integrations, channels — is in
+              the Access panel below, and that IS editable.
+            </div>
+          )
         ) : (
           <>
             <div className="scard__desc">What this agent is allowed to touch. Save to apply.</div>
@@ -386,6 +399,7 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
         )}
       </div>
     </div>
+    </>
   );
 };
 

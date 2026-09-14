@@ -13,6 +13,7 @@ import { chatRouter } from './routes/chat.js';
 import { interAgentRouter } from './routes/interagent.js';
 import { uploadRouter } from './routes/upload.js';
 import { agentsRouter } from './routes/agents.js';
+import { accessRouter } from './routes/access.js';
 import { systemRouter } from './routes/system.js';
 import { memoryRouter } from './routes/memory.js';
 import { trackerRouter } from './routes/tracker.js';
@@ -255,6 +256,7 @@ export function createServer() {
   app.route('/api/interagent', interAgentRouter); // /api/interagent/:agentId, inter-agent lane history
   app.route('/api/upload', uploadRouter); // /api/upload/:agentId, /api/upload/file/:agentId/:filename
   app.route('/api/agents', agentsRouter); // /api/agents, /api/agents/:id
+  app.route('/api/access', accessRouter); // /api/access/catalog — the Access panel's tool groups + presets
   app.route('/api/memory', memoryRouter); // /api/memory/:agentId/*
   app.route('/api/tracker', trackerRouter); // /api/tracker/projects/*, /api/tracker/tasks/*
   app.route('/api/router', routerRouter);  // /api/router/config, /api/router/test, etc.

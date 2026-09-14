@@ -35,6 +35,7 @@ import { PM_ONLY_WORK_OPS, PRIMARY_ONLY_WORK_OPS } from '../../tracker/pm-agent.
 import { workOperation } from '../../tools/work-verbs.js';
 import { effectsFor } from './registry.js';
 import { getSmsReachability, describeSmsRecipients } from '../../services/capability-registry.js';
+import { toolCategoryLabels } from '../access/read.js';
 import type { EffectKind } from './types.js';
 import type { AccessChannel } from '@dojo/shared';
 
@@ -100,6 +101,9 @@ export type ToolGate =
    * therefore gates on holding ANY grant.
    */
   | { readonly kind: 'credential'; readonly service: string | null; readonly row: string }
+  /** Row 17 — the positive CATEGORY grant, at the executor (UX-ACCESS A3 rider).
+   *  Why, the order, and the migration proof: `the-category-gate.test.ts`. */
+  | { readonly kind: 'category'; readonly row: string }
   /** Branch 10 — primary OR the Healer. */
   | { readonly kind: 'primary_or_healer'; readonly row: string }
   /** Branch 8 — the PM allowlist, keyed on the OPERATION not the name. */
@@ -248,6 +252,8 @@ export function gatesForCall(name: string, args: Record<string, unknown>): ToolG
     const service = typeof args.service_name === 'string' ? args.service_name : null;
     gates.push({ kind: 'credential', service, row: '16' });
   }
+  // 17 — LAST (an earlier row's sentence stays the one the agent reads); a tool the index does not name mints nothing.
+  if (toolCategoryLabels(name).length > 0) gates.push({ kind: 'category', row: '17' });
 
   return gates;
 }
