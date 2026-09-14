@@ -4334,6 +4334,20 @@
       "to": 272,
       "by": "UX-ACCESS A4 — the panel's grant MATH is admitted at 272",
       "why": "A3 created it at 234 to keep the arithmetic out of `AccessPanel.tsx`; A4 added the techniques half (+38), which is the same `'*'`-is-a-promise-about-the-future rule the tool groups already have, plus the patch clause that compares through `techniqueGrantOf` so opening the panel on a pre-A4 row and pressing Save sends nothing. Splitting again would divide four sections of ONE form across files that only ever change together, and it is already split on the real seam — this file is pure, no React, and is the whole reason the component is allowed to only render and ask. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/comms.ts",
+      "from": 860,
+      "to": 914,
+      "by": "UX-ACCESS A4 rider — the me-vs-others tier gets its first reader, above the transport check",
+      "why": "+54, of which 37 are comment and 17 are the wall and its refusal. Owner ruling 1's tier had NO server-side reader: A1 declared `ChannelTier`, A2 taught `grantExcesses` to compare it, A3 drew it in the panel, and `mayReachOthersOn` had zero callers whole-tree — a declared field with no reader, and the field with no reader was the one carrying the owner's own \"Operator: exec + iMessage-ME\" exemplar. The wall is 17 lines because it must resolve the OWNER (`is_primary` on the safe-sender list, the same flag the bridge's owner-bound redirect reads) and refuse with a sentence that names who it may reach and how to widen it. The remaining comment is the ORDERING argument, which the exemplar acceptance is what found: the bridge-state check used to be the handler's FIRST statement, so with the bridge off \"iMessage the owner\" and \"iMessage someone else\" came back identical and an agent that was not permitted to reach that person was handed SMS as an alternative — a fact about the BOX masking a fact about PERMISSION. Moving the transport check below the permission checks is an ordering change, not a rewrite: nothing between them reads bridge state. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/access/read.ts",
+      "from": null,
+      "to": 251,
+      "by": "UX-ACCESS A4 — the grants READER is admitted at 251, not split",
+      "why": "The growth detector asks for exactly this when an unlisted file crosses 240 of the 400-line cap, and pinning it is the visible decision it wants. This is the ONE door every enforcement layer asks — channels, the tier, integrations, credentials, tool categories and now techniques — and it is one file on purpose: the memo that makes every read a single indexed SELECT is keyed on the stored text itself, so a write to `agents.permissions` self-invalidates without any write site having to remember to forget. Splitting the readers across files would either duplicate that memo (two caches for one column, which is the second-truth shape this overhaul exists to end) or leave one file importing the other for it, which is the same file with an extra hop. Its length is mostly the account of WHY each reader exists and what its null/absent case means, and those notes are load-bearing: `techniqueGrantOf`'s absent-means-`'*'` rule is the whole A4 migration, and `mayReachOthersOn`'s note is why the tier had no reader for three phases. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -4386,7 +4400,7 @@
     "packages/server/src/agent/spawner.ts": 1459,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
     "packages/server/src/agent/tools/cat/agents.ts": 1532,
-    "packages/server/src/agent/tools/cat/comms.ts": 860,
+    "packages/server/src/agent/tools/cat/comms.ts": 914,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
     "packages/server/src/agent/tools/cat/media.ts": 897,
@@ -4592,6 +4606,7 @@
     "packages/server/src/agent/access/authorize.ts": 448,
     "packages/dashboard/src/components/AccessPanel.tsx": 396,
     "packages/shared/src/access.ts": 273,
-    "packages/dashboard/src/lib/access-edits.ts": 272
+    "packages/dashboard/src/lib/access-edits.ts": 272,
+    "packages/server/src/agent/access/read.ts": 251
   }
 }
