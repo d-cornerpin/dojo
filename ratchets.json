@@ -4348,6 +4348,41 @@
       "to": 251,
       "by": "UX-ACCESS A4 — the grants READER is admitted at 251, not split",
       "why": "The growth detector asks for exactly this when an unlisted file crosses 240 of the 400-line cap, and pinning it is the visible decision it wants. This is the ONE door every enforcement layer asks — channels, the tier, integrations, credentials, tool categories and now techniques — and it is one file on purpose: the memo that makes every read a single indexed SELECT is keyed on the stored text itself, so a write to `agents.permissions` self-invalidates without any write site having to remember to forget. Splitting the readers across files would either duplicate that memo (two caches for one column, which is the second-truth shape this overhaul exists to end) or leave one file importing the other for it, which is the same file with an extra hop. Its length is mostly the account of WHY each reader exists and what its null/absent case means, and those notes are load-bearing: `techniqueGrantOf`'s absent-means-`'*'` rule is the whole A4 migration, and `mayReachOthersOn`'s note is why the tier had no reader for three phases. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/components/AccessPanel.tsx",
+      "from": 396,
+      "to": 437,
+      "by": "UX-ACCESS A5 — the card folds and every section reveals its children",
+      "why": "+41 net (+185/-147), of which 23 net are comment and 15 net are code — this is the smallest net of the five orders it carries. DELETED: the per-credential checkbox list and the `listCredentials` fetch that fed it, the \"every tool group\" and \"every technique\" checkboxes, the disabled-and-dimmed channel rows, and two hand-rolled two-option radiogroups. ADDED: the collapse header (the dashboard's own `CollapseToggle`, not a second implementation), a one-line folded summary built from the STORED object so a shut card never reports an unsaved edit, one `Choice` component the tool mode and the two tier controls now share, one `Switch` the master and the technique access share, and the four conditional bodies the orders ask for. The panel still computes no access: every control is a field of the object the doors read, the grant MATH is in `lib/access-edits.ts`, and the audit row is written by the route. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/lib/access-edits.ts",
+      "from": 272,
+      "to": 314,
+      "by": "UX-ACCESS A5 — the panel's grant math, with the credential half deleted",
+      "why": "+42 net (+74/-31) AND THE CODE DID NOT GROW: 47 of the 74 added lines are comment against 4 deleted, so the executable net is -8. Four credential functions (`grantsEveryCredential`, `credentialChecked`, `setCredential`, `setEveryCredential`) collapse to two trivial ones because the MODEL collapsed with them; `grantsEveryCategory` / `grantsEveryTechnique` / `setEveryTechnique` are replaced by the mode and switch readers. The prose that replaced them is the part that has to be here: why FULL→INDIVIDUAL expands instead of blanking (writing `[]` would strip every tool the agent holds), why turning the technique switch on writes `'*'` (\"all checked, including ones published later\" IS the promise), and why the master's default-to-`'owner'` rule fires only when there is nothing to restore — which is what A3's survive-under-a-false-master property buys. From here this file may only shrink."
+    },
+    {
+      "path": "packages/shared/src/access.ts",
+      "from": 273,
+      "to": 301,
+      "by": "UX-ACCESS A5 — credentials become a boolean, and the fold is written down",
+      "why": "+28 net (+41/-12), 31 net of it comment: the executable net is -2, because two readers (`mayTouchCredentialIn`, `holdsAnyCredentialGrant`) are deleted and one (`foldCredentialGrant`) is added. The prose is the migration and it belongs beside the field it migrates: the measurement that justified the shape ('*' x111, [] x2 on the owner's box, no partial set anywhere and none producible by `derive.ts`), and the four cases the fold answers with the reason for each — including why a non-empty list folds UP (it already held the vault at the surface strip and at `credential_list`) and why anything malformed denies. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/access/read.ts",
+      "from": 251,
+      "to": 264,
+      "by": "UX-ACCESS A5 — the credential fold applied at the one read boundary",
+      "why": "+13 net (+20/-6), 13 of the 20 added lines comment. `mayTouchCredential` is deleted; `holdsCredentialGrant` reads the field directly, exactly as `mayUsePlaud` beside it does. The rest is the fold in `storedGrants` and the note that says why it is THERE: this function is the only place a stored grants document becomes an `AccessGrants`, so folding here means no door, route, panel or audit delta ever sees A1's list shape, and the boolean is not a type the tree merely claims. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/agents.ts",
+      "from": 1532,
+      "to": 1533,
+      "by": "UX-ACCESS A5 — the capability line's credential clause loses its list branch",
+      "why": "+1 net (+3/-2), 2 of the 3 added lines comment. The clause was a three-way ternary over `'*'` / empty / a comma-joined list; it is a two-way one over the boolean. MEASURED across all 113 agents on the owner's box: `accessLine` is byte-identical for every one of them, because `credentials: all` and `credentials: none` are the exact words the two surviving branches already produced. It is a tool RESULT (spawn_agent, get_agent_profile), tail-side, never the cached prefix. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -4399,7 +4434,7 @@
     "packages/server/src/agent/shared-state.ts": 134,
     "packages/server/src/agent/spawner.ts": 1459,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
-    "packages/server/src/agent/tools/cat/agents.ts": 1532,
+    "packages/server/src/agent/tools/cat/agents.ts": 1533,
     "packages/server/src/agent/tools/cat/comms.ts": 914,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
@@ -4604,9 +4639,9 @@
     "packages/server/src/agent/v2/outbound-ledger.ts": 459,
     "packages/server/src/prompt/registry/types.ts": 414,
     "packages/server/src/agent/access/authorize.ts": 448,
-    "packages/dashboard/src/components/AccessPanel.tsx": 396,
-    "packages/shared/src/access.ts": 273,
-    "packages/dashboard/src/lib/access-edits.ts": 272,
-    "packages/server/src/agent/access/read.ts": 251
+    "packages/dashboard/src/components/AccessPanel.tsx": 437,
+    "packages/shared/src/access.ts": 301,
+    "packages/dashboard/src/lib/access-edits.ts": 314,
+    "packages/server/src/agent/access/read.ts": 264
   }
 }
