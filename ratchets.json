@@ -4229,16 +4229,16 @@
     "packages/server/src/agent/provider-error.ts": 317,
     "packages/server/src/agent/runtime.ts": 1528,
     "packages/server/src/agent/shared-state.ts": 134,
-    "packages/server/src/agent/spawner.ts": 1420,
+    "packages/server/src/agent/spawner.ts": 1459,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
-    "packages/server/src/agent/tools/cat/agents.ts": 1392,
+    "packages/server/src/agent/tools/cat/agents.ts": 1528,
     "packages/server/src/agent/tools/cat/comms.ts": 860,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
     "packages/server/src/agent/tools/cat/media.ts": 897,
     "packages/server/src/agent/tools/cat/session.ts": 242,
     "packages/server/src/agent/tools/cat/tracker.ts": 996,
-    "packages/server/src/agent/tools/definitions.ts": 2855,
+    "packages/server/src/agent/tools/definitions.ts": 2873,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 344,
     "packages/server/src/agent/tools/gates.ts": 280,
@@ -4331,7 +4331,7 @@
     "packages/server/src/credentials/secret-fields.ts": 241,
     "packages/server/src/db/migration-backup.ts": 399,
     "packages/server/src/db/migration-checksums.ts": 277,
-    "packages/server/src/gateway/routes/agents.ts": 857,
+    "packages/server/src/gateway/routes/agents.ts": 922,
     "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2839,
     "packages/server/src/gateway/routes/memory.ts": 632,
@@ -4434,6 +4434,7 @@
     "watchdog/src/auto-rollback.ts": 333,
     "watchdog/src/index.ts": 1217,
     "packages/server/src/agent/v2/outbound-ledger.ts": 459,
-    "packages/server/src/prompt/registry/types.ts": 414
+    "packages/server/src/prompt/registry/types.ts": 414,
+    "packages/server/src/agent/access/authorize.ts": 423
   }
 }
