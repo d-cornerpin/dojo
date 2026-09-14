@@ -116,8 +116,17 @@ export function readLegacyAccess(
 
 // ── Build ──
 
+/** The TEN keys the old editor wrote, named so the identity is checkable. */
+export interface LegacyManifest {
+  file_read: string[] | '*'; file_write: string[] | '*'; file_delete: string[] | 'none';
+  exec_allow: string[]; exec_deny: string[];
+  network_domains: string[] | '*' | 'none';
+  max_processes: number; can_spawn_agents: boolean; can_assign_permissions: boolean;
+  system_control: string[];
+}
+
 export interface LegacyDocument {
-  permissions: Record<string, unknown>;
+  permissions: LegacyManifest;
   toolsPolicy: ToolsPolicy;
   shareUserProfile: boolean;
 }
@@ -165,10 +174,26 @@ export function legacyDirty(original: LegacyAccess, draft: LegacyAccess): boolea
 
 // ── The words the panel says about this half ──
 
-/** Which of the two legacy items in "What it can reach" are on. */
+/**
+ * Which of the two folded-in items in "What it can reach" are on.
+ *
+ * ASKED OF THE BUILT DOCUMENT, NOT OF THE SWITCH, and that is load-bearing. The
+ * old editor's "Run Terminal Commands" switch turns on with an EMPTY command
+ * list, and an empty `exec_allow` grants nothing — so a summary that read the
+ * switch would say "programs" about an agent that will be refused every command
+ * the moment it is saved. Driven in the A6 Playwright run: the switch went on,
+ * the stored `exec_allow` came back `[]`. The storage rule is untouched; what
+ * changed is that the panel now reports the value rather than the intent, and
+ * `programsAreEmpty` below is what the row says on screen about the gap.
+ */
 export function legacyReachSummary(s: LegacyAccess): { web: boolean; programs: boolean } {
-  return { web: s.searchOn || s.browseOn, programs: s.execOn };
+  const built = buildLegacyAccess(s);
+  return { web: s.searchOn || s.browseOn, programs: built.permissions.exec_allow.length > 0 };
 }
+
+/** The switch is on and the list is empty: on screen, nothing is granted. */
+export const programsAreEmpty = (s: LegacyAccess): boolean =>
+  s.execOn && buildLegacyAccess(s).permissions.exec_allow.length === 0;
 
 /** The folded state line for "What it may manage". */
 export function manageSummary(s: LegacyAccess): string {

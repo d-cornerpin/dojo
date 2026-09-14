@@ -21,7 +21,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { useState } from 'react';
-import type { LegacyAccess } from '../lib/manifest-edits';
+import { programsAreEmpty, type LegacyAccess } from '../lib/manifest-edits';
 import { Item, Scope, Toggle } from './AccessControls';
 
 interface Props {
@@ -95,6 +95,9 @@ export const ReachManifestItems = ({ state, onChange, editable, note }: Props) =
           onList={(v) => edit({ execList: v })}
           placeholder="ls, cat, node, npm, git"
         />
+        {programsAreEmpty(state) && (
+          <div className="fhelp">No commands listed yet, so this grants nothing until you name some.</div>
+        )}
       </Flag>
     </>
   );

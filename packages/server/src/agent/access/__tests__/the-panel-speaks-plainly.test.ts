@@ -45,7 +45,7 @@ import { ACCESS_PRESETS } from '../presets.js';
 import { accessDigest, toolsSummary, talkSummary, reachSummary, knowsSummary } from '../../../../../dashboard/src/lib/access-summary.js';
 import {
   readLegacyAccess, buildLegacyAccess, legacyDirty, manageSummary, legacyReachSummary,
-  type LegacyAccess,
+  programsAreEmpty, type LegacyAccess,
 } from '../../../../../dashboard/src/lib/manifest-edits.js';
 
 const DASH = path.resolve(
@@ -204,9 +204,17 @@ describe('each row says its own state on its folded header', () => {
     expect(manageSummary(all)).toBe('Your files, this Mac, other agents');
   });
 
-  it('the legacy reach summary names only what is on', () => {
+  it('⚠ THE REACH SUMMARY READS THE VALUE, NOT THE SWITCH', () => {
+    // Found in the A6 Playwright drive: the old "Run Terminal Commands" switch
+    // goes on with an EMPTY command list, and an empty `exec_allow` grants
+    // nothing — so a summary that read the switch would say "programs" about an
+    // agent about to be refused every command. The storage rule is untouched.
     expect(legacyReachSummary(off)).toEqual({ web: false, programs: false });
-    expect(legacyReachSummary({ ...off, execOn: true })).toEqual({ web: false, programs: true });
+    expect(legacyReachSummary({ ...off, execOn: true })).toEqual({ web: false, programs: false });
+    expect(programsAreEmpty({ ...off, execOn: true })).toBe(true);
+    expect(legacyReachSummary({ ...off, execOn: true, execList: 'ls' })).toEqual({ web: false, programs: true });
+    expect(legacyReachSummary({ ...off, execOn: true, execAll: true })).toEqual({ web: false, programs: true });
+    expect(programsAreEmpty({ ...off, execOn: true, execAll: true })).toBe(false);
     expect(legacyReachSummary({ ...off, browseOn: true })).toEqual({ web: true, programs: false });
   });
 });
