@@ -286,8 +286,9 @@ export function accessLine(agentId: string): string {
     if (p.agent !== 'none' || p.user !== 'none') integrations.push(`${which} ${p.agent}/${p.user}`);
   }
   parts.push(`integrations: ${integrations.length ? integrations.join(', ') : 'none'}`);
-  const creds = g.integrations.credentials;
-  parts.push(`credentials: ${creds === '*' ? 'all' : creds.length === 0 ? 'none' : creds.join(', ')}`);
+  // UX-ACCESS A5: one switch, and the two words it produces are the two the
+  // `'*'` / `[]` branches produced before it — so no live agent's line moves.
+  parts.push(`credentials: ${g.integrations.credentials ? 'all' : 'none'}`);
   // UX-ACCESS A4. Through `techniqueGrantOf`, so a row written before A4 reads
   // as the `'*'` it means rather than as an empty section.
   const techs = techniqueGrantOf(g);

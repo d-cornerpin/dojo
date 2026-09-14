@@ -151,8 +151,14 @@ describe('the credential tools are gated', () => {
     expect(g!.kind === 'credential' && g!.service).toBe('stripe_live');
   });
 
-  it('⚠ THE HOLE IS SHUT: an ungranted service is refused and AUDITED', async () => {
-    agent('reader', 'ronin', (g) => { g.integrations.credentials = ['plaud_token']; });
+  it('⚠ THE HOLE IS SHUT: an ungranted agent is refused and AUDITED', async () => {
+    // A1 scoped the refusal per SERVICE NAME; the owner's A5 order made the grant
+    // one switch and deleted the per-name reader, so the fixture is an agent that
+    // holds no credential access rather than one that holds a different name. The
+    // hole this clause was written for — census C3, any agent deletes any
+    // credential — is the same hole and is still shut, and the AUDIT still names
+    // the credential that was reached for.
+    agent('reader', 'ronin', (g) => { g.integrations.credentials = false; });
     const gate = gatesForCall('credential_delete', { service_name: 'stripe_live' })
       .find((x) => x.kind === 'credential')!;
     const out = await evaluateGate(gate, ctx('reader', 'credential_delete', { service_name: 'stripe_live' }));
@@ -161,14 +167,14 @@ describe('the credential tools are gated', () => {
     expect(out.resource).toBe('stripe_live');
   });
 
-  it('THE POSITIVE CONTROL: the granted service still opens', async () => {
-    agent('reader', 'ronin', (g) => { g.integrations.credentials = ['plaud_token']; });
+  it('THE POSITIVE CONTROL: a granted agent still opens it', async () => {
+    agent('reader', 'ronin', (g) => { g.integrations.credentials = true; });
     const gate = gatesForCall('credential_get', { service_name: 'plaud_token' })
       .find((x) => x.kind === 'credential')!;
     expect((await evaluateGate(gate, ctx('reader', 'credential_get', { service_name: 'plaud_token' }))).verdict.allowed).toBe(true);
   });
 
-  it('THE MIGRATION CONTROL: an agent carrying the migrated `*` is refused nothing', async () => {
+  it('THE MIGRATION CONTROL: an agent carrying the migrated grant is refused nothing', async () => {
     agent('worker', 'apprentice');
     const gate = gatesForCall('credential_delete', { service_name: 'stripe_live' })
       .find((x) => x.kind === 'credential')!;
@@ -176,7 +182,7 @@ describe('the credential tools are gated', () => {
   });
 
   it('`credential_list` names no service, so it gates on holding ANY grant', async () => {
-    agent('none', 'apprentice', (g) => { g.integrations.credentials = []; });
+    agent('none', 'apprentice', (g) => { g.integrations.credentials = false; });
     const gate = gatesForCall('credential_list', {}).find((x) => x.kind === 'credential')!;
     expect((await evaluateGate(gate, ctx('none', 'credential_list'))).verdict.allowed).toBe(false);
   });

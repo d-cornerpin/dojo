@@ -51,12 +51,12 @@ vi.mock('../../../config/platform.js', async () => {
 
 import {
   MOST_RESTRICTIVE_GRANTS, channelTierOf, mayReachChannel, mayReachOthersOn,
-  providerLevelOf, mayTouchCredentialIn, stableGrantsText, type AccessGrants,
+  providerLevelOf, stableGrantsText, type AccessGrants,
 } from '@dojo/shared';
 import { deriveLegacyGrants } from '../derive.js';
 import {
   getAccessGrants, forgetAccessGrants, mayUseChannel, channelTierFor, hasChannelMaster,
-  integrationLevelFor, mayTouchCredential, holdsCredentialGrant, toolCategoryGranted,
+  integrationLevelFor, holdsCredentialGrant, toolCategoryGranted,
 } from '../read.js';
 import { materializeAccessGrants, writeGrantsIfAbsent } from '../materialize.js';
 import { channelForTool, CHANNEL_TOOLS } from '../channels.js';
@@ -130,10 +130,12 @@ describe('owner ruling 1 — the master switch, and per-channel grants beneath i
 
   it('owner ruling 2 is EXPRESSIBLE: the most-restrictive shape holds nothing but files', () => {
     expect(MOST_RESTRICTIVE_GRANTS.channels.master).toBe(false);
-    expect(MOST_RESTRICTIVE_GRANTS.integrations.credentials).toEqual([]);
+    // UX-ACCESS A5 folded the credential grant to one switch (owner order). The
+    // requirement is unchanged — the floor reaches no credential — and it is now
+    // one value rather than an empty list plus a per-name reader.
+    expect(MOST_RESTRICTIVE_GRANTS.integrations.credentials).toBe(false);
     expect(MOST_RESTRICTIVE_GRANTS.integrations.plaud).toBe(false);
     expect(providerLevelOf(MOST_RESTRICTIVE_GRANTS.integrations.google, 'user')).toBe('none');
-    expect(mayTouchCredentialIn(MOST_RESTRICTIVE_GRANTS, 'stripe_live')).toBe(false);
   });
 });
 
@@ -188,7 +190,9 @@ describe('owner ruling 3 — the snapshot reproduces today’s effective access'
   it('Plaud and the credential vault are snapshot as they are today: everyone', () => {
     // Census C13 and C3 — the two integrations with no identity check at all.
     expect(deriveLegacyGrants('worker').integrations.plaud).toBe(true);
-    expect(deriveLegacyGrants('worker').integrations.credentials).toBe('*');
+    // A1 snapshotted this as `'*'`; A5 folded the field to the boolean the owner
+    // edits. Same measurement, one shape.
+    expect(deriveLegacyGrants('worker').integrations.credentials).toBe(true);
   });
 });
 
@@ -253,7 +257,7 @@ describe('the channel doors take agent identity, not a role singleton', () => {
     const reader = grantsWith(deriveLegacyGrants('reader'), (g) => {
       g.integrations.google.user = 'none';
       g.integrations.microsoft.user = 'none';
-      g.integrations.credentials = ['plaud_token'];
+      g.integrations.credentials = true;
     });
     mockDb.current!.prepare('UPDATE agents SET permissions = ? WHERE id = ?').run(operator, 'operator');
     mockDb.current!.prepare('UPDATE agents SET permissions = ? WHERE id = ?').run(reader, 'reader');
@@ -281,28 +285,29 @@ describe('the channel doors take agent identity, not a role singleton', () => {
   });
 });
 
-describe('credentials are scoped to the grant', () => {
+describe('the credential vault is reachable only by grant', () => {
+  // A1 scoped this per SERVICE NAME. The owner's A5 order collapses it to one
+  // switch and the MODEL with it, so the per-name half of these clauses is gone
+  // with the mechanism it pinned. THE REQUIREMENT THE FILE WAS WRITTEN FOR IS
+  // UNCHANGED and is what is asserted below: census C3's hole — any agent could
+  // read, update or DELETE any credential — is still shut, and the positive
+  // control still opens. `the-credential-grant-is-one-switch.test.ts` carries
+  // the fold itself and the executor wall keyed on it.
   beforeEach(() => {
     seed([{ id: 'reader', classification: 'ronin' }, { id: 'worker', classification: 'apprentice' }]);
-    const reader = grantsWith(deriveLegacyGrants('reader'), (g) => { g.integrations.credentials = ['plaud_token']; });
-    const none = grantsWith(deriveLegacyGrants('worker'), (g) => { g.integrations.credentials = []; });
+    const reader = grantsWith(deriveLegacyGrants('reader'), (g) => { g.integrations.credentials = true; });
+    const none = grantsWith(deriveLegacyGrants('worker'), (g) => { g.integrations.credentials = false; });
     mockDb.current!.prepare('UPDATE agents SET permissions = ? WHERE id = ?').run(reader, 'reader');
     mockDb.current!.prepare('UPDATE agents SET permissions = ? WHERE id = ?').run(none, 'worker');
     forgetAccessGrants();
   });
 
   it('⚠ THE any-AGENT-DELETES-ANY-CREDENTIAL HOLE IS SHUT', () => {
-    expect(mayTouchCredential('reader', 'stripe_live')).toBe(false);
-  });
-
-  it('THE POSITIVE CONTROL: the one it WAS granted still opens', () => {
-    expect(mayTouchCredential('reader', 'plaud_token')).toBe(true);
-    expect(holdsCredentialGrant('reader')).toBe(true);
-  });
-
-  it('an empty grant holds nothing at all, and the vault stops being reachable', () => {
     expect(holdsCredentialGrant('worker')).toBe(false);
-    expect(mayTouchCredential('worker', 'plaud_token')).toBe(false);
+  });
+
+  it('THE POSITIVE CONTROL: a granted agent still reaches the vault', () => {
+    expect(holdsCredentialGrant('reader')).toBe(true);
   });
 });
 

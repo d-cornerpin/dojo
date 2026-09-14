@@ -191,7 +191,7 @@ describe('the presets the plan names', () => {
   it('⚠ "Full trust" — primary-like: every group, every channel, the whole vault', () => {
     const g = byId('full_trust')!.grants;
     expect(g.tools.categories).toBe('*');
-    expect(g.integrations.credentials).toBe('*');
+    expect(g.integrations.credentials).toBe(true);
     expect(g.integrations.plaud).toBe(true);
     expect(g.integrations.google.agent).toBe('full');
     expect(g.channels.master).toBe(true);
@@ -361,12 +361,15 @@ describe('the Access panel is bound to the real object, both directions', () => 
     }
   });
 
-  it('⚠ THE ÜBER-TOGGLE GATES ITS CHILDREN — the per-channel rows are disabled beneath it', () => {
+  it('⚠ THE ÜBER-TOGGLE GATES ITS CHILDREN — they do not exist beneath a false master', () => {
     const src = panel();
     expect(src).toContain('Allowed to talk to humans');
-    // The children are rendered inert when the master is off, in the DOM and not
-    // only in the eye: owner ruling 1's "inert unless the master is on".
-    expect(src).toMatch(/disabled=\{[^}]*master/);
+    // A3 drew the children DISABLED and dimmed; the owner's A5 order hides them
+    // instead, which is strictly stronger — there is no control to reach at all.
+    // The requirement is unchanged and still lives in `channelTierOf`: owner
+    // ruling 1's "inert unless the master is on".
+    expect(src).toMatch(/\{on && \(/);
+    expect(src, 'no disabled-but-present per-channel row survives').not.toMatch(/disabled=\{!masterOn/);
   });
 
   it('⚠ A SENSEI THAT IS NOT THE PRIMARY GETS NO MASTER TOGGLE, AND IS TOLD WHY', () => {

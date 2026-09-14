@@ -107,8 +107,11 @@ export function deriveGrantsFromRow(
       plaud: true,
       // surface.ts:604 pushes the credential tools unconditionally and
       // `gatesForCall` mints no `secrets` gate, so every agent may read, update
-      // or delete every credential today (census C3). `'*'` is that fact.
-      credentials: '*',
+      // or delete every credential today (census C3). `true` is that fact —
+      // A1 wrote `'*'` here, and UX-ACCESS A5 collapsed the field to the boolean
+      // the owner edits, which is the same measurement in the shape that can now
+      // be stated on screen.
+      credentials: true,
       google: { agent: tier, user: tier },
       microsoft: { agent: tier, user: tier },
     },

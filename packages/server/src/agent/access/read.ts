@@ -19,7 +19,7 @@
 
 import type { AccessChannel, AccessGrants, AccountKind, IntegrationLevel, ToolGrants } from '@dojo/shared';
 import {
-  channelTierOf, mayReachChannel, mayTouchCredentialIn, holdsAnyCredentialGrant,
+  channelTierOf, mayReachChannel, foldCredentialGrant,
   categoryGranted, providerLevelOf, techniqueGrantOf, techniqueGranted, holdsAnyTechniqueGrant,
   mayReachOthersOn as mayReachOthersOnIn,
 } from '@dojo/shared';
@@ -51,7 +51,16 @@ function storedGrants(raw: string | null): AccessGrants | null {
     // reader below indexes into, and a half-written object must fall back to the
     // measured derivation rather than throw at a tool door.
     if (!g || g.v !== 1 || !g.tools || !g.integrations || !g.channels) return null;
-    return { ...g, tools: { ...g.tools, ...canonicalizeToolsPolicy(g.tools) } };
+    return {
+      ...g,
+      tools: { ...g.tools, ...canonicalizeToolsPolicy(g.tools) },
+      // UX-ACCESS A5 — THE CREDENTIAL FOLD, APPLIED ONCE, HERE.
+      // Every stored row written before A5 carries the A1 list shape (`'*'` on
+      // all 111 live agents). Folding at this boundary means no door, no route,
+      // no panel and no audit delta ever sees it, so the boolean is not a type
+      // the tree merely claims — it is the only value that leaves this function.
+      integrations: { ...g.integrations, credentials: foldCredentialGrant(g.integrations.credentials) },
+    };
   } catch {
     return null;
   }
@@ -154,12 +163,16 @@ export function mayUsePlaud(agentId: string): boolean {
 
 // ── Credentials ──
 
-export function mayTouchCredential(agentId: string, serviceName: string): boolean {
-  return mayTouchCredentialIn(getAccessGrants(agentId), serviceName);
-}
-
+/**
+ * May this agent reach the credential store? (UX-ACCESS A5.)
+ *
+ * ONE question, read exactly the way `mayUsePlaud` above reads its own boolean.
+ * A1's per-service sibling is deleted rather than kept for one caller: the
+ * owner's ruling is that credentials are all-or-none, and a second, finer
+ * authority living below a single toggle is the drift this phase ends.
+ */
 export function holdsCredentialGrant(agentId: string): boolean {
-  return holdsAnyCredentialGrant(getAccessGrants(agentId));
+  return getAccessGrants(agentId).integrations.credentials;
 }
 
 // ── Tools ──

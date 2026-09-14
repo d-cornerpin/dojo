@@ -26,7 +26,7 @@ import {
 } from '../brokers/index.js';
 import { EFFECT_FROM_ARGS, EFFECT_FROM_FIXED, type EffectKind } from './types.js';
 import {
-  mayUseChannel, mayTouchCredential, holdsCredentialGrant,
+  mayUseChannel, holdsCredentialGrant,
   toolCategoryGranted, toolCategoryLabels,
 } from '../access/read.js';
 import type { ToolGate } from './gates.js';
@@ -236,27 +236,25 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
             auditAs: name,
           };
 
-    // ── Row 16: the credential store, scoped at last ──
-    // `service === null` is `credential_list`, which names no service and is
-    // therefore asking "may this agent see the vault at all".
-    case 'credential': {
-      const ok = gate.service === null
-        ? holdsCredentialGrant(agentId)
-        : mayTouchCredential(agentId, gate.service);
-      return ok ? skip(gate) : {
+    // ── Row 16: the credential store, ONE question (UX-ACCESS A5) ──
+    // A1 asked two — "may it see the vault" for `credential_list`, and "may it
+    // touch THIS name" for the other four. The owner's ruling collapses the
+    // grant to a single switch, so the row asks the single question and the
+    // sentence stops describing a per-credential rule that no longer exists.
+    // `gate.service` survives as the AUDIT resource: the message lost detail on
+    // purpose, the ledger row did not.
+    case 'credential':
+      return holdsCredentialGrant(agentId) ? skip(gate) : {
         gate,
         verdict: denied(
           'credential-not-granted',
-          gate.service === null
-            ? 'this agent holds no credential grant'
-            : `credential "${gate.service}" is not granted to this agent`,
-          `Permission denied: ${gate.service === null ? 'the credential store is' : `the credential "${gate.service}" is`} not in this agent's grants. The request was not performed. Ask the primary agent to grant it if this needs to happen.`,
+          'this agent has no access to stored credentials',
+          'Permission denied: this agent does not have access to stored credentials. The request was not performed. Ask the primary agent to grant it if this needs to happen.',
         ),
         resource: gate.service,
         errorCode: 'PERMISSION_DENIED',
         auditAs: name,
       };
-    }
 
     // ── Row 17: the positive category grant, AT THE EXECUTOR (A3 rider) ──
     // The same predicate `surface.ts` filters the advertised list with. The strip

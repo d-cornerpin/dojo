@@ -39,10 +39,10 @@
 //
 // ── WHY THE EXCESS CHECK READS THE PATCH AND NOT THE RESULT ──
 // `update_agent` merges over the TARGET's current object. A target that already
-// holds `credentials:'*'` from the A1 migration is not something the caller
-// granted, and refusing an unrelated edit because of it would make the door
-// unusable on exactly the agents the owner most wants to narrow. So the check
-// reads what the CALLER asked for.
+// holds `categories:'*'` and the credential switch from the A1 migration is not
+// something the caller granted, and refusing an unrelated edit because of it
+// would make the door unusable on exactly the agents the owner most wants to
+// narrow. So the check reads what the CALLER asked for.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { z } from 'zod';
@@ -87,7 +87,11 @@ export const grantsPatchSchema = z.object({
   }).strict().optional(),
   integrations: z.object({
     plaud: z.boolean().optional(),
-    credentials: nameList.optional(),
+    // UX-ACCESS A5 — a BOOLEAN, the same shape as `plaud` above it. A model that
+    // sends A1's `'*'` or a list of service names is REFUSED with the field
+    // named, which is the schema teaching the shape rather than silently
+    // accepting a grant the caller believed it made.
+    credentials: z.boolean().optional(),
     google: providerSchema.optional(),
     microsoft: providerSchema.optional(),
   }).strict().optional(),
@@ -210,13 +214,10 @@ export function grantExcesses(
   if (patch.integrations?.plaud === true && !holder.integrations.plaud) {
     out.push('integrations.plaud: cannot grant Plaud — you do not hold it');
   }
-  if (patch.integrations?.credentials !== undefined) {
-    const { ok, extra } = nameSubset(patch.integrations.credentials, holder.integrations.credentials);
-    if (!ok) {
-      out.push(extra[0] === '*'
-        ? 'integrations.credentials: cannot grant every credential — your own grant names a bounded list'
-        : `integrations.credentials: cannot grant ${extra.map((c) => `"${c}"`).join(', ')} — ${extra.length > 1 ? 'they are' : 'it is'} not in your credential grant`);
-    }
+  // UX-ACCESS A5: one switch, so one rule — the same one Plaud gets above.
+  // Withholding is always allowed; only granting what you do not hold is not.
+  if (patch.integrations?.credentials === true && !holder.integrations.credentials) {
+    out.push('integrations.credentials: cannot grant access to stored credentials — you do not hold it');
   }
   providerExcesses('google', patch.integrations?.google, holder.integrations.google, out);
   providerExcesses('microsoft', patch.integrations?.microsoft, holder.integrations.microsoft, out);
@@ -262,7 +263,7 @@ export function mergeGrants(base: AccessGrants, patch: GrantsPatch): AccessGrant
   if (patch.integrations) {
     const i = patch.integrations;
     if (i.plaud !== undefined) g.integrations.plaud = i.plaud;
-    if (i.credentials !== undefined) g.integrations.credentials = i.credentials === '*' ? '*' : [...i.credentials];
+    if (i.credentials !== undefined) g.integrations.credentials = i.credentials;
     for (const which of ['google', 'microsoft'] as const) {
       const p = i[which];
       if (!p) continue;
@@ -306,12 +307,7 @@ export function clampGrantsTo(grants: AccessGrants, holder: AccessGrants): Acces
     g.tools.allow = [...holder.tools.allow];
   }
   if (!holder.integrations.plaud) g.integrations.plaud = false;
-  if (holder.integrations.credentials !== '*') {
-    const held = new Set(holder.integrations.credentials);
-    g.integrations.credentials = g.integrations.credentials === '*'
-      ? [...holder.integrations.credentials]
-      : g.integrations.credentials.filter((c) => held.has(c));
-  }
+  if (!holder.integrations.credentials) g.integrations.credentials = false;
   for (const which of ['google', 'microsoft'] as const) {
     for (const kind of ['agent', 'user'] as const) {
       const cap = providerLevelOf(holder.integrations[which], kind);

@@ -32,16 +32,27 @@ export function CollapseToggle({ collapsed, onClick, label }: { collapsed: boole
   );
 }
 
-/** Per-key collapsed state for a group of panels, persisted to localStorage so
- *  the channels tab stays tidy across reloads. */
-export function usePanelCollapse(storageKey: string) {
+/**
+ * Per-key collapsed state for a group of panels, persisted to localStorage so a
+ * tab stays tidy across reloads.
+ *
+ * `defaultCollapsed` is what a key answers before anybody has touched it. It
+ * lives in the hook rather than at the call site (where the three channel panels
+ * each wrote their own `?? true`) because `toggle` has to agree with it: flipping
+ * an untouched key has to flip it away from the DEFAULT, and a call site cannot
+ * teach that to a `!prev[k]`. `isCollapsed` is therefore the only way to ask.
+ *
+ * UX-ACCESS A5 added the parameter for the Access panel, which opens collapsed.
+ */
+export function usePanelCollapse(storageKey: string, defaultCollapsed = false) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
     try { return JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch { return {}; }
   });
+  const isCollapsed = (k: string): boolean => collapsed[k] ?? defaultCollapsed;
   const toggle = (k: string) => setCollapsed(prev => {
-    const next = { ...prev, [k]: !prev[k] };
+    const next = { ...prev, [k]: !(prev[k] ?? defaultCollapsed) };
     try { localStorage.setItem(storageKey, JSON.stringify(next)); } catch { /* ignore */ }
     return next;
   });
-  return { collapsed, toggle };
+  return { isCollapsed, toggle };
 }

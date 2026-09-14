@@ -78,8 +78,24 @@ export interface ProviderGrants {
 export interface IntegrationGrants {
   /** Plaud is one global connect flag today; this is the per-agent half. */
   plaud: boolean;
-  /** Credential service names this agent may read/write/delete. `'*'` = all. */
-  credentials: string[] | '*';
+  /**
+   * MAY THIS AGENT REACH THE CREDENTIAL STORE AT ALL? (owner order, UX-ACCESS A5.)
+   *
+   * A1 declared this as `string[] | '*'` — a per-service allow-list. The owner's
+   * ruling is that the honest shape is all-or-none, and the measurement agrees:
+   * across the 113 stored rows on the owner's box the value was `'*'` on 111 and
+   * `[]` on the two A4 exemplars. **Nothing had ever named a subset**, and
+   * nothing could: `derive.ts` answers `'*'` and only `'*'`.
+   *
+   * So the field is the same kind of switch `plaud` beside it already is, read
+   * the same way (directly — there is no helper, because there is no rule to
+   * hide), and the per-name reader is deleted rather than left with one caller.
+   * A second, finer reading of a field the panel draws as one toggle is exactly
+   * the drift this overhaul exists to end.
+   *
+   * The migration is `foldCredentialGrant`, applied at the one read boundary.
+   */
+  credentials: boolean;
   google: ProviderGrants;
   microsoft: ProviderGrants;
 }
@@ -161,16 +177,28 @@ export function providerLevelOf(
   return provider[kind] ?? 'none';
 }
 
-/** May this agent touch the credential stored under `serviceName`? */
-export function mayTouchCredentialIn(grants: AccessGrants, serviceName: string): boolean {
-  const c = grants.integrations.credentials;
-  return c === '*' || c.includes(serviceName);
-}
-
-/** Does this agent hold ANY credential grant (i.e. is the vault reachable)? */
-export function holdsAnyCredentialGrant(grants: AccessGrants): boolean {
-  const c = grants.integrations.credentials;
-  return c === '*' || c.length > 0;
+/**
+ * A STORED credential grant, read as the boolean it now is (UX-ACCESS A5).
+ *
+ * This is the whole migration, and it is a READER rule so that no row is
+ * rewritten and no DDL runs — the same shape A4's `techniqueGrantOf` used for
+ * an absent section.
+ *
+ *   `'*'`            → true    the value all 111 live agents carry
+ *   `[]`             → false   the value A4's two exemplars carry
+ *   a non-empty list → true    holding one name was already holding the vault:
+ *                              the surface strip and the `credential_list` door
+ *                              both answered yes for such an agent. **No row on
+ *                              the owner's box is in this state and none can be
+ *                              produced by `derive.ts`**, so the case is
+ *                              answered here rather than left to a cast.
+ *   anything else    → false   a malformed field never widens.
+ */
+export function foldCredentialGrant(stored: unknown): boolean {
+  if (typeof stored === 'boolean') return stored;
+  if (stored === '*') return true;
+  if (Array.isArray(stored)) return stored.length > 0;
+  return false;
 }
 
 /** Is this `TOOL_CATEGORIES` label granted? Uncategorized tools are never here. */
@@ -242,7 +270,7 @@ export const MOST_RESTRICTIVE_GRANTS: AccessGrants = {
   tools: { categories: ['Meta', 'File & System', 'Managing Other Agents'], allow: [], deny: [] },
   integrations: {
     plaud: false,
-    credentials: [],
+    credentials: false,
     google: { agent: 'none', user: 'none' },
     microsoft: { agent: 'none', user: 'none' },
   },

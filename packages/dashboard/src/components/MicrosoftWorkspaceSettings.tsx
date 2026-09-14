@@ -66,7 +66,7 @@ export const MicrosoftWorkspaceSettings = () => {
   const [showActivity, setShowActivity] = useState(false);
   const [connecting, setConnecting] = useState<ConnectingState | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { collapsed, toggle } = usePanelCollapse('channels.collapse.microsoft');
+  const { isCollapsed, toggle } = usePanelCollapse('channels.collapse.microsoft', true);
 
   useEffect(() => {
     loadStatus();
@@ -253,21 +253,21 @@ export const MicrosoftWorkspaceSettings = () => {
         const hasRows = accounts.length > 0;
         const atCap = connectedCount >= status.maxPerKind;
         const adding = connecting?.key === `add:${kind}`;
-        const isCollapsed = collapsed[kind] ?? true;
+        const collapsed = isCollapsed(kind);
 
         return (
           <div key={kind} className="tile space-y-4">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <h3 className="scard__title">{meta.title}</h3>
-                {!isCollapsed && <p className="text-xs text-ui/40 mt-1">{meta.subtitle}</p>}
+                {!collapsed && <p className="text-xs text-ui/40 mt-1">{meta.subtitle}</p>}
               </div>
-              <CollapseToggle collapsed={isCollapsed} onClick={() => toggle(kind)} label={meta.title} />
+              <CollapseToggle collapsed={collapsed} onClick={() => toggle(kind)} label={meta.title} />
             </div>
 
             {error && kind === 'agent' && <div className="alert-banner alert-error">{error}</div>}
 
-            {isCollapsed ? (
+            {collapsed ? (
               <div className="space-y-2">
                 {hasRows ? (
                   <>

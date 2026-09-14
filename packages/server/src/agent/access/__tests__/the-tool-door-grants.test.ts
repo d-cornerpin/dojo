@@ -138,7 +138,7 @@ describe('a spawn that names no grants gets the most restrictive object', () => 
     agent('primary', 'sensei');
     const legacy = deriveLegacyGrants('primary');
     expect(legacy.tools.categories).toBe('*');
-    expect(legacy.integrations.credentials).toBe('*');
+    expect(legacy.integrations.credentials).toBe(true);
     // The two must differ, or "most restrictive" is a synonym for "unchanged".
     expect(stableGrantsText(MOST_RESTRICTIVE_GRANTS)).not.toBe(stableGrantsText(legacy));
   });
@@ -148,7 +148,7 @@ describe('a spawn that names no grants gets the most restrictive object', () => 
     const out = resolveSpawnGrants(undefined, getAccessGrants('primary'), true);
     const g = (out as { ok: true; grants: AccessGrants }).grants;
     expect(g.channels.master).toBe(false);
-    expect(g.integrations.credentials).toEqual([]);
+    expect(g.integrations.credentials).toBe(false);
     expect(g.integrations.plaud).toBe(false);
     expect(g.integrations.google.agent).toBe('none');
   });
@@ -177,16 +177,19 @@ describe('a spawn that names no grants gets the most restrictive object', () => 
 // ════════════════════════════════════════════════════════════════════════════════
 
 describe('the no-escalation rule', () => {
-  it('⚠ A GRANTER CANNOT HAND OUT A CREDENTIAL IT DOES NOT HOLD', () => {
-    agent('holder', 'ronin', (g) => { g.integrations.credentials = ['plaud_token']; });
+  it('⚠ A GRANTER CANNOT HAND OUT CREDENTIAL ACCESS IT DOES NOT HOLD', () => {
+    // A1 scoped this per service name; the owner's A5 order made the grant one
+    // switch, so the rule is Plaud's rule exactly. What it PINS is unchanged: an
+    // agent cannot mint a child that reaches the vault it cannot reach itself.
+    agent('holder', 'ronin', (g) => { g.integrations.credentials = false; });
     const excesses = grantExcesses(
-      { integrations: { credentials: ['stripe_live'] } },
+      { integrations: { credentials: true } },
       getAccessGrants('holder'),
       false,
     );
     expect(excesses.length).toBeGreaterThan(0);
     expect(excesses.join(' ')).toMatch(/credential/i);
-    expect(excesses.join(' ')).toContain('stripe_live');
+    expect(grantExcesses({ integrations: { credentials: false } }, getAccessGrants('holder'), false)).toEqual([]);
   });
 
   it('⚠ A GRANTER CANNOT HAND OUT A CHANNEL TIER ABOVE ITS OWN', () => {
@@ -243,7 +246,7 @@ describe('the no-escalation rule', () => {
     expect(grantExcesses(
       {
         tools: { categories: '*' },
-        integrations: { plaud: true, credentials: '*', google: { agent: 'full', user: 'full' } },
+        integrations: { plaud: true, credentials: true, google: { agent: 'full', user: 'full' } },
         channels: { master: true, imessage: 'all', sms: 'all' },
       },
       getAccessGrants('primary'),
@@ -266,14 +269,14 @@ describe('the no-escalation rule', () => {
 
 describe('resolveSpawnGrants / resolveUpdateGrants', () => {
   it('⚠ A SPAWN THAT ESCALATES IS REFUSED WITH A MESSAGE THAT NAMES THE FIELD', () => {
-    agent('holder', 'ronin', (g) => { g.integrations.credentials = ['plaud_token']; });
+    agent('holder', 'ronin', (g) => { g.integrations.credentials = false; });
     const out = resolveSpawnGrants(
-      { integrations: { credentials: ['stripe_live'] } },
+      { integrations: { credentials: true } },
       getAccessGrants('holder'),
       false,
     );
     expect(out.ok).toBe(false);
-    expect(!out.ok && out.reason).toMatch(/stripe_live/);
+    expect(!out.ok && out.reason).toMatch(/integrations\.credentials/);
     expect(!out.ok && out.reason).toMatch(/cannot grant/i);
   });
 
@@ -288,7 +291,7 @@ describe('resolveSpawnGrants / resolveUpdateGrants', () => {
     const g = (out as { ok: true; grants: AccessGrants }).grants;
     expect(g.channels.imessage).toBe('owner');
     expect(g.channels.sms).toBe('none');          // untouched sections keep the floor
-    expect(g.integrations.credentials).toEqual([]);
+    expect(g.integrations.credentials).toBe(false);
     expect(g.tools.categories).toEqual(['Web']);
   });
 
@@ -296,7 +299,7 @@ describe('resolveSpawnGrants / resolveUpdateGrants', () => {
     agent('primary', 'sensei');
     const target = agent('worker', 'apprentice', (g) => {
       g.tools.categories = ['Web'];
-      g.integrations.credentials = ['plaud_token'];
+      g.integrations.credentials = true;
     });
     const out = resolveUpdateGrants(
       { channels: { master: true, imessage: 'owner' } },
@@ -307,16 +310,16 @@ describe('resolveSpawnGrants / resolveUpdateGrants', () => {
     expect(out.ok).toBe(true);
     const g = (out as { ok: true; grants: AccessGrants }).grants;
     expect(g.tools.categories).toEqual(['Web']);
-    expect(g.integrations.credentials).toEqual(['plaud_token']);
+    expect(g.integrations.credentials).toBe(true);
     expect(g.channels.imessage).toBe('owner');
   });
 
   it('the excess check reads the PATCH, not the merged result — a pre-existing grant is not the caller’s escalation', () => {
-    const target = agent('rich', 'ronin', (g) => { g.integrations.credentials = '*'; });
-    agent('poor', 'ronin', (g) => { g.integrations.credentials = []; g.tools.categories = ['Web']; });
+    const target = agent('rich', 'ronin', (g) => { g.integrations.credentials = true; });
+    agent('poor', 'ronin', (g) => { g.integrations.credentials = false; g.tools.categories = ['Web']; });
     const out = resolveUpdateGrants({ tools: { categories: ['Web'] } }, target, getAccessGrants('poor'), false);
     expect(out.ok, 'the caller narrowed nothing it does not hold').toBe(true);
-    expect((out as { ok: true; grants: AccessGrants }).grants.integrations.credentials).toBe('*');
+    expect((out as { ok: true; grants: AccessGrants }).grants.integrations.credentials).toBe(true);
   });
 });
 
@@ -354,9 +357,9 @@ describe('the two grant refusals are classified and audited', () => {
   });
 
   it('the refusal text names the field, so a model can act on it', () => {
-    agent('holder', 'ronin', (g) => { g.integrations.credentials = ['plaud_token']; });
+    agent('holder', 'ronin', (g) => { g.integrations.credentials = false; });
     const out = resolveSpawnGrants(
-      { channels: { imessage: 'all' }, integrations: { credentials: ['stripe_live'] } },
+      { channels: { imessage: 'all' }, integrations: { credentials: true } },
       getAccessGrants('holder'),
       false,
     );

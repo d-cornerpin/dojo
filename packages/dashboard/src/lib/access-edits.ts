@@ -38,21 +38,61 @@ export interface AccountRow {
 
 export const clone = (g: AccessGrants): AccessGrants => cloneGrants(g);
 
-// ── Tool groups ──
+// ── Tool groups (UX-ACCESS A5: a MODE, not a checkbox) ──
+//
+// Owner order: the section offers "Full tool access" or "Individual tool
+// access", and the 38 group checkboxes render only under the second. The model
+// is unchanged and the mapping is exact — `'*'` IS the full mode, which is why
+// all 111 migrated agents read "Full" and the capability diff stays empty.
 
-export const grantsEveryCategory = (g: AccessGrants): boolean => g.tools.categories === '*';
+export type ToolMode = 'full' | 'individual';
+
+export const toolMode = (g: AccessGrants): ToolMode =>
+  g.tools.categories === '*' ? 'full' : 'individual';
 
 export const categoryChecked = (g: AccessGrants, label: string): boolean =>
   g.tools.categories === '*' || g.tools.categories.includes(label);
 
-// ── Techniques (UX-ACCESS A4) ──
+/**
+ * Switch the mode.
+ *
+ * FULL → INDIVIDUAL EXPANDS, it does not blank. `'*'` means "every group,
+ * including ones added later", so the honest starting point for a bounded list
+ * is today's whole list — and writing `[]` here would strip every tool the agent
+ * holds the moment the owner so much as looked at the control. Nothing is saved
+ * until Save either way, so a mode flip the owner reverses costs nothing.
+ */
+export function setToolMode(g: AccessGrants, mode: ToolMode, allLabels: string[]): AccessGrants {
+  const next = clone(g);
+  next.tools.categories = mode === 'full'
+    ? '*'
+    : (next.tools.categories === '*' ? [...allLabels] : [...next.tools.categories]);
+  return next;
+}
+
+// ── Techniques (UX-ACCESS A4; A5 makes it a switch over a list) ──
 //
 // The SAME `'*'`-is-a-promise rule as the tool groups, and for the same reason:
 // unticking one technique under `'*'` must not silently keep a grant for a
 // technique the Trainer publishes next week. `techniqueGrantOf` is what makes a
 // row written before A4 (no `techniques` key) read as the `'*'` it means.
+//
+// A5, owner order: a "Technique access" switch, with the list beneath it and all
+// of it checked when the switch goes on. "On" is therefore exactly "holds any
+// grant", and turning it on writes `'*'` — the promise, which is what "all
+// checked, including ones published later" means in this model.
 
-export const grantsEveryTechnique = (g: AccessGrants): boolean => techniqueGrantOf(g) === '*';
+export const techniqueAccessOn = (g: AccessGrants): boolean => {
+  const t = techniqueGrantOf(g);
+  return t === '*' || t.length > 0;
+};
+
+export function setTechniqueAccess(g: AccessGrants, on: boolean, allIds: string[]): AccessGrants {
+  const next = clone(g);
+  next.techniques = on ? '*' : [];
+  void allIds;
+  return next;
+}
 
 export const techniqueChecked = (g: AccessGrants, id: string): boolean => {
   const t = techniqueGrantOf(g);
@@ -69,13 +109,6 @@ export function setTechnique(g: AccessGrants, id: string, on: boolean, allIds: s
   return next;
 }
 
-export function setEveryTechnique(g: AccessGrants, on: boolean, allIds: string[]): AccessGrants {
-  const next = clone(g);
-  next.techniques = on ? '*' : [];
-  void allIds;
-  return next;
-}
-
 /** Tick or untick one group. Under `'*'`, unticking EXPANDS to today's list
  *  minus that group rather than quietly keeping tomorrow's. */
 export function setCategory(g: AccessGrants, label: string, on: boolean, allLabels: string[]): AccessGrants {
@@ -87,32 +120,20 @@ export function setCategory(g: AccessGrants, label: string, on: boolean, allLabe
   return next;
 }
 
-/** The "every group, including any added later" switch. */
-export function setEveryCategory(g: AccessGrants, on: boolean, allLabels: string[]): AccessGrants {
+// ── Credentials (UX-ACCESS A5) ──
+//
+// ⚰ THE PER-CREDENTIAL ROWS ARE GONE, and so is the math behind them
+// (`grantsEveryCredential` / `credentialChecked` / `setCredential` /
+// `setEveryCredential`). Owner order: one toggle, "Access to stored
+// credentials". The MODEL moved with it — `integrations.credentials` is a
+// boolean now — so this is two lines rather than four functions, and there is no
+// finer reading of the field left anywhere for the toggle to be lying about.
+
+export const credentialsGranted = (g: AccessGrants): boolean => g.integrations.credentials;
+
+export function setCredentials(g: AccessGrants, on: boolean): AccessGrants {
   const next = clone(g);
-  next.tools.categories = on ? '*' : [...allLabels];
-  return next;
-}
-
-// ── Credentials ──
-
-export const grantsEveryCredential = (g: AccessGrants): boolean => g.integrations.credentials === '*';
-
-export const credentialChecked = (g: AccessGrants, service: string): boolean =>
-  g.integrations.credentials === '*' || g.integrations.credentials.includes(service);
-
-export function setCredential(g: AccessGrants, service: string, on: boolean, allServices: string[]): AccessGrants {
-  const next = clone(g);
-  const current = next.integrations.credentials === '*' ? [...allServices] : [...next.integrations.credentials];
-  next.integrations.credentials = on
-    ? (current.includes(service) ? current : [...current, service])
-    : current.filter((s) => s !== service);
-  return next;
-}
-
-export function setEveryCredential(g: AccessGrants, on: boolean, allServices: string[]): AccessGrants {
-  const next = clone(g);
-  next.integrations.credentials = on ? '*' : [...allServices];
+  next.integrations.credentials = on;
   return next;
 }
 
@@ -172,9 +193,29 @@ export function setKindLevel(g: AccessGrants, provider: Provider, kind: 'agent' 
 export const hasMaster = (g: AccessGrants): boolean => g.channels.master !== null;
 export const masterOn = (g: AccessGrants): boolean => g.channels.master === true;
 
+/**
+ * The über toggle, which now REVEALS its children rather than dimming them
+ * (owner order, UX-ACCESS A5).
+ *
+ * TURNING IT ON DEFAULTS EVERY CHANNEL TO `'owner'` — "Only me" — and never to
+ * `'all'`. The master is a statement that this agent may talk to people; it is
+ * not a statement about WHICH people, and owner ruling 1's me-vs-other-people
+ * tier is the place that second decision lives. So reaching anyone other than
+ * the owner stays a deliberate extra click, per channel.
+ *
+ * THE DEFAULT ONLY FIRES WHEN THERE IS NOTHING TO RESTORE. A3 made the
+ * per-channel value survive a `false` master on purpose (`channelTierOf` applies
+ * the master, so a stored tier is inert rather than erased); this is what that
+ * property buys. An owner who narrows the children, flips the master off to look
+ * at something and flips it back gets HIS set back, not a fresh sweep of
+ * defaults over it. Turning the master OFF never touches a child.
+ */
 export function setMaster(g: AccessGrants, on: boolean): AccessGrants {
   const next = clone(g);
   next.channels.master = on;
+  if (on && ACCESS_CHANNELS.every((c) => next.channels[c] === 'none')) {
+    for (const c of ACCESS_CHANNELS) next.channels[c] = 'owner';
+  }
   return next;
 }
 
@@ -233,7 +274,8 @@ export function grantsPatch(original: AccessGrants, draft: AccessGrants): Patch 
 
   const integrations: Patch = {};
   if (original.integrations.plaud !== draft.integrations.plaud) integrations.plaud = draft.integrations.plaud;
-  if (moved(original.integrations.credentials, draft.integrations.credentials)) {
+  // A5: a boolean, compared exactly like the Plaud switch above it.
+  if (original.integrations.credentials !== draft.integrations.credentials) {
     integrations.credentials = draft.integrations.credentials;
   }
   for (const provider of ['google', 'microsoft'] as const) {

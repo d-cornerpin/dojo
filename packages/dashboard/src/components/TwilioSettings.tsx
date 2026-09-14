@@ -20,8 +20,8 @@ export const TwilioSettings = () => {
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
-  const { collapsed, toggle } = usePanelCollapse('channels.collapse.twilio');
-  const isCollapsed = collapsed['twilio'] ?? true;
+  const { isCollapsed, toggle } = usePanelCollapse('channels.collapse.twilio', true);
+  const collapsed = isCollapsed('twilio');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -110,11 +110,11 @@ export const TwilioSettings = () => {
           {config.configured && (
             <span className="text-xs px-2 py-0.5 rounded-full bg-cp-teal/20 text-cp-teal">Connected</span>
           )}
-          <CollapseToggle collapsed={isCollapsed} onClick={() => toggle('twilio')} label="Twilio" />
+          <CollapseToggle collapsed={collapsed} onClick={() => toggle('twilio')} label="Twilio" />
         </div>
       </div>
 
-      {isCollapsed && (
+      {collapsed && (
         <div className="space-y-1.5">
           {config.configured ? (
             config.numbers.length > 0 ? (
@@ -134,7 +134,7 @@ export const TwilioSettings = () => {
         </div>
       )}
 
-      {!isCollapsed && (
+      {!collapsed && (
         <p className="text-xs text-ui/40">
           Twilio gives your agents two new channels: SMS (text the user, text people on their behalf, receive replies) and Voice (place + receive phone calls, real-time spoken conversation). Personal Twilio accounts only. No call recording.
         </p>
@@ -142,7 +142,7 @@ export const TwilioSettings = () => {
 
       {/* Master enable — mirrors the iMessage Bridge toggle. When off, the rest
           of the panel collapses. */}
-      {!isCollapsed && (
+      {!collapsed && (
         <div className="flex items-center justify-between">
           <label className="text-sm text-ui/70">Enable Twilio</label>
           <button
@@ -154,7 +154,7 @@ export const TwilioSettings = () => {
         </div>
       )}
 
-      {!isCollapsed && config.enabled && (
+      {!collapsed && config.enabled && (
         <>
           {!config.configured && (
             <ConnectForm
