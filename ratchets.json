@@ -4229,6 +4229,111 @@
       "to": 601,
       "by": "UX-ACCESS A3 — `AgentDetail.effectiveGrants`, declared",
       "why": "+11 (2 code, 9 comment). A2 put `effectiveGrants` on `GET /agents/:id` and nothing declared it, so the panel would have had to cast. The comment states the two facts a reader needs and cannot guess: it rides the DETAIL route only (the list route does not compute it), and it is the EFFECTIVE object — an agent whose row predates A1's materializer answers with its measured access rather than a hole, which is why the panel binds to it and never to `permissions` (`'{}'` for a third of the agents on a worn-in box). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/prompt/assembler.ts",
+      "from": 1826,
+      "to": 1891,
+      "by": "UX-ACCESS A4 — the soul capability REGISTER replaces one bespoke conditional",
+      "why": "+65 net (+75/-10), and 40 of the 75 added lines are comment. T3 answered ONE soul line to ONE authority with a hard-coded string and an `if`; the census found the other four `## Capabilities` claims unconditional, including \"You can execute shell commands.\" for agents the executor refuses at row 3. A second bespoke function per claim is how five claims become five places to forget one, so the claims are a TABLE (`SOUL_CAPABILITY_CLAIMS`) of exact shipped bytes and the door that answers each, and the three properties that make it cache-safe — exact bytes, identity for a holder, absence-is-not-evidence — are written where they can be checked. `applySpawnCapabilityTruth` survives as a one-line alias because four test files and templates.ts's own note point at it. The remaining +25 is the equipped-technique grant check (seam 4) with its account of the four unvalidated write paths it exists to close. MEASURED: the primary's assembled prompt is byte-identical across this change. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/components/AccessPanel.tsx",
+      "from": 356,
+      "to": 396,
+      "by": "UX-ACCESS A4 — the Techniques section becomes a grant, beside the pre-load",
+      "why": "+40 net (+57/-17). A3 admitted this file at 356 and said the fourth section was \"the existing control, not a grant\"; A4 makes it one. The two halves answer different questions and both must be drawn: the GRANT governs the agent's technique index, the matcher that would otherwise inject a body unasked, and the use_technique door, and saves with the panel; the PRE-LOAD inlines the whole TECHNIQUE.md and saves on change, as it always did. The grant list gates the equip list ON SCREEN for the same reason the renderer gates it on the server — equipping something ungranted loads nothing, and a control that offers it lies to the owner. The grant MATH went to `lib/access-edits.ts` (pure, no React) with the rest, which is why the arithmetic is not here. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/surface.ts",
+      "from": 659,
+      "to": 688,
+      "by": "UX-ACCESS A4 — the channel strip, A1 §6.5 closed",
+      "why": "+29 net (+30/-1), 23 of 30 added lines comment. Three lines of filter; the rest is the measurement that makes it inert and the reason it is safe. A1 handed this here in writing (\"A4 owns prompt/capability truth\"). Measured at ac945a99: 105 of 111 agents were advertised six tools they hold no grant for, and every one is refused at a door that already reads `mayUseChannel`. The filter is derived from `channelForTool` over the build-checked SEND_TO_PEOPLE surface, so a send tool added tomorrow is covered the day it lands. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/twilio/call-session.ts",
+      "from": 884,
+      "to": 913,
+      "by": "UX-ACCESS A4 — the voice grant at the speech-out transport",
+      "why": "+29 net (+30/-1), 18 of 30 comment. The census found FIVE callers pushing speech into a live call and not one asked anything; two of them (the streaming push in model-call.ts, the pre-tool filler in persist-assistant.ts) reach the caller MID-TURN, ahead of every end-of-turn arm, so a guard on the arms alone would have left the loudest two open. `queueAgentSay` is where all five meet — one transport, one door, the same shape the fs broker has. Empty-diff by construction: `this.agentId` is `getPrimaryAgentId()` for every session the platform opens and the primary holds `voice`. The comment carries the null-agent posture (the platform speaking is not an agent reaching a human) because getting that wrong silences a call opener. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/channel-push.ts",
+      "from": 391,
+      "to": 418,
+      "by": "UX-ACCESS A4 — ONE channel-grant guard for five auto-route arms",
+      "why": "+27 (+27/-0), 14 comment. A1 §6.2, A2 §6.4 and A3 §7.2 each recorded this hand-up and each declined it. One guard, not five: four of the five arms (iMessage, SMS, both phone-TTS) reach a person through a bridge, Twilio or a live call rather than through `executeTool`, where `mayUseChannel` would already have been asked. Its POSITION is load-bearing and the comment says why — after the settled-context hold, so a turn already being held keeps its own recorded reason and this arm fires only where a push would otherwise have happened. The refusal is a `held` ledger row with the reason, never a silent drop. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/access/authorize.ts",
+      "from": 423,
+      "to": 448,
+      "by": "UX-ACCESS A4 — the techniques section rides the existing grant door",
+      "why": "+25 net (+26/-1). The schema field, the no-escalation clause, the merge arm, the clamp arm and the audit-delta line. It is 25 lines and not 5 because the section has to appear in all five places the other three sections do — a section that validates but does not clamp, or merges but never appears in the delta, is a grant with a quiet hole. It reuses `nameSubset` rather than adding a fourth subset rule, and every comparison goes through `techniqueGrantOf` so an object written before A4 (no key) compares as the `'*'` it means and a no-op edit stays a no-op. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/techniques/tools.ts",
+      "from": 892,
+      "to": 914,
+      "by": "UX-ACCESS A4 — the technique door takes an agent, and its hand-inlined copy folds onto it",
+      "why": "+22 net (+33/-11), 23 of 33 added lines comment. `checkTechniqueAccess` took only the squad and answered \"published ⇒ everybody\" — the file said so in a comment. It takes an agentId now, asks the GRANT first (so a technique that is both ungranted and unpublished reads as ungranted rather than sending the agent to the Trainer to publish something it still could not use), and leaves the state/squad rule byte-identical. `executeUseTechnique`'s hand-inlined COPY of the same three branches is DELETED and folded onto the function: A4 adds a grant to the door, and a second copy of a door is a second place for the grant to be missing. `list_techniques` narrows to match the door. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/preflight/turn-closures.ts",
+      "from": 465,
+      "to": 480,
+      "by": "UX-ACCESS A4 — ONE channel-grant guard for the engine ack's four arms",
+      "why": "+15 (+15/-0), 8 comment. Same door, same single-guard shape as channel-push.ts. Three of the four arms (iMessage, phone TTS, SMS) never pass through `executeTool`; only Teams was gated, and only accidentally, because its arm synthesizes a tool call. Placed BELOW the persist+broadcast, deliberately and stated: the ack is already in the dashboard before any push runs, so a withheld push costs the channel hop and never the line — which is what makes the guard a `return` rather than a throw. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/assemble/technique-hints.ts",
+      "from": 222,
+      "to": 233,
+      "by": "UX-ACCESS A4 — the matcher's candidate set is the agent's grant",
+      "why": "+11 net (+17/-6), 8 comment. This is the loudest of the four technique seams and the reason the grant could not be advertisement-only: a STRONG match inlines the whole TECHNIQUE.md as its own message and calls `recordTechniqueUsage` — the agent runs a standing procedure it never asked for and never saw a door for. `listTechniques({state:'published'})` was every published technique on the box for every non-PM agent. One `.filter`, the same predicate the index and the door ask. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/agents.ts",
+      "from": 1528,
+      "to": 1532,
+      "by": "UX-ACCESS A4 — the access line states the fourth section",
+      "why": "+4 net (+5/-1). `accessLine` is what `spawn_agent` appends and `get_agent_profile` renders, and a section the door enforces but the line never mentions is a grant the granting agent cannot see. Read through `techniqueGrantOf`, so a row written before A4 reads as the `'*'` it means rather than as an empty section. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/lib/api.ts",
+      "from": 2428,
+      "to": 2430,
+      "by": "UX-ACCESS A4 — the catalog carries the published techniques",
+      "why": "+2 (1 field, 1 comment). The panel's grant control and its equip control must be drawn from the SAME list; offering an agent a technique to equip that the grant section does not list is how the two halves of one section start disagreeing. It rides the catalog route the panel already fetches rather than a second call. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2873,
+      "to": 2875,
+      "by": "UX-ACCESS A4 — `grants.techniques` declared on both grant-bearing tools",
+      "why": "+2 net (+3/-1): one property on spawn_agent, one on update_agent, and 'All three sections' became 'All four'. ZERO PREFIX COST, measured the same way A2 measured it: both tools are two-phase-loaded through `load_tool_docs` and are not on any agent's always-loaded list, so the two schemas ride the un-cached tail on the turns that ask for them. The tool INDEX lists names only and did not move. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/prompt/registry/entries.ts",
+      "from": 542,
+      "to": 544,
+      "by": "UX-ACCESS A4 — `sys.techniques-index` stops discarding its context",
+      "why": "+2 net (+4/-2). The entry was written `render: () => generateTechniqueIndex()`, so the ONE place a per-agent technique filter could attach threw the agent id away and every agent on the box read the same advertisement. It is `render: (ctx) => generateTechniqueIndex(ctx.agentId)` now, and the `reason` field says so — that field is the registry's own record of what a slot is for, and a slot that changed what it is scoped to without saying so is how the roster stops describing the prompt. From here this file may only shrink."
+    },
+    {
+      "path": "packages/shared/src/access.ts",
+      "from": null,
+      "to": 273,
+      "by": "UX-ACCESS A4 — the grants MODEL is admitted at 273, not split",
+      "why": "The growth detector asks for exactly this when an unlisted file crosses 240 of the 400-line cap, and pinning it is the visible decision it wants. It is 273 lines of which the great majority is the ACCOUNT of the model — why the object lives in `agents.permissions` and not a new table, why `channelTierOf` is the only legal channel read (owner ruling 1 as a property of the reader), why `MOST_RESTRICTIVE_GRANTS` names a third category and why that is a measurement, and why the new `techniques` section is OPTIONAL on the wire. Splitting it would put the four section types in one file and the readers that enforce their rules in another, which is precisely how a rule gets re-implemented at a call site. It is pure — no database, no platform identity, no imports — and that is what keeps it small in the way that matters. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/lib/access-edits.ts",
+      "from": null,
+      "to": 272,
+      "by": "UX-ACCESS A4 — the panel's grant MATH is admitted at 272",
+      "why": "A3 created it at 234 to keep the arithmetic out of `AccessPanel.tsx`; A4 added the techniques half (+38), which is the same `'*'`-is-a-promise-about-the-future rule the tool groups already have, plus the patch clause that compares through `techniqueGrantOf` so opening the panel on a pre-A4 row and pressing Save sends nothing. Splitting again would divide four sections of ONE form across files that only ever change together, and it is already split on the real seam — this file is pure, no React, and is the whole reason the component is allowed to only render and ask. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -4246,7 +4351,7 @@
     "packages/dashboard/src/components/TechniqueSessionProvider.tsx": 533,
     "packages/dashboard/src/components/TwilioSettings.tsx": 563,
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
-    "packages/dashboard/src/lib/api.ts": 2428,
+    "packages/dashboard/src/lib/api.ts": 2430,
     "packages/dashboard/src/lib/voice/voice-client.ts": 873,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 452,
     "packages/dashboard/src/pages/Agents.tsx": 678,
@@ -4280,19 +4385,19 @@
     "packages/server/src/agent/shared-state.ts": 134,
     "packages/server/src/agent/spawner.ts": 1459,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
-    "packages/server/src/agent/tools/cat/agents.ts": 1528,
+    "packages/server/src/agent/tools/cat/agents.ts": 1532,
     "packages/server/src/agent/tools/cat/comms.ts": 860,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
     "packages/server/src/agent/tools/cat/media.ts": 897,
     "packages/server/src/agent/tools/cat/session.ts": 242,
     "packages/server/src/agent/tools/cat/tracker.ts": 996,
-    "packages/server/src/agent/tools/definitions.ts": 2873,
+    "packages/server/src/agent/tools/definitions.ts": 2875,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 370,
     "packages/server/src/agent/tools/gates.ts": 286,
     "packages/server/src/agent/tools/index.ts": 680,
-    "packages/server/src/agent/tools/surface.ts": 659,
+    "packages/server/src/agent/tools/surface.ts": 688,
     "packages/server/src/agent/tools/types.ts": 338,
     "packages/server/src/agent/tools/util.ts": 371,
     "packages/server/src/agent/turn-context.ts": 625,
@@ -4312,7 +4417,7 @@
     "packages/server/src/agent/v2/steps/assemble/index.ts": 308,
     "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts": 224,
     "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 125,
-    "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 222,
+    "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 233,
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 198,
     "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 350,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
@@ -4330,7 +4435,7 @@
     "packages/server/src/agent/v2/steps/execute/tracker-floors.ts": 314,
     "packages/server/src/agent/v2/steps/execute/work-status.ts": 52,
     "packages/server/src/agent/v2/steps/execute/xml-fallback.ts": 155,
-    "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 391,
+    "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 418,
     "packages/server/src/agent/v2/steps/finalize/close-the-loop.ts": 158,
     "packages/server/src/agent/v2/steps/finalize/completion-ack.ts": 154,
     "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts": 90,
@@ -4368,7 +4473,7 @@
     "packages/server/src/agent/v2/steps/preflight/start-ack.ts": 176,
     "packages/server/src/agent/v2/steps/preflight/step-contexts.ts": 138,
     "packages/server/src/agent/v2/steps/preflight/turn-classification.ts": 381,
-    "packages/server/src/agent/v2/steps/preflight/turn-closures.ts": 465,
+    "packages/server/src/agent/v2/steps/preflight/turn-closures.ts": 480,
     "packages/server/src/agent/v2/steps/preflight/turn-trigger.ts": 312,
     "packages/server/src/agent/v2/steps/step-outcome.ts": 140,
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
@@ -4419,8 +4524,8 @@
     "packages/server/src/microsoft/tools-write.ts": 2131,
     "packages/server/src/migration/checks.ts": 537,
     "packages/server/src/migration/import.ts": 407,
-    "packages/server/src/prompt/assembler.ts": 1826,
-    "packages/server/src/prompt/registry/entries.ts": 542,
+    "packages/server/src/prompt/assembler.ts": 1891,
+    "packages/server/src/prompt/registry/entries.ts": 544,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
     "packages/server/src/scheduler/engine.ts": 414,
@@ -4438,7 +4543,7 @@
     "packages/server/src/techniques/share-export.ts": 464,
     "packages/server/src/techniques/share-import.ts": 311,
     "packages/server/src/techniques/store.ts": 546,
-    "packages/server/src/techniques/tools.ts": 892,
+    "packages/server/src/techniques/tools.ts": 914,
     "packages/server/src/tools/tool-docs.ts": 595,
     "packages/server/src/tools/unified-read.ts": 761,
     "packages/server/src/tools/work-verbs.ts": 399,
@@ -4448,7 +4553,7 @@
     "packages/server/src/tracker/task-stamps.ts": 296,
     "packages/server/src/tracker/tools.ts": 5067,
     "packages/server/src/tracker/version-gap-reconcile.ts": 327,
-    "packages/server/src/twilio/call-session.ts": 884,
+    "packages/server/src/twilio/call-session.ts": 913,
     "packages/server/src/twilio/sms-inbound.ts": 406,
     "packages/server/src/update-state.ts": 417,
     "packages/server/src/update/disk-preflight.ts": 246,
@@ -4484,7 +4589,9 @@
     "watchdog/src/index.ts": 1217,
     "packages/server/src/agent/v2/outbound-ledger.ts": 459,
     "packages/server/src/prompt/registry/types.ts": 414,
-    "packages/server/src/agent/access/authorize.ts": 423,
-    "packages/dashboard/src/components/AccessPanel.tsx": 356
+    "packages/server/src/agent/access/authorize.ts": 448,
+    "packages/dashboard/src/components/AccessPanel.tsx": 396,
+    "packages/shared/src/access.ts": 273,
+    "packages/dashboard/src/lib/access-edits.ts": 272
   }
 }
