@@ -4383,10 +4383,40 @@
       "to": 1533,
       "by": "UX-ACCESS A5 — the capability line's credential clause loses its list branch",
       "why": "+1 net (+3/-2), 2 of the 3 added lines comment. The clause was a three-way ternary over `'*'` / empty / a comma-joined list; it is a two-way one over the boolean. MEASURED across all 113 agents on the owner's box: `accessLine` is byte-identical for every one of them, because `credentials: all` and `credentials: none` are the exact words the two surviving branches already produced. It is a tool RESULT (spawn_agent, get_agent_profile), tail-side, never the cached prefix. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/components/AccessControls.tsx",
+      "from": 0,
+      "to": 141,
+      "by": "UX-ACCESS A6 — one Access panel, five plain questions, the permissions card folded in",
+      "why": "NOT A RAISE — a new file at 141, under `maxNewFileLines` (400) and under the growth gate's 240 crossing line, so it is already legal twice over. Pinned anyway for the reason PHASE-6 T1 pinned `turn-context.ts`: the thing a pinned file DECOMPOSES INTO must be watched at least as tightly as the file it came out of, or a phase moves code into unwatched files and reports a flat `AccessPanel.tsx` as progress. It holds the six shapes the panel and the folded permission controls BOTH draw — Check, Toggle, Choice, Item, Scope and the collapsible Row — which is why they are in neither caller: two copies of the row primitive is how \"consistent row heights\" stops being true. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/components/AccessManifest.tsx",
+      "from": 0,
+      "to": 239,
+      "by": "UX-ACCESS A6 — one Access panel, five plain questions, the permissions card folded in",
+      "why": "NOT A RAISE — a new file at 239, under `maxNewFileLines` (400) and ONE LINE under the growth gate's 240 crossing line, which is exactly why it is pinned now rather than left to trip that gate on its next edit. It is the agent editor's deleted Permissions card, re-rendered as rows two and five of the Access panel: fourteen toggles with one plain sentence each, their sub-options, the advanced disclosure for the raw fields no toggle can express, and the note a built-in agent gets instead of controls. It holds no arithmetic — `lib/manifest-edits.ts` does, and that module is held to producing the old editor's document byte for byte. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/lib/manifest-edits.ts",
+      "from": 0,
+      "to": 205,
+      "by": "UX-ACCESS A6 — one Access panel, five plain questions, the permissions card folded in",
+      "why": "NOT A RAISE — a new file at 205, under `maxNewFileLines` (400) and under the growth gate's 240 crossing line. It is the pure half of the folded Permissions card: the old editor's twenty `useState` hooks as one object, its `buildOutput` as one function, and a dirty test that compares the two BUILT documents so a cosmetic difference never sends a PUT or writes an audit row. The identity with the old editor is the load-bearing property of the whole fold and it is a test, not an intention. Roughly a third of the file is the account of the three defects found while porting — the one-way web toggles, the \"All files\" delete option that wrote `/tmp/**`, and the exec switch that goes on with an empty list — each written beside the rule it constrains. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/lib/access-summary.ts",
+      "from": 0,
+      "to": 113,
+      "by": "UX-ACCESS A6 — one Access panel, five plain questions, the permissions card folded in",
+      "why": "NOT A RAISE — a new file at 113, under `maxNewFileLines` (400) and under the growth gate's 240 crossing line. It exists BECAUSE `lib/access-edits.ts` may only shrink: the folded card's digest and the five row state lines are a READ of the grants object, and that file is the WRITE arithmetic. Putting the words there would have taken it from 314 to 418 against an entry that says, in three separate raises, that it may only shrink. Nothing here returns an `AccessGrants` and nothing there produces a sentence. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
   "files": {
+    "packages/dashboard/src/components/AccessControls.tsx": 141,
+    "packages/dashboard/src/components/AccessManifest.tsx": 239,
     "packages/dashboard/src/components/AttachmentChips.tsx": 465,
     "packages/dashboard/src/components/CanvasView.tsx": 425,
     "packages/dashboard/src/components/ContactsPanel.tsx": 478,
@@ -4400,7 +4430,9 @@
     "packages/dashboard/src/components/TechniqueSessionProvider.tsx": 533,
     "packages/dashboard/src/components/TwilioSettings.tsx": 563,
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
+    "packages/dashboard/src/lib/access-summary.ts": 113,
     "packages/dashboard/src/lib/api.ts": 2430,
+    "packages/dashboard/src/lib/manifest-edits.ts": 205,
     "packages/dashboard/src/lib/voice/voice-client.ts": 873,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 452,
     "packages/dashboard/src/pages/Agents.tsx": 678,
