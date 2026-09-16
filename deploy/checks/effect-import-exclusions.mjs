@@ -161,6 +161,7 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
   // ── PLATFORM-INTERNAL (43 statements / 37 files) — no tool path at all ────
   { file: 'index.ts', klass: 'platform-internal', why: 'boot. It runs once before any agent exists.' },
   { file: 'logger.ts', klass: 'platform-internal', why: 'the log sink itself, at a platform path. Everything imports it, which is exactly why a graph walk cannot classify this tree.' },
+  { file: 'log-rotation.ts', klass: 'platform-internal', why: 'the log sink\'s rotation, split out of logger.ts by T74b so the keep policy and its two guards could be stated and tested. Same file, same platform path, same reach as logger.ts: it is handed the live log path by logger.ts and touches only that file and its one backup.' },
   { file: 'config/loader.ts', klass: 'platform-internal', why: 'the platform config and secrets files, read at their own fixed paths.' },
   { file: 'db/connection.ts', klass: 'platform-internal', why: 'opens the platform database. One writer, one path, no argument.' },
   { file: 'db/migrations.ts', klass: 'platform-internal', why: 'the pre-migration online backup and the migration chain, both on the database\'s own path.' },
