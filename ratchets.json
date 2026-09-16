@@ -4625,7 +4625,7 @@
     "packages/server/src/techniques/share-import.ts": 311,
     "packages/server/src/techniques/store.ts": 546,
     "packages/server/src/techniques/tools.ts": 914,
-    "packages/server/src/tools/tool-docs.ts": 595,
+    "packages/server/src/tools/tool-docs.ts": 683,
     "packages/server/src/tools/unified-read.ts": 761,
     "packages/server/src/tools/work-verbs.ts": 399,
     "packages/server/src/tracker/delivery-evidence.ts": 320,
