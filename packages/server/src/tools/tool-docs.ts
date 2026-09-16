@@ -6,9 +6,22 @@
 
 import { createLogger } from '../logger.js';
 import { readToolDoc } from './tool-doc-read.js';
+import { resolveToolAlias } from './aliases.js';
 import type { ToolDefinition } from '../agent/tools/types.js';
 
 const logger = createLogger('tool-docs');
+
+/**
+ * The name a recorded tool call resolves to TODAY. C27 hook 3 of the alias layer: the
+ * `load_tool_docs` handler canonicalizes every requested name before it loads anything
+ * (`agent/tools/cat/meta.ts`), so a replay of that record has to apply the same rule or a
+ * renamed tool comes back as a stranger. A tombstoned name keeps itself — it resolves to
+ * nothing and is filtered out of the array by membership, same as at the door.
+ */
+function canonicalToolName(name: string): string {
+  const resolved = resolveToolAlias(name, {});
+  return resolved.tombstone ? name : resolved.name;
+}
 
 // ── Always-loaded defaults ──
 
@@ -291,40 +304,115 @@ export function clearSessionLoadedTools(agentId: string): void {
 
 const rehydratedAgents = new Set<string>();
 
+// T79: the load sequence is one row per `load_tool_docs` CALL, not per tool, and it is read
+// once per agent per process. The cap is a runaway guard, not a window: truncating it in
+// either direction breaks the very prefix this function exists to reproduce, so it is set
+// far above anything a session does. MEASURED on the owner's 365 MB dev dojo — 257 load
+// calls in the whole message table across every agent and every session it has ever run;
+// the busiest single agent has 228 ALL TIME, and the most in any one live session is 4.
+const LOAD_SEQUENCE_CALL_CAP = 500;
+
 /**
- * Re-import the tool names this agent was already using, ONCE per process. Idempotent and
- * cheap after the first call. Called by the turn owner (`agent/v2/loop.ts`) at the top of a
- * turn; never from an assembly.
+ * Re-import the tools this agent had loaded, ONCE per process. Idempotent and cheap after
+ * the first call. Called by the turn owner (`agent/v2/loop.ts`) at the top of a turn; never
+ * from an assembly.
+ *
+ * ── T79: THIS REPLAYS THE LOAD SEQUENCE. IT NO LONGER INFERS ONE. ───────────────────────
+ * T72b/3 made the tail append-only WITHIN a process, because a `Set`'s insertion order is
+ * the load order. The set does not survive a restart, and what stood here rebuilt it from
+ * the last 40 assistant messages' `tool_use` NAMES — the CALLED set, in CALL order. A tool
+ * loaded and not yet called vanished (the array SHRANK and everything behind the gap
+ * moved); two loaded in one batch and used in the other order came back SWAPPED; anything
+ * older than the window was gone. `rows.reverse()` fixed the direction of a sequence that
+ * was still the wrong sequence. The incident, the measurement and the numbers are in
+ * `memory/__tests__/the-tools-lane-is-append-only.test.ts` (§T79).
+ *
+ * THE RECORD ALREADY EXISTS, so nothing new is stored: every `load_tool_docs` call is an
+ * assistant `tool_use` block carrying the exact names it asked for, and the rows are
+ * ordered. Replaying them oldest-first reproduces the pre-restart array byte for byte.
+ *
+ * Membership is still settled in ONE place — `partitionToolsForApiCall`'s `byName` filter.
+ * A name the door refused at load time (a tool this agent may not have) sits in the set and
+ * never reaches the array; if that grant later opens, the array changes — but a grant IS a
+ * declaration change, the one event this contract has always exempted.
  */
 export function rehydrateSessionToolsFromHistory(agentId: string, recentLimit = 40): void {
   if (rehydratedAgents.has(agentId)) return;
   rehydratedAgents.add(agentId);
   try {
     const db = getDb();
-    const rows = db.prepare(
+    // The session boundary, for the same reason the assembler respects it: a restart after
+    // a reset must not hand the agent back the session it was told to forget. In-process
+    // that is `clearSessionLoadedTools` setting the rehydrated flag; across a restart the
+    // flag is gone and this is what makes the decision stick.
+    const boundary = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?')
+      .get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? null;
+
+    const ordered: string[] = [];
+    const placed = new Set<string>();
+    const place = (name: string) => {
+      if (typeof name !== 'string' || placed.has(name)) return;
+      placed.add(name);
+      ordered.push(name);
+    };
+
+    // ── 1. THE LOAD SEQUENCE, OLDEST FIRST ──
+    const loadRows = (boundary
+      ? db.prepare(
+          `SELECT content FROM messages
+            WHERE agent_id = ? AND role = 'assistant' AND content LIKE '%load_tool_docs%'
+              AND created_at >= (unixepoch(?) * 1000)
+            ORDER BY created_at ASC, rowid ASC LIMIT ?`,
+        ).all(agentId, boundary, LOAD_SEQUENCE_CALL_CAP)
+      : db.prepare(
+          `SELECT content FROM messages
+            WHERE agent_id = ? AND role = 'assistant' AND content LIKE '%load_tool_docs%'
+            ORDER BY created_at ASC, rowid ASC LIMIT ?`,
+        ).all(agentId, LOAD_SEQUENCE_CALL_CAP)) as Array<{ content: string }>;
+
+    for (const r of loadRows) {
+      if (typeof r.content !== 'string') continue;
+      let parsed: unknown;
+      try { parsed = JSON.parse(r.content); } catch { continue; /* not JSON, skip */ }
+      if (!Array.isArray(parsed)) continue;
+      for (const block of parsed as Array<Record<string, unknown>>) {
+        if (block?.type !== 'tool_use' || typeof block.name !== 'string') continue;
+        if (canonicalToolName(block.name) !== 'load_tool_docs') continue;
+        const requested = (block.input as { tools?: unknown } | undefined)?.tools;
+        if (!Array.isArray(requested)) continue;
+        // The same canonicalization the handler applies before it marks anything
+        // (`agent/tools/cat/meta.ts`), so a renamed name replays as the name that was
+        // actually loaded rather than as a stranger that lands at the end.
+        for (const raw of requested) if (typeof raw === 'string') place(canonicalToolName(raw));
+      }
+    }
+    const fromLoads = ordered.length;
+
+    // ── 2. requirement preserved (#15): "an agent previously loaded a tool but the server
+    // restarted, so the in-memory session state was lost; it should not have to re-call
+    // load_tool_docs for a tool it is already using." Names it CALLED whose load is not on
+    // record — a conversation that predates this replay, or a load whose session was
+    // archived — still come back. They are APPENDED BEHIND the replayed sequence, so
+    // recovering one can never move a tool the record already placed.
+    const calledRows = db.prepare(
       "SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' ORDER BY created_at DESC, rowid DESC LIMIT ?",
     ).all(agentId, recentLimit) as Array<{ content: string }>;
-    const seen = new Set<string>();
-    // OLDEST FIRST. The query reads newest-first (it is a LIMITed recency window), but the
-    // set it fills is now the tools lane's ORDER, not just its membership (T72b claim 3),
-    // so it must approximate the order the agent originally loaded them in. Walking the
-    // window backwards makes a restart reproduce the pre-restart array instead of reversing
-    // it, which would re-bill the whole tail on the first post-restart call.
-    rows.reverse();
-    for (const r of rows) {
+    calledRows.reverse(); // the query is a newest-first recency window; call order is oldest-first
+    for (const r of calledRows) {
       if (typeof r.content !== 'string' || !r.content.includes('tool_use')) continue;
       try {
         const parsed = JSON.parse(r.content);
         if (!Array.isArray(parsed)) continue;
         for (const block of parsed) {
-          if (block?.type === 'tool_use' && typeof block.name === 'string') seen.add(block.name);
+          if (block?.type === 'tool_use' && typeof block.name === 'string') place(canonicalToolName(block.name));
         }
       } catch { /* not JSON, skip */ }
     }
-    if (seen.size > 0) {
-      markToolsLoaded(agentId, [...seen]);
+
+    if (ordered.length > 0) {
+      markToolsLoaded(agentId, ordered);
       logger.info('Rehydrated session tool docs from history after restart', {
-        agentId, count: seen.size,
+        agentId, count: ordered.length, fromLoadSequence: fromLoads,
       });
     }
   } catch { /* best effort — a missing table must not break a turn */ }
