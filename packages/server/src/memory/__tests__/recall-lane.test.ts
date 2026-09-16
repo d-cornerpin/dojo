@@ -182,16 +182,27 @@ describe('§1 the recall lane rides the tail', () => {
     // closes the scaffolding block at slot 1000 — can no longer name it as a section, print
     // it in the ladder, or claim it as "the WHAT". That sentence's job is done by the pin's
     // own frame and by its tail position now.
-    const ack = renderScaffoldingAck(['lane.scratchpad', 'lane.fresh-tail']);
+    // W81 moves it a THIRD time, for a third lane and the same reason. FOUR lanes left the
+    // fit — `lane.attempt-ledger`, `lane.active-tasks`, `lane.scratchpad` and `lane.events` —
+    // because a tool can rewrite each of them mid-conversation while they sit ahead of the
+    // whole array (owner's DS4 FINDING 2). So the ack loses their sections, loses their
+    // ladder rungs, and loses `ACK_TAIL`'s scratchpad sentence, which named a block that is
+    // no longer in the scaffolding the ack closes. That sentence's job is done by the
+    // scratchpad block's own header ("update with scratchpad_set"), beside the thing it
+    // describes instead of thousands of tokens above it.
+    const ack = renderScaffoldingAck(['lane.continuity', 'lane.fresh-tail']);
     expect(ack).toBe(
-      'Understood, I have reviewed my background context (scratchpad). Source ' +
-      'priority for this turn: my scratchpad > live conversation below. When sources ' +
-      'disagree, trust the most recent and most specific. The scratchpad is my own working ' +
-      'outline; I maintain it via scratchpad_set as I make progress and read from it when I ' +
-      'need to remember where I am.',
+      'Understood, I have reviewed my background context (continuity brief). Source ' +
+      'priority for this turn: live conversation below > continuity brief. When sources ' +
+      'disagree, trust the most recent and most specific.',
     );
     expect(ack).not.toContain('relevant memory');
     expect(ack).not.toContain('active user directive');
+    // W81's four, each asserted absent by NAME rather than by the set they left.
+    expect(ack).not.toContain('active tracker tasks');
+    expect(ack).not.toContain('attempt ledger');
+    expect(ack).not.toContain('scratchpad');
+    expect(ack).not.toContain('events & notices');
   });
 
   it('is protected from the repair, and its entry is attributed to it', () => {

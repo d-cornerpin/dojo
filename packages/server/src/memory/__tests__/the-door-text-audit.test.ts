@@ -107,7 +107,15 @@ beforeEach(() => {
 describe('§1 the summaries-lane header is demoted to a pointer', () => {
   const laneSource = (): string => {
     const src = read('memory/assembler.ts');
-    return src.slice(src.indexOf("id: 'lane.summaries'"), src.indexOf("id: 'lane.attempt-ledger'"));
+    // W81: the end bound was `src.indexOf("id: 'lane.attempt-ledger'")`, and that declaration
+    // LEFT this file when the lane moved below the conversation — `indexOf` returned -1 and
+    // `slice(start, -1)` silently widened the window to the rest of the file, which is how a
+    // source-slice clause goes vacuous without going red. The bound is DERIVED now: the next
+    // lane declaration of any name after this one, so a future move cannot repeat it.
+    const from = src.indexOf("id: 'lane.summaries'");
+    const next = src.indexOf("id: 'lane.", from + 10);
+    if (from < 0 || next <= from) throw new Error('lane.summaries slice bounds not found in assembler.ts');
+    return src.slice(from, next);
   };
 
   it('the HEAD sentence is gone — OPEN WORK is no longer named as the current record of what is owed', () => {

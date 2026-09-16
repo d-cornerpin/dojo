@@ -94,9 +94,15 @@ function seed(): void {
 /** Everything the model would receive, as one string. */
 async function whatTheModelReceives(): Promise<string> {
   const ctx = await assembleContext(AGENT, MODEL);
-  return ctx.messages
-    .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))
-    .join('\n---\n');
+  // W81: `ctx.eventsLane` is where the EVENTS & NOTICES block lives now — it left
+  // MessageSlot.Events = 1050 because its content is a scrolling window over the live tail,
+  // so it re-rendered ahead of the whole array whenever the conversation moved. This helper
+  // answers "what does the model receive", and the loop injects that field at 1840, so it is
+  // part of the answer. Reading only `messages` would have made every clause below vacuous.
+  return [
+    ...ctx.messages.map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content))),
+    ...(ctx.eventsLane ? [ctx.eventsLane] : []),
+  ].join('\n---\n');
 }
 
 /** The EVENTS & NOTICES line for a given intent, or null when the lane does not carry it. */

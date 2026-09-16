@@ -1,9 +1,9 @@
 import type Anthropic from '@anthropic-ai/sdk';
-import { renderTaskStamps, renderStepFacts, type TaskStampFields } from '../tracker/task-stamps.js';
-import { getDb as getStampDb } from '../db/connection.js';
+// W81: the tracker-stamp and tracker-view imports LEFT with the two work-board lanes. Their
+// one reader in this tree is `memory/work-board-lane.ts` now, which is where the SQL that
+// needs them went. An import kept beside a deleted reader is a symbol waiting to be wrong.
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { taskScope, revertCountExpr, stampColumns } from '../work/tracker-view.js';
 import { type PromptTurnContext } from '../prompt/assembler.js';
 import { conversationKey, type TurnCounterparty } from '../agent/v2/counterparty.js';
 import { getContextWindow, getModelOutputCap } from '../agent/model.js';
@@ -25,6 +25,7 @@ import {
   POST_BUDGET_LANES,
   POST_BUDGET_RESERVE_TOKENS,
   SCAFFOLDING_ACK_RESERVE_TOKENS,
+  LANE_TRUNCATION_MARKER,
   type AllocationReport,
   type Lane,
   type LaneCandidate,
@@ -34,6 +35,10 @@ import {
 import { tagMessageLane, tagMessageLanes, collectMessageLaneIds } from './message-lane-tag.js';
 import { getContextSummaries } from './dag.js';
 import { buildRecallLaneMessage } from './recall-lane.js';
+// W81: the two WORK-BOARD blocks, moved below the conversation with their own module for the
+// reason `memory/recall-lane.ts` has one — a post-budget lane must be able to DERIVE its
+// reserve by calling its own renderer, and a render buried inside a lane literal cannot be.
+import { buildWorkBoardLane } from './work-board-lane.js';
 import { getLatestBriefing } from './briefing.js';
 import { COMPILE_ORDER_PIECES_MARKER } from '../work/join-drive.js';
 import { pinnedContextSection } from '../vault/retrieval.js';
@@ -480,6 +485,23 @@ export interface AssembledContext {
    */
   directiveLane?: string | null;
   /**
+   * W81 — THE FOUR LANES THE OWNER'S DS4 FINDING 2 MOVED OUT OF THE CACHED REGION.
+   *
+   * Same split as `directiveLane`, four nouns over, and for the one rule this task turns on:
+   * whatever a tool can mutate must render BELOW the conversation. Each is READ by this
+   * assembly — the work board and the pad are agent-scoped reads only the assembler holds the
+   * scoping for, and the events block is derived from the tail this assembly already
+   * computed — and each is EMITTED by the loop past `volatileFrom`, at
+   * MessageSlot.AttemptLedgerTail 1810 / ActiveTasksTail 1820 / ScratchpadTail 1830 /
+   * EventsTail 1840. They may not sit in `messages`: everything in that array is the
+   * cacheable region by definition, and a block a `work_update` rewrites re-bills every token
+   * behind it (measured: six occurrences, 15-50K tokens each, 2026-09-12).
+   */
+  attemptLedgerLane?: string | null;
+  activeTasksLane?: string | null;
+  scratchpadLane?: string | null;
+  eventsLane?: string | null;
+  /**
    * T68b — WHETHER THE FAN-OUT COMPILE ORDER ARRIVED WHOLE, decided by the only module that
    * can decide it: the one that built the array.
    *
@@ -898,7 +920,9 @@ function textRender(content: string | null): LaneRender | null {
  * Every entry carries a `truncate`, so a lane under pressure is shortened, not deleted.
  */
 function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unknown>> {
-  const lim = (id: string, g: 'rows' | 'chars' | 'tokens' | 'retrieval', k: string) => laneLimit(id, g, k);
+  // W81: the `lim` shorthand went with its last caller. Every lane that used it —
+  // attempt-ledger, active-tasks, events — is below the conversation now and reads
+  // `laneLimit` directly from the module that renders it.
   // §T0-B E `:1595` — `min(available * 0.7, 6000)`. The SHARE survives as this lane's
   // ceiling (it is the same 0.7 `memory/budget.ts` hands the compaction gate, so the gate's
   // model of the assembler cannot drift from it again); the "available" it multiplies is now
@@ -1037,104 +1061,24 @@ function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unk
     // and a lane whose content is retrieved against the LIVE ASK may not sit in it. The block
     // is still computed on this assembly — see `recallLane` below, which is where the
     // scaffolding gate and the window policy live — and the loop appends it past the boundary.
-    {
-      id: 'lane.attempt-ledger',
-      slot: MessageSlot.AttemptLedger,
-      priority: LANE_PRIORITY['lane.attempt-ledger'],
-      minTokens: 0,
-      // §T0-B B `:914` was a DOUBLE gate — `< 800` AND `< remaining`. The 800 is a lane
-      // ceiling and the remaining-check is the allocator's job; one number, one owner.
-      maxTokens: laneLimit('lane.attempt-ledger', 'tokens', 'cap'),
-      truncate: truncateTextLane,
-      render: async (ctx) => {
-        try {
-          const { listTasks } = await import('../tracker/schema.js');
-          const { getRecentObservations, getRecentTransitions, formatEntryLine } = await import('../tracker/task-log.js');
-          const activeForLedger = listTasks({ status: 'in_progress', assignedTo: ctx.agentId })
-            .slice(0, lim('lane.attempt-ledger', 'rows', 'tasks'));
-          const sections: string[] = [];
-          for (const task of activeForLedger) {
-            const entries = [
-              ...getRecentObservations(task.id, lim('lane.attempt-ledger', 'rows', 'observations')),
-              ...getRecentTransitions(task.id, lim('lane.attempt-ledger', 'rows', 'transitions')),
-            ].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-              .slice(-lim('lane.attempt-ledger', 'rows', 'entries'));
-            if (entries.length === 0) continue;
-            let revertNote = '';
-            try {
-              const row = getDb().prepare(`SELECT ${revertCountExpr('w')} AS revert_count FROM work w WHERE w.id = ?`)
-                .get(task.id) as { revert_count: number | null } | undefined;
-              if (row?.revert_count) revertNote = `, reverted ${row.revert_count}x already`;
-            } catch { /* column may not exist on old DBs */ }
-            sections.push(`Task "${task.title}"${revertNote}:\n${entries.map((e) => `  ${formatEntryLine(e)}`).join('\n')}`);
-          }
-          if (sections.length === 0) return null;
-          return textRender(
-            `═══ ATTEMPT LEDGER (engine record of work on your active tasks, do not repeat attempts already logged here) ═══\n${sections.join('\n\n')}\n═══ END ATTEMPT LEDGER ═══`,
-          );
-        } catch { return null; /* tracker may be empty or absent */ }
-      },
-    },
-    {
-      id: 'lane.active-tasks',
-      slot: MessageSlot.ActiveTasks,
-      priority: LANE_PRIORITY['lane.active-tasks'],
-      minTokens: 0,
-      maxTokens: Infinity,
-      truncate: truncateTextLane,
-      // ── T67b §2 + §3 — THREE VOLATILITIES REMOVED FROM ONE LANE ───────────────────────
-      //  (a) the `shouldFireScaffolding` gate: present on a session-start turn, absent on the
-      //      next one. A block ahead of the tail that appears and disappears costs the whole
-      //      prefix behind it every time it moves; the tracker rows it states are ground
-      //      truth on every turn, not only on the first.
-      //  (b) the RECENT-MENTION suppression: it dropped the lane when the last few turns
-      //      happened to name the task ids — a decision derived from a SCROLLING WINDOW, so
-      //      the block reappeared unprompted as those rows aged out, rewriting history. What
-      //      it saved was this lane's own tokens; what it spent was every cached token behind
-      //      it. Deleted, with its `recentMentionWindow` declaration.
-      //  (c) the STAMP TICKED. `renderTaskStamps` renders `relAgo(...)` — "10m ago" becomes
-      //      "20m ago" with no tracker row changed — so this lane re-billed the prefix on a
-      //      clock. It is called with `relative: false` here and renders the recorded INSTANT
-      //      instead. That is the HL5 snapshot's own resolution of the same question, quoted
-      //      from `memory/recall-lane.ts`: "an ISO instant is unambiguous, costs six words,
-      //      and cannot disagree with the clock lane about anything". Every other reader of
-      //      `renderTaskStamps` is a tool result (0 prefix bytes) and keeps "10m ago".
-      render: async (ctx) => {
-        try {
-          const { listTasks } = await import('../tracker/schema.js');
-          const activeTasks = listTasks({ status: 'in_progress', assignedTo: ctx.agentId });
-          if (activeTasks.length === 0) return null;
-          const stampStmt = getStampDb().prepare(
-            `SELECT w.id AS id, ${stampColumns('w')},
-                    w.step_number AS step_number, w.total_steps AS total_steps,
-                    w.parent_id AS project_id
-               FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
-          );
-          const descCap = lim('lane.active-tasks', 'chars', 'description');
-          const noteCap = lim('lane.active-tasks', 'chars', 'lastNote');
-          const taskLines = activeTasks.slice(0, lim('lane.active-tasks', 'rows', 'tasks')).map((t) => {
-            let line = `• ${t.title} (ID: ${t.id.slice(0, 8)}, priority: ${t.priority})`;
-            try {
-              const st = stampStmt.get(t.id) as TaskStampFields | undefined;
-              if (st) {
-                const stamp = renderTaskStamps(st, { relative: false });
-                const steps = renderStepFacts(st);
-                line += `\n  State: ${stamp}${steps ? ` | ${steps}` : ''}`;
-              }
-            } catch { /* stamps are best-effort */ }
-            if (t.description) line += `\n  Instructions: ${t.description.slice(0, descCap)}${t.description.length > descCap ? '...' : ''}`;
-            if (t.notes) {
-              const lastNote = t.notes.split('\n').filter(Boolean).pop();
-              if (lastNote) line += `\n  Last note: ${lastNote.slice(0, noteCap)}`;
-            }
-            return line;
-          });
-          return textRender(
-            `═══ YOUR ACTIVE TASKS (from tracker, ground truth) ═══\nYou are currently assigned to these in_progress tasks. This is what you should be working on:\n\n${taskLines.join('\n\n')}\n\n═══ END ACTIVE TASKS ═══`,
-          );
-        } catch { return null; /* tracker may not be available */ }
-      },
-    },
+    // ── W81: `lane.attempt-ledger` (500) AND `lane.active-tasks` (600) LEFT THIS LIST ────
+    //
+    // They STATE THE WORK BOARD, and the owner's DS4 FINDING 2 (2026-09-12, six occurrences)
+    // is the bill for stating it ahead of the conversation: a state-mutating tool call
+    // followed within seconds by a deep invalidation of 15-50K tokens landing between the
+    // stable prefix and the history. Two of his six were `work_update`, and the census found
+    // that the doors are not a small set — every `work_*` write reaches both blocks, and the
+    // engine's own >=6-non-trivial-tool-call tracker floor mints an in_progress row out of
+    // six PURE READS (`agent/v2/steps/execute/tracker-floors.ts`), which is why `plaud_*`
+    // and `outlook_*` are in his list beside the two writes.
+    //
+    // A lane written by that many doors cannot be change-keyed into stability, so the rule
+    // decides it: WHATEVER A TOOL CAN MUTATE MUST RENDER BELOW THE CONVERSATION. They are
+    // post-budget tail lanes now — `memory/work-board-lane.ts`, MessageSlot.AttemptLedgerTail
+    // = 1810 and MessageSlot.ActiveTasksTail = 1820 — rendered from ONE tracker read and
+    // appended by the loop past `volatileFrom`, each with a DECLARED RESERVE derived by
+    // calling its own renderer. Same move as `lane.directive`'s at T67b §7, two nouns over.
+
     {
       id: 'lane.continuity',
       slot: MessageSlot.CompactionContinuity,
@@ -1184,34 +1128,16 @@ function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unk
         } catch { return null; /* best effort */ }
       },
     },
-    {
-      id: 'lane.scratchpad',
-      slot: MessageSlot.Scratchpad,
-      priority: LANE_PRIORITY['lane.scratchpad'],
-      minTokens: 0,
-      maxTokens: Infinity,
-      truncate: truncateTextLane,
-      render: (ctx) => {
-        try {
-          const db = getDb();
-          const cfgRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(ctx.agentId) as { config: string } | undefined;
-          if (!cfgRow?.config) return null;
-          const cfg = JSON.parse(cfgRow.config) as Record<string, unknown>;
-          const scratchpad = typeof cfg.scratchpad === 'string' ? cfg.scratchpad.trim() : '';
-          if (scratchpad.length === 0) return null;
-          return textRender(
-            `═══ YOUR SCRATCHPAD (agent-maintained outline + progress, survives compaction; update with scratchpad_set) ═══\n` +
-            `${scratchpad}\n` +
-            `═══ END SCRATCHPAD ═══`,
-          );
-        } catch (err) {
-          logger.warn('Scratchpad injection failed', {
-            error: err instanceof Error ? err.message : String(err),
-          }, ctx.agentId);
-          return null;
-        }
-      },
-    },
+    // ── W81: `lane.scratchpad` (800) LEFT THIS LIST ──────────────────────────────────────
+    //
+    // Three tools rewrite `agents.config.scratchpad` mid-conversation — `scratchpad_set`,
+    // `scratchpad_clear` and `reset_session` — and this lane held PRIORITY 20, the highest
+    // content priority in the assembly, at slot 800: ahead of the whole conversation and
+    // first in line to be paid for. The scaffolding ack's own sentence stated the volatility
+    // out loud ("I maintain it via scratchpad_set as I make progress"), which is the same
+    // shape of self-witness `lane.directive` carried at T67b. It is a post-budget tail lane
+    // now at MessageSlot.ScratchpadTail = 1830, and its pad is capped where it was not.
+
     // ── T67b §7: `lane.directive` LEFT this candidate list ────────────────────────────────
     //
     // It was `MessageSlot.ActiveDirective = 900` with priority 10 — the highest-priority,
@@ -1230,41 +1156,20 @@ function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unk
     // ITS SALIENCE DOES NOT DROP, it rises: the pin now sits AFTER the live conversation
     // instead of before it, in the recency-salient position the tail exists to give, which is
     // the same argument `memory/recall-lane.ts` makes for the HL5 snapshot's placement.
-    {
-      id: 'lane.events',
-      slot: MessageSlot.Events,
-      priority: LANE_PRIORITY['lane.events'],
-      minTokens: 0,
-      maxTokens: Infinity,
-      truncate: truncateTextLane,
-      render: (ctx) => {
-        const { awarenessEvents } = ctx.tail();
-        if (awarenessEvents.length === 0) return null;
-        const gistCap = lim('lane.events', 'chars', 'gist');
-        const eventLines = awarenessEvents.slice(-lim('lane.events', 'rows', 'events')).map((m) => {
-          const o = m.origin;
-          const rawContent = typeof m.content === 'string' ? m.content : '';
-          const body = rawContent
-            .replace(/^\s*\[[^\]]*\]\s*/, '')
-            .replace(/\s+/g, ' ')
-            .trim();
-          const label = o?.kind === 'user'
-            ? `${o.channel ?? 'msg'} notice${o.senderName ? ` from ${o.senderName}` : ''}`
-            : (o?.intent ?? 'event');
-          const structured = o?.kind === 'user' ? buildAwarenessGist(m.inboundMeta, rawContent) : null;
-          const gist = structured ?? body.slice(0, gistCap);
-          const at = renderMessageTimeStamp(m.createdAt);
-          return `• ${at ?? ''}[${label}] ${gist}`;
-        });
-        return textRender(
-          '═══ EVENTS & NOTICES (things that happened, and notifications addressed to the ' +
-          'owner that you are AWARE of but are NOT in conversation with, NOT the person ' +
-          'you are replying to below. Surface one to the owner only if it genuinely ' +
-          'matters; never reply to its sender) ═══\n' +
-          eventLines.join('\n'),
-        );
-      },
-    },
+    // ── W81: `lane.events` (1050) LEFT THIS LIST, AND IT IS THE SUBTLEST OF THE FOUR ─────
+    //
+    // NO TOOL WRITES IT. Its content is `awarenessEvents.slice(-10)` taken from the fresh
+    // tail's FIXED ROW WINDOW (`getRecentMessages(agentId, policy.freshTailCount)`), so every
+    // tool call appends two rows and eventually pushes an awareness row out of the window —
+    // the block re-renders because the CONVERSATION moved, with nothing mutated anywhere.
+    // Driven at `0cc9a3ba` across a single `outlook_search` on a 14-notice body: 1,344 ->
+    // 1,276 chars, at slot 1050, ahead of every message in the array. That is the same
+    // scrolling-window defect T67b deleted from this file's recent-mention suppression, and
+    // it is what explains the READ tools in the owner's six occurrences.
+    //
+    // A scrolling window cannot be re-keyed into stability — the window IS the content — so
+    // position is the only door. `renderEventsLane` below, MessageSlot.EventsTail = 1840.
+
     {
       id: 'lane.fresh-tail',
       slot: MessageSlot.FreshTail,
@@ -1843,6 +1748,32 @@ async function assembleMessageContext(
   }
   if (directiveLane) postBudget.push('lane.directive');
 
+  // ── W81: THE FOUR LANES THE OWNER'S FINDING 2 MOVED BELOW THE CONVERSATION ─────────────
+  // Read HERE and emitted by the loop past `volatileFrom`, the same split `lane.directive`
+  // and `lane.relevant-memory` use. The reason is the one sentence this whole task turns on:
+  // whatever a tool can mutate must render below the conversation, because a block ahead of
+  // it re-bills every token behind it whenever it moves. Best-effort, each in its own try, so
+  // one failed read costs its own block and never the assembly.
+  let attemptLedgerLane: string | null = null;
+  let activeTasksLane: string | null = null;
+  try {
+    const board = await buildWorkBoardLane(agentId);
+    attemptLedgerLane = board.attemptLedger;
+    activeTasksLane = board.activeTasks;
+  } catch (err) {
+    logger.warn('Work-board lane failed — the active task board is NOT in front of the model', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+  if (attemptLedgerLane) postBudget.push('lane.attempt-ledger');
+  if (activeTasksLane) postBudget.push('lane.active-tasks');
+
+  const scratchpadLane = renderScratchpadLane(agentId);
+  if (scratchpadLane) postBudget.push('lane.scratchpad');
+
+  const eventsLane = renderEventsLane(laneCtx.tail().awarenessEvents);
+  if (eventsLane) postBudget.push('lane.events');
+
   // Record the post-budget lanes that actually fired, against their declared reserves.
   // T1 2b checked this derived `empty` too: these lanes are inline pushes onto `postBudget`,
   // not `lane.render()` calls behind a catch, so "did not fire" is the whole truth here.
@@ -1904,6 +1835,10 @@ async function assembleMessageContext(
     recallLane,
     openCommitmentsLane,
     directiveLane,
+    attemptLedgerLane,
+    activeTasksLane,
+    scratchpadLane,
+    eventsLane,
     compileOrderIntact,
   };
 }
@@ -1983,6 +1918,98 @@ ${summary.content}
 // caller passes the lane's own granted ceiling rather than re-deriving a share here. The
 // recency floor survives as a FLOOR: the newest N summaries are the compressed tail of the
 // live thread and ride along even when the ceiling is too small to hold them by cost alone.
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// W81 — THE SCRATCHPAD AND THE EVENTS BLOCK, RENDERED FOR THE TAIL.
+//
+// Both were `buildContentLanes` entries until this task; both are read here and emitted by
+// the loop past `volatileFrom`. The renders are the lane renders, byte for byte, plus the
+// ONE bounding change each needed to be declarable as a post-budget reserve — the pad cap
+// and the ceiling enforcement. A diff that also changed what the model reads would have made
+// the before/after measurement meaningless, so neither did.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+const SCRATCHPAD_HEAD =
+  '═══ YOUR SCRATCHPAD (agent-maintained outline + progress, survives compaction; update '
+  + 'with scratchpad_set) ═══';
+const SCRATCHPAD_TAIL = '═══ END SCRATCHPAD ═══';
+
+/** The block, from a pad already read. Pure, so the worst-case generator calls this one. */
+export function renderScratchpadBlock(pad: string): string | null {
+  if (pad.length === 0) return null;
+  const cap = laneLimit('lane.scratchpad', 'chars', 'pad');
+  const body = pad.length > cap ? `${pad.slice(0, cap)}${LANE_TRUNCATION_MARKER}` : pad;
+  return `${SCRATCHPAD_HEAD}\n${body}\n${SCRATCHPAD_TAIL}`;
+}
+
+function renderScratchpadLane(agentId: string): string | null {
+  try {
+    const cfgRow = getDb().prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as
+      { config: string } | undefined;
+    if (!cfgRow?.config) return null;
+    const cfg = JSON.parse(cfgRow.config) as Record<string, unknown>;
+    const pad = typeof cfg.scratchpad === 'string' ? cfg.scratchpad.trim() : '';
+    return renderScratchpadBlock(pad);
+  } catch (err) {
+    logger.warn('Scratchpad injection failed', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+    return null;
+  }
+}
+
+/** Derived by CALLING the renderer with the pad cap flooded — never counted beside it. */
+let scratchpadWorstCase: number | null = null;
+export function scratchpadWorstCaseTokens(): number {
+  if (scratchpadWorstCase !== null) return scratchpadWorstCase;
+  const cap = laneLimit('lane.scratchpad', 'chars', 'pad');
+  scratchpadWorstCase = estimateTokens(renderScratchpadBlock('p'.repeat(cap + 10)) ?? '');
+  return scratchpadWorstCase;
+}
+
+const EVENTS_HEAD =
+  '═══ EVENTS & NOTICES (things that happened, and notifications addressed to the '
+  + 'owner that you are AWARE of but are NOT in conversation with, NOT the person '
+  + 'you are replying to below. Surface one to the owner only if it genuinely '
+  + 'matters; never reply to its sender) ═══';
+
+/** The block, from bullets already built. Pure, for the same reason. */
+export function renderEventsBlock(lines: string[]): string | null {
+  if (lines.length === 0) return null;
+  return `${EVENTS_HEAD}\n${lines.join('\n')}`;
+}
+
+function renderEventsLane(awarenessEvents: Message[]): string | null {
+  if (awarenessEvents.length === 0) return null;
+  const gistCap = laneLimit('lane.events', 'chars', 'gist');
+  const lines = awarenessEvents.slice(-laneLimit('lane.events', 'rows', 'events')).map((m) => {
+    const o = m.origin;
+    const rawContent = typeof m.content === 'string' ? m.content : '';
+    const body = rawContent.replace(/^\s*\[[^\]]*\]\s*/, '').replace(/\s+/g, ' ').trim();
+    const label = o?.kind === 'user'
+      ? `${o.channel ?? 'msg'} notice${o.senderName ? ` from ${o.senderName}` : ''}`
+      : (o?.intent ?? 'event');
+    const structured = o?.kind === 'user' ? buildAwarenessGist(m.inboundMeta, rawContent) : null;
+    const gist = structured ?? body.slice(0, gistCap);
+    const at = renderMessageTimeStamp(m.createdAt);
+    return `• ${at ?? ''}[${label}] ${gist}`;
+  });
+  return renderEventsBlock(lines);
+}
+
+/** Derived by CALLING the renderer with every declared cap flooded at once. */
+let eventsWorstCase: number | null = null;
+export function eventsLaneWorstCaseTokens(): number {
+  if (eventsWorstCase !== null) return eventsWorstCase;
+  const rows = laneLimit('lane.events', 'rows', 'events');
+  const gistCap = laneLimit('lane.events', 'chars', 'gist');
+  // The widest label the renderer can build, and the widest instant its stamp can print.
+  const label = `${'c'.repeat(24)} notice from ${'s'.repeat(64)}`;
+  const at = renderMessageTimeStamp('2026-09-30T23:41:59.999Z') ?? '';
+  const lines = Array.from({ length: rows }, () => `• ${at}[${label}] ${'g'.repeat(gistCap)}`);
+  eventsWorstCase = estimateTokens(renderEventsBlock(lines) ?? '');
+  return eventsWorstCase;
+}
 
 export function selectSummariesForPrefix(summaries: Summary[], budget: number): Summary[] {
   if (summaries.length === 0) return [];

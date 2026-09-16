@@ -22,6 +22,10 @@
 // The tail's order, and what makes each position true:
 //
 //   msg.pending-nudge          one-shot steer; absent on almost every turn
+//   msg.attempt-ledger         moves when a WORK ROW is touched                   ← W81
+//   msg.active-tasks           moves when the BOARD does, incl. the engine's floor ← W81
+//   msg.scratchpad             moves when the agent writes one                    ← W81
+//   msg.events                 moves when the tail's ROW WINDOW scrolls           ← W81
 //   msg.turn-context           routing/presence; moves when the CHANNEL or the wait count does
 //   engine.recent-outbound     receipts; moves when the agent SENDS
 //   msg.deliveries             deliveries into this conversation; moves when the agent SENDS
@@ -101,6 +105,25 @@ export async function injectAndRecord(
   if (!useTools && state.loopCount === 1 && messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
     injectRegistryMessage('msg.tool-note', messages, mctx);
   }
+
+  // ── W81: THE FOUR LANES THE OWNER'S DS4 FINDING 2 MOVED BELOW THE CONVERSATION ────────
+  // Slots 1810 -> 1840, i.e. FIRST in the tail, ahead of `msg.turn-context` at 1850, because
+  // the tail's order is most-stable-first and all four move less often than the channel does.
+  // They were `fitLanes` candidates at slots 500 / 600 / 800 / 1050 — AHEAD of the entire
+  // conversation — while every `work_*` tool moves the first two (and so does the engine's
+  // >=6-non-trivial-tool-call tracker floor, out of six PURE READS), three tools move the
+  // third, and the fourth is a scrolling window over the live tail's fixed row budget, so it
+  // moves when the CONVERSATION does. The assembler computes all four (one tracker read for
+  // the first two); they enter the array HERE, past `volatileFrom`, where a block that
+  // changes costs its own bytes instead of every byte behind it.
+  mctx.attemptLedgerLane = ctx.attemptLedgerLane ?? null;
+  injectRegistryMessage('msg.attempt-ledger', messages, mctx);
+  mctx.activeTasksLane = ctx.activeTasksLane ?? null;
+  injectRegistryMessage('msg.active-tasks', messages, mctx);
+  mctx.scratchpadLane = ctx.scratchpadLane ?? null;
+  injectRegistryMessage('msg.scratchpad', messages, mctx);
+  mctx.eventsLane = ctx.eventsLane ?? null;
+  injectRegistryMessage('msg.events', messages, mctx);
 
   // Precise clock time as the FINAL message, after every other engine
   // injection, so its per-minute churn falls past the entire cached

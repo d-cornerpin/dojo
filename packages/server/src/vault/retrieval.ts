@@ -267,11 +267,31 @@ export function searchUnfiledArchives(
  * `work/obligation-memory.ts` already records auto-recall inflation making rows immune to
  * hygiene as a defect rather than a service.
  */
+// ── W81: THE TRACKER READ LEFT THIS FUNCTION ────────────────────────────────────────────
+//
+// `pinnedContextSection` renders `lane.vault` at MessageSlot.VaultPull = 200 — ahead of the
+// entire conversation — and it called `activeTaskSuppressor`, which reads
+// `listTasks({ status: 'in_progress', assignedTo })` and drops pinned procedure/event entries
+// that overlap a task's title+description at >=0.45. So OPENING, CLOSING, RETITLING OR
+// RE-DESCRIBING A TASK silently rewrote slot 200, and the byte that moved was in a block
+// every message in the array sits behind. That is the owner's DS4 FINDING 2 arriving at a
+// lane nobody had connected to the tracker — `work_update` was two of his six occurrences,
+// and this is the second door it reached through, beside `lane.active-tasks` itself.
+//
+// THE SUPPRESSOR IS NOT DELETED. It is still applied by `memory/recall-lane.ts`, in the tail,
+// where the whole block is recomputed every turn anyway and a tracker read costs nothing in
+// cache. What it is no longer allowed to do is decide the bytes of a block ahead of the
+// conversation.
+//
+// WHAT IS GIVEN UP, stated rather than assumed: a PINNED procedure/event entry that restates
+// an in-flight task can now appear at slot 200 as well as in `msg.active-tasks` at 1820. The
+// duplication it was preventing is also much weaker than it was — the task board no longer
+// sits 400 slots away, it sits below the entire conversation — and the rule the suppressor
+// enforces ("the tracker is the source of truth for active state") is stated in the active-
+// tasks block's own header, which the model reads after this one.
 export function pinnedContextSection(
   agentId: string | undefined,
 ): { section: string; entryIds: string[] } {
-  const suppress = activeTaskSuppressor(agentId);
-
   let pinned = getPinnedEntries(agentId);
   if (pinned.length > MAX_PINNED_ENTRIES) {
     pinned.sort((a, b) => {
@@ -285,7 +305,6 @@ export function pinnedContextSection(
   const lines: string[] = [];
   const includedIds: string[] = [];
   for (const entry of pinned) {
-    if (suppress(entry).suppressed) continue;
     lines.push(formatEntryForPrompt(entry));
     includedIds.push(entry.id);
   }

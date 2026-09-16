@@ -60,6 +60,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import {
   estimateTokens, estimateImageTokens, imagePixelDimensions, IMAGE_TOKEN_CEILING,
+  CACHED_REGION_SHARE,
 } from './budget.js';
 import { MessageSlot } from '../prompt/registry/types.js';
 
@@ -182,13 +183,31 @@ export interface Lane<C = unknown, P = unknown> {
 // STRONGER than priority 10 — the reserve cannot be outbid, where a priority can. Same shape
 // as `lane.relevant-memory`'s exit at CORE-2 item 4, and for the same reason: its content is
 // the newest unanswered user ask, so it may not sit ahead of the cache boundary at all.
+//
+// ── W81: FOUR MORE LANES LEFT THIS TABLE, AND THE RULE IS THE ONE ABOVE ─────────────────
+// `lane.active-tasks` (50), `lane.attempt-ledger` (60), `lane.events` (40) and
+// `lane.scratchpad` (20) are post-budget TAIL lanes now. The owner's DS4 FINDING 2 named the
+// class: a state-mutating tool call followed within seconds by a deep invalidation landing
+// BETWEEN the stable prefix and the conversation, 15-50K tokens rebuilt. His rule and this
+// tree's are the same sentence — WHATEVER A TOOL CAN MUTATE MUST RENDER BELOW THE
+// CONVERSATION — and the census behind the move found the doors:
+//   * the two work-board lanes: every `work_*` write, plus the engine's >=6-tool-call
+//     tracker floor, which mints an in_progress row out of six PURE READS.
+//   * `lane.events`: its content is `awarenessEvents.slice(-10)` over the fresh tail's
+//     FIXED ROW WINDOW, so every tool call appends two rows and eventually pushes an
+//     awareness row out of the window — a block ahead of the conversation re-rendering
+//     because the conversation moved. That is the same scrolling-window defect T67b deleted
+//     from `lane.active-tasks`'s recent-mention suppression, one noun over.
+//   * `lane.scratchpad`: `scratchpad_set`, `scratchpad_clear` and `reset_session` all
+//     rewrite it mid-conversation, and the ack's own sentence says the agent maintains it
+//     "as I make progress" — i.e. by construction, on a working turn.
+// A priority rung is a statement about what to DROP under budget pressure, and a lane the
+// fit no longer ranks has nothing to say there. Each carries a DECLARED RESERVE in
+// `POST_BUDGET_LANES` instead, which is stronger: a reserve cannot be outbid where a
+// priority can (T67b §5's argument for `lane.directive`, unchanged).
 export const LANE_PRIORITY: Record<string, number> = {
-  'lane.scratchpad': 20,
   'lane.fresh-tail': 30,
   'lane.scaffolding-ack': 35,
-  'lane.events': 40,
-  'lane.active-tasks': 50,
-  'lane.attempt-ledger': 60,
   'lane.continuity': 70,
   'lane.summaries': 80,
   'lane.vault': 100,
@@ -201,11 +220,7 @@ export const LANE_PRIORITY: Record<string, number> = {
  * exactly how they came to disagree in the first place.
  */
 export const LANE_LADDER_LABEL: Record<string, string> = {
-  'lane.scratchpad': 'my scratchpad',
   'lane.fresh-tail': 'live conversation below',
-  'lane.events': 'events & notices',
-  'lane.active-tasks': 'active tracker tasks',
-  'lane.attempt-ledger': 'attempt ledger',
   'lane.continuity': 'continuity brief',
   'lane.summaries': 'compressed history',
   'lane.vault': 'vault entries',
@@ -217,10 +232,7 @@ export const LANE_SECTION_LABEL: Record<string, string> = {
   'lane.briefing': 'briefing',
   'lane.vault': 'vault',
   'lane.summaries': 'summaries',
-  'lane.attempt-ledger': 'attempt ledger',
-  'lane.active-tasks': 'active tasks',
   'lane.continuity': 'continuity brief',
-  'lane.scratchpad': 'scratchpad',
 };
 
 // ── The declared numbers ────────────────────────────────────────────────────────────────
@@ -324,13 +336,26 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
   // SCROLLING WINDOW, so the block came back unprompted as those rows aged out and rewrote
   // bytes ahead of the tail. It saved this lane's own few hundred tokens and spent every
   // cached token behind it.
+  // W81: `chars.title` is NEW, and it is the one term this move added. The title was the
+  // single unbounded string in the block, which is exactly why the lane could never have
+  // declared a worst case — and a post-budget lane must declare one. 120 is not a new
+  // opinion: `lane.relevant-memory` above declares the same 120 for `snapshotTitle`, chosen
+  // there by measuring the longest commitment title on the worn-in dev body (79 chars on the
+  // Bob fixtures) and leaving room. One cap, one justification.
   'lane.active-tasks': {
     rows: { tasks: 5 },
-    chars: { description: 300, lastNote: 200 },
+    chars: { title: 120, description: 300, lastNote: 200 },
   },
 
   // §T0-B C `:1185`(−10), D `:1205`(0,400) — the awareness lane's row cap and gist slice.
   'lane.events': { rows: { events: 10 }, chars: { gist: 400 } },
+
+  // W81: `chars.pad` is NEW, and it is the one term the scratchpad's move added. The pad was
+  // unbounded — the lane declared `maxTokens: Infinity` and the agent writes it itself — and
+  // an unbounded lane cannot declare the reserve a post-budget lane must have. 4,000 chars is
+  // ~4x the largest pad on the worn-in dev body (kevin, 1,046) and the block TRUNCATES rather
+  // than drops, so the cap costs the tail of a runaway pad and never the pad itself.
+  'lane.scratchpad': { chars: { pad: 4000 } },
 
   // §T0-B G `:43`, `:61`, `:2043`, `:2082`, `:256` — the content caps that shape the tail
   // before it is budgeted. Declared here; the constants stay exported from `assembler.ts`
@@ -447,6 +472,92 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       'therefore a RECORDED over-budget event at the validator, not a silent one, which ' +
       'is the same disposition requirement B8 gives the forced last group. Narrowing the ' +
       '25,000 cap is a product-behaviour change and is enumerated for T9, not taken here.',
+  },
+  // ── W81: THE FOUR LANES THE OWNER'S FINDING 2 MOVED OUT OF THE CACHED REGION ──────────
+  // Each reserve is DERIVED BY CALLING THE RENDERER with every declared cap flooded at once
+  // (the `recallLaneWorstCaseTokens` discipline), and each literal is pinned to the function
+  // that produced it by `memory/__tests__/the-prefix-holds-still.test.ts` §W81, so a cap
+  // that changes moves the reserve with it instead of silently outgrowing it.
+  {
+    id: 'lane.attempt-ledger',
+    slot: MessageSlot.AttemptLedgerTail,
+    reserveTokens: 800,
+    measured:
+      'W81, DERIVED FROM THE LANE\'S OWN DECLARED CEILING: `attemptLedgerWorstCaseTokens()` '
+      + '(`memory/work-board-lane.ts`) returns LANE_LIMITS[\'lane.attempt-ledger\'].tokens.cap '
+      + '= 800, which was this lane\'s `maxTokens` at MessageSlot.AttemptLedger = 500 and was '
+      + 'enforced by `truncateTextLane` on every assembly — so 800 is the largest this block '
+      + 'has ever been permitted to be, not a new allowance. The render enforces the same '
+      + 'ceiling itself now, because no allocator runs downstream of a post-budget lane. '
+      + 'WHY IT IS A RESERVE AT ALL: every `work_*` write reaches this block through the '
+      + 'spine\'s `work_events` transition branch (`work/audit-trail.ts`), and it sat AHEAD '
+      + 'of the whole conversation, so a `work_update` re-billed the entire array behind it. '
+      + 'WHAT IT COSTS: 800 tokens leave the content budget on every assembly and the block '
+      + 'is now recomputed every turn instead of cached. What it replaces spent the same '
+      + 'tokens AND every cached token behind them, on every tool call that touched a row.',
+  },
+  {
+    id: 'lane.active-tasks',
+    slot: MessageSlot.ActiveTasksTail,
+    reserveTokens: 1239,
+    measured:
+      'W81, DERIVED BY CALLING THE RENDERER: `activeTasksWorstCaseTokens()` '
+      + '(`memory/work-board-lane.ts`) builds 5 task lines (rows.tasks) through the REAL '
+      + '`taskLine` + `renderActiveTasksBlock`, every cap flooded at once — a 120-char title '
+      + '(chars.title, NEW at W81 and the one term this move added, because an unbounded '
+      + 'title is why this lane could never declare a worst case), a 300-char description '
+      + '(chars.description), a 200-char last note (chars.lastNote), a full 36-char id and '
+      + 'the widest `renderTaskStamps({relative:false})` / `renderStepFacts` terms, both '
+      + 'measured by CALLING those two renderers rather than counted beside them. '
+      + 'WHY IT IS A RESERVE AT ALL: this lane was a `fitLanes` candidate at '
+      + 'MessageSlot.ActiveTasks = 600 with `maxTokens: Infinity`, stating the WORK BOARD — '
+      + 'the most-written surface an agent has. Every `work_*` tool moves it, and so does the '
+      + 'engine\'s >=6-non-trivial-tool-call tracker floor '
+      + '(`agent/v2/steps/execute/tracker-floors.ts`), which mints an in_progress row out of '
+      + 'six PURE READS: that is why `plaud_*` and `outlook_*` appear in the owner\'s list of '
+      + 'six occurrences alongside the two `work_update`s. '
+      + 'WHAT IT COSTS: the block is uncached now, and its title is capped where it was not.',
+  },
+  {
+    id: 'lane.scratchpad',
+    slot: MessageSlot.ScratchpadTail,
+    reserveTokens: 1049,
+    measured:
+      'W81, DERIVED BY CALLING THE RENDERER: `scratchpadWorstCaseTokens()` '
+      + '(`memory/assembler.ts`) renders the real frame around a pad flooded to '
+      + 'LANE_LIMITS[\'lane.scratchpad\'].chars.pad = 4,000 — NEW at W81 for the reason '
+      + '`chars.title` is new next door: the pad was unbounded, and an unbounded lane cannot '
+      + 'declare a reserve. 4,000 chars is ~4x the largest pad on the worn-in dev body '
+      + '(kevin, 1,046 chars) and the block truncates rather than drops, so the cap costs the '
+      + 'tail of a runaway pad and never the pad itself. '
+      + 'WHY IT IS A RESERVE AT ALL: `scratchpad_set`, `scratchpad_clear` and `reset_session` '
+      + 'all rewrite `agents.config.scratchpad` MID-CONVERSATION, and the block sat at '
+      + 'MessageSlot.Scratchpad = 800 with priority 20 — ahead of the entire conversation, '
+      + 'and ahead of it at the HIGHEST content priority in the assembly. The ack\'s own '
+      + 'deleted sentence stated the volatility out loud: "I maintain it via scratchpad_set '
+      + 'as I make progress."',
+  },
+  {
+    id: 'lane.events',
+    slot: MessageSlot.EventsTail,
+    reserveTokens: 1395,
+    measured:
+      'W81, DERIVED BY CALLING THE RENDERER: `eventsLaneWorstCaseTokens()` '
+      + '(`memory/assembler.ts`) renders the real frame around 10 bullets (rows.events), each '
+      + 'a 400-char gist (chars.gist) behind the widest label and a full '
+      + '`renderMessageTimeStamp` instant. '
+      + 'WHY IT IS A RESERVE AT ALL, and it is the subtlest of the four: NO TOOL WRITES THIS '
+      + 'LANE. Its content is `awarenessEvents.slice(-10)` over the fresh tail\'s FIXED ROW '
+      + 'WINDOW (`getRecentMessages(agentId, policy.freshTailCount)`), so every tool call '
+      + 'appends two rows and eventually pushes an awareness row out of the window — the '
+      + 'block re-renders because the CONVERSATION moved, with nothing mutated anywhere. '
+      + 'Driven at `0cc9a3ba` across a single `outlook_search` on a 14-notice body: 1,344 -> '
+      + '1,276 chars at slot 1050, ahead of everything. That is the same scrolling-window '
+      + 'defect T67b deleted from `lane.active-tasks`\'s recent-mention suppression, and it is '
+      + 'the one that explains the READ tools in the owner\'s six. '
+      + 'WHAT IT COSTS: a lane that was a cache hit between notices is recomputed every turn. '
+      + 'A scrolling window cannot be re-keyed into stability — the window IS the content — '
+      + 'so position is the only door, which is the disposition the rule already names.',
   },
   {
     id: 'lane.deliveries',
@@ -605,6 +716,13 @@ export const POST_BUDGET_ENTRY_LANE: Record<string, string> = {
   'engine.open-commitments': 'lane.relevant-memory',
   // T67b §7: the directive pin, same split for the same reason — it declares its own reserve.
   'msg.directive': 'lane.directive',
+  // W81: the four lanes the owner's FINDING 2 moved out of the cached region. Each declares
+  // its own reserve above, so each entry is attributed to its own lane rather than to the
+  // tail it now sits inside — the same split `msg.deliveries` and `msg.directive` make.
+  'msg.attempt-ledger': 'lane.attempt-ledger',
+  'msg.active-tasks': 'lane.active-tasks',
+  'msg.scratchpad': 'lane.scratchpad',
+  'msg.events': 'lane.events',
   // The three engine-side injections that still push directly (`pre-call-injections.ts`).
   'engine.open-work': 'lane.loop-tail',
   'engine.recent-outbound': 'lane.loop-tail',
@@ -664,10 +782,15 @@ const ACK_MID = '). Source priority for this turn: ';
 // make impossible (research 06 §2: the ack's prose and the budget's order disagreeing). The
 // sentence itself is not lost: `formatDirectiveBlock` carries the pin's own framing, and the
 // tail position states the same primacy by construction.
+// W81: the sentence "The scratchpad is my own working outline; I maintain it via
+// scratchpad_set as I make progress and read from it when I need to remember where I am."
+// LEFT this string, for the identical reason T67b's note above gives. `lane.scratchpad` is a
+// tail lane at 1830 now, so the ack — which closes the SCAFFOLDING BLOCK it sits inside —
+// was naming a section that is not at this position. The sentence's own content is not lost:
+// the scratchpad block carries `update with scratchpad_set` in its own header, where it is
+// beside the thing it describes rather than three thousand tokens above it.
 const ACK_TAIL =
-  '. When sources disagree, trust the most recent and most specific. The scratchpad is my ' +
-  'own working outline; I maintain it via scratchpad_set as I make progress and read from ' +
-  'it when I need to remember where I am.';
+  '. When sources disagree, trust the most recent and most specific.';
 
 /**
  * Generate the ack from the admitted lane ids. Pure: same ids in, same bytes out.
@@ -862,6 +985,49 @@ export function fitLanes(
     a.c.lane.priority - b.c.lane.priority || a.c.lane.slot - b.c.lane.slot,
   );
 
+  // ── W81: THE PASS-2 WALK IS CACHED-PHASE-FIRST ──────────────────────────────────────────
+  //
+  // THE DEFECT. Pass 2 walked in pure PRIORITY order, and `available` at each step is
+  // `budget - spent - owedBelow` — i.e. A LANE'S GRANT IS A FUNCTION OF WHAT EVERY
+  // HIGHER-PRIORITY LANE ALREADY SPENT. `lane.fresh-tail` is priority 30 and every lane
+  // emitted ahead of it ranks below (events 40 … summaries 80 … vault 100, briefing 110), so
+  // the LIVE CONVERSATION was granted first and the CACHED REGION divided the remainder. The
+  // tail grows on every single tool call, read or write; therefore the bytes of the cached
+  // region moved on every single tool call. Driven at `0cc9a3ba` on one `outlook_search`
+  // — a pure read that mutated nothing — `lane.summaries` at slot 300 went 22,424 -> 10,580
+  // chars and re-billed the whole array behind it. That is the owner's DS4 FINDING 2 for the
+  // tools that write NOTHING, and it is the same rule roadmap non-negotiable #10 states one
+  // noun over: a lane ahead of the tail may not be a function of the tail.
+  //
+  // THE RULE, stated once: NO LANE'S GRANT MAY DEPEND ON A LANE EMITTED AFTER IT. Pass 2
+  // therefore walks the CACHED phase (`slot < MessageSlot.FreshTail`) to completion before it
+  // begins the LIVE phase, in priority order WITHIN each phase. A cached lane's grant is now
+  // a pure function of {the budget, its own cost and ceiling, the costs of the higher-
+  // priority CACHED lanes, the reserved minimums} — none of which moves between compactions.
+  //
+  // WHAT THIS COSTS, AND THE GUARANTEE THAT REPLACES IT. Priority no longer decides the
+  // cached/live tug-of-war, so the live conversation loses a race it used to win. PASS 1 IS
+  // UNCHANGED and still walks pure priority, so under real scarcity the tail's floor is still
+  // reserved before the briefing's; and `cachedRegionCap` below gives the conversation a
+  // DECLARED 30% of the content budget, which is stronger than a priority — a declared floor
+  // cannot be outbid, the way `POST_BUDGET_RESERVE_TOKENS` is stronger than the priority-10
+  // rung `lane.directive` traded for it (T67b §5).
+  //
+  // The trade is also the right way round on the bill: a cached token is paid once and read
+  // from cache thereafter, where a tail token is recomputed EVERY turn (T69b §5 measured the
+  // provider's cached prefix ending at the newest exchange). Moving budget from the live
+  // region to the cached one is cheaper per turn, not more expensive.
+  const CACHED_PHASE = (slot: number) => slot < MessageSlot.FreshTail;
+  const byPhase = [...byPriority].sort((a, b) =>
+    (CACHED_PHASE(a.c.lane.slot) ? 0 : 1) - (CACHED_PHASE(b.c.lane.slot) ? 0 : 1),
+  );
+  // The cached phase's declared ceiling. Without it the inversion above would trade a cache
+  // defect for a worse one: `lane.briefing`, `lane.vault`, `lane.continuity` and
+  // `lane.scratchpad` all declare `maxTokens: Infinity`, so a single oversized row could take
+  // the whole budget and leave the model a conversation of one message.
+  const cachedRegionCap = Math.floor(budget * CACHED_REGION_SHARE);
+  let cachedSpent = 0;
+
   // ── Pass 1: reserve the minimums, highest priority first ──
   let reserved = 0;
   for (const e of byPriority) {
@@ -887,10 +1053,10 @@ export function fitLanes(
     }
   }
 
-  // ── Pass 2: distribute the remainder, highest priority first ──
+  // ── Pass 2: distribute the remainder, CACHED phase first, highest priority within it ──
   let spent = 0;
-  for (let i = 0; i < byPriority.length; i++) {
-    const e = byPriority[i];
+  for (let i = 0; i < byPhase.length; i++) {
+    const e = byPhase[i];
     if (e.reserved < 0) {
       e.granted = 0;
       grants.push({
@@ -902,12 +1068,20 @@ export function fitLanes(
       });
       continue;
     }
-    // Never spend a reservation still owed to a lane below this one.
+    // Never spend a reservation still owed to a lane below this one. "Below" is the WALK's
+    // order, which is now phase-then-priority — so a cached lane correctly withholds the
+    // tail's reserved floor, which is what keeps the live conversation from being starved by
+    // a cached lane that declares no ceiling.
     let owedBelow = 0;
-    for (let j = i + 1; j < byPriority.length; j++) {
-      if (byPriority[j].reserved > 0) owedBelow += byPriority[j].reserved;
+    for (let j = i + 1; j < byPhase.length; j++) {
+      if (byPhase[j].reserved > 0) owedBelow += byPhase[j].reserved;
     }
-    const available = Math.max(0, budget - spent - owedBelow);
+    const inCachedPhase = CACHED_PHASE(e.c.lane.slot);
+    // W81: a cached lane sees the CACHED CAP, never `spent` — `spent` carries the tail's
+    // size, and reading it here is exactly how the tail's growth reached the prefix.
+    const available = inCachedPhase
+      ? Math.max(0, Math.min(cachedRegionCap - cachedSpent, budget - cachedSpent - owedBelow))
+      : Math.max(0, budget - spent - owedBelow);
     const ceiling = Math.min(e.cost, e.c.lane.maxTokens);
     // A lane never gets less than the floor pass 1 already set aside for it.
     const grant = Math.max(e.reserved, Math.min(ceiling, available));
@@ -929,6 +1103,7 @@ export function fitLanes(
 
     e.granted = grant;
     spent += grant;
+    if (inCachedPhase) cachedSpent += grant;
 
     if (grant >= e.cost) {
       grants.push({
@@ -947,6 +1122,7 @@ export function fitLanes(
           (e.c.lane.maxTokens < e.cost ? ` (lane ceiling ${e.c.lane.maxTokens})` : ''),
       });
       spent += shrunk.tokens - grant;
+      if (inCachedPhase) cachedSpent += shrunk.tokens - grant;
     }
   }
 

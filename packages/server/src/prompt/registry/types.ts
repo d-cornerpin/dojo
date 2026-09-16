@@ -107,18 +107,32 @@ export enum MessageSlot {
   // (`memory/recall-lane.ts`); nothing was deleted. The number stays RETIRED, not reused: the
   // slot values are a byte-equivalence contract, so re-pointing 400 at a different section
   // would silently reorder a future array — the same disposition TrackerNotif=1500 got.
-  AttemptLedger = 500, // A6 (active task)
-  ActiveTasks = 600, // A7 (session start)
+  // W81: MessageSlot.AttemptLedger (500) and MessageSlot.ActiveTasks (600) were STRIPPED
+  // with their lanes. Both STATE THE WORK BOARD, and the work board is the most-written
+  // surface an agent has — every `work_*` tool, plus the engine's >=6-non-trivial-tool-call
+  // floor, which mints an in_progress row out of six PURE READS. So a tool call rewrote a
+  // block sitting ahead of the entire conversation, which is the owner's DS4 FINDING 2
+  // (2026-09-12, six occurrences, 15-50K tokens rebuilt each). They moved WHOLE to
+  // `AttemptLedgerTail = 1810` / `ActiveTasksTail = 1820` (`memory/work-board-lane.ts`);
+  // nothing was deleted. The numbers stay RETIRED, not reused: the slot values are a
+  // byte-equivalence contract, so re-pointing 500 or 600 at a different section would
+  // silently reorder a future array — the same disposition RelevantMemory=400,
+  // TrackerNotif=1500 and ActiveDirective=900 got.
   CompactionContinuity = 700, // A8 (post-compaction <24h)
-  Scratchpad = 800, // A9
+  // W81: MessageSlot.Scratchpad (800) was STRIPPED with its lane — `scratchpad_set`,
+  // `scratchpad_clear` and `reset_session` all rewrite it MID-CONVERSATION, and the block's
+  // own header says the agent maintains it "as I make progress". It moved WHOLE to
+  // `ScratchpadTail = 1830`. RETIRED, not reused, per the paragraph above.
   ActiveDirective = 900, // A10 (tier 2; sits closest to the tail)
   ScaffoldingAck = 1000, // A11 (assistant beat closing the scaffolding block)
-  // PHASE-3 T3: the EVENTS & NOTICES awareness lane. It has always been emitted here —
-  // between the ack and the live tail (`assembler.ts:1215` pre-repin) — and was the one
-  // section with NO admission gate, NO token add and NO record. Declaring the slot ADDS a
-  // number between two existing ones; it renumbers nothing, so the byte-equivalence
-  // contract above is untouched.
-  Events = 1050,
+  // W81: MessageSlot.Events (1050) was STRIPPED with its lane. Its content is
+  // `awarenessEvents.slice(-10)` taken from the fresh tail's FIXED ROW WINDOW
+  // (`getRecentMessages(agentId, policy.freshTailCount)`), so every tool call appends two
+  // rows and eventually pushes an awareness row out of the window — a block AHEAD of the
+  // conversation re-rendering because the conversation moved, with nothing mutated anywhere.
+  // Driven at `0cc9a3ba` across one `outlook_search`: 1,344 -> 1,276 chars. Same
+  // scrolling-window class T67b deleted from `lane.active-tasks`'s recent-mention
+  // suppression. It moved WHOLE to `EventsTail = 1840`. RETIRED, not reused.
   // ── the live recent-message tail (rehydrated rows, ledger A1) ──
   FreshTail = 1100,
   // ── engine injections (§3c), fire post-tail in this order ──
@@ -134,6 +148,20 @@ export enum MessageSlot {
   Attachments = 1600, // image/PDF content blocks
   PendingNudge = 1700, // steering nudge
   ToolNote = 1800, // no-tools capability note
+  // ── W81: THE FOUR LANES THAT LEFT THE CACHED REGION, IN MOST-STABLE-FIRST ORDER ────────
+  // They sit between `ToolNote = 1800` and `TurnContext = 1850` because they are all MORE
+  // stable than turn-context (which moves every turn by construction) and all LESS stable
+  // than anything the cached region may still hold. Adding numbers BETWEEN two existing ones
+  // renumbers nothing, so the byte-equivalence contract above is untouched — the same move
+  // Events=1050, Deliveries=1860 and RecalledMemory=1880 made.
+  // The order within the four is their own volatility, measured rather than assumed: the
+  // ledger changes only when a work row is TOUCHED; the task board changes on that plus the
+  // per-turn stamp; the scratchpad changes when the agent decides to write one; the events
+  // block changes whenever the tail's row window scrolls, which is every few tool calls.
+  AttemptLedgerTail = 1810,
+  ActiveTasksTail = 1820,
+  ScratchpadTail = 1830,
+  EventsTail = 1840,
   // C28 Part 1: per-turn volatile routing/presence context (ReplyDestination,
   // ChannelLandscape, PhoneConduct, counterparty header, iMessage-bridge state,
   // othersWaiting / conversational-turn hints) moved OUT of the cached system
@@ -265,6 +293,18 @@ export interface AssemblyContext {
    *  every substantive user turn and may never sit in the cached prefix. It was
    *  `MessageSlot.ActiveDirective = 900` until this task. */
   directiveLane?: string | null;
+  /** W81: the four blocks the owner's DS4 FINDING 2 moved out of the cached region — the
+   *  attempt ledger and the active-task board (`memory/work-board-lane.ts`, ONE tracker read),
+   *  the scratchpad and the events block. All four are rendered by the assembler and appended
+   *  by the loop past `volatileFrom`, at 1810/1820/1830/1840. Volatile by construction: every
+   *  `work_*` tool moves the first two (and so does the engine's >=6-tool-call tracker floor,
+   *  out of six PURE READS), `scratchpad_set`/`scratchpad_clear`/`reset_session` move the
+   *  third, and the fourth is a scrolling window over the live tail's fixed row budget — so it
+   *  moves when the CONVERSATION does, with nothing mutated anywhere. */
+  attemptLedgerLane?: string | null;
+  activeTasksLane?: string | null;
+  scratchpadLane?: string | null;
+  eventsLane?: string | null;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -312,6 +352,15 @@ export const VOLATILE_TURN_FIELDS = [
   'delegationHint',
   'deliveriesLane',
   'recallLane',
+  // W81: `directiveLane` was MISSING from this list — T67b added the field and not the row,
+  // so a system render could still have read the newest user ask straight into the cached
+  // prefix. Added here with the four this task moved, because the omission is the same kind
+  // of gap in every case and fixing one while leaving the other is the disease.
+  'directiveLane',
+  'attemptLedgerLane',
+  'activeTasksLane',
+  'scratchpadLane',
+  'eventsLane',
 ] as const satisfies readonly (keyof AssemblyContext)[];
 
 export type VolatileTurnField = (typeof VOLATILE_TURN_FIELDS)[number];

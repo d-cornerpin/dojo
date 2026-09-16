@@ -417,6 +417,32 @@ export const GATE_MESSAGE_CAP_TOKENS = 4000;
 export const SUMMARY_SHARE = 0.7;
 
 /**
+ * W81 — THE CACHED REGION'S CEILING, AND WHY A CEILING HAD TO EXIST AT ALL.
+ *
+ * `fitLanes` used to spend pass 2 in pure PRIORITY order, and `lane.fresh-tail` outranks
+ * every lane emitted AHEAD of it (priority 30 against summaries' 80, the vault's 100, the
+ * briefing's 110). So the live conversation was granted FIRST and the cached lanes divided
+ * whatever it left — which made the bytes of the cached region a function of the size of the
+ * uncached one. A single mail search appending a 15,000-token tool_result re-truncated
+ * `lane.summaries` at slot 300 and re-billed the entire array behind it, with no content
+ * changed anywhere (measured: 22,424 -> 10,580 chars across one `outlook_search`).
+ *
+ * The walk is now CACHED-PHASE-FIRST (`lanes.ts`), so a cached lane's grant can no longer
+ * move with the tail. That inverts who gives way under pressure, so the live conversation
+ * needs a DECLARED guarantee where it previously had a race it always won: the cached phase
+ * may spend at most this share of the content budget, and the remainder is the tail's floor.
+ *
+ * WHY 0.7 AND NOT A NEW NUMBER: `SUMMARY_SHARE` above is already the declared ceiling of the
+ * largest lane in that region, so on any body where summaries ARE the cached region this cap
+ * cannot bind — it is the largest value that changes nothing today, and it still leaves the
+ * live conversation a guaranteed 30% of the content budget (~29,000 tokens on a 128k window
+ * with a measured tool payload). Two names rather than one because they answer two different
+ * questions, and welding them would make a later change to either one silently move the
+ * other.
+ */
+export const CACHED_REGION_SHARE = 0.7;
+
+/**
  * Canonical model-aware fresh-tail window size (FA-M3). Moved here from `memory/store.ts`
  * unchanged, byte for byte: the assembler's tail-shown count and compaction's inside-tail
  * count MUST be the same number or the tail-to-summary handoff drops or duplicates

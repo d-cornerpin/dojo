@@ -512,6 +512,74 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
       'conversation is the recency-salient position, which is what a pin wants.',
     render: (ctx) => (ctx.directiveLane ? { role: 'user', content: ctx.directiveLane } : null),
   },
+  // ── W81: THE FOUR LANES THE OWNER'S DS4 FINDING 2 MOVED BELOW THE CONVERSATION ─────────
+  // One rule, four applications: whatever a tool can mutate must render BELOW the
+  // conversation, because a block ahead of it re-bills every token behind it whenever it
+  // moves. Six occurrences on the owner's production box, 2026-09-12, 15-50K tokens each.
+  // Emitted most-stable-first (1810 -> 1840), all four ahead of `msg.turn-context` at 1850.
+  {
+    id: 'msg.attempt-ledger',
+    target: 'messages',
+    slot: MessageSlot.AttemptLedgerTail,
+    reason:
+      'W81: THE ATTEMPT LEDGER. It was a `fitLanes` candidate at MessageSlot.AttemptLedger = '
+      + '500, and it states the engine\'s record of work on the agent\'s active tasks — so '
+      + 'every `work_*` write reaches it through the spine\'s `work_events` transition branch '
+      + '(`work/audit-trail.ts`), plus `work_note` directly. Two of the owner\'s six '
+      + 'occurrences were `work_update`. Rendered by the assembler from the same single '
+      + '`listTasks` read as `msg.active-tasks` (`memory/work-board-lane.ts`); appended by '
+      + 'the loop past `volatileFrom`. First of the four because it is the most stable: it '
+      + 'moves only when a work row is actually touched.',
+    render: (ctx) => (ctx.attemptLedgerLane ? { role: 'user', content: ctx.attemptLedgerLane } : null),
+  },
+  {
+    id: 'msg.active-tasks',
+    target: 'messages',
+    slot: MessageSlot.ActiveTasksTail,
+    reason:
+      'W81: THE ACTIVE-TASK BOARD. It was a `fitLanes` candidate at MessageSlot.ActiveTasks = '
+      + '600 with `maxTokens: Infinity`, stating the work board — the most-written surface an '
+      + 'agent has. Every `work_*` tool moves it, and so does the ENGINE: the '
+      + '>=6-non-trivial-tool-call tracker floor (`agent/v2/steps/execute/tracker-floors.ts`) '
+      + 'mints an in_progress row out of six PURE READS, which is why `plaud_*` and '
+      + '`outlook_*` appear in the owner\'s six alongside the two writes. Driven at '
+      + '`0cc9a3ba`, one `work_update` moved the merged prefix block at index 0 — and index 0 '
+      + 'is what the entire array sits behind. Same read as `msg.attempt-ledger`, appended by '
+      + 'the loop past `volatileFrom`.',
+    render: (ctx) => (ctx.activeTasksLane ? { role: 'user', content: ctx.activeTasksLane } : null),
+  },
+  {
+    id: 'msg.scratchpad',
+    target: 'messages',
+    slot: MessageSlot.ScratchpadTail,
+    reason:
+      'W81: THE SCRATCHPAD. It was a `fitLanes` candidate at MessageSlot.Scratchpad = 800 '
+      + 'holding PRIORITY 20 — the highest content priority in the assembly — while three '
+      + 'tools rewrite `agents.config.scratchpad` mid-conversation: `scratchpad_set`, '
+      + '`scratchpad_clear` and `reset_session`. The scaffolding ack\'s own sentence said the '
+      + 'volatility out loud ("I maintain it via scratchpad_set as I make progress"), which '
+      + 'is the same self-witness `lane.directive` carried at T67b §7. Its pad is capped at '
+      + 'LANE_LIMITS[\'lane.scratchpad\'].chars.pad now, because a post-budget lane must be '
+      + 'able to declare a worst case and an unbounded pad cannot.',
+    render: (ctx) => (ctx.scratchpadLane ? { role: 'user', content: ctx.scratchpadLane } : null),
+  },
+  {
+    id: 'msg.events',
+    target: 'messages',
+    slot: MessageSlot.EventsTail,
+    reason:
+      'W81: EVENTS & NOTICES, and it is the subtlest of the four because NO TOOL WRITES IT. '
+      + 'Its content is `awarenessEvents.slice(-10)` over the fresh tail\'s FIXED ROW WINDOW '
+      + '(`getRecentMessages(agentId, policy.freshTailCount)`), so every tool call appends two '
+      + 'rows and eventually pushes an awareness row out of the window — the block re-renders '
+      + 'because the CONVERSATION moved, with nothing mutated anywhere. Driven at `0cc9a3ba` '
+      + 'across a single `outlook_search` on a 14-notice body: 1,344 -> 1,276 chars at slot '
+      + '1050, ahead of every message in the array. Same scrolling-window defect T67b deleted '
+      + 'from `lane.active-tasks`\'s recent-mention suppression. A scrolling window cannot be '
+      + 're-keyed into stability — the window IS the content — so position is the only door. '
+      + 'Last of the four: it is the most volatile, moving every few tool calls.',
+    render: (ctx) => (ctx.eventsLane ? { role: 'user', content: ctx.eventsLane } : null),
+  },
   {
     id: 'msg.peer-status',
     target: 'messages',

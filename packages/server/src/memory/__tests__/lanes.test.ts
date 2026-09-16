@@ -100,10 +100,15 @@ describe('the lane table declares priority as data, independent of position', ()
     // off the top, which is a stronger guarantee than any priority, because a reserve cannot
     // be outbid. Same exit `lane.relevant-memory` made at CORE-2 item 4. The ladder the ack
     // prints is unchanged for every rung that remains, in the same relative order.
+    // W81: `'lane.scratchpad'` and `'lane.active-tasks'` LEFT this list with their lanes,
+    // for the reason the note above gives one noun over. Both were rewritten MID-CONVERSATION
+    // by tools — `scratchpad_set`/`scratchpad_clear`/`reset_session` for one, every `work_*`
+    // write plus the engine's >=6-tool-call tracker floor for the other — while sitting ahead
+    // of the whole conversation, which is the owner's DS4 FINDING 2. They are post-budget tail
+    // lanes at 1830 / 1820 with reserves off the top. The ladder the ack prints is unchanged
+    // for every rung that remains, in the same relative order.
     const prose = [
-      'lane.scratchpad',
       'lane.fresh-tail',
-      'lane.active-tasks',
       'lane.continuity',
       'lane.vault',
       'lane.briefing',
@@ -118,7 +123,11 @@ describe('the lane table declares priority as data, independent of position', ()
     // low-priority end of the pair from `lane.directive` (which left the fit entirely) to
     // `lane.scratchpad`, which is the highest-priority scaffolding lane now; the property
     // being pinned is the separation itself and it is untouched.
-    expect(LANE_PRIORITY['lane.briefing']).toBeGreaterThan(LANE_PRIORITY['lane.scratchpad']);
+    // W81: `lane.scratchpad` left the fit too, so the low-priority end of the pair is
+    // `lane.continuity` now — the highest-priority scaffolding lane the fit still ranks. The
+    // property is the separation, not the pair of nouns that demonstrate it.
+    expect(LANE_PRIORITY['lane.briefing']).toBeGreaterThan(LANE_PRIORITY['lane.continuity']);
+
   });
 });
 
@@ -156,20 +165,22 @@ describe('the two-pass fit reserves minimums by priority, then distributes the r
   it('pass 1 gives a high-priority lane its floor even when a bigger lane rendered first', () => {
     const briefing = textLane('lane.briefing', LANE_PRIORITY['lane.briefing'], 100);
     // T67b: the high-priority stand-in is `lane.scratchpad` (20) — the top of the fit now
-    // that the directive is a reserved tail lane. The mechanic being pinned is unchanged:
+    // that the directive is a reserved tail lane. W81: the scratchpad left the fit in turn
+    // (three tools rewrite it mid-conversation), so the stand-in is `lane.continuity` (70),
+    // the highest-priority lane the fit still ranks. The mechanic being pinned is unchanged:
     // a lane RENDERED SECOND still gets its floor reserved FIRST.
-    const directive = textLane('lane.scratchpad', LANE_PRIORITY['lane.scratchpad'], 800, { minTokens: 64 });
+    const directive = textLane('lane.continuity', LANE_PRIORITY['lane.continuity'], 700, { minTokens: 64 });
     // Deliberately in BUILD order (briefing first) — the order the old arithmetic consumed.
     const { report } = fitLanes([candidate(briefing, 900), candidate(directive, 200)], 1000);
     expect(report.reservedTokens).toBe(64);
-    const d = report.grants.find((g) => g.id === 'lane.scratchpad')!;
+    const d = report.grants.find((g) => g.id === 'lane.continuity')!;
     expect(d.status).toBe('admitted');
     expect(d.granted).toBe(200);
   });
 
   it('pass 2 never spends a reservation still owed to a lane below it', () => {
     const tail = textLane('lane.fresh-tail', LANE_PRIORITY['lane.fresh-tail'], 1100, { minTokens: 64 });
-    const directive = textLane('lane.scratchpad', LANE_PRIORITY['lane.scratchpad'], 800, { minTokens: 64 });
+    const directive = textLane('lane.continuity', LANE_PRIORITY['lane.continuity'], 700, { minTokens: 64 });
     // The higher-priority lane is greedy (cost 5,000) but must leave the tail its 64-token floor.
     const { report } = fitLanes([candidate(directive, 5000), candidate(tail, 5000)], 1000);
     const t = report.grants.find((g) => g.id === 'lane.fresh-tail')!;
@@ -178,7 +189,10 @@ describe('the two-pass fit reserves minimums by priority, then distributes the r
   });
 
   it('honours a declared lane ceiling even when the budget could afford more', () => {
-    const ledger = textLane('lane.attempt-ledger', LANE_PRIORITY['lane.attempt-ledger'], 500, {
+    // W81: `lane.attempt-ledger` is post-budget now, so it has no rung; the CEILING is the
+    // property this clause pins and `LANE_LIMITS` still declares it. The priority is a
+    // fixture literal because the lane no longer supplies one.
+    const ledger = textLane('lane.attempt-ledger', 60, 500, {
       maxTokens: laneLimit('lane.attempt-ledger', 'tokens', 'cap'),
     });
     const { report } = fitLanes([candidate(ledger, 5000)], 100000);
@@ -287,16 +301,22 @@ describe('THE INVERSION, killed and pinned: a forced 8K budget', () => {
     // `LANE_PRIORITY['lane.relevant-memory']` as `undefined` in the comparison below, where
     // every `undefined >= n` is silently FALSE. The nine-lane inversion this block pins is
     // unchanged for the eight that remain.
-    ['lane.attempt-ledger', 500, 800, 0],
-    ['lane.active-tasks', 600, 900, 0],
-    ['lane.continuity', 700, 1500, 0],
+    // W81: `['lane.attempt-ledger', 500, 800, 0]` and `['lane.active-tasks', 600, 900, 0]`
+    // LEFT this fixture with their lanes, for exactly the reason the two notes above give:
+    // both are post-budget now (1810 / 1820, `memory/work-board-lane.ts`), never ranked, so a
+    // row here would test a rung that does not exist AND would read `LANE_PRIORITY[id]` as
+    // `undefined` — where every `undefined >= n` is silently false.
+    ['lane.continuity', 700, 1500, 64],
     // T67b §7: `['lane.directive', 900, 200, 64]` LEFT this fixture with the lane, for the
     // same reason the recall lane's row left it above — it is post-budget at slot 1890 now,
     // reserved off the top and never ranked, so a row here would test a rung that does not
     // exist and would read `LANE_PRIORITY['lane.directive']` as `undefined`. `lane.scratchpad`
     // (priority 20) is the smallest-and-highest-priority lane the fit still ranks, so it
     // carries the floor this fixture uses to pin the inversion.
-    ['lane.scratchpad', 800, 400, 64],
+    // W81: `['lane.scratchpad', 800, 400, 64]` LEFT it in turn — three tools rewrite the pad
+    // mid-conversation and it held the HIGHEST content priority in the assembly while doing
+    // it, so it is post-budget at 1830 now. `lane.continuity` (priority 70) is the
+    // smallest-and-highest-priority lane the fit still ranks, so it carries the floor.
     ['lane.fresh-tail', 1100, 5000, 64],
   ];
   const FORCED_BUDGET = 8000;
@@ -307,12 +327,15 @@ describe('THE INVERSION, killed and pinned: a forced 8K budget', () => {
     );
   }
 
-  it('the SMALLEST, HIGHEST-PRIORITY lane survives (it was the directive; T67b made it the scratchpad)', () => {
+  it('the SMALLEST, HIGHEST-PRIORITY lane survives (directive -> scratchpad -> continuity)', () => {
+    // The noun has moved twice and the property has not: T67b swapped `lane.directive` for
+    // `lane.scratchpad` when the pin became a reserved tail lane, and W81 swapped it again
+    // when the pad did. `lane.continuity` (70) is the smallest-and-highest-priority lane the
+    // fit still ranks.
     const { report } = fitLanes(build(), FORCED_BUDGET);
-    const d = report.grants.find((g) => g.id === 'lane.scratchpad')!;
+    const d = report.grants.find((g) => g.id === 'lane.continuity')!;
     expect(d.status).toBe('admitted');
-    expect(d.granted).toBe(400);
-    expect(report.admittedIds).toContain('lane.scratchpad');
+    expect(report.admittedIds).toContain('lane.continuity');
   });
 
   it('the BRIEFING drops first', () => {
@@ -364,11 +387,13 @@ describe('the scaffolding ack is GENERATED and BYTE-STABLE', () => {
   });
 
   it('cannot claim a section the budget dropped', () => {
-    const ack = renderScaffoldingAck(['lane.scratchpad'])!;
-    expect(ack).toContain('scratchpad');
+    // W81: the probe lane is `lane.continuity` — the scratchpad no longer HAS a section, so
+    // an ack asked for it renders null, which would make this clause vacuous rather than red.
+    const ack = renderScaffoldingAck(['lane.continuity'])!;
+    expect(ack).toContain('continuity brief');
     expect(ack).not.toContain('briefing');
     expect(ack).not.toContain('vault');
-    expect(ack).not.toContain('continuity brief');
+    expect(ack).not.toContain('summaries');
   });
 
   it('T67b: the ack no longer names the ACTIVE USER DIRECTIVE at all', () => {

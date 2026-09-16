@@ -29,6 +29,7 @@ import {
   type ValidatedMessage,
 } from '../assembly-validation.js';
 import { LANE_PRIORITY, isProtectedLaneId } from '../lanes.js';
+import { MessageSlot } from '../../prompt/registry/types.js';
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────────
 
@@ -167,18 +168,29 @@ describe('repairAssembly — C10, priority order and not one message older', () 
   // repair rather than as the fixture describing a lane table that has moved on. The
   // protection itself is asserted in its own clause below. Same exit `lane.relevant-memory`
   // made at CORE-2 item 4. Six messages, each 6 tokens per repeat unit.
+  // ── W81: THE `lane.scratchpad` AND `lane.events` ROWS LEFT THIS FIXTURE ───────────────
+  // Both are post-budget tail lanes now (1830 / 1840), so `isProtectedLaneId` refuses to drop
+  // them and a row for either would be testing a rung the ladder no longer has — the same
+  // reason the `lane.directive` row left it at T67b and `lane.relevant-memory`'s at CORE-2.
+  // They were also the two rows that CARRIED the slot-vs-priority inversion this block is
+  // named for: the scratchpad was emitted late (slot 800) and ranked highest (20), which is
+  // the one shape a front-trimmer gets wrong. With them gone the REAL lane table is monotone
+  // — slot order and priority order agree on all five lanes the fit still ranks — so the
+  // inversion clause below asserts that monotonicity instead of demonstrating a violation it
+  // can no longer construct from real ids. That is a strictly stronger statement about the
+  // table, and it is stated rather than quietly dropped.
   const laneArray = (): { messages: ValidatedMessage[]; laneIds: (string | null)[] } => ({
     messages: [
-      user('BRIEFING '.repeat(100)),   // 0  slot ~100   priority 110  (lowest)
-      user('VAULT '.repeat(100)),      // 1  slot ~200   priority 100
-      user('SCRATCHPAD '.repeat(100)), // 2  slot ~1000  priority 20   (highest)
-      user('EVENTS '.repeat(100)),     // 3  slot 1050   priority 40
-      user('FRESHTAIL '.repeat(100)),  // 4  slot ~1200  priority 30
+      user('BRIEFING '.repeat(100)),   // 0  slot 100   priority 110  (lowest)
+      user('VAULT '.repeat(100)),      // 1  slot 200   priority 100
+      user('SUMMARIES '.repeat(100)),  // 2  slot 300   priority 80
+      user('CONTINUITY '.repeat(100)), // 3  slot 700   priority 70
+      user('FRESHTAIL '.repeat(100)),  // 4  slot 1100  priority 30   (highest)
       user('the live question'),       // 5  newest, no lane: the loop's tail-append
     ],
     laneIds: [
-      'lane.briefing', 'lane.vault', 'lane.scratchpad',
-      'lane.events', 'lane.fresh-tail', null,
+      'lane.briefing', 'lane.vault', 'lane.summaries',
+      'lane.continuity', 'lane.fresh-tail', null,
     ],
   });
 
@@ -196,23 +208,23 @@ describe('repairAssembly — C10, priority order and not one message older', () 
   it('drops in DESCENDING priority order when one lane is not enough', () => {
     const { messages, laneIds } = laneArray();
     // Room for the two highest-priority lanes plus the tail-append, and no more.
-    const budget = cost([messages[2], messages[4], messages[5]]) + 5;
+    const budget = cost([messages[3], messages[4], messages[5]]) + 5;
     const r = repairAssembly(messages, { budgetTokens: budget, laneIds });
-    expect(r.droppedLaneIds).toEqual(['lane.briefing', 'lane.vault', 'lane.events']);
-    // …which is exactly descending priority, and NOT array order.
+    expect(r.droppedLaneIds).toEqual(['lane.briefing', 'lane.vault', 'lane.summaries']);
+    // …which is exactly descending priority.
     expect(LANE_PRIORITY['lane.briefing']).toBeGreaterThan(LANE_PRIORITY['lane.vault']);
-    expect(LANE_PRIORITY['lane.vault']).toBeGreaterThan(LANE_PRIORITY['lane.events']);
-    expect(LANE_PRIORITY['lane.events']).toBeGreaterThan(LANE_PRIORITY['lane.fresh-tail']);
+    expect(LANE_PRIORITY['lane.vault']).toBeGreaterThan(LANE_PRIORITY['lane.summaries']);
+    expect(LANE_PRIORITY['lane.summaries']).toBeGreaterThan(LANE_PRIORITY['lane.fresh-tail']);
   });
 
-  it('THE INVERSION, KILLED — and the front-trimmer arithmetic reproduced beside it', () => {
+  it('W81: the repair still ranks, and the REAL table is now monotone', () => {
     const { messages, laneIds } = laneArray();
-    const budget = cost([messages[2], messages[4], messages[5]]) + 5;
+    const budget = cost([messages[3], messages[4], messages[5]]) + 5;
 
-    // NEW: priority order. The scratchpad, the fresh tail and the live question survive.
+    // Priority order. The continuity brief, the fresh tail and the live question survive.
     const repaired = repairAssembly(messages, { budgetTokens: budget, laneIds });
     const kept = repaired.messages.map((m) => String(m.content).split(' ')[0]);
-    expect(kept).toContain('SCRATCHPAD');
+    expect(kept).toContain('CONTINUITY');
     expect(kept).toContain('FRESHTAIL');
     expect(kept).toContain('the');
 
@@ -225,26 +237,30 @@ describe('repairAssembly — C10, priority order and not one message older', () 
       }
     }
 
-    // OLD: `agent/model.ts`'s Anthropic front-trimmer, transcribed — splice(0,1) until it
-    // fits, with no notion of priority at all. Same array, same budget.
-    const oldTrimmed = [...messages];
-    while (cost(oldTrimmed) > budget && oldTrimmed.length > 1) oldTrimmed.splice(0, 1);
-    const oldKept = oldTrimmed.map((m) => String(m.content).split(' ')[0]);
-    const oldKeptLanes = laneIds.filter((id, i): id is string =>
-      id !== null && oldTrimmed.includes(messages[i]));
-    const oldDropped = laneIds.filter((id, i): id is string =>
-      id !== null && !oldTrimmed.includes(messages[i]));
-
-    // AND THE SAME INVARIANT, over the SAME input, is VIOLATED by the old arithmetic: it
-    // dropped `lane.scratchpad` (priority 20, the second-highest lane there is) while
-    // keeping `lane.events` (40) and `lane.fresh-tail` (30) below it — because slot order
-    // is not priority order and a front-trimmer only knows slot order.
-    expect(oldDropped).toContain('lane.scratchpad');
-    expect(oldKeptLanes).toContain('lane.events');
-    const oldViolations = oldDropped.filter((d) =>
-      oldKeptLanes.some((k) => LANE_PRIORITY[d] < LANE_PRIORITY[k]));
-    expect(oldViolations.length).toBeGreaterThan(0);
-    expect(oldKept).not.toEqual(kept);
+    // ── THE PART W81 CHANGED, ASSERTED RATHER THAN LOST ──────────────────────────────────
+    // This clause used to reproduce `agent/model.ts`'s front-trimmer beside the repair and
+    // show it violating the ranking — because `lane.scratchpad` was emitted at slot 800 and
+    // ranked 20, so an oldest-first splice dropped the second-highest lane there was. W81
+    // moved that lane (and `lane.events`, the other inverted pair) below the conversation,
+    // and what is left is MONOTONE: on the five lanes the fit still ranks, later slot means
+    // higher priority, with no exception. So the violation cannot be constructed from real
+    // ids any more, and the honest thing to pin is the monotonicity itself.
+    //
+    // THIS IS A PROPERTY OF TODAY'S TABLE, NOT OF THE DESIGN. The repair still ranks, and it
+    // must: the moment one lane is added out of order this clause goes red and the front-
+    // trimmer would start dropping the wrong thing again. That is exactly what it is for.
+    const ranked = Object.keys(LANE_PRIORITY).filter((id) => id !== 'lane.scaffolding-ack');
+    const slots: Record<string, number> = {
+      'lane.briefing': MessageSlot.MorningBriefing,
+      'lane.vault': MessageSlot.VaultPull,
+      'lane.summaries': MessageSlot.Summaries,
+      'lane.continuity': MessageSlot.CompactionContinuity,
+      'lane.fresh-tail': MessageSlot.FreshTail,
+    };
+    expect(new Set(ranked)).toEqual(new Set(Object.keys(slots)));
+    const bySlot = [...ranked].sort((a, b) => slots[a] - slots[b]);
+    const byPriorityDesc = [...ranked].sort((a, b) => LANE_PRIORITY[b] - LANE_PRIORITY[a]);
+    expect(bySlot).toEqual(byPriorityDesc);
   });
 
   it('NEVER drops the loop tail-append — a message with no lane is not droppable', () => {
@@ -259,8 +275,8 @@ describe('repairAssembly — C10, priority order and not one message older', () 
       // It dropped everything it was allowed to drop, in priority order, and then FAILED,
       // rather than reaching for the newest message.
       expect(err.droppedLaneIds).toEqual([
-        'lane.briefing', 'lane.vault', 'lane.events', 'lane.fresh-tail',
-        'lane.scratchpad',
+        'lane.briefing', 'lane.vault', 'lane.summaries', 'lane.continuity',
+        'lane.fresh-tail',
       ]);
     }
   });

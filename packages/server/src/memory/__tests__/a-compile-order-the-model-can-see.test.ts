@@ -339,7 +339,13 @@ describe('T68b §2 — CONTROL: the awareness lane\'s charter is unchanged', () 
       + 'x'.repeat(420) + ` [${NOTICE_FP}]`;
     insertRow({ role: 'user', content: notice, lane: 'events', originIntent: 'scheduler' });
 
-    const text = textOf((await assembleContext(AGENT, MODEL)).messages);
+    // W81: the awareness block is `ctx.eventsLane` now, not a message in the array. It was
+    // MessageSlot.Events = 1050 — ahead of the whole conversation — while its content is a
+    // SCROLLING WINDOW over the live tail's fixed row budget, so it re-rendered whenever the
+    // conversation moved. The CHARTER this clause controls for is unchanged; only the
+    // position is, so the clause reads the field the way T67b's directive clauses do.
+    const ctx = await assembleContext(AGENT, MODEL);
+    const text = `${textOf(ctx.messages)}\n${ctx.eventsLane ?? ''}`;
 
     expect(text).toContain('EVENTS & NOTICES');
     expect(text).toContain('the 6pm garbage reminder fired');
@@ -351,12 +357,16 @@ describe('T68b §2 — CONTROL: the awareness lane\'s charter is unchanged', () 
   it('the compile order does not put a bullet in the EVENTS lane at all', async () => {
     insertRow({ role: 'user', content: compileOrderContent(), lane: 'events', originIntent: 'fanout_join' });
 
-    const msgs = (await assembleContext(AGENT, MODEL)).messages;
-    const events = msgs.filter((m) => typeof m.content === 'string' && m.content.includes('EVENTS & NOTICES'));
+    const ctx = await assembleContext(AGENT, MODEL);
+    const events = ctx.messages.filter((m) => typeof m.content === 'string' && m.content.includes('EVENTS & NOTICES'));
 
-    // Nothing to gist ⇒ no lane. This is also the cache property: a compile order arriving
-    // APPENDS a fresh-tail message and rewrites no block ahead of it (slot 1050 < 1100).
+    // Nothing to gist ⇒ no lane. Asserted on BOTH surfaces: the array (where the block used
+    // to be, so a regression that put it back would be caught) and the field (where W81 moved
+    // it). The cache property this clause states is now stronger, not weaker: the block sits
+    // at MessageSlot.EventsTail = 1840, BELOW the entire conversation, so a compile order
+    // arriving rewrites nothing ahead of anything.
     expect(events).toHaveLength(0);
+    expect(ctx.eventsLane).toBeNull();
   });
 });
 

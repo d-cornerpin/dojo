@@ -60,6 +60,14 @@ const EXPECTED_MESSAGE = [
   'msg.delegation-hint',
   'msg.pending-nudge',
   'msg.tool-note',
+  // ── W81: THE FOUR LANES THE OWNER'S DS4 FINDING 2 MOVED BELOW THE CONVERSATION ────────
+  // Slots 1810 -> 1840, ahead of `msg.turn-context` at 1850, most-stable-first. Each was a
+  // `fitLanes` candidate AHEAD of the entire conversation — 500 / 600 / 800 / 1050 — while a
+  // tool could rewrite it mid-conversation, which is the class his six occurrences named.
+  'msg.attempt-ledger',
+  'msg.active-tasks',
+  'msg.scratchpad',
+  'msg.events',
   'msg.turn-context',
   // PHASE-3 T7: THE DELIVERIES LANE, slot 1860 — what this agent has already sent the
   // counterparty, read from the `deliveries` rows by `memory/deliveries-lane.ts`. It takes

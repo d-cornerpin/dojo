@@ -239,7 +239,16 @@ describe('the summaries lane header says which block is current', () => {
     const url = await import('node:url');
     const here = path.dirname(url.fileURLToPath(import.meta.url));
     const src = fs.readFileSync(path.resolve(here, '../assembler.ts'), 'utf8');
-    const lane = src.slice(src.indexOf("id: 'lane.summaries'"), src.indexOf("id: 'lane.attempt-ledger'"));
+    // W81: the end bound was `src.indexOf("id: 'lane.attempt-ledger'")`, and that declaration
+    // LEFT this file when the lane moved below the conversation — `indexOf` returned -1 and
+    // `slice(start, -1)` silently widened the window to the rest of the file, which is how a
+    // source-slice clause goes vacuous without going red. The bound is DERIVED now: the next
+    // lane declaration of any name after this one, so a future move cannot repeat it.
+    const from = src.indexOf("id: 'lane.summaries'");
+    const next = src.indexOf("id: 'lane.", from + 10);
+    expect(from).toBeGreaterThan(0);
+    expect(next).toBeGreaterThan(from);
+    const lane = src.slice(from, next);
     expect(lane).toContain('═══ COMPRESSED HISTORY (summaries of earlier messages, not live conversation) ═══');
     // ── AMENDED BY HARNESS-LEARNINGS HL6, and the amendment is the audit's one migration ──
     // This clause read `toContain('OPEN WORK')`, and it was right for T20: at the time, the
