@@ -35,11 +35,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ToolCall } from '@dojo/shared';
 
-const { broadcastSpy, insertSpy, executeToolSpy, outboundIntents } = vi.hoisted(() => ({
+const { broadcastSpy, insertSpy, executeToolSpy, outboundIntents, engineMayRouteToSpy } = vi.hoisted(() => ({
   broadcastSpy: vi.fn(),
   insertSpy: vi.fn(),
   executeToolSpy: vi.fn(async () => ({ kind: 'applied', result: { content: 'sent' } })),
   outboundIntents: [] as Array<Record<string, unknown>>,
+  engineMayRouteToSpy: vi.fn((_agentId: string, _channel: string) => true),
 }));
 
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: broadcastSpy }));
@@ -62,6 +63,26 @@ vi.mock('../../../outbound.js', () => ({
 }));
 vi.mock('../../../../../contacts/resolve-recipient.js', () => ({
   resolveRecipientDisplay: (_c: string, id: string) => id,
+}));
+// ── UX-ACCESS A4's CHANNEL DOOR, declared rather than borrowed (W83, v3.1.23 cut) ──
+// `turn-closures.ts` now asks `engineMayRouteTo` before any of its four push arms
+// fire. That predicate reads the agent's stored grants out of the DATABASE, and
+// this file's `AGENT` is the literal string `'kevin'` — the owner's own primary.
+// Until T74b gave the suite its own home, the door silently opened a real
+// `~/.dojo/data/dojo.db`, found the owner's live grants there and answered `true`,
+// so these three clauses passed on a fact about ONE DEVELOPER'S BOX. On a fresh
+// checkout there is no such row and the ack was withheld. Same class as the five
+// live-database readers T74b's report §4 names; this one was invisible until the
+// grants work gave the door something to read.
+//
+// The door is A4's business and has its own suite
+// (`agent/access/__tests__/the-engine-route-asks.test.ts`, 301 lines) — exactly the
+// disposition this file already gives the outbound scope above. Here it is a SPY,
+// not a blank: the grant is declared open so the Teams arm can be measured, and
+// the CONTROL clause below drives it shut and pins that the arm stops. What the
+// file has always been about — Teams yes, email no — is untouched.
+vi.mock('../../../../access/engine-route.js', () => ({
+  engineMayRouteTo: (...a: unknown[]) => engineMayRouteToSpy(...(a as [string, string])),
 }));
 vi.mock('../../../../turn-state.js', () => ({ continuationContext: { set: vi.fn() } }));
 
@@ -108,6 +129,8 @@ const routingMarkers = (): string[] => insertSpy.mock.calls
 beforeEach(() => {
   broadcastSpy.mockClear(); insertSpy.mockClear(); executeToolSpy.mockClear();
   outboundIntents.length = 0;
+  engineMayRouteToSpy.mockClear();
+  engineMayRouteToSpy.mockReturnValue(true);
 });
 
 describe('the predicate: the door opens where the ack can now actually be pushed', () => {
@@ -167,6 +190,26 @@ describe('the delivery: the ack REACHES a Teams chat, through the send the route
     const deliver = ackFor(person({ channel: 'teams' }), { chatId: CHAT_ID });
     await deliver('On it.', 'start_ack', null, 'agent-text');
     expect(routingMarkers().some((m) => m.includes('Teams to chat'))).toBe(true);
+  });
+
+  it('CONTROL — the A4 channel door is ASKED, and a withheld grant stops the push (W83)', async () => {
+    // The door is asked for the ack's own agent and the counterparty's own channel;
+    // and when it says no, the arm does not fire. Both halves, because a mock that
+    // only ever answers `true` would let the guard be deleted without a red.
+    const deliver = ackFor(person({ channel: 'teams' }), { chatId: CHAT_ID });
+    await deliver('On it.', 'start_ack', null, 'agent-text');
+    expect(engineMayRouteToSpy).toHaveBeenCalledWith(AGENT, 'teams');
+
+    engineMayRouteToSpy.mockClear();
+    executeToolSpy.mockClear();
+    insertSpy.mockClear();
+    outboundIntents.length = 0;
+    engineMayRouteToSpy.mockReturnValue(false);
+    const withheld = ackFor(person({ channel: 'teams' }), { chatId: CHAT_ID });
+    await withheld('On it.', 'start_ack', null, 'agent-text');
+    expect(executeToolSpy).not.toHaveBeenCalled();
+    expect(outboundIntents).toHaveLength(0);
+    expect(routingMarkers().some((m) => m.includes('Teams to chat'))).toBe(false);
   });
 
   it('CONTROL — no chat id, no push: an ack with nowhere to go is never claimed as delivered', async () => {
