@@ -17,12 +17,12 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { createLogger } from './logger.js';
+import { homeDir } from './home.js';
 
 const logger = createLogger('update-state');
 
-const DOJO_DIR = path.join(os.homedir(), '.dojo');
+const DOJO_DIR = path.join(homeDir(), '.dojo');
 export const UPDATE_STATE_PATH = path.join(DOJO_DIR, 'update-state.json');
 
 // Failing-boot thresholds. SHARED CONTRACT with watchdog/src/auto-rollback.ts.

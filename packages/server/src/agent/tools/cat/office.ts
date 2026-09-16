@@ -29,7 +29,6 @@
 // calling `share_file` on a document the user is already looking at.
 // ════════════════════════════════════════════════════════════════════════════
 
-import os from 'node:os';
 import path from 'node:path';
 import { getDb } from '../../../db/connection.js';
 import { isPrimaryAgent } from '../../../config/platform.js';
@@ -38,6 +37,7 @@ import { executeOfficeTool } from '../../../microsoft/tools-office.js';
 import { checkPermission } from '../../permissions.js';
 import { auditLog, permissionDeniedMessage, openFileInCanvas, localOfficePathFromResult } from '../util.js';
 import type { ToolHandler, ToolHandlerMap } from '../handler.js';
+import { homeDir } from '../../../home.js';
 
 const officeBody: ToolHandler = async ({ agentId, name, args }) => {
     let content = '';
@@ -92,7 +92,7 @@ const officeBody: ToolHandler = async ({ agentId, name, args }) => {
         : 'document';
       const localDest = typeof args.path === 'string' && (args.path as string).trim().length > 0
         ? (args.path as string).trim()
-        : path.join(os.homedir(), '.dojo', 'uploads', agentId, localFilename);
+        : path.join(homeDir(), '.dojo', 'uploads', agentId, localFilename);
       const perm = checkPermission(agentId, { type: 'file_write', path: localDest });
       if (!perm.allowed) {
         auditLog(agentId, name, localDest, 'denied', perm.reason);

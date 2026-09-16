@@ -60,7 +60,6 @@ import { writeToolReceipt } from '../../../receipts/store.js';
 import { checkPermission } from '../../permissions.js';
 import { sharePathGuard } from '../../path-guards.js';
 import { auditLog, permissionDeniedMessage, registerSharedFile } from '../util.js';
-import os from 'node:os';
 import { appendTeamsSafeSender, appendGmailSafeSender, appendOutlookSafeSender } from '../../../services/channel-safe-senders.js';
 import { createPublicShare } from '../../../services/public-share.js';
 import { executeSmsSend } from '../../../twilio/sms-outbound.js';
@@ -71,6 +70,7 @@ import { getSmsReachability, describeSmsRecipients } from '../../../services/cap
 import { queuePendingAttachments } from '../../pending-attachments.js';
 import { syncSafeSenderToContacts } from '../../../contacts/from-safe-senders.js';
 import type { ToolHandlerMap } from '../handler.js';
+import { homeDir } from '../../../home.js';
 
 export const commsHandlers: ToolHandlerMap = {
   async "share_file"({ agentId, args }) {
@@ -140,7 +140,7 @@ export const commsHandlers: ToolHandlerMap = {
       return { content, isError };
     }
 
-    const uploadsDir = path.join(os.homedir(), '.dojo', 'uploads', agentId);
+    const uploadsDir = path.join(homeDir(), '.dojo', 'uploads', agentId);
     try { effectFs.mkdirSync(uploadsDir, { recursive: true }); } catch { /* best effort */ }
 
     const guessMime = (filename: string): string => {

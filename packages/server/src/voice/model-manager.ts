@@ -1,12 +1,12 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { createLogger } from '../logger.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('voice-models');
 
-export const VOICE_ROOT = path.join(os.homedir(), '.dojo', 'voice');
+export const VOICE_ROOT = path.join(homeDir(), '.dojo', 'voice');
 export const MODELS_DIR = path.join(VOICE_ROOT, 'models');
 /**
  * Where @huggingface/transformers (used by kokoro-js) caches its model files.
@@ -17,7 +17,7 @@ export const MODELS_DIR = path.join(VOICE_ROOT, 'models');
  */
 export const KOKORO_CACHE_DIR = path.join(VOICE_ROOT, 'kokoro');
 /** Legacy locations checked as a fallback so existing installs aren't forced to re-download. */
-const KOKORO_LEGACY_HF_CACHE = path.join(os.homedir(), '.cache', 'huggingface');
+const KOKORO_LEGACY_HF_CACHE = path.join(homeDir(), '.cache', 'huggingface');
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../..');
 const KOKORO_LEGACY_NODE_MODULES_CACHE = path.join(repoRoot, 'node_modules/@huggingface/transformers/.cache');
 
@@ -575,7 +575,7 @@ export async function deleteModel(kind: 'whisper' | 'kokoro' | 'moonshine', id: 
 
 export async function freeDiskMb(): Promise<number> {
   try {
-    const stat = await fsp.statfs(os.homedir());
+    const stat = await fsp.statfs(homeDir());
     return Math.floor((stat.bavail * stat.bsize) / (1024 * 1024));
   } catch {
     return -1;

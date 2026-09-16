@@ -5,7 +5,6 @@
 import { execSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -24,6 +23,7 @@ import { replaceAskTitleFromModel } from '../work/ask-title.js';
 import { isContentFreeCourtesy } from '../agent/v2/classifiers/inbound-courtesy.js';
 import { appleMessageDateToUnixMs } from './imessage-date.js';
 import { recordAtDoor, withOutboundIfAbsent, PLATFORM_SENDER, recordedId } from '../agent/v2/outbound.js';
+import { homeDir } from '../home.js';
 
 // ── iMessage attachment pipeline ────────────────────────────────────────────
 //
@@ -64,7 +64,7 @@ interface UploadedFile {
   category: 'image' | 'pdf' | 'text' | 'office' | 'audio' | 'video' | 'unknown';
 }
 
-const DOJO_UPLOAD_DIR = path.join(os.homedir(), '.dojo', 'uploads');
+const DOJO_UPLOAD_DIR = path.join(homeDir(), '.dojo', 'uploads');
 const IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const HEIC_MIMES = new Set(['image/heic', 'image/heif']);
 const PDF_MIMES = new Set(['application/pdf']);
@@ -135,8 +135,8 @@ function ensureImessageUploadDir(agentId: string): string {
 }
 
 function expandHomedir(p: string): string {
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
-  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(homeDir(), p.slice(2));
+  if (p === '~') return homeDir();
   return p;
 }
 
@@ -886,7 +886,7 @@ export function sendResponseViaIMessage(
   sendIMessage(sender, cleaned); // sanitization happens inside sendIMessage
   return { address: sender, name: recipientName ?? sender };
 }
-const CHAT_DB_PATH = path.join(os.homedir(), 'Library', 'Messages', 'chat.db');
+const CHAT_DB_PATH = path.join(homeDir(), 'Library', 'Messages', 'chat.db');
 
 function loadLastSeenRowId(): number {
   try {
@@ -1800,7 +1800,7 @@ export function reloadApprovedSenders(): void {
 // attachments require imsg, AppleScript's POSIX file handling is
 // broken on newer macOS.
 
-const IMSG_CANDIDATE_PATHS = ['/opt/homebrew/bin/imsg', '/usr/local/bin/imsg', `${os.homedir()}/.dojo/bin/imsg`];
+const IMSG_CANDIDATE_PATHS = ['/opt/homebrew/bin/imsg', '/usr/local/bin/imsg', `${homeDir()}/.dojo/bin/imsg`];
 
 function findImsg(): string | null {
   // Select the first candidate that actually RUNS, not the first that exists.

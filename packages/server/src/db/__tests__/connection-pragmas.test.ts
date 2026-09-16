@@ -10,10 +10,11 @@
 // silently ignored on a bad value and SQLite caps mmap_size at its compile-time
 // maximum without complaining.
 //
-// The test drives the real module, not a hand-built connection, by pointing HOME
-// at a scratch directory before importing it — connection.ts derives its path
-// from os.homedir(), which on POSIX is $HOME. Nothing here touches the live
-// database.
+// The test drives the real module, not a hand-built connection, by pointing
+// DOJO_HOME at a scratch directory before importing it — connection.ts derives its
+// path from homeDir() (src/home.ts), which reads DOJO_HOME. Nothing here touches the
+// live database. Note that this OVERRIDES the per-worker home the suite already gave
+// this process; the case needs a directory it controls, not merely an isolated one.
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
@@ -27,7 +28,7 @@ let closeDb: () => void;
 
 beforeAll(async () => {
   scratchHome = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-pragmas-'));
-  vi.stubEnv('HOME', scratchHome);
+  vi.stubEnv('DOJO_HOME', scratchHome);
   vi.resetModules();
   const connection = await import('../connection.js');
   closeDb = connection.closeDb;

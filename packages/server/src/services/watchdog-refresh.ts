@@ -26,14 +26,14 @@ import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { createLogger } from '../logger.js';
 import { compareVersions } from '../gateway/routes/update.js';
+import { homeDir } from '../home.js';
 
 const execAsync = promisify(exec);
 const logger = createLogger('watchdog-refresh');
 
-const DOJO_DIR = path.join(os.homedir(), '.dojo');
+const DOJO_DIR = path.join(homeDir(), '.dojo');
 const PLATFORM_DIR = path.join(DOJO_DIR, 'platform');
 // The watchdog ships INSIDE platform/ so a self-update (which only rewrites
 // ~/.dojo/platform) still delivers it. deploy/build-package.sh assembles this.

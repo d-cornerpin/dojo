@@ -47,11 +47,11 @@ vi.mock('../tunnel.js', () => ({
   }),
 }));
 
-// The deny list answers `~`-rooted rules against `os.homedir()`, and OUT_DIR is
+// The deny list answers `~`-rooted rules against `homeDir()`, and OUT_DIR is
 // computed from it at import time — so the fake home is installed before the
 // import, exactly as the sibling asset test does it.
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'public-share-sensitive-'));
-process.env.HOME = tmpHome;
+process.env.DOJO_HOME = tmpHome;
 
 import { createPublicShare, OUT_DIR } from '../public-share.js';
 

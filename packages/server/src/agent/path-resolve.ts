@@ -11,25 +11,25 @@
 // these is shaped the way it is — every one of them is a fixed incident.
 // ════════════════════════════════════════════════════════════════════════════
 
-import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { PROTECTED_IDENTITY_PATHS } from './sensei-policy.js';
 import { foldPath } from './fs-case.js';
+import { homeDir } from '../home.js';
 
 /** Expand `~` / `~/…` / `~user` to a home-relative path. Everything else passes
  *  through unchanged (callers check `path.isAbsolute` themselves). Moved here
  *  from `path-guards.ts`, which re-exports it as `resolvePath`, so the process
  *  broker can expand a token without importing the share gate. */
 export function resolveHomePath(inputPath: string): string {
-  if (inputPath === '~') return os.homedir();
-  if (inputPath.startsWith('~/')) return path.join(os.homedir(), inputPath.slice(2));
-  if (inputPath.startsWith('~')) return path.join(os.homedir(), '..', inputPath.slice(1));
+  if (inputPath === '~') return homeDir();
+  if (inputPath.startsWith('~/')) return path.join(homeDir(), inputPath.slice(2));
+  if (inputPath.startsWith('~')) return path.join(homeDir(), '..', inputPath.slice(1));
   return inputPath;
 }
 
 export function expandTilde(pattern: string): string {
-  const home = os.homedir();
+  const home = homeDir();
   if (pattern === '~') return home;
   if (pattern.startsWith('~/')) return home + pattern.slice(1);
   return pattern;

@@ -366,7 +366,7 @@ describe('the publish family is complete, and the census says so from source', (
   it('the platform-named members cannot quietly acquire an agent-named path', () => {
     // open_browser: the published file is the screenshot this handler wrote.
     const canvas = fs.readFileSync(path.join(SRC, 'agent/tools/cat/canvas.ts'), 'utf8');
-    expect(/const shotsDir = path\.join\(os\.homedir\(\), '\.dojo', 'data', 'canvas-shots'\)/.test(canvas)).toBe(true);
+    expect(/const shotsDir = path\.join\(homeDir\(\), '\.dojo', 'data', 'canvas-shots'\)/.test(canvas)).toBe(true);
     expect(/const pngPath = path\.join\(shotsDir, `\$\{uuidv4\(\)\}\.png`\)/.test(canvas)).toBe(true);
 
     // openFileInCanvas: its caller set is the census, and it is complete.

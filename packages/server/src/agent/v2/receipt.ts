@@ -22,7 +22,6 @@
 
 import fs from 'node:fs';
 import { estimateTokensFromChars } from '../../memory/budget.js';
-import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -32,6 +31,7 @@ import { PART_JOINER } from '../../prompt/registry/types.js';
 import { assemblyTokens } from '../../memory/assembly-validation.js';
 import { POST_BUDGET_LANES, type AllocationReport } from '../../memory/lanes.js';
 import { createLogger } from '../../logger.js';
+import { homeDir } from '../../home.js';
 
 const logger = createLogger('context-receipt');
 
@@ -92,7 +92,7 @@ export interface ReceiptInput {
  *  two durable sinks follow, and the reason this one changed — PHASE-3 T7's receipt clause
  *  wrote into the real `~/.dojo` until it did. */
 function receiptsRoot(): string {
-  return path.join(os.homedir(), '.dojo', 'receipts');
+  return path.join(homeDir(), '.dojo', 'receipts');
 }
 const MAX_RECEIPTS_PER_AGENT = 200;
 const MODE_CACHE_MS = 30_000;

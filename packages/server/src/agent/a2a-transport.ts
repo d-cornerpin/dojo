@@ -61,6 +61,7 @@ import { recordFloorGhost } from './v2/floor-ghost.js';
 // Types are still imported from @dojo/shared as type-only (erased at compile time).
 import type { A2AIntent, A2AEnvelope, A2ADropReason, ToolCall } from '@dojo/shared';
 import type { ToolOutcome } from './tool-outcome.js';
+import { homeDir } from '../home.js';
 
 // Terminal intents CLOSE the thread (prevent acknowledgement replies).
 // But closing the thread and waking the receiver are INDEPENDENT concepts.
@@ -915,9 +916,8 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     try {
       const fs = await import('node:fs');
       const path = await import('node:path');
-      const os = await import('node:os');
 
-      const recipientDir = path.join(os.homedir(), '.dojo', 'uploads', target.id);
+      const recipientDir = path.join(homeDir(), '.dojo', 'uploads', target.id);
       if (!fs.existsSync(recipientDir)) {
         fs.mkdirSync(recipientDir, { recursive: true });
       }

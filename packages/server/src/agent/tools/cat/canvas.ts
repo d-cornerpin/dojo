@@ -21,7 +21,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import * as effectFs from '../../effects/fs.js';
-import os from 'node:os';
 import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../../../gateway/ws.js';
@@ -33,6 +32,7 @@ import { resolvePath, sharePathGuard } from '../../path-guards.js';
 import { auditLog, permissionDeniedMessage, registerSharedFile, toDashboardPath, queueCanvasDocAttachment } from '../util.js';
 import { isScreenShareEnabled } from '../../../screen-share/manager.js';
 import type { ToolHandlerMap } from '../handler.js';
+import { homeDir } from '../../../home.js';
 
 export const canvasHandlers: ToolHandlerMap = {
   async "canvas_render"({ agentId, args }) {
@@ -133,7 +133,7 @@ export const canvasHandlers: ToolHandlerMap = {
     }
     try {
       const png = await captureSiteScreenshot(targetUrl);
-      const shotsDir = path.join(os.homedir(), '.dojo', 'data', 'canvas-shots');
+      const shotsDir = path.join(homeDir(), '.dojo', 'data', 'canvas-shots');
       effectFs.mkdirSync(shotsDir, { recursive: true });
       const pngPath = path.join(shotsDir, `${uuidv4()}.png`);
       effectFs.writeFileSync(pngPath, png);

@@ -7,7 +7,6 @@
 
 import fs from 'node:fs';
 import { estimateTokens } from '../memory/budget.js';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getDb } from '../db/connection.js';
@@ -36,6 +35,7 @@ import {
   type VaultConversation,
 } from './store.js';
 import { MAX_PINNED_ENTRIES } from './retrieval.js';
+import { homeDir } from '../home.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -809,7 +809,7 @@ const DREAMER_TOOLS_POLICY = JSON.stringify({
 });
 
 function getDreamerPermissions(): string {
-  const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
+  const profilePath = path.join(homeDir(), '.dojo', 'prompts', 'USER.md');
   // USER.md only. SOUL.md (identity) is engine-protected (GLOBAL_FILE_WRITE_DENY)
   // and never written by any agent; the Dreamer updates USER.md only for
   // fundamental profile changes (new job, marital/family status, a move).
@@ -1062,8 +1062,8 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
   }
 
   // Compute profile file paths for Dreamer's file access
-  const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
-  const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
+  const profilePath = path.join(homeDir(), '.dojo', 'prompts', 'USER.md');
+  const soulPath = path.join(homeDir(), '.dojo', 'prompts', 'SOUL.md');
 
   // Step 1: Engine-level maintenance (no LLM, fast)
   const maintenance = runEngineMaintenance();
@@ -1455,8 +1455,8 @@ async function wakeNextBatchFromDb(primaryId: string, state: PendingBatchState |
     });
   }
 
-  const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
-  const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
+  const profilePath = path.join(homeDir(), '.dojo', 'prompts', 'USER.md');
+  const soulPath = path.join(homeDir(), '.dojo', 'prompts', 'SOUL.md');
   // batchIndex 0 / totalBatches 1 keeps the "batch X of N" note off (N is not
   // known statelessly). The batch text carries every archive anyway.
   const cycleMessage = buildDreamerCycleMessage(
@@ -1493,8 +1493,8 @@ export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
       archivesInBatch: batch.ids.length,
     });
 
-    const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
-    const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
+    const profilePath = path.join(homeDir(), '.dojo', 'prompts', 'USER.md');
+    const soulPath = path.join(homeDir(), '.dojo', 'prompts', 'SOUL.md');
 
     try {
       const dreamerId = getDreamerAgentId();
@@ -1805,8 +1805,8 @@ export async function recoverDreamerFromContextOverflow(
     WHERE id = ?
   `).run(JSON.stringify(nextBatch.ids), dreamerAgentId);
 
-  const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
-  const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
+  const profilePath = path.join(homeDir(), '.dojo', 'prompts', 'USER.md');
+  const soulPath = path.join(homeDir(), '.dojo', 'prompts', 'SOUL.md');
 
   const recoveryMessage = buildDreamerCycleMessage(
     nextBatch.text,
@@ -1858,7 +1858,7 @@ export async function runFirstRunProfileBootstrap(): Promise<{ dreamerId: string
   }
 
   // Read the USER.md profile
-  const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
+  const profilePath = path.join(homeDir(), '.dojo', 'prompts', 'USER.md');
 
   let profileContent = '';
   try { profileContent = fs.readFileSync(profilePath, 'utf-8'); } catch { /* ok */ }

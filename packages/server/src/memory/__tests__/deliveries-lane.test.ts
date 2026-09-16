@@ -320,14 +320,14 @@ describe('the declared reserve is a bound the render obeys', () => {
 // looks identical to an absent one is the defect this phase exists to delete, and the
 // receipt is the one place that can state it, because it is written after the tail-append.
 describe('the receipt attributes the lane to itself, measured', () => {
-  const REAL_HOME = process.env.HOME;
+  const REAL_HOME = process.env.DOJO_HOME;
   const REAL_MODE = process.env.DOJO_RECEIPT_MODE;
 
   it('records the lane as ADMITTED with its measured cost, and does not double-count it', async () => {
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-t7-receipt-'));
-    process.env.HOME = scratch;
+    process.env.DOJO_HOME = scratch;
     process.env.DOJO_RECEIPT_MODE = 'meta';
-    // RECEIPTS_ROOT resolves from os.homedir() at module load, so the import comes after.
+    // RECEIPTS_ROOT resolves from homeDir() at module load, so the import comes after.
     const { writeContextReceipt } = await import('../../agent/v2/receipt.js');
     const grant = (id: string, slot: number) => ({
       id, slot, priority: Number.MAX_SAFE_INTEGER, requested: 0, granted: 0,
@@ -388,7 +388,7 @@ describe('the receipt attributes the lane to itself, measured', () => {
     expect(tail.reason).not.toContain('msg.deliveries');
     expect(tail.granted).toBeLessThan(del.granted);
 
-    process.env.HOME = REAL_HOME;
+    process.env.DOJO_HOME = REAL_HOME;
     if (REAL_MODE === undefined) delete process.env.DOJO_RECEIPT_MODE;
     else process.env.DOJO_RECEIPT_MODE = REAL_MODE;
     fs.rmSync(scratch, { recursive: true, force: true });

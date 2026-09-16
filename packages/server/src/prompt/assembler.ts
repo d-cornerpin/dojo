@@ -32,10 +32,11 @@ import { getTwilioConfig } from '../twilio/auth.js';
 // one contract for every model, curation tightness, not forked verbosity.)
 import { generateToolIndex } from '../tools/categories.js';
 import { getAgentAlwaysLoadedTools } from '../tools/tool-docs.js';
+import { homeDir } from '../home.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
 
 const logger = createLogger('prompt-assembler');
-const PROMPTS_DIR = path.join(os.homedir(), '.dojo', 'prompts');
+const PROMPTS_DIR = path.join(homeDir(), '.dojo', 'prompts');
 const __assemblerDir = path.dirname(fileURLToPath(import.meta.url));
 
 /**
@@ -54,7 +55,7 @@ export function platformTemplateSearchPaths(file: string): string[] {
     // repo:      <root>/templates/<file>   ·   package: ~/.dojo/platform/templates/<file>
     path.resolve(__assemblerDir, '../../../../templates', file),
     path.resolve(__assemblerDir, '../../../templates', file),
-    path.join(os.homedir(), '.dojo', 'platform', 'templates', file),
+    path.join(homeDir(), '.dojo', 'platform', 'templates', file),
   ];
 }
 

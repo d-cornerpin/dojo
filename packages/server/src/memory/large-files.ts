@@ -1,10 +1,10 @@
 import * as effectFs from '../agent/effects/fs.js';
 import path from 'node:path';
-import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { estimateTokens } from './budget.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('memory-large-files');
 
@@ -17,7 +17,7 @@ const logger = createLogger('memory-large-files');
 // roughly "a long blog post", anything bigger is almost always faster to
 // re-fetch than to keep in context.
 const LARGE_FILE_TOKEN_THRESHOLD = 8000;
-const FILES_BASE_DIR = path.join(os.homedir(), '.dojo', 'data', 'files');
+const FILES_BASE_DIR = path.join(homeDir(), '.dojo', 'data', 'files');
 
 // ── Interception Check ──
 

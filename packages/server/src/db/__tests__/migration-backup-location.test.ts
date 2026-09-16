@@ -132,13 +132,13 @@ describe('pre-migration backup: destination', () => {
   });
 
   it('in production the connection and getDbPath() name the same file', async () => {
-    // Drives the REAL connection module under a scratch HOME — the convention
+    // Drives the REAL connection module under a scratch DOJO_HOME — the convention
     // `db/__tests__/connection-pragmas.test.ts` established. This is the clause that
     // says the fix changed nothing on the owner's box: on a real boot the snapshot
     // still lands in `<home>/.dojo/data/backups`.
     const scratchHome = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-backup-home-'));
     try {
-      vi.stubEnv('HOME', scratchHome);
+      vi.stubEnv('DOJO_HOME', scratchHome);
       vi.resetModules();
       const connection = await vi.importActual<typeof import('../connection.js')>('../connection.js');
       const db = connection.getDb();

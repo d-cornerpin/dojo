@@ -10,10 +10,10 @@
 
 import * as effectFs from '../agent/effects/fs.js';
 import path from 'node:path';
-import os from 'node:os';
 import crypto from 'node:crypto';
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { googleRead, googleWrite } from './client.js';
+import { homeDir } from '../home.js';
 
 const SLIDES_BASE = 'https://slides.googleapis.com/v1/presentations';
 const DRIVE_BASE = 'https://www.googleapis.com/drive/v3';
@@ -202,7 +202,7 @@ export const STYLE_PRESETS: Record<string, { description: string; style: DeckSty
 };
 
 // Persistent style store
-const STYLE_STORE_PATH = path.join(os.homedir(), '.dojo', 'data', 'slides_styles.json');
+const STYLE_STORE_PATH = path.join(homeDir(), '.dojo', 'data', 'slides_styles.json');
 
 type StyleStore = Record<string, DeckStyle>;
 
@@ -2783,7 +2783,7 @@ export async function executeGoogleSlidesTool(
         // 3. Prepare output dir under the calling agent's uploads tree.
         // file_read permissions on this path follow whatever the agent has,
         // typically '*' for primary or the agent's own uploads dir.
-        const recipientDir = path.join(os.homedir(), '.dojo', 'uploads', agentId);
+        const recipientDir = path.join(homeDir(), '.dojo', 'uploads', agentId);
         if (!effectFs.existsSync(recipientDir)) effectFs.mkdirSync(recipientDir, { recursive: true });
 
         // 4. For each slide, request a thumbnail URL then download the PNG bytes.

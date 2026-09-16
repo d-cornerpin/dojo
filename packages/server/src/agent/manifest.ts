@@ -10,12 +10,12 @@
 // truth for a grant and the rows are its projection.
 // ════════════════════════════════════════════════════════════════════════════
 
-import os from 'node:os';
 import path from 'node:path';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { isPrimaryAgent } from '../config/platform.js';
 import type { PermissionManifest } from '@dojo/shared';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('permissions');
 
@@ -124,7 +124,7 @@ export const DEFAULT_SUBAGENT_PERMISSIONS: PermissionManifest = {
 
 /** `~/.dojo/uploads/<agentId>/**` — this agent's own artifact directory. */
 export function artifactPathFor(agentId: string): string {
-  return path.join(os.homedir(), '.dojo', 'uploads', agentId, '**');
+  return path.join(homeDir(), '.dojo', 'uploads', agentId, '**');
 }
 
 function withArtifactPath(value: string[] | '*', agentId: string): string[] | '*' {

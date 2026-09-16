@@ -8,7 +8,7 @@
 //
 // This test starts a real second instance against a port something else already
 // holds and asserts the canaries NEVER move. connection.ts derives its path from
-// os.homedir(), which on POSIX is $HOME, so pointing HOME at a temp directory
+// homeDir() (src/home.ts), so pointing DOJO_HOME at a temp directory
 // gives the child its own would-be database and nothing goes near the live one
 // on :3001.
 //
@@ -97,7 +97,7 @@ describe('boot order: the port is bound before any database work', () => {
   it('a second instance against a busy port exits without writing to the database', async () => {
     const child = spawn(TSX, [SERVER_ENTRY], {
       cwd: REPO_ROOT,
-      env: { ...process.env, HOME: scratchHome, DOJO_PORT: String(busyPort) },
+      env: { ...process.env, HOME: scratchHome, DOJO_HOME: scratchHome, DOJO_PORT: String(busyPort) },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

@@ -38,16 +38,18 @@
 //
 // ── TEST HYGIENE (binding) ──
 // Nothing here touches the owner's real `~/.ssh`, `~/.dojo` or anything outside
-// a throwaway temp dir. `os.homedir()` is redirected to a fixture home built by
+// a throwaway temp dir. `homeDir()` is redirected to a fixture home built by
 // this file and every "secret" in it is a dummy string written here.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 const fixtureHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'exec-argv-home-')));
+// The deny table resolves home through `homeDir()`, which reads DOJO_HOME.
+process.env.DOJO_HOME = fixtureHome;
 const projects = path.join(fixtureHome, 'Projects');
 const dojoDir = path.join(fixtureHome, '.dojo');
 const sshDir = path.join(fixtureHome, '.ssh');
@@ -137,9 +139,7 @@ function mustScript(raw: string) {
   return r.value;
 }
 
-let homedirSpy: ReturnType<typeof vi.spyOn>;
-beforeAll(() => { homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(fixtureHome); });
-afterAll(() => { homedirSpy.mockRestore(); fs.rmSync(fixtureHome, { recursive: true, force: true }); });
+afterAll(() => { fs.rmSync(fixtureHome, { recursive: true, force: true }); });
 
 // ══════════════════════════════════════════════════════════════════════════
 describe('§A — the argv resolver is the only mint, and it refuses every shape that is not argv', () => {

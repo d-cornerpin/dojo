@@ -16,8 +16,8 @@
 // ════════════════════════════════════════
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { homeDir } from '../home.js';
 
 const ASSET_MIME: Record<string, string> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -32,8 +32,8 @@ const ASSET_MIME: Record<string, string> = {
 const MAX_ASSET_BYTES = 24 * 1024 * 1024;
 
 function resolveHome(p: string): string {
-  if (p === '~') return os.homedir();
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  if (p === '~') return homeDir();
+  if (p.startsWith('~/')) return path.join(homeDir(), p.slice(2));
   return p;
 }
 

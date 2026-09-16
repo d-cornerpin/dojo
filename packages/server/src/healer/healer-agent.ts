@@ -35,6 +35,7 @@ import {
   getHealerAgentName,
   isSetupCompleted,
 } from '../config/platform.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('healer-agent');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -902,8 +903,8 @@ export function scheduleHealingCycle(): void {
 // This log accumulates until the user sends a Healer Report, at which
 // point it gets archived and a new log starts.
 
-const HEALER_LOG_PATH = path.join(os.homedir(), '.dojo', 'logs', 'healer-report.log');
-const HEALER_ARCHIVE_DIR = path.join(os.homedir(), '.dojo', 'logs', 'healer-archives');
+const HEALER_LOG_PATH = path.join(homeDir(), '.dojo', 'logs', 'healer-report.log');
+const HEALER_ARCHIVE_DIR = path.join(homeDir(), '.dojo', 'logs', 'healer-archives');
 
 /**
  * Map an agent name to a generic role label for external reports.

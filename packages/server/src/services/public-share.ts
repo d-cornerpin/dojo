@@ -15,16 +15,16 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import crypto from 'node:crypto';
 import { createLogger } from '../logger.js';
 import { getTunnelStatus } from './tunnel.js';
 import { isSensitivePath } from '../agent/path-guards.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('public-share');
 
 const PORT = parseInt(process.env.DOJO_PORT ?? '3001', 10);
-export const OUT_DIR = path.join(os.homedir(), '.dojo', 'out');
+export const OUT_DIR = path.join(homeDir(), '.dojo', 'out');
 
 /** Slug shape: YYYYMMDD-HHMMSS-<7-char hex>. ~28-bit collision space. */
 function makeSlug(): string {

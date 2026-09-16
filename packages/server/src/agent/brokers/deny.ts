@@ -43,9 +43,9 @@
 // window; every refusal here now applies to every agent by construction.
 // ════════════════════════════════════════════════════════════════════════════
 
-import os from 'node:os';
 import path from 'node:path';
 import { foldPath } from '../fs-case.js';
+import { homeDir } from '../../home.js';
 
 /** The doors a rule can shut. One row may shut several. */
 export type DenyTier = 'sensitive' | 'global_read' | 'global_write' | 'global_delete';
@@ -260,7 +260,7 @@ function contextFor(absPath: string): DenyMatchContext {
   return {
     folded: foldPath(absPath),
     base: foldPath(path.basename(absPath)),
-    home: foldPath(os.homedir()),
+    home: foldPath(homeDir()),
   };
 }
 

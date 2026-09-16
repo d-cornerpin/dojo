@@ -48,13 +48,13 @@ function childFile(source: string, at = home): string {
 }
 
 /** Run a snippet in a REAL child process with HOME pointed at the fixture.
- *  `os.homedir()` honours $HOME on POSIX, which is what makes both modules
+ *  `homeDir()` reads DOJO_HOME, which is what makes both modules
  *  resolve `~/.dojo/update-state.json` inside the scratch directory. */
 function runInChild(source: string, opts: { home?: string } = {}): { status: number | null; stdout: string; stderr: string } {
   const at = opts.home ?? home;
   const r = spawnSync(TSX, [childFile(source, at)], {
     encoding: 'utf-8',
-    env: { ...process.env, HOME: at },
+    env: { ...process.env, HOME: at, DOJO_HOME: at },
     timeout: 60_000,
     cwd: REPO_ROOT,
   });
@@ -65,7 +65,7 @@ function runInChild(source: string, opts: { home?: string } = {}): { status: num
  *  processes are genuinely in flight at the same time. */
 function startChild(source: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const child = spawn(TSX, [childFile(source)], {
-    env: { ...process.env, HOME: home }, cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, HOME: home, DOJO_HOME: home }, cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = ''; let stderr = '';
   child.stdout.on('data', (d) => { stdout += String(d); });

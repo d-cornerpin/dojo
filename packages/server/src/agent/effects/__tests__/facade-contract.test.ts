@@ -25,6 +25,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
+import { homeDir } from '../../../home.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -272,13 +273,13 @@ describe('grantsForCall reads the registry, and invents nothing', () => {
     );
     expect(grants).toHaveLength(1);
     expect(grants[0]).toMatchObject({ kind: 'fs_write', at: 'tree' });
-    expect((grants[0] as { root: string }).root).toBe(path.join(os.homedir(), '.dojo', 'uploads', AGENT));
+    expect((grants[0] as { root: string }).root).toBe(path.join(homeDir(), '.dojo', 'uploads', AGENT));
   });
 
   it('a scope template hole cannot climb out of the scope it is placed in', () => {
     const t = (v: unknown): string | null =>
       expandScopeTemplate('~/.dojo/techniques/{args.name}', AGENT, { name: v });
-    expect(t('reports')).toBe(path.join(os.homedir(), '.dojo', 'techniques', 'reports'));
+    expect(t('reports')).toBe(path.join(homeDir(), '.dojo', 'techniques', 'reports'));
     expect(t('../../.ssh')).toBeNull();
     expect(t('a/b')).toBeNull();
     expect(t(undefined)).toBeNull();
@@ -433,12 +434,12 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     // (`derived:the calling agent uploads directory`) never covered the
     // generator's own write. Corrected at the site with its reason (P5-R14).
     const grants = grantsForCall(AGENT, effectsFor('image_create'), { prompt: 'a cat' });
-    const generated = path.join(os.homedir(), '.dojo', 'uploads', 'generated');
+    const generated = path.join(homeDir(), '.dojo', 'uploads', 'generated');
     const png = path.join(generated, 'x.png');
     expect(grantsCover(grants, { op: 'fs_mkdir', path: generated, real: generated }), 'it may create its own directory').toBe(true);
     expect(grantsCover(grants, { op: 'fs_write', path: png, real: png }), 'it may write the generated image').toBe(true);
     // …and not a neighbour under the same parent, which is what makes it a scope.
-    const neighbour = path.join(os.homedir(), '.dojo', 'uploads', 'someone-else', 'x.png');
+    const neighbour = path.join(homeDir(), '.dojo', 'uploads', 'someone-else', 'x.png');
     expect(grantsCover(grants, { op: 'fs_write', path: neighbour, real: neighbour }), 'the scope is the generated dir alone').toBe(false);
   });
 
@@ -474,11 +475,11 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     // by the platform, and the per-agent ownership check stays exactly where it
     // is, after the read, so no message the owner sees changes.
     const grants = grantsForCall(AGENT, effectsFor('history_get'), { id: 'file_x' });
-    const store = path.join(os.homedir(), '.dojo', 'data', 'files');
+    const store = path.join(homeDir(), '.dojo', 'data', 'files');
     const stored = path.join(store, 'some-agent', 'file_x.txt');
     expect(grantsCover(grants, { op: 'fs_read', path: stored, real: stored }), 'it may read a stored body').toBe(true);
     // …and nothing else under the same parent, which is what makes it a scope.
-    const sibling = path.join(os.homedir(), '.dojo', 'data', 'dojo.db');
+    const sibling = path.join(homeDir(), '.dojo', 'data', 'dojo.db');
     expect(grantsCover(grants, { op: 'fs_read', path: sibling, real: sibling }), 'the scope is the store alone').toBe(false);
     // A read declaration is not a write one.
     expect(grantsCover(grants, { op: 'fs_write', path: stored, real: stored })).toBe(false);
@@ -565,9 +566,9 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
   });
 
   it('tts_create and music_create DECLARE the generated dir AND their own delivery copy', () => {
-    const generatedDir = path.join(os.homedir(), '.dojo', 'uploads', 'generated');
+    const generatedDir = path.join(homeDir(), '.dojo', 'uploads', 'generated');
     const wav = path.join(generatedDir, 'x.wav');
-    const uploads = path.join(os.homedir(), '.dojo', 'uploads', AGENT);
+    const uploads = path.join(homeDir(), '.dojo', 'uploads', AGENT);
     const stable = path.join(uploads, 'weekly-recap-1234.wav');
     for (const tool of ['tts_create', 'music_create']) {
       const grants = grantsForCall(AGENT, effectsFor(tool), { text: 'hello', description: 'a beat' });
@@ -575,7 +576,7 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
       expect(grantsCover(grants, { op: 'fs_write', path: wav, real: wav }), `${tool} may write the asset`).toBe(true);
       expect(grantsCover(grants, { op: 'fs_read', path: wav, real: wav }), `${tool} may read it back to deliver it`).toBe(true);
       expect(grantsCover(grants, { op: 'fs_write', path: stable, real: stable }), `${tool} may place the delivery copy`).toBe(true);
-      const other = path.join(os.homedir(), '.dojo', 'uploads', 'someone-else', 'x.wav');
+      const other = path.join(homeDir(), '.dojo', 'uploads', 'someone-else', 'x.wav');
       expect(grantsCover(grants, { op: 'fs_write', path: other, real: other }), `${tool} may not write another agent uploads dir`).toBe(false);
     }
   });
@@ -592,13 +593,13 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     // generated-directory effect declared only the write) and the second had
     // prose with no machine-checkable scope, so both were corrected at the site.
     const grants = grantsForCall(AGENT, effectsFor('image_create'), { description: 'a cat' });
-    const generated = path.join(os.homedir(), '.dojo', 'uploads', 'generated', 'x.png');
-    const uploads = path.join(os.homedir(), '.dojo', 'uploads', AGENT);
+    const generated = path.join(homeDir(), '.dojo', 'uploads', 'generated', 'x.png');
+    const uploads = path.join(homeDir(), '.dojo', 'uploads', AGENT);
     const stable = path.join(uploads, 'a-cat-1234.png');
     expect(grantsCover(grants, { op: 'fs_read', path: generated, real: generated }), 'it may read back its own output').toBe(true);
     expect(grantsCover(grants, { op: 'fs_mkdir', path: uploads, real: uploads }), 'it may create the caller uploads dir').toBe(true);
     expect(grantsCover(grants, { op: 'fs_write', path: stable, real: stable }), 'it may place the stable copy there').toBe(true);
-    const other = path.join(os.homedir(), '.dojo', 'uploads', 'someone-else', 'x.png');
+    const other = path.join(homeDir(), '.dojo', 'uploads', 'someone-else', 'x.png');
     expect(grantsCover(grants, { op: 'fs_write', path: other, real: other }), 'and never another agent uploads dir').toBe(false);
   });
 
@@ -658,13 +659,13 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     // never derived from `effects[]` (P5-R5).
     const shown = path.join(scratch, 'photo.png');
     const grants = grantsForCall(AGENT, effectsFor('show_to_user'), { file_paths: [shown] });
-    const uploads = path.join(os.homedir(), '.dojo', 'uploads', AGENT);
+    const uploads = path.join(homeDir(), '.dojo', 'uploads', AGENT);
     const copy = path.join(uploads, '1_photo.png');
     expect(grantsCover(grants, { op: 'fs_read', path: shown, real: shown }), 'it may read what it was asked to show').toBe(true);
     expect(grantsCover(grants, { op: 'fs_mkdir', path: uploads, real: uploads }), 'it may create its own uploads directory').toBe(true);
     expect(grantsCover(grants, { op: 'fs_write', path: copy, real: copy }), 'it may copy the file in for the serve route').toBe(true);
     // …and never into ANOTHER agent's uploads directory, which is what makes it a scope.
-    const other = path.join(os.homedir(), '.dojo', 'uploads', 'someone-else', 'x.png');
+    const other = path.join(homeDir(), '.dojo', 'uploads', 'someone-else', 'x.png');
     expect(grantsCover(grants, { op: 'fs_write', path: other, real: other }), "the scope is this agent's uploads alone").toBe(false);
     // A read of the source is not a licence to overwrite it.
     expect(grantsCover(grants, { op: 'fs_write', path: shown, real: shown })).toBe(false);
@@ -730,7 +731,7 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     // touch — while the real write, `~/.dojo/uploads/<agentId>/<sanitised>.pdf`,
     // went undeclared. The declaration both missed the real write and named a
     // false one, and the conversion is what forced it into the open.
-    const uploads = path.join(os.homedir(), '.dojo', 'uploads', AGENT);
+    const uploads = path.join(homeDir(), '.dojo', 'uploads', AGENT);
     const out = path.join(uploads, 'report.pdf');
     const source = path.join(scratch, 'source.pdf');
     for (const tool of ['pdf_merge', 'pdf_extract_pages', 'pdf_rotate_pages', 'pdf_reorder_pages',
@@ -742,7 +743,7 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
       expect(grantsCover(grants, { op: 'fs_write', path: out, real: out }), `${tool} may write its output`).toBe(true);
       expect(grantsCover(grants, { op: 'fs_read', path: source, real: source }), `${tool} may read its input`).toBe(true);
       // …and never another agent's uploads directory, which is what makes it a scope.
-      const other = path.join(os.homedir(), '.dojo', 'uploads', 'someone-else', 'x.pdf');
+      const other = path.join(homeDir(), '.dojo', 'uploads', 'someone-else', 'x.pdf');
       expect(grantsCover(grants, { op: 'fs_write', path: other, real: other }), `${tool} may not write elsewhere`).toBe(false);
       // A read of the input is not a licence to overwrite it in place.
       expect(grantsCover(grants, { op: 'fs_write', path: source, real: source }), `${tool} may not overwrite its input`).toBe(false);
@@ -755,7 +756,7 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
       filename: 'deck.pdf',
       content: [{ type: 'image', path: img }],
     });
-    const uploads = path.join(os.homedir(), '.dojo', 'uploads', AGENT);
+    const uploads = path.join(homeDir(), '.dojo', 'uploads', AGENT);
     const out = path.join(uploads, 'deck.pdf');
     expect(grantsCover(grants, { op: 'fs_write', path: out, real: out }), 'it may write the PDF').toBe(true);
     expect(grantsCover(grants, { op: 'fs_read', path: img, real: img }), 'it may read the image it embeds').toBe(true);
@@ -780,12 +781,12 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
 
   it('load_tool_docs DECLARES the docs directory it reads, and the scope is that directory alone', () => {
     const grants = grantsForCall(AGENT, effectsFor('load_tool_docs'), { tools: ['web_fetch'] });
-    const docsDir = path.join(os.homedir(), '.dojo', 'tools');
+    const docsDir = path.join(homeDir(), '.dojo', 'tools');
     const doc = path.join(docsDir, 'web_fetch.md');
     expect(grantsCover(grants, { op: 'fs_stat', path: doc, real: doc }), 'it may probe a doc').toBe(true);
     expect(grantsCover(grants, { op: 'fs_read', path: doc, real: doc }), 'it may read a doc').toBe(true);
     // …and nothing outside the directory, which is what makes it a scope.
-    const outside = path.join(os.homedir(), '.dojo', 'data', 'dojo.db');
+    const outside = path.join(homeDir(), '.dojo', 'data', 'dojo.db');
     expect(grantsCover(grants, { op: 'fs_read', path: outside, real: outside }), 'the scope is the docs dir alone').toBe(false);
     // A read of the docs is not a licence to write them — the generator's job.
     expect(grantsCover(grants, { op: 'fs_write', path: doc, real: doc })).toBe(false);
@@ -800,12 +801,12 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     // and are not derived from `effects[]` (RULING P5-R5), so this widens what
     // the facade will carry and gates nothing new.
     const grants = grantsForCall(AGENT, effectsFor('open_browser'), { url: 'https://example.com' });
-    const shotsDir = path.join(os.homedir(), '.dojo', 'data', 'canvas-shots');
+    const shotsDir = path.join(homeDir(), '.dojo', 'data', 'canvas-shots');
     const png = path.join(shotsDir, 'a-screenshot.png');
     expect(grantsCover(grants, { op: 'fs_mkdir', path: shotsDir, real: shotsDir }), 'it may create its own directory').toBe(true);
     expect(grantsCover(grants, { op: 'fs_write', path: png, real: png }), 'it may write the screenshot').toBe(true);
     // …and nothing else under the same parent, which is what makes it a scope.
-    const sibling = path.join(os.homedir(), '.dojo', 'data', 'dojo.db');
+    const sibling = path.join(homeDir(), '.dojo', 'data', 'dojo.db');
     expect(grantsCover(grants, { op: 'fs_write', path: sibling, real: sibling }), 'the scope is the shots dir alone').toBe(false);
   });
 
@@ -1116,13 +1117,13 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     // handler sanitises before writing into `~/.dojo/uploads/<agentId>`. Resolved
     // as a path it named a file in the server's working directory these tools
     // never touch, while the real write went undeclared.
-    const uploads = path.join(os.homedir(), '.dojo', 'uploads', AGENT);
+    const uploads = path.join(homeDir(), '.dojo', 'uploads', AGENT);
     const out = path.join(uploads, 'Report.docx');
     for (const tool of ['office_create_word_document', 'office_create_spreadsheet', 'office_create_presentation']) {
       const grants = grantsForCall(AGENT, effectsFor(tool), { filename: 'Report.docx' });
       expect(grantsCover(grants, { op: 'fs_mkdir', path: uploads, real: uploads }), `${tool} may create its uploads dir`).toBe(true);
       expect(grantsCover(grants, { op: 'fs_write', path: out, real: out }), `${tool} may write its output`).toBe(true);
-      const other = path.join(os.homedir(), '.dojo', 'uploads', 'someone-else', 'x.docx');
+      const other = path.join(homeDir(), '.dojo', 'uploads', 'someone-else', 'x.docx');
       expect(grantsCover(grants, { op: 'fs_write', path: other, real: other }), `${tool} may not write elsewhere`).toBe(false);
       const cwd = path.resolve('Report.docx');
       expect(grantsCover(grants, { op: 'fs_write', path: cwd, real: cwd }), `${tool} never names the bare filename`).toBe(false);
@@ -1148,7 +1149,7 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     // the default preset — a capability loss with no error anywhere. The store is
     // a FIXED path, so it needs no mechanic at all; what it needs is the
     // declaration on each verb that touches it.
-    const store = path.join(os.homedir(), '.dojo', 'data', 'slides_styles.json');
+    const store = path.join(homeDir(), '.dojo', 'data', 'slides_styles.json');
     const READERS = ['slides_add_slide', 'slides_get_style', 'slides_add_text_box', 'slides_add_bullet_list',
       'slides_add_shape', 'slides_add_line', 'slides_populate_table', 'slides_layout_title',
       'slides_layout_section', 'slides_layout_content', 'slides_layout_two_column',
@@ -1159,7 +1160,7 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
       expect(grantsCover(grants, { op: 'fs_read', path: store, real: store }), `${tool} may read the style store`).toBe(true);
       expect(grantsCover(grants, { op: 'fs_write', path: store, real: store }), `${tool} write`).toBe(WRITERS.includes(tool));
       // …and nothing else in the same directory, which is what makes it a path.
-      const sibling = path.join(os.homedir(), '.dojo', 'data', 'dojo.db');
+      const sibling = path.join(homeDir(), '.dojo', 'data', 'dojo.db');
       expect(grantsCover(grants, { op: 'fs_read', path: sibling, real: sibling }), `${tool} reaches no sibling`).toBe(false);
     }
     // A verb that does NOT touch the store still declares nothing for it, which
@@ -1188,12 +1189,12 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
   });
 
   it('slides_export_pngs and slides_build_slide DECLARE what they really touch', () => {
-    const uploads = path.join(os.homedir(), '.dojo', 'uploads', AGENT);
+    const uploads = path.join(homeDir(), '.dojo', 'uploads', AGENT);
     const png = path.join(uploads, 'slide-1.png');
     const exportGrants = grantsForCall(AGENT, effectsFor('slides_export_pngs'), { presentation_id: 'deck-1' });
     expect(grantsCover(exportGrants, { op: 'fs_mkdir', path: uploads, real: uploads }), 'it may create its uploads dir').toBe(true);
     expect(grantsCover(exportGrants, { op: 'fs_write', path: png, real: png }), 'it may write each exported PNG').toBe(true);
-    const other = path.join(os.homedir(), '.dojo', 'uploads', 'someone-else', 'x.png');
+    const other = path.join(homeDir(), '.dojo', 'uploads', 'someone-else', 'x.png');
     expect(grantsCover(exportGrants, { op: 'fs_write', path: other, real: other }), 'never another agent uploads dir').toBe(false);
     // `slides_build_slide` uploads a LOCAL image named one level inside an
     // element (mechanic 7); a non-image element grants nothing for it.
@@ -1330,7 +1331,7 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
       'agent/tools/cat/office.ts', 'agent/tools/index.ts',
     ]);
 
-    const uploads = path.join(os.homedir(), '.dojo', 'uploads', AGENT);
+    const uploads = path.join(homeDir(), '.dojo', 'uploads', AGENT);
     const named = path.join(scratch, 'named-by-the-agent.md');
     const stat = (p: string): { op: 'fs_stat'; path: string; real: string } =>
       ({ op: 'fs_stat', path: p, real: p });
@@ -1350,7 +1351,7 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
 
     // (3) `open_browser` hands over the screenshot it just wrote.
     const browser = grantsForCall(AGENT, effectsFor('open_browser'), { url: 'https://example.com' });
-    const shot = path.join(os.homedir(), '.dojo', 'data', 'canvas-shots', 'abc.png');
+    const shot = path.join(homeDir(), '.dojo', 'data', 'canvas-shots', 'abc.png');
     expect(grantsCover(browser, stat(shot)), 'open_browser may probe its own screenshot').toBe(true);
 
     // (4) The office tools the canvas auto-opens: the create half writes into

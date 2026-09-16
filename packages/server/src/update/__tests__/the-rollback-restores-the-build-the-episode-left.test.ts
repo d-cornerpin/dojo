@@ -90,7 +90,7 @@ function marker(fields: Record<string, unknown>): void {
 function runRollback(): { code: number; out: string } {
   try {
     const out = execFileSync('bash', [SCRIPT], {
-      env: { ...process.env, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ''}` },
+      env: { ...process.env, HOME: home, DOJO_HOME: home, PATH: `${binDir}:${process.env.PATH ?? ''}` },
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });

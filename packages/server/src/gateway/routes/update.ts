@@ -20,13 +20,14 @@ import {
   measureUpdateDiskNeed, updateDiskRefusal, isOutOfSpaceError, outOfSpaceFailureMessage,
   type UpdateDiskNeed,
 } from '../../update/disk-preflight.js';
+import { homeDir } from '../../home.js';
 
 const execAsync = promisify(exec);
 const logger = createLogger('updater');
 
 const GITHUB_REPO = 'd-cornerpin/dojo';
-const PLATFORM_DIR = path.join(os.homedir(), '.dojo', 'platform');
-const DOJO_DIR = path.join(os.homedir(), '.dojo');
+const PLATFORM_DIR = path.join(homeDir(), '.dojo', 'platform');
+const DOJO_DIR = path.join(homeDir(), '.dojo');
 
 // Per-update backup directories live as siblings of PLATFORM_DIR:
 //   ~/.dojo/platform                  (current install)

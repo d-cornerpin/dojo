@@ -70,7 +70,7 @@ const emitted = (): string[] =>
  *  makes the arms meaningful. */
 function runChild(mode: 'kill-inside' | 'kill-after'): string {
   const r = spawnSync(TSX, [CHILD, mode, sink], {
-    env: { ...process.env, HOME: home },
+    env: { ...process.env, HOME: home, DOJO_HOME: home },
     encoding: 'utf8',
     timeout: 60_000,
   });

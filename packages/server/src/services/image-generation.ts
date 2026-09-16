@@ -24,16 +24,16 @@
 
 import * as effectFs from '../agent/effects/fs.js';
 import path from 'node:path';
-import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { imagePixelDimensions } from '../memory/budget.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('image-gen');
 
-export const GENERATED_IMAGES_DIR = path.join(os.homedir(), '.dojo', 'uploads', 'generated');
+export const GENERATED_IMAGES_DIR = path.join(homeDir(), '.dojo', 'uploads', 'generated');
 
 export function ensureGeneratedImagesDir(): void {
   if (!effectFs.existsSync(GENERATED_IMAGES_DIR)) {

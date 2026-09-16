@@ -14,10 +14,10 @@
 // ════════════════════════════════════════
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { createLogger } from '../logger.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('migration-classify');
 
@@ -31,7 +31,7 @@ export interface ClassifiedStep {
   detail?: string;
 }
 
-const HOME = os.homedir();
+const HOME = homeDir();
 
 function expandHome(p: string): string {
   if (p === '~') return HOME;

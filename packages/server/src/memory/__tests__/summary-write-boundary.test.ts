@@ -30,9 +30,10 @@
 // The LEVEL-3 truncation is deliberately still `ok:true`: it truncates the MODEL'S OWN
 // OUTPUT, which has already been through the summariser and carries no raw rows.
 // ════════════════════════════════════════════════════════════════════════════════════════
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { runMigrations } from '../../db/migrations.js';
 
 const callModel = vi.fn();
 vi.mock('../../agent/model.js', () => ({
@@ -47,6 +48,12 @@ const RAW = [
   '[USER] here is a genuinely important business decision about the Verve deck',
   '[SOURCE: AGENT MESSAGE FROM maddy] and some peer traffic',
 ].join('\n\n---\n\n');
+
+// `generateSummary` reads the `agents` table for the identity line. Until the suite
+// got its own home (T74b) these cases were silently reading the DEVELOPER'S live
+// database, where that table happens to exist — passing by accident on one machine.
+// The schema is now made here rather than borrowed from whoever runs the tests.
+beforeAll(() => { runMigrations(); });
 
 beforeEach(() => { callModel.mockReset(); });
 

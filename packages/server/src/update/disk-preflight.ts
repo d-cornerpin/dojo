@@ -53,13 +53,13 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createLogger } from '../logger.js';
 import {
   MIGRATION_BACKUP_FREE_DISK_MULTIPLE, MIGRATION_BACKUP_OVERRIDE_FILE,
   migrationBackupOverridePresent,
 } from '../db/migration-backup.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('update-disk');
 
@@ -134,8 +134,8 @@ export function measureUpdateDiskNeed(input: {
   /** The installed platform tree. Defaults to the running box's. */
   platformDir?: string;
 }): UpdateDiskNeed {
-  const dbPath = input.dbPath ?? path.join(os.homedir(), '.dojo', 'data', 'dojo.db');
-  const platformDir = input.platformDir ?? path.join(os.homedir(), '.dojo', 'platform');
+  const dbPath = input.dbPath ?? path.join(homeDir(), '.dojo', 'data', 'dojo.db');
+  const platformDir = input.platformDir ?? path.join(homeDir(), '.dojo', 'platform');
 
   const dbBytes = fileSize(dbPath) + fileSize(`${dbPath}-wal`) + fileSize(`${dbPath}-shm`);
   const backupNeedBytes = dbBytes * MIGRATION_BACKUP_FREE_DISK_MULTIPLE;
@@ -198,7 +198,7 @@ export function updateDiskRefusal(
   need: UpdateDiskNeed, opts?: { dataDir?: string },
 ): string | null {
   if (need.ok) return null;
-  const dataDir = opts?.dataDir ?? path.join(os.homedir(), '.dojo', 'data');
+  const dataDir = opts?.dataDir ?? path.join(homeDir(), '.dojo', 'data');
   if (migrationBackupOverridePresent(dataDir)) {
     logger.warn(
       'Starting an update with too little free disk because an override is set. '

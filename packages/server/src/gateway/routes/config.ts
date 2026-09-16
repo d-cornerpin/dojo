@@ -3,7 +3,6 @@ import { v4 as uuidv4 } from 'uuid';
 import Anthropic from '@anthropic-ai/sdk';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as os from 'node:os';
 import { getDb } from '../../db/connection.js';
 import { getProviderCredential, setProviderCredential, clearSecretsCache, getSearchApiKey, getSearchProvider, setSearchConfig } from '../../config/loader.js';
 import { clearClientCache, resolveOpenAIBaseUrl, THINKING_OUTPUT_FLOOR_TOKENS } from '../../agent/model.js';
@@ -14,6 +13,7 @@ import { getOllamaModelInfo } from '../../services/ollama.js';
 import type { Provider, Model } from '@dojo/shared';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
 import { renameAgent, roleNameKeyToIdKey } from '../../prompt/agent-rename.js';
+import { homeDir } from '../../home.js';
 
 // ── Model Usage Helper ──
 
@@ -2311,7 +2311,7 @@ configRouter.get('/settings', (c) => {
   return c.json({ ok: true, data: settings });
 });
 
-const PROMPTS_DIR = path.join(os.homedir(), '.dojo', 'prompts');
+const PROMPTS_DIR = path.join(homeDir(), '.dojo', 'prompts');
 
 const IDENTITY_FILES: Record<string, { filename: string; defaultContent: string }> = {
   soul: { filename: 'SOUL.md', defaultContent: DEFAULT_SOUL },

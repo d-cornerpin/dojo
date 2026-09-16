@@ -23,13 +23,13 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
 import { pollProviderVideo, fetchVideoAsset } from './video-generation.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('video-job-poller');
 
@@ -92,7 +92,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 function deliverVideo(row: VideoJobRow, assetPath: string, sizeBytes: number): void {
   // Copy into the caller's uploads dir with a friendly, title-derived
   // filename so downloads are named sensibly.
-  const recipientDir = path.join(os.homedir(), '.dojo', 'uploads', row.agent_id);
+  const recipientDir = path.join(homeDir(), '.dojo', 'uploads', row.agent_id);
   if (!fs.existsSync(recipientDir)) fs.mkdirSync(recipientDir, { recursive: true });
   const titleSlug = row.title ? slugify(row.title) : '';
   const shortId = row.id.replace(/^vid_/, '').slice(0, 8);

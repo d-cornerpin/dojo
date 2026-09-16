@@ -16,6 +16,7 @@ import {
   ATTACHMENTS_ROOT_FOLDER,
 } from '../services/email-attachments.js';
 import type { AccountSlot } from './auth.js';
+import { homeDir } from '../home.js';
 
 // ── Tool Definitions ──
 
@@ -1453,7 +1454,6 @@ export async function executeMicrosoftWriteTool(
       if (!att?.contentBytes) return 'Error: attachment has no downloadable content (may be an inline image or reference attachment)';
 
       const fs = await import('node:fs');
-      const os = await import('node:os');
       const nodePath = await import('node:path');
 
       const fileName = att.name ?? 'attachment';
@@ -1461,7 +1461,7 @@ export async function executeMicrosoftWriteTool(
       // ~/Downloads/, which is OUTSIDE the transcribe_audio sandbox).
       // Lets the agent immediately pipe audio attachments through
       // transcribe_audio without an extra move step.
-      const defaultDir = nodePath.join(os.homedir(), '.dojo', 'uploads', agentId);
+      const defaultDir = nodePath.join(homeDir(), '.dojo', 'uploads', agentId);
       fs.mkdirSync(defaultDir, { recursive: true });
       const outPath = (args.save_path as string | undefined) ?? nodePath.join(defaultDir, fileName);
       const content = Buffer.from(att.contentBytes, 'base64');
@@ -1520,7 +1520,6 @@ export async function executeMicrosoftWriteTool(
       if (!token) return 'Error: not authenticated with Microsoft (agent account).';
 
       const fs = await import('node:fs');
-      const os = await import('node:os');
       const nodePath = await import('node:path');
 
       const isSharePointReference =
@@ -1574,7 +1573,7 @@ export async function executeMicrosoftWriteTool(
       //    gmail_read_attachment / outlook_download_attachment), so
       //    transcribe_audio can read the path directly without a move.
       const fileName = att.name ?? `teams-attachment-${attachmentId.slice(0, 12)}.bin`;
-      const defaultDir = nodePath.join(os.homedir(), '.dojo', 'uploads', agentId);
+      const defaultDir = nodePath.join(homeDir(), '.dojo', 'uploads', agentId);
       fs.mkdirSync(defaultDir, { recursive: true });
       const outPath = (args.save_path as string | undefined) ?? nodePath.join(defaultDir, fileName);
       fs.writeFileSync(outPath, bytes);

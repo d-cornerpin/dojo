@@ -26,14 +26,14 @@
 // rewrite.
 import * as effectFs from './effects/fs.js';
 import path from 'node:path';
-import os from 'node:os';
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 import { createLogger } from '../logger.js';
 import type { ToolDefinition } from './tools/types.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('pdf-tools');
 
-const UPLOADS_DIR = path.join(os.homedir(), '.dojo', 'uploads');
+const UPLOADS_DIR = path.join(homeDir(), '.dojo', 'uploads');
 
 function ensureAgentUploadDir(agentId: string): string {
   const dir = path.join(UPLOADS_DIR, agentId);

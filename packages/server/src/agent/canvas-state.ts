@@ -14,10 +14,10 @@
 // this state, and the disk watcher whose callback fires outside any dispatch.
 // ════════════════════════════════════════
 
-import os from 'node:os';
 import path from 'node:path';
 import { getDb } from '../db/connection.js';
 import { startCanvasWatch, stopCanvasWatch } from './canvas-watch.js';
+import { homeDir } from '../home.js';
 
 export interface CanvasState {
   kind: 'canvas' | 'iframe' | 'screenshot';
@@ -104,8 +104,8 @@ export function setCanvasStatus(agentId: string, status: CanvasStatus): void {
 }
 
 export function resolveHome(p: string): string {
-  if (p === '~') return os.homedir();
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  if (p === '~') return homeDir();
+  if (p.startsWith('~/')) return path.join(homeDir(), p.slice(2));
   return p;
 }
 

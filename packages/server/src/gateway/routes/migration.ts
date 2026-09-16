@@ -20,6 +20,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { getDashboardPasswordHash, getJwtSecret } from '../../config/loader.js';
 import { broadcast } from '../ws.js';
 import { createLogger } from '../../logger.js';
+import { homeDir } from '../../home.js';
 
 const logger = createLogger('migration-routes');
 
@@ -140,7 +141,7 @@ migrationRouter.post('/preflight', async (c) => {
     let diskOk = true;
     let freeBytes: number | null = null;
     try {
-      const st = fs.statfsSync(os.homedir());
+      const st = fs.statfsSync(homeDir());
       freeBytes = Number(st.bavail) * Number(st.bsize);
       diskOk = freeBytes >= manifest.contents.database_size_bytes * 2;
     } catch { diskOk = true; /* can't determine — don't block */ }
@@ -257,7 +258,7 @@ migrationRouter.post('/run-dependency-setup', (c) => {
     const scriptPath = path.join(os.tmpdir(), `dojo-setup-combined-${Date.now()}-${process.pid}.sh`);
     fs.writeFileSync(scriptPath, script, { mode: 0o755 });
 
-    const child = spawn('bash', [scriptPath], { cwd: os.homedir(), env: process.env });
+    const child = spawn('bash', [scriptPath], { cwd: homeDir(), env: process.env });
     const emit = (line: string) => broadcast({ type: 'migration:depsetup', data: { line } });
     const onData = (buf: Buffer) => {
       for (const line of buf.toString().split('\n')) if (line.length > 0) emit(line);

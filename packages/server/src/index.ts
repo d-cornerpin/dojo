@@ -1,7 +1,6 @@
 import { serve, type ServerType } from '@hono/node-server';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger, setLogBroadcast } from './logger.js';
@@ -20,6 +19,7 @@ import { killTunnelSync } from './services/tunnel.js';
 import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, isPMEnabled, setPlatformConfig, HOUSEHOLD_AGENT_IDS_KEY } from './config/platform.js';
 import { recordBootAttempt, markMigrationsRan, confirmHealthy, readMarker, synthesizeMigrationBootEpisode } from './update-state.js';
 import { probeFsCaseInsensitive, setFsCaseInsensitive } from './agent/path-guards.js';
+import { homeDir } from './home.js';
 
 const logger = createLogger('main');
 const PORT = parseInt(process.env.DOJO_PORT ?? '3001', 10);
@@ -117,12 +117,12 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const PLATFORM_DIRS = [
-  path.join(os.homedir(), '.dojo'),
-  path.join(os.homedir(), '.dojo', 'data'),
-  path.join(os.homedir(), '.dojo', 'logs'),
-  path.join(os.homedir(), '.dojo', 'prompts'),
-  path.join(os.homedir(), '.dojo', 'uploads'),
-  path.join(os.homedir(), '.dojo', 'uploads', 'generated'),
+  path.join(homeDir(), '.dojo'),
+  path.join(homeDir(), '.dojo', 'data'),
+  path.join(homeDir(), '.dojo', 'logs'),
+  path.join(homeDir(), '.dojo', 'prompts'),
+  path.join(homeDir(), '.dojo', 'uploads'),
+  path.join(homeDir(), '.dojo', 'uploads', 'generated'),
 ];
 
 function ensureDirectories(): void {
@@ -336,7 +336,7 @@ async function main(): Promise<void> {
 
   // 1b. PHASE-0 T10: MEASURE whether this box folds path case (APFS does, ext4
   // does not) — every sensitive-path guard reads the flag. See path-guards.ts.
-  const fsFolds = probeFsCaseInsensitive(path.join(os.homedir(), '.dojo', 'data'), fs);
+  const fsFolds = probeFsCaseInsensitive(path.join(homeDir(), '.dojo', 'data'), fs);
   setFsCaseInsensitive(fsFolds);
   logger.info('Filesystem case sensitivity probed', { caseInsensitive: fsFolds });
 

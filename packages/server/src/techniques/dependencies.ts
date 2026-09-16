@@ -34,8 +34,8 @@
 //     reference and what to do about each.
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { homeDir } from '../home.js';
 
 export const DEPENDENCY_MANIFEST_FILENAME = 'dependencies.json';
 export const DEPENDENCY_MANIFEST_VERSION = 1;
@@ -436,7 +436,7 @@ function isSensitiveForBundling(absPath: string): boolean {
     '.npmrc', '.pypirc', '.netrc', 'credentials',
   ]);
   if (SENSITIVE.has(base)) return true;
-  const home = os.homedir();
+  const home = homeDir();
   if (absPath.startsWith(path.join(home, '.ssh') + path.sep) && !base.endsWith('.pub')) return true;
   if (absPath === path.join(home, '.aws', 'credentials')) return true;
   if (absPath.startsWith(path.join(home, '.config', 'gcloud') + path.sep)) return true;
@@ -453,8 +453,8 @@ function isSensitiveForBundling(absPath: string): boolean {
  * know don't exist).
  */
 function resolveSourcePath(raw: string, dirPath: string): string | null {
-  if (raw.startsWith('~/')) return path.join(os.homedir(), raw.slice(2));
-  if (raw === '~') return os.homedir();
+  if (raw.startsWith('~/')) return path.join(homeDir(), raw.slice(2));
+  if (raw === '~') return homeDir();
   if (path.isAbsolute(raw)) return raw;
   if (raw.split(/[\\/]/).includes('..')) return path.resolve(dirPath, raw);
   return null;

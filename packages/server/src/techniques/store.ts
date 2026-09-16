@@ -4,7 +4,6 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
@@ -26,6 +25,7 @@ import {
 // (PHASE-5 T8, RULING P5-R15 ADDENDUM 3(1)(a)). Re-exported below, so nothing
 // that imported these names from the store had to move.
 import { getTechnique, resolveTechniqueRef, rowToTechnique, type TechniqueMetadata } from './technique-dir.js';
+import { homeDir } from '../home.js';
 
 export { getTechnique, resolveTechniqueRef, techniqueDirectory } from './technique-dir.js';
 export type { TechniqueMetadata } from './technique-dir.js';
@@ -45,7 +45,7 @@ export class TechniqueValidationError extends Error {
   }
 }
 
-const TECHNIQUES_DIR = path.join(os.homedir(), '.dojo', 'techniques');
+const TECHNIQUES_DIR = path.join(homeDir(), '.dojo', 'techniques');
 
 function ensureTechniquesDir(): void {
   if (!fs.existsSync(TECHNIQUES_DIR)) {

@@ -8,7 +8,6 @@
 import fs from 'node:fs';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import path from 'node:path';
-import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
@@ -21,6 +20,7 @@ import { getTwilioSmsSafeSenders } from '../services/channel-safe-senders.js';
 import { addressesMatch } from '../services/imessage-bridge.js';
 import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
 import { isSmsEnabled, getTwilioCreds } from './auth.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('twilio-sms-inbound');
 
@@ -128,7 +128,7 @@ export async function downloadMmsMedia(payload: InboundSmsPayload, agentId: stri
     result.failedUrls.push(...payload.mediaUrls.slice(MAX_MMS_MEDIA));
   }
 
-  const dir = path.join(os.homedir(), '.dojo', 'uploads', agentId);
+  const dir = path.join(homeDir(), '.dojo', 'uploads', agentId);
   try {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   } catch (err) {

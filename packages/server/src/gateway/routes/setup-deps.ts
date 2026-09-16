@@ -7,12 +7,12 @@ import { Hono } from 'hono';
 import { execSync, exec } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { deleteAllForAgent } from '../../memory/message-store.js';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
+import { homeDir } from '../../home.js';
 
 const logger = createLogger('setup-deps');
 
@@ -22,7 +22,7 @@ export const setupDepsRouter = new Hono();
 
 // Extend PATH to include Homebrew locations and npm-global fallback (launchd has minimal PATH)
 const EXTENDED_PATH = [
-  path.join(os.homedir(), '.npm-global', 'bin'),
+  path.join(homeDir(), '.npm-global', 'bin'),
   '/opt/homebrew/bin',
   '/opt/homebrew/sbin',
   '/usr/local/bin',
@@ -65,8 +65,8 @@ setupDepsRouter.get('/deps/check', async (c) => {
 
   // Check Playwright Chromium
   const pwCacheDirs = [
-    path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright'),
-    path.join(os.homedir(), '.cache', 'ms-playwright'),
+    path.join(homeDir(), 'Library', 'Caches', 'ms-playwright'),
+    path.join(homeDir(), '.cache', 'ms-playwright'),
   ];
   const hasPlaywright = pwCacheDirs.some(d => {
     try { return fs.existsSync(d) && fs.readdirSync(d).some(f => f.includes('chromium')); }
@@ -151,7 +151,7 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
         } catch (firstErr) {
           const errMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
           if (errMsg.includes('EACCES')) {
-            const globalDir = path.join(os.homedir(), '.npm-global');
+            const globalDir = path.join(homeDir(), '.npm-global');
             execSync(`mkdir -p "${globalDir}"`, { encoding: 'utf-8', env: execEnv });
             execSync(`npm config set prefix "${globalDir}"`, { encoding: 'utf-8', env: execEnv });
             const npmGlobalEnv = { ...execEnv, PATH: `${globalDir}/bin:${execEnv.PATH}` };
@@ -387,7 +387,7 @@ setupDepsRouter.get('/permissions/check', (c) => {
         }
         case 'full-disk-access': {
           // Try reading Messages database
-          const chatDb = path.join(os.homedir(), 'Library', 'Messages', 'chat.db');
+          const chatDb = path.join(homeDir(), 'Library', 'Messages', 'chat.db');
           try {
             fs.accessSync(chatDb, fs.constants.R_OK);
             return 'granted';
@@ -439,7 +439,7 @@ setupDepsRouter.post('/permissions/request/:perm', (c) => {
         // First, attempt to read the Messages database — this triggers macOS to register
         // the Node process in the Full Disk Access list (even though it will fail).
         // Without this, the user won't see "node" in the FDA list to toggle on.
-        const chatDbPath = path.join(os.homedir(), 'Library', 'Messages', 'chat.db');
+        const chatDbPath = path.join(homeDir(), 'Library', 'Messages', 'chat.db');
         try { fs.readFileSync(chatDbPath); } catch { /* expected to fail — the attempt is what registers it */ }
         // Also try via sqlite3 CLI which may register Terminal
         try { execSync(`sqlite3 "${chatDbPath}" "SELECT 1" 2>/dev/null`, { timeout: 3000, env: execEnv }); } catch { /* expected */ }

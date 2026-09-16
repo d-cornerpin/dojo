@@ -20,10 +20,10 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import path from 'node:path';
-import os from 'node:os';
 import * as effectFs from '../agent/effects/fs.js';
+import { homeDir } from '../home.js';
 
-export const TOOLS_DIR = path.join(os.homedir(), '.dojo', 'tools');
+export const TOOLS_DIR = path.join(homeDir(), '.dojo', 'tools');
 
 export function getToolsDir(): string {
   return TOOLS_DIR;

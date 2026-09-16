@@ -54,11 +54,11 @@ import {
   __resetAssemblyValidationSinkFailures,
 } from '../assembly-validation-sink.js';
 
-const REAL_HOME = process.env.HOME;
+const REAL_HOME = process.env.DOJO_HOME;
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-sink-'));
 
 function useScratchHome(): void {
-  process.env.HOME = SCRATCH;
+  process.env.DOJO_HOME = SCRATCH;
 }
 
 beforeEach(() => {
@@ -70,7 +70,7 @@ beforeEach(() => {
 });
 
 afterAll(() => {
-  process.env.HOME = REAL_HOME;
+  process.env.DOJO_HOME = REAL_HOME;
   fs.rmSync(SCRATCH, { recursive: true, force: true });
 });
 

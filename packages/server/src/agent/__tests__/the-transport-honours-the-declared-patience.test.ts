@@ -44,11 +44,18 @@ import OpenAI from 'openai';
 import { Agent } from 'undici';
 import type { AddressInfo } from 'node:net';
 
-vi.mock('node:os', async (orig) => {
-  const real = await orig<typeof import('node:os')>();
+// The platform resolves `~/.dojo` in exactly one place — `src/home.ts` — so that is
+// what a test redirects. Computed inside the factory, which runs before this module's
+// own bindings initialise.
+vi.mock('../../home.js', async () => {
   const p = await import('node:path');
-  const homedir = (): string => p.join(real.tmpdir(), 'dojo-t73b-transport');
-  return { ...real, homedir, default: { ...real, homedir } };
+  const o = await import('node:os');
+  const dir = p.join(o.tmpdir(), 'dojo-t73b-transport');
+  return {
+    homeDir: (): string => dir,
+    dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
+    isTestRun: (): boolean => true,
+  };
 });
 
 // ── The Agent wrapper §3 reads ──

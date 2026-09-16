@@ -1,13 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import crypto from 'node:crypto';
 import yaml from 'yaml';
 import { SecretsSchema, type SecretsData } from './schema.js';
 import { createLogger } from '../logger.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('config');
-const PLATFORM_DIR = path.join(os.homedir(), '.dojo');
+const PLATFORM_DIR = path.join(homeDir(), '.dojo');
 const SECRETS_PATH = path.join(PLATFORM_DIR, 'secrets.yaml');
 
 let cachedSecrets: SecretsData | null = null;

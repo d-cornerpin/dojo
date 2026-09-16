@@ -18,6 +18,7 @@ import path from 'node:path';
 import { getDb } from '../db/connection.js';
 import { readDependencyManifest } from '../techniques/dependencies.js';
 import { createLogger } from '../logger.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('dependency-script');
 
@@ -95,7 +96,7 @@ export function generateDependencySetupScript(exportedAtIso: string): DepScriptR
     // The technique dir resolves under $HOME on the NEW machine.
     const techBase = `"$HOME/.dojo/techniques/${path.basename(t.directory_path)}"`;
     const dir = t.directory_path.startsWith('~/')
-      ? path.join(process.env.HOME ?? '', t.directory_path.slice(2))
+      ? path.join(homeDir(), t.directory_path.slice(2))
       : t.directory_path;
     let manifest;
     try {

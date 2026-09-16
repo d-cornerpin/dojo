@@ -27,7 +27,7 @@
 //
 // ── TEST HYGIENE (binding) ──
 // Nothing in this file touches the owner's real `~/.ssh`, `~/.dojo` or anything
-// else outside a throwaway temp dir. `os.homedir()` is redirected to a fixture
+// else outside a throwaway temp dir. `homeDir()` is redirected to a fixture
 // home built by this file, and every "secret" inside it is a dummy string
 // written here.
 // ════════════════════════════════════════════════════════════════════════════
@@ -37,18 +37,20 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-// ── Fixture world, built before the homedir spy and before any import of the
+// ── Fixture world, built before DOJO_HOME is pointed at it and before any import of the
 // code under test (vitest hoists `vi.mock`, not these consts). ──
 // `realpathSync` on purpose: macOS's `os.tmpdir()` is `/var/folders/…`, and
 // `/var` is itself a symlink to `/private/var`. A HOME directory behind a
 // symlink is not the shape any real box has, and leaving the fixture in that
 // shape would have the test measuring the tmpdir's own indirection rather than
 // the guard. (The observation is recorded as a hand-up in the T2 report: the
-// deny table anchors on `os.homedir()` unresolved, exactly as its two pre-merge
+// deny table anchors on `homeDir()` unresolved, exactly as its two pre-merge
 // twins did, so a genuinely symlinked home would miss the home-anchored rules
 // on the RESOLVED candidate. Parity with the legacy lists, named rather than
 // silently inherited.)
 const fixtureHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'broker-corpus-home-')));
+// The deny table resolves home through `homeDir()`, which reads DOJO_HOME.
+process.env.DOJO_HOME = fixtureHome;
 const projects = path.join(fixtureHome, 'Projects');
 const dojoDir = path.join(fixtureHome, '.dojo');
 const sshDir = path.join(fixtureHome, '.ssh');
@@ -165,13 +167,10 @@ function mustResolveUrl(raw: string) {
   return r.value;
 }
 
-let homedirSpy: ReturnType<typeof vi.spyOn>;
 beforeAll(() => {
-  homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(fixtureHome);
   setFsCaseInsensitive(REAL_FS_FOLDS);
 });
 afterAll(() => {
-  homedirSpy.mockRestore();
   fs.rmSync(fixtureHome, { recursive: true, force: true });
 });
 

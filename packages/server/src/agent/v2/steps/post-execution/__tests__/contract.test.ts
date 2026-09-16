@@ -44,6 +44,16 @@ vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
   insertMessageIfAbsent: () => null,
 }));
 
+// Same rule, second reader: the spinning-floor branch asks
+// `agentCanSelfCompleteById`, which SELECTs from `agents`. Before the suite had its
+// own home (T74b) that query ran against the developer's live database and found a
+// real table, so the case passed on one machine and nowhere else. The step's contract
+// does not depend on the answer — only on being given one.
+vi.mock('../../../../tools/util.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../../tools/util.js')>()),
+  agentCanSelfCompleteById: () => false,
+}));
+
 function freshState(): AgentTurnState {
   return initState({
     agentId: 'primary',

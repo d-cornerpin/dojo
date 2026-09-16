@@ -39,15 +39,15 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { clearPlatformConfigCache } from '../config/platform.js';
 import { UNSUBSTITUTED } from './assembler.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('agent-rename');
-const PROMPTS_DIR = (): string => path.join(os.homedir(), '.dojo', 'prompts');
+const PROMPTS_DIR = (): string => path.join(homeDir(), '.dojo', 'prompts');
 
 /** One stored soul the rename rewrote, and how many times. */
 export interface SoulRefill {

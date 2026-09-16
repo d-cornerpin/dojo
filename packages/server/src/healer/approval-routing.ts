@@ -35,6 +35,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { resolveRealPathHardened, isProtectedIdentityPath } from '../agent/permissions.js';
 import { withOutboundIfAbsent, PLATFORM_SENDER } from '../agent/v2/outbound.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('healer-approval-routing');
 
@@ -102,8 +103,8 @@ export function selectHealerApprovalRouting(input: {
 const SCRATCH_ZONE_SOURCES = [
   '/tmp',
   os.tmpdir(),
-  path.join(os.homedir(), '.dojo', 'uploads'),
-  path.join(os.homedir(), '.dojo', 'tmp'),
+  path.join(homeDir(), '.dojo', 'uploads'),
+  path.join(homeDir(), '.dojo', 'tmp'),
 ];
 
 const SCRATCH_ZONE_ROOTS: string[] = (() => {

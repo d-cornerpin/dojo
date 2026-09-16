@@ -6,12 +6,12 @@
 import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getProviderCredential, setProviderCredential } from '../config/loader.js';
 import { broadcast } from '../gateway/ws.js';
 import { sendAlert } from './imessage-bridge.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('tunnel');
 
@@ -34,7 +34,7 @@ let restartAttempted = false;
 // reclaim an orphaned quick tunnel and (2) back off after a Cloudflare throttle
 // instead of stacking another request onto the account-less pool. Both live
 // under ~/.dojo alongside the rest of the platform state.
-const DOJO_DIR = path.join(os.homedir(), '.dojo');
+const DOJO_DIR = path.join(homeDir(), '.dojo');
 const TUNNEL_PIDFILE = path.join(DOJO_DIR, 'tunnel.pid');
 const TUNNEL_BACKOFF_FILE = path.join(DOJO_DIR, 'tunnel-backoff.json');
 

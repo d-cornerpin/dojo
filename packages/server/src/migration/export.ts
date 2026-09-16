@@ -14,17 +14,18 @@ import { copyTree } from './fs-copy.js';
 import { generateManifest, type ExportManifest } from './manifest.js';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('migration-export');
 
-const DOJO_DIR = path.join(os.homedir(), '.dojo');
-const GWS_DIR = path.join(os.homedir(), '.config', 'gws');
+const DOJO_DIR = path.join(homeDir(), '.dojo');
+const GWS_DIR = path.join(homeDir(), '.config', 'gws');
 // Cloudflare tunnel setup lives OUTSIDE ~/.dojo, in ~/.cloudflared: the account
 // cert (cert.pem), the named-tunnel credentials file (<UUID>.json — the tunnel
 // secret/key) and config.yml. The named-tunnel connector token also lives in
 // secrets.yaml (already inside ~/.dojo), but a credentials-file / cert based
 // setup needs this directory to run on the new machine. Travels as cloudflared/.
-const CLOUDFLARED_DIR = path.join(os.homedir(), '.cloudflared');
+const CLOUDFLARED_DIR = path.join(homeDir(), '.cloudflared');
 
 // Deny-list for the comprehensive ~/.dojo copy. Top-level entries we never
 // export because they are installer/runtime APP CODE or assets (the target

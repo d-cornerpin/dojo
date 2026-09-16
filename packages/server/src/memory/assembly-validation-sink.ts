@@ -52,10 +52,10 @@
 // separable concern is the adding-without-deleting shape the gate exists to slow down.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createLogger } from '../logger.js';
 import type { AssemblyValidationMode } from './assembly-validation.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('assembly-validation-sink');
 
@@ -63,7 +63,7 @@ export const ASSEMBLY_VALIDATION_SINK_FILENAME = 'assembly-validation.jsonl';
 
 /** Resolved per call, never cached: tests redirect `HOME`, and a cached path ignores them. */
 export function assemblyValidationSinkPath(): string {
-  return path.join(os.homedir(), '.dojo', 'logs', ASSEMBLY_VALIDATION_SINK_FILENAME);
+  return path.join(homeDir(), '.dojo', 'logs', ASSEMBLY_VALIDATION_SINK_FILENAME);
 }
 
 export interface DivergenceRecord {

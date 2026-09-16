@@ -26,15 +26,15 @@
 
 import * as effectFs from '../agent/effects/fs.js';
 import path from 'node:path';
-import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('audio-generation');
 
-const GENERATED_DIR = path.join(os.homedir(), '.dojo', 'uploads', 'generated');
+const GENERATED_DIR = path.join(homeDir(), '.dojo', 'uploads', 'generated');
 function ensureGeneratedDir(): void {
   if (!effectFs.existsSync(GENERATED_DIR)) {
     effectFs.mkdirSync(GENERATED_DIR, { recursive: true });

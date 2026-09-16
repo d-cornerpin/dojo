@@ -5,7 +5,6 @@
 
 import * as effectFs from '../agent/effects/fs.js';
 import { officeLocalPath } from './office-local-path.js';
-import os from 'node:os';
 import path from 'node:path';
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { getValidAccessToken } from './auth.js';
@@ -13,6 +12,7 @@ import { logMicrosoftActivity } from './activity-log.js';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import JSZip from 'jszip';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('office-tools');
 
@@ -1293,7 +1293,7 @@ async function saveOfficeBuffer(
   }
   // Local fallback. Mirror the PDF tools' uploads-dir pattern so every
   // agent-generated file lives in one predictable place.
-  const dir = path.join(os.homedir(), '.dojo', 'uploads', agentId);
+  const dir = path.join(homeDir(), '.dojo', 'uploads', agentId);
   if (!effectFs.existsSync(dir)) effectFs.mkdirSync(dir, { recursive: true });
   const safe = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
   const outPath = path.join(dir, safe);

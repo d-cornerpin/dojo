@@ -5,11 +5,11 @@
 
 import { exec } from 'node:child_process';
 import path from 'node:path';
-import os from 'node:os';
 import { createRequire } from 'node:module';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { bumpToolConfigGeneration } from '../agent/tool-config-generation.js';
+import { homeDir } from '../home.js';
 
 // Resolver anchored to THIS module so Node's standard
 // node_modules-walk-upward finds packages regardless of process.cwd().
@@ -98,7 +98,7 @@ export function installOfficePackages(): void {
   logger.info('Installing Office packages: docx, xlsx, pptxgenjs');
 
   const cwd = process.cwd();
-  const npmGlobalBin = path.join(os.homedir(), '.npm-global', 'bin');
+  const npmGlobalBin = path.join(homeDir(), '.npm-global', 'bin');
   const extendedPath = [npmGlobalBin, '/opt/homebrew/bin', '/usr/local/bin', process.env.PATH ?? ''].join(':');
 
   exec(

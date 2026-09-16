@@ -30,7 +30,6 @@
 // silently refused).
 // ════════════════════════════════════════════════════════════════════════════
 
-import os from 'node:os';
 import path from 'node:path';
 import { canonicalizeAgentPath, resolveRealPathHardened } from '../path-resolve.js';
 import { effectsFor } from '../tools/registry.js';
@@ -44,6 +43,7 @@ import { techniqueDirectory } from '../../techniques/technique-dir.js';
 import { canvasFilePath } from '../canvas-state.js';
 import { localPathFromFileId } from '../../microsoft/office-local-path.js';
 import { attachCallCapability, mintCallCapability, type ResourceGrant } from './capability.js';
+import { homeDir } from '../../home.js';
 
 /**
  * PROGRAMS A TOOL LEGITIMATELY SPAWNS WHOSE ARGUMENTS IT BUILDS ITSELF —
@@ -137,7 +137,7 @@ export function expandScopeTemplate(
     if (cursor.includes('/') || cursor.includes('\\') || cursor === '..') return null;
     out = out.replace(hole, cursor);
   }
-  if (out.startsWith('~')) out = path.join(os.homedir(), out.slice(1));
+  if (out.startsWith('~')) out = path.join(homeDir(), out.slice(1));
   if (!path.isAbsolute(out)) return null;
   return canonicalizeAgentPath(out);
 }

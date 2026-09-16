@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import type { LogEntry } from '@dojo/shared';
+import { homeDir } from './home.js';
+import { rotateLogFile } from './log-rotation.js';
 
-const LOG_DIR = path.join(os.homedir(), '.dojo', 'logs');
+const LOG_DIR = path.join(homeDir(), '.dojo', 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'dojo.log');
-const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
 const FLUSH_INTERVAL_MS = 500; // Flush buffer every 500ms
 const MAX_BUFFER_SIZE = 50; // Flush if buffer exceeds this many entries
 
@@ -52,16 +52,9 @@ function rotateIfNeeded(): void {
   lastRotateCheck = now;
 
   try {
-    const stat = fs.statSync(LOG_FILE);
-    if (stat.size > MAX_LOG_SIZE) {
-      const rotatedPath = LOG_FILE + '.1';
-      if (fs.existsSync(rotatedPath)) {
-        fs.unlinkSync(rotatedPath);
-      }
-      fs.renameSync(LOG_FILE, rotatedPath);
-    }
+    rotateLogFile(LOG_FILE, now);
   } catch {
-    // File doesn't exist yet, nothing to rotate
+    // Rotation is never worth losing a log line over.
   }
 }
 

@@ -17,8 +17,9 @@
 // cannot chmod (a mounted share, an alien volume) must not take the boot down
 // with it, so the failure path is asserted here too.
 //
-// TEST HYGIENE: `os.homedir()` is redirected to a throwaway temp directory.
-// These tests never read, write or chmod the real `~/.dojo`. Every value
+// TEST HYGIENE: DOJO_HOME is pointed at a throwaway temp directory, so
+// `homeDir()` — the one place this server resolves home (src/home.ts) — answers
+// with it. These tests never read, write or chmod the real `~/.dojo`. Every value
 // written here is a literal this file made up; no real secret appears.
 
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
@@ -30,10 +31,7 @@ const fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'secrets-mode-home-'))
 fs.mkdirSync(path.join(fixtureHome, '.dojo'), { recursive: true });
 const SECRETS = path.join(fixtureHome, '.dojo', 'secrets.yaml');
 
-vi.mock('node:os', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:os')>();
-  return { ...actual, default: { ...actual, homedir: () => fixtureHome }, homedir: () => fixtureHome };
-});
+process.env.DOJO_HOME = fixtureHome;
 
 vi.mock('../../logger.js', () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),

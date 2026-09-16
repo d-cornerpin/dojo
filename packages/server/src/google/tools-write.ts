@@ -15,6 +15,7 @@ import {
   ATTACHMENTS_ROOT_FOLDER,
 } from '../services/email-attachments.js';
 import type { AccountSlot } from './auth.js';
+import { homeDir } from '../home.js';
 
 const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const CALENDAR_BASE = 'https://www.googleapis.com/calendar/v3';
@@ -1170,11 +1171,10 @@ export async function executeGoogleWriteTool(
       if (!att?.data) return 'Error: attachment has no downloadable data (may be inline or removed).';
 
       const fs = await import('node:fs');
-      const os = await import('node:os');
       const nodePath = await import('node:path');
 
       const filenameArg = (args.filename as string | undefined) ?? `attachment-${attachmentId.slice(0, 12)}.bin`;
-      const defaultDir = nodePath.join(os.homedir(), '.dojo', 'uploads', agentId);
+      const defaultDir = nodePath.join(homeDir(), '.dojo', 'uploads', agentId);
       fs.mkdirSync(defaultDir, { recursive: true });
       const outPath = (args.save_path as string | undefined) ?? nodePath.join(defaultDir, filenameArg);
 

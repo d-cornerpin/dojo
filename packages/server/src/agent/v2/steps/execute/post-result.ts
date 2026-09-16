@@ -12,7 +12,6 @@
 // came with them: its only use was here.
 // ════════════════════════════════════════
 
-import os from 'node:os';
 import path from 'node:path';
 import { classifyTool, parseTechniqueFreshRead } from '@dojo/shared';
 import type { ToolCall } from '@dojo/shared';
@@ -31,6 +30,7 @@ import { bumpEffectfulCalls } from '../../turn-record.js';
 import { createLogger } from '../../../../logger.js';
 import { FIRE_AND_FORGET_GEN_TOOLS, SEND_TO_PEOPLE_SET } from './tool-sets.js';
 import type { ExecuteContext, PendingToolResult } from './index.js';
+import { homeDir } from '../../../../home.js';
 
 const logger = createLogger('v2-loop');
 
@@ -43,7 +43,7 @@ const logger = createLogger('v2-loop');
 // budget produces nonsense like "open a tracker project before you can
 // look at your own technique's files." Other agents, other paths, and
 // trainer reads OUTSIDE the techniques tree still count normally.
-const TECHNIQUES_ROOT = path.join(os.homedir(), '.dojo', 'techniques');
+const TECHNIQUES_ROOT = path.join(homeDir(), '.dojo', 'techniques');
 function isTrainerOwnTechniquesRead(
   agentId: string,
   toolName: string,
@@ -56,7 +56,7 @@ function isTrainerOwnTechniquesRead(
   // Resolve ~ before the prefix check, the trainer often passes
   // ~/.dojo/techniques/... and a literal startsWith on the resolved
   // root would miss it.
-  const resolved = rawPath.startsWith('~') ? path.join(os.homedir(), rawPath.slice(1)) : rawPath;
+  const resolved = rawPath.startsWith('~') ? path.join(homeDir(), rawPath.slice(1)) : rawPath;
   return resolved.startsWith(TECHNIQUES_ROOT + path.sep) || resolved === TECHNIQUES_ROOT;
 }
 

@@ -18,14 +18,15 @@ import { runPostMigrationChecks, setLastManifest, type PostMigrationCheck } from
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import type { ExportManifest } from './manifest.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('migration-import');
 
-const DOJO_DIR = path.join(os.homedir(), '.dojo');
-const GWS_DIR = path.join(os.homedir(), '.config', 'gws');
+const DOJO_DIR = path.join(homeDir(), '.dojo');
+const GWS_DIR = path.join(homeDir(), '.config', 'gws');
 // Cloudflare tunnel setup restores to ~/.cloudflared (mirror of the export's
 // CLOUDFLARED_DIR). Outside ~/.dojo, so routed separately like gws.
-const CLOUDFLARED_DIR = path.join(os.homedir(), '.cloudflared');
+const CLOUDFLARED_DIR = path.join(homeDir(), '.cloudflared');
 
 function broadcastProgress(stage: string, progress: number, message: string): void {
   broadcast({
@@ -318,7 +319,7 @@ export async function performImport(
     // Step 14: Path migration
     broadcastProgress('paths', 85, 'Updating paths for this machine...');
     const oldHome = manifest.exported_from.home_directory;
-    const newHome = os.homedir();
+    const newHome = homeDir();
     migratePaths(oldHome, newHome, DOJO_DIR);
 
     // Clear all caches so they reload from the restored files

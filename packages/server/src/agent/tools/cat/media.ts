@@ -80,7 +80,6 @@ import { insertMessageIfAbsent } from '../../../memory/message-store.js';
 import { getModelCapabilities } from '../../../services/capabilities.js';
 import { auditLog, toolsLogger as logger } from '../util.js';
 import * as effectFs from '../../effects/fs.js';
-import os from 'node:os';
 import pathModule from 'node:path';
 import { createGenerationJob as createImgJob, setRunning as setImgRunning, setSucceeded as setImgSucceeded, setFailed as setImgFailed, createGenerationJob, enqueueAudioOrMusicJob } from '../../../services/generation-jobs.js';
 import { enqueueVideoJob } from '../../../services/video-job-poller.js';
@@ -100,6 +99,7 @@ import { recordCost } from '../../../costs/tracker.js';
 import { resolveAttachmentPath, fetchAudioUrl, transcribeAudio } from '../../../services/transcription.js';
 import { submitVideoJob } from '../../../services/video-generation.js';
 import type { ToolHandler, ToolHandlerMap } from '../handler.js';
+import { homeDir } from '../../../home.js';
 
 const handlers = {
   async "image_create"({ agentId, args }) {
@@ -294,7 +294,7 @@ const handlers = {
         // caller's chat. The runtime fires once more, the agent's
         // one-line reply ("Here you go!") lands with the image
         // thumbnail, and we're done.
-        const recipientDir = path.join(os.homedir(), '.dojo', 'uploads', agentId);
+        const recipientDir = path.join(homeDir(), '.dojo', 'uploads', agentId);
         if (!effectFs.existsSync(recipientDir)) effectFs.mkdirSync(recipientDir, { recursive: true });
         // Build a human-friendly on-disk filename. Prefer the agent-
         // provided slug (e.g. "coffee-shop-sunset") and append a short
@@ -755,7 +755,7 @@ const handlers = {
       // Sandbox the path to the dojo uploads dir to prevent the
       // agent from accidentally (or maliciously) reading arbitrary
       // files off disk.
-      const uploadsRoot = pathModule.join(os.homedir(), '.dojo', 'uploads');
+      const uploadsRoot = pathModule.join(homeDir(), '.dojo', 'uploads');
       const resolvedPath = pathModule.resolve(pathArg);
       if (!resolvedPath.startsWith(uploadsRoot + pathModule.sep)) {
         content = `Error: path must be inside ~/.dojo/uploads/ (got ${resolvedPath}).`;

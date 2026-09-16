@@ -28,12 +28,12 @@
 import * as effectFs from '../agent/effects/fs.js';
 import { turnContext } from '../agent/turn-context.js';
 import path from 'node:path';
-import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('generation-jobs');
 
@@ -172,7 +172,7 @@ export function setFailed(jobId: string, error: string): void {
  * assistant message (no LLM turn), mirroring the video poller's deliverVideo.
  */
 function deliverAsset(row: GenerationJobRow, assetPath: string, sizeBytes: number, mime: string): void {
-  const recipientDir = path.join(os.homedir(), '.dojo', 'uploads', row.agent_id);
+  const recipientDir = path.join(homeDir(), '.dojo', 'uploads', row.agent_id);
   if (!effectFs.existsSync(recipientDir)) effectFs.mkdirSync(recipientDir, { recursive: true });
   const ext = path.extname(assetPath) || '.wav';
   const titleSlug = row.title ? slugify(row.title) : '';

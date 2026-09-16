@@ -8,6 +8,7 @@ import { getDb } from '../db/connection.js';
 import { getCurrentVersion } from '../gateway/routes/update.js';
 import { isImessageConfigured } from '../services/presence.js';
 import { createLogger } from '../logger.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('migration-manifest');
 
@@ -159,7 +160,7 @@ export function generateManifest(dbSizeBytes: number, prompts: string[], techniq
     exported_from: {
       hostname: os.hostname(),
       username: os.userInfo().username,
-      home_directory: os.homedir(),
+      home_directory: homeDir(),
       os_version: `macOS ${getOsVersion()}`,
       node_version: process.version,
     },

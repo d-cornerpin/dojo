@@ -10,16 +10,16 @@
 // at once (../overhaul-research/22-remediation-reconciliation.md §3).
 //
 // TEST HYGIENE (binding, task brief §2): these tests NEVER touch the owner's
-// real ~/.ssh or ~/.dojo. `os.homedir()` is redirected to a throwaway temp
+// real ~/.ssh or ~/.dojo. `homeDir()` is redirected to a throwaway temp
 // directory and the "secrets" inside it are dummy strings this file wrote.
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterAll, beforeEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 // ── Fixture world ──
-// Built BEFORE the module mocks so the homedir spy can point at it, and before
+// Built BEFORE the module mocks so DOJO_HOME can point at it, and before
 // any import of the code under test (vitest hoists vi.mock, not these consts).
 const fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'share-guards-home-'));
 const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'share-guards-scratch-'));
@@ -83,14 +83,10 @@ import { checkPermission } from '../permissions.js';
 
 const AGENT = 'agent-under-test';
 
-let homedirSpy: ReturnType<typeof vi.spyOn>;
-
-beforeAll(() => {
-  homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(fixtureHome);
-});
+// The guards resolve home through `homeDir()`, which reads DOJO_HOME.
+process.env.DOJO_HOME = fixtureHome;
 
 afterAll(() => {
-  homedirSpy.mockRestore();
   fs.rmSync(fixtureHome, { recursive: true, force: true });
   fs.rmSync(scratchDir, { recursive: true, force: true });
 });

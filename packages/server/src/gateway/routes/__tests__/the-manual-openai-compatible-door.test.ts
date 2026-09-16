@@ -31,11 +31,18 @@ import realOs from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 
-vi.mock('node:os', async (orig) => {
-  const real = await orig<typeof import('node:os')>();
+// The platform resolves `~/.dojo` in exactly one place — `src/home.ts` — so that is
+// what a test redirects. Computed inside the factory, which runs before this module's
+// own bindings initialise.
+vi.mock('../../../home.js', async () => {
   const p = await import('node:path');
-  const homedir = (): string => p.join(real.tmpdir(), 'dojo-t63-manual-provider');
-  return { ...real, homedir, default: { ...real, homedir } };
+  const o = await import('node:os');
+  const dir = p.join(o.tmpdir(), 'dojo-t63-manual-provider');
+  return {
+    homeDir: (): string => dir,
+    dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
+    isTestRun: (): boolean => true,
+  };
 });
 
 const mockDb: { current: Database.Database | null } = { current: null };

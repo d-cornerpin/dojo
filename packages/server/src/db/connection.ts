@@ -1,11 +1,11 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { createLogger } from '../logger.js';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('db');
-const DB_DIR = path.join(os.homedir(), '.dojo', 'data');
+const DB_DIR = path.join(homeDir(), '.dojo', 'data');
 const DB_PATH = path.join(DB_DIR, 'dojo.db');
 
 let db: Database.Database | null = null;

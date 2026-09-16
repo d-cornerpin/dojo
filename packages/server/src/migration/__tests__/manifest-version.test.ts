@@ -73,6 +73,12 @@ describe('export manifest platform_version (rider ii)', () => {
   it('the manifest\'s version comes from the tree\'s ONE version authority', async () => {
     const src = fs.readFileSync(path.join(REPO_ROOT, 'packages/server/src/migration/manifest.ts'), 'utf-8');
     expect(src).toMatch(/getCurrentVersion/);
+    // `generateManifest` reads the `agents` table. Until the suite got its own home
+    // (T74b) this case was silently reading the DEVELOPER'S live database, where that
+    // table happens to exist — so it passed by accident on one machine and would have
+    // failed on a fresh checkout. The schema it needs is now made, not borrowed.
+    const { runMigrations } = await import('../../db/migrations.js');
+    runMigrations();
     const { generateManifest } = await import('../manifest.js');
     const { getCurrentVersion } = await import('../../gateway/routes/update.js');
     const m = generateManifest(1234, [], [], 0);

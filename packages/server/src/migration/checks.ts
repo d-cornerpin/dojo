@@ -4,7 +4,6 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
@@ -16,6 +15,7 @@ import { classifyManualSteps } from './step-classify.js';
 import { getValidAccessTokenForAccount as getValidGoogleToken } from '../google/auth.js';
 import { getValidAccessTokenForAccount as getValidMsToken } from '../microsoft/auth.js';
 import type { PostMigrationCheck } from '@dojo/shared';
+import { homeDir } from '../home.js';
 
 const logger = createLogger('migration-checks');
 
@@ -68,8 +68,8 @@ function broadcastChecks(): void {
 // ── Technique dependency check ──
 
 function expandHome(p: string): string {
-  if (p === '~') return os.homedir();
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  if (p === '~') return homeDir();
+  if (p.startsWith('~/')) return path.join(homeDir(), p.slice(2));
   return p;
 }
 
@@ -335,7 +335,7 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
     // we're done; if it throws (EPERM under macOS TCC), it's still needed. This
     // is why Re-check works now: it re-runs this real probe instead of a
     // hardcoded "needs you".
-    const chatDb = path.join(os.homedir(), 'Library', 'Messages', 'chat.db');
+    const chatDb = path.join(homeDir(), 'Library', 'Messages', 'chat.db');
     let fdaGranted = false;
     try { fs.closeSync(fs.openSync(chatDb, 'r')); fdaGranted = true; } catch { /* TCC-denied or missing */ }
     currentChecks.push({

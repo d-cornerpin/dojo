@@ -2,15 +2,15 @@ import { Hono } from 'hono';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { createLogger } from '../../logger.js';
 import { inlineHtmlAssets } from '../../services/canvas-html.js';
 import { renderOfficeToHtml, isOfficeRenderable } from '../../services/office-render.js';
 import { routeFailure } from './route-failure.js';
+import { homeDir } from '../../home.js';
 
 const logger = createLogger('upload');
 
-const UPLOAD_DIR = path.join(os.homedir(), '.dojo', 'uploads');
+const UPLOAD_DIR = path.join(homeDir(), '.dojo', 'uploads');
 // 1 GB per file / 2 GB per message. Single-user local install — caps are
 // to catch obviously-wrong inputs, not to defend against abuse. Memory
 // note: Hono's formData() parser buffers the whole body in memory before

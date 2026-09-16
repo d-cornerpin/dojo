@@ -3,7 +3,6 @@
 // ════════════════════════════════════════
 
 import { Hono } from 'hono';
-import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { createLogger } from '../../logger.js';
@@ -54,6 +53,7 @@ export function recordProviderError(providerId: string): void {
 }
 import { getProviderCredential } from '../../config/loader.js';
 import { routeFailure } from './route-failure.js';
+import { homeDir } from '../../home.js';
 
 const logger = createLogger('services-routes');
 const servicesRouter = new Hono();
@@ -67,7 +67,7 @@ servicesRouter.get('/watchdog', (c) => {
   // false "watchdog down"). We just read that file here; missing/unreadable
   // means the watchdog has never reported in, so running:false.
   try {
-    const statePath = path.join(os.homedir(), '.dojo', 'watchdog-state.json');
+    const statePath = path.join(homeDir(), '.dojo', 'watchdog-state.json');
     let lastHeartbeat: string | null = null;
     // UX-REPAIR T14: the watchdog stores `{ message, at }` and this route used to keep only
     // `.message`, then serve it under the key `lastAlert` — which the Health card feeds to a

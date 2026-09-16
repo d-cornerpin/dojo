@@ -22,12 +22,12 @@
 // restricted import: deciding whether a string looks like a path reads no file.
 // ════════════════════════════════════════════════════════════════════════════
 
-import os from 'node:os';
 import path from 'node:path';
+import { homeDir } from '../home.js';
 
 /** `~/x` → the home-relative absolute path; anything else unchanged. */
 function expandLocalHome(p: string): string {
-  return p.startsWith('~') ? path.join(os.homedir(), p.slice(1)) : p;
+  return p.startsWith('~') ? path.join(homeDir(), p.slice(1)) : p;
 }
 
 /**
