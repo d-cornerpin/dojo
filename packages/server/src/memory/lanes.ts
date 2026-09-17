@@ -325,6 +325,19 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
     },
   },
 
+  // T76b: the live integration-status line. Two caps, and the SET it renders is bounded by
+  // the platform itself rather than by a number chosen here — `listIntegrationStatuses()`
+  // returns exactly one entry per member of its own `'google' | 'microsoft' | 'plaud'` union,
+  // so `rows.integrations` is a CEILING ON THAT UNION, not a truncation policy. It is 4, one
+  // above the three that exist, so adding a fourth family does not silently drop a line the
+  // agent was granted; a fifth would, and `the-status-line-beats-the-note.test.ts` fails on
+  // that day with the reason attached. `chars.tool` bounds the one term the block does not
+  // author: a tool name read out of `agent_tool_failures`.
+  'lane.integration-status': {
+    rows: { integrations: 4 },
+    chars: { tool: 60 },
+  },
+
   // §T0-B E `:911`(800) — the ledger's own hard ceiling, and C `:896`/`:897`/`:898`,
   // D `:959`/`:962`, C `:892`(0,2), `:949`(0,5).
   'lane.attempt-ledger': {
@@ -559,6 +572,31 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       + 'A scrolling window cannot be re-keyed into stability — the window IS the content — '
       + 'so position is the only door, which is the disposition the rule already names.',
   },
+  // ── T76b (W85): THE LIVE INTEGRATION-STATUS LINE ──────────────────────────────────────
+  {
+    id: 'lane.integration-status',
+    slot: MessageSlot.IntegrationStatusTail,
+    reserveTokens: 532,
+    measured:
+      'T76b, DERIVED BY CALLING THE RENDERER: `integrationStatusWorstCaseTokens()` '
+      + '(`memory/integration-status-lane.ts`) builds LANE_LIMITS[\'lane.integration-status\'] '
+      + '.rows.integrations maximal rows through the REAL `integrationStatusLine` + '
+      + '`renderIntegrationStatusBlock`, every optional term present at once — the longer '
+      + 'DISCONNECTED state clause, a last-successful-use instant, an unresolved-failure term '
+      + 'carrying a name over chars.tool (so the `...` suffix is counted) and a six-digit hit '
+      + 'count — plus one extra no-ledger row so the FOOTER is inside the measurement. The '
+      + 'widest instants come from CALLING `recordedInstant` rather than being counted beside '
+      + 'it, the `recall-lane.ts` / `work-board-lane.ts` discipline. '
+      + 'WHY IT IS A RESERVE AT ALL: it is a post-budget TAIL lane by charter, not by rescue. '
+      + 'Its content is the live connection state and the activity ledgers, both of which a '
+      + 'tool call and a background reconnect can move, so roadmap non-negotiable #10 forbids '
+      + 'it the cached region — and its whole job is to be READ on the turn it is true, which '
+      + 'a lane the fit can drop cannot promise. '
+      + 'WHAT IT COSTS AND WHAT IT BUYS: these tokens leave the content budget on every '
+      + 'assembly. What they replace is the W84 failure mode — a false memory about a broken '
+      + 'connection, recalled through `msg.relevant-memory` directly behind this block, with '
+      + 'nothing in context to outrank it. That cost a day and a hand-deleted vault row.',
+  },
   {
     id: 'lane.deliveries',
     slot: MessageSlot.Deliveries,
@@ -723,6 +761,10 @@ export const POST_BUDGET_ENTRY_LANE: Record<string, string> = {
   'msg.active-tasks': 'lane.active-tasks',
   'msg.scratchpad': 'lane.scratchpad',
   'msg.events': 'lane.events',
+  // T76b: the live integration-status line declares its own reserve, so its entry is
+  // attributed to its own lane rather than to the tail it sits inside — the same split
+  // `msg.deliveries`, `msg.directive` and the W81 four make.
+  'msg.integration-status': 'lane.integration-status',
   // The three engine-side injections that still push directly (`pre-call-injections.ts`).
   'engine.open-work': 'lane.loop-tail',
   'engine.recent-outbound': 'lane.loop-tail',

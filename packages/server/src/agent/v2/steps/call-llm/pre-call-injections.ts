@@ -32,6 +32,7 @@
 //   engine.open-work           obligations; moves when the BOARD does
 //   engine.open-commitments    HL5 snapshot; moves when the BOARD does            ← T69b
 //   msg.peer-status            one line; moves when a peer flips idle/working
+//   msg.integration-status     live connection truth; moves on a SUCCESSFUL call  ← T76b
 //   engine.recently-answered   moves on EVERY answered turn                       ← T69b
 //   msg.relevant-memory        retrieved against the LIVE ASK: moves every turn, BY DESIGN
 //   msg.directive              IS the newest ask: moves every turn, BY DESIGN
@@ -257,6 +258,24 @@ export async function injectAndRecord(
   // contract (this phase's Global Constraints): after msg.turn-context, before
   // msg.current-time, behind the cache boundary by construction.
   injectRegistryMessage('msg.peer-status', messages, mctx);
+
+  // ── T76b (W85): THE LIVE INTEGRATION-STATUS LINE, at 1877 ─────────────────────────────
+  // W84: the Plaud read tools reported an empty account for a day, and the agent wrote the
+  // conclusion into its vault ("Plaud flaps"). That note returns through
+  // `msg.relevant-memory`, three messages below this one, and until now nothing in the tail
+  // outranked it — so a fixed tool could still be refused by a remembered breakage.
+  // The assembler computes the block (`ctx.integrationStatusLane`); it enters the array HERE
+  // for a position argument the tail's own rule makes for it. Every block AHEAD of this one
+  // is stabler: peer-status flips rarely, the snapshot moves with the board, the send-keyed
+  // blocks move when the agent sends. This one moves whenever the agent SUCCESSFULLY USES
+  // Google or Microsoft — a real content change, not a clock read, and on a working agent it
+  // is most turns. Most-stable-first therefore puts it at the BACK of the stable group, one
+  // place ahead of `engine.recently-answered` and the rest of the registered deliberate
+  // churn, so the bytes it re-bills when it moves are only the ones already being re-billed.
+  // Injected for EVERY counterparty, exactly as the snapshot above is: whether a connection
+  // works does not stop being true because the turn is an A2A or an engine one.
+  mctx.integrationStatusLane = ctx.integrationStatusLane ?? null;
+  injectRegistryMessage('msg.integration-status', messages, mctx);
 
   // ── RECENTLY ANSWERED (ticket-stamps plan A4, owner-approved) ─────────────────────────
   // The last few asks of THIS conversation that already have answers, read from the per-ask

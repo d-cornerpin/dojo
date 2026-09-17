@@ -78,6 +78,15 @@ const EXPECTED_MESSAGE = [
   // Live peer statuses in the volatile lane (2026-07-16 cache finding): the
   // cached group roster carries names only; idle/working churn lands here.
   'msg.peer-status',
+  // T76b (W85): THE LIVE INTEGRATION-STATUS LINE, slot 1877 — the platform's own record of
+  // each GRANTED integration's state, last successful use and unresolved failure
+  // (`memory/integration-status-lane.ts`). W84's Plaud regex reported an empty account for a
+  // day and the agent wrote "Plaud flaps" into its vault; a false memory about a connection
+  // returns through `msg.relevant-memory` directly below this entry, and until now nothing in
+  // the tail outranked it. It sits in the LAST stable seat — behind peer-status, ahead of
+  // `engine.recently-answered` — because a successful Google/Microsoft call legitimately moves
+  // its last-use term, so it belongs where that movement costs its own bytes and no others.
+  'msg.integration-status',
   // SWEEP CORE-2 item 4: THE RECALL LANE — per-message semantic recall and the conclusions it
   // carries from the migration-113 answer stamps (`memory/recall-lane.ts`). It was a
   // `fitLanes` candidate at MessageSlot.RelevantMemory = 400 with no registry entry at all,

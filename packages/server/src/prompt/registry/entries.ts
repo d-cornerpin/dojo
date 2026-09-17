@@ -596,6 +596,32 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     },
   },
   {
+    id: 'msg.integration-status',
+    target: 'messages',
+    slot: MessageSlot.IntegrationStatusTail,
+    reason:
+      'T76b (W85): THE LIVE INTEGRATION-STATUS LINE. W84\'s Plaud regex matched zero of 23 '
+      + 'rows and the tool answered `No recordings found.` — and during that diagnosis the '
+      + 'agent concluded Plaud "flaps" and WROTE IT INTO ITS VAULT. A false memory about a '
+      + 'connection is self-sealing: it returns through `msg.relevant-memory`, the agent '
+      + 'declines to call the tool, and reports the remembered breakage as current fact. '
+      + 'Deleting the row fixes one row; this entry fixes the mechanism, in HL5\'s shape — '
+      + 'publish the complete current set and say out loud that it supersedes every earlier '
+      + 'mention. LEDGER-BACKED ONLY: state from `listIntegrationStatuses()`, last successful '
+      + 'use from `google_activity` / `microsoft_activity` scoped to this agent, unresolved '
+      + 'failures from `agent_tool_failures` (where a success DELETES the row, which is what '
+      + 'makes "no unresolved failure on record" a printable fact). A family with no outcome '
+      + 'ledger states no last use and the block\'s footer says why, because an unexplained '
+      + 'blank is the W84 defect one surface over. GRANT-SCOPED via `mayUsePlaud` and '
+      + '`widestIntegrationLevel` — the same readers `agent/tools/surface.ts` filters the '
+      + 'toolset with — so the line never advertises what the agent cannot call. The '
+      + 'ASSEMBLER computes it and the loop appends it past `volatileFrom`, at 1877: the last '
+      + 'position among the stable blocks, immediately ahead of the four registered '
+      + 'deliberate-churn injections, so a successful call moving its last-use term re-bills '
+      + 'only blocks that were going to be re-billed anyway.',
+    render: (ctx) => (ctx.integrationStatusLane ? { role: 'user', content: ctx.integrationStatusLane } : null),
+  },
+  {
     id: 'msg.current-time',
     target: 'messages',
     slot: MessageSlot.CurrentTime,

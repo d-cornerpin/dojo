@@ -39,6 +39,7 @@ import { buildRecallLaneMessage } from './recall-lane.js';
 // reason `memory/recall-lane.ts` has one — a post-budget lane must be able to DERIVE its
 // reserve by calling its own renderer, and a render buried inside a lane literal cannot be.
 import { buildWorkBoardLane } from './work-board-lane.js';
+import { buildIntegrationStatusLane } from './integration-status-lane.js';
 import { getLatestBriefing } from './briefing.js';
 import { COMPILE_ORDER_PIECES_MARKER } from '../work/join-drive.js';
 import { pinnedContextSection } from '../vault/retrieval.js';
@@ -501,6 +502,8 @@ export interface AssembledContext {
   activeTasksLane?: string | null;
   scratchpadLane?: string | null;
   eventsLane?: string | null;
+  /** T76b: the live integration-status line (`memory/integration-status-lane.ts`), at 1877. */
+  integrationStatusLane?: string | null;
   /**
    * T68b — WHETHER THE FAN-OUT COMPILE ORDER ARRIVED WHOLE, decided by the only module that
    * can decide it: the one that built the array.
@@ -1774,6 +1777,25 @@ async function assembleMessageContext(
   const eventsLane = renderEventsLane(laneCtx.tail().awarenessEvents);
   if (eventsLane) postBudget.push('lane.events');
 
+  // ── T76b (W85): THE LIVE INTEGRATION-STATUS LINE ──────────────────────────────────────
+  // Read HERE and emitted by the loop past `volatileFrom` at 1877, the same split the four
+  // lanes above use. A false memory about a connection ("Plaud is unreliable / returns
+  // nothing", written into the vault during W84's own diagnosis) is self-sealing, because it
+  // comes back through `msg.relevant-memory` and nothing in context outranks it. This block
+  // is what outranks it, and everything it says is read from a ledger on this turn.
+  // Best-effort in its own try: a failed read costs this block and never the assembly — but
+  // it WARNS, because an agent assembling a turn with no live connection truth in front of it
+  // is the exact state W84 measured a day against.
+  let integrationStatusLane: string | null = null;
+  try {
+    integrationStatusLane = await buildIntegrationStatusLane(agentId);
+  } catch (err) {
+    logger.warn('Integration-status lane failed — live connection truth is NOT in front of the model', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+  if (integrationStatusLane) postBudget.push('lane.integration-status');
+
   // Record the post-budget lanes that actually fired, against their declared reserves.
   // T1 2b checked this derived `empty` too: these lanes are inline pushes onto `postBudget`,
   // not `lane.render()` calls behind a catch, so "did not fire" is the whole truth here.
@@ -1839,6 +1861,7 @@ async function assembleMessageContext(
     activeTasksLane,
     scratchpadLane,
     eventsLane,
+    integrationStatusLane,
     compileOrderIntact,
   };
 }

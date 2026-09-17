@@ -195,6 +195,22 @@ export enum MessageSlot {
   // cached prefix carries NAMES only; the volatile idle/working state renders
   // here so a peer's status flip never invalidates the cached prefix.
   PeerStatus = 1875,
+  // T76b (W85): THE LIVE INTEGRATION-STATUS LINE (`memory/integration-status-lane.ts`).
+  // W84's Plaud regex answered `No recordings found.` over an account holding 23, and the
+  // agent wrote "Plaud flaps" into its vault — a false memory about a connection, which is
+  // self-sealing: the next turn recalls it and declines to call the tool. The platform's live
+  // state has to sit in front of the model and OUTRANK the note (HL5's supersession shape,
+  // one noun over).
+  // 1877 is the LAST position among the stable blocks: after `PeerStatus = 1875` and before
+  // `engine.recently-answered`, the first of the four REGISTERED deliberate-churn injections.
+  // That is where the tail's most-stable-first rule actually puts it, because the honest
+  // answer about this block's volatility is that a successful Google/Microsoft call MOVES it
+  // — a real content change, not a clock read — and on a working agent that is most turns.
+  // Placing it at the back of the stable group means what it costs when it moves is its own
+  // bytes and nothing else: everything behind it was going to be re-billed this turn anyway.
+  // A number BETWEEN two existing ones renumbers nothing, so the byte-equivalence contract
+  // above is untouched — the same move Events=1050, Deliveries=1860 and the W81 four made.
+  IntegrationStatusTail = 1877,
   // T67b §7: THE ACTIVE USER DIRECTIVE, MOVED OUT OF THE CACHED PREFIX.
   // It was `ActiveDirective = 900`, ahead of the fresh tail, while its content IS the newest
   // unanswered user ask — so every substantive user message rewrote the front of the message
@@ -305,6 +321,13 @@ export interface AssemblyContext {
   activeTasksLane?: string | null;
   scratchpadLane?: string | null;
   eventsLane?: string | null;
+  /** T76b: the LIVE INTEGRATION-STATUS line (`memory/integration-status-lane.ts`) — the
+   *  platform's own record of each granted integration's state, last successful use and
+   *  unresolved failure, published so a remembered "that tool is broken" cannot be the only
+   *  claim in the room (W84). Rendered by the assembler, appended by the loop past
+   *  `volatileFrom`, at 1877. Volatile by construction: a successful Google/Microsoft call
+   *  moves its last-use term, and a connection flip moves its state. */
+  integrationStatusLane?: string | null;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -361,6 +384,11 @@ export const VOLATILE_TURN_FIELDS = [
   'activeTasksLane',
   'scratchpadLane',
   'eventsLane',
+  // T76b: the integration-status line reads the LIVE connection state and the activity
+  // ledgers, so a system render that reached it would weld this turn's connection health into
+  // the cached prefix — and a reconnect would then re-bill the whole prompt. Exactly the leak
+  // `sys.integration-reconnect` was moved to the tail to close (C28 FA-PT1).
+  'integrationStatusLane',
 ] as const satisfies readonly (keyof AssemblyContext)[];
 
 export type VolatileTurnField = (typeof VOLATILE_TURN_FIELDS)[number];

@@ -489,6 +489,16 @@ describe('T69b §4 — the tail is ordered most-stable-first and the deliberate 
     expect(at('engine.recent-outbound')).toBeLessThan(at('engine.open-commitments'));
     expect(at('msg.deliveries')).toBeLessThan(at('engine.open-commitments'));
     expect(at('engine.open-work')).toBeLessThan(at('engine.open-commitments'));
+    // T76b: THE LIVE INTEGRATION-STATUS LINE takes the last seat in the stable group.
+    // It is NOT deliberate churn — on a turn that calls no integration it is byte-identical,
+    // which `the-status-line-beats-the-note.test.ts` §4 pins — but it is the most volatile of
+    // the blocks that hold still, because a SUCCESSFUL Google/Microsoft call legitimately
+    // moves its last-use term. Most-stable-first therefore puts it behind everything above
+    // and in front of the four registered exemptions, so what it costs when it does move is
+    // its own bytes and nothing else.
+    expect(at('msg.peer-status')).toBeLessThan(at('msg.integration-status'));
+    expect(at('engine.open-commitments')).toBeLessThan(at('msg.integration-status'));
+    expect(at('msg.integration-status')).toBeLessThan(at('engine.recently-answered'));
   });
 
   it('every injected tail entry is DECLARED in the lane table — no undeclared block rides here', () => {
@@ -500,6 +510,8 @@ describe('T69b §4 — the tail is ordered most-stable-first and the deliberate 
   it('the slot numbers say the same thing the imperative order does', () => {
     expect(MessageSlot.TurnContext).toBeLessThan(MessageSlot.Deliveries);
     expect(MessageSlot.Deliveries).toBeLessThan(MessageSlot.PeerStatus);
+    expect(MessageSlot.PeerStatus).toBeLessThan(MessageSlot.IntegrationStatusTail);   // T76b
+    expect(MessageSlot.IntegrationStatusTail).toBeLessThan(MessageSlot.RecalledMemory);
     expect(MessageSlot.PeerStatus).toBeLessThan(MessageSlot.RecalledMemory);
     expect(MessageSlot.RecalledMemory).toBeLessThan(MessageSlot.ActiveDirectiveTail);
     expect(MessageSlot.ActiveDirectiveTail).toBeLessThan(MessageSlot.CurrentTime);
