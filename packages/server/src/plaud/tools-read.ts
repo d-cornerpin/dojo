@@ -148,14 +148,14 @@ export async function executePlaudTool(
       const pageSize = Math.min((args.page_size as number | undefined) ?? 20, 100);
       const result = await runPlaudCommand(['files', '--page', String(page), '--page-size', String(pageSize)], { agentId });
       if (!result.ok) return result.error ?? 'Plaud files command failed.';
-      return formatRecordingList(parsePlaudListOutput(result.stdout));
+      return formatRecordingList(parsePlaudListOutput(result.stdout), result.stdout);
     }
 
     case 'plaud_recent_recordings': {
       const days = (args.days as number | undefined) ?? 7;
       const result = await runPlaudCommand(['recent', '--days', String(days)], { agentId });
       if (!result.ok) return result.error ?? 'Plaud recent command failed.';
-      return formatRecordingList(parsePlaudListOutput(result.stdout));
+      return formatRecordingList(parsePlaudListOutput(result.stdout), result.stdout);
     }
 
     case 'plaud_search_recordings': {
@@ -167,7 +167,7 @@ export async function executePlaudTool(
       const result = await runPlaudCommand(cliArgs, { agentId });
       if (!result.ok) return result.error ?? 'Plaud search command failed.';
       const parsed = parsePlaudListOutput(result.stdout);
-      return formatRecordingList(parsed, `Search results for "${query}":`);
+      return formatRecordingList(parsed, result.stdout, `Search results for "${query}":`);
     }
 
     case 'plaud_get_recording': {
@@ -233,10 +233,20 @@ export async function executePlaudTool(
 // Plaud CLI's `files`, `recent`, and `search` commands output a fixed-
 // width text table where each row is:
 //
-//   [optional "N. " index]<32-char hex id>  <title>  <YYYY-MM-DD>  <duration>
+//   [optional "N. " index]<id>  <title>  <YYYY-MM-DD>  <duration>
 //
 // Columns are separated by 2+ spaces. Header/footer lines like
-// "Matched 50 of 100 scanned" or "Searching for X..." are skipped.
+// "Matched 50 of 100 scanned", "Searching for X...", the `files` table's
+// "ID NAME DATE DURATION" row and its box-drawing rule are all skipped
+// because none of them open with an id.
+//
+// ── UX-REPAIR T75b: THE ID CARRIES A TYPE PREFIX ──
+// Every id the CLI prints is `of_` + 32 hex — `of_38cd455de5582b16fbded77bda37572a`.
+// This pattern used to demand bare hex from the first character, so on
+// 2026-09-16 not one row of a 23-row table matched, all three list tools
+// returned an empty array, and the agent told the owner his account was empty
+// while the same command in a shell printed the meetings. The prefix is
+// optional here so a bare-hex id keeps parsing too.
 
 interface ParsedRecording {
   id: string;
@@ -249,7 +259,7 @@ function parsePlaudListOutput(text: string): ParsedRecording[] {
   const results: ParsedRecording[] = [];
   // Leading whitespace is the CLI's row indent (2 spaces); the optional
   // "<N>. " is for numbered output some commands use.
-  const lineRegex = /^\s*(?:\d+\.\s+)?([a-f0-9]{16,64})\s{2,}(.+?)\s{2,}(\d{4}-\d{2}-\d{2}|\d{2}-\d{2}-\d{4})\s{2,}(\S.*?)\s*$/;
+  const lineRegex = /^\s*(?:\d+\.\s+)?((?:[a-zA-Z][a-zA-Z0-9]{0,7}_)?[a-f0-9]{16,64})\s{2,}(.+?)\s{2,}(\d{4}-\d{2}-\d{2}|\d{2}-\d{2}-\d{4})\s{2,}(\S.*?)\s*$/;
   for (const raw of text.split('\n')) {
     const m = raw.match(lineRegex);
     if (!m) continue;
@@ -261,9 +271,20 @@ function parsePlaudListOutput(text: string): ParsedRecording[] {
 
 // ── Output formatter ──
 
-function formatRecordingList(records: ParsedRecording[], header?: string): string {
+// ── UX-REPAIR T75b: AN EMPTY PARSE IS NOT AN EMPTY ACCOUNT ──
+// `raw` is the CLI's own stdout, and when nothing parsed out of it the agent
+// gets THOSE WORDS rather than a sentence we made up. A genuinely empty result
+// already reads well — the CLI prints "No recordings matched X in 500 scanned."
+// — and a table shape this parser has not learned stays visible instead of
+// being flattened into a confident, wrong "No recordings found." That flattening
+// is what made the `of_` prefix cost a day: the tool did not fail, it lied, and
+// nothing downstream could tell an empty account from an unread one.
+function formatRecordingList(records: ParsedRecording[], raw: string, header?: string): string {
   if (records.length === 0) {
-    return header ? `${header}\n(no recordings)` : 'No recordings found.';
+    const cliSaid = raw.trim();
+    if (cliSaid.length === 0) return header ? `${header}\n(no recordings)` : 'No recordings found.';
+    const body = cliSaid.length > 2000 ? `${cliSaid.slice(0, 2000)}\n… (truncated)` : cliSaid;
+    return header ? `${header}\n${body}` : body;
   }
   const lines: string[] = [];
   if (header) lines.push(header);
