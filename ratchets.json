@@ -4472,8 +4472,50 @@
       "path": "packages/server/src/prompt/assembler.ts",
       "from": 1891,
       "to": 1892,
-      "by": "W83 (v3.1.23 release merge) — conflict resolution, not a new raise",
-      "why": "T74b pinned this file at 1827 (1826 + its one `import { homeDir }` line) on a branch cut from main `b382580`; UX-ACCESS A4 independently raised the same pin to 1891 on the other lineage. Cherry-picking T74b’s gate commit onto the merged tree conflicted on exactly this key. 1892 is the MEASURED line count of the merged file (`wc -l` = 1892), which is A4’s 1891 plus T74b’s single import line — the union of two disjoint additions, not a third change. NO NEW CODE WAS ADMITTED BY THIS PIN. The other two keys in the same conflict hunk resolved without arithmetic: `migration/import.ts` takes T74b’s 408 (A4 never touched it) and `prompt/registry/entries.ts` keeps A4’s 612 (T74b never touched it; it was only conflict context)."
+      "by": "W83 (v3.1.23 release merge) \u2014 conflict resolution, not a new raise",
+      "why": "T74b pinned this file at 1827 (1826 + its one `import { homeDir }` line) on a branch cut from main `b382580`; UX-ACCESS A4 independently raised the same pin to 1891 on the other lineage. Cherry-picking T74b\u2019s gate commit onto the merged tree conflicted on exactly this key. 1892 is the MEASURED line count of the merged file (`wc -l` = 1892), which is A4\u2019s 1891 plus T74b\u2019s single import line \u2014 the union of two disjoint additions, not a third change. NO NEW CODE WAS ADMITTED BY THIS PIN. The other two keys in the same conflict hunk resolved without arithmetic: `migration/import.ts` takes T74b\u2019s 408 (A4 never touched it) and `prompt/registry/entries.ts` keeps A4\u2019s 612 (T74b never touched it; it was only conflict context)."
+    },
+    {
+      "path": "packages/server/src/memory/lanes.ts",
+      "from": 1152,
+      "to": 1194,
+      "by": "T76b (W85) \u2014 the live integration-status line: the platform's connection truth outranks a remembered one",
+      "why": "The lane's DECLARATION, which this tree requires to live beside the other lanes rather than in the module that renders it: a `LANE_LIMITS` entry (rows.integrations, chars.tool), a `POST_BUDGET_LANES` reserve of 532 tokens, and its `POST_BUDGET_ENTRY_LANE` row. 33 of the 42 lines are the `measured` string and the two comment blocks \u2014 `PostBudgetLane.measured` is a contract that says a reserve with no derivation is a rumour, and the row-cap comment records why 4 is a CEILING ON THE FAMILY UNION rather than a truncation policy (a fifth family would drop a granted line, and the gate fails on that day). No smaller version is also true: the reserve is a number the fit subtracts off the top of every assembly, and an unexplained one is what this field exists to refuse."
+    },
+    {
+      "path": "packages/server/src/prompt/registry/types.ts",
+      "from": 463,
+      "to": 491,
+      "by": "T76b (W85) \u2014 the live integration-status line: the platform's connection truth outranks a remembered one",
+      "why": "`MessageSlot.IntegrationStatusTail = 1877`, the `integrationStatusLane` context field, and its row in `VOLATILE_TURN_FIELDS`. 24 of the 28 lines are the POSITION ARGUMENT, and this file is where it has to be made: the slot enum is a byte-equivalence contract and every other number in it carries the reason it sits where it does. The argument here is the uncomfortable one \u2014 this block is the most volatile of the blocks that hold still, because a successful Google/Microsoft call legitimately moves its last-use term \u2014 and recording it is what stops a later reader 'tidying' it to the front of the tail, where it would re-bill everything behind it."
+    },
+    {
+      "path": "packages/server/src/prompt/registry/entries.ts",
+      "from": 612,
+      "to": 638,
+      "by": "T76b (W85) \u2014 the live integration-status line: the platform's connection truth outranks a remembered one",
+      "why": "One `MessageInjection` for `msg.integration-status`. `BaseInjection.reason` is MANDATORY and is the file's whole convention; 24 of the 26 lines are that string, carrying the W84 incident, the ledgers each term reads, the grant scoping and the seat. The render body is one line, identical in shape to the four W81 entries above it."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2664,
+      "to": 2687,
+      "by": "T76b (W85) \u2014 the live integration-status line: the platform's connection truth outranks a remembered one",
+      "why": "The read: one `buildIntegrationStatusLane(agentId)` in its own try, the `postBudget.push`, the returned field and its doc line. 11 of the 23 lines are the WARN-level failure path and its comment \u2014 warn rather than debug, for the reason `engine.open-work` already argues one screen up: a swallowed read here means the agent assembles a turn with no live connection truth in front of it, which is the exact state W84 measured a day against."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts",
+      "from": 366,
+      "to": 385,
+      "by": "T76b (W85) \u2014 the live integration-status line: the platform's connection truth outranks a remembered one",
+      "why": "Two lines of injection and one row in the file's ordered tail table; the other 16 are the position argument at the site that decides it. \u26a0 THIS FILE IS OR7 GROUND and its own header says the ORDER IS THE CONTRACT, so a block entering the array between `msg.peer-status` and `engine.recently-answered` without the argument beside it is precisely the silent reorder T69b spent a task undoing."
+    },
+    {
+      "path": "packages/server/src/memory/integration-status-lane.ts",
+      "from": 0,
+      "to": 461,
+      "by": "T76b (W85) \u2014 the live integration-status line: the platform's connection truth outranks a remembered one",
+      "why": "A NEW FILE ADMITTED ABOVE maxNewFileLines (400), pinned at its measured count. Stated plainly because the cap exists to make exactly this visible. THE SPLIT: 461 lines = 209 comment, 26 blank, 226 code. 102 of those comment lines are the module header, and they are the deliverable \u2014 a status line that invents a freshness is the W84 defect one surface over, so the header is the STEP-0 CENSUS naming, for each term, the table it is read from, what that table actually holds, and (for Plaud) that NO outcome ledger exists at all. It also records the one candidate censused and REJECTED (`google_accounts.last_verified_at`, rewritten by the background token refresh, so it advances on a timer), because a rejection kept out of the file is a rejection the next task re-makes. TWO TRIMS WERE TAKEN BEFORE ASKING: the position argument moved to the two files that decide it (types.ts, pre-call-injections.ts) and the 38-label census was packed into a set, 479 -> 461. WHY NOT SPLIT THE FILE: the only separable piece is the 38-label family map, and moving a data table into its own module to get under a line cap is gaming the gate, not satisfying it. WHY IT CANNOT LIVE IN AN EXISTING FILE: `memory/lanes.ts` and `memory/assembler.ts` may only shrink, and \u2014 the `work-board-lane.ts` reason \u2014 a post-budget lane must DERIVE its reserve by CALLING its own renderer, which a render buried in an assembler branch cannot do."
     }
   ],
   "maxNewFileLines": 400,
@@ -4565,7 +4607,7 @@
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 198,
     "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 350,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
-    "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 366,
+    "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 385,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 165,
     "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 225,
     "packages/server/src/agent/v2/steps/execute/index.ts": 289,
@@ -4648,13 +4690,13 @@
     "packages/server/src/healer/healer-agent.ts": 1186,
     "packages/server/src/healer/injury-recovery.ts": 831,
     "packages/server/src/index.ts": 1271,
-    "packages/server/src/memory/assembler.ts": 2664,
+    "packages/server/src/memory/assembler.ts": 2687,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
     "packages/server/src/memory/budget.ts": 548,
     "packages/server/src/memory/compaction.ts": 1547,
     "packages/server/src/memory/deliveries-lane.ts": 257,
-    "packages/server/src/memory/lanes.ts": 1152,
+    "packages/server/src/memory/lanes.ts": 1194,
     "packages/server/src/memory/message-store.ts": 1153,
     "packages/server/src/memory/recall-lane.ts": 901,
     "packages/server/src/memory/recall.ts": 510,
@@ -4669,7 +4711,7 @@
     "packages/server/src/migration/checks.ts": 537,
     "packages/server/src/migration/import.ts": 408,
     "packages/server/src/prompt/assembler.ts": 1892,
-    "packages/server/src/prompt/registry/entries.ts": 612,
+    "packages/server/src/prompt/registry/entries.ts": 638,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
     "packages/server/src/scheduler/engine.ts": 414,
@@ -4732,12 +4774,13 @@
     "watchdog/src/auto-rollback.ts": 333,
     "watchdog/src/index.ts": 1217,
     "packages/server/src/agent/v2/outbound-ledger.ts": 459,
-    "packages/server/src/prompt/registry/types.ts": 463,
+    "packages/server/src/prompt/registry/types.ts": 491,
     "packages/server/src/agent/access/authorize.ts": 448,
     "packages/dashboard/src/components/AccessPanel.tsx": 437,
     "packages/shared/src/access.ts": 301,
     "packages/dashboard/src/lib/access-edits.ts": 314,
     "packages/server/src/agent/access/read.ts": 264,
-    "packages/server/src/memory/work-board-lane.ts": 266
+    "packages/server/src/memory/work-board-lane.ts": 266,
+    "packages/server/src/memory/integration-status-lane.ts": 461
   }
 }

@@ -485,7 +485,7 @@
     "packages/server/src/prompt/registry/assembler.ts": 156,
     "packages/server/src/prompt/registry/entries.ts": 542,
     "packages/server/src/prompt/registry/registry.ts": 54,
-    "packages/server/src/prompt/registry/types.ts": 382,
+    "packages/server/src/prompt/registry/types.ts": 491,
     "packages/server/src/prompt/templates.ts": 186,
     "packages/server/src/providers/anthropic-sdk-auth.ts": 86,
     "packages/server/src/providers/anthropic-sdk.ts": 391,
