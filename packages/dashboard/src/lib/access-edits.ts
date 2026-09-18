@@ -251,6 +251,46 @@ export function inertChannels(
   return out;
 }
 
+/**
+ * Mail accounts this draft grants WRITE on, whose send path is shut — the grant whose
+ * widest word promises more than it buys.
+ *
+ * `inertChannels` above warns at a granted channel with no tool group. This is the same
+ * treatment pointed the other way: the grant that looks set is the WRITE LEVEL, and the
+ * fix is a channel switch. "Read & write" is the widest word on that control and an owner
+ * reasonably reads it as "it can send mail now". It cannot: sending is a human channel and
+ * needs "Can talk to people" → Email. What the write grant DOES buy without that switch is
+ * reading, filing — and, since T77b, DRAFTING: `gmail_draft` / `outlook_draft` put a
+ * finished message in the Drafts folder and send nothing.
+ *
+ * TWO REASONS, NOT ONE, because the fix differs and a sentence that names the wrong control
+ * is worse than none: the master is off (turn it on, then pick Email), or the master is on
+ * and Email alone is off (turn Email on). `channelTierOf` collapses both into `'none'`, so
+ * the two fields are read separately here exactly as `inertChannels` reads them.
+ *
+ * A HELPER AGENT (`master === null`) IS NEVER WARNED. It has no switch of its own — it
+ * talks through the main agent — so there is nothing on screen to point at, and the panel
+ * already says so in its own words.
+ */
+export function mailWriteWithoutSend(
+  g: AccessGrants,
+): Array<{ provider: Provider; missing: 'master' | 'email' }> {
+  if (g.channels.master === null) return [];
+  const missing = g.channels.master !== true ? 'master' : g.channels.email === 'none' ? 'email' : null;
+  if (missing === null) return [];
+
+  const out: Array<{ provider: Provider; missing: 'master' | 'email' }> = [];
+  for (const provider of ['google', 'microsoft'] as const) {
+    const p = g.integrations[provider];
+    // `setAccountLevel` keeps the kind level at the widest account, so the kind level is
+    // the authoritative answer; the per-account scan is the belt on a hand-edited object.
+    const writes = p.agent === 'full' || p.user === 'full'
+      || Object.values(p.accounts ?? {}).some((level) => level === 'full');
+    if (writes) out.push({ provider, missing });
+  }
+  return out;
+}
+
 // ── The patch ──
 
 type Patch = Record<string, unknown>;

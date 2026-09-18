@@ -99,6 +99,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   tunnel: 'serial',
   // Google writes
   gmail_send: 'serial',
+  gmail_draft: 'serial',
   gmail_reply: 'serial',
   gmail_label: 'serial',
   calendar_create: 'serial',
@@ -113,6 +114,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   sheets_create: 'serial',
   // Microsoft writes
   outlook_send: 'serial',
+  outlook_draft: 'serial',
   outlook_reply: 'serial',
   outlook_delete: 'serial',
   calendar_create_ms: 'serial',

@@ -81,6 +81,32 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    // T77b — A DRAFT IS NOT A SEND, and this definition is where that starts.
+    // No `reachesPeople`: this tool reaches nobody. It writes a message into the
+    // account's own Drafts folder and stops, so it passes the integration WRITE
+    // grant and consults no channel grant (`agent/access/channels.ts` answers
+    // `null` for any name outside `SEND_TO_PEOPLE`). An agent with a full account
+    // grant and "Can talk to people" off can draft all day and send nothing —
+    // which is the whole point of the tool.
+    name: 'gmail_draft',
+    description: 'Create a DRAFT email in the connected Google account\'s Drafts folder. This sends nothing: the draft sits in Drafts until a person opens it and presses Send themselves. Use it to prepare a message for the user to review and send, and whenever you want a mail written but the decision to send it left with them. For a NEW message pass `to` and `subject`. To draft a REPLY on an existing thread pass `reply_to_message_id` instead — the recipient, the "Re:" subject and the threading are taken from that message, so the draft opens inside the conversation. Supports attachments on the same rules as gmail_send (25MB inline cap, overflow auto-uploads to Drive and appends a link).',
+    effects: [{ kind: 'fs_read', from: 'args.attachments[]' }],
+    input_schema: {
+      type: 'object',
+      properties: {
+        body: { type: 'string', description: 'Draft body text' },
+        to: { type: 'string', description: 'Recipient email address (or comma-separated list). Required for a NEW draft; taken from the original message when replying.' },
+        subject: { type: 'string', description: 'Subject line. Required for a NEW draft; taken from the original message (as "Re: ...") when replying.' },
+        reply_to_message_id: { type: 'string', description: 'Draft a reply on this message\'s thread instead of starting a new one. The draft is threaded and pre-addressed from that message.' },
+        reply_all: { type: 'boolean', description: 'When replying, address every recipient of the original, not just its sender (default: false)' },
+        cc: { type: 'string', description: 'CC recipients (comma-separated)' },
+        bcc: { type: 'string', description: 'BCC recipients (comma-separated)' },
+        attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach. Combined cap of 25MB inline; larger spill to Drive automatically.' },
+      },
+      required: ['body'],
+    },
+  },
+  {
     name: 'gmail_read_attachment',
     description:
       'Download an attachment from a Gmail message to local disk. Use gmail_list_attachments (or gmail_read, which lists them) to find the attachment_id first. Saves to ~/.dojo/uploads/<your-agent-id>/ by default; override with save_path. Returns the absolute path so you can pass it to file_read, show_to_user, etc.',
@@ -603,6 +629,92 @@ function buildRfc2822Email(
   return Buffer.from(headers.join('\r\n') + '\r\n' + parts.join('\r\n')).toString('base64url');
 }
 
+// ── T77b: THE REPLY THREADING, IN ONE PLACE ──
+//
+// `gmail_reply` and `gmail_draft` put the SAME message on the SAME thread; the only
+// difference between them is which Gmail endpoint receives it (`messages/send` versus
+// `drafts`). So everything that makes it a reply — the original's thread id, its
+// `Message-ID` for the `In-Reply-To` / `References` pair, the recipient set under
+// `reply_all`, and the `Re:` subject — is read HERE, once, and both callers thread their
+// result identically. A second copy would be two threading rules free to drift, and a
+// draft that lands off-thread is invisible until the owner opens it.
+interface GmailReplyContext {
+  threadId: string;
+  replyTo: string;
+  replySubject: string;
+  msgIdHeader: string;
+}
+
+async function gmailReplyContext(
+  messageId: string,
+  replyAll: boolean,
+  agentId: string,
+  agentName: string,
+  slot: string,
+  action: string,
+): Promise<{ ok: true; ctx: GmailReplyContext } | { ok: false; error: string }> {
+  const origUrl = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Message-ID`;
+  const orig = await googleRead(origUrl, agentId, agentName, action, { messageId, slot }, slot);
+  if (!orig.ok) return { ok: false, error: `Error fetching original message: ${orig.error}` };
+
+  const origData = orig.data as { threadId: string; payload?: { headers?: Array<{ name: string; value: string }> } };
+  const headers = origData?.payload?.headers ?? [];
+  const from = headers.find(h => h.name === 'From')?.value ?? '';
+  const to = headers.find(h => h.name === 'To')?.value ?? '';
+  const subject = headers.find(h => h.name === 'Subject')?.value ?? '';
+  return {
+    ok: true,
+    ctx: {
+      threadId: origData.threadId,
+      replyTo: replyAll ? [from, to].filter(Boolean).join(', ') : from,
+      replySubject: subject.startsWith('Re:') ? subject : `Re: ${subject}`,
+      msgIdHeader: headers.find(h => h.name === 'Message-ID')?.value ?? '',
+    },
+  };
+}
+
+// ── T77b: AND THE ATTACHMENT LADDER, ALSO IN ONE PLACE ──
+//
+// Load, split at Gmail's 25MB inline ceiling, push the overflow to Drive, and append the
+// share links to the body. `gmail_send`, `gmail_reply` and `gmail_draft` all need exactly
+// this and had two identical copies of it before the third was needed. (`gmail_forward` is
+// NOT a caller: it merges the ORIGINAL message's attachments in as well, which is a
+// different ladder, and it keeps its own.)
+async function gmailAttachmentsWithOverflow(
+  paths: readonly string[] | undefined,
+  body: string,
+  agentId: string,
+  agentName: string,
+  slot: string,
+): Promise<
+  | { ok: true; inline: LocalAttachment[]; overflowCount: number; body: string }
+  | { ok: false; error: string }
+> {
+  const loaded = loadUserAttachmentsForGmail(paths as string[] | undefined);
+  if (!loaded.ok) return { ok: false, error: loaded.error };
+
+  const { inline, overflow } = partitionForGmail(loaded.attachments);
+  const overflowLines: string[] = [];
+  for (const att of overflow) {
+    const up = await uploadAttachmentToDrive(att, agentId, agentName, slot);
+    if (!up.ok) return { ok: false, error: `Error uploading attachment "${att.name}" to Drive: ${up.error}` };
+    overflowLines.push(`  • ${up.name} (${formatSize(att.size)}), ${up.url}`);
+  }
+  return {
+    ok: true,
+    inline,
+    overflowCount: overflow.length,
+    body: overflowLines.length > 0
+      ? `${body}\n\nAttached via Google Drive (file too large to inline):\n${overflowLines.join('\n')}`
+      : body,
+  };
+}
+
+/** The "with N attachments" tail every mail-writing tool ends its result with. */
+const gmailAttachSummary = (inlineCount: number, overflowCount: number): string =>
+  (inlineCount + overflowCount) === 0 ? '' :
+    ` with ${inlineCount} inline attachment(s)${overflowCount > 0 ? ` and ${overflowCount} Drive link(s)` : ''}`;
+
 // ── Drive overflow helpers ──
 //
 // When user-supplied attachments exceed Gmail's 25MB inline ceiling, upload
@@ -989,21 +1101,11 @@ export async function executeGoogleWriteTool(
     case 'gmail_send': {
       const to = args.to as string;
       const subject = args.subject as string;
-      let body = args.body as string;
 
-      const loaded = loadUserAttachmentsForGmail(args.attachments as string[] | undefined);
-      if (!loaded.ok) return loaded.error;
-
-      const { inline, overflow } = partitionForGmail(loaded.attachments);
-      const overflowLines: string[] = [];
-      for (const att of overflow) {
-        const up = await uploadAttachmentToDrive(att, agentId, agentName, slot);
-        if (!up.ok) return `Error uploading attachment "${att.name}" to Drive: ${up.error}`;
-        overflowLines.push(`  • ${up.name} (${formatSize(att.size)}), ${up.url}`);
-      }
-      if (overflowLines.length > 0) {
-        body = `${body}\n\nAttached via Google Drive (file too large to inline):\n${overflowLines.join('\n')}`;
-      }
+      const prepared = await gmailAttachmentsWithOverflow(args.attachments as string[] | undefined, args.body as string, agentId, agentName, slot);
+      if (!prepared.ok) return prepared.error;
+      const { inline, body } = prepared;
+      const overflow = { length: prepared.overflowCount };
 
       const raw = buildRfc2822Email(to, subject, body, {
         cc: args.cc as string | undefined,
@@ -1026,43 +1128,21 @@ export async function executeGoogleWriteTool(
       }
       writeToolReceipt({ agentId, tool: 'gmail_send', tier: 1, verified: true, basis: 'provider-id', providerId: sendData.id, threadId: sendData.threadId ?? null, recipient: to, sentText: gmailSentText, detail: { status: 'sent' } });
 
-      const attachSummary = (inline.length + overflow.length) === 0 ? '' :
-        ` with ${inline.length} inline attachment(s)${overflow.length > 0 ? ` and ${overflow.length} Drive link(s)` : ''}`;
-      return `Email sent to ${to} with subject "${subject}"${attachSummary}`;
+      return `Email sent to ${to} with subject "${subject}"${gmailAttachSummary(inline.length, overflow.length)}`;
     }
 
     case 'gmail_reply': {
       const messageId = args.message_id as string;
-      let body = args.body as string;
-
-      // Fetch original message to get thread ID and headers
-      const origUrl = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Message-ID`;
-      const orig = await googleRead(origUrl, agentId, agentName, 'gmail_reply_fetch', { messageId, slot }, slot);
-      if (!orig.ok) return `Error fetching original message: ${orig.error}`;
-
-      const origData = orig.data as { threadId: string; payload?: { headers?: Array<{ name: string; value: string }> } };
-      const headers = origData?.payload?.headers ?? [];
-      const from = headers.find(h => h.name === 'From')?.value ?? '';
-      const to = headers.find(h => h.name === 'To')?.value ?? '';
-      const subject = headers.find(h => h.name === 'Subject')?.value ?? '';
-      const msgIdHeader = headers.find(h => h.name === 'Message-ID')?.value ?? '';
       const replyAll = args.reply_all === true;
-      const replyTo = replyAll ? [from, to].filter(Boolean).join(', ') : from;
-      const replySubject = subject.startsWith('Re:') ? subject : `Re: ${subject}`;
 
-      const loaded = loadUserAttachmentsForGmail(args.attachments as string[] | undefined);
-      if (!loaded.ok) return loaded.error;
+      const context = await gmailReplyContext(messageId, replyAll, agentId, agentName, slot, 'gmail_reply_fetch');
+      if (!context.ok) return context.error;
+      const { threadId, replyTo, replySubject, msgIdHeader } = context.ctx;
 
-      const { inline, overflow } = partitionForGmail(loaded.attachments);
-      const overflowLines: string[] = [];
-      for (const att of overflow) {
-        const up = await uploadAttachmentToDrive(att, agentId, agentName, slot);
-        if (!up.ok) return `Error uploading attachment "${att.name}" to Drive: ${up.error}`;
-        overflowLines.push(`  • ${up.name} (${formatSize(att.size)}), ${up.url}`);
-      }
-      if (overflowLines.length > 0) {
-        body = `${body}\n\nAttached via Google Drive (file too large to inline):\n${overflowLines.join('\n')}`;
-      }
+      const prepared = await gmailAttachmentsWithOverflow(args.attachments as string[] | undefined, args.body as string, agentId, agentName, slot);
+      if (!prepared.ok) return prepared.error;
+      const { inline, body } = prepared;
+      const overflow = { length: prepared.overflowCount };
 
       const raw = buildRfc2822Email(replyTo, replySubject, body, {
         inReplyTo: msgIdHeader,
@@ -1070,20 +1150,73 @@ export async function executeGoogleWriteTool(
         attachments: inline,
       });
 
-      const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw, threadId: origData.threadId }, agentId, agentName, 'gmail_reply', { messageId, replyAll, slot, inlineAttachments: inline.length, driveAttachments: overflow.length }, undefined, slot);
+      const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw, threadId }, agentId, agentName, 'gmail_reply', { messageId, replyAll, slot, inlineAttachments: inline.length, driveAttachments: overflow.length }, undefined, slot);
       if (!result.ok) return `Error replying to email: ${result.error}`;
 
       // C26: capture the provider id (was discarded); missing id fails the turn.
       const replyData = result.data as { id?: string; threadId?: string } | null;
       if (!replyData?.id) {
-        writeToolReceipt({ agentId, tool: 'gmail_reply', tier: 1, verified: false, basis: 'http-status', recipient: replyTo, detail: { anomaly: 'gmail reply 2xx but no message id', threadId: replyData?.threadId ?? origData.threadId ?? null } });
+        writeToolReceipt({ agentId, tool: 'gmail_reply', tier: 1, verified: false, basis: 'http-status', recipient: replyTo, detail: { anomaly: 'gmail reply 2xx but no message id', threadId: replyData?.threadId ?? threadId ?? null } });
         return `Error: the Gmail API accepted the reply but returned no message id, so the reply to message ${messageId} could not be verified. It may still have gone out: check the thread / Sent folder FIRST, and re-send only if it is not there.`;
       }
-      writeToolReceipt({ agentId, tool: 'gmail_reply', tier: 1, verified: true, basis: 'provider-id', providerId: replyData.id, threadId: replyData.threadId ?? origData.threadId ?? null, recipient: replyTo, detail: { status: 'sent' } });
+      writeToolReceipt({ agentId, tool: 'gmail_reply', tier: 1, verified: true, basis: 'provider-id', providerId: replyData.id, threadId: replyData.threadId ?? threadId ?? null, recipient: replyTo, detail: { status: 'sent' } });
 
-      const attachSummary = (inline.length + overflow.length) === 0 ? '' :
-        ` with ${inline.length} inline attachment(s)${overflow.length > 0 ? ` and ${overflow.length} Drive link(s)` : ''}`;
-      return `Reply sent${replyAll ? ' (to all)' : ''} to message ${messageId}${attachSummary}`;
+      return `Reply sent${replyAll ? ' (to all)' : ''} to message ${messageId}${gmailAttachSummary(inline.length, overflow.length)}`;
+    }
+
+    // ── T77b — THE DRAFT. Same message, same thread, a different endpoint. ──
+    //
+    // Three things this case deliberately does NOT do, each of them the reason the tool
+    // exists rather than an oversight:
+    //   • It does not consult `resolved.account.sendEmail`. That switch governs whether
+    //     mail may LEAVE this account; a draft never leaves it. An owner who has kept
+    //     sending off still gets drafts, which is exactly the use this tool serves.
+    //   • It writes NO send receipt. `receipts/store.ts` tiers deliveries to people;
+    //     a draft delivers to nobody, and a receipt claiming otherwise would be a lie
+    //     in the one ledger the close-gate reads.
+    //   • It opens no outbound scope and writes no delivery row, because
+    //     `channelOfSendTool('gmail_draft')` is null. Nothing to switch off — the
+    //     machinery is keyed on the send surface this tool is not on.
+    case 'gmail_draft': {
+      const replyToId = args.reply_to_message_id as string | undefined;
+      let to = args.to as string | undefined;
+      let subject = args.subject as string | undefined;
+      let threadId: string | undefined;
+      let msgIdHeader: string | undefined;
+
+      if (replyToId) {
+        const context = await gmailReplyContext(replyToId, args.reply_all === true, agentId, agentName, slot, 'gmail_draft_fetch');
+        if (!context.ok) return context.error;
+        to = to ?? context.ctx.replyTo;
+        subject = subject ?? context.ctx.replySubject;
+        threadId = context.ctx.threadId;
+        msgIdHeader = context.ctx.msgIdHeader;
+      }
+      if (!to || !subject) {
+        return 'Error: a new draft needs both `to` and `subject`. To draft a REPLY on an existing thread, pass `reply_to_message_id` instead and both are taken from that message.';
+      }
+
+      const prepared = await gmailAttachmentsWithOverflow(args.attachments as string[] | undefined, args.body as string, agentId, agentName, slot);
+      if (!prepared.ok) return prepared.error;
+
+      const raw = buildRfc2822Email(to, subject, prepared.body, {
+        cc: args.cc as string | undefined,
+        bcc: args.bcc as string | undefined,
+        ...(msgIdHeader ? { inReplyTo: msgIdHeader, references: msgIdHeader } : {}),
+        attachments: prepared.inline,
+      });
+
+      const message: Record<string, unknown> = { raw };
+      if (threadId) message.threadId = threadId;
+
+      const result = await googleWrite('POST', `${GMAIL_BASE}/drafts`, { message }, agentId, agentName, 'gmail_draft', { to, subject, slot, threaded: Boolean(threadId), inlineAttachments: prepared.inline.length, driveAttachments: prepared.overflowCount }, undefined, slot);
+      if (!result.ok) return `Error creating draft: ${result.error}`;
+
+      const draftData = result.data as { id?: string; message?: { id?: string; threadId?: string } } | null;
+      const where = resolved.account.email ? `${resolved.account.email}'s Drafts folder` : 'the Drafts folder';
+      const threaded = threadId ? ' on the existing thread' : '';
+      const idNote = draftData?.id ? ` Draft id: ${draftData.id}.` : '';
+      return `Draft saved in ${where}${threaded}, addressed to ${to} with subject "${subject}"${gmailAttachSummary(prepared.inline.length, prepared.overflowCount)}. NOTHING HAS BEEN SENT — it stays in Drafts until a person opens it and presses Send.${idNote}`;
     }
 
     case 'gmail_forward': {

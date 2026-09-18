@@ -194,11 +194,16 @@ export const SEND_TO_PEOPLE_NA: Readonly<Record<string, string>> = {
   'gmail_label': 'Gmail label mgmt', 'gmail_list_labels': 'Gmail label mgmt',
   'gmail_create_label': 'Gmail label mgmt', 'gmail_delete_label': 'Gmail label mgmt',
   'gmail_list_attachments': 'Gmail attachment read', 'gmail_read_attachment': 'Gmail attachment read',
+  // T77b: a draft is an ACCOUNT WRITE, not a channel send. It saves a message into the
+  // mailbox's own Drafts folder and stops; a person opens it and presses Send, or does
+  // not. Nothing reaches anyone, so it takes the integration write grant and no channel.
+  'gmail_draft': 'writes a draft into the mailbox\'s Drafts folder, sends nothing — a person sends it',
   'outlook_search': 'Outlook read', 'outlook_read': 'Outlook read', 'outlook_inbox': 'Outlook read',
   'outlook_mark_read': 'Outlook state', 'outlook_delete': 'Outlook mailbox op',
   'outlook_move_to_folder': 'Outlook folder op', 'outlook_list_folders': 'Outlook folder read',
   'outlook_create_folder': 'Outlook folder op', 'outlook_categories_set': 'Outlook category op',
   'outlook_list_attachments': 'Outlook attachment read', 'outlook_download_attachment': 'Outlook attachment read',
+  'outlook_draft': 'writes a draft into the mailbox\'s Drafts folder, sends nothing — a person sends it',
   'teams_read_messages': 'Teams read', 'teams_list_teams': 'Teams read', 'teams_list_channels': 'Teams read',
   'teams_read_channel_messages': 'Teams read', 'teams_list_chats': 'Teams read',
   'teams_create_chat': 'Teams chat creation (no message body sent)',

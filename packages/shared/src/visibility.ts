@@ -846,6 +846,18 @@ const BOOKKEEPING_EXACT: ReadonlySet<string> = new Set([
 // retrieval so that a world-changing act wins when both appear.
 const EFFECTFUL_VERBS: ReadonlySet<string> = new Set([
   'send', 'reply', 'forward',
+  // T77b: `draft` joins the verb set rather than taking a per-name override, because it is
+  // the SAME shape T54 diagnosed on `shell` — a world-changing act the vocabulary simply
+  // lacked a word for, not a heuristic getting a name wrong. Writing a message into the
+  // owner's Drafts folder is a real change to his mailbox and must draw a badge; hidden, it
+  // is the chip-noise defect in the other direction, where the owner sees nothing at all.
+  // As with `shell`, the consequence is said out loud: this class is read by five ENGINE
+  // sites (loop thrash-progress, promise-floor, going-idle's countsAsTaskWork and its
+  // side-effect hint, execute/post-result), so preparing a draft now counts as real work in
+  // each — which is correct, since "write me an email to send later" is the whole task.
+  // Measured before landing: `gmail_draft` and `outlook_draft` are the only tools in the
+  // registry carrying a `draft` token, so nothing else moves.
+  'draft',
   'create', 'write', 'edit', 'append', 'insert', 'replace', 'update',
   'delete', 'remove', 'patch',
   'upload', 'share', 'move',

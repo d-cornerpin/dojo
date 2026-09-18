@@ -152,7 +152,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'Gmail',
-    tools: ['gmail_search', 'gmail_read', 'gmail_inbox', 'gmail_send', 'gmail_reply', 'gmail_forward', 'gmail_label', 'gmail_list_labels', 'gmail_create_label', 'gmail_delete_label', 'gmail_list_attachments', 'gmail_read_attachment'],
+    tools: ['gmail_search', 'gmail_read', 'gmail_inbox', 'gmail_send', 'gmail_reply', 'gmail_forward', 'gmail_draft', 'gmail_label', 'gmail_list_labels', 'gmail_create_label', 'gmail_delete_label', 'gmail_list_attachments', 'gmail_read_attachment'],
   },
   {
     label: 'Google Calendar',
@@ -198,7 +198,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'Outlook',
-    tools: ['outlook_search', 'outlook_read', 'outlook_inbox', 'outlook_send', 'outlook_reply', 'outlook_forward', 'outlook_mark_read', 'outlook_delete', 'outlook_move_to_folder', 'outlook_list_folders', 'outlook_create_folder', 'outlook_categories_set', 'outlook_list_attachments', 'outlook_download_attachment'],
+    tools: ['outlook_search', 'outlook_read', 'outlook_inbox', 'outlook_send', 'outlook_reply', 'outlook_forward', 'outlook_draft', 'outlook_mark_read', 'outlook_delete', 'outlook_move_to_folder', 'outlook_list_folders', 'outlook_create_folder', 'outlook_categories_set', 'outlook_list_attachments', 'outlook_download_attachment'],
   },
   {
     label: 'Twilio (SMS + Voice phone calls)',

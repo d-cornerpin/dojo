@@ -62,8 +62,9 @@ describe('tool registry (PHASE-5 T1 Step 2)', () => {
 
   it('reports effect coverage from the REGISTRY, which is what T7 s exit gate consumes', () => {
     const cov = effectCoverage();
-    expect(cov.total).toBe(438);
-    expect(cov.declared).toBe(438);
+    // UX-REPAIR T77b: 438 → 442. Two new draft definitions and their two `user_` twins.
+    expect(cov.total).toBe(442);
+    expect(cov.declared).toBe(442);
     // T8 Step 3: 125 → 126. `history_get` gained the fs_read it always
     // performed, when the recall door converted to the facade and the missing
     // declaration refused it (RULING P5-R14, corrected at the site).
@@ -84,7 +85,10 @@ describe('tool registry (PHASE-5 T1 Step 2)', () => {
     // the persisted deck style off disk and two write it; export_pngs writes a
     // PNG per slide into the agent's uploads dir; build_slide reads a local image
     // one level inside an element. The census is doing its job.
-    expect(cov.effectful).toBe(145);
+    // UX-REPAIR T77b, 145 → 149: `gmail_draft` and `outlook_draft` plus their two `user_`
+    // twins, each declaring the `fs_read` its `attachments` field earns. Deliberately NOT
+    // a `send` effect — a draft delivers to nobody.
+    expect(cov.effectful).toBe(149);
     // PHASE-5 T3, and this number corrects an assumption rather than confirming
     // one: `proc` is 18, not 1. T1 already declared `proc` on 17 tools that run
     // a subprocess with no shell and no resource argument (all eight Plaud verbs

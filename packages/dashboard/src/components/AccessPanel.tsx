@@ -10,7 +10,7 @@ import { Check, Choice, Item, Row, Toggle, splitLabel } from './AccessControls';
 import { KnowsManifestItem, ManageManifestItems, ReachManifestItems } from './AccessManifest';
 import {
   accountLevel, categoryChecked, clone, credentialsGranted, grantsPatch, hasMaster, inertChannels,
-  isDirty, masterOn, setAccountLevel, setCategory, setChannelTier, setCredentials, setKindLevel,
+  isDirty, mailWriteWithoutSend, masterOn, setAccountLevel, setCategory, setChannelTier, setCredentials, setKindLevel,
   setMaster, setPlaud, setTechnique, setTechniqueAccess, setToolMode, techniqueAccessOn,
   techniqueChecked, toolMode, type AccountRow, type Provider, type ToolMode,
 } from '../lib/access-edits';
@@ -286,6 +286,15 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
         />
         {accountRows('google', google)}
         {accountRows('microsoft', microsoft)}
+        {mailWriteWithoutSend(draft).map((w) => (
+          <div className="note--warn" key={w.provider} style={{ marginTop: 10, marginBottom: 0 }}>
+            {PROVIDER_LABEL[w.provider]} is granted read &amp; write, but the agent cannot send mail from it
+            — {w.missing === 'master' ? '“Can talk to people” is off' : 'Email is off under “Can talk to people”'}.
+            Reading and drafts still work: it can leave a finished message in your Drafts folder for you
+            to send. To let it send for itself, turn on{' '}
+            {w.missing === 'master' ? '“Can talk to people” → Email' : 'Email'} below.
+          </div>
+        ))}
         <ReachManifestItems state={legacy} onChange={setLegacy} editable={manifestEditable} note={manifestNote} />
         <Item
           name="Use stored keys & logins"

@@ -269,12 +269,20 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
   // door — so the static census is T0's 320 + 1 and the runtime census is 437 + 1.
   // The twin count is untouched, which is the check that the new definition did
   // not accidentally acquire a `user_` twin.
-  it('the census is T0\'s 320 static definitions + T3\'s `shell`, 117 user_ twins, 438 at runtime', () => {
-    expect(BASE.length).toBe(321);
+  //
+  // UX-REPAIR T77b moves both by exactly TWO, and the delta is named rather than
+  // re-baselined: `gmail_draft` and `outlook_draft` are two NEW write definitions, and
+  // each takes a `user_` twin from the full-parity loop its family already runs. So the
+  // static census is 321 + 2 and the twin census is 117 + 2 — the twin count moving IS
+  // the check that the loop reached them, the inverse of T3's check that `shell` did
+  // not accidentally acquire one.
+  it('the census is T0\'s 320 static definitions + T3\'s `shell` + T77b\'s two drafts, 119 user_ twins, 442 at runtime', () => {
+    expect(BASE.length).toBe(323);
     expect(BASE.filter((d) => d.name === 'shell')).toHaveLength(1);
-    expect(TWINS.length).toBe(117);
-    expect(ALL.length).toBe(438);
-    expect(new Set(ALL.map((d) => d.name)).size).toBe(438);
+    expect(BASE.filter((d) => d.name === 'gmail_draft' || d.name === 'outlook_draft')).toHaveLength(2);
+    expect(TWINS.length).toBe(119);
+    expect(ALL.length).toBe(442);
+    expect(new Set(ALL.map((d) => d.name)).size).toBe(442);
   });
 
   it('EVERY definition declares its effects, and every declaration is well formed', () => {
@@ -319,7 +327,11 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // microsoft `teams_create_chat`, `teams_send_message`,
     // `teams_send_channel_message`, `onedrive_share`. Recorded in T1's AS-BUILT
     // with the command; nothing was tuned to reach it.
-    expect(effectfulTwins).toBe(20);
+    // T77b: 20 → 22. `gmail_draft` and `outlook_draft` each declare the `fs_read` their
+    // `attachments` field earns, and each twin inherits it through the same spread. NOT a
+    // `send` effect — a draft delivers to nobody — which is the arithmetic saying the
+    // classification held.
+    expect(effectfulTwins).toBe(22);
   });
 
   it('the effect surface is the size T1 derived, and every kind is in use or knowingly absent', () => {
@@ -357,9 +369,11 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // inside an element. Converted as-is, the first style read would have been
     // refused and every deck would have silently fallen back to the default
     // preset — a capability loss with no error anywhere.
+    // T77b moves both by TWO: the two draft definitions, each with the `fs_read` its
+    // `attachments` field earns, plus their two twins (127 base → 149 runtime).
     const effectful = BASE.filter((d) => d.effects.length > 0);
-    expect(effectful.length).toBe(125);
-    expect(ALL.filter((d) => d.effects.length > 0).length).toBe(145);
+    expect(effectful.length).toBe(127);
+    expect(ALL.filter((d) => d.effects.length > 0).length).toBe(149);
     // T8 Step 3 moves this by EIGHT, and the tripwire is what earned it:
     // `pdf_create.filename` and the seven `output_filename` siblings are BARE
     // NAMES, not paths. Their old `fs_write from: args.<name>` declaration
@@ -537,11 +551,14 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // right identifier appears" is not the same as calling it for a tool outside
     // the core and reading the answer.
     expect(toolDefinitions.length).toBe(112);
-    expect(ALL.length).toBe(438);
+    expect(ALL.length).toBe(442);
 
     const core = new Set(toolDefinitions.map((d) => d.name));
     const outsideCore = ALL.filter((d) => !core.has(d.name));
-    expect(outsideCore.length).toBe(326);
+    // T77b: 326 → 330, the four new draft names. They are provider tools, so they land
+    // outside the core array exactly as every other Google/Microsoft tool does — which is
+    // the property this clause exists to hold.
+    expect(outsideCore.length).toBe(330);
 
     // One from each family the core array cannot see, plus a `user_` twin, which
     // exists only at module load and therefore only in the runtime map.

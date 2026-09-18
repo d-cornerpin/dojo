@@ -74,6 +74,27 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    // T77b — see the twin note on `gmail_draft`. No `reachesPeople`: this reaches
+    // nobody. It creates a draft in the mailbox and stops, so it passes the
+    // integration WRITE grant and consults no channel grant.
+    name: 'outlook_draft',
+    description: 'Create a DRAFT email in the connected Microsoft account\'s Drafts folder. This sends nothing: the draft sits in Drafts until a person opens it and presses Send themselves. Use it to prepare a message for the user to review and send, and whenever you want a mail written but the decision to send it left with them. For a NEW message pass `to` and `subject`. To draft a REPLY on an existing thread pass `reply_to_message_id` instead — Outlook builds the reply draft on that conversation, pre-addressed and quoting the original. Supports attachments on the same rules as outlook_send (3MB per file inline; larger spill to a OneDrive link).',
+    effects: [{ kind: 'fs_read', from: 'args.attachments[]' }],
+    input_schema: {
+      type: 'object',
+      properties: {
+        body: { type: 'string', description: 'Draft body text' },
+        to: { type: 'string', description: 'Recipient email address (or comma-separated list). Required for a NEW draft; Outlook fills it from the original message when replying.' },
+        subject: { type: 'string', description: 'Subject line. Required for a NEW draft; Outlook fills it from the original message when replying.' },
+        reply_to_message_id: { type: 'string', description: 'Draft a reply on this message\'s conversation instead of starting a new one.' },
+        reply_all: { type: 'boolean', description: 'When replying, address every recipient of the original, not just its sender (default: false)' },
+        cc: { type: 'string', description: 'CC recipients (comma-separated). New drafts only.' },
+        attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach. Files ≤3MB inline; larger spill to OneDrive link automatically.' },
+      },
+      required: ['body'],
+    },
+  },
+  {
     name: 'calendar_create_ms',
     description: 'Create a new Microsoft Calendar event. Defaults to your default calendar; pass calendar_id to add to a shared calendar where you have write access (use calendar_list_ms to find IDs and check canEdit). Pass the event name as `title` (preferred) - `subject` (Microsoft API field name) and `summary` (Google API field name) are also accepted as aliases.',
     effects: [{ kind: 'send', from: 'args.attendees[]' }],
@@ -1039,6 +1060,67 @@ export async function executeMicrosoftWriteTool(
       const attachSummary = (prepared.inlineCount + prepared.overflowCount) === 0 ? '' :
         ` with ${prepared.inlineCount} inline attachment(s)${prepared.overflowCount > 0 ? ` and ${prepared.overflowCount} OneDrive link(s)` : ''}`;
       return `Reply sent${replyAll ? ' (to all)' : ''} to message ${args.message_id}${attachSummary}`;
+    }
+
+    // ── T77b — THE DRAFT. The same two Graph shapes `outlook_send` / `outlook_reply`
+    // build, pointed at the endpoints that STOP at the mailbox. ──
+    //
+    // What it deliberately does not do, and why, is identical to `gmail_draft`: it never
+    // reads `resolved.account.sendEmail` (that switch governs mail LEAVING the account,
+    // and nothing leaves), it writes no send receipt (a draft delivers to nobody), and it
+    // opens no outbound scope (`channelOfSendTool` answers null for it).
+    //
+    // REPLY DRAFTS REUSE `outlook_reply`'S OWN REQUEST BODY, verbatim in shape: Graph's
+    // `createReply` / `createReplyAll` take the same `{ comment }` or
+    // `{ message: { body, attachments } }` payload as `reply` / `replyAll` and differ only
+    // in returning the draft instead of queueing the send. That is the reuse — the
+    // threading is Graph's, from the conversation the original message is on, so there is
+    // no second threading rule here to drift from the first.
+    case 'outlook_draft': {
+      const replyToId = args.reply_to_message_id as string | undefined;
+      const prepared = await prepareOutlookAttachments(args.attachments as string[] | undefined, slot);
+      if (!prepared.ok) return prepared.error;
+      const bodyText = (args.body as string) + prepared.bodySuffix;
+
+      let endpoint: string;
+      let requestBody: Record<string, unknown>;
+      let describe: string;
+
+      if (replyToId) {
+        const replyAll = args.reply_all === true;
+        endpoint = `me/messages/${encodeURIComponent(replyToId)}/${replyAll ? 'createReplyAll' : 'createReply'}`;
+        requestBody = prepared.inline.length > 0
+          ? { message: { body: { contentType: 'Text', content: bodyText }, attachments: prepared.inline } }
+          : { comment: bodyText };
+        describe = `a reply${replyAll ? ' to all' : ''} on the conversation of message ${replyToId}`;
+      } else {
+        if (!args.to || !args.subject) {
+          return 'Error: a new draft needs both `to` and `subject`. To draft a REPLY on an existing conversation, pass `reply_to_message_id` instead and Outlook fills both from that message.';
+        }
+        const message: Record<string, unknown> = {
+          subject: args.subject,
+          body: { contentType: 'Text', content: bodyText },
+          toRecipients: parseRecipients(args.to as string),
+        };
+        if (args.cc) message.ccRecipients = parseRecipients(args.cc as string);
+        if (prepared.inline.length > 0) message.attachments = prepared.inline;
+        endpoint = 'me/messages';
+        requestBody = message;
+        describe = `addressed to ${args.to} with subject "${args.subject}"`;
+      }
+
+      const result = await msGraphWrite('POST', endpoint, requestBody, agentId, agentName, 'outlook_draft', {
+        to: args.to, subject: args.subject, replyTo: replyToId ?? null, slot,
+        inlineAttachments: prepared.inlineCount, onedriveAttachments: prepared.overflowCount,
+      }, slot);
+      if (!result.ok) return `Error creating draft: ${result.error}`;
+
+      const draftData = result.data as { id?: string } | null;
+      const where = resolved.account.email ? `${resolved.account.email}'s Drafts folder` : 'the Drafts folder';
+      const attachSummary = (prepared.inlineCount + prepared.overflowCount) === 0 ? '' :
+        ` with ${prepared.inlineCount} inline attachment(s)${prepared.overflowCount > 0 ? ` and ${prepared.overflowCount} OneDrive link(s)` : ''}`;
+      const idNote = draftData?.id ? ` Draft id: ${draftData.id}.` : '';
+      return `Draft saved in ${where}, ${describe}${attachSummary}. NOTHING HAS BEEN SENT — it stays in Drafts until a person opens it and presses Send.${idNote}`;
     }
 
     case 'outlook_forward': {
