@@ -23,6 +23,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getProviderCredential } from '../config/loader.js';
+import { resolveOpenAIBaseUrl } from '../agent/model.js';
 
 const logger = createLogger('pricing-sync');
 
@@ -56,6 +57,30 @@ function isDeepSeekBaseUrl(baseUrl: string | null): boolean {
   return baseUrl.toLowerCase().includes('deepseek.com');
 }
 
+/**
+ * T77b — where this provider's model catalog is, by the ONE rule the model client itself uses
+ * (`resolveOpenAIBaseUrl`, `agent/model.ts`): bare-host providers keep their root, everyone
+ * else gets `/v1`, and a base URL that ALREADY ends in `/v1` is left alone.
+ *
+ * This used to be `${baseUrl}/v1/models` built by hand — the third copy of the URL rule, and
+ * the one T63 missed when it deleted the other two from `gateway/routes/config.ts`. It is
+ * byte-identical for OpenRouter (`…/api` → `…/api/v1/models`) and wrong for exactly the case
+ * T63 exists for: the base URL a local server prints for you to paste already ends in `/v1`,
+ * so the hand-build asked for `…/v1/v1/models` and the boot refresh took a 404 against a box
+ * that validates and chats perfectly well.
+ *
+ * The modality union still rides OpenRouter alone. OpenRouter's `/models` defaults to
+ * `output_modalities=text`, which omits image / video / audio-only generators; without the
+ * param a user's flux / seedance rows are invisible here and never get their prices refreshed.
+ * No other provider honours it.
+ */
+export function providerModelsUrl(baseUrl: string): string {
+  const root = resolveOpenAIBaseUrl(baseUrl) ?? baseUrl.replace(/\/+$/, '');
+  return root.includes('openrouter.ai')
+    ? `${root}/models?output_modalities=text,image,audio,video`
+    : `${root}/models`;
+}
+
 async function syncOpenAiCompatibleProvider(provider: ProviderRow): Promise<{ updated: number; skipped: boolean }> {
   if (isDeepSeekBaseUrl(provider.base_url)) {
     return { updated: 0, skipped: true };
@@ -66,15 +91,7 @@ async function syncOpenAiCompatibleProvider(provider: ProviderRow): Promise<{ up
     return { updated: 0, skipped: true };
   }
 
-  const baseUrl = (provider.base_url || 'https://openrouter.ai/api').replace(/\/+$/, '');
-  // OpenRouter's /v1/models defaults to output_modalities=text, which omits
-  // image / video / audio-only generators. Request the full modality union
-  // so media-gen models the user added (flux, seedance, etc.) are visible
-  // here and get their prices refreshed too, not just chat/LLMs. Harmless
-  // for other OpenAI-compatible providers, but only OpenRouter honours it.
-  const modelsUrl = baseUrl.includes('openrouter.ai')
-    ? `${baseUrl}/v1/models?output_modalities=text,image,audio,video`
-    : `${baseUrl}/v1/models`;
+  const modelsUrl = providerModelsUrl(provider.base_url || 'https://openrouter.ai/api');
   const response = await fetch(modelsUrl, {
     headers: {
       Authorization: `Bearer ${credential}`,
