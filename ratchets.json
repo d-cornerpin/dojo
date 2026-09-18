@@ -4516,6 +4516,41 @@
       "to": 461,
       "by": "T76b (W85) \u2014 the live integration-status line: the platform's connection truth outranks a remembered one",
       "why": "A NEW FILE ADMITTED ABOVE maxNewFileLines (400), pinned at its measured count. Stated plainly because the cap exists to make exactly this visible. THE SPLIT: 461 lines = 209 comment, 26 blank, 226 code. 102 of those comment lines are the module header, and they are the deliverable \u2014 a status line that invents a freshness is the W84 defect one surface over, so the header is the STEP-0 CENSUS naming, for each term, the table it is read from, what that table actually holds, and (for Plaud) that NO outcome ledger exists at all. It also records the one candidate censused and REJECTED (`google_accounts.last_verified_at`, rewritten by the background token refresh, so it advances on a timer), because a rejection kept out of the file is a rejection the next task re-makes. TWO TRIMS WERE TAKEN BEFORE ASKING: the position argument moved to the two files that decide it (types.ts, pre-call-injections.ts) and the 38-label census was packed into a set, 479 -> 461. WHY NOT SPLIT THE FILE: the only separable piece is the 38-label family map, and moving a data table into its own module to get under a line cap is gaming the gate, not satisfying it. WHY IT CANNOT LIVE IN AN EXISTING FILE: `memory/lanes.ts` and `memory/assembler.ts` may only shrink, and \u2014 the `work-board-lane.ts` reason \u2014 a post-budget lane must DERIVE its reserve by CALLING its own renderer, which a render buried in an assembler branch cannot do."
+    },
+    {
+      "path": "packages/server/src/google/tools-write.ts",
+      "from": 1862,
+      "to": 1995,
+      "by": "UX-REPAIR T77b (W87) \u2014 the draft tools, and the write-grant dependency warning",
+      "why": "+133 net. The `gmail_draft` definition (24), its executor case (54), and the two extractions that stopped the reply-threading and the 25MB/Drive attachment ladder from being forked a third time (gmailReplyContext, gmailAttachmentsWithOverflow, gmailAttachSummary \u2014 ~85 added at the helper site, ~30 deleted from gmail_send and gmail_reply, which now hold one copy between them instead of two). The extraction is why the raise is not larger: a copied threading block would have cost the same lines and left a second rule free to drift, and a draft that lands off-thread is invisible until the owner opens it. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/microsoft/tools-write.ts",
+      "from": 2131,
+      "to": 2212,
+      "by": "UX-REPAIR T77b (W87) \u2014 the draft tools, and the write-grant dependency warning",
+      "why": "+81 net. The `outlook_draft` definition (21) and its executor case (60). No extraction was available on this side: Graph does the threading, so the reply-draft path reuses `outlook_reply`'s own request-body shape against `createReply`/`createReplyAll` rather than a shared local helper, and there is no MIME ladder to share. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/lib/access-edits.ts",
+      "from": 314,
+      "to": 354,
+      "by": "UX-REPAIR T77b (W87) \u2014 the draft tools, and the write-grant dependency warning",
+      "why": "+40 net (12 code, 28 comment). `mailWriteWithoutSend` \u2014 the pure predicate behind the write-grant dependency warning, sited next to `inertChannels` because it is the SAME treatment pointed the other way and the two must be read together. Spinning it into a new module purely to dodge this pin would have hidden that pairing to satisfy a number. From here this file may only shrink."
+    },
+    {
+      "path": "packages/shared/src/visibility.ts",
+      "from": 977,
+      "to": 989,
+      "by": "UX-REPAIR T77b (W87) \u2014 the draft tools, and the write-grant dependency warning",
+      "why": "+12 net (1 code, 11 comment). One verb, `draft`, joining `EFFECTFUL_VERBS`, with the T54 argument recorded at the site: the five ENGINE sites that read this class now count a draft as real work, which is a consequence stated rather than discovered later. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/components/AccessPanel.tsx",
+      "from": 437,
+      "to": 445,
+      "by": "UX-REPAIR T77b (W87) \u2014 the draft tools, and the write-grant dependency warning",
+      "why": "+8 net. One import name and the seven-line `note--warn` block, mirroring the A3 inert-channel warning six rows below it. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -4684,7 +4719,7 @@
     "packages/server/src/google/tools-forms.ts": 821,
     "packages/server/src/google/tools-read.ts": 944,
     "packages/server/src/google/tools-slides.ts": 3022,
-    "packages/server/src/google/tools-write.ts": 1862,
+    "packages/server/src/google/tools-write.ts": 1995,
     "packages/server/src/healer/approval-routing.ts": 497,
     "packages/server/src/healer/diagnostic.ts": 1067,
     "packages/server/src/healer/healer-agent.ts": 1186,
@@ -4707,7 +4742,7 @@
     "packages/server/src/microsoft/auth.ts": 624,
     "packages/server/src/microsoft/tools-office.ts": 3508,
     "packages/server/src/microsoft/tools-read.ts": 1631,
-    "packages/server/src/microsoft/tools-write.ts": 2131,
+    "packages/server/src/microsoft/tools-write.ts": 2212,
     "packages/server/src/migration/checks.ts": 537,
     "packages/server/src/migration/import.ts": 408,
     "packages/server/src/prompt/assembler.ts": 1892,
@@ -4769,16 +4804,16 @@
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
     "packages/shared/src/types.ts": 601,
-    "packages/shared/src/visibility.ts": 977,
+    "packages/shared/src/visibility.ts": 989,
     "packages/shared/src/ws.ts": 1115,
     "watchdog/src/auto-rollback.ts": 333,
     "watchdog/src/index.ts": 1217,
     "packages/server/src/agent/v2/outbound-ledger.ts": 459,
     "packages/server/src/prompt/registry/types.ts": 491,
     "packages/server/src/agent/access/authorize.ts": 448,
-    "packages/dashboard/src/components/AccessPanel.tsx": 437,
+    "packages/dashboard/src/components/AccessPanel.tsx": 445,
     "packages/shared/src/access.ts": 301,
-    "packages/dashboard/src/lib/access-edits.ts": 314,
+    "packages/dashboard/src/lib/access-edits.ts": 354,
     "packages/server/src/agent/access/read.ts": 264,
     "packages/server/src/memory/work-board-lane.ts": 266,
     "packages/server/src/memory/integration-status-lane.ts": 461
