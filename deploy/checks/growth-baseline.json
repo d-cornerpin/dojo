@@ -36,7 +36,7 @@
   "capFraction": 0.6,
   "files": {
     "packages/dashboard/src/App.tsx": 348,
-    "packages/dashboard/src/components/ActiveAgentProvider.tsx": 82,
+    "packages/dashboard/src/components/ActiveAgentProvider.tsx": 190,
     "packages/dashboard/src/components/ActiveJobsIndicator.tsx": 366,
     "packages/dashboard/src/components/AgentCard.tsx": 354,
     "packages/dashboard/src/components/AttachmentChips.tsx": 465,
