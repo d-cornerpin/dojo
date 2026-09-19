@@ -44,6 +44,18 @@ export type TaskLogEntryKind =
   | 'user_verdict_request'
   | 'user_verdict_applied'
   | 'legacy_note'
+  // SLOW-INFERENCE T79d: the durable dedupe marker for an out-of-band effort review. Lives
+  // in the `entry_kind` field of an `audit` `work_events` row (this whole trail's existing
+  // shape, see the module header) — NOT a new `work_events.kind`, so no CHECK-constraint
+  // migration is needed (`work/__tests__/work-event-kinds-conformance.test.ts` only walks
+  // `appendEvent`/`appendWorkEvent` call sites' literal `kind` argument, never this JSON
+  // payload field). `action_taken` carries the task's `effort_reviewed_calls` baseline AT
+  // the moment the request was filed, as a string; a request is still PENDING for as long as
+  // the task's live baseline still equals that snapshot, and RESOLVED the instant
+  // `advanceBaseline` moves it (on either verdict — see `tracker/pm-agent.ts`'s
+  // `isEffortReviewPending`). That single comparison is the whole dedupe: durable because it
+  // is read straight off the database, so it survives a PM restart with no extra bookkeeping.
+  | 'effort_review_requested'
   // T10G: the two the spine names honestly. A PM blessing used to arrive here wearing a
   // `transition` label with `from_status = to_status`; it is a VERDICT and now says so.
   | 'claim_upheld'

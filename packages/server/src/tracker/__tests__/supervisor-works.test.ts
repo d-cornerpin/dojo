@@ -185,12 +185,14 @@ describe('THE CAP IS GONE — with no replacement throttle and no budget', () =>
   });
 
   it('the polled 10-minute heartbeat SURVIVES — it is a cadence, never a validation throttle', () => {
-    // Negative control. `LLM_REVIEW_INTERVAL_MS` gates the idle no-validation-pending
-    // review only, and validation has always bypassed it. Deleting it would be a different
-    // change wearing this one's name.
+    // Negative control. `LLM_REVIEW_INTERVAL_MS` gates the idle no-validation-pending,
+    // no-effort-review-pending review only; validation has always bypassed it, and
+    // SLOW-INFERENCE T79d adds a second, equally legitimate bypass (an effort review is
+    // "triggered by the queue, not gated on the interval" — its own brief, verbatim).
+    // Deleting either bypass would be a different change wearing this one's name.
     const src = pmSource();
     expect(src).toContain('LLM_REVIEW_INTERVAL_MS');
-    expect(src).toMatch(/if \(!validationPending && now - lastLLMReviewAt < LLM_REVIEW_INTERVAL_MS\) return;/);
+    expect(src).toMatch(/if \(!validationPending && !effortReviewPending && now - lastLLMReviewAt < LLM_REVIEW_INTERVAL_MS\) return;/);
   });
 });
 

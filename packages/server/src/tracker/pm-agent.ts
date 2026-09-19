@@ -36,6 +36,9 @@ import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, i
 import type { Message } from '@dojo/shared';
 import { workOperation, type WorkOp } from '../tools/work-verbs.js';
 import { isTerminalTaskStatus } from '../agent/tool-helpers.js';
+// SLOW-INFERENCE T79d: `effort-governor.ts` is a declared LEAF (its own header) — this file
+// may import from it, never the reverse, so no cycle.
+import { effortDelta, advanceBaseline, EFFORT_REVIEW_DELTA_CALLS } from './effort-governor.js';
 
 const logger = createLogger('pm-agent');
 
@@ -1142,6 +1145,301 @@ function pruneOldPMMessages(pmId: string): void {
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════════════════
+// SLOW-INFERENCE T79d — THE PM REVIEWS EFFORT OUT OF BAND: extend or intervene.
+//
+// `tracker/effort-governor.ts` (T79c) counts effort WITHOUT judging it — a task that has
+// burned `EFFORT_REVIEW_DELTA_CALLS` (150) calls since it last genuinely advanced is not
+// necessarily stuck; it might be a long, honest sweep. This is the judge: a task that trips
+// the meter gets ONE out-of-band look from the PM's own model, and the agent working it is
+// NEVER interrupted while that look happens — no steer, no message, nothing added to its
+// prompt assembly. Only the verdict acts, and only on the CIRCLING branch does anything ever
+// reach the agent (the existing rung-2 poke, unchanged mechanism, PM's reason embedded).
+//
+// THE QUEUE IS THE DEDUPE, AND IT IS DURABLE ON PURPOSE. `queueEffortReviewIfNeeded` is
+// called from the poke sweep for every claimed task, every tick; it must not queue a second
+// review while one is still outstanding, and that "still outstanding" fact has to survive a
+// PM restart (the owner's dev box rebuilds this process constantly). So the marker is not a
+// module-level flag — it is a `task_log` `effort_review_requested` entry (rides the SAME
+// audit-entry seam T79a's engine observations use, `writeTaskLog`), carrying the task's
+// `effort_reviewed_calls` baseline AT THE MOMENT it was filed. A request is PENDING for as
+// long as the live baseline still reads that exact number; the instant `advanceBaseline`
+// moves it (on EITHER verdict, see `runEffortReview` below), the request is resolved and a
+// fresh threshold trip is free to queue a new one. One comparison, no separate "in-flight"
+// state, and it is read straight off the database every time — a restart mid-review simply
+// means the request looks pending until the retry loop (below) tries it again.
+function isEffortReviewPending(taskId: string, baselineNow: number): boolean {
+  const last = listTaskLog(taskId, { limit: 1, kinds: ['effort_review_requested'] })[0];
+  if (!last) return false;
+  const snapshot = Number(last.actionTaken);
+  return Number.isFinite(snapshot) && snapshot === baselineNow;
+}
+
+/**
+ * Called from the poke sweep for every claimed task, REGARDLESS of the sweep's own
+ * `assigneeStatus === 'working'` guard (see the comment at that guard). Reads the task's own
+ * effort numbers, and if the delta has crossed the threshold and no request is already
+ * pending, files the durable marker. Pure queueing: no LLM call happens here, and nothing
+ * reaches the agent. Exported for direct unit testing (the dedupe is the load-bearing
+ * property, and it needs to be provable without a live PM turn).
+ */
+export function queueEffortReviewIfNeeded(taskId: string): boolean {
+  const row = getDb().prepare(
+    'SELECT effort_calls, effort_reviewed_calls FROM work WHERE id = ?',
+  ).get(taskId) as { effort_calls: number; effort_reviewed_calls: number } | undefined;
+  if (!row) return false;
+  if (effortDelta(row) < EFFORT_REVIEW_DELTA_CALLS) return false;
+  if (isEffortReviewPending(taskId, row.effort_reviewed_calls)) return false;
+  writeTaskLog({
+    taskId,
+    fromEntity: 'engine',
+    entryKind: 'effort_review_requested',
+    actionTaken: String(row.effort_reviewed_calls),
+    reason:
+      `effort delta ${effortDelta(row)} reached the ${EFFORT_REVIEW_DELTA_CALLS}-call review `
+      + `threshold without the task advancing; queued for the PM's out-of-band look (the agent `
+      + `is not interrupted by this)`,
+  });
+  return true;
+}
+
+/**
+ * Every task whose queued request is still PENDING (baseline unmoved since it was filed) —
+ * the set `runPMReview` hands to `runEffortReview`, and the set that bypasses that loop's
+ * 10-minute cadence gate (T79d's brief: "triggered by the queue, not gated on the interval").
+ * A correlated subquery per row, not a JOIN+GROUP BY: `work` is small enough on any real box
+ * that this reads clearly, and it mirrors the poke ladder's own "read the newest matching
+ * event" shape (`work/poke-ladder.ts:lastPoke`) rather than inventing a second one.
+ */
+function findPendingEffortReviewTaskIds(): string[] {
+  try {
+    const rows = getDb().prepare(`
+      SELECT w.id AS id, w.effort_reviewed_calls AS baseline,
+             (SELECT json_extract(e.payload, '$.action_taken')
+                FROM work_events e
+               WHERE e.work_id = w.id AND e.kind = 'audit'
+                 AND json_extract(e.payload, '$.entry_kind') = 'effort_review_requested'
+               ORDER BY e.id DESC LIMIT 1) AS requested_baseline
+        FROM work w
+       WHERE w.effort_calls - w.effort_reviewed_calls >= ?
+    `).all(EFFORT_REVIEW_DELTA_CALLS) as Array<{ id: string; baseline: number; requested_baseline: string | null }>;
+    return rows
+      .filter((r) => r.requested_baseline !== null && Number(r.requested_baseline) === r.baseline)
+      .map((r) => r.id);
+  } catch (err) {
+    logger.warn('findPendingEffortReviewTaskIds failed (non-fatal, retried next tick)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+}
+
+/**
+ * The last ~20 `work_events` for this task, newest first — the spine's own record of what
+ * actually happened to the row, independent of anything a chatty prose trail might editorialize.
+ */
+function recentWorkEventLines(taskId: string, limit = 20): string {
+  const rows = getDb().prepare(
+    `SELECT kind, actor, payload, created_at FROM work_events WHERE work_id = ? ORDER BY id DESC LIMIT ?`,
+  ).all(taskId, limit) as Array<{ kind: string; actor: string; payload: string | null; created_at: number }>;
+  if (rows.length === 0) return '  (no work_events recorded for this task yet)';
+  return rows.map((r) => {
+    const when = new Date(r.created_at).toISOString();
+    let payload = r.payload ?? '';
+    if (payload.length > 200) payload = payload.slice(0, 200) + '…';
+    return `  [${when}] [${r.actor}] ${r.kind} ${payload}`;
+  }).join('\n');
+}
+
+/**
+ * A sample of the assignee's OWN recent activity. CHOICE, DOCUMENTED (T79d's brief asks for
+ * this explicitly): the cheapest honest source is the assignee's own recent `messages` rows,
+ * unscoped by `messages.task_id`. That column exists (migration 112) but is only populated by
+ * specific engine-authored rows (see `memory/message-store.ts`'s `EngineEventWork`), never by
+ * an agent's ordinary assistant/tool turns — so filtering on it here would silently return
+ * nothing for the common case. What DOES make an agent's own recent messages a fair proxy for
+ * "activity attributable to this task" is the effort meter's own resolution of "current task":
+ * `agent/v2/steps/execute/tracker-counting.ts`'s `resolveCurrentClaimedTaskId` charges calls
+ * to whichever ONE task is the agent's most-recently-touched claim, so an agent working one
+ * task at a time (the common case) has its recent messages genuinely be about this task. This
+ * mirrors the exact query shape already used a few hundred lines up in this same file for the
+ * pause-validation report's "agent's last user-facing message" — widened from 1 row to a
+ * small sample, never invented fresh.
+ */
+function recentAssigneeActivityLines(assignedTo: string | null, limit = 10): string {
+  if (!assignedTo) return '  (task is unassigned)';
+  const rows = getDb().prepare(
+    `SELECT role, content, created_at FROM messages
+      WHERE agent_id = ? AND role IN ('assistant', 'tool')
+      ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+  ).all(assignedTo, limit) as Array<{ role: string; content: string; created_at: string }>;
+  if (rows.length === 0) return '  (no recent activity recorded for the assignee)';
+  return rows.map((r) => {
+    const snippet = (r.content.length > 200 ? r.content.slice(0, 200) + '…' : r.content).replace(/\s+/g, ' ');
+    return `  [${r.created_at}] [${r.role}] ${snippet}`;
+  }).join('\n');
+}
+
+function buildEffortReviewPrompt(
+  taskId: string,
+  row: { title: string; goal: string | null; status: string; effort_calls: number; effort_reviewed_calls: number },
+  assignedTo: string | null,
+): string {
+  const delta = effortDelta(row);
+  return [
+    `[ENGINE — EFFORT REVIEW, OUT OF BAND] Task "${row.title}" (${taskId}) has burned ${delta} `
+      + `tool calls since it last genuinely advanced (lifetime ${row.effort_calls}, baseline `
+      + `${row.effort_reviewed_calls}) — past the ${EFFORT_REVIEW_DELTA_CALLS}-call review threshold.`,
+    `Status: ${row.status}. Goal: ${row.goal ?? '(no goal recorded)'}.`,
+    '',
+    'The assignee is NOT interrupted by this review and does not know it is happening. Judge from the record alone.',
+    '',
+    'Recent task events (newest first, up to 20):',
+    recentWorkEventLines(taskId),
+    '',
+    "A sample of the assignee's recent activity (newest first, up to 10; may include other tasks if it juggles more than one):",
+    recentAssigneeActivityLines(assignedTo),
+    '',
+    'Judge ONE thing: is this task genuinely ADVANCING (e.g. a long sweep making real '
+      + "incremental progress that hasn't hit a status change yet) or CIRCLING (repeating the "
+      + 'same calls with nothing new landing)?',
+    '',
+    'Reply with ONLY a JSON object and nothing else — no tool calls, no other text:',
+    '{"advancing": true or false, "reason": "one or two sentences"}',
+  ].join('\n');
+}
+
+/**
+ * Parse the PM's reply defensively — the same style `renderSmellFlag` and the evidence-array
+ * parse above it already use in this file (try/catch, a sentinel on failure, never a throw).
+ * `null` means "no usable verdict landed"; the caller leaves the baseline untouched, so the
+ * SAME pending request is retried the next time `runPMReview` runs, rather than the review
+ * being silently lost or a guess being wired to either action.
+ */
+function parseEffortVerdict(text: string | null | undefined): { advancing: boolean; reason: string } | null {
+  if (!text) return null;
+  try {
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    const parsed = JSON.parse(match[0]) as { advancing?: unknown; reason?: unknown };
+    if (typeof parsed.advancing === 'boolean' && typeof parsed.reason === 'string') {
+      return { advancing: parsed.advancing, reason: parsed.reason };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Run ONE out-of-band effort review, start to finish. RIDES the same plumbing
+ * `runPMReview` uses for its own LLM turn (`insertEngineEventIfAbsent` + `getAgentRuntime()
+ * .handleMessage`) rather than inventing a second way to talk to the PM's model — this is
+ * a SEPARATE message/turn from the situation report, though, because the verdict this needs
+ * is a structured yes/no+reason, not a freeform tool-calling pass.
+ *
+ * advancing=true: `advanceBaseline` + a `task_log` `observation` (actor `'pm'`) carrying the
+ * reason — the audit trail IS the feature, and NOTHING reaches the agent.
+ * advancing=false: the EXISTING rung-2 (`'urgent'`) poke fires, PM's reason embedded in its
+ * text, and the baseline ALSO moves — so a stalled intervention re-reviews after another
+ * `EFFORT_REVIEW_DELTA_CALLS` calls, never every sweep.
+ * No parseable verdict: baseline untouched, nothing sent anywhere, logged — the request stays
+ * pending and `runPMReview`'s next tick tries again.
+ */
+export async function runEffortReview(taskId: string): Promise<void> {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT title, goal, agent_id AS assigned_to, effort_calls, effort_reviewed_calls,
+           ${STATE_TO_STATUS_SQL('state')} AS status
+      FROM work WHERE id = ?
+  `).get(taskId) as {
+    title: string; goal: string | null; assigned_to: string | null;
+    effort_calls: number; effort_reviewed_calls: number; status: string;
+  } | undefined;
+  if (!row) {
+    logger.info('Effort review skipped: task no longer exists', { taskId });
+    return;
+  }
+  // Defensive re-check: something else may have moved the baseline between queueing and this
+  // run (a genuine status transition landed in the meantime) — the review is moot.
+  if (effortDelta(row) < EFFORT_REVIEW_DELTA_CALLS) {
+    logger.info('Effort review skipped: the task advanced on its own since queueing', { taskId });
+    return;
+  }
+
+  const pmId = getPMAgentId();
+  const prompt = buildEffortReviewPrompt(taskId, row, row.assigned_to);
+  insertEngineEventIfAbsent({
+    id: uuidv4(), agentId: pmId, content: prompt, sourceAgentId: null,
+    originIntent: 'effort_review', work: { taskId, runId: null, rootKind: null, rootId: null },
+  });
+
+  try {
+    await getAgentRuntime().handleMessage(pmId, prompt);
+  } catch (err) {
+    logger.error('Effort review: the PM turn failed; the request stays pending and retries next cycle', {
+      taskId, error: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
+
+  const replyRow = db.prepare(
+    `SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+  ).get(pmId) as { content: string } | undefined;
+  const verdict = parseEffortVerdict(replyRow?.content);
+  if (!verdict) {
+    logger.warn('Effort review: the PM reply did not parse as a verdict; the request stays pending and retries next cycle', { taskId });
+    return;
+  }
+
+  if (verdict.advancing) {
+    advanceBaseline(taskId);
+    writeTaskLog({
+      taskId, fromEntity: 'pm', entryKind: 'observation',
+      actionTaken: 'effort review: advancing — baseline extended',
+      reason: verdict.reason,
+    });
+    logger.info('Effort review: PM ruled advancing — baseline extended, assignee untouched', { taskId });
+    return;
+  }
+
+  // CIRCLING — the existing rung-2 ("urgent") poke, PM's reason embedded, the ladder owns
+  // escalation from here on. Fires REGARDLESS of the normal ladder's own idle-time gating:
+  // this signal came from call volume, not idle time, and a task that never goes idle
+  // (because it keeps calling tools) is exactly the case the idle-based ladder cannot catch.
+  const task = getTask(taskId);
+  if (!task || !task.assignedTo) {
+    logger.warn('Effort review: PM ruled circling but the task has no assignee left to poke', { taskId });
+    advanceBaseline(taskId); // still re-arm — never spin every sweep on an orphaned verdict
+    return;
+  }
+  const taskUpdatedMs = new Date(task.updatedAt.includes('Z') ? task.updatedAt : task.updatedAt + 'Z').getTime();
+  const idleSecondsForMessage = Math.max(0, Math.floor((Date.now() - taskUpdatedMs) / 1000));
+  const pokeMessage =
+    `[PM EFFORT REVIEW — ${EFFORT_REVIEW_DELTA_CALLS}+ calls without advancing] ${verdict.reason}\n\n`
+    + buildPokeMessage(task, 'urgent', 2, idleSecondsForMessage);
+
+  try {
+    const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
+    await deliverA2AMessage({
+      intent: 'QUESTION', threadId: uuidv4(), requiresResponse: true,
+      payload: pokeMessage, toAgent: task.assignedTo, fromAgent: pmId,
+    });
+  } catch (err) {
+    logger.error('Effort review: rung-2 poke delivery failed (non-fatal; still recorded below)', {
+      taskId, error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  recordPoke(taskId, pmId, 2, 'urgent', task.assignedTo);
+  broadcast({ type: 'tracker:poke', data: { taskId, agentId: task.assignedTo, pokeType: 'urgent' } });
+  // Re-arm even on intervention: without this, a stalled task would be re-reviewed on EVERY
+  // sweep tick until the agent finally moves it, instead of after another 150 honest-or-not
+  // calls land on top of what just tripped this one (T79d's brief, explicitly).
+  advanceBaseline(taskId);
+  logger.warn('Effort review: PM ruled circling — rung-2 poke fired with the PM reason embedded', { taskId });
+}
+// ════════════════════════════════════════════════════════════════════════════════════════
+
 async function runPMReview(): Promise<void> {
   const now = Date.now();
   const db = getDb();
@@ -1175,7 +1473,12 @@ async function runPMReview(): Promise<void> {
     }
   })();
   const validationPending = pendingValidationCount > 0;
-  if (!validationPending && now - lastLLMReviewAt < LLM_REVIEW_INTERVAL_MS) return;
+  // SLOW-INFERENCE T79d: an effort review rides this loop's plumbing but NOT its 10-minute
+  // clock — the brief is explicit that the review is "triggered by the queue, not gated on
+  // the interval." Computed once, reused below (the gate and the work must agree on the set).
+  const pendingEffortReviewTaskIds = findPendingEffortReviewTaskIds();
+  const effortReviewPending = pendingEffortReviewTaskIds.length > 0;
+  if (!validationPending && !effortReviewPending && now - lastLLMReviewAt < LLM_REVIEW_INTERVAL_MS) return;
 
   // SWEEP CORE-2 item 1: the two per-hour cap gates that stood here are DELETED. See the
   // tombstone above `PM_MAX_MESSAGES`. Nothing rations the validator now — a spin is handled
@@ -1232,6 +1535,15 @@ async function runPMReview(): Promise<void> {
     // marker so the record does not claim a review happened.
     if (validationPending) recordValidatorUnavailable(pmId, pmAgent?.status ?? 'missing');
     return;
+  }
+
+  // ── SLOW-INFERENCE T79d: EFFORT REVIEW — the queue's own tasks, run BEFORE anything else
+  // in this tick. Independent of `activeTasks`/`issues` below (an effort review needs
+  // nothing from the situation-report machinery) and runs ahead of the `issues.length === 0`
+  // "nothing to say" early return further down, so a queued review is never silently skipped
+  // on a tick where the rest of the board is quiet.
+  for (const effortTaskId of pendingEffortReviewTaskIds) {
+    await runEffortReview(effortTaskId);
   }
 
   // ── Engine-level checks (fast, deterministic, no LLM needed) ──
@@ -2153,6 +2465,18 @@ export async function runPokeCheck(): Promise<void> {
     // by task staleness alone. "Is the agent active on THIS task" is the task
     // row's clock, not the agent's chatter.
     const idleSeconds = Math.max(0, Math.floor((now - taskUpdated) / 1000));
+
+    // SLOW-INFERENCE T79d: queue an effort review REGARDLESS of the `assigneeStatus ===
+    // 'working'` guard three lines down. That guard exists to protect POKES — a live turn is
+    // not idle, and poking mid-turn produced exactly the false positives the comment below
+    // this one exists to prevent. An effort review is a different kind of signal and is not
+    // subject to that reasoning: it is out of band BY CONSTRUCTION (T79d's brief) — the PM
+    // reads the durable record and rules without ever touching the assignee's live turn, so
+    // there is nothing here for a turn to be interrupted BY. Skipping this while the agent is
+    // 'working' would in fact hide the exact case the effort meter exists to catch: a wide
+    // loop that never goes idle because it keeps calling tools, so `assigneeStatus` never
+    // leaves 'working' and the idle-based ladder below never fires on it at all.
+    queueEffortReviewIfNeeded(task.id);
 
     // P2 drive boundary: a poke never fires while the assignee is MID-TURN.
     // A live turn is by definition not idle; poking it produced the false

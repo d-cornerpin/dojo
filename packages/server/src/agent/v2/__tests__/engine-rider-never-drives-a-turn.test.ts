@@ -197,6 +197,11 @@ describe('PHASE-2 T10H — the rider set is COMPLETE, enforced against the write
     'pm_review', 'pm_rename', 'validation_check', 'engine_event_expired', 'agent_health',
     'block_validated', 'schedule_run_failed', 'schedule_run_failed_owner', 'learning_loop',
     'healer',
+    // SLOW-INFERENCE T79d: `tracker/pm-agent.ts`'s `runEffortReview` — a deliverable, not a
+    // rider, for the same reason `pm_review` is one: it IS the reason for a turn (a dedicated
+    // PM turn asking for a structured advancing/circling verdict), not content riding a turn
+    // that would happen anyway.
+    'effort_review',
     // STRIP (PHASE-3 T7 Step 2): 'cross_conv_send_echo' left with its writer. It was never
     // reachable by this walk in any case (the echo used insertMessageIfAbsent, not
     // insertEngineEvent*), so it was already a stale entry in this test's own partition.
