@@ -10,7 +10,7 @@ import { apiRootIsBareHost, contractForModel, contractForModelId, type ModelCont
 import { classifyProviderError, isRetryableProviderClass } from './provider-error.js';
 import {
   resolveStreamPatience, resolveTransportTimeouts,
-  STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS,
+  STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, TRANSPORT_DEFAULT_TIMEOUT_MS,
   type StreamPatience,
 } from './stream-patience.js';
 import { scheduleRateLimitRetry } from './rate-limit-retry.js';
@@ -855,7 +855,7 @@ async function buildNativeOllamaMessages(
 
 async function callOllamaModel(
   params: ModelCallParams,
-  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null },
+  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null },
 ): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
   const baseUrl = (modelInfo.providerBaseUrl ?? 'http://localhost:11434').replace(/\/+$/, '');
@@ -940,18 +940,31 @@ async function callOllamaModel(
   }
 
   try {
-    // Combine external abort (from stop button) with internal 5-min timeout.
+    // Combine external abort (from stop button) with internal timeout.
     // Node 22+ AbortSignal.any returns a signal that aborts when EITHER
     // input signal aborts.
     //
-    // T73b, STATED SO IT IS NOT MISTAKEN FOR COVERED: this transport is NOT the one T73b
-    // lifted. It arms no `makeStreamWatchdog`, reads neither patience column, and bounds the
-    // whole call with the flat 300 s below — a ceiling of its own making that happens to land
-    // on the same number as undici's. `callOpenAIModel` and the Anthropic-direct path derive
-    // their transport clock from the provider row; this one does not, and making it do so is
-    // extending T64b to a third transport rather than removing a ceiling that contradicted a
-    // stored value. Ollama's own server has no equivalent declaration to honour today.
-    const timeoutSignal = AbortSignal.timeout(300000);
+    // T79e: this transport is the third one T64b/T73b's patience now reaches. It still arms
+    // no `makeStreamWatchdog` — there is no per-chunk bump/contentStarted machinery here, and
+    // adding one is a bigger change than "honour the stored bound" — so the single flat
+    // `AbortSignal.timeout` below has always had to stand in for BOTH the first-chunk bound
+    // and the idle bound at once. `resolveTransportTimeouts` already folds both into
+    // `bodyTimeoutMs` (it is `max(headersTimeoutMs, bodyTimeoutMs)` by construction, because
+    // `bodyNeeded` is derived from `max(firstChunkMs, idleMs)`), so that one number is the
+    // flat ceiling this call needs — never tighter than either declared bound, exactly the
+    // property `callOpenAIModel` and the Anthropic-direct path get from the same function.
+    //
+    // NULL row, or a declaration the standing 300 s already covers, makes `resolveTransportTimeouts`
+    // return `null` — and this is where R6 (byte-preservation) bites: every provider configured
+    // before today gets EXACTLY `TRANSPORT_DEFAULT_TIMEOUT_MS` (300,000), not some other number
+    // this function's own arithmetic could produce, so "existing providers are unchanged" stays
+    // a fact about the code rather than a hope.
+    const patience = resolveStreamPatience({
+      firstChunkTimeoutMs: modelInfo.firstChunkTimeoutMs,
+      streamIdleTimeoutMs: modelInfo.streamIdleTimeoutMs,
+    });
+    const transportTimeouts = resolveTransportTimeouts(patience);
+    const timeoutSignal = AbortSignal.timeout(transportTimeouts?.bodyTimeoutMs ?? TRANSPORT_DEFAULT_TIMEOUT_MS);
     const signal = params.abortSignal
       ? AbortSignal.any([timeoutSignal, params.abortSignal])
       : timeoutSignal;
