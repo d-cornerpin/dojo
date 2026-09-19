@@ -244,12 +244,22 @@ export function toolsInSameFamily(requested: string, allowed: Set<string>): stri
 const FAMILY_LIST_CAP = 8;
 
 /** Formats a family list capped at `FAMILY_LIST_CAP`, with a "+N more" tail
- * when there are more members than that. */
+ * when there are more members than that.
+ *
+ * FIX-WAVE ITEM 2: the wording claims only a PREFIX, never kinship. `family`
+ * is `familyOf()`'s leading token — for a domain name (`gmail`, `calendar`)
+ * that token genuinely reads as a domain, but for a verb-first name
+ * (`set_capability_model`, `set_channel`, `set_user_presence`, `set_voice`
+ * all bucket as family "set") it is nothing but a shared verb, and "the
+ * 'set' tools you can call" reads as an invented kinship the tools don't
+ * have. Mechanical prefix phrasing is true of every family, verb-first or
+ * domain-first alike, and claims nothing else — no per-family branching
+ * (R5): every family gets this exact phrasing. */
 function formatFamilyList(family: string, members: string[]): string {
   const shown = members.slice(0, FAMILY_LIST_CAP);
   const rest = members.length - shown.length;
   const tail = rest > 0 ? `, +${rest} more` : '';
-  return `no tool by that name; the "${family}" tools you can call: ${shown.join(', ')}${tail}`;
+  return `no tool by that name; tools whose names start with "${family}_": ${shown.join(', ')}${tail}`;
 }
 
 /** The parenthetical pointer for one unknown name: an earned suggestion,
@@ -281,17 +291,25 @@ function pointerFor(name: string, allowed: Set<string>): string {
  * escalation advice (complete_task when this agent can self-complete,
  * otherwise send_to_agent / tell the user), unchanged from before this task.
  *
- * Names that classify as `allowed` are not failures and are silently
- * skipped — a caller should not be passing them in, but this stays honest
- * rather than misreporting one if it slips through.
+ * FIX-WAVE ITEM 3: a name that classifies `allowed` is not a naming or
+ * permission failure, but a caller only reaches this function BECAUSE
+ * something it dispatched failed — so an all-`allowed` input means the tool
+ * really is on this agent's list and STILL failed to dispatch (reachable
+ * only at the execute-site else-branch via a second drift defect: the
+ * membership routing found no case for a name that IS in the registry).
+ * This used to return `""` for that input, which handed the model silence
+ * exactly when something the engine itself got wrong. Now it names the
+ * tool(s) and gives a concrete next step instead.
  */
 export function describeNameFailure(requested: string[], allowed: Set<string>, known: Set<string>): string {
   const unknownNames: string[] = [];
   const notAllowedNames: string[] = [];
+  const allowedNames: string[] = [];
   for (const name of requested) {
     const verdict = classifyToolName(name, allowed, known);
     if (verdict === 'unknown') unknownNames.push(name);
     else if (verdict === 'exists_not_allowed') notAllowedNames.push(name);
+    else allowedNames.push(name);
   }
 
   const sentences: string[] = [];
@@ -317,6 +335,19 @@ export function describeNameFailure(requested: string[], allowed: Set<string>, k
       'This is a permission issue, not a format issue: the tool(s) may exist for other agents but are not on this agent\'s allow list, or a permission filter is stripping them ' +
       '(e.g. web_search/web_fetch require network_domains != "none", exec requires exec_allow non-empty, file_read requires file_read permission). ' +
       escalation,
+    );
+  }
+
+  // FIX-WAVE ITEM 3: every requested name classified `allowed` — nothing to
+  // report as a naming or permission failure, yet the caller only got here
+  // because dispatch itself failed for a name it should have handled. Name
+  // it plainly rather than answering "" and leaving the model with nothing.
+  if (sentences.length === 0 && allowedNames.length > 0) {
+    const plural = allowedNames.length > 1;
+    sentences.push(
+      `${plural ? 'These tool names appear allowed for this agent' : 'This tool name appears allowed for this agent'} but failed to dispatch: ${allowedNames.join(', ')}. ` +
+      'This is an engine defect, not a naming or permission problem: the tool is on this agent\'s allow list and should have run. ' +
+      'Retry the call once; if it fails again the same way, report the tool name to the user rather than guessing at a workaround.',
     );
   }
 

@@ -1335,7 +1335,32 @@ export async function executeGoogleWriteTool(
 
       const url = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}/modify`;
       const result = await googleWrite('POST', url, { addLabelIds: addLabels, removeLabelIds: removeLabels }, agentId, agentName, 'gmail_label', { messageId, addLabels, removeLabels }, undefined, slot);
-      if (!result.ok) return `Error modifying labels: ${result.error}`;
+      if (!result.ok) {
+        // FIX-WAVE ITEM 4 (live-test finding): the bare Gmail 400 — "Invalid
+        // label: Junk E-mail" — has no remedy. A live agent trying to move a
+        // message to spam guessed an Outlook-ism ("Junk E-mail"), got this
+        // text back, and had nowhere to go: the same decision-moment
+        // principle as the tool-NAME fixes elsewhere on this branch, one
+        // layer down at label VALUES. `name` here is the tool AS CALLED
+        // (`gmail_label` or `user_gmail_label`), so the lister/creator
+        // pointers below are derived from it rather than hardcoded — an
+        // agent on the user_ slot gets pointed at user_gmail_list_labels /
+        // user_gmail_create_label, never the base names it cannot call.
+        if (/invalid label/i.test(result.error ?? '')) {
+          const prefix = name.startsWith('user_') ? 'user_' : '';
+          const listerTool = `${prefix}gmail_list_labels`;
+          const createTool = `${prefix}gmail_create_label`;
+          return (
+            `Error modifying labels: ${result.error}. That label does not exist on this Gmail account ` +
+            `(label names are per-account, not shared). Call ${listerTool} to see the account's actual label ` +
+            'names before retrying — do not guess or invent one. Two common cases already have a standard label: ' +
+            'to archive a message, remove_labels: ["INBOX"] (there is no separate "Archive" label to add); to ' +
+            'mark it as junk/spam, add_labels the system label "SPAM". If you intended a genuinely new custom ' +
+            `label, call ${createTool} first, then retry gmail_label with the exact name it returns.`
+          );
+        }
+        return `Error modifying labels: ${result.error}`;
+      }
       return `Labels updated on message ${messageId}`;
     }
 

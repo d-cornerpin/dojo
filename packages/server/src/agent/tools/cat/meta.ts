@@ -63,24 +63,45 @@ export const metaHandlers: ToolHandlerMap = {
       return { content, isError };
     }
     // C27 hook 3: an old (renamed) tool name resolves to the NEW tool's
-    // docs; collect a note so the model learns the new name. Tombstoned
-    // (removed) tools keep their name and fall through to the blocked path.
+    // docs; collect a note so the model learns the new name.
+    //
+    // FIX-WAVE ITEM 1: a TOMBSTONED (removed, no-replacement) name is neither
+    // an alias rename nor a bare naming failure — the alias table already
+    // holds the exact remedial pointer for it (`tools/aliases.ts`'s
+    // `isTombstone` entries, e.g. `tracker_edit_notes`). Previously a
+    // tombstoned name kept its own text and fell straight through to
+    // `describeNameFailure` below, which told the model "no similar tool
+    // name found... the tool was never real" — a lie, since the table holds
+    // the pointer the whole time. Collected separately here and EXCLUDED
+    // from the allowed/unknown classification entirely, mirroring the
+    // execution path's tombstone check ahead of dispatch
+    // (`agent/tools/index.ts:180-182`).
     const aliasDocNotes: string[] = [];
+    const tombstoneTexts: string[] = [];
+    const tombstonedOriginals = new Set<string>();
     const canonicalRequested = requestedTools.map((t) => {
       const r = resolveToolAlias(t, {});
-      if (r.tombstone) return t;
+      if (r.tombstone) {
+        tombstonedOriginals.add(t);
+        tombstoneTexts.push(r.tombstone);
+        return t;
+      }
       if (r.name !== t) aliasDocNotes.push(`"${t}" is now "${r.name}"`);
       return r.name;
     });
-    // Now intersect with the agent's accessible tools.
+    const tombstoneNote = tombstoneTexts.length > 0 ? tombstoneTexts.join(' ') : null;
+    // Now intersect with the agent's accessible tools. Tombstoned names are
+    // dropped from this set BEFORE the allowed/unknown split, so they can
+    // land in neither group — their pointer text is surfaced on its own below.
+    const nonTombstoneRequested = canonicalRequested.filter(t => !tombstonedOriginals.has(t));
     const allowedToolNames = new Set(getFilteredTools(agentId).map(t => t.name));
     // T80a: the global tool universe getFilteredTools filters FROM — so a
     // requested name absent from BOTH sets is classified `unknown` (a naming
     // problem) rather than lumped in with names that exist for other agents
     // but not this one (`exists_not_allowed`, a permission problem).
     const knownToolNames = new Set(getAllToolDefinitions().map(t => t.name));
-    const filteredTools = canonicalRequested.filter(t => allowedToolNames.has(t));
-    const blockedTools = canonicalRequested.filter(t => !allowedToolNames.has(t));
+    const filteredTools = nonTombstoneRequested.filter(t => allowedToolNames.has(t));
+    const blockedTools = nonTombstoneRequested.filter(t => !allowedToolNames.has(t));
     if (filteredTools.length === 0) {
       // T80a: the incident — an agent guessed five tool names, the engine
       // told it every one of them was a PERMISSION problem, and it reported
@@ -88,10 +109,13 @@ export const metaHandlers: ToolHandlerMap = {
       // classifies each requested name and reports naming failures and
       // permission failures with DIFFERENT wording and DIFFERENT next steps,
       // instead of one blanket "this is a permission issue" for both.
+      const namingFailureText = blockedTools.length > 0
+        ? describeNameFailure(blockedTools, allowedToolNames, knownToolNames)
+        : '';
       content =
         `Error: none of the requested tools are accessible to this agent. ` +
         `Requested: [${requestedTools.join(', ')}]. ` +
-        describeNameFailure(canonicalRequested, allowedToolNames, knownToolNames);
+        [namingFailureText, tombstoneNote].filter(Boolean).join(' ');
       isError = true;
       return { content, isError };
     }
@@ -109,6 +133,11 @@ export const metaHandlers: ToolHandlerMap = {
     // same bracket-note placement/format as the aliasDocNotes note above.
     if (blockedTools.length > 0 && !content.startsWith('Error')) {
       content += `\n\n[Engine note: ${describeNameFailure(blockedTools, allowedToolNames, knownToolNames)}]`;
+    }
+    // FIX-WAVE ITEM 1: a tombstoned name's pointer, verbatim, in its own
+    // note — never folded into the naming-failure sentence above it.
+    if (tombstoneNote && !content.startsWith('Error')) {
+      content += `\n\n[Engine note: ${tombstoneNote}]`;
     }
     isError = content.startsWith('Error');
     return { content, isError };
