@@ -959,20 +959,44 @@ async function callOllamaModel(
     // before today gets EXACTLY `TRANSPORT_DEFAULT_TIMEOUT_MS` (300,000), not some other number
     // this function's own arithmetic could produce, so "existing providers are unchanged" stays
     // a fact about the code rather than a hope.
-    const patience = resolveStreamPatience({
-      firstChunkTimeoutMs: modelInfo.firstChunkTimeoutMs,
-      streamIdleTimeoutMs: modelInfo.streamIdleTimeoutMs,
-    });
+    //
+    // T79e FIX ROUND — THE ABORT SIGNAL ALONE WAS NOT ENOUGH. Node's built-in `fetch` runs on
+    // undici's GLOBAL dispatcher unless one is explicitly attached via `init.dispatcher`, and
+    // that global dispatcher carries its OWN independent `headersTimeout`/`bodyTimeout`
+    // (unconfigured default: 300,000, same fact `stream-patience.ts`'s header documents). An
+    // `AbortSignal` and a dispatcher clock are two unrelated timers racing the same socket —
+    // whichever fires first wins — so deriving only the signal left a declared 600 s row still
+    // dying at ~300 s in production, the exact defect this task exists to fix. The fix reuses
+    // `transportClientOptions`, the SAME cache-by-clock undici `Agent` machinery `getClient`
+    // and `getOpenAIClient` already use, rather than a second Agent-construction path: one
+    // provider declaring more patience must not multiply the number of ways an Agent gets
+    // built for it. A NULL row (or a declaration the standing transport already covers) gets
+    // `transport === null`, so no `dispatcher` key is set at all — the call goes out on
+    // undici's global dispatcher exactly as it always has, which is R6 for the client
+    // configuration, not just the abort duration.
+    const patience = resolveStreamPatience(modelInfo);
     const transportTimeouts = resolveTransportTimeouts(patience);
     const timeoutSignal = AbortSignal.timeout(transportTimeouts?.bodyTimeoutMs ?? TRANSPORT_DEFAULT_TIMEOUT_MS);
     const signal = params.abortSignal
       ? AbortSignal.any([timeoutSignal, params.abortSignal])
       : timeoutSignal;
+    const transport = transportClientOptions(patience);
+    // Node's global `RequestInit.dispatcher` is typed off `undici-types` (bundled with
+    // `@types/node`) — a separately-versioned package from the `undici` npm dependency this
+    // file imports `Agent` from for the SDK clients above. The two `Dispatcher` interfaces
+    // have drifted (a `FormData` iterator shape, at this version pairing) enough that TS
+    // refuses the direct assignment even though the identical `Agent` instance already flows
+    // through an equivalent field for the OpenAI/Anthropic clients, whose own `fetchOptions`
+    // typing is looser. The cast is narrow — this one field, to the exact type Node's own
+    // `fetch` declares for it — not a blanket `any`, and is runtime-verified by this task's
+    // driven tests (a real `Agent`'s `connect` event firing on a call built with it).
+    const dispatcher = transport?.fetchOptions.dispatcher as NonNullable<RequestInit['dispatcher']> | undefined;
     const response = await fetch(`${baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody),
       signal,
+      ...(dispatcher ? { dispatcher } : {}),
     });
 
     if (!response.ok) {
