@@ -10,9 +10,21 @@
 //
 // These tests pin `packages/server/src/tools/name-help.ts`, the shared leaf
 // every tool-name-failure text now goes through, against that incident and
-// against the owner's ambiguity resolutions (R1-R8 in the task brief).
+// against the owner's ambiguity resolutions.
+//
+// REVISION NOTE: an earlier version of this suite pinned a RANKING —
+// `suggestToolNames` had to rank `user_gmail_label` first for all five
+// guesses, via a small verb-synonym table asserting label ≈ tag ≈ mark ≈
+// add ≈ update. The owner withdrew that requirement: two of the five
+// guesses (`user_gmail_update`, `user_gmail_modify`) share no substring and
+// no token with the real tool's name, so making them rank it first is a
+// SEMANTIC GUESS, not a fact, and would misfire on an untested family. The
+// fix pins a weaker, honest claim instead: the real name surfaces
+// SOMEWHERE in the failure text for all five guesses — as an earned lexical
+// suggestion where one exists, otherwise via family enumeration (a plain
+// listing of the real tools sharing the guess's leading segment).
 import { describe, it, expect } from 'vitest';
-import { classifyToolName, suggestToolNames, describeNameFailure } from '../name-help.js';
+import { classifyToolName, suggestToolNames, toolsInSameFamily, describeNameFailure } from '../name-help.js';
 
 // The allowed set the brief pins the five incident guesses against: the real
 // tool plus "realistic neighbors" a Gmail-label-capable agent would plausibly
@@ -36,6 +48,11 @@ const INCIDENT_GUESSES = [
   'gmail_label_add',
   'gmail_add_label',
 ];
+
+// The two guesses scoring alone cannot rescue: no substring, no shared
+// token with "label" — only family enumeration surfaces the real tool.
+const LEXICALLY_UNEARNED_GUESSES = ['user_gmail_update', 'user_gmail_modify'];
+const LEXICALLY_EARNED_GUESSES = INCIDENT_GUESSES.filter((g) => !LEXICALLY_UNEARNED_GUESSES.includes(g));
 
 describe('classifyToolName', () => {
   it('calls a name in the allow list allowed', () => {
@@ -61,8 +78,15 @@ describe('classifyToolName', () => {
   });
 });
 
-describe('suggestToolNames — the five incident guesses', () => {
-  it.each(INCIDENT_GUESSES)('ranks user_gmail_label first for the guess %s', (guess) => {
+describe('describeNameFailure — the real tool surfaces somewhere for all five incident guesses', () => {
+  it.each(INCIDENT_GUESSES)('mentions user_gmail_label in the failure text for guess %s', (guess) => {
+    const text = describeNameFailure([guess], GMAIL_LABEL_ALLOWED, new Set(GMAIL_LABEL_ALLOWED));
+    expect(text).toContain('user_gmail_label');
+  });
+});
+
+describe('suggestToolNames — lexically earned guesses rank the real tool first', () => {
+  it.each(LEXICALLY_EARNED_GUESSES)('ranks user_gmail_label first for the guess %s', (guess) => {
     const suggestions = suggestToolNames(guess, GMAIL_LABEL_ALLOWED);
     expect(suggestions[0]).toBe('user_gmail_label');
   });
@@ -71,6 +95,45 @@ describe('suggestToolNames — the five incident guesses', () => {
     for (const guess of INCIDENT_GUESSES) {
       expect(suggestToolNames(guess, GMAIL_LABEL_ALLOWED).length).toBeLessThanOrEqual(3);
     }
+  });
+});
+
+describe('suggestToolNames — lexically unearned guesses get no suggestion at all (owner ruling, withdrawn synonym table)', () => {
+  it.each(LEXICALLY_UNEARNED_GUESSES)('returns no suggestions for %s — nothing shares a substring or a same-family token with anything allowed', (guess) => {
+    expect(suggestToolNames(guess, GMAIL_LABEL_ALLOWED)).toEqual([]);
+  });
+
+  it('never suggests work_update for a gmail-family guess, even though "update" is a literal shared word', () => {
+    // This is the exact false-positive the withdrawn verb-synonym table
+    // could not avoid: "update" is a genuine substring match against
+    // work_update, but work_update is a DIFFERENT family entirely. A
+    // cross-family lexical coincidence must never be suggested.
+    for (const guess of LEXICALLY_UNEARNED_GUESSES) {
+      expect(suggestToolNames(guess, GMAIL_LABEL_ALLOWED)).not.toContain('work_update');
+    }
+  });
+});
+
+describe('toolsInSameFamily — the honest fallback for the hard cases', () => {
+  it.each(LEXICALLY_UNEARNED_GUESSES)('lists the real gmail tools, including user_gmail_label, for %s', (guess) => {
+    const family = toolsInSameFamily(guess, GMAIL_LABEL_ALLOWED);
+    expect(family).toContain('user_gmail_label');
+  });
+
+  it('draws only from the allowed set, never from a global registry', () => {
+    const allowed = new Set(['user_gmail_read', 'user_gmail_search']);
+    const family = toolsInSameFamily('user_gmail_update', allowed);
+    expect(family.sort()).toEqual(['user_gmail_read', 'user_gmail_search']);
+  });
+
+  it('caps the listing at 8 members with a "+N more" tail when there are more', () => {
+    const bigFamily = new Set(Array.from({ length: 10 }, (_, i) => `user_gmail_${String.fromCharCode(97 + i)}`));
+    const text = describeNameFailure(['user_gmail_zzz'], bigFamily, bigFamily);
+    expect(text).toMatch(/\+2 more/);
+  });
+
+  it('is empty when the requested name has no recognizable family segment overlap', () => {
+    expect(toolsInSameFamily('zzz_qqq_wibble', GMAIL_LABEL_ALLOWED)).toEqual([]);
   });
 });
 
@@ -88,10 +151,16 @@ describe('suggestToolNames — suggestions come only from the allowed set (R4)',
   });
 });
 
-describe('suggestToolNames — a confidently wrong suggestion is worse than none (R3)', () => {
-  it('returns no suggestions when the requested name shares no token and no substring with anything allowed', () => {
-    const suggestions = suggestToolNames('zzz_qqq_wibble', GMAIL_LABEL_ALLOWED);
-    expect(suggestions).toEqual([]);
+describe('describeNameFailure — a name with no family overlap and no close match says plainly it may be wrong (owner ruling)', () => {
+  const text = describeNameFailure(['zzz_qqq_wibble'], GMAIL_LABEL_ALLOWED, new Set(GMAIL_LABEL_ALLOWED));
+
+  it('offers neither a suggestion pointer nor a family list', () => {
+    expect(text).not.toMatch(/did you mean/);
+    expect(text).not.toMatch(/tools you can call/);
+  });
+
+  it('says plainly the name may be wrong', () => {
+    expect(text).toMatch(/name may simply be wrong/);
   });
 });
 
