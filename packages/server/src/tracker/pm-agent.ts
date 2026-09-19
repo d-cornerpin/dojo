@@ -1429,12 +1429,21 @@ export async function runEffortReview(taskId: string): Promise<void> {
 
   const prompt = buildEffortReviewPrompt(taskId, row, row.assigned_to);
   // FIX ROUND, Finding 2, ruling (b): the correlation boundary, captured BEFORE dispatch. The
-  // read-back below only considers PM messages with a HIGHER rowid than this — never `created_
+  // read-back below only considers PM messages with a HIGHER `seq` than this — never `created_
   // at`, for the reason `pendingCirclingVerdict` states above (two writes can share a
   // millisecond; an autoincrement id cannot repeat) — so a stale reply left over from an
   // earlier, unrelated PM turn can never be misread as THIS request's verdict.
-  const dispatchRowid = (db.prepare(
-    `SELECT COALESCE(MAX(rowid), 0) AS m FROM messages WHERE agent_id = ?`,
+  //
+  // T79 FIX WAVE 2: `seq`, not the bare SQLite `rowid` keyword. PHASE-1 T10
+  // (`133_drop_dead_stores_and_promote_seq.sql`) made `messages.seq` the table's actual
+  // `INTEGER PRIMARY KEY` — `seq` IS the rowid, under the one name every other reader in this
+  // tree uses (`agent/v2/counterparty.ts`'s `WAITING_COLS`, this same file's own poke-history
+  // reads a few hundred lines up). A bare `rowid` still returns the identical integer (SQLite
+  // aliases them), so this is a rename with no behaviour change — pinned by
+  // `memory/__tests__/lane-readers.test.ts`'s "no reader projects a bare `rowid`" conformance
+  // walk, which this exact site was the one violation of.
+  const dispatchSeq = (db.prepare(
+    `SELECT COALESCE(MAX(seq), 0) AS m FROM messages WHERE agent_id = ?`,
   ).get(pmId) as { m: number }).m;
 
   insertEngineEventIfAbsent({
@@ -1452,16 +1461,16 @@ export async function runEffortReview(taskId: string): Promise<void> {
   }
 
   const replyRow = db.prepare(`
-    SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' AND rowid > ?
-     ORDER BY created_at DESC, rowid DESC LIMIT 1
-  `).get(pmId, dispatchRowid) as { content: string } | undefined;
+    SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' AND seq > ?
+     ORDER BY created_at DESC, seq DESC LIMIT 1
+  `).get(pmId, dispatchSeq) as { content: string } | undefined;
   const verdict = parseEffortVerdict(replyRow?.content);
   if (!verdict) {
     logger.warn('Effort review: the PM reply did not parse as a verdict; the request stays pending and retries next cycle', { taskId });
     return;
   }
   // FIX ROUND, Finding 2, ruling (a): a verdict whose echoed task_id does not match is
-  // REJECTED, never applied to the task it happened to be read for. A rowid-scoped mismatch
+  // REJECTED, never applied to the task it happened to be read for. A seq-scoped mismatch
   // should be rare in practice (the boundary above already excludes stale replies), but the
   // schema's whole point is to make a wrong-task application impossible rather than merely
   // unlikely.

@@ -93,13 +93,15 @@ function pokeCount(taskId: string): number {
 }
 
 /** A minimal `messages` table — just the columns `runEffortReview`'s own queries touch.
- *  `rowid` is the correlation boundary (Finding 2 fix), the same idiom `work_events.id`
- *  already uses elsewhere in this tree — an autoincrement, never a clock, so two rows landing
- *  in the same millisecond still order correctly. */
+ *  `seq` is the correlation boundary (Finding 2 fix; T79 FIX WAVE 2 renamed it from a bare
+ *  `rowid` column to the table's REAL primary key name — PHASE-1 T10's promotion, see
+ *  `133_drop_dead_stores_and_promote_seq.sql`), the same idiom `work_events.id` already uses
+ *  elsewhere in this tree — an autoincrement, never a clock, so two rows landing in the same
+ *  millisecond still order correctly. */
 function createMessagesTable(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS messages (
-      rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
       id TEXT, agent_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
