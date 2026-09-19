@@ -98,6 +98,7 @@ import { runPostCallClassify } from './steps/post-call-classify/index.js';
 // the turn decides before the main `try` opens lives there, including the three closures
 // that build the finalize / teardown / preCallGates contexts.
 import { runPreflight } from './steps/preflight/index.js';
+import { noteEngineCheckpoint } from '../../work/engine-checkpoint-note.js';
 
 const logger = createLogger('v2-loop');
 
@@ -651,6 +652,18 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
           createdAt: new Date().toISOString(),
         },
       });
+      // T79a: same reasoning as the turn-budget checkpoint (`pre-call-gates/turn-budget.ts`)
+      // — this checkpoint is about to park the turn and self-continue with whatever the
+      // agent had claimed still in flight. Square the tracker BEFORE scheduling that
+      // continuation, so the next turn's close-out gate does not read "checkpointed" as
+      // "abandoned" and refuse the continuation's own tool calls.
+      try {
+        noteEngineCheckpoint(agentId, 'tool-loop');
+      } catch (checkpointErr) {
+        logger.warn('v2: engine-checkpoint tracker note failed (non-fatal)', {
+          agentId, error: checkpointErr instanceof Error ? checkpointErr.message : String(checkpointErr),
+        }, agentId);
+      }
       // Schedule a self-continuation. Reassembles context fresh, the agent
       // sees its full history including the work it just did and continues
       // naturally. 1s delay lets DB writes settle.

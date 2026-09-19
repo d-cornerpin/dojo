@@ -24,6 +24,7 @@ import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { turnContinuationCounts, queueSelfWake } from '../../../shared-state.js';
 import { type AgentTurnState } from '../../state.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
+import { noteEngineCheckpoint } from '../../../../work/engine-checkpoint-note.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -155,6 +156,19 @@ export async function runTurnTimeBudget(
         createdAt: new Date().toISOString(),
       },
     });
+    // T79a: this checkpoint is about to park the turn with whatever the agent had claimed
+    // still in flight. Square the tracker BEFORE queuing the continuation, so the very next
+    // turn's close-out gate (`preflight/closeout-gate.ts`) does not read "checkpointed" as
+    // "abandoned" and refuse the continuation's own tool calls. Deliberately NOT called on
+    // the cap/death branch above (`turn-continuation-cap`) — a turn that is being STOPPED,
+    // not continued, is a different question T79b owns.
+    try {
+      noteEngineCheckpoint(agentId, 'turn-budget');
+    } catch (checkpointErr) {
+      logger.warn('v2: engine-checkpoint tracker note failed (non-fatal)', {
+        agentId, error: checkpointErr instanceof Error ? checkpointErr.message : String(checkpointErr),
+      }, agentId);
+    }
     // Queue wakeup so handleMessage's finally fires the loop again
     stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
     queueSelfWake(agentId, 'turn-budget-continuation');
