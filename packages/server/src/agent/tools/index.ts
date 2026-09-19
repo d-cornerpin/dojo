@@ -71,8 +71,9 @@ import { resolveAgentRef, resolveGroupRef } from '../tool-helpers.js';
 import { sharePathGuard, pdfInputPaths } from '../path-guards.js';
 import { gatesForCall, ungatedEffectKinds } from './gates.js';
 import { validateToolArgs } from './validate-args.js';
-import { toolDefinitions, toolDefinitionsByName, isBoundaryValidated } from './definitions.js';
+import { toolDefinitions, toolDefinitionsByName, isBoundaryValidated, getAllToolDefinitions } from './definitions.js';
 import { getFilteredTools, getAgentDenySet } from './surface.js';
+import { describeNameFailure } from '../../tools/name-help.js';
 import { handlerFor } from './handlers.js';
 // The registration LOOP over `toolDefinitions` travelled to the definitions
 // leaf with the array it projects; this file keeps only the cap's READER,
@@ -557,7 +558,16 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         content = await executeMicrosoftReadTool(name, args, agentId, dispatchAgentName);
         isError = content.startsWith('Error');
       } else {
-        content = `Unknown tool: ${name}`;
+        // T80a: a model that never called load_tool_docs and instead emitted
+        // a bad name straight from free text (Architecture Rule 1: the
+        // engine enforces, the model follows) reaches here directly. Same
+        // classified truth as the load_tool_docs path — GENERIC, not keyed
+        // on this agent's name landing here: it is `unknown` unless the
+        // name really does exist elsewhere in the platform's tool universe,
+        // in which case it is honestly `exists_not_allowed`.
+        const allowedToolNames = new Set(getFilteredTools(agentId).map(t => t.name));
+        const knownToolNames = new Set(getAllToolDefinitions().map(t => t.name));
+        content = describeNameFailure([name], allowedToolNames, knownToolNames);
         isError = true;
         auditLog(agentId, 'tool_call', name, 'error', 'Unknown tool');
       }

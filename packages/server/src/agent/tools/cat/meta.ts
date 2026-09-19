@@ -37,7 +37,9 @@
 
 import type { ToolHandlerMap } from '../handler.js';
 import { resolveToolAlias } from '../../../tools/aliases.js';
+import { describeNameFailure } from '../../../tools/name-help.js';
 import { getFilteredTools } from '../surface.js';
+import { getAllToolDefinitions } from '../definitions.js';
 
 export const metaHandlers: ToolHandlerMap = {
   async load_tool_docs({ agentId, args }) {
@@ -72,20 +74,24 @@ export const metaHandlers: ToolHandlerMap = {
     });
     // Now intersect with the agent's accessible tools.
     const allowedToolNames = new Set(getFilteredTools(agentId).map(t => t.name));
+    // T80a: the global tool universe getFilteredTools filters FROM — so a
+    // requested name absent from BOTH sets is classified `unknown` (a naming
+    // problem) rather than lumped in with names that exist for other agents
+    // but not this one (`exists_not_allowed`, a permission problem).
+    const knownToolNames = new Set(getAllToolDefinitions().map(t => t.name));
     const filteredTools = canonicalRequested.filter(t => allowedToolNames.has(t));
     const blockedTools = canonicalRequested.filter(t => !allowedToolNames.has(t));
     if (filteredTools.length === 0) {
-      // FN-8: only point at complete_task when this agent actually has it
-      // (allowedToolNames already reflects the completability filter).
-      const blockedEscalation = allowedToolNames.has('complete_task')
-        ? `Ask the user to update this agent's permissions, or call complete_task(status="blocked").`
-        : `Ask the user to update this agent's permissions, use send_to_agent to reach an agent with broader permissions, or tell the user you are blocked.`;
+      // T80a: the incident — an agent guessed five tool names, the engine
+      // told it every one of them was a PERMISSION problem, and it reported
+      // itself "blocked" while holding full access. `describeNameFailure`
+      // classifies each requested name and reports naming failures and
+      // permission failures with DIFFERENT wording and DIFFERENT next steps,
+      // instead of one blanket "this is a permission issue" for both.
       content =
         `Error: none of the requested tools are accessible to this agent. ` +
         `Requested: [${requestedTools.join(', ')}]. ` +
-        `This is a permission issue, not a format issue, the tools may exist for other agents but are not on this agent's allow list, or the permission filter is stripping them ` +
-        `(e.g. web_search/web_fetch require network_domains != "none", exec requires exec_allow non-empty, file_read requires file_read permission). ` +
-        blockedEscalation;
+        describeNameFailure(canonicalRequested, allowedToolNames, knownToolNames);
       isError = true;
       return { content, isError };
     }
@@ -94,12 +100,15 @@ export const metaHandlers: ToolHandlerMap = {
     if (aliasDocNotes.length > 0 && !content.startsWith('Error')) {
       content += `\n\n[Engine note: ${aliasDocNotes.join('; ')}. Docs above are for the new name(s).]`;
     }
-    // If some (but not all) of the requested tools were blocked, append
-    // a note so the agent knows which ones it didn't get and why.
+    // T80a: if some (but not all) of the requested tools were skipped, append
+    // a note naming them — this is the partial-miss path the incident's first
+    // call actually hit (4 requested, 2 real, 2 invented; the invented ones
+    // were folded into a generic "blocked by tools_policy" note that never
+    // said they weren't real names, which taught the agent the invented
+    // style was fine). Same classified wording as the total-miss branch,
+    // same bracket-note placement/format as the aliasDocNotes note above.
     if (blockedTools.length > 0 && !content.startsWith('Error')) {
-      content +=
-        `\n\n[Note: these requested tools were not accessible to this agent and were skipped: ${blockedTools.join(', ')}. ` +
-        `Tools may be blocked by tools_policy or by permission filters (network/file/exec/etc.).]`;
+      content += `\n\n[Engine note: ${describeNameFailure(blockedTools, allowedToolNames, knownToolNames)}]`;
     }
     isError = content.startsWith('Error');
     return { content, isError };
