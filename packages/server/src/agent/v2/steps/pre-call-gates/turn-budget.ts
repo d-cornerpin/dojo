@@ -25,7 +25,7 @@ import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { turnContinuationCounts, queueSelfWake } from '../../../shared-state.js';
 import { type AgentTurnState } from '../../state.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
-import { noteEngineCheckpoint } from '../../../../work/engine-checkpoint-note.js';
+import { noteEngineCheckpoint, pendingCirclingVerdictParkLine } from '../../../../work/engine-checkpoint-note.js';
 import { resolveUnattendedBudget, continuationCapFor } from '../../../unattended-budget.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
 
@@ -226,12 +226,18 @@ export async function runTurnTimeBudget(
       }, agentId);
     }
 
+    // T79 FIX WAVE, FINDING 2: read BEFORE the park message is built, so an undelivered
+    // circling verdict for whatever this agent has claimed rides the SAME tail-side system row
+    // as an honest additional line — the one surface a never-idle agent is guaranteed to read
+    // on its very next turn. `null` (no pending verdict, the common case) leaves `sysMsg`
+    // byte-identical to before this fix.
+    const circlingLine = pendingCirclingVerdictParkLine(agentId);
     const sysMsg = (
       `[System: This turn ran for ${elapsedMin} minutes. Pausing here and continuing on a fresh turn ` +
       `(${continuationCount} of ${cap}). ` +
       `Your earlier conversation has been summarized, pick up where you left off. ` +
       `Check work_update(action="list") for the task you were working on; do not start over.]`
-    );
+    ) + (circlingLine ? `\n\n${circlingLine}` : '');
     const sysMsgId = uuidv4();
     insertMessageIfAbsent({ id: sysMsgId, agentId, role: 'system', content: sysMsg, turnNumber });
     broadcast({

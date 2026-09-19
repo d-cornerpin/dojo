@@ -56,7 +56,7 @@ vi.mock('../../agent/a2a-transport.js', () => ({
   makeThreadId: (seed: string) => `thread-${seed}`,
 }));
 
-import { queueEffortReviewIfNeeded, runEffortReview, runPokeCheck } from '../pm-agent.js';
+import { queueEffortReviewIfNeeded, runEffortReview, runPokeCheck, findPendingEffortReviewTaskIds } from '../pm-agent.js';
 import { EFFORT_REVIEW_DELTA_CALLS } from '../effort-governor.js';
 import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 // The REAL Set `agent/runtime.ts`'s own busy-guard reads (`agent/shared-state.ts`) — imported
@@ -473,5 +473,60 @@ describe('§4 the verdict is correlated: a busy PM defers, a stale reply is igno
     expect(effortRow('mismatch-1').effort_reviewed_calls).toBe(0);
     expect(effortRow('mismatch-2').effort_reviewed_calls).toBe(0);
     expect(deliverA2ASpy).not.toHaveBeenCalled();
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// §5 (T79 FIX WAVE, FINDING 4) — a terminal task is never handed back for review
+// ════════════════════════════════════════════════════════════════════════════════
+
+describe('§5 findPendingEffortReviewTaskIds — the terminal-state filter', () => {
+  function seedOverThreshold(id: string, agentId = 'a1'): void {
+    seedTrackerTask(mockDb.current!, { id, agentId, status: 'in_progress', title: 'Sweep the mailbox' });
+    mockDb.current!.prepare('UPDATE work SET effort_calls = ?, effort_reviewed_calls = 0 WHERE id = ?')
+      .run(EFFORT_REVIEW_DELTA_CALLS, id);
+  }
+
+  it('CONTROL — a genuinely pending in_progress task IS returned', () => {
+    seedOverThreshold('pending-1');
+    expect(queueEffortReviewIfNeeded('pending-1')).toBe(true);
+
+    expect(findPendingEffortReviewTaskIds()).toEqual(['pending-1']);
+  });
+
+  it('the crash window: a transition applied to DONE before advanceBaseline ran is excluded, not handed to the PM', () => {
+    seedOverThreshold('crashed-done');
+    expect(queueEffortReviewIfNeeded('crashed-done')).toBe(true);
+
+    // Simulate the crash: `setTrackerStatus` applied the transition (state -> done) but the
+    // process died before its own `advanceBaseline` call, so the delta is still >= threshold
+    // and the queued request marker is still (falsely) "pending".
+    mockDb.current!.prepare(`UPDATE work SET state = 'done' WHERE id = ?`).run('crashed-done');
+
+    expect(findPendingEffortReviewTaskIds()).toEqual([]);
+  });
+
+  it('the same crash window on a CANCELLED (abandoned) task is also excluded', () => {
+    seedOverThreshold('crashed-cancelled');
+    expect(queueEffortReviewIfNeeded('crashed-cancelled')).toBe(true);
+    mockDb.current!.prepare(`UPDATE work SET state = 'abandoned' WHERE id = ?`).run('crashed-cancelled');
+
+    expect(findPendingEffortReviewTaskIds()).toEqual([]);
+  });
+
+  it('the same crash window on a FALLEN (failed) task is also excluded', () => {
+    seedOverThreshold('crashed-fallen');
+    expect(queueEffortReviewIfNeeded('crashed-fallen')).toBe(true);
+    mockDb.current!.prepare(`UPDATE work SET state = 'failed' WHERE id = ?`).run('crashed-fallen');
+
+    expect(findPendingEffortReviewTaskIds()).toEqual([]);
+  });
+
+  it('a BLOCKED (non-terminal) task with a pending request is still returned — only TERMINAL states are excluded', () => {
+    seedOverThreshold('still-blocked');
+    expect(queueEffortReviewIfNeeded('still-blocked')).toBe(true);
+    mockDb.current!.prepare(`UPDATE work SET state = 'blocked' WHERE id = ?`).run('still-blocked');
+
+    expect(findPendingEffortReviewTaskIds()).toEqual(['still-blocked']);
   });
 });

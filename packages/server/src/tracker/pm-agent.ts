@@ -38,7 +38,7 @@ import { workOperation, type WorkOp } from '../tools/work-verbs.js';
 import { isTerminalTaskStatus } from '../agent/tool-helpers.js';
 // SLOW-INFERENCE T79d: `effort-governor.ts` is a declared LEAF (its own header) — this file
 // may import from it, never the reverse, so no cycle.
-import { effortDelta, advanceBaseline, EFFORT_REVIEW_DELTA_CALLS } from './effort-governor.js';
+import { effortDelta, advanceBaseline, EFFORT_REVIEW_DELTA_CALLS, pendingCirclingVerdict } from './effort-governor.js';
 
 const logger = createLogger('pm-agent');
 
@@ -1210,8 +1210,26 @@ export function queueEffortReviewIfNeeded(taskId: string): boolean {
  * A correlated subquery per row, not a JOIN+GROUP BY: `work` is small enough on any real box
  * that this reads clearly, and it mirrors the poke ladder's own "read the newest matching
  * event" shape (`work/poke-ladder.ts:lastPoke`) rather than inventing a second one.
+ *
+ * T79 FIX WAVE, FINDING 4 (minor): `state NOT IN ('done','failed','abandoned')` — the spine's
+ * own terminal set (`work/store.ts`'s `TERMINAL_STATES`, same three values inlined here as the
+ * literal SQL fragment this codebase already uses at every other terminal-state filter, e.g.
+ * `agent/v2/compile-owed-gate.ts`). Queueing itself only ever happens for an `in_progress`
+ * task (the poke sweep's own `inProgressTasks` loop), but a task can go terminal AFTER a
+ * request is filed and BEFORE this query next runs: `setTrackerStatus` applies the transition
+ * and calls `advanceBaseline` as one unit, but a crash between those two steps leaves the
+ * delta still >= threshold on a task that is already `done`/`cancelled`/`fallen`. Without this
+ * filter, this query would still call it "pending" and hand it to `runEffortReview` for one
+ * wasted PM look at a task nobody can act on any more. `runPMReview`'s own re-check of
+ * `effortDelta` inside `runEffortReview` catches a race the OTHER way (advanced since
+ * queueing, still non-terminal) — this filter is the terminal-state half that check does not
+ * cover, because a terminal task's delta does not fall below the threshold on its own.
+ *
+ * Exported for direct unit testing, the same reason `queueEffortReviewIfNeeded` is: the
+ * terminal-state exclusion is the load-bearing property here and it needs to be provable
+ * without driving a whole `runPMReview` tick.
  */
-function findPendingEffortReviewTaskIds(): string[] {
+export function findPendingEffortReviewTaskIds(): string[] {
   try {
     const rows = getDb().prepare(`
       SELECT w.id AS id, w.effort_reviewed_calls AS baseline,
@@ -1222,6 +1240,7 @@ function findPendingEffortReviewTaskIds(): string[] {
                ORDER BY e.id DESC LIMIT 1) AS requested_baseline
         FROM work w
        WHERE w.effort_calls - w.effort_reviewed_calls >= ?
+         AND w.state NOT IN ('done', 'failed', 'abandoned')
     `).all(EFFORT_REVIEW_DELTA_CALLS) as Array<{ id: string; baseline: number; requested_baseline: string | null }>;
     return rows
       .filter((r) => r.requested_baseline !== null && Number(r.requested_baseline) === r.baseline)
@@ -1342,37 +1361,12 @@ function parseEffortVerdict(text: string | null | undefined): { advancing: boole
   }
 }
 
-/**
- * A circling verdict `runEffortReview` recorded that has not yet reached the assignee as a
- * rung-2 poke. FIX ROUND, Finding 1: `runEffortReview` itself never delivers — see that
- * function's own circling branch — so this is the other half, read by the poke sweep's
- * guarded delivery path.
- *
- * `sinceEventId` is the `work_events.id` (never a timestamp) the verdict was recorded at,
- * for the SAME reason `work/poke-ladder.ts` bounds its own escalation cycle on an event id
- * rather than `created_at`: two writes can land in the same millisecond, an autoincrement id
- * cannot repeat. Returns `null` once a rung-2-or-higher poke has actually gone out since —
- * see `circlingPokeAlreadyDelivered` — so a delivered verdict cannot be re-forced forever.
- */
-function pendingCirclingVerdict(taskId: string): { reason: string; sinceEventId: number } | null {
-  const last = listTaskLog(taskId, { limit: 1, kinds: ['effort_review_intervene'] })[0];
-  if (!last || !last.reason) return null;
-  const sinceEventId = Number(last.id);
-  if (!Number.isFinite(sinceEventId)) return null;
-  if (circlingPokeAlreadyDelivered(taskId, sinceEventId)) return null;
-  return { reason: last.reason, sinceEventId };
-}
-
-/** Has a rung-2-or-higher poke already gone out for this task SINCE the given event id? */
-function circlingPokeAlreadyDelivered(taskId: string, sinceEventId: number): boolean {
-  const row = getDb().prepare(`
-    SELECT 1 FROM work_events
-     WHERE work_id = ? AND kind = 'poke' AND id > ?
-       AND CAST(json_extract(payload, '$.rung') AS INTEGER) >= 2
-     LIMIT 1
-  `).get(taskId, sinceEventId);
-  return !!row;
-}
+// `pendingCirclingVerdict` (the circling-verdict readback) and its own `circlingPokeAlready
+// Delivered` marker check MOVED to `tracker/effort-governor.ts` — T79 FIX WAVE, FINDING 2 —
+// so `work/engine-checkpoint-note.ts` can read the SAME pending verdict at the checkpoint
+// park-message site without importing this file (which pulls in `agent/runtime.ts` and the
+// full A2A transport) from anywhere under `agent/v2/`. Imported below from there; the guarded
+// poke-sweep call site a few hundred lines down is unchanged.
 
 /**
  * Run ONE out-of-band effort review, start to finish. RIDES the same plumbing

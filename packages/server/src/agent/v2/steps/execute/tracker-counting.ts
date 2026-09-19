@@ -35,9 +35,16 @@ import { chargeEffort } from '../../../../tracker/effort-governor.js';
  * every claimed task and picks the STALEST to warn about) and this one is "which row
  * pays for THIS call" — a different question that additionally needs a deterministic
  * pick when more than one task is claimed at once: charge the MOST RECENTLY UPDATED
- * one (`ORDER BY updated_at DESC LIMIT 1`). That is also the task most likely to be
- * the one this iteration's calls were actually for, since a tracker write on it is
- * what would have bumped `updated_at` in the first place.
+ * one (`ORDER BY updated_at DESC, rowid DESC LIMIT 1`). That is also the task most
+ * likely to be the one this iteration's calls were actually for, since a tracker
+ * write on it is what would have bumped `updated_at` in the first place.
+ *
+ * T79 FIX WAVE, FINDING 3 (minor): `, rowid DESC` is the tiebreak. `noteEngineCheckpoint`
+ * (`work/engine-checkpoint-note.ts`) touches every one of an agent's claimed tasks with ONE
+ * shared `now` at a checkpoint, so two tasks can share the exact same `updated_at` — without a
+ * secondary sort the pick between them is whatever order SQLite happens to return, unspecified
+ * and untested. `rowid` is monotonic insertion order, always present on this table (a normal
+ * rowid table, not `WITHOUT ROWID`), and free of ties by construction.
  *
  * Returns `null` when nothing is claimed — charge nothing in that case. Untracked
  * work already has its own governor (the tracker floors: the >3 nudge / >=6
@@ -51,7 +58,7 @@ export function resolveCurrentClaimedTaskId(agentId: string): string | null {
   const row = getDb().prepare(
     `SELECT w.id AS id FROM work w
      WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed'
-     ORDER BY w.updated_at DESC LIMIT 1`,
+     ORDER BY w.updated_at DESC, w.rowid DESC LIMIT 1`,
   ).get(agentId) as { id: string } | undefined;
   return row?.id ?? null;
 }
@@ -86,6 +93,23 @@ export function countTrackerWorkThisIteration(state: AgentTurnState, ctx: Execut
   // still never DISARM the floor (FN-9); they simply no longer COUNT toward it.
   const nonTrackerInThisIter = result.toolCalls.filter(
     (tc) => !isTrackerFamilyCall(tc.name, tc.arguments) && !TRIVIAL_TOOLS.has(tc.name),
+  ).length;
+  // T79 FIX WAVE, FINDING 1 (CRITICAL) — the durable effort meter's OWN count, computed here
+  // but consumed ONLY at the charge site below. `nonTrackerInThisIter` above exists for the
+  // SCAFFOLDING FLOORS (FA-T3's deliberate anti-false-positive carve-out for TRIVIAL_TOOLS —
+  // reconnaissance lookups should not trip the >=6 auto-scaffold), and every floor/nudge that
+  // reads it keeps reading exactly that number, untouched.
+  //
+  // The effort meter has no such reason to look away: a wide loop built entirely of
+  // TRIVIAL_TOOLS calls (varied gmail_search / gmail_inbox / calendar-lookup shapes — the
+  // plan's own motivating scenario, a mailbox sweep re-enumerating forever) is real, ongoing
+  // model spend on a claimed task, and before this fix it charged the meter NOTHING, so on an
+  // uncapped provider row nothing ever stopped it. This count reuses `isTrackerFamilyCall` —
+  // the SAME authoritative tracker-family predicate `trackerInThisIter` above already applies
+  // — and excludes nothing else: every call this iteration that is not a tracker-family call,
+  // TRIVIAL_TOOLS included, is chargeable effort.
+  const chargeableCallsInThisIter = result.toolCalls.filter(
+    (tc) => !isTrackerFamilyCall(tc.name, tc.arguments),
   ).length;
   // The status-mutation OPERATIONS are the signal "agent advanced or closed a
   // task this turn", distinct from broad tracker engagement (which includes
@@ -136,20 +160,24 @@ export function countTrackerWorkThisIteration(state: AgentTurnState, ctx: Execut
         accumulateUntrackedWorkAcrossTurns(agentId, turnConv, nonTrackerInThisIter);
       }
     }
-    // T79c: charge this iteration's counted non-tracker work calls to the agent's
-    // CURRENT claimed task — durably, in the row, where a compaction cannot erase it
-    // (unlike the in-memory cross-turn counter mirrored just above). This is the
-    // complementary half of T79a's engine checkpoint note: that task keeps a claimed
-    // row's `updated_at` honest across a checkpoint-and-continue so it is never
-    // mistaken for abandoned; this counter is what stops that same aliveness from
-    // being spent forever on a task nobody is really advancing. See
-    // `resolveCurrentClaimedTaskId` above for how "current claimed task" is resolved
-    // and why nothing is charged when there isn't one.
-    if (nonTrackerInThisIter > 0) {
-      const claimedTaskId = resolveCurrentClaimedTaskId(agentId);
-      if (claimedTaskId) {
-        chargeEffort(claimedTaskId, nonTrackerInThisIter);
-      }
+  }
+  // T79c (T79 FIX WAVE, FINDING 1): charge this iteration's chargeable work calls to the
+  // agent's CURRENT claimed task — durably, in the row, where a compaction cannot erase it
+  // (unlike the in-memory cross-turn counter mirrored just above). This is the complementary
+  // half of T79a's engine checkpoint note: that task keeps a claimed row's `updated_at` honest
+  // across a checkpoint-and-continue so it is never mistaken for abandoned; this counter is
+  // what stops that same aliveness from being spent forever on a task nobody is really
+  // advancing. See `resolveCurrentClaimedTaskId` above for how "current claimed task" is
+  // resolved and why nothing is charged when there isn't one.
+  //
+  // Deliberately OUTSIDE the `if (nonTrackerInThisIter > 0 || trackerInThisIter > 0)` gate
+  // above: a trivial-only iteration (FINDING 1's mailbox-sweep scenario) trips neither of
+  // those two, so nesting the charge inside that gate — as it stood before this fix — silently
+  // skipped it even after `chargeableCallsInThisIter` was widened to see it.
+  if (chargeableCallsInThisIter > 0) {
+    const claimedTaskId = resolveCurrentClaimedTaskId(agentId);
+    if (claimedTaskId) {
+      chargeEffort(claimedTaskId, chargeableCallsInThisIter);
     }
   }
   // START ACK (NEXT-WAVE item 1, agent-created path): the owner rule is that

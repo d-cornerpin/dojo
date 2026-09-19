@@ -233,6 +233,27 @@ describe('§2 resolveCurrentClaimedTaskId — the charge site\'s "which task pay
     mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(1_700_000_100_000, 'older');
     expect(resolveCurrentClaimedTaskId('a1')).toBe('older');
   });
+
+  // ════════════════════════════════════════════════════════════════════════════════
+  // T79 FIX WAVE, FINDING 3 (minor) — the tiebreak.
+  // ════════════════════════════════════════════════════════════════════════════════
+  it('two claimed tasks sharing the EXACT SAME updated_at (the noteEngineCheckpoint shape — one shared `now` touches every claimed task) resolve deterministically, every time', () => {
+    const sameInstant = 1_700_000_000_000;
+    seedTrackerTask(mockDb.current!, {
+      id: 'seeded-first', agentId: 'a1', status: 'in_progress', updated_at: sameInstant,
+    });
+    seedTrackerTask(mockDb.current!, {
+      id: 'seeded-second', agentId: 'a1', status: 'in_progress', updated_at: sameInstant,
+    });
+
+    // Without a secondary sort key this pick is whatever order SQLite happens to return for a
+    // tied ORDER BY — unspecified, and free to differ across a query planner change or even a
+    // second run. Called repeatedly to prove it never flips.
+    const picks = new Set(Array.from({ length: 5 }, () => resolveCurrentClaimedTaskId('a1')));
+    expect(picks.size, 'the same tie must resolve to the SAME task every time').toBe(1);
+    // `rowid DESC` — later insertion wins the tie, the same direction as `updated_at DESC`.
+    expect([...picks][0]).toBe('seeded-second');
+  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════

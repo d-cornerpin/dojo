@@ -98,7 +98,7 @@ import { runPostCallClassify } from './steps/post-call-classify/index.js';
 // the turn decides before the main `try` opens lives there, including the three closures
 // that build the finalize / teardown / preCallGates contexts.
 import { runPreflight } from './steps/preflight/index.js';
-import { noteEngineCheckpoint } from '../../work/engine-checkpoint-note.js';
+import { noteEngineCheckpoint, pendingCirclingVerdictParkLine } from '../../work/engine-checkpoint-note.js';
 
 const logger = createLogger('v2-loop');
 
@@ -639,10 +639,16 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       logger.warn('v2 hit MAX_TOOL_LOOPS, auto-continuing with fresh turn', {
         agentId, maxLoops: MAX_TOOL_LOOPS,
       }, agentId);
+      // T79 FIX WAVE, FINDING 2: same reasoning as the turn-budget checkpoint's continuation
+      // path — read BEFORE the park message is built, so an undelivered circling verdict rides
+      // this SAME tail-side system row rather than waiting on the poke sweep's 60s tick behind
+      // a `working` guard this never-idle agent may not clear for hours. `null` leaves `sysMsg`
+      // byte-identical to before this fix.
+      const circlingLine = pendingCirclingVerdictParkLine(agentId);
       const sysMsg = (
         `[System: This turn reached ${MAX_TOOL_LOOPS} tool calls. Starting a fresh turn ` +
         `to continue your work. Pick up where you left off.]`
-      );
+      ) + (circlingLine ? `\n\n${circlingLine}` : '');
       const sysMsgId = uuidv4();
       insertMessageIfAbsent({ id: sysMsgId, agentId, role: 'system', content: sysMsg, turnNumber });
       broadcast({

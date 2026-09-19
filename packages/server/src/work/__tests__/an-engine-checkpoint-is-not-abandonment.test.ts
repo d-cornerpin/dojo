@@ -29,8 +29,9 @@ vi.mock('../../db/connection.js', async () => {
 });
 
 import { runMigrations } from '../../db/migrations.js';
-import { listTaskLog } from '../../tracker/task-log.js';
-import { noteEngineCheckpoint } from '../engine-checkpoint-note.js';
+import { listTaskLog, writeTaskLog } from '../../tracker/task-log.js';
+import { noteEngineCheckpoint, pendingCirclingVerdictParkLine } from '../engine-checkpoint-note.js';
+import { pendingCirclingVerdict } from '../../tracker/effort-governor.js';
 import { taskScope } from '../tracker-view.js';
 
 const AGENT = 'kevin';
@@ -198,5 +199,61 @@ describe('an engine checkpoint squares the tracker it interrupts', () => {
       .get('w-on-deck-sibling') as { updated_at: number };
     expect(onDeckRow.updated_at).toBe(stale);
     expect(listTaskLog('w-on-deck-sibling', { kinds: ['observation'] })).toEqual([]);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// T79 FIX WAVE, FINDING 2 — the circling verdict rides the checkpoint park message.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('pendingCirclingVerdictParkLine — a never-idle agent gets the verdict on its own checkpoint', () => {
+  /** Simulates `runEffortReview`'s own circling-branch write (`tracker/pm-agent.ts`): the
+   *  durable `effort_review_intervene` task_log entry `pendingCirclingVerdict` reads back. */
+  function recordCirclingVerdict(taskId: string, reason: string): void {
+    writeTaskLog({ taskId, fromEntity: 'pm', entryKind: 'effort_review_intervene', reason });
+  }
+
+  it('no pending verdict: returns null, the byte-identical-message case', () => {
+    seedWork('w-quiet', { title: 'Quiet task' });
+    expect(pendingCirclingVerdictParkLine(AGENT)).toBeNull();
+  });
+
+  it('a claimed task with a recorded circling verdict: returns a line naming the task and quoting the PM\'s reason, and latches the delivery marker', () => {
+    seedWork('w-circling', { title: 'Sweep the mailbox' });
+    recordCirclingVerdict('w-circling', 'same three calls repeated with nothing new landing');
+
+    const line = pendingCirclingVerdictParkLine(AGENT);
+
+    expect(line, 'a pending circling verdict must produce a line').not.toBeNull();
+    expect(line).toContain('Sweep the mailbox');
+    expect(line).toContain('w-circling');
+    expect(line).toContain('same three calls repeated with nothing new landing');
+
+    // THE LATCH: the SAME read the guarded poke sweep uses now sees this verdict as already
+    // delivered — proven directly against `tracker/effort-governor.ts`'s real export, not a
+    // re-invocation of this function.
+    expect(pendingCirclingVerdict('w-circling'), 'the marker this checkpoint just wrote must be visible to the sweep\'s own read').toBeNull();
+  });
+
+  it('the sweep does NOT redeliver what the checkpoint already surfaced: a second checkpoint call also returns null', () => {
+    seedWork('w-circling-2', { title: 'Long research sweep' });
+    recordCirclingVerdict('w-circling-2', 'circling on the same three files');
+
+    const first = pendingCirclingVerdictParkLine(AGENT);
+    expect(first).toContain('circling on the same three files');
+
+    const second = pendingCirclingVerdictParkLine(AGENT);
+    expect(second, 'already delivered once; a second checkpoint must not re-surface it').toBeNull();
+  });
+
+  it('an agent with no claimed task at all: returns null', () => {
+    expect(pendingCirclingVerdictParkLine('nobody-claims-anything')).toBeNull();
+  });
+
+  it('a DIFFERENT agent\'s circling verdict is never surfaced for this agent', () => {
+    seedWork('w-other-circling', { agent_id: OTHER_AGENT, title: 'Someone else\'s task' });
+    recordCirclingVerdict('w-other-circling', 'not this agent\'s problem');
+
+    expect(pendingCirclingVerdictParkLine(AGENT)).toBeNull();
   });
 });

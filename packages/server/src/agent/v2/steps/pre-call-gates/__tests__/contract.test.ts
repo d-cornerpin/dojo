@@ -110,8 +110,15 @@ vi.mock('../../../../../work/tracker-store.js', async (importOriginal) => ({
 // true, still fine — but a mock makes the NEW 'unattended-budget' call a positive assertion
 // instead of an unobserved side effect).
 const noteEngineCheckpointSpy = vi.fn(() => 0);
+// T79 FIX WAVE, FINDING 2: `turn-budget.ts` now also reads `pendingCirclingVerdictParkLine`
+// from this same module, right before it builds the continuation's park message. Stubbed to
+// `null` (no pending verdict) so every existing assertion in this file about that message's
+// text is completely unaffected — `null` is the one case FINDING 2's own fix leaves the
+// message byte-identical for.
+const pendingCirclingVerdictParkLineSpy = vi.fn(() => null as string | null);
 vi.mock('../../../../../work/engine-checkpoint-note.js', () => ({
   noteEngineCheckpoint: (...a: unknown[]) => noteEngineCheckpointSpy(...(a as [string, string])),
+  pendingCirclingVerdictParkLine: (...a: unknown[]) => pendingCirclingVerdictParkLineSpy(...(a as [string])),
 }));
 
 const escalateUnattendedBudgetTripToPMSpy = vi.fn(async () => {});
@@ -193,6 +200,7 @@ beforeEach(() => {
   insertMessageIfAbsentSpy.mockClear();
   insertEngineEventIfAbsentSpy.mockClear();
   noteEngineCheckpointSpy.mockClear();
+  pendingCirclingVerdictParkLineSpy.mockClear();
   escalateUnattendedBudgetTripToPMSpy.mockClear();
   // T79b fix round: same discipline as `checkAndCompactSpy` above — re-arm the THROWING
   // default every test, so the one describe block below that overrides it with a fake,

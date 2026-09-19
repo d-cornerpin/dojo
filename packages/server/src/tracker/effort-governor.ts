@@ -29,7 +29,22 @@
 // attribution has no existing seam to ride, unlike calls (already counted at
 // `tracker-counting.ts`'s RC-19 cross-turn accumulator). It is not built until a
 // measured need names it.
-
+//
+// T79 FIX WAVE, FINDING 2 ADDED A THIRD READER, STILL A LEAF: `pendingCirclingVerdict` (below)
+// reads the audit trail via `work/audit-trail.ts`'s `readAuditTrail` DIRECTLY, not through
+// `tracker/task-log.ts`'s `listTaskLog` wrapper (a thin `readAuditTrail(...).map(mapRow)` —
+// measured, not assumed). `task-log.ts` itself imports `gateway/ws.js` for its OWN broadcast
+// calls elsewhere in that file; pulling it in here would hand every caller of the charge/
+// advance sites (which is most of the write-side tracker) a NEW transitive edge to the
+// websocket gateway, and one real test file's `vi.mock('gateway/ws.js', () => ({ broadcast }))`
+// (a plain top-level closure variable, not `vi.hoisted`) broke the instant that edge existed —
+// Vitest hoists `vi.mock` factories above the file's own local declarations, so a factory
+// invoked earlier than before throws on the not-yet-initialized closure variable. `work/audit-
+// trail.ts` imports only `db/connection.js`, `work/store.js` and `work/tracker-view.ts` — none
+// of them the gateway — so reading it directly keeps this module the minimal leaf its header
+// above already promises.
+import { getDb } from '../db/connection.js';
+import { readAuditTrail } from '../work/audit-trail.js';
 import { writeEffortCharge, writeEffortBaseline } from '../work/effort-meter.js';
 
 /**
@@ -92,4 +107,56 @@ export function effortDelta(row: { effort_calls: number; effort_reviewed_calls: 
  */
 export function advanceBaseline(taskId: string): void {
   writeEffortBaseline(taskId);
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// T79 FIX WAVE, FINDING 2 — MOVED HERE FROM `tracker/pm-agent.ts` (T79d's original home),
+// so the checkpoint side (`work/engine-checkpoint-note.ts`) can read a pending circling
+// verdict TOO, without importing `pm-agent.ts` from the v2 loop — a module `pm-agent.ts`
+// itself pulls in (`agent/runtime.ts`, the full A2A transport, the scheduler) would be a real
+// import cycle the instant anything under `agent/v2/` reached back into it. This module is
+// already the declared LEAF both the charge site and the advance site import without a cycle
+// (see the file header above); `pendingCirclingVerdict` reading `work/audit-trail.ts` directly
+// (see the import comment above for why NOT `tracker/task-log.ts`) adds nothing new to that
+// shape.
+//
+// `pm-agent.ts`'s own poke-sweep fill-in (the guarded delivery path, unchanged by this move)
+// now imports `pendingCirclingVerdict` from here instead of defining it locally — one
+// function, two readers, the exact "one place" this whole plan's other leaves already argue
+// for.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** Has a rung-2-or-higher poke already gone out for this task SINCE the given event id? */
+function circlingPokeAlreadyDelivered(taskId: string, sinceEventId: number): boolean {
+  const row = getDb().prepare(`
+    SELECT 1 FROM work_events
+     WHERE work_id = ? AND kind = 'poke' AND id > ?
+       AND CAST(json_extract(payload, '$.rung') AS INTEGER) >= 2
+     LIMIT 1
+  `).get(taskId, sinceEventId);
+  return !!row;
+}
+
+/**
+ * A circling verdict `runEffortReview` (`tracker/pm-agent.ts`) recorded that has not yet
+ * reached the assignee. Two readers deliver it, and BOTH latch through the same marker: the
+ * poke sweep's guarded fill-in (behind the `assigneeStatus === 'working'` guard) and the
+ * engine checkpoint park-message line (`work/engine-checkpoint-note.ts`, T79 FIX WAVE FINDING
+ * 2 — surfaces it at the one moment a never-idle agent is guaranteed to read fresh context).
+ *
+ * `sinceEventId` is the `work_events.id` (never a timestamp) the verdict was recorded at, for
+ * the same reason `work/poke-ladder.ts` bounds its own escalation cycle on an event id rather
+ * than `created_at`: two writes can land in the same millisecond, an autoincrement id cannot
+ * repeat. Returns `null` once a rung-2-or-higher poke has actually gone out since — see
+ * `circlingPokeAlreadyDelivered` — so a delivered verdict cannot be re-forced forever, by
+ * EITHER reader: whichever one delivers first records the SAME rung>=2 marker the other one
+ * checks, so the two can never both deliver the same verdict.
+ */
+export function pendingCirclingVerdict(taskId: string): { reason: string; sinceEventId: number } | null {
+  const last = readAuditTrail(taskId, { limit: 1, kinds: ['effort_review_intervene'] })[0];
+  if (!last || !last.reason) return null;
+  const sinceEventId = last.id;
+  if (!Number.isFinite(sinceEventId)) return null;
+  if (circlingPokeAlreadyDelivered(taskId, sinceEventId)) return null;
+  return { reason: last.reason, sinceEventId };
 }
