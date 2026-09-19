@@ -58,7 +58,11 @@ export function createWorkTable(db: DatabaseType.Database): void {
       paused_until INTEGER, status_before_pause TEXT,
       last_run_at INTEGER, missed_runs_paused_at INTEGER,
       last_activity_turn INTEGER, last_activity_at INTEGER, last_activity_outcome TEXT,
-      last_answered_turn INTEGER, last_answered_at INTEGER, last_delivery_summary TEXT
+      last_answered_turn INTEGER, last_answered_at INTEGER, last_delivery_summary TEXT,
+      -- SLOW-INFERENCE T79c (migration 165): the durable effort meter. Monotonic total +
+      -- moving baseline, so effort_calls minus effort_reviewed_calls is "how much has this
+      -- task burned since it last genuinely advanced."
+      effort_calls INTEGER NOT NULL DEFAULT 0, effort_reviewed_calls INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS work_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, work_id TEXT NOT NULL,

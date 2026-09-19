@@ -37,6 +37,10 @@ import {
   statusToState, stateToStatus, TRACKER_ROOT_KIND, WORK_EVENT,
   type TrackerStatus,
 } from './tracker-view.js';
+// SLOW-INFERENCE T79c: the durable effort meter's ADVANCE half. `effort-governor.ts` is a
+// leaf (imports only the DB connection), so importing it here creates no cycle with the
+// CHARGE half at `agent/v2/steps/execute/tracker-counting.ts` — see that module's header.
+import { advanceBaseline } from '../tracker/effort-governor.js';
 
 const logger = createLogger('tracker-store');
 
@@ -423,6 +427,21 @@ export function setTrackerStatus(
       }), 'setTrackerStatus: pause bookkeeping cleared', { taskId: id });
     }
   });
+  // SLOW-INFERENCE T79c: a genuine advance moves the effort baseline. `result.kind`
+  // is `'applied'` ONLY when `transition()` actually moved `work.state` — never on a
+  // refusal, and never on G4's "already in that state" no-op. That is what makes a
+  // looping agent's same-status spam (the tool's own `[NO-OP] ... no change made`
+  // text at `tracker/tools.ts`) unable to reset its own meter: `setTrackerStatus` is
+  // this platform's ONE status writer for the tracker's two nouns (doc comment
+  // above), so `work_update(action="status")`, `work_update(action="complete_step")`
+  // and `work_update(action="close_project")` — and every PM validate/override path
+  // — all clear this same gate. Rung AFTER `withUnit`, deliberately, the same reason
+  // `transition()` itself rings its own post-transaction effects afterward: pure
+  // bookkeeping must never be able to fail or roll back a state change that has
+  // already been decided.
+  if (result.kind === 'applied') {
+    advanceBaseline(id);
+  }
   return result;
 }
 

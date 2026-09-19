@@ -322,6 +322,22 @@ const STEPS_BY_PATH: Declaration[] = [
       + '"exactly one of these in THIS file", so importing the shared derivation here would '
       + 'delete the guarantee in order to satisfy the census.',
   },
+  {
+    rel: 'packages/server/src/tracker/__tests__/effort-accumulates-until-the-task-advances.test.ts',
+    verdict: 'cannot-go-quiet',
+    why: 'IT GROWS NO WALK — there is no readFileSync/readdirSync of the step packages here '
+      + 'at all (this file does not even set readsSource). The one occurrence of '
+      + 'agent/v2/steps is a plain named import of resolveCurrentClaimedTaskId from '
+      + 'agent/v2/steps/execute/tracker-counting.js (SLOW-INFERENCE T79c\'s charge-site '
+      + 'resolution), used directly as a function call, not read as text. A PHASE-6 cut that '
+      + 'relocated that file could not make this guard go quiet the way a hand-rolled text '
+      + 'walk can: the import would fail to RESOLVE, which TypeScript refuses at compile '
+      + 'time — louder and earlier than even a readFileSync ENOENT at test-run time. The '
+      + 'failure mode this census exists to prevent (a corpus silently narrowing until a '
+      + 'negative clause passes vacuously) cannot occur here because there is no corpus and '
+      + 'no negative clause over step-package text; the whole file exercises one specific '
+      + 'exported function, by direct call, against fixture rows.',
+  },
 ];
 
 // ════════════════════════════════════════════════════════════════════════════════════════

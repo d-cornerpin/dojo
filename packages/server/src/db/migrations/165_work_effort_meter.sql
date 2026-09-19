@@ -1,0 +1,83 @@
+-- 165 (SLOW-INFERENCE T79c): A TASK CARRIES ITS OWN EFFORT METER.
+--
+-- The defect this closes: `agent/v2/steps/pre-call-gates/turn-budget.ts` (T79b) and
+-- `agent/v2/loop.ts`'s 75-tool-loop cap now checkpoint an interrupted turn instead of
+-- silently dying, and `work/engine-checkpoint-note.ts` (T79a) touches `updated_at` at
+-- every one of those checkpoints so the close-out gate reads an honestly in-flight task
+-- as in-flight rather than abandoned. That fix has a cost its own header names: "the
+-- engine now keeps its own claim alive forever, even on a task nobody is really
+-- advancing." A wide loop's signature is exactly that — effort without advancement — and
+-- until now nothing counted it anywhere a compaction could not erase: the only running
+-- tallies of tool-call volume live in `agent/turn-state.ts`'s in-memory maps, which are
+-- per-process and gone the moment the agent's context compacts or the process restarts.
+--
+-- WHY ON `work` AND NOT ON `agents`. Effort is a property of the TASK, not of the agent
+-- doing it: it is the task that survives an agent restart, a compaction, and a
+-- reassignment to a different agent, and it is the task whose stall a person actually
+-- cares about ("this hasn't moved in three hundred calls"), not some abstract per-agent
+-- lifetime counter that would reset to meaninglessness the moment two unrelated tasks
+-- were worked back to back. Putting it on `agents` would also mean an agent reassigned
+-- mid-task carries the PREVIOUS agent's effort into work it never touched, or the new
+-- agent's counter reads a stale total from unrelated prior tasks — either way the wrong
+-- row owns the fact. `work` is the row the fact is actually about.
+--
+-- WHY TWO COLUMNS AND NOT ONE. `effort_calls` is monotonic — it only ever goes up, via
+-- `tracker/effort-governor.ts`'s `chargeEffort`, charged once per counted work call by
+-- `agent/v2/steps/execute/tracker-counting.ts` (mirroring the existing RC-19 cross-turn
+-- accumulator at the same seam). `effort_reviewed_calls` is a MOVING BASELINE: the same
+-- module's `advanceBaseline` sets it to the current `effort_calls` the instant the task
+-- genuinely advances (a real status transition, a completed step, a project close — see
+-- `work/tracker-store.ts:setTrackerStatus`, "the tracker's one status writer", which is
+-- the single choke point every one of those three routes through). The METER a reader
+-- asks about is `effortDelta` — `effort_calls - effort_reviewed_calls` — "how much has
+-- this task burned SINCE it last actually moved." Collapsing the two into one column
+-- would force advancement to ERASE the lifetime total (destroying the audit trail of how
+-- much work a task has ever cost) or leave the delta permanently poisoned by count that
+-- already earned its keep (a task that advanced honestly a hundred times would still
+-- read as "burning" on call 101 of its hundred-and-first honest turn). Two columns let
+-- advancement MOVE THE BASELINE FORWARD without ever decrementing or zeroing the
+-- monotonic total — history is kept, not erased, exactly as T79a's own header names this
+-- task as its complementary guardrail.
+--
+-- NOT NULL DEFAULT 0, AND WHY THAT IS SAFE ON A LIVED-IN DATABASE. Every row that exists
+-- before this migration runs reads `effort_calls = 0, effort_reviewed_calls = 0`, so
+-- `effortDelta` reads exactly 0 for every task already on the box — no false trip on day
+-- one, no task that was mid-flight yesterday suddenly reading as a wide loop today. A
+-- nullable pair would have forced every reader to treat NULL as "unknown, assume zero"
+-- forever; DEFAULT 0 says the same thing once, at the schema, and every future INSERT
+-- (which never names these two columns) gets it for free.
+--
+-- NO CHECK CONSTRAINT, same argument as 163 and 164. The one real invariant —
+-- `effort_reviewed_calls` never exceeds `effort_calls` — is upheld by construction by
+-- `tracker/effort-governor.ts`'s two writers (`chargeEffort` only ever increments the
+-- monotonic column; `advanceBaseline` sets the baseline TO the current monotonic value,
+-- never past it) and by nothing else ever writing either column. A CHECK spanning two
+-- columns cannot express "these move together, in this order, from these two functions
+-- only" — it can only reject a snapshot that violates the invariant after the fact, which
+-- is a strictly weaker guarantee than "only one leaf module can write here at all," and it
+-- would be a second, staler place that invariant's shape lives. The reader
+-- (`effortDelta`) has to survive a value this schema never approved anyway — a
+-- hand-edited row, a restored backup — and it does that by being a subtraction that
+-- degrades gracefully, not by trusting a constraint to have held.
+--
+-- NEXT-RELEASE AUDIT NOTE: this is the one schema addition T79c makes.
+-- `work.effort_calls` has one writer (`work/effort-meter.ts`'s `writeEffortCharge`, called
+-- ONLY from `tracker/effort-governor.ts`'s `chargeEffort`, called from
+-- `agent/v2/steps/execute/tracker-counting.ts`). `work.effort_reviewed_calls` has one writer
+-- (`work/effort-meter.ts`'s `writeEffortBaseline`, called ONLY from
+-- `tracker/effort-governor.ts`'s `advanceBaseline`, called from
+-- `work/tracker-store.ts:setTrackerStatus` on every `kind: 'applied'` transition — which is
+-- how `work_update(action="status")`, `work_update(action="complete_step")` and
+-- `work_update(action="close_project")` all reach it, along with every PM validate/override
+-- path, since all of them route through that one function). The literal `UPDATE work`
+-- statements live in `work/effort-meter.ts` rather than in `tracker/effort-governor.ts`
+-- itself because the work spine's own single-writer conformance walk
+-- (`work/__tests__/single-writer-conformance.test.ts`, PART A clause (a)) requires every
+-- write to `work` to live under `work/`; `tracker/effort-governor.ts` stays the module both
+-- call sites actually import (declared constant, delta arithmetic, the two public
+-- functions). Both columns are read together by `tracker/effort-governor.ts`'s
+-- `effortDelta`. T79d (not this task) is the declared consumer that decides what to DO with
+-- the delta; this task only makes it durable.
+
+ALTER TABLE work ADD COLUMN effort_calls INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE work ADD COLUMN effort_reviewed_calls INTEGER NOT NULL DEFAULT 0;

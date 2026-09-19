@@ -20,6 +20,41 @@ import { advance, type AgentTurnState } from '../../state.js';
 import { isAdvancingStatusArg } from './work-status.js';
 import { TRIVIAL_TOOLS } from './tool-sets.js';
 import type { ExecuteContext } from './index.js';
+import { getDb } from '../../../../db/connection.js';
+import { taskScope } from '../../../../work/tracker-view.js';
+import { chargeEffort } from '../../../../tracker/effort-governor.js';
+
+/**
+ * T79c: resolve "the agent's CURRENT claimed task" for the durable effort meter.
+ *
+ * Same scope, same predicate, same filter as `tracker-floors.ts`'s own nag — it
+ * resolves "the only open tracker task assigned to you" (the "hasn't been updated in
+ * a while" message, ~line 283 there) via `taskScope`, `state = 'claimed'` (status
+ * "in_progress"), `agent_id = ?`. Copied in SHAPE rather than by calling that code,
+ * because the nag's question is "is there a stale one to name in a message" (it reads
+ * every claimed task and picks the STALEST to warn about) and this one is "which row
+ * pays for THIS call" — a different question that additionally needs a deterministic
+ * pick when more than one task is claimed at once: charge the MOST RECENTLY UPDATED
+ * one (`ORDER BY updated_at DESC LIMIT 1`). That is also the task most likely to be
+ * the one this iteration's calls were actually for, since a tracker write on it is
+ * what would have bumped `updated_at` in the first place.
+ *
+ * Returns `null` when nothing is claimed — charge nothing in that case. Untracked
+ * work already has its own governor (the tracker floors: the >3 nudge / >=6
+ * auto-scaffold above/below in this same iteration), a SEPARATE mechanism from this
+ * durable per-task meter.
+ *
+ * Exported so the "most-recently-updated wins" choice is directly testable in
+ * isolation from the rest of this iteration's accounting.
+ */
+export function resolveCurrentClaimedTaskId(agentId: string): string | null {
+  const row = getDb().prepare(
+    `SELECT w.id AS id FROM work w
+     WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed'
+     ORDER BY w.updated_at DESC LIMIT 1`,
+  ).get(agentId) as { id: string } | undefined;
+  return row?.id ?? null;
+}
 
 export function countTrackerWorkThisIteration(state: AgentTurnState, ctx: ExecuteContext): AgentTurnState {
   const { agentId, turnCtx, result, counterparty, counterpartyIsAgentSender, engineStartAckDeliveredThisTurn } = ctx;
@@ -99,6 +134,21 @@ export function countTrackerWorkThisIteration(state: AgentTurnState, ctx: Execut
       const turnConv = turnCtx.convKey;
       if (typeof turnConv === 'string' && turnConv.length > 0) {
         accumulateUntrackedWorkAcrossTurns(agentId, turnConv, nonTrackerInThisIter);
+      }
+    }
+    // T79c: charge this iteration's counted non-tracker work calls to the agent's
+    // CURRENT claimed task — durably, in the row, where a compaction cannot erase it
+    // (unlike the in-memory cross-turn counter mirrored just above). This is the
+    // complementary half of T79a's engine checkpoint note: that task keeps a claimed
+    // row's `updated_at` honest across a checkpoint-and-continue so it is never
+    // mistaken for abandoned; this counter is what stops that same aliveness from
+    // being spent forever on a task nobody is really advancing. See
+    // `resolveCurrentClaimedTaskId` above for how "current claimed task" is resolved
+    // and why nothing is charged when there isn't one.
+    if (nonTrackerInThisIter > 0) {
+      const claimedTaskId = resolveCurrentClaimedTaskId(agentId);
+      if (claimedTaskId) {
+        chargeEffort(claimedTaskId, nonTrackerInThisIter);
       }
     }
   }
