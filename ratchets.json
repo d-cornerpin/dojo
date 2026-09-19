@@ -4551,6 +4551,20 @@
       "to": 445,
       "by": "UX-REPAIR T77b (W87) \u2014 the draft tools, and the write-grant dependency warning",
       "why": "+8 net. One import name and the seven-line `note--warn` block, mirroring the A3 inert-channel warning six rows below it. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/index.ts",
+      "from": 680,
+      "to": 690,
+      "by": "TOOL-NAME-HONESTY t80 (T80a) \u2014 a wrong tool name is not a permission problem",
+      "why": "+10. The execution-time unknown-tool branch now routes through describeNameFailure (tools/name-help.ts) instead of emitting a bare \"Unknown tool: X\": it separates \"no such tool\" from \"exists but not yours\", suggests real names, and lists the family the agent actually holds. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tools/name-help.ts",
+      "from": 0,
+      "to": 324,
+      "by": "TOOL-NAME-HONESTY t80 (T80a) \u2014 new leaf module, pinned decrease-only at birth",
+      "why": "NEW FILE, 324 lines, pinned at its current count per the growth detector's own remedy so the decision is visible rather than discovered at the 400-line cap. Zero imports (pure leaf): name classification, lexical suggestion scoring, same-family enumeration, and the shared failure text for all three name-failure sites. ~40% is the argued header + per-function reasoning (the synonym-table withdrawal is recorded in-file). From here it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -4617,7 +4631,7 @@
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 370,
     "packages/server/src/agent/tools/gates.ts": 286,
-    "packages/server/src/agent/tools/index.ts": 680,
+    "packages/server/src/agent/tools/index.ts": 690,
     "packages/server/src/agent/tools/surface.ts": 688,
     "packages/server/src/agent/tools/types.ts": 338,
     "packages/server/src/agent/tools/util.ts": 371,
@@ -4816,6 +4830,7 @@
     "packages/dashboard/src/lib/access-edits.ts": 354,
     "packages/server/src/agent/access/read.ts": 264,
     "packages/server/src/memory/work-board-lane.ts": 266,
-    "packages/server/src/memory/integration-status-lane.ts": 461
+    "packages/server/src/memory/integration-status-lane.ts": 461,
+    "packages/server/src/tools/name-help.ts": 324
   }
 }
