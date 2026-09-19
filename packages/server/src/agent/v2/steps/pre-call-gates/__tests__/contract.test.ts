@@ -65,9 +65,36 @@ vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
   insertEngineEventIfAbsent: (...a: unknown[]) => insertEngineEventIfAbsentSpy(...(a as [])),
 }));
 
+// SLOW-INFERENCE T79b fix round (Finding 1): `getDb` is a SPY, not a fixed factory, so a
+// handful of tests can hand `readProviderUnattendedBudgetMinutes` a fake row-returning
+// database — still no real DB file opened, which is the file's own standing rule — while
+// every OTHER test keeps the original "throws" default unchanged. Without this, every test
+// that reached the cap check saw `getDb()` throw, `readProviderUnattendedBudgetMinutes` catch
+// and fall back to `null`, and the cap land on 3 — which is INDISTINGUISHABLE from "the real
+// query ran and read a declared value of 60". The new describe block below drives the real
+// query with a real (fake) row and asserts the cap that produces, which only a working query
+// can produce.
+const getDbSpy = vi.fn(() => { throw new Error('no database in a contract test'); });
 vi.mock('../../../../../db/connection.js', () => ({
-  getDb: () => { throw new Error('no database in a contract test'); },
+  getDb: (...a: unknown[]) => getDbSpy(...(a as [])),
 }));
+
+/**
+ * A fake `Database.Database`-shaped object carrying exactly one row for
+ * `readProviderUnattendedBudgetMinutes`'s `models JOIN providers` query — `prepare` and the
+ * returned `get` are themselves spies, so a test can assert the REAL query ran (the SQL text
+ * it was handed, the model id it was asked about) rather than merely that a NUMBER came back,
+ * which a silent catch-and-fallback could also produce by coincidence.
+ */
+function fakeProviderDb(maxUnattendedMinutes: number | null): {
+  db: { prepare: (sql: string) => { get: (modelId: string) => { max_unattended_minutes: number | null } } };
+  prepareSpy: ReturnType<typeof vi.fn>;
+  getSpy: ReturnType<typeof vi.fn>;
+} {
+  const getSpy = vi.fn((_modelId: string) => ({ max_unattended_minutes: maxUnattendedMinutes }));
+  const prepareSpy = vi.fn((_sql: string) => ({ get: getSpy }));
+  return { db: { prepare: prepareSpy }, prepareSpy, getSpy };
+}
 
 const setTrackerStatusSpy = vi.fn(() => ({ kind: 'no_change' as const }));
 vi.mock('../../../../../work/tracker-store.js', async (importOriginal) => ({
@@ -167,6 +194,12 @@ beforeEach(() => {
   insertEngineEventIfAbsentSpy.mockClear();
   noteEngineCheckpointSpy.mockClear();
   escalateUnattendedBudgetTripToPMSpy.mockClear();
+  // T79b fix round: same discipline as `checkAndCompactSpy` above — re-arm the THROWING
+  // default every test, so the one describe block below that overrides it with a fake,
+  // row-returning database (via `getDbSpy.mockImplementation(...)`) cannot leak that override
+  // into any later test in file order.
+  getDbSpy.mockReset();
+  getDbSpy.mockImplementation(() => { throw new Error('no database in a contract test'); });
 });
 
 /** Drive the step with an assembled-token total at `pct` of the window. */
@@ -463,5 +496,72 @@ describe('SLOW-INFERENCE T79b — the trip is an honest pause with a PM hand-off
     expect(content).toMatch(/standard 60-minute unattended budget/);
     expect(content).toMatch(/project manager has been handed the resumption/);
     expect(content).not.toMatch(/stuck loop/);
+  });
+});
+
+describe('SLOW-INFERENCE T79b fix round (Finding 1) — a DECLARED provider budget drives the real gate, not just the resolver', () => {
+  // Every test above this block reaches the cap check with `getDb()` throwing, which
+  // `readProviderUnattendedBudgetMinutes` catches and turns into `null` — the SAME value a
+  // genuinely-declared-nothing row would produce. That makes "the query works and read 60" and
+  // "the query silently failed and fell back to 60" INDISTINGUISHABLE at cap 3. These tests
+  // drive the real query against a real (fake) row and assert the cap boundary ONLY a working
+  // read of a NON-default value can produce — 31/32, not 3/4 — which is proof the SQL path ran.
+
+  it('a declared 480-minute budget: the query itself is driven, with the real SQL and the real model id', async () => {
+    const fake = fakeProviderDb(480);
+    getDbSpy.mockImplementation(() => fake.db as unknown as ReturnType<typeof getDbSpy>);
+
+    await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
+
+    expect(fake.prepareSpy).toHaveBeenCalledWith(expect.stringContaining('JOIN providers'));
+    expect(fake.getSpy).toHaveBeenCalledWith('deepseek-v4-flash'); // stateInStep's configuredModelId
+  });
+
+  it('a declared 480-minute budget: the 31st continuation still PARKS — cap is 31, not 3', async () => {
+    const fake = fakeProviderDb(480);
+    getDbSpy.mockImplementation(() => fake.db as unknown as ReturnType<typeof getDbSpy>);
+    turnContinuationCounts.set(AGENT, 30);
+
+    const out = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
+
+    expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' satisfies PreCallGatesExitReason });
+    expect(checkAndCompactSpy).toHaveBeenCalled();
+    expect(noteEngineCheckpointSpy).toHaveBeenCalledWith(AGENT, 'turn-budget');
+    expect(escalateUnattendedBudgetTripToPMSpy).not.toHaveBeenCalled();
+    expect(turnContinuationCounts.get(AGENT)).toBe(31);
+  });
+
+  it('a declared 480-minute budget: the 32nd continuation TRIPS — the boundary is 31, not the old 3', async () => {
+    const fake = fakeProviderDb(480);
+    getDbSpy.mockImplementation(() => fake.db as unknown as ReturnType<typeof getDbSpy>);
+    turnContinuationCounts.set(AGENT, 31);
+
+    const out = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
+
+    expect(out).toMatchObject({ directive: 'exit', reason: 'turn-continuation-cap' satisfies PreCallGatesExitReason });
+    expect(checkAndCompactSpy).not.toHaveBeenCalled();
+    expect(turnContinuationCounts.has(AGENT)).toBe(false);
+    expect(noteEngineCheckpointSpy).toHaveBeenCalledWith(AGENT, 'unattended-budget');
+    expect(escalateUnattendedBudgetTripToPMSpy).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: AGENT,
+      budgetMinutes: 480,
+      continuationCap: 31,
+      elapsedMinutes: 32 * 15, // (cap + 1) * turn-budget-minutes
+      declaredByProvider: true,
+    }));
+  });
+
+  it('a declared 0 (uncapped) budget: the 50th continuation still PARKS, never trips', async () => {
+    const fake = fakeProviderDb(0);
+    getDbSpy.mockImplementation(() => fake.db as unknown as ReturnType<typeof getDbSpy>);
+    turnContinuationCounts.set(AGENT, 49);
+
+    const out = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
+
+    expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' satisfies PreCallGatesExitReason });
+    expect(checkAndCompactSpy).toHaveBeenCalled();
+    expect(noteEngineCheckpointSpy).toHaveBeenCalledWith(AGENT, 'turn-budget');
+    expect(escalateUnattendedBudgetTripToPMSpy).not.toHaveBeenCalled();
+    expect(turnContinuationCounts.get(AGENT)).toBe(50);
   });
 });

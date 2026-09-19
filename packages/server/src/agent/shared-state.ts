@@ -93,7 +93,10 @@ export const A2A_PREEMPT_MIN_INTERVAL_MS = 30_000;
 export const agentStartTimes = new Map<string, number>();
 
 // Per-agent count of consecutive auto-continuations across turns.
-// Bounded by MAX_TURN_AUTO_CONTINUATIONS; reset on a clean turn end.
+// SLOW-INFERENCE T79b: no longer bounded by a flat MAX_TURN_AUTO_CONTINUATIONS (that constant
+// is gone) — the ladder is bounded by the serving provider's own declared unattended budget,
+// via `agent/unattended-budget.ts`'s `continuationCapFor`, read fresh at each checkpoint in
+// `agent/v2/steps/pre-call-gates/turn-budget.ts`. Reset on a clean turn end, unchanged.
 export const turnContinuationCounts = new Map<string, number>();
 
 // Heartbeat timers — re-broadcast agent:status='working' every 30s while
