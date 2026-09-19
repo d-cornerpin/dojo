@@ -1,0 +1,56 @@
+-- 164 (SLOW-INFERENCE T79b): A PROVIDER MAY DECLARE HOW LONG IT MAY RUN UNATTENDED.
+--
+-- The defect this closes: `agent/v2/steps/pre-call-gates/turn-budget.ts` hard-codes
+-- `MAX_TURN_AUTO_CONTINUATIONS = 3` on top of a 15-minute turn budget — a flat 60-minute
+-- ceiling applied identically to a metered cloud API and a free local box with no queue
+-- behind it. On a slow local model the ceiling is not a safety margin, it is the FIRST
+-- number the model has any chance of hitting, and hitting it used to be a silent death: the
+-- turn stopped, nobody was told why, and nothing self-woke.
+--
+-- WHY ON `providers` AND NOT ON `models` — CITED VERBATIM FROM 163. "Patience is a property
+-- of the SERVING MACHINE, not of a model row: it is set by that box's hardware and its queue,
+-- and every model it serves waits behind the same processor." The same sentence holds here
+-- without changing a word: how long a box may be left to work unattended is a fact about the
+-- box's owner and its queue, not about which model happens to be loaded on it, and it rides
+-- the SAME `models JOIN providers` read migration 163 already pays for — one column added to
+-- a join the engine performs at this cap check regardless, at zero extra query cost. On
+-- `models` it would be one machine's fact stored once per model, written at every model's
+-- insert site, and free to disagree with itself model to model on a box that runs one queue.
+--
+-- NULL = "exactly today's derived 60 minutes." Every existing row is NULL and no backfill is
+-- written, for the same reason 163 wrote none: the standing ceiling (15-minute turn budget ×
+-- (1 + 3 continuations) = 60 minutes) is already right for every provider configured today,
+-- and writing a number into a row whose owner never chose one would be a claim nobody made.
+-- `agent/unattended-budget.ts`'s `resolveUnattendedBudget` turns NULL back into that same 60,
+-- and `continuationCapFor(60, 15)` turns that back into the same continuation cap of 3 — so
+-- every provider that has declared nothing runs byte-identically to before this migration,
+-- pinned by the NULL-row control in
+-- `a-provider-declares-its-own-unattended-budget.test.ts`.
+--
+-- `0` = NO CAP, AND IT IS UNAMBIGUOUS-OFF RATHER THAN A TYPO RISK. Response-patience (163)
+-- could not let zero mean anything but "broken" — a zero-millisecond timeout aborts every
+-- call before it can start. A budget has no such trap: every LEGAL positive declaration is
+-- floored at `UNATTENDED_MIN_MINUTES = 15` in `agent/unattended-budget.ts`, so the one value
+-- a typo could produce by dropping a digit or a unit (5, 6, 1.5) either lands above the floor
+-- (still a real, if strict, budget) or below it and is refused back to the standing default —
+-- it can never silently collapse to zero. Zero is therefore never reachable by accident, which
+-- is what makes it safe to spend on a real, opposite meaning: "let this box run until it
+-- finishes, however long that is." An owner who wants that has to type the one digit that
+-- means it.
+--
+-- NO CHECK CONSTRAINT, FOR THE SAME REASON 163 GIVES. The legal range (15 minutes – 24 hours)
+-- and the zero-means-uncapped exception live in `agent/unattended-budget.ts` as
+-- `UNATTENDED_MIN_MINUTES` / `UNATTENDED_MAX_MINUTES` / `UNCAPPED`, and BOTH write doors
+-- (`POST /config/providers`, `PATCH /config/providers/:id/unattended-budget`) and the one
+-- reader (`turn-budget.ts`'s cap check) enforce them from that one module. A CHECK here would
+-- be a third, staler copy, and the wrong instrument besides: the reader has to survive a value
+-- this schema never approved (a hand-edited database, a restored backup, a future writer) by
+-- falling back to the default, not by trusting a constraint to have held.
+--
+-- NEXT-RELEASE AUDIT NOTE: this is the one schema addition T79b makes.
+-- `providers.max_unattended_minutes` has exactly one reader (`turn-budget.ts`'s cap check,
+-- via `agent/unattended-budget.ts`'s `resolveUnattendedBudget` / `continuationCapFor` —
+-- read fresh at each cap evaluation, no caching layer) and two writers (`POST /providers`,
+-- `PATCH /providers/:id/unattended-budget`).
+
+ALTER TABLE providers ADD COLUMN max_unattended_minutes INTEGER;

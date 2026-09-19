@@ -76,6 +76,22 @@ vi.mock('../../../../../work/tracker-store.js', async (importOriginal) => ({
   upholdClaim: vi.fn(),
 }));
 
+// SLOW-INFERENCE T79b — the trip path's two best-effort side calls, mocked so this contract
+// test can assert THAT they were called (with what) rather than relying on `getDb()`'s throw
+// above to silently swallow them via the call sites' own try/catch, which is what happened
+// here for `noteEngineCheckpoint`'s pre-existing 'turn-budget' call before this task (still
+// true, still fine — but a mock makes the NEW 'unattended-budget' call a positive assertion
+// instead of an unobserved side effect).
+const noteEngineCheckpointSpy = vi.fn(() => 0);
+vi.mock('../../../../../work/engine-checkpoint-note.js', () => ({
+  noteEngineCheckpoint: (...a: unknown[]) => noteEngineCheckpointSpy(...(a as [string, string])),
+}));
+
+const escalateUnattendedBudgetTripToPMSpy = vi.fn(async () => {});
+vi.mock('../../../../../tracker/pm-agent.js', () => ({
+  escalateUnattendedBudgetTripToPM: (...a: unknown[]) => escalateUnattendedBudgetTripToPMSpy(...(a as [])),
+}));
+
 const AGENT = 'primary';
 
 function freshState(): AgentTurnState {
@@ -132,6 +148,15 @@ beforeEach(() => {
   turnContinuationCounts.clear();
   backgroundDrains.clear();
   checkAndCompactSpy.mockClear();
+  // T79b: a pre-existing gap — this spy's DEFAULT implementation (unlike its siblings below)
+  // was never re-armed here, only its call history cleared. "the background gap-drain stays
+  // fire-and-forget" (below) replaces the implementation with an intentionally-unresolved
+  // promise via `mockImplementation` and only ever resolves the ONE instance it captured; any
+  // later test in file order that reaches a real `await checkAndCompact(...)` call then hangs
+  // on somebody else's leftover promise. Re-arming the default here is what
+  // `estimateAssembledTokensSpy` and `getUncompactedGapCountSpy` already do one line down —
+  // this spy was the odd one out.
+  checkAndCompactSpy.mockImplementation(async () => ({ leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 }));
   estimateAssembledTokensSpy.mockClear();
   estimateAssembledTokensSpy.mockImplementation(async () => ({
     total: 1000, summaryTokens: 0, freshTailTokens: 1000, briefTokens: 0, freshTailCount: 1, summaryCount: 0,
@@ -140,6 +165,8 @@ beforeEach(() => {
   getUncompactedGapCountSpy.mockImplementation(() => 0);
   insertMessageIfAbsentSpy.mockClear();
   insertEngineEventIfAbsentSpy.mockClear();
+  noteEngineCheckpointSpy.mockClear();
+  escalateUnattendedBudgetTripToPMSpy.mockClear();
 });
 
 /** Drive the step with an assembled-token total at `pct` of the window. */
@@ -368,5 +395,73 @@ describe('the background gap-drain stays fire-and-forget', () => {
 
     expect(out.directive).toBe('proceed');
     expect(checkAndCompactSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('SLOW-INFERENCE T79b — the trip is an honest pause with a PM hand-off, not a silent death', () => {
+  it('an undeclared provider (getDb throws -> null -> the standing default) still trips at exactly the 4th crossing, unchanged', async () => {
+    // The NULL-row control, wired: with no database to read a provider's declaration from,
+    // `readProviderUnattendedBudgetMinutes` catches and returns null, `resolveUnattendedBudget`
+    // turns that into 60, and `continuationCapFor(60, 15)` is exactly 3 — the same cap this
+    // replaced. Three crossings still park; the fourth still trips.
+    turnContinuationCounts.set(AGENT, 3);
+    const out = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
+
+    expect(out).toMatchObject({ directive: 'exit', reason: 'turn-continuation-cap' satisfies PreCallGatesExitReason });
+    expect(checkAndCompactSpy).not.toHaveBeenCalled();
+    expect(turnContinuationCounts.has(AGENT)).toBe(false);
+  });
+
+  it('the trip squares the tracker: noteEngineCheckpoint fires with reason \'unattended-budget\'', async () => {
+    turnContinuationCounts.set(AGENT, 3);
+    await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
+
+    expect(noteEngineCheckpointSpy).toHaveBeenCalledWith(AGENT, 'unattended-budget');
+  });
+
+  it('the trip hands resumption to the PM — no silent death', async () => {
+    turnContinuationCounts.set(AGENT, 3);
+    await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
+
+    expect(escalateUnattendedBudgetTripToPMSpy).toHaveBeenCalledTimes(1);
+    expect(escalateUnattendedBudgetTripToPMSpy).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: AGENT,
+      budgetMinutes: 60,
+      continuationCap: 3,
+      elapsedMinutes: 60,
+      declaredByProvider: false,
+    }));
+  });
+
+  it('a parked (non-trip) checkpoint does NOT ring the PM — only a trip does', async () => {
+    const out = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
+
+    expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' satisfies PreCallGatesExitReason });
+    expect(noteEngineCheckpointSpy).toHaveBeenCalledWith(AGENT, 'turn-budget');
+    expect(escalateUnattendedBudgetTripToPMSpy).not.toHaveBeenCalled();
+  });
+
+  it('a failed PM hand-off does not throw out of the step — best effort, same as the checkpoint note', async () => {
+    escalateUnattendedBudgetTripToPMSpy.mockRejectedValueOnce(new Error('PM offline'));
+    turnContinuationCounts.set(AGENT, 3);
+
+    const out = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
+
+    expect(out).toMatchObject({ directive: 'exit', reason: 'turn-continuation-cap' satisfies PreCallGatesExitReason });
+  });
+
+  it('the trip message is honest: names the budget and the PM hand-off, and drops the stuck-loop guess', async () => {
+    turnContinuationCounts.set(AGENT, 3);
+    await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
+
+    const call = insertMessageIfAbsentSpy.mock.calls.find(
+      (c) => typeof (c[0] as { content?: string }).content === 'string'
+        && (c[0] as { content: string }).content.includes('running for about'),
+    );
+    expect(call, 'no trip message was inserted').toBeTruthy();
+    const content = (call![0] as { content: string }).content;
+    expect(content).toMatch(/standard 60-minute unattended budget/);
+    expect(content).toMatch(/project manager has been handed the resumption/);
+    expect(content).not.toMatch(/stuck loop/);
   });
 });

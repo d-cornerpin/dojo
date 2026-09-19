@@ -28,6 +28,14 @@ export interface Provider {
   // 10 s – 30 min, enforced at the write door and again by the reader.
   firstChunkTimeoutMs: number | null;
   streamIdleTimeoutMs: number | null;
+  // T79b (SLOW-INFERENCE) — how many minutes this provider's own owner says a turn may run
+  // unattended (checkpointing and self-continuing) before the engine hands resumption to the
+  // PM, in minutes. Null means "declared nothing", which is the standard 60-minute budget (the
+  // same ceiling every provider has always had: a 15-minute turn budget times 1 + 3
+  // continuations). `0` means NO CAP — the box may run to completion, however long that takes.
+  // Legal range otherwise 15 – 1440 minutes, enforced at the write door and again by the
+  // reader (`agent/unattended-budget.ts`).
+  unattendedBudgetMinutes: number | null;
   isValidated: boolean;
   validatedAt: string | null;
   // User-entered host machine RAM in GB. Only relevant for remote Ollama

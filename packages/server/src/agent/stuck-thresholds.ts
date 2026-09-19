@@ -87,7 +87,7 @@ export const STUCK_THRESHOLDS: Readonly<Record<StuckThresholdId, StuckThreshold>
     ms: STUCK_AGENT_THRESHOLD_MINUTES * MIN,
     owner: 'the engine reaper — agent/runtime.ts `recoverStuckAgents`',
     reason:
-      'D18: comfortably above the legal turn budget (15 min) x (1 + up to 3 continuations) plus overshoot, so a long-but-LIVE turn is never reaped. The 30s heartbeat keeps `updated_at` fresh and the in-process `activeRuns` guard is the real safety; this cliff only catches a genuinely dead process\'s rows.',
+      'D18, reworded SLOW-INFERENCE T79b: the arithmetic this used to cite — "(15 min) x (1 + up to 3 continuations)" — went stale the moment the continuation count stopped being capped at 3 for every provider (T79b: it is now the provider\'s own declared unattended budget, unbounded for a provider that declares 0). That is not a reason to raise this cliff: what actually keeps a long-but-LIVE turn from being reaped was never the continuation count, it is the 30s heartbeat that keeps `updated_at` fresh on every live process, checkpointing or not, plus the in-process `activeRuns` guard. A turn with a hundred continuations is still a hundred heartbeats; this cliff only ever catches a process that stopped sending them, i.e. one that is actually dead.',
     carriedFrom: 'STUCK_AGENT_THRESHOLD_MINUTES = 75 — agent/runtime.ts',
   },
   recurring_run_hard_stuck: {

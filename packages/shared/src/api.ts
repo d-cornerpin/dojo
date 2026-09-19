@@ -53,6 +53,10 @@ export interface CreateProviderRequest {
   // provider declares nothing and the standard bounds apply.
   firstChunkTimeoutMs?: number | null;
   streamIdleTimeoutMs?: number | null;
+  // T79b — how many minutes this provider may run a turn's continuation ladder before the
+  // engine hands resumption to the PM. Omitted (the normal case) means the standard 60-minute
+  // budget applies; `0` means no cap.
+  unattendedBudgetMinutes?: number | null;
 }
 
 // T66b — the edit. Every field optional, and only the ones present are written: the create

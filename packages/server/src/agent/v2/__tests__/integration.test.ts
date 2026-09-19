@@ -2739,6 +2739,13 @@ describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the 
   });
 
   it('past MAX_TURN_AUTO_CONTINUATIONS the turn STOPS instead: no compaction, no recap, and the person is told', async () => {
+    // SLOW-INFERENCE T79b — message expectation updated (per that task's brief): the old
+    // wording guessed "usually means a stuck loop, an over-scoped task, or a slow model" with
+    // no evidence for any of the three. The engine now says only what it actually knows — the
+    // budget it spent, named honestly (this provider declared none, so it is the standard
+    // 60-minute default) — and that the PM, not the owner noticing silence, has been handed
+    // the resumption. Nothing else about this test changed: same 60-minute NULL-row control,
+    // same no-compaction / no-recap / no-wakeup / cleared-counter shape.
     await runAcrossTheBudget({ continuationsAlready: 3 });
 
     expect(checkAndCompactSpy).not.toHaveBeenCalled();
@@ -2750,6 +2757,9 @@ describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the 
       .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
       .all() as Array<{ content: string }>;
     expect(sys[0].content).toMatch(/running for about 60 minutes without finishing/);
+    expect(sys[0].content).toMatch(/standard 60-minute unattended budget/);
+    expect(sys[0].content).toMatch(/project manager has been handed the resumption/);
+    expect(sys[0].content).not.toMatch(/stuck loop/);
   });
 
   // ══════════════════════════════════════════════════════════════════════════════

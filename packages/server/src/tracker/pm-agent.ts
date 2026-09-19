@@ -697,6 +697,104 @@ export async function escalateCloseoutMissToPM(ctx: {
 }
 
 /**
+ * Engine-to-PM hand-off for an UNATTENDED-BUDGET TRIP (SLOW-INFERENCE T79b).
+ *
+ * `agent/v2/steps/pre-call-gates/turn-budget.ts` calls this the instant a turn's
+ * auto-continuation ladder runs out — the provider's declared unattended budget (or the
+ * standing 60-minute default) has been spent and the engine is ending the turn rather than
+ * continuing it further without anyone watching. Before this task, that ending was a SILENT
+ * death: the turn stopped, a message was left in chat guessing "usually means a stuck loop",
+ * and nothing else happened until the owner noticed the agent had gone quiet. This hand-off
+ * replaces the silence: the PM is told, in the same commit that ends the turn, so resumption
+ * is owned by machinery rather than by somebody noticing.
+ *
+ * ── WHY THIS IS A NEW FUNCTION AND NOT A THIRD `escalateCloseoutMissToPM` SOURCE ──
+ * That hand-off's payload hard-codes one specific claim: "Agent finished a turn without
+ * calling work_update(...)". That is true of a closeout miss and FALSE of a budget trip — the
+ * turn parked because it ran out of unattended time, not because it skipped the tracker, and
+ * sending that sentence here would be exactly the kind of guess-dressed-as-fact this task's
+ * brief calls out ("drops the stuck loop guess"). Its early-return guard
+ * (`danglingTaskIds.length === 0` -> no-op) is a second, structural mismatch: a budget trip on
+ * a turn with nothing claimed is the COMMON case (chat-only work has no tracker row at all),
+ * and "the PM must learn about the trip" cannot be conditional on a task existing to name.
+ * Forcing this shape through the closeout-miss function would mean branching most of its body
+ * on `ctx.source` until nothing in it is actually shared — a second, honest function, mirroring
+ * its GUARD shape (no PM configured / PM is the tripped agent = no-op, logged) and its DELIVERY
+ * shape (`deliverA2AMessage`, `fromAgent: 'system'`, `intent: 'QUESTION'`, `requiresResponse:
+ * true`), is the smaller and truer change.
+ *
+ * The tracker side of "square the interrupted work" is NOT this function's job — the caller
+ * has already called `noteEngineCheckpoint(agentId, 'unattended-budget')` (T79a's helper)
+ * before reaching here, which touches every claimed/stranded task's `updated_at` so the next
+ * turn's close-out gate does not read the pause as abandonment. This function's only job is
+ * making sure a PM who can act on it actually hears about the trip.
+ *
+ * Fire-and-forget by convention (matches `escalateCloseoutMissToPM`): if the PM is offline,
+ * unconfigured, or the delivery fails, the trip still happened and the turn still ended: the
+ * owner can always see it from the dashboard. This function only ever adds a channel, never a
+ * dependency the trip path could fail on.
+ */
+export async function escalateUnattendedBudgetTripToPM(ctx: {
+  agentId: string;
+  /** The resolved budget in minutes. Never `Infinity` — a trip cannot fire on an uncapped
+   *  budget, because `continuationCapFor(Infinity, …)` is a cap no continuation count exceeds. */
+  budgetMinutes: number;
+  /** `continuationCapFor`'s answer: how many auto-continuations this budget bought. */
+  continuationCap: number;
+  /** `(continuationCap + 1) * turnBudgetMinutes`, rounded — the total unattended time spent. */
+  elapsedMinutes: number;
+  /** `false` when the provider declared nothing and the standing default was used — the
+   *  message names that honestly rather than implying an owner chose 60 minutes on purpose. */
+  declaredByProvider: boolean;
+}): Promise<void> {
+  const pmId = getPMAgentId();
+  if (!pmId) {
+    logger.info('Unattended-budget trip: PM hand-off skipped, no PM configured', { agentId: ctx.agentId });
+    return;
+  }
+  if (pmId === ctx.agentId) {
+    logger.info('Unattended-budget trip: PM hand-off skipped, the tripped agent IS the PM', { agentId: ctx.agentId });
+    return;
+  }
+
+  const budgetLabel = ctx.declaredByProvider
+    ? `this provider's own declared ${ctx.budgetMinutes}-minute unattended budget`
+    : 'the standard 60-minute unattended budget (this provider has declared no budget of its own)';
+
+  const payload =
+    `[Engine notice - UNATTENDED BUDGET TRIP]\n\n` +
+    `Agent "${ctx.agentId}" has been working the same turn, checkpointing and self-continuing, for ` +
+    `about ${ctx.elapsedMinutes} minutes — reaching ${budgetLabel} after ${ctx.continuationCap} ` +
+    `auto-continuation${ctx.continuationCap === 1 ? '' : 's'}. The engine has ended the turn rather than ` +
+    `continuing it further unattended. This is the budget's own ceiling, not a stuck-loop guess: the turn's ` +
+    `in-flight tracker rows were touched (not left stale) before this notice was sent, so close-out checks ` +
+    `will not mistake the pause for abandonment.\n\n` +
+    `Your call: check the agent's claimed work (work_update(action="list")), then either send it a follow-up ` +
+    `to resume, retask what it was doing, or leave it as-is. Nothing else acts on this turn until you or the ` +
+    `owner do — resuming it is now on you, not on someone noticing the silence.`;
+
+  try {
+    const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
+    await deliverA2AMessage({
+      intent: 'QUESTION',
+      threadId: uuidv4(),
+      requiresResponse: true,
+      payload,
+      toAgent: pmId,
+      fromAgent: 'system',
+    });
+    logger.info('Unattended-budget trip escalated to PM', {
+      pmId, agentId: ctx.agentId, budgetMinutes: ctx.budgetMinutes, continuationCap: ctx.continuationCap,
+    });
+  } catch (err) {
+    logger.warn('Failed to deliver unattended-budget trip escalation to PM', {
+      error: err instanceof Error ? err.message : String(err),
+      pmId, agentId: ctx.agentId,
+    });
+  }
+}
+
+/**
  * Smell-pattern detector. Writes signal entries into task_log and sets
  * tasks.last_smell_flag for PM to read as context. Never blocks the
  * transition (that's the engine hard-gate's job), this is purely an
