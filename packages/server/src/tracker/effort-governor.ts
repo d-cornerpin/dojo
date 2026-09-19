@@ -71,12 +71,24 @@ export function effortDelta(row: { effort_calls: number; effort_reviewed_calls: 
  * and the lifetime total in `effort_calls` is untouched (advancement moves the
  * baseline; it never erases history).
  *
- * Called from exactly one place, `work/tracker-store.ts:setTrackerStatus`, and only
- * when that call's own `transition()` result is `kind: 'applied'` — a genuine state
- * move, never a refusal and never G4's "already in that state" no-op. That guard is
- * what makes a looping agent's same-status spam ("the [NO-OP] adversarial case")
- * unable to reset its own meter: this function is simply never reached for a call
- * that did not move the row.
+ * TWO CALLERS, BOTH NAMED HERE SO THIS COMMENT STAYS TRUE (updated for SLOW-INFERENCE T79d,
+ * which added the second):
+ *
+ *   1. `work/tracker-store.ts:setTrackerStatus`, and only when that call's own `transition()`
+ *      result is `kind: 'applied'` — a genuine state move, never a refusal and never G4's
+ *      "already in that state" no-op.
+ *   2. `tracker/pm-agent.ts:runEffortReview` — the PM's out-of-band judgment on a task that
+ *      tripped `EFFORT_REVIEW_DELTA_CALLS` without advancing, on EITHER verdict (advancing:
+ *      the look confirms real progress, so the baseline extends to match; circling: the
+ *      baseline still moves, so the stalled task re-reviews after another 150 calls instead
+ *      of spinning every sweep tick — see that function's own header for the full argument).
+ *
+ * THE SAFETY INVARIANT THIS PROTECTS, RESTATED HONESTLY: a looping agent still cannot reset
+ * its own meter. Neither caller is reachable from the assignee's own say-so — caller 1 is
+ * gated on a REAL transition (never the agent's own same-status spam, the "[NO-OP]"
+ * adversarial case), and caller 2 is gated on the PM's judgment, a SEPARATE agent's model
+ * call reasoning over the durable record, never the assignee calling a tool. The assignee can
+ * generate effort; it can never itself decide that effort counted.
  */
 export function advanceBaseline(taskId: string): void {
   writeEffortBaseline(taskId);

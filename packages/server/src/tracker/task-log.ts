@@ -56,6 +56,16 @@ export type TaskLogEntryKind =
   // `isEffortReviewPending`). That single comparison is the whole dedupe: durable because it
   // is read straight off the database, so it survives a PM restart with no extra bookkeeping.
   | 'effort_review_requested'
+  // FIX ROUND (code review Finding 1, CRITICAL): the PM's CIRCLING verdict, recorded durably
+  // by `runEffortReview` — and that is now ALL `runEffortReview` does on that branch. Its
+  // `reason` field carries the PM's own words verbatim; delivering them to the agent is the
+  // job of the poke sweep's GUARDED path alone (`pendingCirclingVerdict` /
+  // `circlingPokeAlreadyDelivered` in `tracker/pm-agent.ts`), because a direct delivery here
+  // would honor neither the `assigneeStatus === 'working'` guard nor the `pmActiveRuns` busy-
+  // deferral every other poke in that file respects — the exact false-positive class (a
+  // requiresResponse A2A landing inside the assignee's live turn) those guards exist to
+  // prevent. The look is out-of-band; the poke never is.
+  | 'effort_review_intervene'
   // T10G: the two the spine names honestly. A PM blessing used to arrive here wearing a
   // `transition` label with `from_status = to_status`; it is a VERDICT and now says so.
   | 'claim_upheld'

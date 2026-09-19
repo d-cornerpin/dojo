@@ -1304,8 +1304,14 @@ function buildEffortReviewPrompt(
       + "incremental progress that hasn't hit a status change yet) or CIRCLING (repeating the "
       + 'same calls with nothing new landing)?',
     '',
+    // FIX ROUND (code review Finding 2, ruling (a)): the verdict echoes `task_id` so the
+    // read-back can PROVE which request it answers, rather than trusting "whatever the PM's
+    // newest message happens to be" — see `runEffortReview`'s correlation logic below.
+    `The "task_id" field in your reply MUST be exactly "${taskId}" — this is how the review `
+      + 'confirms it is reading YOUR answer to THIS question, not some other message.',
+    '',
     'Reply with ONLY a JSON object and nothing else — no tool calls, no other text:',
-    '{"advancing": true or false, "reason": "one or two sentences"}',
+    `{"advancing": true or false, "reason": "one or two sentences", "task_id": "${taskId}"}`,
   ].join('\n');
 }
 
@@ -1315,20 +1321,57 @@ function buildEffortReviewPrompt(
  * `null` means "no usable verdict landed"; the caller leaves the baseline untouched, so the
  * SAME pending request is retried the next time `runPMReview` runs, rather than the review
  * being silently lost or a guess being wired to either action.
+ *
+ * FIX ROUND (Finding 2, ruling (a)): `task_id` is now a REQUIRED field of the schema, not an
+ * optional courtesy — a reply missing it is exactly as unusable as one missing `reason`. The
+ * caller (`runEffortReview`) is the one that knows the EXPECTED task id and does the match/
+ * reject/log; this function only knows how to get three well-typed fields out of prose.
  */
-function parseEffortVerdict(text: string | null | undefined): { advancing: boolean; reason: string } | null {
+function parseEffortVerdict(text: string | null | undefined): { advancing: boolean; reason: string; taskId: string } | null {
   if (!text) return null;
   try {
     const match = text.match(/\{[\s\S]*\}/);
     if (!match) return null;
-    const parsed = JSON.parse(match[0]) as { advancing?: unknown; reason?: unknown };
-    if (typeof parsed.advancing === 'boolean' && typeof parsed.reason === 'string') {
-      return { advancing: parsed.advancing, reason: parsed.reason };
+    const parsed = JSON.parse(match[0]) as { advancing?: unknown; reason?: unknown; task_id?: unknown };
+    if (typeof parsed.advancing === 'boolean' && typeof parsed.reason === 'string' && typeof parsed.task_id === 'string') {
+      return { advancing: parsed.advancing, reason: parsed.reason, taskId: parsed.task_id };
     }
     return null;
   } catch {
     return null;
   }
+}
+
+/**
+ * A circling verdict `runEffortReview` recorded that has not yet reached the assignee as a
+ * rung-2 poke. FIX ROUND, Finding 1: `runEffortReview` itself never delivers — see that
+ * function's own circling branch — so this is the other half, read by the poke sweep's
+ * guarded delivery path.
+ *
+ * `sinceEventId` is the `work_events.id` (never a timestamp) the verdict was recorded at,
+ * for the SAME reason `work/poke-ladder.ts` bounds its own escalation cycle on an event id
+ * rather than `created_at`: two writes can land in the same millisecond, an autoincrement id
+ * cannot repeat. Returns `null` once a rung-2-or-higher poke has actually gone out since —
+ * see `circlingPokeAlreadyDelivered` — so a delivered verdict cannot be re-forced forever.
+ */
+function pendingCirclingVerdict(taskId: string): { reason: string; sinceEventId: number } | null {
+  const last = listTaskLog(taskId, { limit: 1, kinds: ['effort_review_intervene'] })[0];
+  if (!last || !last.reason) return null;
+  const sinceEventId = Number(last.id);
+  if (!Number.isFinite(sinceEventId)) return null;
+  if (circlingPokeAlreadyDelivered(taskId, sinceEventId)) return null;
+  return { reason: last.reason, sinceEventId };
+}
+
+/** Has a rung-2-or-higher poke already gone out for this task SINCE the given event id? */
+function circlingPokeAlreadyDelivered(taskId: string, sinceEventId: number): boolean {
+  const row = getDb().prepare(`
+    SELECT 1 FROM work_events
+     WHERE work_id = ? AND kind = 'poke' AND id > ?
+       AND CAST(json_extract(payload, '$.rung') AS INTEGER) >= 2
+     LIMIT 1
+  `).get(taskId, sinceEventId);
+  return !!row;
 }
 
 /**
@@ -1340,11 +1383,19 @@ function parseEffortVerdict(text: string | null | undefined): { advancing: boole
  *
  * advancing=true: `advanceBaseline` + a `task_log` `observation` (actor `'pm'`) carrying the
  * reason — the audit trail IS the feature, and NOTHING reaches the agent.
- * advancing=false: the EXISTING rung-2 (`'urgent'`) poke fires, PM's reason embedded in its
- * text, and the baseline ALSO moves — so a stalled intervention re-reviews after another
- * `EFFORT_REVIEW_DELTA_CALLS` calls, never every sweep.
- * No parseable verdict: baseline untouched, nothing sent anywhere, logged — the request stays
- * pending and `runPMReview`'s next tick tries again.
+ * advancing=false: FIX ROUND, Finding 1 (CRITICAL, code review) — this function used to call
+ * `deliverA2AMessage` DIRECTLY, honoring neither the `assigneeStatus === 'working'` guard nor
+ * the `pmActiveRuns` busy-deferral that every other poke in this file honors, which could land
+ * a `requiresResponse` A2A message inside the assignee's LIVE TURN — precisely the false-
+ * positive class those two guards exist to prevent (and the plan's own PRESERVE list keeps
+ * them). RULING: the LOOK is guard-exempt (see the poke sweep's own comment on why); the POKE
+ * never is. So this branch only RECORDS the verdict durably (`effort_review_intervene`,
+ * `pendingCirclingVerdict`'s own source) and moves the baseline; the EXISTING guarded poke
+ * path (the `in_progress` loop below, `pendingCirclingVerdict` + `circlingPokeAlreadyDelivered`)
+ * delivers rung 2 on whichever LATER sweep tick both guards actually allow it — the sweep runs
+ * every 60s, so delivery is eventual by construction, never a spin.
+ * No parseable verdict, a task_id mismatch, or a busy PM: baseline untouched, nothing sent or
+ * recorded, logged — the request stays pending and `runPMReview`'s next tick tries again.
  */
 export async function runEffortReview(taskId: string): Promise<void> {
   const db = getDb();
@@ -1368,7 +1419,30 @@ export async function runEffortReview(taskId: string): Promise<void> {
   }
 
   const pmId = getPMAgentId();
+
+  // FIX ROUND, Finding 2, ruling (c): `getAgentRuntime().handleMessage` (`agent/runtime.ts`)
+  // has NO signal in its return value for "the PM was already mid-run, so I only queued a
+  // wakeup and did not actually turn" — it resolves `void` either way. Detect it BEFORE
+  // dispatch, off the SAME `activeRuns` set the runtime itself gates on (imported once
+  // already, above, as `pmActiveRuns`, for the poke sweep's own busy-deferral) and bail out
+  // completely: no prompt is even inserted, nothing is read back, and the durable request
+  // marker is untouched — `runPMReview`'s existing re-drive tries again next tick, which is
+  // the self-heal this file already has rather than a new one.
+  if (pmActiveRuns.has(pmId)) {
+    logger.info('Effort review deferred: the PM is mid-run, no synchronous turn to read a reply from; the request stays pending and retries next cycle', { taskId, pmId });
+    return;
+  }
+
   const prompt = buildEffortReviewPrompt(taskId, row, row.assigned_to);
+  // FIX ROUND, Finding 2, ruling (b): the correlation boundary, captured BEFORE dispatch. The
+  // read-back below only considers PM messages with a HIGHER rowid than this — never `created_
+  // at`, for the reason `pendingCirclingVerdict` states above (two writes can share a
+  // millisecond; an autoincrement id cannot repeat) — so a stale reply left over from an
+  // earlier, unrelated PM turn can never be misread as THIS request's verdict.
+  const dispatchRowid = (db.prepare(
+    `SELECT COALESCE(MAX(rowid), 0) AS m FROM messages WHERE agent_id = ?`,
+  ).get(pmId) as { m: number }).m;
+
   insertEngineEventIfAbsent({
     id: uuidv4(), agentId: pmId, content: prompt, sourceAgentId: null,
     originIntent: 'effort_review', work: { taskId, runId: null, rootKind: null, rootId: null },
@@ -1383,12 +1457,24 @@ export async function runEffortReview(taskId: string): Promise<void> {
     return;
   }
 
-  const replyRow = db.prepare(
-    `SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-  ).get(pmId) as { content: string } | undefined;
+  const replyRow = db.prepare(`
+    SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' AND rowid > ?
+     ORDER BY created_at DESC, rowid DESC LIMIT 1
+  `).get(pmId, dispatchRowid) as { content: string } | undefined;
   const verdict = parseEffortVerdict(replyRow?.content);
   if (!verdict) {
     logger.warn('Effort review: the PM reply did not parse as a verdict; the request stays pending and retries next cycle', { taskId });
+    return;
+  }
+  // FIX ROUND, Finding 2, ruling (a): a verdict whose echoed task_id does not match is
+  // REJECTED, never applied to the task it happened to be read for. A rowid-scoped mismatch
+  // should be rare in practice (the boundary above already excludes stale replies), but the
+  // schema's whole point is to make a wrong-task application impossible rather than merely
+  // unlikely.
+  if (verdict.taskId !== taskId) {
+    logger.warn('Effort review: PM verdict task_id does not match this request; rejected, the request stays pending and retries next cycle', {
+      taskId, verdictTaskId: verdict.taskId,
+    });
     return;
   }
 
@@ -1403,40 +1489,20 @@ export async function runEffortReview(taskId: string): Promise<void> {
     return;
   }
 
-  // CIRCLING — the existing rung-2 ("urgent") poke, PM's reason embedded, the ladder owns
-  // escalation from here on. Fires REGARDLESS of the normal ladder's own idle-time gating:
-  // this signal came from call volume, not idle time, and a task that never goes idle
-  // (because it keeps calling tools) is exactly the case the idle-based ladder cannot catch.
-  const task = getTask(taskId);
-  if (!task || !task.assignedTo) {
-    logger.warn('Effort review: PM ruled circling but the task has no assignee left to poke', { taskId });
-    advanceBaseline(taskId); // still re-arm — never spin every sweep on an orphaned verdict
-    return;
-  }
-  const taskUpdatedMs = new Date(task.updatedAt.includes('Z') ? task.updatedAt : task.updatedAt + 'Z').getTime();
-  const idleSecondsForMessage = Math.max(0, Math.floor((Date.now() - taskUpdatedMs) / 1000));
-  const pokeMessage =
-    `[PM EFFORT REVIEW — ${EFFORT_REVIEW_DELTA_CALLS}+ calls without advancing] ${verdict.reason}\n\n`
-    + buildPokeMessage(task, 'urgent', 2, idleSecondsForMessage);
-
-  try {
-    const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
-    await deliverA2AMessage({
-      intent: 'QUESTION', threadId: uuidv4(), requiresResponse: true,
-      payload: pokeMessage, toAgent: task.assignedTo, fromAgent: pmId,
-    });
-  } catch (err) {
-    logger.error('Effort review: rung-2 poke delivery failed (non-fatal; still recorded below)', {
-      taskId, error: err instanceof Error ? err.message : String(err),
-    });
-  }
-  recordPoke(taskId, pmId, 2, 'urgent', task.assignedTo);
-  broadcast({ type: 'tracker:poke', data: { taskId, agentId: task.assignedTo, pokeType: 'urgent' } });
-  // Re-arm even on intervention: without this, a stalled task would be re-reviewed on EVERY
-  // sweep tick until the agent finally moves it, instead of after another 150 honest-or-not
-  // calls land on top of what just tripped this one (T79d's brief, explicitly).
+  // CIRCLING — record the verdict durably; DO NOT deliver from here (Finding 1, above). The
+  // guarded poke sweep is the only path that ever reaches the agent from here on.
+  writeTaskLog({
+    taskId, fromEntity: 'pm', entryKind: 'effort_review_intervene',
+    reason: verdict.reason,
+  });
+  // Re-arm even though delivery is deferred to the guarded sweep: without this, a stalled task
+  // would be QUEUED for a brand new review on every sweep tick until the poke actually lands,
+  // instead of after another 150 calls (T79d's brief, explicitly). Delivery-tracking for the
+  // poke ITSELF is the separate `pendingCirclingVerdict`/`circlingPokeAlreadyDelivered`
+  // mechanism above, keyed off the `effort_review_intervene` event's own id, so moving the
+  // baseline here does not affect whether the poke still goes out.
   advanceBaseline(taskId);
-  logger.warn('Effort review: PM ruled circling — rung-2 poke fired with the PM reason embedded', { taskId });
+  logger.warn('Effort review: PM ruled circling — verdict recorded, awaiting the guarded poke sweep to deliver rung 2', { taskId });
 }
 // ════════════════════════════════════════════════════════════════════════════════════════
 
@@ -2511,6 +2577,26 @@ export async function runPokeCheck(): Promise<void> {
       pokeNumber = 1;
     }
 
+    // FIX ROUND, Finding 1 (CRITICAL, code review): a PM effort-review verdict of CIRCLING is
+    // a CALL-VOLUME signal, not an idle-time one — a wide loop that never stops calling tools
+    // never goes idle at all, so it can trip this without the ladder above ever deciding
+    // anything. It fills in ONLY when the ladder decided NOTHING this tick (never downgrades
+    // an idle-based rung 3/4 that already fired), and it is evaluated HERE — after the
+    // `assigneeStatus === 'working'` guard above (a live turn already `continue`d past this
+    // point) and before the `pmActiveRuns` busy-deferral a few lines down — so it goes through
+    // BOTH guards exactly like every other poke in this loop, never around them. This is the
+    // "eventual by construction" half of the ruling: the sweep re-checks every 60s until both
+    // guards allow delivery.
+    let effortReviewReason: string | null = null;
+    if (!pokeType && lastPokeNumber < 2) {
+      const circling = pendingCirclingVerdict(task.id);
+      if (circling) {
+        pokeType = 'urgent';
+        pokeNumber = 2;
+        effortReviewReason = circling.reason;
+      }
+    }
+
     if (!pokeType) continue;
 
     // P2 drive boundary (owner status-truth invariant, 2026-07-21): the
@@ -2644,12 +2730,17 @@ export async function runPokeCheck(): Promise<void> {
     }
 
     // ── Normal poke (nudge / urgent / escalate) ──
-    const pokeMessage = deliveryEvidence && tangibleHandover
+    const basePokeMessage = deliveryEvidence && tangibleHandover
       ? `CLOSE-OUT NEEDED, NOT RE-WORK: task "${task.title}" (${task.id}) still says in_progress, but the engine's own records show ${renderDeliveryEvidence(deliveryEvidence)}. ` +
         `If that delivery completed this task, call work_update(action="status", task_id="${task.id}", status="complete") with the result NOW. ` +
         `Do NOT redo the work, do NOT pause the task, and do NOT re-deliver what the user already has. ` +
         `Only if the delivery did NOT actually finish the task should you continue working it (and say what remains).`
       : buildPokeMessage(task, pokeType, pokeNumber, idleSeconds);
+    // FIX ROUND, Finding 1: the PM's own reason, when this send is the guarded delivery of a
+    // recorded circling verdict rather than an ordinary idle-based rung.
+    const pokeMessage = effortReviewReason
+      ? `[PM EFFORT REVIEW — ${EFFORT_REVIEW_DELTA_CALLS}+ calls without advancing] ${effortReviewReason}\n\n${basePokeMessage}`
+      : basePokeMessage;
     const recipient = pokeType === 'escalate_primary' ? primaryId : task.assignedTo;
 
     // Busy deferral (owner request 2026-07-23): a poke landing while the
