@@ -35,6 +35,7 @@ import { resolveTurnCounterparty, type TurnCounterparty, type WaitingConversatio
 import { resolveOwnerAffinityChannel, affinityPromotionAllowed } from '../../owner-affinity.js';
 import { resetProactiveSendStreak } from '../../proactive-budget.js';
 import { startTurn } from '../../turn-record.js';
+import { declaredPatienceHonestFailTurn } from '../../../shared-state.js';
 import type { PreflightContext, PreflightScratch } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -196,6 +197,14 @@ export async function runCounterpartyAndRecord(
   // engine receipts without threading it through every send executor. Cleared at
   // the turn's `finally`, like every other fact in the bag.
   turnCtx.turnNumber = turnNumber;
+  // T81c FIX ROUND 1 (NO-DOOMED-DIALS) — belt-and-suspenders clear, right where this turn's
+  // OWN identity is allocated. `runtime.ts`'s queued-wakeup gate already refuses to act on this
+  // marker unless it names `currentTurnNumber(agentId)` exactly, and allocating `turnNumber`
+  // here moves that number forward BEFORE this line runs — so a stale entry from an earlier
+  // turn already fails that identity check on its own. This clear is the second, independent
+  // guarantee (matching the marker's own doc in `shared-state.ts`): every new turn starts with
+  // a clean slate regardless of what a future edit to the identity check might get wrong.
+  declaredPatienceHonestFailTurn.delete(agentId);
   // S3 (PHASE-3 T3): restart rehydration, at the TURN, once per agent per process.
   // `memory/assembler.ts:1262-1281` (pre-repin) did this from inside the assembly read path
   // on EVERY assembly — a mutation on a read, and one that re-broke the cached tools prefix

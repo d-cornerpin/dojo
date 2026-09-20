@@ -32,6 +32,7 @@ import {
   recoveryRunStreak,
   MAX_INLOOP_RECOVERIES_SAME_INPUTS,
   doomedPrefillCompactionSpent,
+  declaredPatienceHonestFailTurn,
 } from '../shared-state.js';
 import { setAgentStatus, writeAgentLastError } from '../agent-status.js';
 import type { AgentTurnState } from './state.js';
@@ -576,6 +577,19 @@ async function recordInjury(
   // P4 turn record: a turn that died on an exception gets an honest terminal
   // state instead of an open-ended row.
   try { markTurnDied(agentId, state.turnNumber); } catch { /* best effort */ }
+
+  // T81c FIX ROUND 1 (NO-DOOMED-DIALS) — THE ONE PLACE THIS MARKER IS EVER SET. Reaching
+  // `recordInjury` with `DECLARED_PATIENCE_EXCEEDED_CODE` means every earlier cascade step —
+  // the pre-dial-refusal compaction retry, context-overflow, output-truncation, Tier-B — has
+  // already declined to handle this specific failure, so THIS is the honest-fail turn: no
+  // self-scheduled retry exists for it. Keyed to the turn number so `runtime.ts`'s queued-wakeup
+  // gate can tell "the marker names the turn that JUST ended" from "a stale entry from some
+  // earlier, unrelated chain" — see the marker's own doc in `shared-state.ts` for the defect
+  // this replaces (an unscoped `agents.last_error` read that silently declined an unrelated
+  // turn's legitimate retry).
+  if (code === DECLARED_PATIENCE_EXCEEDED_CODE) {
+    declaredPatienceHonestFailTurn.set(agentId, state.turnNumber);
+  }
 
   // v2.3.19 — ALWAYS persist a chat-history system note FIRST so the
   // agent has context on its next turn. Pre-spec the only path that

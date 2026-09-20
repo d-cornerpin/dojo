@@ -178,3 +178,39 @@ export const MAX_CONSECUTIVE_INLOOP_RECOVERIES = 3;
 // bounded and costs no dial, where the alternative (denying a rightful compaction) is the exact
 // defect this fix exists to close.
 export const doomedPrefillCompactionSpent = new Map<string, number>();
+
+// T81c FIX ROUND 1 (NO-DOOMED-DIALS) — REPLACES a `last_error` STRING READ THE REVIEW ROUND
+// PROVED UNSAFE, keyed `agentId -> turnNumber`, same idiom as `doomedPrefillCompactionSpent`
+// directly above.
+//
+// THE DEFECT THE FIRST CUT SHIPPED: `runtime.ts`'s 500ms queued-wakeup restart declined to fire
+// whenever `agents.last_error` CONTAINED a declared-patience phrase, with no scoping to WHICH
+// turn produced it. `agents.last_error` survives a `working` transition by design (FA-A2 — the
+// Healer's diagnostic must not vanish on the free retry that follows an injury), so an OLD
+// declared-patience injury's message could still be sitting in `last_error` turns later, after
+// the agent recovered onto a completely different failure. Four recovery arms in
+// `v2/recovery.ts` — `tryContextOverflowRecovery`, `tryPreDialDoomedRefusalRecovery`,
+// `tryOutputTruncationRecovery`, and Tier-B's `tryProviderRecovery` — all call `queueSelfWake`
+// for a LEGITIMATE, intended retry WITHOUT touching `last_error` at all (none of them are
+// injuries; `recordInjury` is the only writer). Reviewer's reproduction: an agent injured by a
+// declared-patience turn, resumed by a fresh human message (status flips to `working`,
+// `last_error` untouched), then hits an UNRELATED context-overflow on the very next turn — the
+// stale phrase from the FIRST injury was still sitting in `last_error`, so the SECOND turn's
+// entirely legitimate forced-compaction retry was silently declined. Status stayed `working`
+// forever with nothing left to wake it except the 75-minute stuck-agent reaper — exactly the
+// silent-hang class P3 forbids, produced by the very mechanism meant to prevent one.
+//
+// THE FIX: stop reading prose. `v2/recovery.ts`'s `recordInjury` is the ONE place that KNOWS,
+// authoritatively, that a turn just ended on `DECLARED_PATIENCE_EXCEEDED_CODE` with NO
+// self-scheduled retry — reaching `recordInjury` at all means every earlier cascade step
+// (including the four listed above) declined to handle it. It sets this marker to the turn
+// that just failed, and ONLY there. `runtime.ts`'s queued-wakeup gate declines ONLY when the
+// marker names the EXACT turn number `v2/turn-record.ts`'s `currentTurnNumber` reports as the
+// agent's latest — i.e., the turn that marker was set for is still the most recent one, nothing
+// has run since — and consumes (deletes) it as part of declining. Cleared unconditionally at
+// the start of every new turn (`v2/steps/preflight/counterparty-and-record.ts`, right where the
+// turn's own number is allocated) as a second, independent guarantee: even if some future edit
+// let a stale marker survive an intervening turn, `currentTurnNumber` having moved on already
+// makes an old entry's turn number mismatch — the clear-on-start is belt-and-suspenders on top
+// of an identity check, not the whole safety net by itself.
+export const declaredPatienceHonestFailTurn = new Map<string, number>();

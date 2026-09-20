@@ -665,6 +665,12 @@ export interface OllamaStatusEvent {
     slots: Array<{ providerId: string; modelName: string; activeRequests: number }>;
     queuedRequests: number;
     queuedModels: Array<{ providerId: string; modelName: string }>;
+    // T81c (NO-DOOMED-DIALS) Fix Round 1, Minor 1: a same-model pileup (two+ requests for the
+    // IDENTICAL model on one provider, serialized behind each other) is a different condition
+    // from `queuedRequests`/`queuedModels` above (two DIFFERENT models contending for one slot)
+    // — the GPU-livelock incident's own shape, surfaced so the Health page can tell them apart.
+    sameModelWaiters: number;
+    sameModelWaitingModels: Array<{ providerId: string; modelName: string; count: number }>;
   };
 }
 

@@ -321,16 +321,21 @@ describe('PHASE-6 T1: the ten maps are GONE, not standing beside their replaceme
     expect(declared.sort()).toEqual([...TURN_STATE_KEEPS].sort());
   });
 
-  it('shared-state.ts declares its twelve untouched by THIS task, plus T81b\'s one new cross-turn Set', () => {
+  it('shared-state.ts declares its twelve untouched by THIS task, plus T81b\'s and T81c\'s new cross-turn Maps', () => {
     // T81b (NO-DOOMED-DIALS) added `doomedPrefillCompactionSpent` — a genuinely NEW piece of
     // ambient per-agent state (mirroring `recoveryRunStreak`'s own shape, already one of the
     // twelve this clause pins), not a reintroduction of anything PHASE-6 T1's collapse retired.
-    // The count moves to 13; `RETIRED_FROM_TURN_STATE` above is the list this clause actually
-    // guards against creeping back, and it names none of shared-state.ts's twelve or T81b's
-    // thirteenth.
+    // The count moved to 13.
+    //
+    // T81c FIX ROUND 1 added `declaredPatienceHonestFailTurn` — the SAME idiom again (a turn-
+    // scoped `agentId -> turnNumber` Map), replacing an unscoped `agents.last_error` STRING read
+    // the review round proved unsafe (see that Map's own doc). The count moves to 14;
+    // `RETIRED_FROM_TURN_STATE` above is the list this clause actually guards against creeping
+    // back, and it names none of shared-state.ts's twelve, T81b's thirteenth, or T81c's
+    // fourteenth.
     const src = read('agent/shared-state.ts');
     const declared = [...src.matchAll(/export const (\w+) = new (?:Map|Set)/g)].map((m) => m[1]);
-    expect(declared).toHaveLength(13);
+    expect(declared).toHaveLength(14);
   });
 
   it('the two ambient-state files are PINNED in ratchets.json', () => {

@@ -66,6 +66,12 @@ interface OllamaLockData {
   slots: Array<{ modelName: string; activeRequests: number }>;
   queuedRequests: number;
   queuedModels: string[];
+  // T81c (NO-DOOMED-DIALS) Fix Round 1, Minor 1: a same-model pileup (two+ requests for the
+  // IDENTICAL model on one provider, serialized behind each other) — the GPU-livelock
+  // incident's own shape, distinct from `queuedRequests`/`queuedModels` above (which mean two
+  // DIFFERENT models contending for one slot).
+  sameModelWaiters: number;
+  sameModelWaitingModels: Array<{ providerId: string; modelName: string; count: number }>;
 }
 
 interface ResourceData {
@@ -436,6 +442,16 @@ export const Health = () => {
               {resources.ollamaLock.queuedRequests} request{resources.ollamaLock.queuedRequests !== 1 ? 's' : ''} queued
               {resources.ollamaLock.queuedModels.length > 0 && <> for {resources.ollamaLock.queuedModels.join(', ')}</>}
               . Multiple local models in use, consider consolidating to one.
+            </div>
+          )}
+
+          {resources?.ollamaLock && resources.ollamaLock.sameModelWaiters > 0 && (
+            <div className="note--warn" style={{ marginTop: 12, marginBottom: 0 }}>
+              {resources.ollamaLock.sameModelWaiters} request{resources.ollamaLock.sameModelWaiters !== 1 ? 's' : ''} waiting behind a same-model call already in progress
+              {resources.ollamaLock.sameModelWaitingModels.length > 0 && (
+                <> ({resources.ollamaLock.sameModelWaitingModels.map(m => `${m.modelName} · ${m.count}`).join(', ')})</>
+              )}
+              . Requests for the same model are served one at a time on this box.
             </div>
           )}
         </div>

@@ -372,10 +372,14 @@ vi.mock('../steer-queue.js', async () => {
 // hand-rolled engine walk below — the derivation lives in `engine-sources.ts` now.
 import { engineSources, engineText } from './engine-sources.js';
 import { runV2Turn } from '../loop.js';
-import { stoppedAgents, recoveryRunStreak, pendingWakeups, turnContinuationCounts, doomedPrefillCompactionSpent } from '../../shared-state.js';
+import {
+  stoppedAgents, recoveryRunStreak, pendingWakeups, turnContinuationCounts,
+  doomedPrefillCompactionSpent, declaredPatienceHonestFailTurn,
+} from '../../shared-state.js';
 import { AgentError } from '../../errors.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../../stream-patience.js';
 import { turnContext } from '../../turn-context.js';
+import { currentTurnNumber } from '../turn-record.js';
 import { recordDelivery } from '../deliveries.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
@@ -504,6 +508,7 @@ beforeEach(() => {
   stoppedAgents.clear();
   recoveryRunStreak.clear();
   doomedPrefillCompactionSpent.clear();
+  declaredPatienceHonestFailTurn.clear();
   pendingWakeups.clear();
   turnContinuationCounts.clear();
   enqueueSteerSpy.mockClear();
@@ -1590,6 +1595,113 @@ describe('runV2Turn integration', () => {
 
       expect(checkAndCompactSpy).not.toHaveBeenCalled();
       expect(onAgentInjuredSpy).toHaveBeenCalled();
+    });
+  });
+
+  describe('T81c FIX ROUND 1 — the declared-patience-honest-fail marker', () => {
+    // CRITICAL finding, review round 1: the first cut read `agents.last_error` — a STRING that
+    // survives a `working` transition by design — to decide whether `runtime.ts`'s queued-wakeup
+    // restart should decline. Reproduced defect: an agent injured by a declared-patience turn,
+    // resumed, then hitting an UNRELATED recovery arm (context-overflow, the pre-dial compaction
+    // retry, output-truncation, Tier-B) on the very NEXT turn had its entirely legitimate
+    // self-wake silently declined by the STALE phrase still sitting in `last_error` — none of
+    // those four arms ever touch that column. This block drives the REAL cascade (not DB
+    // seeding) and asserts the marker `runtime.ts` actually consults: set ONLY by `recordInjury`
+    // for `DECLARED_PATIENCE_EXCEEDED_CODE` (the honest-fail path with no self-scheduled retry),
+    // and left UNSET by every path that queues its own legitimate retry instead.
+
+    const midFlightTimeout = (): AgentError => new AgentError(
+      'model first-chunk timeout: no data from provider for too long (elapsed 40000ms); '
+      + '~9999 estimated prompt tokens against a declared 40000ms first-chunk patience',
+      'primary',
+      { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false },
+    );
+    const preDialRefusal = (): AgentError => new AgentError(
+      "refused before any network dial: ~9999 estimated prompt tokens exceeds the ~100-token "
+      + "ceiling this provider's declared 10 tok/s prefill throughput can cover inside its "
+      + "declared 40000ms first-chunk patience.",
+      'primary',
+      { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false, preDialRefusal: true },
+    );
+
+    it('a mid-flight declared-patience timeout reaching the honest fail SETS the marker to the turn that just ended', async () => {
+      callModelSpy.mockRejectedValue(midFlightTimeout());
+      await runV2Turn('primary');
+
+      expect(onAgentInjuredSpy).toHaveBeenCalled(); // this IS the honest-fail path
+      expect(declaredPatienceHonestFailTurn.get('primary')).toBe(currentTurnNumber('primary'));
+    });
+
+    it('a SECOND pre-dial refusal (compaction already spent) reaching the honest fail ALSO sets the marker', async () => {
+      callModelSpy.mockRejectedValue(preDialRefusal());
+      await runV2Turn('primary'); // spends the one compaction attempt — no injury, no marker yet
+      expect(declaredPatienceHonestFailTurn.has('primary')).toBe(false);
+
+      callModelSpy.mockRejectedValue(preDialRefusal());
+      await runV2Turn('primary'); // still doomed — the honest fail
+
+      expect(onAgentInjuredSpy).toHaveBeenCalled();
+      expect(declaredPatienceHonestFailTurn.get('primary')).toBe(currentTurnNumber('primary'));
+    });
+
+    it('CONTROL: the FIRST pre-dial refusal (compaction succeeds, retry queued) does NOT set the marker', async () => {
+      callModelSpy.mockRejectedValue(preDialRefusal());
+      await runV2Turn('primary');
+
+      expect(onAgentInjuredSpy).not.toHaveBeenCalled();
+      expect(pendingWakeups.has('primary')).toBe(true); // a real retry IS queued
+      expect(declaredPatienceHonestFailTurn.has('primary'), 'a legitimate compaction retry must not be mistaken for a no-retry honest fail').toBe(false);
+    });
+
+    it('CONTROL: context-overflow recovery (an UNRELATED arm) does NOT set the marker, even though it also queues a self-wake', async () => {
+      isContextOverflowErrorMock.mockImplementation(() => true);
+      callModelSpy.mockRejectedValue(new Error('400 prompt is too long: 250000 tokens > 200000 maximum'));
+
+      await runV2Turn('primary');
+
+      expect(checkAndCompactSpy).toHaveBeenCalled();
+      expect(pendingWakeups.has('primary')).toBe(true);
+      expect(onAgentInjuredSpy).not.toHaveBeenCalled();
+      expect(declaredPatienceHonestFailTurn.has('primary'), 'this arm never touches last_error either — the OLD check could have wrongly declined a LATER turn').toBe(false);
+    });
+
+    it('CONTROL: Tier-B recoverable-provider-4xx recovery does NOT set the marker', async () => {
+      callModelSpy.mockRejectedValue(
+        new Error('400 The model does not support image input, no endpoints found that support images'),
+      );
+
+      await runV2Turn('primary');
+
+      expect(recordErrorMock).not.toHaveBeenCalled();
+      expect(pendingWakeups.has('primary')).toBe(true);
+      expect(declaredPatienceHonestFailTurn.has('primary')).toBe(false);
+    });
+
+    it('CONTROL: a wholly unrelated injury (not declared-patience) reaches recordInjury but does NOT set the marker', async () => {
+      callModelSpy.mockRejectedValue(new Error('500 Internal Server Error: something weird'));
+      await runV2Turn('primary');
+
+      expect(onAgentInjuredSpy).toHaveBeenCalled(); // this IS an honest fail — just not THIS class
+      expect(declaredPatienceHonestFailTurn.has('primary'), 'the marker is gated on the CODE, not on "recordInjury ran"').toBe(false);
+    });
+
+    it('THE REPRODUCED DEFECT, closed: a stale last_error from an earlier chain no longer blocks an unrelated later recovery arm', async () => {
+      // Simulates exactly the reviewer's reproduction: an agent's `last_error` still carries an
+      // OLD declared-patience phrase (from some earlier, already-resolved injury this test does
+      // not need to replay) while the marker itself is correctly unset (no honest-fail turn is
+      // pending). A later, wholly unrelated context-overflow recovery must proceed normally.
+      mockDb.current!.prepare("UPDATE agents SET last_error = ? WHERE id = 'primary'").run(
+        'model first-chunk timeout: no data from provider for too long (elapsed 40000ms)',
+      );
+      expect(declaredPatienceHonestFailTurn.has('primary')).toBe(false);
+
+      isContextOverflowErrorMock.mockImplementation(() => true);
+      callModelSpy.mockRejectedValue(new Error('400 prompt is too long: 250000 tokens > 200000 maximum'));
+      await runV2Turn('primary');
+
+      expect(checkAndCompactSpy).toHaveBeenCalled();
+      expect(pendingWakeups.has('primary')).toBe(true);
+      expect(onAgentInjuredSpy).not.toHaveBeenCalled();
     });
   });
 

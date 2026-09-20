@@ -389,7 +389,11 @@ import {
   // (voice barge-in) never had a governor at all.
   lastA2APreemptAt,
   A2A_PREEMPT_MIN_INTERVAL_MS,
+  // T81c FIX ROUND 1 (NO-DOOMED-DIALS): the turn-scoped marker that replaced the first cut's
+  // unscoped `agents.last_error` read (see the marker's own doc for the reproduced defect).
+  declaredPatienceHonestFailTurn,
 } from './shared-state.js';
+import { currentTurnNumber } from './v2/turn-record.js';
 
 import { turnBoundary, forceA2ATurn, a2aTurnRetries, MAX_A2A_TURN_RETRIES, lastTurnWasA2A, MAX_DRAIN_STUCK } from './turn-state.js';
 import { turnContext } from './turn-context.js';
@@ -595,35 +599,30 @@ function isSelfResumeBlockedStatus(status: string | undefined): boolean {
 }
 
 /**
- * T81c (NO-DOOMED-DIALS, census row 22) — GPU livelock incident, Leg B: does `agents.last_error`
- * say the most recent injury was a declared-patience exhaustion (T81a/T81b's own
- * `DECLARED_PATIENCE_EXCEEDED_CODE`)?
+ * T81c FIX ROUND 1 (NO-DOOMED-DIALS, census row 22) — REPLACES the first cut's `agents.last_error`
+ * text read, which the review round reproduced as unsafe: `last_error` survives a `working`
+ * transition by design (FA-A2), so a stale declared-patience phrase from an EARLIER, already-
+ * resolved injury could still be sitting there when a LATER, unrelated turn's legitimate
+ * recovery arm (context-overflow, the pre-dial compaction retry, output-truncation, Tier-B —
+ * none of which touch `last_error`) queued its own self-wake. The old check could not tell
+ * "this turn's own failure" from "some other turn's diagnostic that never got cleared", and
+ * silently declined a real retry — the exact silent-hang class P3 forbids. See
+ * `declaredPatienceHonestFailTurn`'s own doc in `shared-state.ts` for the full defect and the
+ * reproduction shape.
  *
- * Reads `last_error` — the persisted STRING, not a parallel store invented for this task —
- * because it is the one signal that survives exactly the gap `isSelfResumeBlockedStatus` alone
- * cannot cover: `resetWorkingAgentsToIdleAtBoot`'s crash-recovery sweep (`agent-status.ts`) sets
- * a `working` row straight to `idle` with a RAW statement that never touches `last_error` (by
- * design — `setAgentStatus`'s own clear-on-idle default is what every OTHER idle transition
- * goes through, and a boot sweep for rows no process can still be running has no turn context to
- * ask). A server that crashes mid-retry, after a declared-patience injury already wrote
- * `last_error` and before the agent ever got back to a clean `idle`, boots with status='idle'
- * (unblocked) and a stale diagnostic that still names the un-finishable request — exactly the
- * shape `isSelfResumeBlockedStatus`'s status-only check cannot see, and the restart boundary
- * this whole census is about.
- *
- * Two phrases, matching `healer/injury-recovery.ts`'s own rehydrate classifier: a mid-flight
- * watchdog abort (`agent/model.ts`'s `STREAM_FIRST_CHUNK_TIMEOUT_ERROR`) and a T81b pre-dial
- * refusal (`agent/model.ts`'s `PRE_DIAL_REFUSAL_PHRASE`) both carry `DECLARED_PATIENCE_EXCEEDED_CODE`,
- * but only the persisted MESSAGE survives to this reader — copied as literals rather than
- * imported, same reasoning as that file's own header: this reader holds a STRING and nothing
- * else.
+ * Declines ONLY when the marker names the EXACT turn `v2/turn-record.ts`'s `currentTurnNumber`
+ * reports as this agent's latest — i.e. the marked turn is still the most recent one and
+ * nothing has run since `recordInjury` set it — and CONSUMES (deletes) the marker as the one
+ * action that acts on it. `recordInjury` is the only writer, so a marker whose turn number does
+ * not match the agent's current latest is stale by construction (a later turn already ran,
+ * whether or not it also cleared the marker at its own start).
  */
-function lastTurnEndedOnDeclaredPatience(agentId: string): boolean {
-  const row = getDb()
-    .prepare('SELECT last_error FROM agents WHERE id = ?')
-    .get(agentId) as { last_error?: string | null } | undefined;
-  const lastError = (row?.last_error ?? '').toLowerCase();
-  return lastError.includes('model first-chunk timeout') || lastError.includes('refused before any network dial');
+function turnJustEndedOnDeclaredPatience(agentId: string): boolean {
+  const markedTurn = declaredPatienceHonestFailTurn.get(agentId);
+  if (markedTurn === undefined) return false;
+  if (markedTurn !== currentTurnNumber(agentId)) return false;
+  declaredPatienceHonestFailTurn.delete(agentId);
+  return true;
 }
 
 class AgentRuntime {
@@ -1001,17 +1000,20 @@ class AgentRuntime {
           // T81c (NO-DOOMED-DIALS, census row 22) — checked FIRST, before the status read
           // below: consult WHY the prior turn ended, not just what status it left behind. A
           // declared-patience exhaustion is a cold-redial of an identical un-finishable request
-          // no matter what status the row currently carries (see `lastTurnEndedOnDeclaredPatience`'s
-          // own doc for the boot-sweep gap `isSelfResumeBlockedStatus` alone cannot close). T81a's
-          // own injury path already told the human (a persisted system note + Healer dispatch) —
-          // duplicating that note here would just be noise, so this restart ONLY declines. The
-          // wake is re-queued through `queueSelfWake` (never a raw `pendingWakeups.add` — UX-REPAIR
-          // T37 pins runtime.ts at exactly one direct add, the busy-path arrival) so a live user
-          // stop is still honoured and a later clean turn (which clears `last_error`) lets a
-          // future pass fire it normally. A genuinely NEW human message is unaffected either way —
-          // it arrives through `handleMessage`'s own top-of-function door, which this timer never
-          // gates.
-          if (lastTurnEndedOnDeclaredPatience(agentId)) {
+          // no matter what status the row currently carries. T81a's own injury path already
+          // told the human (a persisted system note + Healer dispatch) — duplicating that note
+          // here would just be noise, so this restart ONLY declines. The wake is re-queued
+          // through `queueSelfWake` (never a raw `pendingWakeups.add` — UX-REPAIR T37 pins
+          // runtime.ts at exactly one direct add, the busy-path arrival) so a live user stop is
+          // still honoured. A genuinely NEW human message is unaffected either way — it arrives
+          // through `handleMessage`'s own top-of-function door, which this timer never gates.
+          //
+          // FIX ROUND 1: `turnJustEndedOnDeclaredPatience` — not a `last_error` text read. See
+          // that function's own doc, and `declaredPatienceHonestFailTurn`'s in `shared-state.ts`,
+          // for the review round's reproduced defect (an unscoped string read silently declined
+          // an UNRELATED turn's legitimate recovery retry) and why a turn-scoped marker replaces
+          // it entirely rather than patching the string match.
+          if (turnJustEndedOnDeclaredPatience(agentId)) {
             queueSelfWake(agentId, 'declared-patience-decline-requeue');
             logger.info('Queued wakeup declined: the prior turn ended on a declared-patience exhaustion, not auto-redialing the identical request', { agentId }, agentId);
             return;
