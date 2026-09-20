@@ -4719,6 +4719,20 @@
       "to": 421,
       "by": "NO-DOOMED-DIALS t81 \u2014 over-cap pin (files crossed 400 during t81; pinned decrease-only)",
       "why": "+the activeRuns guard on fixStuckAgent (T81d) tipped a long-standing file over the cap. From here it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 3413,
+      "to": 3488,
+      "by": "NO-DOOMED-DIALS t81 final fix wave \u2014 the fourth transport's trip carries the code",
+      "why": "+75. callOllamaModel's own-timer discrimination + sawAnyContent + the shared decision points, and the truthful declared-vs-standing wording in refuseIfDoomed. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/healer/injury-recovery.ts",
+      "from": 862,
+      "to": 870,
+      "by": "NO-DOOMED-DIALS t81 final fix wave",
+      "why": "+8. classifyError also recognizes the pre-dial refusal phrase on the restart/rehydrate path. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -4765,7 +4779,7 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 217,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 3413,
+    "packages/server/src/agent/model.ts": 3488,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
@@ -4895,7 +4909,7 @@
     "packages/server/src/healer/approval-routing.ts": 497,
     "packages/server/src/healer/diagnostic.ts": 1067,
     "packages/server/src/healer/healer-agent.ts": 1186,
-    "packages/server/src/healer/injury-recovery.ts": 862,
+    "packages/server/src/healer/injury-recovery.ts": 870,
     "packages/server/src/index.ts": 1271,
     "packages/server/src/memory/assembler.ts": 2687,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
