@@ -147,9 +147,11 @@ export const MAX_INLOOP_RECOVERIES_SAME_INPUTS = 2;
 // all callers migrate.
 export const MAX_CONSECUTIVE_INLOOP_RECOVERIES = 3;
 
-// T81b (NO-DOOMED-DIALS) — which agents have already spent their ONE forced-compaction
-// attempt on a pre-dial doomed-request refusal (`v2/recovery.ts`'s `tryPreDialDoomedRefusalRecovery`),
-// keyed to WHICH turn spent it — not a bare boolean.
+// T81b (NO-DOOMED-DIALS), WIDENED BY T82b (ANSWER-ANYWAY) — which agents have already spent
+// their ONE forced-compaction attempt on a declared-patience exhaustion (`v2/recovery.ts`'s
+// `tryDeclaredPatienceCompactOnceRecovery`, widened by T82b from a pre-dial-refusal-only
+// `tryPreDialDoomedRefusalRecovery` to also cover a real dial dying at patience, sharing this
+// exact Map rather than adding a second one), keyed to WHICH turn spent it — not a bare boolean.
 //
 // REVIEW ROUND FINDING: a bare `Set<agentId>` (the first cut) is cleared only when the cap is
 // spent (a second doomed refusal arrives) or on a CLEAN turn finalize
@@ -189,7 +191,7 @@ export const doomedPrefillCompactionSpent = new Map<string, number>();
 // Healer's diagnostic must not vanish on the free retry that follows an injury), so an OLD
 // declared-patience injury's message could still be sitting in `last_error` turns later, after
 // the agent recovered onto a completely different failure. Four recovery arms in
-// `v2/recovery.ts` — `tryContextOverflowRecovery`, `tryPreDialDoomedRefusalRecovery`,
+// `v2/recovery.ts` — `tryContextOverflowRecovery`, `tryDeclaredPatienceCompactOnceRecovery`,
 // `tryOutputTruncationRecovery`, and Tier-B's `tryProviderRecovery` — all call `queueSelfWake`
 // for a LEGITIMATE, intended retry WITHOUT touching `last_error` at all (none of them are
 // injuries; `recordInjury` is the only writer). Reviewer's reproduction: an agent injured by a

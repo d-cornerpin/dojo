@@ -1580,16 +1580,148 @@ describe('runV2Turn integration', () => {
       expect(onAgentInjuredSpy).not.toHaveBeenCalled();
     });
 
-    it('CONTROL: the identical code from a genuine watchdog timeout (no pre-dial marker) is never compacted — straight to the honest fail', async () => {
-      // Same `code` as the pre-dial case (T81a's own, never a second one) but no
-      // `preDialRefusal` — a real dial was attempted and died mid-flight, so compacting and
-      // retrying would repeat the exact wall-clock cost that just failed (P3).
-      callModelSpy.mockRejectedValue(new AgentError(
-        'model first-chunk timeout: no data from provider for too long (elapsed 40000ms); '
-        + '~9999 estimated prompt tokens against a declared 40000ms first-chunk patience',
-        'primary',
-        { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false },
+    // T82b (ANSWER-ANYWAY) DELETED THIS CONTROL'S OLD ASSERTION. Pre-T82b, the identical code
+    // from a genuine watchdog timeout (no `preDialRefusal`) skipped this recovery entirely and
+    // went straight to the honest fail — "a real dial was attempted and died mid-flight, so
+    // compacting and retrying would repeat the exact wall-clock cost that just failed (P3)".
+    // That reasoning did not survive T82a: the redial here was never a bare cold re-dial of the
+    // SAME prompt, it is "force-compact (to the provider-aware budget, strictly smaller than
+    // the threshold that just failed) THEN re-dial" — a materially different, smaller request,
+    // not a repeat. A live dial death now gets the identical one-shot compact-and-retry a
+    // pre-dial refusal always got; see the dedicated `describe` block below
+    // ("T82b — a live timeout routes through the SAME compact-once path") for the full
+    // first-occurrence / second-occurrence / shared-marker coverage.
+  });
+
+  describe('T82b (ANSWER-ANYWAY) — a live timeout routes through the SAME compact-once path pre-dial refusals use', () => {
+    // THE DELETION THIS TASK MAKES: pre-T82b, `v2/recovery.ts` only ran the compact-once
+    // discipline for a PRE-DIAL refusal (`error.preDialRefusal === true` — `agent/model.ts`
+    // refused to dial at all). A REAL dial that went out and died at the identical declared
+    // bound (the watchdog cut it mid-flight, `preDialRefusal` false or absent) fell straight
+    // through to `recordInjury` on its FIRST occurrence — "a live timeout is immediately
+    // terminal". That is gone: both shapes now share the ONE compact-once path, the ONE
+    // `doomedPrefillCompactionSpent` marker, and the ONE spent/adjacency discipline — no new
+    // mechanism, no new marker (see `recovery.ts`'s own step-0.5 header for the full argument).
+    //
+    // FIXTURE (never a code constant): "the box times out on a big prompt, serves a small one
+    // fine" — a live dial that dies at the declared patience on a ~60K-token turn, echoing
+    // T81b/T82a's own 600s/180tps fixture family.
+    const SIXTY_K_BLOB = 'x'.repeat(240_000); // ~60,000 tokens via the platform's /4 estimator
+    const liveTimeout = (): AgentError => new AgentError(
+      'model first-chunk timeout: no data from provider for too long (elapsed 600000ms); '
+      + '~60000 estimated prompt tokens against a declared 600000ms first-chunk patience',
+      'primary',
+      // `preDialRefusal` intentionally omitted (defaults false): a REAL dial went out and died
+      // mid-flight — the shape a watchdog abort produces, never a pre-dial refusal's shape.
+      { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false },
+    );
+    const preDialRefusal = (): AgentError => new AgentError(
+      "refused before any network dial: ~9999 estimated prompt tokens exceeds the ~100-token "
+      + "ceiling this provider's declared 10 tok/s prefill throughput can cover inside its "
+      + "declared 40000ms first-chunk patience.",
+      'primary',
+      { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false, preDialRefusal: true },
+    );
+
+    it('a live timeout on a 60K turn compacts ONCE, and the retried (materially smaller) assembly lands an answer', async () => {
+      // The assembler is asked again on the retried turn (the real `assemble` step, unmocked
+      // in production, re-reads the DB after `checkAndCompact` ran for real). Standing in for
+      // that here: the canned assembly flips from the oversized blob to a small, DIFFERENT
+      // shape the moment `checkAndCompactSpy` has actually been invoked — so the model only
+      // ever "serves small": it rejects the big assembly (the box timing out) and succeeds on
+      // the compacted one, causally proving the redial is smaller, not merely re-mocked.
+      assembleContextMock.mockImplementation(async () => (
+        checkAndCompactSpy.mock.calls.length > 0
+          ? { systemPrompt: '<system prompt>', messages: [{ role: 'user', content: 'compacted, small' }] }
+          : { systemPrompt: '<system prompt>', messages: [{ role: 'user', content: SIXTY_K_BLOB }] }
       ));
+      callModelSpy.mockImplementation(async (args: unknown) => {
+        const { messages } = args as { messages: Array<{ content: unknown }> };
+        if (messages.some((m) => m.content === SIXTY_K_BLOB)) throw liveTimeout();
+        return { content: 'It is done.', toolCalls: [], inputTokens: 10, outputTokens: 3, stopReason: 'end_turn' };
+      });
+
+      await runV2Turn('primary'); // turn N: the 60K assembly dials, dies at patience
+
+      expect(checkAndCompactSpy).toHaveBeenCalledWith(
+        'primary',
+        expect.any(String),
+        expect.any(Number),
+        expect.objectContaining({ force: true }),
+      );
+      expect(pendingWakeups.has('primary')).toBe(true); // not declined — the retry wake fires
+      expect(onAgentInjuredSpy).not.toHaveBeenCalled();
+      expect(recordErrorMock).not.toHaveBeenCalled();
+
+      await runV2Turn('primary'); // turn N+1: the retry — assembly is now the compacted, smaller one
+
+      expect(checkAndCompactSpy).toHaveBeenCalledTimes(1); // exactly ONE compaction across the chain
+      expect(callModelSpy).toHaveBeenCalledTimes(2); // exactly 2 dials total
+      expect(onAgentInjuredSpy).not.toHaveBeenCalled();
+      const messages = mockDb.current!
+        .prepare("SELECT content FROM messages WHERE role = 'assistant' ORDER BY rowid DESC LIMIT 1")
+        .all() as Array<{ content: string }>;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].content).toBe('It is done.'); // the answer lands
+    });
+
+    it('a SECOND live timeout in the same turn-chain (the one attempt already spent) is never compacted twice — honest fail, exactly 2 dials total', async () => {
+      callModelSpy.mockRejectedValue(liveTimeout());
+      await runV2Turn('primary'); // turn N: dies at patience, compacts, spends the one attempt, self-wakes
+      expect(checkAndCompactSpy).toHaveBeenCalledTimes(1);
+
+      checkAndCompactSpy.mockClear();
+      onAgentInjuredSpy.mockClear();
+      callModelSpy.mockRejectedValue(liveTimeout()); // the retried dial ALSO dies at patience
+      await runV2Turn('primary'); // turn N+1: the retry itself times out again
+
+      expect(checkAndCompactSpy).not.toHaveBeenCalled(); // marker already spent — no second compaction
+      expect(callModelSpy).toHaveBeenCalledTimes(2); // exactly 2 dials total across the whole chain
+      expect(onAgentInjuredSpy).toHaveBeenCalledWith(
+        'primary',
+        expect.stringContaining('model first-chunk timeout'),
+        DECLARED_PATIENCE_EXCEEDED_CODE,
+      );
+      expect(declaredPatienceHonestFailTurn.get('primary')).toBe(currentTurnNumber('primary'));
+    });
+
+    it('CONTROL (pre-dial path byte-unchanged): a pre-dial refusal still force-compacts once and retries exactly as it did before this task', async () => {
+      callModelSpy.mockRejectedValue(preDialRefusal());
+
+      await runV2Turn('primary');
+
+      expect(checkAndCompactSpy).toHaveBeenCalledWith(
+        'primary',
+        expect.any(String),
+        expect.any(Number),
+        expect.objectContaining({ force: true }),
+      );
+      expect(pendingWakeups.has('primary')).toBe(true);
+      expect(onAgentInjuredSpy).not.toHaveBeenCalled();
+    });
+
+    it('SHARED-MARKER CONTROL: a pre-dial compaction spends the ONE attempt — a live timeout right after in the same chain is never compacted twice, straight to honest fail', async () => {
+      callModelSpy.mockRejectedValue(preDialRefusal());
+      await runV2Turn('primary'); // turn N: pre-dial refusal compacts, spends the ONE shared attempt
+      expect(checkAndCompactSpy).toHaveBeenCalledTimes(1);
+
+      checkAndCompactSpy.mockClear();
+      onAgentInjuredSpy.mockClear();
+      callModelSpy.mockRejectedValue(liveTimeout()); // turn N+1: a REAL dial goes out this time and dies at patience
+      await runV2Turn('primary');
+
+      // The marker is SHARED across both shapes, not per-shape — the live timeout finds it
+      // already spent by the pre-dial refusal and never gets its own compaction.
+      expect(checkAndCompactSpy).not.toHaveBeenCalled();
+      expect(onAgentInjuredSpy).toHaveBeenCalledWith(
+        'primary',
+        expect.stringContaining('model first-chunk timeout'),
+        DECLARED_PATIENCE_EXCEEDED_CODE,
+      );
+    });
+
+    it('CONTROL: a non-patience error code is completely untouched by this task — straight to the ordinary injury path', async () => {
+      callModelSpy.mockRejectedValue(new Error('500 Internal Server Error: something weird'));
 
       await runV2Turn('primary');
 
@@ -1624,11 +1756,21 @@ describe('runV2Turn integration', () => {
       { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false, preDialRefusal: true },
     );
 
-    it('a mid-flight declared-patience timeout reaching the honest fail SETS the marker to the turn that just ended', async () => {
+    it('a mid-flight declared-patience timeout SETS the marker on the turn that just ended, once the T82b compact-once attempt is spent', async () => {
+      // T82b (ANSWER-ANYWAY): a live dial death now gets the SAME one-shot compact-and-retry a
+      // pre-dial refusal always got, so the FIRST occurrence no longer reaches the honest fail
+      // at all — it compacts and queues a retry instead, same as the block below's own
+      // "a SECOND pre-dial refusal ... ALSO sets the marker" shape. The honest fail (and this
+      // marker) only fires once that one attempt is spent, on the SECOND occurrence.
       callModelSpy.mockRejectedValue(midFlightTimeout());
-      await runV2Turn('primary');
+      await runV2Turn('primary'); // spends the one compact-and-retry attempt — no injury, no marker yet
+      expect(onAgentInjuredSpy).not.toHaveBeenCalled();
+      expect(declaredPatienceHonestFailTurn.has('primary')).toBe(false);
 
-      expect(onAgentInjuredSpy).toHaveBeenCalled(); // this IS the honest-fail path
+      callModelSpy.mockRejectedValue(midFlightTimeout());
+      await runV2Turn('primary'); // the retry ALSO dies at patience — the one attempt is spent
+
+      expect(onAgentInjuredSpy).toHaveBeenCalled(); // NOW this is the honest-fail path
       expect(declaredPatienceHonestFailTurn.get('primary')).toBe(currentTurnNumber('primary'));
     });
 
@@ -1645,12 +1787,20 @@ describe('runV2Turn integration', () => {
     // `agent/__tests__/the-agent-sdk-transport-honours-declared-patience.test.ts` §D), and
     // proving the downstream reaction is identical regardless of which transport produced it.
     it('T81d: the agent-sdk transport\'s own declared-patience shape ALSO sets the marker — recordInjury does not care which transport produced the code', async () => {
-      callModelSpy.mockRejectedValue(new AgentError(
+      const agentSdkShape = (): AgentError => new AgentError(
         'model first-chunk timeout: no data from provider for too long (elapsed 640000ms); '
         + '~10 estimated prompt tokens against a declared 600000ms first-chunk patience',
         'primary',
         { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false },
-      ));
+      );
+      // T82b: the FIRST occurrence, from ANY transport, now compacts and retries — see the
+      // mid-flight test above for the full rationale. This test's own point (the marker is
+      // transport-agnostic) is proven on the SECOND occurrence, once that attempt is spent.
+      callModelSpy.mockRejectedValue(agentSdkShape());
+      await runV2Turn('primary');
+      expect(declaredPatienceHonestFailTurn.has('primary')).toBe(false);
+
+      callModelSpy.mockRejectedValue(agentSdkShape());
       await runV2Turn('primary');
 
       expect(onAgentInjuredSpy).toHaveBeenCalled();
@@ -1671,12 +1821,19 @@ describe('runV2Turn integration', () => {
     // `callModelSpy` standing in for that transport's real catch-block output, proving the
     // downstream reaction is identical regardless of which transport produced the code.
     it('T81 fix wave: the ollama transport\'s own declared-patience shape ALSO sets the marker', async () => {
-      callModelSpy.mockRejectedValue(new AgentError(
+      const ollamaShape = (): AgentError => new AgentError(
         'model first-chunk timeout: no data from provider for too long (elapsed 640000ms); '
         + '~10 estimated prompt tokens against a declared 600000ms first-chunk patience',
         'primary',
         { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false },
-      ));
+      );
+      // T82b: same widening as the agent-sdk case directly above — the FIRST occurrence
+      // compacts and retries; the marker only fires once that attempt is spent.
+      callModelSpy.mockRejectedValue(ollamaShape());
+      await runV2Turn('primary');
+      expect(declaredPatienceHonestFailTurn.has('primary')).toBe(false);
+
+      callModelSpy.mockRejectedValue(ollamaShape());
       await runV2Turn('primary');
 
       expect(onAgentInjuredSpy).toHaveBeenCalled();

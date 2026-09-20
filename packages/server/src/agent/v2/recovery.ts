@@ -125,22 +125,29 @@ export async function recoverFromError(
     return;
   }
 
-  // 0.5. T81b — a PRE-DIAL doomed-request refusal (census row 37): `agent/model.ts` refused to
-  //      dial at all because the declared patience and declared prefill throughput already say
-  //      this exact prompt cannot finish. Checked structurally (`error.preDialRefusal`), not by
-  //      matching the message, and BEFORE step 1 below: `error.code` here is T81a's own
-  //      `DECLARED_PATIENCE_EXCEEDED_CODE`, which shares nothing with `isContextOverflowError`'s
-  //      vocabulary, but a structural check that runs first can never depend on that staying
-  //      true. See `AgentError.preDialRefusal`'s own doc for why a real watchdog timeout
-  //      (same code, no dial ever refused THIS time — it died mid-flight) must never reach here.
-  if (error instanceof AgentError
-    && error.code === DECLARED_PATIENCE_EXCEEDED_CODE
-    && error.preDialRefusal) {
-    if (await tryPreDialDoomedRefusalRecovery(agentId, state.turnNumber)) return;
+  // 0.5. T81b, WIDENED BY T82b (ANSWER-ANYWAY) — a declared-patience exhaustion, checked
+  //      structurally on `error.code` alone, BEFORE step 1: `DECLARED_PATIENCE_EXCEEDED_CODE`
+  //      shares nothing with `isContextOverflowError`'s prose vocabulary.
+  //
+  //      THE DELETION: pre-T82b this branch also required `error.preDialRefusal`, so only
+  //      `agent/model.ts` REFUSING to dial (census row 37) got the compact-and-retry below. A
+  //      REAL dial that died at the SAME bound (`preDialRefusal` false — the watchdog cut it
+  //      mid-flight) fell straight through to `recordInjury` on its FIRST occurrence: "a live
+  //      timeout is immediately terminal." That is gone — both shapes share the SAME one-shot
+  //      discipline now; `tryDeclaredPatienceCompactOnceRecovery` no longer reads the flag.
+  //
+  //      WHY SAFE: `preDialRefusal` mattered because a cold re-dial of a real dial death repeats
+  //      the exact wall-clock cost that just failed (P3). But the retry here was never a bare
+  //      cold re-dial — it is "force-compact (to T82a's provider-aware budget, strictly under
+  //      the threshold that just failed) THEN re-dial", a smaller, different request by
+  //      construction. The shared spent/adjacency marker still caps this at one extra dial per
+  //      chain, so a SECOND exhaustion (either shape) still falls straight to `recordInjury`.
+  if (error instanceof AgentError && error.code === DECLARED_PATIENCE_EXCEEDED_CODE) {
+    if (await tryDeclaredPatienceCompactOnceRecovery(agentId, state.turnNumber)) return;
     // The one compaction attempt is already spent (or compaction could not even run, e.g. the
     // agent's model is the 'auto' sentinel) — fall through to the ordinary cascade. None of the
     // steps below recognise this code, so it lands on `recordInjury`: T81a's honest fail, and
-    // still never a dial.
+    // still never a dial that would only re-prove the same arithmetic.
   }
 
   // 1. Context overflow — provider rejected because prompt too big.
@@ -284,35 +291,45 @@ async function tryContextOverflowRecovery(
   }
 }
 
-// ── Step 0.5: T81b — a PRE-DIAL doomed-request refusal ──
+// ── Step 0.5: T81b, WIDENED BY T82b — a declared-patience exhaustion, either shape ──
 //
 // Deliberately its OWN step, not folded into `tryContextOverflowRecovery` above even though
 // both end in the identical `checkAndCompact(..., { force: true })` call: that step's trigger
 // is a STRING pattern match against provider prose (`isContextOverflowError`); this one is a
-// STRUCTURAL fact the model layer attached before it ever dialed (`AgentError.preDialRefusal`).
-// Sharing a function would mean either step's future edit risks widening what the other one
-// fires on — the exact prose-vs-structure conflation `provider-error.ts`'s own header spends a
-// paragraph warning against.
+// STRUCTURAL fact — `error.code === DECLARED_PATIENCE_EXCEEDED_CODE`. Sharing a function would
+// mean either step's future edit risks widening what the other one fires on — the exact
+// prose-vs-structure conflation `provider-error.ts`'s own header spends a paragraph warning
+// against.
+//
+// T82b (ANSWER-ANYWAY) — CONSOLIDATION, NOT A NEW MECHANISM: this function was named (and
+// scoped) `tryPreDialDoomedRefusalRecovery`, gated on `error.preDialRefusal` at its call site,
+// reachable ONLY when `agent/model.ts`'s pre-dial gate refused to dial at all — a real dial that
+// died mid-flight at the identical bound never reached it, honest-failing on the FIRST such
+// timeout. Renamed and re-scoped because the discipline it enforces (one compact-and-retry
+// attempt per doomed-request chain, never a second) does not care WHICH shape produced the
+// code: a pre-dial refusal and a live watchdog death are the SAME fact — this box's declared
+// patience cannot carry this prompt — discovered at two different moments. Both get the same
+// one-shot compaction and the same shared spent/adjacency marker; no second Map, no branch.
 //
 // UNLIKE context overflow, this recovery is capped at exactly ONE attempt PER DOOMED-REQUEST
 // CHAIN (`doomedPrefillCompactionSpent`, keyed `agentId -> turnNumber` — see that map's own doc
 // in `shared-state.ts` for the identity check and the review-round finding it replaced a bare
-// boolean to fix). Context overflow has no such cap because each retry is answering a DIFFERENT
-// question the provider just asked ("still too big?" — maybe not, once compaction ran); a
-// pre-dial refusal that recurs on the immediate next turn after ONE forced compaction is
-// answering the SAME question the same way twice — the box's declared prefill speed and
-// declared patience have not changed, so compacting harder without a different prompt in hand
-// would not change the arithmetic either. Retrying it a second time would be spending a real
-// compaction pass on a call that was never going to reach the wire. A doomed refusal that
-// resurfaces LATER — after some OTHER turn (success or a different failure) ran in between —
-// is a fresh chain by construction and earns its own single attempt.
-async function tryPreDialDoomedRefusalRecovery(agentId: string, turnNumber: number): Promise<boolean> {
+// boolean to fix; that doc now covers both shapes too). Context overflow has no such cap because
+// each retry answers a DIFFERENT question the provider just asked ("still too big?" — maybe not,
+// once compaction ran); a declared-patience exhaustion recurring on the immediate next turn
+// after ONE forced compaction answers the SAME question the same way twice — the box's declared
+// speed and patience have not changed (though per T82a the redial IS materially smaller: the
+// compaction targets the provider-aware budget, strictly under the threshold that just failed —
+// a SECOND failure means even that smaller prompt could not be served). A doomed chain that
+// resurfaces LATER — after some OTHER turn ran in between — is a fresh chain and earns its own
+// single attempt.
+async function tryDeclaredPatienceCompactOnceRecovery(agentId: string, turnNumber: number): Promise<boolean> {
   const spentAtTurn = doomedPrefillCompactionSpent.get(agentId);
   if (spentAtTurn === turnNumber - 1) {
-    // The one attempt ran on the turn immediately before this one, and THIS refusal is the
-    // re-estimate that followed it — still over the ceiling. Clear the marker (a later,
-    // unrelated doomed request earns its own single try) and let the caller fall through to
-    // the honest fail.
+    // The one attempt ran on the turn immediately before this one, and THIS declared-patience
+    // exhaustion (pre-dial refusal or a live dial that died at patience — either shape) is the
+    // retry that followed it — still could not be served. Clear the marker (a later, unrelated
+    // doomed chain earns its own single try) and let the caller fall through to the honest fail.
     doomedPrefillCompactionSpent.delete(agentId);
     return false;
   }
@@ -329,11 +346,11 @@ async function tryPreDialDoomedRefusalRecovery(agentId: string, turnNumber: numb
     const cw = getContextWindow(compactModelId);
     await checkAndCompact(agentId, compactModelId, cw, { force: true });
     doomedPrefillCompactionSpent.set(agentId, turnNumber);
-    logger.warn('v2: forced compaction after a pre-dial doomed-request refusal (T81b)', { agentId, turnNumber }, agentId);
+    logger.warn('v2: forced compaction after a declared-patience exhaustion (T81b/T82b)', { agentId, turnNumber }, agentId);
     queueSelfWake(agentId, 'recovery-doomed-prefill-compaction');
     return true;
   } catch (recovErr) {
-    logger.warn('v2: pre-dial doomed-request compaction attempt failed', {
+    logger.warn('v2: declared-patience compact-once recovery attempt failed', {
       agentId,
       error: recovErr instanceof Error ? recovErr.message : String(recovErr),
     }, agentId);
