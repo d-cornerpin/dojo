@@ -456,4 +456,33 @@ describe('T82d — the teardown boolean genuinely reaches recoverFromError, not 
       .filter((c) => c.startsWith('Heads up:'));
     expect(headsUp).toHaveLength(1);
   });
+
+  // T82 FIX WAVE, Important I2 — every OTHER honest-fail test in this describe block (and in
+  // `integration.test.ts`) pre-spends `doomedPrefillCompactionSpent` so `recordInjury` is reached
+  // via the LADDER-EXHAUSTION arm, where a trim genuinely did run on the turn before. This test
+  // is the one that reaches `recordInjury` on a genuine FIRST occurrence with NO prior trim at
+  // all: the agent's model is the `'auto'` sentinel, so `tryDeclaredPatienceCompactOnceRecovery`
+  // bails BEFORE attempting any compaction. The old, unconditional wording ("even after I
+  // trimmed it once and tried again") would have been a lie here.
+  it('I2: a FIRST occurrence that never got to trim (model is the \'auto\' sentinel) tells the truth — no false "trimmed it once" claim', async () => {
+    mockDb.current!.prepare("UPDATE agents SET model_id = 'auto' WHERE id = ?").run(AGENT);
+    // Deliberately NOT pre-spending doomedPrefillCompactionSpent — this is the FIRST occurrence.
+
+    const err = new AgentError(
+      'model first-chunk timeout: no data from provider for too long (elapsed 600000ms)',
+      AGENT,
+      { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false },
+    );
+    await runTurnRecovery(stateInTeardown(), ctx(), err); // ctx()'s own default: user-facing
+
+    const headsUp = broadcastSpy.mock.calls
+      .map((call) => call[0] as { type?: string; message?: { content?: string } })
+      .filter((e) => e.type === 'chat:message')
+      .map((e) => e.message?.content ?? '')
+      .filter((c) => c.startsWith('Heads up:'));
+    expect(headsUp).toHaveLength(1);
+    expect(headsUp[0]).toMatch(/couldn't finish answering/i);
+    expect(headsUp[0]).not.toContain('even after I trimmed it once and tried again');
+    expect(headsUp[0]).toContain("couldn't trim it down enough to try again");
+  });
 });

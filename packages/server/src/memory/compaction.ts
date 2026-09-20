@@ -112,6 +112,26 @@ export async function estimateAssembledTokens(
   /** The model the turn will actually call, when the caller knows it. Absent means the
    *  output cap is unknown and the reserve uses its own floor rather than inventing one. */
   modelId?: string,
+  opts?: {
+    /**
+     * T82 FIX WAVE, Important I1 — the model whose declared box-speed decides the provider-aware
+     * CEILING, when it differs from `modelId` (which stays the output-cap source, unchanged).
+     * `runCheckAndCompact` (below) is the one caller that needs this split: it resolves
+     * `modelId` to the SUMMARY-WRITER model (`resolveSummaryWriterModel`, which may pick a
+     * cheaper/different-provider model than the one serving the turn) before calling here, but
+     * the compaction TRIGGER must key on the box actually producing the pressure — the same
+     * `turnModelId` its own external threshold already uses (see that function's own comment).
+     * Before this, an undeclared turn model paired with a declared-ceiling writer model shrank
+     * this dry run's `assemblyBudgetTokens` (and therefore `summaryTokens`/`total`) against a
+     * ceiling that has nothing to do with the model actually serving the turn, while the
+     * EXTERNAL threshold this total is compared against stayed unceilinged (turn model
+     * undeclared) — an asymmetric mismatch that made the trigger fire LATER than the R6
+     * byte-preservation control promises for a genuinely undeclared row. Absent, defaults to
+     * `modelId` — every existing caller (the two OTHER call sites in this file, and
+     * `context-gates.ts`'s pre-call gate) passes one model for both roles and is byte-identical.
+     */
+    ceilingModelId?: string;
+  },
 ): Promise<{
   total: number;
   summaryTokens: number;
@@ -124,6 +144,7 @@ export async function estimateAssembledTokens(
 }> {
   const { measureAgentToolPayloadTokens } = await import('../tools/tool-docs.js');
   const { getModelOutputCap, getProviderCeilingTokens } = await import('../agent/model.js');
+  const ceilingModelId = opts?.ceilingModelId ?? modelId;
   // T82a fix wave: thread the SAME provider-aware ceiling through this dry run's own
   // `contextWindowPolicy` call, so `policy.assemblyBudgetTokens` — and therefore the
   // `summaryBudget` cap below — matches what a REAL assembly of this agent, on this
@@ -138,7 +159,9 @@ export async function estimateAssembledTokens(
   const policy = contextWindowPolicy(contextWindow, {
     toolPayloadTokens: await measureAgentToolPayloadTokens(agentId),
     maxOutputTokens: modelId ? getModelOutputCap(modelId) : undefined,
-    providerCeilingTokens: modelId ? getProviderCeilingTokens(modelId) : null,
+    // T82 FIX WAVE, I1: the ceiling reads off `ceilingModelId`, NOT `modelId` — see this
+    // parameter's own doc above for why the two may legitimately differ.
+    providerCeilingTokens: ceilingModelId ? getProviderCeilingTokens(ceilingModelId) : null,
   });
   const summaries = getContextSummaries(agentId);
   const rawSummaryTokens = summaries.reduce((sum, s) => sum + (s.tokenCount ?? 0), 0);
@@ -536,7 +559,13 @@ async function runCheckAndCompact(
     modelId = resolved;
   }
 
-  const assembled = await estimateAssembledTokens(agentId, contextWindow, modelId);
+  // T82 FIX WAVE, I1: `modelId` here is the (possibly reassigned) summary-WRITER model — the
+  // output-cap side of the dry run correctly still reads it, unchanged. The CEILING side must
+  // read `turnModelId` (the box actually serving this agent's turns, captured above before the
+  // reassignment), the SAME model the external `threshold` below keys on — otherwise the two
+  // halves of one comparison silently disagree about whose declared speed they are honouring.
+  // See `estimateAssembledTokens`'s own `ceilingModelId` doc for the full incident this closes.
+  const assembled = await estimateAssembledTokens(agentId, contextWindow, modelId, { ceilingModelId: turnModelId });
   const totalTokens = assembled.total;
   const activeThreshold = getContextThreshold();
   const rawThreshold = activeThreshold * contextWindow;
@@ -735,7 +764,10 @@ async function runCheckAndCompact(
     // created — see the header above `ageOutReplayedReasoning`.
     if (leafCreated > 0) { ageOutReplayedReasoning(agentId); stubOldToolResultsAtBoundary(agentId); }
 
-    const tokensAfter = (await estimateAssembledTokens(agentId, contextWindow, modelId)).total;
+    // T82 FIX WAVE, I1: same `ceilingModelId` threading as the dry run above — `tokensBefore`
+    // (captured from that dry run) and `tokensAfter` must be measured on the SAME ceiling basis
+    // or the subtraction below compares two different budgets, not the same budget before/after.
+    const tokensAfter = (await estimateAssembledTokens(agentId, contextWindow, modelId, { ceilingModelId: turnModelId })).total;
     const tokensReclaimed = tokensBefore - tokensAfter;
 
     const result = { leafCreated, condensedCreated, tokensReclaimed: Math.max(tokensReclaimed, 0) };

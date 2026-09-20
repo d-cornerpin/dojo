@@ -234,3 +234,42 @@ describe('T82c — the steering note for size-class injuries carries the orderin
     vi.useRealTimers();
   });
 });
+
+// T82 FIX WAVE, Minor M5 — the guard's OWN failure (fail-open) is audit-logged, not just
+// `logger.warn`'d. Criteria (b)/(c) above already write into `healer_actions` when a HUMAN
+// deliberately invokes a bypass; this is the guard breaking on its own error and letting the
+// reset through anyway — the same category of "a reset happened outside the count criterion",
+// and a `healer_actions` reader must be able to see it happened at all.
+describe('T82 FIX WAVE — M5: the guard\'s fail-open path is audit-logged, not just a log line', () => {
+  it('a read failure inside evaluateSessionResetGuard fails OPEN and writes a healer_actions row naming the fail-open', async () => {
+    setLastError(TARGET, PATIENCE_LAST_ERROR);
+    const { evaluateSessionResetGuard } = await import('../injury-recovery.js');
+
+    const db = mockDb.current!;
+    const realPrepare = db.prepare.bind(db);
+    const prepareSpy = vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+      // Fail ONLY the guard's own first read (`SELECT name, last_error FROM agents ...`) so the
+      // audit INSERT a few lines later, on the SAME connection, still succeeds — proving the
+      // write really happened, not merely that nothing threw.
+      if (sql.includes('SELECT name, last_error FROM agents WHERE id = ?')) {
+        throw new Error('simulated guard read failure');
+      }
+      return realPrepare(sql);
+    });
+
+    let result: { allowed: boolean };
+    try {
+      result = evaluateSessionResetGuard(TARGET, {});
+    } finally {
+      prepareSpy.mockRestore();
+    }
+
+    expect(result.allowed).toBe(true); // fails OPEN — R2, unchanged by this fix
+
+    const auditRows = mockDb.current!.prepare(
+      "SELECT * FROM healer_actions WHERE category = 'session_reset_guard' AND agent_id = ? AND action_taken = 'reset_permitted_fail_open'",
+    ).all(TARGET) as Array<{ result: string; description: string }>;
+    expect(auditRows.length).toBe(1);
+    expect(auditRows[0].description).toContain('failed open');
+  });
+});

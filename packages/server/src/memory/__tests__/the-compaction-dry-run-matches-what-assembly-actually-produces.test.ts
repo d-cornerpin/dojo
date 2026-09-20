@@ -129,3 +129,74 @@ describe('estimateAssembledTokens — RED: the dry run threads the provider-awar
     expect(withoutModelId.summaryTokens).toBe(withNullCeilingModel.summaryTokens);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// T82 FIX WAVE, Important I1 — THE CEILING MUST COME FROM THE TURN MODEL, NOT THE (POSSIBLY
+// REASSIGNED) OUTPUT-CAP MODEL.
+//
+// `runCheckAndCompact` (`memory/compaction.ts`) keys its EXTERNAL threshold on `turnModelId`
+// (the box actually serving this agent's turns, captured before `resolveSummaryWriterModel` can
+// reassign `modelId` to a cheaper/different-provider summary writer) — correct, and unchanged
+// by this fix. But it passed the REASSIGNED writer model into this dry run for BOTH roles
+// (output cap AND ceiling), so on a mixed config — an UNDECLARED turn model paired with a
+// DECLARED-ceiling writer model — the dry run's own `assemblyBudgetTokens` shrank against a
+// ceiling that has nothing to do with the box serving the turn, while the external threshold it
+// is compared against stayed unceilinged (the turn model declared nothing). That asymmetry made
+// the compaction trigger fire LATER than the R6 byte-preservation control promises for a
+// genuinely undeclared row.
+//
+// `estimateAssembledTokens` now takes an optional `ceilingModelId`, threaded independently of
+// `modelId` (which stays the output-cap source — unchanged). This suite drives that new
+// parameter directly, matching exactly how `runCheckAndCompact` calls it.
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('estimateAssembledTokens — I1: the ceiling model may differ from the output-cap model', () => {
+  it('mixed config: a declared-ceiling model in the modelId (output-cap) position, an undeclared model in ceilingModelId — matches TODAY\'S un-ceilinged behavior, not the declared one', async () => {
+    const db = mockDb.current!;
+    seedAgentAndModels(db);
+    seedHugeSummary(db);
+
+    // The exact shape `runCheckAndCompact` produces on a mixed config: `modelId` is the
+    // resolved summary-WRITER (here, the one with a declared ceiling — CEILING_MODEL stands in
+    // for "the cheap floor model Settings resolved"), `ceilingModelId` is the UNDECLARED turn
+    // model (NULL_MODEL stands in for "the cloud model actually serving this agent's turns").
+    const mixed = await estimateAssembledTokens(AGENT, CONTEXT_WINDOW, CEILING_MODEL, { ceilingModelId: NULL_MODEL });
+    // The un-ceilinged control: an entirely undeclared model in BOTH roles.
+    const unceilinged = await estimateAssembledTokens(AGENT, CONTEXT_WINDOW, NULL_MODEL);
+
+    // Both models in this fixture declare no `max_output_tokens`, so the reserve (and therefore
+    // the assembly budget) is identical whichever of the two sits in the output-cap position —
+    // isolating this assertion to the ceiling side alone, which is this test's whole point.
+    expect(mixed.summaryTokens).toBe(unceilinged.summaryTokens);
+    expect(mixed.total).toBe(unceilinged.total);
+    // And, the other half of the asymmetry this fix closes: the mixed call must NOT be capped
+    // at the writer's declared ceiling — that would be the pre-fix defect (a caller with a
+    // completely undeclared turn model still landing on the smaller, wrong number).
+    expect(mixed.summaryTokens).toBeGreaterThan(SUMMARY_CAP);
+  });
+
+  it('CONTROL: ceilingModelId absent falls back to modelId — every pre-existing caller (single model, both roles) is byte-identical', async () => {
+    const db = mockDb.current!;
+    seedAgentAndModels(db);
+    seedHugeSummary(db);
+
+    const withoutOpts = await estimateAssembledTokens(AGENT, CONTEXT_WINDOW, CEILING_MODEL);
+    const withExplicitSameCeiling = await estimateAssembledTokens(AGENT, CONTEXT_WINDOW, CEILING_MODEL, { ceilingModelId: CEILING_MODEL });
+
+    expect(withExplicitSameCeiling.summaryTokens).toBe(withoutOpts.summaryTokens);
+    expect(withExplicitSameCeiling.total).toBe(withoutOpts.total);
+  });
+
+  it('CONTROL: ceilingModelId genuinely drives the ceiling when modelId itself is undeclared (the reverse mix)', async () => {
+    const db = mockDb.current!;
+    seedAgentAndModels(db);
+    seedHugeSummary(db);
+
+    // Output-cap side undeclared (NULL_MODEL), ceiling side declared (CEILING_MODEL) — the
+    // dry run should be capped at the SAME budget the single-model declared case produces.
+    const reverseMix = await estimateAssembledTokens(AGENT, CONTEXT_WINDOW, NULL_MODEL, { ceilingModelId: CEILING_MODEL });
+    const declaredBoth = await estimateAssembledTokens(AGENT, CONTEXT_WINDOW, CEILING_MODEL);
+
+    expect(reverseMix.summaryTokens).toBe(SUMMARY_CAP);
+    expect(reverseMix.summaryTokens).toBe(declaredBoth.summaryTokens);
+  });
+});

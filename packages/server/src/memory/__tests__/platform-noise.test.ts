@@ -22,18 +22,29 @@ describe('T82d: the declared-patience Heads-up lines are chat-visible but never 
   });
 
   it('CASE 3\'s honest-fail line is platform noise, with no triggering ask on record', () => {
-    expect(isPlatformNoise(declaredPatienceHonestFailNote(null))).toBe(true);
+    expect(isPlatformNoise(declaredPatienceHonestFailNote(null, true))).toBe(true);
   });
 
   it('CASE 3\'s honest-fail line is platform noise WITH a triggering ask quoted in the variable middle', () => {
-    const note = declaredPatienceHonestFailNote('can you pull together the Q3 board deck by tomorrow?');
+    const note = declaredPatienceHonestFailNote('can you pull together the Q3 board deck by tomorrow?', true);
     expect(note).toContain('Q3 board deck'); // sanity: the fixture actually exercises the variable tail
     expect(isPlatformNoise(note)).toBe(true);
   });
 
   it('CASE 3\'s honest-fail line is STILL platform noise once the inbound channel marker is stripped (CRITICAL 1\'s fix)', () => {
-    const note = declaredPatienceHonestFailNote('[SOURCE: IMESSAGE FROM John Smith] how did the presentation go?');
+    const note = declaredPatienceHonestFailNote('[SOURCE: IMESSAGE FROM John Smith] how did the presentation go?', true);
     expect(note).not.toContain('[SOURCE:'); // CRITICAL 1's own fix, re-asserted here as a precondition
+    expect(isPlatformNoise(note)).toBe(true);
+  });
+
+  // T82 FIX WAVE, I2 — the SECOND wording variant (`didCompact: false`, the bail cases: the
+  // agent's model is the 'auto' sentinel, or `checkAndCompact` itself threw) must ALSO be
+  // platform noise. `platform-noise.ts`'s anchor is an alternation over both templates; this is
+  // the fixture that proves the second branch of that alternation, not just the first.
+  it('CASE 3 (I2, didCompact=false): the "never got to trim" variant is ALSO platform noise', () => {
+    const note = declaredPatienceHonestFailNote('can you pull together the Q3 board deck by tomorrow?', false);
+    expect(note).toContain("couldn't trim it down enough to try again");
+    expect(note).not.toContain('even after I trimmed it once and tried again');
     expect(isPlatformNoise(note)).toBe(true);
   });
 

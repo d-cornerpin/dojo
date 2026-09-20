@@ -181,12 +181,23 @@ function recordDeclaredPatienceHonestFail(agentId: string): void {
   writeHealerState(DECLARED_PATIENCE_HONEST_FAIL_SCOPE, `${agentId}:${uuidv4()}`, Date.now());
 }
 
+// T82 FIX WAVE, Minor M4 — the LIKE prefix is built from `agentId`, which is a `agents.id`
+// UUID today and therefore never itself contains a LIKE wildcard (`%`, `_`) or the escape
+// character. That invariant is exactly the kind that quietly stops being true (a future ID
+// scheme, an imported/legacy row, a caller passing something that was never validated as a
+// UUID) with nothing here to notice — escaping is cheap insurance against THAT id turning this
+// prefix scan into a wildcard match across a DIFFERENT agent's honest-fail rows, not a reaction
+// to an observed collision.
+function escapeLikePrefix(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
 /** Exported for `evaluateSessionResetGuard` (below) and for tests. */
 export function countDeclaredPatienceHonestFails(agentId: string): number {
   try {
     const row = getDb()
-      .prepare('SELECT COUNT(*) AS cnt FROM healer_state WHERE scope = ? AND key LIKE ?')
-      .get(DECLARED_PATIENCE_HONEST_FAIL_SCOPE, `${agentId}:%`) as { cnt: number };
+      .prepare("SELECT COUNT(*) AS cnt FROM healer_state WHERE scope = ? AND key LIKE ? ESCAPE '\\'")
+      .get(DECLARED_PATIENCE_HONEST_FAIL_SCOPE, `${escapeLikePrefix(agentId)}:%`) as { cnt: number };
     return row?.cnt ?? 0;
   } catch {
     return 0;
@@ -196,8 +207,8 @@ export function countDeclaredPatienceHonestFails(agentId: string): number {
 function clearDeclaredPatienceHonestFails(agentId: string): void {
   try {
     getDb()
-      .prepare('DELETE FROM healer_state WHERE scope = ? AND key LIKE ?')
-      .run(DECLARED_PATIENCE_HONEST_FAIL_SCOPE, `${agentId}:%`);
+      .prepare("DELETE FROM healer_state WHERE scope = ? AND key LIKE ? ESCAPE '\\'")
+      .run(DECLARED_PATIENCE_HONEST_FAIL_SCOPE, `${escapeLikePrefix(agentId)}:%`);
   } catch { /* best-effort, matches every other clear in this section */ }
 }
 
@@ -331,7 +342,12 @@ const autoWakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // (`classifyProviderErrorText`) instead of a sixth private copy: every status there is matched
 // as a token, so "prompt is too long: 204015 tokens" can no longer read as a 401. The
 // dojo-specific buckets (context corruption, config) have no HTTP equivalent and stay.
-export function classifyError(error: string | null, code?: string): string {
+// T82 FIX WAVE, Minor M3 — NOT exported. Verified at this task's own HEAD: no file outside
+// this one imports `classifyError` from `injury-recovery.js` (three call sites below are its
+// only callers), so the export was dead surface. `agent/__tests__/error-taxonomy-conformance.
+// test.ts`'s census of "surviving classifyError wrappers" matches on the bare declaration text
+// (`function classifyError(`), not on `export`, so that guard is unaffected by dropping it here.
+function classifyError(error: string | null, code?: string): string {
   // T81a — GPU livelock incident (2026-09-18/19). Checked FIRST, ahead of every rule below: a
   // declared-patience exhaustion carries this CODE from the model layer on the live path (the
   // overwhelmingly common case — this function is called synchronously from the same injury
@@ -491,7 +507,23 @@ export function onAgentInjured(agentId: string, errorMessage: string, code?: str
   // when it sets `declaredPatienceHonestFailTurn`) — record the durable count criterion (a) of
   // the session-reset guard reads. One row per call, see the section doc above for why counting
   // rows is counting distinct turns.
-  if (errorClass === 'declared_patience_exceeded') {
+  //
+  // T82 FIX WAVE, CRITICAL C1 — keyed on the `code` PARAMETER, never on `errorClass` (a PHRASE
+  // match against `errorMessage`/`agents.last_error`). The two used to be the same gate here,
+  // and that was the defect: `rehydrateInjuredAgents` (below) replays `onAgentInjured(agent.id,
+  // agent.last_error)` for EVERY error/paused agent on EVERY server start, with no code (a
+  // restart holds nothing but the persisted STRING) — and `agents.last_error` keeps carrying the
+  // declared-patience phrase for as long as the agent stays injured. `errorClass` above still
+  // correctly reads 'declared_patience_exceeded' from the phrase alone (that is WHY the
+  // auto-wake skip and grace-period selection above are untouched — they must survive a
+  // restart), but a fresh honest-fail ROW on every rehydrate meant one real failed chain plus
+  // one routine restart reached the guard's count of 2 without a second genuine failure ever
+  // happening: amnesia-first, reopened by routine restarts, exactly the class R2 exists to
+  // close. The live path (`v2/recovery.ts`'s `recordInjury`) ALWAYS passes `code` (see this
+  // file's own header comment on `onAgentInjured`'s `code` parameter); rehydrate and the
+  // platform-error caller (`v2/recovery.ts`'s `tryPlatformErrorRecovery`) never do — so this is
+  // the one condition that is true exactly once per genuinely NEW failed chain.
+  if (code === DECLARED_PATIENCE_EXCEEDED_CODE) {
     recordDeclaredPatienceHonestFail(agentId);
   }
 
@@ -1005,7 +1037,36 @@ export function evaluateSessionResetGuard(
     logger.warn('Session-reset guard failed open (treating as allowed)', {
       targetAgentId, error: err instanceof Error ? err.message : String(err),
     });
+    // T82 FIX WAVE, Minor M5 — a fail-open IS a reset permitted outside the guard's own policy,
+    // the same category of event criteria (b)/(c) already audit-log via
+    // `auditSessionResetBypass` below. A `logger.warn` alone left this specific "the guard broke
+    // and let it through" case invisible to anyone reading `healer_actions`, the one table every
+    // other Healer-adjacent bypass/audit trail in this codebase lands in.
+    auditSessionResetGuardFailOpen(targetAgentId, err);
     return { allowed: true };
+  }
+}
+
+/**
+ * T82 FIX WAVE, Minor M5 — the guard's OWN error is not a policy bypass (`auditSessionResetBypass`
+ * above is criteria (b)/(c), a human or the owner deliberately invoking an escape hatch); this
+ * is the guard breaking and failing open on itself. Same table, same category, a distinct
+ * `action_taken` so the two are never confused when read back.
+ */
+function auditSessionResetGuardFailOpen(targetAgentId: string, err: unknown): void {
+  try {
+    getDb().prepare(`
+      INSERT INTO healer_actions (id, diagnostic_id, category, description, agent_id, action_taken, result, created_at)
+      VALUES (?, NULL, 'session_reset_guard', ?, ?, 'reset_permitted_fail_open', 'error', datetime('now'))
+    `).run(
+      uuidv4(),
+      `T82 fix wave M5: session-reset guard failed open on its own error (not a policy bypass): ${err instanceof Error ? err.message : String(err)}`,
+      targetAgentId,
+    );
+  } catch (auditErr) {
+    logger.warn('Failed to audit-log a session-reset guard fail-open', {
+      targetAgentId, error: auditErr instanceof Error ? auditErr.message : String(auditErr),
+    });
   }
 }
 

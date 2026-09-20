@@ -114,14 +114,28 @@ export function declaredPatienceStatusLine(): string {
 // dashboard already trusts for "show just what the sender wrote", before any collapsing,
 // truncation or quoting, so the quoted preview reads exactly like the bubble the owner already
 // sees for that message.
-export function declaredPatienceHonestFailNote(triggerContent: string | null): string {
+//
+// T82 FIX WAVE, Important I2 — `didCompact` forks the trim clause. This function used to claim
+// "even after I trimmed it once and tried again" UNCONDITIONALLY, but `recordInjury` (below)
+// is reachable on a FIRST occurrence too: when `tryDeclaredPatienceCompactOnceRecovery` bails
+// before any compaction runs (the agent's model is the `'auto'` sentinel, or `checkAndCompact`
+// itself threw), no trim ever happened, and the old wording asserted one anyway. `didCompact` is
+// true exactly when a compaction genuinely completed for THIS doomed chain — either on the
+// immediately preceding turn (the ladder-exhaustion case: `spentAtTurn === turnNumber - 1`,
+// still true and correct) or never (the bail cases) — never a re-derivation, just the caller's
+// own fact, already in hand at the `tryDeclaredPatienceCompactOnceRecovery` call site, threaded
+// down.
+export function declaredPatienceHonestFailNote(triggerContent: string | null, didCompact: boolean): string {
   const stripped = stripInboundChannelMarker(triggerContent ?? '');
   const trimmed = stripped.replace(/\s+/g, ' ').trim();
   const preview = trimmed.length > 160 ? `${trimmed.slice(0, 160)}…` : trimmed;
   const askClause = preview ? ` "${preview}"` : '';
+  const trimClause = didCompact
+    ? 'even after I trimmed it once and tried again'
+    : "and I couldn't trim it down enough to try again";
   return (
     `${OWNER_ALERT_HEADS_UP_PREFIX} I couldn't finish answering${askClause} — my model couldn't process ` +
-    `this much context in time, even after I trimmed it once and tried again. The Healer is looking into it.`
+    `this much context in time, ${trimClause}. The Healer is looking into it.`
   );
 }
 
@@ -230,8 +244,18 @@ export async function recoverFromError(
   //      the threshold that just failed) THEN re-dial", a smaller, different request by
   //      construction. The shared spent/adjacency marker still caps this at one extra dial per
   //      chain, so a SECOND exhaustion (either shape) still falls straight to `recordInjury`.
+  // T82 FIX WAVE, I2 — `didCompact` carries whether a compaction genuinely completed for this
+  // doomed chain (this turn, or the immediately preceding one) down to `recordInjury`'s honest-
+  // fail wording. Declared here (not inside the `if` below) so the fall-through to `recordInjury`
+  // always has a defined value — `false` when this code path never ran at all (a wholly
+  // different injury class), which is correct: `declaredPatienceHonestFailNote` is only ever
+  // invoked when `code === DECLARED_PATIENCE_EXCEEDED_CODE` anyway (see `recordInjury`'s own
+  // gate), so this default is never read for any other class.
+  let declaredPatienceDidCompact = false;
   if (error instanceof AgentError && error.code === DECLARED_PATIENCE_EXCEEDED_CODE) {
-    if (await tryDeclaredPatienceCompactOnceRecovery(agentId, state.turnNumber)) {
+    const compactAttempt = await tryDeclaredPatienceCompactOnceRecovery(agentId, state.turnNumber);
+    declaredPatienceDidCompact = compactAttempt.didCompact;
+    if (compactAttempt.recovered) {
       // T82d (R3) CASE 1 — the FIRST live patience death on a turn a human is actually
       // waiting on. The compact-and-retry above just engaged (this is exactly the branch
       // T82b's own spent/adjacency marker gates to ONCE per doomed-request chain, so this
@@ -246,7 +270,9 @@ export async function recoverFromError(
     // The one compaction attempt is already spent (or compaction could not even run, e.g. the
     // agent's model is the 'auto' sentinel) — fall through to the ordinary cascade. None of the
     // steps below recognise this code, so it lands on `recordInjury`: T81a's honest fail, and
-    // still never a dial that would only re-prove the same arithmetic.
+    // still never a dial that would only re-prove the same arithmetic. `declaredPatienceDidCompact`
+    // is `true` here iff that spent attempt genuinely ran (on the turn just before this one) —
+    // `false` iff it never got the chance to (I2's bail cases).
   }
 
   // 1. Context overflow — provider rejected because prompt too big.
@@ -284,7 +310,7 @@ export async function recoverFromError(
   //    next turn. Only THEN consider injury — and even then, the agent
   //    has something in chat history to read instead of just going
   //    silent.
-  await recordInjury(state, message, cause, code, turnFacing, facts);
+  await recordInjury(state, message, cause, code, turnFacing, facts, declaredPatienceDidCompact);
 }
 
 /**
@@ -422,15 +448,37 @@ async function tryContextOverflowRecovery(
 // a SECOND failure means even that smaller prompt could not be served). A doomed chain that
 // resurfaces LATER — after some OTHER turn ran in between — is a fresh chain and earns its own
 // single attempt.
-async function tryDeclaredPatienceCompactOnceRecovery(agentId: string, turnNumber: number): Promise<boolean> {
+/**
+ * T82 FIX WAVE, I2 — the return shape carries TWO independent facts, not one:
+ *   `recovered`  — did THIS call just compact and queue a retry (the caller returns early on
+ *                  `true`, posting CASE 1's status line).
+ *   `didCompact` — did a compaction genuinely complete for this doomed chain AT ALL, whether
+ *                  just now or on the turn immediately before this one. `false` only in the
+ *                  two BAIL arms (the model is the `'auto'` sentinel, or `checkAndCompact`
+ *                  itself threw) — the two arms `recordInjury`'s honest-fail wording must NOT
+ *                  claim a trim for.
+ * `recovered: true` implies `didCompact: true`; the reverse does not hold (the ladder-exhaustion
+ * arm below is `recovered: false, didCompact: true` — a trim ran, on the PRIOR turn, and it
+ * still was not enough).
+ */
+interface DeclaredPatienceCompactAttempt {
+  recovered: boolean;
+  didCompact: boolean;
+}
+
+async function tryDeclaredPatienceCompactOnceRecovery(
+  agentId: string,
+  turnNumber: number,
+): Promise<DeclaredPatienceCompactAttempt> {
   const spentAtTurn = doomedPrefillCompactionSpent.get(agentId);
   if (spentAtTurn === turnNumber - 1) {
     // The one attempt ran on the turn immediately before this one, and THIS declared-patience
     // exhaustion (pre-dial refusal or a live dial that died at patience — either shape) is the
     // retry that followed it — still could not be served. Clear the marker (a later, unrelated
     // doomed chain earns its own single try) and let the caller fall through to the honest fail.
+    // A real trim DID run (last turn) — `didCompact: true` is the honest answer here.
     doomedPrefillCompactionSpent.delete(agentId);
-    return false;
+    return { recovered: false, didCompact: true };
   }
 
   try {
@@ -438,7 +486,9 @@ async function tryDeclaredPatienceCompactOnceRecovery(agentId: string, turnNumbe
       .prepare('SELECT model_id FROM agents WHERE id = ?')
       .get(agentId) as { model_id: string | null } | undefined;
     const compactModelId = lastModelRow?.model_id ?? null;
-    if (!compactModelId || compactModelId === 'auto') return false;
+    // BAIL ARM 1 (I2) — no model to compact against (the 'auto' sentinel, or none at all): no
+    // trim was even attempted, let alone completed.
+    if (!compactModelId || compactModelId === 'auto') return { recovered: false, didCompact: false };
 
     const { checkAndCompact } = await import('../../memory/compaction.js');
     const { getContextWindow } = await import('../model.js');
@@ -447,13 +497,15 @@ async function tryDeclaredPatienceCompactOnceRecovery(agentId: string, turnNumbe
     doomedPrefillCompactionSpent.set(agentId, turnNumber);
     logger.warn('v2: forced compaction after a declared-patience exhaustion (T81b/T82b)', { agentId, turnNumber }, agentId);
     queueSelfWake(agentId, 'recovery-doomed-prefill-compaction');
-    return true;
+    return { recovered: true, didCompact: true };
   } catch (recovErr) {
+    // BAIL ARM 2 (I2) — the attempt STARTED but did not complete: `checkAndCompact` threw
+    // before this doomed chain's marker was ever set, so no trim actually landed.
     logger.warn('v2: declared-patience compact-once recovery attempt failed', {
       agentId,
       error: recovErr instanceof Error ? recovErr.message : String(recovErr),
     }, agentId);
-    return false;
+    return { recovered: false, didCompact: false };
   }
 }
 
@@ -688,6 +740,11 @@ async function recordInjury(
   code: string | undefined,
   turnFacing: RecoveryTurnFacing,
   facts?: ProviderErrorFacts,
+  /** T82 FIX WAVE, I2 — true iff a compaction genuinely completed for this doomed chain (this
+   *  turn or the one before it). Only ever read when `code === DECLARED_PATIENCE_EXCEEDED_CODE`
+   *  (see the read site below); defaults `false` for every other caller/class, where it is
+   *  never consulted. */
+  declaredPatienceDidCompact = false,
 ): Promise<void> {
   const agentId = state.agentId;
   logger.error(`v2 agent loop failed: ${message}`, { agentId, code, cause }, agentId);
@@ -733,7 +790,10 @@ async function recordInjury(
   // and keeps today's unclassified path untouched, byte-for-byte.
   const isDeclaredPatienceHonestFail = code === DECLARED_PATIENCE_EXCEEDED_CODE;
   if (isDeclaredPatienceHonestFail && turnFacing.isUserFacingTurn) {
-    persistAndBroadcastSystemNote(agentId, declaredPatienceHonestFailNote(state.lastUserMessageContent));
+    persistAndBroadcastSystemNote(
+      agentId,
+      declaredPatienceHonestFailNote(state.lastUserMessageContent, declaredPatienceDidCompact),
+    );
   } else if (isRateLimit) {
     persistAndBroadcastSystemNote(agentId, RATE_LIMIT_RETRY_NOTE);
   } else {
