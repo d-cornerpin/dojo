@@ -12,6 +12,12 @@ import { broadcast } from '../gateway/ws.js';
 // (`agent/agent-status.ts`, PHASE-6 T10). Same column, same value, same `updated_at`; the
 // broadcast stays at each site because that is the order these sites already emitted in.
 import { writeAgentStatus } from '../agent/agent-status.js';
+// T81d (NO-DOOMED-DIALS, census row 17): `activeRuns` is the in-memory concurrency guard
+// `agent/runtime.ts`'s `recoverStuckAgents` (census row 19) already checks before reaping a
+// stale-looking 'working' row. `agent/shared-state.ts` is a leaf module (imports only the
+// logger) so importing it here does not reach back into `agent/runtime.ts` or anything else
+// this file's own layer would form a cycle with.
+import { activeRuns } from '../agent/shared-state.js';
 import { v4 as uuidv4 } from 'uuid';
 import { sanitizeMessagesOnModelChange } from '../agent/model-switch.js';
 import type { DiagnosticItem } from './diagnostic.js';
@@ -146,6 +152,21 @@ export function startFrequentAutoFixes(): void {
 
 function fixStuckAgent(item: DiagnosticItem): AutoFixResult {
   if (item.code !== 'STUCK_AGENT' || !item.agentId) return { applied: false, description: '' };
+
+  // T81d (NO-DOOMED-DIALS, census row 17): never reap a run THIS process knows is live.
+  // `activeRuns` is the in-memory concurrency guard; flipping the DB row to 'idle' out from
+  // under a running turn lets a new inbound message start a SECOND concurrent turn on the same
+  // context. A row can look stale to the `STUCK_AGENT` diagnostic (which reads only DB
+  // `updated_at`, same as `runtime.ts`'s stale-row query) yet still be an active run here only
+  // if the heartbeat also stalled, which means the turn really is wedged in THIS process — so
+  // skip it and let the process-level watchdog (`recoverStuckAgents`, census row 19, which this
+  // guard copies verbatim) handle it instead of resetting a status the run is still writing to.
+  if (activeRuns.has(item.agentId)) {
+    logger.warn('Auto-fix STUCK_AGENT: row is stale but run is live in-process, not resetting', {
+      agentId: item.agentId, agentName: item.agentName,
+    });
+    return { applied: false, description: '' };
+  }
 
   writeAgentStatus(item.agentId, 'idle');
   broadcast({ type: 'agent:status', agentId: item.agentId, status: 'idle' });

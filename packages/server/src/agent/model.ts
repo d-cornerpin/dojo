@@ -2520,7 +2520,7 @@ function getOpenAICost(apiModelId: string): { input: number; output: number } {
 
 async function callAnthropicSdkModel(
   params: ModelCallParams,
-  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[] },
+  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[]; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null },
 ): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
 
@@ -2536,6 +2536,43 @@ async function callAnthropicSdkModel(
     toolDefs = filterToolsForApiCall(agentId, allPermitted, alwaysLoaded);
   }
 
+  // T81d (NO-DOOMED-DIALS, census row 35) — THE THIRD TRANSPORT HAD NO CLOCK AT ALL.
+  // Census row 35: "No timeout/AbortSignal found in this codebase at all for this path" —
+  // whatever `@anthropic-ai/claude-agent-sdk`'s `query()` does internally was uncontrolled
+  // here. Bring it under the same `resolveStreamPatience` discipline the other two transports
+  // already have (T73b/T79e).
+  //
+  // This transport has no per-chunk watchdog — `query()`'s async generator gives no per-token
+  // hook to bump one (unlike `makeStreamWatchdog`, which the OpenAI-compat and direct-Anthropic
+  // paths use), and building that machinery is a bigger change than "honour the stored bound".
+  // That makes its shape match `callOllamaModel`'s raw-fetch transport (T79e) instead: one flat
+  // derived ceiling, no first-chunk/idle split, no code translation on the abort —
+  // `resolveTransportTimeouts` already folds both declared bounds into one number for exactly
+  // this reason.
+  //
+  // NULL row — nothing declared, or a declaration the standing transport default already
+  // covers — makes `resolveTransportTimeouts` return `null`, `sdkTimeoutMs` stays `null`, and
+  // `callAnthropicViaSdk` never builds an `AbortController` at all: `query()` runs with EXACTLY
+  // the arguments it always has. That is R6 (byte-preservation) for a transport that had no
+  // clock to preserve until today — "today's behavior" for the NULL row IS "no bound at all".
+  const patience = resolveStreamPatience(modelInfo);
+  const transportTimeouts = resolveTransportTimeouts(patience);
+  const sdkTimeoutMs = transportTimeouts?.bodyTimeoutMs ?? null;
+
+  // T81d, closing the T81b review-round's parked minor finding: the pre-dial doomed-request
+  // gate (`refuseIfDoomed`) covered the OpenAI-compat and direct-Anthropic transports and left
+  // this one exempt only because nobody had computed an input estimate for it — not because the
+  // gate doesn't apply here. `systemPrompt` + `messages` + `toolDefs` are the exact three inputs
+  // this transport is about to send (`callAnthropicViaSdk` folds them into its own prompt/system
+  // string below), and estimating their size is the same cheap `estimateTokens` call the other
+  // two transports already pay at their own estimate sites — not new work invented for this
+  // gate. Byte-preserving no-op when this provider has not declared a prefill throughput,
+  // identical to the other two call sites.
+  const sdkInputEstimate = estimateTokens(systemPrompt)
+    + estimateTokens(JSON.stringify(messages))
+    + estimateTokens(JSON.stringify(toolDefs));
+  refuseIfDoomed(agentId, sdkInputEstimate, patience, modelInfo.prefillTokensPerSec);
+
   const startTime = Date.now();
   const streamedChunks: string[] = [];
 
@@ -2550,6 +2587,7 @@ async function callAnthropicSdkModel(
         streamedChunks.push(chunk);
         onChunk?.(chunk);
       },
+      timeoutMs: sdkTimeoutMs,
     });
 
     const latencyMs = Date.now() - startTime;

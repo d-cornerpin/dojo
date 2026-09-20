@@ -277,8 +277,16 @@ export async function callAnthropicViaSdk(params: {
   messages: Array<{ role: string; content: string | object[] }>;
   tools?: ToolDefinition[];
   onChunk?: (text: string) => void;
+  /**
+   * T81d (NO-DOOMED-DIALS) — the transport clock derived from this provider's declared patience
+   * (`agent/stream-patience.ts` `resolveTransportTimeouts`, called by `agent/model.ts` before
+   * this function is reached). `null`/`undefined` means exactly what it always has for this
+   * transport: no bound at all — `query()` runs with whatever `@anthropic-ai/claude-agent-sdk`
+   * does on its own, byte-identical to every call before this task.
+   */
+  timeoutMs?: number | null;
 }): Promise<AgentSdkCallResult> {
-  const { agentId, apiModelId, systemPrompt, messages, tools, onChunk } = params;
+  const { agentId, apiModelId, systemPrompt, messages, tools, onChunk, timeoutMs } = params;
 
   // Dynamic import, SDK may not be installed
   const sdk = await import('@anthropic-ai/claude-agent-sdk');
@@ -309,6 +317,25 @@ export async function callAnthropicViaSdk(params: {
     promptLength: lastUserMessage.length,
   }, agentId);
 
+  // T81d: `abortController` is the ONE cancellation lever `Options` (sdk.d.ts) exposes — the
+  // SDK has no numeric timeout field of its own, so an externally-armed abort is the whole
+  // mechanism. `timedOutByPatience` distinguishes OUR timer firing from any other reason the
+  // controller might later be aborted (there is none today — nothing else ever aborts this
+  // controller — but the flag costs nothing and means this site never has to be revisited if a
+  // future caller adds one).
+  let timedOutByPatience = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abortController: AbortController | undefined;
+  if (timeoutMs != null) {
+    abortController = new AbortController();
+    const controller = abortController;
+    timer = setTimeout(() => {
+      timedOutByPatience = true;
+      controller.abort();
+    }, timeoutMs);
+    timer.unref?.();
+  }
+
   try {
     for await (const message of query({
       prompt: lastUserMessage || 'Continue.',
@@ -318,6 +345,7 @@ export async function callAnthropicViaSdk(params: {
         maxTurns: 1,
         allowedTools: [],
         permissionMode: 'bypassPermissions' as any,
+        ...(abortController ? { abortController } : {}),
       },
     })) {
       if (message.type === 'assistant') {
@@ -356,8 +384,22 @@ export async function callAnthropicViaSdk(params: {
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    // T81d: name OUR abort distinctly. This transport has no `StreamWatchdog` (see the
+    // comment above the timer), so it cannot produce the richer `DECLARED_PATIENCE_EXCEEDED_CODE`
+    // the other two transports throw — but a bare "operation was aborted" from the SDK, with no
+    // mention of why, is exactly the kind of unlabeled error P3 asks every declared-patience
+    // exhaustion to NOT be. Labeling it here costs nothing and is strictly more honest than
+    // rethrowing `err` unchanged.
+    if (timedOutByPatience) {
+      logger.error(`Agent SDK call aborted: exceeded this provider's declared patience (${timeoutMs}ms)`, {
+        error: msg, model: sdkModel, timeoutMs,
+      }, agentId);
+      throw new Error(`Agent SDK call aborted after ${timeoutMs}ms — exceeded this provider's declared patience (underlying SDK error: ${msg})`);
+    }
     logger.error('Agent SDK call failed', { error: msg, model: sdkModel }, agentId);
     throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 
   // Estimate tokens if not provided by the SDK

@@ -15,6 +15,11 @@ import { CHARS_PER_TOKEN } from '../memory/budget.js'; // PHASE-3 T2: was a priv
 import { HEALER_WORKING_STUCK_MINUTES } from '../agent/stuck-thresholds.js';
 // SWEEP CORE-2 item 2: the Healer's three status writes go through the ONE writer.
 import { writeAgentStatus, terminateDuplicateAgentsByName } from '../agent/agent-status.js';
+// T81d (NO-DOOMED-DIALS, census row 15): the same `activeRuns` guard `agent/runtime.ts`'s
+// `recoverStuckAgents` (census row 19) already applies before reaping a stale 'working' row.
+// `agent/shared-state.ts` is a leaf module (imports only the logger), so this does not reach
+// back into `agent/runtime.ts` or create a cycle with anything in this file's own layer.
+import { activeRuns } from '../agent/shared-state.js';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -341,8 +346,22 @@ function runHealerSelfWatchdog(): void {
     } else if (row.status === 'working') {
       const updatedMs = new Date(row.updated_at.replace(' ', 'T') + 'Z').getTime();
       if (Date.now() - updatedMs > HEALER_WORKING_STUCK_MINUTES * 60 * 1000) {
-        shouldReset = true;
-        reason = `stuck in working status for >${HEALER_WORKING_STUCK_MINUTES} min`;
+        // T81d (NO-DOOMED-DIALS, census row 15): never reap a run THIS process knows is live.
+        // `activeRuns` is the in-memory concurrency guard; flipping the Healer's own row to
+        // 'idle' out from under a running cycle lets a new inbound wake start a SECOND
+        // concurrent Healer cycle on the same context. A row can be stale by this clock
+        // (>HEALER_WORKING_STUCK_MINUTES) yet still be an active run here only if the heartbeat
+        // also stalled, which means the cycle really is wedged in THIS process — so skip it and
+        // let the process-level watchdog (`recoverStuckAgents`, census row 19, which this guard
+        // copies verbatim) handle it instead of resetting a status the cycle is still writing to.
+        if (activeRuns.has(healerId)) {
+          logger.warn('Healer self-watchdog: row is stale but run is live in-process, not resetting', {
+            healerId, healerName: row.name,
+          });
+        } else {
+          shouldReset = true;
+          reason = `stuck in working status for >${HEALER_WORKING_STUCK_MINUTES} min`;
+        }
       }
     }
 
