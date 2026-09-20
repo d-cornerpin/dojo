@@ -33,10 +33,12 @@ import {
   classifyProviderErrorText,
   providerClassOf,
   isRetryableProviderClass,
+  type ProviderErrorFacts,
 } from '../provider-error.js';
 import { errorRecoveryClassifier } from '../v2/classifiers/errors.js';
 import { AgentError } from '../errors.js';
 import { classifyToolResult, toolErrorCodeForThrow, toolWasBlocked } from '../tool-outcome.js';
+import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../stream-patience.js';
 
 /** An `Anthropic.APIError` as the SDK hands it over: status, parsed body, headers. */
 function anthropicApiError(
@@ -242,6 +244,56 @@ describe('provider errors — the prose fallback matches a status as a token', (
       expect(classifyProviderErrorText(text).class).toBe(expected);
     });
   }
+});
+
+describe('T81a — a declared-patience exhaustion is not a network blip', () => {
+  const declaredPatienceError = (): AgentError => new AgentError(
+    'model first-chunk timeout: no data from provider for too long (elapsed 300ms; ' +
+    '~92000 estimated prompt tokens against a declared 300ms first-chunk patience)',
+    'kevin',
+    { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false },
+  );
+
+  it('THE DEFECT, PINNED: the message contains the word "timeout" and must NOT classify as network', () => {
+    // The GPU livelock incident's exact root cause: `provider-error.ts`'s prose fallback
+    // matches `lower.includes('timeout')` and would otherwise return 'network' here,
+    // indistinguishable from a dropped TCP connection.
+    expect(declaredPatienceError().message.toLowerCase()).toContain('timeout');
+    expect(classifyProviderError(declaredPatienceError()).class).not.toBe('network');
+  });
+
+  it('classifies to its own distinct class, read from the code the model layer attaches', () => {
+    const facts = classifyProviderError(declaredPatienceError());
+    expect(facts.class).toBe('declared_patience_exceeded');
+    expect(facts.basis).toBe('body');
+  });
+
+  it('is never retryable — a cold re-dial of a doomed prompt is never the remedy (P3)', () => {
+    expect(isRetryableProviderClass('declared_patience_exceeded')).toBe(false);
+  });
+
+  it('neither the recoverable-4xx classifier nor the platform classifier claim it (Tiers 0-4 fall through)', () => {
+    const facts: ProviderErrorFacts = {
+      class: 'declared_patience_exceeded', status: null,
+      providerType: DECLARED_PATIENCE_EXCEEDED_CODE, transportCode: null,
+      retryAfterSeconds: null, basis: 'body',
+    };
+    const text = declaredPatienceError().message;
+    expect(classifyRecoverableProviderError(text, facts)).toBeNull();
+    expect(classifyPlatformError(text, facts)).toBeNull();
+  });
+
+  it('CONTROL: a genuine mid-stream idle timeout keeps its unchanged network classification', () => {
+    // T81a scopes the split to the FIRST-CHUNK/declared-patience case only. A plain
+    // `stream_idle_timeout` code must fall through exactly as it always has — still 'network',
+    // still eligible for the single same-model retry and the transient auto-wake, because a
+    // stall AFTER content started is a genuine transient signal, not a size-driven one.
+    const err = new AgentError(
+      'model stream idle timeout: no data from provider for too long (elapsed 300ms)',
+      'kevin', { code: 'stream_idle_timeout', retryable: true },
+    );
+    expect(classifyProviderError(err).class).toBe('network');
+  });
 });
 
 describe('the tool seam — `ToolErrorCode` gains a structured population, and only that', () => {

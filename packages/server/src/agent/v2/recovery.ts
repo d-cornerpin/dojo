@@ -550,9 +550,18 @@ async function recordInjury(
   }
 
   // Schedule healer notification after grace period.
+  //
+  // T81a: `code` rides along, not just `message`. The GPU livelock incident's root cause lived
+  // exactly in the gap between these two — `injury-recovery.ts` held nothing but a STRING, so a
+  // declared-patience exhaustion (which its own message names in prose) was indistinguishable
+  // from a genuine dropped connection until the classifier there learned the phrase too. Both
+  // signals are threaded now: the code for the live path (this call, the common case), the
+  // identical phrase inside `message` for the one that survives a restart holding nothing but
+  // `agents.last_error` (`rehydrateInjuredAgents`, which cannot pass a code that was never
+  // persisted).
   try {
     const { onAgentInjured } = await import('../../healer/injury-recovery.js');
-    onAgentInjured(agentId, message);
+    onAgentInjured(agentId, message, code);
   } catch {
     /* module may not be available */
   }

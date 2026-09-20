@@ -3,7 +3,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 import { isPrimaryAgent } from '../config/platform.js';
-import { providerClassOf, type ProviderErrorFacts } from './provider-error.js';
+import type { ProviderErrorFacts } from './provider-error.js';
 import { writeAgentStatus } from './agent-status.js';
 import {
   recordErrorInWindow, noteErrorLoopPause, clearErrorLoop, ERROR_LOOP_WINDOW_MS,
@@ -155,63 +155,14 @@ function pauseAgent(agentId: string): void {
 }
 
 // ── Retry Logic ──
-
-export interface RetryOptions {
-  maxRetries: number;
-  baseDelayMs: number;
-  maxDelayMs: number;
-}
-
-const DEFAULT_RETRY_OPTIONS: RetryOptions = {
-  maxRetries: 3,
-  baseDelayMs: 1000,
-  maxDelayMs: 30000,
-};
-
-export async function withRetry<T>(
-  fn: () => Promise<T>,
-  agentId: string,
-  options?: Partial<RetryOptions>,
-): Promise<T> {
-  const opts = { ...DEFAULT_RETRY_OPTIONS, ...options };
-  let lastError: Error | undefined;
-
-  for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-
-      // Don't retry non-retryable errors
-      if (err instanceof AgentError && !err.retryable) {
-        throw err;
-      }
-
-      // Don't inline-retry rate limits — the background retry manager handles those.
-      // PHASE-4 T5: asked of the provider's status, not of this error's prose.
-      if (err instanceof AgentError && err.code === 'MODEL_CALL_FAILED') {
-        const cls = providerClassOf(err);
-        if (cls === 'rate_limit' || cls === 'overloaded' || cls === 'quota') {
-          throw err; // Let the background retry handle it
-        }
-      }
-
-      if (attempt < opts.maxRetries) {
-        const delay = Math.min(
-          opts.baseDelayMs * Math.pow(2, attempt),
-          opts.maxDelayMs,
-        );
-
-        logger.warn(`Retrying after error (attempt ${attempt + 1}/${opts.maxRetries}): ${lastError.message}`, {
-          attempt: attempt + 1,
-          maxRetries: opts.maxRetries,
-          delayMs: delay,
-        }, agentId);
-
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-    }
-  }
-
-  throw lastError ?? new Error('Retry failed with unknown error');
-}
+//
+// T81a — `withRetry` (generic exponential-backoff retry helper, `maxRetries=3, baseDelayMs=
+// 1000, maxDelayMs=30000`) DELETED here. Census (NO-DOOMED-DIALS, row 9) named it a dead
+// mechanism; re-verified at this task's own HEAD before deleting (`grep -rn withRetry` across
+// the whole monorepo, excluding `dist/`): the ONLY match left in the entire tree was this
+// function's own definition. It had zero live callers and — contrary to the census's note that
+// it once had "its own test" — no dedicated test file exists for it in this tree today; there
+// is no test to tombstone because none was found. A flat-arbitrary-backoff retry helper sitting
+// unused was a liability in its own right: exactly the shape someone could wire up later, on a
+// model call, without having read P2/P3 (a bound must be declared or derived, never a flat
+// constant; a tripped bound fails honestly to a human, it never silently re-dials).

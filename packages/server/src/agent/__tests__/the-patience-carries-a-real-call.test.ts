@@ -69,7 +69,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 import { runMigrations } from '../../db/migrations.js';
 import { clearSecretsCache } from '../../config/loader.js';
 import { callModel, clearClientCache, STREAM_IDLE_TIMEOUT_ERROR, STREAM_FIRST_CHUNK_TIMEOUT_ERROR, STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, type ModelCallResult } from '../model.js';
-import { resolveStreamPatience } from '../stream-patience.js';
+import { resolveStreamPatience, DECLARED_PATIENCE_EXCEEDED_CODE, STREAM_IDLE_TIMEOUT_CODE } from '../stream-patience.js';
 import { AgentError } from '../errors.js';
 
 // Real sockets, a real migration chain per case, and two cases that deliberately wait out a
@@ -222,6 +222,31 @@ describe('T64b — the first-token bound is the provider\'s to declare', () => {
     expect(requests).toBe(2); // callModel itself never retries; one request per call, as before
   });
 
+  it('T81a RED: the declared-patience exhaustion carries its OWN code, distinct from idle', async () => {
+    behaviour.preFirstChunkMs = 1_200;
+    seedProvider(300, null);
+    const err = await call().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AgentError);
+    // At HEAD (pre-T81a) this was 'stream_idle_timeout' — the same code a genuine dropped
+    // connection carries, which is the GPU livelock incident's root cause: provider-error.ts
+    // and injury-recovery.ts had nothing coded to tell the two apart.
+    expect((err as AgentError).code).toBe(DECLARED_PATIENCE_EXCEEDED_CODE);
+    expect((err as AgentError).code).not.toBe(STREAM_IDLE_TIMEOUT_CODE);
+    // Never retryable — a cold re-dial of a doomed prefill is never the remedy (P3).
+    expect((err as AgentError).retryable).toBe(false);
+  });
+
+  it('T81a: the message names the prompt size and the declared patience, for the human who reads it', async () => {
+    behaviour.preFirstChunkMs = 1_200;
+    seedProvider(300, null);
+    const err = await call().catch((e: unknown) => e);
+    // The exact token count is not asserted (the stub's tiny prompt is not the point) — only
+    // that the two facts an owner needs to see WHY are both present in the one string that
+    // survives every layer down to `agents.last_error`.
+    expect((err as AgentError).message).toMatch(/~\d+ estimated prompt tokens/);
+    expect((err as AgentError).message).toContain('declared 300ms first-chunk patience');
+  });
+
   it('T72b: an ACK frame does not spend the declared prompt-processing grant', async () => {
     // THE OWNER'S SHAPE, end to end through the real transport. The server sends
     // `delta:{"role":"assistant","content":""}` at once — which is what put his abort at
@@ -321,6 +346,16 @@ describe('T64b — the idle bound is separately the provider\'s to declare', () 
     // And no fabricated stop reason survives on the abort path: there is no result at all to
     // carry one. That was the last place TB8 job 1's `end_turn` was still being invented.
     expect((err as AgentError).message).toContain(STREAM_IDLE_TIMEOUT_ERROR);
+  });
+
+  it('T81a CONTROL: a genuine mid-stream stall never picks up the declared-patience code or clause', async () => {
+    behaviour.midStreamStallMs = 1_200;
+    seedProvider(6_000, 300);
+    const err = await call().catch((e: unknown) => e);
+    expect((err as AgentError).code).not.toBe(DECLARED_PATIENCE_EXCEEDED_CODE);
+    // Not size-driven — a stall after content has already started says nothing about the
+    // prompt, and the message must not guess at a fact it doesn't have.
+    expect((err as AgentError).message).not.toMatch(/estimated prompt tokens/);
   });
 });
 

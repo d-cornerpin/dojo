@@ -18,6 +18,7 @@ import { createLogger } from '../logger.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
 import { classifyProviderErrorText } from '../agent/provider-error.js';
+import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../agent/stream-patience.js';
 import { broadcast } from '../gateway/ws.js';
 import { clearAgentLastError } from '../agent/agent-status.js';
 import { TRANSIENT_PROVIDER_ERROR_SQL } from './diagnostic.js';
@@ -279,7 +280,25 @@ const autoWakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // (`classifyProviderErrorText`) instead of a sixth private copy: every status there is matched
 // as a token, so "prompt is too long: 204015 tokens" can no longer read as a 401. The
 // dojo-specific buckets (context corruption, config) have no HTTP equivalent and stay.
-function classifyError(error: string | null): string {
+function classifyError(error: string | null, code?: string): string {
+  // T81a — GPU livelock incident (2026-09-18/19). Checked FIRST, ahead of every rule below: a
+  // declared-patience exhaustion carries this CODE from the model layer on the live path (the
+  // overwhelmingly common case — this function is called synchronously from the same injury
+  // that just threw), and the IDENTICAL LITERAL PHRASE `agent/model.ts`'s
+  // `STREAM_FIRST_CHUNK_TIMEOUT_ERROR` throws, in its own message text, on the one path that
+  // survives a restart holding nothing but `agents.last_error` (`rehydrateInjuredAgents`, which
+  // has no code to pass — only the persisted string). Copied as a literal rather than imported
+  // for the same reason every other entry in this table is one: this reader holds a STRING and
+  // nothing else, per the file header above. Checked ahead of the generic prose table below
+  // because "no data from provider for too long" contains the word "timeout" and would
+  // otherwise fall into the SAME 'network' bucket a genuine dropped connection does — which is
+  // the exact misclassification that let the auto-wake below cold-re-dial an un-finishable
+  // prompt every five seconds.
+  if (code === DECLARED_PATIENCE_EXCEEDED_CODE
+    || (error ?? '').toLowerCase().includes('model first-chunk timeout')) {
+    return 'declared_patience_exceeded';
+  }
+
   if (!error) return 'unknown';
   const lower = error.toLowerCase();
 
@@ -312,8 +331,14 @@ function classifyError(error: string | null): string {
  * Called when an agent enters 'error' or 'paused' (error loop) status.
  * Starts a grace period timer. If the agent is still injured after the
  * grace period, notifies the Healer agent.
+ *
+ * `code`, T81a: the `AgentError.code` that produced this injury, when the caller has one (the
+ * live path — `agent/v2/recovery.ts`'s `recordInjury` always does). Optional because
+ * `rehydrateInjuredAgents` has only a persisted `agents.last_error` STRING to offer after a
+ * restart; `classifyError` below still recognises a declared-patience exhaustion from that
+ * string alone, so the omission does not reopen the auto-wake for it.
  */
-export function onAgentInjured(agentId: string, errorMessage: string): void {
+export function onAgentInjured(agentId: string, errorMessage: string, code?: string): void {
   // The healer cannot heal itself, that would create an infinite loop.
   // Instead, alert the user directly via iMessage AND broadcast to the
   // dashboard so the user sees the alert without needing iMessage.
@@ -398,7 +423,7 @@ export function onAgentInjured(agentId: string, errorMessage: string): void {
   // (rate_limit, network) get a longer grace because they often resolve on
   // their own. Non-transient errors are unlikely to self-resolve, so the
   // healer should engage almost immediately.
-  const errorClass = classifyError(errorMessage);
+  const errorClass = classifyError(errorMessage, code);
   const isTransient = errorClass === 'rate_limit' || errorClass === 'network';
   const gracePeriodMs = isTransient ? GRACE_PERIOD_MS_TRANSIENT : GRACE_PERIOD_MS_NON_TRANSIENT;
 
@@ -407,9 +432,15 @@ export function onAgentInjured(agentId: string, errorMessage: string): void {
   // on a 401 just spams paid model calls every 5 seconds with the same
   // broken credentials. Tier D conditions get the Healer's attention but
   // skip the engine-level retry.
+  //
+  // T81a: a declared-patience exhaustion gets the SAME treatment, for a different reason — not
+  // because retrying can't work (a 401 never will), but because retrying is PROVABLY the wrong
+  // remedy: a cold re-dial re-sends the identical un-finishable prompt to the identical slow
+  // provider, which is the exact GPU livelock this class exists to stop.
   const isKnownPermanent =
     errorClass === 'auth' ||
     errorClass === 'config' ||
+    errorClass === 'declared_patience_exceeded' ||
     /\[auth_invalid\]|\[access_denied\]|\[quota_exhausted\]|\[no_models_available\]|invalid_api_key|\bunauthorized\b|api key/i.test(errorMessage);
 
   logger.info('Agent injured, scheduling auto-wake + healer notification', {

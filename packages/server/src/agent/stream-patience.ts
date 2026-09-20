@@ -120,6 +120,27 @@ export function resolveStreamPatience(declared?: DeclaredPatience | null): Strea
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════
+// T81a — THE TWO IDENTITIES A WATCHDOG ABORT MAY CARRY, AND WHY THEY ARE NOT ONE.
+// ════════════════════════════════════════════════════════════════════════════════════════
+//
+// The GPU livelock incident (2026-09-18/19): a first-chunk timeout on a provider that
+// DECLARED its patience, and a genuine mid-stream stall, threw the SAME `AgentError` code
+// (`stream_idle_timeout`) — T72b/T65b split the MESSAGE PHRASE `model.ts` throws (so the loop's
+// same-model retry already refuses the first-chunk case) but nothing downstream of the throw
+// ever read the phrase, only the code. `provider-error.ts` had nothing coded to key on but the
+// word "timeout" IN the message, so both cases fell into the generic `'network'` class, and
+// `healer/injury-recovery.ts`'s blind 5-second auto-wake treated a request that PROVABLY cannot
+// finish faster on a cold re-dial exactly like a dropped TCP connection — cold-re-dialing the
+// identical un-finishable 110K-token prompt, over and over, on a 5s cadence.
+//
+// `firstChunkDeclared` (above) already answers "was this bound something the OWNER set, or a
+// standing default a cloud provider never agreed to" — these two codes reuse that same fact
+// rather than re-deriving it: a first-chunk timeout WITHOUT a declaration is the unmodified
+// cloud-provider control and keeps the code (and every behaviour) it always had.
+export const DECLARED_PATIENCE_EXCEEDED_CODE = 'declared_patience_exceeded';
+export const STREAM_IDLE_TIMEOUT_CODE = 'stream_idle_timeout';
+
+// ════════════════════════════════════════════════════════════════════════════════════════
 // T73b — THE TRANSPORT HAS A CLOCK TOO, AND IT WAS THE SHORTER ONE.
 // ════════════════════════════════════════════════════════════════════════════════════════
 //

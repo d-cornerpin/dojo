@@ -11,6 +11,7 @@ import { classifyProviderError, isRetryableProviderClass } from './provider-erro
 import {
   resolveStreamPatience, resolveTransportTimeouts,
   STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, TRANSPORT_DEFAULT_TIMEOUT_MS,
+  DECLARED_PATIENCE_EXCEEDED_CODE, STREAM_IDLE_TIMEOUT_CODE,
   type StreamPatience,
 } from './stream-patience.js';
 import { scheduleRateLimitRetry } from './rate-limit-retry.js';
@@ -198,6 +199,39 @@ export function streamTimeoutPhrase(watchdog: StreamWatchdog, patience: StreamPa
   return watchdog.firstChunkTimedOut() && patience.firstChunkDeclared
     ? STREAM_FIRST_CHUNK_TIMEOUT_ERROR
     : STREAM_IDLE_TIMEOUT_ERROR;
+}
+
+/**
+ * Which `AgentError` CODE this abort deserves — the sibling decision to `streamTimeoutPhrase`,
+ * split out at T81a because the phrase alone was never read by anything downstream of the
+ * throw site. `provider-error.ts` and `healer/injury-recovery.ts` both classify from `.code`
+ * (or, for the latter, from the identical literal phrase surviving in a persisted string once
+ * the process a Map lived in is gone) — and until now the phrase's own distinction never
+ * reached that layer: every watchdog abort left with the identical `'stream_idle_timeout'`
+ * code, first-chunk-declared and genuinely-idle alike. One decision point, so the two throw
+ * sites across both transports cannot come to disagree, same discipline as the phrase above.
+ */
+export function streamTimeoutCode(watchdog: StreamWatchdog, patience: StreamPatience): string {
+  return watchdog.firstChunkTimedOut() && patience.firstChunkDeclared
+    ? DECLARED_PATIENCE_EXCEEDED_CODE
+    : STREAM_IDLE_TIMEOUT_CODE;
+}
+
+/**
+ * The extra clause a declared-patience-exceeded message carries: how big the request the
+ * provider gave up on was, and how long its own owner said it needed. Empty for a genuine
+ * mid-stream idle timeout — that case is not size-driven, and appending a size here would be a
+ * guess this function has no basis for.
+ *
+ * T81a: this is the fact `injury-recovery.ts`'s human-facing note reads, because it survives
+ * every layer between here and a restart inside the one string that does —
+ * `AgentError.message`, and from it `agents.last_error`.
+ */
+export function declaredPatienceClause(
+  watchdog: StreamWatchdog, patience: StreamPatience, estimatedInputTokens: number,
+): string {
+  if (!(watchdog.firstChunkTimedOut() && patience.firstChunkDeclared)) return '';
+  return `; ~${estimatedInputTokens} estimated prompt tokens against a declared ${patience.firstChunkMs}ms first-chunk patience`;
 }
 
 /**
@@ -2292,11 +2326,15 @@ async function callOpenAIModel(
       // false or shows on the external signal). Translate to the retryable
       // phrase the v2 loop matches for its single same-model retry.
       recordProviderError(modelInfo.providerId);
-      const msg = `${streamTimeoutPhrase(watchdog, patience)}: no data from provider for too long (elapsed ${watchdog.elapsedMs()}ms)`;
+      const code = streamTimeoutCode(watchdog, patience);
+      const msg = `${streamTimeoutPhrase(watchdog, patience)}: no data from provider for too long (elapsed ${watchdog.elapsedMs()}ms)${declaredPatienceClause(watchdog, patience, finalInputEstimate)}`;
       logger.warn(`OpenAI call aborted by stream watchdog: ${msg}`, {
         model: modelInfo.apiModelId, providerId: modelInfo.providerId,
       }, agentId);
-      throw new AgentError(msg, agentId, { code: 'stream_idle_timeout', retryable: true });
+      // T81a: a declared-patience exhaustion is NOT retryable — the phrase above already
+      // withholds the v2 loop's same-model retry; this says the same thing to anything that
+      // reads the flag structurally instead of matching the message.
+      throw new AgentError(msg, agentId, { code, retryable: code === STREAM_IDLE_TIMEOUT_CODE });
     }
     const latencyMs = Date.now() - startTime;
     const message = err instanceof Error ? err.message : String(err);
@@ -3050,9 +3088,10 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
   } catch (err) {
     anthWatchdog.finish();
     if (streamWasCutByWatchdog(anthWatchdog, params.abortSignal)) {
-      const msg = `${streamTimeoutPhrase(anthWatchdog, anthPatience)}: no data from provider for too long (elapsed ${anthWatchdog.elapsedMs()}ms)`;
+      const code = streamTimeoutCode(anthWatchdog, anthPatience);
+      const msg = `${streamTimeoutPhrase(anthWatchdog, anthPatience)}: no data from provider for too long (elapsed ${anthWatchdog.elapsedMs()}ms)${declaredPatienceClause(anthWatchdog, anthPatience, inputEstimate)}`;
       logger.warn(`Anthropic call aborted by stream watchdog: ${msg}`, {}, agentId);
-      throw new AgentError(msg, agentId, { code: 'stream_idle_timeout', retryable: true });
+      throw new AgentError(msg, agentId, { code, retryable: code === STREAM_IDLE_TIMEOUT_CODE });
     }
     const latencyMs = Date.now() - startTime;
     const message = err instanceof Error ? err.message : String(err);

@@ -28,6 +28,8 @@
 // those three the verdict came from, so "we guessed from the words" never looks like "the
 // provider told us".
 
+import { DECLARED_PATIENCE_EXCEEDED_CODE } from './stream-patience.js';
+
 /** What the provider's answer means for what we should do next. */
 export type ProviderErrorClass =
   /** 401 — the credential is invalid, expired or revoked. The owner must act. */
@@ -47,6 +49,17 @@ export type ProviderErrorClass =
   | 'bad_request'
   /** The request never got an HTTP answer at all. */
   | 'network'
+  /**
+   * T81a — a stream watchdog cut the call before the FIRST token, on a provider that DECLARED
+   * how long it needed. Distinct from 'network' on purpose: the request did not fail to
+   * connect, it failed to finish inside a bound its own owner set, and a declared bound this
+   * large usually means the PROMPT was too big for the box, not that the box is offline. The
+   * GPU livelock incident this class exists to prevent was exactly this case folding into
+   * 'network' — indistinguishable from a dropped TCP connection — and collecting the same
+   * blind auto-wake a dropped connection legitimately earns. Never retryable: re-dialing
+   * restarts the whole prefill it was most of the way through, to fail at the same bound again.
+   */
+  | 'declared_patience_exceeded'
   /** We genuinely do not know. Never guessed at. */
   | 'unknown';
 
@@ -274,6 +287,21 @@ export function classifyProviderError(err: unknown): ProviderErrorFacts {
   // body (an SDK that wrapped a parsed error without a status), so that is tried before prose.
   if (providerType) {
     const t = providerType.toLowerCase();
+    // T81a — the model layer's OWN identity for a declared-patience exhaustion, carried on
+    // `AgentError.code` and read here exactly as every other provider `type`/`code` already is
+    // (`readProviderType` above). Checked first and returned immediately rather than folded
+    // into the `byType` ternary below: it is not host to any of that ternary's remedies
+    // (waiting, re-authenticating, upgrading a plan), and reaching the ternary at all would put
+    // it one edit away from being swept into whichever branch runs last. This is also the exact
+    // point the GPU livelock incident's root cause lived: before this check, `t` fell through
+    // to the prose table below, which matches the word "timeout" in this error's own message
+    // and returns the generic 'network' class — indistinguishable from a dropped connection.
+    if (t === DECLARED_PATIENCE_EXCEEDED_CODE) {
+      return {
+        class: 'declared_patience_exceeded', status: null, providerType, transportCode: null,
+        retryAfterSeconds, basis: 'body',
+      };
+    }
     const byType: ProviderErrorClass | null =
       t.includes('rate_limit') ? 'rate_limit'
         : t.includes('overloaded') ? 'overloaded'
