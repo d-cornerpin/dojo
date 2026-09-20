@@ -380,6 +380,14 @@ import { AgentError } from '../../errors.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../../stream-patience.js';
 import { turnContext } from '../../turn-context.js';
 import { currentTurnNumber } from '../turn-record.js';
+// T82d (ANSWER-ANYWAY) — the recovery cascade under test directly, for the ONE case
+// (engine/A2A/scheduled turns) this file has no existing fixture to drive end-to-end: nothing
+// in this suite has ever built a genuine "no waiting human" turn (would need the seeded ask
+// closed AND a pending engine event or A2A wake seeded in its place). Calling the cascade
+// directly with a hand-built state exercises the SAME real module, against the SAME real
+// mocks every other test in this file already relies on, without inventing that fixture.
+import { recoverFromError } from '../recovery.js';
+import { initState } from '../state.js';
 import { recordDelivery } from '../deliveries.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
@@ -1910,6 +1918,150 @@ describe('runV2Turn integration', () => {
       expect(checkAndCompactSpy).toHaveBeenCalled();
       expect(pendingWakeups.has('primary')).toBe(true);
       expect(onAgentInjuredSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('T82d (ANSWER-ANYWAY) — OWNER RULING R3: "Silence is never an acceptable failure mode."', () => {
+    // The incident this task closes: the owner asked a question, the turn died at declared
+    // patience, and he got NOTHING in his own chat — the honest read of what happened went to
+    // internal logs and the Healer, never to him. These tests drive the REAL cascade against
+    // this file's DEFAULT fixture, which `setupTestDb` already seeds as a genuine human
+    // conversation (an unanswered dashboard/owner message) — exactly the shape
+    // `isUserFacingTurn` is true for, the same shape every T81b/T82b/T81c test above already
+    // runs on.
+    const midFlightTimeout = (): AgentError => new AgentError(
+      'model first-chunk timeout: no data from provider for too long (elapsed 600000ms); '
+      + '~60000 estimated prompt tokens against a declared 600000ms first-chunk patience',
+      'primary',
+      { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false },
+    );
+
+    // The one class of user-visible engine text that earns default-mode (non-wordy) rendering
+    // in the owner's dashboard without a further turn to relay it — see recovery.ts's own T82d
+    // header for the full argument. A bare `[System: ...]` note (every OTHER note this cascade
+    // posts) is agent-only and would repeat the exact silence this task exists to end.
+    function headsUpMessages(): string[] {
+      return getBroadcastEventsByType('chat:message')
+        .map((e) => (e as { message?: { content?: string } }).message?.content ?? '')
+        .filter((c) => c.startsWith('Heads up:'));
+    }
+
+    it('CASE 1: the first live patience death posts exactly one plain-voice status line to the channel', async () => {
+      callModelSpy.mockRejectedValue(midFlightTimeout());
+
+      await runV2Turn('primary'); // turn N: dies at patience, T82b compacts + self-wakes
+
+      const statusLines = headsUpMessages();
+      expect(statusLines).toHaveLength(1);
+      expect(statusLines[0]).toMatch(/hit my model's size limit/i);
+      expect(statusLines[0]).toMatch(/trimming my context/i);
+      expect(statusLines[0]).toMatch(/retrying/i);
+    });
+
+    it('CASE 2: once the retry succeeds, the answer is the next thing in the channel — no failure text, no apology spam', async () => {
+      // Same causal-proof shape T82b's own "lands an answer" test uses: the model only ever
+      // serves small, so the retry succeeding actually proves the redial was smaller, not
+      // merely re-mocked.
+      assembleContextMock.mockImplementation(async () => (
+        checkAndCompactSpy.mock.calls.length > 0
+          ? { systemPrompt: '<system prompt>', messages: [{ role: 'user', content: 'compacted, small' }] }
+          : { systemPrompt: '<system prompt>', messages: [{ role: 'user', content: 'the original big ask' }] }
+      ));
+      callModelSpy.mockImplementation(async (args: unknown) => {
+        const { messages } = args as { messages: Array<{ content: unknown }> };
+        if (messages.some((m) => m.content === 'the original big ask')) throw midFlightTimeout();
+        return { content: 'Here is your answer.', toolCalls: [], inputTokens: 10, outputTokens: 3, stopReason: 'end_turn' };
+      });
+
+      await runV2Turn('primary'); // turn N: dies, compacts, self-wakes
+      expect(headsUpMessages()).toHaveLength(1); // the one status line from CASE 1
+
+      await runV2Turn('primary'); // turn N+1: the retry, on the smaller assembly, succeeds
+
+      expect(headsUpMessages()).toHaveLength(1); // the retry's success added NOTHING new
+      const messages = mockDb.current!
+        .prepare("SELECT content FROM messages WHERE role = 'assistant' ORDER BY rowid DESC LIMIT 1")
+        .all() as Array<{ content: string }>;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].content).toBe('Here is your answer.'); // the answer, not a failure note
+    });
+
+    it('CASE 3 + DEDUPE PIN: ladder exhaustion replaces silence with exactly one honest failure line naming the ask and the cause — never a second status line', async () => {
+      callModelSpy.mockRejectedValue(midFlightTimeout());
+      await runV2Turn('primary'); // turn N: first death — status line, compact, self-wake
+      expect(headsUpMessages()).toHaveLength(1);
+
+      callModelSpy.mockRejectedValue(midFlightTimeout());
+      await runV2Turn('primary'); // turn N+1: the retry ALSO dies at patience — ladder exhaustion
+
+      const allHeadsUp = headsUpMessages();
+      // Exactly ONE status line (turn N) plus ONE failure line (turn N+1) — never a third, and
+      // never a second status line for the same chain (the dedupe pin: the compact path runs
+      // once per chain by the T82b spent marker, and the status line is keyed off that SAME
+      // discipline, not a new one).
+      expect(allHeadsUp).toHaveLength(2);
+      const failureLine = allHeadsUp[1];
+      expect(failureLine).toMatch(/couldn't finish answering/i);
+      expect(failureLine).toContain('hello primary'); // names the triggering ask, briefly
+      expect(failureLine).toMatch(/couldn't process this much context/i); // the plain cause
+      expect(failureLine).toMatch(/healer/i); // what happens next
+      expect(onAgentInjuredSpy).toHaveBeenCalled(); // internal reporting is unchanged
+    });
+
+    it('WORDING: neither the status line nor the failure line leaks engine jargon or the raw error code', async () => {
+      callModelSpy.mockRejectedValue(midFlightTimeout());
+      await runV2Turn('primary');
+      callModelSpy.mockRejectedValue(midFlightTimeout());
+      await runV2Turn('primary');
+
+      const allHeadsUp = headsUpMessages();
+      expect(allHeadsUp.length).toBe(2);
+      for (const line of allHeadsUp) {
+        const lower = line.toLowerCase();
+        expect(lower).not.toContain('declared_patience_exceeded');
+        expect(lower).not.toContain('patience');
+        expect(lower).not.toContain('doom');
+      }
+    });
+
+    it('CASE 4 (control-pinned): an engine/A2A/scheduled turn gets ZERO channel lines on the identical error — internal reporting is unchanged', async () => {
+      // No existing fixture in this file builds a genuine "no waiting human" turn (would need
+      // the seeded ask closed AND a pending engine event or A2A wake in its place) — so this
+      // drives `recoverFromError` directly with `isUserFacingTurn: false`, the exact value
+      // `steps/teardown/index.ts` computes for an engine/A2A/scheduled turn from the SAME
+      // established predicate `finalize-record.ts` already uses. Everything else (the real DB,
+      // the real cascade, every other mock) is identical to every other test in this file.
+      const buildState = (turnNumber: number) => initState({
+        agentId: 'primary',
+        contextWindow: 200000,
+        isAutoRouted: false,
+        configuredModelId: 'test-model',
+        turnNumber,
+        triggeredByIMessage: false,
+        triggeredByA2AReplyIntent: null,
+        lastUserMessageContent: 'hello primary',
+        lastUserMessageId: 'msg-user-1',
+        inboundChannel: null,
+        inboundContext: null,
+        pendingTechniqueAck: null,
+      });
+
+      // First occurrence: T82b's compact-once path is turn-kind-agnostic (any doomed request
+      // earns its one compaction), so it still engages — but nothing reaches the channel.
+      await recoverFromError(buildState(41), midFlightTimeout(), { isUserFacingTurn: false });
+      expect(checkAndCompactSpy).toHaveBeenCalledTimes(1);
+      expect(headsUpMessages()).toHaveLength(0);
+
+      // Second occurrence, the immediate next turn in the same chain (the marker is now spent)
+      // — ladder exhaustion, recordInjury's honest-fail path. STILL zero channel lines; internal
+      // reporting (onAgentInjured) is unchanged from today.
+      await recoverFromError(buildState(42), midFlightTimeout(), { isUserFacingTurn: false });
+      expect(onAgentInjuredSpy).toHaveBeenCalledWith(
+        'primary',
+        expect.stringContaining('model first-chunk timeout'),
+        DECLARED_PATIENCE_EXCEEDED_CODE,
+      );
+      expect(headsUpMessages()).toHaveLength(0);
     });
   });
 

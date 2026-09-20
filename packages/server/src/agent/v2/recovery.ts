@@ -17,6 +17,7 @@
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
+import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 import { createLogger } from '../../logger.js';
 import { markTurnDied } from './turn-record.js';
 import { broadcast } from '../../gateway/ws.js';
@@ -52,6 +53,74 @@ const RATE_LIMIT_RETRY_NOTE =
   `[System: The model provider returned a rate limit error. The platform is retrying ` +
   `automatically. Give it a moment, and tell the user there is a short delay if they are waiting.]`;
 
+// ── T82d (ANSWER-ANYWAY) — OWNER'S RULING R3 ──
+//
+// Verbatim, binding: "Silence is never an acceptable failure mode." The incident this task
+// closes: the owner asked a question, the turn died at declared patience, and he got NOTHING
+// in his own chat — the honest read of what happened went to internal logs and the Healer,
+// never to him. `tryDeclaredPatienceCompactOnceRecovery` (T82b, below) already answers the
+// FIRST such death with a compact-and-retry that usually just works; `recordInjury`'s
+// honest-fail path (T81a, below) already answers the SECOND (ladder exhaustion) with a marker,
+// a note to the Healer, and deliberately NO auto-wake. Both are honest. Neither, before this
+// task, put one word of that honesty where the person asking could actually read it.
+//
+// THE SURFACE THESE TWO LINES USE, AND WHY IT IS NOT `persistAndBroadcastSystemNote`'s PLAIN
+// `[System: ...]` SHAPE EVERY OTHER NOTE IN THIS FILE USES. A bare role='system' row classifies
+// `agent-only` under `packages/shared/src/visibility.ts`'s `classifyMessageForDisplay`
+// (mirrored in the dashboard's own reader, `packages/dashboard/src/pages/Chat.tsx`) — hidden
+// from the owner's default (non-wordy) chat, visible only in wordy mode. That is fine for
+// every OTHER note in this file, because every other note either has a next turn that will
+// read and relay it in the agent's own voice (Tier B, the rate-limit passthrough) or is paired
+// with a `chat:error` toast / iMessage alert that reaches the person a different way (Tier D).
+// Neither is true here: case 1's status line has to land WHILE the retry is still in flight
+// (there is no "next turn" to relay it from yet), and case 3's honest fail IS T81a's own
+// no-auto-wake path — there is no future turn to relay anything from at all. So both reuse the
+// ONE existing mechanism that makes a role='system' row `user-visible` without depending on a
+// further turn: `OWNER_ALERT_HEADS_UP_PREFIX` (`@dojo/shared`), the exact idiom
+// `agent/destructive-gate.ts`'s `notifyOwnerApprovalExpired` already uses for an expired
+// approval. This is not a new delivery mechanism — it is the SAME `insertMessageIfAbsent` +
+// `broadcast chat:message` this file has always used (`persistAndBroadcastSystemNote`, below),
+// with the one prefix that earns default-mode visibility instead of one that doesn't.
+//
+// Gated throughout on `RecoveryTurnFacing.isUserFacingTurn` — see that type's own doc for the
+// predicate — so an engine/A2A/scheduled turn (no person on the other end) never gets either
+// line: internal reporting (recordError / onAgentInjured / status writes) is unchanged for
+// those turns, only the channel stays silent, which is correct for them (case 4).
+function declaredPatienceStatusLine(): string {
+  return `${OWNER_ALERT_HEADS_UP_PREFIX} I hit my model's size limit — trimming my context and retrying now.`;
+}
+
+// CASE 3 — the honest failure. Names what was asked (briefly — this is a status line, not a
+// transcript) and the plain cause, in the agent's own voice: no jargon, no error codes. `cause`
+// stays deliberately generic across BOTH shapes `DECLARED_PATIENCE_EXCEEDED_CODE` covers (a
+// pre-dial refusal, or a live dial the watchdog cut mid-flight): this file does not read
+// `error.preDialRefusal` any more (T82b's own step-0.5 header explains why the two shapes share
+// one discipline), so it has no honest way to say which one this was — and guessing would be
+// exactly the kind of engine-internal detail this line exists to keep OUT of the user's channel.
+function declaredPatienceHonestFailNote(triggerContent: string | null): string {
+  const trimmed = (triggerContent ?? '').replace(/\s+/g, ' ').trim();
+  const preview = trimmed.length > 160 ? `${trimmed.slice(0, 160)}…` : trimmed;
+  const askClause = preview ? ` "${preview}"` : '';
+  return (
+    `${OWNER_ALERT_HEADS_UP_PREFIX} I couldn't finish answering${askClause} — my model couldn't process ` +
+    `this much context in time, even after I trimmed it once and tried again. The Healer is looking into it.`
+  );
+}
+
+/**
+ * T82d (ANSWER-ANYWAY) — the SAME established predicate
+ * `agent/v2/steps/teardown/finalize-record.ts` already uses twice
+ * (`counterparty.kind === 'user' && !isA2ATurn && !isEngineTurn`): a turn serving a genuine
+ * human conversation (dashboard OR a routed channel), as distinct from an engine/A2A/scheduled
+ * turn with no person on the other end. Computed ONCE, at this file's one caller
+ * (`steps/teardown/index.ts`, from the turn's own bag), and handed in as a plain boolean so
+ * this file stays decoupled from `TurnCounterparty`'s shape — recovery.ts does not otherwise
+ * know or care what a counterparty is.
+ */
+export interface RecoveryTurnFacing {
+  readonly isUserFacingTurn: boolean;
+}
+
 // ── Public API ──
 
 export type RecoveryKind =
@@ -82,6 +151,7 @@ export interface ClassifiedError {
 export async function recoverFromError(
   state: AgentTurnState,
   error: unknown,
+  turnFacing: RecoveryTurnFacing,
 ): Promise<void> {
   const message = error instanceof Error ? error.message : String(error);
   const cause =
@@ -143,7 +213,18 @@ export async function recoverFromError(
   //      construction. The shared spent/adjacency marker still caps this at one extra dial per
   //      chain, so a SECOND exhaustion (either shape) still falls straight to `recordInjury`.
   if (error instanceof AgentError && error.code === DECLARED_PATIENCE_EXCEEDED_CODE) {
-    if (await tryDeclaredPatienceCompactOnceRecovery(agentId, state.turnNumber)) return;
+    if (await tryDeclaredPatienceCompactOnceRecovery(agentId, state.turnNumber)) {
+      // T82d (R3) CASE 1 — the FIRST live patience death on a turn a human is actually
+      // waiting on. The compact-and-retry above just engaged (this is exactly the branch
+      // T82b's own spent/adjacency marker gates to ONCE per doomed-request chain, so this
+      // status line is deduped for free — no new state, no new marker). Exactly one short,
+      // plain-voice line; the ANSWER is still the next thing the person sees once the
+      // retried (smaller) dial completes (case 2 — nothing else posts here on success).
+      if (turnFacing.isUserFacingTurn) {
+        persistAndBroadcastSystemNote(agentId, declaredPatienceStatusLine());
+      }
+      return;
+    }
     // The one compaction attempt is already spent (or compaction could not even run, e.g. the
     // agent's model is the 'auto' sentinel) — fall through to the ordinary cascade. None of the
     // steps below recognise this code, so it lands on `recordInjury`: T81a's honest fail, and
@@ -185,7 +266,7 @@ export async function recoverFromError(
   //    next turn. Only THEN consider injury — and even then, the agent
   //    has something in chat history to read instead of just going
   //    silent.
-  await recordInjury(state, message, cause, code, facts);
+  await recordInjury(state, message, cause, code, turnFacing, facts);
 }
 
 /**
@@ -587,6 +668,7 @@ async function recordInjury(
   message: string,
   cause: string | undefined,
   code: string | undefined,
+  turnFacing: RecoveryTurnFacing,
   facts?: ProviderErrorFacts,
 ): Promise<void> {
   const agentId = state.agentId;
@@ -620,7 +702,21 @@ async function recordInjury(
   // Persist the unclassified-error note as a system message so the agent
   // sees something it can act on (apologize to user, try a different
   // approach next session, etc.) rather than just going silent.
-  if (isRateLimit) {
+  //
+  // T82d (R3) CASE 3 — ladder exhaustion. Reaching here with `DECLARED_PATIENCE_EXCEEDED_CODE`
+  // means T82b's one compact-and-retry attempt is already spent (see step 0.5 above) — this IS
+  // T81a's honest-fail turn: no self-scheduled retry, no auto-wake, nothing will read the
+  // generic "[System: ...] apologize to the user" note below on some later turn, because there
+  // is no later turn coming on its own. On a turn a human is actually waiting on, that note
+  // reaching only the agent's own (hidden) history is exactly the silence R3 exists to end, so
+  // this REPLACES it with one honest, in-channel line naming the ask and the plain cause — see
+  // `declaredPatienceHonestFailNote`'s own doc for why the cause stays shape-agnostic. Gated on
+  // `isUserFacingTurn` (case 4, control-pinned): an engine/A2A/scheduled turn has no such human
+  // and keeps today's unclassified path untouched, byte-for-byte.
+  const isDeclaredPatienceHonestFail = code === DECLARED_PATIENCE_EXCEEDED_CODE;
+  if (isDeclaredPatienceHonestFail && turnFacing.isUserFacingTurn) {
+    persistAndBroadcastSystemNote(agentId, declaredPatienceHonestFailNote(state.lastUserMessageContent));
+  } else if (isRateLimit) {
     persistAndBroadcastSystemNote(agentId, RATE_LIMIT_RETRY_NOTE);
   } else {
     persistAndBroadcastSystemNote(

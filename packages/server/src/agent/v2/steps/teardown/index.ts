@@ -133,7 +133,10 @@ export async function runTurnRecovery(
   ctx: TeardownContext,
   err: unknown,
 ): Promise<StepOutcome> {
-  const { agentId, turnInjectedTechniqueId, reArmIfStrandedNoAnswer, stopStatusHeartbeat } = ctx;
+  const {
+    agentId, counterparty, isA2ATurn, isEngineTurn,
+    turnInjectedTechniqueId, reArmIfStrandedNoAnswer, stopStatusHeartbeat,
+  } = ctx;
 
   // Best-effort cleanup before recovery so heartbeats / abort controllers
   // don't keep firing while the recovery cascade does its DB writes.
@@ -183,7 +186,14 @@ export async function runTurnRecovery(
   // would double-handle).
   try {
     const { recoverFromError } = await import('../../recovery.js');
-    await recoverFromError(state, err);
+    // T82d (ANSWER-ANYWAY, OWNER RULING R3) — the SAME established predicate
+    // `finalize-record.ts` already uses twice (`counterparty.kind === 'user' && !isA2ATurn &&
+    // !isEngineTurn`): a turn serving a genuine human conversation, not an engine/A2A/scheduled
+    // one with no person on the other end. Computed here, once, from facts the bag already
+    // carries, and handed to `recoverFromError` as a plain boolean so it stays decoupled from
+    // `TurnCounterparty`'s shape.
+    const isUserFacingTurn = counterparty.kind === 'user' && !isA2ATurn && !isEngineTurn;
+    await recoverFromError(state, err, { isUserFacingTurn });
   } catch (recovErr) {
     logger.error('v2 recovery cascade itself threw, swallowing to avoid double-handle', {
       agentId,
