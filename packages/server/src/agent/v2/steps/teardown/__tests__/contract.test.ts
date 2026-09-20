@@ -91,6 +91,13 @@ import {
   runTurnTeardown,
   type TeardownContext,
 } from '../index.js';
+// T82d (ANSWER-ANYWAY) FIX ROUND 1, ALSO (a) — real (unmocked) here on purpose: this file's
+// only mocks are `db/connection.js` and `gateway/ws.js` (see above), so a DECLARED_PATIENCE_
+// EXCEEDED_CODE `AgentError` genuinely exercises `agent/v2/recovery.ts`'s real cascade, not a
+// stand-in.
+import { AgentError } from '../../../../errors.js';
+import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../../../../stream-patience.js';
+import { doomedPrefillCompactionSpent } from '../../../../shared-state.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LOOP_TS = path.resolve(HERE, '..', '..', '..', 'loop.ts');
@@ -363,5 +370,90 @@ describe('IT RUNS ON EVERY EXIT PATH — and that is the language\'s guarantee, 
     // be countable, and there must be no third.
     const d = readDriver();
     expect(d.returnsBeforeTry).toBe(1);
+  });
+});
+
+// ── T82d (ANSWER-ANYWAY) FIX ROUND 1, ALSO (a) ────────────────────────────────
+//
+// The review found this file's own `ctx()` helper hard-codes `isA2ATurn: false,
+// isEngineTurn: false` for EVERY existing clause above — so nothing in this contract file had
+// ever driven the boolean `runTurnRecovery` actually computes
+// (`counterparty.kind === 'user' && !isA2ATurn && !isEngineTurn`) to `false` and watched it
+// reach `recoverFromError`. Every T82d behavioral case lives in
+// `agent/v2/__tests__/integration.test.ts`, which is real coverage of `recovery.ts`'s OWN
+// branch logic, but none of it goes through THIS driver seam — the actual wiring the reviewer
+// asked to see proven once, here, for real.
+describe('T82d — the teardown boolean genuinely reaches recoverFromError, not hard-coded', () => {
+  it('an ENGINE turn (isEngineTurn: true, the real shape — an engine turn synthesizes a user-shaped counterparty) gets ZERO channel lines on a declared-patience honest-fail', async () => {
+    // Pre-spend the T82b compact-once marker so this reaches `recordInjury`'s honest-fail
+    // branch directly — the branch this task's Heads-up line is gated on — without also
+    // exercising the real (unmocked here) compaction/model-context-window machinery the OTHER
+    // arm would need. That machinery is already driven for real, safely, in the fully-mocked
+    // `integration.test.ts` harness; this file's job is the WIRING, not a second copy of it.
+    doomedPrefillCompactionSpent.set(AGENT, TURN - 1);
+
+    const err = new AgentError(
+      'model first-chunk timeout: no data from provider for too long (elapsed 600000ms)',
+      AGENT,
+      { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false },
+    );
+    // The REAL shape (`counterparty.ts`'s "an engine turn synthesizes a user-shaped
+    // counterparty"): `counterparty.kind` reads 'user' even on a genuine engine turn — only
+    // `isEngineTurn` says otherwise. Proves the gate does not merely trust `counterparty.kind`.
+    await runTurnRecovery(stateInTeardown(), ctx({
+      counterparty: { kind: 'user' } as TeardownContext['counterparty'],
+      isEngineTurn: true,
+    }), err);
+
+    const headsUp = broadcastSpy.mock.calls
+      .map((call) => call[0] as { type?: string; message?: { content?: string } })
+      .filter((e) => e.type === 'chat:message')
+      .map((e) => e.message?.content ?? '')
+      .filter((c) => c.startsWith('Heads up:'));
+    expect(headsUp).toHaveLength(0);
+
+    // Internal reporting is UNCHANGED — the status write `recordInjury` always makes for an
+    // unclassified/non-paused injury still happens; only the channel stays silent.
+    const row = mockDb.current!.prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string };
+    expect(row.status).toBe('error');
+  });
+
+  it('an A2A turn (isA2ATurn: true, counterparty.kind: \'agent\') gets ZERO channel lines on the identical error', async () => {
+    doomedPrefillCompactionSpent.set(AGENT, TURN - 1);
+
+    const err = new AgentError(
+      'model first-chunk timeout: no data from provider for too long (elapsed 600000ms)',
+      AGENT,
+      { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false },
+    );
+    await runTurnRecovery(stateInTeardown(), ctx({
+      counterparty: { kind: 'agent' } as TeardownContext['counterparty'],
+      isA2ATurn: true,
+    }), err);
+
+    const headsUp = broadcastSpy.mock.calls
+      .map((call) => call[0] as { type?: string; message?: { content?: string } })
+      .filter((e) => e.type === 'chat:message')
+      .map((e) => e.message?.content ?? '')
+      .filter((c) => c.startsWith('Heads up:'));
+    expect(headsUp).toHaveLength(0);
+  });
+
+  it('CONTROL: the SAME error, on the file\'s default user-facing ctx(), DOES post a Heads-up line — proving the two clauses above are gated on the flag, not silently always-off', async () => {
+    doomedPrefillCompactionSpent.set(AGENT, TURN - 1);
+
+    const err = new AgentError(
+      'model first-chunk timeout: no data from provider for too long (elapsed 600000ms)',
+      AGENT,
+      { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false },
+    );
+    await runTurnRecovery(stateInTeardown(), ctx(), err); // ctx()'s own default: kind 'user', both flags false
+
+    const headsUp = broadcastSpy.mock.calls
+      .map((call) => call[0] as { type?: string; message?: { content?: string } })
+      .filter((e) => e.type === 'chat:message')
+      .map((e) => e.message?.content ?? '')
+      .filter((c) => c.startsWith('Heads up:'));
+    expect(headsUp).toHaveLength(1);
   });
 });

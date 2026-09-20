@@ -19,12 +19,28 @@
 // cannot disagree. A user-visible row is "announced" exactly when a `chat:message` naming its id
 // goes through that function.
 //
-// WHAT COUNTS AS CONFORMING, and both forms are real:
+// WHAT COUNTS AS CONFORMING, and all three forms are real:
 //   · the row is written and a `chat:message` goes out beside it — the owner-lane form;
 //   · the note is posted through `postAgentNotice`, which is the EVENTS lane: `lane='events'`,
 //     `display_tier='agent-only'` (measured on the live box: 87 of 87 `fanout_join` rows), so it
 //     is not a user-visible row at all and the invariant does not reach it. It announces on
 //     `interagent:message` through the same door.
+//   · T82D FIX ROUND 1, CRITICAL 2 — THE SECOND CONFORMING DOOR: the composed sentence is
+//     handed to `persistAndBroadcastSystemNote(` (private to `agent/v2/recovery.ts`), which
+//     PROVABLY always does both — `insertMessageIfAbsent` THEN `broadcast({ type: 'chat:message',
+//     ... })`, unconditionally, for whatever content it receives (read its own definition; it is
+//     not re-derived here, only trusted). `agent/v2/recovery.ts`'s `declaredPatienceStatusLine` /
+//     `declaredPatienceHonestFailNote` are the first composers shaped this way: a composer may
+//     legitimately live in its OWN top-level declaration (a named, independently-testable
+//     "build the sentence" function, T82d's tests import them directly) with the actual send
+//     one hop away, at ITS caller — split from the broadcast by a THIRD function, which the two
+//     forms above never were. A textual "is `chat:message` in the enclosing declaration" check
+//     is blind to that hop, so this form is judged differently, on the CALL-GRAPH EDGE instead
+//     of a text window: conforming iff this file ALSO calls `persistAndBroadcastSystemNote(`
+//     passing THIS composer's own name as (part of) the argument. Precise, not a wider window —
+//     an unrelated `persistAndBroadcastSystemNote(` call elsewhere in the same file can never
+//     cover for a genuinely silent composer, because its name would not appear at that call
+//     site. The NEGATIVE CONTROL below plants exactly that shape and proves it still fails.
 //
 // The window is deliberately generous (the write and its announcement are adjacent at every
 // conforming site — one line apart at three of them) and the failure message names the file and
@@ -50,6 +66,27 @@ function enclosingDeclaration(lines: string[], at: number): string {
   let to = at + 1;
   while (to < lines.length && !DECL_START.test(lines[to])) to += 1;
   return lines.slice(from, to).join('\n');
+}
+
+// T82D FIX ROUND 1, CRITICAL 2 — the composer's own name, when its enclosing declaration is a
+// named `function` or `const`, so the second conforming door (below) can check the CALL-GRAPH
+// edge instead of guessing from adjacent text.
+const NAMED_DECL = /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+(\w+)|const\s+(\w+))/;
+function declarationName(scope: string): string | null {
+  const m = scope.split('\n')[0]?.match(NAMED_DECL);
+  return m ? (m[1] ?? m[2] ?? null) : null;
+}
+
+// The second conforming door: this composer's return value is passed to
+// `persistAndBroadcastSystemNote(`, which unconditionally broadcasts `chat:message` for
+// whatever content it is given (proven at its own definition in `agent/v2/recovery.ts`, not
+// re-derived here). Keyed to the composer's OWN NAME so an unrelated call to the same helper
+// elsewhere in the file can never satisfy a genuinely silent composer — see the header's full
+// argument and the NEGATIVE CONTROL below, which plants exactly that unrelated-call shape.
+function routesThroughPersistAndBroadcast(fileText: string, scope: string): boolean {
+  const name = declarationName(scope);
+  if (!name) return false;
+  return new RegExp(`persistAndBroadcastSystemNote\\([^;]*\\b${name}\\(`).test(fileText);
 }
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
@@ -81,7 +118,8 @@ describe('the owner-alert census: a row the owner can see always reaches the soc
         if (!/\$\{OWNER_ALERT_HEADS_UP_PREFIX\}/.test(line)) continue;
         sites += 1;
         const scope = enclosingDeclaration(lines, i);
-        const announced = /type:\s*'chat:message'/.test(scope) || /postAgentNotice\(/.test(scope);
+        const announced = /type:\s*'chat:message'/.test(scope) || /postAgentNotice\(/.test(scope)
+          || routesThroughPersistAndBroadcast(text, scope);
         if (!announced) {
           offenders.push(`${file.slice(SRC.length + 1)}:${i + 1} — an owner-alert row is composed here and no chat:message announces it (silent insert: reload-only)`);
         }
@@ -109,5 +147,61 @@ describe('the owner-alert census: a row the owner can see always reaches the soc
     // …and the matched control: the same file WITH the announcement passes.
     const fixed = `${planted}\nbroadcast({ type: 'chat:message', agentId, message });`;
     expect(/type:\s*'chat:message'/.test(fixed)).toBe(true);
+  });
+
+  it('SECOND DOOR MUTATION PROOF (T82d fix round 1): a composer split from its broadcast by a third function is still caught when never wired, passes once it is, and an unrelated call to the same helper never covers for a DIFFERENT silent composer', () => {
+    // The exact new shape T82d introduced: the composer lives in its own named top-level
+    // declaration (`agent/v2/recovery.ts`'s `declaredPatienceStatusLine` /
+    // `declaredPatienceHonestFailNote`), and the actual send is one hop away, at ITS caller,
+    // through `persistAndBroadcastSystemNote(`. A bounding declaration sits between the two on
+    // purpose here, exactly like the real file (a doc comment + the next function), so
+    // `enclosingDeclaration` genuinely stops SHORT of the call and this proves the NAME-based
+    // cross-file check, not scope-boundary leakage.
+    const silentSrc = [
+      "function unwiredComposer(): string {",
+      "  return `${OWNER_ALERT_HEADS_UP_PREFIX} nobody ever sends this`;",
+      "}",
+      "",
+      "function callerThatNeverWiresIt(): void {",
+      "  const msg = unwiredComposer();",
+      "  console.log(msg); // never reaches persistAndBroadcastSystemNote or broadcast",
+      "}",
+    ].join('\n');
+    const silentLines = silentSrc.split('\n');
+    const silentScope = enclosingDeclaration(silentLines, 1);
+    expect(silentScope).not.toMatch(/persistAndBroadcastSystemNote/); // the boundary genuinely stopped short
+    const silentAnnounced = /type:\s*'chat:message'/.test(silentScope) || /postAgentNotice\(/.test(silentScope)
+      || routesThroughPersistAndBroadcast(silentSrc, silentScope);
+    expect(silentAnnounced, 'the FULL predicate the census runs').toBe(false);
+
+    // The matched control: the SAME composer, wired through a caller elsewhere in the file.
+    const wiredSrc = [
+      "function unwiredComposer(): string {",
+      "  return `${OWNER_ALERT_HEADS_UP_PREFIX} nobody ever sends this`;",
+      "}",
+      "",
+      "function callerThatWiresIt(): void {",
+      "  persistAndBroadcastSystemNote(agentId, unwiredComposer());",
+      "}",
+    ].join('\n');
+    const wiredScope = enclosingDeclaration(wiredSrc.split('\n'), 1);
+    expect(wiredScope).not.toMatch(/persistAndBroadcastSystemNote/); // still outside the scope itself
+    expect(routesThroughPersistAndBroadcast(wiredSrc, wiredScope)).toBe(true);
+
+    // And the door does NOT cover for an UNRELATED call to the same helper: a SECOND, genuinely
+    // silent composer beside a wired one must still fail, even though
+    // `persistAndBroadcastSystemNote(` now appears somewhere in the same file's text — proving
+    // this is a call-graph edge keyed to the composer's own name, not a wider window.
+    const besideSrc = [
+      wiredSrc,
+      "",
+      "function anotherUnwiredComposer(): string {",
+      "  return `${OWNER_ALERT_HEADS_UP_PREFIX} this one is still never sent`;",
+      "}",
+    ].join('\n');
+    const besideLines = besideSrc.split('\n');
+    const secondComposerLine = besideLines.findIndex((l) => l.includes('this one is still never sent'));
+    const secondScope = enclosingDeclaration(besideLines, secondComposerLine);
+    expect(routesThroughPersistAndBroadcast(besideSrc, secondScope)).toBe(false);
   });
 });

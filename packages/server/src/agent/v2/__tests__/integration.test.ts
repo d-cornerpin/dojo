@@ -481,6 +481,17 @@ function getBroadcastEventsByType(type: string): unknown[] {
     .filter((e: { type?: string }) => e.type === type);
 }
 
+// T82d (ANSWER-ANYWAY) — the one class of user-visible engine text that earns default-mode
+// (non-wordy) rendering in the owner's dashboard without a further turn to relay it (see
+// recovery.ts's own T82d header for the full argument). Hoisted to file scope (fix round 1,
+// ALSO (b)) so the PRE-EXISTING "unrelated injury" control below can pin against it too, not
+// just the new T82d describe block.
+function headsUpMessages(): string[] {
+  return getBroadcastEventsByType('chat:message')
+    .map((e) => (e as { message?: { content?: string } }).message?.content ?? '')
+    .filter((c) => c.startsWith('Heads up:'));
+}
+
 beforeEach(() => {
   mockDb.current = setupTestDb();
   broadcastSpy.mockClear();
@@ -1899,6 +1910,11 @@ describe('runV2Turn integration', () => {
 
       expect(onAgentInjuredSpy).toHaveBeenCalled(); // this IS an honest fail — just not THIS class
       expect(declaredPatienceHonestFailTurn.has('primary'), 'the marker is gated on the CODE, not on "recordInjury ran"').toBe(false);
+      // T82d FIX ROUND 1, ALSO (b): pinned explicitly. `recordInjury`'s NEW Heads-up branch is
+      // gated on `code === DECLARED_PATIENCE_EXCEEDED_CODE`; a wholly unrelated injury (no code
+      // at all, on a plain `Error`) must fall through to the ORIGINAL generic unclassified path
+      // byte-for-byte, never gaining a channel line it didn't have before this task.
+      expect(headsUpMessages()).toHaveLength(0);
     });
 
     it('THE REPRODUCED DEFECT, closed: a stale last_error from an earlier chain no longer blocks an unrelated later recovery arm', async () => {
@@ -1936,15 +1952,8 @@ describe('runV2Turn integration', () => {
       { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false },
     );
 
-    // The one class of user-visible engine text that earns default-mode (non-wordy) rendering
-    // in the owner's dashboard without a further turn to relay it — see recovery.ts's own T82d
-    // header for the full argument. A bare `[System: ...]` note (every OTHER note this cascade
-    // posts) is agent-only and would repeat the exact silence this task exists to end.
-    function headsUpMessages(): string[] {
-      return getBroadcastEventsByType('chat:message')
-        .map((e) => (e as { message?: { content?: string } }).message?.content ?? '')
-        .filter((c) => c.startsWith('Heads up:'));
-    }
+    // `headsUpMessages()` is file-scoped (see its own definition, near `getBroadcastEventsByType`)
+    // so the pre-existing T81c "unrelated injury" control above can pin against it too.
 
     it('CASE 1: the first live patience death posts exactly one plain-voice status line to the channel', async () => {
       callModelSpy.mockRejectedValue(midFlightTimeout());
@@ -2022,6 +2031,37 @@ describe('runV2Turn integration', () => {
         expect(lower).not.toContain('patience');
         expect(lower).not.toContain('doom');
       }
+    });
+
+    it('WORDING (FIX ROUND 1, CRITICAL 1): a routed-channel ask\'s inbound marker never leaks into either Heads-up line', async () => {
+      // The reviewer's live reproduction: a routed-channel (iMessage/SMS/Teams/email) trigger's
+      // `lastUserMessageContent` carries its own engine-stamped `[SOURCE: IMESSAGE FROM ...]`
+      // marker RAW — the human who sent it never wrote that tag and never sees it (the dashboard
+      // strips it before rendering their own bubble; `parseInboundChannel` /
+      // `stripInboundChannelMarker`, `packages/shared/src/visibility.ts`). Overwrites the
+      // seeded trigger's TEXT only (same row, same ticket, same conv_key) so this exercises the
+      // REAL wiring from `state.lastUserMessageContent` through `recordInjury` to the
+      // honest-fail line, not just `declaredPatienceHonestFailNote` in isolation (that pure-
+      // function pin lives in `memory/__tests__/platform-noise.test.ts`).
+      mockDb.current!.prepare("UPDATE messages SET content = ? WHERE id = 'msg-user-1'").run(
+        '[SOURCE: IMESSAGE FROM John Smith] How did the presentation go?',
+      );
+
+      callModelSpy.mockRejectedValue(midFlightTimeout());
+      await runV2Turn('primary'); // turn N: first death — status line (no ask quoted, unaffected)
+      callModelSpy.mockRejectedValue(midFlightTimeout());
+      await runV2Turn('primary'); // turn N+1: ladder exhaustion — the honest-fail line quotes the ask
+
+      const allHeadsUpWithMarker = headsUpMessages();
+      expect(allHeadsUpWithMarker.length).toBe(2);
+      for (const line of allHeadsUpWithMarker) {
+        expect(line).not.toContain('[SOURCE:');
+        expect(line).not.toContain('IMESSAGE FROM');
+        expect(line).not.toContain('John Smith');
+      }
+      // The actual ask still reaches the owner — just marker-free, exactly like the bubble the
+      // dashboard already renders for this same message.
+      expect(allHeadsUpWithMarker[1]).toContain('How did the presentation go?');
     });
 
     it('CASE 4 (control-pinned): an engine/A2A/scheduled turn gets ZERO channel lines on the identical error — internal reporting is unchanged', async () => {

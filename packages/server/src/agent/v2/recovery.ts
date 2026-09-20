@@ -17,7 +17,7 @@
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
-import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
+import { OWNER_ALERT_HEADS_UP_PREFIX, stripInboundChannelMarker } from '@dojo/shared';
 import { createLogger } from '../../logger.js';
 import { markTurnDied } from './turn-record.js';
 import { broadcast } from '../../gateway/ws.js';
@@ -86,7 +86,10 @@ const RATE_LIMIT_RETRY_NOTE =
 // predicate — so an engine/A2A/scheduled turn (no person on the other end) never gets either
 // line: internal reporting (recordError / onAgentInjured / status writes) is unchanged for
 // those turns, only the channel stays silent, which is correct for them (case 4).
-function declaredPatienceStatusLine(): string {
+// Exported for tests: `agent/v2/__tests__/integration.test.ts` (the wording/marker pins) and
+// `memory/__tests__/platform-noise.test.ts` (so that suite's fixtures are the ACTUAL generated
+// text, never a hand-typed copy that could quietly drift from what this file really produces).
+export function declaredPatienceStatusLine(): string {
   return `${OWNER_ALERT_HEADS_UP_PREFIX} I hit my model's size limit — trimming my context and retrying now.`;
 }
 
@@ -97,8 +100,23 @@ function declaredPatienceStatusLine(): string {
 // `error.preDialRefusal` any more (T82b's own step-0.5 header explains why the two shapes share
 // one discipline), so it has no honest way to say which one this was — and guessing would be
 // exactly the kind of engine-internal detail this line exists to keep OUT of the user's channel.
-function declaredPatienceHonestFailNote(triggerContent: string | null): string {
-  const trimmed = (triggerContent ?? '').replace(/\s+/g, ' ').trim();
+//
+// FIX ROUND 1, CRITICAL 1 (marker leak, reproduced live) — `triggerContent` is
+// `state.lastUserMessageContent`, read RAW off the trigger row. On a routed-channel ask
+// (iMessage/SMS/Teams/email) that string carries its own leading `[SOURCE: IMESSAGE FROM
+// John Smith]`-shaped inbound marker: the ENGINE stamps it there so the model can tell which
+// channel and who, the human who actually typed the message never wrote it and never sees it
+// (the dashboard strips it before rendering their bubble, `parseInboundChannel` /
+// `stripInboundChannelMarker` in `packages/shared/src/visibility.ts`). Quoting the raw string
+// leaked that engine-only tag straight into the owner's own chat — `Heads up: I couldn't
+// finish answering "[SOURCE: IMESSAGE FROM John Smith] How did..."` — the exact opposite of
+// "no engine jargon" this line exists to guarantee. Stripped with the SAME shared parser the
+// dashboard already trusts for "show just what the sender wrote", before any collapsing,
+// truncation or quoting, so the quoted preview reads exactly like the bubble the owner already
+// sees for that message.
+export function declaredPatienceHonestFailNote(triggerContent: string | null): string {
+  const stripped = stripInboundChannelMarker(triggerContent ?? '');
+  const trimmed = stripped.replace(/\s+/g, ' ').trim();
   const preview = trimmed.length > 160 ? `${trimmed.slice(0, 160)}…` : trimmed;
   const askClause = preview ? ` "${preview}"` : '';
   return (

@@ -74,6 +74,32 @@ export const PLATFORM_NOISE_PATTERNS: RegExp[] = [
   /^\s*This is batch \d+ of \d+/i,
   /^\s*# Identity\s*$/m, // start of any SOUL.md prompt embedded in a message
   /^\s*You are the (Dreamer|Trainer|Healer|PM|Imaginer)\b/i,
+
+  // T82d (ANSWER-ANYWAY) FIX ROUND 1, IMPORTANT (compaction leak, empirically confirmed) —
+  // `agent/v2/recovery.ts`'s two declared-patience Heads-up lines (`declaredPatienceStatusLine`,
+  // `declaredPatienceHonestFailNote`) are owner-VISIBLE IN CHAT — that is their whole purpose,
+  // OWNER RULING R3, "silence is never an acceptable failure mode" — but they are NOT memory.
+  // Every OTHER `[System: ...]` note this cascade posts is already caught by the
+  // `/^\s*\[System: /i` entry above; these two are NOT `[System: ...]`-shaped (that shape is
+  // what made them agent-only/invisible in the FIRST place, the exact bug this task fixed), so
+  // without their own entries here they evaded every pattern above and rode VERBATIM into
+  // persisted compaction summaries (`MessageSlot.Summaries`, inside the cacheable prefix every
+  // later turn re-reads). A transient operational blip fossilizing into the model's own
+  // long-term self-narrative is the Bob-class lesson: read back turns or weeks later, a
+  // "trimming my context and retrying now" or "I couldn't finish answering" from some past,
+  // already-resolved race reads as still-true right now.
+  //
+  // Anchored on the STABLE prefix+shape each template always produces, not the variable middle
+  // (the honest-fail line quotes the triggering ask — platform-noise must not need to know that
+  // shape) — end-anchored too, since both templates have a fixed, known tail. Deliberately NOT
+  // a bare `Heads up:` prefix match: OTHER owner-alert writers (`agent/destructive-gate.ts`'s
+  // expired-approval note, `scheduler/runner.ts`'s failed-reminder notes) ALSO use
+  // `OWNER_ALERT_HEADS_UP_PREFIX`, and THEIR notes are genuine memory the vault/compaction must
+  // keep — only these two exact templates are transient status noise. A human typing a message
+  // that happens to start "Heads up:" is likewise untouched by these two patterns (see the
+  // control in `memory/__tests__/platform-noise.test.ts`).
+  /^Heads up: I hit my model's size limit — trimming my context and retrying now\.$/,
+  /^Heads up: I couldn't finish answering[\s\S]*my model couldn't process this much context in time, even after I trimmed it once and tried again\. The Healer is looking into it\.$/,
 ];
 
 /** True if the content is platform/inter-agent plumbing (not conversation). */
