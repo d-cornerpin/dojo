@@ -4852,6 +4852,34 @@
       "to": 1613,
       "by": "ANSWER-ANYWAY t82 final fix wave \u2014 the count survives restarts honestly",
       "why": "+32 t82 fix wave: dry-run ceiling keyed on the turn model (I1). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/index.ts",
+      "from": 680,
+      "to": 690,
+      "by": "TOOL-NAME-HONESTY t80 (T80a) \u2014 a wrong tool name is not a permission problem",
+      "why": "+10. The execution-time unknown-tool branch now routes through describeNameFailure (tools/name-help.ts) instead of emitting a bare \"Unknown tool: X\": it separates \"no such tool\" from \"exists but not yours\", suggests real names, and lists the family the agent actually holds. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tools/name-help.ts",
+      "from": 0,
+      "to": 324,
+      "by": "TOOL-NAME-HONESTY t80 (T80a) \u2014 new leaf module, pinned decrease-only at birth",
+      "why": "NEW FILE, 324 lines, pinned at its current count per the growth detector's own remedy so the decision is visible rather than discovered at the 400-line cap. Zero imports (pure leaf): name classification, lexical suggestion scoring, same-family enumeration, and the shared failure text for all three name-failure sites. ~40% is the argued header + per-function reasoning (the synonym-table withdrawal is recorded in-file). From here it may only shrink."
+    },
+    {
+      "path": "packages/server/src/tools/name-help.ts",
+      "from": 324,
+      "to": 355,
+      "by": "TOOL-NAME-HONESTY t80 fix wave \u2014 final-review items",
+      "why": "+31. The all-allowed fallback sentence (describeNameFailure can no longer return an empty error) and the family-list label reworded to a pure prefix fact. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/google/tools-write.ts",
+      "from": 1995,
+      "to": 2020,
+      "by": "TOOL-NAME-HONESTY t80 fix wave \u2014 live-test finding",
+      "why": "+25. The invalid-label door text: names the same-prefix lister and create tools, the archive (remove INBOX) and junk (SPAM) idioms \u2014 the label-value twin of the tool-name fix, found when the live agent invented an Outlook-ism. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -4922,7 +4950,7 @@
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 370,
     "packages/server/src/agent/tools/gates.ts": 286,
-    "packages/server/src/agent/tools/index.ts": 680,
+    "packages/server/src/agent/tools/index.ts": 690,
     "packages/server/src/agent/tools/surface.ts": 688,
     "packages/server/src/agent/tools/types.ts": 338,
     "packages/server/src/agent/tools/util.ts": 371,
@@ -5024,7 +5052,7 @@
     "packages/server/src/google/tools-forms.ts": 821,
     "packages/server/src/google/tools-read.ts": 944,
     "packages/server/src/google/tools-slides.ts": 3022,
-    "packages/server/src/google/tools-write.ts": 1995,
+    "packages/server/src/google/tools-write.ts": 2020,
     "packages/server/src/healer/approval-routing.ts": 497,
     "packages/server/src/healer/diagnostic.ts": 1067,
     "packages/server/src/healer/healer-agent.ts": 1186,
@@ -5121,6 +5149,7 @@
     "packages/dashboard/src/lib/access-edits.ts": 354,
     "packages/server/src/agent/access/read.ts": 264,
     "packages/server/src/memory/work-board-lane.ts": 266,
-    "packages/server/src/memory/integration-status-lane.ts": 461
+    "packages/server/src/memory/integration-status-lane.ts": 461,
+    "packages/server/src/tools/name-help.ts": 355
   }
 }
