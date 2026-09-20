@@ -4733,6 +4733,104 @@
       "to": 870,
       "by": "NO-DOOMED-DIALS t81 final fix wave",
       "why": "+8. classifyError also recognizes the pre-dial refusal phrase on the restart/rehydrate path. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/healer/injury-recovery.ts",
+      "from": 870,
+      "to": 1094,
+      "by": "ANSWER-ANYWAY t82 (T82a-d + fix rounds) \u2014 the context system learns the box; the request always gets answered",
+      "why": "+224 T82c: the session-reset guard (three dire criteria, audit rows, honest-fail counter) + the dedicated size-class remedy note. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/recovery.ts",
+      "from": 702,
+      "to": 833,
+      "by": "ANSWER-ANYWAY t82 (T82a-d + fix rounds) \u2014 the context system learns the box; the request always gets answered",
+      "why": "+131 T82b/T82d: live timeouts route through compact-once; the two owner-visible Heads-up lines (marker-stripped) + turn-facing threading. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/model-call.ts",
+      "from": 350,
+      "to": 420,
+      "by": "ANSWER-ANYWAY t82 (T82a-d + fix rounds) \u2014 the context system learns the box; the request always gets answered",
+      "why": "+70 T82a fix 2: fit-filtered fallback selection + rescue-if-emptied via the shared helper. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/stream-patience.ts",
+      "from": 334,
+      "to": 394,
+      "by": "ANSWER-ANYWAY t82 (T82a-d + fix rounds) \u2014 the context system learns the box; the request always gets answered",
+      "why": "+60 T82a: providerAwareBudgetTokens + PROVIDER_CEILING_SAFETY argued census row. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/index.ts",
+      "from": 198,
+      "to": 246,
+      "by": "ANSWER-ANYWAY t82 (T82a-d + fix rounds) \u2014 the context system learns the box; the request always gets answered",
+      "why": "+48 T82a fix 1: post-selection budget re-check via reassemble-for-fit. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 3488,
+      "to": 3527,
+      "by": "ANSWER-ANYWAY t82 (T82a-d + fix rounds) \u2014 the context system learns the box; the request always gets answered",
+      "why": "+39 T82a: getProviderCeilingTokens + the demoted doom-gate assertion text. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1547,
+      "to": 1581,
+      "by": "ANSWER-ANYWAY t82 (T82a-d + fix rounds) \u2014 the context system learns the box; the request always gets answered",
+      "why": "+34 T82a: reactive trigger + dry-run estimate key on the provider-aware ceiling. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/budget.ts",
+      "from": 548,
+      "to": 573,
+      "by": "ANSWER-ANYWAY t82 (T82a-d + fix rounds) \u2014 the context system learns the box; the request always gets answered",
+      "why": "+25 T82a: contextWindowPolicy takes providerCeilingTokens. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/session.ts",
+      "from": 242,
+      "to": 264,
+      "by": "ANSWER-ANYWAY t82 (T82a-d + fix rounds) \u2014 the context system learns the box; the request always gets answered",
+      "why": "+22 T82c: reset_session consults the guard before any side effect. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/assemble/index.ts",
+      "from": 308,
+      "to": 325,
+      "by": "ANSWER-ANYWAY t82 (T82a-d + fix rounds) \u2014 the context system learns the box; the request always gets answered",
+      "why": "+17 T82a: volatileFrom recorded for the re-assembly splice. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/index.ts",
+      "from": 237,
+      "to": 247,
+      "by": "ANSWER-ANYWAY t82 (T82a-d + fix rounds) \u2014 the context system learns the box; the request always gets answered",
+      "why": "+10 T82d: computes and threads isUserFacingTurn. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2687,
+      "to": 2692,
+      "by": "ANSWER-ANYWAY t82 (T82a-d + fix rounds) \u2014 the context system learns the box; the request always gets answered",
+      "why": "+5 T82a: provider ceiling into the admission policy. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/shared-state.ts",
+      "from": 216,
+      "to": 218,
+      "by": "ANSWER-ANYWAY t82 (T82a-d + fix rounds) \u2014 the context system learns the box; the request always gets answered",
+      "why": "+2 T82b doc. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2875,
+      "to": 2877,
+      "by": "ANSWER-ANYWAY t82 (T82a-d + fix rounds) \u2014 the context system learns the box; the request always gets answered",
+      "why": "+2 T82c: reset_session reason/owner_requested args. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -4779,14 +4877,14 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 217,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 3488,
+    "packages/server/src/agent/model.ts": 3527,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 345,
     "packages/server/src/agent/runtime.ts": 1607,
-    "packages/server/src/agent/shared-state.ts": 216,
-    "packages/server/src/agent/stream-patience.ts": 334,
+    "packages/server/src/agent/shared-state.ts": 218,
+    "packages/server/src/agent/stream-patience.ts": 394,
     "packages/server/src/providers/anthropic-sdk.ts": 470,
     "packages/server/src/services/ollama-lock.ts": 448,
     "packages/server/src/healer/auto-fix.ts": 421,
@@ -4797,9 +4895,9 @@
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
     "packages/server/src/agent/tools/cat/media.ts": 897,
-    "packages/server/src/agent/tools/cat/session.ts": 242,
+    "packages/server/src/agent/tools/cat/session.ts": 264,
     "packages/server/src/agent/tools/cat/tracker.ts": 996,
-    "packages/server/src/agent/tools/definitions.ts": 2875,
+    "packages/server/src/agent/tools/definitions.ts": 2877,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 370,
     "packages/server/src/agent/tools/gates.ts": 286,
@@ -4817,16 +4915,16 @@
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 546,
     "packages/server/src/agent/v2/recorded-commitment.ts": 209,
-    "packages/server/src/agent/v2/recovery.ts": 702,
+    "packages/server/src/agent/v2/recovery.ts": 833,
     "packages/server/src/agent/v2/state.ts": 730,
     "packages/server/src/agent/v2/steer-queue.ts": 335,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
-    "packages/server/src/agent/v2/steps/assemble/index.ts": 308,
+    "packages/server/src/agent/v2/steps/assemble/index.ts": 325,
     "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts": 224,
     "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 125,
     "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 233,
-    "packages/server/src/agent/v2/steps/call-llm/index.ts": 198,
-    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 350,
+    "packages/server/src/agent/v2/steps/call-llm/index.ts": 246,
+    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 420,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 385,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 165,
@@ -4886,7 +4984,7 @@
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
     "packages/server/src/agent/v2/steps/teardown/conversation-tagging.ts": 70,
     "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 546,
-    "packages/server/src/agent/v2/steps/teardown/index.ts": 237,
+    "packages/server/src/agent/v2/steps/teardown/index.ts": 247,
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/costs/tracker.ts": 541,
     "packages/server/src/credentials/secret-fields.ts": 241,
@@ -4909,13 +5007,13 @@
     "packages/server/src/healer/approval-routing.ts": 497,
     "packages/server/src/healer/diagnostic.ts": 1067,
     "packages/server/src/healer/healer-agent.ts": 1186,
-    "packages/server/src/healer/injury-recovery.ts": 870,
+    "packages/server/src/healer/injury-recovery.ts": 1094,
     "packages/server/src/index.ts": 1271,
-    "packages/server/src/memory/assembler.ts": 2687,
+    "packages/server/src/memory/assembler.ts": 2692,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
-    "packages/server/src/memory/budget.ts": 548,
-    "packages/server/src/memory/compaction.ts": 1547,
+    "packages/server/src/memory/budget.ts": 573,
+    "packages/server/src/memory/compaction.ts": 1581,
     "packages/server/src/memory/deliveries-lane.ts": 257,
     "packages/server/src/memory/lanes.ts": 1194,
     "packages/server/src/memory/message-store.ts": 1153,
