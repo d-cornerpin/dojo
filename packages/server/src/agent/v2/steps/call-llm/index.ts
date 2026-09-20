@@ -41,7 +41,9 @@ import { isBareNoReplySentinel } from '@dojo/shared';
 import { queueEmbedding } from '../../../../memory/embeddings.js';
 import { redactHandedCredentials } from '../../../../credentials/secret-fields.js';
 import type { AssembledContext } from '../../../../memory/assembler.js';
+import { estimateTokens } from '../../../../memory/budget.js';
 import type { AssemblyContext } from '../../../../prompt/registry/types.js';
+import type { PromptTurnContext } from '../../../../prompt/assembler.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { TurnCounterparty } from '../../counterparty.js';
 import { selectModel } from './model-selection.js';
@@ -73,6 +75,15 @@ export interface CallLLMContext {
   readonly modelContext: AssemblyContext;
   readonly volatileFrom: number | undefined;
   readonly steerAwaitingConfirm: SteerEntry | null;
+  /**
+   * T82a fix wave — the EXACT turn context `assemble` called `assembleContext` with. The
+   * auto-router names the real model AFTER that assembly ran (against the `'__auto__'`
+   * sentinel, which declares no provider ceiling by construction), so this step re-runs
+   * `assembleContext` with the real model when the estimate demands it — see
+   * `reassembleForResolvedModel` below — and must hand it the SAME turn context or the
+   * re-assembly's content would silently diverge from what this iteration decided.
+   */
+  readonly assemblyTurnContext: PromptTurnContext;
   /** Driver CLOSURES, passed as values so their bindings stay live across the
    *  boundary (CUT 2's precedent) and so a step never points back at the driver. */
   readonly revertTriggerStampOnAbort: () => void;
@@ -87,10 +98,18 @@ export type CallLLMOutcome =
 export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext): Promise<CallLLMOutcome> {
   const {
     agentId, turnCtx, turnNumber, counterparty, isA2ATurn, isAutoRouted, configuredModelId,
-    lastUserMessageContent, messages, systemPrompt, assembled: ctx, modelContext: mctx,
-    volatileFrom, steerAwaitingConfirm, revertTriggerStampOnAbort, setAgentStatus,
+    lastUserMessageContent, assembled: assembledIn, modelContext: mctx,
+    steerAwaitingConfirm, assemblyTurnContext, revertTriggerStampOnAbort, setAgentStatus,
   } = ctxIn;
   let state = stateIn;
+  // Mutable locals: `reassembleForResolvedModel` below may replace all four when the
+  // router's pick was not the model this assembly was sized for. Every other reader in
+  // this function (and everything it hands downstream) reads these, never `ctxIn`'s
+  // originals, so a re-assembly is invisible to call sites outside this function.
+  let messages = ctxIn.messages;
+  let systemPrompt = ctxIn.systemPrompt;
+  let ctx = assembledIn;
+  let volatileFrom = ctxIn.volatileFrom;
 
   const messageId = uuidv4();
   state = advance(state, { currentMessageId: messageId });
@@ -98,6 +117,70 @@ export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext)
   const selection = await selectModel(state, agentId, isAutoRouted, configuredModelId, lastUserMessageContent, systemPrompt, messages, revertTriggerStampOnAbort);
   state = selection.state;
   const { routerTier, routerConfidence, routerFreshDecision, excludedModels } = selection;
+
+  // ══════════════════════════════════════════════════════════════════════════════════
+  // T82a FIX WAVE — THE ROUTER'S PICK RE-CHECKS THE BUDGET IT WAS ASSEMBLED WITHOUT.
+  // ══════════════════════════════════════════════════════════════════════════════════
+  //
+  // `assemble` ran against `contextModelId` — the `'__auto__'` sentinel on an
+  // auto-routed turn — because the router names the REAL model from THIS array's own
+  // content (`decideTier` reads the assembled messages), so the model cannot be known
+  // before the assembly it would size. `getProviderCeilingTokens('__auto__')` is
+  // `null` by construction (no such row exists), so T82a's provider-aware cap never
+  // engaged for that assembly: the admission budget and the compaction trigger both
+  // learned the box, but an auto-routed turn's actual dial target was never told to
+  // them at all.
+  //
+  // The fix is NOT a second trimmer. `assembleContext` is already provider-aware (this
+  // task's first commit); the gap was that it never got CALLED with the model whose
+  // ceiling matters. So: once the real model is known, re-derive the SAME admission
+  // budget `memory/budget.ts` already computes for it, and if the array this turn
+  // already built exceeds it, ask the ONE assembler to build it again — this time
+  // against the truth.
+  //
+  // Cheap short-circuit: `getProviderCeilingTokens` is a single indexed row read, and a
+  // provider that has declared neither patience nor throughput (every fast/cloud pick,
+  // and the whole world before this task) returns `null` immediately — nothing else in
+  // this block runs, so a pinned agent or a cloud auto-route pays nothing extra. This
+  // is why `estimateTokens`/`contextWindowPolicy`/`assembleContext` are all deferred
+  // behind that one check rather than imported at module scope: the common path never
+  // even loads them.
+  {
+    const { getProviderCeilingTokens, getContextWindow, getModelOutputCap } = await import('../../../model.js');
+    const providerCeiling = getProviderCeilingTokens(selection.modelId);
+    if (providerCeiling !== null) {
+      const [{ contextWindowPolicy }, { measureAgentToolPayloadTokens }] = await Promise.all([
+        import('../../../../memory/budget.js'),
+        import('../../../../tools/tool-docs.js'),
+      ]);
+      const assembledEstimate = estimateTokens(systemPrompt) + messages.reduce((sum, m) => {
+        const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
+        return sum + estimateTokens(content);
+      }, 0);
+      const policy = contextWindowPolicy(getContextWindow(selection.modelId), {
+        toolPayloadTokens: await measureAgentToolPayloadTokens(agentId),
+        maxOutputTokens: getModelOutputCap(selection.modelId),
+        providerCeilingTokens: providerCeiling,
+      });
+      if (assembledEstimate > policy.assemblyBudgetTokens) {
+        logger.warn('v2 auto-router: picked model was not the one this assembly was sized for; re-assembling against its provider-aware budget', {
+          agentId, modelId: selection.modelId, assembledEstimate, budget: policy.assemblyBudgetTokens,
+        }, agentId);
+        const { assembleContext } = await import('../../../../memory/assembler.js');
+        const reassembled = await assembleContext(agentId, selection.modelId, assemblyTurnContext);
+        // The tail this iteration's OWN `assemble` step appended past the cacheable
+        // prefix (technique hints, the multistep scaffold, the delegation hint, the
+        // drained steer) is preserved verbatim — re-running THOSE would double-fire
+        // their side effects (one-shot flags, steer delivery marks). Only the
+        // cacheable prefix is rebuilt, against the model that will actually be dialed.
+        const tail = messages.slice(volatileFrom ?? messages.length);
+        messages = [...reassembled.messages, ...tail];
+        systemPrompt = reassembled.systemPrompt;
+        ctx = reassembled;
+        volatileFrom = reassembled.messages.length;
+      }
+    }
+  }
 
   const injected = await injectAndRecord(state, {
     agentId, turnNumber, modelId: selection.modelId, messages, systemPrompt,

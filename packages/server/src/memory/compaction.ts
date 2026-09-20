@@ -123,10 +123,22 @@ export async function estimateAssembledTokens(
   reserveTokens: number;
 }> {
   const { measureAgentToolPayloadTokens } = await import('../tools/tool-docs.js');
-  const { getModelOutputCap } = await import('../agent/model.js');
+  const { getModelOutputCap, getProviderCeilingTokens } = await import('../agent/model.js');
+  // T82a fix wave: thread the SAME provider-aware ceiling through this dry run's own
+  // `contextWindowPolicy` call, so `policy.assemblyBudgetTokens` — and therefore the
+  // `summaryBudget` cap below — matches what a REAL assembly of this agent, on this
+  // model, will actually admit. Before this, the dry run modelled a bigger budget than
+  // the assembler would honour, so this estimate could UNDER-report what the compaction
+  // trigger is comparing against. `modelId` absent (the caller does not yet know it, e.g.
+  // an auto-routed turn's pre-call gate reading the `'__auto__'` sentinel) resolves to
+  // `null` the same way `getModelOutputCap` already does for that case — the honest
+  // "unknown" answer, which leaves this exactly as it was (the over-trigger direction is
+  // the safe one where the real ceiling cannot yet be named, and NULL never narrows
+  // anything, only a genuine ceiling does).
   const policy = contextWindowPolicy(contextWindow, {
     toolPayloadTokens: await measureAgentToolPayloadTokens(agentId),
     maxOutputTokens: modelId ? getModelOutputCap(modelId) : undefined,
+    providerCeilingTokens: modelId ? getProviderCeilingTokens(modelId) : null,
   });
   const summaries = getContextSummaries(agentId);
   const rawSummaryTokens = summaries.reduce((sum, s) => sum + (s.tokenCount ?? 0), 0);

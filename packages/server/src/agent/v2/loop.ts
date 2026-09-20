@@ -473,7 +473,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       });
       turnCtx.state = assembled.state;
       if (assembled.directive === 'exit') break;
-      const { assembled: ctx, messages, systemPrompt, volatileFrom, modelContext: mctx, steerAwaitingConfirm } = assembled;
+      const { assembled: ctx, messages, systemPrompt, volatileFrom, modelContext: mctx, steerAwaitingConfirm, assemblyTurnContext } = assembled;
       // ── Phase: model call ──
       // (Auto-routing + capability gate + retry-fallback + TRUE streaming.)
       turnCtx.state = advance(turnCtx.state!, { phase: 'callLLM' });
@@ -489,7 +489,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         agentId, turnCtx, turnNumber, db,
         counterparty, isA2ATurn, isAutoRouted, configuredModelId, lastUserMessageContent,
         messages, systemPrompt, assembled: ctx, modelContext: mctx, volatileFrom,
-        steerAwaitingConfirm,
+        steerAwaitingConfirm, assemblyTurnContext,
         revertTriggerStampOnAbort, setAgentStatus,
       };
       const callLLM = await runCallLLM(turnCtx.state!, callLLMContext);

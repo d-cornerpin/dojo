@@ -38,6 +38,7 @@ import { assembleContext, type AssembledContext } from '../../../../memory/assem
 import { estimateTokens } from '../../../../memory/budget.js';
 import { buildAssemblyContext } from '../../../../prompt/registry/assembler.js';
 import type { AssemblyContext } from '../../../../prompt/registry/types.js';
+import type { PromptTurnContext } from '../../../../prompt/assembler.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { clearConsumedOneShotFlags } from '../../../runtime.js';
 import { complexityClassifier } from '../../classifiers/complexity.js';
@@ -109,6 +110,21 @@ export type AssembleOutcome =
       readonly volatileFrom: number;
       readonly modelContext: AssemblyContext;
       readonly steerAwaitingConfirm: SteerEntry | null;
+      /**
+       * T82a fix wave — THE EXACT TURN CONTEXT `assembleContext` WAS CALLED WITH.
+       *
+       * The router (auto-routing) picks the model AFTER this assembly ran, against the
+       * `'__auto__'` sentinel (`getProviderCeilingTokens('__auto__')` is `null` by
+       * construction — no such model row exists — so the provider-aware cap this task's
+       * first commit taught `contextWindowPolicy` never engaged for an auto-routed turn).
+       * `callLLM` re-runs `assembleContext` with the REAL model once the router names it,
+       * and it must call it with the SAME turn context or the re-assembly would silently
+       * diverge in content (a different counterparty header, a different othersWaiting
+       * count) from the one this iteration actually decided. One object, handed across —
+       * not rebuilt — for the same reason `staleTaskWindowMinutes` is passed rather than
+       * recomputed (see this file's header).
+       */
+      readonly assemblyTurnContext: PromptTurnContext;
     }
   | { readonly directive: 'exit'; readonly state: AgentTurnState; readonly reason: string };
 
@@ -304,5 +320,6 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   return {
     ...proceed(state), directive: 'proceed', state,
     assembled: ctx, messages, systemPrompt, volatileFrom, modelContext: mctx, steerAwaitingConfirm,
+    assemblyTurnContext: sharedTurnContext,
   } as AssembleOutcome;
 }
