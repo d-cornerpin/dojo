@@ -4614,6 +4614,111 @@
       "to": 137,
       "by": "SLOW-INFERENCE t79 (T79a-e + fix wave) \u2014 work-based governance replaces wall-clock stuck detection",
       "why": "+3. Honest comment: the continuation ladder is bounded by the declared budget, not a flat constant. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 3198,
+      "to": 3413,
+      "by": "NO-DOOMED-DIALS t81 (T81a-d + fix rounds) \u2014 the engine never dials a doomed request, never re-dials one that didn't finish",
+      "why": "+215. T81b/T81d: the pre-dial doom gate on all four transports and the sdk transport joining the shared patience/code decision points. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/recovery.ts",
+      "from": 605,
+      "to": 702,
+      "by": "NO-DOOMED-DIALS t81 (T81a-d + fix rounds) \u2014 the engine never dials a doomed request, never re-dials one that didn't finish",
+      "why": "+97. T81a/T81b: declared-patience code threading, compact-once refusal recovery, the honest-fail marker setter. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1528,
+      "to": 1607,
+      "by": "NO-DOOMED-DIALS t81 (T81a-d + fix rounds) \u2014 the engine never dials a doomed request, never re-dials one that didn't finish",
+      "why": "+79. T81c: the restart-decline gate (turn-scoped) and the preempt cool-down. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/shared-state.ts",
+      "from": 137,
+      "to": 216,
+      "by": "NO-DOOMED-DIALS t81 (T81a-d + fix rounds) \u2014 the engine never dials a doomed request, never re-dials one that didn't finish",
+      "why": "+79. T81b/T81c: doomedPrefillCompactionSpent and declaredPatienceHonestFailTurn turn-scoped maps + preempt cool-down state, each argued in-file. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/config.ts",
+      "from": 2894,
+      "to": 2950,
+      "by": "NO-DOOMED-DIALS t81 (T81a-d + fix rounds) \u2014 the engine never dials a doomed request, never re-dials one that didn't finish",
+      "why": "+56. T81b: the prefill-throughput write door (mirror of the response-patience/unattended pair). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/healer/injury-recovery.ts",
+      "from": 831,
+      "to": 862,
+      "by": "NO-DOOMED-DIALS t81 (T81a-d + fix rounds) \u2014 the engine never dials a doomed request, never re-dials one that didn't finish",
+      "why": "+31. T81a: declared-patience injuries skip the blind auto-wake, note carries size+patience. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/provider-error.ts",
+      "from": 317,
+      "to": 345,
+      "by": "NO-DOOMED-DIALS t81 (T81a-d + fix rounds) \u2014 the engine never dials a doomed request, never re-dials one that didn't finish",
+      "why": "+28. T81a: the declared_patience_exceeded class ahead of the prose timeout->network fallback. From here this file may only shrink."
+    },
+    {
+      "path": "packages/shared/src/types.ts",
+      "from": 609,
+      "to": 619,
+      "by": "NO-DOOMED-DIALS t81 (T81a-d + fix rounds) \u2014 the engine never dials a doomed request, never re-dials one that didn't finish",
+      "why": "+10. T81b: Provider.prefillTokensPerSec. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts",
+      "from": 284,
+      "to": 293,
+      "by": "NO-DOOMED-DIALS t81 (T81a-d + fix rounds) \u2014 the engine never dials a doomed request, never re-dials one that didn't finish",
+      "why": "+9. T81c: marker clear at turn start. From here this file may only shrink."
+    },
+    {
+      "path": "packages/shared/src/ws.ts",
+      "from": 1115,
+      "to": 1121,
+      "by": "NO-DOOMED-DIALS t81 (T81a-d + fix rounds) \u2014 the engine never dials a doomed request, never re-dials one that didn't finish",
+      "why": "+6. T81c: same-model waiter fields on OllamaStatusEvent. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/index.ts",
+      "from": 171,
+      "to": 175,
+      "by": "NO-DOOMED-DIALS t81 (T81a-d + fix rounds) \u2014 the engine never dials a doomed request, never re-dials one that didn't finish",
+      "why": "+4. T81b: spent-flag clear on clean finalize. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/stream-patience.ts",
+      "from": 0,
+      "to": 334,
+      "by": "NO-DOOMED-DIALS t81 \u2014 new-file pin at birth (the growth detector's named remedy)",
+      "why": "NEW to the pin list at 334 lines: the one-owner module for declared patience grew resolveDoomCeiling + the prefill-throughput bounds + the split timeout codes across t79/t81. Heavily commented by design (the module IS the argument). From here it may only shrink."
+    },
+    {
+      "path": "packages/server/src/providers/anthropic-sdk.ts",
+      "from": 0,
+      "to": 470,
+      "by": "NO-DOOMED-DIALS t81 \u2014 over-cap pin (files crossed 400 during t81; pinned decrease-only)",
+      "why": "+patience clock, own-timer discriminator (AgentSdkPatienceExceededError), sawAnyContent tracking (T81d). From here it may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/ollama-lock.ts",
+      "from": 0,
+      "to": 448,
+      "by": "NO-DOOMED-DIALS t81 \u2014 over-cap pin (files crossed 400 during t81; pinned decrease-only)",
+      "why": "+same-model cap=1 queue-behind with patience-derived wait bound and status visibility (T81c). From here it may only shrink."
+    },
+    {
+      "path": "packages/server/src/healer/auto-fix.ts",
+      "from": 0,
+      "to": 421,
+      "by": "NO-DOOMED-DIALS t81 \u2014 over-cap pin (files crossed 400 during t81; pinned decrease-only)",
+      "why": "+the activeRuns guard on fixStuckAgent (T81d) tipped a long-standing file over the cap. From here it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -4660,13 +4765,17 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 217,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 3198,
+    "packages/server/src/agent/model.ts": 3413,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
-    "packages/server/src/agent/provider-error.ts": 317,
-    "packages/server/src/agent/runtime.ts": 1528,
-    "packages/server/src/agent/shared-state.ts": 137,
+    "packages/server/src/agent/provider-error.ts": 345,
+    "packages/server/src/agent/runtime.ts": 1607,
+    "packages/server/src/agent/shared-state.ts": 216,
+    "packages/server/src/agent/stream-patience.ts": 334,
+    "packages/server/src/providers/anthropic-sdk.ts": 470,
+    "packages/server/src/services/ollama-lock.ts": 448,
+    "packages/server/src/healer/auto-fix.ts": 421,
     "packages/server/src/agent/spawner.ts": 1459,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
     "packages/server/src/agent/tools/cat/agents.ts": 1533,
@@ -4694,7 +4803,7 @@
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 546,
     "packages/server/src/agent/v2/recorded-commitment.ts": 209,
-    "packages/server/src/agent/v2/recovery.ts": 605,
+    "packages/server/src/agent/v2/recovery.ts": 702,
     "packages/server/src/agent/v2/state.ts": 730,
     "packages/server/src/agent/v2/steer-queue.ts": 335,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
@@ -4723,7 +4832,7 @@
     "packages/server/src/agent/v2/steps/finalize/close-the-loop.ts": 158,
     "packages/server/src/agent/v2/steps/finalize/completion-ack.ts": 154,
     "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts": 90,
-    "packages/server/src/agent/v2/steps/finalize/index.ts": 171,
+    "packages/server/src/agent/v2/steps/finalize/index.ts": 175,
     "packages/server/src/agent/v2/steps/finalize/link-backstop.ts": 113,
     "packages/server/src/agent/v2/steps/finalize/route-reply.ts": 211,
     "packages/server/src/agent/v2/steps/finalize/stranded-attachments.ts": 122,
@@ -4750,7 +4859,7 @@
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 411,
     "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 273,
     "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 238,
-    "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts": 284,
+    "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts": 293,
     "packages/server/src/agent/v2/steps/preflight/inbound-and-abort.ts": 202,
     "packages/server/src/agent/v2/steps/preflight/index.ts": 296,
     "packages/server/src/agent/v2/steps/preflight/recall-flag.ts": 102,
@@ -4771,7 +4880,7 @@
     "packages/server/src/db/migration-checksums.ts": 277,
     "packages/server/src/gateway/routes/agents.ts": 962,
     "packages/server/src/gateway/routes/chat.ts": 492,
-    "packages/server/src/gateway/routes/config.ts": 2894,
+    "packages/server/src/gateway/routes/config.ts": 2950,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/setup-deps.ts": 513,
     "packages/server/src/gateway/routes/tracker.ts": 959,
@@ -4786,7 +4895,7 @@
     "packages/server/src/healer/approval-routing.ts": 497,
     "packages/server/src/healer/diagnostic.ts": 1067,
     "packages/server/src/healer/healer-agent.ts": 1186,
-    "packages/server/src/healer/injury-recovery.ts": 831,
+    "packages/server/src/healer/injury-recovery.ts": 862,
     "packages/server/src/index.ts": 1271,
     "packages/server/src/memory/assembler.ts": 2687,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
@@ -4866,9 +4975,9 @@
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
-    "packages/shared/src/types.ts": 609,
+    "packages/shared/src/types.ts": 619,
     "packages/shared/src/visibility.ts": 989,
-    "packages/shared/src/ws.ts": 1115,
+    "packages/shared/src/ws.ts": 1121,
     "watchdog/src/auto-rollback.ts": 333,
     "watchdog/src/index.ts": 1217,
     "packages/server/src/agent/v2/outbound-ledger.ts": 459,
