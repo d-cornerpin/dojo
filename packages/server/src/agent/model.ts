@@ -948,13 +948,6 @@ async function callOllamaModel(
   const baseUrl = (modelInfo.providerBaseUrl ?? 'http://localhost:11434').replace(/\/+$/, '');
   const ollamaModelName = modelInfo.apiModelId;
 
-  // Acquire the Ollama model lock (waits if a different model is in use
-  // ON THE SAME PROVIDER, remote Ollama hosts have their own slot pool).
-  const lock = getOllamaLock();
-  await lock.acquire(modelInfo.providerId, ollamaModelName);
-
-  const startTime = Date.now();
-
   const nativeMessages = await buildNativeOllamaMessages(systemPrompt, messages, agentId);
 
   // Build tools in the shape Ollama's native API accepts (same as the OpenAI
@@ -1026,6 +1019,34 @@ async function callOllamaModel(
     requestBody.options = { num_ctx: effectiveNumCtx };
   }
 
+  // T81b review round, finding 2: `patience` and the gate now sit HERE — before the lock is
+  // even acquired, before `startTime` starts, before the try/catch/finally that means "we are
+  // actually attempting a dial" — matching the OTHER two transports' structure exactly rather
+  // than special-casing the one shape that used to differ. `nativeMessages`/`nativeTools` are
+  // already fully built above for `requestBody`, so the estimate is the identical cost class
+  // the other two transports already pay at their own estimate sites, not new work invented
+  // for the gate. The FIRST cut of this gate lived inside the try below, which meant a refusal
+  // fell into the generic `catch` a few lines down: `recordProviderError(modelInfo.providerId)`
+  // marked a perfectly healthy provider unhealthy for a request that never touched it, and an
+  // ERROR-level log read "Ollama call failed: refused before any network dial" — a sentence
+  // that contradicts itself, because nothing failed and nothing was dialed. Hoisting the check
+  // out here removes the mislabelling at its root instead of teaching the catch a special case.
+  //
+  // A useful side effect, not the reason for the move: the Ollama model lock (below) now
+  // serializes actual DIALS only. A refused request never queues behind a slot it will never
+  // use, and this transport's estimate is cheap enough that computing it lock-free costs
+  // nothing measurable.
+  const patience = resolveStreamPatience(modelInfo);
+  const nativeEstimate = estimateTokens(JSON.stringify(nativeMessages)) + estimateTokens(JSON.stringify(nativeTools ?? []));
+  refuseIfDoomed(agentId, nativeEstimate, patience, modelInfo.prefillTokensPerSec);
+
+  // Acquire the Ollama model lock (waits if a different model is in use
+  // ON THE SAME PROVIDER, remote Ollama hosts have their own slot pool).
+  const lock = getOllamaLock();
+  await lock.acquire(modelInfo.providerId, ollamaModelName);
+
+  const startTime = Date.now();
+
   try {
     // Combine external abort (from stop button) with internal timeout.
     // Node 22+ AbortSignal.any returns a signal that aborts when EITHER
@@ -1061,17 +1082,6 @@ async function callOllamaModel(
     // `transport === null`, so no `dispatcher` key is set at all — the call goes out on
     // undici's global dispatcher exactly as it always has, which is R6 for the client
     // configuration, not just the abort duration.
-    const patience = resolveStreamPatience(modelInfo);
-
-    // T81b: census row 37 named this transport's estimate site as one to check "if cheaply
-    // available" — it is. `nativeMessages`/`nativeTools` are already fully built (above,
-    // outside this try) for `requestBody`, so this is the identical cost class the other two
-    // transports already pay at their own estimate sites, not new work invented for the gate.
-    // This runs INSIDE the try/finally that releases the Ollama model lock (`finally` below),
-    // so a refusal here still frees the slot for the next call rather than leaking it.
-    const nativeEstimate = estimateTokens(JSON.stringify(nativeMessages)) + estimateTokens(JSON.stringify(nativeTools ?? []));
-    refuseIfDoomed(agentId, nativeEstimate, patience, modelInfo.prefillTokensPerSec);
-
     const transportTimeouts = resolveTransportTimeouts(patience);
     const timeoutSignal = AbortSignal.timeout(transportTimeouts?.bodyTimeoutMs ?? TRANSPORT_DEFAULT_TIMEOUT_MS);
     const signal = params.abortSignal

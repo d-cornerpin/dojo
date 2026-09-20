@@ -1538,6 +1538,43 @@ describe('runV2Turn integration', () => {
       );
     });
 
+    it('REVIEW ROUND FINDING 1: doomed → compact → an UNRELATED error → doomed again ⇒ compaction IS attempted again', async () => {
+      // The bare-boolean first cut of `doomedPrefillCompactionSpent` stayed set across an
+      // intervening error-path turn end that had nothing to do with doom (no finalize, no
+      // second doomed refusal to consume it) — so a LATER, unrelated doomed request found the
+      // marker already "spent" and was denied the one compaction it was entitled to. The fix
+      // ties the marker to the specific turn that spent it (`agentId -> turnNumber`), so a turn
+      // that is NOT the immediate successor of the one that compacted is a fresh chain.
+      callModelSpy.mockRejectedValue(preDialRefusal());
+      await runV2Turn('primary'); // turn N: doomed → compacts, spends the attempt, self-wakes
+      expect(checkAndCompactSpy).toHaveBeenCalledTimes(1);
+
+      checkAndCompactSpy.mockClear();
+      onAgentInjuredSpy.mockClear();
+      // A wholly unrelated failure — same fixture PHASE 6's own "generic injury" case uses —
+      // reaching recordInjury, nowhere near the pre-dial-refusal branch (not even an
+      // `AgentError`, let alone one carrying the code or the marker).
+      callModelSpy.mockRejectedValue(new Error('500 Internal Server Error: something weird'));
+      await runV2Turn('primary'); // turn N+1: unrelated to doom entirely
+      expect(checkAndCompactSpy).not.toHaveBeenCalled();
+      expect(onAgentInjuredSpy).toHaveBeenCalled();
+
+      checkAndCompactSpy.mockClear();
+      onAgentInjuredSpy.mockClear();
+      callModelSpy.mockRejectedValue(preDialRefusal());
+      await runV2Turn('primary'); // turn N+2: doomed again — NOT the immediate successor of turn N
+
+      // The stale marker from turn N must not block this: it is a fresh chain and earns its
+      // own compaction, not an immediate honest-fail.
+      expect(checkAndCompactSpy).toHaveBeenCalledWith(
+        'primary',
+        expect.any(String),
+        expect.any(Number),
+        expect.objectContaining({ force: true }),
+      );
+      expect(onAgentInjuredSpy).not.toHaveBeenCalled();
+    });
+
     it('CONTROL: the identical code from a genuine watchdog timeout (no pre-dial marker) is never compacted — straight to the honest fail', async () => {
       // Same `code` as the pre-dial case (T81a's own, never a second one) but no
       // `preDialRefusal` — a real dial was attempted and died mid-flight, so compacting and

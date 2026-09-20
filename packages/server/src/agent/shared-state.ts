@@ -137,13 +137,33 @@ export const MAX_INLOOP_RECOVERIES_SAME_INPUTS = 2;
 export const MAX_CONSECUTIVE_INLOOP_RECOVERIES = 3;
 
 // T81b (NO-DOOMED-DIALS) — which agents have already spent their ONE forced-compaction
-// attempt on a pre-dial doomed-request refusal (`v2/recovery.ts`'s `tryPreDialDoomedRefusalRecovery`).
+// attempt on a pre-dial doomed-request refusal (`v2/recovery.ts`'s `tryPreDialDoomedRefusalRecovery`),
+// keyed to WHICH turn spent it — not a bare boolean.
 //
-// A `Set`, not a count like `recoveryRunStreak` above — there is nothing to count past one.
-// The brief is explicit: compact ONCE and retry; if the re-estimate is STILL over the ceiling,
-// fall straight through to T81a's honest fail, never a second compaction. Cleared the same two
-// ways `recoveryRunStreak` is: the cap being spent (`v2/recovery.ts`, the moment a second
-// refusal arrives) and a clean turn finalize (`v2/steps/finalize/index.ts`) — so a later,
-// unrelated doomed request on the same agent earns its own single try rather than being
-// permanently blocked by one that was already resolved.
-export const doomedPrefillCompactionSpent = new Set<string>();
+// REVIEW ROUND FINDING: a bare `Set<agentId>` (the first cut) is cleared only when the cap is
+// spent (a second doomed refusal arrives) or on a CLEAN turn finalize
+// (`v2/steps/finalize/index.ts`, matching `recoveryRunStreak`'s own asymmetry — a turn that
+// ends via the error/recovery arm never clears it, on purpose, the same reason
+// `recoveryRunStreak` doesn't either). But an error-path turn end for a DIFFERENT reason (an
+// unrelated network failure, say) is also NEITHER of those two — so the bare boolean stayed set
+// forever, and a much-later, wholly unrelated doomed request on the same agent found it already
+// "spent" and skipped the one compaction it was entitled to.
+//
+// THE FIX: discriminate the marker the way `recoveryRunStreak` discriminates by
+// `{kind, inputsFingerprint}` — store WHICH turn earned the spend (`agentId -> turnNumber`),
+// not just THAT one was spent. `turn-record.ts`'s `startTurn` allocates `turn_number` as
+// `MAX(turn_number) + 1` per agent, so it is a strict, gapless, per-agent monotonic sequence —
+// which makes "is the CURRENT turn the one immediately after the one that compacted"
+// (`current === spentAtTurn + 1`) a reliable identity check, not a guess. A turn number that
+// does NOT match is proof a DIFFERENT turn happened in between (successful or not), so the
+// marker is treated as unspent and a fresh compaction is granted — self-cleaning, because no
+// stale entry can ever coincidentally satisfy the adjacency check again (turn numbers never
+// repeat and never go backward).
+//
+// TRADEOFF, STATED RATHER THAN HIDDEN: if the queued self-wake races an unrelated trigger (a
+// user message, say) and loses, so the doomed request's actual retry lands two-or-more turns
+// later instead of immediately next, this grants it one EXTRA compaction it was not strictly
+// owed. That is the deliberately safe direction to be wrong in: an extra compaction attempt is
+// bounded and costs no dial, where the alternative (denying a rightful compaction) is the exact
+// defect this fix exists to close.
+export const doomedPrefillCompactionSpent = new Map<string, number>();

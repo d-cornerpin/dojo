@@ -135,7 +135,7 @@ export async function recoverFromError(
   if (error instanceof AgentError
     && error.code === DECLARED_PATIENCE_EXCEEDED_CODE
     && error.preDialRefusal) {
-    if (await tryPreDialDoomedRefusalRecovery(agentId)) return;
+    if (await tryPreDialDoomedRefusalRecovery(agentId, state.turnNumber)) return;
     // The one compaction attempt is already spent (or compaction could not even run, e.g. the
     // agent's model is the 'auto' sentinel) — fall through to the ordinary cascade. None of the
     // steps below recognise this code, so it lands on `recordInjury`: T81a's honest fail, and
@@ -293,20 +293,25 @@ async function tryContextOverflowRecovery(
 // fires on — the exact prose-vs-structure conflation `provider-error.ts`'s own header spends a
 // paragraph warning against.
 //
-// UNLIKE context overflow, this recovery is capped at exactly ONE attempt
-// (`doomedPrefillCompactionSpent`, cleared on the cap being spent or a clean turn finalize —
-// see that set's own doc in `shared-state.ts`). Context overflow has no such cap because each
-// retry is answering a DIFFERENT question the provider just asked ("still too big?" — maybe
-// not, once compaction ran); a pre-dial refusal that recurs after ONE forced compaction is
+// UNLIKE context overflow, this recovery is capped at exactly ONE attempt PER DOOMED-REQUEST
+// CHAIN (`doomedPrefillCompactionSpent`, keyed `agentId -> turnNumber` — see that map's own doc
+// in `shared-state.ts` for the identity check and the review-round finding it replaced a bare
+// boolean to fix). Context overflow has no such cap because each retry is answering a DIFFERENT
+// question the provider just asked ("still too big?" — maybe not, once compaction ran); a
+// pre-dial refusal that recurs on the immediate next turn after ONE forced compaction is
 // answering the SAME question the same way twice — the box's declared prefill speed and
 // declared patience have not changed, so compacting harder without a different prompt in hand
 // would not change the arithmetic either. Retrying it a second time would be spending a real
-// compaction pass on a call that was never going to reach the wire.
-async function tryPreDialDoomedRefusalRecovery(agentId: string): Promise<boolean> {
-  if (doomedPrefillCompactionSpent.has(agentId)) {
-    // The one attempt already ran and THIS very refusal is the re-estimate that followed it —
-    // still over the ceiling. Clear the marker (a later, unrelated doomed request earns its
-    // own single try) and let the caller fall through to the honest fail.
+// compaction pass on a call that was never going to reach the wire. A doomed refusal that
+// resurfaces LATER — after some OTHER turn (success or a different failure) ran in between —
+// is a fresh chain by construction and earns its own single attempt.
+async function tryPreDialDoomedRefusalRecovery(agentId: string, turnNumber: number): Promise<boolean> {
+  const spentAtTurn = doomedPrefillCompactionSpent.get(agentId);
+  if (spentAtTurn === turnNumber - 1) {
+    // The one attempt ran on the turn immediately before this one, and THIS refusal is the
+    // re-estimate that followed it — still over the ceiling. Clear the marker (a later,
+    // unrelated doomed request earns its own single try) and let the caller fall through to
+    // the honest fail.
     doomedPrefillCompactionSpent.delete(agentId);
     return false;
   }
@@ -322,8 +327,8 @@ async function tryPreDialDoomedRefusalRecovery(agentId: string): Promise<boolean
     const { getContextWindow } = await import('../model.js');
     const cw = getContextWindow(compactModelId);
     await checkAndCompact(agentId, compactModelId, cw, { force: true });
-    doomedPrefillCompactionSpent.add(agentId);
-    logger.warn('v2: forced compaction after a pre-dial doomed-request refusal (T81b)', { agentId }, agentId);
+    doomedPrefillCompactionSpent.set(agentId, turnNumber);
+    logger.warn('v2: forced compaction after a pre-dial doomed-request refusal (T81b)', { agentId, turnNumber }, agentId);
     queueSelfWake(agentId, 'recovery-doomed-prefill-compaction');
     return true;
   } catch (recovErr) {
