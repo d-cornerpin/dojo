@@ -1467,12 +1467,14 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Session Management ──
   {
     name: 'reset_session',
-    description: 'Wipe a sub-agent\'s (or your own) conversation context and start fresh. This is THE tool for clearing an agent\'s memory when it\'s stuck in a loop, confused, or when the user explicitly asks for a clean slate. Archives the existing conversation to the vault first so nothing is lost.',
+    description: 'Wipe a sub-agent\'s (or your own) conversation context and start fresh. This is THE tool for clearing an agent\'s memory when it\'s stuck in a loop, confused, or when the user explicitly asks for a clean slate. Archives the existing conversation to the vault first so nothing is lost.\n\n**T82c: compaction comes first for a declared-patience exhaustion (the model could not be served fast enough for a request).** For that injury class this refuses until compact-and-redial has already failed on 2 distinct turns for the target agent — wake it again with send_to_agent(intent="QUESTION") first and let the engine\'s own forced-compaction-then-redial run before reaching for this. It becomes available early if you pass `reason="corruption"` (you have diagnosed corrupted context) or `owner_requested=true` (the owner explicitly asked) — both are audit-logged. Every other injury class (and self-resets) are unaffected.',
     effects: [],
     input_schema: {
       type: 'object',
       properties: {
         agent_id: { type: 'string', description: 'REQUIRED. The agent ID or name of the agent to reset. Pass a sub-agent\'s ID/name to reset them, or pass your own ID to reset yourself.' },
+        reason: { type: 'string', description: 'T82c: pass "corruption" when you have diagnosed corrupted context on the target — bypasses the compaction-first guard for a declared-patience injury. Audit-logged. Omit for every other reset.' },
+        owner_requested: { type: 'boolean', description: 'T82c: set true ONLY when relaying an explicit owner instruction to reset this agent right now — bypasses the compaction-first guard for a declared-patience injury. Audit-logged. Do not set this speculatively.' },
       },
       required: ['agent_id'],
     },

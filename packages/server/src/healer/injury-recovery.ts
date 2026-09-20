@@ -13,6 +13,7 @@
 // event-driven setTimeout per injured agent.
 // ════════════════════════════════════════
 
+import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { sendAlert } from '../services/imessage-bridge.js';
@@ -150,6 +151,56 @@ function deleteHealerState(scope: string, key: string): void {
   } catch { /* best-effort */ }
 }
 
+// ── T82c (ANSWER-ANYWAY) — the durable "how many distinct turns has compact-and-redial
+// already failed on" signal, backed by the SAME `healer_state` table above (no schema
+// change: a THIRD scope value on an already-generic (scope, key, at_ms) store).
+//
+// OWNER RULING, VERBATIM INTENT: "We aren't taking that away" — the Healer keeps session
+// reset, it just can't be the first trigger pulled when compaction could have worked. For a
+// size-class injury (`declared_patience_exceeded`), `agent/tools/cat/session.ts`'s
+// `reset_session` guard (`evaluateSessionResetGuard` below) refuses UNLESS compact-and-redial
+// has already failed on >=2 DISTINCT turns for this agent, corruption is diagnosed, or the
+// owner explicitly asked. This is the durable count backing criterion (a).
+//
+// SOURCE, documented per this task's own instruction: `v2/recovery.ts`'s `recordInjury` is
+// the ONE place that authoritatively knows a turn just ended on `DECLARED_PATIENCE_EXCEEDED_CODE`
+// with no self-scheduled retry (see its own comment, and `declaredPatienceHonestFailTurn`'s doc
+// in `shared-state.ts`) — it calls `onAgentInjured(agentId, message, code)` with that code
+// EXACTLY ONCE per failed turn. `onAgentInjured` below records one row here whenever
+// `classifyError` resolves to `'declared_patience_exceeded'`, so counting rows IS counting
+// distinct turns, without threading `state.turnNumber` through this call — each row's key
+// carries a fresh UUID rather than the turn number, precisely so a second call in the same
+// process tick never collides with (and silently loses) the first. "Within the current
+// chain" is read as "since this agent's last clean recovery": `onAgentRecovered` clears every
+// row for the agent the moment it leaves error/paused, the same reset point
+// `agents.recovery_attempts` already uses for the identical reason (a truly recovered agent
+// starts its next injury, of any kind, with a clean slate).
+const DECLARED_PATIENCE_HONEST_FAIL_SCOPE = 'declared_patience_honest_fail';
+
+function recordDeclaredPatienceHonestFail(agentId: string): void {
+  writeHealerState(DECLARED_PATIENCE_HONEST_FAIL_SCOPE, `${agentId}:${uuidv4()}`, Date.now());
+}
+
+/** Exported for `evaluateSessionResetGuard` (below) and for tests. */
+export function countDeclaredPatienceHonestFails(agentId: string): number {
+  try {
+    const row = getDb()
+      .prepare('SELECT COUNT(*) AS cnt FROM healer_state WHERE scope = ? AND key LIKE ?')
+      .get(DECLARED_PATIENCE_HONEST_FAIL_SCOPE, `${agentId}:%`) as { cnt: number };
+    return row?.cnt ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+function clearDeclaredPatienceHonestFails(agentId: string): void {
+  try {
+    getDb()
+      .prepare('DELETE FROM healer_state WHERE scope = ? AND key LIKE ?')
+      .run(DECLARED_PATIENCE_HONEST_FAIL_SCOPE, `${agentId}:%`);
+  } catch { /* best-effort, matches every other clear in this section */ }
+}
+
 // Per-agent absolute timestamp before which Healer will NOT re-fire.
 // Cleared on any successful turn (via onAgentRecovered).
 const healerSuppressedUntil = {
@@ -280,7 +331,7 @@ const autoWakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // (`classifyProviderErrorText`) instead of a sixth private copy: every status there is matched
 // as a token, so "prompt is too long: 204015 tokens" can no longer read as a 401. The
 // dojo-specific buckets (context corruption, config) have no HTTP equivalent and stay.
-function classifyError(error: string | null, code?: string): string {
+export function classifyError(error: string | null, code?: string): string {
   // T81a — GPU livelock incident (2026-09-18/19). Checked FIRST, ahead of every rule below: a
   // declared-patience exhaustion carries this CODE from the model layer on the live path (the
   // overwhelmingly common case — this function is called synchronously from the same injury
@@ -435,6 +486,15 @@ export function onAgentInjured(agentId: string, errorMessage: string, code?: str
   const isTransient = errorClass === 'rate_limit' || errorClass === 'network';
   const gracePeriodMs = isTransient ? GRACE_PERIOD_MS_TRANSIENT : GRACE_PERIOD_MS_NON_TRANSIENT;
 
+  // T82c: reaching here with THIS class means `v2/recovery.ts`'s `recordInjury` already
+  // concluded compact-and-redial could not save this turn (see that function's own comment on
+  // when it sets `declaredPatienceHonestFailTurn`) — record the durable count criterion (a) of
+  // the session-reset guard reads. One row per call, see the section doc above for why counting
+  // rows is counting distinct turns.
+  if (errorClass === 'declared_patience_exceeded') {
+    recordDeclaredPatienceHonestFail(agentId);
+  }
+
   // v2.3.19, known-permanent errors (auth, config) should NOT auto-wake.
   // The pre-spec auto-wake was useful for transient flakes, but firing it
   // on a 401 just spams paid model calls every 5 seconds with the same
@@ -570,6 +630,11 @@ export function onAgentRecovered(agentId: string): void {
   // a successful turn).
   healerSuppressedUntil.delete(agentId);
 
+  // T82c: a clean recovery ends the current doomed chain — the next injury (of any class)
+  // starts the session-reset guard's count at zero again, same reset point
+  // `agents.recovery_attempts` already uses.
+  clearDeclaredPatienceHonestFails(agentId);
+
   // Cancel the engine auto-wake timer if it's still pending, agent recovered
   // before we needed to poke them.
   const wakeTimer = autoWakeTimers.get(agentId);
@@ -688,10 +753,43 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
     }
 
     parts.push('');
-    parts.push('Please investigate and attempt recovery:');
-    parts.push(`1. If the error is transient (network, rate limit): send_to_agent(agent="${agentId}", intent="QUESTION", payload="...") to poke them.`);
-    parts.push(`2. If the error is context corruption: reset_session(agent_id="${agentId}") to clear their context.`);
-    parts.push('3. If the error is a config issue: send an iMessage alert to the user via imessage_send.');
+    if (errorClass === 'declared_patience_exceeded') {
+      // T82c (ANSWER-ANYWAY), THE STEERING FIX — OWNER RULING, VERBATIM INTENT: "We aren't
+      // taking that away" — the Healer keeps session reset, it just can't be the first trigger
+      // pulled when compaction could have worked. This is the note the vault-archive incident
+      // traced back to: pre-T82c a declared-patience injury fell into the GENERIC three-item
+      // list below, whose item 2 ("context corruption: reset_session") reads, to an LLM
+      // skimming for the most decisive tool, like it covers "the model timed out" too. It does
+      // not — this class is compaction-first, and this branch says so explicitly, states what
+      // the engine ALREADY tried, names the remedy ordering, and does NOT surface reset_session
+      // as an option (it is gated by `evaluateSessionResetGuard` in
+      // `agent/tools/cat/session.ts` and will refuse outside its own three criteria regardless
+      // of what this note says — but a note that never dangles the hammer is the steering half
+      // of this fix, the guard above is the mechanical half).
+      parts.push(
+        'This is a declared-patience exhaustion (the model could not be served fast enough for ' +
+        'this request) — the engine already ran ONE forced compaction + redial automatically ' +
+        'inside the failed turn (or could not, e.g. the agent is on the \'auto\' model sentinel), ' +
+        'and it did not resolve.',
+      );
+      parts.push('Try, in this order:');
+      parts.push(
+        `1. Compaction-first: send_to_agent(agent="${agentId}", intent="QUESTION", payload="...") ` +
+        'to wake the agent again. Its next turn runs the SAME forced-compaction-then-redial ' +
+        'automatically if it hits the same exhaustion — reach for this BEFORE session reset.',
+      );
+      parts.push(
+        `2. reset_session(agent_id="${agentId}") is available once compact-and-redial has ` +
+        'already failed on 2 distinct turns for this agent. It will refuse otherwise, unless ' +
+        'you pass reason="corruption" (you have diagnosed corrupted context) or ' +
+        'owner_requested=true (the owner explicitly asked) — both are audit-logged.',
+      );
+    } else {
+      parts.push('Please investigate and attempt recovery:');
+      parts.push(`1. If the error is transient (network, rate limit): send_to_agent(agent="${agentId}", intent="QUESTION", payload="...") to poke them.`);
+      parts.push(`2. If the error is context corruption: reset_session(agent_id="${agentId}") to clear their context.`);
+      parts.push('3. If the error is a config issue: send an iMessage alert to the user via imessage_send.');
+    }
 
     const content = parts.join('\n');
 
@@ -809,6 +907,132 @@ async function notifyHealerOfRecovery(agentId: string): Promise<void> {
     logger.debug('Failed to notify healer of recovery (non-fatal)', {
       agentId,
       error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// T82c (ANSWER-ANYWAY) — THE SESSION-RESET GUARD.
+//
+// OWNER RULING, VERBATIM INTENT: the Healer KEEPS session reset — "We aren't taking that
+// away" — it just can't be the first trigger pulled when compaction could have worked. For
+// size-class injuries (declared-patience exhaustions): compaction-first; session reset ONLY
+// when (a) compact-and-redial already failed on >=2 distinct turns, (b) context corruption is
+// diagnosed, or (c) the owner explicitly asked. Non-size injuries: byte-identical behavior.
+// The reset TOOL itself is untouched — this is a MECHANICAL guard `agent/tools/cat/session.ts`'s
+// `reset_session` handler consults before it does anything, not a change to what reset DOES
+// once it is permitted to fire.
+//
+// Reads the target's RECENT injury class off `agents.last_error` — the same persisted STRING
+// every other reader in this file treats as authoritative (see `classifyError`'s own header):
+// a genuinely recovered agent has this column cleared by `onAgentRecovered` (`clearAgentLastError`
+// above), so a stale injury from days ago cannot trip this guard.
+// ════════════════════════════════════════════════════════════════════════════
+
+export interface SessionResetGuardArgs {
+  /** T82c criterion (b): pass 'corruption' (or any string containing it) when the caller has
+   *  diagnosed corrupted context on the target. Bypasses the count. Audit-logged. */
+  reason?: string | null;
+  /** T82c criterion (c): true ONLY when relaying an explicit owner instruction to reset this
+   *  agent right now. Bypasses the count. Audit-logged. Never inferred, only set. */
+  ownerRequested?: boolean;
+}
+
+export interface SessionResetGuardResult {
+  allowed: boolean;
+  /** Present only when allowed=false — the decision-moment text `reset_session` returns to
+   *  its caller, naming what to do instead and when reset becomes permitted. */
+  refusalText?: string;
+}
+
+/**
+ * Evaluate whether `reset_session` may proceed against `targetAgentId`. Called by
+ * `agent/tools/cat/session.ts` before ANY side effect (archive, boundary write, reorient).
+ *
+ * Non-size injuries (or no recent injury at all) return `{ allowed: true }` immediately —
+ * this is the CONTROL case the T82c tests hold to byte-identical behavior.
+ */
+export function evaluateSessionResetGuard(
+  targetAgentId: string,
+  args: SessionResetGuardArgs,
+): SessionResetGuardResult {
+  try {
+    const db = getDb();
+    const row = db.prepare('SELECT name, last_error FROM agents WHERE id = ?')
+      .get(targetAgentId) as { name: string; last_error: string | null } | undefined;
+    const lastError = row?.last_error ?? null;
+    const errorClass = classifyError(lastError);
+    if (errorClass !== 'declared_patience_exceeded') {
+      return { allowed: true }; // non-size injury, or no recent injury: unchanged (control)
+    }
+    const label = row?.name ?? targetAgentId;
+
+    // (b) corruption diagnosed — bypasses the count, audit-logged.
+    if (args.reason && /corrupt/i.test(args.reason)) {
+      auditSessionResetBypass(targetAgentId, 'corruption', args.reason);
+      return { allowed: true };
+    }
+    // (c) owner explicitly asked — bypasses the count, audit-logged.
+    if (args.ownerRequested === true) {
+      auditSessionResetBypass(targetAgentId, 'owner_requested', null);
+      return { allowed: true };
+    }
+    // (a) compact-and-redial already failed on >=2 distinct turns for this agent.
+    const failCount = countDeclaredPatienceHonestFails(targetAgentId);
+    if (failCount >= 2) {
+      return { allowed: true };
+    }
+
+    return {
+      allowed: false,
+      refusalText:
+        `Session reset refused: ${label}'s most recent injury is a declared-patience exhaustion ` +
+        `(the model could not be served fast enough for this request), not corrupted context. ` +
+        `Compaction comes first for this injury class — the engine already runs one forced ` +
+        `compaction + redial automatically inside a failed turn. Wake ${label} again with ` +
+        `send_to_agent(agent="${targetAgentId}", intent="QUESTION", payload="...") and let that ` +
+        `run before reaching for a reset. reset_session becomes available here once compact-and-` +
+        `redial has failed on 2 distinct turns for this agent (currently ${failCount}); if you've ` +
+        `diagnosed context corruption, call reset_session again with reason="corruption"; if the ` +
+        `owner explicitly asked for a reset, call it with owner_requested=true. Both of those are ` +
+        `audit-logged.`,
+    };
+  } catch (err) {
+    // Fail OPEN, matching every other best-effort guard in this file (healer damping,
+    // provider-pattern detection): this guard's own failure must never brick the one
+    // recovery tool the Healer has for a genuinely wedged agent — R2 ("we aren't taking that
+    // away") applies to the guard breaking too, not just to the policy it enforces.
+    logger.warn('Session-reset guard failed open (treating as allowed)', {
+      targetAgentId, error: err instanceof Error ? err.message : String(err),
+    });
+    return { allowed: true };
+  }
+}
+
+/**
+ * T82c criteria (b)/(c): both bypasses are AUDIT-LOGGED, per this task's own instruction, into
+ * `healer_actions` — the existing table every other Healer-initiated action already lands in
+ * (see `healer-agent.ts`'s `runAutoFixes` writes and `appendToHealerLog`'s read of it).
+ * `diagnostic_id` is NULL: this action is not tied to a diagnostic cycle.
+ */
+function auditSessionResetBypass(
+  targetAgentId: string,
+  kind: 'corruption' | 'owner_requested',
+  detail: string | null,
+): void {
+  try {
+    getDb().prepare(`
+      INSERT INTO healer_actions (id, diagnostic_id, category, description, agent_id, action_taken, result, created_at)
+      VALUES (?, NULL, 'session_reset_guard', ?, ?, 'reset_permitted_bypass', ?, datetime('now'))
+    `).run(
+      uuidv4(),
+      `T82c size-class session-reset guard bypassed (${kind})${detail ? `: ${detail}` : ''}`,
+      targetAgentId,
+      kind,
+    );
+  } catch (err) {
+    logger.warn('Failed to audit-log a session-reset guard bypass', {
+      targetAgentId, kind, error: err instanceof Error ? err.message : String(err),
     });
   }
 }

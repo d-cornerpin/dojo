@@ -30,7 +30,7 @@ import { activeRuns } from '../../shared-state.js';
 import { archiveAgentConversation } from '../../../vault/archive.js';
 import { buildSessionResetMessage } from '../../session-reset.js';
 import { getTunnelStatus, startTunnel, stopTunnel } from '../../../services/tunnel.js';
-import { onAgentRecovered } from '../../../healer/injury-recovery.js';
+import { onAgentRecovered, evaluateSessionResetGuard } from '../../../healer/injury-recovery.js';
 import { rehomeUnclaimedEngineEvents } from '../../v2/counterparty.js';
 import { setPresence, getPresence } from '../../../services/presence.js';
 import type { ToolHandlerMap } from '../handler.js';
@@ -169,6 +169,28 @@ export const sessionHandlers: ToolHandlerMap = {
       // (the boundary + reorient take hold as its current turn winds down).
       if (resolvedId !== agentId && activeRuns.has(resolvedId)) {
         content = `Agent "${agent.name}" is in the middle of a live turn right now. Resetting it would cut its work off mid-thought and leak that work past the new-session divider. Wait for it to go idle, then reset.`;
+        isError = true;
+        return { content, isError };
+      }
+
+      // T82c (ANSWER-ANYWAY) — OWNER RULING, VERBATIM INTENT: the Healer KEEPS session
+      // reset — "We aren't taking that away" — it just can't be the first trigger pulled
+      // when compaction could have worked. For a size-class injury (a declared-patience
+      // exhaustion) this refuses unless compact-and-redial has already failed on 2 distinct
+      // turns for this agent, context corruption is diagnosed (reason="corruption"), or the
+      // owner explicitly asked (owner_requested=true) — see `evaluateSessionResetGuard`'s own
+      // doc in `healer/injury-recovery.ts` for the durable signal each criterion reads and
+      // why both bypasses are audit-logged there. Non-size injuries (or no recent injury at
+      // all) return allowed:true immediately: byte-identical to pre-T82c behavior. The reset
+      // MECHANISM below (archive, boundary write, reorient) is untouched — this only gates
+      // whether it runs.
+      const resetGuard = evaluateSessionResetGuard(resolvedId, {
+        reason: typeof args.reason === 'string' ? args.reason : null,
+        ownerRequested: args.owner_requested === true,
+      });
+      if (!resetGuard.allowed) {
+        content = resetGuard.refusalText
+          ?? 'Session reset refused: compaction comes first for this injury class.';
         isError = true;
         return { content, isError };
       }
