@@ -41,7 +41,6 @@ import { isBareNoReplySentinel } from '@dojo/shared';
 import { queueEmbedding } from '../../../../memory/embeddings.js';
 import { redactHandedCredentials } from '../../../../credentials/secret-fields.js';
 import type { AssembledContext } from '../../../../memory/assembler.js';
-import { estimateTokens } from '../../../../memory/budget.js';
 import type { AssemblyContext } from '../../../../prompt/registry/types.js';
 import type { PromptTurnContext } from '../../../../prompt/assembler.js';
 import type { TurnContext } from '../../../turn-context.js';
@@ -49,6 +48,7 @@ import type { TurnCounterparty } from '../../counterparty.js';
 import { selectModel } from './model-selection.js';
 import { injectAndRecord } from './pre-call-injections.js';
 import { callWithRetryAndFallback } from './model-call.js';
+import { reassembleForFitIfNeeded } from './reassemble-for-fit.js';
 import type { AgentStatus } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
 
@@ -133,53 +133,17 @@ export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext)
   //
   // The fix is NOT a second trimmer. `assembleContext` is already provider-aware (this
   // task's first commit); the gap was that it never got CALLED with the model whose
-  // ceiling matters. So: once the real model is known, re-derive the SAME admission
-  // budget `memory/budget.ts` already computes for it, and if the array this turn
-  // already built exceeds it, ask the ONE assembler to build it again — this time
-  // against the truth.
-  //
-  // Cheap short-circuit: `getProviderCeilingTokens` is a single indexed row read, and a
-  // provider that has declared neither patience nor throughput (every fast/cloud pick,
-  // and the whole world before this task) returns `null` immediately — nothing else in
-  // this block runs, so a pinned agent or a cloud auto-route pays nothing extra. This
-  // is why `estimateTokens`/`contextWindowPolicy`/`assembleContext` are all deferred
-  // behind that one check rather than imported at module scope: the common path never
-  // even loads them.
-  {
-    const { getProviderCeilingTokens, getContextWindow, getModelOutputCap } = await import('../../../model.js');
-    const providerCeiling = getProviderCeilingTokens(selection.modelId);
-    if (providerCeiling !== null) {
-      const [{ contextWindowPolicy }, { measureAgentToolPayloadTokens }] = await Promise.all([
-        import('../../../../memory/budget.js'),
-        import('../../../../tools/tool-docs.js'),
-      ]);
-      const assembledEstimate = estimateTokens(systemPrompt) + messages.reduce((sum, m) => {
-        const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
-        return sum + estimateTokens(content);
-      }, 0);
-      const policy = contextWindowPolicy(getContextWindow(selection.modelId), {
-        toolPayloadTokens: await measureAgentToolPayloadTokens(agentId),
-        maxOutputTokens: getModelOutputCap(selection.modelId),
-        providerCeilingTokens: providerCeiling,
-      });
-      if (assembledEstimate > policy.assemblyBudgetTokens) {
-        logger.warn('v2 auto-router: picked model was not the one this assembly was sized for; re-assembling against its provider-aware budget', {
-          agentId, modelId: selection.modelId, assembledEstimate, budget: policy.assemblyBudgetTokens,
-        }, agentId);
-        const { assembleContext } = await import('../../../../memory/assembler.js');
-        const reassembled = await assembleContext(agentId, selection.modelId, assemblyTurnContext);
-        // The tail this iteration's OWN `assemble` step appended past the cacheable
-        // prefix (technique hints, the multistep scaffold, the delegation hint, the
-        // drained steer) is preserved verbatim — re-running THOSE would double-fire
-        // their side effects (one-shot flags, steer delivery marks). Only the
-        // cacheable prefix is rebuilt, against the model that will actually be dialed.
-        const tail = messages.slice(volatileFrom ?? messages.length);
-        messages = [...reassembled.messages, ...tail];
-        systemPrompt = reassembled.systemPrompt;
-        ctx = reassembled;
-        volatileFrom = reassembled.messages.length;
-      }
-    }
+  // ceiling matters. So: once the real model is known, ask `reassembleForFitIfNeeded`
+  // (shared with `model-call.ts`'s fallback ladder — the SAME hole one layer deeper,
+  // round 2) whether the array this turn already built still fits, and use its answer.
+  const reassembly = await reassembleForFitIfNeeded({
+    agentId, modelId: selection.modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext,
+  });
+  if (reassembly) {
+    messages = reassembly.messages;
+    systemPrompt = reassembly.systemPrompt;
+    ctx = reassembly.assembled;
+    volatileFrom = reassembly.volatileFrom;
   }
 
   const injected = await injectAndRecord(state, {
@@ -192,6 +156,7 @@ export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext)
     agentId, turnCtx, turnNumber, messageId, messages, systemPrompt,
     useTools: injected.useTools, isAutoRouted, isA2ATurn, excludedModels,
     revertTriggerStampOnAbort, setAgentStatus, assembled: ctx, routerTier, counterparty,
+    volatileFrom, assemblyTurnContext,
   });
   if (called.abandoned) return called.abandoned as CallLLMOutcome;
   state = called.state;

@@ -11,6 +11,9 @@ import { getDailySpend } from '../costs/tracker.js';
 import { checkBudget } from '../costs/budget.js';
 import { getModelCapabilities } from '../services/capabilities.js';
 import type { DimensionScore } from './types.js';
+// T82a fix wave (round 2) — a LEAF import, deliberately not `agent/model.js`: see
+// `providerCeilingTokensFor` below for why the query is mirrored here instead.
+import { resolveStreamPatience, resolveDoomCeiling, providerAwareBudgetTokens } from '../agent/stream-patience.js';
 
 const logger = createLogger('selector');
 
@@ -75,11 +78,81 @@ function estimateRequestCost(model: TierModelRow): number {
   return inputCost + outputCost;
 }
 
+// ════════════════════════════════════════════════════════════════════════════════════════
+// T82a FIX WAVE (round 2) — THE FALLBACK PICK LEARNS THE BOX TOO.
+// ════════════════════════════════════════════════════════════════════════════════════════
+//
+// Round 1 taught `agent/v2/steps/call-llm/index.ts` to re-check the ROUTER'S INITIAL pick
+// against the array it inherited. The same hole exists one layer deeper: when that pick's
+// dial FAILS and `model-call.ts` asks THIS function for a fallback, the fallback candidate
+// is filtered on capability/rate-limit/budget and nothing else — a tier mixing cloud rows
+// (no ceiling) with a declared-local row (600s/180tps) can hand back the local row for the
+// SAME oversized array, unchecked. This is that same gap, reachable from a second door.
+//
+// `inputEstimate` is OPTIONAL and every existing call site omits it — that is the R6
+// byte-preservation control (every caller before this task, unchanged) AND, separately, the
+// `selector-latency.test.ts` sub-2ms guard: the fit check below never runs, never queries
+// the two ceiling columns, when the caller doesn't supply an estimate.
+//
+// WHY A LOCAL, MIRRORED QUERY AND NOT `agent/model.js`'s `getProviderCeilingTokens`: the
+// EXACT precedent `agent/v2/steps/pre-call-gates/turn-budget.ts`'s
+// `readProviderUnattendedBudgetMinutes` states for the identical situation — `agent/model.ts`
+// carries the Anthropic/OpenAI SDKs and undici, and this selector has never needed any of
+// that for the sake of two already-declared columns. It also keeps `selectModel` SYNCHRONOUS:
+// `getProviderCeilingTokens` only ever does a synchronous indexed read, so mirroring it here
+// costs nothing async and every one of this function's three existing callers, none of which
+// await it today, keeps working unchanged.
+function providerCeilingTokensFor(modelId: string): number | null {
+  try {
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT p.first_chunk_timeout_ms AS first_chunk_timeout_ms, p.prefill_tokens_per_sec AS prefill_tokens_per_sec
+      FROM models m JOIN providers p ON p.id = m.provider_id
+      WHERE m.id = ?
+    `).get(modelId) as { first_chunk_timeout_ms: number | null; prefill_tokens_per_sec: number | null } | undefined;
+    if (!row) return null;
+    const patience = resolveStreamPatience({ firstChunkTimeoutMs: row.first_chunk_timeout_ms, streamIdleTimeoutMs: null });
+    // R6, mirrored from `getProviderCeilingTokens`: a declared throughput alone, with no
+    // declared patience, is not "this provider declared both halves" — leave it unconstrained.
+    if (!patience.firstChunkDeclared) return null;
+    return resolveDoomCeiling(patience.firstChunkMs, row.prefill_tokens_per_sec);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether `modelId` can serve a prompt of `inputEstimate` tokens at all, per its own
+ * declared ceiling. `null` ceiling (undeclared, or only one half declared) means
+ * unconstrained — every candidate before T82a, and every fast/cloud one since.
+ *
+ * `providerAwareBudgetTokens(Infinity, ceiling)` rather than a bare `floor(ceiling * 0.5)`:
+ * the arithmetic is `agent/stream-patience.ts`'s ONE named constant
+ * (`PROVIDER_CEILING_SAFETY`), reused rather than re-derived a second time with its own
+ * literal `0.5` a different module could tune out of step with the first. `Infinity` stands
+ * in for "this candidate's own admission budget", which this synchronous, per-candidate
+ * filter cannot afford to compute (that needs an async tool-payload measurement per
+ * candidate) — the ceiling term is the one that actually binds for a declared-slow box, which
+ * is the whole shape of the incident this filter exists to catch.
+ */
+function fitsProviderCeiling(modelId: string, inputEstimate: number): boolean {
+  const ceiling = providerCeilingTokensFor(modelId);
+  if (ceiling === null) return true;
+  return inputEstimate <= providerAwareBudgetTokens(Number.POSITIVE_INFINITY, ceiling);
+}
+
 export function selectModel(
   tier: string | null | undefined,
   agentId: string,
   excludeModels?: string[],
   requireCapabilities?: string[],
+  /**
+   * T82a fix wave (round 2): the current assembled input, in tokens. When present, a
+   * candidate whose declared ceiling cannot cover it is excluded — mirroring the existing
+   * rate-limit/budget filters, one more predicate in the same walk. `undefined` (every
+   * caller before this task) skips the check entirely: R6's byte-preservation control.
+   */
+  inputEstimate?: number,
 ): SelectedModel | null {
   const excluded = new Set(excludeModels ?? []);
   const required = requireCapabilities ?? [];
@@ -134,6 +207,17 @@ export function selectModel(
         logger.warn('Model exceeds budget, skipping', {
           modelId: model.model_id,
           reason: budgetCheck.reason,
+        }, agentId);
+        continue;
+      }
+
+      // T82a fix wave (round 2): skip a candidate whose own declared ceiling cannot cover
+      // what is already assembled. Mirrors the budget check immediately above — same shape,
+      // same log level, one more predicate a starved selection can be diagnosed from.
+      if (inputEstimate !== undefined && !fitsProviderCeiling(model.model_id, inputEstimate)) {
+        logger.warn('Model cannot fit the already-assembled input within its declared ceiling, skipping', {
+          modelId: model.model_id,
+          inputEstimate,
         }, agentId);
         continue;
       }

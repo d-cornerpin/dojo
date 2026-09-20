@@ -32,6 +32,8 @@ import { AgentError } from '../../../errors.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { TurnCounterparty } from '../../counterparty.js';
 import type { AssembledContext } from '../../../../memory/assembler.js';
+import type { PromptTurnContext } from '../../../../prompt/assembler.js';
+import { reassembleForFitIfNeeded, estimateAssembledArrayTokens } from './reassemble-for-fit.js';
 import type { AgentStatus } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
 
@@ -53,6 +55,14 @@ export interface ModelCallInputs {
   readonly assembled: AssembledContext;
   readonly routerTier: string | null;
   readonly counterparty: TurnCounterparty;
+  /**
+   * T82a fix wave (round 2) — the same two facts `reassembleForFitIfNeeded` needs, now
+   * threaded here too: a same-turn FALLBACK pick (below) can be a declared-slow model just
+   * as easily as the router's initial pick was, and dialing it with the array built for a
+   * DIFFERENT model unchecked is the identical hole one layer deeper.
+   */
+  readonly volatileFrom: number | undefined;
+  readonly assemblyTurnContext: PromptTurnContext;
 }
 
 /** Either the turn is abandoned, or the call produced a result and a (possibly
@@ -66,9 +76,20 @@ export async function callWithRetryAndFallback(
   modelIdIn: string,
   input: ModelCallInputs,
 ): Promise<ModelCallResultOrAbandon> {
-  const { agentId, turnCtx, messageId, messages, systemPrompt, useTools, isAutoRouted, isA2ATurn, excludedModels, revertTriggerStampOnAbort, setAgentStatus, assembled: ctx, routerTier, counterparty } = input;
+  const {
+    agentId, turnCtx, messageId, useTools, isAutoRouted, isA2ATurn, excludedModels,
+    revertTriggerStampOnAbort, setAgentStatus, routerTier, counterparty, assemblyTurnContext,
+  } = input;
   let state = stateIn;
   let modelId = modelIdIn;
+  // Mutable locals: a FALLBACK pick below can be a model the array in hand was never sized
+  // for (the round-1 hole, one layer deeper) — `reassembleForFitIfNeeded` may replace all
+  // four, and every attempt after that point (including this same one, on `continue`) reads
+  // these, never `input`'s originals.
+  let messages = input.messages;
+  let systemPrompt = input.systemPrompt;
+  let ctx = input.assembled;
+  let volatileFrom = input.volatileFrom;
   // ── Call model with retry-and-fallback (matches v1 runtime.ts:1028-1116) ──
   // For auto-routed agents, try up to 3 different models in the tier.
   // For fixed-model agents, throw on first failure.
@@ -296,7 +317,56 @@ export async function callWithRetryAndFallback(
       state = advance(state, { lockedModelId: null, lockedTier: null });
       const { selectModel } = await import('../../../../router/selector.js');
       const fallbackTier = routerTier ?? state.lockedTier ?? 'standard';
-      const fallback = selectModel(fallbackTier, agentId, excludedModels, ['tools']);
+
+      // ══════════════════════════════════════════════════════════════════════════════
+      // T82a FIX WAVE (round 2) — THE FALLBACK PICK RE-CHECKS THE BUDGET TOO.
+      // ══════════════════════════════════════════════════════════════════════════════
+      // The SAME hole round 1 closed on the router's INITIAL pick, one layer deeper: a
+      // tier mixes cloud rows (no declared ceiling) with a declared-slow local row by
+      // design, and until now a fallback pick was filtered on capability/rate-limit/
+      // budget only — nothing stopped it from being handed the SAME oversized array.
+      //
+      // FILTER-FIRST (consolidation-fitting: the selector already filters on budget and
+      // rate-limit; this is one more predicate in the same walk, not a second gate).
+      // `messages`/`systemPrompt` here are whatever is CURRENTLY in hand — round 1's own
+      // re-assembly, or an earlier round-2 rescue this same loop, may already have
+      // resized them for a different model, and the fallback pick must be judged
+      // against that reality, not the turn's original assembly.
+      let fallback = selectModel(
+        fallbackTier, agentId, excludedModels, ['tools'],
+        estimateAssembledArrayTokens(systemPrompt, messages),
+      );
+
+      if (!fallback) {
+        // RESCUE-IF-EMPTIED: the fit filter may have starved a candidate every OTHER
+        // filter would have accepted. Re-running the identical selection WITHOUT an
+        // estimate answers "who is the best candidate ignoring fit" — since every other
+        // predicate is unchanged between the two calls, a candidate that call accepts
+        // and the fit-aware call did not can only have failed on fit. Reuse the ONE
+        // re-assemble helper (round 1's own) rather than a second trimmer.
+        const fitExcluded = selectModel(fallbackTier, agentId, excludedModels, ['tools']);
+        if (fitExcluded) {
+          const reassembly = await reassembleForFitIfNeeded({
+            agentId, modelId: fitExcluded.modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext,
+          });
+          if (reassembly) {
+            messages = reassembly.messages;
+            systemPrompt = reassembly.systemPrompt;
+            ctx = reassembly.assembled;
+            volatileFrom = reassembly.volatileFrom;
+            // Re-run selection with the NEW estimate: the rescue candidate is the most
+            // likely winner, but the smaller re-assembled array may now also fit a
+            // higher-priority candidate the first fit-aware pass had already rejected.
+            fallback = selectModel(
+              fallbackTier, agentId, excludedModels, ['tools'],
+              estimateAssembledArrayTokens(systemPrompt, messages),
+            );
+          }
+        }
+      }
+
+      // Existing fallback-exhausted honest-fail path, unchanged: nothing fits, with or
+      // without the rescue attempt above.
       if (!fallback) {
         logger.error('v2 auto-router: no fallback models available', {
           failedModel: modelId, tier: fallbackTier, excludedModels, attempt,
