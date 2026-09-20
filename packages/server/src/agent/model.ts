@@ -1043,7 +1043,10 @@ async function callOllamaModel(
   // Acquire the Ollama model lock (waits if a different model is in use
   // ON THE SAME PROVIDER, remote Ollama hosts have their own slot pool).
   const lock = getOllamaLock();
-  await lock.acquire(modelInfo.providerId, ollamaModelName);
+  // T81c: `patience.firstChunkMs` is already in hand (line above) — handing it to the lock
+  // costs nothing new and is what lets a request queued behind a same-model call use THAT
+  // call's own declared patience as its wait bound instead of the lock's flat swap timeout.
+  await lock.acquire(modelInfo.providerId, ollamaModelName, patience.firstChunkMs);
 
   const startTime = Date.now();
 

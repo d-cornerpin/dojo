@@ -382,6 +382,13 @@ import {
   // the user's stop is live, which is what stops a stopped run from restarting
   // itself out of its own end-of-run drains.
   queueSelfWake,
+  // T81c (NO-DOOMED-DIALS, census row 21): the retired per-agent preempt cool-down —
+  // added for inbound A2A preempts, which stopped calling `preemptAgentForUrgentMessage`
+  // entirely before this Map ever got a second caller (see the doc on both exports in
+  // `shared-state.ts`). Revived below for the function itself, whose only caller today
+  // (voice barge-in) never had a governor at all.
+  lastA2APreemptAt,
+  A2A_PREEMPT_MIN_INTERVAL_MS,
 } from './shared-state.js';
 
 import { turnBoundary, forceA2ATurn, a2aTurnRetries, MAX_A2A_TURN_RETRIES, lastTurnWasA2A, MAX_DRAIN_STUCK } from './turn-state.js';
@@ -541,10 +548,30 @@ export function clearConsumedOneShotFlags(
  * Use sparingly, every preempt costs whatever in-flight model work was
  * mid-stream. Call it for genuinely urgent traffic only: PM pokes,
  * Healer alerts, direct user messages.
+ *
+ * T81c (NO-DOOMED-DIALS, census row 21) — GPU livelock incident, Leg B: this function used to
+ * carry ZERO governor. Combined with the 500ms queued-wakeup restart (below), a repeated
+ * urgent-preempt signal (a flaky VAD, a reconnect loop) could abort a fresh in-flight call
+ * every ~1s forever — no counter, no backoff, the fastest concretely-provable cold-redial loop
+ * in the census. A per-agent cool-down now bounds it to at most one real abort per window: the
+ * FIRST preempt in a window still fires immediately (voice barge-in must work on the first
+ * press); any MORE within the window are coalesced — the caller is told nothing new happened
+ * because, from the caller's perspective, nothing needs to: the in-flight call this preempt
+ * would have aborted is the SAME call the first preempt already tore down, still unwinding
+ * toward the queued wakeup that will serve everyone waiting.
  */
 export function preemptAgentForUrgentMessage(agentId: string): boolean {
+  const now = Date.now();
+  const lastPreemptAt = lastA2APreemptAt.get(agentId);
+  if (lastPreemptAt !== undefined && now - lastPreemptAt < A2A_PREEMPT_MIN_INTERVAL_MS) {
+    logger.info('Preempt coalesced: within this agent\'s cool-down window, not re-aborting', {
+      agentId, sinceLastPreemptMs: now - lastPreemptAt,
+    }, agentId);
+    return false;
+  }
   const controller = activeAbortControllers.get(agentId);
   if (!controller) return false;
+  lastA2APreemptAt.set(agentId, now);
   preemptedAgents.add(agentId);
   controller.abort();
   activeAbortControllers.delete(agentId);
@@ -565,6 +592,38 @@ export function preemptAgentForUrgentMessage(agentId: string): boolean {
 // all of which enter via handleMessage rather than these gates.
 function isSelfResumeBlockedStatus(status: string | undefined): boolean {
   return status === 'terminated' || status === 'paused' || status === 'error';
+}
+
+/**
+ * T81c (NO-DOOMED-DIALS, census row 22) — GPU livelock incident, Leg B: does `agents.last_error`
+ * say the most recent injury was a declared-patience exhaustion (T81a/T81b's own
+ * `DECLARED_PATIENCE_EXCEEDED_CODE`)?
+ *
+ * Reads `last_error` — the persisted STRING, not a parallel store invented for this task —
+ * because it is the one signal that survives exactly the gap `isSelfResumeBlockedStatus` alone
+ * cannot cover: `resetWorkingAgentsToIdleAtBoot`'s crash-recovery sweep (`agent-status.ts`) sets
+ * a `working` row straight to `idle` with a RAW statement that never touches `last_error` (by
+ * design — `setAgentStatus`'s own clear-on-idle default is what every OTHER idle transition
+ * goes through, and a boot sweep for rows no process can still be running has no turn context to
+ * ask). A server that crashes mid-retry, after a declared-patience injury already wrote
+ * `last_error` and before the agent ever got back to a clean `idle`, boots with status='idle'
+ * (unblocked) and a stale diagnostic that still names the un-finishable request — exactly the
+ * shape `isSelfResumeBlockedStatus`'s status-only check cannot see, and the restart boundary
+ * this whole census is about.
+ *
+ * Two phrases, matching `healer/injury-recovery.ts`'s own rehydrate classifier: a mid-flight
+ * watchdog abort (`agent/model.ts`'s `STREAM_FIRST_CHUNK_TIMEOUT_ERROR`) and a T81b pre-dial
+ * refusal (`agent/model.ts`'s `PRE_DIAL_REFUSAL_PHRASE`) both carry `DECLARED_PATIENCE_EXCEEDED_CODE`,
+ * but only the persisted MESSAGE survives to this reader — copied as literals rather than
+ * imported, same reasoning as that file's own header: this reader holds a STRING and nothing
+ * else.
+ */
+function lastTurnEndedOnDeclaredPatience(agentId: string): boolean {
+  const row = getDb()
+    .prepare('SELECT last_error FROM agents WHERE id = ?')
+    .get(agentId) as { last_error?: string | null } | undefined;
+  const lastError = (row?.last_error ?? '').toLowerCase();
+  return lastError.includes('model first-chunk timeout') || lastError.includes('refused before any network dial');
 }
 
 class AgentRuntime {
@@ -939,6 +998,24 @@ class AgentRuntime {
         turnBoundary.delete(agentId);
         // Use a short delay to let any in-flight DB writes finish
         setTimeout(() => {
+          // T81c (NO-DOOMED-DIALS, census row 22) — checked FIRST, before the status read
+          // below: consult WHY the prior turn ended, not just what status it left behind. A
+          // declared-patience exhaustion is a cold-redial of an identical un-finishable request
+          // no matter what status the row currently carries (see `lastTurnEndedOnDeclaredPatience`'s
+          // own doc for the boot-sweep gap `isSelfResumeBlockedStatus` alone cannot close). T81a's
+          // own injury path already told the human (a persisted system note + Healer dispatch) —
+          // duplicating that note here would just be noise, so this restart ONLY declines. The
+          // wake is re-queued through `queueSelfWake` (never a raw `pendingWakeups.add` — UX-REPAIR
+          // T37 pins runtime.ts at exactly one direct add, the busy-path arrival) so a live user
+          // stop is still honoured and a later clean turn (which clears `last_error`) lets a
+          // future pass fire it normally. A genuinely NEW human message is unaffected either way —
+          // it arrives through `handleMessage`'s own top-of-function door, which this timer never
+          // gates.
+          if (lastTurnEndedOnDeclaredPatience(agentId)) {
+            queueSelfWake(agentId, 'declared-patience-decline-requeue');
+            logger.info('Queued wakeup declined: the prior turn ended on a declared-patience exhaustion, not auto-redialing the identical request', { agentId }, agentId);
+            return;
+          }
           // Skip the wakeup if the agent has been terminated since the
           // wakeup was queued. Without this guard, an agent that called
           // complete_task could be resurrected by a wakeup queued in the

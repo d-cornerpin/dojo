@@ -81,11 +81,22 @@ export const backgroundDrains = new Set<string>();
 // users got zero visibility into compaction even on long single-task flows.
 export const lastCompactionDividerAt = new Map<string, number>();
 
-// v2.5.38 — per-agent timestamp of the most recent inbound A2A preempt.
-// Used to throttle preempts so a chatty sender can't interrupt a busy
-// receiver more than once every A2A_PREEMPT_MIN_INTERVAL_MS. Subsequent
-// inbound A2As within the window queue normally (existing handleMessage
-// behavior — added to pendingWakeups, fires after current turn ends).
+// v2.5.38 — per-agent timestamp of the most recent forced preempt. Originally added so a
+// chatty inbound A2A sender couldn't interrupt a busy receiver more than once every
+// A2A_PREEMPT_MIN_INTERVAL_MS — but `chat.ts` and `a2a-transport.ts` both stopped calling
+// `preemptAgentForUrgentMessage` shortly after (the "duplicate-work root fix": preempting a
+// mid-flight turn and letting the queued wakeup cold-redial it caused duplicate side effects),
+// leaving this Map with zero callers.
+//
+// T81c (NO-DOOMED-DIALS, census row 21) — GPU livelock incident, Leg B: revived for the
+// function itself. `preemptAgentForUrgentMessage`'s one live caller (voice barge-in) had never
+// had ANY governor, and combined with the 500ms queued-wakeup restart in `runtime.ts`, a
+// repeated preempt signal could abort a fresh in-flight call every ~1s with no counter and no
+// backoff — the fastest concretely-provable cold-redial loop the census found. The name and
+// the value are unchanged from the A2A-era original on purpose: the SHAPE this task was told
+// to reuse (`shared-state.ts:90`) is this exact pair, not a re-derivation of it, and every
+// future caller of `preemptAgentForUrgentMessage` shares this ONE per-agent cool-down rather
+// than inventing its own.
 export const lastA2APreemptAt = new Map<string, number>();
 export const A2A_PREEMPT_MIN_INTERVAL_MS = 30_000;
 
