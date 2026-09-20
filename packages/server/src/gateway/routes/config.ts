@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { getDb } from '../../db/connection.js';
 import { getProviderCredential, setProviderCredential, clearSecretsCache, getSearchApiKey, getSearchProvider, setSearchConfig } from '../../config/loader.js';
 import { clearClientCache, resolveOpenAIBaseUrl, THINKING_OUTPUT_FLOOR_TOKENS } from '../../agent/model.js';
-import { CreateProviderSchema, EditProviderSchema, EnableModelsSchema, ProviderPatienceSchema, ProviderUnattendedBudgetSchema } from '../../config/schema.js';
+import { CreateProviderSchema, EditProviderSchema, EnableModelsSchema, ProviderPatienceSchema, ProviderUnattendedBudgetSchema, ProviderPrefillThroughputSchema } from '../../config/schema.js';
 import { createLogger } from '../../logger.js';
 import { DEFAULT_SOUL_MD as DEFAULT_SOUL, DEFAULT_USER_MD as DEFAULT_USER } from '../../prompt/templates.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
@@ -484,16 +484,16 @@ configRouter.post('/providers', async (c) => {
     return c.json({ ok: false, error: parsed.error.issues.map(i => i.message).join(', ') }, 400);
   }
 
-  const { id, name, type, baseUrl, authType, credential, behavesLike, firstChunkTimeoutMs, streamIdleTimeoutMs, unattendedBudgetMinutes } = parsed.data;
+  const { id, name, type, baseUrl, authType, credential, behavesLike, firstChunkTimeoutMs, streamIdleTimeoutMs, unattendedBudgetMinutes, prefillTokensPerSec } = parsed.data;
   const db = getDb();
 
   // If provider already exists, update it instead of erroring
   const existing = db.prepare('SELECT id FROM providers WHERE id = ?').get(id);
   if (existing) {
     db.prepare(`
-      UPDATE providers SET name = ?, type = ?, base_url = ?, auth_type = ?, behaves_like = ?, first_chunk_timeout_ms = ?, stream_idle_timeout_ms = ?, max_unattended_minutes = ?, updated_at = datetime('now')
+      UPDATE providers SET name = ?, type = ?, base_url = ?, auth_type = ?, behaves_like = ?, first_chunk_timeout_ms = ?, stream_idle_timeout_ms = ?, max_unattended_minutes = ?, prefill_tokens_per_sec = ?, updated_at = datetime('now')
       WHERE id = ?
-    `).run(name, type, baseUrl ?? null, authType, behavesLike ?? null, firstChunkTimeoutMs ?? null, streamIdleTimeoutMs ?? null, unattendedBudgetMinutes ?? null, id);
+    `).run(name, type, baseUrl ?? null, authType, behavesLike ?? null, firstChunkTimeoutMs ?? null, streamIdleTimeoutMs ?? null, unattendedBudgetMinutes ?? null, prefillTokensPerSec ?? null, id);
 
     if (credential) {
       setProviderCredential(id, credential, authType as 'api_key' | 'oauth');
@@ -530,10 +530,13 @@ configRouter.post('/providers', async (c) => {
   //
   // T79b: the unattended budget joins the same replace set for the identical reason, and is
   // edited through `PATCH /providers/:id/unattended-budget` for the identical consequence.
+  //
+  // T81b: the prefill throughput joins the same replace set for the identical reason, and is
+  // edited through `PATCH /providers/:id/prefill-throughput` for the identical consequence.
   db.prepare(`
-    INSERT INTO providers (id, name, type, base_url, auth_type, behaves_like, first_chunk_timeout_ms, stream_idle_timeout_ms, max_unattended_minutes, is_validated, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
-  `).run(id, name, type, baseUrl ?? null, authType, behavesLike ?? null, firstChunkTimeoutMs ?? null, streamIdleTimeoutMs ?? null, unattendedBudgetMinutes ?? null);
+    INSERT INTO providers (id, name, type, base_url, auth_type, behaves_like, first_chunk_timeout_ms, stream_idle_timeout_ms, max_unattended_minutes, prefill_tokens_per_sec, is_validated, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+  `).run(id, name, type, baseUrl ?? null, authType, behavesLike ?? null, firstChunkTimeoutMs ?? null, streamIdleTimeoutMs ?? null, unattendedBudgetMinutes ?? null, prefillTokensPerSec ?? null);
 
   // Auto-insert models for Anthropic providers (dynamically fetched, with fallback)
   if (type === 'anthropic') {
@@ -1503,6 +1506,15 @@ configRouter.patch('/providers/:id', async (c) => {
     }, 400);
   }
 
+  // T81b: same reasoning, one door over. `prefillTokensPerSec` has its own narrow PATCH, for
+  // the same reason the two fields above do.
+  if ('prefillTokensPerSec' in raw) {
+    return c.json({
+      ok: false,
+      error: 'prefillTokensPerSec belongs to PATCH /providers/:id/prefill-throughput, which is where this provider\'s declared prefill speed is set',
+    }, 400);
+  }
+
   const parsed = EditProviderSchema.safeParse(body);
   if (!parsed.success) {
     return c.json({ ok: false, error: parsed.error.issues.map(i => i.message).join(', ') }, 400);
@@ -1720,6 +1732,47 @@ configRouter.patch('/providers/:id/unattended-budget', async (c) => {
   // on that agent's very next checkpoint, with nothing to clear.
   const row = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as Record<string, unknown>;
   logger.info('Provider unattended budget updated', { providerId: id, unattendedBudgetMinutes: nextBudget });
+  return c.json({ ok: true, data: rowToProvider(row) });
+});
+
+// PATCH /providers/:id/prefill-throughput — set or clear how many tokens per second this
+// provider's owner says it chews through a prompt at. Body:
+// { prefillTokensPerSec: number | null }. Null clears it back to "undeclared", which turns
+// `resolveDoomCeiling` (and therefore the pre-dial gate it feeds) off entirely for this
+// provider — the byte-preservation default every provider has today.
+//
+// NO-DOOMED-DIALS T81b. Same narrow-door shape as the two doors immediately above it, and for
+// the same reason: the owner's local box is already a configured provider, editing one number
+// should not mean deleting and re-adding it, and a re-POST would full-replace the identity
+// fields. It changes this one column and nothing else.
+configRouter.patch('/providers/:id/prefill-throughput', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => null);
+  const parsed = ProviderPrefillThroughputSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ ok: false, error: parsed.error.issues.map(i => i.message).join(', ') }, 400);
+  }
+
+  const db = getDb();
+  const existing = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  if (!existing) return c.json({ ok: false, error: 'Provider not found' }, 404);
+
+  // Undefined (the body did not name the field) never reaches here — the schema's own
+  // `.refine()` requires it — but the ternary matches the two doors above it exactly, so a
+  // caller reading all three handlers side by side sees one idiom, not three.
+  const nextThroughput = parsed.data.prefillTokensPerSec === undefined
+    ? existing.prefill_tokens_per_sec ?? null
+    : parsed.data.prefillTokensPerSec;
+
+  db.prepare("UPDATE providers SET prefill_tokens_per_sec = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(nextThroughput, id);
+
+  // No client cache to invalidate here, exactly as the unattended-budget door above: nothing
+  // about this column ever shapes an HTTP client or a cached dispatcher. It is read fresh,
+  // straight off the row, at the one place that checks it (`agent/model.ts`'s pre-dial gate,
+  // via `resolveDoomCeiling`) — an edit here takes effect on that provider's very next call.
+  const row = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as Record<string, unknown>;
+  logger.info('Provider prefill throughput updated', { providerId: id, prefillTokensPerSec: nextThroughput });
   return c.json({ ok: true, data: rowToProvider(row) });
 });
 
@@ -2550,6 +2603,9 @@ function rowToProvider(row: Record<string, unknown>): Provider {
     // T79b: read back as stored. A pre-164 row read through an old path has no column, and
     // `?? null` says "declared nothing" rather than inventing a number.
     unattendedBudgetMinutes: typeof row.max_unattended_minutes === 'number' ? row.max_unattended_minutes : null,
+    // T81b: read back as stored. A pre-166 row read through an old path has no column, and
+    // `?? null` says "declared nothing" rather than inventing a number.
+    prefillTokensPerSec: typeof row.prefill_tokens_per_sec === 'number' ? row.prefill_tokens_per_sec : null,
     isValidated: Boolean(row.is_validated),
     validatedAt: row.validated_at as string | null,
     hostRamGb: typeof row.host_ram_gb === 'number' ? row.host_ram_gb : null,

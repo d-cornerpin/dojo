@@ -60,7 +60,7 @@
 
 import type { AgentStatus, WsEvent } from '@dojo/shared';
 import type { getDb } from '../../../../db/connection.js';
-import { recoveryRunStreak } from '../../../shared-state.js';
+import { recoveryRunStreak, doomedPrefillCompactionSpent } from '../../../shared-state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { AgentTurnState, TurnPhase } from '../../state.js';
 import type { TurnCounterparty } from '../../counterparty.js';
@@ -120,6 +120,10 @@ export async function runFinalize(state: AgentTurnState, ctx: FinalizeContext): 
   // a natural exit without further recovery, so any prior recovery
   // attempts are presumed resolved (matches v1 runtime.ts:1404).
   recoveryRunStreak.delete(agentId);
+  // T81b: same reasoning, for the pre-dial doomed-request compaction marker — a clean turn end
+  // means whatever it was guarding against is resolved, so a later, unrelated doomed request
+  // gets its own single compaction attempt rather than being permanently blocked by this one.
+  doomedPrefillCompactionSpent.delete(agentId);
 
   // Set agent back to idle (unless terminated)
   const currentAgent = db.prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as

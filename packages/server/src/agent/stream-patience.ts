@@ -253,3 +253,82 @@ export function resolveTransportTimeouts(patience: StreamPatience): TransportTim
     requestTimeoutMs: Math.max(TRANSPORT_REQUEST_TIMEOUT_DEFAULT_MS, headersNeeded),
   };
 }
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// T81b (NO-DOOMED-DIALS) — CENSUS ROW 37: THE PRE-DIAL SIZE-VS-PATIENCE RECONCILIATION.
+// ════════════════════════════════════════════════════════════════════════════════════════
+//
+// Everything above answers "how long may we wait". Nothing above ever asked the question the
+// GPU livelock incident needed answered BEFORE the call went out: "given how long we may wait
+// and how fast this box chews through a prompt, can this particular request possibly finish at
+// all?" A provider that has declared its first-chunk patience (163) and now ALSO declares its
+// prefill throughput (migration 166) has said everything needed to answer that — in tokens,
+// which is exactly the unit both transports already estimate for the request about to be sent
+// (`agent/model.ts`'s `finalInputEstimate` / `inputEstimate`).
+//
+// ── THE FLOOR AND CEILING ON WHAT A PROVIDER MAY DECLARE ──
+//
+// Anchored on the owner's own measured box (`T73b`'s header, above: his DS4 runs cold prefill
+// at roughly 200 tok/s) and the incident's own number (180 tok/s) — both comfortably inside
+// [1, 100_000]. FLOOR of 1: below it the declared speed could not process even a one-token
+// prompt inside any legal patience, which is functionally "this box does not work", not a real
+// declaration — a typo (a decimal point, a units slip) lands here and is refused back to
+// "undeclared" (the feature stays off) rather than silently refusing every call the provider
+// will ever receive. CEILING of 100,000: an order of magnitude past any single-stream prefill
+// speed measured on consumer or datacenter hardware, so a value above it is far more likely a
+// units mistake (tokens per MINUTE or per HOUR typed into a tokens-per-SECOND field) than a
+// real benchmark, and honouring it would make the ceiling below effectively infinite — quietly
+// turning the safety feature off while it still looks configured.
+export const PREFILL_THROUGHPUT_MIN_TOK_PER_SEC = 1;
+export const PREFILL_THROUGHPUT_MAX_TOK_PER_SEC = 100_000;
+
+/**
+ * A stored throughput is honoured only when it is COHERENT, the same asymmetry `isCoherent`
+ * documents above: the write door refuses these shapes outright, but the reader must survive a
+ * row the door never approved (a hand-edited database, a restored backup, a writer that does
+ * not exist yet) by treating it as undeclared, not by throwing at estimate time.
+ */
+function isCoherentThroughput(stored: unknown): stored is number {
+  if (typeof stored !== 'number' || !Number.isInteger(stored)) return false;
+  if (stored < PREFILL_THROUGHPUT_MIN_TOK_PER_SEC || stored > PREFILL_THROUGHPUT_MAX_TOK_PER_SEC) return false;
+  return true;
+}
+
+/**
+ * The largest input a declared prefill throughput can chew through inside a declared patience
+ * — the number census row 37 is missing, and the one number `agent/model.ts`'s pre-dial gate
+ * needs. `null` when `prefillTokensPerSec` is undeclared or incoherent: there is no fact to
+ * derive a ceiling FROM, so per P2 there is no bound to enforce, and the gate this feeds is
+ * skipped entirely — every request dials exactly as it does today. This is the byte-preserving
+ * NULL-row control migration 166 promises, expressed as code rather than as a hope.
+ *
+ * ── THE MARGIN, AND WHY IT IS `TRANSPORT_MARGIN_MS` RATHER THAN A NEW NUMBER ──
+ * Census row 37's own fix shape is `estimate / declaredThroughput + margin > declaredPatience`
+ * — refuse when the estimated processing time, PLUS a margin, would not fit inside the
+ * declared bound. Solved for the token ceiling this function returns, that is
+ * `ceiling = (declaredPatienceMs − marginMs) / 1000 × tokensPerSec`: the same slack, spent on
+ * the token side instead of the time side.
+ *
+ * `resolveTransportTimeouts` above already has exactly one constant whose entire job is
+ * "how much slack to leave between two derived time bounds so a call that is genuinely on the
+ * edge does not depend on the arithmetic being exact" — `TRANSPORT_MARGIN_MS`. Minting a SECOND
+ * such number here, sized differently for no reason but that it lives in a different function,
+ * is precisely the "invent a constant" this task's brief refuses. Reusing it is not a claim
+ * that undici's timer-wheel granularity (the reasoning `TRANSPORT_MARGIN_MS` itself documents)
+ * is what is at stake here — it plainly is not. It is a claim that this module has already
+ * decided, once, how much unclaimed time a declared bound should keep in reserve against
+ * ordinary measurement slop, and a second, un-derived margin would only be able to disagree
+ * with the first one by accident.
+ *
+ * Floored at zero: a declared patience no longer than the margin itself leaves no time at all
+ * to spend on tokens, and every positive estimate is doomed — which is the honest answer, not
+ * an edge case to special-case around.
+ */
+export function resolveDoomCeiling(
+  declaredPatienceMs: number,
+  prefillTokensPerSec: number | null | undefined,
+): number | null {
+  if (!isCoherentThroughput(prefillTokensPerSec)) return null;
+  const usableMs = Math.max(0, declaredPatienceMs - TRANSPORT_MARGIN_MS);
+  return Math.floor((usableMs / 1000) * prefillTokensPerSec);
+}

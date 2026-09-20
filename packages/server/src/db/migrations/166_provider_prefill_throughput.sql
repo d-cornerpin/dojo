@@ -1,0 +1,52 @@
+-- 166 (NO-DOOMED-DIALS T81b): A PROVIDER MAY DECLARE HOW FAST IT CHEWS THROUGH A PROMPT.
+--
+-- The GPU livelock incident, 2026-09-18/19: a 110K-token prompt landed on a local box whose
+-- owner had ALREADY declared a 600-second first-chunk patience (migration 163) — a bound that
+-- prompt could never finish inside, on that box, at any prefill speed the box has ever shown.
+-- Nothing before this migration could have known that BEFORE dialing: `agent/model.ts` already
+-- computes a token estimate for the exact request about to go out, on every transport, and
+-- until now nothing was ever compared against it. The call went out, ran the box for minutes,
+-- hit the declared bound, and the engine's own wake machinery cold-re-dialed the identical
+-- un-finishable prompt on a five-second cadence — T81a closed the half of that where the abort
+-- was already correct and the auto-wake still treated it like a dropped connection; this
+-- migration is what makes the FIRST dial refusable (census row 37).
+--
+-- WHY A COLUMN AT ALL. A declared first-chunk patience (163) answers "how long may this
+-- machine think before it speaks"; it says nothing about "how much prompt can it get through
+-- in that time" — that second fact needs a SPEED, and nothing on `providers` declares one.
+-- `agent/stream-patience.ts`'s `resolveDoomCeiling` turns the pair (declared patience, declared
+-- throughput) into the one number row 37 asks for: the largest prompt this box's own owner
+-- says it can possibly finish before the bound it already declared.
+--
+-- WHY ON `providers` AND NOT ON `models` — CITED VERBATIM FROM 163 AND 164, because the
+-- argument does not change here: "Patience is a property of the SERVING MACHINE, not of a
+-- model row: it is set by that box's hardware and its queue, and every model it serves waits
+-- behind the same processor." Prefill speed is the same kind of fact about the same machine,
+-- and it rides the identical `models JOIN providers` read 163 and 164 already pay for — one
+-- more column on a join the engine performs at the estimate site regardless, at zero extra
+-- query cost.
+--
+-- NULL = "no such fact is declared, so there is nothing to refuse against" — THE FEATURE IS
+-- OFF, not "assume a speed". Every existing row is NULL and no backfill is written: nobody has
+-- benchmarked their box's prefill throughput yet, and writing a guessed number into a row whose
+-- owner never measured one would be a claim nobody made — and, because this column (unlike
+-- 163's and 164's) can only ever make MORE requests refuse, never fewer, guessing would be the
+-- wrong kind of claim besides. `resolveDoomCeiling` returns `null` on a NULL (or incoherent)
+-- throughput, and a `null` ceiling means the pre-dial gate is skipped entirely: every existing
+-- provider, and every provider that has not opened this door, dials exactly as it does today.
+--
+-- NO CHECK CONSTRAINT, for the same reason 163 and 164 give it none. The legal range lives in
+-- `agent/stream-patience.ts` as `PREFILL_THROUGHPUT_MIN_TOK_PER_SEC` /
+-- `PREFILL_THROUGHPUT_MAX_TOK_PER_SEC`, read by both the write door and the one reader
+-- (`resolveDoomCeiling`) from that single module. A CHECK here would be a second, staler copy,
+-- and the wrong instrument regardless: the reader must survive a value this schema never
+-- approved (a hand-edited row, a restored backup, a future writer) by treating it as
+-- undeclared, not by trusting a constraint to have held.
+--
+-- NEXT-RELEASE AUDIT NOTE: this is the one schema addition T81b makes.
+-- `providers.prefill_tokens_per_sec` has exactly one reader (`agent/stream-patience.ts`'s
+-- `resolveDoomCeiling`, called from `agent/model.ts` at the pre-dial estimate sites on every
+-- transport — OpenAI-compatible, Anthropic-direct, and the Ollama native path) and two writers
+-- (`POST /config/providers`, `PATCH /config/providers/:id/prefill-throughput`).
+
+ALTER TABLE providers ADD COLUMN prefill_tokens_per_sec INTEGER;

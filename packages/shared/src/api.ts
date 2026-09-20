@@ -57,6 +57,10 @@ export interface CreateProviderRequest {
   // engine hands resumption to the PM. Omitted (the normal case) means the standard 60-minute
   // budget applies; `0` means no cap.
   unattendedBudgetMinutes?: number | null;
+  // T81b — how many tokens per second this box's owner says it chews through a prompt at.
+  // Omitted (the normal case) means throughput is undeclared and the pre-dial doomed-request
+  // gate stays off for this provider.
+  prefillTokensPerSec?: number | null;
 }
 
 // T66b — the edit. Every field optional, and only the ones present are written: the create

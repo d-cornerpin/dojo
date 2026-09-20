@@ -26,10 +26,12 @@ import { recordError, AgentError } from '../errors.js';
 import { hasActiveRateLimitRetry } from '../rate-limit-retry.js';
 import { classifyRecoverableProviderError, classifyPlatformError } from './classifiers/provider.js';
 import { classifyProviderError, classifyProviderErrorText, type ProviderErrorFacts } from '../provider-error.js';
+import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../stream-patience.js';
 import {
   queueSelfWake,
   recoveryRunStreak,
   MAX_INLOOP_RECOVERIES_SAME_INPUTS,
+  doomedPrefillCompactionSpent,
 } from '../shared-state.js';
 import { setAgentStatus, writeAgentLastError } from '../agent-status.js';
 import type { AgentTurnState } from './state.js';
@@ -120,6 +122,24 @@ export async function recoverFromError(
     // and the eventual back-online notice.
     persistAndBroadcastSystemNote(agentId, RATE_LIMIT_RETRY_NOTE);
     return;
+  }
+
+  // 0.5. T81b — a PRE-DIAL doomed-request refusal (census row 37): `agent/model.ts` refused to
+  //      dial at all because the declared patience and declared prefill throughput already say
+  //      this exact prompt cannot finish. Checked structurally (`error.preDialRefusal`), not by
+  //      matching the message, and BEFORE step 1 below: `error.code` here is T81a's own
+  //      `DECLARED_PATIENCE_EXCEEDED_CODE`, which shares nothing with `isContextOverflowError`'s
+  //      vocabulary, but a structural check that runs first can never depend on that staying
+  //      true. See `AgentError.preDialRefusal`'s own doc for why a real watchdog timeout
+  //      (same code, no dial ever refused THIS time — it died mid-flight) must never reach here.
+  if (error instanceof AgentError
+    && error.code === DECLARED_PATIENCE_EXCEEDED_CODE
+    && error.preDialRefusal) {
+    if (await tryPreDialDoomedRefusalRecovery(agentId)) return;
+    // The one compaction attempt is already spent (or compaction could not even run, e.g. the
+    // agent's model is the 'auto' sentinel) — fall through to the ordinary cascade. None of the
+    // steps below recognise this code, so it lands on `recordInjury`: T81a's honest fail, and
+    // still never a dial.
   }
 
   // 1. Context overflow — provider rejected because prompt too big.
@@ -256,6 +276,58 @@ async function tryContextOverflowRecovery(
     return true;
   } catch (recovErr) {
     logger.warn('v2: context overflow recovery attempt failed', {
+      agentId,
+      error: recovErr instanceof Error ? recovErr.message : String(recovErr),
+    }, agentId);
+    return false;
+  }
+}
+
+// ── Step 0.5: T81b — a PRE-DIAL doomed-request refusal ──
+//
+// Deliberately its OWN step, not folded into `tryContextOverflowRecovery` above even though
+// both end in the identical `checkAndCompact(..., { force: true })` call: that step's trigger
+// is a STRING pattern match against provider prose (`isContextOverflowError`); this one is a
+// STRUCTURAL fact the model layer attached before it ever dialed (`AgentError.preDialRefusal`).
+// Sharing a function would mean either step's future edit risks widening what the other one
+// fires on — the exact prose-vs-structure conflation `provider-error.ts`'s own header spends a
+// paragraph warning against.
+//
+// UNLIKE context overflow, this recovery is capped at exactly ONE attempt
+// (`doomedPrefillCompactionSpent`, cleared on the cap being spent or a clean turn finalize —
+// see that set's own doc in `shared-state.ts`). Context overflow has no such cap because each
+// retry is answering a DIFFERENT question the provider just asked ("still too big?" — maybe
+// not, once compaction ran); a pre-dial refusal that recurs after ONE forced compaction is
+// answering the SAME question the same way twice — the box's declared prefill speed and
+// declared patience have not changed, so compacting harder without a different prompt in hand
+// would not change the arithmetic either. Retrying it a second time would be spending a real
+// compaction pass on a call that was never going to reach the wire.
+async function tryPreDialDoomedRefusalRecovery(agentId: string): Promise<boolean> {
+  if (doomedPrefillCompactionSpent.has(agentId)) {
+    // The one attempt already ran and THIS very refusal is the re-estimate that followed it —
+    // still over the ceiling. Clear the marker (a later, unrelated doomed request earns its
+    // own single try) and let the caller fall through to the honest fail.
+    doomedPrefillCompactionSpent.delete(agentId);
+    return false;
+  }
+
+  try {
+    const lastModelRow = getDb()
+      .prepare('SELECT model_id FROM agents WHERE id = ?')
+      .get(agentId) as { model_id: string | null } | undefined;
+    const compactModelId = lastModelRow?.model_id ?? null;
+    if (!compactModelId || compactModelId === 'auto') return false;
+
+    const { checkAndCompact } = await import('../../memory/compaction.js');
+    const { getContextWindow } = await import('../model.js');
+    const cw = getContextWindow(compactModelId);
+    await checkAndCompact(agentId, compactModelId, cw, { force: true });
+    doomedPrefillCompactionSpent.add(agentId);
+    logger.warn('v2: forced compaction after a pre-dial doomed-request refusal (T81b)', { agentId }, agentId);
+    queueSelfWake(agentId, 'recovery-doomed-prefill-compaction');
+    return true;
+  } catch (recovErr) {
+    logger.warn('v2: pre-dial doomed-request compaction attempt failed', {
       agentId,
       error: recovErr instanceof Error ? recovErr.message : String(recovErr),
     }, agentId);

@@ -211,9 +211,27 @@ vi.mock('../../spawner.js', () => ({
 }));
 
 vi.mock('../../errors.js', () => ({
+  // T81b: brought up to date with the real class's fields (`code`, `retryable`, `provider`,
+  // `preDialRefusal`) — this mock previously only stored the raw `options` bag and never
+  // assigned any of them to the instance, so `error.code`/`error.preDialRefusal` (which
+  // `v2/recovery.ts`'s pre-dial-refusal step, and T81a's `onAgentInjured(agentId, message,
+  // code)` call before it, both read) were silently `undefined` for every test in this file.
+  // Real values now, so a mocked `callModel` rejection can exercise those code paths honestly.
   AgentError: class AgentError extends Error {
-    constructor(message: string, public agentId: string, public options?: { code?: string }) {
+    public readonly code: string;
+    public readonly retryable: boolean;
+    public readonly provider: unknown;
+    public readonly preDialRefusal: boolean;
+    constructor(
+      message: string,
+      public agentId: string,
+      public options?: { code?: string; retryable?: boolean; provider?: unknown; preDialRefusal?: boolean },
+    ) {
       super(message);
+      this.code = options?.code ?? 'AGENT_ERROR';
+      this.retryable = options?.retryable ?? false;
+      this.provider = options?.provider ?? null;
+      this.preDialRefusal = options?.preDialRefusal ?? false;
     }
   },
   recordError: (...args: unknown[]) => recordErrorMock(...(args as [string])),
@@ -354,7 +372,9 @@ vi.mock('../steer-queue.js', async () => {
 // hand-rolled engine walk below — the derivation lives in `engine-sources.ts` now.
 import { engineSources, engineText } from './engine-sources.js';
 import { runV2Turn } from '../loop.js';
-import { stoppedAgents, recoveryRunStreak, pendingWakeups, turnContinuationCounts } from '../../shared-state.js';
+import { stoppedAgents, recoveryRunStreak, pendingWakeups, turnContinuationCounts, doomedPrefillCompactionSpent } from '../../shared-state.js';
+import { AgentError } from '../../errors.js';
+import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../../stream-patience.js';
 import { turnContext } from '../../turn-context.js';
 import { recordDelivery } from '../deliveries.js';
 import { runMigrations } from '../../../db/migrations.js';
@@ -483,6 +503,7 @@ beforeEach(() => {
   }));
   stoppedAgents.clear();
   recoveryRunStreak.clear();
+  doomedPrefillCompactionSpent.clear();
   pendingWakeups.clear();
   turnContinuationCounts.clear();
   enqueueSteerSpy.mockClear();
@@ -1471,6 +1492,68 @@ describe('runV2Turn integration', () => {
     // No injury.
     expect(recordErrorMock).not.toHaveBeenCalled();
     expect(onAgentInjuredSpy).not.toHaveBeenCalled();
+  });
+
+  describe('T81b — a PRE-DIAL doomed-request refusal', () => {
+    const preDialRefusal = (): AgentError => new AgentError(
+      "refused before any network dial: ~9999 estimated prompt tokens exceeds the ~100-token "
+      + "ceiling this provider's declared 10 tok/s prefill throughput can cover inside its "
+      + "declared 40000ms first-chunk patience. Compact the conversation to shrink the prompt, "
+      + "or raise this provider's declared patience or prefill throughput.",
+      'primary',
+      { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false, preDialRefusal: true },
+    );
+
+    it('force-compacts ONCE and retries — no injury', async () => {
+      callModelSpy.mockRejectedValue(preDialRefusal());
+
+      await runV2Turn('primary');
+
+      expect(checkAndCompactSpy).toHaveBeenCalledWith(
+        'primary',
+        expect.any(String),
+        expect.any(Number),
+        expect.objectContaining({ force: true }),
+      );
+      expect(pendingWakeups.has('primary')).toBe(true);
+      expect(onAgentInjuredSpy).not.toHaveBeenCalled();
+      expect(recordErrorMock).not.toHaveBeenCalled();
+    });
+
+    it('a SECOND pre-dial refusal (the re-estimate is still over the ceiling) is never compacted twice — honest fail', async () => {
+      callModelSpy.mockRejectedValue(preDialRefusal());
+      await runV2Turn('primary'); // spends the one attempt
+      expect(checkAndCompactSpy).toHaveBeenCalledTimes(1);
+
+      checkAndCompactSpy.mockClear();
+      onAgentInjuredSpy.mockClear();
+      callModelSpy.mockRejectedValue(preDialRefusal());
+      await runV2Turn('primary'); // still doomed after the one compaction — no dial was ever attempted
+
+      expect(checkAndCompactSpy).not.toHaveBeenCalled();
+      expect(onAgentInjuredSpy).toHaveBeenCalledWith(
+        'primary',
+        expect.stringContaining('refused before any network dial'),
+        DECLARED_PATIENCE_EXCEEDED_CODE,
+      );
+    });
+
+    it('CONTROL: the identical code from a genuine watchdog timeout (no pre-dial marker) is never compacted — straight to the honest fail', async () => {
+      // Same `code` as the pre-dial case (T81a's own, never a second one) but no
+      // `preDialRefusal` — a real dial was attempted and died mid-flight, so compacting and
+      // retrying would repeat the exact wall-clock cost that just failed (P3).
+      callModelSpy.mockRejectedValue(new AgentError(
+        'model first-chunk timeout: no data from provider for too long (elapsed 40000ms); '
+        + '~9999 estimated prompt tokens against a declared 40000ms first-chunk patience',
+        'primary',
+        { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false },
+      ));
+
+      await runV2Turn('primary');
+
+      expect(checkAndCompactSpy).not.toHaveBeenCalled();
+      expect(onAgentInjuredSpy).toHaveBeenCalled();
+    });
   });
 
   it('PHASE 6 (v2.3.19): auth_invalid 401 → Tier D lock with plain-English banner + system note', async () => {

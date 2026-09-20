@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { BEHAVES_LIKE_PROFILES } from '../agent/model-contract.js';
-import { STREAM_PATIENCE_MIN_MS, STREAM_PATIENCE_MAX_MS } from '../agent/stream-patience.js';
+import {
+  STREAM_PATIENCE_MIN_MS, STREAM_PATIENCE_MAX_MS,
+  PREFILL_THROUGHPUT_MIN_TOK_PER_SEC, PREFILL_THROUGHPUT_MAX_TOK_PER_SEC,
+} from '../agent/stream-patience.js';
 import { UNATTENDED_MIN_MINUTES, UNATTENDED_MAX_MINUTES, UNCAPPED } from '../agent/unattended-budget.js';
 
 // ── Secrets.yaml Schema ──
@@ -62,6 +65,25 @@ const unattendedBudgetMinutes: z.ZodOptional<z.ZodNullable<z.ZodEffects<z.ZodNum
 
 const unattendedBudgetFields = { unattendedBudgetMinutes };
 
+// ── The declarable prefill throughput (NO-DOOMED-DIALS T81b), shared by both write doors ──
+//
+// Tokens per second — the unit a benchmark reports, and the unit `providers.prefill_tokens_per_sec`
+// (migration 166) stores. Unlike the unattended-budget field above, there is no "0 means no
+// cap" exception here: throughput answers a different question (how FAST, not how LONG), and
+// zero tokens/sec is not a real speed for a machine that answers requests at all — see the
+// migration's own header. Bounds imported from `agent/stream-patience.ts`, the one module
+// `resolveDoomCeiling` also imports them from, so a value that can be stored can always be
+// honoured.
+const prefillTokensPerSec: z.ZodOptional<z.ZodNullable<z.ZodNumber>> =
+  z.number()
+    .int('`prefillTokensPerSec` must be a whole number of tokens per second')
+    .min(PREFILL_THROUGHPUT_MIN_TOK_PER_SEC, `\`prefillTokensPerSec\` must be at least ${PREFILL_THROUGHPUT_MIN_TOK_PER_SEC} token/sec`)
+    .max(PREFILL_THROUGHPUT_MAX_TOK_PER_SEC, `\`prefillTokensPerSec\` must be at most ${PREFILL_THROUGHPUT_MAX_TOK_PER_SEC} tokens/sec`)
+    .nullable()
+    .optional();
+
+const prefillThroughputFields = { prefillTokensPerSec };
+
 // ── Provider Creation Schema ──
 export const CreateProviderSchema = z.object({
   id: z.string().min(1).max(64).regex(/^[a-z0-9_-]+$/, 'ID must be lowercase alphanumeric with hyphens/underscores'),
@@ -82,6 +104,10 @@ export const CreateProviderSchema = z.object({
   // T79b: how long this provider may run a turn's continuation ladder before the engine hands
   // resumption to the PM. See `unattendedBudgetMinutes` above for the bounds and why 0 is legal.
   ...unattendedBudgetFields,
+  // T81b: how fast this box's owner says it chews through a prompt. See `prefillTokensPerSec`
+  // above for the bounds and why (unlike the two fields above it) there is no zero-means-uncapped
+  // exception.
+  ...prefillThroughputFields,
 });
 
 export type CreateProviderInput = z.infer<typeof CreateProviderSchema>;
@@ -117,6 +143,20 @@ export const ProviderUnattendedBudgetSchema = z.object(unattendedBudgetFields).s
   );
 
 export type ProviderUnattendedBudgetInput = z.infer<typeof ProviderUnattendedBudgetSchema>;
+
+// ── Provider Prefill-Throughput Schema (NO-DOOMED-DIALS T81b) ──
+//
+// The same narrow-door shape as the two schemas immediately above, for the same reason: the
+// owner's local box is already a configured provider, and `POST /providers` over an existing
+// id is a full replace that would clear every OTHER identity field an edit form did not happen
+// to re-send. `.strict()` refuses a body carrying anything else.
+export const ProviderPrefillThroughputSchema = z.object(prefillThroughputFields).strict()
+  .refine(
+    b => b.prefillTokensPerSec !== undefined,
+    { message: 'Body must name `prefillTokensPerSec` (a whole number of tokens per second, or null to leave throughput undeclared)' },
+  );
+
+export type ProviderPrefillThroughputInput = z.infer<typeof ProviderPrefillThroughputSchema>;
 
 // ── Provider Edit Schema (T66b) ──
 //

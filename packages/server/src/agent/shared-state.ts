@@ -135,3 +135,15 @@ export const MAX_INLOOP_RECOVERIES_SAME_INPUTS = 2;
 // use MAX_INLOOP_RECOVERIES_SAME_INPUTS instead. Will be removed once
 // all callers migrate.
 export const MAX_CONSECUTIVE_INLOOP_RECOVERIES = 3;
+
+// T81b (NO-DOOMED-DIALS) — which agents have already spent their ONE forced-compaction
+// attempt on a pre-dial doomed-request refusal (`v2/recovery.ts`'s `tryPreDialDoomedRefusalRecovery`).
+//
+// A `Set`, not a count like `recoveryRunStreak` above — there is nothing to count past one.
+// The brief is explicit: compact ONCE and retry; if the re-estimate is STILL over the ceiling,
+// fall straight through to T81a's honest fail, never a second compaction. Cleared the same two
+// ways `recoveryRunStreak` is: the cap being spent (`v2/recovery.ts`, the moment a second
+// refusal arrives) and a clean turn finalize (`v2/steps/finalize/index.ts`) — so a later,
+// unrelated doomed request on the same agent earns its own single try rather than being
+// permanently blocked by one that was already resolved.
+export const doomedPrefillCompactionSpent = new Set<string>();

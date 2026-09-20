@@ -321,10 +321,16 @@ describe('PHASE-6 T1: the ten maps are GONE, not standing beside their replaceme
     expect(declared.sort()).toEqual([...TURN_STATE_KEEPS].sort());
   });
 
-  it('shared-state.ts still declares its twelve, untouched by this task', () => {
+  it('shared-state.ts declares its twelve untouched by THIS task, plus T81b\'s one new cross-turn Set', () => {
+    // T81b (NO-DOOMED-DIALS) added `doomedPrefillCompactionSpent` — a genuinely NEW piece of
+    // ambient per-agent state (mirroring `recoveryRunStreak`'s own shape, already one of the
+    // twelve this clause pins), not a reintroduction of anything PHASE-6 T1's collapse retired.
+    // The count moves to 13; `RETIRED_FROM_TURN_STATE` above is the list this clause actually
+    // guards against creeping back, and it names none of shared-state.ts's twelve or T81b's
+    // thirteenth.
     const src = read('agent/shared-state.ts');
     const declared = [...src.matchAll(/export const (\w+) = new (?:Map|Set)/g)].map((m) => m[1]);
-    expect(declared).toHaveLength(12);
+    expect(declared).toHaveLength(13);
   });
 
   it('the two ambient-state files are PINNED in ratchets.json', () => {

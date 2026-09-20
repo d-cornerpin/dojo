@@ -31,12 +31,30 @@ export class AgentError extends Error {
    * which of those the verdict came from. Present only on errors raised by the model layer.
    */
   public readonly provider: ProviderErrorFacts | null;
+  /**
+   * T81b — set ONLY by `agent/model.ts`'s pre-dial doomed-request gate, never by a watchdog
+   * abort. Both throw the identical `code` (`declared_patience_exceeded`, T81a) — the brief's
+   * own instruction is "do not invent a second code" — so `v2/recovery.ts` needs a SEPARATE
+   * fact to tell "refused before a byte went out" (free to retry: a forced compaction and a
+   * fresh estimate cost nothing a dial did not already cost) apart from "a real dial died at
+   * this same declared bound" (a cold re-dial would repeat the exact wall-clock cost that just
+   * failed — the one thing P3 forbids). A structured field rather than a second message
+   * substring check on purpose: this file's own module header quotes the defect a prose-keyed
+   * decision caused elsewhere in this codebase (`provider-error.ts`), and a decision that
+   * chooses whether to spend a compaction and a retry is exactly load-bearing enough to earn
+   * the same discipline. The refusal's message ALSO carries a distinguishing phrase
+   * (`agent/model.ts`'s `PRE_DIAL_REFUSAL_PHRASE`) for a human reading `agents.last_error`
+   * after this field itself has not survived a process boundary — the same belt-and-suspenders
+   * T81a keeps for its own code/phrase pair.
+   */
+  public readonly preDialRefusal: boolean;
 
   constructor(
     message: string,
     agentId: string,
     options?: {
       retryable?: boolean; code?: string; cause?: Error; provider?: ProviderErrorFacts | null;
+      preDialRefusal?: boolean;
     },
   ) {
     super(message);
@@ -45,6 +63,7 @@ export class AgentError extends Error {
     this.retryable = options?.retryable ?? false;
     this.code = options?.code ?? 'AGENT_ERROR';
     this.provider = options?.provider ?? null;
+    this.preDialRefusal = options?.preDialRefusal ?? false;
     if (options?.cause) {
       this.cause = options.cause;
     }

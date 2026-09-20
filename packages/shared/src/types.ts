@@ -36,6 +36,16 @@ export interface Provider {
   // Legal range otherwise 15 – 1440 minutes, enforced at the write door and again by the
   // reader (`agent/unattended-budget.ts`).
   unattendedBudgetMinutes: number | null;
+  // T81b (NO-DOOMED-DIALS) — how many tokens per second this box's owner says it chews through
+  // a prompt at, as declared on the SERVING MACHINE (same argument as the two fields above:
+  // every model on a provider waits behind the same processor). Null means "declared nothing",
+  // which turns the pre-dial doomed-request gate OFF entirely for this provider — every
+  // request dials exactly as it does today. Paired with `firstChunkTimeoutMs` above,
+  // `agent/stream-patience.ts`'s `resolveDoomCeiling` turns the two into the largest prompt
+  // this box can possibly finish before its own declared patience runs out, and
+  // `agent/model.ts` refuses to dial anything bigger. Legal range 1 – 100,000 tokens/sec,
+  // enforced at the write door and again by the reader.
+  prefillTokensPerSec: number | null;
   isValidated: boolean;
   validatedAt: string | null;
   // User-entered host machine RAM in GB. Only relevant for remote Ollama
