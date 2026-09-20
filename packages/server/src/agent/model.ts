@@ -2525,7 +2525,7 @@ async function callAnthropicSdkModel(
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
 
   // Dynamic import, gracefully fail if SDK not installed
-  const { callAnthropicViaSdk, AgentSdkVisionUnsupportedError } = await import('../providers/anthropic-sdk.js');
+  const { callAnthropicViaSdk, AgentSdkVisionUnsupportedError, AgentSdkPatienceExceededError } = await import('../providers/anthropic-sdk.js');
 
   // Get tools for prompt-based formatting (two-phase loading)
   let toolDefs: ToolDefinition[] = [];
@@ -2545,10 +2545,13 @@ async function callAnthropicSdkModel(
   // This transport has no per-chunk watchdog — `query()`'s async generator gives no per-token
   // hook to bump one (unlike `makeStreamWatchdog`, which the OpenAI-compat and direct-Anthropic
   // paths use), and building that machinery is a bigger change than "honour the stored bound".
-  // That makes its shape match `callOllamaModel`'s raw-fetch transport (T79e) instead: one flat
-  // derived ceiling, no first-chunk/idle split, no code translation on the abort —
+  // That makes its shape match `callOllamaModel`'s raw-fetch transport (T79e) for the CLOCK
+  // itself: one flat derived ceiling, no first-chunk/idle split armed in real time.
   // `resolveTransportTimeouts` already folds both declared bounds into one number for exactly
-  // this reason.
+  // this reason. The CODE the abort carries is a different matter — see the catch block's
+  // `AgentSdkPatienceExceededError` branch below, added in the T81d review-round fix: a synthetic
+  // watchdog-shaped stand-in still reconstructs the first-chunk-vs-idle DECISION (not the live
+  // per-chunk timer) from whether this call ever saw content before it tripped.
   //
   // NULL row — nothing declared, or a declaration the standing transport default already
   // covers — makes `resolveTransportTimeouts` return `null`, `sdkTimeoutMs` stays `null`, and
@@ -2638,6 +2641,51 @@ async function callAnthropicSdkModel(
         retryable: false,
         cause: err,
       });
+    }
+
+    // T81d FIX ROUND (CRITICAL, review round) — OUR OWN DECLARED-PATIENCE ABORT MUST CARRY THE
+    // SAME IDENTITY THE OTHER TWO TRANSPORTS BUILD FROM `streamWasCutByWatchdog`.
+    //
+    // Without this branch, the abort surfaced as a generic `MODEL_CALL_FAILED` at the bottom of
+    // this catch: `provider-error.ts` classified it 'unknown', `v2/recovery.ts`'s `recordInjury`
+    // never set `declaredPatienceHonestFailTurn` (it keys on the CODE, and the code never
+    // arrived), T81c's restart-decline never fired, and the Healer's 5s blind auto-wake
+    // cold-redialled the identical unfinishable prompt — reopening the exact GPU livelock this
+    // whole plan exists to close, through the one transport this task was scoped to protect.
+    //
+    // `AgentSdkPatienceExceededError` is thrown by `callAnthropicViaSdk` ONLY when THIS
+    // process's own timer (armed from `patience`/`sdkTimeoutMs` above) is what fired the abort —
+    // nothing else can trip this transport's `AbortController` today (there is no external
+    // `params.abortSignal` wired into it), so the TYPE itself is the disambiguator
+    // `streamWasCutByWatchdog` gives the other two transports via a shared signal: an external
+    // abort or a genuine SDK failure never reaches this branch, and keeps today's classification
+    // below unchanged.
+    //
+    // The synthetic `StreamWatchdog` stand-in is HONEST, not a hardcoded first-chunk claim:
+    // `firstChunkTimedOut` reads `!err.sawAnyContent`, so a trip that happened after the model
+    // had already started answering correctly falls through `streamTimeoutCode` to the ORDINARY
+    // retryable `STREAM_IDLE_TIMEOUT_CODE` — the same distinction the other two transports make,
+    // not a coarser one invented for this one.
+    if (err instanceof AgentSdkPatienceExceededError) {
+      const syntheticWatchdog: StreamWatchdog = {
+        signal: new AbortController().signal,
+        bump: () => {},
+        contentStarted: () => {},
+        finish: () => {},
+        timedOut: () => true,
+        firstChunkTimedOut: () => !err.sawAnyContent,
+        elapsedMs: () => latencyMs,
+      };
+      const code = streamTimeoutCode(syntheticWatchdog, patience);
+      const declaredMsg = `${streamTimeoutPhrase(syntheticWatchdog, patience)}: no data from provider for too long (elapsed ${latencyMs}ms)${declaredPatienceClause(syntheticWatchdog, patience, sdkInputEstimate)}`;
+      recordProviderError(modelInfo.providerId);
+      logger.warn(`Agent SDK call aborted by declared patience: ${declaredMsg}`, {
+        model: modelInfo.apiModelId, providerId: modelInfo.providerId, timeoutMs: err.timeoutMs,
+      }, agentId);
+      // T81a: a declared-patience exhaustion is never retryable; a genuine mid-stream idle
+      // timeout (code falls to STREAM_IDLE_TIMEOUT_CODE) keeps its ordinary retry — the same
+      // rule the other two transports apply at their own watchdog-cut throw sites.
+      throw new AgentError(declaredMsg, agentId, { code, retryable: code === STREAM_IDLE_TIMEOUT_CODE });
     }
 
     recordProviderError(modelInfo.providerId);

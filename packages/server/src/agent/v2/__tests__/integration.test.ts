@@ -1632,6 +1632,31 @@ describe('runV2Turn integration', () => {
       expect(declaredPatienceHonestFailTurn.get('primary')).toBe(currentTurnNumber('primary'));
     });
 
+    // T81d FIX ROUND (NO-DOOMED-DIALS review, CRITICAL) — the agent-sdk transport
+    // (`agent/model.ts` `callAnthropicSdkModel` / `providers/anthropic-sdk.ts`
+    // `callAnthropicViaSdk`) had NO clock at all until T81d, and the first cut of that task
+    // gave it a timer without the honest-fail IDENTITY: its own derived-patience abort threw a
+    // plain `Error` with no `.code`, which reached this exact `recordInjury` seam classified
+    // 'unknown' — never setting this marker — and reopened the GPU livelock through the one
+    // transport the whole plan exists to protect. The fix round made `callAnthropicSdkModel`
+    // throw the SAME `AgentError` SHAPE (`DECLARED_PATIENCE_EXCEEDED_CODE`, `retryable: false`)
+    // the other two transports already built — this is `callModelSpy` standing in for THAT
+    // transport's real catch-block output (proven for real, driven through `callModel`, in
+    // `agent/__tests__/the-agent-sdk-transport-honours-declared-patience.test.ts` §D), and
+    // proving the downstream reaction is identical regardless of which transport produced it.
+    it('T81d: the agent-sdk transport\'s own declared-patience shape ALSO sets the marker — recordInjury does not care which transport produced the code', async () => {
+      callModelSpy.mockRejectedValue(new AgentError(
+        'model first-chunk timeout: no data from provider for too long (elapsed 640000ms); '
+        + '~10 estimated prompt tokens against a declared 600000ms first-chunk patience',
+        'primary',
+        { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false },
+      ));
+      await runV2Turn('primary');
+
+      expect(onAgentInjuredSpy).toHaveBeenCalled();
+      expect(declaredPatienceHonestFailTurn.get('primary')).toBe(currentTurnNumber('primary'));
+    });
+
     it('a SECOND pre-dial refusal (compaction already spent) reaching the honest fail ALSO sets the marker', async () => {
       callModelSpy.mockRejectedValue(preDialRefusal());
       await runV2Turn('primary'); // spends the one compaction attempt — no injury, no marker yet

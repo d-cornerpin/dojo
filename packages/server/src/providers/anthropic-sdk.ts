@@ -137,6 +137,39 @@ export class AgentSdkVisionUnsupportedError extends Error {
   }
 }
 
+/**
+ * T81d FIX ROUND (NO-DOOMED-DIALS review, CRITICAL) — thrown INSTEAD of a bare SDK abort
+ * error when THIS transport's OWN derived-patience timer is what ended the call.
+ *
+ * Nothing else can abort this transport's `AbortController` today — there is no external
+ * `params.abortSignal` wired into it and no other timeout source — so this TYPE is itself the
+ * disambiguator `streamWasCutByWatchdog` gives the other two transports via a shared signal:
+ * every instance of this class names a genuine declared-patience trip, and nothing else ever
+ * throws it. `sawAnyContent` carries the one fact `agent/model.ts`'s catch needs to rebuild the
+ * same first-chunk-vs-idle distinction the other two transports' real `StreamWatchdog` makes —
+ * whether the model had already started answering before this trip, which decides
+ * `DECLARED_PATIENCE_EXCEEDED_CODE` (never retryable) vs `STREAM_IDLE_TIMEOUT_CODE` (a genuine
+ * mid-stream stall, which keeps its ordinary retry).
+ *
+ * THE DEFECT THIS CLOSES: the first cut of this timer threw a plain, untyped `Error`. Its
+ * message SAID "declared patience" in prose, but nothing downstream reads prose —
+ * `provider-error.ts` classified it 'unknown', `v2/recovery.ts`'s `recordInjury` never set
+ * `declaredPatienceHonestFailTurn` (the code, not the text, is what it keys on), T81c's
+ * restart-decline never fired, and the Healer's 5s blind auto-wake cold-redialled the identical
+ * unfinishable prompt — reopening the exact GPU livelock this whole plan exists to close,
+ * through the one transport this task was scoped to protect.
+ */
+export class AgentSdkPatienceExceededError extends Error {
+  readonly timeoutMs: number;
+  readonly sawAnyContent: boolean;
+  constructor(timeoutMs: number, sawAnyContent: boolean) {
+    super(`Agent SDK call aborted after ${timeoutMs}ms — exceeded this provider's declared patience`);
+    this.name = 'AgentSdkPatienceExceededError';
+    this.timeoutMs = timeoutMs;
+    this.sawAnyContent = sawAnyContent;
+  }
+}
+
 type SdkContentBlock = { type?: string; text?: string; [k: string]: unknown };
 
 /** True when a message's content carries at least one top-level image block. */
@@ -307,6 +340,11 @@ export async function callAnthropicViaSdk(params: {
   let outputTokens = 0;
   let cacheReadTokens: number | undefined;
   let cacheCreationTokens: number | undefined;
+  // T81d FIX ROUND: the one fact `AgentSdkPatienceExceededError` needs to let `model.ts` rebuild
+  // the first-chunk-vs-idle distinction — true the moment GENERATED CONTENT (a text delta) has
+  // arrived, mirroring `makeStreamWatchdog`'s own `contentStarted()` definition exactly ("a text
+  // delta, a reasoning delta, or a tool-call delta" — this transport only ever streams text).
+  let sawAnyContent = false;
 
   logger.info('Calling Anthropic via Agent SDK', {
     model: sdkModel,
@@ -355,6 +393,7 @@ export async function callAnthropicViaSdk(params: {
           for (const block of betaMsg.content) {
             if (block.type === 'text' && block.text) {
               fullResponse += block.text;
+              sawAnyContent = true;
               onChunk?.(block.text);
             }
           }
@@ -373,6 +412,7 @@ export async function callAnthropicViaSdk(params: {
         if (event?.type === 'content_block_delta' && event?.delta?.type === 'text_delta') {
           const text = event.delta.text ?? '';
           fullResponse += text;
+          sawAnyContent = true;
           onChunk?.(text);
         }
       } else if (message.type === 'auth_status') {
@@ -384,17 +424,14 @@ export async function callAnthropicViaSdk(params: {
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // T81d: name OUR abort distinctly. This transport has no `StreamWatchdog` (see the
-    // comment above the timer), so it cannot produce the richer `DECLARED_PATIENCE_EXCEEDED_CODE`
-    // the other two transports throw — but a bare "operation was aborted" from the SDK, with no
-    // mention of why, is exactly the kind of unlabeled error P3 asks every declared-patience
-    // exhaustion to NOT be. Labeling it here costs nothing and is strictly more honest than
-    // rethrowing `err` unchanged.
+    // T81d FIX ROUND: name OUR abort with a TYPE `agent/model.ts`'s catch can structurally
+    // detect, not just a prose message — see `AgentSdkPatienceExceededError`'s own doc comment
+    // for the exact chain a plain `Error` here broke.
     if (timedOutByPatience) {
       logger.error(`Agent SDK call aborted: exceeded this provider's declared patience (${timeoutMs}ms)`, {
-        error: msg, model: sdkModel, timeoutMs,
+        error: msg, model: sdkModel, timeoutMs, sawAnyContent,
       }, agentId);
-      throw new Error(`Agent SDK call aborted after ${timeoutMs}ms — exceeded this provider's declared patience (underlying SDK error: ${msg})`);
+      throw new AgentSdkPatienceExceededError(timeoutMs!, sawAnyContent);
     }
     logger.error('Agent SDK call failed', { error: msg, model: sdkModel }, agentId);
     throw err;

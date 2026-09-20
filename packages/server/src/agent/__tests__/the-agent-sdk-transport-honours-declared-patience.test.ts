@@ -22,11 +22,22 @@
 //        honour, now covering this one too. Mirrors
 //        `a-doomed-request-refuses-before-dialing.test.ts`'s own RED/GREEN/CONTROL shape.
 //
-// This transport has no per-chunk watchdog (query()'s async generator gives no bump() hook),
-// so — like the Ollama raw-fetch transport — one flat derived ceiling stands in for both the
-// first-chunk and idle bounds, with no translated `DECLARED_PATIENCE_EXCEEDED_CODE` (that code
-// is a `StreamWatchdog` concept this transport does not have); the abort is still NAMED,
-// distinctly, so it never reads as a silent hang or an unlabeled network blip.
+// This transport has no per-chunk watchdog (query()'s async generator gives no bump() hook), so
+// — like the Ollama raw-fetch transport — one flat derived ceiling stands in for the LIVE timer
+// (no first-chunk/idle split armed in real time).
+//
+// ── FIX ROUND (CRITICAL, review round) — §D below ──
+// The first cut of this task stopped at "the abort is named" (a plain `Error` with prose
+// mentioning "declared patience") and its own in-code comment claimed the richer
+// `DECLARED_PATIENCE_EXCEEDED_CODE` could not be produced here. Both were wrong, and the
+// reviewer traced the exact chain: a plain `Error` classified 'unknown' in `provider-error.ts`,
+// `recordInjury` never set `declaredPatienceHonestFailTurn` (it keys on the CODE), T81c's
+// restart-decline never fired, and the Healer's 5s blind auto-wake cold-redialled the identical
+// unfinishable prompt — reopening the exact GPU livelock this whole plan exists to close,
+// through the one transport this task was scoped to protect. §D drives the REAL `callModel`
+// dispatch and proves the code now arrives, that `recordInjury`'s downstream reaction still
+// fires for this transport's own error shape, and that a genuine SDK failure (never our own
+// timer) keeps today's classification.
 // ════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -40,14 +51,33 @@ import path from 'node:path';
 // transport built, which is the whole fact under test in §B. ──
 const agentSdk = vi.hoisted(() => ({
   queryCalls: [] as Array<{ prompt: string; options: Record<string, unknown> }>,
-  mode: 'answer' as 'answer' | 'stall',
+  mode: 'answer' as 'answer' | 'stall' | 'stall-after-content' | 'abort-unrelated',
 }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: (args: { prompt: string; options: Record<string, unknown> }) => {
     agentSdk.queryCalls.push(args);
-    if (agentSdk.mode === 'stall') {
+    if (agentSdk.mode === 'abort-unrelated') {
+      // A genuine SDK failure that happens to look like an abort but is NEVER caused by our own
+      // `AbortController`/timer — the whole point of §D's control: nothing else can trip our
+      // controller today (no external `params.abortSignal` is wired into this transport), so
+      // this simulates the one other way an "aborted"-sounding error could reach the catch.
+      return (async function* abortUnrelated() {
+        throw new Error('The operation was aborted.');
+        // eslint-disable-next-line no-unreachable
+        yield undefined as never;
+      })();
+    }
+    if (agentSdk.mode === 'stall' || agentSdk.mode === 'stall-after-content') {
       return (async function* stall() {
+        if (agentSdk.mode === 'stall-after-content') {
+          // The model DID start answering before the trip — proves the synthetic watchdog's
+          // `sawAnyContent` distinction is honest, not a hardcoded first-chunk claim.
+          yield {
+            type: 'assistant',
+            message: { content: [{ type: 'text', text: 'Working on it' }], usage: {} },
+          };
+        }
         await new Promise<void>((resolve, reject) => {
           const controller = args.options.abortController as AbortController | undefined;
           if (!controller) return; // no bound armed: a stall here would hang forever, as today
@@ -103,8 +133,11 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 import { runMigrations } from '../../db/migrations.js';
 import { clearSecretsCache } from '../../config/loader.js';
 import { callModel, clearClientCache, PRE_DIAL_REFUSAL_PHRASE, type ModelCallResult } from '../model.js';
-import { callAnthropicViaSdk } from '../../providers/anthropic-sdk.js';
-import { DECLARED_PATIENCE_EXCEEDED_CODE, resolveStreamPatience, resolveTransportTimeouts } from '../stream-patience.js';
+import { callAnthropicViaSdk, AgentSdkPatienceExceededError } from '../../providers/anthropic-sdk.js';
+import {
+  DECLARED_PATIENCE_EXCEEDED_CODE, STREAM_IDLE_TIMEOUT_CODE,
+  resolveStreamPatience, resolveTransportTimeouts,
+} from '../stream-patience.js';
 import { AgentError } from '../errors.js';
 
 vi.setConfig({ testTimeout: 20_000 });
@@ -140,6 +173,35 @@ const seedAgentSdk = (
     VALUES ('kevin', 'Kevin', 'm-sdk', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
+
+/**
+ * §D drives the REAL `callModel` chain (DB reads, budget check, dynamic tool-doc imports) BEFORE
+ * it ever reaches `callAnthropicViaSdk`'s own `setTimeout` — so the timer this test needs to fire
+ * is not yet SCHEDULED at the instant fake timers take over, and `vi.advanceTimersByTimeAsync`
+ * cannot discover a timer that gets registered only partway through its own run. Stepping in
+ * small increments gives the pending chain a fresh microtask-flush opportunity between each one.
+ *
+ * MEASURED, not guessed: driven with `console.log` instrumentation before this helper existed,
+ * `callModel`'s own pre-dispatch chain (DB reads, `checkBudget`, `sanitizeOrphanToolBlocks`,
+ * `validateAtProviderBoundary`, the dynamic `tools/tool-docs.js` import) consumes roughly
+ * 250,000–300,000ms of ADVANCED fake time on its own — each `await` hop only progresses one
+ * step per `advanceTimersByTimeAsync` call when nothing is yet due to fire — before `query()` is
+ * even reached and the derived-patience timer gets scheduled. `MAX_ADVANCE_MS` below is sized
+ * with a wide margin over "that overhead, plus the largest derived bound this file declares", so
+ * it does not need retuning if either side drifts slightly; the actual bound fired is what §B
+ * independently verifies, not the number this loop advances by.
+ */
+const MAX_ADVANCE_MS = 2_000_000;
+
+async function advanceUntilSettled<T>(promise: Promise<T>, totalMs = MAX_ADVANCE_MS, stepMs = 1_000): Promise<T | unknown> {
+  let settled: { value: T } | { error: unknown } | null = null;
+  promise.then((value) => { settled = { value }; }, (error) => { settled = { error }; });
+  for (let elapsed = 0; elapsed < totalMs && !settled; elapsed += stepMs) {
+    await vi.advanceTimersByTimeAsync(stepMs);
+  }
+  if (!settled) throw new Error(`promise did not settle within ${totalMs}ms of advanced fake time`);
+  return 'error' in settled ? (settled as { error: unknown }).error : (settled as { value: T }).value;
+}
 
 const callAgentSdk = (message: string): Promise<ModelCallResult> => callModel({
   agentId: 'kevin',
@@ -181,7 +243,10 @@ describe('T81d §A — the mechanism: a declared timeoutMs genuinely cuts a stal
       messages: [{ role: 'user', content: 'hi' }], timeoutMs: 50,
     }).catch((e: unknown) => e);
 
-    expect(err, 'a stalled call with a declared bound must reject, not hang').toBeInstanceOf(Error);
+    // A TYPE, not just prose — this is the fact §D's model.ts branch structurally detects.
+    expect(err, 'a stalled call with a declared bound must reject, not hang').toBeInstanceOf(AgentSdkPatienceExceededError);
+    expect((err as AgentSdkPatienceExceededError).timeoutMs).toBe(50);
+    expect((err as AgentSdkPatienceExceededError).sawAnyContent, 'nothing was ever yielded before the trip').toBe(false);
     expect((err as Error).message).toMatch(/aborted after 50ms/i);
     expect((err as Error).message, 'the cut must be NAMED — not a bare unlabeled abort').toMatch(/declared patience/i);
   });
@@ -284,5 +349,61 @@ describe('T81d §C — the pre-dial doomed-request gate now covers the agent-sdk
     const result = await callAgentSdk(LONG_MESSAGE);
     expect(result.content).toBe('It is done.');
     expect(agentSdk.queryCalls).toHaveLength(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════
+// §D — THE FIX ROUND (CRITICAL, review round): the trip carries DECLARED_PATIENCE_EXCEEDED_CODE
+// structurally, all the way up through the REAL `callModel` dispatch — not just as prose on a
+// plain `Error`, which is what the first cut shipped and what reopened the livelock this whole
+// plan exists to close. Fake timers are used here (unlike §A/§B/§C) because proving the CODE
+// arrives at the `callModel` boundary means letting the real, `resolveTransportTimeouts`-derived
+// (300s-floored) `setTimeout` actually fire — there is no way to observe the catch block's
+// branch decision without it firing.
+// ════════════════════════════════════════════════════════════════════════════════════
+describe('T81d §D — FIX ROUND: the trip carries DECLARED_PATIENCE_EXCEEDED_CODE through the real dispatch', () => {
+  it('RED: a mid-generation patience trip through the REAL callModel dispatch carries DECLARED_PATIENCE_EXCEEDED_CODE', async () => {
+    agentSdk.mode = 'stall';
+    seedAgentSdk(600_000, null, null); // declared, no throughput — the pre-dial gate (§C) is a no-op here
+    vi.useFakeTimers();
+    const promise = callAgentSdk(SHORT_MESSAGE);
+    promise.catch(() => {}); // avoid an unhandled-rejection warning while time advances
+    const err = await advanceUntilSettled(promise);
+    vi.useRealTimers();
+
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).code, 'the code must reach callModel\'s boundary, not just the transport\'s own throw').toBe(DECLARED_PATIENCE_EXCEEDED_CODE);
+    expect((err as AgentError).retryable, 'a declared-patience exhaustion is never retryable (P3)').toBe(false);
+  });
+
+  it('a trip AFTER the model had already started answering falls to the ordinary retryable STREAM_IDLE_TIMEOUT_CODE, not the honest-fail one', async () => {
+    // The synthetic watchdog's `firstChunkTimedOut` reads whether THIS call ever saw content —
+    // an honest signal, not a hardcoded "every trip is a first-chunk stall" claim. A stall that
+    // starts only after content began is a genuine mid-stream idle case, which keeps the
+    // ordinary retry every OTHER mid-stream stall gets, on either of the other two transports.
+    agentSdk.mode = 'stall-after-content';
+    seedAgentSdk(600_000, null, null);
+    vi.useFakeTimers();
+    const promise = callAgentSdk(SHORT_MESSAGE);
+    promise.catch(() => {});
+    const err = await advanceUntilSettled(promise);
+    vi.useRealTimers();
+
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).code).toBe(STREAM_IDLE_TIMEOUT_CODE);
+    expect((err as AgentError).retryable, 'a genuine mid-stream idle timeout keeps its ordinary retry').toBe(true);
+  });
+
+  it('CONTROL: an abort NOT caused by our own patience timer (a genuine SDK failure) keeps today\'s classification', async () => {
+    // Nothing external can trip this transport's AbortController today (no `params.abortSignal`
+    // is wired into it) — so the only other way an "aborted"-looking error reaches the catch is
+    // a genuine SDK failure, which is exactly what this proves stays classified as it always was
+    // (`MODEL_CALL_FAILED`), never mistaken for our own declared-patience trip.
+    agentSdk.mode = 'abort-unrelated';
+    seedAgentSdk(600_000, null, null); // patience IS declared — an AbortController is built —
+    const err = await callAgentSdk(SHORT_MESSAGE).catch((e: unknown) => e); // — but never fires
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).code, 'a genuine SDK failure must not be mistaken for our own timer trip').not.toBe(DECLARED_PATIENCE_EXCEEDED_CODE);
+    expect((err as AgentError).code).toBe('MODEL_CALL_FAILED');
   });
 });
