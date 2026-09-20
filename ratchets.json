@@ -4831,6 +4831,27 @@
       "to": 2877,
       "by": "ANSWER-ANYWAY t82 (T82a-d + fix rounds) \u2014 the context system learns the box; the request always gets answered",
       "why": "+2 T82c: reset_session reason/owner_requested args. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/healer/injury-recovery.ts",
+      "from": 1094,
+      "to": 1155,
+      "by": "ANSWER-ANYWAY t82 final fix wave \u2014 the count survives restarts honestly",
+      "why": "+61 t82 fix wave: code-keyed honest-fail recording (C1), LIKE escape, fail-open audit row. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/recovery.ts",
+      "from": 833,
+      "to": 893,
+      "by": "ANSWER-ANYWAY t82 final fix wave \u2014 the count survives restarts honestly",
+      "why": "+60 t82 fix wave: did-compact threading and the two honest wording variants (I2). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1581,
+      "to": 1613,
+      "by": "ANSWER-ANYWAY t82 final fix wave \u2014 the count survives restarts honestly",
+      "why": "+32 t82 fix wave: dry-run ceiling keyed on the turn model (I1). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -4915,7 +4936,7 @@
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 546,
     "packages/server/src/agent/v2/recorded-commitment.ts": 209,
-    "packages/server/src/agent/v2/recovery.ts": 833,
+    "packages/server/src/agent/v2/recovery.ts": 893,
     "packages/server/src/agent/v2/state.ts": 730,
     "packages/server/src/agent/v2/steer-queue.ts": 335,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
@@ -5007,13 +5028,13 @@
     "packages/server/src/healer/approval-routing.ts": 497,
     "packages/server/src/healer/diagnostic.ts": 1067,
     "packages/server/src/healer/healer-agent.ts": 1186,
-    "packages/server/src/healer/injury-recovery.ts": 1094,
+    "packages/server/src/healer/injury-recovery.ts": 1155,
     "packages/server/src/index.ts": 1271,
     "packages/server/src/memory/assembler.ts": 2692,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
     "packages/server/src/memory/budget.ts": 573,
-    "packages/server/src/memory/compaction.ts": 1581,
+    "packages/server/src/memory/compaction.ts": 1613,
     "packages/server/src/memory/deliveries-lane.ts": 257,
     "packages/server/src/memory/lanes.ts": 1194,
     "packages/server/src/memory/message-store.ts": 1153,
