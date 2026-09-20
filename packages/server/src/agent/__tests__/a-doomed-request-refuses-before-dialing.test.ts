@@ -93,7 +93,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 import { runMigrations } from '../../db/migrations.js';
 import { clearSecretsCache, setProviderCredential } from '../../config/loader.js';
 import { callModel, clearClientCache, type ModelCallResult } from '../model.js';
-import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../stream-patience.js';
+import { DECLARED_PATIENCE_EXCEEDED_CODE, STREAM_FIRST_CHUNK_TIMEOUT_MS } from '../stream-patience.js';
 import { PRE_DIAL_REFUSAL_PHRASE } from '../model.js';
 import { AgentError } from '../errors.js';
 
@@ -164,6 +164,28 @@ const seedOpenAICompatible = (prefillTokensPerSec: number | null): void => {
     INSERT INTO providers (id, name, type, base_url, auth_type, first_chunk_timeout_ms, prefill_tokens_per_sec, is_validated, created_at, updated_at)
     VALUES ('local', 'Local DS4', 'openai-compatible', ?, 'none', ?, ?, 1, datetime('now'), datetime('now'))
   `).run(stubUrl, SCALED_PATIENCE_MS, prefillTokensPerSec);
+  db.prepare(`
+    INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
+    VALUES ('m-local', 'local', 'Local DS4', 'local-ds4', '["text","tools"]', 32768, 4096, 1, datetime('now'), datetime('now'))
+  `).run();
+  db.prepare(`
+    INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
+    VALUES ('kevin', 'Kevin', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
+  `).run();
+};
+
+/**
+ * T81 fix wave (final review, Minor M2): a provider that declares ONLY its prefill throughput
+ * and leaves `first_chunk_timeout_ms` NULL — `patience.firstChunkMs` resolves to the STANDING
+ * default, not anything this row declared, which is the exact case `refuseIfDoomed`'s wording
+ * got wrong.
+ */
+const seedOpenAICompatibleUndeclaredFirstChunk = (prefillTokensPerSec: number | null): void => {
+  const db = mockDb.current!;
+  db.prepare(`
+    INSERT INTO providers (id, name, type, base_url, auth_type, prefill_tokens_per_sec, is_validated, created_at, updated_at)
+    VALUES ('local', 'Local DS4', 'openai-compatible', ?, 'none', ?, 1, datetime('now'), datetime('now'))
+  `).run(stubUrl, prefillTokensPerSec);
   db.prepare(`
     INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
     VALUES ('m-local', 'local', 'Local DS4', 'local-ds4', '["text","tools"]', 32768, 4096, 1, datetime('now'), datetime('now'))
@@ -277,5 +299,39 @@ describe('T81b — Anthropic-direct transport: RED, then the fix', () => {
     seedAnthropicDirect(null);
     await callAnthropicDirect(LONG_MESSAGE);
     expect(anthropic.streamCalls).toHaveLength(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════
+// T81 FIX WAVE (NO-DOOMED-DIALS final review, Minor M2) — THE WORDING IS HONEST ABOUT
+// STANDING VS DECLARED PATIENCE.
+//
+// `refuseIfDoomed`'s message said "its declared ${firstChunkMs}ms first-chunk patience"
+// UNCONDITIONALLY — but `resolveDoomCeiling` only needs `prefillTokensPerSec` to be declared;
+// `patience.firstChunkMs` can still be the STANDING default (nobody declared it) when a
+// provider declares throughput alone. The refusal then claimed a number was "declared" that
+// nobody set. `patience.firstChunkDeclared` (T72b) already answers which case this is.
+// ════════════════════════════════════════════════════════════════════════════════════
+describe('T81 fix wave — refuseIfDoomed\'s wording is honest about standing vs declared patience', () => {
+  it('says "declared" when the first-chunk bound really was declared', async () => {
+    seedOpenAICompatible(SCALED_THROUGHPUT_TOK_PER_SEC); // this helper also declares first_chunk_timeout_ms
+    const err = await callOpenAICompatible(LONG_MESSAGE).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AgentError);
+    const msg = (err as AgentError).message;
+    expect(msg).toContain(`its declared ${SCALED_PATIENCE_MS}ms first-chunk patience`);
+  });
+
+  it('RED: says "standing", not "declared", when only prefill throughput was declared', async () => {
+    // `first_chunk_timeout_ms` is left NULL: `patience.firstChunkMs` resolves to the STANDING
+    // `STREAM_FIRST_CHUNK_TIMEOUT_MS` (90s) default, not anything this row declared. A
+    // throughput of 1 tok/s (the module's own floor) keeps the ceiling small enough that
+    // `LONG_MESSAGE` still refuses.
+    seedOpenAICompatibleUndeclaredFirstChunk(1);
+    const err = await callOpenAICompatible(LONG_MESSAGE).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).preDialRefusal).toBe(true);
+    const msg = (err as AgentError).message;
+    expect(msg).toContain(`the standing ${STREAM_FIRST_CHUNK_TIMEOUT_MS}ms first-chunk patience`);
+    expect(msg, 'must not claim a number nobody declared').not.toMatch(/its declared \d+ms first-chunk patience/);
   });
 });

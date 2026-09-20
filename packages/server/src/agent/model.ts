@@ -271,7 +271,15 @@ function refuseIfDoomed(
 ): void {
   const ceiling = resolveDoomCeiling(patience.firstChunkMs, prefillTokensPerSec);
   if (ceiling === null || estimatedInputTokens <= ceiling) return;
-  const message = `${PRE_DIAL_REFUSAL_PHRASE}: ~${estimatedInputTokens} estimated prompt tokens exceeds the ~${ceiling}-token ceiling this provider's declared ${prefillTokensPerSec} tok/s prefill throughput can cover inside its declared ${patience.firstChunkMs}ms first-chunk patience. Compact the conversation to shrink the prompt, or raise this provider's declared patience or prefill throughput.`;
+  // T81 fix wave (final review, Minor M2): `resolveDoomCeiling` only needs `prefillTokensPerSec`
+  // declared — `patience.firstChunkMs` can still be the STANDING default (nobody set it) when a
+  // provider declares throughput alone. Calling that number "declared" unconditionally was a
+  // claim about a fact that may not be true; `firstChunkDeclared` (T72b) already answers which
+  // case this is, the same fact `streamTimeoutCode`/`streamTimeoutPhrase` key on above.
+  const firstChunkClause = patience.firstChunkDeclared
+    ? `its declared ${patience.firstChunkMs}ms first-chunk patience`
+    : `the standing ${patience.firstChunkMs}ms first-chunk patience`;
+  const message = `${PRE_DIAL_REFUSAL_PHRASE}: ~${estimatedInputTokens} estimated prompt tokens exceeds the ~${ceiling}-token ceiling this provider's declared ${prefillTokensPerSec} tok/s prefill throughput can cover inside ${firstChunkClause}. Compact the conversation to shrink the prompt, or raise this provider's declared patience or prefill throughput.`;
   logger.warn(`Refusing to dial a doomed request: ${message}`, {
     agentId, estimatedInputTokens, ceiling, prefillTokensPerSec, firstChunkMs: patience.firstChunkMs,
   }, agentId);
@@ -1049,6 +1057,16 @@ async function callOllamaModel(
   await lock.acquire(modelInfo.providerId, ollamaModelName, patience.firstChunkMs);
 
   const startTime = Date.now();
+  // T81 fix wave (final review, Important I1) — hoisted above the try/catch below, on purpose:
+  // both are assigned INSIDE the try (`timeoutSignal` where the AbortSignal is built,
+  // `sawAnyContent` inside the NDJSON line parser), and the catch's own-timer discrimination
+  // (below) needs to read both. See that catch branch's own doc comment for the full chain.
+  // Optional — not just for TS's control-flow analysis: if something throws before the
+  // assignment below (inside the try, ahead of it) genuinely runs, our own timer was never
+  // even built, so `timeoutSignal?.aborted` reading `undefined` (falsy) is the CORRECT answer,
+  // not a workaround for one.
+  let timeoutSignal: AbortSignal | undefined;
+  let sawAnyContent = false;
 
   try {
     // Combine external abort (from stop button) with internal timeout.
@@ -1086,7 +1104,7 @@ async function callOllamaModel(
     // undici's global dispatcher exactly as it always has, which is R6 for the client
     // configuration, not just the abort duration.
     const transportTimeouts = resolveTransportTimeouts(patience);
-    const timeoutSignal = AbortSignal.timeout(transportTimeouts?.bodyTimeoutMs ?? TRANSPORT_DEFAULT_TIMEOUT_MS);
+    timeoutSignal = AbortSignal.timeout(transportTimeouts?.bodyTimeoutMs ?? TRANSPORT_DEFAULT_TIMEOUT_MS);
     const signal = params.abortSignal
       ? AbortSignal.any([timeoutSignal, params.abortSignal])
       : timeoutSignal;
@@ -1168,6 +1186,19 @@ async function callOllamaModel(
 
       const message = chunk.message;
       if (message) {
+        // T81 fix wave (final review, Important I1): the one fact the catch block's synthetic
+        // watchdog needs to rebuild the first-chunk-vs-idle distinction — mirrors
+        // `makeStreamWatchdog.contentStarted()`'s own definition of GENERATED CONTENT exactly
+        // ("a text delta, a reasoning delta, or a tool-call delta") so this transport tells a
+        // first-chunk stall from a genuine mid-stream idle timeout the same way the other two
+        // transports do.
+        if (
+          (typeof message.content === 'string' && message.content.length > 0)
+          || (typeof message.thinking === 'string' && message.thinking.length > 0)
+          || (Array.isArray(message.tool_calls) && message.tool_calls.length > 0)
+        ) {
+          sawAnyContent = true;
+        }
         if (typeof message.content === 'string' && message.content.length > 0) {
           fullContent += message.content;
           if (onChunk) onChunk(message.content);
@@ -1280,6 +1311,50 @@ async function callOllamaModel(
   } catch (err) {
     const latencyMs = Date.now() - startTime;
     const message = err instanceof Error ? err.message : String(err);
+
+    // T81 FIX WAVE (NO-DOOMED-DIALS final review, Important I1) — OUR OWN DECLARED-PATIENCE
+    // ABORT MUST CARRY THE SAME IDENTITY THE OTHER TWO TRANSPORTS BUILD FROM
+    // `streamWasCutByWatchdog`. MIRRORS d15635a0's fix for the agent-sdk transport exactly.
+    //
+    // Without this branch, the abort fell through to the generic `MODEL_CALL_FAILED` below:
+    // `provider-error.ts` classified it 'network' (the message contains the word "aborted"),
+    // `v2/recovery.ts`'s `recordInjury` never set `declaredPatienceHonestFailTurn` (it keys on
+    // the CODE, and the code never arrived), T81c's restart-decline never fired, and the
+    // Healer's 5s blind auto-wake cold-redialled the identical unfinishable prompt — reopening
+    // the exact GPU livelock this whole plan exists to close, through the one transport whose
+    // clock (T79e) started this very task.
+    //
+    // OWN-TIMER DISCRIMINATION: this transport has no dedicated exception type the way
+    // `providers/anthropic-sdk.ts` does (there is no separate module boundary to throw across)
+    // — but it has something equally exact: `timeoutSignal` is OUR OWN `AbortSignal.timeout`,
+    // combined with any external `params.abortSignal` only via `AbortSignal.any` (never the
+    // other way around), so `timeoutSignal.aborted` is true if and only if OUR timer is what
+    // fired — independent of whether an external stop-button abort ALSO happened to be present
+    // on this call. Checking `!params.abortSignal?.aborted` alongside it is what keeps a
+    // genuine user-requested stop (which also aborts the combined `signal`, but never
+    // `timeoutSignal` itself) from ever being mistaken for our own trip.
+    if (timeoutSignal?.aborted && !params.abortSignal?.aborted) {
+      const syntheticWatchdog: StreamWatchdog = {
+        signal: new AbortController().signal,
+        bump: () => {},
+        contentStarted: () => {},
+        finish: () => {},
+        timedOut: () => true,
+        firstChunkTimedOut: () => !sawAnyContent,
+        elapsedMs: () => latencyMs,
+      };
+      const code = streamTimeoutCode(syntheticWatchdog, patience);
+      const declaredMsg = `${streamTimeoutPhrase(syntheticWatchdog, patience)}: no data from provider for too long (elapsed ${latencyMs}ms)${declaredPatienceClause(syntheticWatchdog, patience, nativeEstimate)}`;
+      recordProviderError(modelInfo.providerId);
+      logger.warn(`Ollama call aborted by declared patience: ${declaredMsg}`, {
+        model: ollamaModelName, baseUrl, latencyMs,
+      }, agentId);
+      // T81a: a declared-patience exhaustion is never retryable; a genuine mid-stream idle
+      // timeout (code falls to STREAM_IDLE_TIMEOUT_CODE) keeps its ordinary retry — the same
+      // rule the other two transports apply at their own watchdog-cut throw sites.
+      throw new AgentError(declaredMsg, agentId, { code, retryable: code === STREAM_IDLE_TIMEOUT_CODE });
+    }
+
     recordProviderError(modelInfo.providerId);
     // F3: best-effort utility calls (caller has a fallback) log at WARN, a
     // handled recoverable failure is not an agent-level error.

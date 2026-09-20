@@ -294,8 +294,16 @@ function classifyError(error: string | null, code?: string): string {
   // otherwise fall into the SAME 'network' bucket a genuine dropped connection does — which is
   // the exact misclassification that let the auto-wake below cold-re-dial an un-finishable
   // prompt every five seconds.
+  // T81 fix wave (final review, Minor M1): a pre-dial refusal (`agent/model.ts`'s
+  // `refuseIfDoomed`) is the SAME honest-fail class — it throws `DECLARED_PATIENCE_EXCEEDED_CODE`
+  // on the live path too — but until now only the watchdog's own timeout phrase survived a
+  // restart here. `PRE_DIAL_REFUSAL_PHRASE`'s literal ('refused before any network dial') is
+  // copied rather than imported, for the same reason `STREAM_FIRST_CHUNK_TIMEOUT_ERROR` above it
+  // is: this reader holds a STRING and nothing else, and `agent/model.ts` is too heavy an import
+  // for this leaf module to take just for a phrase.
   if (code === DECLARED_PATIENCE_EXCEEDED_CODE
-    || (error ?? '').toLowerCase().includes('model first-chunk timeout')) {
+    || (error ?? '').toLowerCase().includes('model first-chunk timeout')
+    || (error ?? '').toLowerCase().includes('refused before any network dial')) {
     return 'declared_patience_exceeded';
   }
 

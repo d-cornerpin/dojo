@@ -115,7 +115,11 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 import { runMigrations } from '../../db/migrations.js';
 import { clearSecretsCache } from '../../config/loader.js';
 import { callModel, clearClientCache, type ModelCallResult } from '../model.js';
-import { resolveStreamPatience, resolveTransportTimeouts, TRANSPORT_DEFAULT_TIMEOUT_MS } from '../stream-patience.js';
+import {
+  resolveStreamPatience, resolveTransportTimeouts, TRANSPORT_DEFAULT_TIMEOUT_MS,
+  DECLARED_PATIENCE_EXCEEDED_CODE, STREAM_IDLE_TIMEOUT_CODE,
+} from '../stream-patience.js';
+import { AgentError } from '../errors.js';
 
 vi.setConfig({ testTimeout: 20_000 });
 
@@ -130,7 +134,19 @@ const FAKE_DOJO = path.join(realOs.tmpdir(), 'dojo-t79e-ollama-patience', '.dojo
 // body byte goes out — the shape `resolveTransportTimeouts`'s `bodyTimeoutMs` bounds. Every case
 // in the ORIGINAL describe block below (the abort-duration arithmetic) leaves this at 0 and
 // answers at once, since the point there is which number was armed, not whether it fires.
-const behaviour = { preFirstChunkMs: 0 };
+//
+// `mode`, T81 fix wave: three new shapes §D needs, none of which any earlier test in this file
+// uses (so `preFirstChunkMs`'s own contract above is untouched for every existing case):
+//   'answer'            — the original behaviour (headers flush, then `preFirstChunkMs`, then
+//                          one content chunk + `done` together).
+//   'hold'               — headers flush, then NOTHING — the connection sits open until the
+//                          client aborts it. Proves a trip BEFORE any content.
+//   'content-then-hold'  — headers flush, ONE content chunk, then nothing — the connection sits
+//                          open with `sawAnyContent` already true. Proves a trip AFTER content.
+//   'error500'           — an ordinary non-2xx response, no stall involved at all — the CONTROL
+//                          proving a genuine HTTP failure is untouched by this task.
+const behaviour: { preFirstChunkMs: number; mode: 'answer' | 'hold' | 'content-then-hold' | 'error500' } =
+  { preFirstChunkMs: 0, mode: 'answer' };
 
 let server: http.Server;
 let stubUrl = '';
@@ -144,8 +160,18 @@ beforeAll(async () => {
     }
     req.on('data', () => {});
     req.on('end', () => {
+      if (behaviour.mode === 'error500') {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'boom' }));
+        return;
+      }
       res.writeHead(200, { 'content-type': 'application/x-ndjson' });
       res.flushHeaders(); // bytes on the wire now: what follows is a BODY gap
+      if (behaviour.mode === 'hold') return; // never write anything — a first-chunk stall
+      if (behaviour.mode === 'content-then-hold') {
+        res.write(`${JSON.stringify({ message: { role: 'assistant', content: 'Working on it' } })}\n`);
+        return; // one chunk, then nothing — an idle stall AFTER content
+      }
       const write = (): void => {
         if (res.writableEnded || res.destroyed) return; // the client may have already aborted
         res.write(`${JSON.stringify({ message: { role: 'assistant', content: 'It is done.' } })}\n`);
@@ -197,6 +223,7 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   behaviour.preFirstChunkMs = 0;
+  behaviour.mode = 'answer';
 });
 
 afterEach(() => {
@@ -377,5 +404,117 @@ describe('T79e — the Ollama transport clock is derived from the declared patie
     seedProvider(200_000, 120_000);
     await call();
     expect(spy).toHaveBeenCalledWith(300_000);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════
+// T81 FIX WAVE (NO-DOOMED-DIALS final review, Important I1) — THE OWN-TIMER TRIP CARRIES THE
+// HONEST-FAIL IDENTITY, MIRRORING d15635a0's FIX FOR THE AGENT-SDK TRANSPORT.
+//
+// Until now, when this transport's OWN `AbortSignal.timeout` tripped, the abort fell into the
+// generic `catch` at the bottom of `callOllamaModel` and was wrapped as a plain
+// `MODEL_CALL_FAILED`, retryable — the same shape `provider-error.ts`'s prose table classifies
+// 'network', which is exactly the misclassification that let the Healer's 5s blind auto-wake
+// cold-redial an unfinishable prompt every five seconds. §D drives the REAL `callModel`
+// dispatch (a real HTTP server, a real `fetch`) and proves the trip now carries
+// `DECLARED_PATIENCE_EXCEEDED_CODE` (never retryable) when nothing was ever generated, and the
+// ordinary retryable `STREAM_IDLE_TIMEOUT_CODE` when the trip happens AFTER content already
+// started — the same distinction the other two transports make via their real `StreamWatchdog`.
+//
+// ── WHY THE TIMER ITSELF IS MOCKED, NOT WAITED ON ──
+// `callOllamaModel`'s own `AbortSignal` is EITHER the real `resolveTransportTimeouts`-derived
+// bound (non-null only past 300s of declared patience) OR the flat 300,000ms default — there is
+// no way to make THIS transport's own timer fire quickly at real wall-clock speed, the same fact
+// that made the sibling agent-sdk file's §D use fake timers and a 2,000,000ms advance loop.
+// Here, `AbortSignal.timeout` is mocked to return a plain `AbortController`'s signal that the
+// test aborts BY HAND once the real (fast, loopback) HTTP exchange has reached the point under
+// test — the mechanism exercised is exactly what a real timer firing does (the identical signal
+// object flows through `AbortSignal.any` and the `fetch` call unmodified); only the CLOCK
+// driving it is swapped out, which is what `resolveTransportTimeouts`'s own §B already proves is
+// wired correctly in production.
+// ════════════════════════════════════════════════════════════════════════════════════
+describe('T81 fix wave §D — the own-timer trip carries the honest-fail identity', () => {
+  const waitUntil = async (check: () => boolean, timeoutMs = 2_000): Promise<void> => {
+    const start = Date.now();
+    while (!check()) {
+      if (Date.now() - start > timeoutMs) throw new Error('condition never became true within timeoutMs');
+      await new Promise(r => setTimeout(r, 10));
+    }
+  };
+
+  it('RED: a trip BEFORE any content carries DECLARED_PATIENCE_EXCEEDED_CODE, never retryable', async () => {
+    behaviour.mode = 'hold'; // headers flush, then nothing — a first-chunk stall
+    const ownTimer = new AbortController();
+    vi.spyOn(AbortSignal, 'timeout').mockReturnValue(ownTimer.signal);
+    seedProvider(600_000, null); // declared — the derived bound would be real in production
+
+    const promise = call();
+    promise.catch(() => {}); // avoid an unhandled-rejection warning while the request is in flight
+    await new Promise(r => setTimeout(r, 50)); // let the real request actually reach the stub
+    ownTimer.abort(); // OUR OWN TIMER fires — no external params.abortSignal exists on this call
+    const err = await promise.catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).code).toBe(DECLARED_PATIENCE_EXCEEDED_CODE);
+    expect((err as AgentError).retryable, 'a declared-patience exhaustion is never retryable (P3)').toBe(false);
+  });
+
+  it('a trip AFTER the model had already started answering falls to the ordinary retryable STREAM_IDLE_TIMEOUT_CODE', async () => {
+    behaviour.mode = 'content-then-hold'; // one content chunk, then a hold
+    const ownTimer = new AbortController();
+    vi.spyOn(AbortSignal, 'timeout').mockReturnValue(ownTimer.signal);
+    seedProvider(600_000, null);
+
+    const chunks: string[] = [];
+    const promise = callModel({
+      agentId: 'kevin', modelId: 'm-ollama',
+      messages: [{ role: 'user', content: 'Is it done?' }],
+      systemPrompt: 'You are a local model.',
+      tools: false,
+      onChunk: (c) => chunks.push(c),
+    });
+    promise.catch(() => {});
+    await waitUntil(() => chunks.length > 0); // the content chunk really arrived before the trip
+    ownTimer.abort();
+    const err = await promise.catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).code).toBe(STREAM_IDLE_TIMEOUT_CODE);
+    expect((err as AgentError).retryable, 'a genuine mid-stream idle timeout keeps its ordinary retry').toBe(true);
+  });
+
+  it('CONTROL: an external params.abortSignal (the stop button) carries NO patience code', async () => {
+    behaviour.mode = 'hold';
+    // The mocked "own timer" is a SEPARATE controller that never fires here — proving the
+    // discrimination reads `timeoutSignal.aborted` specifically, not merely "some signal
+    // aborted" (which `AbortSignal.any`'s combined signal would also report true for).
+    const ownTimer = new AbortController();
+    vi.spyOn(AbortSignal, 'timeout').mockReturnValue(ownTimer.signal);
+    seedProvider(600_000, null);
+    const external = new AbortController();
+
+    const promise = callModel({
+      agentId: 'kevin', modelId: 'm-ollama',
+      messages: [{ role: 'user', content: 'Is it done?' }],
+      systemPrompt: 'You are a local model.',
+      tools: false,
+      abortSignal: external.signal,
+    });
+    promise.catch(() => {});
+    await new Promise(r => setTimeout(r, 50));
+    external.abort();
+    const err = await promise.catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).code, 'a user-requested stop must not be mistaken for our own timer trip').not.toBe(DECLARED_PATIENCE_EXCEEDED_CODE);
+  });
+
+  it('CONTROL: a genuine 500 response keeps MODEL_CALL_FAILED, unchanged', async () => {
+    behaviour.mode = 'error500';
+    seedProvider(600_000, null); // patience IS declared — a timer is built — but never fires
+    const err = await call().catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).code, 'a genuine HTTP failure must not be mistaken for our own timer trip').toBe('MODEL_CALL_FAILED');
   });
 });

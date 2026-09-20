@@ -100,6 +100,24 @@ describe('T81a — a declared-patience exhaustion skips the blind auto-wake', ()
     expect(handleMessage).not.toHaveBeenCalled();
   });
 
+  it('RED (T81 fix wave, Minor M1): a pre-dial refusal phrase alone (no code) ALSO classifies to the honest-fail class on a restart', async () => {
+    // `refuseIfDoomed` (`agent/model.ts`) throws an `AgentError` carrying
+    // `PRE_DIAL_REFUSAL_PHRASE` ('refused before any network dial') in its message and
+    // `DECLARED_PATIENCE_EXCEEDED_CODE` as its code — but `rehydrateInjuredAgents` only has the
+    // persisted `agents.last_error` STRING after a restart, no code, exactly like the
+    // first-chunk-timeout case above. This is the fixture shape that string really has (the
+    // literal `refuseIfDoomed` throw site builds).
+    const REFUSAL_MSG =
+      'refused before any network dial: ~9999 estimated prompt tokens exceeds the ~100-token '
+      + "ceiling this provider's declared 10 tok/s prefill throughput can cover inside its "
+      + 'declared 40000ms first-chunk patience. Compact the conversation to shrink the prompt, '
+      + "or raise this provider's declared patience or prefill throughput.";
+    vi.useFakeTimers();
+    onAgentInjured(AGENT, REFUSAL_MSG);
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(handleMessage).not.toHaveBeenCalled();
+  });
+
   it('still notifies the Healer — this is a different TREATMENT, not a silence', async () => {
     vi.useFakeTimers();
     onAgentInjured(AGENT, PATIENCE_MSG, DECLARED_PATIENCE_EXCEEDED_CODE);
