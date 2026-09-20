@@ -72,6 +72,10 @@ vi.mock('../../agent/model.js', () => ({
   callModel: async () => ({ content: 'x', toolCalls: [], usage: {} }),
   getContextWindow: () => windowNow.value,
   getModelOutputCap: () => 4096,
+  // T82a: no provider in this suite declares a serving ceiling — this is the NULL-row R6
+  // control, expressed as the mock's own answer rather than left for a missing export to
+  // throw on.
+  getProviderCeilingTokens: () => null,
 }));
 
 // THE QUERY-SENSITIVE SEARCH. `vectorSearch` decides which SUMMARIES `lane.summaries` picks

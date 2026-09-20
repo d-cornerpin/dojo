@@ -6,6 +6,10 @@ import { broadcast } from '../gateway/ws.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
 import { getMessagesOutsideFreshTail, getRecentMessages } from './store.js';
 import { estimateTokens, getFreshTailCount, contextWindowPolicy, storedRowCost, CONTEXT_THRESHOLD, CONTEXT_WARN_THRESHOLD } from './budget.js';
+// T82a: `agent/stream-patience.ts` is a LEAF (no imports of its own — see its header), so
+// importing its arithmetic here does not create the cycle `agent/model.ts` is dynamically
+// imported below to avoid.
+import { providerAwareBudgetTokens } from '../agent/stream-patience.js';
 import { insertMessageIfAbsent, retireReplayedReasoningBeforeTurn } from './message-store.js';
 // T67b: the stub distance is DECLARED by the assembler, which renders it, and READ here,
 // which decides when it applies. One number, two readers — never a second literal.
@@ -504,6 +508,12 @@ async function runCheckAndCompact(
   contextWindow: number,
   options?: CheckAndCompactOptions,
 ): Promise<CompactionResult> {
+  // T82a: the model whose BOX is actually serving this agent's turns — captured before the
+  // summary-writer resolution below can reassign `modelId` to a different (often cheaper,
+  // often different-provider) model. The compaction trigger cares about the box that produced
+  // the pressure, not the box that will write the summary describing it.
+  const turnModelId = modelId;
+
   // Resolve which model WRITES the summaries (see resolveSummaryWriterModel).
   {
     const resolved = resolveSummaryWriterModel(agentId, modelId);
@@ -517,7 +527,19 @@ async function runCheckAndCompact(
   const assembled = await estimateAssembledTokens(agentId, contextWindow, modelId);
   const totalTokens = assembled.total;
   const activeThreshold = getContextThreshold();
-  const threshold = activeThreshold * contextWindow;
+  const rawThreshold = activeThreshold * contextWindow;
+  // T82a: the SAME provider-aware ceiling `memory/budget.ts`'s admission budget keys on
+  // (`agent/model.ts`'s `getProviderCeilingTokens`, off the same `getModelInfo` join
+  // `refuseIfDoomed` already trusts), applied to the compaction trigger's own threshold so a
+  // slow box compacts early and continuously instead of waiting on a percentage of a window it
+  // cannot serve at speed. `null` (either half of the provider's declaration is missing —
+  // every provider configured before this task) leaves `threshold` exactly
+  // `activeThreshold * contextWindow`, byte-identical to today (R6).
+  const { getProviderCeilingTokens } = await import('../agent/model.js');
+  const providerCeilingTokens = getProviderCeilingTokens(turnModelId);
+  const threshold = providerCeilingTokens != null
+    ? providerAwareBudgetTokens(rawThreshold, providerCeilingTokens)
+    : rawThreshold;
 
   const force = options?.force ?? false;
 

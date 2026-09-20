@@ -74,6 +74,8 @@ vi.mock('../../agent/model.js', () => ({
   callModel: async () => ({ content: 'x', toolCalls: [], usage: {} }),
   getContextWindow: () => CONTEXT_WINDOW,
   getModelOutputCap: () => 4096,
+  // T82a: no provider in this suite declares a serving ceiling — the NULL-row R6 control.
+  getProviderCeilingTokens: () => null,
 }));
 
 vi.mock('../vector-search.js', () => ({

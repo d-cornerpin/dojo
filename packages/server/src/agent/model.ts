@@ -279,7 +279,11 @@ function refuseIfDoomed(
   const firstChunkClause = patience.firstChunkDeclared
     ? `its declared ${patience.firstChunkMs}ms first-chunk patience`
     : `the standing ${patience.firstChunkMs}ms first-chunk patience`;
-  const message = `${PRE_DIAL_REFUSAL_PHRASE}: ~${estimatedInputTokens} estimated prompt tokens exceeds the ~${ceiling}-token ceiling this provider's declared ${prefillTokensPerSec} tok/s prefill throughput can cover inside ${firstChunkClause}. Compact the conversation to shrink the prompt, or raise this provider's declared patience or prefill throughput.`;
+  // T82a: with the admission budget and the compaction trigger both now planning against this
+  // same ceiling (memory/budget.ts, memory/compaction.ts), this gate is a BACKSTOP — an
+  // assertion that the upstream planning already agrees with itself, not the mechanism that
+  // keeps a request off the wire. Seeing it fire is therefore a signal about where to look.
+  const message = `${PRE_DIAL_REFUSAL_PHRASE}: ~${estimatedInputTokens} estimated prompt tokens exceeds the ~${ceiling}-token ceiling this provider's declared ${prefillTokensPerSec} tok/s prefill throughput can cover inside ${firstChunkClause}. Compact the conversation to shrink the prompt, or raise this provider's declared patience or prefill throughput. This gate is a backstop, not the mechanism — post-T82a its firing means the upstream budget was sized wrong, not that nothing upstream tried.`;
   logger.warn(`Refusing to dial a doomed request: ${message}`, {
     agentId, estimatedInputTokens, ceiling, prefillTokensPerSec, firstChunkMs: patience.firstChunkMs,
   }, agentId);
@@ -3484,5 +3488,40 @@ export function getModelOutputCap(modelId: string): number | undefined {
       : undefined;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * ════════════════════════════════════════════════════════════════════════════════════════
+ * T82a (ANSWER-ANYWAY) — THE ADMISSION BUDGET AND THE COMPACTION TRIGGER LEARN THE BOX.
+ * ════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * `refuseIfDoomed` (T81b, above) already turns a declared patience and a declared prefill
+ * throughput into `resolveDoomCeiling`'s ceiling, off exactly the `getModelInfo` join this
+ * file performs for every other provider-declared fact. This is the same derivation, exposed
+ * the way `getContextWindow` and `getModelOutputCap` expose their own single field off that
+ * same row — one more accessor beside two that already exist, not a second join.
+ *
+ * `null` unless the provider's declaration is genuinely BOTH halves, not one:
+ *   • `patience.firstChunkDeclared` false means `first_chunk_timeout_ms` is NULL — the
+ *     resolved `firstChunkMs` is the STANDING 90s default, not anything this provider said,
+ *     and planning an admission budget off a number nobody declared is not this task's job.
+ *   • `resolveDoomCeiling` itself returns `null` when `prefillTokensPerSec` is undeclared or
+ *     incoherent.
+ * Either gap alone reproduces R6 exactly: `memory/budget.ts`'s admission budget and
+ * `memory/compaction.ts`'s own trigger threshold both leave `providerCeilingTokens` as
+ * `null`/omitted and every number they compute is untouched.
+ *
+ * Never throws, the same convention as its two siblings: a budget/compaction decision is not
+ * the place to discover a missing table, a broken connection, or an unknown model.
+ */
+export function getProviderCeilingTokens(modelId: string): number | null {
+  try {
+    const info = getModelInfo(modelId);
+    const patience = resolveStreamPatience(info);
+    if (!patience.firstChunkDeclared) return null;
+    return resolveDoomCeiling(patience.firstChunkMs, info.prefillTokensPerSec);
+  } catch {
+    return null;
   }
 }

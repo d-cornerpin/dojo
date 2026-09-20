@@ -55,6 +55,16 @@
 // window and pass it; the policy is a pure function of it, and testable without a database.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
+// ── T82a (ANSWER-ANYWAY): the one import this leaf module now has ─────────────────────────
+//
+// `providerAwareBudgetTokens` is `agent/stream-patience.ts`'s own function, not re-derived
+// here — the header above already refuses to let a threshold/reserve/estimator exist twice,
+// and a second "cap this budget at the box's ceiling" written out again inline would be
+// exactly that mistake wearing this module's name instead. `stream-patience.ts` is a LEAF (its
+// own header: no imports of its own), so this does not create the cycle the header above
+// explains this module was designed to avoid with `agent/model.ts`.
+import { providerAwareBudgetTokens } from '../agent/stream-patience.js';
+
 // ── The estimator ──
 
 /** Characters per token. Measured, not inherited — see the header. */
@@ -498,20 +508,35 @@ function clampWindow(contextWindow: number): number {
  * usedTokens)`, whose "include the last group anyway" safety then hands the model exactly
  * one message with nothing logged and nothing broadcast. Zero is representable; negative
  * is a lie. `assertSystemPromptFits` is what turns that zero into a loud failure.
+ *
+ * ── T82a (ANSWER-ANYWAY): `measured.providerCeilingTokens`, OPTIONAL and additive ─────────
+ * `null`/`undefined` (every provider configured before this task, and every provider that has
+ * declared only patience or only throughput but not both) leaves `assemblyBudgetTokens`
+ * EXACTLY the expression above — the byte-preservation control R6 requires. A caller that HAS
+ * resolved a box-speed ceiling (`agent/model.ts`'s `getProviderCeilingTokens`, off the same
+ * `getModelInfo` join `agent/model.ts` already performs for `refuseIfDoomed`) passes it here,
+ * and the window-derived budget is capped at it via `providerAwareBudgetTokens` — the same
+ * arithmetic the pre-dial gate already trusted, now spent BEFORE the assembler decides what to
+ * admit rather than only after it has already built a prompt too big to send.
  */
 export function contextWindowPolicy(
   contextWindow: number,
-  measured: { toolPayloadTokens: number; maxOutputTokens?: number },
+  measured: { toolPayloadTokens: number; maxOutputTokens?: number; providerCeilingTokens?: number | null },
 ): ContextWindowPolicy {
   const cw = clampWindow(contextWindow);
   const reserve = Math.max(0, toolAndOutputReserve(measured));
+  const windowBudget = Math.max(0, Math.floor(CONTEXT_THRESHOLD * cw) - reserve);
+  const { providerCeilingTokens } = measured;
+  const assemblyBudgetTokens = providerCeilingTokens != null
+    ? Math.max(0, providerAwareBudgetTokens(windowBudget, providerCeilingTokens))
+    : windowBudget;
   return {
     contextWindow: cw,
     compactionThreshold: CONTEXT_THRESHOLD,
     warnThreshold: CONTEXT_WARN_THRESHOLD,
     blockThreshold: CONTEXT_BLOCK_THRESHOLD,
     toolAndOutputReserve: reserve,
-    assemblyBudgetTokens: Math.max(0, Math.floor(CONTEXT_THRESHOLD * cw) - reserve),
+    assemblyBudgetTokens,
     freshTailCount: getFreshTailCount(cw),
     gateMessageCap: GATE_MESSAGE_CAP_TOKENS,
     summaryShare: SUMMARY_SHARE,

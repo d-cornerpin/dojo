@@ -332,3 +332,63 @@ export function resolveDoomCeiling(
   const usableMs = Math.max(0, declaredPatienceMs - TRANSPORT_MARGIN_MS);
   return Math.floor((usableMs / 1000) * prefillTokensPerSec);
 }
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// T82a (ANSWER-ANYWAY) — CENSUS ROW [safety fraction]: THE ADMISSION BUDGET LEARNS THE BOX.
+// ════════════════════════════════════════════════════════════════════════════════════════
+//
+// `resolveDoomCeiling` above answers "given how long we may wait and how fast this box chews
+// through a prompt, what is the largest prompt that could possibly finish" — and until this
+// task that number was spent EXACTLY ONCE, as a pre-dial backstop in `agent/model.ts`'s
+// `refuseIfDoomed`, immediately before the socket opens. Nothing upstream of that gate ever
+// told the ADMISSION BUDGET (`memory/budget.ts`'s `contextWindowPolicy`) or the COMPACTION
+// TRIGGER (`memory/compaction.ts`'s own reactive threshold) that the box was slow, so both
+// kept sizing themselves off the model's declared context WINDOW alone — a number the
+// provider's own patience can be nowhere near able to serve. The incident (a 60K-token
+// assembly for a one-line question, on a box whose declared patience covers ~102.6K in 600s)
+// is exactly that gap: the budget knew the model's window but not the box's speed, so nothing
+// trimmed early and the pre-dial gate was the first thing in the whole request path to notice.
+//
+// ── WHY HALF, AND WHY IT IS A NAMED CONSTANT RATHER THAN THE CEILING ITSELF ──
+// `resolveDoomCeiling` already answers "the largest prompt this box's patience could possibly
+// carry to completion" — the FAILURE boundary. Planning the admission budget AT that boundary
+// would mean every healthy turn runs right up against the same edge that turns into a refusal
+// the moment the box has an off day: a slightly slower prefill run (thermal throttling, a
+// second process sharing the GPU, a prompt whose real content is a few percent denser than the
+// /4 estimator's model of it) tips a turn that was PLANNED to just barely fit into one that
+// doesn't. `resolveDoomCeiling`'s own margin (`TRANSPORT_MARGIN_MS`) already protects the
+// TIME side of that arithmetic; this constant protects the SIZE side of it, the same way a
+// bridge's rated capacity is not the load at which it collapses.
+//
+// Half is the argument, not a compromise: a healthy prefill run then lands inside roughly
+// half the declared patience, leaving the other half as headroom for exactly the two things
+// that make one turn slower than the last on the SAME box — in-turn growth (a turn that adds a
+// few tool calls after the budget was planned costs more than the snapshot the plan was struck
+// from) and ordinary box variance (thermal throttling, a second process, a slightly denser
+// prompt than the estimator's /4-chars-per-token model). Same discipline `TRANSPORT_MARGIN_MS`
+// documents for the transport's clock — a declared bound is honoured with room to spare, not
+// planned against to the millisecond (or, here, the token).
+export const PROVIDER_CEILING_SAFETY = 0.5;
+
+/**
+ * Caps an already-computed token budget (the admission budget `contextWindowPolicy` derives
+ * from the model's declared context WINDOW, or the compaction trigger's own threshold derived
+ * the same way) at what the box's declared patience and declared prefill throughput can
+ * actually plan for — `PROVIDER_CEILING_SAFETY` of `resolveDoomCeiling`'s own ceiling.
+ *
+ * `min`, never a straight substitution: a model whose window-derived budget is ALREADY smaller
+ * than the box-speed ceiling (a genuinely small context window, or an agent whose measured
+ * tool payload already ate most of a bigger one) must not be WIDENED by a fast box's ceiling —
+ * this function only ever tightens, exactly the direction `resolveTransportTimeouts`'s own
+ * "we only ever LIFT" note argues for the opposite bound.
+ *
+ * Pure, and takes the ceiling as a plain `number` rather than the `number | null`
+ * `resolveDoomCeiling` returns: the NULL case (either half of the provider's declaration is
+ * missing) is a decision for the CALLER to make before reaching here — "no ceiling to apply"
+ * is not the same fact as "a ceiling of zero", and folding the two together here would make
+ * this function the place that decides R6's byte-preservation control instead of merely being
+ * the arithmetic the decision spends.
+ */
+export function providerAwareBudgetTokens(modelCtxBudget: number, ceiling: number): number {
+  return Math.min(modelCtxBudget, Math.floor(ceiling * PROVIDER_CEILING_SAFETY));
+}

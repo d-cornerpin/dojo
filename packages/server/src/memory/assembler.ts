@@ -6,7 +6,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { type PromptTurnContext } from '../prompt/assembler.js';
 import { conversationKey, type TurnCounterparty } from '../agent/v2/counterparty.js';
-import { getContextWindow, getModelOutputCap } from '../agent/model.js';
+import { getContextWindow, getModelOutputCap, getProviderCeilingTokens } from '../agent/model.js';
 // PHASE-3 T9: the ONE tool_use ⇄ tool_result pairing repair. The assembler's own second
 // copy is deleted; see the call site and `__tests__/one-pairing-repair.test.ts`.
 import { repairToolPairing, type PairedMessage } from '../agent/tool-pairing.js';
@@ -1241,9 +1241,14 @@ async function assembleMessageContext(
   // transport will actually serialise, plus the derived output allowance. The old 15,000
   // literal was smaller than the primary's tool schemas alone, so the assembler's ceiling
   // sat ABOVE the window and the provider front-trimmers were doing the real work.
+  // T82a: the box's own declared serving ceiling, off the SAME provider join `refuseIfDoomed`
+  // already trusts (`getModelInfo`). `null` (either half of a provider's declaration is
+  // missing, which is every provider configured before this task) leaves `assemblyBudgetTokens`
+  // exactly what it was before this line existed — R6's byte-preservation control.
   const policy = contextWindowPolicy(contextWindow, {
     toolPayloadTokens: await measureAgentToolPayloadTokens(agentId),
     maxOutputTokens: getModelOutputCap(modelId),
+    providerCeilingTokens: getProviderCeilingTokens(modelId),
   });
   const maxTokens = policy.assemblyBudgetTokens;
 

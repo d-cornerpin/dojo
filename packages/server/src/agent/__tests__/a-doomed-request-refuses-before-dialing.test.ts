@@ -270,6 +270,23 @@ describe('T81b — OpenAI-compatible transport: RED, then the fix', () => {
     expect(msg).toMatch(/raise this provider's declared patience or prefill throughput/i);
   });
 
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  // T82a (ANSWER-ANYWAY) — POST-T82a THIS GATE IS A BACKSTOP, NOT THE MECHANISM.
+  //
+  // T82a taught `memory/budget.ts`'s admission budget and `memory/compaction.ts`'s own
+  // compaction trigger this SAME `resolveDoomCeiling` arithmetic, so a healthy turn's
+  // assembly is planned to fit inside it long before a dial is ever attempted. This gate
+  // (T81b) stays as the pre-dial ASSERTION it always was structurally, but its meaning
+  // changes: seeing this refusal fire now means the budget upstream was sized wrong, not
+  // that nothing upstream tried.
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  it('RED (T82a): the refusal names itself a backstop and points at the upstream budget', async () => {
+    seedOpenAICompatible(SCALED_THROUGHPUT_TOK_PER_SEC);
+    const err = await callOpenAICompatible(LONG_MESSAGE).catch((e: unknown) => e);
+    const msg = (err as AgentError).message;
+    expect(msg).toMatch(/upstream budget/i);
+  });
+
   it('GREEN: the same declared throughput dials a prompt that fits the ceiling', async () => {
     seedOpenAICompatible(SCALED_THROUGHPUT_TOK_PER_SEC);
     const result = await callOpenAICompatible(SHORT_MESSAGE);
