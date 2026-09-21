@@ -200,7 +200,7 @@ describe('a stop aborts EVERY call the agent has in flight', () => {
     const offenders: string[] = [];
     for (const file of sourceFiles()) {
       if (rel(file) === 'agent/shared-state.ts') continue;
-      codeLines(fs.readFileSync(file, 'utf-8')).forEach(({ line, n }) => {
+      codeLines(textOf(file)).forEach(({ line, n }) => {
         if (/activeAbortControllers\.(set|delete)\(/.test(line)) {
           offenders.push(`${rel(file)}:${n} — ${line.trim()}`);
         }
@@ -214,7 +214,7 @@ describe('a stop aborts EVERY call the agent has in flight', () => {
     // and it must be among the registrars. If the dial door ever stops registering,
     // every engine-initiated call goes back to being un-abortable.
     const registrars = sourceFiles()
-      .filter((f) => /registerAbortable\(/.test(fs.readFileSync(f, 'utf-8')))
+      .filter((f) => /registerAbortable\(/.test(textOf(f)))
       .map(rel);
     expect(registrars).toContain('agent/model.ts');
   });
@@ -326,7 +326,7 @@ describe('the continuation chain cannot re-arm itself after a stop', () => {
     const offenders: string[] = [];
     for (const file of sourceFiles()) {
       if (rel(file) === 'agent/shared-state.ts') continue;
-      codeLines(fs.readFileSync(file, 'utf-8')).forEach(({ line, n }) => {
+      codeLines(textOf(file)).forEach(({ line, n }) => {
         if (/stoppedAgents\.has\(/.test(line)) offenders.push(`${rel(file)}:${n} — ${line.trim()}`);
       });
     }
@@ -337,7 +337,7 @@ describe('the continuation chain cannot re-arm itself after a stop', () => {
     const offenders: string[] = [];
     for (const file of sourceFiles()) {
       if (rel(file) === 'agent/shared-state.ts' || rel(file) === 'agent/runtime.ts') continue;
-      codeLines(fs.readFileSync(file, 'utf-8')).forEach(({ line, n }) => {
+      codeLines(textOf(file)).forEach(({ line, n }) => {
         if (/stopFencedRuns\.delete\(/.test(line)) offenders.push(`${rel(file)}:${n} — ${line.trim()}`);
       });
     }
@@ -460,7 +460,20 @@ describe('the status field does not lie about a stop', () => {
   });
 });
 
+/**
+ * The server's source files — WALKED ONCE for the whole suite.
+ *
+ * Four clauses here census the tree. Re-walking and re-reading every `.ts` under `src/` for
+ * each of them is four full passes of real filesystem work, and vitest runs suites in parallel:
+ * measured on this box, the added contention was enough to tip `work/__tests__/
+ * work-event-kinds-conformance.test.ts` — a neighbouring 15-second whole-tree walk of its own —
+ * over its per-clause timeout, failing a DIFFERENT clause of it on each run. A guard that makes
+ * an unrelated guard flaky is a guard that will get muted. The tree does not change mid-run, so
+ * one pass is all that was ever needed.
+ */
+let sourceFilesCache: string[] | null = null;
 function sourceFiles(): string[] {
+  if (sourceFilesCache) return sourceFilesCache;
   const out: string[] = [];
   const walk = (dir: string): void => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -474,7 +487,16 @@ function sourceFiles(): string[] {
     }
   };
   walk(SRC_ROOT);
+  sourceFilesCache = out;
   return out;
+}
+
+/** Same reasoning for the file CONTENTS: read once, reused by every census below. */
+const textCache = new Map<string, string>();
+function textOf(file: string): string {
+  let t = textCache.get(file);
+  if (t === undefined) { t = fs.readFileSync(file, 'utf-8'); textCache.set(file, t); }
+  return t;
 }
 
 function rel(p: string): string { return path.relative(SRC_ROOT, p); }

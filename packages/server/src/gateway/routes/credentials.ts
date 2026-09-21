@@ -124,7 +124,10 @@ credentialsRouter.patch('/:id', async (c) => {
 
 credentialsRouter.delete('/:id', (c) => {
   const id = c.req.param('id');
-  const result = deleteCredentialById(id, null);
+  // T83 FIX ROUND (review IMPORTANT B-1): `confirm: true`, declared here rather than exempted
+  // in the store. This route IS the owner, pressing delete on a row they opened in their own
+  // Credentials tab — the click is the confirmation the flag exists to capture.
+  const result = deleteCredentialById(id, null, { confirm: true });
   if (!result.ok) return c.json({ ok: false, error: result.error ?? 'Delete failed.' }, 404);
   return c.json({ ok: true, data: { deleted: true } });
 });

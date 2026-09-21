@@ -52,15 +52,35 @@ export interface CredentialRecordWithValue extends CredentialRecord {
 // the flag. The flag is not a formality; it is the caller saying on the record which specific
 // existing value it is ending, and every authorised overwrite leaves an audit row.
 //
-// The two callers that are not an agent — the dashboard PATCH (the owner's own hand on their
-// own row) and the VNC rotate (the engine turning its own private slot) — pass the flag
-// EXPLICITLY at their sites rather than being exempted here by some actor sniff. A rule with
-// an exception nobody can see is how this defect got in.
+// The callers that are not an agent — the dashboard PATCH (the owner's own hand on their own
+// row), the VNC rotate (the engine turning its own private slot), the T83 remediation purge —
+// pass the flag EXPLICITLY at their sites rather than being exempted here by some actor sniff.
+// A rule with an exception nobody can see is how this defect got in.
+//
+// FIX ROUND (review IMPORTANT B-1): the rule covers `credential_delete` too. It was the quiet
+// surface — no flag, no statement of what it was ending, no audit row — and a delete-then-add
+// reaches the same end state as a refused overwrite while leaving LESS record than an
+// authorised one. A law with one unguarded door is a speed bump.
 // ════════════════════════════════════════
 
 export interface CredentialWriteOptions {
   /** Authorise destroying the value currently stored under this service name. */
   readonly overwrite?: boolean;
+}
+
+/**
+ * T83 FIX ROUND (review IMPORTANT B-1) — the same authorisation for the OTHER destroy door.
+ *
+ * `credential_delete` was the quiet surface the first cut left standing: an agent-callable
+ * tool that removed a stored value with no flag, no statement of what it was ending, no audit
+ * row and a five-word receipt. A delete-then-add reaches the same end state as a refused
+ * overwrite while leaving LESS record than an authorised one — which makes the overwrite rule
+ * a speed bump rather than a law. It is a separate word from `overwrite` because it is a
+ * separate act, and the door text prints the exact call either way.
+ */
+export interface CredentialDeleteOptions {
+  /** Authorise permanently removing this credential. */
+  readonly confirm?: boolean;
 }
 
 interface ExistingRow {
@@ -77,9 +97,29 @@ function findExisting(serviceName: string): ExistingRow | undefined {
 }
 
 /**
- * The door text. States what exists, says the prior value cannot be recovered, and names the
- * flag — in that order, because a caller who reads only the first sentence should still have
- * learned the thing that matters.
+ * The DELETE door text (T83 fix round). Same discipline as the overwrite door below, plus the
+ * one sentence that only belongs here: a caller who merely wants to replace a value is
+ * redirected to `credential_update`, because a delete-then-add throws away the row's
+ * provenance — which is the fact every future refusal is built out of.
+ */
+function deleteRefusal(serviceName: string, row: ExistingRow): string {
+  const by = row.created_by_agent_id ? ` by ${row.created_by_agent_id}` : '';
+  const changed = row.updated_at !== row.created_at ? `, last changed ${row.updated_at}` : '';
+  return (
+    `"${serviceName}" is a stored credential — created ${row.created_at}${by}${changed}. ` +
+    `Deleting it is permanent: the value is gone, there is no recycle bin and no prior version. ` +
+    `If the user explicitly asked you to remove this credential, call ` +
+    `credential_delete(service_name="${serviceName}", confirm=true) and the deletion will be recorded. ` +
+    `If you are only replacing its value, do NOT delete it — call ` +
+    `credential_update(service_name="${serviceName}", credentials={…}, overwrite=true) instead, which keeps ` +
+    `the row's history of who created it and when. If you are unsure, ask the user before removing anything.`
+  );
+}
+
+/**
+ * The OVERWRITE door text. States what exists, says the prior value cannot be recovered, and
+ * names the flag — in that order, because a caller who reads only the first sentence should
+ * still have learned the thing that matters.
  */
 function overwriteRefusal(serviceName: string, row: ExistingRow, verb: string): string {
   const by = row.created_by_agent_id ? ` by ${row.created_by_agent_id}` : '';
@@ -100,21 +140,24 @@ function overwriteRefusal(serviceName: string, row: ExistingRow, verb: string): 
  * PATCH, the VNC rotate) gets the structured-log line instead: those are the owner's own hand
  * and the engine's own slot, which is the very confirmation an audit row would be recording.
  */
-function auditOverwrite(serviceName: string, row: ExistingRow, actingAgentId: string | null, verb: string): void {
+function auditDestroy(
+  serviceName: string, row: ExistingRow, actingAgentId: string | null, verb: string, act: 'overwrote' | 'deleted',
+): void {
   const detail =
-    `${verb} overwrote the credential stored under "${serviceName}" ` +
+    `${verb} ${act} the credential stored under "${serviceName}" ` +
     `(created ${row.created_at}${row.created_by_agent_id ? ` by ${row.created_by_agent_id}` : ''}). ` +
     `The previous value is unrecoverable.`;
-  logger.warn('Credential overwritten', { serviceName, actingAgentId, verb, createdAt: row.created_at });
+  logger.warn(act === 'deleted' ? 'Credential deleted' : 'Credential overwritten',
+    { serviceName, actingAgentId, verb, createdAt: row.created_at });
   if (!actingAgentId) return;
   try {
     getDb().prepare(
       `INSERT INTO audit_log (id, agent_id, action_type, target, result, detail, created_at)
        VALUES (?, ?, 'tool_call', ?, 'success', ?, datetime('now'))`,
-    ).run(uuidv4(), actingAgentId, `credential_overwrite:${serviceName}`, detail);
+    ).run(uuidv4(), actingAgentId, `credential_${act === 'deleted' ? 'delete' : 'overwrite'}:${serviceName}`, detail);
   } catch (err) {
-    logger.error('Failed to audit-log a credential overwrite', {
-      serviceName, error: err instanceof Error ? err.message : String(err),
+    logger.error('Failed to audit-log a credential destruction', {
+      serviceName, act, error: err instanceof Error ? err.message : String(err),
     });
   }
 }
@@ -268,7 +311,7 @@ export function addCredential(
     if (!opts?.overwrite) return { ok: false, error: overwriteRefusal(trimmedName, existing, 'credential_add') };
     // IN PLACE, never delete-and-reinsert: `created_at` / `created_by_agent_id` are what make
     // the NEXT refusal able to name what it is protecting, and a reinsert launders exactly that.
-    auditOverwrite(trimmedName, existing, createdByAgentId, 'credential_add');
+    auditDestroy(trimmedName, existing, createdByAgentId, 'credential_add', 'overwrote');
     writeValue(existing.id, credentials, description);
     return { ok: true, record: readRecord(existing.id) };
   }
@@ -303,7 +346,7 @@ export function updateCredential(
   // that is there. Same rule, same door text as `addCredential` above.
   if (!opts?.overwrite) return { ok: false, error: overwriteRefusal(serviceName, row, 'credential_update') };
 
-  auditOverwrite(serviceName, row, updatedByAgentId, 'credential_update');
+  auditDestroy(serviceName, row, updatedByAgentId, 'credential_update', 'overwrote');
   writeValue(row.id, credentials, description);
   logger.info('Credential updated', { serviceName, updatedByAgentId });
 
@@ -342,11 +385,18 @@ function readRecord(id: string): CredentialRecord {
 export function deleteCredentialByService(
   serviceName: string,
   deletingAgentId: string | null,
+  opts?: CredentialDeleteOptions,
 ): { ok: boolean; error?: string } {
-  const result = getDb().prepare('DELETE FROM agent_credentials WHERE service_name = ?').run(serviceName);
-  if (result.changes === 0) {
-    return { ok: false, error: `No credential found for service "${serviceName}".` };
-  }
+  const row = findExisting(serviceName);
+  if (!row) return { ok: false, error: `No credential found for service "${serviceName}".` };
+
+  // T83 FIX ROUND (review IMPORTANT B-1): THE SECOND DESTROY DOOR, closed with the same rule as
+  // the first. This one took no confirmation at all, and a delete-then-add reaches the same end
+  // state as a refused overwrite while leaving LESS record than an authorised one.
+  if (!opts?.confirm) return { ok: false, error: deleteRefusal(serviceName, row) };
+
+  auditDestroy(serviceName, row, deletingAgentId, 'credential_delete', 'deleted');
+  getDb().prepare('DELETE FROM agent_credentials WHERE id = ?').run(row.id);
   logger.info('Credential deleted', { serviceName, deletingAgentId });
   return { ok: true };
 }
@@ -354,8 +404,9 @@ export function deleteCredentialByService(
 export function deleteCredentialById(
   id: string,
   deletingAgentId: string | null,
+  opts?: CredentialDeleteOptions,
 ): { ok: boolean; error?: string } {
   const row = getDb().prepare('SELECT service_name FROM agent_credentials WHERE id = ?').get(id) as { service_name: string } | undefined;
   if (!row) return { ok: false, error: `No credential found with id "${id}".` };
-  return deleteCredentialByService(row.service_name, deletingAgentId);
+  return deleteCredentialByService(row.service_name, deletingAgentId, opts);
 }

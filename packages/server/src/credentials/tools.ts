@@ -75,12 +75,13 @@ export const credentialsToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'credential_delete',
-    description: 'Permanently delete a credential by service name. Use only when the user explicitly asks to remove it (e.g., they revoked the token, or the technique is no longer needed). Deletion is irreversible - no recycle bin.',
+    description: 'Permanently delete a credential by service name. Use only when the user explicitly asks to remove it (e.g., they revoked the token, or the technique is no longer needed). Deletion is irreversible - no recycle bin, no prior version. REQUIRES confirm=true: the engine refuses until you say you mean it, and the refusal tells you when the credential was created and by whom. If you only want to REPLACE a value, do not delete - use credential_update with overwrite=true, which keeps the row\'s record of who created it and when.',
     effects: [{ kind: 'secrets', from: 'derived:the encrypted credential store' }],
     input_schema: {
       type: 'object',
       properties: {
         service_name: { type: 'string', description: 'Service name of the credential to delete.' },
+        confirm: { type: 'boolean', description: 'Required, and must be true: you are permanently removing this credential and its value cannot be recovered.' },
       },
       required: ['service_name'],
     },
@@ -174,7 +175,7 @@ export async function executeCredentialTool(
     case 'credential_delete': {
       const serviceName = args.service_name as string;
       if (!serviceName || typeof serviceName !== 'string') return 'Error: service_name is required.';
-      const result = deleteCredentialByService(serviceName, agentId);
+      const result = deleteCredentialByService(serviceName, agentId, { confirm: args.confirm === true });
       if (!result.ok) return `Error: ${result.error}`;
       return `Credential "${serviceName}" deleted.`;
     }

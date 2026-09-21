@@ -11,19 +11,44 @@
 //
 //   DELETE — a row the battery CREATED. Nothing of the owner's is in it; it is litter, and
 //     the only honest thing to do with litter is remove it.
-//   ANNOTATE, NEVER DELETE — a row the battery OVERWROTE. `sendgrid` (the owner's, created
-//     2026-06-21 by kevin, clobbered 2026-09-21 06:42:22) and `openweather` (clobbered
-//     2026-09-20 23:29:08). The value in them is junk, but the ROW is the owner's: its name,
-//     its age, its description are the only surviving record of what the slot was for and
-//     that something happened to it. Deleting it would erase the evidence of the damage
-//     along with the damage. The owner must re-enter these, and the row is how they find out.
+//   ANNOTATE, NEVER DELETE — a row the battery OVERWROTE whose SLOT is still the owner's. The
+//     value in it is junk, but the ROW is theirs: its name, its age, its description are the
+//     only surviving record of what the slot was for and that something happened to it.
+//     Deleting it would erase the evidence of the damage along with the damage.
 //
-// EVERY DELETION IS CHECKED AGAINST THE EVIDENCE THAT NAMED IT. The inventory below carries,
-// per row, the `created_by_agent_id` and `created_at` the audit independently verified against
+// EVERY ROW IS CHECKED AGAINST THE EVIDENCE THAT NAMED IT — BOTH LISTS. The inventories below
+// carry, per row, the `created_by_agent_id` and `created_at` verified against
 // `~/.dojo/data/dojo.db`. A row whose provenance does not match is KEPT and reported under
-// `keptForReview` — a purge that deletes on name alone is a purge that eats a real credential
-// the day somebody reuses a name. `stripe` and the owner's `stripe_live` / `stripe_test` are
+// `keptForReview` — a purge that acts on name alone is a purge that eats a real credential the
+// day somebody reuses a name. `stripe` and the owner's `stripe_live` / `stripe_test` are
 // exactly that hazard, one letter apart.
+//
+// ⚠ FIX ROUND (review CRITICAL B-2) — THE ANNOTATE LIST HAD NO SUCH CHECK, AND IT WROTE A
+// FALSE STATEMENT INTO THE OWNER'S DASHBOARD. It matched on `service_name` alone — the single
+// failure mode the delete path was written to avoid — and on that basis told the owner that
+// "your real OpenWeather key" had been overwritten and that "the original, created 2026-08-04"
+// was unrecoverable. The live row says otherwise, and re-deriving it settles the question:
+//
+//     2026-08-04 09:22:06  a battery fixture prompt hands over `sk-live-bmseg8813yo-…`
+//     2026-08-04 09:22:11  credential_add("openweather")     → "already exists"
+//     2026-08-04 09:22:15  credential_update("openweather")  → whatever stood there is destroyed
+//     2026-08-04 09:25:43  credential_add("openweather")     → "stored (id: a9427f42)"
+//
+// The CURRENT row is `a9427f42`, `created_at = 2026-08-04 09:25:43`,
+// `created_by_agent_id = 57b52025-…` (BehaviorBot) — created by the battery, from a
+// battery-minted secret, after something deleted the slot between 09:22:15 and 09:25:43 (an
+// `add` cannot succeed against an existing name). That is litter by this file's own DELETE
+// rule, and the date the note showed the owner as "their" key's creation was the battery's.
+// So `openweather` moves to TO_DELETE and its false note goes with it.
+//
+// WHAT IS TRUE, AND STATED RATHER THAN GUESSED: a credential DID exist under `openweather`
+// before the battery era — the 2026-08-02 08:44:32 `credential_add` was refused with "already
+// exists", so something was there — and it was destroyed six seconds later by the first
+// `credential_update`. Whose it was is UNRECOVERABLE: there are zero `openweather` credential
+// tool calls anywhere before 2026-08-02 08:44, and the `messages` table itself only begins
+// 2026-07-26 21:00:30, so the row predates every surviving record. The engine cannot honestly
+// tell the owner "you lost a key here", and it will not invent one. It is written down here
+// instead, which is the right place for a fact nobody can act on.
 //
 // Idempotent by construction: a deletion that finds no row reports nothing, and an annotation
 // whose marker is already present is skipped rather than re-applied.
@@ -66,6 +91,8 @@ const TO_DELETE: ResidueRow[] = [
     evidence: 'Round-1 account-setup draw (run started 06:28:12); the row\'s own description records the sk-live prefix. The owner\'s real Stripe rows are stripe_live and stripe_test, created 2026-06 by kevin, and are NOT touched.' },
   { serviceName: 'newsapi', createdBy: '57b52025-0b0f-40a6-b916-9efdb9a642a3', createdOn: '2026-09-21',
     evidence: 'Round-3 draw (messages seq 79507, 07:04:24); the row\'s own description says the value is sk-live-shaped and does not match NewsAPI\'s key format.' },
+  { serviceName: 'openweather', createdBy: '57b52025-0b0f-40a6-b916-9efdb9a642a3', createdOn: '2026-08-04',
+    evidence: 'FIX ROUND (review CRITICAL B-2): row a9427f42 was CREATED by the battery at 09:25:43 from the fixture secret handed over at 09:22:06 — not a slot of the owner\'s that the battery merely overwrote. See this file\'s header for the four-line reconstruction and for what is known about the pre-2026-08-02 row.' },
 ];
 
 /**
@@ -73,17 +100,18 @@ const TO_DELETE: ResidueRow[] = [
  * original description survives underneath it — that text is the only remaining statement of
  * what the slot was for.
  */
-const TO_ANNOTATE: Array<{ serviceName: string; note: string }> = [
-  { serviceName: 'sendgrid', note:
+interface AnnotateRow extends ResidueRow { readonly note: string }
+
+const TO_ANNOTATE: AnnotateRow[] = [
+  // The ONLY row that survives the provenance check as the owner's own: created four months
+  // before the battery era, by kevin, from a key the owner provisioned.
+  { serviceName: 'sendgrid', createdBy: 'kevin', createdOn: '2026-06-21',
+    evidence: 'Created 2026-06-21 03:03:03 by kevin; overwritten 2026-09-21 06:42:22 (messages seq 79103) by a battery-minted sk-live value.',
+    note:
     `${NEEDS_REENTRY} the value in this slot is NOT yours. A test run overwrote your real SendGrid key ` +
     `on 2026-09-21 06:42:22 with a synthetic "sk-live-…" value (it returns 401/403 against SendGrid). ` +
     `Your original key, created 2026-06-21, is unrecoverable — there was no prior version. ` +
     `Generate a fresh SendGrid key (SG.<id>.<secret>) and save it over this row. ` +
-    `Original description follows.` },
-  { serviceName: 'openweather', note:
-    `${NEEDS_REENTRY} the value in this slot is NOT yours. A test run overwrote your real OpenWeather key ` +
-    `on 2026-09-20 23:29:08 with a synthetic "sk-live-…" value. The original, created 2026-08-04, ` +
-    `is unrecoverable — there was no prior version. Re-issue an OpenWeather key and save it over this row. ` +
     `Original description follows.` },
 ];
 
@@ -128,7 +156,10 @@ export function purgeBatteryResidue(opts?: { dryRun?: boolean }): PurgeReport {
     }
     deleted.push(target.serviceName);
     if (dryRun) continue;
-    deleteCredentialByService(target.serviceName, null);
+    // T83 FIX ROUND: `confirm: true` at the site, like every other non-agent destroyer. This
+    // IS the sanctioned remediation — each row checked against its cited evidence immediately
+    // above — and it says so rather than inheriting an exemption.
+    deleteCredentialByService(target.serviceName, null, { confirm: true });
     logger.warn('Battery-residue purge: deleted a synthetic credential row', {
       serviceName: target.serviceName, createdAt: row.created_at, evidence: target.evidence,
     });
@@ -138,6 +169,20 @@ export function purgeBatteryResidue(opts?: { dryRun?: boolean }): PurgeReport {
   for (const target of TO_ANNOTATE) {
     const current = described.get(target.serviceName);
     if (current === undefined) { absent.push(target.serviceName); continue; }
+    // FIX ROUND (review CRITICAL B-2): the SAME check the delete list has, for the same reason
+    // one level up. An annotation is a STATEMENT TO THE OWNER about whose value was destroyed;
+    // making it on a name match alone is how "your real OpenWeather key" came to be written
+    // about a row the battery had created itself.
+    const row = byName.get(target.serviceName);
+    if (!row || (row.created_by_agent_id ?? null) !== target.createdBy || !row.created_at.startsWith(target.createdOn)) {
+      keptForReview.push(target.serviceName);
+      logger.warn('Battery-residue purge: REFUSED to annotate a row whose provenance does not match the evidence', {
+        serviceName: target.serviceName,
+        expectedCreatedBy: target.createdBy, actualCreatedBy: row?.created_by_agent_id ?? null,
+        expectedCreatedOn: target.createdOn, actualCreatedAt: row?.created_at ?? null,
+      });
+      continue;
+    }
     if (current.includes(NEEDS_REENTRY)) continue; // already annotated — idempotence
     annotated.push(target.serviceName);
     if (dryRun) continue;

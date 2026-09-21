@@ -53,7 +53,12 @@ const OWNER_AGENT = 'kevin';
 const BATTERY_AGENT = 'behaviorbot';
 
 beforeEach(() => {
-  vi.resetModules();
+  // NO `vi.resetModules()` here, deliberately. The store and the tool module hold no
+  // module-level state — `getDb` is mocked to read `mockDb.current` at CALL time, so a fresh
+  // database per test is all the isolation this suite needs. Resetting the module graph instead
+  // made every clause re-import `../tools.js` (and with it the whole tool-definition chain)
+  // from scratch: ~2.5 s each in isolation, over the 5 s timeout under full-suite load, and
+  // slow enough to starve neighbouring suites' own whole-tree walks into failing too.
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT, status TEXT, config TEXT, updated_at TEXT);
@@ -251,6 +256,60 @@ describe('the flag reaches the model, and the owner\'s own edits still work', ()
     expect(auditRows()).toHaveLength(1);
   });
 
+  it('THE RED (review IMPORTANT B-1): credential_delete refuses without confirm, and names the row', async () => {
+    await seedOwnersKey();
+    const { deleteCredentialByService, getCredentialByService } = await import('../store.js');
+
+    const result = deleteCredentialByService('sendgrid', BATTERY_AGENT);
+
+    expect(result.ok, 'the second destroy door was the quiet one').toBe(false);
+    expect(result.error).toContain('2026-06-21');
+    expect(result.error).toContain(OWNER_AGENT);
+    expect(result.error).toContain('confirm=true');
+    // And it points a caller who only wanted to REPLACE a value at the verb that keeps the
+    // row's provenance, instead of letting delete-then-add launder it away.
+    expect(result.error).toContain('credential_update');
+    expect(getCredentialByService('sendgrid', null), 'the row was deleted anyway').not.toBeNull();
+  });
+
+  it('a confirmed delete works and leaves an audit row naming the row it ended', async () => {
+    await seedOwnersKey();
+    const { deleteCredentialByService, getCredentialByService } = await import('../store.js');
+
+    const result = deleteCredentialByService('sendgrid', BATTERY_AGENT, { confirm: true });
+
+    expect(result.ok).toBe(true);
+    expect(getCredentialByService('sendgrid', null)).toBeNull();
+    const rows = auditRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].agent_id).toBe(BATTERY_AGENT);
+    expect(`${rows[0].target} ${rows[0].detail}`).toContain('sendgrid');
+    expect(`${rows[0].target} ${rows[0].detail}`).toMatch(/delete/i);
+  });
+
+  it('the delete TOOL carries the flag, refuses without it, and honours it', async () => {
+    await seedOwnersKey();
+    const { credentialsToolDefinitions, executeCredentialTool } = await import('../tools.js');
+    const def = credentialsToolDefinitions.find((d) => d.name === 'credential_delete');
+    const props = (def?.input_schema as { properties: Record<string, unknown> }).properties;
+    expect(props.confirm, 'the model has no way to authorise a deletion').toBeDefined();
+    expect(def?.description).toMatch(/confirm/);
+
+    const refused = await executeCredentialTool('credential_delete', { service_name: 'sendgrid' }, BATTERY_AGENT);
+    expect(refused).toContain('2026-06-21');
+    const done = await executeCredentialTool('credential_delete',
+      { service_name: 'sendgrid', confirm: true }, BATTERY_AGENT);
+    expect(done).toContain('deleted');
+  });
+
+  it('CONTROL: deleting a name that does not exist still says so, and writes nothing', async () => {
+    const { deleteCredentialByService } = await import('../store.js');
+    const result = deleteCredentialByService('never_existed', BATTERY_AGENT, { confirm: true });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('No credential found');
+    expect(auditRows()).toEqual([]);
+  });
+
   it('THE CENSUS: the two non-agent writers state their authorisation at the site', () => {
     // The dashboard PATCH is the owner editing their own row — their click IS the
     // confirmation — and the VNC rotate is the engine turning its own private slot.
@@ -258,7 +317,12 @@ describe('the flag reaches the model, and the owner\'s own edits still work', ()
     for (const f of ['gateway/routes/credentials.ts', 'screen-share/manager.ts']) {
       const src = fs.readFileSync(path.join(SRC_ROOT, f), 'utf-8');
       expect(/overwrite:\s*true/.test(src), `${f} overwrites without declaring it`).toBe(true);
+      // FIX ROUND (review IMPORTANT B-1): and the same for the OTHER destroy door.
+      expect(/confirm:\s*true/.test(src), `${f} deletes without declaring it`).toBe(true);
     }
+    // The remediation purge is a non-agent destroyer too, and says so.
+    const purge = fs.readFileSync(path.join(SRC_ROOT, 'credentials/battery-residue-purge.ts'), 'utf-8');
+    expect(/confirm:\s*true/.test(purge)).toBe(true);
   });
 });
 
@@ -290,6 +354,7 @@ describe('the battery residue is purged, and the clobbered slots are not hidden'
     addCredential('stripe_live', { api_key: 'real' }, 'the owner\'s real Stripe key', OWNER_AGENT);
     stamp('stripe_live', OWNER_AGENT, '2026-06-21 03:03:03');
     addCredential('openweather', { api_key: 'sk-live-x' }, 'OpenWeather (rotated)', BEHAVIORBOT_ID);
+    stamp('openweather', BEHAVIORBOT_ID, '2026-08-04 09:25:43');
     await seedOwnersKey();
   }
 
@@ -304,10 +369,30 @@ describe('the battery residue is purged, and the clobbered slots are not hidden'
     expect(names).not.toContain('t6_probe');
     expect(names).not.toContain('stripe');
     expect(names, 'the owner\'s own Stripe row is a DIFFERENT row').toContain('stripe_live');
-    expect(names, 'a clobbered slot is annotated, never deleted').toContain('sendgrid');
-    expect(names).toContain('openweather');
+    expect(names, 'a clobbered slot that IS the owner\'s is annotated, never deleted').toContain('sendgrid');
+    // FIX ROUND (review CRITICAL B-2): `openweather` is battery litter, not an owner slot —
+    // row a9427f42 was CREATED by BehaviorBot at 2026-08-04 09:25:43, so it goes with the rest
+    // of the litter and its false "your real OpenWeather key" note goes with it.
+    expect(names, 'a row the battery created is not a row the battery overwrote').not.toContain('openweather');
     expect(report.deleted).toContain('stripe');
-    expect(report.annotated).toEqual(expect.arrayContaining(['sendgrid', 'openweather']));
+    expect(report.deleted).toContain('openweather');
+    expect(report.annotated).toEqual(['sendgrid']);
+  });
+
+  it('THE RED (review CRITICAL B-2): an annotation is REFUSED when provenance does not match', async () => {
+    const { addCredential } = await import('../store.js');
+    // A `sendgrid` row that is NOT the owner's June one — the battery's, same name. The old
+    // annotate path matched on name alone and would have told the owner their real key was
+    // destroyed, about a row the battery made itself.
+    addCredential('sendgrid', { api_key: 'sk-live-x' }, 'battery sendgrid', BEHAVIORBOT_ID);
+    const { purgeBatteryResidue } = await import('../battery-residue-purge.js');
+    const report = purgeBatteryResidue();
+
+    expect(report.annotated, 'a statement to the owner made on a name match').toEqual([]);
+    expect(report.keptForReview).toContain('sendgrid');
+    const desc = (mockDb.current!.prepare('SELECT description FROM agent_credentials WHERE service_name = ?')
+      .get('sendgrid') as { description: string }).description;
+    expect(desc).not.toMatch(/NEEDS RE-ENTRY/i);
   });
 
   it('the annotation is what the owner will actually read, on the surface they read it on', async () => {

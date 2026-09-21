@@ -139,7 +139,10 @@ export function getSavedVncPassword(): string | null {
 
 export function clearSavedVncPassword(): void {
   try {
-    deleteCredentialByService(VNC_CRED_SERVICE, null);
+    // T83 FIX ROUND (review IMPORTANT B-1): `confirm: true` at the site. This is the engine
+    // forgetting its OWN saved VNC password after it failed to authenticate — a stale value
+    // that would otherwise lock the user out. No third party's secret lives at this name.
+    deleteCredentialByService(VNC_CRED_SERVICE, null, { confirm: true });
   } catch { /* nothing saved */ }
 }
 
