@@ -86,22 +86,43 @@ import { advance, initState, type AgentTurnState } from '../state.js';
 import { runAssemble, ASSEMBLE_PHASE, type AssembleContext } from '../steps/assemble/index.js';
 import { runTurnClassification } from '../steps/preflight/turn-classification.js';
 import type { PreflightContext, PreflightScratch } from '../steps/preflight/index.js';
-import { getPendingEngineEvent } from '../counterparty.js';
+import { getPendingEngineEvent, ENGINE_EVENT_EXPIRY_HOURS } from '../counterparty.js';
 import type { TurnContext } from '../../turn-context.js';
 import { runMigrations } from '../../../db/migrations.js';
 
 const AGENT = 'agent-t83-livechain';
 const MODEL = 'model-t83-livechain';
-const T0 = Date.parse('2026-09-20T23:21:30Z');
+
+// ⚠ THE SEED CLOCK IS RELATIVE, AND THAT IS LOAD-BEARING — NEVER PIN IT TO A LITERAL INSTANT.
+//
+// This line WAS `Date.parse('2026-09-20T23:21:30Z')`: the author's own wall clock at the hour
+// the file was written (b35c386f, 2026-09-21T01:04Z). It passed that night and turned red BY
+// ITSELF at 2026-09-21T05:21:30Z, with no commit anywhere near it. `getPendingEngineEvent`'s
+// D8 lifecycle gate is `created_at >= unixepoch('now', '-ENGINE_EVENT_EXPIRY_HOURS hours')`,
+// and the first thing that function does is call `expireExhaustedEngineEvents`, which SWEEPS
+// anything past that same horizon — so the literal's own age was the fuse, and T0 + 6h was
+// the hour it burned down. Three later sittings each measured the failure as "pre-existing"
+// against their own diff and routed around it; `counterparty.ts` is byte-identical from
+// v3.1.25 to now, so there was never an introducing commit to find.
+//
+// A real engine event is read SECONDS after it is written — `close-the-loop.ts` inserts the
+// completion report and queues the self-wake in the same breath — so "freshly queued" is the
+// honest fixture for the delivery chain, and it must be expressed relative to the clock the
+// SQL actually reads. The horizon's own behaviour is not thereby untested: the third test
+// below seeds deliberately PAST it and pins what the engine does instead.
+const T0 = Date.now() - 60_000;
 
 const TRIGGER_FP = 'LIVE-CHAIN-COMPLETION-REPORT-FINGERPRINT-4c02';
 const NOTIFICATION_FP = 'LIVE-CHAIN-MAILBOX-NOTICE-FINGERPRINT-9b73';
+const STALE_FP = 'LIVE-CHAIN-STALE-COMPLETION-FINGERPRINT-7e31';
 
 let tseq = 0;
 
 function insertRow(p: {
   id: string; role: string; content: string; lane: 'owner' | 'a2a' | 'events';
   originIntent?: string | null; inboundMeta?: string | null;
+  /** Epoch ms. Defaults to the fresh seed clock; only the horizon test overrides it. */
+  createdAt?: number;
 }): void {
   tseq += 1;
   mockDb.current!.prepare(
@@ -113,7 +134,7 @@ function insertRow(p: {
     p.id, AGENT, p.role, p.lane, p.content,
     p.lane === 'events' ? 'engine-note' : p.lane === 'a2a' ? 'a2a' : (p.role === 'assistant' ? 'agent-text' : 'user-text'),
     p.lane === 'owner' ? 'user-visible' : 'agent-only',
-    Math.max(1, Math.ceil(p.content.length / 4)), T0 + tseq * 1000, p.originIntent ?? null,
+    Math.max(1, Math.ceil(p.content.length / 4)), p.createdAt ?? (T0 + tseq * 1000), p.originIntent ?? null,
     p.inboundMeta ?? null,
   );
 }
@@ -238,6 +259,51 @@ describe('T83 live chain — ENGINE TURN: getPendingEngineEvent → runAssemble 
     if (out.directive !== 'proceed') throw new Error(`expected proceed, got exit: ${out.reason}`);
     expect(textOf(out.messages)).toContain(TRIGGER_FP);
     expect(out.assembled.messageEntryIds).not.toContain('lane.empty-context-fallback');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// THE OTHER SIDE OF DOOR 1 — and the reason the seed clock above is relative.
+//
+// The delivery chain's guarantee has a deliberate edge: an engine event is eligible while it
+// is INSIDE its D8 lifecycle, and past the horizon it is not delivered at all. That is not a
+// silent drop — `expireExhaustedEngineEvents` stamps `swept_at` (identity preserved) and
+// posts exactly one agent notice, so what the person experiences is "the agent told me the
+// reminder could not be delivered", never a completion note arriving stale out of yesterday.
+// Nothing pinned that behaviourally before: `answered-edge.test.ts` pins the CONSTANT's value
+// (`ENGINE_EVENT_EXPIRY_HOURS === 6`) and nothing drove the sweep. An unpinned edge is how a
+// fixture came to depend on the horizon by accident instead of on purpose.
+describe('T83 live chain — THE HORIZON: past the lifecycle the trigger is retired, loudly', () => {
+  it('a completion report older than ENGINE_EVENT_EXPIRY_HOURS never wakes the agent, is swept, and the owner is told once', () => {
+    insertRow({
+      id: 't83lc-stale-trigger', role: 'user', lane: 'events', originIntent: 'completion_report',
+      createdAt: Date.now() - (ENGINE_EVENT_EXPIRY_HOURS * 3600_000 + 60_000),
+      content:
+        `[Engine event: completion report owed] [${STALE_FP}] You just finished work the owner ` +
+        `asked for while talking to another agent. Send the owner ONE short completion note.`,
+    });
+
+    // DOOR 1, REAL — and it says no, because the event is past its horizon.
+    expect(getPendingEngineEvent(AGENT)).toBeNull();
+
+    // Not silently lost: the row is disposed by the sanctioned signal, identity intact.
+    const stale = mockDb.current!.prepare('SELECT swept_at FROM messages WHERE id = ?')
+      .get('t83lc-stale-trigger') as { swept_at: number | string | null } | undefined;
+    expect(stale?.swept_at ?? null).not.toBeNull();
+
+    // And the person hears about it, exactly once, in the agent's own voice.
+    const notices = mockDb.current!.prepare(
+      "SELECT content FROM messages WHERE agent_id = ? AND origin_intent = 'engine_event_expired'",
+    ).all(AGENT) as Array<{ content: string }>;
+    expect(notices).toHaveLength(1);
+    expect(notices[0].content).toContain('could not deliver a scheduled reminder');
+    expect(notices[0].content).toContain(STALE_FP);
+
+    // Once, not once per consult: the `swept_at` .changes guard is the only once-guard.
+    expect(getPendingEngineEvent(AGENT)).toBeNull();
+    expect(mockDb.current!.prepare(
+      "SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND origin_intent = 'engine_event_expired'",
+    ).get(AGENT)).toEqual({ n: 1 });
   });
 });
 
