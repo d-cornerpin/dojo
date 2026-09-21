@@ -145,16 +145,45 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   // it directly. (Reuses the complexity classifier that was computed but unconsumed.)
   const conversationalTurn = counterparty.kind === 'user'
     && complexityClassifier(lastUserMessageContent ?? '').complexity === 'simple';
-  // Content-preservation for an ACTION-REQUIRED engine-origin A2A message
-  // (Healer QUESTION, PM escalation, destructive-gate approval, all origin_intent
-  // 'a2a_request'). It drives an engine turn, but the EVENTS/awareness lane
-  // truncates each notice to a gist, which would clip the very thing the receiver
-  // must act on (an approval token, the full escalation). Keep THIS event full in
-  // the live tail instead: the assembler leaves the id out of the truncated
-  // awareness block so scopeToEngineTurn's copy is what the model reads. Scoped to
-  // 'a2a_request' only, so scheduler/reminder engine turns are unchanged.
+  // Content-preservation for THE ROW THAT IS THIS TURN'S OWN TRIGGER.
+  //
+  // T83 (behav-sig:a9ca4fea) — WAS scoped to origin_intent === 'a2a_request' only (Healer
+  // QUESTION, PM escalation, destructive-gate approval — content the receiver must act on,
+  // an approval token, the full escalation). But `isEngineTurn` is ALREADY the general
+  // claim: it is true iff `pendingEngineEvent != null` (`preflight/turn-classification.ts`
+  // `isEngineTurn = !isA2ATurn && !hasUnansweredUser && pendingEngineEvent != null`), and
+  // OPEN-11's own comment on that line says it plainly for every engine turn, not one
+  // intent: "The scheduler payload itself is the ACTIVE USER DIRECTIVE this turn."
+  // `engine-riders.ts` draws the real line, structurally, upstream of this file: a
+  // **deliverable event** (schedule fire, tracker assignment, reminder, healer action, "a
+  // peer's completion report", an a2a request, a spawn kickoff, a PM review) IS the reason
+  // for a turn, while a **rider** (thrash steer, delegation hint, the fan-out compile order,
+  // …) merely rides one — and `getPendingEngineEvent`'s own query (`DELIVERABLE_ENGINE_EVENT_
+  // WHERE`) excludes every `ENGINE_RIDER_INTENTS` value by construction, so `pendingEngineEvent`
+  // can NEVER be a rider. Narrowing this exemption to one deliverable intent left every OTHER
+  // one — 'completion_report' among them — subject to the EVENTS/awareness lane's truncation
+  // exactly like an ambient notice, even though it is this turn's whole reason for existing.
+  //
+  // MEASURED (the incident this closes): a freshly spawned A2A worker sends its DELIVERABLE
+  // and exits; `close-the-loop.ts` inserts a `completion_report` engine event and the runtime
+  // drain wakes it for a follow-up turn. That turn's ENTIRE live tail is the agent's own
+  // send_to_agent tool_use/tool_result pair (a fresh spawn has nothing else) plus this one
+  // 'user'-role trigger row. The awareness sweep (this exemption's only gate) pulled the
+  // trigger out into the gisted events lane, leaving `freshTail` = [assistant tool_use, an
+  // all-tool_result "user" row] — no leading user message — which `applyIntegrityPass`'s
+  // "must start with role=user" repair then shifts to EMPTY. Assembly's own zero-guard fired
+  // (`memory-assembler: Context assembly produced 0 messages after filtering`) and recovered
+  // via an unscoped "last user message in the DB" query that happened, by luck of recency
+  // ordering, to land back on the very row that had just been filtered out.
+  //
+  // THE FIX IS THE RULE, NOT A SECOND INTENT LITERAL: keep THE PENDING ENGINE EVENT full
+  // whenever it is driving this turn, full stop — `isEngineTurn && pendingEngineEvent` is
+  // already exactly "this row is why this turn exists", by the definition one file over.
+  // Every OTHER engine-origin row in the tail (a stale, already-served notice sitting from
+  // earlier in the session) is untouched: it is not `pendingEngineEvent` and stays gisted,
+  // per T68b's charter ("every OTHER engine notice ... still gists at 400").
   let engineEventKeepFullId: string | null = null;
-  if (isEngineTurn && pendingEngineEvent?.originIntent === 'a2a_request') {
+  if (isEngineTurn && pendingEngineEvent) {
     try {
       const idRow = db.prepare('SELECT id FROM messages WHERE agent_id = ? AND rowid = ?')
         .get(agentId, pendingEngineEvent.rowid) as { id: string } | undefined;

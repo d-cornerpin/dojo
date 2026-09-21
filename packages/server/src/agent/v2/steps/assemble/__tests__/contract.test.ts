@@ -375,3 +375,98 @@ describe('PHASE-6 CUT 6: the `assemble` step\'s contract', () => {
     expect(refused.state.steerQueue.pending.some((e) => e.attempts > 0)).toBe(true);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// T83 (behav-sig:a9ca4fea) — `engineEventKeepFullId` IS COMPUTED FOR ANY PENDING ENGINE
+// EVENT, NOT ONE HAND-PICKED INTENT.
+//
+// The literal fixed line: it used to read
+//   `if (isEngineTurn && pendingEngineEvent?.originIntent === 'a2a_request')`
+// and now reads
+//   `if (isEngineTurn && pendingEngineEvent)`.
+//
+// WHY: `isEngineTurn` is ALREADY the general claim (`preflight/turn-classification.ts`:
+// `isEngineTurn = !isA2ATurn && !hasUnansweredUser && pendingEngineEvent != null`) — a
+// pending engine event driving a turn is, by construction, that turn's own directive, not
+// ambient awareness, whatever its `origin_intent`. `getPendingEngineEvent`'s own query
+// excludes every `ENGINE_RIDER_INTENTS` value, so `pendingEngineEvent` can never carry a
+// rider intent — this file's own `ctxFor` default (`pendingEngineEvent: null`) is what a
+// rider-driven or ordinary turn looks like, and the tests below never given it need not
+// (and structurally cannot, upstream) contrive one.
+//
+// This is the seam the memory/__tests__/a-turns-trigger-survives-assembly.test.ts
+// reproduction depends on: THAT file proves the assembler keeps a message whole when
+// `engineEventKeepFullId` names it; THIS file proves `runAssemble` now names the right
+// message for the incident's own intent (`completion_report`), not just the one intent the
+// pre-T83 gate recognised.
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('T83: engineEventKeepFullId is computed for ANY pending engine event, not one hand-picked intent', () => {
+  function dbResolvingIdTo(id: string): AssembleContext['db'] {
+    return { prepare: () => ({ all: () => [], get: () => ({ id }), run: () => ({ changes: 0 }) }) } as unknown as AssembleContext['db'];
+  }
+
+  function keepFullIdPassedToAssembler(): string | null | undefined {
+    const turnContextArg = assembleContextSpy.mock.calls[0]?.[2] as { engineEventKeepFullId?: string | null } | undefined;
+    return turnContextArg?.engineEventKeepFullId;
+  }
+
+  it('RED-BY-CONSTRUCTION (the incident\'s own intent): a completion_report trigger threads its message id into the assembler as engineEventKeepFullId', async () => {
+    const ctx = ctxFor({
+      isEngineTurn: true,
+      pendingEngineEvent: { rowid: 501, originIntent: 'completion_report' },
+      db: dbResolvingIdTo('msg-501'),
+    });
+
+    await runAssemble(freshState(), ctx);
+
+    expect(keepFullIdPassedToAssembler()).toBe('msg-501');
+  });
+
+  it('the ORIGINAL exemption (an a2a_request intent) still resolves — the broadened rule is a superset, not a replacement', async () => {
+    const ctx = ctxFor({
+      isEngineTurn: true,
+      pendingEngineEvent: { rowid: 502, originIntent: 'a2a_request' },
+      db: dbResolvingIdTo('msg-502'),
+    });
+
+    await runAssemble(freshState(), ctx);
+
+    expect(keepFullIdPassedToAssembler()).toBe('msg-502');
+  });
+
+  it('an intent the pre-T83 gate had never seen (e.g. a scheduler/tracker/healer deliverable) resolves identically — the gate no longer branches on intent value at all', async () => {
+    const ctx = ctxFor({
+      isEngineTurn: true,
+      pendingEngineEvent: { rowid: 503, originIntent: 'scheduler' },
+      db: dbResolvingIdTo('msg-503'),
+    });
+
+    await runAssemble(freshState(), ctx);
+
+    expect(keepFullIdPassedToAssembler()).toBe('msg-503');
+  });
+
+  it('no pendingEngineEvent ⇒ no engineEventKeepFullId, even were isEngineTurn somehow true', async () => {
+    const ctx = ctxFor({
+      isEngineTurn: true,
+      pendingEngineEvent: null,
+      db: dbResolvingIdTo('should-never-be-read'),
+    });
+
+    await runAssemble(freshState(), ctx);
+
+    expect(keepFullIdPassedToAssembler()).toBeNull();
+  });
+
+  it('a pending engine event on a NON-engine turn is never kept full — the gate still requires isEngineTurn, not pendingEngineEvent alone', async () => {
+    const ctx = ctxFor({
+      isEngineTurn: false,
+      pendingEngineEvent: { rowid: 504, originIntent: 'completion_report' },
+      db: dbResolvingIdTo('msg-504'),
+    });
+
+    await runAssemble(freshState(), ctx);
+
+    expect(keepFullIdPassedToAssembler()).toBeNull();
+  });
+});

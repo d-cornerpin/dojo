@@ -1007,12 +1007,16 @@ export interface PromptTurnContext {
    */
   resolvedReplyChannel?: Channel;
   /**
-   * On an engine turn driven by an ACTION-REQUIRED engine-origin A2A message
-   * (Healer QUESTION, PM escalation, destructive-gate approval), the message id of
-   * that event. The assembler keeps it FULL in the live tail instead of collapsing
-   * it into the truncated EVENTS/awareness gist, so the receiver sees the whole
-   * directive (e.g. an approval token) it must act on. Undefined/null on every other
-   * turn (scheduler/reminder engine events keep the normal awareness-lane behavior).
+   * On an engine turn, the message id of the PENDING ENGINE EVENT that is driving it
+   * (`isEngineTurn` is true iff one exists). The assembler keeps it FULL in the live
+   * tail instead of collapsing it into the truncated EVENTS/awareness gist, so the
+   * agent sees the whole directive it must act on — an approval token on an
+   * `a2a_request`, or simply the trigger itself on a `completion_report`/`scheduler`/
+   * … turn where nothing else survives the tail scoping (T83, behav-sig:a9ca4fea: a
+   * freshly spawned worker's tail held nothing else, so gisting the trigger emptied
+   * the tail to zero and tripped the assembler's empty-context recovery). Undefined/
+   * null on every non-engine turn. Every OTHER engine-origin row in the tail (a
+   * stale, already-served notice) is unaffected and still gists normally.
    */
   engineEventKeepFullId?: string | null;
   /**
