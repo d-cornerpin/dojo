@@ -4971,6 +4971,13 @@
       "to": 724,
       "by": "t83 pre-cut fixes (empty-assembly class, scope conformance, stop-truth, credential-overwrite)",
       "why": "+5 abort registration on tool-loop checkpoint dial. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/credentials/store.ts",
+      "from": 0,
+      "to": 361,
+      "by": "t83 credential-overwrite fix \u2014 over-cap pin at the growth detector's own remedy",
+      "why": "+122: refuse-by-default same-name writes, overwrite flag + audit rows, annotation metadata, the purge seam. From here it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -5024,6 +5031,7 @@
     "packages/server/src/agent/provider-error.ts": 345,
     "packages/server/src/agent/runtime.ts": 1656,
     "packages/server/src/agent/shared-state.ts": 307,
+    "packages/server/src/credentials/store.ts": 361,
     "packages/server/src/agent/stream-patience.ts": 394,
     "packages/server/src/providers/anthropic-sdk.ts": 470,
     "packages/server/src/services/ollama-lock.ts": 448,
