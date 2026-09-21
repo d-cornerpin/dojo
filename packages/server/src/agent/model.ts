@@ -221,6 +221,23 @@ export function streamTimeoutCode(watchdog: StreamWatchdog, patience: StreamPati
 }
 
 /**
+ * WHICH bound this trip spent, and whose number it was — the third sibling of the two above,
+ * for the LOG line rather than the error. The phrase says what happened; this says what it
+ * happened against, and the word "declared" appears only when the row actually declared.
+ *
+ * T83b: the Ollama path's log used to open `aborted by declared patience` unconditionally, on a
+ * provider whose patience columns were both NULL. A reader chasing three nights of failures was
+ * told the owner had configured the bound that killed the call; nobody had configured anything.
+ * The standing/declared split is worded exactly as `refuseIfDoomed` words its own, so the two
+ * sentences a human meets about the same fact read the same way.
+ */
+export function streamTripBound(watchdog: StreamWatchdog, patience: StreamPatience): string {
+  return watchdog.firstChunkTimedOut()
+    ? `${patience.firstChunkDeclared ? 'its declared' : 'the standing'} ${patience.firstChunkMs}ms first-chunk bound`
+    : `${patience.idleDeclared ? 'its declared' : 'the standing'} ${patience.idleMs}ms idle bound`;
+}
+
+/**
  * The extra clause a declared-patience-exceeded message carries: how big the request the
  * provider gave up on was, and how long its own owner said it needed. Empty for a genuine
  * mid-stream idle timeout — that case is not size-driven, and appending a size here would be a
@@ -1064,57 +1081,48 @@ async function callOllamaModel(
   await lock.acquire(modelInfo.providerId, ollamaModelName, patience.firstChunkMs);
 
   const startTime = Date.now();
-  // T81 fix wave (final review, Important I1) — hoisted above the try/catch below, on purpose:
-  // both are assigned INSIDE the try (`timeoutSignal` where the AbortSignal is built,
-  // `sawAnyContent` inside the NDJSON line parser), and the catch's own-timer discrimination
-  // (below) needs to read both. See that catch branch's own doc comment for the full chain.
-  // Optional — not just for TS's control-flow analysis: if something throws before the
-  // assignment below (inside the try, ahead of it) genuinely runs, our own timer was never
-  // even built, so `timeoutSignal?.aborted` reading `undefined` (falsy) is the CORRECT answer,
-  // not a workaround for one.
-  let timeoutSignal: AbortSignal | undefined;
-  let sawAnyContent = false;
+
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  // T83b — THE BOUNDS THIS TRANSPORT ARMS, AND WHY THEY ARE NOT `patience`'s TWO NUMBERS.
+  //
+  // `resolveStreamPatience`'s standing 90s/60s are derived from HOSTED behaviour (its own
+  // header says so) and this transport has never used them: its bound has always been the
+  // flat `TRANSPORT_DEFAULT_TIMEOUT_MS`. Arming the hosted constants here would make an
+  // undeclared local box LESS patient than it was yesterday — a 31B model reading a 50K prompt
+  // is not a dead socket at t=91s — so an undeclared row keeps the 300s it has always had, now
+  // as a per-phase bound instead of a total one. A DECLARED row is honoured exactly, on both
+  // sides, which is the whole point of the two columns.
+  //
+  // `patience` itself is left alone for `refuseIfDoomed` and `transportClientOptions` above:
+  // feeding those the lifted numbers would build a dispatcher for every NULL row and lose T79e's
+  // byte-preservation control.
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  const bounds: StreamPatience = {
+    firstChunkMs: patience.firstChunkDeclared ? patience.firstChunkMs : TRANSPORT_DEFAULT_TIMEOUT_MS,
+    idleMs: patience.idleDeclared ? patience.idleMs : TRANSPORT_DEFAULT_TIMEOUT_MS,
+    firstChunkDeclared: patience.firstChunkDeclared,
+    idleDeclared: patience.idleDeclared,
+  };
+  // T83b: the SAME `makeStreamWatchdog` the OpenAI-compat and Anthropic-direct paths arm —
+  // bumped per received chunk, `contentStarted()` on the first generated delta — replacing the
+  // flat total-duration `AbortSignal.timeout` T79e left here. A wall clock on the whole call
+  // cannot tell a healthy 13 tok/s generation at t=301s from a dead socket, and for three
+  // consecutive nights it called the first one the second (ticket-ollama-flat-ceiling.md). The
+  // external stop rides the combined signal exactly as it did, via `AbortSignal.any` inside.
+  const watchdog = makeStreamWatchdog(params.abortSignal, bounds.firstChunkMs, bounds.idleMs);
 
   try {
-    // Combine external abort (from stop button) with internal timeout.
-    // Node 22+ AbortSignal.any returns a signal that aborts when EITHER
-    // input signal aborts.
-    //
-    // T79e: this transport is the third one T64b/T73b's patience now reaches. It still arms
-    // no `makeStreamWatchdog` — there is no per-chunk bump/contentStarted machinery here, and
-    // adding one is a bigger change than "honour the stored bound" — so the single flat
-    // `AbortSignal.timeout` below has always had to stand in for BOTH the first-chunk bound
-    // and the idle bound at once. `resolveTransportTimeouts` already folds both into
-    // `bodyTimeoutMs` (it is `max(headersTimeoutMs, bodyTimeoutMs)` by construction, because
-    // `bodyNeeded` is derived from `max(firstChunkMs, idleMs)`), so that one number is the
-    // flat ceiling this call needs — never tighter than either declared bound, exactly the
-    // property `callOpenAIModel` and the Anthropic-direct path get from the same function.
-    //
-    // NULL row, or a declaration the standing 300 s already covers, makes `resolveTransportTimeouts`
-    // return `null` — and this is where R6 (byte-preservation) bites: every provider configured
-    // before today gets EXACTLY `TRANSPORT_DEFAULT_TIMEOUT_MS` (300,000), not some other number
-    // this function's own arithmetic could produce, so "existing providers are unchanged" stays
-    // a fact about the code rather than a hope.
-    //
-    // T79e FIX ROUND — THE ABORT SIGNAL ALONE WAS NOT ENOUGH. Node's built-in `fetch` runs on
+    // T79e FIX ROUND — THE WATCHDOG ALONE IS NOT ENOUGH. Node's built-in `fetch` runs on
     // undici's GLOBAL dispatcher unless one is explicitly attached via `init.dispatcher`, and
     // that global dispatcher carries its OWN independent `headersTimeout`/`bodyTimeout`
-    // (unconfigured default: 300,000, same fact `stream-patience.ts`'s header documents). An
-    // `AbortSignal` and a dispatcher clock are two unrelated timers racing the same socket —
-    // whichever fires first wins — so deriving only the signal left a declared 600 s row still
-    // dying at ~300 s in production, the exact defect this task exists to fix. The fix reuses
-    // `transportClientOptions`, the SAME cache-by-clock undici `Agent` machinery `getClient`
-    // and `getOpenAIClient` already use, rather than a second Agent-construction path: one
-    // provider declaring more patience must not multiply the number of ways an Agent gets
-    // built for it. A NULL row (or a declaration the standing transport already covers) gets
-    // `transport === null`, so no `dispatcher` key is set at all — the call goes out on
-    // undici's global dispatcher exactly as it always has, which is R6 for the client
-    // configuration, not just the abort duration.
-    const transportTimeouts = resolveTransportTimeouts(patience);
-    timeoutSignal = AbortSignal.timeout(transportTimeouts?.bodyTimeoutMs ?? TRANSPORT_DEFAULT_TIMEOUT_MS);
-    const signal = params.abortSignal
-      ? AbortSignal.any([timeoutSignal, params.abortSignal])
-      : timeoutSignal;
+    // (unconfigured default: 300,000, same fact `stream-patience.ts`'s header documents). Those
+    // are INTER-READ timers, not a total duration, so they are the right shape to sit under a
+    // per-chunk watchdog — but a declared 600 s row still died at ~300 s until one was attached.
+    // The fix reuses `transportClientOptions`, the SAME cache-by-clock undici `Agent` machinery
+    // `getClient` and `getOpenAIClient` already use, rather than a second Agent-construction
+    // path. A NULL row (or a declaration the standing transport already covers) gets
+    // `transport === null`, so no `dispatcher` key is set at all — the call goes out on undici's
+    // global dispatcher exactly as it always has, which is R6 for the client configuration.
     const transport = transportClientOptions(patience);
     // Node's global `RequestInit.dispatcher` is typed off `undici-types` (bundled with
     // `@types/node`) — a separately-versioned package from the `undici` npm dependency this
@@ -1130,7 +1138,7 @@ async function callOllamaModel(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody),
-      signal,
+      signal: watchdog.signal,
       ...(dispatcher ? { dispatcher } : {}),
     });
 
@@ -1193,18 +1201,17 @@ async function callOllamaModel(
 
       const message = chunk.message;
       if (message) {
-        // T81 fix wave (final review, Important I1): the one fact the catch block's synthetic
-        // watchdog needs to rebuild the first-chunk-vs-idle distinction — mirrors
-        // `makeStreamWatchdog.contentStarted()`'s own definition of GENERATED CONTENT exactly
-        // ("a text delta, a reasoning delta, or a tool-call delta") so this transport tells a
-        // first-chunk stall from a genuine mid-stream idle timeout the same way the other two
-        // transports do.
+        // T72b claim 2, this transport's spelling of it: the moment this box proves it can
+        // EMIT, which ends prompt-processing patience and starts the dead-connection bound. A
+        // text, thinking or tool-call delta is generated output; Ollama's bare
+        // `{"message":{"role":"assistant"}}` frame is the ack frame under another name and must
+        // not buy a shorter leash while the machine is still reading the prompt.
         if (
           (typeof message.content === 'string' && message.content.length > 0)
           || (typeof message.thinking === 'string' && message.thinking.length > 0)
           || (Array.isArray(message.tool_calls) && message.tool_calls.length > 0)
         ) {
-          sawAnyContent = true;
+          watchdog.contentStarted();
         }
         if (typeof message.content === 'string' && message.content.length > 0) {
           fullContent += message.content;
@@ -1264,6 +1271,10 @@ async function callOllamaModel(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      // Bytes arrived, so the socket is alive: the same per-chunk re-arm the other two
+      // transports do on every SSE event. `processLine` decides separately whether any of them
+      // were generated CONTENT, which is a different question (see `contentStarted` below).
+      watchdog.bump();
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
@@ -1272,6 +1283,11 @@ async function callOllamaModel(
     // Flush any trailing content left in the buffer after the stream ends.
     if (buffer.trim()) processLine(buffer);
 
+    // T65b's post-loop truth check is deliberately NOT mirrored here: unlike `openai`'s SSE
+    // reader, which swallows its own abort and returns, an aborted `fetch` body errors the
+    // stream, so `reader.read()` always rejects into the catch below. There is no silent exit
+    // from this loop to guard.
+    watchdog.finish();
     const latencyMs = Date.now() - startTime;
 
     if (fullThinking.length > 0) {
@@ -1316,44 +1332,27 @@ async function callOllamaModel(
         : (doneReason === 'stop' ? 'end_turn' : (doneReason ?? 'end_turn')),
     };
   } catch (err) {
+    watchdog.finish();
     const latencyMs = Date.now() - startTime;
     const message = err instanceof Error ? err.message : String(err);
 
-    // T81 FIX WAVE (NO-DOOMED-DIALS final review, Important I1) — OUR OWN DECLARED-PATIENCE
-    // ABORT MUST CARRY THE SAME IDENTITY THE OTHER TWO TRANSPORTS BUILD FROM
-    // `streamWasCutByWatchdog`. MIRRORS d15635a0's fix for the agent-sdk transport exactly.
+    // T83b — THE TRIP'S IDENTITY IS NOW MEASURED RATHER THAN ASSERTED.
     //
-    // Without this branch, the abort fell through to the generic `MODEL_CALL_FAILED` below:
-    // `provider-error.ts` classified it 'network' (the message contains the word "aborted"),
-    // `v2/recovery.ts`'s `recordInjury` never set `declaredPatienceHonestFailTurn` (it keys on
-    // the CODE, and the code never arrived), T81c's restart-decline never fired, and the
-    // Healer's 5s blind auto-wake cold-redialled the identical unfinishable prompt — reopening
-    // the exact GPU livelock this whole plan exists to close, through the one transport whose
-    // clock (T79e) started this very task.
+    // This branch used to build a `StreamWatchdog` whose `timedOut()` was hardcoded `true` and
+    // then report "no data from provider for too long" — a claim about inter-chunk gaps the flat
+    // timer above had never measured. The real watchdog answers both questions itself, so the
+    // same shared `streamWasCutByWatchdog` / `streamTimeoutCode` / `streamTimeoutPhrase` the
+    // other two transports go through now decide here too, fed by a clock that actually watched.
     //
-    // OWN-TIMER DISCRIMINATION: this transport has no dedicated exception type the way
-    // `providers/anthropic-sdk.ts` does (there is no separate module boundary to throw across)
-    // — but it has something equally exact: `timeoutSignal` is OUR OWN `AbortSignal.timeout`,
-    // combined with any external `params.abortSignal` only via `AbortSignal.any` (never the
-    // other way around), so `timeoutSignal.aborted` is true if and only if OUR timer is what
-    // fired — independent of whether an external stop-button abort ALSO happened to be present
-    // on this call. Checking `!params.abortSignal?.aborted` alongside it is what keeps a
-    // genuine user-requested stop (which also aborts the combined `signal`, but never
-    // `timeoutSignal` itself) from ever being mistaken for our own trip.
-    if (timeoutSignal?.aborted && !params.abortSignal?.aborted) {
-      const syntheticWatchdog: StreamWatchdog = {
-        signal: new AbortController().signal,
-        bump: () => {},
-        contentStarted: () => {},
-        finish: () => {},
-        timedOut: () => true,
-        firstChunkTimedOut: () => !sawAnyContent,
-        elapsedMs: () => latencyMs,
-      };
-      const code = streamTimeoutCode(syntheticWatchdog, patience);
-      const declaredMsg = `${streamTimeoutPhrase(syntheticWatchdog, patience)}: no data from provider for too long (elapsed ${latencyMs}ms)${declaredPatienceClause(syntheticWatchdog, patience, nativeEstimate)}`;
+    // The discrimination it preserves is the one that matters: `watchdog.timedOut()` is set in
+    // the timer callback and nowhere else, so an external stop — which aborts the combined
+    // signal via `AbortSignal.any` but never this timer — can never mint a patience code.
+    // `!external?.aborted` is the belt to that braces, unchanged from the timer it replaces.
+    if (streamWasCutByWatchdog(watchdog, params.abortSignal)) {
+      const code = streamTimeoutCode(watchdog, bounds);
+      const declaredMsg = `${streamTimeoutPhrase(watchdog, bounds)}: no data from provider for too long (elapsed ${watchdog.elapsedMs()}ms)${declaredPatienceClause(watchdog, bounds, nativeEstimate)}`;
       recordProviderError(modelInfo.providerId);
-      logger.warn(`Ollama call aborted by declared patience: ${declaredMsg}`, {
+      logger.warn(`Ollama call aborted by ${streamTripBound(watchdog, bounds)}: ${declaredMsg}`, {
         model: ollamaModelName, baseUrl, latencyMs,
       }, agentId);
       // T81a: a declared-patience exhaustion is never retryable; a genuine mid-stream idle

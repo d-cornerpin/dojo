@@ -374,6 +374,11 @@ describe('T64b — CONTROL: a provider that declares nothing is untouched', () =
         // what decides whether a first-chunk timeout keeps the loop's retry. A NULL row
         // declares nothing, so this provider keeps every behaviour it had.
         firstChunkDeclared: false,
+        // T83b: the same statement for the idle side, added because a transport whose own
+        // standing bound is not this module's (the Ollama native path) cannot tell a declared
+        // 60,000 from a defaulted one otherwise. `toEqual` is exact on purpose — a field
+        // appearing on this resolver is a fact about every caller, so it lands here.
+        idleDeclared: false,
       });
   });
 

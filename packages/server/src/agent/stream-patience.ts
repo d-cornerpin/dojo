@@ -60,6 +60,14 @@ export interface StreamPatience {
    * nothing has said nothing, so it keeps the retry it has always had; that is the control.
    */
   firstChunkDeclared: boolean;
+  /**
+   * The same fact for `idleMs`. Read by a transport whose own standing bound is not this
+   * module's — the Ollama native path (T83b), which has always used
+   * `TRANSPORT_DEFAULT_TIMEOUT_MS` — where 60,000 off a row and 60,000 off the default are the
+   * same number and opposite instructions; and by the log line that must not call a default a
+   * declaration, which is the lie T79e's flat ceiling told on every undeclared Ollama call.
+   */
+  idleDeclared: boolean;
 }
 
 /**
@@ -116,6 +124,7 @@ export function resolveStreamPatience(declared?: DeclaredPatience | null): Strea
     firstChunkMs: honour(declared?.firstChunkTimeoutMs, STREAM_FIRST_CHUNK_TIMEOUT_MS),
     idleMs: honour(declared?.streamIdleTimeoutMs, STREAM_IDLE_TIMEOUT_MS),
     firstChunkDeclared: isCoherent(declared?.firstChunkTimeoutMs),
+    idleDeclared: isCoherent(declared?.streamIdleTimeoutMs),
   };
 }
 
