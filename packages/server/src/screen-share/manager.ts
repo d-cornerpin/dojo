@@ -116,7 +116,11 @@ const VNC_CRED_SERVICE = 'screen_share_vnc';
 export function saveVncPassword(password: string): void {
   const value = { password };
   if (getCredentialByService(VNC_CRED_SERVICE, null)) {
-    updateCredential(VNC_CRED_SERVICE, value, undefined, null);
+    // T83: `overwrite: true`, declared here rather than exempted in the store. This is the
+    // engine re-saving its OWN private slot after the user typed a password that connected —
+    // the value being replaced is a previous copy of the same thing, there is no third party's
+    // secret at this name, and the user's successful connect is the confirmation.
+    updateCredential(VNC_CRED_SERVICE, value, undefined, null, { overwrite: true });
   } else {
     addCredential(VNC_CRED_SERVICE, value, 'Screen sharing VNC password', null);
   }

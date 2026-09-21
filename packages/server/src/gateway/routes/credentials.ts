@@ -112,7 +112,12 @@ credentialsRouter.patch('/:id', async (c) => {
   if (!current) return c.json({ ok: false, error: 'Credential not found.' }, 404);
   const merged = mergeObjectPatch(current.credentials, credentials);
 
-  const result = updateCredential(existing.serviceName, merged, description, null);
+  // T83: `overwrite: true`, stated here rather than exempted in the store. This route IS the
+  // owner, in their own Credentials tab, editing a row they opened — the click is the
+  // confirmation the flag exists to capture, and refusing it would be asking somebody to
+  // confirm to themselves. The store's rule is identical for every caller; what differs is
+  // who is answering for it, and that is what this line records.
+  const result = updateCredential(existing.serviceName, merged, description, null, { overwrite: true });
   if (!result.ok) return c.json({ ok: false, error: result.error }, 404);
   return c.json({ ok: true, data: { id: result.record.id, service_name: result.record.serviceName } });
 });

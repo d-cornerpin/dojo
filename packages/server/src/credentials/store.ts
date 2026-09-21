@@ -34,6 +34,113 @@ export interface CredentialRecordWithValue extends CredentialRecord {
   credentials: Record<string, unknown>;
 }
 
+// ════════════════════════════════════════
+// T83 — A CREDENTIAL IS NEVER SILENTLY OVERWRITTEN.
+//
+// THE DATA LOSS, measured not inferred. `agent_credentials.sendgrid` was created
+// 2026-06-21 03:03:03 by kevin from a key the owner provisioned. At 2026-09-21 06:42:22 a
+// battery-minted `sk-live-…` fake replaced it. The write was NOT `credential_add`, which
+// already refused a duplicate name — it was `credential_update` (messages seq 79103), and
+// the whole receipt was `Credential "sendgrid" updated.`. `credential_add`'s own refusal
+// text is what routed the caller there: "use credential_update to change its value".
+// `openweather` went the same way on 2026-09-20 23:29:08. Neither prior value is
+// recoverable: one ciphertext column, overwritten in place, no version, no audit row.
+//
+// THE RULE, and it is one rule for every caller so no surface can be the quiet one: a write
+// that would DESTROY a stored value refuses unless the caller passes `overwrite: true`. The
+// refusal names what it is protecting — created when, by whom, last changed when — and names
+// the flag. The flag is not a formality; it is the caller saying on the record which specific
+// existing value it is ending, and every authorised overwrite leaves an audit row.
+//
+// The two callers that are not an agent — the dashboard PATCH (the owner's own hand on their
+// own row) and the VNC rotate (the engine turning its own private slot) — pass the flag
+// EXPLICITLY at their sites rather than being exempted here by some actor sniff. A rule with
+// an exception nobody can see is how this defect got in.
+// ════════════════════════════════════════
+
+export interface CredentialWriteOptions {
+  /** Authorise destroying the value currently stored under this service name. */
+  readonly overwrite?: boolean;
+}
+
+interface ExistingRow {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  created_by_agent_id: string | null;
+}
+
+function findExisting(serviceName: string): ExistingRow | undefined {
+  return getDb().prepare(
+    'SELECT id, created_at, updated_at, created_by_agent_id FROM agent_credentials WHERE service_name = ?',
+  ).get(serviceName) as ExistingRow | undefined;
+}
+
+/**
+ * The door text. States what exists, says the prior value cannot be recovered, and names the
+ * flag — in that order, because a caller who reads only the first sentence should still have
+ * learned the thing that matters.
+ */
+function overwriteRefusal(serviceName: string, row: ExistingRow, verb: string): string {
+  const by = row.created_by_agent_id ? ` by ${row.created_by_agent_id}` : '';
+  const changed = row.updated_at !== row.created_at ? `, last changed ${row.updated_at}` : '';
+  return (
+    `A credential is already stored under "${serviceName}" — created ${row.created_at}${by}${changed}. ` +
+    `Replacing it destroys the stored value permanently; there is no prior version and no undo. ` +
+    `If the user has genuinely handed you a replacement for THIS credential, call ` +
+    `${verb}(service_name="${serviceName}", credentials={…}, overwrite=true) and the overwrite will be ` +
+    `recorded. If you are storing a DIFFERENT service's key, pick a service_name that is not taken. ` +
+    `If you are unsure which of the two this is, ask the user before writing anything.`
+  );
+}
+
+/**
+ * Record an authorised overwrite. NEVER carries a value — not the one destroyed, not the one
+ * written. `audit_log.agent_id` is NOT NULL, so a write with no agent behind it (the dashboard
+ * PATCH, the VNC rotate) gets the structured-log line instead: those are the owner's own hand
+ * and the engine's own slot, which is the very confirmation an audit row would be recording.
+ */
+function auditOverwrite(serviceName: string, row: ExistingRow, actingAgentId: string | null, verb: string): void {
+  const detail =
+    `${verb} overwrote the credential stored under "${serviceName}" ` +
+    `(created ${row.created_at}${row.created_by_agent_id ? ` by ${row.created_by_agent_id}` : ''}). ` +
+    `The previous value is unrecoverable.`;
+  logger.warn('Credential overwritten', { serviceName, actingAgentId, verb, createdAt: row.created_at });
+  if (!actingAgentId) return;
+  try {
+    getDb().prepare(
+      `INSERT INTO audit_log (id, agent_id, action_type, target, result, detail, created_at)
+       VALUES (?, ?, 'tool_call', ?, 'success', ?, datetime('now'))`,
+    ).run(uuidv4(), actingAgentId, `credential_overwrite:${serviceName}`, detail);
+  } catch (err) {
+    logger.error('Failed to audit-log a credential overwrite', {
+      serviceName, error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/** Replace the sealed value (and optionally the description) of a row that already exists. */
+function writeValue(
+  id: string,
+  credentials: Record<string, unknown>,
+  description: string | null | undefined,
+): void {
+  const { ciphertext, iv, authTag } = sealSecret(JSON.stringify(credentials));
+  if (description === undefined) {
+    getDb().prepare(
+      `UPDATE agent_credentials
+       SET encrypted_credentials = ?, iv = ?, auth_tag = ?, updated_at = datetime('now')
+       WHERE id = ?`,
+    ).run(ciphertext, iv, authTag, id);
+    return;
+  }
+  getDb().prepare(
+    `UPDATE agent_credentials
+     SET encrypted_credentials = ?, iv = ?, auth_tag = ?, description = ?, updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(ciphertext, iv, authTag, description, id);
+}
+
 // ── Crypto ──
 // PHASE-5 T6C: the AES-256-GCM pair that used to live here is now
 // `credentials/at-rest.ts`, shared with `twilio/auth.ts`. Same algorithm, same
@@ -147,14 +254,23 @@ export function addCredential(
   credentials: Record<string, unknown>,
   description: string | null,
   createdByAgentId: string | null,
+  opts?: CredentialWriteOptions,
 ): { ok: true; record: CredentialRecord } | { ok: false; error: string } {
   const trimmedName = serviceName.trim();
   if (!trimmedName) return { ok: false, error: 'service_name is required.' };
   if (trimmedName.length > 100) return { ok: false, error: 'service_name must be 100 characters or fewer.' };
 
-  const existing = getDb().prepare('SELECT id FROM agent_credentials WHERE service_name = ?').get(trimmedName);
+  const existing = findExisting(trimmedName);
   if (existing) {
-    return { ok: false, error: `A credential for "${trimmedName}" already exists. Use credential_update to change its value, or credential_delete to remove it first.` };
+    // T83: the refusal used to say only that the name was taken, and then hand the caller the
+    // verb that overwrites without asking. It now says WHOSE value is there and how old it is,
+    // and the only way past it is the flag.
+    if (!opts?.overwrite) return { ok: false, error: overwriteRefusal(trimmedName, existing, 'credential_add') };
+    // IN PLACE, never delete-and-reinsert: `created_at` / `created_by_agent_id` are what make
+    // the NEXT refusal able to name what it is protecting, and a reinsert launders exactly that.
+    auditOverwrite(trimmedName, existing, createdByAgentId, 'credential_add');
+    writeValue(existing.id, credentials, description);
+    return { ok: true, record: readRecord(existing.id) };
   }
 
   const plaintext = JSON.stringify(credentials);
@@ -169,13 +285,7 @@ export function addCredential(
 
   logger.info('Credential added', { serviceName: trimmedName, createdByAgentId });
 
-  const row = getDb().prepare(
-    `SELECT id, service_name, description, encrypted_credentials, iv, auth_tag,
-            created_by_agent_id, created_at, updated_at,
-            last_accessed_at, last_accessed_by_agent_id, access_count
-     FROM agent_credentials WHERE id = ?`,
-  ).get(id) as RawRow;
-  return { ok: true, record: rowToRecord(row) };
+  return { ok: true, record: readRecord(id) };
 }
 
 export function updateCredential(
@@ -183,38 +293,50 @@ export function updateCredential(
   credentials: Record<string, unknown>,
   description: string | null | undefined,
   updatedByAgentId: string | null,
+  opts?: CredentialWriteOptions,
 ): { ok: true; record: CredentialRecord } | { ok: false; error: string } {
-  const row = getDb().prepare(
-    'SELECT id FROM agent_credentials WHERE service_name = ?',
-  ).get(serviceName) as { id: string } | undefined;
+  const row = findExisting(serviceName);
   if (!row) return { ok: false, error: `No credential found for service "${serviceName}".` };
 
-  const plaintext = JSON.stringify(credentials);
-  const { ciphertext, iv, authTag } = sealSecret(plaintext);
+  // T83 — THIS IS THE DOOR THE DATA WENT OUT OF, so this is the door that closes. A rotate is
+  // a real and common thing; what was missing is the caller saying it MEANT to end the value
+  // that is there. Same rule, same door text as `addCredential` above.
+  if (!opts?.overwrite) return { ok: false, error: overwriteRefusal(serviceName, row, 'credential_update') };
 
-  if (description === undefined) {
-    getDb().prepare(
-      `UPDATE agent_credentials
-       SET encrypted_credentials = ?, iv = ?, auth_tag = ?, updated_at = datetime('now')
-       WHERE id = ?`,
-    ).run(ciphertext, iv, authTag, row.id);
-  } else {
-    getDb().prepare(
-      `UPDATE agent_credentials
-       SET encrypted_credentials = ?, iv = ?, auth_tag = ?, description = ?, updated_at = datetime('now')
-       WHERE id = ?`,
-    ).run(ciphertext, iv, authTag, description, row.id);
-  }
-
+  auditOverwrite(serviceName, row, updatedByAgentId, 'credential_update');
+  writeValue(row.id, credentials, description);
   logger.info('Credential updated', { serviceName, updatedByAgentId });
 
-  const updated = getDb().prepare(
+  return { ok: true, record: readRecord(row.id) };
+}
+
+/**
+ * Replace ONLY the description. No re-seal, no touch of the encrypted columns.
+ *
+ * Exists for the one job that must not go through `updateCredential`: telling the owner, on
+ * the row itself, that the slot's value is junk and needs re-entering. The T83 remediation
+ * annotates `sendgrid` and `openweather` this way rather than deleting them — a deleted row
+ * takes the owner's only record of what the slot was FOR with it.
+ */
+export function annotateCredential(
+  serviceName: string,
+  description: string,
+): { ok: boolean; error?: string } {
+  const result = getDb().prepare(
+    "UPDATE agent_credentials SET description = ?, updated_at = datetime('now') WHERE service_name = ?",
+  ).run(description, serviceName);
+  if (result.changes === 0) return { ok: false, error: `No credential found for service "${serviceName}".` };
+  logger.info('Credential description annotated', { serviceName });
+  return { ok: true };
+}
+
+function readRecord(id: string): CredentialRecord {
+  return rowToRecord(getDb().prepare(
     `SELECT id, service_name, description, encrypted_credentials, iv, auth_tag,
             created_by_agent_id, created_at, updated_at,
             last_accessed_at, last_accessed_by_agent_id, access_count
      FROM agent_credentials WHERE id = ?`,
-  ).get(row.id) as RawRow;
-  return { ok: true, record: rowToRecord(updated) };
+  ).get(id) as RawRow);
 }
 
 export function deleteCredentialByService(

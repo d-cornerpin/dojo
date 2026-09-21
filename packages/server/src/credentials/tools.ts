@@ -39,7 +39,7 @@ export const credentialsToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'credential_add',
-    description: '**This is the ONLY place credentials should be stored in the dojo. Never put API keys, tokens, passwords, or secrets in vault_remember — the engine will refuse those entries.** When the user hands you any value labeled secret/key/token/password/credential (whether for a technique you are building, a placeholder you are filling, or a service the user wants connected), store it here. Pass `credentials` as an OBJECT with whatever fields the service needs (e.g. {api_key: "..."} for a single-key API, or {api_key: "...", workspace_id: "...", secret: "..."} for a multi-field API). Description should be short but specific - what is the credential for, when did the user provide it, what service does it authenticate against. Fails if a credential for that service_name already exists - use credential_update to change an existing one.',
+    description: '**This is the ONLY place credentials should be stored in the dojo. Never put API keys, tokens, passwords, or secrets in vault_remember — the engine will refuse those entries.** When the user hands you any value labeled secret/key/token/password/credential (whether for a technique you are building, a placeholder you are filling, or a service the user wants connected), store it here. Pass `credentials` as an OBJECT with whatever fields the service needs (e.g. {api_key: "..."} for a single-key API, or {api_key: "...", workspace_id: "...", secret: "..."} for a multi-field API). Description should be short but specific - what is the credential for, when did the user provide it, what service does it authenticate against. If a credential is already stored under that service_name this REFUSES and tells you when that one was created and by whom: the stored value cannot be recovered once replaced, so either pick an unused service_name, or pass overwrite=true if the user has genuinely handed you a replacement for that same credential. When in doubt, ask the user first.',
     effects: [{ kind: 'secrets', from: 'derived:the encrypted credential store' }],
     fields: {
       'credentials': { secret: true },
@@ -50,13 +50,14 @@ export const credentialsToolDefinitions: ToolDefinition[] = [
         service_name: { type: 'string', description: 'Short identifier (lowercase, no spaces; e.g. "openweather", "github_pat", "shopify_admin"). Used as the key for credential_get / credential_update / credential_delete later.' },
         credentials: { type: 'object', description: 'The credential payload as an object. Single-key APIs: {api_key: "..."}. Multi-key: include each field the API requires.' },
         description: { type: 'string', description: 'Short note about what the credential is for and where the user got it (e.g., "OpenWeatherMap free-tier API key, provided by user on 2026-05-25 for the weather-dashboard technique").' },
+        overwrite: { type: 'boolean', description: 'Authorise DESTROYING the value already stored under this service_name. Omit it (or pass false) unless the user has explicitly handed you a replacement for that exact credential — the previous value is unrecoverable and the overwrite is recorded against you.' },
       },
       required: ['service_name', 'credentials'],
     },
   },
   {
     name: 'credential_update',
-    description: 'Update an existing credential. Pass the same service_name and the new credentials object. Optionally pass a new description; omit to leave the existing description unchanged. Use when the user rotates a token or replaces an API key.',
+    description: 'Replace the value of an existing credential. Pass the same service_name and the new credentials object. Optionally pass a new description; omit to leave the existing description unchanged. Use when the user rotates a token or replaces an API key. REQUIRES overwrite=true: replacing a credential destroys the stored value permanently (there is no prior version and no undo), so the engine refuses until you say you mean it, and the refusal tells you when the existing value was created and by whom. Never pass overwrite=true to make an error go away — if you are storing a different service\'s key, use credential_add with a service_name that is not taken.',
     effects: [{ kind: 'secrets', from: 'derived:the encrypted credential store' }],
     fields: {
       'credentials': { secret: true },
@@ -67,6 +68,7 @@ export const credentialsToolDefinitions: ToolDefinition[] = [
         service_name: { type: 'string', description: 'Service name of the credential to update.' },
         credentials: { type: 'object', description: 'New credential payload (replaces the existing one entirely).' },
         description: { type: 'string', description: 'Optional new description.' },
+        overwrite: { type: 'boolean', description: 'Required, and must be true: you are ending the value currently stored under this service_name and it cannot be recovered.' },
       },
       required: ['service_name', 'credentials'],
     },
@@ -149,7 +151,9 @@ export async function executeCredentialTool(
       if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)) {
         return 'Error: credentials must be an object (e.g. {"api_key": "..."} or {"api_key": "...", "secret": "..."}). Pass a string value as {"value": "..."} if the service needs just one opaque token.';
       }
-      const result = addCredential(serviceName, credentials, description, agentId);
+      // T83: the flag is passed through EXPLICITLY and is only ever true when the model said
+      // so. The store owns the rule; this layer owns nothing but the hand-off.
+      const result = addCredential(serviceName, credentials, description, agentId, { overwrite: args.overwrite === true });
       if (!result.ok) return `Error: ${result.error}`;
       return `Credential "${result.record.serviceName}" stored (id: ${result.record.id.slice(0, 8)}). Retrieve with credential_get(service_name="${result.record.serviceName}") when you need it for an API call.`;
     }
@@ -162,7 +166,7 @@ export async function executeCredentialTool(
       if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)) {
         return 'Error: credentials must be an object.';
       }
-      const result = updateCredential(serviceName, credentials, description, agentId);
+      const result = updateCredential(serviceName, credentials, description, agentId, { overwrite: args.overwrite === true });
       if (!result.ok) return `Error: ${result.error}`;
       return `Credential "${result.record.serviceName}" updated.`;
     }
