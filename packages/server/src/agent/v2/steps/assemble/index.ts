@@ -84,6 +84,13 @@ export interface AssembleContext {
   readonly latestUserSource: 'text' | 'voice' | null;
   readonly mostRecentIsA2A: boolean;
   readonly pendingEngineEvent: { rowid: number; originIntent?: string | null } | null;
+  /**
+   * T83 fix round 2: the newest inbound row, the SAME one `isNotificationTurn`
+   * (`preflight/turn-classification.ts`) tested to classify this turn. Read ONLY to
+   * resolve the notification trigger's own message id for `engineEventKeepFullId` —
+   * never re-classified here, `isNotificationTurn` is the one decision.
+   */
+  readonly mostRecentInbound: { rowid: number } | null | undefined;
   readonly waitingConvs: ReadonlyArray<unknown>;
   /** Rides BY VALUE on positive evidence (#15), not on an absence: one write site,
    *  in `postCallClassify`, straight-line — nothing can write it while the driver is
@@ -133,7 +140,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
     agentId, turnCtx, turnNumber, db, contextModelId, contextWindow, counterparty,
     counterpartyIsAgentSender, chosenConvKey, hasUnansweredUser, isA2ATurn, isEngineTurn,
     isNotificationTurn, lastUserMessageContent, latestTtsEngine, latestUserSource,
-    mostRecentIsA2A, pendingEngineEvent, waitingConvs, engineStartAckDeliveredThisTurn,
+    mostRecentIsA2A, pendingEngineEvent, mostRecentInbound, waitingConvs, engineStartAckDeliveredThisTurn,
     staleTaskWindowMinutes, startAckRepliedNow, setAgentStatus,
   } = ctxIn;
   let state = stateIn;
@@ -179,14 +186,40 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   // THE FIX IS THE RULE, NOT A SECOND INTENT LITERAL: keep THE PENDING ENGINE EVENT full
   // whenever it is driving this turn, full stop — `isEngineTurn && pendingEngineEvent` is
   // already exactly "this row is why this turn exists", by the definition one file over.
-  // Every OTHER engine-origin row in the tail (a stale, already-served notice sitting from
-  // earlier in the session) is untouched: it is not `pendingEngineEvent` and stays gisted,
-  // per T68b's charter ("every OTHER engine notice ... still gists at 400").
+  // Every OTHER engine-origin row in the tail (an ambient notice that is NOT the row
+  // driving this particular turn) is untouched: it is not `pendingEngineEvent` and stays
+  // gisted, per T68b's charter ("every OTHER engine notice ... still gists at 400").
+  //
+  // T83 FIX ROUND 2 (review, behav-sig:a9ca4fea — structural code-read, no live repro) —
+  // THE SAME CLASS HAS A SECOND MEMBER: THE NOTIFICATION TURN.
+  //
+  // `isNotificationTurn` (RC-5.2, `preflight/turn-classification.ts:266-293`) is a wake
+  // whose own trigger is an UNAUTHORIZED human inbound row (a mailbox notice, an unknown
+  // sender) — structurally the exact same shape as an engine turn: one specific row IS
+  // the reason this turn exists, and `scopeToHumanConversation` (`memory/assembler.ts`,
+  // "Unauthorized human inbound ... is NOT a conversation. Keep it so the caller can lift
+  // it into the EVENTS/awareness lane") deliberately keeps it in the scoped tail so the
+  // SAME awareness partition can gist it — the identical door `scopeToEngineTurn`'s kept
+  // engine rows walk through. `isEngineTurn` excludes `isNotificationTurn` by construction
+  // (`isNotificationTurn` requires `!isEngineTurn`), so the gate above never fires for it,
+  // and a history-sparse agent whose whole tail is that one unauthorized row plus its own
+  // prior self-output hits the identical leading-role strip this task already fixed once.
+  //
+  // THE ALTITUDE RULE STANDS: exempt THE TRIGGER ROW BY IDENTITY, never a category. On a
+  // notification turn the trigger is `mostRecentInbound` — the SAME row
+  // `isNotificationTurn`'s own condition just tested — never "every unauthorized row in
+  // the tail" (an older, unrelated unauthorized notice sitting earlier in the session is
+  // NOT this turn's reason for existing and must keep gisting, exactly like an ambient
+  // engine notice that is not `pendingEngineEvent`).
   let engineEventKeepFullId: string | null = null;
-  if (isEngineTurn && pendingEngineEvent) {
+  const turnTriggerRowid =
+    isEngineTurn && pendingEngineEvent ? pendingEngineEvent.rowid
+    : isNotificationTurn && mostRecentInbound ? mostRecentInbound.rowid
+    : null;
+  if (turnTriggerRowid != null) {
     try {
       const idRow = db.prepare('SELECT id FROM messages WHERE agent_id = ? AND rowid = ?')
-        .get(agentId, pendingEngineEvent.rowid) as { id: string } | undefined;
+        .get(agentId, turnTriggerRowid) as { id: string } | undefined;
       engineEventKeepFullId = idRow?.id ?? null;
     } catch { /* best effort, fall back to the truncated awareness gist */ }
   }

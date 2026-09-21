@@ -464,6 +464,11 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         counterparty, counterpartyIsAgentSender, chosenConvKey, hasUnansweredUser,
         isA2ATurn, isEngineTurn, isNotificationTurn, lastUserMessageContent,
         latestTtsEngine, latestUserSource, mostRecentIsA2A, pendingEngineEvent,
+        // T83 fix round 2: the notification trigger's own row (RC-5.2) — `assemble`
+        // resolves its message id for `engineEventKeepFullId` the same way it already
+        // does for `pendingEngineEvent`. Already computed by preflight; handed across,
+        // never re-derived (the header's own rule for every value in this object).
+        mostRecentInbound,
         waitingConvs, engineStartAckDeliveredThisTurn: turnCtx.engineStartAckDeliveredThisTurn,
         // Declared at module level in this file on purpose: a guard pins it there BY
         // PATH (`work-reaper.test.ts`, the narrower and therefore stronger corpus)

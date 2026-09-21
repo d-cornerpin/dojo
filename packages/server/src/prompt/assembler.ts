@@ -1007,16 +1007,21 @@ export interface PromptTurnContext {
    */
   resolvedReplyChannel?: Channel;
   /**
-   * On an engine turn, the message id of the PENDING ENGINE EVENT that is driving it
-   * (`isEngineTurn` is true iff one exists). The assembler keeps it FULL in the live
-   * tail instead of collapsing it into the truncated EVENTS/awareness gist, so the
-   * agent sees the whole directive it must act on — an approval token on an
-   * `a2a_request`, or simply the trigger itself on a `completion_report`/`scheduler`/
-   * … turn where nothing else survives the tail scoping (T83, behav-sig:a9ca4fea: a
-   * freshly spawned worker's tail held nothing else, so gisting the trigger emptied
-   * the tail to zero and tripped the assembler's empty-context recovery). Undefined/
-   * null on every non-engine turn. Every OTHER engine-origin row in the tail (a
-   * stale, already-served notice) is unaffected and still gists normally.
+   * The message id of THE ROW THAT IS THIS TURN'S OWN TRIGGER, on the two turn kinds
+   * whose trigger row would otherwise be gisted like ambient awareness: an engine turn
+   * (the PENDING ENGINE EVENT, `isEngineTurn` true iff one exists) and a notification
+   * turn (`isNotificationTurn`, RC-5.2 — the unauthorized inbound row that classified
+   * it). The assembler keeps THIS ONE ROW full in the live tail instead of collapsing
+   * it into the truncated EVENTS/awareness gist, so the agent sees the whole thing it
+   * must act on — an approval token on an `a2a_request`, or simply the trigger itself
+   * on a `completion_report`/`scheduler`/notification turn where nothing else survives
+   * the tail scoping (T83, behav-sig:a9ca4fea: a freshly spawned worker's tail held
+   * nothing else, so gisting the trigger emptied the tail to zero and tripped the
+   * assembler's empty-context recovery; the notification sibling is the same shape,
+   * closed by the same identity, before it produced a live incident of its own).
+   * Undefined/null on every other turn. Every OTHER engine- or unauthorized-origin row
+   * in the tail — anything that is NOT this exact row — is unaffected and still gists
+   * normally: the exemption is an identity, never a category.
    */
   engineEventKeepFullId?: string | null;
   /**

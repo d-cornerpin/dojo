@@ -55,6 +55,19 @@
 // unmocked) produce a non-empty message array carrying the trigger? The companion test
 // in `agent/v2/steps/assemble/__tests__/contract.test.ts` proves `runAssemble` itself
 // computes that id correctly for a `completion_report` (and any other non-rider) intent.
+//
+// ── FIX ROUND 2 (review) — THE SAME CLASS'S SECOND MEMBER: THE NOTIFICATION TURN ──
+//
+// `isNotificationTurn` (RC-5.2, `preflight/turn-classification.ts:266-293`) is the
+// structural sibling: a wake whose trigger is one specific UNAUTHORIZED human inbound
+// row (a mailbox notice, an unknown sender). `scopeToHumanConversation` deliberately
+// keeps that row in the scoped tail ("Keep it so the caller can lift it into the
+// EVENTS/awareness lane") — the same door `scopeToEngineTurn`'s kept engine rows walk
+// through — and the awareness partition then ALWAYS gists it, because
+// `engineEventKeepFullId` was never computed for a notification turn at all
+// (`isEngineTurn` excludes `isNotificationTurn` by construction). §3 below reproduces
+// and closes it the identical way: exempt THE TRIGGER ROW BY IDENTITY (`mostRecentInbound`
+// — the SAME row `isNotificationTurn`'s own test just read), never a category.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -97,6 +110,7 @@ import { assembleContext } from '../assembler.js';
 import { runMigrations } from '../../db/migrations.js';
 
 const AGENT = 'agent-t83-behavworker';
+const AGENT_NOTIF = 'agent-t83-notification';
 const MODEL = 'model-t83';
 const CONTEXT_WINDOW = 200000;
 const T0 = Date.parse('2026-09-20T23:21:30Z');
@@ -106,23 +120,27 @@ const T0 = Date.parse('2026-09-20T23:21:30Z');
 const TRIGGER_FP = 'COMPLETION-REPORT-TRIGGER-FINGERPRINT-6f11';
 const AMBIENT_FP = 'STALE-SCHEDULER-NOTICE-FINGERPRINT-3a09';
 const A2A_REQUEST_FP = 'A2A-REQUEST-APPROVAL-TOKEN-FINGERPRINT-88cd';
+const NOTIFICATION_FP = 'MAILBOX-NOTICE-TRIGGER-FINGERPRINT-d271';
+const OLDER_NOTIFICATION_FP = 'EARLIER-UNAUTHORIZED-NOTICE-FINGERPRINT-91ae';
 
 let tseq = 0;
 
 function insertRow(p: {
   id: string; role: string; content: string; lane: 'owner' | 'a2a' | 'events';
-  originIntent?: string | null;
+  originIntent?: string | null; inboundMeta?: string | null; agentId?: string;
 }): void {
   tseq += 1;
   mockDb.current!.prepare(
     `INSERT INTO messages (id, agent_id, role, lane, content, display_kind, display_tier,
-                           turn_number, provenance, authorized, token_count, created_at, origin_intent)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 2, 'live', 1, ?, ?, ?)`,
+                           turn_number, provenance, authorized, token_count, created_at, origin_intent,
+                           inbound_meta)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 2, 'live', 1, ?, ?, ?, ?)`,
   ).run(
-    p.id, AGENT, p.role, p.lane, p.content,
+    p.id, p.agentId ?? AGENT, p.role, p.lane, p.content,
     p.lane === 'events' ? 'engine-note' : p.lane === 'a2a' ? 'a2a' : (p.role === 'assistant' ? 'agent-text' : 'user-text'),
     p.lane === 'owner' ? 'user-visible' : 'agent-only',
     Math.max(1, Math.ceil(p.content.length / 4)), T0 + tseq * 1000, p.originIntent ?? null,
+    p.inboundMeta ?? null,
   );
 }
 
@@ -165,6 +183,51 @@ function seedTheFreshSpawnShape(triggerOriginIntent: string, triggerFp: string):
       `[Engine event: ${triggerOriginIntent}] You just finished work the owner asked for while you were ` +
       `talking to another agent, so they have not seen the result yet: [${triggerFp}]. Send the owner ONE ` +
       `short completion note. If there is genuinely nothing worth telling them, reply with [no-reply].`,
+  });
+  return triggerId;
+}
+
+/**
+ * The notification sibling's own shape (RC-5.2): a history-sparse agent whose whole
+ * recorded life is one earlier self-output line plus ONE unauthorized mailbox notice —
+ * the exact row `isNotificationTurn` classifies from, mirroring `gmail-watcher.ts`'s real
+ * `[MAILBOX EVENT]` shape and its `inbound_meta.authorized: false` stamp. Optionally seeds
+ * an OLDER unauthorized notice too, to prove the exemption is this row alone.
+ */
+function seedTheNotificationShape(opts: { withOlderUnauthorizedNotice?: boolean } = {}): string {
+  const db = mockDb.current!;
+  db.prepare(
+    "INSERT INTO providers (id, name, type, auth_type, base_url) VALUES ('p2','P2','openai-compatible','api_key','http://localhost:8001/v1')",
+  ).run();
+  db.prepare(
+    `INSERT INTO models (id, provider_id, api_model_id, name, context_window, max_output_tokens, capabilities, is_enabled)
+     VALUES (?, 'p2', 'ds4-local-2', 'DS4', ?, 4096, '["tools","thinking"]', 1)`,
+  ).run(MODEL, CONTEXT_WINDOW);
+  db.prepare("INSERT INTO agents (id, name, status, model_id, config) VALUES (?, ?, 'idle', ?, '{}')")
+    .run(AGENT_NOTIF, 'T83Notified', MODEL);
+
+  // The agent's own earlier self-output (no conversation_id): what a leading-role
+  // strip has left to work with once the trigger below is swept.
+  insertRow({
+    id: 't83-notif-prior-reply', role: 'assistant', lane: 'owner', agentId: AGENT_NOTIF,
+    content: 'Sure — noted, nothing else pending right now.',
+  });
+
+  if (opts.withOlderUnauthorizedNotice) {
+    insertRow({
+      id: 't83-notif-older', role: 'user', lane: 'owner', agentId: AGENT_NOTIF,
+      inboundMeta: JSON.stringify({ channel: 'email', sender: 'newsletter@example.com', authorized: false }),
+      content: `[SOURCE: GMAIL NOTIFICATION] [MAILBOX EVENT] an earlier, already-seen notice. [${OLDER_NOTIFICATION_FP}]`,
+    });
+  }
+
+  const triggerId = 't83-notif-trigger';
+  insertRow({
+    id: triggerId, role: 'user', lane: 'owner', agentId: AGENT_NOTIF,
+    inboundMeta: JSON.stringify({ channel: 'email', sender: 'unknown@example.com', authorized: false }),
+    content:
+      `[SOURCE: GMAIL NOTIFICATION] [MAILBOX EVENT] the owner's inbox just received an email. ` +
+      `This email was NOT sent to you and is NOT a request for you to do anything. [${NOTIFICATION_FP}]`,
   });
   return triggerId;
 }
@@ -232,8 +295,11 @@ describe('T83 §1 — REPRODUCTION: the incident shape, driven at the real assem
 describe('T83 §2 — CONTROL: the fix does not widen what the awareness lane gists', () => {
   it('an AMBIENT engine notice that is NOT this turn\'s own pending event still gets swept out of the live tail', async () => {
     const triggerId = seedTheFreshSpawnShape('completion_report', TRIGGER_FP);
-    // A stale, already-queued notice from earlier in the session — real ambient
-    // awareness, and not the row driving this turn.
+    // A second, genuinely pending, UNSERVED engine notice — created AFTER the trigger
+    // (later `created_at`, no `served_by_turn`), sitting in the same tail. It is real
+    // ambient awareness, not a strawman: the only thing that disqualifies it from being
+    // kept full is that it is NOT `pendingEngineEvent` for THIS turn (`engineEventKeepFullId`
+    // above names the completion-report row specifically, by identity, not by category).
     insertRow({
       id: 't83-ambient-notice', role: 'user', lane: 'events', originIntent: 'scheduler',
       content: `[Scheduler] the 6pm garbage reminder fired and was delivered. [${AMBIENT_FP}]`,
@@ -249,5 +315,66 @@ describe('T83 §2 — CONTROL: the fix does not widen what the awareness lane gi
     // It is exactly where T68b's charter says an ordinary engine notice belongs: gisted,
     // not dropped outright.
     expect(ctx.eventsLane ?? '').toContain('garbage reminder');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// T83 §3 — THE NOTIFICATION SIBLING (RC-5.2, fix round 2 / review).
+//
+// Structurally identical to §1/§2, one door over: `scopeToHumanConversation`
+// (`memory/assembler.ts:842-849`) is the ENGINE-turn incident's `scopeToEngineTurn`, and
+// the unauthorized inbound row it deliberately keeps ("so the caller can lift it into the
+// EVENTS/awareness lane") is that mechanism's completion-report row. The SAME awareness
+// partition sweeps it, and — pre-fix-round-2 — `engineEventKeepFullId` was never computed
+// for a notification turn at all (`isEngineTurn` excludes `isNotificationTurn`), so it
+// gisted unconditionally. A history-sparse agent (one prior self-output line, nothing
+// else) hits the identical leading-role strip.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+const OWNER_ON_DASHBOARD = {
+  kind: 'user' as const, name: 'the owner', relation: 'owner' as const, channel: 'dashboard' as const,
+  senderId: null, threadId: null, senderIsAgent: false,
+};
+
+describe('T83 §3 — the notification turn is the same class, closed the same way', () => {
+  it('RED-BY-CONSTRUCTION: without the keep-full id, the notification trigger is gisted away and the leading-role strip empties the tail', async () => {
+    seedTheNotificationShape();
+
+    // Pre-fix-round-2 shape: `isNotificationTurn` true, `engineEventKeepFullId` never
+    // computed for it (the gate only ever recognised engine turns).
+    const ctx = await assembleContext(AGENT_NOTIF, MODEL, {
+      isNotificationTurn: true, counterparty: OWNER_ON_DASHBOARD, engineEventKeepFullId: null,
+    });
+
+    expect(ctx.messageEntryIds).toContain('lane.empty-context-fallback');
+  });
+
+  it('GREEN: with the keep-full id the FIXED gate now computes for the notification trigger, it survives as LIVE tail content', async () => {
+    const triggerId = seedTheNotificationShape();
+
+    const ctx = await assembleContext(AGENT_NOTIF, MODEL, {
+      isNotificationTurn: true, counterparty: OWNER_ON_DASHBOARD, engineEventKeepFullId: triggerId,
+    });
+
+    expect(ctx.messageEntryIds).not.toContain('lane.empty-context-fallback');
+    expect(ctx.messages.length).toBeGreaterThan(0);
+    expect(textOf(ctx.messages)).toContain(NOTIFICATION_FP);
+  });
+
+  it('CONTROL: an OLDER unauthorized notice that is NOT this turn\'s own trigger still gets swept into the gist — the exemption is this row alone', async () => {
+    const triggerId = seedTheNotificationShape({ withOlderUnauthorizedNotice: true });
+
+    const ctx = await assembleContext(AGENT_NOTIF, MODEL, {
+      isNotificationTurn: true, counterparty: OWNER_ON_DASHBOARD, engineEventKeepFullId: triggerId,
+    });
+
+    // The turn's own trigger survives whole...
+    expect(textOf(ctx.messages)).toContain(NOTIFICATION_FP);
+    // ...but the OLDER unauthorized notice — real ambient awareness, not the row driving
+    // THIS turn — never reaches the live array, fingerprint absent...
+    expect(textOf(ctx.messages)).not.toContain(OLDER_NOTIFICATION_FP);
+    // ...and it did not vanish outright: it is gisted (by sender, `buildAwarenessGist`'s
+    // structured path — the same real formatter production mailbox notices go through).
+    expect(ctx.eventsLane ?? '').toContain('newsletter@example.com');
   });
 });
