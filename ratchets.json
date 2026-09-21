@@ -4978,6 +4978,76 @@
       "to": 361,
       "by": "t83 credential-overwrite fix \u2014 over-cap pin at the growth detector's own remedy",
       "why": "+122: refuse-by-default same-name writes, overwrite flag + audit rows, annotation metadata, the purge seam. From here it may only shrink."
+    },
+    {
+      "path": "packages/server/src/credentials/store.ts",
+      "from": 361,
+      "to": 412,
+      "by": "t83 engine-tickets fix round \u2014 every transport obeys a stop; one door law for every destroyer",
+      "why": "+51 fix round: delete door under the one-door law + provenance-checked annotation path. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/providers/anthropic-sdk.ts",
+      "from": 470,
+      "to": 516,
+      "by": "t83 engine-tickets fix round \u2014 every transport obeys a stop; one door law for every destroyer",
+      "why": "+46 fix round: external abort signal composed with the patience controller (every transport obeys a stop). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1656,
+      "to": 1698,
+      "by": "t83 engine-tickets fix round \u2014 every transport obeys a stop; one door law for every destroyer",
+      "why": "+42 fix round: unabortable-call accounting, stop-fence vs reset discrimination, reaper carve-out for stopped-wedged runs. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/index.ts",
+      "from": 253,
+      "to": 291,
+      "by": "t83 engine-tickets fix round \u2014 every transport obeys a stop; one door law for every destroyer",
+      "why": "+38 fix round: the ONE idle writer (seven early writes deleted; writes only over literal working). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 3563,
+      "to": 3582,
+      "by": "t83 engine-tickets fix round \u2014 every transport obeys a stop; one door law for every destroyer",
+      "why": "+19 fix round: SDK dial honors registerAbortable refusal + signal threading. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/index.ts",
+      "from": 289,
+      "to": 295,
+      "by": "t83 engine-tickets fix round \u2014 every transport obeys a stop; one door law for every destroyer",
+      "why": "+6 fix round: executor halts on isStopFenced. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/shared-state.ts",
+      "from": 307,
+      "to": 312,
+      "by": "t83 engine-tickets fix round \u2014 every transport obeys a stop; one door law for every destroyer",
+      "why": "+5 fix round: fence/reset discrimination state. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/model-call.ts",
+      "from": 431,
+      "to": 435,
+      "by": "t83 engine-tickets fix round \u2014 every transport obeys a stop; one door law for every destroyer",
+      "why": "+4 fix round: fenced checkpoint reads. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/index.ts",
+      "from": 178,
+      "to": 182,
+      "by": "t83 engine-tickets fix round \u2014 every transport obeys a stop; one door law for every destroyer",
+      "why": "+4 fix round: fenced checkpoint read. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/assemble/index.ts",
+      "from": 387,
+      "to": 388,
+      "by": "t83 engine-tickets fix round \u2014 every transport obeys a stop; one door law for every destroyer",
+      "why": "+1 comment. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -5024,16 +5094,16 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 217,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 3563,
+    "packages/server/src/agent/model.ts": 3582,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 345,
-    "packages/server/src/agent/runtime.ts": 1656,
-    "packages/server/src/agent/shared-state.ts": 307,
-    "packages/server/src/credentials/store.ts": 361,
+    "packages/server/src/agent/runtime.ts": 1698,
+    "packages/server/src/agent/shared-state.ts": 312,
+    "packages/server/src/credentials/store.ts": 412,
     "packages/server/src/agent/stream-patience.ts": 394,
-    "packages/server/src/providers/anthropic-sdk.ts": 470,
+    "packages/server/src/providers/anthropic-sdk.ts": 516,
     "packages/server/src/services/ollama-lock.ts": 448,
     "packages/server/src/healer/auto-fix.ts": 421,
     "packages/server/src/agent/spawner.ts": 1459,
@@ -5067,17 +5137,17 @@
     "packages/server/src/agent/v2/state.ts": 730,
     "packages/server/src/agent/v2/steer-queue.ts": 335,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
-    "packages/server/src/agent/v2/steps/assemble/index.ts": 387,
+    "packages/server/src/agent/v2/steps/assemble/index.ts": 388,
     "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts": 224,
     "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 125,
     "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 233,
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 246,
-    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 431,
+    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 435,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 385,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 165,
     "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 225,
-    "packages/server/src/agent/v2/steps/execute/index.ts": 289,
+    "packages/server/src/agent/v2/steps/execute/index.ts": 295,
     "packages/server/src/agent/v2/steps/execute/post-result.ts": 351,
     "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 404,
     "packages/server/src/agent/v2/steps/execute/result-notes.ts": 152,
@@ -5115,7 +5185,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 235,
     "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 197,
-    "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 178,
+    "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 182,
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 411,
     "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 296,
     "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 238,
@@ -5132,7 +5202,7 @@
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
     "packages/server/src/agent/v2/steps/teardown/conversation-tagging.ts": 70,
     "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 546,
-    "packages/server/src/agent/v2/steps/teardown/index.ts": 253,
+    "packages/server/src/agent/v2/steps/teardown/index.ts": 291,
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/costs/tracker.ts": 541,
     "packages/server/src/credentials/secret-fields.ts": 241,
