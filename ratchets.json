@@ -4917,6 +4917,13 @@
       "why": "+23 checkpoint dials registered/fenced for stop. From here this file may only shrink."
     },
     {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts",
+      "from": 296,
+      "to": 335,
+      "by": "t84 \u2014 the turn-time budget stops overruling the token math",
+      "why": "+39, of which THREE are code: the force flag is DELETED from the checkAndCompact call, one local records whether a rebuild actually happened, and the park receipt branches on it. Every other line is the guard-history record owner ruling 10(c) required before the flag could be weakened \u2014 the commit that BORE it (34c75dc6, v1.15.80), the one-parenthesis inference it encoded, the measurement that falsified that inference (13,649 assembled against a 51,300 threshold at the 15-minute mark, needsCompactionByTokens:false, a live agent severed from a half-served ask), and the three mechanisms the original requirement now rides instead. That record is the whole defence against the flag being re-added by the next reader, which is exactly what this file\u0027s HL4 tombstone and T79b/T83 blocks already exist to do. From here this file may only shrink."
+    },
+    {
       "path": "packages/shared/src/ws.ts",
       "from": 1121,
       "to": 1139,
@@ -5194,7 +5201,7 @@
     "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 197,
     "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 182,
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 411,
-    "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 296,
+    "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 335,
     "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 238,
     "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts": 293,
     "packages/server/src/agent/v2/steps/preflight/inbound-and-abort.ts": 202,
