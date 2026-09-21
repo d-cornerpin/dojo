@@ -239,15 +239,16 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
 
     if (out.directive !== 'proceed') throw new Error('unreachable');
     // UX-REPAIR T2: the same call, now carrying the two facts the engine already knew and
-    // used to discard — the start-ack STAMP (so the ask settlement can judge it as a receipt)
-    // and the explicit `agent-text` kind (so the stamp does not reclassify the model's own
-    // words as engine fallback).
+    // used to discard — the start-ack STAMP and the explicit `agent-text` kind (so the stamp
+    // does not reclassify the model's own words as engine fallback). Settlement itself still
+    // REFUSES a promoted row as an ask receipt (the seventh narrowing's blanket rule).
     //
-    // ANSWER-ANYWAY: `reuseId` is no longer null. The row id is MINTED at the promotion site
-    // and recorded on the bag, because the words the person heard have to stay nameable —
-    // without the id, `turns.answer_message_id` (the door every delivered utterance passes
-    // through to become settlement-visible) can never point at the bubble that carried them,
-    // which is how turn 5649's answered ask was re-served four times and parked `blocked`.
+    // ANSWER-ANYWAY (as reworked under owner rulings 10(d)/OR2): `reuseId` is no longer null.
+    // The row id is MINTED at the promotion site and recorded on the bag, because the words
+    // the person heard have to stay NAMEABLE — the un-blinded ghosted-ask steer quotes them
+    // back so the MODEL decides whether they answered the ask; the engine never judges the
+    // content. Without the id the steer had nothing to show, which is how turn 5649's
+    // answered ask was blindly re-served four times and parked `blocked`.
     expect(deliverEngineUserAckSpy).toHaveBeenCalledWith(
       'Here is the answer.', 'engine_start_ack', ctx.turnCtx.startAckPromotedRowId, 'agent-text',
     );
