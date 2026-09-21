@@ -408,6 +408,21 @@ export interface TurnContext {
   engineStartAckDeliveredThisTurn: boolean;
   deferredDeliveredByAck: boolean;
 
+  /** ⚠ ANSWER-ANYWAY — WHICH BUBBLE carried the words, so what the person HEARD can still be
+   *  named. The pair above records THAT the ack lane spoke and nothing records what it spoke
+   *  through, so the one rule that decides whether captured text-with-tools is the turn's
+   *  reply (`post-call-classify/no-reply.ts`) has nothing left to name and
+   *  `turns.answer_message_id` stays NULL on a turn whose owner heard the answer. The
+   *  incident and the argument are at that site and at `work/ask-settlement.ts`.
+   *
+   *  A RECORD, NEVER A VERDICT: nothing here says the bubble was the answer.
+   *
+   *  ⚠ POPULATION 2, exactly as its two neighbours: written in `postCallClassify` and read by
+   *  a LATER ITERATION of it (the promotion rides with a tool call; the sentinel arrives once
+   *  the tools have run), so a step-local resets each round and the answer is nameless on
+   *  every turn that promoted. */
+  startAckPromotedRowId: string | null;
+
   /** THE ONCE-PER-TURN FILLER LATCH (v2.9.16 voice, v2.9.23 phone). Flipped true the first
    *  time a filler phrase is pushed into the active TTS burst or the live call, so the
    *  subsequent tool-using ITERATIONS of the same turn do not double-fire.
@@ -518,6 +533,7 @@ export function openTurnContext(agentId: string): TurnContext {
     inboundClassifiedAsWork: false,
     engineStartAckDeliveredThisTurn: false,
     deferredDeliveredByAck: false,
+    startAckPromotedRowId: null,
     voiceFillerFired: false,
     goingIdleDetectorRanThisTurn: false,
     // `preflight` builds it with `initState` a few hundred statements in; before that

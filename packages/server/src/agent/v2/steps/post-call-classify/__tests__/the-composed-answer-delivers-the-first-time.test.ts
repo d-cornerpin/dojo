@@ -315,7 +315,11 @@ describe('everything outside the owed compile is byte-identical', () => {
     const sc = scratchFor();
     await runTerminalText(state, ctxFor(turnCtx, { hasUnansweredUser: true }), sc);
     expect(deliverAckSpy).toHaveBeenCalledTimes(1);
-    expect(deliverAckSpy.mock.calls[0]).toEqual([THE_PLAN, START_ACK_ORIGIN_INTENT, null, 'agent-text']);
+    // ANSWER-ANYWAY: the ack arm mints its own row id (so the bubble can be NAMED later); the
+    // stamp and the explicit display kind are unchanged, and this is still not an answer here.
+    expect(deliverAckSpy.mock.calls[0])
+      .toEqual([THE_PLAN, START_ACK_ORIGIN_INTENT, turnCtx.startAckPromotedRowId, 'agent-text']);
+    expect(turnCtx.startAckPromotedRowId).toEqual(expect.any(String));
     expect(turnCtx.engineStartAckDeliveredThisTurn).toBe(true);
     expect(sc.deliveredAsStartLine).toBe(true);
     expect(noteTerminalAnswerSpy).not.toHaveBeenCalled();

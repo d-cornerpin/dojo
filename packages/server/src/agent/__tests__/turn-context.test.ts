@@ -114,6 +114,14 @@ const THE_DRIVER_CARRIES = [
   // redundant-closeout floor, so a lost write double-SENDS the answer.
   'engineStartAckDeliveredThisTurn',
   'deferredDeliveredByAck',
+  // ANSWER-ANYWAY — the SEVENTH local of the same F10 mechanism, and it is classified here
+  // rather than drifting in. The pair above records THAT the ack lane spoke; this records
+  // WHICH bubble carried the words, which is what the `[no-reply]` reply rule needs to name
+  // the turn's answer when the promotion delivered it. Written in `postCallClassify` and read
+  // by a LATER ITERATION of the same span (the promotion rides with a tool call; the sentinel
+  // arrives after the tools have run), so a step-local resets each round and the answer is
+  // nameless on every turn that promoted — which is the measured defect, not a hypothesis.
+  'startAckPromotedRowId',
   // Same tranche, second family: the once-per-turn filler latch. All four of its sites are
   // inside the span, so it crosses the ITERATION rather than a step — and a step-local would
   // be reset every round, so the caller hears "on it … checking … give me a sec …" in a row.

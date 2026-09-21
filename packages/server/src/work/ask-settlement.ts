@@ -379,10 +379,45 @@ const NOT_A_SUPERSEDED_BUBBLE =
  * `claimed`, the real answer's own delivery closes it, and if the turn dies the boot arms find
  * a live claim on a dead turn and hand it back OPEN with a named cause — which is the outcome
  * that priority asks for, and the one the close-on-the-ack was preventing.
+ *
+ * ── ANSWER-ANYWAY: THE REFUSAL IS TIME-SHAPED, EXACTLY AS THE SIXTH ONE IS ──────────────
+ *
+ * The paragraph above claims the engine KNOWS at the instant. What it knows is that the ack is
+ * OWED and that this text is the model's next words; it cannot know what those words SAY, and
+ * a blanket refusal keyed on the stamp is therefore a PRE-JUDGMENT OF CONTENT. Ritual v3.1.26
+ * round 3, seed `eceef8a09723`, agent turn 5649, ask `695067c2`:
+ *
+ *   12:46:23  promoted "as the visible ack" -> "Fresh sources pulled just now (Sep 21, 2026).
+ *                                              US prices, as …" — four tablets, three
+ *                                              dimensions, ten web calls behind it: the ANSWER
+ *   12:46:26  the model ends with `[no-reply]` — correct from its seat; it had delivered
+ *   12:46:28  ask re-opened: its turn finalized without delivering an answer  (serve 1)
+ *   12:46:36  ERROR  ask re-serve STOOD DOWN (serves 4, bound 4); the ask ends `blocked`
+ *
+ * So the rule keeps its instant and loses its blanket. MID-TURN IT IS UNCHANGED, BYTE FOR
+ * BYTE — while the turn runs nobody can know which bubble was the answer (the sixth
+ * narrowing's own argument), so the 7.754 s lying window cannot reopen and the crash shape
+ * (`ended_at IS NULL`) is refused on the same clause, leaving `reconcileOrphanedClaims`
+ * untouched. ONCE THE TURN HAS ENDED the promoted bubble is judged by the one question every
+ * other `agent-text` bubble is judged by: does this finished turn's own answer key name it?
+ * That key has ONE setter (`noteTerminalAnswer`), and what names a promoted bubble is the
+ * `[no-reply]` sentinel's own reply rule, at its own site.
+ *
+ * WHAT IT DOES NOT WIDEN, each a control in `__tests__/an-ask-never-reads-done-on-a-start-ack.test.ts`:
+ * a stamped ack on a turn that recorded NO answer is still refused (the ack-only turn is handed
+ * back with its named cause and the ladder is untouched); so is one on a FINISHED turn whose
+ * key names a DIFFERENT bubble, so "acked, then answered" still settles on the answer; and so
+ * is one with no `turns` row at all, since an absent record cannot read as a naming.
  */
 const NOT_A_START_ACK =
-  `NOT EXISTS (SELECT 1 FROM messages ma WHERE ma.id = d.message_id
-                 AND ma.origin_intent = '${START_ACK_ORIGIN_INTENT}')`;
+  `NOT EXISTS (SELECT 1 FROM messages ma
+                WHERE ma.id = d.message_id
+                  AND ma.origin_intent = '${START_ACK_ORIGIN_INTENT}'
+                  AND NOT EXISTS (SELECT 1 FROM turns ts
+                                   WHERE ts.agent_id = d.agent_id
+                                     AND ts.turn_number = d.turn_number
+                                     AND ts.ended_at IS NOT NULL
+                                     AND ts.answer_message_id = d.message_id))`;
 
 /**
  * ⚠ UX-REPAIR ROUND 6 T25 — THE EIGHTH NARROWING: A DELIVERY THE ENGINE ALREADY SAID DID NOT

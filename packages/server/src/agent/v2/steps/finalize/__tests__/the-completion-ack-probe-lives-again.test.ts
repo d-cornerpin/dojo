@@ -285,6 +285,15 @@ describe('the two siblings ask one question, through one function', () => {
   it('the shared predicate lives with the keyed reader it is the fallback for', () => {
     const src = SRC('../../../answered-edge.ts');
     expect(src).toContain('export function substantiveReplySince');
-    expect(src, 'and it is the only copy of the clause list').toContain("length(trim(content)) > 40");
+    // ANSWER-ANYWAY: the floor is a NAMED constant now, because a second reader arrived —
+    // the `[no-reply]` reply rule asks the same question of ONE row it holds, so the clause
+    // list is shared rather than re-typed, which is this clause's own requirement one step on.
+    // The literal appears exactly once in the tree, at its declaration, and both reads bind it.
+    expect(src, 'the floor is declared once, by name')
+      .toContain('export const SUBSTANTIVE_REPLY_MIN_CHARS = 40;');
+    expect(src, 'and it is the only copy of the clause list').toContain('length(trim(content)) > ?');
+    expect(src.match(/length\(trim\(content\)\) > \?/g), 'both reads, one clause')
+      .toHaveLength(2);
+    expect(src, 'and no site re-spells the number').not.toContain('length(trim(content)) > 40');
   });
 });

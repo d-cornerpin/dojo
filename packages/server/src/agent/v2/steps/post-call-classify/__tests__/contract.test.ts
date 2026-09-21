@@ -239,11 +239,19 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
 
     if (out.directive !== 'proceed') throw new Error('unreachable');
     // UX-REPAIR T2: the same call, now carrying the two facts the engine already knew and
-    // used to discard — the start-ack STAMP (so the ask settlement can refuse it as a
-    // receipt) and the explicit `agent-text` kind (so the stamp does not reclassify the
-    // model's own words as engine fallback). `reuseId` stays null.
-    expect(deliverEngineUserAckSpy)
-      .toHaveBeenCalledWith('Here is the answer.', 'engine_start_ack', null, 'agent-text');
+    // used to discard — the start-ack STAMP (so the ask settlement can judge it as a receipt)
+    // and the explicit `agent-text` kind (so the stamp does not reclassify the model's own
+    // words as engine fallback).
+    //
+    // ANSWER-ANYWAY: `reuseId` is no longer null. The row id is MINTED at the promotion site
+    // and recorded on the bag, because the words the person heard have to stay nameable —
+    // without the id, `turns.answer_message_id` (the door every delivered utterance passes
+    // through to become settlement-visible) can never point at the bubble that carried them,
+    // which is how turn 5649's answered ask was re-served four times and parked `blocked`.
+    expect(deliverEngineUserAckSpy).toHaveBeenCalledWith(
+      'Here is the answer.', 'engine_start_ack', ctx.turnCtx.startAckPromotedRowId, 'agent-text',
+    );
+    expect(ctx.turnCtx.startAckPromotedRowId).toEqual(expect.any(String));
     expect(out.persistedContent).toBeNull();
     // The pair is written ON THE BAG, live, so the wall-clock timer sees it at fire time.
     expect(ctx.turnCtx.engineStartAckDeliveredThisTurn).toBe(true);

@@ -310,9 +310,19 @@ export async function runTerminalText(
         // row `fallback` (`shared/visibility.ts`), and this line is the MODEL'S OWN
         // WORDS pushed early (PHASE-4 T4), not engine-composed prose. Both facts
         // travel or neither should.
-        await deliverEngineUserAck(startLine, START_ACK_ORIGIN_INTENT, null, 'agent-text');
+        // ⚠ ANSWER-ANYWAY — THE ROW IS MINTED HERE SO THE WORDS CAN STILL BE NAMED, and that
+        // is a RECORD, never a verdict: nothing here decides what the words WERE. This arm
+        // consumes `deferredUserReplyWithTools` and latches `deferredDeliveredByAck`, which
+        // between them silence the one rule that decides whether captured text-with-tools is
+        // the turn's reply — so the id travels and the JUDGMENT stays at that rule's own site
+        // (`no-reply.ts`), at the one moment it is decidable. Minted locally for the compile
+        // arm's reason: a caller that must NAME the row it delivered cannot let the closure
+        // choose the name, and `messageId` is still off-limits (the `tool_use` row).
+        const startAckRowId = uuidv4();
+        await deliverEngineUserAck(startLine, START_ACK_ORIGIN_INTENT, startAckRowId, 'agent-text');
+        turnCtx.startAckPromotedRowId = startAckRowId;
         logger.info('v2 start-ack steer: model spoke its start line mid-work; delivered as the visible ack (streamed bubble promoted in place)', {
-          agentId, turnNumber, preview: startLine.slice(0, 60),
+          agentId, turnNumber, preview: startLine.slice(0, 60), rowId: startAckRowId,
           // T41: WHICH half of the owed window this was, so the timeline can be read off the
           // log alone. `steer-armed` is the 2026-07-22 path; `threshold-owed` is the owner's
           // 2026-08-12 re-rule delivering the model's own line during the wait it names.

@@ -23,7 +23,7 @@ import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent, tagTurnOutputConversationId } from '../../../../memory/message-store.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { enqueueSteer, steerFired } from '../../steer-queue.js';
-import { recordedAnswerInConversation } from '../../answered-edge.js';
+import { isSubstantiveReplyRow, recordedAnswerInConversation } from '../../answered-edge.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
@@ -130,6 +130,47 @@ export async function runNoReply(
     noReplyOverridden = true;
     logger.info('v2: [no-reply] on a served human turn with an undelivered captured answer; promoting it as the reply', {
       agentId, turnNumber, preview: persistedContent.slice(0, 60),
+    }, agentId);
+  }
+  // ── ANSWER-ANYWAY — THE SAME SENTENCE, FOR WORDS THE PERSON HAS ALREADY HEARD ──
+  //
+  // The arm above is the whole rule, and DELIVERING is what makes those words the turn's
+  // reply: the persist seam stamps the truthful-answer key on the row it writes, and
+  // `turns.answer_message_id` is the door every delivered utterance passes through to become
+  // settlement-visible (the authority's sixth narrowing reads it, so does the draft
+  // re-classifier, so do the ticket stamps).
+  //
+  // THE START-ACK PROMOTION TAKES BOTH OF THE RULE'S INPUTS — it consumes
+  // `deferredUserReplyWithTools` and sets `deferredDeliveredByAck` — so on a turn that
+  // promoted, the rule cannot reach its own case and the engine holds two beliefs at once:
+  // the sentinel stands down because the person WAS served, and the ledger says nothing was
+  // delivered. Measured on agent turn 5649; the timeline is at `work/ask-settlement.ts`'s
+  // seventh narrowing, which is the reader that paid for it.
+  //
+  // So the rule is handed back what the promotion took and NOTHING ELSE MOVES: the words went
+  // out whole, so this delivers nothing and only NAMES the row that carried them, through the
+  // one setter. No second adjudication path and no settling on promotion — it is reached only
+  // by the model's own turn-ending sentinel, on a turn serving that person's ask.
+  //
+  // ⚠ NO PRE-JUDGMENT AND NO PROSE. The question is the platform's own — `answered-edge.ts`,
+  // "the ONE place this tree answers 'has the person heard from us'", which already owns the
+  // clause list and the floor. A promoted STATUS LINE does not clear it, so nothing is named,
+  // the key stays NULL and the re-serve ladder runs exactly as today — t82's requirement from
+  // the other side, and the owner-priority tie-break's direction: in doubt, serve again.
+  if (
+    !noReplyOverridden &&
+    isBareNoReply &&
+    triggerRow &&
+    !state.surfacedReplyThisTurn &&
+    turnCtx.startAckPromotedRowId &&
+    isSubstantiveReplyRow(agentId, turnCtx.startAckPromotedRowId)
+  ) {
+    noteTerminalAnswer(
+      turnCtx.startAckPromotedRowId,
+      'the start-ack promotion carried this turn\'s words to the person and the model ended with nothing to add',
+    );
+    logger.info('v2: [no-reply] on a served human turn whose only words reached the person through the start-ack promotion; the ledger now names the bubble that carried them', {
+      agentId, turnNumber, rowId: turnCtx.startAckPromotedRowId,
     }, agentId);
   }
   if (!noReplyOverridden && (isBareNoReply || isDeclineNonReply) && (latestUserSource === 'voice' || state.inboundChannel === 'phone')) {

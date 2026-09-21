@@ -168,9 +168,44 @@ export function substantiveReplySince(agentId: string, sinceMs: number): boolean
         AND lane <> 'a2a'
         AND content NOT LIKE '[{%'
         AND origin_intent IS NULL
-        AND length(trim(content)) > 40
+        AND length(trim(content)) > ?
       LIMIT 1`,
-  ).get(agentId, sinceMs);
+  ).get(agentId, sinceMs, SUBSTANTIVE_REPLY_MIN_CHARS);
+}
+
+/** The floor under "substantive", declared once so the window read above and the single-row
+ *  read below cannot drift. NAMED, not re-chosen: it is the literal `40` this function was
+ *  written with (UX-REPAIR T15), and no site invents a second number. Corroborated where the
+ *  platform measured the same class from the other side — SWEEP CORE-2's draft census
+ *  (`steps/teardown/draft-reclassify.ts`) read the live body and found the non-answer bubbles
+ *  of multi-bubble turns averaging 38 characters. */
+export const SUBSTANTIVE_REPLY_MIN_CHARS = 40;
+
+/**
+ * ⚠ ANSWER-ANYWAY — THE SAME QUESTION, ASKED OF ONE ROW THE CALLER HOLDS.
+ *
+ * The window read above asks it of an interval; the `[no-reply]` sentinel's reply rule holds a
+ * single row and needs the same verdict about it — is the bubble the start-ack promotion put
+ * in front of the person what this turn answered with? Shared rather than re-typed, for the
+ * reason this file exists: two copies of one question can answer it differently.
+ *
+ * ⚠ ONE CLAUSE IS DELIBERATELY ABSENT AND ITS ABSENCE IS THE POINT. The window read excludes
+ * every engine-stamped row, and its own comment names the consequence — *"this is how a
+ * promoted start-ack is refused"*. That is a PRE-JUDGMENT of content made at the instant of
+ * promotion, and turn 5649 measured its cost (timeline at `work/ask-settlement.ts`'s seventh
+ * narrowing). This reader is asked only about a row the engine itself promoted, by the
+ * rule that decides what the turn answered with, so the stamp is not the question here and the
+ * substance is. Nothing widens: the window read is untouched and its two floors are unchanged.
+ */
+export function isSubstantiveReplyRow(agentId: string, messageId: string): boolean {
+  return !!getDb().prepare(
+    `SELECT 1 FROM messages
+      WHERE id = ? AND agent_id = ? AND role = 'assistant'
+        AND lane <> 'a2a'
+        AND content NOT LIKE '[{%'
+        AND length(trim(content)) > ?
+      LIMIT 1`,
+  ).get(messageId, agentId, SUBSTANTIVE_REPLY_MIN_CHARS);
 }
 
 /**
