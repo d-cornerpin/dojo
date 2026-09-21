@@ -34,6 +34,26 @@ export const pendingWakeups = new Set<string>();
 // the census that keeps it at one.
 export const stoppedAgents = new Set<string>();
 
+// T83 — THE RUN'S OWN STOP FENCE, because `stoppedAgents` is clearable FROM OUTSIDE. Two
+// legitimate doors lift it — a fresh user message (`routes/chat.ts`) and reset-session
+// (`routes/agents.ts`) — both meaning "the NEXT run may proceed", neither able to say "…but
+// the run you stopped is still unwinding". Measured (MrMeSeeks `a504e5c9`, 2026-09-21): stop
+// 04:22:42.167; reset-session lifted the flag 04:25:23.307; the stopped turn's budget
+// checkpoint then queued `turn-budget-continuation` at 04:27:10.624 unrefused and the chain
+// resumed on turn 73. SELF-CLEANING BY CONSTRUCTION: raised only when `activeRuns` says a run
+// is in flight, lowered by that run's own `finally` in `runtime.ts` — the same ONE owner that
+// retires `stoppedAgents` — so no fence can outlive its run and starve the agent (which would
+// be the P3 silent hang, produced by the guard against one). RESIDUAL, not hidden: that
+// `finally` deletes `activeRuns` at its top and then runs a long awaited tail; a stop landing
+// inside the tail raises no fence and is covered by `stoppedAgents` exactly as before.
+export const stopFencedRuns = new Set<string>();
+
+/** Is a user stop standing — by the flag, or by the fence the stopped run carries? OR-ed
+ *  everywhere: a checkpoint reading only the flag is one reset-session can talk out of a stop. */
+export function isStopFenced(agentId: string): boolean {
+  return stoppedAgents.has(agentId) || stopFencedRuns.has(agentId);
+}
+
 /**
  * THE ONE DOOR FOR A TURN'S OWN WAKEUP (UX-REPAIR T37).
  *
@@ -53,7 +73,8 @@ export const stoppedAgents = new Set<string>();
  * @returns true if the wakeup was queued, false if a live stop refused it.
  */
 export function queueSelfWake(agentId: string, reason: string): boolean {
-  if (stoppedAgents.has(agentId)) {
+  // T83: `isStopFenced`, not `stoppedAgents.has` — see the fence's header for the measured shape.
+  if (isStopFenced(agentId)) {
     sharedStateLogger.info('self-wake refused: the user stopped this agent', { reason }, agentId);
     return false;
   }
@@ -61,8 +82,76 @@ export function queueSelfWake(agentId: string, reason: string): boolean {
   return true;
 }
 
-// AbortControllers for in-flight API calls — aborting kills request immediately.
-export const activeAbortControllers = new Map<string, AbortController>();
+// ════════════════════════════════════════
+// T83 — THE ABORT REGISTRY: A SET PER AGENT, BEHIND ONE DOOR.
+//
+// It was `Map<string, AbortController>` — ONE controller per agent, written and deleted by key
+// from three files. Two measured facts (dev log, MrMeSeeks `a504e5c9`, 2026-09-21) say that
+// shape cannot carry a stop:
+//
+//   1. ONLY ONE CALL SITE EVER REGISTERED — `v2/steps/call-llm/model-call.ts`, for the TURN's
+//      own dial. Every other dial a turn makes registered nothing and carried no signal: the
+//      budget checkpoint's forced compaction (`memory/summarize.ts`), the continuity brief,
+//      the classifiers, ask-title, the vision-caption fallback. 04:22:16.150 the turn's own
+//      call completed and de-registered; 04:22:25.273 the checkpoint's summariser dialled;
+//      04:22:42.167 the stop found an EMPTY map and aborted nothing; 04:27:10.615 that call
+//      completed after 285,328 ms and the turn parked for a continuation.
+//   2. ONE SLOT IS WRONG EVEN IF EVERYONE REGISTERS. Two calls can be in flight on one agentId
+//      at once — proven at 04:25:27.711, ask-title dialling while the summariser ran. One slot
+//      means the second registration evicts the first and the first's completion deletes the
+//      second, so a stop reaches neither. Hence a Set and a release BY IDENTITY.
+//
+// The three doors below are the ONLY writers; `a-stop-stops-and-the-status-tells-the-truth.
+// test.ts` runs the census that keeps it that way.
+// ════════════════════════════════════════
+
+/** In-flight, abortable provider calls per agent. Written only by the doors below. */
+export const activeAbortControllers = new Map<string, Set<AbortController>>();
+
+/**
+ * Register one in-flight call as abortable by this agent's stop.
+ *
+ * THE RACE THIS CLOSES: `stopAgent` can only abort what is registered at the instant it runs,
+ * so a call registering a moment LATER used to dial straight through a stop that had already
+ * landed. Registration and the stop check are one act here: either the stop was already
+ * recorded and this controller is aborted before it reaches the wire, or it is in the registry
+ * and the next abort reaches it. There is no third state.
+ *
+ * @returns true if registered; false if a live stop refused it — and on that path the
+ *          controller is ALREADY aborted, so no caller has to remember to do it.
+ */
+export function registerAbortable(agentId: string, controller: AbortController): boolean {
+  if (isStopFenced(agentId)) {
+    controller.abort();
+    sharedStateLogger.info('call refused before dialling: the user stopped this agent', {}, agentId);
+    return false;
+  }
+  let set = activeAbortControllers.get(agentId);
+  if (!set) { set = new Set(); activeAbortControllers.set(agentId, set); }
+  set.add(controller);
+  return true;
+}
+
+/** This call has settled. Removes BY IDENTITY, so one call's end never de-registers another's. */
+export function releaseAbortable(agentId: string, controller: AbortController): void {
+  const set = activeAbortControllers.get(agentId);
+  if (!set) return;
+  set.delete(controller);
+  if (set.size === 0) activeAbortControllers.delete(agentId);
+}
+
+/** Abort every call this agent has in flight. Returns how many were cut. */
+export function abortInFlight(agentId: string, reason: string): number {
+  const set = activeAbortControllers.get(agentId);
+  if (!set || set.size === 0) return 0;
+  const cut = set.size;
+  for (const c of set) {
+    try { c.abort(); } catch { /* an already-settled controller is not an error */ }
+  }
+  activeAbortControllers.delete(agentId);
+  sharedStateLogger.info('in-flight provider calls aborted', { reason, cut }, agentId);
+  return cut;
+}
 
 // Agents that should treat the next aborted model call as a soft-end so a
 // queued urgent wakeup can fire promptly.

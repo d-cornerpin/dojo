@@ -545,13 +545,15 @@ agentsRouter.post('/:id/stop', (c) => {
 
   stopAgent(id);
 
-  // Also set to idle immediately in the DB so the UI updates right away
-  // (the runtime loop will also set it when it catches the stop flag)
-  db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(id);
-  broadcast({ type: 'agent:status', agentId: id, status: 'idle' });
-
-  logger.info('Agent stopped via dashboard', { agentId: id });
-  return c.json({ ok: true, data: { agentId: id, status: 'idle' } });
+  // T83 — THE ROUTE NO LONGER WRITES THE ENGINE'S LIE A SECOND TIME. What stood here was a raw
+  // `UPDATE agents SET status = 'idle'` plus an idle broadcast, "so the UI updates right away",
+  // duplicating the cosmetic idle `stopAgent` itself used to write — two writers, one untruth.
+  // `stopAgent` now writes idle only when idle is TRUE (no run in flight) and otherwise leaves
+  // the row saying `working` and broadcasts `stopping: true`. The route reports back whatever
+  // actually happened rather than asserting an outcome it has not checked.
+  const after = db.prepare('SELECT status FROM agents WHERE id = ?').get(id) as { status: string };
+  logger.info('Agent stopped via dashboard', { agentId: id, statusAfter: after.status });
+  return c.json({ ok: true, data: { agentId: id, status: after.status, stopping: after.status === 'working' } });
 });
 
 // POST /:id/reset-session — reset a single agent's session.
@@ -583,6 +585,14 @@ agentsRouter.post('/:id/reset-session', async (c) => {
     //     the flag clears, but the loop bails immediately without
     //     processing the user message. Same risk for queued wakeups and
     //     preempt flags. (2026-06-02 bug fix.)
+    //
+    //     T83 — AND `stopFencedRuns` IS DELIBERATELY NOT IN THIS LIST. This clear is about the
+    //     NEXT run, which is correct and stays. But on 2026-09-21 a reset landed 2m41s INTO a
+    //     stopped run (04:25:23, stop at 04:22:42) and lifted the flag out from under it; that
+    //     run's turn-budget checkpoint then queued its own continuation at 04:27:10, unrefused,
+    //     and the chain the owner had stopped resumed on turn 73. The fence is the stopped
+    //     RUN's, retired by that run's own exit path in `runtime.ts` and by nothing else, so a
+    //     reset can grant the next run a clean slate without un-stopping the current one.
     try {
       const { stoppedAgents, preemptedAgents, pendingWakeups } = await import('../../agent/shared-state.js');
       stoppedAgents.delete(id);

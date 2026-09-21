@@ -29,6 +29,9 @@ import { updateRateLimits } from '../router/rate-limits.js';
 import { recordProviderSuccess, recordProviderError } from '../gateway/routes/services.js';
 import { broadcast } from '../gateway/ws.js';
 import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
+// T83: the abort registry's two doors. `shared-state.ts` imports nothing but the logger, so
+// this is a leaf edge — no cycle back through the runtime.
+import { registerAbortable, releaseAbortable } from './shared-state.js';
 import type { ToolCall } from '@dojo/shared';
 
 const logger = createLogger('model');
@@ -2845,7 +2848,40 @@ async function callAnthropicSdkModel(
 // Ollama is the only local type today; a future local type goes here.
 const FREE_LOCAL_PROVIDER_TYPES = new Set(['ollama', 'local']);
 
+// ════════════════════════════════════════
+// T83 — EVERY PROVIDER CALL AN AGENT MAKES IS ABORTABLE BY THAT AGENT'S STOP.
+//
+// Here and not in the turn loop, because this is the ONE place a provider call is dialled and
+// the turn loop is one of eighteen callers. The other seventeen — the forced compaction's
+// summariser, the continuity brief, the classifiers, ask-title, the vision-caption fallback,
+// the web-tool extractor, canvas, browser, voice, the router probe — dialled with no
+// controller anywhere and no signal at all, so `stopAgent` had nothing to reach them with.
+// MEASURED (dev log, MrMeSeeks `a504e5c9`, 2026-09-21): the call the 04:22:42 stop failed to
+// abort was `memory/summarize.ts`'s, dialled 04:22:25.273 by the turn-budget checkpoint and
+// completed 04:27:10.615 after 285,328 ms — not the turn's own call, which had finished at
+// 04:22:16.150 and correctly de-registered.
+//
+// Register through the stop-aware door, dial with that controller folded into whatever signal
+// the caller brought (`AbortSignal.any`, the combinator the transport timeout already uses one
+// layer down), release by identity on every exit path. A caller that brings its own controller
+// — the turn loop, for its `onChunk` suppression — keeps it and keeps its meaning; it simply
+// no longer has to be the thing the stop finds. The door REFUSES while a stop is live, so a
+// call racing the stop comes back already aborted and throws before a byte leaves the box.
+// ════════════════════════════════════════
 export async function callModel(params: ModelCallParams): Promise<ModelCallResult> {
+  const stopCtl = new AbortController();
+  registerAbortable(params.agentId, stopCtl);
+  const signal = params.abortSignal
+    ? AbortSignal.any([params.abortSignal, stopCtl.signal])
+    : stopCtl.signal;
+  try {
+    return await dialModel({ ...params, abortSignal: signal });
+  } finally {
+    releaseAbortable(params.agentId, stopCtl);
+  }
+}
+
+async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
 
   // so the model-call-failure recovery path can be exercised end-to-end. Remove for release.

@@ -1434,8 +1434,20 @@ export const Chat = ({ panel = null }: ChatProps) => {
     // thinking dots and the send→stop button swap need to react live
     // without requiring a page reload to pick up the backend state.
     const unsubStatus = subscribe('agent:status', (event: WsEvent) => {
-      const e = event as { agentId: string; status: string; turnKind?: 'user' | 'a2a'; userFacing?: boolean };
+      const e = event as { agentId: string; status: string; turnKind?: 'user' | 'a2a'; userFacing?: boolean; stopping?: boolean };
       if (e.agentId !== agentIdRef.current) return;
+      // T83: a `working` frame carrying `stopping: true` is the engine being HONEST — the row
+      // still says working because the run is still unwinding, and it will keep saying so for
+      // as long as that takes (a forced compaction has been measured at 285 s). The composer
+      // must not re-raise the dots and the stop button on a stop the user already pressed, so
+      // this frame reads as "no longer accepting" here while the status field keeps telling
+      // every OTHER reader the truth. Before T83 the engine wrote a cosmetic `idle` to get
+      // this effect, and every busy-guard in the platform believed it.
+      if (e.stopping === true) {
+        setIsWorking(false);
+        setAwaitingUserReply(false);
+        return;
+      }
       if (e.status === 'working') {
         setIsWorking(true);
         const kind = e.turnKind ?? 'user';

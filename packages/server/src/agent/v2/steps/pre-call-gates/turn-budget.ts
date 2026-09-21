@@ -22,7 +22,7 @@ import { getContextWindow } from '../../../model.js';
 import { getDb } from '../../../../db/connection.js';
 import { checkAndCompact } from '../../../../memory/compaction.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
-import { turnContinuationCounts, queueSelfWake } from '../../../shared-state.js';
+import { turnContinuationCounts, queueSelfWake, isStopFenced } from '../../../shared-state.js';
 import { type AgentTurnState } from '../../state.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import { noteEngineCheckpoint, pendingCirclingVerdictParkLine } from '../../../../work/engine-checkpoint-note.js';
@@ -224,6 +224,29 @@ export async function runTurnTimeBudget(
       logger.warn('v2 forced compaction at turn-budget checkpoint failed', {
         agentId, error: compErr instanceof Error ? compErr.message : String(compErr),
       }, agentId);
+    }
+
+    // ── T83 — A STOP THAT LANDED DURING THE FORCED COMPACTION ENDS THE TURN HERE ──
+    //
+    // This checkpoint is the longest un-gated stretch in a turn: the gate that reads the stop
+    // flag runs ABOVE this step, and the forced compaction below it dials a summariser that
+    // took 285 seconds on the measured run (dev box, 2026-09-21, 04:22:25 → 04:27:10). The
+    // stop landed at 04:22:42, seventeen seconds in — and the checkpoint went on to write
+    // "Pausing here and continuing on a fresh turn (3 of 31)" into the owner's chat and queue
+    // the continuation that resumed the plan they had stopped.
+    //
+    // Aborting the compaction call (which now happens) is necessary and not sufficient: the
+    // abort surfaces as a caught `compErr` above and execution simply continues into the park.
+    // `queueSelfWake` would refuse the wakeup, but the park MESSAGE would still be written and
+    // the tracker still noted — an engine announcing a continuation that is never coming. So
+    // the checkpoint re-reads the stop at the one moment it can have changed, and exits on the
+    // stop's own reason: nothing parked, nothing queued, nothing claimed.
+    if (isStopFenced(agentId)) {
+      logger.info('v2 turn-budget checkpoint: the user stopped this agent during the forced compaction; not parking and not queuing a continuation', {
+        agentId, turnNumber, continuationCount,
+      }, agentId);
+      turnContinuationCounts.delete(agentId);
+      return requestExit(state, 'stopped-by-user' satisfies PreCallGatesExitReason);
     }
 
     // T79 FIX WAVE, FINDING 2: read BEFORE the park message is built, so an undelivered

@@ -45,14 +45,14 @@ const AGENT = 'voice-fixture-agent';
 
 describe('a preempt storm yields at most one abort per cool-down window', () => {
   it('RED: five preempts inside one cool-down window abort only ONCE', async () => {
-    const { activeAbortControllers, preemptedAgents } = await import('../shared-state.js');
+    const { activeAbortControllers, preemptedAgents, registerAbortable } = await import('../shared-state.js');
     const { preemptAgentForUrgentMessage } = await import('../runtime.js');
 
     let aborts = 0;
     const rearm = (): void => {
       const c = new AbortController();
       c.signal.addEventListener('abort', () => { aborts++; });
-      activeAbortControllers.set(AGENT, c);
+      registerAbortable(AGENT, c);
     };
     rearm();
 
@@ -72,11 +72,11 @@ describe('a preempt storm yields at most one abort per cool-down window', () => 
   });
 
   it('the FIRST press in a window always works, even with nothing yet in the cool-down map', async () => {
-    const { activeAbortControllers, preemptedAgents } = await import('../shared-state.js');
+    const { activeAbortControllers, preemptedAgents, registerAbortable } = await import('../shared-state.js');
     const { preemptAgentForUrgentMessage } = await import('../runtime.js');
 
     const controller = new AbortController();
-    activeAbortControllers.set(AGENT, controller);
+    registerAbortable(AGENT, controller);
 
     const result = preemptAgentForUrgentMessage(AGENT);
 
@@ -87,34 +87,34 @@ describe('a preempt storm yields at most one abort per cool-down window', () => 
 
   it('a preempt AFTER the cool-down window elapses aborts again — this is a window, not a permanent latch', async () => {
     vi.useFakeTimers();
-    const { activeAbortControllers, preemptedAgents } = await import('../shared-state.js');
+    const { activeAbortControllers, preemptedAgents, registerAbortable } = await import('../shared-state.js');
     const { preemptAgentForUrgentMessage } = await import('../runtime.js');
 
     const first = new AbortController();
-    activeAbortControllers.set(AGENT, first);
+    registerAbortable(AGENT, first);
     expect(preemptAgentForUrgentMessage(AGENT)).toBe(true);
 
     // Well past any reasonable cool-down window (minutes).
     await vi.advanceTimersByTimeAsync(5 * 60_000);
 
     const second = new AbortController();
-    activeAbortControllers.set(AGENT, second);
+    registerAbortable(AGENT, second);
     expect(preemptAgentForUrgentMessage(AGENT)).toBe(true);
     expect(second.signal.aborted).toBe(true);
     preemptedAgents.delete(AGENT);
   });
 
   it('CONTROL: a coalesced preempt does not touch a controller belonging to a DIFFERENT agent', async () => {
-    const { activeAbortControllers, preemptedAgents } = await import('../shared-state.js');
+    const { activeAbortControllers, preemptedAgents, registerAbortable } = await import('../shared-state.js');
     const { preemptAgentForUrgentMessage } = await import('../runtime.js');
 
     const mine = new AbortController();
     const someoneElse = new AbortController();
-    activeAbortControllers.set(AGENT, mine);
-    activeAbortControllers.set('someone-else', someoneElse);
+    registerAbortable(AGENT, mine);
+    registerAbortable('someone-else', someoneElse);
 
     preemptAgentForUrgentMessage(AGENT);
-    activeAbortControllers.set(AGENT, new AbortController()); // fresh in-flight call re-armed
+    registerAbortable(AGENT, new AbortController()); // fresh in-flight call re-armed
     preemptAgentForUrgentMessage(AGENT); // coalesced — within the cool-down
 
     expect(someoneElse.signal.aborted, 'a per-agent cool-down must never cross agents').toBe(false);
@@ -128,7 +128,7 @@ describe('a preempt storm yields at most one abort per cool-down window', () => 
   });
 
   it('CONTROL: with no in-flight call to abort, the function still returns false (unchanged today\'s behaviour)', async () => {
-    const { activeAbortControllers } = await import('../shared-state.js');
+    const { activeAbortControllers, registerAbortable } = await import('../shared-state.js');
     const { preemptAgentForUrgentMessage } = await import('../runtime.js');
     activeAbortControllers.delete(AGENT);
     expect(preemptAgentForUrgentMessage(AGENT)).toBe(false);

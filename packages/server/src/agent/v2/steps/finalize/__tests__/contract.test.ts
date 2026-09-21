@@ -228,10 +228,18 @@ describe('PHASE-6 CUT 4: the finalize step\'s contract', () => {
     // give-up arm in `post-call-classify/empty-response.ts`, and the `breaks.length` half
     // below is UNCHANGED at 6 — the arithmetic that proves an exit was ADDED rather than a
     // driver break quietly converted into one.
-    expect(stepExitSites).toBe(24);
+    //
+    // ⚠ RE-DERIVED AGAIN (T83): 24 -> 25. The +1 is the turn-budget checkpoint's own
+    // stop re-read in `pre-call-gates/turn-budget.ts`: the forced compaction it runs can
+    // take minutes (285 s, measured 2026-09-21) and a stop landing inside it used to be
+    // discovered by nobody — the checkpoint went on to write "continuing on a fresh turn"
+    // and queue the continuation for a plan the owner had stopped. `breaks.length` is
+    // UNCHANGED at 6, which is again the arithmetic proving an exit was ADDED here rather
+    // than a driver break quietly converted into one.
+    expect(stepExitSites).toBe(25);
     // THE INVARIANT UNDERNEATH BOTH HALVES, stated as its own clause so a future cut
     // that moves N exits and adds N+1 cannot pass by moving the two numbers in step.
-    expect(breaks.length + stepExitSites).toBe(30);
+    expect(breaks.length + stepExitSites).toBe(31);
     const tryStart = sf.getLineAndCharacterOfPosition(tryStmt.getStart(sf)).line + 1;
     const tryEnd = sf.getLineAndCharacterOfPosition(tryStmt.tryBlock.getEnd()).line + 1;
     for (const b of breaks) {

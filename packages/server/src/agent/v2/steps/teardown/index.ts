@@ -69,7 +69,7 @@
 
 import { createLogger } from '../../../../logger.js';
 import type { getDb } from '../../../../db/connection.js';
-import { activeAbortControllers } from '../../../shared-state.js';
+import { abortInFlight } from '../../../shared-state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { advance, type AgentTurnState, type ChannelInboundContext, type TurnPhase } from '../../state.js';
 import type { TurnCounterparty } from '../../counterparty.js';
@@ -140,8 +140,14 @@ export async function runTurnRecovery(
 
   // Best-effort cleanup before recovery so heartbeats / abort controllers
   // don't keep firing while the recovery cascade does its DB writes.
+  //
+  // T83 — IT ABORTS WHAT IT USED TO FORGET. This was `activeAbortControllers.delete(agentId)`:
+  // a call still genuinely dialling when the turn threw was dropped from the registry and
+  // therefore became un-abortable for the rest of its life — the same hole one turn later.
+  // The turn is over here; anything still on the wire for this agent is owed a cut, not an
+  // amnesty. A call started AFTER this instant registers its own controller and is unaffected.
   stopStatusHeartbeat(agentId);
-  activeAbortControllers.delete(agentId);
+  abortInFlight(agentId, 'turn-teardown');
 
   // C2: a throw anywhere AFTER the pickup-stamp (assembleContext, decideTier,
   // enforceModelCapabilities, the grounding INSERT, the assistant/tool persists,

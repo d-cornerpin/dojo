@@ -260,7 +260,7 @@ describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () =
     activeRuns.add(A);
     pendingWakeups.add(A);
     stoppedAgents.add(A);
-    activeAbortControllers.set(A, new AbortController());
+    activeAbortControllers.set(A, new Set([new AbortController()]));
     preemptedAgents.add(A);
     backgroundDrains.add(A);
     lastCompactionDividerAt.set(A, 1);
@@ -333,9 +333,16 @@ describe('PHASE-6 T1: the ten maps are GONE, not standing beside their replaceme
     // `RETIRED_FROM_TURN_STATE` above is the list this clause actually guards against creeping
     // back, and it names none of shared-state.ts's twelve, T81b's thirteenth, or T81c's
     // fourteenth.
+    //
+    // T83 added `stopFencedRuns` — a per-agent Set carrying the STOP a run is under, scoped to
+    // that run and retired only by its own exit path. It is not a reintroduction of anything
+    // the collapse retired either: `stoppedAgents` (already one of the twelve) says "a stop
+    // was requested", which the two human-intent doors may legitimately lift for the NEXT run,
+    // and on 2026-09-21 one of them lifted it mid-unwind and the stopped chain resumed. The
+    // fence is the fact that clear cannot reach. The count moves to 15.
     const src = read('agent/shared-state.ts');
     const declared = [...src.matchAll(/export const (\w+) = new (?:Map|Set)/g)].map((m) => m[1]);
-    expect(declared).toHaveLength(14);
+    expect(declared).toHaveLength(15);
   });
 
   it('the two ambient-state files are PINNED in ratchets.json', () => {

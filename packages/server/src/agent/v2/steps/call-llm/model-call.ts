@@ -25,7 +25,7 @@ import { callModel, STREAM_IDLE_TIMEOUT_ERROR } from '../../../model.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { abandonTurn, type StepOutcome } from '../step-outcome.js';
 import { broadcast } from '../../../../gateway/ws.js';
-import { activeAbortControllers, stoppedAgents, preemptedAgents } from '../../../shared-state.js';
+import { stoppedAgents, preemptedAgents } from '../../../shared-state.js';
 import { hydrateCredentialsInMessages } from '../../../../credentials/secret-values.js';
 import { noteDeclaredSecretsFromToolCalls } from '../../../../credentials/secret-fields.js';
 import { AgentError } from '../../../errors.js';
@@ -113,13 +113,12 @@ export async function callWithRetryAndFallback(
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     // ── UX-REPAIR T37: THE WINDOW BETWEEN THE GATE AND THE WIRE ──
     //
-    // `stopAgent` can only abort a call that is ALREADY in flight — it aborts
-    // whatever is in `activeAbortControllers`. Between the pre-call gate that
-    // read the flag and the `set` below sits the whole of assemble (vector
-    // search, context build, injections) plus, on the first round, the tool
-    // batch that preceded it. A stop landing in there hit nothing: no
-    // checkpoint to see it, no controller to abort. Measured on the dev box
-    // 2026-08-11 (control C3): stop at 07:34:19.429 — 70 ms after that
+    // `stopAgent` can only abort a call that is ALREADY in flight. Between the
+    // pre-call gate that read the flag and the dial below sits the whole of
+    // assemble (vector search, context build, injections) plus, on the first
+    // round, the tool batch that preceded it. A stop landing in there hit
+    // nothing: no checkpoint to see it, no controller to abort. Measured on the
+    // dev box 2026-08-11 (control C3): stop at 07:34:19.429 — 70 ms after that
     // iteration's gate — and the provider call went out at 07:34:19.506 and ran
     // 27 s to completion, followed by a whole tool batch; the turn did not
     // actually stop until the NEXT gate at 07:35:08.284, 49 s later.
@@ -128,11 +127,19 @@ export async function callWithRetryAndFallback(
     // window from the other side: either the stop was already recorded and we
     // never dial, or the controller is registered and the abort reaches the
     // fetch. There is no third state.
+    //
+    // T83 — AND THE REGISTRATION IS NO LONGER THIS FILE'S JOB. `callModel` itself
+    // registers a stop-linked controller for EVERY call the tree makes, through
+    // the one door that refuses while a stop is live, so the turn's own dial is
+    // covered by the same mechanism that finally covers the seventeen other
+    // dials a turn can make. The controller below stays because it still has a
+    // job this one does not: suppressing `onChunk` broadcasts and the phone-TTS
+    // flush for a stream this code has abandoned. It rides down as the caller's
+    // `abortSignal` exactly as before and is folded into the stop's signal there.
     const beforeCall = stoppedAgents.has(agentId) ? abandonForStop('stopped-before-call') : null;
     if (beforeCall) return beforeCall;
 
     const abortController = new AbortController();
-    activeAbortControllers.set(agentId, abortController);
 
     try {
       // RC-4.4: mark the model call in flight so the start-ack streaming-race grace
@@ -258,11 +265,15 @@ export async function callWithRetryAndFallback(
           });
         },
       });
-      activeAbortControllers.delete(agentId);
       callSucceeded = true;
       break;
     } catch (err) {
-      activeAbortControllers.delete(agentId);
+      // T83: the two `activeAbortControllers.delete(agentId)` calls that stood here and on
+      // the success path are gone — `callModel`'s own `finally` releases its registration by
+      // IDENTITY. Deleting by KEY from here was the second half of the old registry's defect:
+      // a second call in flight on the same agent (ask-title, the compaction summariser —
+      // both observed concurrent on 2026-09-21) was silently de-registered by THIS call
+      // settling, and the next stop reached neither.
 
       // UX-REPAIR T37: READ, never delete. The flag's owner is the run's own
       // exit path in `runtime.ts` — see `shared-state.ts`'s header on

@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
 import type Anthropic from '@anthropic-ai/sdk';
+import type { AgentStatus } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { postAgentNotice } from './agent-notice.js';
 import { createLogger } from '../logger.js';
@@ -378,6 +379,12 @@ import {
   preemptedAgents,
   agentStartTimes,
   statusHeartbeats,
+  // T83 — the run-scoped stop fence and the abort registry's three doors. The fence is raised
+  // by `stopAgent` and retired by the run's own `finally` below (the same ONE owner that
+  // retires `stoppedAgents`); the registry is never written except through these.
+  stopFencedRuns,
+  isStopFenced,
+  abortInFlight,
   // UX-REPAIR T37: the ONE door every self-wake goes through. It refuses while
   // the user's stop is live, which is what stops a stopped run from restarting
   // itself out of its own end-of-run drains.
@@ -439,7 +446,7 @@ export function stopStatusHeartbeat(agentId: string): void {
   }
 }
 
-/** Stop a running agent, aborts in-flight API call and halts the loop.
+/** Stop a running agent, aborts in-flight API calls and halts the loop.
  *
  * Sets a `stopMarkerPending` flag on the agent's `config` JSON so the next
  * context assembly will inject a one-shot stop marker into the user's next
@@ -450,29 +457,52 @@ export function stopStatusHeartbeat(agentId: string): void {
  * in the DB. */
 export function stopAgent(agentId: string): void {
   stoppedAgents.add(agentId);
+  // T83 — RAISE THE RUN'S OWN FENCE. `stoppedAgents` can be lifted from outside by the two
+  // human-intent doors (a fresh user message; reset-session), and on 2026-09-21 reset-session
+  // lifted it 2m41s into a stopped run, after which that run's turn-budget checkpoint queued
+  // its own continuation unrefused. The fence is scoped to the run in flight NOW and is
+  // lowered only by that run's own exit path below. See `shared-state.ts` for the full shape.
+  const runInFlight = activeRuns.has(agentId);
+  if (runInFlight) stopFencedRuns.add(agentId);
   // Clear any queued wakeup so the agent doesn't immediately restart after stopping
   pendingWakeups.delete(agentId);
-  // Abort any in-flight API call. With the abortSignal threaded through
-  // model.ts, this actually cancels the underlying fetch (vs. v1's pre-fix
-  // behavior where the call kept running until natural completion).
-  const controller = activeAbortControllers.get(agentId);
-  if (controller) {
-    controller.abort();
-    activeAbortControllers.delete(agentId);
-  }
+  // Abort EVERY in-flight API call — not just the turn's own. With the abortSignal threaded
+  // through `model.ts`'s one dial door, this actually cancels the underlying fetch (vs. v1's
+  // pre-fix behavior where the call kept running until natural completion), and it now reaches
+  // the calls a turn makes BESIDE its main one: the turn-budget checkpoint's forced compaction,
+  // the continuity brief, the classifiers. It was exactly one of those (a 285-second summariser
+  // dial) that the 04:22:42 stop found nothing to abort.
+  const cut = abortInFlight(agentId, 'user-stop');
 
-  // ── Cosmetic safety net (added 2026-05-04) ──
-  // Stop the heartbeat IMMEDIATELY so the dashboard doesn't keep getting
-  // periodic 'working' broadcasts while the runtime loop unwinds. Without
-  // this, the dashboard would briefly go idle (from the optimistic stop
-  // click), then bounce back to 'working' on the next 30s heartbeat tick,
-  // confusing the user. Also broadcast agent:status='idle' so any reconnected
-  // dashboard sees the stop right away. The runtime loop's own setAgentStatus
-  // calls during finalize will broadcast idle again, that's a harmless dupe.
-  stopStatusHeartbeat(agentId);
+  // ── T83 — THE STATUS DOES NOT LIE (replaces a "Cosmetic safety net", 2026-05-04) ──
+  //
+  // What stood here wrote `status='idle'` and broadcast idle the instant the button was
+  // pressed, while the loop kept unwinding — the code called it cosmetic itself. It is not:
+  // `agents.status` is the fact every other subsystem reads to decide whether this agent is
+  // available, and on 2026-09-21 that false idle is exactly why three `resetSession()` calls
+  // sailed through a genuinely busy agent (04:25:23, 04:25:56, 04:26:30) where the same guard
+  // had correctly refused for 390 s on a run whose status told the truth.
+  //
+  // Idle is now written ONLY when idle is TRUE — no run in flight. While a run unwinds the row
+  // keeps saying `working`, because it is, and the run's own stop checkpoints (pre-call gates,
+  // the model-call catch, the executor) write idle when the turn ends. The dashboard is not
+  // left guessing: the broadcast carries the truthful status plus `stopping: true`, the
+  // truthful stopping state readers needed, with no `agents.status` CHECK constraint widened.
+  //
+  // THE HEARTBEAT STAYS UP while the run does. Killing it was part of the same cosmetic
+  // bargain and is actively unsafe now the row stays `working`: the heartbeat keeps
+  // `updated_at` fresh, and `recoverStuckAgents` reaps stale `working` rows by flipping them
+  // to idle and DELETING their `activeRuns` entry mid-turn (`startStatusHeartbeat`'s D18 note).
   try {
-    writeAgentStatus(agentId, 'idle');
-    broadcast({ type: 'agent:status', agentId, status: 'idle' });
+    if (runInFlight) {
+      const status = (getDb().prepare('SELECT status FROM agents WHERE id = ?')
+        .get(agentId) as { status?: string } | undefined)?.status ?? 'working';
+      broadcast({ type: 'agent:status', agentId, status: status as AgentStatus, stopping: true });
+    } else {
+      stopStatusHeartbeat(agentId);
+      writeAgentStatus(agentId, 'idle');
+      broadcast({ type: 'agent:status', agentId, status: 'idle' });
+    }
   } catch { /* best effort */ }
 
   // Mark stopMarkerPending in the agent's config. The memory assembler READS it on the
@@ -491,7 +521,7 @@ export function stopAgent(agentId: string): void {
     }, agentId);
   }
 
-  logger.info('Agent stop requested', {}, agentId);
+  logger.info('Agent stop requested', { runInFlight, callsAborted: cut }, agentId);
 }
 
 /**
@@ -573,12 +603,14 @@ export function preemptAgentForUrgentMessage(agentId: string): boolean {
     }, agentId);
     return false;
   }
-  const controller = activeAbortControllers.get(agentId);
-  if (!controller) return false;
+  // T83: the registry holds a SET per agent now (a turn can have its own dial and a mid-turn
+  // compaction dial up at the same time), so "is there anything to abort" is a size question
+  // and the abort is `abortInFlight`. The cool-down, the flag order and the return contract
+  // are byte-for-byte the decisions T81c made — only the registry shape underneath changed.
+  if ((activeAbortControllers.get(agentId)?.size ?? 0) === 0) return false;
   lastA2APreemptAt.set(agentId, now);
   preemptedAgents.add(agentId);
-  controller.abort();
-  activeAbortControllers.delete(agentId);
+  abortInFlight(agentId, 'urgent-preempt');
   logger.info('Agent run preempted for urgent wakeup', {}, agentId);
   return true;
 }
@@ -1018,6 +1050,17 @@ class AgentRuntime {
             logger.info('Queued wakeup declined: the prior turn ended on a declared-patience exhaustion, not auto-redialing the identical request', { agentId }, agentId);
             return;
           }
+          // T83 — A STOP THAT LANDED WHILE THIS TIMER WAS ARMED IS STILL A STOP. The timer is
+          // armed before the flag/fence are retired and fires 500 ms after they are, so a stop
+          // arriving in that gap used to find `pendingWakeups` already consumed (nothing left
+          // for `stopAgent` to clear) and a restart it had no say over. The gate is the same
+          // OR the drains use, so the two human-intent clears still let a genuinely fresh
+          // run through: a NEW user message arrives via `handleMessage`'s own door, which
+          // this timer never gates.
+          if (isStopFenced(agentId)) {
+            logger.info('Queued wakeup declined: the user stopped this agent', { agentId }, agentId);
+            return;
+          }
           // Skip the wakeup if the agent has been terminated since the
           // wakeup was queued. Without this guard, an agent that called
           // complete_task could be resurrected by a wakeup queued in the
@@ -1070,7 +1113,13 @@ class AgentRuntime {
       // dies with the run that honoured it, which is strictly tighter than
       // "whichever checkpoint noticed first". The two human-intent clears
       // (a fresh user message; reset-session) are untouched.
+      //
+      // T83 — AND THE FENCE RETIRES HERE TOO, for the same reason and in the same breath.
+      // The two human-intent doors can lift the FLAG (they are about the next run, and that
+      // is correct); nothing outside this line lifts the FENCE, so the run that was stopped
+      // stays stopped all the way down, even across a reset-session that landed mid-unwind.
       stoppedAgents.delete(agentId);
+      stopFencedRuns.delete(agentId);
     }
   }
 

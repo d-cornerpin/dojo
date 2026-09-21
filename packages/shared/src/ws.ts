@@ -31,6 +31,24 @@ export interface AgentStatusEvent {
    * behavior.
    */
   userFacing?: boolean;
+  /**
+   * T83 — THE TRUTHFUL "STOPPING" STATE, and why it is a flag here rather than a seventh
+   * `AgentStatus`. The stop button used to write `status='idle'` into `agents` the instant it
+   * was pressed while the loop kept unwinding for minutes; the code called that cosmetic, and
+   * it was not — `agents.status` is what every OTHER reader consults to decide whether this
+   * agent is busy, and a false idle is how three `resetSession()` calls sailed through a
+   * genuinely working agent on 2026-09-21. The row now keeps saying `working` until the run is
+   * actually torn down, which is true, and this flag is what lets a dashboard say "Stopping…"
+   * instead of either lying or looking like the button did nothing.
+   *
+   * A real seventh status would mean widening `agents.status`'s CHECK constraint (see
+   * `AGENT_STATUSES`' own note: a member added without a migration throws on write) for a
+   * state that is never persisted and never outlives one run. This is the cheaper true thing.
+   *
+   * Set only on the frame `stopAgent` emits for a run that is still unwinding. Absent
+   * everywhere else, so every existing reader is unchanged.
+   */
+  stopping?: boolean;
 }
 
 export interface ChatChunkEvent {
