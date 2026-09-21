@@ -244,6 +244,12 @@ describe('a stop aborts EVERY call the agent has in flight', () => {
   });
 
   it('the Agent-SDK transport takes an external signal and composes it with T81d\'s patience timer', async () => {
+    // STRUCTURE ONLY, and deliberately not the whole guard (fix round 2, review NEW-2): a text
+    // census is what passed while this transport dropped the signal, so the BEHAVIOUR is pinned
+    // where the harness for it already exists — `the-agent-sdk-transport-honours-declared-
+    // patience.test.ts` §D drives a real external abort into a real in-flight `query()` and
+    // asserts both halves (the call is cut; the error is not the patience code). This clause
+    // reads the composition that makes that possible; that one reads the result.
     const sdkSrc = fs.readFileSync(path.join(SRC_ROOT, 'providers/anthropic-sdk.ts'), 'utf-8');
     // It must accept one…
     expect(/abortSignal\?: AbortSignal/.test(sdkSrc)).toBe(true);

@@ -59,9 +59,9 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
     agentSdk.queryCalls.push(args);
     if (agentSdk.mode === 'abort-unrelated') {
       // A genuine SDK failure that happens to look like an abort but is NEVER caused by our own
-      // `AbortController`/timer — the whole point of §D's control: nothing else can trip our
-      // controller today (no external `params.abortSignal` is wired into this transport), so
-      // this simulates the one other way an "aborted"-sounding error could reach the catch.
+      // `AbortController` — neither by the patience timer nor by T83's external stop signal.
+      // It simulates the third way an "aborted"-sounding error can reach the catch, and §D's
+      // control proves all three stay distinguishable there.
       return (async function* abortUnrelated() {
         throw new Error('The operation was aborted.');
         // eslint-disable-next-line no-unreachable
@@ -203,6 +203,31 @@ async function advanceUntilSettled<T>(promise: Promise<T>, totalMs = MAX_ADVANCE
   return 'error' in settled ? (settled as { error: unknown }).error : (settled as { value: T }).value;
 }
 
+/**
+ * The INVERSE of the helper above, and §B's NULL-row control depends on it: proof that a call
+ * does NOT settle however far the clock is pushed. Stepped identically and for the same
+ * measured reason — a timer scheduled partway through `callModel`'s own pre-dispatch chain is
+ * only discovered by a LATER step — so "it never settled" is a statement about the whole
+ * advanced window, not about the instant the chain happened to reach `query()`.
+ */
+async function settlesWithin(promise: Promise<unknown>, totalMs = MAX_ADVANCE_MS, stepMs = 1_000): Promise<boolean> {
+  let settled = false;
+  promise.then(() => { settled = true; }, () => { settled = true; });
+  for (let elapsed = 0; elapsed < totalMs && !settled; elapsed += stepMs) {
+    await vi.advanceTimersByTimeAsync(stepMs);
+  }
+  return settled;
+}
+
+/** Real-time poll — §D's external-abort control needs the dial to have HAPPENED before it cuts it. */
+async function waitUntil(cond: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error('condition never became true');
+    await new Promise<void>((r) => { setTimeout(r, 5); });
+  }
+}
+
 const callAgentSdk = (message: string): Promise<ModelCallResult> => callModel({
   agentId: 'kevin',
   modelId: 'm-sdk',
@@ -296,7 +321,7 @@ describe('T81d §B — the real dispatch attaches the derived bound, or nothing 
     expect(call.options.abortController, 'the derived bound must reach query() as a real AbortController').toBeInstanceOf(AbortController);
   });
 
-  it('CONTROL (byte-preservation): a NULL row arms no PATIENCE CLOCK — re-derived T83', async () => {
+  it('CONTROL (byte-preservation): a NULL row still streams its answer through, uncut', async () => {
     // ⚠ RE-DERIVED, NOT LOWERED (T83 fix round, review CRITICAL A-1). This clause asserted
     // `'abortController' in call.options === false`, as a proxy for "this transport had no clock
     // before today". That proxy stopped being equivalent to its requirement: T83 threads the
@@ -305,9 +330,14 @@ describe('T81d §B — the real dispatch attaches the derived bound, or nothing 
     // `abortController` is the only cancellation lever `Options` exposes — so a controller is
     // now present on every call, carrying cancellation that has nothing to do with patience.
     //
-    // The REQUIREMENT is unchanged and is what is asserted now: a provider that declared no
-    // patience gets NO TIMER, so nothing here can ever end its call on a clock. Proven by
-    // running the fake clock past any plausible bound and seeing the call still complete.
+    // The DERIVATION is anchored independently, the way the sibling control below already
+    // anchored its own: `signal.aborted` read off an instantly-answering mock is false whether a
+    // clock was armed or not, so on its own it discriminates nothing. Fix-round-2 finding NEW-1
+    // is exactly that gap, found by mutation; the clause after this one closes the other half.
+    expect(resolveTransportTimeouts(
+      resolveStreamPatience({ firstChunkTimeoutMs: null, streamIdleTimeoutMs: null }),
+    ), 'a row that declared nothing derives no bound to arm').toBeNull();
+
     seedAgentSdk(null, null, null);
     const result = await callAgentSdk(SHORT_MESSAGE);
     expect(result.content).toBe('It is done.');
@@ -315,6 +345,42 @@ describe('T81d §B — the real dispatch attaches the derived bound, or nothing 
     const call = agentSdk.queryCalls.at(-1)!;
     expect(call.options.abortController?.signal.aborted ?? false,
       'a row that declared nothing must never be cut by this transport').toBe(false);
+  });
+
+  it('CONTROL (byte-preservation): a NULL row arms NO PATIENCE CLOCK — a stall is never cut', async () => {
+    // THE DISCRIMINATION, restored (fix round 2, review NEW-1). The sibling clause above reads
+    // facts off a call that ANSWERED, and an answered call clears its timer in the transport's
+    // own `finally` — so no assertion on it can tell "no timer was armed" from "a 630s timer was
+    // armed". A mutant doing exactly that (`transportTimeouts?.bodyTimeoutMs ?? 630_000` at
+    // `model.ts`) survived the whole suite. A stalled call is where the two answers differ: with
+    // a clock this rejects, without one it hangs, which is precisely what "this transport had no
+    // bound before today" MEANS for the row that declares nothing.
+    //
+    // The fake clock is pushed past any bound this file can derive (630s is the largest) and
+    // then two orders of magnitude further, so "it never fired" is not "it had not fired yet".
+    agentSdk.mode = 'stall';
+    seedAgentSdk(null, null, null);
+    vi.useFakeTimers();
+    const promise = callAgentSdk(SHORT_MESSAGE);
+    promise.catch(() => {}); // avoid an unhandled-rejection warning while time advances
+    let settled: boolean;
+    try {
+      settled = await settlesWithin(promise);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // Non-vacuous by construction: the dial has to have HAPPENED for the absence of a cut to
+    // mean anything, and the stall only hangs because a controller is reachable to hang on.
+    expect(agentSdk.queryCalls, 'the transport never dialled — the clause would prove nothing').toHaveLength(1);
+    const controller = agentSdk.queryCalls.at(-1)!.options.abortController as AbortController | undefined;
+    expect(controller, 'T83 keeps the stop lever reachable even with no patience declared').toBeInstanceOf(AbortController);
+    expect(settled, 'a row that declared nothing armed a clock and ended its own call on it').toBe(false);
+
+    // Release the stalled generator through the OTHER aborter — which also shows the lever is
+    // live, not merely present, on a row that declared no patience.
+    controller!.abort();
+    await promise.catch(() => {});
   });
 
   it('CONTROL: a declaration the standing 300s transport already covers configures nothing here either', async () => {
@@ -410,15 +476,61 @@ describe('T81d §D — FIX ROUND: the trip carries DECLARED_PATIENCE_EXCEEDED_CO
   });
 
   it('CONTROL: an abort NOT caused by our own patience timer (a genuine SDK failure) keeps today\'s classification', async () => {
-    // Nothing external can trip this transport's AbortController today (no `params.abortSignal`
-    // is wired into it) — so the only other way an "aborted"-looking error reaches the catch is
-    // a genuine SDK failure, which is exactly what this proves stays classified as it always was
-    // (`MODEL_CALL_FAILED`), never mistaken for our own declared-patience trip.
+    // Three things can end this call with an "aborted"-looking error: our own timer, T83's
+    // external stop signal, and the SDK failing on its own. The first is the clause above, the
+    // second the clause below; this is the third, and it proves it stays classified as it always
+    // was (`MODEL_CALL_FAILED`), never mistaken for a declared-patience trip.
     agentSdk.mode = 'abort-unrelated';
     seedAgentSdk(600_000, null, null); // patience IS declared — an AbortController is built —
     const err = await callAgentSdk(SHORT_MESSAGE).catch((e: unknown) => e); // — but never fires
     expect(err).toBeInstanceOf(AgentError);
     expect((err as AgentError).code, 'a genuine SDK failure must not be mistaken for our own timer trip').not.toBe(DECLARED_PATIENCE_EXCEEDED_CODE);
     expect((err as AgentError).code).toBe('MODEL_CALL_FAILED');
+  });
+
+  it('THE STOP, BEHAVIOURALLY (fix round 2, review NEW-2): an external abort CUTS the call and carries no patience code', async () => {
+    // A-1's own guards read source text — and a source census reading `model.ts` is what passed
+    // while this transport took the signal and dropped it. The shape that would have caught it
+    // already existed one transport over (`the-third-transport-…test.ts`'s own external-abort
+    // control), so it is mirrored here: a REAL external signal, a REAL in-flight call, in real
+    // time.
+    //
+    // Both halves matter. (a) THE CALL IS CUT: the mock stalls until its controller fires, so a
+    // settled promise is proof the stop reached `query()`'s `abortController` — the exact hop
+    // that was missing. (b) IT IS NOT A PATIENCE TRIP: 600s is declared and the timer is armed,
+    // but only the TIMER sets `timedOutByPatience`, so a stop can never mint the code that tells
+    // T81c's restart-decline and the Healer to stand down.
+    agentSdk.mode = 'stall';
+    seedAgentSdk(600_000, null, null);
+    const external = new AbortController();
+
+    const promise = callModel({
+      agentId: 'kevin', modelId: 'm-sdk',
+      messages: [{ role: 'user', content: SHORT_MESSAGE }],
+      systemPrompt: 'You are Claude.',
+      tools: false,
+      abortSignal: external.signal,
+    });
+    promise.catch(() => {});
+    await waitUntil(() => agentSdk.queryCalls.length > 0);
+    external.abort();
+
+    // Bounded on purpose: the regression this clause exists for is a call that RUNS ON, and a
+    // 20s suite timeout would report that as "slow test" rather than as the defect. 2s is three
+    // orders of magnitude under the 630s bound that IS declared here, so a settle inside it can
+    // only be the stop.
+    const outcome = await Promise.race([
+      promise.then(() => 'cut' as const, () => 'cut' as const),
+      new Promise<'ran-on'>((r) => { setTimeout(() => r('ran-on'), 2_000); }),
+    ]);
+    expect(outcome, 'the stop never reached query() — the call ran on, which is the audited defect').toBe('cut');
+    const err = await promise.catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).code, 'a user-requested stop must not be mistaken for our own timer trip')
+      .not.toBe(DECLARED_PATIENCE_EXCEEDED_CODE);
+    expect((err as Error).message, 'nor may it be NAMED as one').not.toMatch(/declared patience/i);
+    expect(agentSdk.queryCalls.at(-1)!.options.abortController?.signal.aborted,
+      'the signal the SDK was handed is the one the stop aborted').toBe(true);
   });
 });

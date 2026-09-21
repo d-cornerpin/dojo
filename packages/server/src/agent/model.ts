@@ -2743,12 +2743,12 @@ async function callAnthropicSdkModel(
     // whole plan exists to close, through the one transport this task was scoped to protect.
     //
     // `AgentSdkPatienceExceededError` is thrown by `callAnthropicViaSdk` ONLY when THIS
-    // process's own timer (armed from `patience`/`sdkTimeoutMs` above) is what fired the abort —
-    // nothing else can trip this transport's `AbortController` today (there is no external
-    // `params.abortSignal` wired into it), so the TYPE itself is the disambiguator
-    // `streamWasCutByWatchdog` gives the other two transports via a shared signal: an external
-    // abort or a genuine SDK failure never reaches this branch, and keeps today's classification
-    // below unchanged.
+    // process's own timer (armed from `patience`/`sdkTimeoutMs` above) is what fired the abort.
+    // T83 gave that same `AbortController` a second aborter — the stop signal threaded in below
+    // — and the transport's `timedOutByPatience` flag is what keeps the two apart, so the TYPE
+    // is still the disambiguator `streamWasCutByWatchdog` gives the other two transports via a
+    // shared signal: a stop or a genuine SDK failure never reaches this branch, and keeps
+    // today's classification below unchanged.
     //
     // The synthetic `StreamWatchdog` stand-in is HONEST, not a hardcoded first-chunk claim:
     // `firstChunkTimedOut` reads `!err.sawAnyContent`, so a trip that happened after the model

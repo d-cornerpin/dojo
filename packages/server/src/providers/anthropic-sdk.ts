@@ -141,11 +141,12 @@ export class AgentSdkVisionUnsupportedError extends Error {
  * T81d FIX ROUND (NO-DOOMED-DIALS review, CRITICAL) — thrown INSTEAD of a bare SDK abort
  * error when THIS transport's OWN derived-patience timer is what ended the call.
  *
- * Nothing else can abort this transport's `AbortController` today — there is no external
- * `params.abortSignal` wired into it and no other timeout source — so this TYPE is itself the
- * disambiguator `streamWasCutByWatchdog` gives the other two transports via a shared signal:
- * every instance of this class names a genuine declared-patience trip, and nothing else ever
- * throws it. `sawAnyContent` carries the one fact `agent/model.ts`'s catch needs to rebuild the
+ * ONLY the timer throws this, and that is the code's doing rather than the controller's
+ * solitude: T83 wired an external `params.abortSignal` (the stop) into the SAME controller, and
+ * `timedOutByPatience` — set in the timer callback and nowhere else — is what keeps the two
+ * apart. So this TYPE is still the disambiguator `streamWasCutByWatchdog` gives the other two
+ * transports via a shared signal, and a stop never mints one.
+ * `sawAnyContent` carries the one fact `agent/model.ts`'s catch needs to rebuild the
  * same first-chunk-vs-idle distinction the other two transports' real `StreamWatchdog` makes —
  * whether the model had already started answering before this trip, which decides
  * `DECLARED_PATIENCE_EXCEEDED_CODE` (never retryable) vs `STREAM_IDLE_TIMEOUT_CODE` (a genuine
@@ -377,9 +378,8 @@ export async function callAnthropicViaSdk(params: {
   // T81d: `abortController` is the ONE cancellation lever `Options` (sdk.d.ts) exposes — the
   // SDK has no numeric timeout field of its own, so an externally-armed abort is the whole
   // mechanism. `timedOutByPatience` distinguishes OUR timer firing from any other reason the
-  // controller might later be aborted (there is none today — nothing else ever aborts this
-  // controller — but the flag costs nothing and means this site never has to be revisited if a
-  // future caller adds one).
+  // controller might later be aborted — T83's stop signal is that other reason, which is why
+  // the catch reads the flag rather than the fact of the abort.
   //
   // T83 FIX ROUND: the controller is now built whenever EITHER source can cancel — the patience
   // timer (T81d, unchanged) or the caller's external signal (the stop button). A provider with
