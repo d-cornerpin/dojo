@@ -5048,6 +5048,13 @@
       "to": 388,
       "by": "t83 engine-tickets fix round \u2014 every transport obeys a stop; one door law for every destroyer",
       "why": "+1 comment. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/stream-patience.ts",
+      "from": 394,
+      "to": 403,
+      "by": "t83b \u2014 the Ollama native transport joins the per-chunk watchdog (ticket-ollama-flat-ceiling)",
+      "why": "+9 for ONE derived boolean and its argument: `StreamPatience.idleDeclared`, the exact sibling of `firstChunkDeclared` already here, read off the `isCoherent` check this module already runs on the same column \u2014 a fact it knew and threw away, not a new one. It became load-bearing when `callOllamaModel` stopped using a flat total-duration ceiling: THAT transport's standing bound is `TRANSPORT_DEFAULT_TIMEOUT_MS`, not this module's hosted 60,000, so `idleMs === 60_000` off a row and off the default are the same number and opposite instructions \u2014 and the log naming which bound killed a call must not call a default a declaration, the lie the flat ceiling told on three nights of Kevin's memory-summarize. The two alternatives are worse, not merely different: a second `isCoherent` in `model.ts` is the storable-but-unhonourable defect this file's own header exists to prevent, and comparing `idleMs` to the constant is wrong for every row declaring exactly 60,000. 8 of the 9 lines are the doc comment saying so, in a file where comments are cited as evidence. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -5102,7 +5109,7 @@
     "packages/server/src/agent/runtime.ts": 1698,
     "packages/server/src/agent/shared-state.ts": 312,
     "packages/server/src/credentials/store.ts": 412,
-    "packages/server/src/agent/stream-patience.ts": 394,
+    "packages/server/src/agent/stream-patience.ts": 403,
     "packages/server/src/providers/anthropic-sdk.ts": 516,
     "packages/server/src/services/ollama-lock.ts": 448,
     "packages/server/src/healer/auto-fix.ts": 421,
