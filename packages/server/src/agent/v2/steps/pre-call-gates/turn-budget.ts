@@ -3,8 +3,10 @@
 //
 // Relocated verbatim from `agent/v2/loop.ts` (`:2912`–`:3013` at `c1ad4d5`).
 //
-// The turn does not HALT at 15 minutes — it checkpoints: force a compaction, tell the
-// person, and queue a wakeup so the work resumes on a fresh turn.
+// The turn does not HALT at 15 minutes — it checkpoints: ASK whether the context needs
+// compacting, tell the person, and queue a wakeup so the work resumes on a fresh turn.
+// T84 (2026-09-21) retired the `force` on that ask; read its block at the call site —
+// incident, guard history and re-homed requirement — before putting the flag back.
 //
 // HL4 STEP 2 (2d), 2026-08-15: there used to be a fourth thing here — an in-turn
 // `compaction-recap` STEER handing the rebuilt context this turn's own receipts. It is
@@ -90,8 +92,8 @@ export async function runTurnTimeBudget(
 
   // ── Turn time budget, auto-continue, don't halt ──
   // (Matches v1 runtime.ts:884-919.) When a turn runs longer than 15 min,
-  // force a compaction and queue a wakeup so the agent picks up where it
-  // left off. SLOW-INFERENCE T79b: how many consecutive checkpoints we allow
+  // check whether the context wants compacting and queue a wakeup so the agent
+  // picks up where it left off. SLOW-INFERENCE T79b: how many consecutive checkpoints we allow
   // before giving up is no longer a flat 3 — it is derived from the serving
   // provider's own declared unattended budget (see `continuationCapFor`
   // above), floored at exactly 3 for a provider that has declared nothing.
@@ -178,13 +180,36 @@ export async function runTurnTimeBudget(
     }
 
     turnContinuationCounts.set(agentId, continuationCount);
-    logger.warn('v2 turn time budget reached, auto-continuing with forced compaction', {
+    logger.warn('v2 turn time budget reached, auto-continuing', {
       elapsedMin, continuationCount, cap, agentId,
     }, agentId);
 
-    // Force compaction so next turn starts with summarized history.
+    // ── T84 — NO `{ force: true }` HERE. THE TOKEN MATH DECIDES. ──
+    //
+    // `force` bypasses `runCheckAndCompact`'s ENTIRE trigger and all three yield guards, so
+    // this line used to make elapsed wall-clock ALONE a reason to rebuild an agent's history.
+    // On 2026-09-21 the elapsed time was honest provider re-prefill and it compacted 13,649
+    // assembled against a 51,300 threshold — 27% fill, `needsCompactionByTokens: false` in the
+    // log line it emitted — severing a live agent from a half-served two-part ask.
+    //
+    // THE FLAG'S HISTORY, walked before it was weakened (owner ruling 10(c)): born at
+    // `34c75dc6` (v1.15.80, 2026-04-29) carrying ONE inference — "the long-running turn has
+    // bloated context; without this, the resumed turn inherits the same heavy context and
+    // times out again immediately" — with no incident attached, and never re-encoded since
+    // (`716a8bc9`, `74319d0a` are verbatim carries). That requirement now rides the mechanisms
+    // that can measure it: heavy context IS `needsCompactionByTokens`, provider-aware since
+    // T82a (a slow box compacts EARLIER than the old flat 96%); long accumulation is
+    // `needsCompactionByGap`; bloat inside the fresh tail is the case compaction cannot fix at
+    // all; a stuck agent is the cap ladder's job above, and the thrash gate's.
+    //
+    // Full record: census row 25 (NO-DOOMED-DIALS), and
+    // `__tests__/the-clock-does-not-overrule-the-token-math.test.ts`, which drives this
+    // checkpoint against a real database on the incident's own numbers. The auto-continue
+    // below is untouched.
+    let historyWasRebuilt = false;
     try {
-      await checkAndCompact(agentId, effectiveModel, getContextWindow(effectiveModel), { force: true });
+      const compaction = await checkAndCompact(agentId, effectiveModel, getContextWindow(effectiveModel));
+      historyWasRebuilt = compaction.leafCreated > 0 || compaction.condensedCreated > 0;
       // ════════════════════════════════════════════════════════════════════════════
       // TOMBSTONE — THE `compaction-recap` STEER, RETIRED HL4 STEP 2 (2d), 2026-08-15.
       //
@@ -217,19 +242,26 @@ export async function runTurnTimeBudget(
       // the turn does not continue, it parks. Rewording rather than retiring is an HL7
       // pre-registered experiment, which this sitting forbids.
       // ════════════════════════════════════════════════════════════════════════════
-      logger.info('v2 mid-turn forced compaction done; the turn parks for a continuation', {
-        agentId, turnNumber, toolCallsSoFar: state.toolResults.length,
+      // T84: the number stays `toolResults` for T13 (CUT 3's H1)'s measured reason, named in
+      // the tombstone above. `historyWasRebuilt` is the operator's half of this fix — a
+      // checkpoint that compacted and one that (correctly) did not must be told apart.
+      logger.info('v2 turn-budget checkpoint: the turn parks for a continuation', {
+        agentId, turnNumber, toolCallsSoFar: state.toolResults.length, historyWasRebuilt,
       }, agentId);
     } catch (compErr) {
-      logger.warn('v2 forced compaction at turn-budget checkpoint failed', {
+      logger.warn('v2 compaction check at turn-budget checkpoint failed', {
         agentId, error: compErr instanceof Error ? compErr.message : String(compErr),
       }, agentId);
     }
 
-    // ── T83 — A STOP THAT LANDED DURING THE FORCED COMPACTION ENDS THE TURN HERE ──
+    // ── T83 — A STOP THAT LANDED DURING THE CHECKPOINT'S COMPACTION ENDS THE TURN HERE ──
+    //
+    // (T84: nothing in this guard depended on the compaction being FORCED — one the token
+    // math DOES want dials the same summariser for the same minutes, and a checkpoint that
+    // compacts nothing merely reaches this re-read sooner.)
     //
     // This checkpoint is the longest un-gated stretch in a turn: the gate that reads the stop
-    // flag runs ABOVE this step, and the forced compaction below it dials a summariser that
+    // flag runs ABOVE this step, and the compaction above it dials a summariser that
     // took 285 seconds on the measured run (dev box, 2026-09-21, 04:22:25 → 04:27:10). The
     // stop landed at 04:22:42, seventeen seconds in — and the checkpoint went on to write
     // "Pausing here and continuing on a fresh turn (3 of 31)" into the owner's chat and queue
@@ -242,7 +274,7 @@ export async function runTurnTimeBudget(
     // the checkpoint re-reads the stop at the one moment it can have changed, and exits on the
     // stop's own reason: nothing parked, nothing queued, nothing claimed.
     if (isStopFenced(agentId)) {
-      logger.info('v2 turn-budget checkpoint: the user stopped this agent during the forced compaction; not parking and not queuing a continuation', {
+      logger.info('v2 turn-budget checkpoint: the user stopped this agent during the compaction check; not parking and not queuing a continuation', {
         agentId, turnNumber, continuationCount,
       }, agentId);
       turnContinuationCounts.delete(agentId);
@@ -255,10 +287,17 @@ export async function runTurnTimeBudget(
     // on its very next turn. `null` (no pending verdict, the common case) leaves `sysMsg`
     // byte-identical to before this fix.
     const circlingLine = pendingCirclingVerdictParkLine(agentId);
+    // T84: this row is the RECEIPT for the rebuild above, and it used to assert one
+    // unconditionally — an engine claiming work it did not do, the same untruth this ticket was
+    // filed over. The compacted arm is BYTE-IDENTICAL to before; the other says what happened
+    // instead; both keep the retired recap's re-homed content (see `integration.test.ts`'s
+    // "THE RE-HOME, half 1" and its T84 sibling).
     const sysMsg = (
       `[System: This turn ran for ${elapsedMin} minutes. Pausing here and continuing on a fresh turn ` +
       `(${continuationCount} of ${cap}). ` +
-      `Your earlier conversation has been summarized, pick up where you left off. ` +
+      (historyWasRebuilt
+        ? `Your earlier conversation has been summarized, pick up where you left off. `
+        : `Your conversation history is intact, pick up where you left off. `) +
       `Check work_update(action="list") for the task you were working on; do not start over.]`
     ) + (circlingLine ? `\n\n${circlingLine}` : '');
     const sysMsgId = uuidv4();

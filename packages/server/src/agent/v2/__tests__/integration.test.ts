@@ -3285,12 +3285,22 @@ describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the 
     expect(pendingWakeups.has('primary')).toBe(false);
   });
 
-  it('crossing the budget forces a compaction and parks for a continuation', async () => {
+  it('crossing the budget ASKS the token math about a compaction, and parks for a continuation', async () => {
     await runAcrossTheBudget();
 
-    // The rebuild really happened, and it is a consequence of the branch, not of the clock.
+    // ⚠ T84 (ANSWER-ANYWAY) — THE ONE CHANGE TO THIS CLAUSE, AND IT IS THE FIX'S SUBJECT.
+    // This used to read `expect.objectContaining({ force: true })`. `force` bypasses
+    // `runCheckAndCompact`'s ENTIRE trigger and all three of its yield guards, which made
+    // elapsed wall-clock — on its own — the reason to rebuild a history. On 2026-09-21 that
+    // rebuilt a 13,649-token assembly against a 51,300 threshold (27% fill,
+    // `needsCompactionByTokens: false` in the engine's own log) and severed a live agent from
+    // the half of a two-part ask it still owed. The checkpoint now ASKS instead of telling,
+    // and the exact-arity call below is what pins it: a fourth argument of ANY shape fails
+    // here. The token path itself is driven end-to-end, against a real database and the real
+    // `checkAndCompact`, in
+    // `steps/pre-call-gates/__tests__/the-clock-does-not-overrule-the-token-math.test.ts`.
     expect(checkAndCompactSpy).toHaveBeenCalledWith(
-      'primary', expect.any(String), expect.any(Number), expect.objectContaining({ force: true }),
+      'primary', expect.any(String), expect.any(Number),
     );
 
     // The turn parks rather than dying: the person is told, and a wakeup is queued so
@@ -3450,10 +3460,12 @@ describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the 
   it('DRIVEN: the mid-turn recap reaches NO model request, on any call of the turn it is filed in', async () => {
     const seen = await runAcrossTheBudgetRecording();
 
-    // The turn really crossed the budget and really compacted — without this the clause
-    // would pass on a turn where the branch never ran, which proves nothing.
+    // The turn really crossed the budget and really reached the compaction check — without
+    // this the clause would pass on a turn where the branch never ran, which proves nothing.
+    // (T84: the check is no longer FORCED — same three arguments, no options object. See the
+    // branch's own clause above for why.)
     expect(checkAndCompactSpy).toHaveBeenCalledWith(
-      'primary', expect.any(String), expect.any(Number), expect.objectContaining({ force: true }),
+      'primary', expect.any(String), expect.any(Number),
     );
     expect(seen.length).toBeGreaterThanOrEqual(1);
 
@@ -3480,12 +3492,36 @@ describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the 
     // do not start over" is the recap's own content, on the surface that actually
     // reaches somebody. Unchanged by the retirement, and pinned here so it cannot
     // quietly follow the recap out.
+    //
+    // ⚠ T84: this row is the RECEIPT for a rebuild, and the rebuild is now conditional — so
+    // the clause is driven on the arm where one HAPPENED (the spy reports a summary written),
+    // where the bytes are the same bytes. The other arm is the clause below.
+    checkAndCompactSpy.mockResolvedValueOnce({ leafCreated: 1, condensedCreated: 0, tokensReclaimed: 4000 });
     await runAcrossTheBudget();
     const sys = mockDb.current!
       .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
       .all() as Array<{ content: string }>;
     expect(sys[0].content).toContain('Your earlier conversation has been summarized, pick up where you left off');
     expect(sys[0].content).toContain('do not start over');
+    expect(pendingWakeups.has('primary')).toBe(true);
+  });
+
+  it('T84 — THE RECEIPT IS HONEST: a checkpoint that rebuilt NOTHING does not tell the agent its history was summarized', async () => {
+    // The other arm of the clause above, and the reason it is here rather than folded into
+    // it: an engine that claims a rebuild it did not perform is the same class of untruth
+    // this task was filed over (the blast subject's work ledger recorded a delivery that
+    // never happened). The default spy result is the zero result `checkAndCompact` returns
+    // whenever its own token math declines — which, after this fix, is the COMMON case at
+    // this checkpoint.
+    await runAcrossTheBudget();
+    const sys = mockDb.current!
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .all() as Array<{ content: string }>;
+    expect(sys[0].content).not.toContain('has been summarized');
+    expect(sys[0].content).toContain('Your conversation history is intact, pick up where you left off');
+    // The re-homed content the person is owed rides BOTH arms, unchanged.
+    expect(sys[0].content).toContain('do not start over');
+    expect(sys[0].content).toContain('Check work_update(action="list")');
     expect(pendingWakeups.has('primary')).toBe(true);
   });
 
