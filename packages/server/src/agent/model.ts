@@ -1093,9 +1093,13 @@ async function callOllamaModel(
   // as a per-phase bound instead of a total one. A DECLARED row is honoured exactly, on both
   // sides, which is the whole point of the two columns.
   //
-  // `patience` itself is left alone for `refuseIfDoomed` and `transportClientOptions` above:
-  // feeding those the lifted numbers would build a dispatcher for every NULL row and lose T79e's
-  // byte-preservation control.
+  // `patience` itself stays raw for `refuseIfDoomed`/`transportClientOptions` above: lifted
+  // numbers would build a dispatcher for every NULL row and lose T79e's byte-preservation control.
+  //
+  // STANDING EXCEPTION to stream-patience.ts's never-equal rule: any NULL-`first_chunk_timeout_ms`
+  // row (even one declaring an idle bound) arms a 300,000ms first-chunk watchdog that TIES
+  // undici's global headersTimeout; if undici fires first the trip loses its honest identity.
+  // Accepted — either fix breaks a recorded principle; census row 7 carries the full case.
   // ════════════════════════════════════════════════════════════════════════════════════════
   const bounds: StreamPatience = {
     firstChunkMs: patience.firstChunkDeclared ? patience.firstChunkMs : TRANSPORT_DEFAULT_TIMEOUT_MS,
@@ -1103,12 +1107,9 @@ async function callOllamaModel(
     firstChunkDeclared: patience.firstChunkDeclared,
     idleDeclared: patience.idleDeclared,
   };
-  // T83b: the SAME `makeStreamWatchdog` the OpenAI-compat and Anthropic-direct paths arm —
-  // bumped per received chunk, `contentStarted()` on the first generated delta — replacing the
-  // flat total-duration `AbortSignal.timeout` T79e left here. A wall clock on the whole call
-  // cannot tell a healthy 13 tok/s generation at t=301s from a dead socket, and for three
-  // consecutive nights it called the first one the second (ticket-ollama-flat-ceiling.md). The
-  // external stop rides the combined signal exactly as it did, via `AbortSignal.any` inside.
+  // T83b: the SAME `makeStreamWatchdog` the other two transports arm — bumped per chunk,
+  // `contentStarted()` on the first delta — replacing T79e's flat total-duration timeout that
+  // killed healthy long generations (census row 7). External stop rides `AbortSignal.any` as before.
   const watchdog = makeStreamWatchdog(params.abortSignal, bounds.firstChunkMs, bounds.idleMs);
 
   try {
