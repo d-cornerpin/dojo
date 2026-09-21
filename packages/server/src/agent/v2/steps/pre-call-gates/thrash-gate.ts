@@ -61,7 +61,7 @@ const THRASH_GATE_DRIFT_HARD_LIMIT = 24;
  * case the turn is over and the driver is told why.
  */
 export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): StepOutcome {
-  const { agentId, turnNumber, counterparty, broadcast, setAgentStatus, detectTaskThrashing } = ctx;
+  const { agentId, turnNumber, counterparty, broadcast, detectTaskThrashing } = ctx;
   const ENGINE_BLOCK_ESCAPE_HATCH = ctx.engineBlockEscapeHatch;
 
   // Last-resort auto-block. Two conditions trip it:

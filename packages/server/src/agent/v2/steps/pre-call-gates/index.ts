@@ -141,7 +141,7 @@ export async function runPreCallGates(
   state: AgentTurnState,
   ctx: PreCallGatesContext,
 ): Promise<StepOutcome> {
-  const { agentId, setAgentStatus } = ctx;
+  const { agentId } = ctx;
 
   // Stop / preempt checks
   //

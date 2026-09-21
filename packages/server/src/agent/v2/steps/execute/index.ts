@@ -138,7 +138,7 @@ export type ExecuteOutcome =
   | { readonly directive: 'exit'; readonly state: AgentTurnState; readonly reason: string };
 
 export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Promise<ExecuteOutcome> {
-  const { agentId, result, counterparty, setAgentStatus } = ctx;
+  const { agentId, result, counterparty } = ctx;
 
   const batches = partitionTools(result.toolCalls);
   const turnToolResults: Array<{

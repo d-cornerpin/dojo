@@ -78,7 +78,7 @@ export async function callWithRetryAndFallback(
 ): Promise<ModelCallResultOrAbandon> {
   const {
     agentId, turnCtx, messageId, useTools, isAutoRouted, isA2ATurn, excludedModels,
-    revertTriggerStampOnAbort, setAgentStatus, routerTier, counterparty, assemblyTurnContext,
+    revertTriggerStampOnAbort, routerTier, counterparty, assemblyTurnContext,
   } = input;
   let state = stateIn;
   let modelId = modelIdIn;
