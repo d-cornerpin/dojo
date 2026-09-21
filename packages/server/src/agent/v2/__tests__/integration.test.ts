@@ -3202,7 +3202,7 @@ describe('F10: the wall-clock start-ack timer never outlives its turn', () => {
 // The three clauses that were never about the recap — the positive control, the parking
 // behaviour and the continuation cap — are UNTOUCHED and still guard this branch.
 // ════════════════════════════════════════════════════════════════════════════════
-describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the turn its own receipts', () => {
+describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only when token math wants it) and hands the turn its own receipts', () => {
   /**
    * Move the engine's clock forward WITHOUT fake timers (the loop's own `setTimeout`
    * paths must keep working). `state.turnStartMs` is captured from `new Date()` during
