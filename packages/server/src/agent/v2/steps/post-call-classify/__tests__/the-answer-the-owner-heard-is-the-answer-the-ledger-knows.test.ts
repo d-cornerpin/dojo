@@ -1,39 +1,46 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
-// ANSWER-ANYWAY — THE OWNER HEARD IT, SO THE LEDGER KNOWS IT.
+// ANSWER-ANYWAY — THE OWNER HEARD IT, SO THE LEDGER MUST FIND OUT.
 //
 // THE INCIDENT, from the engine's own rows (release ritual v3.1.26 round 3, seed
 // `eceef8a09723`, scenario `gen-web-research-with-sourcing-eceef8a09723-5`, run `bmub8ip5nhy`,
 // agent turn 5649, ask `695067c2`):
 //
-//   12:45:10  "Research the current state of e-ink tablets … cite sources again this time."
+//   12:45:10  "Research the current state of e-ink tablets: compare at least 2 options…"
 //   12:45:40  the start-ack threshold passes with nothing heard   -> steer requested
 //   12:46:23  "start-ack steer: model spoke its start line mid-work; delivered as the visible
 //              ack (streamed bubble promoted in place)"
 //              preview: "Fresh sources pulled just now (Sep 21, 2026). US prices, as …"
 //              — four tablets, three dimensions, ten web calls behind it: THE ANSWER
 //   12:46:26  "agent ended turn silently via [no-reply] sentinel"  — correct from its seat
-//   12:46:28  "ask re-opened: its turn finalized without delivering an answer"  (serve 1)
-//   12:46:30 / 12:46:33                                                        (serves 2, 3)
+//   12:46:28 / 12:46:30 / 12:46:33   ask re-opened, serves 1-3, each into an agent that had
+//                                    already answered
 //   12:46:36  ERROR "ask re-serve STOOD DOWN" (serves 4, bound 4); the ask ends `blocked`
 //
-// A correct answer reached the owner; the ledger recorded silence; the engine re-served a
-// settled question four times into an agent that had already answered it and then parked the
-// request. This is t82's dual — when the user HAS heard, the engine must know.
+// ── WHAT THE FIX IS, AND WHAT IT DELIBERATELY IS NOT ──
+// The promotion silences BOTH arms of the `[no-reply]` sentinel at once: the REG-3 override
+// has nothing left to promote (the promotion consumed `deferredUserReplyWithTools`) and the
+// ghosted-work-ask floor stood down on `!deferredDeliveredByAck`. So the turn simply ended,
+// and the ledger — keyed on `turns.answer_message_id`, which knows nothing of the ack lane —
+// recorded silence.
 //
-// ── WHAT THIS FILE DRIVES, AND WHY IT IS ONE FILE ──
-// The defect lives in the gap between two subsystems that were each correct alone, so the
-// tests walk it end to end on a REAL database: the promotion writes the bubble and the
-// delivery the way the live doors do, the `[no-reply]` sentinel's own reply rule runs, the
-// turn record is finalized off the key that rule sets, and the settlement authority is then
-// asked for its verdict. Nothing is asserted about an intermediate belief that the owner
-// cannot see the consequences of.
+// THE ENGINE DOES NOT DECIDE WHETHER THOSE WORDS WERE AN ANSWER. Ruling 10(a)/OR2: it
+// detects, it steers, it verifies through delivery records, and it never adjudicates content
+// by heuristic where the model can be made to speak. Ruling 10(d), the owner's words:
+// *"Priority one out of literally anything is 'the user asks the agent to do something and it
+// does it.' Period."* — so an ambiguous "was this answered?" resolves toward ANSWERING AGAIN,
+// never toward a quiet close. The floor is therefore UN-BLINDED and its steer gains SIGHT: the
+// model is handed its own promoted line back, told the ask ledger still shows the question
+// open, and asked to settle it either way. Whichever it does lands through the ONE door — the
+// ordinary persist seam sets `turns.answer_message_id` — so the ask settles on what the model
+// actually said, and a status line alone can never become the answer.
 //
-// THE DOOR IS `turns.answer_message_id` — the truthful-answer key, ONE setter — and it is the
-// door every delivered utterance already passes through to become settlement-visible (the
-// authority's sixth narrowing reads it, the draft re-classifier reads it, the ticket stamps
-// read it). The promoted bubble never reached it, because the promotion consumed
-// `deferredUserReplyWithTools` and latched `deferredDeliveredByAck`, which between them
-// silence the one rule that decides whether captured text-with-tools is the turn's reply.
+// ── HOW THESE TESTS DRIVE IT ──
+// On a REAL in-memory database, one step at a time in the order the loop runs them, with the
+// two production doors simulated in the one row each of them writes: `deliverEngineUserAck`
+// persists the bubble and broadcasts it, and the broadcast spy writes the dashboard
+// `deliveries` row exactly as `agent/v2/outbound.ts:recordDashboardDelivery` does. Then the
+// turn record is written off whatever the truthful-answer key was given, and the real
+// settlement authority — UNCHANGED by this task — is asked for its verdict.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -54,8 +61,23 @@ vi.mock('../../../../../db/connection.js', async () => {
   };
 });
 
-const broadcastSpy = vi.fn();
-vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: (...a: unknown[]) => broadcastSpy(...(a as [])) }));
+/** THE DASHBOARD DOOR, in the one row it writes. `broadcast()` calls
+ *  `recordDashboardDelivery` for every persisted assistant `chat:message`
+ *  (`gateway/ws.ts:228-242`), which is how the promoted bubble AND the model's own reply
+ *  both already reach the delivery ledger. */
+const broadcastSpy = vi.fn((event: { type?: string; message?: { id?: string; role?: string } }) => {
+  if (event?.type !== 'chat:message' || event.message?.role !== 'assistant') return;
+  const id = event.message.id;
+  if (!id || !mockDb.current) return;
+  const persisted = mockDb.current.prepare('SELECT 1 FROM messages WHERE id = ?').get(id);
+  if (!persisted) return;   // an emission with no row is not a delivery (the door's own clause)
+  mockDb.current.prepare(
+    `INSERT OR IGNORE INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id,
+                                       message_id, outcome, created_at)
+     VALUES (?, ?, ?, 'dashboard', 'dashboard', ?, ?, 'delivered', datetime('now'))`,
+  ).run(`d-${id}`, AGENT, TURN, CONV, id);
+});
+vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: (...a: unknown[]) => broadcastSpy(...(a as [never])) }));
 vi.mock('../../../../../services/imessage-bridge.js', () => ({ stripSystemTags: (s: string) => s }));
 
 import { runMigrations } from '../../../../../db/migrations.js';
@@ -65,7 +87,9 @@ import { settleAsk, settleAsksAtTurnFinalize, MAX_ASK_RE_SERVES } from '../../..
 import { initState, type AgentTurnState } from '../../../state.js';
 import { runTerminalText } from '../terminal-text.js';
 import { runNoReply } from '../no-reply.js';
+import { runPersistAssistant } from '../persist-assistant.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
+import type { StepOutcome } from '../../step-outcome.js';
 
 const AGENT = 'kevin';
 const CONV = 'conv-1';
@@ -80,6 +104,19 @@ const THE_ANSWER =
 
 /** The matched control: the same door, the same turn shape, a start line instead. */
 const THE_STATUS_LINE = 'On it — pulling sources now';
+
+/** What the model says when the un-blinded steer reaches it and the promotion HAD the answer. */
+const THE_CONFIRMATION = 'Yes — that comparison above is the answer: four tablets, priced and sourced today.';
+
+/**
+ * THE SENTENCE THE GHOSTED-ASK FLOOR HAS ALWAYS SENT, verbatim. Test (c) asserts the
+ * genuine-silence steer is still exactly this and not one byte more, which is what makes the
+ * sight clause provably additive rather than a rewrite of the existing floor.
+ */
+const THE_HISTORICAL_STEER =
+  '[Engine hint: you ended with [no-reply], but this message is a direct request from the user. '
+  + 'A direct ask never ends in silence. If this exact work was already delivered (check the RECENTLY ANSWERED engine record and your tracker), '
+  + 'reply with ONE brief line pointing to the existing answer or delivery. Otherwise, do the work now, including creating the tracker task first if the user asked for one.]';
 
 interface Bag { [k: string]: unknown }
 
@@ -101,12 +138,9 @@ const modelResult = (over: Partial<{ content: string; toolCalls: ToolCall[] }> =
   inputTokens: 10, outputTokens: 5, stopReason: 'tool_use', ...over,
 } as unknown as PostCallClassifyContext['result']);
 
-/**
- * THE REAL DOOR, in the two rows it produces. `deliverEngineUserAck` persists the bubble
- * (assistant / owner lane / explicit `agent-text` / the start-ack stamp) and broadcasts it;
- * `broadcast` then records the dashboard delivery (`agent/v2/outbound.ts`'s dashboard door).
- * Both are written here so the authority below is asked about the rows the live path writes.
- */
+/** `deliverEngineUserAck` (`steps/preflight/turn-closures.ts:315`), in the two acts that
+ *  matter here: it persists the bubble under the id it was handed, then broadcasts it — and
+ *  the broadcast is what puts it on the delivery ledger. */
 const deliverEngineUserAck = vi.fn(
   async (text: string, originIntent: string | null, reuseId: string | null, displayKind: string | null) => {
     const id = reuseId ?? 'minted-by-the-closure';
@@ -115,15 +149,12 @@ const deliverEngineUserAck = vi.fn(
       originIntent, conversationId: CONV,
       ...(displayKind ? { displayKind: displayKind as 'agent-text' } : {}),
     } as never);
-    mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id,
-                               message_id, outcome, created_at)
-       VALUES (?, ?, ?, 'dashboard', 'dashboard', ?, ?, 'delivered', datetime('now'))`,
-    ).run(`d-${id}`, AGENT, TURN, CONV, id);
+    broadcastSpy({ type: 'chat:message', message: { id, role: 'assistant' } });
   },
 );
 
 const noteTerminalAnswer = vi.fn();
+const persistAndBroadcastSystemRow = vi.fn();
 
 function ctxFor(turnCtx: Bag, over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext {
   return {
@@ -143,7 +174,7 @@ function ctxFor(turnCtx: Bag, over: Partial<PostCallClassifyContext> = {}): Post
     result: modelResult(), maxToolLoops: 20,
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer,
     deliverEngineUserAck: deliverEngineUserAck as never,
-    persistAndBroadcastSystemRow: vi.fn(),
+    persistAndBroadcastSystemRow,
     startAckRepliedNow: () => false,
     ...over,
   } as unknown as PostCallClassifyContext;
@@ -194,22 +225,38 @@ const transitionsFor = (workId: string): Array<{ to: string; reason: string }> =
   ).all(workId) as Array<{ payload: string }>)
     .map((r) => JSON.parse(r.payload) as { to: string; reason: string });
 
+/** Every `ghosted-ask` steer this turn filed, in order — the queue's own record. */
+const ghostedSteers = (s: AgentTurnState): Array<{ floor: string; content: string }> =>
+  (s.steerQueue as unknown as { fired: Array<{ floor: string; content: string }> }).fired
+    .filter((e) => e.floor === 'ghosted-ask');
+
 let state: AgentTurnState;
 
-/** Turn 5649, whole: the ack is owed, the model speaks WITH a tool call, and then ends. */
-async function driveThePromotedTurn(
-  text: string, opts: { endsWithNoReply?: boolean; turnCtx?: Bag } = {},
-): Promise<Bag> {
-  const turnCtx = opts.turnCtx ?? turnCtxFor({ startAckSteerRequested: true });
+/** Model call #1 of turn 5649: the ack is owed and the model speaks WITH a tool call. */
+async function promote(text: string, turnCtx: Bag): Promise<void> {
   await runTerminalText(state, ctxFor(turnCtx, { result: modelResult({ content: text }) }), scratchFor());
-  if (opts.endsWithNoReply !== false) {
-    await runNoReply(
-      state,
-      ctxFor(turnCtx, { result: modelResult({ content: '[no-reply]', toolCalls: [] as ToolCall[] }) }),
-      scratchFor({ persistedContent: '[no-reply]' }),
-    );
-  }
-  return turnCtx;
+}
+
+/** Model call #2: the bare sentinel. Returns the step's own outcome, because "did this steer
+ *  and go round again?" is part of what these tests assert. */
+async function sentinel(turnCtx: Bag): Promise<StepOutcome> {
+  const out = await runNoReply(
+    state,
+    ctxFor(turnCtx, { result: modelResult({ content: '[no-reply]', toolCalls: [] as ToolCall[] }) }),
+    scratchFor({ persistedContent: '[no-reply]' }),
+  );
+  state = out.state;
+  return out;
+}
+
+/** Model call #3: the model answers the steer with an ordinary tool-less reply — the one door. */
+async function ordinaryReply(text: string, turnCtx: Bag, rowId: string): Promise<void> {
+  const out = await runPersistAssistant(
+    state,
+    ctxFor(turnCtx, { messageId: rowId, result: modelResult({ content: text, toolCalls: [] as ToolCall[] }) }),
+    scratchFor({ persistedContent: text }),
+  );
+  state = out.state;
 }
 
 beforeEach(() => {
@@ -224,99 +271,139 @@ beforeEach(() => {
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`,
   ).run(CONV, AGENT);
-  broadcastSpy.mockClear(); deliverEngineUserAck.mockClear(); noteTerminalAnswer.mockClear();
+  broadcastSpy.mockClear(); deliverEngineUserAck.mockClear();
+  noteTerminalAnswer.mockClear(); persistAndBroadcastSystemRow.mockClear();
   state = initState({ agentId: AGENT, maxToolLoops: 20 } as Parameters<typeof initState>[0]);
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// (a) THE LIVE SHAPE — the answer arrives through the promotion, and the ask SETTLES on it
+// (a) THE LIVE SHAPE — the answer rode the promotion, and the model is asked to put it on
+//     the record rather than the engine deciding it for them
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('(a) the shape the ritual caught: the answer rode the promotion, and the ask settles on it', () => {
-  it('RED→GREEN: turn 5649 end to end — settled, zero re-serves, no stand-down, never blocked', async () => {
+describe('(a) the shape the ritual caught: the promotion carried the answer', () => {
+  it('RED→GREEN: turn 5649 end to end — steered with sight, confirmed by the model, settled; zero blind re-serves, never blocked', async () => {
     const workId = claimedAsk();
-    const turnCtx = await driveThePromotedTurn(THE_ANSWER);
+    const turnCtx = turnCtxFor({ startAckSteerRequested: true });
 
-    // The promotion happened exactly as it does today, and it NAMED the row it delivered.
+    await promote(THE_ANSWER, turnCtx);
     expect(turnCtx.engineStartAckDeliveredThisTurn).toBe(true);
     expect(turnCtx.deferredDeliveredByAck).toBe(true);
-    expect(turnCtx.startAckPromotedRowId).toEqual(expect.any(String));
-    const rowId = turnCtx.startAckPromotedRowId as string;
+    const promotedRowId = turnCtx.startAckPromotedRowId as string;
+    expect(promotedRowId).toEqual(expect.any(String));
 
-    // MID-TURN NOTHING CLOSES — T2's whole point, and it is untouched: while the turn is
-    // running nobody can know which bubble was the answer.
+    // MID-TURN NOTHING CLOSES — T2's rule, untouched by this task.
     expect(settleAsk(workId, { agentId: AGENT, turnNumber: TURN, at: 'delivery' }).verdict)
       .toBe('unchanged');
     expect(askRow(workId).state).toBe('claimed');
 
-    // THE DOOR: the `[no-reply]` reply rule named the bubble the person actually heard.
+    // THE SENTINEL: the floor is no longer blind, so the turn goes round again instead of
+    // ending in a silence the ledger would have to guess about.
+    const out = await sentinel(turnCtx);
+    expect(out.directive).toBe('continue');
+    const steers = ghostedSteers(state);
+    expect(steers).toHaveLength(1);
+
+    // THE STEER HAS SIGHT — the model's OWN words, read back off the row that carried them,
+    // plus the ledger fact. The engine asserts no verdict about what the words were.
+    expect(steers[0]!.content).toContain(THE_ANSWER.slice(0, 60));
+    expect(steers[0]!.content).toContain('the user HAS heard one line from you this turn');
+    expect(steers[0]!.content).toContain('still shows their question OPEN');
+    expect(steers[0]!.content).toContain(THE_HISTORICAL_STEER.slice(0, 120));
+    // …and nothing has been recorded as the answer by the engine's own hand.
+    expect(noteTerminalAnswer).not.toHaveBeenCalled();
+
+    // THE MODEL ANSWERS THE STEER, through the ordinary door.
+    await ordinaryReply(THE_CONFIRMATION, turnCtx, 'msg-confirm');
     expect(noteTerminalAnswer).toHaveBeenCalledTimes(1);
-    expect(noteTerminalAnswer.mock.calls[0]![0]).toBe(rowId);
-    expect(finalizeTurnRecord()).toBe(rowId);
+    expect(noteTerminalAnswer.mock.calls[0]).toEqual(['msg-confirm', 'a genuine terminal reply']);
+    expect(finalizeTurnRecord()).toBe('msg-confirm');
 
     // THE VERDICT.
-    const r = settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: TURN });
-    expect(r).toEqual({ closed: 1, held: 0, reopened: 0 });
+    expect(settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: TURN }))
+      .toEqual({ closed: 1, held: 0, reopened: 0 });
     expect(askRow(workId).state).toBe('done');
-    expect(askRow(workId).result_delivery_id).toBe(`d-${rowId}`);
+    expect(askRow(workId).result_delivery_id).toBe('d-msg-confirm');
     // …and none of the four symptoms the ritual recorded.
     expect(markersFor(workId)).not.toContain('ct0_ask_re_served');
     expect(transitionsFor(workId).map((t) => t.to)).toEqual(['claimed', 'done']);
   });
 
-  it('the owner is not told twice: the promotion still delivers exactly ONE bubble, and the naming adds none', async () => {
-    claimedAsk();
-    const turnCtx = await driveThePromotedTurn(THE_ANSWER);
-    expect(deliverEngineUserAck).toHaveBeenCalledTimes(1);
-    const bubbles = mockDb.current!.prepare(
-      `SELECT id, content, origin_intent, display_kind FROM messages
-        WHERE agent_id = ? AND role = 'assistant' AND turn_number = ?`,
-    ).all(AGENT, TURN) as Array<{ id: string; content: string; origin_intent: string; display_kind: string }>;
-    expect(bubbles).toHaveLength(1);
-    expect(bubbles[0]!.id).toBe(turnCtx.startAckPromotedRowId);
-    expect(bubbles[0]!.content).toBe(THE_ANSWER);
-    // The stamp and the explicit kind are UNCHANGED — the fix removed a blanket refusal, not
-    // the record of what the lane did.
-    expect(bubbles[0]!.origin_intent).toBe(START_ACK_ORIGIN_INTENT);
-    expect(bubbles[0]!.display_kind).toBe('agent-text');
+  it('the engine never adjudicates the promoted line: it is quoted, never named as the answer', async () => {
+    const workId = claimedAsk();
+    const turnCtx = turnCtxFor({ startAckSteerRequested: true });
+    await promote(THE_ANSWER, turnCtx);
+    await sentinel(turnCtx);
+    await ordinaryReply(THE_CONFIRMATION, turnCtx, 'msg-confirm');
+    finalizeTurnRecord();
+    settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: TURN });
+
+    const key = mockDb.current!.prepare(
+      'SELECT answer_message_id FROM turns WHERE agent_id = ? AND turn_number = ?',
+    ).get(AGENT, TURN) as { answer_message_id: string };
+    expect(key.answer_message_id).not.toBe(turnCtx.startAckPromotedRowId);
+    expect(askRow(workId).result_delivery_id).not.toBe(`d-${turnCtx.startAckPromotedRowId as string}`);
+    // The promoted bubble is still exactly what it always was: the model's own words, pushed
+    // early, stamped so every reader knows which lane put them there.
+    const bubble = mockDb.current!.prepare(
+      'SELECT content, origin_intent, display_kind FROM messages WHERE id = ?',
+    ).get(turnCtx.startAckPromotedRowId) as { content: string; origin_intent: string; display_kind: string };
+    expect(bubble.content).toBe(THE_ANSWER);
+    expect(bubble.origin_intent).toBe(START_ACK_ORIGIN_INTENT);
+    expect(bubble.display_kind).toBe('agent-text');
   });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// (b) THE MATCHED CONTROL — a status line is still not an answer
+// (b) THE MATCHED CONTROL — a status line is not an answer, and the model is the one who
+//     says so by delivering the real one
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('(b) the same door, a status-line-only ack: nothing settles and the re-serve fires as today', () => {
-  it('"On it — pulling sources now" + [no-reply] names nothing, and the ask is served again', async () => {
+describe('(b) the same door, a status-line-only promotion', () => {
+  it('the steer fires on it too, and the ask settles on the REAL answer the model then delivers', async () => {
     const workId = claimedAsk();
-    const turnCtx = await driveThePromotedTurn(THE_STATUS_LINE);
+    const turnCtx = turnCtxFor({ startAckSteerRequested: true });
+    await promote(THE_STATUS_LINE, turnCtx);
 
-    // The person heard it — the promotion is unchanged and the bubble exists.
-    expect(deliverEngineUserAck).toHaveBeenCalledTimes(1);
-    expect(turnCtx.startAckPromotedRowId).toEqual(expect.any(String));
-    // But the platform's own "is this a substantive, model-authored reply" question says no,
-    // so the key is never set and the turn ends exactly as it does today.
+    const out = await sentinel(turnCtx);
+    expect(out.directive).toBe('continue');
+    expect(ghostedSteers(state)).toHaveLength(1);
+    expect(ghostedSteers(state)[0]!.content).toContain(THE_STATUS_LINE);
+    expect(noteTerminalAnswer).not.toHaveBeenCalled();
+
+    // The model does the other half of what the steer asked for: it delivers the answer.
+    await ordinaryReply(THE_ANSWER, turnCtx, 'msg-answer');
+    expect(finalizeTurnRecord()).toBe('msg-answer');
+
+    expect(settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: TURN }))
+      .toEqual({ closed: 1, held: 0, reopened: 0 });
+    expect(askRow(workId).state).toBe('done');
+    expect(askRow(workId).result_delivery_id).toBe('d-msg-answer');
+  });
+
+  it('the status line ALONE never becomes the turn\'s answer — not the key, not the receipt', async () => {
+    const workId = claimedAsk();
+    const turnCtx = turnCtxFor({ startAckSteerRequested: true });
+    await promote(THE_STATUS_LINE, turnCtx);
+    const statusRowId = turnCtx.startAckPromotedRowId as string;
+    await sentinel(turnCtx);
+    // The model ghosts the steer: nothing more is said, so nothing is recorded as the answer.
     expect(noteTerminalAnswer).not.toHaveBeenCalled();
     expect(finalizeTurnRecord()).toBeNull();
 
-    const r = settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: TURN });
-    expect(r).toEqual({ closed: 0, held: 0, reopened: 1 });
+    const key = mockDb.current!.prepare(
+      'SELECT answer_message_id FROM turns WHERE agent_id = ? AND turn_number = ?',
+    ).get(AGENT, TURN) as { answer_message_id: string | null };
+    expect(key.answer_message_id).toBeNull();
+    expect(key.answer_message_id).not.toBe(statusRowId);
+
+    // …and the ask goes back to the person, exactly as it does today.
+    expect(settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: TURN }))
+      .toEqual({ closed: 0, held: 0, reopened: 1 });
     expect(askRow(workId).state).toBe('open');
     expect(askRow(workId).result_delivery_id).toBeNull();
     expect(markersFor(workId)).toEqual(['ct0_ask_re_served']);
-    expect(transitionsFor(workId).at(-1)!.reason)
-      .toContain(`serve 2 of ${MAX_ASK_RE_SERVES + 1}`);
-  });
-
-  it('and the authority refuses that bubble as evidence even when asked for it directly', async () => {
-    const workId = claimedAsk();
-    const turnCtx = await driveThePromotedTurn(THE_STATUS_LINE);
-    finalizeTurnRecord();
-    // The seventh narrowing keeps its bite on every stamped row the finished turn does not
-    // call its answer — which is every status line, and every ack of an ack-only turn.
-    const { askAnswerEvidence } = await import('../../../../../work/ask-settlement.js');
-    expect(askAnswerEvidence(workId, TURN)).toBeNull();
-    expect(turnCtx.startAckPromotedRowId).toEqual(expect.any(String));
+    expect(transitionsFor(workId).at(-1)!.reason).toContain(`serve 2 of ${MAX_ASK_RE_SERVES + 1}`);
   });
 });
 
@@ -324,29 +411,31 @@ describe('(b) the same door, a status-line-only ack: nothing settles and the re-
 // (c) GENUINE SILENCE — the t82 machinery, whole and byte-identical
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('(c) genuine silence: no promotion, nothing delivered, and the ladder runs to its bound unchanged', () => {
-  it('the re-serve chain and the STOOD-DOWN wording are what they were', async () => {
-    const workId = claimedAsk();
-    // A turn that says nothing to anybody: no text with the tool call, so nothing to promote.
+describe('(c) genuine silence: no promotion, and every byte of the old behaviour', () => {
+  it('the steer sentence is EXACTLY the one this floor has always sent', async () => {
+    claimedAsk();
     const turnCtx = turnCtxFor({ startAckSteerRequested: true });
-    await runTerminalText(
-      state, ctxFor(turnCtx, { result: modelResult({ content: null as unknown as string }) }), scratchFor(),
-    );
-    await runNoReply(
-      state,
-      ctxFor(turnCtx, { result: modelResult({ content: '[no-reply]', toolCalls: [] as ToolCall[] }) }),
-      scratchFor({ persistedContent: '[no-reply]' }),
-    );
+    // A turn that says nothing to anybody: no text with the tool call, nothing to promote.
+    await promote(null as unknown as string, turnCtx);
     expect(deliverEngineUserAck).not.toHaveBeenCalled();
     expect(turnCtx.startAckPromotedRowId).toBeNull();
+
+    await sentinel(turnCtx);
+    expect(ghostedSteers(state)).toHaveLength(1);
+    expect(ghostedSteers(state)[0]!.content).toBe(THE_HISTORICAL_STEER);
+    expect(persistAndBroadcastSystemRow).toHaveBeenCalledWith(THE_HISTORICAL_STEER);
+  });
+
+  it('and a model that ghosts it runs the ladder to its bound with the STOOD-DOWN sentence unchanged', async () => {
+    const workId = claimedAsk();
+    const turnCtx = turnCtxFor({ startAckSteerRequested: true });
+    await promote(null as unknown as string, turnCtx);
+    await sentinel(turnCtx);
     expect(noteTerminalAnswer).not.toHaveBeenCalled();
     finalizeTurnRecord();
 
-    // Serve 1 of the ladder, from this turn.
-    expect(settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: TURN })).toEqual({
-      closed: 0, held: 0, reopened: 1,
-    });
-    // …and the remaining rungs, each a turn that finalized with nothing delivered.
+    expect(settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: TURN }))
+      .toEqual({ closed: 0, held: 0, reopened: 1 });
     for (let i = 1; i <= MAX_ASK_RE_SERVES; i++) {
       const turn = TURN + i;
       claimAsk(workId, AGENT); stampClaimingTurn(workId, turn);
@@ -354,8 +443,7 @@ describe('(c) genuine silence: no promotion, nothing delivered, and the ladder r
       settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: turn });
     }
     expect(askRow(workId).state).toBe('blocked');
-    const last = transitionsFor(workId).at(-1)!;
-    expect(last.reason).toBe(
+    expect(transitionsFor(workId).at(-1)!.reason).toBe(
       `re-serve stood down after ${MAX_ASK_RE_SERVES + 1} serves: turn ${TURN + MAX_ASK_RE_SERVES} `
       + 'finalized without delivering an answer, as the ones before it did. The ask is NOT '
       + 'answered and is NOT closed — it is held OWED and stays in front of the agent, but the '
@@ -372,8 +460,6 @@ describe('(d) the normal path: an answer through the ordinary lane settles exact
   it('a tool-less terminal reply closes the ask at send time, with no promotion anywhere near it', async () => {
     const workId = claimedAsk();
     const turnCtx = turnCtxFor();
-    // Tool-less text is the reply itself: `terminal-text` hands it straight on, nothing is
-    // promoted, and the ordinary persist seam is what names it.
     const sc = scratchFor();
     await runTerminalText(
       state, ctxFor(turnCtx, { result: modelResult({ content: THE_ANSWER, toolCalls: [] as ToolCall[] }) }), sc,
@@ -382,43 +468,60 @@ describe('(d) the normal path: an answer through the ordinary lane settles exact
     expect(deliverEngineUserAck).not.toHaveBeenCalled();
     expect(turnCtx.startAckPromotedRowId).toBeNull();
 
-    // The row and the receipt the ordinary door writes — no stamp, because the model spoke
-    // for itself.
-    insertMessageIfAbsent({
-      id: 'msg-reply', agentId: AGENT, role: 'assistant', content: THE_ANSWER,
-      turnNumber: TURN, conversationId: CONV,
-    } as never);
-    mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id,
-                               message_id, outcome, created_at)
-       VALUES ('d-reply', ?, ?, 'dashboard', 'dashboard', ?, 'msg-reply', 'delivered', datetime('now'))`,
-    ).run(AGENT, TURN, CONV);
-
+    await ordinaryReply(THE_ANSWER, turnCtx, 'msg-reply');
+    expect(noteTerminalAnswer).toHaveBeenCalledTimes(1);
     expect(settleAsk(workId, { agentId: AGENT, turnNumber: TURN, at: 'delivery' }).verdict).toBe('closed');
     expect(askRow(workId).state).toBe('done');
-    expect(askRow(workId).result_delivery_id).toBe('d-reply');
+    expect(askRow(workId).result_delivery_id).toBe('d-msg-reply');
   });
 
-  it('CONTROL — acked FIRST and answered after: the ask settles on the ANSWER, never on the ack', async () => {
+  it('CONTROL — acked FIRST and answered after, with no sentinel in between: settles on the ANSWER', async () => {
     const workId = claimedAsk();
-    const turnCtx = await driveThePromotedTurn(THE_STATUS_LINE, { endsWithNoReply: false });
+    const turnCtx = turnCtxFor({ startAckSteerRequested: true });
+    await promote(THE_STATUS_LINE, turnCtx);
     const ackRowId = turnCtx.startAckPromotedRowId as string;
-    // The work finishes and the model speaks for itself.
-    insertMessageIfAbsent({
-      id: 'msg-reply', agentId: AGENT, role: 'assistant', content: THE_ANSWER,
-      turnNumber: TURN, conversationId: CONV,
-    } as never);
-    mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id,
-                               message_id, outcome, created_at)
-       VALUES ('d-reply', ?, ?, 'dashboard', 'dashboard', ?, 'msg-reply', 'delivered', datetime('now', '+8 seconds'))`,
-    ).run(AGENT, TURN, CONV);
-    noteTerminalAnswer('msg-reply', 'a genuine terminal reply');
+    await ordinaryReply(THE_ANSWER, turnCtx, 'msg-reply');
     finalizeTurnRecord();
 
     settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: TURN });
     expect(askRow(workId).state).toBe('done');
-    expect(askRow(workId).result_delivery_id).toBe('d-reply');
+    expect(askRow(workId).result_delivery_id).toBe('d-msg-reply');
     expect(askRow(workId).result_delivery_id).not.toBe(`d-${ackRowId}`);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE BOUND — un-blinding adds sight, never a loop
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('the un-blinded steer is bounded exactly as the ladder already was', () => {
+  it('a second sentinel in the same turn files NO second ghosted-ask steer, and stops going round', async () => {
+    claimedAsk();
+    const turnCtx = turnCtxFor({ startAckSteerRequested: true });
+    await promote(THE_ANSWER, turnCtx);
+
+    const first = await sentinel(turnCtx);
+    expect(first.directive).toBe('continue');
+    expect(ghostedSteers(state)).toHaveLength(1);
+
+    // The model ghosts it and emits the sentinel again: the rung is spent, the second rung
+    // has no recorded answer to hand back, and silence stands. No new loop.
+    const second = await sentinel(turnCtx);
+    expect(second.directive).toBe('proceed');
+    expect(ghostedSteers(state)).toHaveLength(1);
+
+    const third = await sentinel(turnCtx);
+    expect(third.directive).toBe('proceed');
+    expect(ghostedSteers(state)).toHaveLength(1);
+    expect(noteTerminalAnswer).not.toHaveBeenCalled();
+  });
+
+  it('a promoted turn on CHATTER is still silence: REG-3 is not widened by any of this', async () => {
+    claimedAsk();
+    const turnCtx = turnCtxFor({ startAckSteerRequested: true, inboundClassifiedAsWork: false });
+    await promote(THE_ANSWER, turnCtx);
+    const out = await sentinel(turnCtx);
+    expect(out.directive).toBe('proceed');
+    expect(ghostedSteers(state)).toHaveLength(0);
   });
 });

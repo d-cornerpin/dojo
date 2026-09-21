@@ -20,10 +20,10 @@ import { v4 as uuidv4 } from 'uuid';
 import { NO_REPLY_CLOSED_MARKER, NO_REPLY_TAIL_RE, isBareNoReplySentinel } from '@dojo/shared';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
-import { insertMessageIfAbsent, tagTurnOutputConversationId } from '../../../../memory/message-store.js';
+import { insertMessageIfAbsent, readPersistedRow, tagTurnOutputConversationId } from '../../../../memory/message-store.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { enqueueSteer, steerFired } from '../../steer-queue.js';
-import { isSubstantiveReplyRow, recordedAnswerInConversation } from '../../answered-edge.js';
+import { recordedAnswerInConversation } from '../../answered-edge.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
@@ -132,47 +132,6 @@ export async function runNoReply(
       agentId, turnNumber, preview: persistedContent.slice(0, 60),
     }, agentId);
   }
-  // ── ANSWER-ANYWAY — THE SAME SENTENCE, FOR WORDS THE PERSON HAS ALREADY HEARD ──
-  //
-  // The arm above is the whole rule, and DELIVERING is what makes those words the turn's
-  // reply: the persist seam stamps the truthful-answer key on the row it writes, and
-  // `turns.answer_message_id` is the door every delivered utterance passes through to become
-  // settlement-visible (the authority's sixth narrowing reads it, so does the draft
-  // re-classifier, so do the ticket stamps).
-  //
-  // THE START-ACK PROMOTION TAKES BOTH OF THE RULE'S INPUTS — it consumes
-  // `deferredUserReplyWithTools` and sets `deferredDeliveredByAck` — so on a turn that
-  // promoted, the rule cannot reach its own case and the engine holds two beliefs at once:
-  // the sentinel stands down because the person WAS served, and the ledger says nothing was
-  // delivered. Measured on agent turn 5649; the timeline is at `work/ask-settlement.ts`'s
-  // seventh narrowing, which is the reader that paid for it.
-  //
-  // So the rule is handed back what the promotion took and NOTHING ELSE MOVES: the words went
-  // out whole, so this delivers nothing and only NAMES the row that carried them, through the
-  // one setter. No second adjudication path and no settling on promotion — it is reached only
-  // by the model's own turn-ending sentinel, on a turn serving that person's ask.
-  //
-  // ⚠ NO PRE-JUDGMENT AND NO PROSE. The question is the platform's own — `answered-edge.ts`,
-  // "the ONE place this tree answers 'has the person heard from us'", which already owns the
-  // clause list and the floor. A promoted STATUS LINE does not clear it, so nothing is named,
-  // the key stays NULL and the re-serve ladder runs exactly as today — t82's requirement from
-  // the other side, and the owner-priority tie-break's direction: in doubt, serve again.
-  if (
-    !noReplyOverridden &&
-    isBareNoReply &&
-    triggerRow &&
-    !state.surfacedReplyThisTurn &&
-    turnCtx.startAckPromotedRowId &&
-    isSubstantiveReplyRow(agentId, turnCtx.startAckPromotedRowId)
-  ) {
-    noteTerminalAnswer(
-      turnCtx.startAckPromotedRowId,
-      'the start-ack promotion carried this turn\'s words to the person and the model ended with nothing to add',
-    );
-    logger.info('v2: [no-reply] on a served human turn whose only words reached the person through the start-ack promotion; the ledger now names the bubble that carried them', {
-      agentId, turnNumber, rowId: turnCtx.startAckPromotedRowId,
-    }, agentId);
-  }
   if (!noReplyOverridden && (isBareNoReply || isDeclineNonReply) && (latestUserSource === 'voice' || state.inboundChannel === 'phone')) {
     // Voice AND phone are LIVE conversations, so going silent reads as a dropped
     // call. (comms-audit B-1/phone: phone utterances persist with NO `source`, so
@@ -207,19 +166,69 @@ export async function runNoReply(
     // steer hands the model its own recorded words to restate (the engine
     // never speaks as the agent, owner ruling 2026-07-22); double-ghosted
     // silence stands, loudly logged, and the ladder owns the follow-up.
+    // ── ANSWER-ANYWAY — AND THE FLOOR WAS BLIND TO THE TURN THAT HAD ALREADY SPOKEN ──
+    //
+    // A `!turnCtx.deferredDeliveredByAck` clause stood last in this gate: if the start-ack lane
+    // had spoken, the person counted as served and the floor stood down. That flag has ONE
+    // writer — the promotion in `terminal-text.ts` — so on a promoted turn BOTH arms of this
+    // sentinel went quiet at once: the override above had nothing left to promote (the
+    // promotion consumed it) and this floor believed the ask was answered. The turn just
+    // ended, and the ledger — keyed on `turns.answer_message_id`, which knows nothing of the
+    // ack lane — recorded silence. MEASURED, ritual v3.1.26 round 3, agent turn 5649, ask
+    // `695067c2`: the model front-loaded its WHOLE researched answer into the promoted bubble
+    // at 12:46:23, ended honestly with `[no-reply]` at 12:46:26, and the authority re-served
+    // the settled question four times, logged `ask re-serve STOOD DOWN` at ERROR and left the
+    // owner's ask `blocked` — with his answer on screen throughout.
+    //
+    // SO THE CLAUSE IS GONE AND THE STEER GAINS SIGHT. The engine does not decide whether those
+    // words were an answer — ruling 10(a)/OR2: detect, steer, verify by delivery record, and
+    // never adjudicate content by heuristic where the model can be made to speak. Nor may it
+    // resolve the doubt by closing — ruling 10(d), in the owner's words, *"Priority one out of
+    // literally anything is 'the user asks the agent to do something and it does it.'
+    // Period."* — so ambiguity resolves toward ANSWERING AGAIN, never toward a quiet close.
+    // The model is handed its own line back, told the ledger still shows the question open, and
+    // asked to settle it either way: confirm it in one ordinary reply, or deliver the answer
+    // now if that line was only a status line. Either lands through the ONE door — the ordinary
+    // persist seam sets the key — so the ask settles on what the model actually said.
+    //
+    // NOTHING ELSE MOVES: the bound is this ladder's own (`steerFired`, one rung apiece, then
+    // silence stands), a model that ghosts it reaches the existing stood-down path unchanged,
+    // and with no promotion the sight clause is empty, so the genuine-silence steer is
+    // byte-identical to the sentence it has always sent.
+    const promotedRowId = turnCtx.startAckPromotedRowId;
     const ghostedWorkAsk =
       isBareNoReply && !!triggerRow && turnCtx.inboundClassifiedAsWork &&
-      !state.surfacedReplyThisTurn && !turnCtx.deferredDeliveredByAck;
+      !state.surfacedReplyThisTurn;
     if (ghostedWorkAsk && !steerFired(state.steerQueue, 'ghosted-ask')) {
       broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
       // T9: was an EMPTY chat:message meaning "drop this bubble" — an event named
       // "here is a message" carrying its own opposite, and the one shape that made
-      // "every broadcast has a row" unstateable. It is a named event now.
+      // "every broadcast has a row" unstateable. It is a named event now. (It names THIS
+      // iteration's empty bubble; a promoted line is a different row and stays on screen,
+      // which is the whole reason it can be quoted below.)
       broadcast({ type: 'chat:retract', agentId, messageId });
+      // The model's OWN words, read back off the row that carried them — never the engine's
+      // paraphrase (OR2), and never a judgment of what they were. Empty when nothing was
+      // promoted, which is what keeps the sentence below byte-identical on the silent path.
+      let promotedSight = '';
+      if (promotedRowId) {
+        try {
+          const said = (readPersistedRow(promotedRowId)?.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 220);
+          if (said.length > 0) {
+            promotedSight =
+              ' ENGINE RECORD: the user HAS heard one line from you this turn — while you were '
+              + `working, the engine surfaced your own words to them: "${said}". The ask ledger `
+              + 'still shows their question OPEN, because nothing is recorded as its answer yet. '
+              + 'If that line WAS your answer, say so now in one ordinary reply so it is on the '
+              + 'record; if it was only a status line, give them the answer itself now.';
+          }
+        } catch { /* the sight is a courtesy; the steer stands without it */ }
+      }
       const steerText =
         '[Engine hint: you ended with [no-reply], but this message is a direct request from the user. ' +
         'A direct ask never ends in silence. If this exact work was already delivered (check the RECENTLY ANSWERED engine record and your tracker), ' +
-        'reply with ONE brief line pointing to the existing answer or delivery. Otherwise, do the work now, including creating the tracker task first if the user asked for one.]';
+        'reply with ONE brief line pointing to the existing answer or delivery. Otherwise, do the work now, including creating the tracker task first if the user asked for one.' +
+        promotedSight + ']';
       try {
         persistAndBroadcastSystemRow(steerText);
       } catch { /* dashboard row is best effort */ }
