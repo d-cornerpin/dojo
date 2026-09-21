@@ -53,6 +53,17 @@ const SCOPES = [
   'Notes.ReadWrite',
   'Tasks.ReadWrite',
   'Contacts.ReadWrite',
+  // t83 — the Teams/channel tools (teams_list_teams, teams_list_channels,
+  // teams_read_channel_messages, teams_send_channel_message) called
+  // /me/joinedTeams, /teams/{id}/channels, and channel-message endpoints
+  // from day one without ever requesting the permissions those endpoints
+  // need. Chat.ReadWrite above covers 1:1/group chats only — it does not
+  // cover team-level or channel-level resources. See the conformance test
+  // (the-signin-scopes-cover-every-graph-call.test.ts) for the full mapping.
+  'Team.ReadBasic.All',
+  'Channel.ReadBasic.All',
+  'ChannelMessage.Read.All',
+  'ChannelMessage.Send',
 ].join(' ');
 
 // ── Slot abstraction ──
