@@ -46,7 +46,6 @@ import { advance, type AgentTurnState } from '../../state.js';
 import type { SteerEntry } from '../../steer-queue.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { TurnCounterparty } from '../../counterparty.js';
-import type { AgentStatus } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
 import { injectTechniqueAndGapHints } from './technique-hints.js';
 import { detectMultistepAndScaffold } from './multistep-detection.js';
@@ -101,7 +100,6 @@ export interface AssembleContext {
   /** Driver CLOSURES and helpers, passed as values so their bindings stay live across
    *  the boundary (CUT 2's precedent) and so a step never points back at the driver. */
   readonly startAckRepliedNow: () => boolean;
-  readonly setAgentStatus: (agentId: string, status: AgentStatus) => void;
 }
 
 /** The six values the span DECLARES and the rest of the turn reads. A module cannot
@@ -141,7 +139,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
     counterpartyIsAgentSender, chosenConvKey, hasUnansweredUser, isA2ATurn, isEngineTurn,
     isNotificationTurn, lastUserMessageContent, latestTtsEngine, latestUserSource,
     mostRecentIsA2A, pendingEngineEvent, mostRecentInbound, waitingConvs, engineStartAckDeliveredThisTurn,
-    staleTaskWindowMinutes, startAckRepliedNow, setAgentStatus,
+    staleTaskWindowMinutes, startAckRepliedNow,
   } = ctxIn;
   let state = stateIn;
 

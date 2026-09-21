@@ -20,8 +20,15 @@
 //      it counts the exits that genuinely DO bypass finalize — the two mid-call
 //      `return`s (stopped, preempted) — pinning them at exactly two so a third cannot
 //      appear silently. That number is the interesting half: it is the only way a turn
-//      can end without its finalize block running, and it is deliberate (both write
-//      `idle` themselves and both still run the `finally` that finalizes the record).
+//      can end without its finalize block running, and it is deliberate (both still run
+//      the `finally` that finalizes the record and settles the status).
+//
+//   3. IT DOES NOT SETTLE THE STATUS. Added in the T83 fix round's second pass: this step
+//      wrote `idle` unconditionally, one statement before the driver's `finally`, and that
+//      write landed before `activeRuns.delete` and before the awaited tail — so a stop
+//      landing here found a row that said nobody was home. `teardown`'s `settleStatus` is
+//      the one owner, and the clause below reads the ROW rather than the absence of a call
+//      site, so it fails whatever mechanism a future write is made through.
 // ════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -69,7 +76,6 @@ function ctxFor(overrides: Record<string, unknown> = {}): Parameters<typeof runF
     noteTerminalAnswer: () => {},
     persistRoutingMarker: () => {},
     stopStatusHeartbeat: () => {},
-    setAgentStatus: () => {},
     ...overrides,
   } as Parameters<typeof runFinalize>[1];
 }
@@ -249,8 +255,9 @@ describe('PHASE-6 CUT 4: the finalize step\'s contract', () => {
 
     // (c) AND THE EXITS THAT GENUINELY BYPASS IT, STILL PINNED AT EXACTLY TWO so a
     //     third cannot appear silently: the stopped and the preempted mid-call exits.
-    //     Both write `idle` themselves and both still run the `finally`, so the turn
-    //     record is still finalized — but the finalize span does NOT run for them.
+    //     Both still run the `finally`, so the turn record is still finalized and the
+    //     status still settles — but the finalize span does NOT run for them. (Neither
+    //     writes `idle` itself any more: the T83 fix round moved that to `teardown`.)
     //
     //     ⚠ PHASE-6 CUT 5 CHANGED HOW THEY ARE SPELLED, NOT HOW MANY THERE ARE. They
     //     lived in the `callLLM` span, which is now a step, and a module cannot
@@ -292,5 +299,21 @@ describe('PHASE-6 CUT 4: the finalize step\'s contract', () => {
 
   it('THE STEP OWNS ITS PHASE VALUE, and it is the one the union already had', () => {
     expect(FINALIZE_PHASE).toBe('finalize');
+  });
+
+  it('IT DOES NOT SETTLE THE STATUS (T83 fix round 2, review A-3 residual)', async () => {
+    // The seed row reads `working`, which is what it reads for real at this point in a turn:
+    // `preflight` wrote it, the heartbeat has been keeping it fresh, and `activeRuns` still
+    // holds the agent. A stop landing in this window is honoured by leaving that row alone —
+    // `stopAgent` deliberately stopped writing its own idle for exactly this reason — and this
+    // step used to clobber it one statement before the driver's `finally`.
+    //
+    // Read off the ROW, not off the call site: a re-added write through `ctx.db`, through a
+    // re-added closure, or through a direct import all fail here, where a census of
+    // `setAgentStatus(…, 'idle')` would only catch the middle one.
+    const out = await runFinalize(freshState(), ctxFor());
+    expect(out.directive).toBe('proceed');
+    const row = mockDb.current!.prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string };
+    expect(row.status, 'idle written here is the lie the ticket is named for — teardown owns the settle').toBe('working');
   });
 });

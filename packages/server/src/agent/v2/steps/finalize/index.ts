@@ -31,8 +31,8 @@
 //   4. `surfaceStrandedAttachments` the show_to_user safety net — deliberately AFTER
 //                                  the router, which is why it sends files itself.
 //   5. `scheduleCompletionReport`  the A2A ack-and-ghost follow-up.
-//   6. the tail                    heartbeat off, recovery streak cleared, idle,
-//                                  healer "recovered", the technique's usage row.
+//   6. the tail                    heartbeat off, recovery streak cleared, healer
+//                                  "recovered", technique usage. NOT the status: teardown's.
 // Steps 1 and 4 can both produce the turn's reply text, and 3 sits between them: a
 // reordering would silently change what gets routed and what only reaches the
 // dashboard. The contract test pins the order for that reason.
@@ -58,7 +58,7 @@
 // changed behaviour it did not admit to.
 // ════════════════════════════════════════
 
-import type { AgentStatus, WsEvent } from '@dojo/shared';
+import type { WsEvent } from '@dojo/shared';
 import type { getDb } from '../../../../db/connection.js';
 import { recoveryRunStreak, doomedPrefillCompactionSpent } from '../../../shared-state.js';
 import type { TurnContext } from '../../../turn-context.js';
@@ -98,7 +98,6 @@ export interface FinalizeContext {
   readonly noteTerminalAnswer: (rowId: string, surface: string) => void;
   readonly persistRoutingMarker: (label: string) => void;
   readonly stopStatusHeartbeat: (agentId: string) => void;
-  readonly setAgentStatus: (agentId: string, status: AgentStatus) => void;
 }
 
 /**
@@ -106,7 +105,7 @@ export interface FinalizeContext {
  * where it sits rather than a choice.
  */
 export async function runFinalize(state: AgentTurnState, ctx: FinalizeContext): Promise<StepOutcome> {
-  const { agentId, turnCtx, db, stopStatusHeartbeat, setAgentStatus } = ctx;
+  const { agentId, turnCtx, db, stopStatusHeartbeat } = ctx;
 
   state = recoverDeferredReply(state, ctx);
   const engineCompletionAckThisTurn = runCompletionAck(state, ctx);
@@ -125,13 +124,14 @@ export async function runFinalize(state: AgentTurnState, ctx: FinalizeContext): 
   // gets its own single compaction attempt rather than being permanently blocked by this one.
   doomedPrefillCompactionSpent.delete(agentId);
 
-  // Set agent back to idle (unless terminated)
+  // T83 FIX ROUND 2 (review A-3 residual): the idle write that stood here is DELETED, not
+  // guarded — this step is the last statement of the driver's `try`, so it landed before
+  // teardown, before `activeRuns.delete` and before the awaited tail, clobbering a stop that
+  // landed in that window; a `working` guard would not close it (the clean path IS `working`).
+  // Nothing between here and `settleStatus` reads the status, so `teardown` is the one owner.
   const currentAgent = db.prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as
     | { status: string }
     | undefined;
-  if (currentAgent && currentAgent.status !== 'terminated') {
-    setAgentStatus(agentId, 'idle');
-  }
 
   // Reset the persisted recovery_attempts counter on a successful turn.
   // Pre-2026-05-06 the counter only reset inside reset_session, so 3

@@ -405,11 +405,15 @@ describe('the status field does not lie about a stop', () => {
     // Five of them did — the pre-call gate's stop and preempt arms, both model-call abandons,
     // the assemble empty-context exit, the thrash auto-block, the executor's stopped-mid-batch
     // — every one of them before finalize, before teardown, and long before `activeRuns` is
-    // released. `teardown/index.ts`'s `settleStatus` is the one owner now; `finalize` keeps its
-    // own clean-path write, which `settleStatus` then reads as already-settled and leaves alone.
+    // released. `teardown/index.ts`'s `settleStatus` is the one owner now.
+    //
+    // FIX ROUND 2 (review A-3 residual): `finalize` is no longer on this list. It was, on the
+    // reasoning that its clean-path write was harmless because `settleStatus` would read it as
+    // already-settled — but finalize is the LAST STATEMENT of the driver's `try`, so its write
+    // landed before teardown's body, before `activeRuns.delete` and before the awaited tail, on
+    // every non-abandon path. The window the ticket is about, narrowed rather than closed.
     const ALLOWED = new Set([
       'agent/v2/steps/teardown/index.ts',
-      'agent/v2/steps/finalize/index.ts',
       // OUTSIDE the driver's `try` (loop.ts:416) — preflight exits never reach teardown, so
       // these two must keep writing their own idle or the row stays `working` forever.
       'agent/v2/steps/preflight/turn-classification.ts',

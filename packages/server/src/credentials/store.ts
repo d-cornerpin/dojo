@@ -50,7 +50,7 @@ export interface CredentialRecordWithValue extends CredentialRecord {
 // that would DESTROY a stored value refuses unless the caller passes `overwrite: true`. The
 // refusal names what it is protecting — created when, by whom, last changed when — and names
 // the flag. The flag is not a formality; it is the caller saying on the record which specific
-// existing value it is ending, and every authorised overwrite leaves an audit row.
+// existing value it is ending; every authorised destruction BY AN AGENT leaves an audit row.
 //
 // The callers that are not an agent — the dashboard PATCH (the owner's own hand on their own
 // row), the VNC rotate (the engine turning its own private slot), the T83 remediation purge —
@@ -135,10 +135,10 @@ function overwriteRefusal(serviceName: string, row: ExistingRow, verb: string): 
 }
 
 /**
- * Record an authorised overwrite. NEVER carries a value — not the one destroyed, not the one
- * written. `audit_log.agent_id` is NOT NULL, so a write with no agent behind it (the dashboard
- * PATCH, the VNC rotate) gets the structured-log line instead: those are the owner's own hand
- * and the engine's own slot, which is the very confirmation an audit row would be recording.
+ * Record an authorised DESTRUCTION — an overwrite or a deletion. NEVER carries a value.
+ * `audit_log.agent_id` is NOT NULL, so the three agent-less doors — the dashboard PATCH, the
+ * VNC rotate, the T83 remediation purge — get the warn line INSTEAD of a row, each being its
+ * own record already. "An audit row on every destruction" is a claim about AGENTS only.
  */
 function auditDestroy(
   serviceName: string, row: ExistingRow, actingAgentId: string | null, verb: string, act: 'overwrote' | 'deleted',

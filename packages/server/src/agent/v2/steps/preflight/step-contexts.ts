@@ -68,7 +68,7 @@ export function runStepContexts(
   sc: PreflightScratch,
   input: StepContextsInputs,
 ): StepContextsOutputs {
-  const { agentId, setAgentStatus, stopStatusHeartbeat, detectTaskThrashing } = ctx;
+  const { agentId, stopStatusHeartbeat, detectTaskThrashing } = ctx;
   const ENGINE_BLOCK_ESCAPE_HATCH = ctx.engineBlockEscapeHatch;
   const {
     db, turnNumber, counterparty, counterpartyIsAgentSender, chosenConvKey,
@@ -99,7 +99,7 @@ export function runStepContexts(
     agentId, turnCtx, turnNumber, db,
     counterparty, counterpartyIsAgentSender, chosenConvKey, turnStartedAt,
     settledContextWakeTurn, isA2ATurn, isEngineTurn, broadcast,
-    noteTerminalAnswer, persistRoutingMarker, stopStatusHeartbeat, setAgentStatus,
+    noteTerminalAnswer, persistRoutingMarker, stopStatusHeartbeat,
   });
 
   const teardownContext = (): TeardownContext => ({
@@ -123,15 +123,15 @@ export function runStepContexts(
   // THEM off the bag. The per-iteration property this note is about is unchanged — the
   // read still happens at the call site — and the bag is what makes it true now that the
   // step that WRITES them is a module of its own.
-  // `setAgentStatus` and `detectTaskThrashing` are passed rather than imported so a
-  // step never points back at the driver (CUT 2's `stopStatusHeartbeat` precedent).
+  // `detectTaskThrashing` is passed rather than imported so a step never points back at the
+  // driver (CUT 2's precedent). `setAgentStatus` went with A-3 — this gate writes no status.
   const preCallGatesContext = (): PreCallGatesContext => ({
     agentId, turnNumber, contextWindow, contextModelId, configuredModelId, isAutoRouted,
     counterparty, assemblerOverheadTokens: turnCtx.assemblerOverheadTokens,
     // HL4 step 2 (2d): the ack-delivery pair is GONE from this closure — see the
     // removal note on `PreCallGatesContext`, whose reader was the retired recap.
     engineBlockEscapeHatch: ENGINE_BLOCK_ESCAPE_HATCH,
-    broadcast, setAgentStatus, stashContinuationIfHuman, detectTaskThrashing,
+    broadcast, stashContinuationIfHuman, detectTaskThrashing,
   });
 
   return { finalizeContext, teardownContext, preCallGatesContext };

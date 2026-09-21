@@ -184,7 +184,6 @@ function assembleCtxFor(overrides: Partial<AssembleContext>): AssembleContext {
     engineStartAckDeliveredThisTurn: false,
     staleTaskWindowMinutes: 60,
     startAckRepliedNow: () => false,
-    setAgentStatus: () => { /* not exercised */ },
     ...overrides,
   };
 }
@@ -262,8 +261,7 @@ describe('T83 live chain — NOTIFICATION TURN: real classification → runAssem
     // it (and `mostRecentInbound`, the row it is computed from) gets decided.
     const preflightCtx: PreflightContext = {
       agentId: AGENT,
-      setAgentStatus: () => { /* not exercised */ },
-      startStatusHeartbeat: () => { /* not exercised */ },
+        startStatusHeartbeat: () => { /* not exercised */ },
       stopStatusHeartbeat: () => { /* not exercised */ },
       detectTaskThrashing: () => ({ thrashing: false }),
       engineBlockEscapeHatch: '',

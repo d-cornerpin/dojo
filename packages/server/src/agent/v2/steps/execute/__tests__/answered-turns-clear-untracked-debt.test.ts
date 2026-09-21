@@ -126,7 +126,7 @@ function executeCtx(
     messageId: `resp-${turnNumber}`, persistedContent: null, interAgentTurn: false,
     hasXmlFallbackTools: false, effectiveModelIdForPersist: 'floor-model',
     staleTaskWindowMinutes: 45, maxToolLoops: 40, engineBlockEscapeHatch: '',
-    engineStartAckAfterMs: 30_000, setAgentStatus: () => undefined,
+    engineStartAckAfterMs: 30_000,
   } as unknown as ExecuteContext;
 }
 

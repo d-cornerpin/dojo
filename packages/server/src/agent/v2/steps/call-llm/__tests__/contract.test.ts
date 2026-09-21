@@ -80,7 +80,6 @@ vi.mock('../../../../../router/selector.js', () => ({
 }));
 vi.mock('../../../../../router/probe.js', () => ({ maybeProbe: () => undefined }));
 
-const setAgentStatusSpy = vi.fn();
 const revertTriggerStampOnAbortSpy = vi.fn();
 
 function ctxFor(overrides: Partial<CallLLMContext> = {}): CallLLMContext {
@@ -104,7 +103,6 @@ function ctxFor(overrides: Partial<CallLLMContext> = {}): CallLLMContext {
     volatileFrom: undefined,
     steerAwaitingConfirm: null,
     revertTriggerStampOnAbort: revertTriggerStampOnAbortSpy,
-    setAgentStatus: setAgentStatusSpy,
     ...overrides,
   };
 }
@@ -217,12 +215,12 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
     // refuse to wake it again. The preempt clause below is UNCHANGED and still
     // consumes at its checkpoint — a preempt exists so a queued wakeup CAN fire.
     expect(stoppedAgents.has('kevin')).toBe(true);
-    // ⚠ RE-DERIVED, NOT LOWERED (T83 fix round, review IMPORTANT A-3): this asserted the
-    // step WRITES idle. It must not — the turn has not finalized, teardown has not run, and
-    // `runtime.ts` still holds the agent in `activeRuns` through a long awaited tail, so idle
-    // here is the audited lie seconds wide. `teardown/index.ts`'s `settleStatus` is the one
-    // owner and runs on every exit path, including this one.
-    expect(setAgentStatusSpy).not.toHaveBeenCalled();
+    // T83 FIX ROUND 2: the spy-based "this step does not write idle" assertion that stood here
+    // is GONE, and so is the `setAgentStatus` it was handed — `CallLLMContext` no longer declares one, so
+    // the step cannot reach a status writer at all. The guarantee did not weaken; it moved to
+    // where it covers every mechanism instead of one closure: the compiler (no field), the
+    // engine-wide census in `a-stop-stops-and-the-status-tells-the-truth.test.ts`, and the one
+    // owner's own behaviour in `steps/teardown/__tests__/contract.test.ts`.
   });
 
   it('ABANDON, PREEMPTED: same shape, its own reason, and the queued wakeup is left to fire', async () => {
@@ -235,12 +233,12 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
     if (out.directive !== 'abandon') throw new Error('unreachable');
     expect(out.reason).toContain('preempted');
     expect(preemptedAgents.has('kevin')).toBe(false);
-    // ⚠ RE-DERIVED, NOT LOWERED (T83 fix round, review IMPORTANT A-3): this asserted the
-    // step WRITES idle. It must not — the turn has not finalized, teardown has not run, and
-    // `runtime.ts` still holds the agent in `activeRuns` through a long awaited tail, so idle
-    // here is the audited lie seconds wide. `teardown/index.ts`'s `settleStatus` is the one
-    // owner and runs on every exit path, including this one.
-    expect(setAgentStatusSpy).not.toHaveBeenCalled();
+    // T83 FIX ROUND 2: the spy-based "this step does not write idle" assertion that stood here
+    // is GONE, and so is the `setAgentStatus` it was handed — `CallLLMContext` no longer declares one, so
+    // the step cannot reach a status writer at all. The guarantee did not weaken; it moved to
+    // where it covers every mechanism instead of one closure: the compiler (no field), the
+    // engine-wide census in `a-stop-stops-and-the-status-tells-the-truth.test.ts`, and the one
+    // owner's own behaviour in `steps/teardown/__tests__/contract.test.ts`.
   });
 
   it('A STEP THAT ASKS TO ABANDON STOPS: no retry, and no hand-back of an ask it never gave up on', async () => {

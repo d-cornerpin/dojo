@@ -71,7 +71,6 @@ vi.mock('../../../../../memory/assembler.js', () => ({
   assembleContext: (...a: unknown[]) => assembleContextSpy(...(a as [])),
 }));
 
-const setAgentStatusSpy = vi.fn();
 const revertTriggerStampOnAbortSpy = vi.fn();
 
 // R-FIXTURE: a single message this large estimates (via the platform's own /4 divisor) to
@@ -101,7 +100,6 @@ function ctxFor(overrides: Partial<CallLLMContext> = {}): CallLLMContext {
     steerAwaitingConfirm: null,
     assemblyTurnContext: { latestUserSource: null },
     revertTriggerStampOnAbort: revertTriggerStampOnAbortSpy,
-    setAgentStatus: setAgentStatusSpy,
     ...overrides,
   };
 }

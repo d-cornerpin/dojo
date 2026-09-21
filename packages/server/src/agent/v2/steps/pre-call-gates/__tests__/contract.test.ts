@@ -167,7 +167,6 @@ function makeCtx(overrides: Partial<PreCallGatesContext> = {}): PreCallGatesCont
     deferredDeliveredByAck: false,
     engineBlockEscapeHatch: '[escape hatch]',
     broadcast: (event: WsEvent) => { events.push(event); },
-    setAgentStatus: vi.fn(),
     stashContinuationIfHuman: vi.fn(),
     detectTaskThrashing: vi.fn(() => ({ thrashing: false })),
     ...overrides,
@@ -259,12 +258,12 @@ describe('the exit-request channel — seven ways out, each with a name', () => 
 
     expect(out).toMatchObject({ directive: 'exit', reason: 'stopped-by-user' satisfies PreCallGatesExitReason });
     expect(stoppedAgents.has(AGENT)).toBe(true);
-    // ⚠ RE-DERIVED, NOT LOWERED (T83 fix round, review IMPORTANT A-3): this gate used to write
-    // idle here. It must not — the turn has not finalized, teardown has not run, and
-    // `runtime.ts` still holds the agent in `activeRuns` through a long awaited tail, so idle
-    // at this instant is the audited lie seconds wide. `teardown/index.ts`'s `settleStatus` is
-    // the one owner and runs on every exit path, including this one.
-    expect(ctx.setAgentStatus).not.toHaveBeenCalled();
+    // T83 FIX ROUND 2: the spy-based "this step does not write idle" assertion that stood here
+    // is GONE, and so is the `setAgentStatus` it was handed — `PreCallGatesContext` no longer declares one, so
+    // the step cannot reach a status writer at all. The guarantee did not weaken; it moved to
+    // where it covers every mechanism instead of one closure: the compiler (no field), the
+    // engine-wide census in `a-stop-stops-and-the-status-tells-the-truth.test.ts`, and the one
+    // owner's own behaviour in `steps/teardown/__tests__/contract.test.ts`.
   });
 
   it('a preempted agent exits, and the preempt signal is CONSUMED', async () => {

@@ -34,7 +34,6 @@ import { isStopFenced } from '../../../shared-state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { TurnCounterparty } from '../../counterparty.js';
 import type { RepeatCallState } from '../../identical-call-brake.js';
-import type { AgentStatus } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
 import { runOneToolCall } from './run-one.js';
 import { persistXmlFallbackCollapse } from './xml-fallback.js';
@@ -113,7 +112,6 @@ export interface ExecuteContext {
   readonly maxToolLoops: number;
   readonly engineBlockEscapeHatch: string;
   readonly engineStartAckAfterMs: number;
-  readonly setAgentStatus: (agentId: string, status: AgentStatus) => void;
 }
 
 /** What the whole RESPONSE shares across its calls. Inside the loop these were the

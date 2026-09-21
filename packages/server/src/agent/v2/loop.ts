@@ -36,7 +36,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
 import { broadcast } from '../../gateway/ws.js';
-import type { AgentStatus } from '@dojo/shared';
 // classifyTool is the canonical effectful/retrieval/bookkeeping classifier
 // (test-covered against the full tool registry); the closeout machinery
 // derives "did this turn do real work" from it instead of a hand list that
@@ -474,7 +473,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         // PATH (`work-reaper.test.ts`, the narrower and therefore stronger corpus)
         // and `execute` reads it too. Handed across, never copied.
         staleTaskWindowMinutes: STALE_TASK_WINDOW_MINUTES,
-        startAckRepliedNow, setAgentStatus,
+        startAckRepliedNow,
       });
       turnCtx.state = assembled.state;
       if (assembled.directive === 'exit') break;
@@ -495,7 +494,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         counterparty, isA2ATurn, isAutoRouted, configuredModelId, lastUserMessageContent,
         messages, systemPrompt, assembled: ctx, modelContext: mctx, volatileFrom,
         steerAwaitingConfirm, assemblyTurnContext,
-        revertTriggerStampOnAbort, setAgentStatus,
+        revertTriggerStampOnAbort,
       };
       const callLLM = await runCallLLM(turnCtx.state!, callLLMContext);
       turnCtx.state = callLLM.state;
@@ -613,7 +612,6 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         maxToolLoops: MAX_TOOL_LOOPS,
         engineBlockEscapeHatch: ENGINE_BLOCK_ESCAPE_HATCH,
         engineStartAckAfterMs: ENGINE_START_ACK_AFTER_MS,
-        setAgentStatus,
       });
       turnCtx.state = executed.state;
       if (executed.directive === 'exit') break;

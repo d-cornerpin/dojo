@@ -135,7 +135,6 @@ function gatesCtx(over: Partial<PreCallGatesContext> = {}): PreCallGatesContext 
     assemblerOverheadTokens: 0,
     engineBlockEscapeHatch: 'If this looks wrong, say so.',
     broadcast: broadcastSpy,
-    setAgentStatus: () => {},
     stashContinuationIfHuman: () => {},
     detectTaskThrashing: () => ({ thrashing: false }),
     ...over,

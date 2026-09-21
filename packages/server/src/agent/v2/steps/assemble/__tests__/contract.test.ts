@@ -91,7 +91,6 @@ vi.mock('../../../../../prompt/registry/assembler.js', async (importOriginal) =>
   injectRegistryMessage: (...a: unknown[]) => injectRegistryMessageSpy(...(a as [string, unknown[]])),
 }));
 
-const setAgentStatusSpy = vi.fn();
 const startAckRepliedNowSpy = vi.fn(() => false);
 
 function turnCtxFor(): AssembleContext['turnCtx'] {
@@ -132,7 +131,6 @@ function ctxFor(overrides: Partial<AssembleContext> = {}): AssembleContext {
     waitingConvs: [],
     engineStartAckDeliveredThisTurn: false,
     startAckRepliedNow: startAckRepliedNowSpy,
-    setAgentStatus: setAgentStatusSpy,
     ...overrides,
   };
 }
@@ -255,12 +253,12 @@ describe('PHASE-6 CUT 6: the `assemble` step\'s contract', () => {
     if (out.directive !== 'exit') throw new Error('unreachable');
     expect(out.reason).toBeTruthy();
     // The turn is put down where it stood, exactly as the driver's `break` arm did.
-    // ⚠ RE-DERIVED, NOT LOWERED (T83 fix round, review IMPORTANT A-3): this asserted the
-    // step WRITES idle. It must not — the turn has not finalized, teardown has not run, and
-    // `runtime.ts` still holds the agent in `activeRuns` through a long awaited tail, so idle
-    // here is the audited lie seconds wide. `teardown/index.ts`'s `settleStatus` is the one
-    // owner and runs on every exit path, including this one.
-    expect(setAgentStatusSpy).not.toHaveBeenCalled();
+    // T83 FIX ROUND 2: the spy-based "this step does not write idle" assertion that stood here
+    // is GONE, and so is the `setAgentStatus` it was handed — `AssembleContext` no longer declares one, so
+    // the step cannot reach a status writer at all. The guarantee did not weaken; it moved to
+    // where it covers every mechanism instead of one closure: the compiler (no field), the
+    // engine-wide census in `a-stop-stops-and-the-status-tells-the-truth.test.ts`, and the one
+    // owner's own behaviour in `steps/teardown/__tests__/contract.test.ts`.
     // And the outputs are UNREACHABLE on this arm — the caller cannot accidentally
     // hand a zero-message context to a provider, because the type does not carry it.
     expect('messages' in out).toBe(false);

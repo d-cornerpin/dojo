@@ -116,7 +116,6 @@ function ctxFor(overrides: Partial<ModelCallInputs> = {}): ModelCallInputs {
     isA2ATurn: false,
     excludedModels: [],
     revertTriggerStampOnAbort: () => undefined,
-    setAgentStatus: () => undefined,
     assembled: { systemVolatile: '', reserveTokens: 0 } as unknown as ModelCallInputs['assembled'],
     routerTier: 'standard',
     counterparty: { kind: 'user', id: 'owner', displayName: 'Owner' } as unknown as ModelCallInputs['counterparty'],

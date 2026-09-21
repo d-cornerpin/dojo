@@ -49,7 +49,6 @@ import { selectModel } from './model-selection.js';
 import { injectAndRecord } from './pre-call-injections.js';
 import { callWithRetryAndFallback } from './model-call.js';
 import { reassembleForFitIfNeeded } from './reassemble-for-fit.js';
-import type { AgentStatus } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
 
 const logger = createLogger('v2-loop');
@@ -87,7 +86,6 @@ export interface CallLLMContext {
   /** Driver CLOSURES, passed as values so their bindings stay live across the
    *  boundary (CUT 2's precedent) and so a step never points back at the driver. */
   readonly revertTriggerStampOnAbort: () => void;
-  readonly setAgentStatus: (agentId: string, status: AgentStatus) => void;
 }
 
 /** The shared outcome, plus this step's two outputs on the proceed arm ONLY. */
@@ -99,7 +97,7 @@ export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext)
   const {
     agentId, turnCtx, turnNumber, counterparty, isA2ATurn, isAutoRouted, configuredModelId,
     lastUserMessageContent, assembled: assembledIn, modelContext: mctx,
-    steerAwaitingConfirm, assemblyTurnContext, revertTriggerStampOnAbort, setAgentStatus,
+    steerAwaitingConfirm, assemblyTurnContext, revertTriggerStampOnAbort,
   } = ctxIn;
   let state = stateIn;
   // Mutable locals: `reassembleForResolvedModel` below may replace all four when the
@@ -155,7 +153,7 @@ export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext)
   const called = await callWithRetryAndFallback(state, selection.modelId, {
     agentId, turnCtx, turnNumber, messageId, messages, systemPrompt,
     useTools: injected.useTools, isAutoRouted, isA2ATurn, excludedModels,
-    revertTriggerStampOnAbort, setAgentStatus, assembled: ctx, routerTier, counterparty,
+    revertTriggerStampOnAbort, assembled: ctx, routerTier, counterparty,
     volatileFrom, assemblyTurnContext,
   });
   if (called.abandoned) return called.abandoned as CallLLMOutcome;

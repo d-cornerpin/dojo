@@ -326,7 +326,6 @@ describe('T65b — the one-retry grant becomes reachable for a mid-stream stall'
     isA2ATurn: false,
     excludedModels: [],
     revertTriggerStampOnAbort: () => {},
-    setAgentStatus: () => {},
     assembled: { systemVolatile: '' } as unknown as ModelCallInputs['assembled'],
     routerTier: null,
     counterparty: { kind: 'user' } as unknown as ModelCallInputs['counterparty'],

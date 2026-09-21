@@ -56,7 +56,7 @@
 // so passing it preserves live-read semantics by construction.
 // ════════════════════════════════════════
 
-import type { AgentStatus, WsEvent } from '@dojo/shared';
+import type { WsEvent } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
 import { isStopFenced, preemptedAgents } from '../../../shared-state.js';
 import { type AgentTurnState, type TurnPhase } from '../../state.js';
@@ -112,8 +112,6 @@ export interface PreCallGatesContext {
    */
   readonly engineBlockEscapeHatch: string;
   readonly broadcast: (event: WsEvent) => void;
-  /** The driver's own status writer, passed rather than imported. See the header. */
-  readonly setAgentStatus: (agentId: string, status: AgentStatus) => void;
   /** A closure over driver state (C3). Passed as a VALUE, which keeps its bindings. */
   readonly stashContinuationIfHuman: () => void;
   /** The driver's thrash detector, passed rather than imported. See the header. */

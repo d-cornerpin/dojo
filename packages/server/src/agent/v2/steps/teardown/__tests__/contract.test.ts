@@ -486,3 +486,39 @@ describe('T82d — the teardown boolean genuinely reaches recoverFromError, not 
     expect(headsUp[0]).toContain("couldn't trim it down enough to try again");
   });
 });
+
+// ── The ONE owner of the turn's end-of-run status ─────────────────────────────
+
+describe('settleStatus: the one owner, and it cannot clobber a diagnosis', () => {
+  // T83 FIX ROUND 2 (review A-3 residual). Eight in-run checkpoints used to write `idle`
+  // themselves — the last of them was `finalize`, one statement before the driver's `finally`,
+  // and it went in this round. The behaviour that replaces all eight is asserted HERE, against
+  // the real row, rather than being left to the stop suite's source census: a census proves a
+  // write is gone, and only a run proves the survivor does the job the eight used to.
+  const statusOf = (): string =>
+    (mockDb.current!.prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status;
+  const setStatus = (s: string): void => {
+    mockDb.current!.prepare('UPDATE agents SET status = ? WHERE id = ?').run(s, AGENT);
+  };
+
+  it('a turn that ran to its end settles from `working` to `idle`, exactly once', async () => {
+    setStatus('working');
+    await runTurnTeardown(stateInTeardown(), ctx());
+    expect(statusOf(), 'nothing else writes idle on this path any more — if this arm does not, the row stays `working` forever').toBe('idle');
+    const idleFrames = broadcastSpy.mock.calls
+      .map((call) => call[0] as { type?: string; status?: string })
+      .filter((e) => e.type === 'agent:status' && e.status === 'idle');
+    expect(idleFrames, 'the dashboard hears the settle once, from the one owner').toHaveLength(1);
+  });
+
+  it('every OTHER status is somebody else\'s answer, and is left standing', async () => {
+    // `error`/`paused` are the recovery arm's, `terminated` a completed agent's, `rate_limited`
+    // the retry manager's. The deleted writes clobbered all four; the guard is why centralising
+    // them was safe.
+    for (const diagnosis of ['error', 'paused', 'terminated', 'rate_limited']) {
+      setStatus(diagnosis);
+      await runTurnTeardown(stateInTeardown(), ctx());
+      expect(statusOf(), `teardown overwrote a ${diagnosis} diagnosis with idle`).toBe(diagnosis);
+    }
+  });
+});

@@ -215,24 +215,24 @@ export async function runTurnRecovery(
 /**
  * T83 FIX ROUND (review IMPORTANT A-3) — THE ONE OWNER OF THE TURN'S END-OF-RUN IDLE.
  *
- * FIVE in-run checkpoints used to write `idle` themselves — the pre-call gate's stop and
+ * EIGHT in-run checkpoints used to write `idle` themselves — the pre-call gate's stop and
  * preempt arms, the model call's stop and preempt abandons, the assemble empty-context exit,
- * the thrash auto-block, the executor's stopped-mid-batch — and every one of them wrote it
- * BEFORE finalize, before this arm, and long before `runtime.ts` deletes `activeRuns` and runs
- * its awaited tail. That is the same untruth `stopAgent` stopped telling in the first cut of
- * this ticket, just seconds wide instead of four and a half minutes: the row says nobody is
- * home while the turn is still unwinding, and every busy-guard in the platform believes it.
+ * the thrash auto-block, the executor's stopped-mid-batch, and (fix round 2) finalize's own
+ * unconditional clean-path write — and every one of them wrote it BEFORE this arm, and long
+ * before `runtime.ts` deletes `activeRuns` and runs its awaited tail. That is the same untruth
+ * `stopAgent` stopped telling in the first cut of this ticket, just seconds wide instead of
+ * four and a half minutes: the row says nobody is home while the turn is still unwinding, and
+ * every busy-guard in the platform believes it.
  *
  * This arm is the one place whose defining property is "runs on every exit path" — the same
  * property that made it the right home for the abort sweep — so it is where the turn's status
- * settles, once.
- *
+ * settles, once. The only writers left outside it are preflight's two abandon returns, which
+ * happen BEFORE the driver's `try` opens and so cannot reach this arm at all.
  * IT CANNOT CLOBBER A DIAGNOSIS. The write happens ONLY when the row still literally reads
  * `working`. A turn that ended on an injury has already been moved to `error`/`paused` by
  * `recoverFromError` (which runs in the `catch` arm, before this one); a completed agent reads
- * `terminated`; a rate-limited one reads `rate_limited`; and `finalize` has already written
- * `idle` on the clean path, so this is a no-op there. Anything that is not the word `working`
- * is somebody else's answer and is left exactly as it stands.
+ * `terminated`; a rate-limited one reads `rate_limited`. Anything that is not the word
+ * `working` is somebody else's answer and is left exactly as it stands.
  */
 function settleStatus(ctx: TeardownContext): void {
   try {

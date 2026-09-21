@@ -34,7 +34,6 @@ import type { TurnCounterparty } from '../../counterparty.js';
 import type { AssembledContext } from '../../../../memory/assembler.js';
 import type { PromptTurnContext } from '../../../../prompt/assembler.js';
 import { reassembleForFitIfNeeded, estimateAssembledArrayTokens } from './reassemble-for-fit.js';
-import type { AgentStatus } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
 
 const logger = createLogger('v2-loop');
@@ -51,7 +50,6 @@ export interface ModelCallInputs {
   readonly isA2ATurn: boolean;
   readonly excludedModels: string[];
   readonly revertTriggerStampOnAbort: () => void;
-  readonly setAgentStatus: (agentId: string, status: AgentStatus) => void;
   readonly assembled: AssembledContext;
   readonly routerTier: string | null;
   readonly counterparty: TurnCounterparty;
