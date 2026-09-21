@@ -303,7 +303,8 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
         retryable: true,
       });
     } catch { /* best effort */ }
-    setAgentStatus(agentId, 'idle');
+    // T83 FIX ROUND (review IMPORTANT A-3): the idle write that stood here is gone — `teardown`
+    // is the ONE owner now. See `teardown/index.ts`'s `settleStatus`.
     return requestExit(state, 'thrash-auto-block' satisfies PreCallGatesExitReason);
   }
 

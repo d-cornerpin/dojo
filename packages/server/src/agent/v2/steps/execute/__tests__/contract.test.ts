@@ -345,7 +345,12 @@ describe('PHASE-6 CUT 7: the `execute` step\'s contract', () => {
       expect(out.directive).toBe('exit');
       if (out.directive !== 'exit') throw new Error('unreachable');
       expect(out.reason).toMatch(/stop/i);
-      expect(setAgentStatusSpy).toHaveBeenCalledWith('kevin', 'idle');
+      // ⚠ RE-DERIVED, NOT LOWERED (T83 fix round, review IMPORTANT A-3): this asserted the
+      // step WRITES idle. It must not — the turn has not finalized, teardown has not run, and
+      // `runtime.ts` still holds the agent in `activeRuns` through a long awaited tail, so idle
+      // here is the audited lie seconds wide. `teardown/index.ts`'s `settleStatus` is the one
+      // owner and runs on every exit path, including this one.
+      expect(setAgentStatusSpy).not.toHaveBeenCalled();
       expect(out.state.toolResults.some((r) => String(r.content).includes('Cancelled by user'))).toBe(true);
     } finally {
       stoppedAgents.delete('kevin');

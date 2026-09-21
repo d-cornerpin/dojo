@@ -2673,6 +2673,13 @@ async function callAnthropicSdkModel(
         onChunk?.(chunk);
       },
       timeoutMs: sdkTimeoutMs,
+      // T83 FIX ROUND (review CRITICAL A-1): the fourth transport joins the other three. Ollama
+      // folds this signal into its `fetch` (`:1133`), the OpenAI-compatible and Anthropic-direct
+      // paths fold it into their stream watchdogs (`:2085`, `:3213`) — this one passed nothing,
+      // so an `agent-sdk` dial ran to natural completion through a stop while `stopAgent` logged
+      // `callsAborted: 1` for it. `a-stop-stops-…test.ts` now censuses all four rather than
+      // asserting only that `model.ts` is among the registrars.
+      abortSignal: params.abortSignal,
     });
 
     const latencyMs = Date.now() - startTime;
@@ -2870,7 +2877,19 @@ const FREE_LOCAL_PROVIDER_TYPES = new Set(['ollama', 'local']);
 // ════════════════════════════════════════
 export async function callModel(params: ModelCallParams): Promise<ModelCallResult> {
   const stopCtl = new AbortController();
-  registerAbortable(params.agentId, stopCtl);
+  // T83 FIX ROUND (review CRITICAL A-1): the REFUSAL IS READ, not merely relied upon. The first
+  // cut discarded this boolean and trusted the pre-aborted signal to propagate — which is true
+  // of three transports and was false of the fourth, so a stop that landed a millisecond before
+  // an agent-sdk dial still dialled. Reading the answer makes "stop before register ⇒ no dial" a
+  // property of this function rather than of each transport's signal handling, and the SDK's own
+  // pre-aborted-signal check below is then belt-and-braces instead of the whole mechanism.
+  if (!registerAbortable(params.agentId, stopCtl)) {
+    throw new AgentError(
+      'The user stopped this agent before this call could be dialled.',
+      params.agentId,
+      { code: 'MODEL_CALL_FAILED', retryable: false },
+    );
+  }
   const signal = params.abortSignal
     ? AbortSignal.any([params.abortSignal, stopCtl.signal])
     : stopCtl.signal;

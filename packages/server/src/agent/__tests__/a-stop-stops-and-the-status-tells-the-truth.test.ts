@@ -218,6 +218,52 @@ describe('a stop aborts EVERY call the agent has in flight', () => {
       .map(rel);
     expect(registrars).toContain('agent/model.ts');
   });
+
+  it('THE RED (review CRITICAL A-1): EVERY transport receives the abort signal, not just three', () => {
+    // The first cut's census asked only whether `model.ts` was among the registrars, which is
+    // true of a transport that takes the signal and drops it. `callAnthropicSdkModel` did
+    // exactly that: `registerAbortable` succeeded, `abortInFlight` aborted the controller,
+    // `stopAgent` logged `callsAborted: 1` — and the Agent-SDK call ran to natural completion,
+    // the audited defect surviving on one transport wearing a receipt saying it was fixed.
+    //
+    // Read per-function rather than per-file, because "the file mentions abortSignal" is
+    // exactly the assertion that passed while one of its four dispatchers ignored it.
+    const src = fs.readFileSync(path.join(SRC_ROOT, 'agent/model.ts'), 'utf-8');
+    const bodyOf = (name: string): string => {
+      const start = src.indexOf(`async function ${name}(`);
+      expect(start, `transport ${name} is gone from model.ts`).toBeGreaterThan(-1);
+      const next = src.slice(start + 1).search(/\nasync function |\nexport async function /);
+      return next === -1 ? src.slice(start) : src.slice(start, start + 1 + next);
+    };
+    for (const transport of ['callOllamaModel', 'callOpenAIModel', 'callAnthropicSdkModel']) {
+      expect(/params\.abortSignal/.test(bodyOf(transport)), `${transport} drops the stop signal`).toBe(true);
+    }
+    // The Anthropic-direct path has no function of its own — it is the fall-through tail of
+    // `dialModel`, so it is checked there.
+    expect(/params\.abortSignal/.test(bodyOf('dialModel'))).toBe(true);
+  });
+
+  it('the Agent-SDK transport takes an external signal and composes it with T81d\'s patience timer', async () => {
+    const sdkSrc = fs.readFileSync(path.join(SRC_ROOT, 'providers/anthropic-sdk.ts'), 'utf-8');
+    // It must accept one…
+    expect(/abortSignal\?: AbortSignal/.test(sdkSrc)).toBe(true);
+    // …and the ONE controller the SDK's `Options` exposes must still be reachable when there is
+    // no declared patience at all, which is the case a stop has to work in.
+    expect(/if \(timeoutMs != null \|\| abortSignal\)/.test(sdkSrc)).toBe(true);
+    // T81d's discrimination is the invariant that must survive: only the TIMER may mint the
+    // patience error, so an external stop is never reported as a declared-patience trip.
+    const setters = sdkSrc.split('\n').filter((l) => /timedOutByPatience = true/.test(l));
+    expect(setters, 'an external abort must never set the patience flag').toHaveLength(1);
+    const timerBlock = sdkSrc.slice(sdkSrc.indexOf('if (timeoutMs != null) {'), sdkSrc.indexOf('if (abortSignal) {'));
+    expect(timerBlock).toContain('timedOutByPatience = true');
+  });
+
+  it('callModel REFUSES to dial when the stop already landed — it reads the answer', () => {
+    // `registerAbortable`'s boolean was discarded in the first cut; the pre-aborted signal was
+    // trusted to propagate, which three transports do and the fourth did not.
+    const src = fs.readFileSync(path.join(SRC_ROOT, 'agent/model.ts'), 'utf-8');
+    expect(/if \(!registerAbortable\(/.test(src), 'the refusal is ignored again').toBe(true);
+  });
 });
 
 // ── PROPERTY 3: the fence is the run's, and only the run retires it ──────────
@@ -257,6 +303,34 @@ describe('the continuation chain cannot re-arm itself after a stop', () => {
     seedAgent('idle');
     stopAgent(AGENT);
     expect(stopFencedRuns.has(AGENT), 'a fence nothing will ever clear is a silent hang').toBe(false);
+  });
+
+  it('THE RED (review IMPORTANT A-2): the tool executor halts on a stop that reset-session has "cleared"', async () => {
+    // The scenario the review reproduced: owner stops mid-turn while a tool batch is running;
+    // a reset-session lands two minutes later and lifts `stoppedAgents`. The executor's next
+    // boundary check saw no stop and kept dispatching real side-effecting calls — a send, a
+    // write, a calendar change — for a run the owner had stopped.
+    const { activeRuns, stoppedAgents, isStopFenced } = await import('../shared-state.js');
+    const { stopAgent } = await import('../runtime.js');
+    seedAgent('working');
+    activeRuns.add(AGENT);
+    stopAgent(AGENT);
+    stoppedAgents.delete(AGENT); // reset-session
+
+    expect(isStopFenced(AGENT), 'the executor consults this at both batch boundaries').toBe(true);
+  });
+
+  it('THE CENSUS (review IMPORTANT A-2): no in-run checkpoint reads the raw flag any more', () => {
+    // Five sites did: the pre-call gate, both model-call abandons, and the executor's two batch
+    // boundaries. `stoppedAgents.has(` is now legitimate ONLY inside the fence predicate itself.
+    const offenders: string[] = [];
+    for (const file of sourceFiles()) {
+      if (rel(file) === 'agent/shared-state.ts') continue;
+      codeLines(fs.readFileSync(file, 'utf-8')).forEach(({ line, n }) => {
+        if (/stoppedAgents\.has\(/.test(line)) offenders.push(`${rel(file)}:${n} — ${line.trim()}`);
+      });
+    }
+    expect(offenders, 'a checkpoint reading the raw flag is one reset-session can talk out of a stop').toEqual([]);
   });
 
   it('THE CENSUS: only the run\'s own exit path retires the fence', async () => {
@@ -319,6 +393,62 @@ describe('the status field does not lie about a stop', () => {
     const cfg = JSON.parse((mockDb.current!.prepare('SELECT config FROM agents WHERE id = ?')
       .get(AGENT) as { config: string }).config) as Record<string, unknown>;
     expect(cfg.stopMarkerPending).toBe(true);
+  });
+
+  it('THE RED (review IMPORTANT A-3): no in-run checkpoint writes idle before teardown', async () => {
+    // Five of them did — the pre-call gate's stop and preempt arms, both model-call abandons,
+    // the assemble empty-context exit, the thrash auto-block, the executor's stopped-mid-batch
+    // — every one of them before finalize, before teardown, and long before `activeRuns` is
+    // released. `teardown/index.ts`'s `settleStatus` is the one owner now; `finalize` keeps its
+    // own clean-path write, which `settleStatus` then reads as already-settled and leaves alone.
+    const ALLOWED = new Set([
+      'agent/v2/steps/teardown/index.ts',
+      'agent/v2/steps/finalize/index.ts',
+      // OUTSIDE the driver's `try` (loop.ts:416) — preflight exits never reach teardown, so
+      // these two must keep writing their own idle or the row stays `working` forever.
+      'agent/v2/steps/preflight/turn-classification.ts',
+      'agent/v2/steps/preflight/turn-trigger.ts',
+    ]);
+    // The corpus is the SHARED derivation, not a sixth hand-rolled walk of the step packages —
+    // `guard-corpus-census.test.ts` refuses one, and it refused this clause's first cut.
+    const offenders: string[] = [];
+    const { engineSources } = await import('../v2/__tests__/engine-sources.js');
+    for (const f of engineSources()) {
+      if (ALLOWED.has(f.rel)) continue;
+      codeLines(f.text).forEach(({ line, n }) => {
+        if (/setAgentStatus\([^)]*'idle'\)/.test(line)) offenders.push(`${f.rel}:${n} — ${line.trim()}`);
+      });
+    }
+    expect(offenders, 'idle written while the turn is still unwinding is the audited lie, seconds wide').toEqual([]);
+  });
+
+  it('teardown settles the status, and CANNOT clobber a diagnosis', () => {
+    const src = fs.readFileSync(path.join(SRC_ROOT, 'agent/v2/steps/teardown/index.ts'), 'utf-8');
+    // The guard is the whole safety of centralising it: an injured turn has already been moved
+    // to error/paused by the recovery arm, a completed one reads terminated.
+    expect(/row\?\.status !== 'working'\) return;/.test(src)).toBe(true);
+  });
+
+  it('THE RED (review IMPORTANT A-4): a stop that never tore down is reapable', async () => {
+    const { stopFencedRuns } = await import('../shared-state.js');
+    const { STUCK_AGENT_THRESHOLD_MINUTES } = await import('../stuck-thresholds.js');
+    const src = fs.readFileSync(path.join(SRC_ROOT, 'agent/runtime.ts'), 'utf-8');
+    const reaper = src.slice(src.indexOf('function recoverStuckAgents()'));
+
+    // Before this round the reaper could not see this state at all: the honest `working` row
+    // plus the deliberately-kept heartbeat kept it out of the stale query, and D18's
+    // `activeRuns` guard would have skipped it anyway.
+    expect(/for \(const \[agentId, stoppedAt\] of stopFencedRuns\)/.test(reaper),
+      'the reaper is still blind to a stopped-then-wedged run').toBe(true);
+    // Keyed on how long the STOP has gone unhonoured, not on updated_at, which the heartbeat
+    // keeps fresh on purpose.
+    expect(/Date\.now\(\) - stoppedAt/.test(reaper)).toBe(true);
+    // D18's guard for ORDINARY long turns is untouched — that is what makes this a carve-out
+    // rather than a hole.
+    expect(/if \(activeRuns\.has\(agent\.id\)\) \{/.test(reaper)).toBe(true);
+    // The fence carries a timestamp precisely so the age is answerable.
+    expect(stopFencedRuns).toBeInstanceOf(Map);
+    expect(STUCK_AGENT_THRESHOLD_MINUTES).toBeGreaterThan(0);
   });
 
   it('THE CENSUS: the stop route no longer writes its own idle behind the engine\'s back', () => {

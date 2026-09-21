@@ -318,8 +318,27 @@ export async function callAnthropicViaSdk(params: {
    * does on its own, byte-identical to every call before this task.
    */
   timeoutMs?: number | null;
+  /**
+   * T83 FIX ROUND — THE EXTERNAL CANCELLATION THIS TRANSPORT USED TO DROP ON THE FLOOR.
+   *
+   * The stop button's signal. Every other transport in `agent/model.ts` has honoured
+   * `params.abortSignal` for as long as the stop button has existed; this one had no parameter
+   * for it, so `callAnthropicSdkModel` simply did not pass it. After T83's registry rework the
+   * consequence got WORSE rather than better: `stopAgent` registered a controller for the call,
+   * aborted it, and logged `callsAborted: 1` — a receipt for a cancellation that never reached
+   * the wire, on the one ticket whose subject is the engine not lying about a stop.
+   *
+   * It composes with T81d's patience timer rather than replacing it: ONE `AbortController` goes
+   * to the SDK (the only lever `Options` exposes), and both sources abort it. The
+   * discrimination T81d built is preserved exactly — `timedOutByPatience` is set ONLY by the
+   * timer, so an external abort can never mint `AgentSdkPatienceExceededError` and can never be
+   * mistaken downstream for a declared-patience trip. That is the invariant T81d's own doc
+   * anticipated a future caller would need ("the flag costs nothing and means this site never
+   * has to be revisited if a future caller adds one"); this is that caller.
+   */
+  abortSignal?: AbortSignal;
 }): Promise<AgentSdkCallResult> {
-  const { agentId, apiModelId, systemPrompt, messages, tools, onChunk, timeoutMs } = params;
+  const { agentId, apiModelId, systemPrompt, messages, tools, onChunk, timeoutMs, abortSignal } = params;
 
   // Dynamic import, SDK may not be installed
   const sdk = await import('@anthropic-ai/claude-agent-sdk');
@@ -361,17 +380,39 @@ export async function callAnthropicViaSdk(params: {
   // controller might later be aborted (there is none today — nothing else ever aborts this
   // controller — but the flag costs nothing and means this site never has to be revisited if a
   // future caller adds one).
+  //
+  // T83 FIX ROUND: the controller is now built whenever EITHER source can cancel — the patience
+  // timer (T81d, unchanged) or the caller's external signal (the stop button). A provider with
+  // no declared patience and no live stop still gets `undefined`, i.e. byte-identical behaviour
+  // to before both tasks. `timedOutByPatience` stays the timer's alone: that is what keeps an
+  // external abort from being reported as a declared-patience trip.
   let timedOutByPatience = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abortController: AbortController | undefined;
-  if (timeoutMs != null) {
+  let detachExternal: (() => void) | undefined;
+  if (timeoutMs != null || abortSignal) {
     abortController = new AbortController();
     const controller = abortController;
-    timer = setTimeout(() => {
-      timedOutByPatience = true;
-      controller.abort();
-    }, timeoutMs);
-    timer.unref?.();
+    if (timeoutMs != null) {
+      timer = setTimeout(() => {
+        timedOutByPatience = true;
+        controller.abort();
+      }, timeoutMs);
+      timer.unref?.();
+    }
+    if (abortSignal) {
+      // ALREADY ABORTED means the stop landed before this call could dial — abort before
+      // `query()` is ever entered, so nothing reaches the provider. This is the SDK-side half of
+      // `registerAbortable`'s refusal: the caller hands down a pre-aborted signal and no request
+      // is made, which is the same "there is no third state" the other transports get for free
+      // because `fetch` rejects immediately on an aborted signal.
+      if (abortSignal.aborted) controller.abort();
+      else {
+        const onExternalAbort = (): void => { controller.abort(); };
+        abortSignal.addEventListener('abort', onExternalAbort, { once: true });
+        detachExternal = () => abortSignal.removeEventListener('abort', onExternalAbort);
+      }
+    }
   }
 
   try {
@@ -433,10 +474,15 @@ export async function callAnthropicViaSdk(params: {
       }, agentId);
       throw new AgentSdkPatienceExceededError(timeoutMs!, sawAnyContent);
     }
+    // T83: an EXTERNAL abort (the stop button) lands here and is re-thrown untouched, exactly
+    // like any other SDK failure. It deliberately does NOT get a type of its own: `model.ts`'s
+    // catch and `model-call.ts`'s catch both decide "was this a stop?" by reading the stop flag,
+    // not by classifying the error — which is what lets every transport's abort behave the same.
     logger.error('Agent SDK call failed', { error: msg, model: sdkModel }, agentId);
     throw err;
   } finally {
     if (timer) clearTimeout(timer);
+    detachExternal?.();
   }
 
   // Estimate tokens if not provided by the SDK

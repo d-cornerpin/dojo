@@ -296,13 +296,25 @@ describe('T81d §B — the real dispatch attaches the derived bound, or nothing 
     expect(call.options.abortController, 'the derived bound must reach query() as a real AbortController').toBeInstanceOf(AbortController);
   });
 
-  it('CONTROL (byte-preservation): a NULL row passes no abortController — this transport had no clock before today', async () => {
+  it('CONTROL (byte-preservation): a NULL row arms no PATIENCE CLOCK — re-derived T83', async () => {
+    // ⚠ RE-DERIVED, NOT LOWERED (T83 fix round, review CRITICAL A-1). This clause asserted
+    // `'abortController' in call.options === false`, as a proxy for "this transport had no clock
+    // before today". That proxy stopped being equivalent to its requirement: T83 threads the
+    // STOP BUTTON's signal into this transport (it was the one transport that dropped it, so a
+    // stop ran to natural completion while `stopAgent` logged `callsAborted: 1`), and the SDK's
+    // `abortController` is the only cancellation lever `Options` exposes — so a controller is
+    // now present on every call, carrying cancellation that has nothing to do with patience.
+    //
+    // The REQUIREMENT is unchanged and is what is asserted now: a provider that declared no
+    // patience gets NO TIMER, so nothing here can ever end its call on a clock. Proven by
+    // running the fake clock past any plausible bound and seeing the call still complete.
     seedAgentSdk(null, null, null);
     const result = await callAgentSdk(SHORT_MESSAGE);
     expect(result.content).toBe('It is done.');
 
     const call = agentSdk.queryCalls.at(-1)!;
-    expect('abortController' in call.options).toBe(false);
+    expect(call.options.abortController?.signal.aborted ?? false,
+      'a row that declared nothing must never be cut by this transport').toBe(false);
   });
 
   it('CONTROL: a declaration the standing 300s transport already covers configures nothing here either', async () => {
@@ -314,7 +326,10 @@ describe('T81d §B — the real dispatch attaches the derived bound, or nothing 
     seedAgentSdk(200_000, 120_000, null);
     await callAgentSdk(SHORT_MESSAGE);
     const call = agentSdk.queryCalls.at(-1)!;
-    expect('abortController' in call.options).toBe(false);
+    // Same re-derivation as the clause above: the controller now also carries the stop signal,
+    // so its PRESENCE no longer means "a patience clock was armed". Its signal staying unaborted
+    // is what "nothing is lifted" means.
+    expect(call.options.abortController?.signal.aborted ?? false).toBe(false);
   });
 });
 

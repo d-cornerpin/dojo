@@ -30,7 +30,7 @@ import type { Database } from 'better-sqlite3';
 import { clearErrors } from '../../../errors.js';
 import { partitionTools } from '../../classifiers/concurrency.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { stoppedAgents } from '../../../shared-state.js';
+import { isStopFenced } from '../../../shared-state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { TurnCounterparty } from '../../counterparty.js';
 import type { RepeatCallState } from '../../identical-call-brake.js';
@@ -185,7 +185,12 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
     // unsent; the NEXT one can, and its calls come back as Cancelled exactly
     // like the serial arm's remainder, so the model's context is never missing
     // a result for a call it made.
-    if (stoppedAgents.has(agentId)) {
+    // T83 FIX ROUND (review IMPORTANT A-2): the FENCE, not the raw flag. `stoppedAgents` can be
+    // lifted from outside mid-run by reset-session, and when it was, THIS check stopped seeing
+    // the stop and the executor kept dispatching the remaining batches — real side-effecting
+    // work (a send, a write, a calendar change) for a run the owner had stopped. The fence is
+    // the stopped RUN's and nothing outside that run can lift it.
+    if (isStopFenced(agentId)) {
       for (const rem of batch.calls) {
         turnToolResults.push({
           toolCallId: rem.id,
@@ -208,7 +213,7 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
       for (const tc of batch.calls) {
         // Stop check between each serial call. UX-REPAIR T37: READ, never
         // delete — the run's own exit path owns the clear (`shared-state.ts`).
-        if (stoppedAgents.has(agentId)) {
+        if (isStopFenced(agentId)) {
           // Fill synthetic Cancelled for remaining calls (Part XIX preservation)
           const remaining = batch.calls.slice(batch.calls.indexOf(tc));
           for (const rem of remaining) {
@@ -243,7 +248,8 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
   clearErrors(agentId);
 
   if (stoppedMidBatch) {
-    setAgentStatus(agentId, 'idle');
+    // T83 FIX ROUND (review IMPORTANT A-3): the idle write that stood here is gone — `teardown`
+    // is the ONE owner now. See `teardown/index.ts`'s `settleStatus`.
     return requestExit(state, 'stopped-mid-batch') as ExecuteOutcome;
   }
 

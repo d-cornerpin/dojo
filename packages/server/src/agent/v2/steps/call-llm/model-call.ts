@@ -25,7 +25,7 @@ import { callModel, STREAM_IDLE_TIMEOUT_ERROR } from '../../../model.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { abandonTurn, type StepOutcome } from '../step-outcome.js';
 import { broadcast } from '../../../../gateway/ws.js';
-import { stoppedAgents, preemptedAgents } from '../../../shared-state.js';
+import { isStopFenced, preemptedAgents } from '../../../shared-state.js';
 import { hydrateCredentialsInMessages } from '../../../../credentials/secret-values.js';
 import { noteDeclaredSecretsFromToolCalls } from '../../../../credentials/secret-fields.js';
 import { AgentError } from '../../../errors.js';
@@ -105,8 +105,12 @@ export async function callWithRetryAndFallback(
   /** UX-REPAIR T37 — the turn's ONE stop-abandon, said twice with two truthful
    *  reasons. Kept as one call so the step's abandon census (its contract test
    *  counts `abandonTurn` in this file) still reads TWO: this and the preempt. */
+  //  T83 FIX ROUND (review IMPORTANT A-3): the `setAgentStatus(agentId, 'idle')` that stood
+  //  here is gone. Abandoning the TURN is not the run going down — finalize and teardown still
+  //  have to run, and `activeRuns` still holds the agent through `handleMessage`'s whole awaited
+  //  tail. Writing idle at this instant is the same untruth `stopAgent` stopped telling, just
+  //  seconds wide instead of minutes, and the same busy-guards believe it.
   const abandonForStop = (reason: 'stopped-before-call' | 'stopped-mid-call'): { abandoned: StepOutcome } => {
-    setAgentStatus(agentId, 'idle');
     return { abandoned: abandonTurn(state, reason) };
   };
 
@@ -136,7 +140,7 @@ export async function callWithRetryAndFallback(
     // job this one does not: suppressing `onChunk` broadcasts and the phone-TTS
     // flush for a stream this code has abandoned. It rides down as the caller's
     // `abortSignal` exactly as before and is folded into the stop's signal there.
-    const beforeCall = stoppedAgents.has(agentId) ? abandonForStop('stopped-before-call') : null;
+    const beforeCall = isStopFenced(agentId) ? abandonForStop('stopped-before-call') : null;
     if (beforeCall) return beforeCall;
 
     const abortController = new AbortController();
@@ -279,11 +283,11 @@ export async function callWithRetryAndFallback(
       // exit path in `runtime.ts` — see `shared-state.ts`'s header on
       // `stoppedAgents`. The preempt below still consumes at its checkpoint,
       // and must: a preempt exists so the QUEUED WAKEUP CAN FIRE.
-      if (stoppedAgents.has(agentId)) return abandonForStop('stopped-mid-call');
+      if (isStopFenced(agentId)) return abandonForStop('stopped-mid-call');
       if (preemptedAgents.has(agentId)) {
         preemptedAgents.delete(agentId);
         logger.info('v2 run preempted, queued wakeup will fire', {}, agentId);
-        setAgentStatus(agentId, 'idle');
+        // T83 FIX ROUND (review IMPORTANT A-3): idle is teardown's to write, not this arm's.
         return { abandoned: abandonTurn(state, 'preempted-mid-call') };
       }
 

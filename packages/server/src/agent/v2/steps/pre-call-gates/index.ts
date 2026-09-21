@@ -58,7 +58,7 @@
 
 import type { AgentStatus, WsEvent } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
-import { stoppedAgents, preemptedAgents } from '../../../shared-state.js';
+import { isStopFenced, preemptedAgents } from '../../../shared-state.js';
 import { type AgentTurnState, type TurnPhase } from '../../state.js';
 import type { TurnCounterparty } from '../../counterparty.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
@@ -152,15 +152,20 @@ export async function runPreCallGates(
   // 500 ms after the user stopped it. The requirement the delete carried ("a
   // stale flag must never kill the NEXT turn") is kept, and kept more exactly:
   // the flag now dies with the run that honoured it.
-  if (stoppedAgents.has(agentId)) {
+  // T83 FIX ROUND (review IMPORTANT A-2 + A-3): the FENCE, so a reset-session landing mid-run
+  // cannot talk this gate out of a stop; and NO `setAgentStatus(agentId, 'idle')` here. That
+  // write told the same lie `stopAgent` stopped telling — the turn has not finalized, the run's
+  // `finally` has not run, `activeRuns` still holds the agent, and every busy-guard in the
+  // platform reads that row. Teardown writes idle when the run is genuinely down.
+  if (isStopFenced(agentId)) {
     logger.info('v2 agent stopped by user', {}, agentId);
-    setAgentStatus(agentId, 'idle');
     return requestExit(state, 'stopped-by-user' satisfies PreCallGatesExitReason);
   }
   if (preemptedAgents.has(agentId)) {
     preemptedAgents.delete(agentId);
     logger.info('v2 run preempted, queued wakeup will fire', {}, agentId);
-    setAgentStatus(agentId, 'idle');
+    // T83 FIX ROUND (review IMPORTANT A-3): the idle write that stood here is gone — `teardown`
+    // is the ONE owner now. See `teardown/index.ts`'s `settleStatus`.
     return requestExit(state, 'preempted' satisfies PreCallGatesExitReason);
   }
 

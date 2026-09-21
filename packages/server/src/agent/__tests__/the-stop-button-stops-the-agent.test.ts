@@ -162,7 +162,13 @@ describe('the stop flag outlives the checkpoint that honoured it', () => {
       { agentId: AGENT, setAgentStatus } as never,
     );
     expect(out).toMatchObject({ directive: 'exit', reason: 'stopped-by-user' });
-    expect(setAgentStatus).toHaveBeenCalledWith(AGENT, 'idle');
+    // ⚠ RE-DERIVED, NOT LOWERED (T83 fix round, review IMPORTANT A-3). This asserted that the
+    // gate WRITES idle. It must not: the turn has not finalized, teardown has not run, and
+    // `runtime.ts` still holds the agent in `activeRuns` through a long awaited tail — so idle
+    // here is the same untruth `stopAgent` stopped telling, seconds wide instead of minutes,
+    // and the same busy-guards believe it. `teardown/index.ts`'s `settleStatus` is the one
+    // owner now, and it runs on every exit path including this one.
+    expect(setAgentStatus, 'idle before teardown is the audited lie').not.toHaveBeenCalled();
     // THE RED: at HEAD this gate deleted the flag, so `handleMessage`'s drains
     // — which run after the loop breaks — could not tell a stopped run from a
     // finished one and queued the next turn.
@@ -176,7 +182,14 @@ describe('the stop flag outlives the checkpoint that honoured it', () => {
     // corpus that has quietly stopped containing its subject passes forever.
     const { engineSources } = await import('../v2/__tests__/engine-sources.js');
     const sources = engineSources();
-    const readers = sources.filter((f) => /stoppedAgents\.has\(agentId\)/.test(f.text)).map((f) => f.rel);
+    // ⚠ RE-DERIVED, NOT LOWERED (T83 fix round, review IMPORTANT A-2): the PREDICATE changed
+    // name, the requirement did not. Every checkpoint now reads `isStopFenced`, which ORs the
+    // flag with the stopped run's own fence — because `stoppedAgents` alone is liftable from
+    // outside by reset-session, and when it was lifted mid-run the executor kept dispatching a
+    // stopped run's remaining tool calls. Counting the raw flag here would now count zero and
+    // this clause would have gone vacuous rather than red, which is the failure mode its own
+    // non-vacuity guard below exists to catch.
+    const readers = sources.filter((f) => /isStopFenced\(agentId\)/.test(f.text)).map((f) => f.rel);
     const retirers = sources.filter((f) => /stoppedAgents\.delete\(/.test(f.text)).map((f) => f.rel);
     // Non-vacuity first: the three checkpoints are the pre-call gate, the
     // model-call catch and the executor's batch loop.

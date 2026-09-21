@@ -259,7 +259,12 @@ describe('the exit-request channel — seven ways out, each with a name', () => 
 
     expect(out).toMatchObject({ directive: 'exit', reason: 'stopped-by-user' satisfies PreCallGatesExitReason });
     expect(stoppedAgents.has(AGENT)).toBe(true);
-    expect(ctx.setAgentStatus).toHaveBeenCalledWith(AGENT, 'idle');
+    // ⚠ RE-DERIVED, NOT LOWERED (T83 fix round, review IMPORTANT A-3): this gate used to write
+    // idle here. It must not — the turn has not finalized, teardown has not run, and
+    // `runtime.ts` still holds the agent in `activeRuns` through a long awaited tail, so idle
+    // at this instant is the audited lie seconds wide. `teardown/index.ts`'s `settleStatus` is
+    // the one owner and runs on every exit path, including this one.
+    expect(ctx.setAgentStatus).not.toHaveBeenCalled();
   });
 
   it('a preempted agent exits, and the preempt signal is CONSUMED', async () => {

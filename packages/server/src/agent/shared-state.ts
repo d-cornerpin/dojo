@@ -46,7 +46,12 @@ export const stoppedAgents = new Set<string>();
 // be the P3 silent hang, produced by the guard against one). RESIDUAL, not hidden: that
 // `finally` deletes `activeRuns` at its top and then runs a long awaited tail; a stop landing
 // inside the tail raises no fence and is covered by `stoppedAgents` exactly as before.
-export const stopFencedRuns = new Set<string>();
+//
+// T83 FIX ROUND (review IMPORTANT A-4): the value is WHEN the stop was requested (epoch ms),
+// not a bare membership. A fence is raised against a run that is supposed to be tearing down;
+// if it is still standing an hour later, that run is wedged, and `recoverStuckAgents` needs the
+// age to say so. `.has()` / `.delete()` read exactly as they did when this was a `Set`.
+export const stopFencedRuns = new Map<string, number>();
 
 /** Is a user stop standing — by the flag, or by the fence the stopped run carries? OR-ed
  *  everywhere: a checkpoint reading only the flag is one reset-session can talk out of a stop. */

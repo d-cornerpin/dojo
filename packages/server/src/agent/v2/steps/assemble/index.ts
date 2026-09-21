@@ -375,7 +375,8 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
       agentId,
       loopCount: state.loopCount,
     }, agentId);
-    setAgentStatus(agentId, 'idle');
+    // T83 FIX ROUND (review IMPORTANT A-3): the idle write that stood here is gone — `teardown`
+    // is the ONE owner now. See `teardown/index.ts`'s `settleStatus`.
     return requestExit(state, 'empty-assembled-context') as Extract<AssembleOutcome, { directive: 'exit' }>;
   }
 

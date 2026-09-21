@@ -217,7 +217,12 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
     // refuse to wake it again. The preempt clause below is UNCHANGED and still
     // consumes at its checkpoint — a preempt exists so a queued wakeup CAN fire.
     expect(stoppedAgents.has('kevin')).toBe(true);
-    expect(setAgentStatusSpy).toHaveBeenCalledWith('kevin', 'idle');
+    // ⚠ RE-DERIVED, NOT LOWERED (T83 fix round, review IMPORTANT A-3): this asserted the
+    // step WRITES idle. It must not — the turn has not finalized, teardown has not run, and
+    // `runtime.ts` still holds the agent in `activeRuns` through a long awaited tail, so idle
+    // here is the audited lie seconds wide. `teardown/index.ts`'s `settleStatus` is the one
+    // owner and runs on every exit path, including this one.
+    expect(setAgentStatusSpy).not.toHaveBeenCalled();
   });
 
   it('ABANDON, PREEMPTED: same shape, its own reason, and the queued wakeup is left to fire', async () => {
@@ -230,7 +235,12 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
     if (out.directive !== 'abandon') throw new Error('unreachable');
     expect(out.reason).toContain('preempted');
     expect(preemptedAgents.has('kevin')).toBe(false);
-    expect(setAgentStatusSpy).toHaveBeenCalledWith('kevin', 'idle');
+    // ⚠ RE-DERIVED, NOT LOWERED (T83 fix round, review IMPORTANT A-3): this asserted the
+    // step WRITES idle. It must not — the turn has not finalized, teardown has not run, and
+    // `runtime.ts` still holds the agent in `activeRuns` through a long awaited tail, so idle
+    // here is the audited lie seconds wide. `teardown/index.ts`'s `settleStatus` is the one
+    // owner and runs on every exit path, including this one.
+    expect(setAgentStatusSpy).not.toHaveBeenCalled();
   });
 
   it('A STEP THAT ASKS TO ABANDON STOPS: no retry, and no hand-back of an ask it never gave up on', async () => {

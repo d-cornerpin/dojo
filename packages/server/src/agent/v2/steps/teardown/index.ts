@@ -70,6 +70,7 @@
 import { createLogger } from '../../../../logger.js';
 import type { getDb } from '../../../../db/connection.js';
 import { abortInFlight } from '../../../shared-state.js';
+import { setAgentStatus } from '../../../agent-status.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { advance, type AgentTurnState, type ChannelInboundContext, type TurnPhase } from '../../state.js';
 import type { TurnCounterparty } from '../../counterparty.js';
@@ -212,6 +213,41 @@ export async function runTurnRecovery(
 }
 
 /**
+ * T83 FIX ROUND (review IMPORTANT A-3) — THE ONE OWNER OF THE TURN'S END-OF-RUN IDLE.
+ *
+ * FIVE in-run checkpoints used to write `idle` themselves — the pre-call gate's stop and
+ * preempt arms, the model call's stop and preempt abandons, the assemble empty-context exit,
+ * the thrash auto-block, the executor's stopped-mid-batch — and every one of them wrote it
+ * BEFORE finalize, before this arm, and long before `runtime.ts` deletes `activeRuns` and runs
+ * its awaited tail. That is the same untruth `stopAgent` stopped telling in the first cut of
+ * this ticket, just seconds wide instead of four and a half minutes: the row says nobody is
+ * home while the turn is still unwinding, and every busy-guard in the platform believes it.
+ *
+ * This arm is the one place whose defining property is "runs on every exit path" — the same
+ * property that made it the right home for the abort sweep — so it is where the turn's status
+ * settles, once.
+ *
+ * IT CANNOT CLOBBER A DIAGNOSIS. The write happens ONLY when the row still literally reads
+ * `working`. A turn that ended on an injury has already been moved to `error`/`paused` by
+ * `recoverFromError` (which runs in the `catch` arm, before this one); a completed agent reads
+ * `terminated`; a rate-limited one reads `rate_limited`; and `finalize` has already written
+ * `idle` on the clean path, so this is a no-op there. Anything that is not the word `working`
+ * is somebody else's answer and is left exactly as it stands.
+ */
+function settleStatus(ctx: TeardownContext): void {
+  try {
+    const row = ctx.db.prepare('SELECT status FROM agents WHERE id = ?').get(ctx.agentId) as
+      | { status?: string } | undefined;
+    if (row?.status !== 'working') return;
+    setAgentStatus(ctx.agentId, 'idle');
+  } catch (err) {
+    logger.warn('v2: turn-end status settle failed; the row may still read working', {
+      agentId: ctx.agentId, error: err instanceof Error ? err.message : String(err),
+    }, ctx.agentId);
+  }
+}
+
+/**
  * THE `finally` ARM — the block that runs on EVERY exit path (clean reply,
  * decline, MAX_TOOL_LOOPS, a spinning/thrash break, an early return inside the
  * main try, an exception). That property is the language's, not a list's: the
@@ -227,6 +263,8 @@ export async function runTurnTeardown(
   // check inside the callback also guards a race where the timer fired just
   // before this clear, but cancelling here is the primary discipline.
   if (turnCtx.startAckTimer) { clearTimeout(turnCtx.startAckTimer); turnCtx.startAckTimer = null; }
+
+  settleStatus(ctx);
 
   tagTurnOutputs(ctx);
   await finalizeTurnRecord(state, ctx);

@@ -463,7 +463,7 @@ export function stopAgent(agentId: string): void {
   // its own continuation unrefused. The fence is scoped to the run in flight NOW and is
   // lowered only by that run's own exit path below. See `shared-state.ts` for the full shape.
   const runInFlight = activeRuns.has(agentId);
-  if (runInFlight) stopFencedRuns.add(agentId);
+  if (runInFlight) stopFencedRuns.set(agentId, Date.now());
   // Clear any queued wakeup so the agent doesn't immediately restart after stopping
   pendingWakeups.delete(agentId);
   // Abort EVERY in-flight API call — not just the turn's own. With the abortSignal threaded
@@ -1549,6 +1549,48 @@ function recoverStuckAgents(): void {
       pendingWakeups.delete(agent.id);
       broadcast({ type: 'agent:status', agentId: agent.id, status: 'idle' });
       logger.warn('Recovered stuck agent from permanent working state', { agentId: agent.id, agentName: agent.name });
+    }
+
+    // ── T83 FIX ROUND (review IMPORTANT A-4) — THE STOPPED-THEN-WEDGED RUN ──
+    //
+    // The first cut of this ticket created a state this reaper was structurally blind to. It
+    // made two deliberate choices — the row honestly keeps saying `working` while a stopped run
+    // unwinds, and the heartbeat is kept alive so a long unwind is not mistaken for a dead turn
+    // — and together they mean a stopped run that genuinely WEDGES can never be reaped: the
+    // fresh `updated_at` keeps it out of the stale query above, and D18's guard (`activeRuns`,
+    // directly above) would skip it even if it got there. Before this ticket a stop at least
+    // forced the row to idle. That regression is closed here and nowhere else.
+    //
+    // The carve-out is deliberately the narrowest one that closes it: not "a live run may be
+    // reaped" — D18's guard is untouched for every ordinary long turn, which is the concurrency
+    // hazard it exists for — but "a run the owner EXPLICITLY STOPPED, whose teardown has still
+    // not completed after the same threshold this reaper already trusts, is wedged." A stop is
+    // an instruction to wind down in seconds; an hour later there is nothing left to protect.
+    //
+    // THE RESIDUAL, STATED: if such a run is not wedged but merely catatonic and later resumes,
+    // it can now overlap a new turn — the exact hazard D18 names. It is bounded three ways:
+    // every provider call the zombie had in flight is aborted before the entry is released, so
+    // it has nothing live to finish; the run's own `finally` is idempotent against everything
+    // cleared here; and the window opens only after a full threshold of a stop going unhonoured,
+    // which is already a broken engine.
+    const fenceThresholdMs = STUCK_AGENT_THRESHOLD_MINUTES * 60_000;
+    for (const [agentId, stoppedAt] of stopFencedRuns) {
+      const fencedForMs = Date.now() - stoppedAt;
+      if (fencedForMs < fenceThresholdMs) continue;
+      abortInFlight(agentId, 'stuck-stopped-run-reap');
+      stopStatusHeartbeat(agentId);
+      stopFencedRuns.delete(agentId);
+      stoppedAgents.delete(agentId);
+      activeRuns.delete(agentId);
+      pendingWakeups.delete(agentId);
+      const status = (db.prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined)?.status;
+      if (status === 'working') {
+        writeAgentStatus(agentId, 'idle');
+        broadcast({ type: 'agent:status', agentId, status: 'idle' });
+      }
+      logger.error('Recovered a STOPPED agent whose run never tore down', {
+        agentId, fencedForMinutes: Math.round(fencedForMs / 60_000), statusWas: status,
+      }, agentId);
     }
   } catch (err) {
     logger.error('recoverStuckAgents failed', { error: err instanceof Error ? err.message : String(err) });
