@@ -14,6 +14,7 @@ import { readDependencyManifest, type DependencyManifest } from '../techniques/d
 import { classifyManualSteps } from './step-classify.js';
 import { getValidAccessTokenForAccount as getValidGoogleToken } from '../google/auth.js';
 import { getValidAccessTokenForAccount as getValidMsToken } from '../microsoft/auth.js';
+import { listOllamaModelNames } from '../services/ollama.js';
 import type { PostMigrationCheck } from '@dojo/shared';
 import { homeDir } from '../home.js';
 
@@ -212,9 +213,12 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
     cta: ollamaInstalled ? undefined : { type: 'run_installer', label: 'Re-run installer' },
   });
 
-  // Ollama models
+  // Ollama models. Read over HTTP, never `ollama list`: the CLI auto-launches
+  // Ollama.app when the daemon is down, so the probe could START the thing it
+  // was only meant to ask about (see listOllamaModelNames). `checkCommandExists`
+  // above stays a PATH lookup — it names the binary but never runs it.
   if (ollamaInstalled && manifest.contents.ollama_models.length > 0) {
-    const localModels = getLocalOllamaModels();
+    const localModels = await listOllamaModelNames();
     for (const model of manifest.contents.ollama_models) {
       const isLocal = localModels.includes(model);
       const checkId = `ollama-model-${model}`;
@@ -511,16 +515,6 @@ function checkCommandExists(cmd: string): boolean {
     return true;
   } catch {
     return false;
-  }
-}
-
-function getLocalOllamaModels(): string[] {
-  try {
-    const output = execSync('ollama list', { encoding: 'utf-8', timeout: 5000 });
-    const lines = output.trim().split('\n').slice(1);
-    return lines.map(l => l.split(/\s+/)[0]).filter(Boolean);
-  } catch {
-    return [];
   }
 }
 

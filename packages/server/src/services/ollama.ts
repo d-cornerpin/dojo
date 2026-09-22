@@ -107,6 +107,22 @@ export async function listOllamaModels(baseUrl?: string): Promise<OllamaModel[]>
   }
 }
 
+// The installed model NAMES, in the `name:tag` form `ollama list` prints and the
+// export manifest records.
+//
+// THIS EXISTS TO REPLACE `execSync('ollama list')`. The migration manifest and
+// the post-migration checks both shelled out to the CLI to answer "which models
+// does this box have?" — and on macOS the `ollama` CLI AUTO-LAUNCHES Ollama.app
+// when no daemon is listening. A probe whose whole job is to ASK whether the
+// backend is there was therefore capable of STARTING it, inheriting whatever
+// environment the caller had: a vitest worker running under a sandboxed HOME
+// started a daemon that then served an empty model store to the real box until
+// it was restarted by hand (ritual round 9, run-53015 w17). An HTTP GET cannot
+// launch anything, so daemon-down answers the honest [] instead.
+export async function listOllamaModelNames(baseUrl?: string): Promise<string[]> {
+  return (await listOllamaModels(baseUrl)).map(m => m.name);
+}
+
 // Fetch detailed model info from /api/show (context length, parameter count, etc.)
 export async function getOllamaModelInfo(modelName: string, baseUrl?: string): Promise<{
   contextWindow: number;

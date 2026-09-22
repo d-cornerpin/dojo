@@ -9,6 +9,7 @@ import { getCurrentVersion } from '../gateway/routes/update.js';
 import { isImessageConfigured } from '../services/presence.js';
 import { createLogger } from '../logger.js';
 import { homeDir } from '../home.js';
+import { listOllamaModelNames } from '../services/ollama.js';
 
 const logger = createLogger('migration-manifest');
 
@@ -58,16 +59,6 @@ function getOsVersion(): string {
   }
 }
 
-function getOllamaModels(): string[] {
-  try {
-    const output = execSync('ollama list', { encoding: 'utf-8', timeout: 5000 });
-    const lines = output.trim().split('\n').slice(1); // skip header
-    return lines.map(l => l.split(/\s+/)[0]).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
 // ── SWEEP CORE-2 item 6, rider (ii): the manifest stops claiming 1.0.0 ──
 //
 // This read `config.platform_version`, a key NOTHING IN THE TREE HAS EVER
@@ -90,7 +81,11 @@ function getPlatformVersion(): string {
   return getCurrentVersion();
 }
 
-export function generateManifest(dbSizeBytes: number, prompts: string[], techniques: string[], uploadsSize: number): ExportManifest {
+// ASYNC because the installed-model list is now read over HTTP rather than from
+// `execSync('ollama list')` — the CLI auto-launches Ollama.app when the daemon is
+// down, so the export's inventory probe could start a daemon under the exporting
+// process's environment (see listOllamaModelNames).
+export async function generateManifest(dbSizeBytes: number, prompts: string[], techniques: string[], uploadsSize: number): Promise<ExportManifest> {
   const db = getDb();
 
   // Agents
@@ -177,7 +172,7 @@ export function generateManifest(dbSizeBytes: number, prompts: string[], techniq
       google_workspace_email: googleEmail,
       microsoft_connected: msConnected,
       imessage_configured: (() => { try { return isImessageConfigured(); } catch { return false; } })(),
-      ollama_models: getOllamaModels(),
+      ollama_models: await listOllamaModelNames(),
       providers,
       uploads_size_bytes: uploadsSize,
       cloudflare_named_tunnel: cloudflareNamedTunnel,

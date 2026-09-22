@@ -81,7 +81,7 @@ describe('export manifest platform_version (rider ii)', () => {
     runMigrations();
     const { generateManifest } = await import('../manifest.js');
     const { getCurrentVersion } = await import('../../gateway/routes/update.js');
-    const m = generateManifest(1234, [], [], 0);
+    const m = await generateManifest(1234, [], [], 0);
     expect(m.platform_version).toBe(getCurrentVersion());
     // And it is not the old lie.
     expect(m.platform_version).not.toBe('1.0.0');

@@ -201,7 +201,7 @@ export async function createExport(password: string): Promise<{ filePath: string
     const promptFiles = listFiles(path.join(DOJO_DIR, 'prompts'));
     const techniqueNames = listTechniqueNames();
     const uploadsSize = getDirSize(path.join(DOJO_DIR, 'uploads'));
-    const manifest = generateManifest(dbSize, promptFiles, techniqueNames, uploadsSize);
+    const manifest = await generateManifest(dbSize, promptFiles, techniqueNames, uploadsSize);
 
     // Step 9: Create inner archive (everything except manifest)
     broadcastProgress('archive', 70, 'Creating archive...');
