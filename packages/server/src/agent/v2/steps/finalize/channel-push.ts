@@ -68,27 +68,35 @@ export async function pushReplyToChannel(
 
   // ── DESIGN RULING 13 (2026-09-22) — NOTHING WITH A CREDENTIAL IN IT LEAVES THE BOX ──
   //
-  // The ruling that lets the OWNER read his own fetched credential in dashboard chat is
-  // keyed on the channel, and this is the other side of that key: every arm below hands
-  // the reply to a bridge, to Twilio, to Outlook/Gmail or into a live call, and a secret
-  // that crosses one of those has left the machine it was encrypted on. So the outbound
-  // copy is scrubbed — including an owner-bound iMessage push, because the away-override
-  // promotes a dashboard turn onto iMessage and the message still leaves the box. There is
-  // no narrower redactor for any surface: ruling 13, as the owner corrected it, is that a
-  // credential is not typed into a reply at all, and the vault tab is where he reads one.
+  // Every arm below hands the reply to a bridge, to Twilio, to Outlook/Gmail or into a live
+  // call, and a secret that crosses one of those has left the machine it was encrypted on. So
+  // the outbound copy is scrubbed — including an owner-bound iMessage push, because the
+  // away-override promotes a dashboard turn onto iMessage and the message still leaves the
+  // box. There is no narrower redactor for any surface and no channel-keyed exception: ruling
+  // 13, as the owner corrected it, is that a credential is not typed into a reply AT ALL, and
+  // the vault tab is where he reads one. (An earlier draft of this header described an
+  // owner-dashboard reveal keyed on the channel as if it were live. That reveal was DELETED in
+  // the correction round; nothing in this file is the other side of a key.)
   //
-  // ⚠ THIS SCRUB WAS MISSING, and that is a finding rather than a tidy-up. `state
-  // .lastAssistantTextForIM` is set from the RAW model text (`persist-assistant.ts`,
-  // `terminal-text.ts`) because the reply itself is never rewritten (T5b), so until this
-  // line every channel arm sent whatever the model wrote, secret and all — the dashboard
-  // was the only surface the leak guard covered. Deleting it re-opens that.
+  // ⚠ WHAT THIS LINE IS, NOW THAT THE BIRTH POINT IS SCRUBBED. It arrived as a finding: the
+  // outbound copy was reaching the bridges unscrubbed while the dashboard was the only surface
+  // the leak guard covered. It is no longer the only thing standing there. Every setter of
+  // `state.lastAssistantTextForIM` now reads text that was already scrubbed at its birth point
+  // — `persist-assistant.ts:254` and `:288` (`persistedContent`), `terminal-text.ts:263` (the
+  // promoted compile), `deferred-recovery.ts:79` (`deferredUserReplyWithTools`, the same
+  // string) — so for the REPLY this scrub is an idempotent second pass, defence in depth
+  // rather than the wall. Keep it: it is what makes this router's guarantee a property of the
+  // router, not of four setters in three other files continuing to agree.
+  //
+  // IT IS STILL THE ONLY SCRUB for two strings on this path, and those are the reason it
+  // cannot simply be deleted: the phone arm's STREAMED TAIL (`turnCtx.phoneStreamBuffer`,
+  // accumulated RAW at `call-llm/model-call.ts`) takes its own call a few lines down, and
+  // `finalize/stranded-attachments.ts` carries the same call for the sixth arm's caption,
+  // which it sends after this router has already run.
   //
   // ONE derivation for the five arms below: a per-arm scrub is five places for the next
   // channel to be forgotten in. The scrub is a no-op string-identity return for the
-  // overwhelming majority of turns (no handled credential, or none in the text). The
-  // phone arm's STREAMED TAIL takes its own scrub a few lines down — it is a different
-  // string, not this one — and `finalize/stranded-attachments.ts` carries the same call
-  // for the sixth arm, the caption it sends after this router has already run.
+  // overwhelming majority of turns (no handled credential, or none in the text).
   const replyOut = redactHandedCredentials(agentId, state.lastAssistantTextForIM);
   const { destination, settledContextHold, routeRoot, presenceNow, isImessageConfigured, sendResponseViaIMessage, getPresence } = r;
 

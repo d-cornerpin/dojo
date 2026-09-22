@@ -29,6 +29,7 @@ import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { imagePixelDimensions } from '../memory/budget.js';
+import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/shared-state.js';
 import { homeDir } from '../home.js';
 
 const logger = createLogger('image-gen');
@@ -46,6 +47,9 @@ export interface GenerateImageRequest {
   modelId: string;     // dojo models.id (not api_model_id)
   prompt: string;      // full prompt text to send the model
   aspectRatio?: string; // '1:1' | '16:9' | '9:16' | '4:3' | '3:4' — appended to the prompt if the provider doesn't accept a dedicated param
+  // A-5: whose stop cuts this call. Required, not optional — an optional agent id is an
+  // un-abortable dial one forgetful caller away, which is the defect this field closes.
+  agentId: string;
 }
 
 export interface GenerateImageSuccess {
@@ -72,7 +76,9 @@ export interface GenerateImageSuccess {
 export interface GenerateImageError {
   ok: false;
   error: string;
-  code: 'MODEL_NOT_FOUND' | 'NO_CREDENTIAL' | 'CAPABILITY_MISSING' | 'HTTP_ERROR' | 'NO_IMAGE_RETURNED' | 'DECODE_ERROR' | 'WRITE_ERROR' | 'TIMEOUT' | 'UNKNOWN';
+  // A-5: `STOPPED` is the user's own button and is NOT a provider failure. Every other code in
+  // this union is something that went wrong; this one is something that was asked for.
+  code: 'MODEL_NOT_FOUND' | 'NO_CREDENTIAL' | 'CAPABILITY_MISSING' | 'HTTP_ERROR' | 'NO_IMAGE_RETURNED' | 'DECODE_ERROR' | 'WRITE_ERROR' | 'TIMEOUT' | 'STOPPED' | 'UNKNOWN';
 }
 
 export type GenerateImageResult = GenerateImageSuccess | GenerateImageError;
@@ -166,7 +172,28 @@ function isTimeoutError(err: unknown): boolean {
   return typeof e.message === 'string' && /aborted|timed?\s*out|timeout/i.test(e.message);
 }
 
+/**
+ * A-5 — THE STOP DOOR, wrapping the generator rather than threaded through its dozen returns.
+ *
+ * The slot is opened before the model row is even read, so a stop that landed a moment ago is
+ * answered by `refused` instead of by a dial; it is released in a `finally` that no early
+ * return can skip. The body below keeps its shape byte for byte apart from the two lines that
+ * compose the signal and the two that read `slot.cutByStop()`.
+ */
 export async function generateImage(req: GenerateImageRequest): Promise<GenerateImageResult> {
+  const slot = openAgentCall(req.agentId);
+  try {
+    if (slot.refused) {
+      logger.info('Image generation refused: the user stopped this agent', { modelId: req.modelId });
+      return { ok: false, error: STOPPED_BY_USER, code: 'STOPPED' };
+    }
+    return await dialImage(req, slot);
+  } finally {
+    slot.release();
+  }
+}
+
+async function dialImage(req: GenerateImageRequest, slot: AgentCallSlot): Promise<GenerateImageResult> {
   const startTime = Date.now();
   ensureGeneratedImagesDir();
 
@@ -264,9 +291,16 @@ export async function generateImage(req: GenerateImageRequest): Promise<Generate
       method: 'POST',
       headers,
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(IMAGE_GEN_TIMEOUT_MS),
+      // A-5: COMPOSED, not replaced. The 10-minute ceiling is still this dial's budget and is
+      // still created here, at the dial, so its arming is unchanged; the stop is a second
+      // source on the same signal. `isTimeoutError` below treats a bare `AbortError` as the
+      // deadline, so the stop is discriminated FIRST or the user's button reads as a timeout.
+      signal: AbortSignal.any([slot.signal, AbortSignal.timeout(IMAGE_GEN_TIMEOUT_MS)]),
     });
   } catch (err) {
+    if (slot.cutByStop()) {
+      return { ok: false, error: STOPPED_BY_USER, code: 'STOPPED' };
+    }
     if (isTimeoutError(err)) {
       return {
         ok: false,
@@ -307,6 +341,11 @@ export async function generateImage(req: GenerateImageRequest): Promise<Generate
   try {
     data = await response.json() as typeof data;
   } catch (err) {
+    // A-5: the composed signal governs the body read too, so a stop landing while the image
+    // bytes are arriving surfaces here. Same discrimination, same order.
+    if (slot.cutByStop()) {
+      return { ok: false, error: STOPPED_BY_USER, code: 'STOPPED' };
+    }
     // The same deadline governs the body read, so a slow provider trips here
     // mid-stream. Report it as the timeout it is, not a parse failure.
     if (isTimeoutError(err)) {

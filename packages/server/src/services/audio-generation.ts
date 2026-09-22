@@ -30,6 +30,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
+import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/shared-state.js';
 import { homeDir } from '../home.js';
 
 const logger = createLogger('audio-generation');
@@ -58,6 +59,8 @@ export interface GenerateAudioRequest {
   sampleRate: number;
   /** WAV channel count. GPT Audio = 1 (mono), Lyria = 2 (stereo). */
   channels: number;
+  // A-5: whose stop cuts this call. Required for the reason `GenerateImageRequest.agentId` is.
+  agentId: string;
 }
 
 export interface GenerateAudioSuccess {
@@ -78,7 +81,8 @@ export interface GenerateAudioSuccess {
 export interface GenerateAudioError {
   ok: false;
   error: string;
-  code: 'MODEL_NOT_FOUND' | 'NO_CREDENTIAL' | 'HTTP_ERROR' | 'EMPTY' | 'WRITE_ERROR' | 'UNKNOWN';
+  // A-5: `STOPPED` is the user's own button, not a provider failure. See `image-generation.ts`.
+  code: 'MODEL_NOT_FOUND' | 'NO_CREDENTIAL' | 'HTTP_ERROR' | 'EMPTY' | 'WRITE_ERROR' | 'STOPPED' | 'UNKNOWN';
 }
 
 export type GenerateAudioResult = GenerateAudioSuccess | GenerateAudioError;
@@ -205,7 +209,21 @@ async function collectAudioStream(body: ReadableStream<Uint8Array>): Promise<Str
   return out;
 }
 
+/** A-5 — the stop door. Same shape as `generateImage`'s: see that function's note. */
 export async function generateAudio(req: GenerateAudioRequest): Promise<GenerateAudioResult> {
+  const slot = openAgentCall(req.agentId);
+  try {
+    if (slot.refused) {
+      logger.info('Audio generation refused: the user stopped this agent', { modelId: req.modelId });
+      return { ok: false, error: STOPPED_BY_USER, code: 'STOPPED' };
+    }
+    return await dialAudio(req, slot);
+  } finally {
+    slot.release();
+  }
+}
+
+async function dialAudio(req: GenerateAudioRequest, slot: AgentCallSlot): Promise<GenerateAudioResult> {
   ensureGeneratedDir();
   const start = Date.now();
 
@@ -263,9 +281,12 @@ export async function generateAudio(req: GenerateAudioRequest): Promise<Generate
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(180_000),
+      // A-5: COMPOSED, not replaced — the flat 180s stays this dial's budget and stays armed
+      // exactly here (SUSPECT clock U11, untouched by this task); the stop is a second source.
+      signal: AbortSignal.any([slot.signal, AbortSignal.timeout(180_000)]),
     });
   } catch (err) {
+    if (slot.cutByStop()) return { ok: false, error: STOPPED_BY_USER, code: 'STOPPED' };
     return { ok: false, error: `Request failed: ${err instanceof Error ? err.message : String(err)}`, code: 'HTTP_ERROR' };
   }
 
@@ -281,7 +302,15 @@ export async function generateAudio(req: GenerateAudioRequest): Promise<Generate
     return { ok: false, error: 'Audio provider returned no response body.', code: 'EMPTY' };
   }
 
-  const collected = await collectAudioStream(response.body as ReadableStream<Uint8Array>);
+  // A-5: the signal covers the streamed body, so a stop mid-narration surfaces as a read
+  // failure out of the collector. It is the stop, and it is not "the provider errored".
+  let collected: Awaited<ReturnType<typeof collectAudioStream>>;
+  try {
+    collected = await collectAudioStream(response.body as ReadableStream<Uint8Array>);
+  } catch (err) {
+    if (slot.cutByStop()) return { ok: false, error: STOPPED_BY_USER, code: 'STOPPED' };
+    return { ok: false, error: `Audio stream read failed: ${err instanceof Error ? err.message : String(err)}`, code: 'HTTP_ERROR' };
+  }
   if (collected.error) {
     return { ok: false, error: `Audio provider error: ${collected.error.slice(0, 400)}`, code: 'HTTP_ERROR' };
   }

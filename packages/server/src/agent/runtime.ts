@@ -11,6 +11,7 @@ import { postAgentNotice } from './agent-notice.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getModelCapabilities } from '../services/capabilities.js';
+import { cancelAgentGenerationJobs } from '../services/generation-jobs.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { tagMessageLane } from '../memory/message-lane-tag.js';
 import { prepareImageForModel } from './image-prep.js';
@@ -472,7 +473,27 @@ export function stopAgent(agentId: string): void {
   // the calls a turn makes BESIDE its main one: the turn-budget checkpoint's forced compaction,
   // the continuity brief, the classifiers. It was exactly one of those (a 285-second summariser
   // dial) that the 04:22:42 stop found nothing to abort.
+  //
+  // A-5: and it now reaches the MEDIA dials too — image, TTS/music, the video submit and every
+  // leg of the video poll loop, all of which went straight to a provider endpoint registered in
+  // nothing. See `shared-state.ts`'s `openAgentCall`.
   const cut = abortInFlight(agentId, 'user-stop');
+
+  // A-5 — AND THE RUN-ONCE MEDIA JOBS THIS AGENT HAS OPEN, which the registry alone cannot
+  // reach. `image_create`'s delivery IIFE waits for the turn to END before it dials, so at the
+  // moment it finally goes to the wire there is nothing registered to abort and no fence left
+  // standing (this run's `finally` lowered it on the way out). The job ROW is the fact that
+  // outlives the run; cancelling it here is what makes "the button stops ALL of an agent's
+  // activity" true of a generation that had not started yet. Video keeps its own cancel —
+  // its poll loop registers for its whole life and writes its own row.
+  try {
+    cancelAgentGenerationJobs(agentId);
+  } catch (err) {
+    // A bookkeeping table must never stop a stop.
+    logger.warn('stop: cancelling open generation jobs failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
 
   // ── T83 — THE STATUS DOES NOT LIE (replaces a "Cosmetic safety net", 2026-05-04) ──
   //

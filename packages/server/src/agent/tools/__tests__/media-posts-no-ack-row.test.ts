@@ -78,7 +78,10 @@ vi.mock('../../../services/video-gen-model.js', () => ({ getEffectiveVideoGenMod
 vi.mock('../../../services/transcription-model.js', () => ({ getEffectiveTranscriptionModel: () => MODEL }));
 vi.mock('../../../services/generation-jobs.js', () => ({
   createGenerationJob: () => 'job-1',
-  setRunning: () => {}, setSucceeded: () => {}, setFailed: () => {},
+  // A-5: `setRunning` answers the CAS now, and `true` is what keeps this file's premise —
+  // the delivery IIFE reaching the never-settling generator below, so every row counted here
+  // is one the SYNCHRONOUS path wrote.
+  setRunning: () => true, setSucceeded: () => {}, setFailed: () => {}, setCancelled: () => true,
   enqueueAudioOrMusicJob: () => {},
 }));
 // The generator never settles, so the delivery IIFE parks at its first real

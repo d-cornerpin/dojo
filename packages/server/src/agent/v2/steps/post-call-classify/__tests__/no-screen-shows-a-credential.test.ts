@@ -108,10 +108,11 @@ let state: AgentTurnState;
  */
 async function drive(
   text: string, toolCalls: ToolCall[], carried = false,
+  over: Partial<PostCallClassifyContext> = {},
 ): Promise<{ row: string; frame: string }> {
   const sc = carried ? scratchFor({ persistedContent: text }) : scratchFor();
-  if (!carried) await runTerminalText(state, ctxFor(text, toolCalls), sc);
-  await runPersistAssistant(state, ctxFor(text, toolCalls), sc);
+  if (!carried) await runTerminalText(state, ctxFor(text, toolCalls, over), sc);
+  await runPersistAssistant(state, ctxFor(text, toolCalls, over), sc);
   const row = mockDb.current!.prepare('SELECT content FROM messages WHERE id = ?')
     .get('msg-1') as { content: string } | undefined;
   const frame = frames.find((f) => f.type === 'chat:message');
@@ -171,7 +172,36 @@ describe('neither arm of the persist seam puts a credential on a screen', () => 
     // `terminal-text.ts` can demote a reply to a `role='system'` working note, which is a
     // messages row the at-rest audit forbids a secret in just as firmly. Scrubbing at the
     // birth point is what makes that true without a second scrub here.
-    await drive(`Your gate code is ${FETCHED}.`, []);
+    //
+    // ⚠ RE-REVIEW FINDING N1 — THIS CLAUSE USED TO BE VACUOUS, and the finding is the whole
+    // reason the three arguments below are what they are. It drove with `toolCalls: []`, and
+    // the demotion arm lives inside `if (persistedContent && result.toolCalls.length > 0)`
+    // (`terminal-text.ts:136`) — so it produced NO note at all: the reviewer's probe read
+    // `{ sysRows: 0, noteFrames: 0 }`, its loop re-asserted the assistant row the clause above
+    // already covers, and re-deriving the note from raw `result.content` left the whole suite
+    // green. A clause named for a row it never wrote is the exact shape of the miss this file's
+    // own header exists to prevent.
+    //
+    // THE THREE ARGUMENTS ARE THE ARM'S OWN PRECONDITIONS, and nothing more: a tool call
+    // (line 136), `carried: false` so `runTerminalText` actually runs and decides, and
+    // `hasUnansweredUser: false` so the promotion arm at :216 does not consume the text as a
+    // start line or an owed compile — the three ways a reply riding a tool call escapes being
+    // demoted. What is asserted is the ROW and the FRAME, by name.
+    await drive(`Your gate code is ${FETCHED}.`, [
+      { id: 'tc1', name: 'vault_remember', input: { text: 'noted' } } as unknown as ToolCall,
+    ], false, { hasUnansweredUser: false });
+
+    const sysRows = mockDb.current!.prepare("SELECT content FROM messages WHERE role = 'system'")
+      .all() as Array<{ content: string }>;
+    expect(sysRows.length, 'the demotion arm was not reached — this clause is vacuous again').toBe(1);
+    expect(sysRows[0].content).not.toContain(FETCHED);
+    expect(sysRows[0].content).toContain('<redacted-credential:');
+
+    const noteFrames = frames.filter((f) => f.type === 'chat:workingnote');
+    expect(noteFrames.length, 'the dashboard converts the streamed bubble from this frame').toBe(1);
+    expect(JSON.stringify(noteFrames[0])).not.toContain(FETCHED);
+
+    // And the blanket sweep the clause always carried, now over a database that has the row in it.
     const anyRow = mockDb.current!.prepare('SELECT content FROM messages').all() as Array<{ content: string }>;
     for (const r of anyRow) expect(r.content).not.toContain(FETCHED);
     for (const f of frames) expect(JSON.stringify(f)).not.toContain(FETCHED);

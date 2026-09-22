@@ -25,6 +25,7 @@ import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { buildWireBody } from './generation-params.js';
+import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/shared-state.js';
 import type { GenerationParamSpec } from '@dojo/shared';
 import { homeDir } from '../home.js';
 
@@ -61,7 +62,8 @@ export interface SubmitVideoSuccess {
 export interface SubmitVideoError {
   ok: false;
   error: string;
-  code: 'MODEL_NOT_FOUND' | 'NO_CREDENTIAL' | 'HTTP_ERROR' | 'NO_JOB_ID' | 'UNKNOWN';
+  // A-5: `STOPPED` is the user's own button, not a provider failure. See `image-generation.ts`.
+  code: 'MODEL_NOT_FOUND' | 'NO_CREDENTIAL' | 'HTTP_ERROR' | 'NO_JOB_ID' | 'STOPPED' | 'UNKNOWN';
 }
 
 export type SubmitVideoResult = SubmitVideoSuccess | SubmitVideoError;
@@ -79,7 +81,9 @@ export interface ProviderPollResult {
   error: string | null;
   durationSeconds: number | null;
 }
-export interface ProviderPollError { ok: false; error: string; retryable: boolean }
+// A-5: `stopped` is how the poller tells a user stop apart from a provider failure. A stopped
+// leg is NOT retryable and must NOT reach `markFailed` — a job the owner stopped did not fail.
+export interface ProviderPollError { ok: false; error: string; retryable: boolean; stopped?: true }
 export type ProviderPollOutcome = ProviderPollResult | ProviderPollError;
 
 function resolveVideosBase(baseUrl: string | null): string {
@@ -125,7 +129,21 @@ const COMMON_HEADERS = (credential: string): Record<string, string> => ({
  * Submit a new video job. Writes a `video_jobs` row (status='queued') and
  * returns the dojo job id. The poller takes it from here.
  */
+/** A-5 — the stop door. Same shape as `generateImage`'s: see that function's note. */
 export async function submitVideoJob(req: SubmitVideoRequest): Promise<SubmitVideoResult> {
+  const slot = openAgentCall(req.agentId);
+  try {
+    if (slot.refused) {
+      logger.info('Video submit refused: the user stopped this agent', { modelId: req.modelId });
+      return { ok: false, error: STOPPED_BY_USER, code: 'STOPPED' };
+    }
+    return await dialVideoSubmit(req, slot);
+  } finally {
+    slot.release();
+  }
+}
+
+async function dialVideoSubmit(req: SubmitVideoRequest, slot: AgentCallSlot): Promise<SubmitVideoResult> {
   ensureGeneratedDir();
   const resolved = getModelProvider(req.modelId);
   if ('error' in resolved) return resolved.error;
@@ -159,14 +177,15 @@ export async function submitVideoJob(req: SubmitVideoRequest): Promise<SubmitVid
     } catch (err) {
       return { ok: false, error: `Failed to read reference image: ${err instanceof Error ? err.message : String(err)}`, code: 'HTTP_ERROR' };
     }
-    requestInit = { method: 'POST', headers: COMMON_HEADERS(credential), body: form, signal: AbortSignal.timeout(60_000) };
+    // A-5: COMPOSED, not replaced — the 60s submit ceiling is unchanged and still armed here.
+    requestInit = { method: 'POST', headers: COMMON_HEADERS(credential), body: form, signal: AbortSignal.any([slot.signal, AbortSignal.timeout(60_000)]) };
   } else {
     const body: Record<string, unknown> = { model: model.api_model_id, prompt: req.prompt, ...wire };
     requestInit = {
       method: 'POST',
       headers: { ...COMMON_HEADERS(credential), 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.any([slot.signal, AbortSignal.timeout(60_000)]),
     };
   }
 
@@ -179,6 +198,7 @@ export async function submitVideoJob(req: SubmitVideoRequest): Promise<SubmitVid
   try {
     response = await fetch(endpoint, requestInit);
   } catch (err) {
+    if (slot.cutByStop()) return { ok: false, error: STOPPED_BY_USER, code: 'STOPPED' };
     return { ok: false, error: `Video submit request failed: ${err instanceof Error ? err.message : String(err)}`, code: 'HTTP_ERROR' };
   }
 
@@ -191,6 +211,7 @@ export async function submitVideoJob(req: SubmitVideoRequest): Promise<SubmitVid
   try {
     data = await response.json() as typeof data;
   } catch (err) {
+    if (slot.cutByStop()) return { ok: false, error: STOPPED_BY_USER, code: 'STOPPED' };
     return { ok: false, error: `Failed to parse video submit response: ${err instanceof Error ? err.message : String(err)}`, code: 'HTTP_ERROR' };
   }
 
@@ -210,8 +231,24 @@ export async function submitVideoJob(req: SubmitVideoRequest): Promise<SubmitVid
   return { ok: true, jobId, providerJobId, status: 'queued' };
 }
 
-/** Poll the provider for a job's current state. */
-export async function pollProviderVideo(providerId: string, providerJobId: string): Promise<ProviderPollOutcome> {
+/**
+ * Poll the provider for a job's current state.
+ *
+ * A-5: `agentId` is the requesting agent, so each poll leg registers as one abortable call of
+ * that agent's — the poller outlives the turn, and a stop pressed at minute six of a ten-minute
+ * video has to reach the leg that is on the wire right then, not only the loop around it.
+ */
+export async function pollProviderVideo(agentId: string, providerId: string, providerJobId: string): Promise<ProviderPollOutcome> {
+  const slot = openAgentCall(agentId);
+  try {
+    if (slot.refused) return { ok: false, error: STOPPED_BY_USER, retryable: false, stopped: true };
+    return await dialVideoPoll(slot, providerId, providerJobId);
+  } finally {
+    slot.release();
+  }
+}
+
+async function dialVideoPoll(slot: AgentCallSlot, providerId: string, providerJobId: string): Promise<ProviderPollOutcome> {
   const resolved = resolveProvider(providerId);
   if (!resolved) return { ok: false, error: `Provider ${providerId} unavailable (no credential?).`, retryable: false };
 
@@ -220,9 +257,11 @@ export async function pollProviderVideo(providerId: string, providerJobId: strin
     response = await fetch(`${resolved.base}/videos/${encodeURIComponent(providerJobId)}`, {
       method: 'GET',
       headers: COMMON_HEADERS(resolved.credential),
-      signal: AbortSignal.timeout(30_000),
+      // A-5: COMPOSED — the 30s poll ceiling is unchanged and still armed here.
+      signal: AbortSignal.any([slot.signal, AbortSignal.timeout(30_000)]),
     });
   } catch (err) {
+    if (slot.cutByStop()) return { ok: false, error: STOPPED_BY_USER, retryable: false, stopped: true };
     return { ok: false, error: `Poll request failed: ${err instanceof Error ? err.message : String(err)}`, retryable: true };
   }
 
@@ -244,6 +283,7 @@ export async function pollProviderVideo(providerId: string, providerJobId: strin
   try {
     data = await response.json() as typeof data;
   } catch (err) {
+    if (slot.cutByStop()) return { ok: false, error: STOPPED_BY_USER, retryable: false, stopped: true };
     return { ok: false, error: `Poll parse failed: ${err instanceof Error ? err.message : String(err)}`, retryable: true };
   }
 
@@ -270,11 +310,27 @@ export async function pollProviderVideo(providerId: string, providerJobId: strin
   };
 }
 
+/** A-5: `stopped` marks the user's own button so the poller does not record it as a failure. */
+export type VideoAssetOutcome =
+  | { ok: true; filePath: string; filename: string; sizeBytes: number }
+  | { ok: false; error: string; stopped?: true };
+
 /**
  * Download the finished asset to ~/.dojo/uploads/generated/<uuid>.mp4.
  * Returns the absolute path + byte size on success.
  */
-export async function fetchVideoAsset(providerId: string, providerJobId: string): Promise<{ ok: true; filePath: string; filename: string; sizeBytes: number } | { ok: false; error: string }> {
+export async function fetchVideoAsset(agentId: string, providerId: string, providerJobId: string): Promise<VideoAssetOutcome> {
+  // A-5: the download leg registers too — it is the longest single wire of the three.
+  const slot = openAgentCall(agentId);
+  try {
+    if (slot.refused) return { ok: false, error: STOPPED_BY_USER, stopped: true };
+    return await dialVideoAsset(slot, providerId, providerJobId);
+  } finally {
+    slot.release();
+  }
+}
+
+async function dialVideoAsset(slot: AgentCallSlot, providerId: string, providerJobId: string): Promise<VideoAssetOutcome> {
   ensureGeneratedDir();
   const resolved = resolveProvider(providerId);
   if (!resolved) return { ok: false, error: `Provider ${providerId} unavailable.` };
@@ -284,9 +340,11 @@ export async function fetchVideoAsset(providerId: string, providerJobId: string)
     response = await fetch(`${resolved.base}/videos/${encodeURIComponent(providerJobId)}/content`, {
       method: 'GET',
       headers: COMMON_HEADERS(resolved.credential),
-      signal: AbortSignal.timeout(120_000),
+      // A-5: COMPOSED — the 120s download ceiling (SUSPECT clock U9) is unchanged.
+      signal: AbortSignal.any([slot.signal, AbortSignal.timeout(120_000)]),
     });
   } catch (err) {
+    if (slot.cutByStop()) return { ok: false, error: STOPPED_BY_USER, stopped: true };
     return { ok: false, error: `Asset download failed: ${err instanceof Error ? err.message : String(err)}` };
   }
 
@@ -295,7 +353,14 @@ export async function fetchVideoAsset(providerId: string, providerJobId: string)
     return { ok: false, error: `Asset HTTP ${response.status}: ${errText.slice(0, 300)}` };
   }
 
-  const bytes = Buffer.from(await response.arrayBuffer());
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(await response.arrayBuffer());
+  } catch (err) {
+    // A-5: a stop landing while tens of megabytes of mp4 are arriving surfaces here.
+    if (slot.cutByStop()) return { ok: false, error: STOPPED_BY_USER, stopped: true };
+    return { ok: false, error: `Asset download failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
   if (bytes.length === 0) return { ok: false, error: 'Asset download returned an empty body.' };
 
   const filename = `${uuidv4()}.mp4`;
@@ -308,7 +373,14 @@ export async function fetchVideoAsset(providerId: string, providerJobId: string)
   return { ok: true, filePath, filename, sizeBytes: bytes.length };
 }
 
-/** Best-effort provider-side cancel. Returns true if the provider accepted it. */
+/**
+ * Best-effort provider-side cancel. Returns true if the provider accepted it.
+ *
+ * A-5 — DELIBERATELY NOT REGISTERED, and this is the one media dial in the tree that must not
+ * be. It is the call that ENACTS a cancel; registering it would let the very stop that asked
+ * for the cancel abort the request that delivers it, leaving the provider generating (and
+ * billing for) a clip nobody will ever see. The stop reaches this call by CALLING it.
+ */
 export async function cancelProviderVideo(providerId: string, providerJobId: string): Promise<boolean> {
   const resolved = resolveProvider(providerId);
   if (!resolved) return false;

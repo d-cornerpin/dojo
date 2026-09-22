@@ -81,7 +81,7 @@ import { getModelCapabilities } from '../../../services/capabilities.js';
 import { auditLog, toolsLogger as logger } from '../util.js';
 import * as effectFs from '../../effects/fs.js';
 import pathModule from 'node:path';
-import { createGenerationJob as createImgJob, setRunning as setImgRunning, setSucceeded as setImgSucceeded, setFailed as setImgFailed, createGenerationJob, enqueueAudioOrMusicJob } from '../../../services/generation-jobs.js';
+import { createGenerationJob as createImgJob, setRunning as setImgRunning, setSucceeded as setImgSucceeded, setFailed as setImgFailed, setCancelled as setImgCancelled, createGenerationJob, enqueueAudioOrMusicJob } from '../../../services/generation-jobs.js';
 import { enqueueVideoJob } from '../../../services/video-job-poller.js';
 import { generateImage } from '../../../services/image-generation.js';
 import { getEffectiveAudioGenModel } from '../../../services/audio-gen-model.js';
@@ -224,7 +224,17 @@ const handlers = {
         writeAgentStatus(agentId, 'working');
         broadcast({ type: 'agent:status', agentId, status: 'working' });
 
-        setImgRunning(imgJobId);
+        // A-5: the CAS is READ. This IIFE deliberately waits for the turn to end before it
+        // dials (the loop just above), so a stop pressed during that turn has already lowered
+        // its own fence by the time we get here and the abort registry cannot refuse this dial.
+        // The row can: `stopAgent` cancels the agent's open generation jobs, and a cancelled
+        // row never moves to `running`. Nothing is dialled, nothing is spent, nothing is said.
+        if (!setImgRunning(imgJobId)) {
+          logger.info('image_create: not dialling — the job is no longer queued (stopped or cancelled)', {
+            requestId, requesterId: agentId,
+          });
+          return;
+        }
 
         logger.info('image_create: generating image', {
           requestId, requesterId: agentId, modelId: imageModelId, aspectRatio,
@@ -232,12 +242,24 @@ const handlers = {
         });
 
         const result = await generateImage({
+          agentId,
           modelId: imageModelId,
           prompt: fullPrompt,
           aspectRatio,
         });
 
         if (!result.ok) {
+          // A-5: honest stop identity. The user's own button is not a generation failure —
+          // no `failed` row, no error column, and no "I wasn't able to generate that image"
+          // bubble for work he called off himself.
+          if (result.code === 'STOPPED') {
+            setImgCancelled(imgJobId);
+            logger.info('image_create: cancelled — the user stopped this agent mid-generation', {
+              requestId, requesterId: agentId,
+            });
+            return;
+          }
+
           logger.error('image_create: generation failed', {
             requestId, code: result.code, error: result.error,
           });
@@ -665,6 +687,14 @@ const handlers = {
     });
 
     if (!submit.ok) {
+      // A-5: honest stop identity. A submit the user stopped is not a provider refusal, and
+      // the model must not be steered to explain a failure that did not happen.
+      if (submit.code === 'STOPPED') {
+        auditLog(agentId, 'video_create', null, 'success', 'Not submitted: the user stopped this agent.');
+        content = `${submit.error} The video was not submitted. End your turn.`;
+        isError = true;
+        return { content, isError };
+      }
       auditLog(agentId, 'video_create', null, 'error', submit.error);
       content =
         `Video generation could not be started: ${submit.error}\n\n` +
@@ -786,7 +816,7 @@ const handlers = {
         ext === '.flac' ? 'audio/flac' :
         'audio/mpeg';
     } else {
-      const fetched = await fetchAudioUrl(urlArg!);
+      const fetched = await fetchAudioUrl(agentId, urlArg!);
       if ('error' in fetched) {
         content = `Error: ${fetched.error}`;
         isError = true;
@@ -800,9 +830,10 @@ const handlers = {
     auditLog(agentId, 'transcribe_audio', null, 'success',
       `Source ${attachmentId ? `attachment ${attachmentId}` : `url ${urlArg}`}, ${audio.length} bytes`);
 
-    const result = await transcribeAudio({ audio, mimeType, filename, language });
+    const result = await transcribeAudio({ agentId, audio, mimeType, filename, language });
     if (!result.ok) {
-      content = `Transcription failed: ${result.error}`;
+      // A-5: honest stop identity — the user's button is not a transcription failure.
+      content = result.code === 'STOPPED' ? result.error : `Transcription failed: ${result.error}`;
       isError = true;
       return { content, isError };
     }

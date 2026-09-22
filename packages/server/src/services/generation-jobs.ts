@@ -120,13 +120,24 @@ export function createGenerationJob(params: CreateGenerationJobParams): string {
   return id;
 }
 
-export function setRunning(jobId: string): void {
+/**
+ * CAS transition queued -> running.
+ *
+ * A-5 — THE ANSWER IS RETURNED NOW, and `image_create` reads it. This was `void`, so a caller
+ * that had already been cancelled (the user pressed stop while the job sat queued —
+ * `cancelAgentGenerationJobs` below) sailed past a no-op UPDATE and dialled the provider
+ * anyway. The CAS always knew; nobody was asking it.
+ *
+ * @returns true if this call moved the row to running; false if it was no longer queued.
+ */
+export function setRunning(jobId: string): boolean {
   const res = getDb().prepare(
     "UPDATE generation_jobs SET status='running', attempt_count=attempt_count+1, updated_at=datetime('now') WHERE id = ? AND status='queued'"
   ).run(jobId);
-  if (res.changes === 0) return;
+  if (res.changes === 0) return false;
   const row = getJob(jobId);
   if (row) emitUpdate(row);
+  return true;
 }
 
 export interface SucceededFields {
@@ -152,6 +163,63 @@ export function setSucceeded(jobId: string, f: SucceededFields): boolean {
   const row = getJob(jobId);
   if (row) emitUpdate(row);
   return true;
+}
+
+/**
+ * A-5 — CAS transition to `cancelled`, the terminal state a USER STOP produces.
+ *
+ * Separate from `setFailed` on purpose and the distinction is the whole of requirement (b):
+ * `failed` writes an `error` column, is rendered as a failure by the dashboard indicator, and
+ * makes the caller post *"I wasn't able to finish that audio"* into the chat. None of that is
+ * true of a job the owner deliberately stopped, and saying it would be the engine blaming a
+ * provider for the owner's own button. `cancelled` is the state the manual cancel routes
+ * (`gateway/routes/config.ts`) already write and every worker already honours; a stop is the
+ * same event arriving through a different door.
+ */
+export function setCancelled(jobId: string): boolean {
+  const res = getDb().prepare(`
+    UPDATE generation_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now')
+    WHERE id = ? AND status IN ('queued','running')
+  `).run(jobId);
+  if (res.changes === 0) return false;
+  const row = getJob(jobId);
+  if (row) emitUpdate(row);
+  return true;
+}
+
+/**
+ * A-5 — EVERY RUN-ONCE MEDIA JOB THIS AGENT HAS OPEN, CANCELLED BY ITS STOP. Called from
+ * `stopAgent`. Returns how many rows moved.
+ *
+ * WHY THE ABORT REGISTRY IS NOT ENOUGH ON ITS OWN, which is the measured shape of this arm:
+ * `image_create`'s delivery IIFE deliberately WAITS for the requesting agent to go idle before
+ * it dials (`tools/cat/media.ts`, the 60s wait loop — it exists so the finished image does not
+ * land mid-reply). A stop raises the fence, the run unwinds, teardown writes idle, and the
+ * run's own `finally` lowers the fence — and only THEN does the IIFE wake up and dial. There is
+ * nothing registered during that wait and no fence standing by the time there could be, so the
+ * registry alone cannot refuse that dial. The ROW is the durable fact that survives the run,
+ * and `setRunning`'s CAS is the door the IIFE already goes through.
+ *
+ * Video is NOT handled here: its poll loop registers itself for its whole life
+ * (`video-job-poller.ts`), so `abortInFlight` reaches it directly and it writes its own
+ * cancelled row — one owner per table, rather than two writers racing the same CAS.
+ */
+export function cancelAgentGenerationJobs(agentId: string): number {
+  let ids: string[];
+  try {
+    ids = (getDb().prepare(
+      "SELECT id FROM generation_jobs WHERE agent_id = ? AND status IN ('queued','running')"
+    ).all(agentId) as Array<{ id: string }>).map((r) => r.id);
+  } catch {
+    // A pre-migration DB has no table. A stop must never throw out of `stopAgent`.
+    return 0;
+  }
+  let moved = 0;
+  for (const id of ids) {
+    try { if (setCancelled(id)) moved += 1; } catch { /* best effort, per row */ }
+  }
+  if (moved > 0) logger.info('generation jobs cancelled by the user stop', { agentId, cancelled: moved });
+  return moved;
 }
 
 export function setFailed(jobId: string, error: string): void {
@@ -256,11 +324,17 @@ async function runAudioOrMusicJob(jobId: string): Promise<void> {
       return;
     }
 
-    setRunning(jobId);
+    // A-5: the CAS is now READ. A stop that landed between create and here has already moved
+    // this row to `cancelled`; dialling anyway would spend the owner's money on work he stopped.
+    if (!setRunning(jobId)) {
+      logger.info('generation job: not dialling — the row is no longer queued (stopped or cancelled)', { jobId });
+      return;
+    }
 
     const isMusic = row.kind === 'music';
     const { generateAudio } = await import('./audio-generation.js');
     const result = await generateAudio({
+      agentId: row.agent_id,
       modelId: row.model_id,
       prompt: row.prompt,
       voice: isMusic ? undefined : (row.voice ?? 'alloy'),
@@ -270,6 +344,14 @@ async function runAudioOrMusicJob(jobId: string): Promise<void> {
     });
 
     if (!result.ok) {
+      // A-5: honest stop identity. A stop is not a failure: no `error` column, no failure
+      // wording, and no *"I wasn't able to finish that audio"* bubble for work the owner
+      // himself called off. `setCancelled` is a no-op when `stopAgent` already wrote the row.
+      if (result.code === 'STOPPED') {
+        setCancelled(jobId);
+        logger.info('generation job cancelled: the user stopped this agent mid-generation', { jobId, kind: row.kind });
+        return;
+      }
       setFailed(jobId, result.error);
       const fresh = getJob(jobId);
       if (fresh) deliverError(fresh, result.error);

@@ -24,6 +24,7 @@ import { decodeToWav16kMono, extractAudioFromVideo } from '../agent/effects/tran
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
+import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/shared-state.js';
 import { getEffectiveTranscriptionModel, type LocalTranscriptionEngine } from './transcription-model.js';
 import { transcribeBuffer as localTranscribe, isWhisperBinaryAvailable } from '../voice/stt-service.js';
 import { DEFAULT_WHISPER } from '../voice/model-manager.js';
@@ -49,6 +50,9 @@ export interface TranscribeAudioRequest {
   mimeType: string;
   filename: string;
   language?: string;
+  // A-5: whose stop cuts this call. `transcribe_audio` runs SYNCHRONOUSLY inside the tool
+  // executor, so this is the media dial most likely to be in flight when the button is pressed.
+  agentId: string;
 }
 
 export interface TranscribeAudioSuccess {
@@ -68,7 +72,8 @@ export interface TranscribeAudioSuccess {
 export interface TranscribeAudioError {
   ok: false;
   error: string;
-  code: 'NO_MODEL_CONFIGURED' | 'CLOUD_NO_CREDENTIAL' | 'HTTP_ERROR' | 'LOCAL_ENGINE_ERROR' | 'UNKNOWN';
+  // A-5: `STOPPED` is the user's own button, not a provider failure. See `image-generation.ts`.
+  code: 'NO_MODEL_CONFIGURED' | 'CLOUD_NO_CREDENTIAL' | 'HTTP_ERROR' | 'LOCAL_ENGINE_ERROR' | 'STOPPED' | 'UNKNOWN';
 }
 
 export type TranscribeAudioResult = TranscribeAudioSuccess | TranscribeAudioError;
@@ -84,14 +89,26 @@ export { resolveAttachmentPath } from './attachment-resolve.js';
 // Fetch an https URL into a buffer with a hard byte cap and timeout.
 // Non-https URLs and file:// are rejected. Used when the agent passes
 // `url` instead of `attachment_id`.
-export async function fetchAudioUrl(url: string): Promise<{ buffer: Buffer; mimeType: string; filename: string } | { error: string }> {
+export async function fetchAudioUrl(agentId: string, url: string): Promise<{ buffer: Buffer; mimeType: string; filename: string } | { error: string; stopped?: true }> {
+  // A-5: the source download is an agent's dial like any other — it can be a gigabyte.
+  const slot = openAgentCall(agentId);
+  try {
+    if (slot.refused) return { error: STOPPED_BY_USER, stopped: true };
+    return await dialAudioUrl(slot, url);
+  } finally {
+    slot.release();
+  }
+}
+
+async function dialAudioUrl(slot: AgentCallSlot, url: string): Promise<{ buffer: Buffer; mimeType: string; filename: string } | { error: string; stopped?: true }> {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:') {
       return { error: `Only https URLs are allowed (got ${parsed.protocol}).` };
     }
     const response = await fetch(url, {
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      // A-5: COMPOSED — the 30s fetch ceiling (SUSPECT clock U10) is unchanged.
+      signal: AbortSignal.any([slot.signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]),
     });
     if (!response.ok) {
       return { error: `Fetch returned HTTP ${response.status}.` };
@@ -111,6 +128,7 @@ export async function fetchAudioUrl(url: string): Promise<{ buffer: Buffer; mime
     const filename = urlFilename || `download-${Date.now()}.mp3`;
     return { buffer: Buffer.from(ab), mimeType, filename };
   } catch (err) {
+    if (slot.cutByStop()) return { error: STOPPED_BY_USER, stopped: true };
     const msg = err instanceof Error ? err.message : String(err);
     return { error: `Failed to fetch URL: ${msg}` };
   }
@@ -217,6 +235,23 @@ async function transcribeCloud(
   apiModelId: string,
   req: TranscribeAudioRequest,
 ): Promise<TranscribeAudioResult> {
+  // A-5: the stop door, opened around the whole cloud leg (request AND body read).
+  const slot = openAgentCall(req.agentId);
+  try {
+    if (slot.refused) return { ok: false, error: STOPPED_BY_USER, code: 'STOPPED' };
+    return await dialTranscribeCloud(slot, modelId, providerId, apiModelId, req);
+  } finally {
+    slot.release();
+  }
+}
+
+async function dialTranscribeCloud(
+  slot: AgentCallSlot,
+  modelId: string,
+  providerId: string,
+  apiModelId: string,
+  req: TranscribeAudioRequest,
+): Promise<TranscribeAudioResult> {
   const credential = getProviderCredential(providerId);
   if (!credential) {
     return { ok: false, error: `No credential found for provider ${providerId}.`, code: 'CLOUD_NO_CREDENTIAL' };
@@ -260,7 +295,8 @@ async function transcribeCloud(
         'HTTP-Referer': 'https://dojo.dev',
       },
       body: form,
-      signal: AbortSignal.timeout(120_000),
+      // A-5: COMPOSED — the 120s upload ceiling (SUSPECT clock U10) is unchanged.
+      signal: AbortSignal.any([slot.signal, AbortSignal.timeout(120_000)]),
     });
 
     if (!response.ok) {
@@ -295,6 +331,7 @@ async function transcribeCloud(
       costMode: 'cloud',
     };
   } catch (err) {
+    if (slot.cutByStop()) return { ok: false, error: STOPPED_BY_USER, code: 'STOPPED' };
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, error: `Cloud transcription failed: ${message}`, code: 'HTTP_ERROR' };
   }

@@ -158,6 +158,75 @@ export function abortInFlight(agentId: string, reason: string): number {
   return cut;
 }
 
+// ════════════════════════════════════════
+// A-5 — THE MEDIA DIALS COME THROUGH THE SAME DOOR.
+//
+// T83 made "every provider call an agent makes is abortable by that agent's stop" true of
+// everything dialled through `callModel`. The media generators are not: `image-generation.ts`,
+// `audio-generation.ts`, `video-generation.ts` and `transcription.ts` each call `fetch`
+// directly, so a stop pressed while an image / narration / video / transcript was on the wire
+// found an empty registry for that work and cut nothing. The owner's instruction is that the
+// button stops ALL of an agent's activity, so those dials register here too.
+//
+// ONE DOOR, NOT FIVE COPIES OF `callModel`'s PREAMBLE. Each of those sites already carries its
+// own flat clock as the `signal:` argument, and the three things that have to be true of every
+// one of them are the same three `callModel` spells out in its own header: register through the
+// stop-aware door (which REFUSES, pre-aborted, while a stop is live), dial with that controller
+// COMPOSED with whatever the caller brought rather than replacing it, and release BY IDENTITY
+// on every exit path. Handing back a slot instead of wrapping the call is what lets a body with
+// a dozen early returns adopt it without being rewritten around a callback.
+//
+// AND THE THIRD THING A MEDIA CALLER NEEDS THAT `callModel` DOES NOT: `cutByStop()`. A model
+// call that dies throws and the loop's stop checkpoints read the fence; a generator RETURNS a
+// result object with a `code`, and every one of those unions had only provider-failure codes in
+// it. `image-generation.ts`'s `isTimeoutError` even classifies a bare `AbortError` as the
+// 10-minute deadline, so before this a stop was reported to the user as *"Image generation
+// timed out after 10 minutes. The provider or model is slow or overloaded right now."* — the
+// user's own button wearing a provider's failure. The predicate asks THIS CALL'S OWN
+// controller, never the composed signal, so the caller's clock can never be read as a stop and
+// a stop can never be read as the clock: the same discrimination T81d's patience timer carries.
+// ════════════════════════════════════════
+
+/** One in-flight media call's registration. Opened per call; released on every exit path. */
+export interface AgentCallSlot {
+  /** Hand this to `fetch`. This call's stop controller, composed with the caller's own signals. */
+  readonly signal: AbortSignal;
+  /** A stop was ALREADY standing when this opened: do not dial. `signal` is aborted already. */
+  readonly refused: boolean;
+  /** Was this call cut by THIS agent's stop — as opposed to the caller's clock, or a transport
+   *  error? Reads the call's own controller, so a composed timeout can never answer yes. */
+  cutByStop(): boolean;
+  /** This call has settled. Idempotent, and by identity — never another call's registration. */
+  release(): void;
+}
+
+/**
+ * Open one abortable media call under this agent's stop.
+ *
+ * @param externals any signals the caller already had (its flat clock, a parent loop's signal).
+ *                  `undefined` entries are dropped so a caller need not branch.
+ */
+export function openAgentCall(agentId: string, ...externals: Array<AbortSignal | undefined>): AgentCallSlot {
+  const ctl = new AbortController();
+  const registered = registerAbortable(agentId, ctl);
+  const present = externals.filter((s): s is AbortSignal => s != null);
+  const signal = present.length === 0 ? ctl.signal : AbortSignal.any([ctl.signal, ...present]);
+  let released = false;
+  return {
+    signal,
+    refused: !registered,
+    cutByStop: () => ctl.signal.aborted,
+    release: () => {
+      if (released) return;
+      released = true;
+      releaseAbortable(agentId, ctl);
+    },
+  };
+}
+
+/** The one sentence a stopped media call tells the user. Never a provider's failure wording. */
+export const STOPPED_BY_USER = 'Stopped: you pressed stop while this was still generating.';
+
 // Agents that should treat the next aborted model call as a soft-end so a
 // queued urgent wakeup can fire promptly.
 export const preemptedAgents = new Set<string>();

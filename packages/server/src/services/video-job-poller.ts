@@ -28,7 +28,8 @@ import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
-import { pollProviderVideo, fetchVideoAsset } from './video-generation.js';
+import { pollProviderVideo, fetchVideoAsset, cancelProviderVideo } from './video-generation.js';
+import { openAgentCall, type AgentCallSlot } from '../agent/shared-state.js';
 import { homeDir } from '../home.js';
 
 const logger = createLogger('video-job-poller');
@@ -83,7 +84,27 @@ function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50);
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/**
+ * A-5 — THE BACKOFF SLEEP IS INTERRUPTIBLE, because a poller that cannot be woken is a poller a
+ * stop cannot stop. The loop spends nearly all of its life in here (up to `POLL_MAX_MS` between
+ * legs), so cutting only the HTTP legs would leave a stopped job sitting in a `setTimeout` for
+ * another half-minute before it noticed. RESOLVES rather than rejects: the decision about what
+ * a stop means belongs to the loop's own top-of-iteration check, in one place, not to an
+ * exception thrown from a timer.
+ *
+ * The clock itself is untouched — same `POLL_START_MS` / `POLL_BACKOFF` / `POLL_MAX_MS`, same
+ * `MAX_JOB_AGE_MS` wall — this only adds a second way for the wait to END.
+ */
+const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve) => {
+  if (signal?.aborted) { resolve(); return; }
+  const finish = (): void => {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', finish);
+    resolve();
+  };
+  const timer = setTimeout(finish, ms);
+  signal?.addEventListener('abort', finish, { once: true });
+});
 
 /**
  * Deliver the finished video into the agent's chat as a synthetic
@@ -154,6 +175,31 @@ function deliverError(row: VideoJobRow, error: string): void {
   broadcast({ type: 'chat:chunk', agentId: row.agent_id, messageId: msgId, content: '', done: true, modelId: null });
 }
 
+/**
+ * A-5 — the terminal state a USER STOP produces, and it is deliberately not `markFailed`.
+ *
+ * Same distinction `generation-jobs.ts`'s `setCancelled` carries: `failed` writes an `error`
+ * column AND posts *"I wasn't able to finish that video"* into the owner's chat. A video the
+ * owner stopped did not fail and nothing should tell him it did. The provider-side job is
+ * cancelled first, best-effort, so a stop also stops the minutes of GPU time he is paying for —
+ * exactly what the manual cancel route does, reached through a different door.
+ */
+async function markCancelled(jobId: string, reason: string): Promise<void> {
+  const db = getDb();
+  const row = getJob(jobId);
+  if (row?.provider_job_id) {
+    try { await cancelProviderVideo(row.provider_id, row.provider_job_id); } catch { /* best effort */ }
+  }
+  const res = db.prepare(`
+    UPDATE video_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now')
+    WHERE id = ? AND status IN ('queued','polling')
+  `).run(jobId);
+  if (res.changes === 0) return;
+  const fresh = getJob(jobId);
+  if (fresh) emitUpdate(fresh);
+  logger.info('video job cancelled', { jobId, reason });
+}
+
 function markFailed(jobId: string, error: string): void {
   const db = getDb();
   // Only fail a job that's still active — don't clobber a cancel.
@@ -172,8 +218,13 @@ function markFailed(jobId: string, error: string): void {
 
 async function handleSuccess(row: VideoJobRow, durationSeconds: number | null): Promise<void> {
   if (!row.provider_job_id) { markFailed(row.id, 'No provider job id on success.'); return; }
-  const asset = await fetchVideoAsset(row.provider_id, row.provider_job_id);
-  if (!asset.ok) { markFailed(row.id, `Asset download failed: ${asset.error}`); return; }
+  const asset = await fetchVideoAsset(row.agent_id, row.provider_id, row.provider_job_id);
+  if (!asset.ok) {
+    // A-5: a stop that landed mid-download is not a download failure.
+    if (asset.stopped) { await markCancelled(row.id, 'the user stopped this agent during the asset download'); return; }
+    markFailed(row.id, `Asset download failed: ${asset.error}`);
+    return;
+  }
 
   // Record cost. Video is second-priced; if we couldn't determine the
   // duration, units=0 falls through to a $0 record (better than guessing).
@@ -225,16 +276,51 @@ async function handleSuccess(row: VideoJobRow, durationSeconds: number | null): 
   logger.info('video job succeeded + delivered', { jobId: row.id, durationSeconds, costUsd });
 }
 
+/**
+ * A-5 — THE LOOP ITSELF IS REGISTERED, for the whole of its life, not just its legs.
+ *
+ * The three HTTP legs each register their own call (`video-generation.ts`), so a stop landing
+ * while one is on the wire cuts it. That is not enough on its own: this loop runs for up to
+ * thirty minutes and is asleep for nearly all of them, and a stop that arrives during a
+ * backoff sleep has nothing to abort. It also outlives the run completely — the fence is long
+ * gone by minute six — so `isStopFenced` cannot answer for it either.
+ *
+ * So the loop takes a slot of its own and holds it. From the stop's point of view a poll loop
+ * IS one dial that happens to last minutes, and `abortInFlight` reaches it the same way it
+ * reaches a model call: one registry, one abort, no second mechanism. The slot's signal wakes
+ * the sleep, and the top-of-iteration check turns that into the one honest terminal state.
+ */
 async function pollLoop(jobId: string): Promise<void> {
   if (inFlight.has(jobId)) return;
   inFlight.add(jobId);
+  const owner = getJob(jobId);
+  const slot: AgentCallSlot | null = owner ? openAgentCall(owner.agent_id) : null;
   let delay = POLL_START_MS;
   try {
+    // A stop already standing when this job was enqueued: do not start polling at all, and do
+    // not leave the row `queued` for the boot resume to pick up as if nothing had happened.
+    if (slot?.refused) {
+      await markCancelled(jobId, 'the user stopped this agent before polling began');
+      return;
+    }
     while (true) {
       const row = getJob(jobId);
       if (!row) return;
       if (row.status === 'cancelled' || row.status === 'succeeded' || row.status === 'failed') return;
       if (!row.provider_job_id) { markFailed(jobId, 'No provider job id.'); return; }
+
+      // A-5: the stop, read where the loop can act on it. FIRST, above the wall-clock guard,
+      // so a stop is never recorded as the 30-minute timeout.
+      //
+      // ITS `return` IS UNCONDITIONAL, and that is load-bearing rather than tidy: once the slot
+      // is aborted the sleep below resolves INSTANTLY on every pass, so this is the only thing
+      // standing between a stopped loop and a hot spin. (Replanting its deletion does not fail
+      // a clause politely — it burns a vitest worker to an out-of-memory crash.) Do not make
+      // the exit depend on `markCancelled` having moved a row: the row may already be terminal.
+      if (slot?.cutByStop()) {
+        await markCancelled(jobId, 'the user stopped this agent');
+        return;
+      }
 
       // Wall-clock guard.
       const age = Date.now() - new Date(row.started_at + 'Z').getTime();
@@ -243,11 +329,14 @@ async function pollLoop(jobId: string): Promise<void> {
         return;
       }
 
-      const poll = await pollProviderVideo(row.provider_id, row.provider_job_id);
+      const poll = await pollProviderVideo(row.agent_id, row.provider_id, row.provider_job_id);
 
       getDb().prepare('UPDATE video_jobs SET attempt_count = attempt_count + 1, updated_at = datetime(\'now\') WHERE id = ?').run(jobId);
 
       if (!poll.ok) {
+        // A-5: a stopped leg is not a failed leg — it must not write `failed` and must not
+        // post a failure into the chat.
+        if (poll.stopped) { await markCancelled(jobId, 'the user stopped this agent mid-poll'); return; }
         if (!poll.retryable) { markFailed(jobId, poll.error); return; }
         // transient — fall through to backoff sleep
       } else if (poll.status === 'completed') {
@@ -270,13 +359,19 @@ async function pollLoop(jobId: string): Promise<void> {
         }
       }
 
-      await sleep(delay);
+      await sleep(delay, slot?.signal);
       delay = Math.min(delay * POLL_BACKOFF, POLL_MAX_MS);
     }
   } catch (err) {
+    // A-5: a stop unwinding through here is not an internal poller error.
+    if (slot?.cutByStop()) {
+      await markCancelled(jobId, 'the user stopped this agent');
+      return;
+    }
     logger.error('video poll loop threw', { jobId, error: err instanceof Error ? err.message : String(err) });
     markFailed(jobId, `Internal poller error: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
+    slot?.release();
     inFlight.delete(jobId);
   }
 }

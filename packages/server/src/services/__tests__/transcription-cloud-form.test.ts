@@ -76,6 +76,7 @@ afterEach(() => {
 describe('the cloud transcription request assembles from the in-memory buffer', () => {
   it('carries the FULL audio under the file field, with the filename the provider sees', async () => {
     const result = await transcribeAudio({
+      agentId: 'transcribe-form-agent',
       audio: AUDIO, mimeType: 'audio/mpeg', filename: 'memo.mp3', language: 'en',
     });
     expect(result.ok, 'the cloud path answered').toBe(true);
@@ -104,6 +105,7 @@ describe('the cloud transcription request assembles from the in-memory buffer', 
     const writeSync = vi.spyOn(fs, 'writeFileSync');
     const writeAsync = vi.spyOn(fs.promises, 'writeFile');
     const result = await transcribeAudio({
+      agentId: 'transcribe-form-agent',
       audio: AUDIO, mimeType: 'audio/mpeg', filename: 'memo.mp3',
     });
     expect(result.ok).toBe(true);
