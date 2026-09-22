@@ -5062,6 +5062,41 @@
       "to": 403,
       "by": "t83b \u2014 the Ollama native transport joins the per-chunk watchdog (ticket-ollama-flat-ceiling)",
       "why": "+9 for ONE derived boolean and its argument: `StreamPatience.idleDeclared`, the exact sibling of `firstChunkDeclared` already here, read off the `isCoherent` check this module already runs on the same column \u2014 a fact it knew and threw away, not a new one. It became load-bearing when `callOllamaModel` stopped using a flat total-duration ceiling: THAT transport's standing bound is `TRANSPORT_DEFAULT_TIMEOUT_MS`, not this module's hosted 60,000, so `idleMs === 60_000` off a row and off the default are the same number and opposite instructions \u2014 and the log naming which bound killed a call must not call a default a declaration, the lie the flat ceiling told on three nights of Kevin's memory-summarize. The two alternatives are worse, not merely different: a second `isCoherent` in `model.ts` is the storable-but-unhonourable defect this file's own header exists to prevent, and comparing `idleMs` to the constant is wrong for every row declaring exactly 60,000. 8 of the 9 lines are the doc comment saying so, in a file where comments are cited as evidence. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/counterparty.ts",
+      "from": 997,
+      "to": 1028,
+      "by": "design ruling 13 \u2014 isOwnerDashboardDelivery, the one channel fact the credential carve-out is keyed on",
+      "why": "+31, and 25 of them are the SPOOFING ARGUMENT, which is the whole value of the predicate. The code is six lines: kind, relation, channel, senderIsAgent. It lives HERE because this module is where `relation` and `channel` are DERIVED \u2014 `deriveOrigin` over the trigger row's stamped lane/channel columns (OR4) \u2014 and a copy written at the seam would be a predicate about stamps sitting somewhere that cannot see how they are made, which is how the two come to disagree. The comment records what the six lines cannot: that no text an agent, a contact or a model writes can produce `relation: 'owner'`, that every routed channel and every A2A turn answers false, and \u2014 the half a later reader would otherwise delete as redundant \u2014 that being TRUE here buys nothing outbound, because `finalize/channel-push.ts` redacts every arm on its own. REFUSED: inlining the four conjuncts at the persist seam, which would leave the test pinning an expression rather than a rule and the second caller copying it. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/channel-push.ts",
+      "from": 418,
+      "to": 441,
+      "by": "design ruling 13 \u2014 the outbound credential scrub that was never here",
+      "why": "+23 for ONE derivation (`const replyOut = redactHandedCredentials(agentId, state.lastAssistantTextForIM)`) plus its import, and 20 comment lines that record a FINDING rather than explain a line. The finding, measured at HEAD: this file read the reply text RAW in all five arms, because `lastAssistantTextForIM` is set from `persistedContent` and the reply itself is never rewritten (T5b) \u2014 so every iMessage / Teams / email / phone / SMS auto-route sent whatever the model wrote, credential included, and the dashboard row was the only surface the leak guard covered. Without those lines the next reader sees a redundant-looking call on a string that is 'obviously already safe' and deletes it, re-opening the hole in one line. The comment also states why the owner-bound iMessage push is scrubbed too (the away-override promotes a dashboard turn onto iMessage, and it still leaves the box) and why the derivation is ONE line for five arms rather than five (a per-arm scrub is five places for the next channel to be forgotten in). The arms are otherwise unchanged apart from reading `replyOut`; net code is +1. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/credentials/secret-fields.ts",
+      "from": 241,
+      "to": 261,
+      "by": "design ruling 13 \u2014 redactAssistantBlocksForPersist takes the channel key",
+      "why": "+20: three code lines (the `opts` parameter, the redactor selection, and the text arm reading it) and 17 of argument. The argument is load-bearing because the flag LOOKS like it should apply to both redactions and must not: redaction 1 is the STRUCTURAL declared-field scrub of tool_use arguments \u2014 what the platform replays to the model \u2014 and the owner's standing requirement is that a typed secret never re-enters that window whoever is watching, so only redaction 2 (the value scrub on text blocks) narrows. The comment says that, says the default is off so a caller that does not know who it is talking to redacts, and says the flag is a CHANNEL fact read off the turn's stamps rather than a judgement about the text (OR2) \u2014 the sentence that stops the next reader re-deriving it from what the reply appears to be asking for. REFUSED: a second exported function for the owner path, which would be two persist seams that could drift. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts",
+      "from": 348,
+      "to": 363,
+      "by": "design ruling 13 \u2014 the persist seam passes the channel key",
+      "why": "+15: three code lines (the call now passes `{ toOwnerDashboard: !interAgentTurn && isOwnerDashboardDelivery(counterparty) }`, plus the import) and 12 of reason. This is the seam round 8's incident is about and the one place the row the dashboard renders is produced, so the reason belongs at it: that the owner asked his own agent for his own credential and a placeholder is the engine overruling priority one; that the key is the counterparty stamps and not anything the text says; that the structural tool_use redaction is untouched; and that the same string is still kept off every outbound channel by `finalize/channel-push.ts` \u2014 without which a reader concludes this line is the whole guard and the carve-out reads as a leak. One variable feeds both the row and the socket frame, so BROADCAST_EQUALS_ROW still holds. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/credentials/secret-values.ts",
+      "from": 225,
+      "to": 323,
+      "by": "design ruling 13 \u2014 the module is PINNED for the first time, at its post-ruling count",
+      "why": "+98 on a leaf that imports nothing, and it is where this codebase has repeatedly DECIDED to put credential rationale so the call sites stay one line \u2014 see the model-call.ts raise, which argues exactly that (\"THE MECHANISM IS ELSEWHERE ALREADY: every rule, every property and the whole rationale live in credentials/secret-values.ts\"). The code is ~35 lines: a `handedOut` tag set on the per-agent state, a `direction` argument that defaults to the conservative side, one shared `redactValues` body behind the two exported redactors (one loop, because two would come to disagree about which value is longest), and the `reasoningContent` arm of the hydrator. The rest is the ruling's argument and the round-8 root cause, both of which a reader needs at THIS file to avoid re-deriving them wrongly: that the replayed `reasoning_content` is a field the provider boundary sends and therefore a field this seam owns, and that the owner's-screen carve-out keys on the DIRECTION a value crossed the process rather than on anything a string says (OR2). It was previously unpinned, so this entry is the pin itself: decrease-only from here. Trimmed once already (346 -> 323) by deleting prose the report and the test header carry."
     }
   ],
   "maxNewFileLines": 400,
@@ -5142,7 +5177,7 @@
     "packages/server/src/agent/v2/ack-copy.ts": 303,
     "packages/server/src/agent/v2/answered-edge.ts": 743,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 502,
-    "packages/server/src/agent/v2/counterparty.ts": 997,
+    "packages/server/src/agent/v2/counterparty.ts": 1028,
     "packages/server/src/agent/v2/loop.ts": 724,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 546,
@@ -5172,7 +5207,7 @@
     "packages/server/src/agent/v2/steps/execute/tracker-floors.ts": 314,
     "packages/server/src/agent/v2/steps/execute/work-status.ts": 52,
     "packages/server/src/agent/v2/steps/execute/xml-fallback.ts": 155,
-    "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 418,
+    "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 441,
     "packages/server/src/agent/v2/steps/finalize/close-the-loop.ts": 158,
     "packages/server/src/agent/v2/steps/finalize/completion-ack.ts": 154,
     "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts": 90,
@@ -5190,7 +5225,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/no-reply.ts": 409,
     "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 104,
     "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 276,
-    "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 348,
+    "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 363,
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 286,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 417,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
@@ -5219,7 +5254,8 @@
     "packages/server/src/agent/v2/steps/teardown/index.ts": 291,
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/costs/tracker.ts": 541,
-    "packages/server/src/credentials/secret-fields.ts": 241,
+    "packages/server/src/credentials/secret-fields.ts": 261,
+    "packages/server/src/credentials/secret-values.ts": 323,
     "packages/server/src/db/migration-backup.ts": 399,
     "packages/server/src/db/migration-checksums.ts": 277,
     "packages/server/src/gateway/routes/agents.ts": 972,

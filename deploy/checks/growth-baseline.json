@@ -374,7 +374,7 @@
   "packages/server/src/credentials/at-rest.ts": 180,
   "packages/server/src/credentials/seal-existing.ts": 97,
   "packages/server/src/credentials/secret-fields.ts": 241,
-  "packages/server/src/credentials/secret-values.ts": 225,
+  "packages/server/src/credentials/secret-values.ts": 323,
   "packages/server/src/credentials/store.ts": 361,
   "packages/server/src/credentials/tools.ts": 181,
   "packages/server/src/db/connection.ts": 66,
