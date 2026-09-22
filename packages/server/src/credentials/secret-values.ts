@@ -59,6 +59,46 @@
 //
 // SCOPE: a value is restored only for the agent that handled it, and only from
 // what THIS process is holding. Nothing is ever read back out of the database.
+//
+// ════════════════════════════════════════════════════════════════════════════
+// DESIGN RULING 13 (2026-09-22) — THE OWNER ASKING FOR HIS OWN SECRET GETS IT
+// ════════════════════════════════════════════════════════════════════════════
+// Release-ritual round 8 asked one agent the same question twice ("what's my
+// building gate code?", dashboard chat) and got two different answers, and both
+// halves of that split are this module's:
+//
+//   THE ONE THAT WAS A PLAIN BUG. The value came back through `credential_get`,
+//   the agent reasoned about it, and the engine stored that reasoning with the
+//   placeholder in it — correctly. Then `agent/model.ts` replayed the reasoning
+//   to the provider on the next tool-call turn, because DeepSeek-family models
+//   require their own `reasoning_content` back, and THE REPLAY WAS NEVER
+//   HYDRATED: `hydrateCredentialsInMessages` walked `content` and nothing else.
+//   So the model read its own prior thought with `<redacted-credential:c1>`
+//   where the value had been, and wrote the placeholder into the owner's reply
+//   as if it were the code. Exactly property 3's failure mode one field over —
+//   "the model reads its own previous call with the placeholder in it and
+//   copies it forward" — which is why the fix is the same fix: the read side
+//   covers EVERY field the provider boundary sends back, not just `content`.
+//
+//   THE ONE THAT WAS A DECISION. Beneath that bug sat a real question, and the
+//   owner answered it: when the OWNER asks in DASHBOARD chat for a credential,
+//   the agent SHOWS it — priority one ("the user asks the agent to do something
+//   and it does it") covers secrets too. The guard keeps redacting everywhere
+//   else, and the carve-out is CHANNEL-KEYED, never content-judged (OR2: the
+//   engine never judges content where structure decides). This module owns the
+//   structural half of that key, `redactHandedInCredentials`; the channel half
+//   lives at the seam that knows who it is delivering to.
+//
+// WHAT "HANDED IN" AND "HANDED OUT" MEAN, AND WHY THE SPLIT IS STRUCTURAL.
+// The value set is fed from two directions and always has been. A value the
+// STORE HANDED OUT to this agent (`credential_get`) is one the agent can fetch
+// again at will — showing it on the owner's own screen tells the owner nothing
+// `credential_get` would not. A value the owner HANDED IN through a declared
+// secret field (`credential_add` / `credential_update`) has never been handed
+// back out, and the owner's standing requirement is that a typed secret does
+// not come to rest in the clear; it stays redacted on every surface. That is a
+// fact about HOW the value entered this process, not about what any text says
+// about it, which is what makes it a legal key under OR2.
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -96,29 +136,63 @@ const PLACEHOLDER_RE = /<redacted-credential(?::([a-z0-9]+))?>/g;
 // declared field is still replaced in the stored arguments.
 const MIN_REDACTABLE_CREDENTIAL_LEN = 6;
 
+/**
+ * WHICH WAY A VALUE CROSSED THIS PROCESS. `'out'` is the store handing a value
+ * to the agent (`credential_get`); `'in'` is the owner handing one to the store
+ * through a declared secret field. See the header for why the direction — and
+ * not anything a string says — is what the owner's-screen carve-out keys on.
+ */
+export type CredentialDirection = 'in' | 'out';
+
 /** Per agent: the values it has handled, each with its in-process handle. */
 type AgentSecrets = {
   /** value → tag */
   byValue: Map<string, string>;
   /** tag → value */
   byTag: Map<string, string>;
+  /**
+   * The tags of values the STORE HANDED OUT to this agent. One-way on purpose:
+   * a value first typed in and later fetched has been handed out, and a value
+   * only ever typed in never joins. Nothing removes a tag from this set, so the
+   * question "may the owner's own screen show this?" has a stable answer for
+   * the life of the process.
+   */
+  handedOut: Set<string>;
 };
 const handedCredentialValues = new Map<string, AgentSecrets>();
 
 /** Global so a tag minted for one agent can never be a valid tag for another. */
 let tagCounter = 0;
 
-/** Register secret values this agent has handled, in either direction. */
-export function noteHandedCredentialValues(agentId: string, values: string[]): void {
+/**
+ * Register secret values this agent has handled, in either direction.
+ *
+ * `direction` defaults to `'in'`, which is the conservative side: a caller that
+ * does not say gets the value that is redacted on every surface, so forgetting
+ * the argument can only ever over-redact. Only `credential_get` — the one place
+ * the store hands a value to the agent — passes `'out'`.
+ */
+export function noteHandedCredentialValues(
+  agentId: string, values: string[], direction: CredentialDirection = 'in',
+): void {
   if (values.length === 0) return;
   let state = handedCredentialValues.get(agentId);
-  if (!state) { state = { byValue: new Map(), byTag: new Map() }; handedCredentialValues.set(agentId, state); }
+  if (!state) {
+    state = { byValue: new Map(), byTag: new Map(), handedOut: new Set() };
+    handedCredentialValues.set(agentId, state);
+  }
   for (const v of values) {
     if (typeof v !== 'string' || v.length < MIN_REDACTABLE_CREDENTIAL_LEN) continue;
-    if (state.byValue.has(v)) continue;
-    const tag = `c${++tagCounter}`;
-    state.byValue.set(v, tag);
-    state.byTag.set(tag, v);
+    let tag = state.byValue.get(v);
+    if (!tag) {
+      tag = `c${++tagCounter}`;
+      state.byValue.set(v, tag);
+      state.byTag.set(tag, v);
+    }
+    // A second note UPGRADES the direction and never downgrades it: the same
+    // value typed in on one turn and fetched on a later one has been handed
+    // out, which is the round-8 gate code exactly.
+    if (direction === 'out') state.handedOut.add(tag);
   }
 }
 
@@ -142,6 +216,27 @@ export function redactedPlaceholderFor(agentId: string, value: string): string {
  *  Returns the input unchanged when nothing matches (the common case), so it is
  *  cheap to call on every persisted string. */
 export function redactHandedCredentials(agentId: string, text: string): string {
+  return redactValues(agentId, text, false);
+}
+
+/**
+ * THE OWNER'S-SCREEN SUBSET (design ruling 13). Redacts only the values that
+ * were HANDED IN — the ones the store has never given back to this agent — and
+ * leaves a fetched value standing.
+ *
+ * It is the same redactor with a smaller value set, deliberately: a second
+ * replacement loop is how two loops come to disagree about which value is
+ * longest, and the longest-first ordering below is load-bearing.
+ *
+ * The CHANNEL half of the key is not here and must not be: this function says
+ * which values the owner may see, and the seam that knows it is delivering to
+ * the owner's dashboard says when to ask.
+ */
+export function redactHandedInCredentials(agentId: string, text: string): string {
+  return redactValues(agentId, text, true);
+}
+
+function redactValues(agentId: string, text: string, handedInOnly: boolean): string {
   const state = handedCredentialValues.get(agentId);
   if (!state || state.byValue.size === 0 || !text) return text;
   let out = text;
@@ -150,7 +245,9 @@ export function redactHandedCredentials(agentId: string, text: string): string {
   // long one half-rewritten and unrestorable.
   const values = [...state.byValue.keys()].sort((a, b) => b.length - a.length);
   for (const secret of values) {
-    if (out.includes(secret)) out = out.split(secret).join(`${TAGGED_PREFIX}${state.byValue.get(secret)}>`);
+    const tag = state.byValue.get(secret)!;
+    if (handedInOnly && state.handedOut.has(tag)) continue;
+    if (out.includes(secret)) out = out.split(secret).join(`${TAGGED_PREFIX}${tag}>`);
   }
   return out;
 }
@@ -203,17 +300,41 @@ function hydrateDeep(agentId: string, value: unknown): unknown {
  * Called at the provider boundary and nowhere else (held by a census clause in
  * `__tests__/credential-hydration.test.ts`), so assembly, the context receipt
  * and the dev instruments all see the placeholder and never the value.
+ *
+ * ⚠ IT COVERS `reasoningContent` TOO, AND THAT IS A FIX, NOT A FLOURISH
+ * (design ruling 13, round 8). `memory/assembler.ts` puts the stored
+ * `reasoning_content` back on an assistant message it rebuilds, and
+ * `agent/model.ts` sends that field to the provider on every tool-call turn,
+ * because the DeepSeek family requires its own reasoning back. The field is
+ * REDACTED at persist like every other stored byte — so while this seam walked
+ * `content` alone, a reasoning model read its own prior thought with the
+ * placeholder in it and copied the placeholder forward. That is property 3's
+ * named failure mode one field over, and it reached the owner's screen as the
+ * answer to "what's my gate code?". Every field the boundary sends is hydrated
+ * here; the by-reference guarantee is unchanged, because a message with no
+ * placeholder in EITHER field is still returned as itself.
  */
-export function hydrateCredentialsInMessages<T extends { role: string; content: unknown }>(
+export function hydrateCredentialsInMessages<
+  T extends { role: string; content: unknown; reasoningContent?: string },
+>(
   agentId: string,
   messages: readonly T[],
 ): T[] {
   let changed = false;
   const out = messages.map((m) => {
     const content = hydrateDeep(agentId, m.content);
-    if (content === m.content) return m;
+    const reasoning = typeof m.reasoningContent === 'string'
+      ? hydrateHandedCredentials(agentId, m.reasoningContent)
+      : m.reasoningContent;
+    if (content === m.content && reasoning === m.reasoningContent) return m;
     changed = true;
-    return { ...m, content } as T;
+    // The spread carries `reasoningContent` when the message has one and adds
+    // no key when it does not: a message that never had the field must not gain
+    // an `undefined` one, or a JSON copy of the array stops being what assembly
+    // produced.
+    return (reasoning === m.reasoningContent
+      ? { ...m, content }
+      : { ...m, content, reasoningContent: reasoning }) as T;
   });
   return changed ? out : (messages as T[]);
 }

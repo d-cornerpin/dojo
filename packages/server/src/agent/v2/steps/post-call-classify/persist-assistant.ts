@@ -20,6 +20,7 @@ import { createLogger } from '../../../../logger.js';
 import { redactAssistantBlocksForPersist, redactHandedCredentials } from '../../../../credentials/secret-fields.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { ownOutputBroadcast } from '../../../interagent-broadcast.js';
+import { isOwnerDashboardDelivery } from '../../counterparty.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
@@ -176,7 +177,21 @@ export async function runPersistAssistant(
     // handled is scrubbed from the rest of the row (NEXT-WAVE item 5's classic
     // `sshpass -p '<pw>'`). result.toolCalls is untouched, so the live call still
     // runs with the real value; only the stored/broadcast copy is redacted.
-    const assistantContentForStore = redactAssistantBlocksForPersist(agentId, assistantContent);
+    //
+    // DESIGN RULING 13 (2026-09-22): on a reply bound for the OWNER'S DASHBOARD
+    // CHAT the value scrub narrows to the secrets the owner handed IN. He asked
+    // his own agent for his own credential and the agent fetched it; giving him
+    // a placeholder instead is the engine overruling priority one. The key is
+    // the turn's own counterparty stamps and nothing the text says (OR2), the
+    // structural tool_use redaction is untouched, and the same string is still
+    // kept off every outbound channel by `finalize/channel-push.ts` — this is
+    // the dashboard row and the dashboard socket frame, which only the owner
+    // ever reads. Round 8's split answer (fetch → placeholder, recall →
+    // plaintext) is the incident; `__tests__/the-owner-asking-for-his-own-
+    // secret-gets-it.test.ts` pins both paths to the same answer.
+    const assistantContentForStore = redactAssistantBlocksForPersist(agentId, assistantContent, {
+      toOwnerDashboard: !interAgentTurn && isOwnerDashboardDelivery(counterparty),
+    });
     const reasoningForStore = result.reasoningContent
       ? redactHandedCredentials(agentId, result.reasoningContent) : null;
     const assistantContentJson = JSON.stringify(assistantContentForStore);

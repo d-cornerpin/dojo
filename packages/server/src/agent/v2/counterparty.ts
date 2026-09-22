@@ -778,6 +778,37 @@ export function isRoutedHumanCounterparty(counterparty: TurnCounterparty): boole
 }
 
 /**
+ * ── THE OWNER, ON HIS OWN SCREEN (design ruling 13, 2026-09-22) ──
+ *
+ * The one channel fact the credential leak-guard's carve-out is keyed on: this turn is
+ * answering the OWNER and the answer lands in the DASHBOARD CHAT. It exists as a named
+ * predicate rather than an inline `&&` because two seams ask it (the assistant row the
+ * dashboard renders, and the test that pins both) and a second copy of a rule is how two
+ * copies come to disagree.
+ *
+ * WHY IT CANNOT BE REACHED FROM A NON-DASHBOARD PATH. Both stamps are STRUCTURAL and are
+ * set before the model is ever consulted. `relation` comes from `deriveOrigin` over the
+ * trigger row's own `lane`/`channel` columns, stamped at ingest by the transport that
+ * received the message (OR4) — no text an agent, a contact or a model writes can produce
+ * `relation: 'owner'`. `channel` is the resolved inbound channel of that same row, so an
+ * iMessage, SMS, Teams, email, phone or voice turn answers `false` here, and `kind` rules
+ * out every A2A turn (they resolve `kind: 'agent'`, `channel: 'a2a'`). `senderIsAgent`
+ * closes the last gap: another Dojo agent texting in over a human channel is not the owner.
+ *
+ * AND IT IS ONLY HALF THE GUARD. It says the dashboard CHAT may show the owner his own
+ * fetched credential; it says nothing about what leaves the box. A dashboard turn whose
+ * reply the away-override promotes onto iMessage is still `true` here, and the value is
+ * kept out of that push by `finalize/channel-push.ts`, which redacts every outbound arm on
+ * its own. Deleting either half is a leak.
+ */
+export function isOwnerDashboardDelivery(counterparty: TurnCounterparty): boolean {
+  return counterparty.kind === 'user'
+    && counterparty.relation === 'owner'
+    && counterparty.channel === 'dashboard'
+    && !counterparty.senderIsAgent;
+}
+
+/**
  * ── AND THE SUBSET THE ENGINE CAN ACTUALLY REACH MID-TURN (UX-REPAIR T41, option A) ──
  *
  * The owner's ruling (2026-08-12) opens the pre-call start-ack door "for routed-channel

@@ -21,6 +21,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { ToolCall } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
+import { redactHandedCredentials } from '../../../../credentials/secret-fields.js';
 import { resolveRecipientDisplay } from '../../../../contacts/resolve-recipient.js';
 import { writeToolReceipt } from '../../../../receipts/store.js';
 import { executeTool } from '../../../tools/index.js';
@@ -64,6 +65,28 @@ export async function pushReplyToChannel(
   // second mechanism for one invariant and every branch below would read one `!` wider.
   const state = stateIn as AgentTurnState & { lastAssistantTextForIM: string };
   const { agentId, turnNumber, turnCtx, counterparty, persistRoutingMarker } = ctx;
+
+  // ── DESIGN RULING 13 (2026-09-22) — NOTHING WITH A CREDENTIAL IN IT LEAVES THE BOX ──
+  //
+  // The ruling that lets the OWNER read his own fetched credential in dashboard chat is
+  // keyed on the channel, and this is the other side of that key: every arm below hands
+  // the reply to a bridge, to Twilio, to Outlook/Gmail or into a live call, and a secret
+  // that crosses one of those has left the machine it was encrypted on. So the outbound
+  // copy is scrubbed — ALL of it, including the values `redactHandedInCredentials` lets
+  // through on the owner's screen, and including an owner-bound iMessage push (the
+  // away-override promotes a dashboard turn onto iMessage, and the message still leaves
+  // the box).
+  //
+  // ⚠ THIS SCRUB WAS MISSING, and that is a finding rather than a tidy-up. `state
+  // .lastAssistantTextForIM` is set from the RAW model text (`persist-assistant.ts`,
+  // `terminal-text.ts`) because the reply itself is never rewritten (T5b), so until this
+  // line every channel arm sent whatever the model wrote, secret and all — the dashboard
+  // was the only surface the leak guard covered. Deleting it re-opens that.
+  //
+  // ONE derivation for five arms: a per-arm scrub is five places for the next channel to
+  // be forgotten in. The scrub is a no-op string-identity return for the overwhelming
+  // majority of turns (no handled credential, or none of them in the text).
+  const replyOut = redactHandedCredentials(agentId, state.lastAssistantTextForIM);
   const { destination, settledContextHold, routeRoot, presenceNow, isImessageConfigured, sendResponseViaIMessage, getPresence } = r;
 
   // Outbound routing markers are written via the hoisted
@@ -152,7 +175,7 @@ export async function pushReplyToChannel(
     // so the bridge routes to the owner, never to a contact (the "owner's reply
     // texted to a contact" bug class).
     const ownerBound = imRecipient === undefined;
-    const replyText = state.lastAssistantTextForIM;
+    const replyText = replyOut;
     // PHASE-2 T5: the reply-destination resolver DECLARES who it is answering; the
     // bridge door records whether the send landed. A suppressed or failed push now
     // produces an honest row instead of nothing at all.
@@ -186,7 +209,7 @@ export async function pushReplyToChannel(
         inboundChannel: state.inboundChannel,
         recipient: delivered.name,
         presence: getPresence(),
-        textLength: state.lastAssistantTextForIM.length,
+        textLength: replyOut.length,
       }, agentId);
     } else {
       logger.info('v2.7.23: iMessage auto-reply suppressed (no valid recipient)', {
@@ -208,7 +231,7 @@ export async function pushReplyToChannel(
         name: 'teams_send_message',
         arguments: {
           chat_id: state.inboundContext.chatId,
-          message: state.lastAssistantTextForIM,
+          message: replyOut,
         },
       };
       const result = await withOutboundAsync(
@@ -226,7 +249,7 @@ export async function pushReplyToChannel(
         logger.info('v2.7.24: routed reply via Teams', {
           agentId,
           chatId: state.inboundContext.chatId,
-          textLength: state.lastAssistantTextForIM.length,
+          textLength: replyOut.length,
         }, agentId);
       }
     } catch (err) {
@@ -249,7 +272,7 @@ export async function pushReplyToChannel(
         name: toolName,
         arguments: {
           message_id: state.inboundContext.emailMessageId,
-          body: state.lastAssistantTextForIM,
+          body: replyOut,
           // B-1 (comms-audit): reply FROM the same mailbox that received it.
           // Omitted before, so with 2+ agent accounts the reply silently failed.
           ...(state.inboundContext.emailAccount ? { account: state.inboundContext.emailAccount } : {}),
@@ -282,7 +305,7 @@ export async function pushReplyToChannel(
           agentId,
           emailService: state.inboundContext.emailService,
           subject: state.inboundContext.emailSubject,
-          textLength: state.lastAssistantTextForIM.length,
+          textLength: replyOut.length,
         }, agentId);
       }
     } catch (err) {
@@ -316,7 +339,7 @@ export async function pushReplyToChannel(
         // Streaming path took care of the body. Flush the
         // remaining tail (final sentence without trailing
         // punctuation-plus-whitespace) if any.
-        const tail = turnCtx.phoneStreamBuffer.trim();
+        const tail = redactHandedCredentials(agentId, turnCtx.phoneStreamBuffer).trim();
         if (tail) {
           // PHASE-2 T5: the phone door records per UTTERANCE, so the whole reply is
           // declared as one scope and its sentences fold into one row. A reply spoken
@@ -337,10 +360,10 @@ export async function pushReplyToChannel(
           callSid: state.inboundContext.phoneCallSid,
           to: state.inboundContext.phoneFromNumber,
           tailLength: tail.length,
-          totalTextLength: state.lastAssistantTextForIM.length,
+          totalTextLength: replyOut.length,
         }, agentId);
       } else {
-        const phoneText = state.lastAssistantTextForIM;
+        const phoneText = replyOut;
         await withOutboundAsync(
           {
             agentId, tool: 'auto-route', channel: 'phone',
@@ -354,7 +377,7 @@ export async function pushReplyToChannel(
           agentId,
           callSid: state.inboundContext.phoneCallSid,
           to: state.inboundContext.phoneFromNumber,
-          textLength: state.lastAssistantTextForIM.length,
+          textLength: replyOut.length,
         }, agentId);
       }
     } catch (err) {
@@ -376,7 +399,7 @@ export async function pushReplyToChannel(
         logger.warn('v2.9.18: sms auto-reply skipped - no from-number available', { agentId }, agentId);
       } else {
         const smsTo = state.inboundContext.smsFromNumber;
-        const smsText = state.lastAssistantTextForIM;
+        const smsText = replyOut;
         const r = await withOutboundAsync(
           {
             agentId, tool: 'auto-route', channel: 'sms', recipientId: smsTo,
@@ -405,7 +428,7 @@ export async function pushReplyToChannel(
             agentId,
             to: state.inboundContext.smsFromNumber,
             from: fromNumber,
-            textLength: state.lastAssistantTextForIM.length,
+            textLength: replyOut.length,
           }, agentId);
         }
       }

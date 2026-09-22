@@ -129,9 +129,15 @@ export async function executeCredentialTool(
       // NEXT-WAVE item 5: remember these secret values so the engine can scrub
       // them out of any persisted/broadcast tool_use command that inlines them
       // (rule 6: secrets never in message content). In-process only.
+      // `'out'` is the direction, and it is the ONLY place that passes it: this
+      // is the store handing the agent a value it can fetch again whenever it
+      // likes, which is what makes the value showable on the owner's own screen
+      // when he asks for it (design ruling 13). Everything else feeding this set
+      // is the owner handing a secret IN, and stays redacted everywhere.
       noteHandedCredentialValues(
         agentId,
         Object.values(record.credentials).map((v) => (typeof v === 'string' ? v : JSON.stringify(v))),
+        'out',
       );
       // Lead with the engine sentinel so this secret-bearing result is stubbed
       // deterministically if it ever ages into a compaction summary (Rule 6:
