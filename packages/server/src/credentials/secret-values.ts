@@ -63,42 +63,31 @@
 // ════════════════════════════════════════════════════════════════════════════
 // DESIGN RULING 13 (2026-09-22) — THE OWNER ASKING FOR HIS OWN SECRET GETS IT
 // ════════════════════════════════════════════════════════════════════════════
-// Release-ritual round 8 asked one agent the same question twice ("what's my
-// building gate code?", dashboard chat) and got two different answers, and both
-// halves of that split are this module's:
+// Round 8 asked one agent the same question twice ("what's my building gate
+// code?", dashboard chat) and got two different answers. Both halves are here.
 //
-//   THE ONE THAT WAS A PLAIN BUG. The value came back through `credential_get`,
-//   the agent reasoned about it, and the engine stored that reasoning with the
-//   placeholder in it — correctly. Then `agent/model.ts` replayed the reasoning
-//   to the provider on the next tool-call turn, because DeepSeek-family models
-//   require their own `reasoning_content` back, and THE REPLAY WAS NEVER
-//   HYDRATED: `hydrateCredentialsInMessages` walked `content` and nothing else.
-//   So the model read its own prior thought with `<redacted-credential:c1>`
-//   where the value had been, and wrote the placeholder into the owner's reply
-//   as if it were the code. Exactly property 3's failure mode one field over —
-//   "the model reads its own previous call with the placeholder in it and
-//   copies it forward" — which is why the fix is the same fix: the read side
-//   covers EVERY field the provider boundary sends back, not just `content`.
+// THE BUG. `agent/model.ts` replays a stored `reasoning_content` to the
+// provider on tool-call turns (the DeepSeek family requires its own reasoning
+// back) and `hydrateCredentialsInMessages` walked `content` alone — so the
+// model read its own prior thought with the placeholder in it and copied the
+// placeholder into the owner's reply. That is property 3's named failure mode
+// one field over, so it takes property 3's fix: the read side covers EVERY
+// field the provider boundary sends, not just `content`.
 //
-//   THE ONE THAT WAS A DECISION. Beneath that bug sat a real question, and the
-//   owner answered it: when the OWNER asks in DASHBOARD chat for a credential,
-//   the agent SHOWS it — priority one ("the user asks the agent to do something
-//   and it does it") covers secrets too. The guard keeps redacting everywhere
-//   else, and the carve-out is CHANNEL-KEYED, never content-judged (OR2: the
-//   engine never judges content where structure decides). This module owns the
-//   structural half of that key, `redactHandedInCredentials`; the channel half
-//   lives at the seam that knows who it is delivering to.
+// THE DECISION, which is the owner's: when the OWNER asks in DASHBOARD chat for
+// a credential, the agent SHOWS it — priority one covers secrets too. The guard
+// keeps redacting elsewhere, and the carve-out is CHANNEL-KEYED, never
+// content-judged (OR2). This module owns the structural half of that key,
+// `redactHandedInCredentials`; the channel half lives at the seam that knows
+// who it is delivering to.
 //
-// WHAT "HANDED IN" AND "HANDED OUT" MEAN, AND WHY THE SPLIT IS STRUCTURAL.
-// The value set is fed from two directions and always has been. A value the
-// STORE HANDED OUT to this agent (`credential_get`) is one the agent can fetch
-// again at will — showing it on the owner's own screen tells the owner nothing
-// `credential_get` would not. A value the owner HANDED IN through a declared
-// secret field (`credential_add` / `credential_update`) has never been handed
-// back out, and the owner's standing requirement is that a typed secret does
-// not come to rest in the clear; it stays redacted on every surface. That is a
-// fact about HOW the value entered this process, not about what any text says
-// about it, which is what makes it a legal key under OR2.
+// HANDED IN vs HANDED OUT, and why the split is structural rather than a
+// judgement. A value the store HANDED OUT (`credential_get`) is one the agent
+// can fetch again at will, so showing it on the owner's own screen tells him
+// nothing `credential_get` would not. A value he HANDED IN through a declared
+// secret field has never been handed back out, and a typed secret must not come
+// to rest in the clear; it stays redacted on every surface. That is a fact about
+// how the value entered this process, not about what any text says about it.
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -136,12 +125,9 @@ const PLACEHOLDER_RE = /<redacted-credential(?::([a-z0-9]+))?>/g;
 // declared field is still replaced in the stored arguments.
 const MIN_REDACTABLE_CREDENTIAL_LEN = 6;
 
-/**
- * WHICH WAY A VALUE CROSSED THIS PROCESS. `'out'` is the store handing a value
- * to the agent (`credential_get`); `'in'` is the owner handing one to the store
- * through a declared secret field. See the header for why the direction — and
- * not anything a string says — is what the owner's-screen carve-out keys on.
- */
+/** Which way a value crossed this process — see the header. `'out'` is the store
+ *  handing one to the agent (`credential_get`); `'in'` is the owner handing one
+ *  in through a declared secret field. */
 export type CredentialDirection = 'in' | 'out';
 
 /** Per agent: the values it has handled, each with its in-process handle. */
@@ -166,11 +152,8 @@ let tagCounter = 0;
 
 /**
  * Register secret values this agent has handled, in either direction.
- *
- * `direction` defaults to `'in'`, which is the conservative side: a caller that
- * does not say gets the value that is redacted on every surface, so forgetting
- * the argument can only ever over-redact. Only `credential_get` — the one place
- * the store hands a value to the agent — passes `'out'`.
+ * `direction` defaults to `'in'`, the conservative side: forgetting it can only
+ * ever over-redact. Only `credential_get` passes `'out'`.
  */
 export function noteHandedCredentialValues(
   agentId: string, values: string[], direction: CredentialDirection = 'in',
@@ -222,15 +205,12 @@ export function redactHandedCredentials(agentId: string, text: string): string {
 /**
  * THE OWNER'S-SCREEN SUBSET (design ruling 13). Redacts only the values that
  * were HANDED IN — the ones the store has never given back to this agent — and
- * leaves a fetched value standing.
- *
- * It is the same redactor with a smaller value set, deliberately: a second
- * replacement loop is how two loops come to disagree about which value is
- * longest, and the longest-first ordering below is load-bearing.
- *
- * The CHANNEL half of the key is not here and must not be: this function says
- * which values the owner may see, and the seam that knows it is delivering to
- * the owner's dashboard says when to ask.
+ * leaves a fetched value standing. The same redactor over a smaller set,
+ * deliberately: a second replacement loop is how two loops come to disagree
+ * about which value is longest, and the longest-first order below is
+ * load-bearing. The CHANNEL half of the key is not here and must not be — this
+ * says which values the owner MAY see, the seam that knows it is delivering to
+ * his dashboard says when to ask.
  */
 export function redactHandedInCredentials(agentId: string, text: string): string {
   return redactValues(agentId, text, true);
@@ -302,17 +282,14 @@ function hydrateDeep(agentId: string, value: unknown): unknown {
  * and the dev instruments all see the placeholder and never the value.
  *
  * ⚠ IT COVERS `reasoningContent` TOO, AND THAT IS A FIX, NOT A FLOURISH
- * (design ruling 13, round 8). `memory/assembler.ts` puts the stored
- * `reasoning_content` back on an assistant message it rebuilds, and
- * `agent/model.ts` sends that field to the provider on every tool-call turn,
- * because the DeepSeek family requires its own reasoning back. The field is
- * REDACTED at persist like every other stored byte — so while this seam walked
- * `content` alone, a reasoning model read its own prior thought with the
- * placeholder in it and copied the placeholder forward. That is property 3's
- * named failure mode one field over, and it reached the owner's screen as the
- * answer to "what's my gate code?". Every field the boundary sends is hydrated
- * here; the by-reference guarantee is unchanged, because a message with no
- * placeholder in EITHER field is still returned as itself.
+ * (design ruling 13). `memory/assembler.ts` puts the stored `reasoning_content`
+ * back on the assistant message it rebuilds and `agent/model.ts` sends it to the
+ * provider on tool-call turns; it is REDACTED at persist like every other stored
+ * byte, so while this seam walked `content` alone a reasoning model read its own
+ * prior thought with the placeholder in it and copied it forward — onto the
+ * owner's screen, as the answer to "what's my gate code?". Every field the
+ * boundary sends is hydrated here; the by-reference guarantee is unchanged,
+ * because a message with no placeholder in EITHER field is returned as itself.
  */
 export function hydrateCredentialsInMessages<
   T extends { role: string; content: unknown; reasoningContent?: string },
