@@ -483,6 +483,8 @@ route,PATCH /api/config/models/:id/thinking,packages/server/src/gateway/routes/c
 route,PATCH /api/config/providers/:id,packages/server/src/gateway/routes/config.ts:1470,built,
 route,PATCH /api/config/providers/:id/host-ram,packages/server/src/gateway/routes/config.ts:1580,built,
 route,PATCH /api/config/providers/:id/response-patience,packages/server/src/gateway/routes/config.ts:1632,built,
+route,PATCH /api/config/providers/:id/prefill-throughput,packages/server/src/gateway/routes/config.ts:1748,built,
+route,PATCH /api/config/providers/:id/unattended-budget,packages/server/src/gateway/routes/config.ts:1707,built,
 route,PATCH /api/contacts/:id,packages/server/src/gateway/routes/contacts.ts:101,built,
 route,PATCH /api/credentials/:id,packages/server/src/gateway/routes/credentials.ts:88,built,
 route,PATCH /api/twilio/settings,packages/server/src/gateway/routes/twilio.ts:408,built,
