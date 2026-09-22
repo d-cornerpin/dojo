@@ -5146,6 +5146,48 @@
       "to": 444,
       "by": "review minor m2/m3 \u2014 the header stops over-claiming",
       "why": "+3, all comment, and they narrow a claim rather than widen a feature. The block said one derivation covers everything that leaves the box; two strings it does not cover exist \u2014 the phone arm's STREAMED TAIL (a different string, scrubbed on its own line here) and `stranded-attachments.ts`'s caption (a different file, now carrying the same call). Both are named. An accurate header is the whole value of a header that a reader trusts enough not to re-derive. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/counterparty.ts",
+      "from": 1076,
+      "to": 997,
+      "by": "fix round 2 \u2014 the owner-dashboard predicate is deleted; the file is BASE again",
+      "why": "-79, back to its pre-task count exactly. `isOwnerDashboardDelivery`, the `channelStamped` field and `hasChannelStamp` existed only to key a credential reveal the owner's correction removed (\\\"The agent should not reply with credentials. The user can see them in the credentials store in the vault tab instead.\\\"). Pinning back down rather than banking the headroom: an unused ceiling is a decrease-only ratchet quietly not ratcheting, and two rounds of this task have now been argued at this file."
+    },
+    {
+      "path": "packages/server/src/credentials/secret-values.ts",
+      "from": 355,
+      "to": 278,
+      "by": "fix round 2 \u2014 the render-time seam and the direction split are deleted",
+      "why": "-77. `hydrateOwnerDashboardCredentials`, the `handedOut` tag set, `CredentialDirection` and the direction argument all served the reveal and went with it, as did the paragraphs arguing for them. What remains above BASE (225 -> 278) is the reasoning-field arm of the provider-boundary hydrator, its completeness argument, and the header recording the CORRECTED ruling \u2014 the part of this task that was a real bug rather than a policy question."
+    },
+    {
+      "path": "packages/server/src/credentials/secret-fields.ts",
+      "from": 242,
+      "to": 241,
+      "by": "fix round 2 \u2014 byte-identical to BASE again",
+      "why": "-1: the re-export the render seam needed is gone with the seam. This module has exactly the surface it had at 924f2155."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/chat.ts",
+      "from": 512,
+      "to": 492,
+      "by": "fix round 2 \u2014 the reload render seam is deleted; the route is BASE again",
+      "why": "-20. The re-review graded that seam Critical (RN1: unkeyed and observed by no test, three plaintext-on-reload cases). It is not fixed, it is GONE: the owner's correction left it no job, and the route touches no credential seam at all now. A clause in `credentials/__tests__/a-credential-never-appears-in-chat.test.ts` asserts this file contains neither `redact` nor `hydrate`, so the seam cannot creep back."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts",
+      "from": 375,
+      "to": 357,
+      "by": "fix round 2 \u2014 `ownerView` is deleted; the persist seam has one unconditional behaviour",
+      "why": "-18. The broadcast reads the stored JSON again, so the row and the frame are one string and a reload cannot disagree with the live bubble. The comment that survives says what the scrub is for under the corrected ruling and that its sibling arm now matches it."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts",
+      "from": 387,
+      "to": 407,
+      "by": "fix round 2 \u2014 the tool-less reply is scrubbed at its birth point",
+      "why": "+20 and 18 of them are the argument, which is the only part a reader cannot reconstruct. The CODE is one expression: `persistedContent` is born from `redactHandedCredentials(agentId, result.content)` instead of from `result.content`. It belongs HERE and nowhere else because this is the single place that text is derived \u2014 the assistant row, the working-note system row, both broadcasts, the closeout demotion and the channel-routed copy are all downstream, so a scrub at each writer is a scrub at whichever writers someone remembered. The comment carries the two facts the line cannot: that the owner's correction is what makes the scrub unconditional, and that this is NOT a reversal of T5b \u2014 the sibling arm has rewritten stored reply text since PHASE-4, T5b's caution is about not rewriting what was DELIVERED, and the model still spoke its sentence with the real value in hand. Without that paragraph the next reader deletes the scrub as a T5b violation. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -5226,7 +5268,7 @@
     "packages/server/src/agent/v2/ack-copy.ts": 303,
     "packages/server/src/agent/v2/answered-edge.ts": 743,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 502,
-    "packages/server/src/agent/v2/counterparty.ts": 1076,
+    "packages/server/src/agent/v2/counterparty.ts": 997,
     "packages/server/src/agent/v2/loop.ts": 724,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 546,
@@ -5274,11 +5316,11 @@
     "packages/server/src/agent/v2/steps/post-call-classify/no-reply.ts": 409,
     "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 104,
     "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 276,
-    "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 375,
+    "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 357,
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 286,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 417,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
-    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 387,
+    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 407,
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 235,
@@ -5303,12 +5345,12 @@
     "packages/server/src/agent/v2/steps/teardown/index.ts": 291,
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/costs/tracker.ts": 541,
-    "packages/server/src/credentials/secret-fields.ts": 242,
-    "packages/server/src/credentials/secret-values.ts": 355,
+    "packages/server/src/credentials/secret-fields.ts": 241,
+    "packages/server/src/credentials/secret-values.ts": 278,
     "packages/server/src/db/migration-backup.ts": 399,
     "packages/server/src/db/migration-checksums.ts": 277,
     "packages/server/src/gateway/routes/agents.ts": 972,
-    "packages/server/src/gateway/routes/chat.ts": 512,
+    "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2950,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/setup-deps.ts": 513,
