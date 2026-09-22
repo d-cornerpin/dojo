@@ -5132,6 +5132,20 @@
       "to": 242,
       "by": "fix round 1 \u2014 LOWERING a ceiling: the write-side carve-out is gone from this file",
       "why": "-19. The previous raise bought `redactAssistantBlocksForPersist` a channel-key option; the C1 rework deleted it, so this module is BASE plus a single re-export line for the render-time seam. Pinning it back down rather than leaving headroom: an unused ceiling is a decrease-only ratchet quietly not ratcheting."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/stranded-attachments.ts",
+      "from": 122,
+      "to": 129,
+      "by": "review minor m2 \u2014 the sixth outbound arm joins the credential scrub",
+      "why": "+7: two code lines (a lazy import of the scrub, one local for the scrubbed caption) and five of reason. The reason is the finding: this arm sends a caption over iMessage AFTER the channel router has run, so `channel-push.ts`'s single derivation never sees it \u2014 a sixth arm that the guard's own 'one derivation for every arm' claim silently did not cover. The comment says that out loud at the site, because the next reader deleting a 'redundant' scrub here would re-open a channel nobody is watching. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/channel-push.ts",
+      "from": 441,
+      "to": 444,
+      "by": "review minor m2/m3 \u2014 the header stops over-claiming",
+      "why": "+3, all comment, and they narrow a claim rather than widen a feature. The block said one derivation covers everything that leaves the box; two strings it does not cover exist \u2014 the phone arm's STREAMED TAIL (a different string, scrubbed on its own line here) and `stranded-attachments.ts`'s caption (a different file, now carrying the same call). Both are named. An accurate header is the whole value of a header that a reader trusts enough not to re-derive. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -5242,14 +5256,14 @@
     "packages/server/src/agent/v2/steps/execute/tracker-floors.ts": 314,
     "packages/server/src/agent/v2/steps/execute/work-status.ts": 52,
     "packages/server/src/agent/v2/steps/execute/xml-fallback.ts": 155,
-    "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 441,
+    "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 444,
     "packages/server/src/agent/v2/steps/finalize/close-the-loop.ts": 158,
     "packages/server/src/agent/v2/steps/finalize/completion-ack.ts": 154,
     "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts": 90,
     "packages/server/src/agent/v2/steps/finalize/index.ts": 175,
     "packages/server/src/agent/v2/steps/finalize/link-backstop.ts": 113,
     "packages/server/src/agent/v2/steps/finalize/route-reply.ts": 211,
-    "packages/server/src/agent/v2/steps/finalize/stranded-attachments.ts": 122,
+    "packages/server/src/agent/v2/steps/finalize/stranded-attachments.ts": 129,
     "packages/server/src/agent/v2/steps/post-call-classify/args-for-result.ts": 27,
     "packages/server/src/agent/v2/steps/post-call-classify/closeout-floors.ts": 196,
     "packages/server/src/agent/v2/steps/post-call-classify/empty-response.ts": 252,
