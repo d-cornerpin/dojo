@@ -55,6 +55,52 @@ export function setEmbeddingConfig(config: Partial<EmbeddingConfig>): void {
   `).run(JSON.stringify(updated), JSON.stringify(updated));
 }
 
+// ── Backend absence, reported as a fact instead of guessed from prose ──
+//
+// The embedder is OPTIONAL and fires on every message, response and summary — so
+// whatever this module does when the backend is missing, it does hundreds of
+// times an hour. ROUND 9 of the release ritual (2026-09-21, v3.1.26) measured
+// the cost of getting that wrong: the box's Ollama was UP and serving zero
+// models, every embed came back `HTTP 404 {"error":"model ... not found"}`, the
+// store path below classified absence with a prose regex that knew about refused
+// connections and nothing about 404 — so an optional subsystem emitted 102 ERROR
+// lines in 19 minutes and the SAFETY gate stopped the release.
+//
+// Widening the regex would be the same mistake spelled longer. `provider-error.ts`
+// already states the house rule — the reported CODE decides, prose is the LAST
+// resort — so the 404 leaves the fetch as a TYPE, and prose is left to the one
+// layer with no status to read: a daemon that never answered at all.
+export class EmbeddingBackendUnavailableError extends Error {
+  /** Duck-typed marker: `instanceof` is not reliable across module instances. */
+  readonly backendUnavailable = true;
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'EmbeddingBackendUnavailableError';
+  }
+}
+
+/**
+ * True when the failure means THE BACKEND IS NOT THERE — the daemon never
+ * answered (transport; no status to read) or answered that it has no such model
+ * (HTTP 404). A 500, a malformed body or a DB write fault is a genuine failure
+ * and keeps the ERROR branch.
+ */
+export function isEmbeddingBackendUnavailable(err: unknown): boolean {
+  if (err instanceof Error && (err as { backendUnavailable?: unknown }).backendUnavailable === true) return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /ECONNREFUSED|fetch failed|aborted|timeout|ENOTFOUND|network/i.test(msg);
+}
+
+// The one place a non-OK embed response becomes an error. 404 is "no such model"
+// on Ollama and on OpenAI-compatible servers alike; some of the latter say it in
+// prose under another status, so the body is read as a fallback.
+function embedResponseError(prefix: string, status: number, body: string): Error {
+  const msg = `${prefix}: HTTP ${status} ${body.slice(0, 200)}`;
+  return status === 404 || /model[^.]{0,40}not found|model_not_found|no such model/i.test(body)
+    ? new EmbeddingBackendUnavailableError(msg, status)
+    : new Error(msg);
+}
+
 // ── Embedding Generation ──
 
 // Default per-request embed deadline. Background memory embeds (summaries,
@@ -108,7 +154,7 @@ export async function generateEmbedding(
         truncated = truncated.slice(0, Math.floor(truncated.length / 2));
         continue;
       }
-      throw new Error(`Ollama embedding failed: HTTP ${response.status} ${errorText.slice(0, 200)}`);
+      throw embedResponseError('Ollama embedding failed', response.status, errorText);
     }
     throw new Error('Ollama embedding failed: input still exceeded the context length after 3 halving retries');
   }
@@ -135,7 +181,7 @@ export async function generateEmbedding(
       truncated = truncated.slice(0, Math.floor(truncated.length / 2));
       continue;
     }
-    throw new Error(`Embedding API failed: HTTP ${response.status} ${errorText.slice(0, 200)}`);
+    throw embedResponseError('Embedding API failed', response.status, errorText);
   }
   throw new Error('Embedding API failed: input still exceeded the context length after 3 halving retries');
 }
@@ -143,6 +189,11 @@ export async function generateEmbedding(
 // ── Store Embedding ──
 
 export type EmbeddingSourceType = 'message' | 'summary' | 'briefing' | 'technique';
+
+// An absent optional backend is ONE fact, not one per message. This latch holds
+// from the first failed attempt until the backend answers again, and resets on
+// the next successful store so a LATER absence still gets announced.
+let backendAbsenceReported = false;
 
 export async function storeEmbedding(
   sourceType: EmbeddingSourceType,
@@ -176,15 +227,25 @@ export async function storeEmbedding(
       embedding.length,
     );
 
+    backendAbsenceReported = false; // it answered — a later absence may speak again
     logger.debug('Embedding stored', { sourceType, sourceId, dimensions: embedding.length }, agentId ?? undefined);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // The default embed backend (Ollama) is engine-optional and fires on every
-    // message/response/summary. A connection failure means it is simply absent,
-    // not a store fault, so log that at WARN (best-effort, not a dashboard-
-    // broadcast ERROR); reserve ERROR for a genuine DB write failure.
-    const backendUnavailable = /ECONNREFUSED|fetch failed|aborted|timeout|ENOTFOUND|network/i.test(msg);
-    logger[backendUnavailable ? 'warn' : 'error']('Failed to store embedding', {
+    // The default embed backend (Ollama) is engine-optional. Absent is not a
+    // fault: it is WARN, said once (see the latch above). ERROR stays for the
+    // genuine failure an operator has to act on.
+    if (isEmbeddingBackendUnavailable(err)) {
+      if (!backendAbsenceReported) {
+        backendAbsenceReported = true;
+        logger.warn('Embedding backend unavailable — embeddings are paused and this stays quiet until it answers again', {
+          error: msg,
+          sourceType,
+          sourceId,
+        });
+      }
+      return; // best-effort, don't throw
+    }
+    logger.error('Failed to store embedding', {
       error: msg,
       sourceType,
       sourceId,
