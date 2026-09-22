@@ -90,9 +90,19 @@ function baseManifest(overrides: Partial<ExportManifest['contents']> = {}): Expo
   };
 }
 
+// The module graph is loaded HERE, not inside a case. `manifest.ts` pulls in the
+// update route, presence and the whole db layer; charging that cold import chain
+// to a 5000ms per-case budget made the first case a coin flip under full-suite
+// load (20 workers, saturated cores) — it timed out there while passing in 3.6s
+// when the file ran alone. A hook has its own budget and runs once.
+let generateManifest: typeof import('../manifest.js').generateManifest;
+let runPostMigrationChecks: typeof import('../checks.js').runPostMigrationChecks;
+
 beforeAll(async () => {
   const { runMigrations } = await import('../../db/migrations.js');
   runMigrations();
+  ({ generateManifest } = await import('../manifest.js'));
+  ({ runPostMigrationChecks } = await import('../checks.js'));
 });
 
 beforeEach(() => { spawned.commands.length = 0; });
@@ -124,7 +134,6 @@ describe('the export manifest reads the model list over HTTP', () => {
     const fetchStub = tagsResponder(INSTALLED);
     globalThis.fetch = fetchStub as unknown as typeof fetch;
 
-    const { generateManifest } = await import('../manifest.js');
     const manifest = await generateManifest(1234, [], [], 0);
 
     expect(manifest.contents.ollama_models).toEqual(INSTALLED);
@@ -135,7 +144,6 @@ describe('the export manifest reads the model list over HTTP', () => {
   it('a daemon that is down answers honestly — no models, no throw, no spawn', async () => {
     globalThis.fetch = vi.fn(async () => { throw new TypeError('fetch failed'); }) as unknown as typeof fetch;
 
-    const { generateManifest } = await import('../manifest.js');
     const manifest = await generateManifest(1234, [], [], 0);
 
     expect(manifest.contents.ollama_models).toEqual([]);
@@ -148,7 +156,6 @@ describe('the post-migration wizard reads the model list over HTTP', () => {
     const fetchStub = tagsResponder(INSTALLED);
     globalThis.fetch = fetchStub as unknown as typeof fetch;
 
-    const { runPostMigrationChecks } = await import('../checks.js');
     const checks = await runPostMigrationChecks(baseManifest({ ollama_models: ['nomic-embed-text:latest', 'absent-model:latest'] }));
 
     expect(checks.find(c => c.id === 'ollama-model-nomic-embed-text:latest')?.status).toBe('ok');
@@ -162,7 +169,6 @@ describe('the post-migration wizard reads the model list over HTTP', () => {
   it('with the daemon down every declared model reads as needing download, not as installed', async () => {
     globalThis.fetch = vi.fn(async () => { throw new TypeError('fetch failed'); }) as unknown as typeof fetch;
 
-    const { runPostMigrationChecks } = await import('../checks.js');
     const checks = await runPostMigrationChecks(baseManifest({ ollama_models: ['nomic-embed-text:latest'] }));
 
     expect(checks.find(c => c.id === 'ollama-model-nomic-embed-text:latest')?.status).toBe('action_needed');

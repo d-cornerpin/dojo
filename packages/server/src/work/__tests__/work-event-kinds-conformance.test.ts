@@ -36,7 +36,7 @@
 // contains the words "transition + appendEvent" and a walk that counted prose as a call site
 // would be measuring the documentation.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { WORK_EVENT_KINDS, isWorkEventKind, type WorkEventKind } from '../event-kinds.js';
@@ -85,13 +85,56 @@ function walk(dir: string, acc: string[] = []): string[] {
 }
 
 const rel = (f: string): string => path.relative(SRC, f).split(path.sep).join('/');
-const sourceFiles = (): string[] => walk(SRC).map(rel).sort();
-const read = (r: string): string => fs.readFileSync(path.join(SRC, r), 'utf8');
 
-/** Blank comments, keeping length, so prose describing a call is never counted as one. */
+// ── THE TREE IS READ ONCE, IN A HOOK — NOT ONCE PER CASE ───────────────────────────────
+//
+// MEASURED, on an IDLE box, before this cache existed: four of the twelve cases took
+// 2441ms, 2381ms, 2201ms and 2157ms — each of them already about half of vitest's 5000ms
+// per-case budget. Under a full-suite run (20 workers saturating the cores) that margin is
+// gone, and the file failed 1-2 cases per run, a DIFFERENT case each time, while passing
+// 12/12 when run alone. That is the signature of a case budget spent on shared setup, not
+// of a flaky assertion.
+//
+// WHERE THE TIME WENT: nothing here is cached and the helpers call each other. Every case
+// re-walked all of `packages/server/src` (~540 files), and `writtenKinds()` then called
+// `boundConstantValues()` PER CALL SITE — each one re-reading the whole tree until it
+// matched — plus a full `sourceFiles().map(read)` join for every member-access expression.
+// One case therefore did thousands of readFileSync calls to answer a question about files
+// that cannot change while the run is in progress.
+//
+// THE FIX IS A CACHE, NOT A TIMEOUT. Every helper below is a pure function of a tree that
+// is immutable for the lifetime of the process, so each is memoised, and `beforeAll` pays
+// the whole bill once, off the per-case budget. No assertion, no walk and no planted fault
+// changed: the cases still ask exactly what they asked, they just stop re-deriving the
+// answer twelve times. (A bare `testTimeout` bump was the alternative and is refused — it
+// would have left 2.4s of avoidable IO in every case and only moved the cliff.)
+let fileListCache: string[] | null = null;
+const sourceFiles = (): string[] => (fileListCache ??= walk(SRC).map(rel).sort());
+
+const readCache = new Map<string, string>();
+const read = (r: string): string => {
+  let hit = readCache.get(r);
+  if (hit === undefined) readCache.set(r, hit = fs.readFileSync(path.join(SRC, r), 'utf8'));
+  return hit;
+};
+
+/** Blank comments, keeping length, so prose describing a call is never counted as one.
+ *  Stays a PURE function of its argument — the SELF-TEST case feeds it synthetic strings. */
 export const stripComments = (s: string): string => s
   .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
   .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
+
+/** …and the memoised form, for the tree walk only. */
+const strippedCache = new Map<string, string>();
+const stripped = (r: string): string => {
+  let hit = strippedCache.get(r);
+  if (hit === undefined) strippedCache.set(r, hit = stripComments(read(r)));
+  return hit;
+};
+
+/** Every source file, comments blanked, as ONE blob — built at most once. */
+let joinedCache: string | null = null;
+const strippedJoined = (): string => (joinedCache ??= sourceFiles().map(stripped).join('\n'));
 
 /** The SECOND argument of every `appendEvent` / `appendWorkEvent` CALL, as written. Matched
  *  on the call shape rather than on a list of known kinds — a walk that looked for the kinds
@@ -103,11 +146,13 @@ interface KindExpr { file: string; expr: string }
 /** Every kind expression at every call site, plus the ONE declaration the same shape
  *  matches (`function appendEvent(workId: string, kind: WorkEventKind, …)`), separated by
  *  the type annotation only a parameter list can carry. */
+let kindExpressionsCache: { calls: KindExpr[]; declarations: KindExpr[] } | null = null;
 function kindExpressions(): { calls: KindExpr[]; declarations: KindExpr[] } {
+  if (kindExpressionsCache) return kindExpressionsCache;
   const calls: KindExpr[] = [];
   const declarations: KindExpr[] = [];
   for (const f of sourceFiles()) {
-    const src = stripComments(read(f));
+    const src = stripped(f);
     CALL_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = CALL_RE.exec(src))) {
@@ -115,32 +160,41 @@ function kindExpressions(): { calls: KindExpr[]; declarations: KindExpr[] } {
       (expr.includes(':') ? declarations : calls).push({ file: f, expr });
     }
   }
-  return { calls, declarations };
+  return (kindExpressionsCache = { calls, declarations });
 }
 
 /** A kind constant's declaration, and the values it binds. REQUIRES the `satisfies` clause:
  *  a constant that is not bound to `WorkEventKind` is a SECOND declaration of the list, which
  *  is the shape this task deleted. Returns null when the identifier has no bound declaration
  *  anywhere — which the arm below reports as a failure naming the identifier. */
+const boundConstantCache = new Map<string, string[] | null>();
 function boundConstantValues(identifier: string): string[] | null {
+  const cached = boundConstantCache.get(identifier);
+  if (cached !== undefined) return cached;
   const single = new RegExp(
     String.raw`\b${identifier}\s*=\s*'([a-z_]+)'\s*as const satisfies WorkEventKind\b`,
   );
   const object = new RegExp(
     String.raw`\b${identifier}\s*=\s*\{([\s\S]*?)\}\s*as const satisfies Record<string, WorkEventKind>`,
   );
+  const remember = (v: string[] | null): string[] | null => {
+    boundConstantCache.set(identifier, v);
+    return v;
+  };
   for (const f of sourceFiles()) {
-    const src = stripComments(read(f));
+    const src = stripped(f);
     const s = single.exec(src);
-    if (s) return [s[1]];
+    if (s) return remember([s[1]]);
     const o = object.exec(src);
-    if (o) return [...o[1].matchAll(/[A-Za-z]+\s*:\s*'([a-z_]+)'/g)].map((mm) => mm[1]);
+    if (o) return remember([...o[1].matchAll(/[A-Za-z]+\s*:\s*'([a-z_]+)'/g)].map((mm) => mm[1]));
   }
-  return null;
+  return remember(null);
 }
 
 /** THE ENUMERATED WRITER SET: every kind any writer can pass, by either route. */
+let writtenKindsCache: { kinds: Set<string>; unbound: string[] } | null = null;
 function writtenKinds(): { kinds: Set<string>; unbound: string[] } {
+  if (writtenKindsCache) return writtenKindsCache;
   const kinds = new Set<string>();
   const unbound: string[] = [];
   for (const { expr } of kindExpressions().calls) {
@@ -153,14 +207,13 @@ function writtenKinds(): { kinds: Set<string>; unbound: string[] } {
       // A member access takes only its own value, so an unused member of a bound object
       // does not count as written. `OCCURRENCE_EVENT.released` is one kind, not three.
       const member = expr.split('.')[1].trim();
-      const src = sourceFiles().map(read).map(stripComments).join('\n');
-      const pick = new RegExp(String.raw`\b${member}\s*:\s*'([a-z_]+)'`).exec(src);
+      const pick = new RegExp(String.raw`\b${member}\s*:\s*'([a-z_]+)'`).exec(strippedJoined());
       if (pick) kinds.add(pick[1]); else unbound.push(expr);
     } else {
       for (const v of values) kinds.add(v);
     }
   }
-  return { kinds, unbound };
+  return (writtenKindsCache = { kinds, unbound });
 }
 
 /** The CHECK's own list, read out of the migration file. */
@@ -172,6 +225,14 @@ function checkListedKinds(): string[] {
 }
 
 const sorted = (xs: Iterable<string>): string[] => [...xs].sort();
+
+// Pay for the walk HERE, where it is charged to the hook and not to whichever case happened
+// to ask first. After this every helper above is a map lookup.
+beforeAll(() => {
+  kindExpressions();
+  writtenKinds();
+  strippedJoined();
+});
 
 // ── the three arms ─────────────────────────────────────────────────────────────────────
 
