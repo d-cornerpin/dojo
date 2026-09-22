@@ -5097,6 +5097,41 @@
       "to": 323,
       "by": "design ruling 13 \u2014 the module is PINNED for the first time, at its post-ruling count",
       "why": "+98 on a leaf that imports nothing, and it is where this codebase has repeatedly DECIDED to put credential rationale so the call sites stay one line \u2014 see the model-call.ts raise, which argues exactly that (\"THE MECHANISM IS ELSEWHERE ALREADY: every rule, every property and the whole rationale live in credentials/secret-values.ts\"). The code is ~35 lines: a `handedOut` tag set on the per-agent state, a `direction` argument that defaults to the conservative side, one shared `redactValues` body behind the two exported redactors (one loop, because two would come to disagree about which value is longest), and the `reasoningContent` arm of the hydrator. The rest is the ruling's argument and the round-8 root cause, both of which a reader needs at THIS file to avoid re-deriving them wrongly: that the replayed `reasoning_content` is a field the provider boundary sends and therefore a field this seam owns, and that the owner's-screen carve-out keys on the DIRECTION a value crossed the process rather than on anything a string says (OR2). It was previously unpinned, so this entry is the pin itself: decrease-only from here. Trimmed once already (346 -> 323) by deleting prose the report and the test header carry."
+    },
+    {
+      "path": "packages/server/src/agent/v2/counterparty.ts",
+      "from": 1028,
+      "to": 1076,
+      "by": "fix round 1 \u2014 the fail-closed conjunct and the corrected unspoofability argument",
+      "why": "+48 on top of the raise below, and 42 of them are prose the task review asked for by name. The CODE is `channelStamped` on the counterparty (one optional field, set from a 12-line `hasChannelStamp` helper) and one more conjunct in the predicate. It is load-bearing for a reason the previous argument got WRONG and the comment now states: `relation:'owner' \u2227 channel:'dashboard'` is not only what a stamped dashboard turn produces, it is what `deriveOrigin` returns when it has nothing to go on (its last branch is \\\"plain text = the owner on dashboard chat\\\") and what this file's own `?? 'dashboard'` fallback produces \u2014 a fail-OPEN default underneath a predicate whose module argued it was fail-closed. So the predicate now demands a positive stamp, and the comment says \\\"default\\\" where it used to say \\\"cannot be produced\\\", which in a security doc is the whole distinction. REFUSED: deriving the stamp at the two render seams instead \u2014 they would each re-implement `deriveOrigin`'s trust order, and two copies of a trust order is how they disagree. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/credentials/secret-values.ts",
+      "from": 323,
+      "to": 355,
+      "by": "fix round 1 \u2014 the render-time seam replaces the write-time carve-out",
+      "why": "+32 net for the C1 rework: `hydrateOwnerDashboardCredentials` (9 lines of code) plus the paragraph that says why the carve-out is a READ and not a narrower write \u2014 that writing the value into the row defeats property 2 (a stored plaintext has nothing to hydrate, so a restart presents a possibly-rotated credential as live), manufactures the input the outbound scrub cannot defend, and lands a secret on a row shape the platform's own at-rest audit forbids. That paragraph is the one a future reader needs most, because narrowing the persist scrub is the obvious-looking way to satisfy the ruling and it is the way that leaks. The write-side variant it replaces (`redactHandedInCredentials`) is DELETED, so the module has one redactor again. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/chat.ts",
+      "from": 492,
+      "to": 512,
+      "by": "fix round 1 \u2014 the reload half of the owner's own screen",
+      "why": "+20: four code lines (one import, one `.map` that hydrates each served row) and 15 of argument. It lives here because THIS ROUTE IS THE CHANNEL KEY, and a stronger one than any derivation: it is the owner's dashboard chat surface and the only human-facing read the platform has (`lane='owner'`, fail-closed, stated two predicates above), so nothing an agent, a peer or an outbound bridge does can reach it. The comment records the two things a reader cannot see from the `.map`: that NOTHING STORED MOVES (only the JSON leaving the handler carries the value, the rows keep their placeholders), and that after a restart the placeholder simply stays \u2014 property 2 working rather than a regression. Without the reload half the ruling holds for one bubble and breaks on refresh. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts",
+      "from": 363,
+      "to": 375,
+      "by": "fix round 1 \u2014 the render seam replaces the persist carve-out at the same site",
+      "why": "+12 net over the raise below: the persist call goes BACK to its BASE form (no options object) and the four lines that replace it derive `ownerView`, the socket-frame copy. The comment block is the swap's whole point and is why the line count did not come back down: it states that ruling 13 deliberately leaves the persist scrub alone, that narrowing it was tried and rejected, and that the value exists only in the broadcast copy \u2014 because the next reader looking to satisfy the ruling will reach for the persist call first, exactly as the first cut did. `agent/v2/steps/post-call-classify/__tests__/the-owners-screen-is-the-only-screen-that-shows-a-credential.test.ts` now drives this line end-to-end; the review's `toOwnerDashboard: true` mutant reds 4 of its 7 clauses. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/credentials/secret-fields.ts",
+      "from": 261,
+      "to": 242,
+      "by": "fix round 1 \u2014 LOWERING a ceiling: the write-side carve-out is gone from this file",
+      "why": "-19. The previous raise bought `redactAssistantBlocksForPersist` a channel-key option; the C1 rework deleted it, so this module is BASE plus a single re-export line for the render-time seam. Pinning it back down rather than leaving headroom: an unused ceiling is a decrease-only ratchet quietly not ratcheting."
     }
   ],
   "maxNewFileLines": 400,
@@ -5177,7 +5212,7 @@
     "packages/server/src/agent/v2/ack-copy.ts": 303,
     "packages/server/src/agent/v2/answered-edge.ts": 743,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 502,
-    "packages/server/src/agent/v2/counterparty.ts": 1028,
+    "packages/server/src/agent/v2/counterparty.ts": 1076,
     "packages/server/src/agent/v2/loop.ts": 724,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 546,
@@ -5225,7 +5260,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/no-reply.ts": 409,
     "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 104,
     "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 276,
-    "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 363,
+    "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 375,
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 286,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 417,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
@@ -5254,12 +5289,12 @@
     "packages/server/src/agent/v2/steps/teardown/index.ts": 291,
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/costs/tracker.ts": 541,
-    "packages/server/src/credentials/secret-fields.ts": 261,
-    "packages/server/src/credentials/secret-values.ts": 323,
+    "packages/server/src/credentials/secret-fields.ts": 242,
+    "packages/server/src/credentials/secret-values.ts": 355,
     "packages/server/src/db/migration-backup.ts": 399,
     "packages/server/src/db/migration-checksums.ts": 277,
     "packages/server/src/gateway/routes/agents.ts": 972,
-    "packages/server/src/gateway/routes/chat.ts": 492,
+    "packages/server/src/gateway/routes/chat.ts": 512,
     "packages/server/src/gateway/routes/config.ts": 2950,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/setup-deps.ts": 513,
