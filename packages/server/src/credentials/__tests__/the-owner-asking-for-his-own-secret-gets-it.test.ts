@@ -34,7 +34,7 @@ import {
   CREDENTIAL_STALE_PLACEHOLDER,
   noteHandedCredentialValues,
   redactHandedCredentials,
-  redactHandedInCredentials,
+  hydrateOwnerDashboardCredentials,
   hydrateHandedCredentials,
   hydrateCredentialsInMessages,
   forgetHandedCredentialValues,
@@ -55,7 +55,7 @@ const TYPED = 'ruling13-typed-1111-BB';
 /** The turn the ruling is about: the owner, in dashboard chat. */
 const OWNER_ON_DASHBOARD: TurnCounterparty = {
   kind: 'user', name: 'David', relation: 'owner', channel: 'dashboard',
-  senderId: null, threadId: null, senderIsAgent: false,
+  senderId: null, threadId: null, senderIsAgent: false, channelStamped: true,
 };
 
 function textAndToolUse(text: string) {
@@ -75,42 +75,62 @@ beforeEach(() => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// A — THE OWNER'S OWN SCREEN
+// A — THE OWNER'S OWN SCREEN, AND NOTHING AT REST
 // ════════════════════════════════════════════════════════════════════════════
 describe('the owner asking his own agent for his own credential is answered', () => {
-  it('shows a value the agent FETCHED, in a dashboard reply that rides with a tool call', () => {
+  it('renders a value the agent FETCHED back into the copy his dashboard draws', () => {
     noteHandedCredentialValues(AGENT, [FETCHED], 'out');
     const reply = `Your building gate code is ${FETCHED}.`;
-    const stored = redactAssistantBlocksForPersist(AGENT, textAndToolUse(reply), {
-      toOwnerDashboard: true,
-    });
-    expect(storedTextOf(stored)).toBe(reply);
-    expect(storedTextOf(stored)).not.toContain('<redacted-credential');
+    const stored = storedTextOf(redactAssistantBlocksForPersist(AGENT, textAndToolUse(reply)));
+    expect(hydrateOwnerDashboardCredentials(AGENT, stored)).toBe(reply);
   });
 
-  it('is the CARVE-OUT doing that and not an absent guard — the same row without the channel flag is redacted', () => {
-    // The mutation this clause exists to catch: restore the old unconditional
-    // redaction (drop the flag) and the owner reads a placeholder again. This is
-    // the round-8 screen, reproduced.
+  it('and the ROW it renders from still holds only the placeholder — nothing at rest in the clear', () => {
+    // The rework this clause exists to hold. Writing the value into the row was the
+    // first attempt: it defeats property 2 (a stored plaintext has nothing to
+    // hydrate, so after a restart the agent reads a live-looking credential out of
+    // its own history and would serve a rotated one as current) and it puts a secret
+    // on a row shape the platform's own at-rest audit forbids.
     noteHandedCredentialValues(AGENT, [FETCHED], 'out');
-    const reply = `Your building gate code is ${FETCHED}.`;
-    const stored = redactAssistantBlocksForPersist(AGENT, textAndToolUse(reply));
-    expect(storedTextOf(stored)).not.toContain(FETCHED);
-    expect(storedTextOf(stored)).toContain('<redacted-credential:');
+    const stored = storedTextOf(
+      redactAssistantBlocksForPersist(AGENT, textAndToolUse(`Your building gate code is ${FETCHED}.`)),
+    );
+    expect(stored).not.toContain(FETCHED);
+    expect(stored).toContain('<redacted-credential:');
   });
 
-  it('gives the SAME answer by either retrieval path — which is the whole of the incident', () => {
+  it('AFTER A RESTART the placeholder simply stays — a dead value is never dressed as a live one', () => {
+    noteHandedCredentialValues(AGENT, [FETCHED], 'out');
+    const stored = storedTextOf(
+      redactAssistantBlocksForPersist(AGENT, textAndToolUse(`gate code ${FETCHED}`)),
+    );
+    forgetHandedCredentialValues();                       // the process restarts
+    expect(hydrateOwnerDashboardCredentials(AGENT, stored)).toBe(stored);
+    expect(hydrateOwnerDashboardCredentials(AGENT, stored)).not.toContain(FETCHED);
+  });
+
+  it('BOTH RETRIEVAL PATHS end in the same sentence on his screen', () => {
+    // Round 8's whole complaint. Path 1 is the tool-riding reply: redacted at persist,
+    // rendered back for the owner. Path 2 is the tool-less reply the engine stores as
+    // the model wrote it (T5b: the reply stands) — so what the owner reads is the raw
+    // text, and the render seam is a no-op on it. The two must agree, and the second
+    // half of this clause is what makes it a parity check rather than a restatement:
+    // the SAME function runs over the recall path's own string.
     noteHandedCredentialValues(AGENT, [FETCHED], 'out');
     const answer = `Your building gate code is ${FETCHED}.`;
-    // Path 1: the agent fetched it this turn, so the reply rides with the tool call.
-    const viaFetch = storedTextOf(
-      redactAssistantBlocksForPersist(AGENT, textAndToolUse(answer), { toOwnerDashboard: true }),
+    const viaFetch = hydrateOwnerDashboardCredentials(
+      AGENT, storedTextOf(redactAssistantBlocksForPersist(AGENT, textAndToolUse(answer))),
     );
-    // Path 2: the agent answered from what it already had — a tool-less reply,
-    // which the engine persists as the model wrote it (T5b: the reply stands).
-    const viaRecall = answer;
+    const viaRecall = hydrateOwnerDashboardCredentials(AGENT, answer);
+    expect(viaRecall).toBe(answer);            // no placeholder to put back — a true no-op
     expect(viaFetch).toBe(viaRecall);
     expect(viaFetch).toContain(FETCHED);
+  });
+
+  it('leaves a string with no placeholder BY REFERENCE, so a rendered row that has none cannot move', () => {
+    noteHandedCredentialValues(AGENT, [FETCHED], 'out');
+    const text = 'nothing to put back in here';
+    expect(hydrateOwnerDashboardCredentials(AGENT, text)).toBe(text);
   });
 });
 
@@ -148,11 +168,14 @@ describe('the leak guard keeps redacting everywhere the owner is not', () => {
     expect(rawReads).toEqual([]);
   });
 
-  it('redacts an A2A / inter-agent row, which never carries the owner flag', () => {
+  it('never lets a value into a stored row, whoever the turn was talking to', () => {
+    // The persist seam has ONE behaviour now and the carve-out cannot reach it. The
+    // end-to-end proof that the RENDER seam is not reached on an A2A or routed-channel
+    // turn is
+    // `agent/v2/steps/post-call-classify/__tests__/the-owners-screen-is-the-only-screen-that-shows-a-credential.test.ts`,
+    // which drives the real step.
     noteHandedCredentialValues(AGENT, [FETCHED], 'out');
-    const stored = redactAssistantBlocksForPersist(
-      AGENT, textAndToolUse(`the key is ${FETCHED}`), { toOwnerDashboard: false },
-    );
+    const stored = redactAssistantBlocksForPersist(AGENT, textAndToolUse(`the key is ${FETCHED}`));
     expect(storedTextOf(stored)).not.toContain(FETCHED);
   });
 
@@ -171,6 +194,13 @@ describe('the leak guard keeps redacting everywhere the owner is not', () => {
         senderId: null, threadId: 'th', senderIsAgent: false,
       }],
       ['another Dojo agent texting in over a human channel', { ...OWNER_ON_DASHBOARD, senderIsAgent: true }],
+      // FAIL-CLOSED. `relation:'owner' ∧ channel:'dashboard'` is also what the
+      // attribution derivation returns when it has nothing to go on — `origin.ts`'s
+      // last branch is "plain text = the owner on dashboard chat" and the channel
+      // defaults to 'dashboard'. So the predicate demands a POSITIVE stamp, and a row
+      // that carried neither a channel column nor a parseable inbound_meta answers
+      // false here. No stamps, no secret.
+      ['a turn whose channel was never stamped', { ...OWNER_ON_DASHBOARD, channelStamped: undefined }],
     ];
     for (const [who, cp] of notTheOwnersScreen) {
       expect(`${who}: ${isOwnerDashboardDelivery(cp)}`).toBe(`${who}: false`);
@@ -190,11 +220,12 @@ describe('the leak guard keeps redacting everywhere the owner is not', () => {
     // …and the untagged form the store direction writes is never hydrated back
     // into the replayed window.
     expect(hydrateHandedCredentials(AGENT, JSON.stringify(args))).not.toContain(TYPED);
-    // …and it stays redacted in the owner's own dashboard reply.
-    const stored = redactAssistantBlocksForPersist(
-      AGENT, textAndToolUse(`saved ${TYPED} for you`), { toOwnerDashboard: true },
-    );
-    expect(storedTextOf(stored)).not.toContain(TYPED);
+    // …and the render seam will not put it back on the owner's own screen either: he
+    // typed it, the store never handed it out, and it becomes showable only once his
+    // agent fetches it.
+    const stored = storedTextOf(redactAssistantBlocksForPersist(AGENT, textAndToolUse(`saved ${TYPED} for you`)));
+    expect(stored).not.toContain(TYPED);
+    expect(hydrateOwnerDashboardCredentials(AGENT, stored)).not.toContain(TYPED);
   });
 
   it('learns the OUT direction from the one tool that hands a value out, and from nowhere else', () => {
@@ -230,9 +261,9 @@ describe('the leak guard keeps redacting everywhere the owner is not', () => {
     noteHandedCredentialValues(AGENT, [FETCHED], 'out');
     const stored = redactHandedCredentials(AGENT, `key=${FETCHED}`);
     expect(hydrateHandedCredentials(OTHER, stored)).toBe(`key=${CREDENTIAL_STALE_PLACEHOLDER}`);
-    // The other agent's own dashboard reply cannot carry it either: it holds no
-    // such value, so there is nothing for the carve-out to let through.
-    expect(redactHandedInCredentials(OTHER, `key=${FETCHED}`)).toBe(`key=${FETCHED}`);
+    // The other agent's own dashboard render cannot put it back either: the tag was
+    // minted for AGENT, and the per-agent map is what the render seam reads.
+    expect(hydrateOwnerDashboardCredentials(OTHER, stored)).toBe(stored);
     expect(redactHandedCredentials(OTHER, `key=${FETCHED}`)).toBe(`key=${FETCHED}`);
   });
 });
@@ -265,6 +296,28 @@ describe('the model is never handed its own placeholder back', () => {
     const out = hydrateCredentialsInMessages(AGENT, messages);
     expect(out[0].content).toBe(`key=${FETCHED}`);
     expect(Object.keys(out[0])).toEqual(['role', 'content']);
+  });
+
+  it('COVERS EVERY FIELD THE BOUNDARY SENDS — the census that stops this bug recurring one field later', () => {
+    // The round-8 bug was not "reasoning was forgotten". It was "a field was added to
+    // the message the provider boundary sends, and the hydrator did not learn about
+    // it" — and the hydrator being complete TODAY is an accident of `LaneMessage`
+    // having three fields. This clause makes it a fact: every field of the shape
+    // `memory/assembler.ts` builds and `agent/model.ts` serialises must be either
+    // hydrated here or named as deliberately not carrying credential text. A fourth
+    // field fails this clause on the commit that adds it, not on the next incident.
+    const here2 = path.dirname(fileURLToPath(import.meta.url));
+    const lanes = fs.readFileSync(path.resolve(here2, '../../memory/lanes.ts'), 'utf8');
+    const shape = lanes.slice(lanes.indexOf('export type LaneMessage = {'));
+    const fields = [...shape.slice(0, shape.indexOf('};')).matchAll(/^\s{2}(\w+)\??:/gm)].map((m) => m[1]);
+    expect(fields.sort()).toEqual(['content', 'reasoningContent', 'role']);
+    // `role` is the one field that is structurally not text the agent wrote; the other
+    // two are hydrated, and the clause above proves the reasoning arm end to end.
+    const hydrator = fs.readFileSync(path.resolve(here2, '../secret-values.ts'), 'utf8');
+    const seam = hydrator.slice(hydrator.indexOf('export function hydrateCredentialsInMessages'));
+    for (const f of fields.filter((f) => f !== 'role')) {
+      expect(seam, `hydrateCredentialsInMessages never mentions \`${f}\``).toContain(f);
+    }
   });
 
   it('still returns the assembler\'s own array BY REFERENCE when neither field carries one (OR7 / roadmap #10)', () => {

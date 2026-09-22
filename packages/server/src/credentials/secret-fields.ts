@@ -57,14 +57,13 @@ import {
   noteHandedCredentialValues,
   hasHandedCredentialValues,
   redactHandedCredentials,
-  redactHandedInCredentials,
 } from './secret-values.js';
 export {
   REDACTED_CREDENTIAL,
   noteHandedCredentialValues,
   hasHandedCredentialValues,
   redactHandedCredentials,
-  redactHandedInCredentials,
+  hydrateOwnerDashboardCredentials,
   forgetHandedCredentialValues,
 } from './secret-values.js';
 
@@ -211,30 +210,12 @@ export function noteDeclaredSecretsFromToolCalls(
  *
  * The caller keeps its own untouched array for the live model call; this
  * returns the copy that goes into `messages` and onto the socket.
- *
- * ── `toOwnerDashboard`: THE CHANNEL-KEYED CARVE-OUT (design ruling 13) ──
- * On a reply the engine is delivering to the OWNER in DASHBOARD CHAT, redaction
- * 2 narrows to the values the owner handed IN: a value the store handed OUT
- * through `credential_get` stands, because the owner asking his own agent for
- * his own credential on his own screen is priority one and the agent can fetch
- * it again in the next breath anyway. Redaction 1 is untouched by the flag —
- * the STRUCTURAL one is about the arguments the platform replays to the model,
- * not about what the owner reads, and a typed secret never re-enters that
- * window whoever is watching.
- *
- * The flag is a CHANNEL fact the caller reads off the turn's counterparty
- * stamps, never a judgement about what the text says (OR2). It is off by
- * default, so a caller that does not know who it is talking to redacts.
  */
 export function redactAssistantBlocksForPersist<T extends { type: string }>(
   agentId: string,
   blocks: readonly T[],
-  opts?: { toOwnerDashboard?: boolean },
 ): T[] {
   const scrubValues = hasHandedCredentialValues(agentId);
-  const scrubText = opts?.toOwnerDashboard === true
-    ? redactHandedInCredentials
-    : redactHandedCredentials;
   const scrubValue = (v: unknown): unknown => {
     if (typeof v === 'string') return redactHandedCredentials(agentId, v);
     if (Array.isArray(v)) return v.map(scrubValue);
@@ -254,7 +235,7 @@ export function redactAssistantBlocksForPersist<T extends { type: string }>(
     }
     if (block.type === 'text' && scrubValues) {
       const b = block as unknown as { text: string };
-      return { ...block, text: scrubText(agentId, b.text) } as T;
+      return { ...block, text: redactHandedCredentials(agentId, b.text) } as T;
     }
     return block;
   });

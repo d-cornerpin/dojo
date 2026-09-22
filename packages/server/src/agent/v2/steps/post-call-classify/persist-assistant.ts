@@ -17,7 +17,9 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { stripMoodMarker } from '@dojo/shared';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
-import { redactAssistantBlocksForPersist, redactHandedCredentials } from '../../../../credentials/secret-fields.js';
+import {
+  hydrateOwnerDashboardCredentials, redactAssistantBlocksForPersist, redactHandedCredentials,
+} from '../../../../credentials/secret-fields.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { ownOutputBroadcast } from '../../../interagent-broadcast.js';
 import { isOwnerDashboardDelivery } from '../../counterparty.js';
@@ -176,25 +178,32 @@ export async function runPersistAssistant(
     // replayed to the provider every later turn), and any secret this agent has
     // handled is scrubbed from the rest of the row (NEXT-WAVE item 5's classic
     // `sshpass -p '<pw>'`). result.toolCalls is untouched, so the live call still
-    // runs with the real value; only the stored/broadcast copy is redacted.
+    // runs with the real value; only the stored copy is redacted.
     //
-    // DESIGN RULING 13 (2026-09-22): on a reply bound for the OWNER'S DASHBOARD
-    // CHAT the value scrub narrows to the secrets the owner handed IN. He asked
-    // his own agent for his own credential and the agent fetched it; giving him
-    // a placeholder instead is the engine overruling priority one. The key is
-    // the turn's own counterparty stamps and nothing the text says (OR2), the
-    // structural tool_use redaction is untouched, and the same string is still
-    // kept off every outbound channel by `finalize/channel-push.ts` — this is
-    // the dashboard row and the dashboard socket frame, which only the owner
-    // ever reads. Round 8's split answer (fetch → placeholder, recall →
-    // plaintext) is the incident; `__tests__/the-owner-asking-for-his-own-
-    // secret-gets-it.test.ts` pins both paths to the same answer.
-    const assistantContentForStore = redactAssistantBlocksForPersist(agentId, assistantContent, {
-      toOwnerDashboard: !interAgentTurn && isOwnerDashboardDelivery(counterparty),
-    });
+    // ⚠ DESIGN RULING 13 (2026-09-22) DELIBERATELY LEAVES THIS LINE ALONE. The
+    // owner's carve-out is a RENDER, not a narrower persist: the row and the
+    // semantic index keep the placeholder, so no credential comes to rest in the
+    // clear and the model can never read a live-looking one back out of its own
+    // history. The value goes back only into the copy this turn BROADCASTS to his
+    // dashboard — `ownerView` below. Narrowing the scrub here was the first
+    // attempt and was rejected; `credentials/secret-values.ts` records why.
+    const assistantContentForStore = redactAssistantBlocksForPersist(agentId, assistantContent);
     const reasoningForStore = result.reasoningContent
       ? redactHandedCredentials(agentId, result.reasoningContent) : null;
     const assistantContentJson = JSON.stringify(assistantContentForStore);
+    // THE RENDER SEAM, and the whole of the channel key in production. `ownerView`
+    // is the stored JSON with this agent's own FETCHED credentials put back, and
+    // it is used for the socket frame and nothing else — never for the row, never
+    // for the index, never for a2a. `toOwnerDashboard` is false for every
+    // inter-agent turn and for every counterparty that is not the owner on the
+    // dashboard, so a peer, a contact or a routed channel gets the placeholder;
+    // the chat route applies the identical hydration on a reload, so the live
+    // bubble and the refreshed one agree. `ownerView === assistantContentJson` by
+    // reference on every turn that fetched no credential.
+    const toOwnerDashboard = !interAgentTurn && isOwnerDashboardDelivery(counterparty);
+    const ownerView = toOwnerDashboard
+      ? hydrateOwnerDashboardCredentials(agentId, assistantContentJson)
+      : assistantContentJson;
     if (interAgentTurn) {
       // D-A step 8: the agent's OWN inter-agent-turn output goes to the physical
       // inter-agent store, never the `messages` chat table. Persisting it here
@@ -239,10 +248,13 @@ export async function runPersistAssistant(
       agentName: (agent.name as string | null) ?? null,
       id: messageId,
       role: 'assistant',
-      content: JSON.stringify(assistantContentForStore),
+      content: ownerView,
       createdAt: new Date().toISOString(),
       modelId: effectiveModelIdForPersist,
       attachments: queuedAttachments.length > 0 ? queuedAttachments : undefined,
+      // m5: the thinking panel keeps the placeholder. Un-redacting the reasoning
+      // would put the value into the copy the provider replays for the rest of
+      // the turn, which is the one window this seam exists to keep clean.
       reasoningContent: reasoningForStore ?? undefined,
       conversationId: chosenConversationId,
     }));
