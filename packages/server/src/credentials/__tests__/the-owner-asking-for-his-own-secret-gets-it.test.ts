@@ -158,6 +158,9 @@ describe('the leak guard keeps redacting everywhere the owner is not', () => {
     const push = engineFileContaining('export async function pushReplyToChannel(');
     expect(push, 'the channel push is in no engine file — it was renamed or moved').not.toBeNull();
     expect(push!.text).toContain('redactHandedCredentials(agentId, state.lastAssistantTextForIM)');
+    // m3: the phone arm's STREAMED TAIL is a second string this file sends, and it was
+    // pinned by nothing. It gets its own scrub and its own clause.
+    expect(push!.text).toContain('redactHandedCredentials(agentId, turnCtx.phoneStreamBuffer)');
     // Outside the derivation, its own comment and the type restatement, no arm may
     // read the raw reply.
     const rawReads = push!.text.split('\n')

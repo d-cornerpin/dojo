@@ -83,9 +83,12 @@ export async function pushReplyToChannel(
   // line every channel arm sent whatever the model wrote, secret and all — the dashboard
   // was the only surface the leak guard covered. Deleting it re-opens that.
   //
-  // ONE derivation for five arms: a per-arm scrub is five places for the next channel to
-  // be forgotten in. The scrub is a no-op string-identity return for the overwhelming
-  // majority of turns (no handled credential, or none of them in the text).
+  // ONE derivation for the five arms below: a per-arm scrub is five places for the next
+  // channel to be forgotten in. The scrub is a no-op string-identity return for the
+  // overwhelming majority of turns (no handled credential, or none in the text). The
+  // phone arm's STREAMED TAIL takes its own scrub a few lines down — it is a different
+  // string, not this one — and `finalize/stranded-attachments.ts` carries the same call
+  // for the sixth arm, the caption it sends after this router has already run.
   const replyOut = redactHandedCredentials(agentId, state.lastAssistantTextForIM);
   const { destination, settledContextHold, routeRoot, presenceNow, isImessageConfigured, sendResponseViaIMessage, getPresence } = r;
 
