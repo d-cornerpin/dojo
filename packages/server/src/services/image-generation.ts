@@ -29,7 +29,7 @@ import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { imagePixelDimensions } from '../memory/budget.js';
-import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/shared-state.js';
+import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/abortable-call.js';
 import { homeDir } from '../home.js';
 
 const logger = createLogger('image-gen');
@@ -181,7 +181,10 @@ function isTimeoutError(err: unknown): boolean {
  * compose the signal and the two that read `slot.cutByStop()`.
  */
 export async function generateImage(req: GenerateImageRequest): Promise<GenerateImageResult> {
-  const slot = openAgentCall(req.agentId);
+  // A-5 FIX ROUND: `background`. `image_create`'s delivery IIFE deliberately outlives its turn
+  // — it WAITS for the agent to go idle before dialling — so the turn ending is the one thing
+  // that must not kill it. Only the owner's own stop reaches this call.
+  const slot = openAgentCall(req.agentId, 'background');
   try {
     if (slot.refused) {
       logger.info('Image generation refused: the user stopped this agent', { modelId: req.modelId });

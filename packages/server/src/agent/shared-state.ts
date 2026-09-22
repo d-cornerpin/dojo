@@ -114,6 +114,41 @@ export function queueSelfWake(agentId: string, reason: string): boolean {
 export const activeAbortControllers = new Map<string, Set<AbortController>>();
 
 /**
+ * A-5 FIX ROUND (review CRITICAL C1) — HOW LONG THIS CALL IS ALLOWED TO LIVE.
+ *
+ *   `turn`       — it belongs to the turn that started it. Every abort reaches it: the user's
+ *                  stop, the turn's teardown, an urgent preempt. This is every model call and
+ *                  every media dial made INSIDE a tool call.
+ *   `background` — it can OUTLIVE the turn that asked for it, and the turn ending is therefore
+ *                  not a reason to kill it. Only the USER'S OWN STOP reaches it.
+ *
+ * THE RULE, stated once, here: *a dial that can outlive the turn that asked for it is
+ * `background`.* Today that is the video poll loop and its two provider legs, the run-once
+ * audio/music dial, and `image_create`'s delivery-IIFE dial. Everything else is `turn`.
+ */
+export type AbortScope = 'turn' | 'background';
+
+/**
+ * Per-controller bookkeeping. A SIDECAR rather than a change to the registry's value type, so
+ * `activeAbortControllers` stays `Map<string, Set<AbortController>>` — the shape T83's census
+ * and every existing stop clause read — and so the three doors below remain its only writers.
+ * Weak, so a released controller's entry leaves with it even if nobody deletes it.
+ */
+const abortableMeta = new WeakMap<AbortController, { scope: AbortScope; cutBy: string | null }>();
+
+/**
+ * The abort reasons that mean THE USER STOPPED THIS AGENT, and therefore the only ones a media
+ * result may wear the stop identity for.
+ *
+ * `stuck-stopped-run-reap` is in the set because the reaper only ever fires on a run the owner
+ * EXPLICITLY stopped and whose teardown then wedged (`runtime.ts`'s carve-out) — the user did
+ * press the button; the reap is that press finally landing. `turn-teardown` and
+ * `urgent-preempt` are NOT: a turn that threw and a voice barge-in are the engine's business,
+ * and telling the owner he stopped something he did not is this ticket's own invariant inverted.
+ */
+const USER_STOP_REASONS = new Set(['user-stop', 'stuck-stopped-run-reap']);
+
+/**
  * Register one in-flight call as abortable by this agent's stop.
  *
  * THE RACE THIS CLOSES: `stopAgent` can only abort what is registered at the instant it runs,
@@ -122,18 +157,28 @@ export const activeAbortControllers = new Map<string, Set<AbortController>>();
  * recorded and this controller is aborted before it reaches the wire, or it is in the registry
  * and the next abort reaches it. There is no third state.
  *
+ * @param scope see `AbortScope`. Defaults to `turn` — NARROW BY DEFAULT, deliberately: a
+ *              forgetful caller that should have said `background` gets its work killed at the
+ *              turn's end, which is visible and is what happened before this parameter existed.
+ *              A default of `background` would silently hide work from the stop button instead.
  * @returns true if registered; false if a live stop refused it — and on that path the
  *          controller is ALREADY aborted, so no caller has to remember to do it.
  */
-export function registerAbortable(agentId: string, controller: AbortController): boolean {
+export function registerAbortable(
+  agentId: string, controller: AbortController, scope: AbortScope = 'turn',
+): boolean {
   if (isStopFenced(agentId)) {
     controller.abort();
-    sharedStateLogger.info('call refused before dialling: the user stopped this agent', {}, agentId);
+    // The refusal IS the user's stop — that is the only thing `isStopFenced` reports — so the
+    // identity is stamped here too, or a call refused at the door could not name who refused it.
+    abortableMeta.set(controller, { scope, cutBy: 'user-stop' });
+    sharedStateLogger.info('call refused before dialling: the user stopped this agent', { scope }, agentId);
     return false;
   }
   let set = activeAbortControllers.get(agentId);
   if (!set) { set = new Set(); activeAbortControllers.set(agentId, set); }
   set.add(controller);
+  abortableMeta.set(controller, { scope, cutBy: null });
   return true;
 }
 
@@ -145,87 +190,76 @@ export function releaseAbortable(agentId: string, controller: AbortController): 
   if (set.size === 0) activeAbortControllers.delete(agentId);
 }
 
-/** Abort every call this agent has in flight. Returns how many were cut. */
-export function abortInFlight(agentId: string, reason: string): number {
-  const set = activeAbortControllers.get(agentId);
-  if (!set || set.size === 0) return 0;
-  const cut = set.size;
-  for (const c of set) {
-    try { c.abort(); } catch { /* an already-settled controller is not an error */ }
-  }
-  activeAbortControllers.delete(agentId);
-  sharedStateLogger.info('in-flight provider calls aborted', { reason, cut }, agentId);
-  return cut;
+/**
+ * Was this controller cut through the registry, and under what `reason`? Null if it was not.
+ *
+ * READ-ONLY, and exported so `abortable-call.ts` can build a slot's identity without a second
+ * copy of the sidecar. `abortInFlight` is still the only writer.
+ */
+export function abortReasonOf(controller: AbortController): string | null {
+  return controller.signal.aborted ? abortableMeta.get(controller)?.cutBy ?? null : null;
 }
 
-// ════════════════════════════════════════
-// A-5 — THE MEDIA DIALS COME THROUGH THE SAME DOOR.
-//
-// T83 made "every provider call an agent makes is abortable by that agent's stop" true of
-// everything dialled through `callModel`. The media generators are not: `image-generation.ts`,
-// `audio-generation.ts`, `video-generation.ts` and `transcription.ts` each call `fetch`
-// directly, so a stop pressed while an image / narration / video / transcript was on the wire
-// found an empty registry for that work and cut nothing. The owner's instruction is that the
-// button stops ALL of an agent's activity, so those dials register here too.
-//
-// ONE DOOR, NOT FIVE COPIES OF `callModel`'s PREAMBLE. Each of those sites already carries its
-// own flat clock as the `signal:` argument, and the three things that have to be true of every
-// one of them are the same three `callModel` spells out in its own header: register through the
-// stop-aware door (which REFUSES, pre-aborted, while a stop is live), dial with that controller
-// COMPOSED with whatever the caller brought rather than replacing it, and release BY IDENTITY
-// on every exit path. Handing back a slot instead of wrapping the call is what lets a body with
-// a dozen early returns adopt it without being rewritten around a callback.
-//
-// AND THE THIRD THING A MEDIA CALLER NEEDS THAT `callModel` DOES NOT: `cutByStop()`. A model
-// call that dies throws and the loop's stop checkpoints read the fence; a generator RETURNS a
-// result object with a `code`, and every one of those unions had only provider-failure codes in
-// it. `image-generation.ts`'s `isTimeoutError` even classifies a bare `AbortError` as the
-// 10-minute deadline, so before this a stop was reported to the user as *"Image generation
-// timed out after 10 minutes. The provider or model is slow or overloaded right now."* — the
-// user's own button wearing a provider's failure. The predicate asks THIS CALL'S OWN
-// controller, never the composed signal, so the caller's clock can never be read as a stop and
-// a stop can never be read as the clock: the same discrimination T81d's patience timer carries.
-// ════════════════════════════════════════
+/** Was this controller cut by the USER'S OWN STOP, as opposed to the engine's own aborts? */
+export function wasCutByUserStop(controller: AbortController): boolean {
+  return controller.signal.aborted && USER_STOP_REASONS.has(abortableMeta.get(controller)?.cutBy ?? '');
+}
 
-/** One in-flight media call's registration. Opened per call; released on every exit path. */
-export interface AgentCallSlot {
-  /** Hand this to `fetch`. This call's stop controller, composed with the caller's own signals. */
-  readonly signal: AbortSignal;
-  /** A stop was ALREADY standing when this opened: do not dial. `signal` is aborted already. */
-  readonly refused: boolean;
-  /** Was this call cut by THIS agent's stop — as opposed to the caller's clock, or a transport
-   *  error? Reads the call's own controller, so a composed timeout can never answer yes. */
-  cutByStop(): boolean;
-  /** This call has settled. Idempotent, and by identity — never another call's registration. */
-  release(): void;
+/** How many of this agent's in-flight calls are turn-scoped — i.e. how many a preempt can cut. */
+export function countAbortable(agentId: string, scope: 'all' | AbortScope = 'all'): number {
+  const set = activeAbortControllers.get(agentId);
+  if (!set) return 0;
+  if (scope === 'all') return set.size;
+  let n = 0;
+  for (const c of set) if ((abortableMeta.get(c)?.scope ?? 'turn') === scope) n += 1;
+  return n;
 }
 
 /**
- * Open one abortable media call under this agent's stop.
+ * Abort this agent's in-flight calls. Returns how many were cut.
  *
- * @param externals any signals the caller already had (its flat clock, a parent loop's signal).
- *                  `undefined` entries are dropped so a caller need not branch.
+ * A-5 FIX ROUND (review CRITICAL C1) — THE SCOPE IS NOT OPTIONAL IN PRACTICE, and a census in
+ * `a-stop-stops-the-media-generators.test.ts` keeps every production caller naming one.
+ *
+ * Until A-5 this function's four callers were all equally right, because the registry held only
+ * turn-scoped model calls: "abort everything this agent has in flight" and "abort this turn's
+ * calls" were the same sentence. Putting a thirty-minute video poll loop in the registry ended
+ * that. MEASURED by the review, with the real services on a real database: a voice barge-in
+ * (`preemptAgentForUrgentMessage`, whose one live caller is `voice/voice-ws.ts`) found the poll
+ * loop, aborted it, and the loop wrote `cancelled` with *"the user stopped this agent"* on a
+ * render the user was in the middle of TALKING to the agent about. A turn that merely threw did
+ * the same to a TTS job mid-dial. So the owner asks for a video, speaks while it renders, and
+ * the engine cancels it at the provider and files a log line blaming him.
+ *
+ * `'all'` therefore belongs to the USER'S STOP and to nothing else. The stuck-stopped-run reap
+ * shares it because that agent has already been stopped by the owner.
+ *
+ * @param reason also the ABORT IDENTITY. `USER_STOP_REASONS` decides whether a cut call may
+ *        report itself as stopped-by-the-user; see `AgentCallSlot.cutByStop`.
  */
-export function openAgentCall(agentId: string, ...externals: Array<AbortSignal | undefined>): AgentCallSlot {
-  const ctl = new AbortController();
-  const registered = registerAbortable(agentId, ctl);
-  const present = externals.filter((s): s is AbortSignal => s != null);
-  const signal = present.length === 0 ? ctl.signal : AbortSignal.any([ctl.signal, ...present]);
-  let released = false;
-  return {
-    signal,
-    refused: !registered,
-    cutByStop: () => ctl.signal.aborted,
-    release: () => {
-      if (released) return;
-      released = true;
-      releaseAbortable(agentId, ctl);
-    },
-  };
+export function abortInFlight(
+  agentId: string, reason: string, opts: { scope?: 'all' | AbortScope } = {},
+): number {
+  const want = opts.scope ?? 'turn';
+  const set = activeAbortControllers.get(agentId);
+  if (!set || set.size === 0) return 0;
+  const targets = want === 'all'
+    ? [...set]
+    : [...set].filter((c) => (abortableMeta.get(c)?.scope ?? 'turn') === want);
+  if (targets.length === 0) return 0;
+  for (const c of targets) {
+    const meta = abortableMeta.get(c);
+    if (meta) meta.cutBy = reason;
+    try { c.abort(); } catch { /* an already-settled controller is not an error */ }
+    set.delete(c);
+  }
+  if (set.size === 0) activeAbortControllers.delete(agentId);
+  sharedStateLogger.info('in-flight provider calls aborted', {
+    reason, cut: targets.length, scope: want, leftStanding: set.size,
+  }, agentId);
+  return targets.length;
 }
 
-/** The one sentence a stopped media call tells the user. Never a provider's failure wording. */
-export const STOPPED_BY_USER = 'Stopped: you pressed stop while this was still generating.';
 
 // Agents that should treat the next aborted model call as a soft-end so a
 // queued urgent wakeup can fire promptly.

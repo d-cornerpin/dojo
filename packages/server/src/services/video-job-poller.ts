@@ -29,7 +29,7 @@ import { getDb } from '../db/connection.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
 import { pollProviderVideo, fetchVideoAsset, cancelProviderVideo } from './video-generation.js';
-import { openAgentCall, type AgentCallSlot } from '../agent/shared-state.js';
+import { openAgentCall, type AgentCallSlot } from '../agent/abortable-call.js';
 import { homeDir } from '../home.js';
 
 const logger = createLogger('video-job-poller');
@@ -294,7 +294,11 @@ async function pollLoop(jobId: string): Promise<void> {
   if (inFlight.has(jobId)) return;
   inFlight.add(jobId);
   const owner = getJob(jobId);
-  const slot: AgentCallSlot | null = owner ? openAgentCall(owner.agent_id) : null;
+  // A-5 FIX ROUND (review CRITICAL C1): `background`. This loop is the clearest case the scope
+  // exists for — up to THIRTY MINUTES, enqueued inside a turn that ends seconds later. Before
+  // the scope, a voice barge-in or a thrown turn reached it and it wrote `cancelled` with the
+  // owner's name on it.
+  const slot: AgentCallSlot | null = owner ? openAgentCall(owner.agent_id, 'background') : null;
   let delay = POLL_START_MS;
   try {
     // A stop already standing when this job was enqueued: do not start polling at all, and do
@@ -317,8 +321,18 @@ async function pollLoop(jobId: string): Promise<void> {
       // standing between a stopped loop and a hot spin. (Replanting its deletion does not fail
       // a clause politely — it burns a vitest worker to an out-of-memory crash.) Do not make
       // the exit depend on `markCancelled` having moved a row: the row may already be terminal.
-      if (slot?.cutByStop()) {
-        await markCancelled(jobId, 'the user stopped this agent');
+      //
+      // A-5 FIX ROUND: THE EXIT ASKS `cutBy()`, THE MESSAGE ASKS `cutByStop()`. The scope now
+      // guarantees only the owner's stop reaches a background slot — but "the loop exits on
+      // exactly the aborts it recognises" is the same trap one narrowing away: asked
+      // `cutByStop()` alone, an abort it did NOT recognise would leave the signal aborted, the
+      // sleep resolving instantly and the loop spinning for ever. One exit covers every abort;
+      // the owner's name goes on it only when the owner earned it.
+      const cutBy = slot?.cutBy();
+      if (cutBy) {
+        await markCancelled(jobId, slot!.cutByStop()
+          ? 'the user stopped this agent'
+          : `the engine aborted this agent's in-flight calls (${cutBy})`);
         return;
       }
 
@@ -363,9 +377,11 @@ async function pollLoop(jobId: string): Promise<void> {
       delay = Math.min(delay * POLL_BACKOFF, POLL_MAX_MS);
     }
   } catch (err) {
-    // A-5: a stop unwinding through here is not an internal poller error.
-    if (slot?.cutByStop()) {
-      await markCancelled(jobId, 'the user stopped this agent');
+    // A-5: an abort unwinding through here is not an internal poller error.
+    if (slot?.cutBy()) {
+      await markCancelled(jobId, slot.cutByStop()
+        ? 'the user stopped this agent'
+        : `the engine aborted this agent's in-flight calls (${slot.cutBy()})`);
       return;
     }
     logger.error('video poll loop threw', { jobId, error: err instanceof Error ? err.message : String(err) });

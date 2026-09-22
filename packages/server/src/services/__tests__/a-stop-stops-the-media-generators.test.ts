@@ -34,6 +34,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
@@ -123,10 +124,42 @@ async function untilDialled(n = 1): Promise<void> {
   for (let i = 0; i < 100 && dials.length < n; i += 1) await tick(5);
 }
 
+/** The USER'S STOP, spelled exactly as `runtime.ts`'s `stopAgent` spells it. */
 async function stopNow(): Promise<number> {
   const { abortInFlight } = await import('../../agent/shared-state.js');
-  return abortInFlight(AGENT, 'user-stop');
+  return abortInFlight(AGENT, 'user-stop', { scope: 'all' });
 }
+
+/** What `v2/steps/teardown/index.ts` does when a turn throws. */
+async function turnTeardown(): Promise<number> {
+  const { abortInFlight } = await import('../../agent/shared-state.js');
+  return abortInFlight(AGENT, 'turn-teardown', { scope: 'turn' });
+}
+
+/**
+ * Hangs only the URLs the predicate picks; everything else is answered. Lets a clause put ONE
+ * leg of a multi-leg flow on the wire and stop it there.
+ */
+function hangOnly(pick: (url: string) => boolean, answer: (url: string) => Response): void {
+  globalThis.fetch = vi.fn((input: unknown, init?: RequestInit) => {
+    const url = String(input);
+    const signal = init?.signal ?? undefined;
+    dials.push({ url, signal });
+    if (!pick(url)) return Promise.resolve(answer(url));
+    return new Promise<Response>((_resolve, reject) => {
+      if (signal?.aborted) { reject(new DOMException('This operation was aborted', 'AbortError')); return; }
+      signal?.addEventListener(
+        'abort',
+        () => reject(new DOMException('This operation was aborted', 'AbortError')),
+        { once: true },
+      );
+    });
+  }) as unknown as typeof globalThis.fetch;
+}
+
+const json = (body: unknown) => new Response(JSON.stringify(body), {
+  status: 200, headers: { 'content-type': 'application/json' },
+});
 
 function seed(): void {
   const db = mockDb.current!;
@@ -491,6 +524,23 @@ describe('§6 a stop cuts a transcription in flight', () => {
     expect(result.ok === false && result.code).toBe('STOPPED');
   });
 
+  it('THE STOP SENTENCE STANDS ALONE — the tool never prefixes `Error:` onto the user\'s button', async () => {
+    // Review m5. Both arms of ONE tool, four lines apart, disagreed: the cloud arm rendered a
+    // stop bare and the source-download arm wrapped it in `Error: `. A behavioural clause and
+    // not a source match, because the source match is what let the two drift in the first place.
+    hangUntilAborted();
+    const { mediaHandlers } = await import('../../agent/tools/cat/media.js');
+    const call = mediaHandlers.transcribe_audio({
+      agentId: AGENT, name: 'transcribe_audio', args: { url: 'https://example.test/podcast.mp3' },
+    } as never);
+    await untilDialled();
+    await stopNow();
+    const out = await call;
+
+    expect(out.content).not.toMatch(/^Error:/);
+    expect(out.content).toMatch(/stop/i);
+  });
+
   it('THE RED: the source download is cut too', async () => {
     hangUntilAborted();
     const { fetchAudioUrl } = await import('../transcription.js');
@@ -504,6 +554,230 @@ describe('§6 a stop cuts a transcription in flight', () => {
   });
 });
 
+// ── §8 — C1: the registry's OTHER callers must not reach background media work ───────────
+
+describe('§8 only the USER\'S stop reaches a background media job', () => {
+  // ⚠ THE FIX ROUND'S CRITICAL, and the reason these are controls rather than notes.
+  //
+  // Registering a thirty-minute poll loop in `activeAbortControllers` exposed it to every
+  // caller of `abortInFlight`, not just the button. Before A-5 the registry held only
+  // turn-scoped model calls, so "abort everything this agent has in flight" was the right
+  // sentence for all four callers; it stopped being right the moment background work went in.
+  //
+  // MEASURED by the review on the real services: a voice barge-in
+  // (`preemptAgentForUrgentMessage`, whose one live caller is `voice/voice-ws.ts`) found the
+  // poll loop, aborted it, and the loop wrote `cancelled` with *"the user stopped this agent"*
+  // — on a render the owner was in the middle of TALKING to the agent about. A turn that
+  // merely threw did the same to a TTS job mid-dial. That is this ticket's own honesty
+  // invariant inverted: the thesis is "a stop must never wear a provider's failure", and the
+  // mechanism made a non-stop wear the USER'S identity.
+
+  function queueVideoJob(id = 'vid_c1test'): string {
+    mockDb.current!.prepare(`
+      INSERT INTO video_jobs (id, agent_id, model_id, provider_id, provider_job_id, prompt, status, attempt_count)
+      VALUES (?, ?, ?, ?, 'prov-job-1', 'a cat', 'queued', 0)
+    `).run(id, AGENT, MODEL, PROVIDER);
+    return id;
+  }
+
+  it('PROBE A — a turn that THREW leaves a polling video job polling', async () => {
+    answerWith((url) => url.endsWith('/cancel') ? json({}) : json({ status: 'in_progress' }));
+    const { enqueueVideoJob } = await import('../video-job-poller.js');
+    const jobId = queueVideoJob();
+    enqueueVideoJob(jobId);
+    await untilDialled();
+
+    const cut = await turnTeardown();
+    await tick(40);
+
+    expect(cut, 'a turn teardown has no turn-scoped call here to cut').toBe(0);
+    const row = mockDb.current!.prepare('SELECT status, error FROM video_jobs WHERE id = ?')
+      .get(jobId) as { status: string; error: string | null };
+    expect(['queued', 'polling'], 'the render outlives the turn that asked for it').toContain(row.status);
+    expect(dials.some((d) => d.url.endsWith('/cancel')), 'nothing was cancelled at the provider').toBe(false);
+  });
+
+  it('PROBE B — a voice barge-in never touches a background job, and never burns its cool-down on one', async () => {
+    answerWith((url) => url.endsWith('/cancel') ? json({}) : json({ status: 'in_progress' }));
+    const { preemptAgentForUrgentMessage } = await import('../../agent/runtime.js');
+    const { preemptedAgents } = await import('../../agent/shared-state.js');
+    const { enqueueVideoJob } = await import('../video-job-poller.js');
+    const jobId = queueVideoJob();
+    enqueueVideoJob(jobId);
+    await untilDialled();
+
+    const preempted = preemptAgentForUrgentMessage(AGENT);
+    await tick(40);
+
+    // Its contract is "there WAS an in-flight model call to abort". A poller is not one.
+    expect(preempted, 'a poller must not make a barge-in claim it aborted a model call').toBe(false);
+    // …which is what keeps the 30 s cool-down unspent for the next, genuine barge-in, and
+    // keeps `preemptedAgents` unarmed so an unrelated later failure is not read as a preempt.
+    expect(preemptedAgents.has(AGENT), 'a stale preempt flag re-labels the next real failure').toBe(false);
+    const row = mockDb.current!.prepare('SELECT status FROM video_jobs WHERE id = ?')
+      .get(jobId) as { status: string };
+    expect(['queued', 'polling']).toContain(row.status);
+  });
+
+  it('PROBE C — a turn that THREW leaves a TTS dial on the wire', async () => {
+    hangUntilAborted();
+    const jobs = await import('../generation-jobs.js');
+    const jobId = jobs.createGenerationJob({
+      kind: 'audio', agentId: AGENT, modelId: MODEL, providerId: PROVIDER,
+      prompt: 'read this aloud', voice: 'alloy',
+    });
+    jobs.enqueueAudioOrMusicJob(jobId);
+    await untilDialled();
+
+    await turnTeardown();
+    await tick(40);
+
+    expect(dials[0].signal?.aborted, 'the narration is still generating').toBe(false);
+    const row = mockDb.current!.prepare('SELECT status FROM generation_jobs WHERE id = ?')
+      .get(jobId) as { status: string };
+    expect(row.status).toBe('running');
+  });
+
+  it('THE OTHER HALF: a genuine user stop still cuts BOTH scopes in one sweep', async () => {
+    // Without this, scoping could be "fixed" by hiding background work from the button, which
+    // is the A-5 defect again wearing the fix's clothes.
+    hangUntilAborted();
+    const { generateImage } = await import('../image-generation.js');          // background
+    const { transcribeAudio } = await import('../transcription.js');           // turn
+    mockDb.current!.prepare(
+      `INSERT INTO config (key, value, updated_at) VALUES ('dojo_transcription_model_id', ?, datetime('now'))`,
+    ).run(MODEL);
+
+    const bg = generateImage({ agentId: AGENT, modelId: MODEL, prompt: 'a cat' });
+    const turn = transcribeAudio({
+      agentId: AGENT, audio: Buffer.from('audio-bytes'), mimeType: 'audio/mpeg', filename: 'memo.mp3',
+    });
+    await untilDialled(2);
+
+    const cut = await stopNow();
+
+    expect(cut, 'the button cuts everything, both scopes').toBe(2);
+    expect((await bg).ok === false && ((await bg) as { code: string }).code).toBe('STOPPED');
+    expect((await turn).ok === false && ((await turn) as { code: string }).code).toBe('STOPPED');
+    for (const d of dials) expect(d.signal?.aborted).toBe(true);
+  });
+
+  it('AND THE IDENTITY: a non-stop abort is never reported as the user stopping', async () => {
+    // The turn-scoped half of the same invariant. A teardown CAN reach a turn-scoped dial —
+    // correctly — but it may not put the owner's name on it: `video_create` writes a durable
+    // audit row from this branch.
+    hangUntilAborted();
+    const { submitVideoJob } = await import('../video-generation.js');
+    const inFlight = submitVideoJob({
+      modelId: MODEL, agentId: AGENT, prompt: 'a cat',
+      paramSpec: { params: [] } as never, canonicalParams: {},
+    });
+    await untilDialled();
+
+    await turnTeardown();
+    const submit = await inFlight;
+
+    expect(dials[0].signal?.aborted, 'a turn-scoped dial IS cut by its turn ending').toBe(true);
+    expect(submit.ok === false && submit.code, 'but it is not the user who did it').not.toBe('STOPPED');
+    expect(submit.ok === false && submit.error).not.toMatch(/you pressed stop/i);
+  });
+});
+
+// ── §9 — I1: the three legs that had only a regex behind them ────────────────────────────
+
+describe('§9 every video leg is cut ON THE WIRE, not just by a source match', () => {
+  // The review planted the mutant that walks past §7's regex — keeping the
+  // `AbortSignal.any([...])` shape while dropping `slot.signal` — on the asset download, and
+  // the whole suite stayed GREEN at 22/22. Three sites had only the string match behind them.
+
+  it('THE RED: the poll leg is cut while it is on the wire', async () => {
+    mockDb.current!.prepare(`
+      INSERT INTO video_jobs (id, agent_id, model_id, provider_id, provider_job_id, prompt, status, attempt_count)
+      VALUES ('vid_leg', ?, ?, ?, 'prov-job-1', 'a cat', 'queued', 0)
+    `).run(AGENT, MODEL, PROVIDER);
+    // Hang the poll GET itself, so the stop lands with the leg mid-flight rather than during
+    // the backoff sleep §5 measures.
+    hangOnly((url) => /\/videos\/[^/]+$/.test(url), () => json({}));
+    const { enqueueVideoJob } = await import('../video-job-poller.js');
+    enqueueVideoJob('vid_leg');
+    await untilDialled();
+
+    await stopNow();
+    for (let i = 0; i < 200; i += 1) {
+      const st = (mockDb.current!.prepare('SELECT status FROM video_jobs WHERE id = ?')
+        .get('vid_leg') as { status: string }).status;
+      if (st === 'cancelled') break;
+      await tick(5);
+    }
+
+    expect(dials[0].signal?.aborted, 'the poll GET the provider is serving is cut').toBe(true);
+    const row = mockDb.current!.prepare('SELECT status, error FROM video_jobs WHERE id = ?')
+      .get('vid_leg') as { status: string; error: string | null };
+    expect(row.status).toBe('cancelled');
+    expect(row.error, 'a stopped leg is not a failed poll').toBeNull();
+  });
+
+  it('THE RED: the asset download is cut while the mp4 bytes are arriving', async () => {
+    hangUntilAborted();
+    const { fetchVideoAsset } = await import('../video-generation.js');
+    const inFlight = fetchVideoAsset(AGENT, PROVIDER, 'prov-job-1');
+    await untilDialled();
+
+    await stopNow();
+    const asset = await inFlight;
+
+    expect(dials[0].url).toContain('/content');
+    expect(dials[0].signal?.aborted, 'tens of megabytes stop moving').toBe(true);
+    expect(asset.ok).toBe(false);
+    expect(asset.ok === false && asset.stopped, 'and it is reported as the stop it was').toBe(true);
+  });
+
+  it('THE RED: the submit\'s MULTIPART branch is cut too — not only the JSON one', async () => {
+    // §4 drives the JSON body. The reference-image path builds a `FormData` and assembles its
+    // own `RequestInit`, so it is a second, independently-written `signal:` site.
+    const refPath = path.join(os.tmpdir(), `a5-ref-${process.pid}.png`);
+    fs.writeFileSync(refPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    try {
+      hangUntilAborted();
+      const { submitVideoJob } = await import('../video-generation.js');
+      const inFlight = submitVideoJob({
+        modelId: MODEL, agentId: AGENT, prompt: 'a cat',
+        paramSpec: { params: [] } as never, canonicalParams: {},
+        refImagePath: refPath,
+      });
+      await untilDialled();
+
+      await stopNow();
+      const submit = await inFlight;
+
+      expect(dials[0].signal?.aborted, 'the multipart upload is cut').toBe(true);
+      expect(submit.ok === false && submit.code).toBe('STOPPED');
+    } finally {
+      try { fs.unlinkSync(refPath); } catch { /* best effort */ }
+    }
+  });
+});
+
+// ── §10 — m6: the composed clock is MEASURED, not merely inspected ───────────────────────
+
+describe('§10 composing the stop onto a clock leaves the clock working', () => {
+  it('the caller\'s own deadline still fires through the composition — and is not a stop', async () => {
+    // Every clause above proves the STOP half of `AbortSignal.any`. This proves the other
+    // member still reaches `fetch`, on a real timer rather than a stub that throws, and that
+    // `cutByStop()` correctly refuses to claim it.
+    const { openAgentCall } = await import('../../agent/abortable-call.js');
+    const slot = openAgentCall(AGENT, 'turn', AbortSignal.timeout(20));
+    try {
+      expect(slot.signal.aborted).toBe(false);
+      await new Promise<void>((r) => { slot.signal.addEventListener('abort', () => r(), { once: true }); });
+      expect(slot.signal.aborted, 'the composed clock fired').toBe(true);
+      expect(slot.cutByStop(), 'a deadline is not the user pressing stop').toBe(false);
+    } finally {
+      slot.release();
+    }
+  });
+});
+
 // ── §7 — the census ──────────────────────────────────────────────────────────────────────
 
 describe('§7 the census: every media dial goes through the one door', () => {
@@ -514,6 +788,21 @@ describe('§7 the census: every media dial goes through the one door', () => {
     'services/transcription.ts',
   ];
   const textOf = (rel: string) => fs.readFileSync(path.join(SRC_ROOT, rel), 'utf-8');
+
+  /** Every production .ts under the server's src, tests excluded. */
+  function walkSources(dir = ''): string[] {
+    const out: string[] = [];
+    for (const e of fs.readdirSync(path.join(SRC_ROOT, dir), { withFileTypes: true })) {
+      const rel = dir ? `${dir}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        if (e.name === '__tests__' || e.name === 'node_modules') continue;
+        out.push(...walkSources(rel));
+      } else if (e.name.endsWith('.ts') && !e.name.includes('.test.')) {
+        out.push(rel);
+      }
+    }
+    return out;
+  }
 
   it('every media generator file registers through `openAgentCall`', () => {
     const missing = MEDIA_SERVICES.filter((f) => !/openAgentCall\(/.test(textOf(f)));
@@ -542,10 +831,39 @@ describe('§7 the census: every media dial goes through the one door', () => {
   it('the stop door itself is the registry\'s, not a second copy of it', async () => {
     // `openAgentCall` must go through `registerAbortable` / `releaseAbortable` — the two doors
     // T83's own census keeps as the registry's only writers — rather than touching the map.
-    const src = textOf('agent/shared-state.ts');
+    // It lives in its own file now (see that file's header); the registry stayed put, and the
+    // dependency is one-way, which is the property that keeps the writers at two.
+    const src = textOf('agent/abortable-call.ts');
     const body = src.slice(src.indexOf('export function openAgentCall'));
     expect(/registerAbortable\(/.test(body)).toBe(true);
     expect(/releaseAbortable\(/.test(body)).toBe(true);
+    expect(/activeAbortControllers/.test(src), 'the door must not touch the map itself').toBe(false);
+    expect(/from '\.\/abortable-call/.test(textOf('agent/shared-state.ts')),
+      'the registry importing its own caller would make the cycle this split avoids').toBe(false);
+  });
+
+  it('THE SCOPE CENSUS: every production abort names the scope it means', () => {
+    // A-5 FIX ROUND (review CRITICAL C1). `abortInFlight`'s scope parameter defaults to the
+    // NARROW value, so a forgetful caller under-aborts rather than destroying background work
+    // — but a user-stop-shaped caller that forgets `'all'` would silently reopen the original
+    // A-5 defect. Four callers exist and each one's answer is a decision; this makes a fifth
+    // one state its answer too. `'all'` is carved to the two that mean the owner's own stop.
+    const ALL_SCOPED = new Set(['agent/runtime.ts']);   // stopAgent + the stuck-stopped-run reap
+    const offenders: string[] = [];
+    const allSites: string[] = [];
+    for (const rel of walkSources()) {
+      const src = fs.readFileSync(path.join(SRC_ROOT, rel), 'utf-8');
+      src.split('\n').forEach((line, i) => {
+        if (!/\babortInFlight\(/.test(line) || /export function abortInFlight/.test(line)) return;
+        allSites.push(`${rel}:${i + 1}`);
+        if (!/scope:\s*'(all|turn|background)'/.test(line)) offenders.push(`${rel}:${i + 1} — ${line.trim()}`);
+        if (/scope:\s*'all'/.test(line) && !ALL_SCOPED.has(rel)) {
+          offenders.push(`${rel}:${i + 1} — only the user's own stop may abort background work`);
+        }
+      });
+    }
+    expect(allSites.length, 'the census found no call sites — it has gone vacuous').toBeGreaterThanOrEqual(4);
+    expect(offenders, 'an abort that does not name its scope is one that can kill a render').toEqual([]);
   });
 
   it('`stopAgent` cancels the open run-once jobs the registry cannot reach', () => {

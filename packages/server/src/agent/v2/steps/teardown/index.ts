@@ -147,8 +147,17 @@ export async function runTurnRecovery(
   // therefore became un-abortable for the rest of its life — the same hole one turn later.
   // The turn is over here; anything still on the wire for this agent is owed a cut, not an
   // amnesty. A call started AFTER this instant registers its own controller and is unaffected.
+  //
+  // A-5 FIX ROUND (review CRITICAL C1) — `scope: 'turn'`, and the word "turn" in this
+  // function's own name is the argument. What is owed a cut here is THIS TURN'S work. Since
+  // A-5 the registry also holds BACKGROUND media jobs — a video poll loop that runs for up to
+  // thirty minutes, a TTS dial the turn deliberately fired and walked away from — and those
+  // are the ones the turn ending is expressly not a reason to kill. MEASURED by the review: a
+  // turn that merely threw cancelled a live video render at the provider and the loop recorded
+  // it as *"the user stopped this agent"*. The enqueue happens INSIDE the turn, so a throw
+  // just after `video_create` killed the job that call had created one statement earlier.
   stopStatusHeartbeat(agentId);
-  abortInFlight(agentId, 'turn-teardown');
+  abortInFlight(agentId, 'turn-teardown', { scope: 'turn' });
 
   // C2: a throw anywhere AFTER the pickup-stamp (assembleContext, decideTier,
   // enforceModelCapabilities, the grounding INSERT, the assistant/tool persists,

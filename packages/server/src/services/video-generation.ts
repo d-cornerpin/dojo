@@ -25,7 +25,7 @@ import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { buildWireBody } from './generation-params.js';
-import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/shared-state.js';
+import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/abortable-call.js';
 import type { GenerationParamSpec } from '@dojo/shared';
 import { homeDir } from '../home.js';
 
@@ -131,7 +131,10 @@ const COMMON_HEADERS = (credential: string): Record<string, string> => ({
  */
 /** A-5 — the stop door. Same shape as `generateImage`'s: see that function's note. */
 export async function submitVideoJob(req: SubmitVideoRequest): Promise<SubmitVideoResult> {
-  const slot = openAgentCall(req.agentId);
+  // A-5 FIX ROUND: `turn` — this leg runs INSIDE `video_create`, synchronously, and the tool
+  // is still waiting on it. A turn that dies here has nothing to protect: the job does not
+  // exist yet. The two legs the POLLER drives are the background ones.
+  const slot = openAgentCall(req.agentId, 'turn');
   try {
     if (slot.refused) {
       logger.info('Video submit refused: the user stopped this agent', { modelId: req.modelId });
@@ -239,7 +242,8 @@ async function dialVideoSubmit(req: SubmitVideoRequest, slot: AgentCallSlot): Pr
  * video has to reach the leg that is on the wire right then, not only the loop around it.
  */
 export async function pollProviderVideo(agentId: string, providerId: string, providerJobId: string): Promise<ProviderPollOutcome> {
-  const slot = openAgentCall(agentId);
+  // A-5 FIX ROUND: `background` — driven by the poll loop, minutes after its turn ended.
+  const slot = openAgentCall(agentId, 'background');
   try {
     if (slot.refused) return { ok: false, error: STOPPED_BY_USER, retryable: false, stopped: true };
     return await dialVideoPoll(slot, providerId, providerJobId);
@@ -321,7 +325,8 @@ export type VideoAssetOutcome =
  */
 export async function fetchVideoAsset(agentId: string, providerId: string, providerJobId: string): Promise<VideoAssetOutcome> {
   // A-5: the download leg registers too — it is the longest single wire of the three.
-  const slot = openAgentCall(agentId);
+  // A-5 FIX ROUND: `background` — same reason as the poll leg; the turn is long gone.
+  const slot = openAgentCall(agentId, 'background');
   try {
     if (slot.refused) return { ok: false, error: STOPPED_BY_USER, stopped: true };
     return await dialVideoAsset(slot, providerId, providerJobId);

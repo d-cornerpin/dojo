@@ -24,7 +24,7 @@ import { decodeToWav16kMono, extractAudioFromVideo } from '../agent/effects/tran
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
-import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/shared-state.js';
+import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/abortable-call.js';
 import { getEffectiveTranscriptionModel, type LocalTranscriptionEngine } from './transcription-model.js';
 import { transcribeBuffer as localTranscribe, isWhisperBinaryAvailable } from '../voice/stt-service.js';
 import { DEFAULT_WHISPER } from '../voice/model-manager.js';
@@ -91,7 +91,9 @@ export { resolveAttachmentPath } from './attachment-resolve.js';
 // `url` instead of `attachment_id`.
 export async function fetchAudioUrl(agentId: string, url: string): Promise<{ buffer: Buffer; mimeType: string; filename: string } | { error: string; stopped?: true }> {
   // A-5: the source download is an agent's dial like any other — it can be a gigabyte.
-  const slot = openAgentCall(agentId);
+  // A-5 FIX ROUND: `turn` — `transcribe_audio` is a synchronous tool call and the executor is
+  // holding the turn open on it, so the turn ending genuinely is a reason to cut it.
+  const slot = openAgentCall(agentId, 'turn');
   try {
     if (slot.refused) return { error: STOPPED_BY_USER, stopped: true };
     return await dialAudioUrl(slot, url);
@@ -236,7 +238,8 @@ async function transcribeCloud(
   req: TranscribeAudioRequest,
 ): Promise<TranscribeAudioResult> {
   // A-5: the stop door, opened around the whole cloud leg (request AND body read).
-  const slot = openAgentCall(req.agentId);
+  // A-5 FIX ROUND: `turn` — same reason as the source download above.
+  const slot = openAgentCall(req.agentId, 'turn');
   try {
     if (slot.refused) return { ok: false, error: STOPPED_BY_USER, code: 'STOPPED' };
     return await dialTranscribeCloud(slot, modelId, providerId, apiModelId, req);

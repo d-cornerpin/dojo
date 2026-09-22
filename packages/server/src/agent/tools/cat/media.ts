@@ -818,7 +818,11 @@ const handlers = {
     } else {
       const fetched = await fetchAudioUrl(agentId, urlArg!);
       if ('error' in fetched) {
-        content = `Error: ${fetched.error}`;
+        // A-5 FIX ROUND (review m5): read `stopped` here the way the cloud arm below reads
+        // `code === 'STOPPED'`. Both arms of ONE tool were four lines apart and disagreed —
+        // this one prefixed `Error:` onto the user's own button while that one rendered it
+        // bare. The stop sentence stands alone or it is not the honest identity.
+        content = fetched.stopped ? fetched.error : `Error: ${fetched.error}`;
         isError = true;
         return { content, isError };
       }

@@ -376,7 +376,6 @@ import {
   activeRuns,
   pendingWakeups,
   stoppedAgents,
-  activeAbortControllers,
   preemptedAgents,
   agentStartTimes,
   statusHeartbeats,
@@ -386,6 +385,9 @@ import {
   stopFencedRuns,
   isStopFenced,
   abortInFlight,
+  // A-5 fix round (review CRITICAL C1): the turn-scoped count the preempt asks before it
+  // decides anything — a background media job is not something a barge-in may tear down.
+  countAbortable,
   // UX-REPAIR T37: the ONE door every self-wake goes through. It refuses while
   // the user's stop is live, which is what stops a stopped run from restarting
   // itself out of its own end-of-run drains.
@@ -477,7 +479,13 @@ export function stopAgent(agentId: string): void {
   // A-5: and it now reaches the MEDIA dials too — image, TTS/music, the video submit and every
   // leg of the video poll loop, all of which went straight to a provider endpoint registered in
   // nothing. See `shared-state.ts`'s `openAgentCall`.
-  const cut = abortInFlight(agentId, 'user-stop');
+  //
+  // A-5 FIX ROUND (review CRITICAL C1): `scope: 'all'`, and this is ONE OF ONLY TWO places that
+  // may say it. The user's stop is the whole reason `background` work is in the registry at all
+  // — it is what the owner's instruction is about. The other three callers of `abortInFlight`
+  // are the engine's own aborts and are narrowed to `turn`, so a voice barge-in or a thrown
+  // turn can no longer reach a thirty-minute render and file it as something the owner did.
+  const cut = abortInFlight(agentId, 'user-stop', { scope: 'all' });
 
   // A-5 — AND THE RUN-ONCE MEDIA JOBS THIS AGENT HAS OPEN, which the registry alone cannot
   // reach. `image_create`'s delivery IIFE waits for the turn to END before it dials, so at the
@@ -628,10 +636,19 @@ export function preemptAgentForUrgentMessage(agentId: string): boolean {
   // compaction dial up at the same time), so "is there anything to abort" is a size question
   // and the abort is `abortInFlight`. The cool-down, the flag order and the return contract
   // are byte-for-byte the decisions T81c made — only the registry shape underneath changed.
-  if ((activeAbortControllers.get(agentId)?.size ?? 0) === 0) return false;
+  //
+  // A-5 FIX ROUND (review CRITICAL C1): the size question is asked of the TURN-SCOPED entries
+  // only, and the abort is narrowed to match. A background media job is not something a
+  // barge-in may tear down — and counting one here was worse than harmless: this function
+  // would return `true` (its contract is "there WAS an in-flight model call to abort"), burn
+  // the 30 s cool-down on a poller, so a genuine barge-in in the next thirty seconds would be
+  // coalesced and never abort the real model call; and it would leave `preemptedAgents` armed,
+  // where the next unrelated model failure reads as `preempted-mid-call` and the turn is
+  // abandoned silently. All three follow from counting the wrong set.
+  if (countAbortable(agentId, 'turn') === 0) return false;
   lastA2APreemptAt.set(agentId, now);
   preemptedAgents.add(agentId);
-  abortInFlight(agentId, 'urgent-preempt');
+  abortInFlight(agentId, 'urgent-preempt', { scope: 'turn' });
   logger.info('Agent run preempted for urgent wakeup', {}, agentId);
   return true;
 }
@@ -1598,7 +1615,10 @@ function recoverStuckAgents(): void {
     for (const [agentId, stoppedAt] of stopFencedRuns) {
       const fencedForMs = Date.now() - stoppedAt;
       if (fencedForMs < fenceThresholdMs) continue;
-      abortInFlight(agentId, 'stuck-stopped-run-reap');
+      // A-5 FIX ROUND: `'all'` — the SECOND and last site that may say it. This reaper fires
+      // only on a run the owner EXPLICITLY stopped whose teardown then wedged, so the user
+      // stop it is finishing is the same stop that should have cut this work already.
+      abortInFlight(agentId, 'stuck-stopped-run-reap', { scope: 'all' });
       stopStatusHeartbeat(agentId);
       stopFencedRuns.delete(agentId);
       stoppedAgents.delete(agentId);

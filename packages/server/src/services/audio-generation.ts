@@ -30,7 +30,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
-import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/shared-state.js';
+import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/abortable-call.js';
 import { homeDir } from '../home.js';
 
 const logger = createLogger('audio-generation');
@@ -211,7 +211,10 @@ async function collectAudioStream(body: ReadableStream<Uint8Array>): Promise<Str
 
 /** A-5 — the stop door. Same shape as `generateImage`'s: see that function's note. */
 export async function generateAudio(req: GenerateAudioRequest): Promise<GenerateAudioResult> {
-  const slot = openAgentCall(req.agentId);
+  // A-5 FIX ROUND: `background`. `tts_create` fires the job and ends its turn by design (the
+  // tool result says so in as many words), so this dial is always running after its turn is
+  // gone. Only the owner's own stop reaches it.
+  const slot = openAgentCall(req.agentId, 'background');
   try {
     if (slot.refused) {
       logger.info('Audio generation refused: the user stopped this agent', { modelId: req.modelId });
