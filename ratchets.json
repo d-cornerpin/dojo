@@ -3,6 +3,62 @@
   "$raises": [
     {
       "path": "packages/server/src/agent/shared-state.ts",
+      "from": 381,
+      "to": 415,
+      "by": "A-5 FIX ROUND (review CRITICAL C1) — only the owner's own stop reaches a background media job",
+      "why": "+34 NET, and the honest arithmetic is +113 of scope machinery MINUS 79 that left for `agent/abortable-call.ts`. The +113 is the Critical: a registration now carries a scope ('turn' vs 'background'), `abortInFlight` takes one and filters on it, `countAbortable` answers the preempt's size question per scope, and the abort REASON rides beside the controller so `cutByStop()` has two conjuncts instead of one. About 70 of those lines are the measured incident and the two design refusals, and they are the reason the raise is worth taking rather than the reason to trim: the incident is a voice barge-in cancelling a live video render at the provider and the engine filing it as something the OWNER did, and the refusal is `controller.abort(reason)` — which would make `fetch` reject WITH the reason and break every `err.name === 'AbortError'` reader in the transports. A reader who deletes either paragraph re-derives the Critical or the transport break. THE 79 ARE A REAL MOVE, NOT A SHUFFLE TO FIT A NUMBER: this file is a STATE module (its own header; this pin's previous entry says 'what is left here is the CROSS-TURN state, and it may only shrink'), the registry IS that state and stayed, and a per-call open/compose/release helper is not state — four services were importing the runtime's ambient-state module to get one function. MEASURED BOTH WAYS before choosing: 494 with the door here, 415 without, and the split also drops four service files' dependency on this module entirely. REFUSED: leaving the door here and taking 494 (+60.9% over the growth baseline on a file the review had just flagged as having two lines of headroom). REFUSED: moving the SCOPE or the sidecar out with the door — `abortInFlight` reads both, and a sidecar in another module would make the registry import its own caller. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1719,
+      "to": 1739,
+      "by": "A-5 FIX ROUND (review CRITICAL C1) — the engine's own aborts narrow to turn scope",
+      "why": "+20 (+21/-1; 16 comment, 5 code). The code is `{ scope: 'all' }` on the two callers that mean the owner's stop, `{ scope: 'turn' }` on the urgent preempt, `countAbortable(agentId, 'turn')` replacing a raw `.size` read, and the import swap. The comments carry the three knock-ons that made the raw `.size` read worse than harmless — the preempt returned `true` for a poller (its contract is 'there WAS an in-flight model call to abort'), burned the 30 s cool-down on one so the next GENUINE barge-in was coalesced away from the real model call, and left `preemptedAgents` armed for the next unrelated failure to be misread as `preempted-mid-call` — and the carve-out argument for why exactly two sites may say `'all'`. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/index.ts",
+      "from": 291,
+      "to": 300,
+      "by": "A-5 FIX ROUND (review CRITICAL C1) — a turn ending is not a reason to kill a background render",
+      "why": "+9 (+9/-0; 8 comment, 1 code). The code is `{ scope: 'turn' }`. The comment is the measured defect at the site that caused it: a turn that merely THREW cancelled a live video render at the provider and the poll loop recorded it as 'the user stopped this agent' — and because `enqueueVideoJob` runs INSIDE the turn, a throw just after `video_create` killed the job that call had created one statement earlier. The word 'turn' in this function's own name is the argument for the scope; the eight lines are why a reader must not widen it back. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/media.ts",
+      "from": 902,
+      "to": 906,
+      "by": "A-5 FIX ROUND (review m5) — one tool, two arms, one answer about the owner's button",
+      "why": "+4 (+5/-1; 4 comment, 1 code). `transcribe_audio`'s two source arms sat four lines apart and disagreed: the cloud leg rendered a stop bare and the source download prefixed `Error:` onto the owner's own button. It reads `stopped` the way the other reads `code === 'STOPPED'`. The comment says the two drifted BECAUSE nothing behavioural held either, which is why the fix round also added the clause rather than only the line. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/image-generation.ts",
+      "from": 473,
+      "to": 476,
+      "by": "A-5 FIX ROUND (review CRITICAL C1) — the IIFE dial is background-scoped",
+      "why": "+3, all comment plus the `'background'` argument. `image_create`'s delivery IIFE deliberately WAITS for the agent to go idle before dialling, so the turn ending is the one thing that must not kill this call. Three lines is the price of a reader not re-scoping it to `turn` on the reasonable-looking ground that a tool started it. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/transcription.ts",
+      "from": 396,
+      "to": 399,
+      "by": "A-5 FIX ROUND (review CRITICAL C1) — both transcription legs stay turn-scoped",
+      "why": "+3, all comment plus the two `'turn'` arguments. These are the opposite call from the image dial and the reason is worth one line each: `transcribe_audio` is a SYNCHRONOUS tool call and the executor is holding the turn open on it, so here the turn ending genuinely is a reason to cut. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/video-job-poller.ts",
+      "from": 0,
+      "to": 413,
+      "by": "A-5 FIX ROUND (review m1 + C1) — the ratchet, which is the tighter instrument, goes on the bigger grower",
+      "why": "NEW ENTRY, and it is the review's m1 paid plus this round's own +16. m1's point was an instrument mismatch: at `c21b61ac` this file had grown +31.5% (302 -> 397) and was handled with a growth-baseline hand-move, which resets its headroom to 397x1.25 = 496 — 99 fresh lines — while `generation-jobs.ts` grew LESS (+22.7%) and got the decrease-only ratchet, which is zero headroom. The looser instrument went to the bigger grower. It is pinned now, and the growth entry coexists (growth Rule 2 skips pinned files; Rule 1 still measures from its own baseline), so the binding constraint is decrease-only from 413. The +16 this round is the loop's exit asking `cutBy()` — was this cut AT ALL — rather than `cutByStop()`, with the message still asking `cutByStop()`. That is not a tidy-up: exiting only on aborts it RECOGNISED left an unrecognised abort with the signal aborted, the interruptible sleep resolving instantly, and the loop spinning at full speed for ever. The mutants found it; 11 of the 16 lines are why the next reader must not narrow the exit back to the stop. Decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/services/video-generation.ts",
+      "from": 0,
+      "to": 402,
+      "by": "A-5 FIX ROUND (review CRITICAL C1 + I1) — the three legs get their scopes and their behavioural clauses",
+      "why": "NEW ENTRY, two lines above the 400-line cap and therefore meant to be argued rather than waved through. 397 -> 402: +5, all comment plus three scope arguments — `submitVideoJob` is `turn` (it runs inside `video_create` with the tool still waiting, and a turn that dies there has nothing to protect: the job does not exist yet), while `pollProviderVideo` and `fetchVideoAsset` are `background` (the poller drives them minutes after the turn ended). The review's m2 measured this file as the tightest in the family — 9 lines of growth headroom at `c21b61ac` — so pinning it is the right answer to that, not a concession: a pin is decrease-only and does not hand it the 100 lines a growth re-record would. REFUSED: splitting the three legs apart to stay under 400 — they share `resolveProvider`, `COMMON_HEADERS` and the base-URL derivation, and three files each believing they know how to address a provider's video API is the drift the single module exists to prevent. Decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/agent/shared-state.ts",
       "from": 312,
       "to": 381,
       "by": "A-5 — the stop button stops the media generators too",
@@ -5288,8 +5344,8 @@
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 345,
-    "packages/server/src/agent/runtime.ts": 1719,
-    "packages/server/src/agent/shared-state.ts": 381,
+    "packages/server/src/agent/runtime.ts": 1739,
+    "packages/server/src/agent/shared-state.ts": 415,
     "packages/server/src/credentials/store.ts": 412,
     "packages/server/src/agent/stream-patience.ts": 403,
     "packages/server/src/providers/anthropic-sdk.ts": 516,
@@ -5301,7 +5357,7 @@
     "packages/server/src/agent/tools/cat/comms.ts": 914,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
-    "packages/server/src/agent/tools/cat/media.ts": 902,
+    "packages/server/src/agent/tools/cat/media.ts": 906,
     "packages/server/src/agent/tools/cat/session.ts": 264,
     "packages/server/src/agent/tools/cat/tracker.ts": 996,
     "packages/server/src/agent/tools/definitions.ts": 2877,
@@ -5391,7 +5447,7 @@
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
     "packages/server/src/agent/v2/steps/teardown/conversation-tagging.ts": 70,
     "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 546,
-    "packages/server/src/agent/v2/steps/teardown/index.ts": 291,
+    "packages/server/src/agent/v2/steps/teardown/index.ts": 300,
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/costs/tracker.ts": 541,
     "packages/server/src/credentials/secret-fields.ts": 241,
@@ -5447,11 +5503,13 @@
     "packages/server/src/services/format-time.ts": 275,
     "packages/server/src/services/gmail-watcher.ts": 592,
     "packages/server/src/services/generation-jobs.ts": 443,
-    "packages/server/src/services/image-generation.ts": 473,
+    "packages/server/src/services/image-generation.ts": 476,
     "packages/server/src/services/imessage-bridge.ts": 2314,
     "packages/server/src/services/outlook-watcher.ts": 517,
     "packages/server/src/services/teams-watcher.ts": 461,
-    "packages/server/src/services/transcription.ts": 396,
+    "packages/server/src/services/transcription.ts": 399,
+    "packages/server/src/services/video-generation.ts": 402,
+    "packages/server/src/services/video-job-poller.ts": 413,
     "packages/server/src/services/tunnel.ts": 683,
     "packages/server/src/techniques/dependencies.ts": 586,
     "packages/server/src/techniques/share-export.ts": 464,
