@@ -61,44 +61,35 @@
 // what THIS process is holding. Nothing is ever read back out of the database.
 //
 // ════════════════════════════════════════════════════════════════════════════
-// DESIGN RULING 13 (2026-09-22) — THE OWNER ASKING FOR HIS OWN SECRET GETS IT
+// DESIGN RULING 13 (2026-09-22), AS THE OWNER CORRECTED IT THE SAME DAY
 // ════════════════════════════════════════════════════════════════════════════
-// Round 8 asked one agent the same question twice ("what's my building gate
-// code?", dashboard chat) and got two different answers. Both halves are here.
+// The ruling first read "when the owner asks in dashboard chat for a credential
+// he stored, the agent SHOWS it". He corrected it, in his own words:
 //
-// THE BUG. `agent/model.ts` replays a stored `reasoning_content` to the
-// provider on tool-call turns (the DeepSeek family requires its own reasoning
-// back) and `hydrateCredentialsInMessages` walked `content` alone — so the
-// model read its own prior thought with the placeholder in it and copied the
-// placeholder into the owner's reply. That is property 3's named failure mode
-// one field over, so it takes property 3's fix: the read side covers EVERY
-// field the provider boundary sends, not just `content`.
+//   "The agent should not reply with credentials. The user can see them in the
+//    credentials store in the vault tab instead."
 //
-// THE DECISION, which is the owner's: when the OWNER asks in DASHBOARD chat for
-// a credential, the agent SHOWS it — priority one covers secrets too. The guard
-// keeps redacting elsewhere, and the carve-out is CHANNEL-KEYED, never
-// content-judged (OR2).
+// So there is NO carve-out and no reveal seam anywhere: no channel is special,
+// no surface is special, and the scrub below is unconditional. The vault tab is
+// the one place a credential is shown to a person, and it reads the encrypted
+// store directly — which is also the platform's own stated contract ("the
+// encrypted credentials store … is the only authoritative copy"). An earlier
+// cut of this task built an owner-dashboard reveal (a narrowed persist, then a
+// render-time hydrator at the socket frame and the chat route); the correction
+// deleted all of it, and the two review findings against that machinery died
+// with the code rather than being answered.
 //
-// ⚠ IT IS A READ, NOT A NARROWER WRITE, and the difference is the whole safety
-// argument. The first attempt narrowed the PERSIST scrub, which put the
-// credential in a `messages` row in the clear — defeating property 2 (a stored
-// plaintext has nothing to hydrate, so after a restart the agent reads a
-// live-looking value out of its own history with no store read, and serves a
-// rotated one as current), manufacturing the very input the outbound scrub
-// cannot defend once the in-process set is empty, and putting a secret on a row
-// shape the platform's own at-rest audit forbids. So every stored byte is
-// redacted exactly as it was before this ruling, and the value goes back only
-// in the copy being RENDERED to the owner: `hydrateOwnerDashboardCredentials`,
-// below. The channel half of the key lives at the two surfaces that render —
-// the dashboard socket frame and the chat route.
-//
-// HANDED IN vs HANDED OUT, and why the split is structural rather than a
-// judgement. A value the store HANDED OUT (`credential_get`) is one the agent
-// can fetch again at will, so showing it on the owner's own screen tells him
-// nothing `credential_get` would not. A value he HANDED IN through a declared
-// secret field has never been handed back out; it stays redacted on every
-// surface, rendered ones included. That is a fact about how the value entered
-// this process, not about what any text says about it.
+// WHAT THE ROUND-8 INCIDENT LEAVES BEHIND, because it was never the ruling's
+// half in the first place. The owner asked for his gate code and was shown
+// `<redacted-credential:c1>`, and the engine had not redacted that reply: the
+// MODEL wrote the placeholder, having read it in its own replayed context.
+// `agent/model.ts` sends a stored `reasoning_content` back to the provider on
+// tool-call turns (the DeepSeek family requires it), and
+// `hydrateCredentialsInMessages` walked `content` alone — so the model was
+// handed its own prior thought with the placeholder in it and copied it
+// forward. That is property 3's named failure mode one field over, and it is
+// fixed below: the read side covers EVERY field the provider boundary sends.
+// The agent goes on using its credentials; it just never types one into chat.
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -136,57 +127,29 @@ const PLACEHOLDER_RE = /<redacted-credential(?::([a-z0-9]+))?>/g;
 // declared field is still replaced in the stored arguments.
 const MIN_REDACTABLE_CREDENTIAL_LEN = 6;
 
-/** Which way a value crossed this process — see the header. `'out'` is the store
- *  handing one to the agent (`credential_get`); `'in'` is the owner handing one
- *  in through a declared secret field. */
-export type CredentialDirection = 'in' | 'out';
-
 /** Per agent: the values it has handled, each with its in-process handle. */
 type AgentSecrets = {
   /** value → tag */
   byValue: Map<string, string>;
   /** tag → value */
   byTag: Map<string, string>;
-  /**
-   * The tags of values the STORE HANDED OUT to this agent. One-way on purpose:
-   * a value first typed in and later fetched has been handed out, and a value
-   * only ever typed in never joins. Nothing removes a tag from this set, so the
-   * question "may the owner's own screen show this?" has a stable answer for
-   * the life of the process.
-   */
-  handedOut: Set<string>;
 };
 const handedCredentialValues = new Map<string, AgentSecrets>();
 
 /** Global so a tag minted for one agent can never be a valid tag for another. */
 let tagCounter = 0;
 
-/**
- * Register secret values this agent has handled, in either direction.
- * `direction` defaults to `'in'`, the conservative side: forgetting it can only
- * ever over-redact. Only `credential_get` passes `'out'`.
- */
-export function noteHandedCredentialValues(
-  agentId: string, values: string[], direction: CredentialDirection = 'in',
-): void {
+/** Register secret values this agent has handled, in either direction. */
+export function noteHandedCredentialValues(agentId: string, values: string[]): void {
   if (values.length === 0) return;
   let state = handedCredentialValues.get(agentId);
-  if (!state) {
-    state = { byValue: new Map(), byTag: new Map(), handedOut: new Set() };
-    handedCredentialValues.set(agentId, state);
-  }
+  if (!state) { state = { byValue: new Map(), byTag: new Map() }; handedCredentialValues.set(agentId, state); }
   for (const v of values) {
     if (typeof v !== 'string' || v.length < MIN_REDACTABLE_CREDENTIAL_LEN) continue;
-    let tag = state.byValue.get(v);
-    if (!tag) {
-      tag = `c${++tagCounter}`;
-      state.byValue.set(v, tag);
-      state.byTag.set(tag, v);
-    }
-    // A second note UPGRADES the direction and never downgrades it: the same
-    // value typed in on one turn and fetched on a later one has been handed
-    // out, which is the round-8 gate code exactly.
-    if (direction === 'out') state.handedOut.add(tag);
+    if (state.byValue.has(v)) continue;
+    const tag = `c${++tagCounter}`;
+    state.byValue.set(v, tag);
+    state.byTag.set(tag, v);
   }
 }
 
@@ -208,10 +171,8 @@ export function redactedPlaceholderFor(agentId: string, value: string): string {
 
 /** Replace any credential value this agent has handled with its placeholder.
  *  Returns the input unchanged when nothing matches (the common case), so it is
- *  cheap to call on every persisted string. This is the ONLY redactor: the
- *  owner's-screen carve-out is a READ, not a narrower write (see below), so
- *  every stored byte is redacted exactly as it was before ruling 13.
- */
+ *  cheap to call on every persisted string, and it is the ONLY redactor — the
+ *  corrected ruling 13 gives no surface a narrower one. */
 export function redactHandedCredentials(agentId: string, text: string): string {
   const state = handedCredentialValues.get(agentId);
   if (!state || state.byValue.size === 0 || !text) return text;
@@ -224,44 +185,6 @@ export function redactHandedCredentials(agentId: string, text: string): string {
     if (out.includes(secret)) out = out.split(secret).join(`${TAGGED_PREFIX}${state.byValue.get(secret)}>`);
   }
   return out;
-}
-
-/**
- * ── THE OWNER'S SCREEN, AT RENDER TIME (design ruling 13) ──────────────────
- *
- * Puts a value back into a string that is ON ITS WAY TO THE OWNER'S DASHBOARD —
- * the socket frame the chat bubble is drawn from, and the rows the chat route
- * serves on a reload. It is a READ-SIDE seam, the same shape as the provider
- * boundary above and for the same reason: NOTHING STORED CHANGES. The row keeps
- * its tagged placeholder, so the credential never comes to rest in the clear, is
- * never indexed, and is never what the model reads back out of its own history.
- * Writing the value into the row instead was the first attempt, and it defeated
- * property 2 — a stored plaintext has nothing to hydrate, so after a restart the
- * agent would read a live-looking credential out of history with no store read,
- * and serve a rotated one as current.
- *
- * ONLY VALUES THE STORE HANDED OUT, and only ones THIS PROCESS STILL HOLDS:
- *   • a value the owner typed IN through a declared secret field is not his to
- *     read back off a rendered row — it becomes showable once his agent fetches
- *     it, which is the same `credential_get` he could ask for in the next breath;
- *   • after a restart the set is empty, so the placeholder simply stays, and the
- *     owner sees an honest "not available" rather than a value that may have been
- *     rotated since. That is property 2 working, not a regression — the ruling is
- *     that the owner is not fobbed off with a placeholder for a credential his
- *     agent IS HOLDING, not that a dead value be dressed up as a live one.
- *
- * Every other placeholder is left BYTE-IDENTICAL, deliberately: this seam only
- * ever turns one specific tag into one specific value, so no historical row's
- * rendering moves because of it.
- */
-export function hydrateOwnerDashboardCredentials(agentId: string, text: string): string {
-  if (!text || !text.includes(TAGGED_PREFIX)) return text;
-  const state = handedCredentialValues.get(agentId);
-  if (!state || state.handedOut.size === 0) return text;
-  return text.replace(PLACEHOLDER_RE, (m, tag: string | undefined) => {
-    if (!tag || !state.handedOut.has(tag)) return m;
-    return state.byTag.get(tag) ?? m;
-  });
 }
 
 /**

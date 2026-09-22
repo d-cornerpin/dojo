@@ -63,7 +63,6 @@ export {
   noteHandedCredentialValues,
   hasHandedCredentialValues,
   redactHandedCredentials,
-  hydrateOwnerDashboardCredentials,
   forgetHandedCredentialValues,
 } from './secret-values.js';
 

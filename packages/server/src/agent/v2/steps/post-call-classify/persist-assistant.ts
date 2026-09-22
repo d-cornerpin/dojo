@@ -17,12 +17,9 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { stripMoodMarker } from '@dojo/shared';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
-import {
-  hydrateOwnerDashboardCredentials, redactAssistantBlocksForPersist, redactHandedCredentials,
-} from '../../../../credentials/secret-fields.js';
+import { redactAssistantBlocksForPersist, redactHandedCredentials } from '../../../../credentials/secret-fields.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { ownOutputBroadcast } from '../../../interagent-broadcast.js';
-import { isOwnerDashboardDelivery } from '../../counterparty.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
@@ -180,30 +177,15 @@ export async function runPersistAssistant(
     // `sshpass -p '<pw>'`). result.toolCalls is untouched, so the live call still
     // runs with the real value; only the stored copy is redacted.
     //
-    // ⚠ DESIGN RULING 13 (2026-09-22) DELIBERATELY LEAVES THIS LINE ALONE. The
-    // owner's carve-out is a RENDER, not a narrower persist: the row and the
-    // semantic index keep the placeholder, so no credential comes to rest in the
-    // clear and the model can never read a live-looking one back out of its own
-    // history. The value goes back only into the copy this turn BROADCASTS to his
-    // dashboard — `ownerView` below. Narrowing the scrub here was the first
-    // attempt and was rejected; `credentials/secret-values.ts` records why.
+    // ⚠ DESIGN RULING 13 AS THE OWNER CORRECTED IT (2026-09-22): "The agent should
+    // not reply with credentials. The user can see them in the credentials store in
+    // the vault tab instead." So this scrub is unconditional, it has no channel
+    // carve-out, and the SIBLING ARM below now matches it — a tool-less reply is
+    // scrubbed at its source in `terminal-text.ts`, so the two arms finally agree.
     const assistantContentForStore = redactAssistantBlocksForPersist(agentId, assistantContent);
     const reasoningForStore = result.reasoningContent
       ? redactHandedCredentials(agentId, result.reasoningContent) : null;
     const assistantContentJson = JSON.stringify(assistantContentForStore);
-    // THE RENDER SEAM, and the whole of the channel key in production. `ownerView`
-    // is the stored JSON with this agent's own FETCHED credentials put back, and
-    // it is used for the socket frame and nothing else — never for the row, never
-    // for the index, never for a2a. `toOwnerDashboard` is false for every
-    // inter-agent turn and for every counterparty that is not the owner on the
-    // dashboard, so a peer, a contact or a routed channel gets the placeholder;
-    // the chat route applies the identical hydration on a reload, so the live
-    // bubble and the refreshed one agree. `ownerView === assistantContentJson` by
-    // reference on every turn that fetched no credential.
-    const toOwnerDashboard = !interAgentTurn && isOwnerDashboardDelivery(counterparty);
-    const ownerView = toOwnerDashboard
-      ? hydrateOwnerDashboardCredentials(agentId, assistantContentJson)
-      : assistantContentJson;
     if (interAgentTurn) {
       // D-A step 8: the agent's OWN inter-agent-turn output goes to the physical
       // inter-agent store, never the `messages` chat table. Persisting it here
@@ -248,7 +230,7 @@ export async function runPersistAssistant(
       agentName: (agent.name as string | null) ?? null,
       id: messageId,
       role: 'assistant',
-      content: ownerView,
+      content: JSON.stringify(assistantContentForStore),
       createdAt: new Date().toISOString(),
       modelId: effectiveModelIdForPersist,
       attachments: queuedAttachments.length > 0 ? queuedAttachments : undefined,

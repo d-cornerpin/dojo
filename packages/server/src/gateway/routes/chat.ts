@@ -9,7 +9,6 @@ import { getAgentRuntime } from '../../agent/runtime.js';
 import { queueEmbedding } from '../../memory/embeddings.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { insertInboundMessageIfAbsent } from '../../work/ask-title.js';
-import { hydrateOwnerDashboardCredentials } from '../../credentials/secret-fields.js';
 import { archiveAgentConversation } from '../../vault/archive.js';
 import { replaceContextItems } from '../../memory/dag.js';
 import { broadcast } from '../ws.js';
@@ -337,26 +336,7 @@ chatRouter.get('/:agentId/messages', (c) => {
   // Reverse to chronological order
   rows.reverse();
 
-  // ── DESIGN RULING 13 (2026-09-22): THE RELOAD HALF OF THE OWNER'S OWN SCREEN ──
-  //
-  // This route IS the channel key, and a stronger one than any derivation: it is the
-  // owner's dashboard chat surface and the only human-facing read the platform has
-  // (`lane = 'owner'`, fail-closed, two predicates above). Nothing an agent, a peer or
-  // an outbound bridge does reaches it. So a credential THIS PROCESS fetched for THIS
-  // agent is rendered back into the copy it serves — the same hydration
-  // `persist-assistant.ts` applies to the live socket frame, so the bubble the owner
-  // watched and the bubble he gets after a refresh say the same thing.
-  //
-  // NOTHING STORED MOVES: the rows keep their placeholders, and only the JSON on its way
-  // out of this handler carries the value. After a restart the in-process set is empty and
-  // the placeholder simply stays — which is the module's property 2 working, not a
-  // regression: a dead value must never be presentable as a live one, least of all one
-  // that may have been rotated since.
-  const messages: Message[] = rows.map(rowToMessage)
-    .map((m) => {
-      const content = hydrateOwnerDashboardCredentials(agentId, m.content);
-      return content === m.content ? m : { ...m, content };
-    });
+  const messages: Message[] = rows.map(rowToMessage);
   return c.json({ ok: true, data: messages });
 });
 

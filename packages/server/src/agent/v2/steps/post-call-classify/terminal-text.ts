@@ -25,6 +25,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { INTERNAL_WORKING_NOTE_PREFIX, WORKING_NOTE_PREFIX, stripMoodMarker } from '@dojo/shared';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
+import { redactHandedCredentials } from '../../../../credentials/secret-fields.js';
 import { insertMessageIfAbsent, START_ACK_ORIGIN_INTENT } from '../../../../memory/message-store.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { isRoutedHumanCounterparty } from '../../counterparty.js';
@@ -61,7 +62,26 @@ export async function runTerminalText(
     sentToAgentThisTurn: state.sentToAgentThisTurn,
   });
 
-  let persistedContent: string | null = result.content;
+  // ⚠ DESIGN RULING 13 AS CORRECTED (2026-09-22), and the reason it is HERE rather
+  // than at each writer: "The agent should not reply with credentials. The user can
+  // see them in the credentials store in the vault tab instead."
+  //
+  // `persistedContent` is the single birth point of the tool-less reply — every row
+  // that text ever reaches is downstream of this line: the assistant row and its
+  // broadcast (`persist-assistant.ts`), the working-note system row and its
+  // `chat:workingnote` frame below, the closeout demotion, and the channel-routed
+  // copy. Scrubbing once here is what makes "a credential never appears in chat"
+  // true of all of them, instead of true of whichever writers someone remembered.
+  //
+  // The SIBLING ARM has scrubbed its own stored text since PHASE-4
+  // (`redactAssistantBlocksForPersist` rewrites a tool-riding reply's `text` block),
+  // so this is that arm's treatment extended to this one — not a reversal of T5b.
+  // T5b's caution is about not rewriting what was DELIVERED; the model still spoke
+  // its sentence, the live call still ran with the real value, and the agent reads
+  // the value back at the provider boundary. Only the copies a person or an index
+  // can read carry the placeholder.
+  let persistedContent: string | null =
+    result.content ? redactHandedCredentials(agentId, result.content) : result.content;
   // v2.5.7, strip system routing tags the LLM may have copied from
   // prior conversation history (e.g. "[SENT VIA IMESSAGE to the owner]")
   // before persisting OR routing to iMessage. This cleans both the

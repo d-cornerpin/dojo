@@ -757,21 +757,6 @@ export interface TurnCounterparty {
    * lane) and on ordinary human turns.
    */
   senderIsAgent: boolean;
-  /**
-   * DESIGN RULING 13: was this turn's `channel` read off a REAL STAMP, or is it the
-   * attribution derivation's fallthrough default?
-   *
-   * `deriveOrigin`'s last branch is "plain text = the owner on dashboard chat"
-   * (`shared/src/origin.ts`), and `channel` below falls back to `'dashboard'` when
-   * nothing resolved — so `relation:'owner' ∧ channel:'dashboard'` is BOTH a
-   * positively-stamped dashboard turn AND what a row with no usable stamps produces.
-   * That is fail-OPEN, and the credential carve-out must not sit on it. This flag is
-   * true only when the trigger row carried a `channel` column or an `inbound_meta`
-   * that actually parsed, so `isOwnerDashboardDelivery` can demand a stamp rather
-   * than accept the absence of one. Optional, so every literal that omits it is
-   * fail-closed by construction.
-   */
-  channelStamped?: boolean;
 }
 
 /**
@@ -790,47 +775,6 @@ export function isRoutedHumanCounterparty(counterparty: TurnCounterparty): boole
     && (counterparty.relation === 'owner' || counterparty.relation === 'known_contact')
     && (counterparty.channel === 'imessage' || counterparty.channel === 'sms'
       || counterparty.channel === 'teams' || counterparty.channel === 'email');
-}
-
-/**
- * ── THE OWNER, ON HIS OWN SCREEN (design ruling 13, 2026-09-22) ──
- *
- * The one channel fact the credential leak-guard's carve-out is keyed on: this turn is
- * answering the OWNER and the answer lands in the DASHBOARD CHAT. It exists as a named
- * predicate rather than an inline `&&` because two seams ask it (the assistant row the
- * dashboard renders, and the test that pins both) and a second copy of a rule is how two
- * copies come to disagree.
- *
- * WHY A NON-DASHBOARD PATH CANNOT REACH IT. Every conjunct is STRUCTURAL and is settled
- * before the model is consulted. `relation` and `channel` come from `deriveOrigin` over the
- * trigger row's own stamped columns (OR4), and once a channel stamp exists the derivation
- * never consults content again — so nothing an agent, a contact or a model WRITES moves
- * them: an iMessage, SMS, Teams, email, phone or voice turn answers false, and `kind` rules
- * out every A2A turn (they resolve `kind: 'agent'`, `channel: 'a2a'`). `senderIsAgent` closes
- * the gap where another Dojo agent texts in over a human channel.
- *
- * ⚠ AND THE FOURTH CONJUNCT IS THERE BECAUSE THE FIRST THREE ARE ALSO THE DEFAULT. Stating
- * this precisely matters more than stating it strongly: `relation:'owner' ∧
- * channel:'dashboard'` is not only what a stamped dashboard turn produces, it is what the
- * derivation returns when it has NOTHING to go on — `origin.ts`'s last branch is "plain text
- * = the owner on dashboard chat", and `channel` below defaults to `'dashboard'`. That is
- * fail-open, so the predicate additionally demands `channelStamped`: a row with no `channel`
- * column and no parseable `inbound_meta` answers FALSE and its credentials stay redacted.
- * No stamps, no secret.
- *
- * AND IT IS ONLY HALF THE GUARD. It says the RENDERED copy on the dashboard may carry the
- * owner's own fetched credential — never the stored row, which keeps its placeholder either
- * way — and it says nothing about what leaves the box. A dashboard turn whose reply the
- * away-override promotes onto iMessage is still `true` here, and the value is kept out of
- * that push by `finalize/channel-push.ts`, which redacts every outbound arm on its own.
- * Deleting either half is a leak.
- */
-export function isOwnerDashboardDelivery(counterparty: TurnCounterparty): boolean {
-  return counterparty.kind === 'user'
-    && counterparty.relation === 'owner'
-    && counterparty.channel === 'dashboard'
-    && counterparty.channelStamped === true
-    && !counterparty.senderIsAgent;
 }
 
 /**
@@ -867,24 +811,6 @@ export function engineAckReachesTheirChannel(counterparty: TurnCounterparty): bo
   return isRoutedHumanCounterparty(counterparty)
     && (counterparty.channel === 'imessage' || counterparty.channel === 'sms'
       || counterparty.channel === 'teams');
-}
-
-/**
- * Ruling 13: did this trigger row actually CARRY a channel, or did the derivation fall
- * through to its owner/dashboard default? True only for a non-empty `channel` column or
- * an `inbound_meta` that parses to an object with a `channel` — the same two structured
- * sources `deriveOrigin` trusts before it starts guessing from prose. Best-effort and
- * fail-closed: anything unparseable answers false.
- */
-function hasChannelStamp(triggerChannel: string | null, inboundMeta: string | null): boolean {
-  if (typeof triggerChannel === 'string' && triggerChannel.length > 0) return true;
-  if (!inboundMeta) return false;
-  try {
-    const meta = JSON.parse(inboundMeta) as InboundMeta;
-    return !!meta && typeof meta === 'object' && typeof meta.channel === 'string' && meta.channel.length > 0;
-  } catch {
-    return false;
-  }
 }
 
 /** RC-4.2: read the structured `senderIsAgent` flag off a trigger row's inbound_meta
@@ -947,7 +873,6 @@ export function resolveTurnCounterparty(args: ResolveCounterpartyArgs): TurnCoun
       // The A2A lane is a separate structural entity; senderIsAgent flags a
       // user-CHANNEL sender that happens to be an agent, which never applies here.
       senderIsAgent: false,
-      channelStamped: false,
     };
   }
   // Human turn, derive the sender's origin from the triggering message.
@@ -971,10 +896,6 @@ export function resolveTurnCounterparty(args: ResolveCounterpartyArgs): TurnCoun
     // RC-4.2: the sender is another Dojo agent iff the trigger row's inbound_meta
     // stamped senderIsAgent (iMessage bridge). Used to gate channel-delivered acks.
     senderIsAgent: readSenderIsAgent(args.triggerInboundMeta),
-    // Ruling 13: a POSITIVE stamp, never the fallthrough. The dashboard's own ingest
-    // writes `channel='dashboard'` on the row it inserts, so a real dashboard turn
-    // qualifies; a row with no channel column and no parseable meta does not.
-    channelStamped: hasChannelStamp(args.triggerChannel, args.triggerInboundMeta),
   };
 }
 

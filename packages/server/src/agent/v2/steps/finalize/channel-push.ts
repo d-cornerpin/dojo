@@ -72,10 +72,10 @@ export async function pushReplyToChannel(
   // keyed on the channel, and this is the other side of that key: every arm below hands
   // the reply to a bridge, to Twilio, to Outlook/Gmail or into a live call, and a secret
   // that crosses one of those has left the machine it was encrypted on. So the outbound
-  // copy is scrubbed — ALL of it, including the values `redactHandedInCredentials` lets
-  // through on the owner's screen, and including an owner-bound iMessage push (the
-  // away-override promotes a dashboard turn onto iMessage, and the message still leaves
-  // the box).
+  // copy is scrubbed — including an owner-bound iMessage push, because the away-override
+  // promotes a dashboard turn onto iMessage and the message still leaves the box. There is
+  // no narrower redactor for any surface: ruling 13, as the owner corrected it, is that a
+  // credential is not typed into a reply at all, and the vault tab is where he reads one.
   //
   // ⚠ THIS SCRUB WAS MISSING, and that is a finding rather than a tidy-up. `state
   // .lastAssistantTextForIM` is set from the RAW model text (`persist-assistant.ts`,
