@@ -369,15 +369,23 @@ describe('T81 fix wave — refuseIfDoomed\'s wording is honest about standing vs
 // measurement either, and it still dials.
 // ════════════════════════════════════════════════════════════════════════════════════
 
-/** A provider that has DECLARED NOTHING and been MEASURED. The 2026-09-22 shape. */
-const seedOpenAICompatibleMeasuredOnly = (measuredTokensPerSec: number | null): void => {
+/**
+ * A provider that has DECLARED NO THROUGHPUT and been MEASURED. `firstChunkTimeoutMs` is an
+ * explicit argument because fix round 1's C1 turns it into the load-bearing fact: a MEASURED
+ * rate may arm the pre-dial gate only where the owner declared the patience it is measured
+ * against. Passing `null` reproduces the reviewer's exact defect shape.
+ */
+const seedOpenAICompatibleMeasuredOnly = (
+  measuredTokensPerSec: number | null,
+  firstChunkTimeoutMs: number | null = SCALED_PATIENCE_MS,
+): void => {
   const db = mockDb.current!;
   db.prepare(`
     INSERT INTO providers (id, name, type, base_url, auth_type, first_chunk_timeout_ms,
                            prefill_tokens_per_sec, measured_prefill_tokens_per_sec, measured_prefill_at,
                            is_validated, created_at, updated_at)
     VALUES ('local', 'Local DS4', 'openai-compatible', ?, 'none', ?, NULL, ?, datetime('now'), 1, datetime('now'), datetime('now'))
-  `).run(stubUrl, SCALED_PATIENCE_MS, measuredTokensPerSec);
+  `).run(stubUrl, firstChunkTimeoutMs, measuredTokensPerSec);
   db.prepare(`
     INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
     VALUES ('m-local', 'local', 'Local DS4', 'local-ds4', '["text","tools"]', 32768, 4096, 1, datetime('now'), datetime('now'))
@@ -439,5 +447,136 @@ describe('self-calibration — a provider nobody declared for still refuses a do
     const result = await callOpenAICompatible(LONG_MESSAGE);
     expect(result.content).toBe('It is done.');
     expect(openaiRequests).toBe(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════
+// FIX ROUND 1 — CRITICAL C1: A MEASUREMENT MAY ONLY TIGHTEN A BOUND SOMEBODY DECLARED.
+//
+// `refuseIfDoomed` was the only ceiling consumer without a `firstChunkDeclared` guard. That was
+// harmless while a throughput had to be TYPED — the door had no client caller anywhere in the
+// tree, so the branch was unreachable. Self-calibration removed the precondition, and the gate
+// began arming itself against the STANDING 90-second default: a bound nobody agreed to, on
+// exactly the population this feature targets.
+//
+// The reviewer's own numbers: ceiling = 60 × rate, so a box measured at this build's own fixture
+// (181 tok/s) refuses anything over ~10,860 tokens, and the owner's conversations run 42–52K.
+//
+// This block is the shape, scaled: an UNDECLARED patience must dial, a DECLARED one must still
+// refuse. Remove the guard and the first clause goes red; remove the fallback and the second
+// does — so neither half can be lost without something saying so.
+// ════════════════════════════════════════════════════════════════════════════════════
+//
+// ── WHY A SECOND, LOWER RATE THAN THE REST OF THIS FILE ──
+// The defect only shows at all if the STANDING patience produces a ceiling the test prompt
+// exceeds. Standing is 90s, so the ceiling is `(90_000 − 30_000)/1000 × rate` = 60 × rate; at
+// this file's usual 10 tok/s that is 600 tokens and `LONG_MESSAGE` (~500 estimated) fits inside
+// it — the guarded and unguarded builds would both dial, and the clause would pass for the wrong
+// reason. Measured, not assumed: with 10 tok/s the C1 guard could be deleted and nothing went
+// red. At 5 tok/s the standing ceiling is 300 and the same prompt is decisively over it, so the
+// clause below is a real question. The declared-patience arm is then 40s − 30s = 10s × 5 = 50
+// tokens, which `LONG_MESSAGE` clears easily and `SHORT_MESSAGE` (~3) sits well under.
+const C1_THROUGHPUT_TOK_PER_SEC = 5;
+
+describe('C1 — a measured rate never arms the gate against a patience nobody declared', () => {
+  it('⚠ RED (the defect): UNDECLARED patience + a measured rate DIALS the oversized prompt', async () => {
+    // first_chunk_timeout_ms NULL: `patience.firstChunkMs` is the STANDING 90s, not this
+    // provider's word. Before the fix this refused, citing that standing bound in its own
+    // message. It must dial, exactly as it did before anything was ever measured.
+    seedOpenAICompatibleMeasuredOnly(C1_THROUGHPUT_TOK_PER_SEC, null);
+    const result = await callOpenAICompatible(LONG_MESSAGE);
+    expect(result.content).toBe('It is done.');
+    expect(openaiRequests).toBe(1);
+  });
+
+  it('CONTROL: the identical row with NO measurement also dials — the two agree', async () => {
+    // The baseline the clause above must match. If the fix ever over-corrects into "measured
+    // rows never refuse", this pair still passes and the next one catches it.
+    seedOpenAICompatibleMeasuredOnly(null, null);
+    const result = await callOpenAICompatible(LONG_MESSAGE);
+    expect(result.content).toBe('It is done.');
+    expect(openaiRequests).toBe(1);
+  });
+
+  it('GREEN (the feature): DECLARED patience + a measured rate still refuses, zero dials', async () => {
+    // The half that must survive the fix. This is what self-calibration is FOR: an owner who
+    // declared how long their box may think, and a ledger that has since worked out how fast it
+    // reads, together refuse a prompt that provably cannot finish.
+    seedOpenAICompatibleMeasuredOnly(C1_THROUGHPUT_TOK_PER_SEC, SCALED_PATIENCE_MS);
+    const err = await callOpenAICompatible(LONG_MESSAGE).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).code).toBe(DECLARED_PATIENCE_EXCEEDED_CODE);
+    expect(openaiRequests).toBe(0);
+    // And it names the bound honestly: DECLARED patience, MEASURED throughput.
+    const msg = (err as AgentError).message;
+    expect(msg).toContain(`its declared ${SCALED_PATIENCE_MS}ms first-chunk patience`);
+    expect(msg).toContain(`this provider's measured ${C1_THROUGHPUT_TOK_PER_SEC} tok/s`);
+  });
+
+  it('a DECLARED throughput is unchanged by C1 — it still arms on the standing patience', async () => {
+    // Deliberate asymmetry, and the reason it is not an oversight: typing a throughput is an
+    // act. The T81 fix wave already made this sentence tell the truth about which bound it is
+    // holding the request to, and that behaviour predates this task and must not move.
+    seedOpenAICompatibleUndeclaredFirstChunk(1);
+    const err = await callOpenAICompatible(LONG_MESSAGE).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).preDialRefusal).toBe(true);
+    expect((err as AgentError).message).toContain(`the standing ${STREAM_FIRST_CHUNK_TIMEOUT_MS}ms first-chunk patience`);
+    expect(openaiRequests).toBe(0);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════
+// FIX ROUND 1 — IMPORTANT I1: THE ANTHROPIC-DIRECT WIRING IS PINNED TOO.
+//
+// The reviewer removed the measured fallback from the Ollama, Anthropic-SDK and
+// Anthropic-direct dial sites, left the OpenAI-compatible one intact, and ran 70 files / 855
+// tests green. Three of the four wirings could be silently reverted and nothing would notice.
+// This block closes the Anthropic-direct one; `the-third-transport-honours-declared-patience`
+// and `the-agent-sdk-transport-honours-declared-patience` close the other two, beside their own
+// declared-throughput clauses.
+// ════════════════════════════════════════════════════════════════════════════════════
+
+/** Anthropic-direct, declared patience, NO declared throughput, measured. Post-C1 this arms. */
+const seedAnthropicDirectMeasuredOnly = (measuredTokensPerSec: number | null): void => {
+  const db = mockDb.current!;
+  db.prepare(`
+    INSERT INTO providers (id, name, type, auth_type, first_chunk_timeout_ms,
+                           prefill_tokens_per_sec, measured_prefill_tokens_per_sec, measured_prefill_at,
+                           is_validated, created_at, updated_at)
+    VALUES ('anthropic', 'Anthropic', 'anthropic', 'api_key', ?, NULL, ?, datetime('now'), 1, datetime('now'), datetime('now'))
+  `).run(SCALED_PATIENCE_MS, measuredTokensPerSec);
+  db.prepare(`
+    INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
+    VALUES ('m-anthropic', 'anthropic', 'Claude', 'claude-x', '["text","tools"]', 200000, 8192, 1, datetime('now'), datetime('now'))
+  `).run();
+  db.prepare(`
+    INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
+    VALUES ('kevin', 'Kevin', 'm-anthropic', 'idle', '{}', datetime('now'), datetime('now'))
+  `).run();
+  setProviderCredential('anthropic', 'sk-ant-fake-test-key', 'api_key');
+};
+
+describe('I1 — the Anthropic-direct dial site reads the measurement too', () => {
+  it('RED: an undeclared-throughput provider with a measured rate refuses before the client streams', async () => {
+    seedAnthropicDirectMeasuredOnly(SCALED_THROUGHPUT_TOK_PER_SEC);
+    const err = await callAnthropicDirect(LONG_MESSAGE).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).code).toBe(DECLARED_PATIENCE_EXCEEDED_CODE);
+    expect((err as AgentError).preDialRefusal).toBe(true);
+    expect((err as AgentError).message).toContain(`this provider's measured ${SCALED_THROUGHPUT_TOK_PER_SEC} tok/s`);
+    expect(anthropic.streamCalls).toHaveLength(0);
+  });
+
+  it('CONTROL: no measurement on the same row dials exactly as today', async () => {
+    seedAnthropicDirectMeasuredOnly(null);
+    await callAnthropicDirect(LONG_MESSAGE);
+    expect(anthropic.streamCalls).toHaveLength(1);
+  });
+
+  it('GREEN: the same measured rate dials a prompt that fits its ceiling', async () => {
+    seedAnthropicDirectMeasuredOnly(SCALED_THROUGHPUT_TOK_PER_SEC);
+    await callAnthropicDirect(SHORT_MESSAGE);
+    expect(anthropic.streamCalls).toHaveLength(1);
   });
 });

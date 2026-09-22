@@ -108,6 +108,26 @@ describe('the estimator takes the MAXIMUM of the lower bounds', () => {
     expect(Math.floor(rate as number)).toBe(181);
   });
 
+  it('over a MULTI-ROW body the answer is the largest quotient present, not any other one', () => {
+    // FIX ROUND 1, review N3: the max was pinned by a single clause, which a `min` mutant could
+    // survive almost everywhere. This one names every candidate and asserts the winner is the
+    // biggest — so `min`, `first`, `last` and `mean` are each separately wrong here.
+    const body: PrefillSample[] = [
+      { inputTokens: 20_000, latencyMs: 400_000 },  //  50 tok/s
+      { inputTokens: 60_000, latencyMs: 200_000 },  // 300 tok/s  ← the max
+      { inputTokens: 30_000, latencyMs: 300_000 },  // 100 tok/s
+      { inputTokens: 10_000, latencyMs: 500_000 },  //  20 tok/s
+    ];
+    const rate = estimatePrefillTokensPerSec(body) as number;
+    expect(rate).toBe(300);
+    const quotients = body.map(s => s.inputTokens / ((s.latencyMs as number) / 1000));
+    expect(rate).toBe(Math.max(...quotients));
+    expect(rate).not.toBe(Math.min(...quotients));
+    expect(rate).not.toBe(quotients[0]);
+    expect(rate).not.toBe(quotients[quotients.length - 1]);
+    expect(rate).not.toBe(quotients.reduce((a, b) => a + b, 0) / quotients.length);
+  });
+
   it('and the ORDER the rows arrive in cannot change the answer', () => {
     const forwards = estimatePrefillTokensPerSec([
       { inputTokens: ROUND_5_INPUT_TOKENS, latencyMs: ROUND_5_LATENCY_MS }, ...loose,
@@ -178,6 +198,21 @@ describe('THE FLOOR: the one change to this module that could make the engine le
     expect(CHATTY_APPARENT_TOK_PER_SEC / (estimatePrefillTokensPerSec(body) as number)).toBeGreaterThan(20);
   });
 
+  it('⚠ AN ESTIMATED INPUT COUNT IS NOT A MEASUREMENT, however large the prompt', () => {
+    // FIX ROUND 1, review N1. The no-usage fallback in `agent/model.ts` records
+    // `ceil(chars-of-JSON / 4)`, which runs ~10-15% ABOVE the true token count — an inflated
+    // NUMERATOR, which is the one direction a max-of-lower-bounds may not be wrong in. The
+    // engine knows, at the moment it writes the row, which kind of count it holds.
+    const big = { inputTokens: 50_000, latencyMs: ROUND_5_LATENCY_MS };
+    expect(prefillRateFrom(big), 'a billed count of this size IS a sample').not.toBeNull();
+    expect(prefillRateFrom({ ...big, inputTokensEstimated: true })).toBeNull();
+    // …and it cannot sneak in through the estimator either.
+    expect(estimatePrefillTokensPerSec([{ ...big, inputTokensEstimated: true }])).toBeNull();
+    // A row that says nothing about it is a billed row: `undefined` and `false` are the same
+    // claim, which is what keeps every existing caller unchanged.
+    expect(prefillRateFrom({ ...big, inputTokensEstimated: false })).not.toBeNull();
+  });
+
   it('the boundary is the constant the module declares, and it is inclusive', () => {
     expect(PREFILL_SAMPLE_MIN_INPUT_TOKENS).toBe(4_000);
     // One token under the floor is not a sample; the floor itself is.
@@ -236,6 +271,15 @@ describe('recalibrateFromSample — the reading lands on the row', () => {
   it('a call below the floor establishes NOTHING — the column stays null', () => {
     seedProvider();
     recalibrateFromSample('local', { inputTokens: 100, latencyMs: 20 });
+    expect(reading().rate).toBeNull();
+    expect(reading().at).toBeNull();
+  });
+
+  it('a call whose input count was ESTIMATED establishes nothing either', () => {
+    seedProvider();
+    recalibrateFromSample('local', {
+      inputTokens: ROUND_5_INPUT_TOKENS, latencyMs: ROUND_5_LATENCY_MS, inputTokensEstimated: true,
+    });
     expect(reading().rate).toBeNull();
     expect(reading().at).toBeNull();
   });
@@ -304,15 +348,27 @@ describe('THE WINDOW — a stale maximum falls back to what the ledger still sup
     expect(reading().rate).toBe(2000);
   });
 
-  it('the rescan reads the ledger, not just the sample in hand', () => {
+  it('⚠ THE ONE-WAY RULE: the rescan may LOWER the reading and may never RAISE it', () => {
+    // FIX ROUND 1, review N1. A fast row sitting INSIDE the window that the write path never
+    // sanctioned — on a real box this is exactly what a pre-upgrade row, or a row written by
+    // the char-derived no-usage fallback, looks like: the rescan cannot tell it from a billed
+    // one. So it is not allowed to set the reading. The highest a LIVE call ever handed this
+    // function is the ceiling, and the rescan only ever pulls down from there.
     seedProvider();
-    // A fast call INSIDE the window that the caller is not holding. A rescan sees it; the
-    // O(1) ratchet cannot. Stale stamp forces the rescan path.
-    seedCostRow('fast-inside', 100_000, 200_000, 3); // 500 tok/s
+    seedCostRow('fast-inside', 100_000, 200_000, 3); // 500 tok/s, never sanctioned by a live call
     mockDb.current!.prepare(
       "UPDATE providers SET measured_prefill_at = datetime('now', '-30 days') WHERE id = 'local'",
     ).run();
     recalibrateFromSample('local', { inputTokens: ROUND_5_INPUT_TOKENS, latencyMs: ROUND_5_LATENCY_MS });
+    // 181, not 500: the ledger row did not get to raise it.
+    expect(Math.floor(reading().rate as number)).toBe(181);
+  });
+
+  it('and a LIVE call at that same speed does set it — the ratchet is the only way up', () => {
+    // The half that stops "refuse everything" from becoming "learn nothing". The same 500 tok/s,
+    // arriving through the write path instead of off the ledger, is sanctioned immediately.
+    seedProvider();
+    recalibrateFromSample('local', { inputTokens: 100_000, latencyMs: 200_000 });
     expect(reading().rate).toBe(500);
   });
 

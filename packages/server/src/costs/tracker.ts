@@ -49,6 +49,15 @@ export interface RecordCostParams {
    *  cost, beside what the provider charged. Undefined where no estimate is computed
    *  (ollama, agent-sdk) and stored NULL — never 0, which reads as a perfect prediction. */
   estimatedInputTokens?: number;
+  /**
+   * True when `inputTokens` above is the char-derived fallback rather than a count the provider
+   * billed — the one transport branch that has one (`agent/model.ts`'s no-usage path). NOT
+   * stored: it is read once, here, by the prefill speedometer, which must refuse such a row
+   * because a JSON-inflated numerator tips its quotient ABOVE the true rate and the estimator
+   * is taking a MAXIMUM. Cost accounting is unaffected either way — an estimated count has
+   * always billed as if it were real, and this task does not reopen that.
+   */
+  inputTokensEstimated?: boolean;
 }
 
 interface ModelPricing {
@@ -127,7 +136,7 @@ function getModelPricing(modelId: string): ModelPricing {
 const warnedUnknownPriceModels = new Set<string>();
 
 export function recordCost(params: RecordCostParams): void {
-  const { agentId, modelId, providerId, inputTokens, outputTokens, latencyMs, requestType, imageWidth, imageHeight, units, cacheReadTokens, cacheCreationTokens, estimatedInputTokens } = params;
+  const { agentId, modelId, providerId, inputTokens, outputTokens, latencyMs, requestType, imageWidth, imageHeight, units, cacheReadTokens, cacheCreationTokens, estimatedInputTokens, inputTokensEstimated } = params;
 
   try {
     const pricing = getModelPricing(modelId);
@@ -212,7 +221,7 @@ export function recordCost(params: RecordCostParams): void {
     // below the sample floor, which is most of them. Never allowed to fail a recorded cost:
     // the speedometer is an instrument, and a model call's accounting does not depend on it.
     try {
-      recalibrateFromSample(providerId, { inputTokens, latencyMs });
+      recalibrateFromSample(providerId, { inputTokens, latencyMs, inputTokensEstimated });
     } catch {
       // Best-effort, exactly like the alert check below.
     }

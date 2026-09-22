@@ -296,8 +296,42 @@ function refuseIfDoomed(
   // as the number because the message below names it, and the T81 fix wave already established
   // in this same sentence that a number must not be called "declared" when nobody declared it.
   const throughput = resolvePrefillThroughput(prefillTokensPerSec, measuredPrefillTokensPerSec);
+  if (throughput === null) return;
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  // FIX ROUND 1, CRITICAL C1 — A MEASUREMENT MAY ONLY TIGHTEN A BOUND SOMEBODY DECLARED.
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  //
+  // This function was, until this line, the ONLY consumer of the doom ceiling without a
+  // `firstChunkDeclared` guard. Its two siblings both have one, and both record the same
+  // reason: `getProviderCeilingTokens` ("planning an admission budget off a number nobody
+  // declared is not this task's job") and `router/selector.ts`'s mirrored query ("a declared
+  // throughput alone, with no declared patience, is not 'this provider declared both halves'").
+  //
+  // The asymmetry was HARMLESS while a throughput had to be typed by a human: declaring one was
+  // a deliberate act, and the prefill-throughput door had no client caller anywhere in the tree,
+  // so this branch was structurally unreachable. Self-calibration removes that precondition. The
+  // reviewer proved the consequence at the real dial site: same provider, same 40,007-token
+  // prompt — with `measured_prefill_tokens_per_sec` NULL it dials; with 181.07 it refuses, zero
+  // dials, citing a ceiling of 60 × rate = 10,860 tokens "inside the standing 90000ms
+  // first-chunk patience". The owner's own conversations run 42–52K. His box would have started
+  // refusing them the moment it finished measuring itself, on a bound nobody agreed to.
+  //
+  // Three things made it worse than a wrong number. The one-shot compaction recovery a pre-dial
+  // refusal routes into aims via `getProviderCeilingTokens`, which returns `null` here — so the
+  // forced compaction cannot even target the ceiling that refused, and the turn honest-fails
+  // AFTER a destructive compaction. Ollama and agent-sdk providers cannot declare patience from
+  // the UI at all (`Settings.tsx` renders that pair only where the stream watchdog arms), so the
+  // refusal's own advice — "raise this provider's declared patience" — points at a control they
+  // do not have. And for Ollama the 90s standing bound is not even the real one; that transport
+  // waits 300s.
+  //
+  // So: a MEASURED rate arms this gate only where the owner declared the patience it is measured
+  // against. A DECLARED throughput keeps today's behaviour exactly, standing patience included —
+  // that is a deliberate act, and the `firstChunkClause` below already tells the truth about
+  // which bound it is being held to.
+  if (throughput.source === 'measured' && !patience.firstChunkDeclared) return;
   const ceiling = resolveDoomCeiling(patience.firstChunkMs, prefillTokensPerSec, measuredPrefillTokensPerSec);
-  if (ceiling === null || throughput === null || estimatedInputTokens <= ceiling) return;
+  if (ceiling === null || estimatedInputTokens <= ceiling) return;
   // T81 fix wave (final review, Minor M2): `resolveDoomCeiling` only needs `prefillTokensPerSec`
   // declared — `patience.firstChunkMs` can still be the STANDING default (nobody set it) when a
   // provider declares throughput alone. Calling that number "declared" unconditionally was a
@@ -315,9 +349,14 @@ function refuseIfDoomed(
   // gate was off. A declared provider reads the identical message it read before the 2026-09-22
   // ruling, down to the number: `throughput.tokensPerSec` IS `prefillTokensPerSec` in that case.
   const message = `${PRE_DIAL_REFUSAL_PHRASE}: ~${estimatedInputTokens} estimated prompt tokens exceeds the ~${ceiling}-token ceiling this provider's ${throughput.source} ${throughput.tokensPerSec} tok/s prefill throughput can cover inside ${firstChunkClause}. Compact the conversation to shrink the prompt, or raise this provider's declared patience or prefill throughput. This gate is a backstop, not the mechanism — post-T82a its firing means the upstream budget was sized wrong, not that nothing upstream tried.`;
+  // Fix round 1 (review N6): `prefillTokensPerSec` stays bound to the DECLARED column — which is
+  // what that key has always named, and is `null` on a measured refusal. The number actually
+  // spent gets its own key beside its source. A key that reads "declared" while carrying a
+  // measured value is the same class of lie the T81 M2 rule removed from the message above.
   logger.warn(`Refusing to dial a doomed request: ${message}`, {
-    agentId, estimatedInputTokens, ceiling, prefillTokensPerSec: throughput.tokensPerSec,
-    throughputSource: throughput.source, firstChunkMs: patience.firstChunkMs,
+    agentId, estimatedInputTokens, ceiling, prefillTokensPerSec,
+    throughputTokensPerSec: throughput.tokensPerSec, throughputSource: throughput.source,
+    firstChunkMs: patience.firstChunkMs, firstChunkDeclared: patience.firstChunkDeclared,
   }, agentId);
   throw new AgentError(message, agentId, {
     code: DECLARED_PATIENCE_EXCEEDED_CODE,
@@ -2278,6 +2317,9 @@ async function callOpenAIModel(
     let outputTokens: number;
     let uncachedInputTokens: number;
     let cacheReadTokens: number | undefined;
+    // Fix round 1 (review N1): flipped true only by the no-usage branch below, and read only by
+    // the prefill speedometer. `false` here is the claim "this came off a usage block".
+    let inputTokensEstimated = false;
     if (realUsage) {
       const promptTokens = realUsage.prompt_tokens ?? 0;
       const cachedTokens = realUsage.prompt_cache_hit_tokens ?? realUsage.prompt_tokens_details?.cached_tokens ?? 0;
@@ -2301,6 +2343,13 @@ async function callOpenAIModel(
       outputTokens = Math.ceil((fullText.length + JSON.stringify(toolCalls).length) / 4);
       uncachedInputTokens = inputTokens;
       cacheReadTokens = undefined;
+      // Fix round 1 (review N1): this is the ONE branch in the engine where the recorded input
+      // count is not a count anybody billed. The numerator above is characters of JSON — struct-
+      // ure and escaping included — divided by four, so on prose it runs ~10-15% ABOVE the true
+      // token count. That is harmless for cost (it always has been) and NOT harmless for the
+      // prefill speedometer, which divides this number by latency and takes a MAXIMUM: an
+      // inflated numerator is the one direction a max-of-lower-bounds may not be wrong in.
+      inputTokensEstimated = true;
     }
 
     // Calculate cost. Uncached input at full rate + cache reads at 0.1x (P-7).
@@ -2328,6 +2377,9 @@ async function callOpenAIModel(
       cacheReadTokens,
       // Step 3: the post-trim estimate, i.e. the one describing the request that went out.
       estimatedInputTokens: finalInputEstimate,
+      // Fix round 1 (review N1): true only on the no-usage fallback above. The prefill
+      // speedometer refuses such a row; nothing else reads it.
+      inputTokensEstimated,
     });
 
     recordProviderSuccess(modelInfo.providerId);

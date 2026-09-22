@@ -171,6 +171,12 @@ const behaviour: {
 
 let server: http.Server;
 let stubUrl = '';
+/**
+ * How many times the stub was actually dialed. Fix round 1 (review I1): the pre-dial gate's
+ * whole claim is "zero dials attempted", and until this counter existed this file had no way to
+ * say whether a request reached the wire at all.
+ */
+let ollamaRequests = 0;
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
@@ -179,6 +185,7 @@ beforeAll(async () => {
       res.end(JSON.stringify({ error: 'not found' }));
       return;
     }
+    ollamaRequests += 1;
     req.on('data', () => {});
     req.on('end', () => {
       if (behaviour.mode === 'error500') {
@@ -259,6 +266,7 @@ beforeEach(() => {
   db.pragma('foreign_keys = ON');
   mockDb.current = db;
   runMigrations();
+  ollamaRequests = 0;
   behaviour.preFirstChunkMs = 0;
   behaviour.mode = 'answer';
   behaviour.dripCount = 16;
@@ -640,5 +648,113 @@ describe('T83b §G — an undeclared row keeps 300s on both phases, and the log 
       warned.some(w => w.startsWith('Ollama call aborted by its declared 600ms first-chunk bound:')),
       `no log line carried the trip's bound; saw: ${JSON.stringify(warned)}`,
     ).toBe(true);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════
+// FIX ROUND 1 — IMPORTANT I1 + CRITICAL C1, ON THE TRANSPORT THEY BITE HARDEST.
+//
+// The reviewer removed the measured-prefill fallback from this transport's dial site (and the
+// two Anthropic ones), left the OpenAI-compatible site intact, and 70 files / 855 tests stayed
+// green. This file is where that wiring gets pinned, and Ollama is the transport that matters
+// most for BOTH findings:
+//
+//   · C1 lands hardest here. `Settings.tsx` renders the patience pair only where the stream
+//     watchdog arms — `type !== 'ollama' && authType !== 'agent-sdk'` — so an Ollama provider
+//     cannot declare a first-chunk patience from the UI at all. Before the C1 fix, its measured
+//     rate armed the pre-dial gate against the STANDING 90s default and the refusal told its
+//     owner to raise a control that is not rendered for them. And this transport's real bound
+//     is not 90s anyway: it is `TRANSPORT_DEFAULT_TIMEOUT_MS` (300s), as this file's own §G says.
+//   · I1 lands here because this dial site had no pre-dial coverage of any kind.
+//
+// The scaled pair mirrors `a-doomed-request-refuses-before-dialing.test.ts`: 40s of patience
+// less the 30s transport margin leaves 10s, at 10 tok/s a 100-token ceiling.
+// ════════════════════════════════════════════════════════════════════════════════════
+const DOOM_PATIENCE_MS = 40_000;
+const DOOM_THROUGHPUT_TOK_PER_SEC = 10;
+/** See the C1 clause below for why the standing-patience arm needs a smaller number. */
+const C1_THROUGHPUT_TOK_PER_SEC = 5;
+const DOOM_LONG_MESSAGE = 'x'.repeat(2_000);  // ~500 estimated tokens — over the ceiling
+const DOOM_SHORT_MESSAGE = 'Is it done?';     // ~3 estimated tokens — under it
+
+/** An Ollama provider carrying any combination of the three columns the gate reads. */
+const seedOllamaThroughput = (
+  firstChunkMs: number | null,
+  prefillTokensPerSec: number | null,
+  measuredPrefillTokensPerSec: number | null,
+): void => {
+  const db = mockDb.current!;
+  db.prepare(`
+    INSERT INTO providers (id, name, type, base_url, auth_type, first_chunk_timeout_ms,
+                           prefill_tokens_per_sec, measured_prefill_tokens_per_sec, measured_prefill_at,
+                           is_validated, created_at, updated_at)
+    VALUES ('local-ollama', 'Local Ollama', 'ollama', ?, 'none', ?, ?, ?, datetime('now'), 1, datetime('now'), datetime('now'))
+  `).run(stubUrl, firstChunkMs, prefillTokensPerSec, measuredPrefillTokensPerSec);
+  db.prepare(`
+    INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
+    VALUES ('m-ollama', 'local-ollama', 'Local DS4', 'ds4-local', '["text","tools"]', 32768, 4096, 1, datetime('now'), datetime('now'))
+  `).run();
+  db.prepare(`
+    INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
+    VALUES ('kevin', 'Kevin', 'm-ollama', 'idle', '{}', datetime('now'), datetime('now'))
+  `).run();
+};
+
+const callWith = (message: string): Promise<ModelCallResult> => callModel({
+  agentId: 'kevin',
+  modelId: 'm-ollama',
+  messages: [{ role: 'user', content: message }],
+  systemPrompt: 'You are a local model.',
+  tools: false,
+});
+
+describe('fix round 1 §H — the Ollama dial site reads the measurement, under C1\'s rule', () => {
+  it('⚠ C1: an Ollama box that CANNOT declare patience from the UI still dials, measured or not', async () => {
+    // The exact shape the reviewer proved: patience NULL (which is every Ollama provider the
+    // dashboard can produce), throughput undeclared, a measurement on the row. It must dial.
+    //
+    // The rate is LOWER than this block's others on purpose, and it is what makes the clause a
+    // real question: with patience undeclared the ceiling is the STANDING 90s one, 60 × rate.
+    // At 10 tok/s that is 600 tokens and this prompt (~500) fits — the clause would pass whether
+    // or not the C1 guard existed. At 5 tok/s the ceiling is 300 and the prompt is decisively
+    // over it, so deleting the guard turns this red.
+    seedOllamaThroughput(null, null, C1_THROUGHPUT_TOK_PER_SEC);
+    const result = await callWith(DOOM_LONG_MESSAGE);
+    expect(result.content).toBe('It is done.');
+    expect(ollamaRequests).toBe(1);
+  });
+
+  it('I1 RED: with patience DECLARED, the measured rate refuses — zero dials reach the socket', async () => {
+    // The wiring the reviewer's narrowed mutant could remove silently. `ollamaRequests` is the
+    // whole claim: the stub is never touched.
+    seedOllamaThroughput(DOOM_PATIENCE_MS, null, DOOM_THROUGHPUT_TOK_PER_SEC);
+    const err = await callWith(DOOM_LONG_MESSAGE).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).code).toBe(DECLARED_PATIENCE_EXCEEDED_CODE);
+    expect((err as AgentError).preDialRefusal).toBe(true);
+    expect((err as AgentError).message).toContain(`this provider's measured ${DOOM_THROUGHPUT_TOK_PER_SEC} tok/s`);
+    expect(ollamaRequests).toBe(0);
+  });
+
+  it('CONTROL: the identical row with no measurement dials exactly as it does today', async () => {
+    seedOllamaThroughput(DOOM_PATIENCE_MS, null, null);
+    const result = await callWith(DOOM_LONG_MESSAGE);
+    expect(result.content).toBe('It is done.');
+    expect(ollamaRequests).toBe(1);
+  });
+
+  it('GREEN: the same measured rate dials a prompt that fits its ceiling', async () => {
+    seedOllamaThroughput(DOOM_PATIENCE_MS, null, DOOM_THROUGHPUT_TOK_PER_SEC);
+    const result = await callWith(DOOM_SHORT_MESSAGE);
+    expect(result.content).toBe('It is done.');
+    expect(ollamaRequests).toBe(1);
+  });
+
+  it('a DECLARED throughput still refuses here, and still says "declared"', async () => {
+    seedOllamaThroughput(DOOM_PATIENCE_MS, DOOM_THROUGHPUT_TOK_PER_SEC, null);
+    const err = await callWith(DOOM_LONG_MESSAGE).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).message).toContain(`this provider's declared ${DOOM_THROUGHPUT_TOK_PER_SEC} tok/s`);
+    expect(ollamaRequests).toBe(0);
   });
 });

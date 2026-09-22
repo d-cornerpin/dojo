@@ -1906,10 +1906,16 @@ const msToSecInput = (ms: number | null): string => (ms === null ? '' : String(M
  * asking for. Absent entirely until a provider has served a call big enough to measure from.
  */
 const MeasuredReadingSpeed = ({ provider }: { provider: Provider }) => {
-  if (provider.measuredPrefillTokensPerSec === null) return null;
+  const measured = provider.measuredPrefillTokensPerSec;
+  if (measured === null) return null;
+  // Fix round 1 (review N4): the reader (`agent/stream-patience.ts`) floors this and then
+  // re-checks it against the same 1-100,000 bounds a declared value must satisfy, so a stored
+  // reading outside them is IGNORED by the engine. Showing it anyway would tell the owner his
+  // box was measured at 500,000 tokens/sec while nothing at all was using that number.
+  if (Math.floor(measured) < THROUGHPUT_MIN_TOK_PER_SEC || measured > THROUGHPUT_MAX_TOK_PER_SEC) return null;
   return (
     <p className="text-[11px] text-cp-teal/70 mt-1">
-      Measured reading speed: ~{Math.floor(provider.measuredPrefillTokensPerSec)} tokens/sec.
+      Measured reading speed: ~{Math.floor(measured)} tokens/sec.
       Worked out from this machine's own recent calls — you do not need to fill anything in.
     </p>
   );
@@ -2212,7 +2218,9 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
                 <p className="text-[11px] text-ui/40 mt-1">
                   Tokens per second. You should not need this: the engine watches how fast this
                   machine actually gets through a prompt and works the number out on its own. Fill
-                  it in only to overrule that — a figure you type here always wins.
+                  it in only to overrule that — a figure you type here always wins. Be careful
+                  with a low one: it tells the engine to turn away long messages before it even
+                  tries them. Clear the box to undo that.
                 </p>
               </div>
               <div>

@@ -434,6 +434,80 @@ describe('T81d §C — the pre-dial doomed-request gate now covers the agent-sdk
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════
+// FIX ROUND 1 — IMPORTANT I1 + CRITICAL C1 ON THE AGENT-SDK DIAL SITE.
+//
+// §C above covers a DECLARED throughput here. Self-calibration (owner ruling 2026-09-22) added a
+// second source for the same number, and the reviewer showed this dial site's wiring to it could
+// be removed with nothing going red. C1 then bounds when that source may arm the gate at all:
+// `Settings.tsx` renders the patience pair only where the stream watchdog arms — which excludes
+// `authType === 'agent-sdk'` — so an agent-sdk provider cannot declare a first-chunk patience
+// from the UI, and a measurement must not refuse its traffic against the standing 90s default.
+// ════════════════════════════════════════════════════════════════════════════════════
+
+/** See the C1 clause below for why the standing-patience arm needs a smaller number. */
+const C1_THROUGHPUT_TOK_PER_SEC = 5;
+
+/** An agent-sdk provider with NO declared throughput and a measured reading on the row. */
+const seedAgentSdkMeasured = (
+  firstChunkTimeoutMs: number | null,
+  measuredPrefillTokensPerSec: number | null,
+): void => {
+  const db = mockDb.current!;
+  db.prepare(`
+    INSERT INTO providers (id, name, type, auth_type, first_chunk_timeout_ms, stream_idle_timeout_ms,
+                           prefill_tokens_per_sec, measured_prefill_tokens_per_sec, measured_prefill_at,
+                           is_validated, created_at, updated_at)
+    VALUES ('claude-sdk', 'Claude Agent SDK', 'anthropic', 'agent-sdk', ?, NULL, NULL, ?, datetime('now'), 1, datetime('now'), datetime('now'))
+  `).run(firstChunkTimeoutMs, measuredPrefillTokensPerSec);
+  db.prepare(`
+    INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
+    VALUES ('m-sdk', 'claude-sdk', 'Claude (SDK)', 'sonnet', '["text","tools"]', 200000, 8192, 1, datetime('now'), datetime('now'))
+  `).run();
+  db.prepare(`
+    INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
+    VALUES ('kevin', 'Kevin', 'm-sdk', 'idle', '{}', datetime('now'), datetime('now'))
+  `).run();
+};
+
+describe('fix round 1 §E — the agent-sdk dial site reads the measurement, under C1\'s rule', () => {
+  it('I1 RED: patience declared + a measured rate refuses — the SDK is never queried', async () => {
+    seedAgentSdkMeasured(SCALED_PATIENCE_MS, SCALED_THROUGHPUT_TOK_PER_SEC);
+    const err = await callAgentSdk(LONG_MESSAGE).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).code).toBe(DECLARED_PATIENCE_EXCEEDED_CODE);
+    expect((err as AgentError).preDialRefusal).toBe(true);
+    expect((err as AgentError).message).toContain(`this provider's measured ${SCALED_THROUGHPUT_TOK_PER_SEC} tok/s`);
+    expect(agentSdk.queryCalls).toHaveLength(0);
+  });
+
+  it('⚠ C1: with patience UNDECLARED — which is every agent-sdk row the UI can make — it dials', async () => {
+    // A lower rate than the clauses around it, and that is what makes this a real question: an
+    // undeclared patience resolves to the STANDING 90s, so the ceiling is 60 × rate. At this
+    // file's usual 10 tok/s that is 600 tokens and `LONG_MESSAGE` (~500) fits inside it, so the
+    // clause would pass with or without the C1 guard. At 5 tok/s the ceiling is 300 and the
+    // prompt is over it — delete the guard and this turns red.
+    seedAgentSdkMeasured(null, C1_THROUGHPUT_TOK_PER_SEC);
+    const result = await callAgentSdk(LONG_MESSAGE);
+    expect(result.content).toBe('It is done.');
+    expect(agentSdk.queryCalls).toHaveLength(1);
+  });
+
+  it('CONTROL: the same declared patience with no measurement dials as today', async () => {
+    seedAgentSdkMeasured(SCALED_PATIENCE_MS, null);
+    const result = await callAgentSdk(LONG_MESSAGE);
+    expect(result.content).toBe('It is done.');
+    expect(agentSdk.queryCalls).toHaveLength(1);
+  });
+
+  it('GREEN: the same measured rate dials a prompt that fits its ceiling', async () => {
+    seedAgentSdkMeasured(SCALED_PATIENCE_MS, SCALED_THROUGHPUT_TOK_PER_SEC);
+    const result = await callAgentSdk(SHORT_MESSAGE);
+    expect(result.content).toBe('It is done.');
+    expect(agentSdk.queryCalls).toHaveLength(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════
 // §D — THE FIX ROUND (CRITICAL, review round): the trip carries DECLARED_PATIENCE_EXCEEDED_CODE
 // structurally, all the way up through the REAL `callModel` dispatch — not just as prose on a
 // plain `Error`, which is what the first cut shipped and what reopened the livelock this whole

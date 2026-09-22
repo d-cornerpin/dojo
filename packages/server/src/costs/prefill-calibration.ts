@@ -17,17 +17,46 @@
 // Every model call writes a `cost_records` row carrying `input_tokens` — the BILLED, UNCACHED
 // input; cache reads have had their own column since migration 086 — alongside `latency_ms`
 // and `provider_id`. A call's latency is its prefill time PLUS its generation time PLUS
-// overhead, so latency is never SHORTER than the prefill inside it. Therefore, for EVERY row,
-// unconditionally:
+// overhead, so latency is never SHORTER than the prefill inside it. Therefore, whenever
+// `input_tokens` is a COUNT THE PROVIDER BILLED:
 //
 //     input_tokens / (latency_ms / 1000)   is a LOWER BOUND on that box's prefill rate
 //
 // and the MAXIMUM of those lower bounds is the tightest statement the ledger can make. It
 // converges on the true rate FROM BELOW, which is the safe side of the only decisions that
 // read it: a smaller rate yields a smaller doom ceiling, so the pre-dial check refuses sooner
-// and the admission budget plans smaller. An under-measured box is a CAUTIOUS box. There is no
-// reading of this number that lets the engine dial something a true measurement would have
-// refused.
+// and the admission budget plans smaller. An under-measured box is a CAUTIOUS box.
+//
+// ── WHERE THAT GUARANTEE STOPS, AND WHAT HOLDS THE EDGE (fix round 1, review N1/N2) ──
+//
+// The bound is only as good as its NUMERATOR, and there are two places the numerator is not a
+// billed count of the prompt this box actually processed. Both are named here rather than
+// glossed, because the first draft of this header claimed the guarantee held "for EVERY row,
+// unconditionally", and it does not:
+//
+//   1. THE NO-USAGE FALLBACK. When an OpenAI-compatible stream carries no usage block,
+//      `agent/model.ts` falls back to `ceil((systemPrompt.length + JSON.stringify(messages).length) / 4)`.
+//      That numerator is char-derived and INFLATED by JSON structure and escaping — on prose it
+//      can exceed the true token count by order 10–15%, which tips the quotient ABOVE the true
+//      rate. This is closed at the source: `recordCost` passes `inputTokensEstimated` and such a
+//      call never establishes a reading (`recalibrateFromSample` returns before it looks at
+//      anything). A row already in the ledger from before this build cannot be told apart at
+//      rescan time, which is exactly why the rescan below may only LOWER the stored reading and
+//      never raise it — see `recalibrateFromSample`.
+//   2. ONE PROVIDER, UNLIKE MODELS. `provider_id` is the only grouping key, so a box serving a
+//      0.5B model and a 70B one reports the FASTER model's rate for both. This is the honest
+//      cost of putting the fact on the SERVING MACHINE, which is where migrations 163/164/166
+//      all put its siblings for reasons that have not changed. It is also the benign direction:
+//      an over-read only makes the pre-dial gate FAIL TO FIRE (back to the behaviour of every
+//      box before this feature), and `providerAwareBudgetTokens` is a `min`, so an over-high
+//      ceiling degenerates to the model-window budget rather than widening it.
+//
+// So the claim, stated exactly: for billed rows this is a lower bound and the maximum of them
+// approaches the truth from below; the two cases above can read HIGH, are bounded, and both
+// degrade toward "the gate does not fire" rather than toward "the gate fires wrongly". Since
+// fix round 1's C1 the measured rate can only arm the pre-dial gate on a provider whose owner
+// declared a first-chunk patience, and every consumer still spends only
+// `PROVIDER_CEILING_SAFETY` (half) of the ceiling it derives.
 //
 // The same arithmetic run on the incident's own row: the dev box's local-deepseek call billed
 // 35,237 uncached input tokens with a 194.6-second latency, which is 181 tok/s — within 10% of
@@ -123,6 +152,16 @@ export interface PrefillSample {
   inputTokens: number;
   /** `cost_records.latency_ms`. Null/absent on rows the provider never timed. */
   latencyMs: number | null | undefined;
+  /**
+   * True when `inputTokens` is the char-derived fallback rather than a count the provider
+   * billed (header case 1). Such a call may not establish a reading: its numerator is inflated
+   * by JSON structure, so its quotient can sit ABOVE the true rate — the one direction the
+   * estimator is not allowed to be wrong in when it is taking a maximum.
+   *
+   * Absent on a row read back from the ledger, which cannot tell: the rescan's one-way rule
+   * (`recalibrateFromSample`) is what covers that half.
+   */
+  inputTokensEstimated?: boolean;
 }
 
 /**
@@ -136,6 +175,7 @@ export interface PrefillSample {
  */
 function qualifies(sample: PrefillSample): boolean {
   const { inputTokens, latencyMs } = sample;
+  if (sample.inputTokensEstimated === true) return false;
   if (typeof latencyMs !== 'number' || !Number.isFinite(latencyMs) || latencyMs <= 0) return false;
   if (typeof inputTokens !== 'number' || !Number.isFinite(inputTokens)) return false;
   return inputTokens >= PREFILL_SAMPLE_MIN_INPUT_TOKENS;
@@ -219,12 +259,27 @@ export function recalibrateFromSample(providerId: string, sample: PrefillSample)
     `).get(PREFILL_RESCAN_AFTER, providerId) as StoredReading | undefined;
     if (!stored) return;
 
-    // The daily rescan is the only path that may LOWER the reading, and it is authoritative
-    // when it runs: the window it looks at already contains the sample that triggered it.
-    // `?? fresh` covers the one arrangement where the rescan can come back empty — a clock or a
-    // window boundary that excludes the row we just wrote — by falling back to the measurement
-    // in hand rather than clearing a column on a technicality.
-    const next = stored.stale ? (rescanWindow(providerId) ?? fresh) : Math.max(stored.rate ?? 0, fresh);
+    // ── THE ONE-WAY RULE (fix round 1, review N1) ──
+    //
+    // `sanctioned` is the highest rate a LIVE call has ever handed this function — the write
+    // path, which is the only place that can know whether `inputTokens` was a billed count or
+    // the char-derived fallback (header case 1). The rescan reads raw ledger rows and cannot
+    // tell, so it is allowed to LOWER the reading and never to RAISE it. That is not a
+    // restriction on what the rescan is for: its entire purpose is to let a maximum FALL when
+    // the sample that set it ages out of the window. Raising was always the O(1) ratchet's job.
+    //
+    // The property this buys, stated plainly: the stored reading can never exceed the maximum
+    // over samples the write path approved. A historical inflated row can at worst prevent a
+    // legitimate fall — bounded by the same 10–15%, and in the direction that makes the gate
+    // fail to fire rather than fire wrongly.
+    //
+    // `?? sanctioned` covers the one arrangement where the rescan can come back empty — a clock
+    // or a window boundary that excludes the row we just wrote — by keeping the measurement in
+    // hand rather than clearing a column on a technicality.
+    const sanctioned = Math.max(stored.rate ?? 0, fresh);
+    const next = stored.stale
+      ? Math.min(sanctioned, rescanWindow(providerId) ?? sanctioned)
+      : sanctioned;
 
     // Nothing moved and nothing was owed: skip the write entirely so an unchanging box does not
     // rewrite `providers.updated_at` on every large call.
