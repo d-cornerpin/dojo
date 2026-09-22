@@ -2,6 +2,55 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit \u2014 that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/server/src/agent/shared-state.ts",
+      "from": 312,
+      "to": 381,
+      "by": "A-5 — the stop button stops the media generators too",
+      "why": "+69 (+69/-0; 42 comment, 27 code). `openAgentCall` and `AgentCallSlot`. It lives HERE and nowhere else because this file IS the abort registry — the three doors and their census — and a media door written at the media boundary would be a fourth writer of a set whose defining property is having three. The 27 code lines are the interface, the function, and the one stop sentence the four generators share. The 42 comment lines carry what the code cannot: the measured defect (four files dialling `fetch` with no registration), why the slot is handed back rather than wrapping a callback (these bodies have a dozen early returns each; a callback shape would have rewritten four working generators around a guard), why the caller's clock is COMPOSED rather than replaced, and the derivation of `cutByStop()` — that it reads the call's OWN controller so a composed timeout can never answer yes, which is the invariant that stops a user's button being reported as a provider's deadline. REFUSED: a new `agent/media-stop.ts` (+0 here) — it would have to import `registerAbortable`/`releaseAbortable` anyway, and a second module that knows how to register is exactly the side door `a-stop-stops-and-the-status-tells-the-truth.test.ts`'s registry census exists to refuse. REFUSED: trimming the `cutByStop` derivation to one line — it is the discrimination argument, and non-negotiable #14 puts the measurement beside the number. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/image-generation.ts",
+      "from": 434,
+      "to": 473,
+      "by": "A-5 — the stop button stops the media generators too",
+      "why": "+39 (+39/-0; 26 comment, 13 code). The 13 code lines are the `agentId` field, the `STOPPED` code, the four-line wrapper that opens and releases the slot, the composed `signal:`, and two three-line discrimination branches (the request and the body read). The 26 comment lines are one paragraph and it is the one this file most needed: `isTimeoutError` here answers TRUE for a bare `AbortError`, so this file is where a stop was literally rendered to the user as \"Image generation timed out after 10 minutes. The provider or model is slow or overloaded right now. Try again in a moment\" — a retry suggestion attached to work he cancelled. A reader deleting the stop check as redundant re-opens exactly that, and only the comment says so. REFUSED: threading the slot through the twelve existing returns instead of wrapping (+0 net, but every early return becomes a release site and one forgotten one leaks a registration into the next stop). REFUSED: opening the slot at the fetch rather than at entry (−1 line) — registration before the model lookup is what lets a stop that landed a moment ago be answered by a refusal instead of by a dial. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/transcription.ts",
+      "from": 359,
+      "to": 396,
+      "by": "A-5 — the stop button stops the media generators too",
+      "why": "+37 (+37/-0; 18 comment, 19 code). Two dials, two wrappers: the cloud upload and the https source download, each getting the slot, the composed signal and a stop branch, plus the `agentId` field and the `STOPPED` code. `transcribe_audio` runs SYNCHRONOUSLY inside the tool executor, which makes these the media dials most likely to be in flight when the button is pressed — and the source download is permitted a gigabyte by this same file, so it is also the longest. REFUSED: registering the LOCAL engines too — whisper/moonshine are a subprocess, not a fetch, and an `AbortSignal` reaches neither; that is the process-tree sweep's work and pretending otherwise here would buy a receipt for a stop that does not happen. Stated in the report rather than implied by a registration. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1698,
+      "to": 1719,
+      "by": "A-5 — the stop button stops the media generators too",
+      "why": "+21 (+21/-0; 14 comment, 7 code). The 7 code lines are the import, the guarded `cancelAgentGenerationJobs(agentId)` call and its non-fatal catch — a bookkeeping table must never stop a stop. The 14 comment lines are the WHY, and it is the one arm of this ticket the abort registry provably cannot reach: `image_create`'s delivery IIFE waits for the requesting agent to go idle before it dials, so the run unwinds, teardown writes idle, this function's own `finally` lowers the fence, and only THEN does the IIFE dial — nothing registered during the wait, no fence standing by the time there could be. Without the paragraph the next reader sees a DB write inside a stop handler and deletes it as scope creep. REFUSED: cancelling video rows here too — its poll loop registers for its whole life and writes its own cancelled row, and two writers racing one CAS is how a cancel gets clobbered. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/media.ts",
+      "from": 897,
+      "to": 902,
+      "by": "A-5 — the stop button stops the media generators too",
+      "why": "+5 (+16/-11; 11 comment, 5 code, and the arithmetic is that three existing branches were rewritten rather than appended to). The code is `agentId` onto three generator calls, the `setRunning` boolean read, and three `STOPPED` branches. The comments say why the CAS is read at all — the deferred-dial window this file's own wait loop creates — and why a stop takes the cancelled path instead of the failed one at each of the three generators. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/channel-push.ts",
+      "from": 444,
+      "to": 452,
+      "by": "redaction re-review N3 — the header states the deleted reveal as live",
+      "why": "+8 (+19/-11), and it is a COMMENT CORRECTION carrying no code at all — redaction re-review finding N3. Two false sentences stood in this header on HEAD: it described the owner-dashboard credential reveal as live and this scrub as \"the other side of that key\" (the reveal was DELETED in the correction round two commits earlier, and line 78 already said so, four lines below), and it claimed `state.lastAssistantTextForIM` is set from RAW model text because the reply is never rewritten. That second claim stopped being true in the commit that wrote it: all four setters now read scrubbed text (`persist-assistant.ts:254`, `:288`; `terminal-text.ts:263`; `deferred-recovery.ts:79`). The replacement states what the line actually is — an idempotent second pass for the reply, defence in depth — AND the two strings for which it is still the only scrub, the phone streamed tail and the caption, because this is the paragraph a future reader will use to decide whether the scrub can be deleted. +8 is the price of a header that no longer argues for its own removal. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/generation-jobs.ts",
+      "from": 0,
+      "to": 443,
+      "by": "A-5 — the stop button stops the media generators too",
+      "why": "NEW ENTRY above the 400-line cap: 361 → 443 (+82; 55 comment, 27 code). The file was already 361 and unlisted, so it was invisible to the decrease-only rule while holding the whole run-once media lifecycle; pinning it at its measured size is a far tighter watch than the cap it just crossed. The 27 code lines are `setCancelled` (the CAS a USER STOP produces), `cancelAgentGenerationJobs` (its per-agent sweep, called from `stopAgent`), `setRunning` returning its answer instead of discarding it, and the audio worker's stop branch. The 55 comment lines carry the distinction the whole ticket turns on — that `failed` writes an `error` column, renders as a failure in the indicator and posts \"I wasn't able to finish that audio\" into the owner's chat, none of which is true of a job he deliberately stopped — plus the measured reason the abort registry alone cannot reach a queued image (the delivery IIFE's wait loop outliving the fence) and the reason video is NOT swept here (its poll loop owns its own row; two writers racing one CAS is how a cancel gets clobbered). REFUSED: splitting the lifecycle helpers into a `generation-jobs-lifecycle.ts` to stay under 400 — the CAS transitions and the worker that honours them are one mechanism, and the precedent this file's own neighbours set (`cat/media.ts` at 897, `cat/agents.ts` at 1,284) is that shaping code to fit a gate is not what the gate is for. REFUSED: putting `cancelAgentGenerationJobs` in `runtime.ts` (−16 here, +16 there, and `runtime.ts` is also over its pin) — the SQL for this table belongs with the table's other writers, not in the turn loop. Decrease-only from here."
+    },
+    {
       "path": "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts",
       "from": 165,
       "to": 167,
@@ -5239,8 +5288,8 @@
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 345,
-    "packages/server/src/agent/runtime.ts": 1698,
-    "packages/server/src/agent/shared-state.ts": 312,
+    "packages/server/src/agent/runtime.ts": 1719,
+    "packages/server/src/agent/shared-state.ts": 381,
     "packages/server/src/credentials/store.ts": 412,
     "packages/server/src/agent/stream-patience.ts": 403,
     "packages/server/src/providers/anthropic-sdk.ts": 516,
@@ -5252,7 +5301,7 @@
     "packages/server/src/agent/tools/cat/comms.ts": 914,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
-    "packages/server/src/agent/tools/cat/media.ts": 897,
+    "packages/server/src/agent/tools/cat/media.ts": 902,
     "packages/server/src/agent/tools/cat/session.ts": 264,
     "packages/server/src/agent/tools/cat/tracker.ts": 996,
     "packages/server/src/agent/tools/definitions.ts": 2877,
@@ -5298,7 +5347,7 @@
     "packages/server/src/agent/v2/steps/execute/tracker-floors.ts": 314,
     "packages/server/src/agent/v2/steps/execute/work-status.ts": 52,
     "packages/server/src/agent/v2/steps/execute/xml-fallback.ts": 155,
-    "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 444,
+    "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 452,
     "packages/server/src/agent/v2/steps/finalize/close-the-loop.ts": 158,
     "packages/server/src/agent/v2/steps/finalize/completion-ack.ts": 154,
     "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts": 90,
@@ -5397,11 +5446,12 @@
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/format-time.ts": 275,
     "packages/server/src/services/gmail-watcher.ts": 592,
-    "packages/server/src/services/image-generation.ts": 434,
+    "packages/server/src/services/generation-jobs.ts": 443,
+    "packages/server/src/services/image-generation.ts": 473,
     "packages/server/src/services/imessage-bridge.ts": 2314,
     "packages/server/src/services/outlook-watcher.ts": 517,
     "packages/server/src/services/teams-watcher.ts": 461,
-    "packages/server/src/services/transcription.ts": 359,
+    "packages/server/src/services/transcription.ts": 396,
     "packages/server/src/services/tunnel.ts": 683,
     "packages/server/src/techniques/dependencies.ts": 586,
     "packages/server/src/techniques/share-export.ts": 464,
