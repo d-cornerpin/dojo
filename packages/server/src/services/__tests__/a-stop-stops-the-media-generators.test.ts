@@ -847,8 +847,11 @@ describe('§7 the census: every media dial goes through the one door', () => {
     // NARROW value, so a forgetful caller under-aborts rather than destroying background work
     // — but a user-stop-shaped caller that forgets `'all'` would silently reopen the original
     // A-5 defect. Four callers exist and each one's answer is a decision; this makes a fifth
-    // one state its answer too. `'all'` is carved to the two that mean the owner's own stop.
-    const ALL_SCOPED = new Set(['agent/runtime.ts']);   // stopAgent + the stuck-stopped-run reap
+    // one state its answer too. `'all'` is carved BY REASON, not by file (re-review NEW-1: a
+    // file-keyed carve let `urgent-preempt` — which lives in the same file as `stopAgent` —
+    // widen back to 'all' with the whole suite green): only the two reasons that mean the
+    // owner's own stop may abort background work, wherever they are written.
+    const ALL_REASONS = /'(user-stop|stuck-stopped-run-reap)'/;
     const offenders: string[] = [];
     const allSites: string[] = [];
     for (const rel of walkSources()) {
@@ -857,7 +860,7 @@ describe('§7 the census: every media dial goes through the one door', () => {
         if (!/\babortInFlight\(/.test(line) || /export function abortInFlight/.test(line)) return;
         allSites.push(`${rel}:${i + 1}`);
         if (!/scope:\s*'(all|turn|background)'/.test(line)) offenders.push(`${rel}:${i + 1} — ${line.trim()}`);
-        if (/scope:\s*'all'/.test(line) && !ALL_SCOPED.has(rel)) {
+        if (/scope:\s*'all'/.test(line) && !ALL_REASONS.test(line)) {
           offenders.push(`${rel}:${i + 1} — only the user's own stop may abort background work`);
         }
       });
