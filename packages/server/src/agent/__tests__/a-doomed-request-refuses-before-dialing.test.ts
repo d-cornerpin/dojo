@@ -352,3 +352,92 @@ describe('T81 fix wave — refuseIfDoomed\'s wording is honest about standing vs
     expect(msg, 'must not claim a number nobody declared').not.toMatch(/its declared \d+ms first-chunk patience/);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════
+// PREFILL SELF-CALIBRATION (owner design ruling, 2026-09-22) — THE GATE STOPS NEEDING TO
+// BE TOLD.
+//
+// Every RED above needs a human to have typed a tokens-per-second figure into a form. The
+// owner's ruling: "never ask the user for a number the platform can observe." Migration 167
+// stores what `costs/prefill-calibration.ts` derives from this engine's own cost ledger, and
+// the pre-dial gate falls back to it when — and ONLY when — nobody declared one.
+//
+// This block drives the REAL `callModel` against a provider whose `prefill_tokens_per_sec` is
+// NULL and whose `measured_prefill_tokens_per_sec` is set, at the same live dial site the
+// declared cases above use. The CONTROL immediately above this comment (NULL throughput dials
+// an oversized prompt) is what proves the fallback is not always-on: that row has no
+// measurement either, and it still dials.
+// ════════════════════════════════════════════════════════════════════════════════════
+
+/** A provider that has DECLARED NOTHING and been MEASURED. The 2026-09-22 shape. */
+const seedOpenAICompatibleMeasuredOnly = (measuredTokensPerSec: number | null): void => {
+  const db = mockDb.current!;
+  db.prepare(`
+    INSERT INTO providers (id, name, type, base_url, auth_type, first_chunk_timeout_ms,
+                           prefill_tokens_per_sec, measured_prefill_tokens_per_sec, measured_prefill_at,
+                           is_validated, created_at, updated_at)
+    VALUES ('local', 'Local DS4', 'openai-compatible', ?, 'none', ?, NULL, ?, datetime('now'), 1, datetime('now'), datetime('now'))
+  `).run(stubUrl, SCALED_PATIENCE_MS, measuredTokensPerSec);
+  db.prepare(`
+    INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
+    VALUES ('m-local', 'local', 'Local DS4', 'local-ds4', '["text","tools"]', 32768, 4096, 1, datetime('now'), datetime('now'))
+  `).run();
+  db.prepare(`
+    INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
+    VALUES ('kevin', 'Kevin', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
+  `).run();
+};
+
+describe('self-calibration — a provider nobody declared for still refuses a doomed request', () => {
+  it('RED: an UNDECLARED provider with a MEASURED reading refuses — zero dials attempted', async () => {
+    // Before the ruling this exact row dialed unconditionally (the CONTROL above). The only
+    // thing that changed is that the ledger has since written down how fast this box reads.
+    seedOpenAICompatibleMeasuredOnly(SCALED_THROUGHPUT_TOK_PER_SEC);
+    const err = await callOpenAICompatible(LONG_MESSAGE).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).code).toBe(DECLARED_PATIENCE_EXCEEDED_CODE);
+    expect((err as AgentError).preDialRefusal).toBe(true);
+    expect(openaiRequests).toBe(0);
+  });
+
+  it('and the refusal says MEASURED, because nobody declared anything', async () => {
+    // The T81 fix wave's own rule, applied to the second half of the same sentence: a number
+    // the engine worked out for itself must not be reported as something its owner declared.
+    seedOpenAICompatibleMeasuredOnly(SCALED_THROUGHPUT_TOK_PER_SEC);
+    const err = await callOpenAICompatible(LONG_MESSAGE).catch((e: unknown) => e);
+    const msg = (err as AgentError).message;
+    expect(msg).toContain(`this provider's measured ${SCALED_THROUGHPUT_TOK_PER_SEC} tok/s prefill throughput`);
+    expect(msg, 'must not claim a number nobody declared').not.toContain(`declared ${SCALED_THROUGHPUT_TOK_PER_SEC} tok/s`);
+  });
+
+  it('a DECLARED figure still wins outright, and still reads as "declared"', async () => {
+    // Both columns set and DISAGREEING: declared 10 tok/s (a 100-token ceiling, refuses) beside
+    // a measured 10,000 tok/s (which would sail past it). The owner's number is the answer.
+    const db = () => mockDb.current!;
+    seedOpenAICompatible(SCALED_THROUGHPUT_TOK_PER_SEC);
+    db().prepare(
+      "UPDATE providers SET measured_prefill_tokens_per_sec = 10000, measured_prefill_at = datetime('now') WHERE id = 'local'",
+    ).run();
+    const err = await callOpenAICompatible(LONG_MESSAGE).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AgentError);
+    expect((err as AgentError).message).toContain(`this provider's declared ${SCALED_THROUGHPUT_TOK_PER_SEC} tok/s prefill throughput`);
+    expect(openaiRequests).toBe(0);
+  });
+
+  it('GREEN: the same measured reading dials a prompt that fits its ceiling', async () => {
+    seedOpenAICompatibleMeasuredOnly(SCALED_THROUGHPUT_TOK_PER_SEC);
+    const result = await callOpenAICompatible(SHORT_MESSAGE);
+    expect(result.content).toBe('It is done.');
+    expect(openaiRequests).toBe(1);
+  });
+
+  it('CONTROL: a measurement too small to be coherent is no measurement — the gate stays off', async () => {
+    // `Math.floor(0.4)` is 0, which is below `PREFILL_THROUGHPUT_MIN_TOK_PER_SEC`. A reader that
+    // trusted the column blindly would hand the gate a zero ceiling and refuse every request
+    // this provider ever receives.
+    seedOpenAICompatibleMeasuredOnly(0.4);
+    const result = await callOpenAICompatible(LONG_MESSAGE);
+    expect(result.content).toBe('It is done.');
+    expect(openaiRequests).toBe(1);
+  });
+});

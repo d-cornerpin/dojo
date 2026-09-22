@@ -46,6 +46,18 @@ export interface Provider {
   // `agent/model.ts` refuses to dial anything bigger. Legal range 1 – 100,000 tokens/sec,
   // enforced at the write door and again by the reader.
   prefillTokensPerSec: number | null;
+  // PREFILL SELF-CALIBRATION (owner design ruling 2026-09-22: "never ask the user for a number
+  // the platform can observe"; migration 167) — the same reading, DERIVED from this engine's own
+  // cost ledger instead of typed by a person. Read-only everywhere: there is no write door, and
+  // the dashboard shows it as information beside the rare-override field above it. Null until a
+  // provider has served a call big enough to measure from. `prefillTokensPerSec` ALWAYS wins
+  // when set — this is consulted only where nobody declared anything, which is exactly the set
+  // of providers for which the doomed-dial gate was previously off.
+  measuredPrefillTokensPerSec: number | null;
+  // When that reading was last established, in SQLite's own `YYYY-MM-DD HH:MM:SS`. Null with the
+  // reading. Not decoration: the estimator keeps a rolling 30-day window and a maximum over a
+  // window has to be able to fall, which needs a stamp to know when to look again.
+  measuredPrefillAt: string | null;
   isValidated: boolean;
   validatedAt: string | null;
   // User-entered host machine RAM in GB. Only relevant for remote Ollama

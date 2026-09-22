@@ -382,6 +382,35 @@ export const updateProviderResponsePatience = async (
   });
 };
 
+// T81b — set or clear the tokens-per-second this box's owner says it reads a prompt at. `null`
+// leaves it undeclared, which is now "use whatever the engine measured for itself" (owner
+// ruling 2026-09-22) rather than "the feature is off". A declared figure always wins over a
+// measured one. Its own narrow route: the identity door refuses this field by name.
+export const updateProviderPrefillThroughput = async (
+  providerId: string,
+  prefillTokensPerSec: number | null,
+): Promise<ApiResponse<ProviderResponse>> => {
+  return request<ProviderResponse>(`/config/providers/${providerId}/prefill-throughput`, {
+    method: 'PATCH',
+    body: JSON.stringify({ prefillTokensPerSec }),
+  });
+};
+
+// T79b — set or clear how long an agent on this provider may keep working unattended before it
+// has to check in, in minutes. `null` clears it back to the standard hour; `0` declares NO CAP.
+// Its own narrow route for the same reason the patience pair has one: the identity door
+// full-replaces what it is given, and this door refuses to touch any column but this one. The
+// server refuses the field BY NAME on the identity door, so there is no shortcut here.
+export const updateProviderUnattendedBudget = async (
+  providerId: string,
+  unattendedBudgetMinutes: number | null,
+): Promise<ApiResponse<ProviderResponse>> => {
+  return request<ProviderResponse>(`/config/providers/${providerId}/unattended-budget`, {
+    method: 'PATCH',
+    body: JSON.stringify({ unattendedBudgetMinutes }),
+  });
+};
+
 export const updateProviderHostRam = async (
   providerId: string,
   ramGb: number | null,

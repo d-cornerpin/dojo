@@ -1,0 +1,86 @@
+-- 167 (ANSWER-ANYWAY, prefill self-calibration): THE PLATFORM MEASURES WHAT IT USED TO ASK FOR.
+--
+-- OWNER DESIGN RULING, 2026-09-22, verbatim: "never ask the user for a number the platform can
+-- observe." Migration 166 gave a provider a place to DECLARE its prefill throughput, and the
+-- pre-dial gate (`agent/model.ts`'s `refuseIfDoomed`) and the admission budget
+-- (`memory/budget.ts`, `memory/compaction.ts`) both spend it. But declaring it means
+-- benchmarking a box by hand and typing tokens-per-second into a form — so in practice the
+-- column stays NULL, and with it NULL the whole ANSWER-ANYWAY safety chain is off. The engine
+-- was asking its owner for a number it had already been writing down, thousands of times, in
+-- its own cost ledger.
+--
+-- WHAT THE LEDGER ALREADY KNOWS. Every model call writes a `cost_records` row carrying
+-- `input_tokens` (the BILLED, UNCACHED input — cache reads are their own column since 086),
+-- `latency_ms`, and `provider_id`. A call's total latency is prefill time PLUS generation time
+-- PLUS overhead, so it is never SHORTER than the prefill it contains, and therefore
+--
+--     input_tokens / (latency_ms / 1000)   is a LOWER BOUND on that box's prefill rate
+--
+-- for every row, unconditionally. The MAXIMUM of those lower bounds over a provider's recent
+-- rows is the tightest thing the ledger can say — it converges on the true rate FROM BELOW,
+-- which is the safe side: an under-estimated speed yields a SMALLER doom ceiling, so the
+-- pre-dial check and the admission budget both become MORE conservative, never less. There is
+-- no reading of this column that can make the engine dial something it would otherwise refuse
+-- beyond what a true measurement would have allowed.
+--
+-- WHY TWO COLUMNS AND NOT ONE. `measured_prefill_tokens_per_sec` is the rate;
+-- `measured_prefill_at` is when that rate was last established. The stamp is not decoration:
+-- the estimator keeps a ROLLING WINDOW (30 days, `costs/prefill-calibration.ts`), and a maximum
+-- over a window must be able to FALL when the sample that set it ages out. Without a stamp the
+-- only honest way to let it fall is to rescan the window on every single call; with one, the
+-- reader can ratchet up in O(1) on a faster sample and pay for a full rescan at most once a
+-- day. The stamp is compared, never waited on — nothing in this feature arms a clock.
+--
+-- WHY `REAL` AND NOT `INTEGER`, UNLIKE 166's DECLARED COLUMN. A declared value is a human
+-- typing a round number; a measured one is a quotient (35,237 / 194.6 = 181.07…). Rounding at
+-- the WRITE would throw away the only thing that distinguishes two consecutive measurements,
+-- and rounding UP at the write would break the from-below guarantee the paragraph above rests
+-- on. The column stores the quotient as measured and the READER floors it to a whole
+-- tokens/sec (`agent/stream-patience.ts`), which is a second, deliberate step in the safe
+-- direction.
+--
+-- WHY ON `providers` — CITED VERBATIM FROM 163, 164 AND 166, because the argument does not
+-- change here: "Patience is a property of the SERVING MACHINE, not of a model row: it is set by
+-- that box's hardware and its queue, and every model it serves waits behind the same
+-- processor." A measured prefill rate is a fact about that same machine, measured across every
+-- model it serves, and it rides the identical `models JOIN providers` read the three migrations
+-- before it already pay for.
+--
+-- DECLARED ALWAYS WINS, WHICH IS WHY THIS IS AN ADDITION AND NOT A REPLACEMENT. 166's
+-- `prefill_tokens_per_sec` keeps exactly the meaning and exactly the precedence it has today:
+-- when it is set, nothing in this migration is read at all. These columns are consulted only
+-- where that one is NULL — i.e. only where the feature was OFF — so no provider's behaviour
+-- can change in the direction of "less safe" and no existing declaration can be overruled by a
+-- machine's opinion of it.
+--
+-- NULL = "nothing has been measured yet", and every existing row is NULL. No backfill is
+-- written by this migration: a backfill would need to read the whole cost ledger inside the
+-- boot transaction on a body that may hold hundreds of thousands of rows, and there is no need
+-- — the very first qualifying call on a provider establishes its reading, and until then the
+-- provider behaves exactly as it does today (the gate stays off).
+--
+-- NO CHECK CONSTRAINT, for the same reason 163, 164 and 166 give none: the legal range lives
+-- once in `agent/stream-patience.ts` (`PREFILL_THROUGHPUT_MIN_TOK_PER_SEC` /
+-- `PREFILL_THROUGHPUT_MAX_TOK_PER_SEC`), read by the reader that must survive a value this
+-- schema never approved (a hand-edited row, a restored backup) by treating it as unmeasured
+-- rather than by trusting a constraint to have held.
+--
+-- THE INDEX. `cost_records` has indexes on `(agent_id, created_at)` and `(model_id, created_at)`
+-- but none on `provider_id`, and the estimator's window rescan asks exactly
+-- "this provider, recent, latency present". Without the index that rescan is a full table scan
+-- on the largest table on a lived-in box. It is additive, partial (only rows that can possibly
+-- qualify), and `IF NOT EXISTS`, so re-running the chain is a no-op.
+--
+-- NEXT-RELEASE AUDIT NOTE: `providers.measured_prefill_tokens_per_sec` /
+-- `providers.measured_prefill_at` have exactly one writer (`costs/prefill-calibration.ts`,
+-- called from `costs/tracker.ts`'s `recordCost` after a qualifying row lands) and one reader
+-- (`agent/stream-patience.ts`'s `resolvePrefillThroughput`, reached from `resolveDoomCeiling`
+-- at the pre-dial gate, the admission budget, the compaction trigger and the router's fit
+-- filter). The dashboard displays the pair read-only through `GET /config/providers`.
+
+ALTER TABLE providers ADD COLUMN measured_prefill_tokens_per_sec REAL;
+ALTER TABLE providers ADD COLUMN measured_prefill_at TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_cost_records_prefill_sample
+  ON cost_records(provider_id, created_at)
+  WHERE latency_ms IS NOT NULL;

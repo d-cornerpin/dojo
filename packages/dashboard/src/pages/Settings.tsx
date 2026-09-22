@@ -3,6 +3,11 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { useSearchParams } from 'react-router-dom';
 import type { Provider, Model, GenerationParamSpec, VoiceOption, EditProviderRequest } from '@dojo/shared';
 import * as api from '../lib/api';
+import {
+  numberEditsFor, numInput,
+  THROUGHPUT_MIN_TOK_PER_SEC, THROUGHPUT_MAX_TOK_PER_SEC,
+  UNATTENDED_MIN_MINUTES, UNATTENDED_MAX_MINUTES, UNATTENDED_STANDARD_MINUTES, UNATTENDED_UNCAPPED,
+} from '../lib/provider-edits';
 import { useToast } from '../hooks/useToast';
 import { RouterConfig, SystemModelConfig, VoiceOpenerModelConfig } from '../components/RouterConfig';
 import { DataBackupNotice } from '../components/DataBackupNotice';
@@ -1893,6 +1898,23 @@ const parsePatienceSeconds = (raw: string, label: string): PatienceParse => {
 
 const msToSecInput = (ms: number | null): string => (ms === null ? '' : String(Math.round(ms / 1000)));
 
+/**
+ * PREFILL SELF-CALIBRATION (owner ruling 2026-09-22: "never ask the user for a number the
+ * platform can observe"). What the engine worked out for itself, shown as INFORMATION rather
+ * than as a control: there is no write door for it, and a field that let someone edit a
+ * measurement would turn it straight back into the declaration this feature exists to stop
+ * asking for. Absent entirely until a provider has served a call big enough to measure from.
+ */
+const MeasuredReadingSpeed = ({ provider }: { provider: Provider }) => {
+  if (provider.measuredPrefillTokensPerSec === null) return null;
+  return (
+    <p className="text-[11px] text-cp-teal/70 mt-1">
+      Measured reading speed: ~{Math.floor(provider.measuredPrefillTokensPerSec)} tokens/sec.
+      Worked out from this machine's own recent calls — you do not need to fill anything in.
+    </p>
+  );
+};
+
 /** The two fields, shared by the add form and the per-provider editor so they cannot drift. */
 const PatienceFields = ({
   firstChunkSec, idleSec, onFirstChunk, onIdle, disabled,
@@ -1981,11 +2003,18 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
   // Never pre-filled: the server does not send the stored key to the client and must not.
   // Blank therefore means KEEP, and the help text under the field says exactly that.
   const [credential, setCredential] = useState('');
+  // The fold opens by itself when ANY of the advanced numbers is already set — a value the user
+  // cannot see is a value they cannot check, and this fold now holds four of them, not two.
   const [showPatience, setShowPatience] = useState(
-    provider.firstChunkTimeoutMs !== null || provider.streamIdleTimeoutMs !== null,
+    provider.firstChunkTimeoutMs !== null || provider.streamIdleTimeoutMs !== null
+    || provider.prefillTokensPerSec !== null || provider.unattendedBudgetMinutes !== null,
   );
   const [firstChunkSec, setFirstChunkSec] = useState(msToSecInput(provider.firstChunkTimeoutMs));
   const [idleSec, setIdleSec] = useState(msToSecInput(provider.streamIdleTimeoutMs));
+  // '' is "say nothing". For reading speed that means "use whatever the engine measured";
+  // for working time it means "the standard hour". Neither is a number the user has to supply.
+  const [tokensPerSec, setTokensPerSec] = useState(numInput(provider.prefillTokensPerSec));
+  const [unattendedMinutes, setUnattendedMinutes] = useState(numInput(provider.unattendedBudgetMinutes));
   const [status, setStatus] = useState<'idle' | 'saving' | 'validating' | 'valid' | 'invalid'>('idle');
   const [error, setError] = useState<string | null>(null);
 
@@ -1997,8 +2026,12 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
 
     const first = parsePatienceSeconds(firstChunkSec, 'The wait for the first word');
     const idle = parsePatienceSeconds(idleSec, 'The wait during an answer');
+    // The only-what-moved rule for the two narrow-door numbers, decided in `lib/provider-edits.ts`
+    // where it can be argued with in a test rather than only observed in a browser.
+    const numbers = numberEditsFor(provider, { tokensPerSec, unattendedMinutes });
     if (!first.ok) { setError(first.error); setShowPatience(true); return; }
     if (!idle.ok) { setError(idle.error); setShowPatience(true); return; }
+    if (!numbers.ok) { setError(numbers.error); setShowPatience(true); return; }
 
     // ONLY WHAT MOVED. This is the client half of the anti-trap: a field the user did not
     // touch is not mentioned, so there is no request in which it could be cleared.
@@ -2015,8 +2048,18 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
     const patienceMoved = armsTheWatchdog && (
       first.ms !== provider.firstChunkTimeoutMs || idle.ms !== provider.streamIdleTimeoutMs
     );
+    // Two more narrow doors, each with its own flag for the same reason the patience pair has
+    // one: the server REFUSES both of these fields by name on the identity door, so they can
+    // never ride along in `edit`, and a field the user did not touch must not be mentioned to
+    // its own door either — sending an untouched value back is how a blank clears a number
+    // nobody meant to clear. An ABSENT key is "do not call this door"; a `null` key is "call it
+    // and clear the number". Those are different requests.
+    const speedMoved = 'prefillTokensPerSec' in numbers.edits;
+    const unattendedMoved = 'unattendedBudgetMinutes' in numbers.edits;
 
-    if (Object.keys(edit).length === 0 && !patienceMoved) { onCancel(); return; }
+    if (Object.keys(edit).length === 0 && !patienceMoved && !speedMoved && !unattendedMoved) {
+      onCancel(); return;
+    }
 
     setStatus('saving');
     if (patienceMoved) {
@@ -2024,6 +2067,14 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
         firstChunkTimeoutMs: first.ms, streamIdleTimeoutMs: idle.ms,
       });
       if (!p.ok) { setError(p.error); setStatus('idle'); return; }
+    }
+    if (speedMoved) {
+      const s = await api.updateProviderPrefillThroughput(provider.id, numbers.edits.prefillTokensPerSec ?? null);
+      if (!s.ok) { setError(s.error); setStatus('idle'); return; }
+    }
+    if (unattendedMoved) {
+      const u = await api.updateProviderUnattendedBudget(provider.id, numbers.edits.unattendedBudgetMinutes ?? null);
+      if (!u.ok) { setError(u.error); setStatus('idle'); return; }
     }
 
     let revalidationRequired = false;
@@ -2121,18 +2172,22 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
         </div>
       )}
 
-      {armsTheWatchdog && (
-        <div>
-          <button
-            type="button"
-            onClick={() => setShowPatience(v => !v)}
-            className="btn btn--sm"
-            aria-expanded={showPatience}
-          >
-            {showPatience ? '▾' : '▸'} Response patience (advanced)
-          </button>
-          {showPatience && (
-            <div className="mt-2 space-y-2">
+      {/* The fold is no longer gated on `armsTheWatchdog`: the two fields added here apply to
+          every provider, and an Ollama box — the one kind the watchdog gate excludes — is
+          precisely the kind whose owner needs to say how long it may work on its own. Only the
+          PATIENCE PAIR keeps that gate, inside, where it still means what it meant. */}
+      <div>
+        <button
+          type="button"
+          onClick={() => setShowPatience(v => !v)}
+          className="btn btn--sm"
+          aria-expanded={showPatience}
+        >
+          {showPatience ? '▾' : '▸'} Speed and patience (advanced)
+        </button>
+        {showPatience && (
+          <div className="mt-2 space-y-2">
+            {armsTheWatchdog && (
               <PatienceFields
                 firstChunkSec={firstChunkSec}
                 idleSec={idleSec}
@@ -2140,10 +2195,49 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
                 onIdle={setIdleSec}
                 disabled={busy}
               />
+            )}
+            <div className="fgrid" style={{ marginBottom: 0 }}>
+              <div>
+                <label className="flabel">Reading speed</label>
+                <input
+                  type="number" step="1"
+                  min={THROUGHPUT_MIN_TOK_PER_SEC} max={THROUGHPUT_MAX_TOK_PER_SEC}
+                  placeholder="measured automatically"
+                  value={tokensPerSec}
+                  onChange={(e) => setTokensPerSec(e.target.value)}
+                  disabled={busy}
+                  className="finput disabled:opacity-60"
+                />
+                <MeasuredReadingSpeed provider={provider} />
+                <p className="text-[11px] text-ui/40 mt-1">
+                  Tokens per second. You should not need this: the engine watches how fast this
+                  machine actually gets through a prompt and works the number out on its own. Fill
+                  it in only to overrule that — a figure you type here always wins.
+                </p>
+              </div>
+              <div>
+                <label className="flabel">Working time on its own</label>
+                <input
+                  type="number" step="1"
+                  min={UNATTENDED_UNCAPPED} max={UNATTENDED_MAX_MINUTES}
+                  placeholder={`${UNATTENDED_STANDARD_MINUTES} (standard)`}
+                  value={unattendedMinutes}
+                  onChange={(e) => setUnattendedMinutes(e.target.value)}
+                  disabled={busy}
+                  className="finput disabled:opacity-60"
+                />
+                <p className="text-[11px] text-ui/40 mt-1">
+                  Minutes. How long an agent on this machine may keep working before it has to
+                  stop and check in. Blank is the standard {UNATTENDED_STANDARD_MINUTES} minutes;{' '}
+                  {UNATTENDED_MIN_MINUTES} minutes to {UNATTENDED_MAX_MINUTES / 60} hours is
+                  allowed. Type <strong>0</strong> to let it run as long as the job takes — worth
+                  it on a slow machine of your own, rarely worth it on a paid service.
+                </p>
+              </div>
             </div>
-          )}
-        </div>
-      )}
+          </div>
+        )}
+      </div>
 
       <div className="flex items-center gap-3">
         <button type="button" onClick={handleSave} disabled={busy} className="btn btn--sm btn--primary">

@@ -7,6 +7,7 @@ import { getDb } from '../db/connection.js';
 import { turnContext } from '../agent/turn-context.js';
 import { createLogger } from '../logger.js';
 import { checkAlertsAfterCost } from './budget.js';
+import { recalibrateFromSample } from './prefill-calibration.js';
 import { CHARS_PER_TOKEN } from '../memory/budget.js';
 
 const logger = createLogger('costs');
@@ -203,6 +204,18 @@ export function recordCost(params: RecordCostParams): void {
 
     // Invalidate daily spend cache so next budget check gets fresh data
     invalidateDailySpendCache();
+
+    // PREFILL SELF-CALIBRATION (owner ruling 2026-09-22: "never ask the user for a number the
+    // platform can observe"). The row just written is a speedometer reading — uncached input
+    // over latency is a lower bound on this box's prefill rate — and this is the one place in
+    // the engine that holds both halves at the moment they become true. A no-op for every row
+    // below the sample floor, which is most of them. Never allowed to fail a recorded cost:
+    // the speedometer is an instrument, and a model call's accounting does not depend on it.
+    try {
+      recalibrateFromSample(providerId, { inputTokens, latencyMs });
+    } catch {
+      // Best-effort, exactly like the alert check below.
+    }
 
     // D-H visibility: an unknown (NULL) price now bills as $0 rather than the
     // old Sonnet premium, so a genuinely-paid model whose price lookup failed

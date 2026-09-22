@@ -2606,6 +2606,13 @@ function rowToProvider(row: Record<string, unknown>): Provider {
     // T81b: read back as stored. A pre-166 row read through an old path has no column, and
     // `?? null` says "declared nothing" rather than inventing a number.
     prefillTokensPerSec: typeof row.prefill_tokens_per_sec === 'number' ? row.prefill_tokens_per_sec : null,
+    // Prefill self-calibration (owner ruling 2026-09-22, migration 167): read back as measured,
+    // and READ-ONLY — there is deliberately no write door for this pair. It is the engine's own
+    // observation, and a form that let a person edit it would turn a measurement back into the
+    // declaration it exists to stop asking for. A pre-167 row read through an old path has
+    // neither column, and `null` says "nothing measured yet" rather than inventing a number.
+    measuredPrefillTokensPerSec: typeof row.measured_prefill_tokens_per_sec === 'number' ? row.measured_prefill_tokens_per_sec : null,
+    measuredPrefillAt: typeof row.measured_prefill_at === 'string' ? row.measured_prefill_at : null,
     isValidated: Boolean(row.is_validated),
     validatedAt: row.validated_at as string | null,
     hostRamGb: typeof row.host_ram_gb === 'number' ? row.host_ram_gb : null,

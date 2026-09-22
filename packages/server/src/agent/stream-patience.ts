@@ -303,6 +303,69 @@ function isCoherentThroughput(stored: unknown): stored is number {
   return true;
 }
 
+// ════════════════════════════════════════════════════════════════════════════════════════
+// PREFILL SELF-CALIBRATION (owner ruling, 2026-09-22) — WHEN NOBODY DECLARED, THE LEDGER DID.
+// ════════════════════════════════════════════════════════════════════════════════════════
+//
+// Everything above this point assumes the throughput is a number a human typed. In practice it
+// is NULL on nearly every box, because typing it means benchmarking one first — so the whole
+// ANSWER-ANYWAY chain that spends it (the pre-dial gate, the admission budget, the compaction
+// trigger, the router's fit filter) sat switched off for exactly the providers it was built
+// for. `costs/prefill-calibration.ts` now derives the same fact from the engine's own cost
+// ledger and stores it on `providers.measured_prefill_tokens_per_sec` (migration 167); this is
+// the one function that decides which of the two numbers a consumer gets.
+//
+// ── DECLARED ALWAYS WINS, AND THE PRECEDENCE IS NOT NEGOTIABLE ──
+// A declared value is a person making a claim about their own machine. A measured value is the
+// engine's inference from calls that have already happened. When both exist the person's claim
+// is the answer — not because it is more accurate (it usually is not; the owner's hand-measured
+// "about 200" against the ledger's 181 is the case in point) but because an override that can
+// be silently overruled by a machine's opinion of it is not an override. The measurement is
+// consulted ONLY where the declaration is absent or incoherent, which is exactly the set of
+// providers for which every consumer of this number was previously doing nothing at all. No
+// provider that has declared anything changes behaviour by a single token.
+//
+// ── WHY THE MEASURED VALUE IS FLOORED ──
+// The stored measurement is a quotient (35,237 / 194.6 = 181.07…), and every consumer wants a
+// whole tokens/sec. Flooring rather than rounding keeps the direction of every approximation in
+// this feature pointing the same way: `costs/prefill-calibration.ts` takes the MAXIMUM of LOWER
+// BOUNDS, so the stored number already approaches the truth from below, and the floor here
+// keeps it there. A rounded-up 181.6 → 182 would be the one step in the chain that claims the
+// box is faster than anything ever observed.
+export type PrefillThroughputSource = 'declared' | 'measured';
+
+export interface ResolvedPrefillThroughput {
+  tokensPerSec: number;
+  source: PrefillThroughputSource;
+}
+
+/**
+ * Which prefill throughput this provider's consumers should spend, and where it came from —
+ * or `null` when nobody declared one and nothing has been measured yet, which is the
+ * byte-preserving "feature off" state migration 166's header describes and migration 167
+ * preserves for every provider whose ledger has not yet produced a qualifying call.
+ *
+ * The `source` is not decoration: `agent/model.ts`'s refusal message names the number it
+ * refused on, and calling a reading off the cost ledger something the owner "declared" would be
+ * the same class of lie T81's own fix wave removed from that sentence (the `firstChunkClause`
+ * immediately beside it).
+ */
+export function resolvePrefillThroughput(
+  declaredTokensPerSec: number | null | undefined,
+  measuredTokensPerSec?: number | null,
+): ResolvedPrefillThroughput | null {
+  if (isCoherentThroughput(declaredTokensPerSec)) {
+    return { tokensPerSec: declaredTokensPerSec, source: 'declared' };
+  }
+  const floored = typeof measuredTokensPerSec === 'number' && Number.isFinite(measuredTokensPerSec)
+    ? Math.floor(measuredTokensPerSec)
+    : null;
+  if (isCoherentThroughput(floored)) {
+    return { tokensPerSec: floored, source: 'measured' };
+  }
+  return null;
+}
+
 /**
  * The largest input a declared prefill throughput can chew through inside a declared patience
  * — the number census row 37 is missing, and the one number `agent/model.ts`'s pre-dial gate
@@ -332,14 +395,21 @@ function isCoherentThroughput(stored: unknown): stored is number {
  * Floored at zero: a declared patience no longer than the margin itself leaves no time at all
  * to spend on tokens, and every positive estimate is doomed — which is the honest answer, not
  * an edge case to special-case around.
+ *
+ * The third argument is the self-calibration fallback (owner ruling 2026-09-22, above) and is
+ * OPTIONAL on purpose: every call site that omits it resolves exactly as it did before that
+ * ruling, which is what keeps "a provider that declared nothing behaves identically" a fact
+ * about the code rather than a hope for the second time in this function's life.
  */
 export function resolveDoomCeiling(
   declaredPatienceMs: number,
   prefillTokensPerSec: number | null | undefined,
+  measuredPrefillTokensPerSec?: number | null,
 ): number | null {
-  if (!isCoherentThroughput(prefillTokensPerSec)) return null;
+  const resolved = resolvePrefillThroughput(prefillTokensPerSec, measuredPrefillTokensPerSec);
+  if (resolved === null) return null;
   const usableMs = Math.max(0, declaredPatienceMs - TRANSPORT_MARGIN_MS);
-  return Math.floor((usableMs / 1000) * prefillTokensPerSec);
+  return Math.floor((usableMs / 1000) * resolved.tokensPerSec);
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════

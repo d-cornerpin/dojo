@@ -106,16 +106,22 @@ function providerCeilingTokensFor(modelId: string): number | null {
   try {
     const db = getDb();
     const row = db.prepare(`
-      SELECT p.first_chunk_timeout_ms AS first_chunk_timeout_ms, p.prefill_tokens_per_sec AS prefill_tokens_per_sec
+      SELECT p.first_chunk_timeout_ms AS first_chunk_timeout_ms, p.prefill_tokens_per_sec AS prefill_tokens_per_sec,
+             p.measured_prefill_tokens_per_sec AS measured_prefill_tokens_per_sec
       FROM models m JOIN providers p ON p.id = m.provider_id
       WHERE m.id = ?
-    `).get(modelId) as { first_chunk_timeout_ms: number | null; prefill_tokens_per_sec: number | null } | undefined;
+    `).get(modelId) as { first_chunk_timeout_ms: number | null; prefill_tokens_per_sec: number | null; measured_prefill_tokens_per_sec: number | null } | undefined;
     if (!row) return null;
     const patience = resolveStreamPatience({ firstChunkTimeoutMs: row.first_chunk_timeout_ms, streamIdleTimeoutMs: null });
     // R6, mirrored from `getProviderCeilingTokens`: a declared throughput alone, with no
     // declared patience, is not "this provider declared both halves" — leave it unconstrained.
     if (!patience.firstChunkDeclared) return null;
-    return resolveDoomCeiling(patience.firstChunkMs, row.prefill_tokens_per_sec);
+    // PREFILL SELF-CALIBRATION (owner ruling 2026-09-22): the third column is the measured
+    // fallback, read ONLY where the declared one is NULL. It stays mirrored here rather than
+    // calling `getProviderCeilingTokens` for the reason stated two paragraphs above — this
+    // selector still must not import `agent/model.ts` and its SDKs for the sake of what is now
+    // three already-declared columns on a join it already performs.
+    return resolveDoomCeiling(patience.firstChunkMs, row.prefill_tokens_per_sec, row.measured_prefill_tokens_per_sec);
   } catch {
     return null;
   }

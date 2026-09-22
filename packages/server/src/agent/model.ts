@@ -9,7 +9,7 @@ import { AgentError } from './errors.js';
 import { apiRootIsBareHost, contractForModel, contractForModelId, type ModelContract } from './model-contract.js';
 import { classifyProviderError, isRetryableProviderClass } from './provider-error.js';
 import {
-  resolveStreamPatience, resolveTransportTimeouts, resolveDoomCeiling,
+  resolveStreamPatience, resolveTransportTimeouts, resolveDoomCeiling, resolvePrefillThroughput,
   STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, TRANSPORT_DEFAULT_TIMEOUT_MS,
   DECLARED_PATIENCE_EXCEEDED_CODE, STREAM_IDLE_TIMEOUT_CODE,
   type StreamPatience,
@@ -288,9 +288,16 @@ function refuseIfDoomed(
   estimatedInputTokens: number,
   patience: StreamPatience,
   prefillTokensPerSec: number | null,
+  measuredPrefillTokensPerSec?: number | null,
 ): void {
-  const ceiling = resolveDoomCeiling(patience.firstChunkMs, prefillTokensPerSec);
-  if (ceiling === null || estimatedInputTokens <= ceiling) return;
+  // PREFILL SELF-CALIBRATION (owner ruling 2026-09-22). Declared still wins outright; the
+  // measured reading off the cost ledger is consulted only where the declaration is absent,
+  // i.e. only where this gate was previously a no-op. `throughput` carries the SOURCE as well
+  // as the number because the message below names it, and the T81 fix wave already established
+  // in this same sentence that a number must not be called "declared" when nobody declared it.
+  const throughput = resolvePrefillThroughput(prefillTokensPerSec, measuredPrefillTokensPerSec);
+  const ceiling = resolveDoomCeiling(patience.firstChunkMs, prefillTokensPerSec, measuredPrefillTokensPerSec);
+  if (ceiling === null || throughput === null || estimatedInputTokens <= ceiling) return;
   // T81 fix wave (final review, Minor M2): `resolveDoomCeiling` only needs `prefillTokensPerSec`
   // declared — `patience.firstChunkMs` can still be the STANDING default (nobody set it) when a
   // provider declares throughput alone. Calling that number "declared" unconditionally was a
@@ -303,9 +310,14 @@ function refuseIfDoomed(
   // same ceiling (memory/budget.ts, memory/compaction.ts), this gate is a BACKSTOP — an
   // assertion that the upstream planning already agrees with itself, not the mechanism that
   // keeps a request off the wire. Seeing it fire is therefore a signal about where to look.
-  const message = `${PRE_DIAL_REFUSAL_PHRASE}: ~${estimatedInputTokens} estimated prompt tokens exceeds the ~${ceiling}-token ceiling this provider's declared ${prefillTokensPerSec} tok/s prefill throughput can cover inside ${firstChunkClause}. Compact the conversation to shrink the prompt, or raise this provider's declared patience or prefill throughput. This gate is a backstop, not the mechanism — post-T82a its firing means the upstream budget was sized wrong, not that nothing upstream tried.`;
+  // `${throughput.source}` is the ONLY byte that moves here, and only for a provider that
+  // declared nothing — where this sentence could not previously be produced at all, because the
+  // gate was off. A declared provider reads the identical message it read before the 2026-09-22
+  // ruling, down to the number: `throughput.tokensPerSec` IS `prefillTokensPerSec` in that case.
+  const message = `${PRE_DIAL_REFUSAL_PHRASE}: ~${estimatedInputTokens} estimated prompt tokens exceeds the ~${ceiling}-token ceiling this provider's ${throughput.source} ${throughput.tokensPerSec} tok/s prefill throughput can cover inside ${firstChunkClause}. Compact the conversation to shrink the prompt, or raise this provider's declared patience or prefill throughput. This gate is a backstop, not the mechanism — post-T82a its firing means the upstream budget was sized wrong, not that nothing upstream tried.`;
   logger.warn(`Refusing to dial a doomed request: ${message}`, {
-    agentId, estimatedInputTokens, ceiling, prefillTokensPerSec, firstChunkMs: patience.firstChunkMs,
+    agentId, estimatedInputTokens, ceiling, prefillTokensPerSec: throughput.tokensPerSec,
+    throughputSource: throughput.source, firstChunkMs: patience.firstChunkMs,
   }, agentId);
   throw new AgentError(message, agentId, {
     code: DECLARED_PATIENCE_EXCEEDED_CODE,
@@ -658,10 +670,10 @@ function sanitizeOrphanToolBlocks(
   }
 }
 
-function getModelInfo(modelId: string): { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; providerAuthType: string; providerBehavesLike: string | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null } {
+function getModelInfo(modelId: string): { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; providerAuthType: string; providerBehavesLike: string | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null; measuredPrefillTokensPerSec: number | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null } {
   const db = getDb();
   const row = db.prepare(`
-    SELECT m.provider_id, m.api_model_id, m.context_window, m.max_output_tokens, m.thinking_enabled, m.num_ctx_override, m.num_ctx_recommended, m.capabilities, p.type as provider_type, p.base_url as provider_base_url, p.auth_type as provider_auth_type, p.behaves_like as provider_behaves_like, p.first_chunk_timeout_ms as provider_first_chunk_timeout_ms, p.stream_idle_timeout_ms as provider_stream_idle_timeout_ms, p.prefill_tokens_per_sec as provider_prefill_tokens_per_sec
+    SELECT m.provider_id, m.api_model_id, m.context_window, m.max_output_tokens, m.thinking_enabled, m.num_ctx_override, m.num_ctx_recommended, m.capabilities, p.type as provider_type, p.base_url as provider_base_url, p.auth_type as provider_auth_type, p.behaves_like as provider_behaves_like, p.first_chunk_timeout_ms as provider_first_chunk_timeout_ms, p.stream_idle_timeout_ms as provider_stream_idle_timeout_ms, p.prefill_tokens_per_sec as provider_prefill_tokens_per_sec, p.measured_prefill_tokens_per_sec as provider_measured_prefill_tokens_per_sec
     FROM models m
     JOIN providers p ON p.id = m.provider_id
     WHERE m.id = ?
@@ -681,6 +693,7 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
     provider_first_chunk_timeout_ms: number | null;
     provider_stream_idle_timeout_ms: number | null;
     provider_prefill_tokens_per_sec: number | null;
+    provider_measured_prefill_tokens_per_sec: number | null;
   } | undefined;
 
   if (!row) {
@@ -732,6 +745,11 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
     // 166). NULL on every provider today — nobody has benchmarked one yet — and
     // `resolveDoomCeiling` turns NULL into "no ceiling, skip the pre-dial gate entirely".
     prefillTokensPerSec: row.provider_prefill_tokens_per_sec,
+    // PREFILL SELF-CALIBRATION (owner ruling 2026-09-22, migration 167): the same fact derived
+    // from this engine's own cost ledger, for the providers whose owner never typed one. Read
+    // ONLY when the declared column above is NULL — `resolvePrefillThroughput` holds that
+    // precedence, and this is one more column on a join this function already performs.
+    measuredPrefillTokensPerSec: row.provider_measured_prefill_tokens_per_sec,
     // Default ON, matches migration default and the UX the user asked for.
     thinkingEnabled: row.thinking_enabled === null || row.thinking_enabled === undefined
       ? true
@@ -974,7 +992,7 @@ async function buildNativeOllamaMessages(
 
 async function callOllamaModel(
   params: ModelCallParams,
-  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null },
+  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null; measuredPrefillTokensPerSec: number | null },
 ): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
   const baseUrl = (modelInfo.providerBaseUrl ?? 'http://localhost:11434').replace(/\/+$/, '');
@@ -1070,7 +1088,7 @@ async function callOllamaModel(
   // nothing measurable.
   const patience = resolveStreamPatience(modelInfo);
   const nativeEstimate = estimateTokens(JSON.stringify(nativeMessages)) + estimateTokens(JSON.stringify(nativeTools ?? []));
-  refuseIfDoomed(agentId, nativeEstimate, patience, modelInfo.prefillTokensPerSec);
+  refuseIfDoomed(agentId, nativeEstimate, patience, modelInfo.prefillTokensPerSec, modelInfo.measuredPrefillTokensPerSec);
 
   // Acquire the Ollama model lock (waits if a different model is in use
   // ON THE SAME PROVIDER, remote Ollama hosts have their own slot pool).
@@ -1836,7 +1854,7 @@ export function applyProviderRequestParams(
 
 async function callOpenAIModel(
   params: ModelCallParams,
-  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; providerAuthType: string; providerBehavesLike: string | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null; thinkingEnabled: boolean; capabilities: string[] },
+  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; providerAuthType: string; providerBehavesLike: string | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null; measuredPrefillTokensPerSec: number | null; thinkingEnabled: boolean; capabilities: string[] },
 ): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
   const startTime = Date.now();
@@ -1900,7 +1918,7 @@ async function callOpenAIModel(
   // strictly before anything below builds a client or touches a socket (`patience` above is
   // the same resolved bound the watchdog and the transport clock are armed with, a few lines
   // up). Byte-preserving no-op when this provider has not declared a prefill throughput.
-  refuseIfDoomed(agentId, finalInputEstimate, patience, modelInfo.prefillTokensPerSec);
+  refuseIfDoomed(agentId, finalInputEstimate, patience, modelInfo.prefillTokensPerSec, modelInfo.measuredPrefillTokensPerSec);
 
   const effectiveMaxTokens = resolveOutputBudget(modelInfo, finalInputEstimate);
 
@@ -2602,7 +2620,7 @@ function getOpenAICost(apiModelId: string): { input: number; output: number } {
 
 async function callAnthropicSdkModel(
   params: ModelCallParams,
-  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[]; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null },
+  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[]; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null; measuredPrefillTokensPerSec: number | null },
 ): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
 
@@ -2656,7 +2674,7 @@ async function callAnthropicSdkModel(
   const sdkInputEstimate = estimateTokens(systemPrompt)
     + estimateTokens(JSON.stringify(messages))
     + estimateTokens(JSON.stringify(toolDefs));
-  refuseIfDoomed(agentId, sdkInputEstimate, patience, modelInfo.prefillTokensPerSec);
+  refuseIfDoomed(agentId, sdkInputEstimate, patience, modelInfo.prefillTokensPerSec, modelInfo.measuredPrefillTokensPerSec);
 
   const startTime = Date.now();
   const streamedChunks: string[] = [];
@@ -3144,7 +3162,7 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
   // dial (`client.messages.stream`, well below, is), so this still runs strictly before
   // anything reaches a socket. Byte-preserving no-op when this provider has not declared a
   // prefill throughput.
-  refuseIfDoomed(agentId, inputEstimate, anthPatience, modelInfo.prefillTokensPerSec);
+  refuseIfDoomed(agentId, inputEstimate, anthPatience, modelInfo.prefillTokensPerSec, modelInfo.measuredPrefillTokensPerSec);
 
   // KEPT with the trimmer gone, deliberately (T4 Step 2b pinned it as a SEPARATE guard).
   // Its old comment said "post-trim … in case budget trimming created new orphans", and that
@@ -3575,7 +3593,7 @@ export function getProviderCeilingTokens(modelId: string): number | null {
     const info = getModelInfo(modelId);
     const patience = resolveStreamPatience(info);
     if (!patience.firstChunkDeclared) return null;
-    return resolveDoomCeiling(patience.firstChunkMs, info.prefillTokensPerSec);
+    return resolveDoomCeiling(patience.firstChunkMs, info.prefillTokensPerSec, info.measuredPrefillTokensPerSec);
   } catch {
     return null;
   }
