@@ -57,19 +57,19 @@ export function setEmbeddingConfig(config: Partial<EmbeddingConfig>): void {
 
 // ── Backend absence, reported as a fact instead of guessed from prose ──
 //
-// The embedder is OPTIONAL and fires on every message, response and summary — so
-// whatever this module does when the backend is missing, it does hundreds of
-// times an hour. ROUND 9 of the release ritual (2026-09-21, v3.1.26) measured
-// the cost of getting that wrong: the box's Ollama was UP and serving zero
-// models, every embed came back `HTTP 404 {"error":"model ... not found"}`, the
-// store path below classified absence with a prose regex that knew about refused
-// connections and nothing about 404 — so an optional subsystem emitted 102 ERROR
-// lines in 19 minutes and the SAFETY gate stopped the release.
+// The embedder is OPTIONAL and fires on every message, response and summary, so
+// whatever this module does when it is missing, it does hundreds of times an
+// hour. ROUND 9 of the release ritual (2026-09-21, v3.1.26) measured the cost of
+// getting that wrong: Ollama was UP serving zero models, every embed came back
+// `HTTP 404 {"error":"model ... not found"}`, and absence was classified by a
+// prose regex that knew refused connections and nothing about 404 — so an
+// optional subsystem emitted 102 ERROR lines in 19 minutes and the SAFETY gate
+// stopped the release.
 //
 // Widening the regex would be the same mistake spelled longer. `provider-error.ts`
-// already states the house rule — the reported CODE decides, prose is the LAST
-// resort — so the 404 leaves the fetch as a TYPE, and prose is left to the one
-// layer with no status to read: a daemon that never answered at all.
+// states the house rule — the reported CODE decides, prose is the LAST resort —
+// so the 404 leaves the fetch as a TYPE, and prose is left to the one layer with
+// no status to read: a daemon that never answered at all.
 export class EmbeddingBackendUnavailableError extends Error {
   /** Duck-typed marker: `instanceof` is not reliable across module instances. */
   readonly backendUnavailable = true;
@@ -79,21 +79,33 @@ export class EmbeddingBackendUnavailableError extends Error {
   }
 }
 
-/**
- * True when the failure means THE BACKEND IS NOT THERE — the daemon never
- * answered (transport; no status to read) or answered that it has no such model
- * (HTTP 404). A 500, a malformed body or a DB write fault is a genuine failure
- * and keeps the ERROR branch.
- */
+/** True when the failure means THE BACKEND IS NOT THERE — the daemon never
+ *  answered (transport; no status to read) or answered that it has no such model
+ *  (HTTP 404). A 500, a malformed body or a DB write fault is a genuine failure
+ *  and keeps the ERROR branch. */
 export function isEmbeddingBackendUnavailable(err: unknown): boolean {
   if (err instanceof Error && (err as { backendUnavailable?: unknown }).backendUnavailable === true) return true;
   const msg = err instanceof Error ? err.message : String(err);
   return /ECONNREFUSED|fetch failed|aborted|timeout|ENOTFOUND|network/i.test(msg);
 }
 
+// ── The absence is announced ONCE, by whoever notices first ──
+// One fact, several witnesses: memory writes, the vault's per-entry embed and its
+// per-search query embed each used to warn on their own schedule. They share this
+// latch. It re-arms the moment the backend ANSWERS (see generateEmbedding), not
+// when some caller manages to store a row — so "until it answers again" is the
+// mechanism rather than an approximation of it.
+let backendAbsenceReported = false;
+
+export function warnEmbeddingBackendAbsentOnce(context: Record<string, unknown>): void {
+  if (backendAbsenceReported) return;
+  backendAbsenceReported = true;
+  logger.warn('Embedding backend unavailable — embeddings are paused until it answers again', context);
+}
+
 // The one place a non-OK embed response becomes an error. 404 is "no such model"
-// on Ollama and on OpenAI-compatible servers alike; some of the latter say it in
-// prose under another status, so the body is read as a fallback.
+// on both backends; some OpenAI-compatible servers say it in prose under another
+// status, so the body is read as a fallback.
 function embedResponseError(prefix: string, status: number, body: string): Error {
   const msg = `${prefix}: HTTP ${status} ${body.slice(0, 200)}`;
   return status === 404 || /model[^.]{0,40}not found|model_not_found|no such model/i.test(body)
@@ -147,6 +159,7 @@ export async function generateEmbedding(
       });
       if (response.ok) {
         const data = await response.json() as { embedding: number[] };
+        backendAbsenceReported = false; // it ANSWERED — re-arm the absence warning
         return new Float32Array(data.embedding);
       }
       const errorText = await response.text().catch(() => '');
@@ -174,6 +187,7 @@ export async function generateEmbedding(
     });
     if (response.ok) {
       const data = await response.json() as { data: Array<{ embedding: number[] }> };
+      backendAbsenceReported = false; // it ANSWERED — re-arm the absence warning
       return new Float32Array(data.data[0].embedding);
     }
     const errorText = await response.text().catch(() => '');
@@ -189,11 +203,6 @@ export async function generateEmbedding(
 // ── Store Embedding ──
 
 export type EmbeddingSourceType = 'message' | 'summary' | 'briefing' | 'technique';
-
-// An absent optional backend is ONE fact, not one per message. This latch holds
-// from the first failed attempt until the backend answers again, and resets on
-// the next successful store so a LATER absence still gets announced.
-let backendAbsenceReported = false;
 
 export async function storeEmbedding(
   sourceType: EmbeddingSourceType,
@@ -227,7 +236,6 @@ export async function storeEmbedding(
       embedding.length,
     );
 
-    backendAbsenceReported = false; // it answered — a later absence may speak again
     logger.debug('Embedding stored', { sourceType, sourceId, dimensions: embedding.length }, agentId ?? undefined);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -235,14 +243,7 @@ export async function storeEmbedding(
     // fault: it is WARN, said once (see the latch above). ERROR stays for the
     // genuine failure an operator has to act on.
     if (isEmbeddingBackendUnavailable(err)) {
-      if (!backendAbsenceReported) {
-        backendAbsenceReported = true;
-        logger.warn('Embedding backend unavailable — embeddings are paused and this stays quiet until it answers again', {
-          error: msg,
-          sourceType,
-          sourceId,
-        });
-      }
+      warnEmbeddingBackendAbsentOnce({ error: msg, site: 'memory.storeEmbedding', sourceType, sourceId });
       return; // best-effort, don't throw
     }
     logger.error('Failed to store embedding', {

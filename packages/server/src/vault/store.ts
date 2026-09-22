@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { dominantMessageLineage } from '../memory/conversations.js';
 import { createLogger } from '../logger.js';
-import { generateEmbedding } from '../memory/embeddings.js';
+import { generateEmbedding, isEmbeddingBackendUnavailable, warnEmbeddingBackendAbsentOnce } from '../memory/embeddings.js';
 import { estimateTokens } from '../memory/budget.js';
 import { getHouseholdAgentIds, isPMAgent, isHealerAgent } from '../config/platform.js';
 
@@ -363,9 +363,9 @@ export async function createEntry(params: {
     const embedding = await generateEmbedding(content);
     embeddingBuf = Buffer.from(embedding.buffer);
   } catch (err) {
-    logger.warn('Failed to generate embedding for vault entry', {
-      error: err instanceof Error ? err.message : String(err),
-    });
+    const m = err instanceof Error ? err.message : String(err);
+    if (isEmbeddingBackendUnavailable(err)) warnEmbeddingBackendAbsentOnce({ error: m, site: 'vault.createEntry' });
+    else logger.warn('Failed to generate embedding for vault entry', { error: m });
   }
 
   // Check for semantic duplicates
@@ -600,9 +600,9 @@ export async function semanticSearch(query: string, options?: {
     try {
       queryEmbedding = await generateEmbedding(query);
     } catch (err) {
-      logger.warn('Failed to generate query embedding, falling back to text search', {
-        error: err instanceof Error ? err.message : String(err),
-      });
+      const m = err instanceof Error ? err.message : String(err);
+      if (isEmbeddingBackendUnavailable(err)) warnEmbeddingBackendAbsentOnce({ error: m, site: 'vault.semanticSearch' });
+      else logger.warn('Failed to generate query embedding, falling back to text search', { error: m });
       // Fallback to text search (same agent + owner scoping as the semantic path)
       const entries = listEntries({ search: query, limit, agentId: options?.agentId, includeOwnerScope: true });
       return entries.map(e => ({ ...e, similarity: 0.5 }));

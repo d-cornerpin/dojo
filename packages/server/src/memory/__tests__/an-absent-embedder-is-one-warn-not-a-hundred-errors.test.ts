@@ -24,13 +24,21 @@
 //      rather than remembered.
 //   3. A 500 and a malformed body still take the ERROR branch. Without this
 //      control, "classify everything as absent" would pass the first two.
-//   4. The latch is not a gag: once the backend answers, a LATER absence speaks.
+//   4. The latch is not a gag: once the backend ANSWERS, a LATER absence speaks
+//      — and "answers" means an embed succeeded, not that a row was stored, so a
+//      caller that embeds without storing (the vault's query path, the router)
+//      re-arms it too.
+//   5. ONE latch, shared by every witness. The vault's per-entry and per-search
+//      embeds were the other two unthrottled mouths; they route through it now.
 //
 // The engine keeps TRYING throughout — the graceful path is unchanged, only the
 // logging is. Each case asserts the fetch count to hold that line.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
 const h = vi.hoisted(() => {
@@ -177,6 +185,66 @@ describe('an embedder that is not there', () => {
     await storeEmbedding('message', 'gone-3', null, CONTENT);
     expect(h.calls.warn, 'a second, later absence is its own fact and must be said').toHaveLength(2);
     expect(h.calls.error).toHaveLength(0);
+  });
+});
+
+// ── The latch is shared, and it re-arms on an ANSWER ────────────────────────
+// The warning promises "paused until it answers again". Until the fix round that
+// was wider than the mechanism: the latch reset only when a row was successfully
+// STORED, so a backend that came back to a caller which embeds without storing
+// (the vault's query embed, the router) stayed silently latched. The reset now
+// lives on the successful embed itself, and these cases hold the two halves —
+// the promise, and the "one fact, several witnesses" sharing it.
+describe('one latch, shared by every optional-embedding consumer', () => {
+  it('re-arms when the backend ANSWERS, even though nothing was stored', async () => {
+    let body = NOT_FOUND_BODY;
+    let status = 404;
+    globalThis.fetch = vi.fn(async () => new Response(body, { status })) as unknown as typeof fetch;
+
+    const { storeEmbedding, generateEmbedding } = await freshEmbeddings();
+    await storeEmbedding('message', 'absent-1', null, CONTENT);
+    expect(h.calls.warn).toHaveLength(1);
+
+    // A bare embed — the vault's query path and the router do exactly this, and
+    // never write an `embeddings` row.
+    body = JSON.stringify({ embedding: [0.1, 0.2] });
+    status = 200;
+    await generateEmbedding(CONTENT);
+    expect(h.db.current!.prepare('SELECT COUNT(*) c FROM embeddings').get()).toEqual({ c: 0 });
+
+    body = NOT_FOUND_BODY;
+    status = 404;
+    await storeEmbedding('message', 'absent-2', null, CONTENT);
+    expect(h.calls.warn, 'it answered, so the next absence is a NEW fact').toHaveLength(2);
+    expect(h.calls.error).toHaveLength(0);
+  });
+
+  it('a second witness does not re-announce the same absence', async () => {
+    globalThis.fetch = vi.fn(respond(NOT_FOUND_BODY, 404)) as unknown as typeof fetch;
+
+    const { storeEmbedding, warnEmbeddingBackendAbsentOnce } = await freshEmbeddings();
+    await storeEmbedding('message', 'noticed-first', null, CONTENT);
+    expect(h.calls.warn).toHaveLength(1);
+
+    // What vault.createEntry and vault.semanticSearch now call.
+    warnEmbeddingBackendAbsentOnce({ error: 'HTTP 404', site: 'vault.createEntry' });
+    warnEmbeddingBackendAbsentOnce({ error: 'HTTP 404', site: 'vault.semanticSearch' });
+    expect(h.calls.warn, 'one absent backend is one fact, whoever notices it').toHaveLength(1);
+  });
+
+  it('both vault sites route through the shared latch rather than warning per call', () => {
+    const src = fs.readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../vault/store.ts'),
+      'utf-8',
+    );
+    // vault_search embeds on every recall and createEntry on every write — the two
+    // unthrottled witnesses the fix round named.
+    for (const site of ['vault.createEntry', 'vault.semanticSearch']) {
+      expect(src, `${site} must announce an absent backend through the shared latch`)
+        .toContain(`warnEmbeddingBackendAbsentOnce({ error: m, site: '${site}' })`);
+    }
+    // …and a GENUINE failure is still said every time, at both sites.
+    expect(src.match(/else logger\.warn\('Failed to generate /g)).toHaveLength(2);
   });
 });
 
