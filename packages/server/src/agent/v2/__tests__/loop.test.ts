@@ -18,10 +18,16 @@ describe('canonicalToolSignature', () => {
     expect(sig1).toBe(sig2);
   });
 
-  it('strips prose fields (caption, message, etc.)', () => {
+  // 2026-09-22 OWNER RULING — this assertion is INVERTED on purpose. It used to
+  // read "strips prose fields (caption, message, etc.)". The prose allow-list is
+  // deleted: a different caption is a different ask, and the allow-list is what
+  // collapsed five distinct `user_gmail_search` date ranges into one signature on
+  // the owner's box. Re-running the same operation under varied prose is caught by
+  // the thrash ladder's DRIFT arms, not by pretending the args were equal.
+  it('does NOT strip prose fields — a different caption is a different call', () => {
     const sig1 = canonicalToolSignature('show_to_user', { file: 'a.png', caption: 'first try' });
     const sig2 = canonicalToolSignature('show_to_user', { file: 'a.png', caption: 'second try, with more words' });
-    expect(sig1).toBe(sig2);
+    expect(sig1).not.toBe(sig2);
   });
 
   it('normalizes 6+ digit runs to *', () => {
@@ -64,8 +70,53 @@ describe('canonicalToolSignature', () => {
     expect(sig1).not.toBe(sig2);
     expect(sig1).not.toBe(sig3);
     expect(sig2).not.toBe(sig3);
-    // And the length tag is in there for stability
-    expect(sig1).toMatch(/\[len=\d+\]/);
+    // And the length tag is in there for stability, now carrying a digest of the
+    // WHOLE value so two long strings with the same head AND the same length are
+    // still distinguishable (see the 500-char tail test below).
+    expect(sig1).toMatch(/\[len=\d+#[0-9a-f]{8}\]/);
+  });
+
+  // 2026-09-22 OWNER RULING (2c): "reasonable length-capping that still
+  // distinguishes distinct values — e.g. hash long values, never drop them."
+  // The pre-fix form was `head…[len=N]`, so two 500-char queries sharing a
+  // 60-char head and a length were ONE signature. They are two asks.
+  it('caps long values without collapsing them: two 500-char values differing at the TAIL stay distinct', () => {
+    const head = 'x'.repeat(480);
+    const a = `${head}${'a'.repeat(20)}`;
+    const b = `${head}${'b'.repeat(20)}`;
+    expect(a.length).toBe(500);
+    expect(b.length).toBe(500);
+    const sigA = canonicalToolSignature('user_gmail_search', { query: a });
+    const sigB = canonicalToolSignature('user_gmail_search', { query: b });
+    expect(sigA).not.toBe(sigB);
+    // …and the cap is still doing its job: the signature is nowhere near 500 chars
+    // of value, so a long arg cannot blow up a log line or a steer message.
+    expect(sigA.length).toBeLessThan(200);
+  });
+
+  it('folds an over-long array TAIL into the digest instead of dropping it', () => {
+    const sig1 = canonicalToolSignature('foo', { items: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] });
+    const sig2 = canonicalToolSignature('foo', { items: ['a', 'b', 'c', 'd', 'e', 'f', 'z'] });
+    expect(sig1).not.toBe(sig2);
+  });
+
+  // The structural guarantee the thrash gate's message now rests on: it may say
+  // "you already have the result" only because a signature match IS full-args
+  // identity. If a key can vanish from the signature, that sentence becomes a lie
+  // again — which is the defect the owner hit.
+  it('⚠ EVERY ARGUMENT KEY APPEARS IN THE SIGNATURE (no allow-list, no exceptions)', () => {
+    const args: Record<string, unknown> = {
+      caption: 'c', message: 'm', content: 'k', text: 't', payload: 'p',
+      summary: 's', description: 'd', query: 'q', reason: 'r', note: 'n',
+      notes: 'nn', change_summary: 'cs', instructions: 'i',
+      path: '/x', max_results: 40, flag: true, nothing: null,
+      items: [1, 2], nested: { a: 1 },
+    };
+    for (const tool of ['show_to_user', 'user_gmail_search', 'gmail_search', 'file_append', 'some_tool_nobody_classified']) {
+      const sig = canonicalToolSignature(tool, args);
+      const missing = Object.keys(args).filter((k) => !sig.includes(`"${k}":`));
+      expect(missing, `${tool} dropped arg key(s): ${missing.join(', ')}`).toEqual([]);
+    }
   });
 
   it('treats two identical long commands as the same signature (loop detector still works)', () => {
@@ -80,10 +131,11 @@ describe('canonicalToolSignature', () => {
     expect(sig).toBe('foo:{"count":5,"flag":true,"missing":null}');
   });
 
-  it('windows arrays to first 5 elements', () => {
+  it('keeps an array head verbatim and bounds the rest (a 7-item array is not a 5-item one)', () => {
     const sig1 = canonicalToolSignature('foo', { items: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] });
     const sig2 = canonicalToolSignature('foo', { items: ['a', 'b', 'c', 'd', 'e'] });
-    expect(sig1).toBe(sig2);
+    expect(sig1).not.toBe(sig2);
+    expect(sig2).toBe('foo:{"items":["a","b","c","d","e"]}');
   });
 
   it('sorts keys for stability', () => {
@@ -92,48 +144,52 @@ describe('canonicalToolSignature', () => {
     expect(sig1).toBe(sig2);
   });
 
-  it('strips the default prose fields for non-search tools', () => {
-    // For ordinary tools, all of these fields are agent prose and get dropped
-    // from the signature. v2.7.25, `query` only stays in for search tools
-    // (see test below); for everything else it's still stripped here so
-    // ordinary tools that happen to accept a `query` field don't suddenly
-    // start logging distinct sigs.
-    const proseFields = ['caption', 'message', 'content', 'text', 'payload',
+  // The INVERSE of the old "strips the default prose fields for non-search tools".
+  // Each of the 13 names below was on v1's PROSE_FIELDS allow-list. A tool NOBODY
+  // classified — which is what `user_gmail_search` was — must distinguish all of
+  // them, because there is no classification step left to miss.
+  it('⚠ AN UNCLASSIFIED TOOL DISTINGUISHES EVERY FORMER PROSE FIELD', () => {
+    const formerProseFields = ['caption', 'message', 'content', 'text', 'payload',
       'summary', 'description', 'query', 'reason', 'note', 'notes',
       'change_summary', 'instructions'];
-    for (const field of proseFields) {
-      const sig1 = canonicalToolSignature('some_non_search_tool', { path: '/x', [field]: 'value-A' });
-      const sig2 = canonicalToolSignature('some_non_search_tool', { path: '/x', [field]: 'value-B' });
-      expect(sig1).toBe(sig2);
+    for (const field of formerProseFields) {
+      const sig1 = canonicalToolSignature('some_tool_nobody_classified', { path: '/x', [field]: 'value-A' });
+      const sig2 = canonicalToolSignature('some_tool_nobody_classified', { path: '/x', [field]: 'value-B' });
+      expect(sig1, `${field} collapsed on an unclassified tool`).not.toBe(sig2);
     }
   });
 
-  // v2.7.25 regression, vault_search with 4 different query phrasings was
-  // collapsing to the same signature because `query` was in the global
-  // PROSE_FIELDS set, so the 4th call tripped the 3-repeat loop detector.
-  // For search tools, different queries are different operations.
-  it('keeps `query` in signature for search tools (vault_search, web_search, gmail_search, etc.)', () => {
+  // v2.7.25's regression test, kept and WIDENED. It used to enumerate the 26
+  // members of SEARCH_TOOLS — the carve-out set that had to be remembered. The
+  // `user_`-prefixed twins were never in it, which is the 2026-09-22 defect, so
+  // the list now includes them and the canonical names are checked for the same
+  // property by the same rule rather than by membership.
+  it('keeps `query` in the signature for every search tool AND its user_ twin', () => {
     const searchTools = [
       'vault_search', 'web_search', 'web_fetch', 'web_browse',
       'history_search', 'history_get', 'history_expand',
       'gmail_search', 'outlook_search', 'calendar_search', 'calendar_search_ms',
       'drive_list', 'onedrive_search', 'contacts_search',
       'plaud_search_recordings', 'squad_recall', 'screen_screenshot', 'technique_read',
+      // The twins — runtime-generated, in no carve-out set, and the family the
+      // old registry-exhaustive scan was structurally blind to.
+      'user_gmail_search', 'user_outlook_search', 'user_calendar_search', 'user_drive_list',
     ];
     for (const tool of searchTools) {
       const sig1 = canonicalToolSignature(tool, { query: 'phrasing A' });
       const sig2 = canonicalToolSignature(tool, { query: 'phrasing B' });
-      expect(sig1).not.toBe(sig2);
+      expect(sig1, `${tool} collapsed two distinct queries`).not.toBe(sig2);
     }
   });
 
-  it('still strips non-query prose fields (reason, note, etc.) for search tools', () => {
-    // Search tools keep `query` but other prose fields still get dropped, 
-    // the agent shouldn't be able to disguise a duplicate call by passing
-    // a different `reason` string.
+  it('a different `reason` on the same search is also a different call now', () => {
+    // Inverted from "still strips non-query prose fields for search tools". The
+    // old worry was an agent disguising a duplicate by varying `reason`; the
+    // measured cost of guarding against it was refusing real work, and the drift
+    // arms of the thrash ladder catch signature-varying dodges by design.
     const sig1 = canonicalToolSignature('vault_search', { query: 'same query', reason: 'first try' });
     const sig2 = canonicalToolSignature('vault_search', { query: 'same query', reason: 'second try' });
-    expect(sig1).toBe(sig2);
+    expect(sig1).not.toBe(sig2);
   });
 });
 

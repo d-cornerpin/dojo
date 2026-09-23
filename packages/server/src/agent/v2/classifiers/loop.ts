@@ -43,245 +43,140 @@ export interface LoopCheckResult {
   refusalMessage?: string;  // populated when decision === 'block'
 }
 
-/**
- * Fields that carry agent prose rather than operation identity.
- * Removed from the canonical signature so two calls that say
- * different things in their `caption` but do the same operation
- * compare equal.
- *
- * Verbatim from v1 runtime.ts:255-259.
- */
-const DEFAULT_PROSE_FIELDS = new Set([
-  'caption', 'message', 'content', 'text', 'payload',
-  'summary', 'description', 'query', 'reason', 'note', 'notes',
-  'change_summary', 'instructions',
-]);
+// ════════════════════════════════════════════════════════════════════════════
+// THE SIGNATURE IS THE WHOLE ARGUMENT OBJECT (OWNER RULING, 2026-09-22)
+//
+// ── WHAT WAS HERE, AND WHY IT IS GONE ──
+// A PROSE-FIELD ALLOW-LIST. v1 shipped `PROSE_FIELDS` — `caption, message,
+// content, text, payload, summary, description, query, reason, note, notes,
+// change_summary, instructions` — DROPPED from the signature on the theory that
+// they "carry agent prose rather than operation identity", so two `show_to_user`
+// calls with different captions would compare equal. Every time that theory met a
+// real tool it was wrong, and every time the answer was ANOTHER CARVE-OUT SET
+// keyed on TOOL NAME rather than a fix to the rule:
+//   · v2.7.25     SEARCH_TOOLS       `query` is identity for 26 named search tools
+//                                    (a vault_search sweep of 4 phrasings, blocked)
+//   · 2026-07     GENERATION_TOOLS   `description`/`prompt`/`text` is identity
+//                                    (7 distinct headshots, blocked after 3)
+//   · OPEN-3      COORDINATION_TOOLS `payload`/`message` is identity
+//                                    (multi-message PM coordination, blocked)
+//   · D5 + 07-21  MUTATING_TOOLS     `content` is identity
+//                                    (a Word doc abandoned mid-build on the 4th append)
+// Four sets, a release-gate derivation scan (`deploy/check-tool-conformance.mjs`
+// section (e)) and a registry-exhaustive unit test were built to keep the
+// allow-list honest. The allow-list still failed in production:
+//
+//   THE LIVE DEFECT (2026-09-22). An agent ran FIVE `user_gmail_search` calls
+//   with five different date ranges — `after:2026/09/08 before:2026/09/11`, then
+//   /11–/14, /14–/17, /17–/20, /20–/23 — each returning different mail.
+//   `user_gmail_search` is a RUNTIME-GENERATED twin of `gmail_search` and is in
+//   no carve-out set, so `query` was stripped and all five collapsed to
+//   `user_gmail_search:{"max_results":40}`. The thrash gate refused the work AND
+//   told the model *"You already have the result from the first call"*, which was
+//   not true. NEITHER GUARD COULD HAVE CAUGHT IT: the `user_` twins are minted at
+//   runtime and are not in the category registry the exhaustive scan iterates, so
+//   the scan is structurally blind to the entire twin family.
+//
+// ── THE RULE NOW ──
+// OWNER RULING: *"Two calls are 'the same' only when the model asked for the same
+// work."* EVERY argument key participates, keys sorted, no allow-list and no
+// name-keyed exception to keep in sync. There is no set left to forget a tool
+// from — which is why this DELETES four exported sets, five field lists,
+// `proseFieldsFor`, and the release-gate section built to police them, instead of
+// adding a fifth set for the twins.
+//
+// ── WHAT THIS COSTS, STATED ──
+// A model that varies a caption while re-running the same operation no longer
+// collapses to one signature, so `loopDetector` will not stop it. That case is
+// covered where it always actually was: the thrash ladder's DRIFT arms
+// (`agent/v2/steps/pre-call-gates/thrash-gate.ts`) exist precisely to catch an
+// agent that VARIES its signatures to dodge the gate — a one-shot nudge at 8
+// iterations, a terminal block at 24 — with `MAX_TOOL_LOOPS` as the per-turn
+// ceiling. Trading a false REFUSAL of genuine work for a slightly later stop on
+// genuine spinning is the direction the owner has ruled on every time this has
+// come up; the reverse trade is the one that reached production.
+// ════════════════════════════════════════════════════════════════════════════
 
-/**
- * v2.7.25, Search / exploration tools where the `query` field IS the
- * operation identity, not prose. Dropping `query` from the signature
- * collapsed semantically-distinct searches into one bucket and blocked
- * legitimate "try a different phrasing" sweeps (e.g. vault_search with
- * 4 related queries hit the 3-repeat threshold and refused the 4th).
- *
- * For these tools the global PROSE_FIELDS minus `query` is used, 
- * everything else (`reason`, `note`, etc.) still gets stripped, but
- * each distinct query phrase counts as a distinct operation.
- *
- * Update this set when you add a new search-style tool whose primary
- * input is the user-supplied search string.
- *
- * HAND-PICKED, NOT DERIVABLE: membership here is an ARG-SCHEMA fact (this
- * tool's `query` field carries operation identity), which no display/effect
- * classifier knows. The tool-list conformance test asserts every name below is
- * a real registered tool, so a rename/typo (e.g. the removed `vault_describe`,
- * which was never a real tool) fails the build instead of silently going dead.
- */
-export const SEARCH_TOOLS = new Set([
-  // Vault + memory
-  'vault_search', 'vault_get',
-  'history_search', 'history_get', 'history_expand',
-  'squad_recall',
-  // External search
-  'web_search', 'web_fetch', 'web_browse',
-  // Email
-  'gmail_search', 'outlook_search',
-  // Calendar
-  'calendar_search', 'calendar_search_ms',
-  // Storage / contacts / sites
-  'drive_list', 'onedrive_search', 'sharepoint_list_sites', 'contacts_search',
-  // Plaud
-  'plaud_search_recordings',
-  // Screen / techniques (different questions → different operations)
-  'screen_screenshot', 'technique_read',
-]);
-
-const SEARCH_TOOL_PROSE_FIELDS = (() => {
-  const s = new Set(DEFAULT_PROSE_FIELDS);
-  s.delete('query');
-  return s;
-})();
-
-/**
- * Generation / creation tools where the `description` (or `prompt`) IS the
- * operation identity, not prose. Field bug: image_create takes
- * `aspect_ratio` + `description`, and `description` was being stripped as
- * prose, leaving only `aspect_ratio: '1:1'` in the signature. Every
- * image_create call with the same aspect ratio collapsed to the same
- * signature, so a batch of 7 distinct headshots got blocked after 3.
- *
- * For these tools we keep `description` and `prompt` in the signature so
- * each distinct prompt counts as a distinct operation. The other
- * DEFAULT_PROSE_FIELDS (reason, note, etc.) still get stripped.
- */
-export const GENERATION_TOOLS = new Set([
-  'image_create',
-  'video_create',
-  'music_create',
-  // 2026-07-21: tts_create's `text` IS the operation identity (a batch of
-  // distinct utterances is the same shape as the 7-distinct-headshots case).
-  'tts_create',
-]);
-
-const GENERATION_TOOL_PROSE_FIELDS = (() => {
-  const s = new Set(DEFAULT_PROSE_FIELDS);
-  s.delete('description');
-  s.delete('prompt');
-  s.delete('text');
-  return s;
-})();
-
-/**
- * OPEN-3, Inter-agent coordination tools where the `payload`/`message` IS the
- * operation identity, not prose. send_to_agent's args are
- * {agent, thread_id, intent, payload}; stripping `payload` as prose collapsed
- * every distinct message to the SAME thread/intent into one signature, so
- * legitimate multi-message PM coordination on a user turn hit the 3-repeat
- * threshold and got blocked ("STOP, you have called send_to_agent N times").
- * Keeping the content field means distinct messages count as distinct
- * operations; a TRUE thrash (re-sending the identical message) still collapses
- * to one signature and is still caught. Mirrors the SEARCH/GENERATION carve-outs.
- */
-export const COORDINATION_TOOLS = new Set([
-  'send_to_agent',
-  'broadcast_to_group',
-]);
-
-const COORDINATION_TOOL_PROSE_FIELDS = (() => {
-  const s = new Set(DEFAULT_PROSE_FIELDS);
-  s.delete('payload');
-  s.delete('message');
-  return s;
-})();
-
-/**
- * D5, Mutating tools where the content-bearing field IS the operation identity,
- * not prose. file_write/append/patch take {path, content}; stripping `content`
- * as prose collapsed every append to the SAME file into one signature, so the
- * 4th section-append (the tool's own docs recommend building a long doc one
- * section at a time) was blocked as a "loop". Channel sends take {to, message/
- * text}; the message content is what distinguishes two real sends to the same
- * recipient. Keep those fields, canonicalToolSignature already fingerprints
- * long strings to a cheap prefix+len hash, so distinct writes/sends are
- * distinct operations. A TRUE thrash (identical content re-written/re-sent)
- * still collapses to one signature and is still caught.
- *
- * HAND-PICKED, NOT DERIVABLE, and DELIBERATELY NARROW: this set is NOT "every
- * effectful tool". It is exactly the tools whose ARG SHAPE carries a free-text
- * content/text/message field that must stay in the signature. That is an
- * arg-schema fact, not an effect classification, so it is not derived from
- * classifyTool (a calendar_create is effectful but its identity is structured
- * {summary,start,end}, not a content blob, so it uses the DEFAULT prose fields).
- * The thrash-PROGRESS question ("did a world-changing call succeed this turn")
- * is a separate concern and is answered by classifyTool === 'effectful-action'
- * at the detectTaskThrashing call site, NOT by this set. The conformance test
- * asserts every name here is a real registered tool.
- */
-export const MUTATING_TOOLS = new Set([
-  'file_write', 'file_append', 'file_patch',
-  'imessage_send', 'sms_send',
-  'gmail_send', 'gmail_reply',
-  'outlook_send', 'outlook_reply',
-  'teams_send_message',
-  // Office document builders (2026-07-21 production incident): building a long
-  // Word doc IS repeated appends to the same file_id with different `content`;
-  // stripping `content` as prose collapsed the 4th legitimate section-append
-  // into a "loop" and the STOP order abandoned the build mid-document. Same
-  // defect, same fix as file_append above (D5).
-  'office_create_word_document', 'office_append_to_word_document',
-  'office_insert_in_word_document',
-  // Full sweep of the same class (2026-07-21, after the incident above): every
-  // registered tool whose operation identity rides a free-text content field,
-  // found by the release-gate derivation scan (check-tool-conformance.mjs)
-  // instead of waiting for each family to burn us one incident at a time.
-  // Document/deck/pdf builders, iterative editors, and content-bearing sends:
-  'docs_create', 'docs_edit', 'docs_insert_text',
-  'office_create_presentation',
-  'slides_add_text_box', 'slides_add_shape', 'slides_update_text',
-  'pdf_create', 'pdf_watermark',
-  'teams_send_channel_message',
-  'keyboard_type', 'scratchpad_set',
-  'save_technique', 'update_technique',
-  'squad_share', 'vault_remember',
-]);
-
-const MUTATING_TOOL_PROSE_FIELDS = (() => {
-  const s = new Set(DEFAULT_PROSE_FIELDS);
-  s.delete('content');
-  s.delete('text');
-  s.delete('message');
-  return s;
-})();
-
-function proseFieldsFor(toolName: string): ReadonlySet<string> {
-  if (SEARCH_TOOLS.has(toolName)) return SEARCH_TOOL_PROSE_FIELDS;
-  if (GENERATION_TOOLS.has(toolName)) return GENERATION_TOOL_PROSE_FIELDS;
-  if (COORDINATION_TOOLS.has(toolName)) return COORDINATION_TOOL_PROSE_FIELDS;
-  if (MUTATING_TOOLS.has(toolName)) return MUTATING_TOOL_PROSE_FIELDS;
-  return DEFAULT_PROSE_FIELDS;
+/** 32-bit FNV-1a, hex. Deterministic and dependency-free, and used ONLY to keep a
+ *  length-capped value distinguishable from another value with the same head and
+ *  the same length. Never a security hash. */
+function fnv1a32(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
 }
 
+/** Above this many characters a value is CAPPED (never dropped). */
+const LONG_VALUE_CHARS = 80;
+/** The readable head kept in a capped value, so a human reading a log or a steer
+ *  can still tell what the call was about. */
+const VALUE_PREFIX_CHARS = 60;
+/** Array items carried verbatim before the tail is folded into the digest. */
+const ARRAY_HEAD_ITEMS = 5;
+
 // D5 (2026-07-08 defect-class sweep): the "a successful mutating call is forward
-// progress" predicate is NO LONGER a hand list. It was a 10-name snapshot with
-// zero _ms / user_ / calendar / drive coverage, so an MS-heavy or Google-write
-// work turn looked like non-progress to the stall machinery. The predicate now
-// lives at the detectTaskThrashing call site as classifyTool(name) ===
-// 'effectful-action', which expands correctly (creating a calendar event or
-// uploading a file IS real work) and never drifts. The MUTATING_TOOLS set above
-// survives ONLY for the signature prose-field carve-out, a different concern.
+// progress" predicate is not a hand list either. It lives at the
+// detectTaskThrashing call site as classifyTool(name) === 'effectful-action',
+// which expands correctly (creating a calendar event or uploading a file IS real
+// work) and never drifts. MUTATING_TOOLS used to survive here for the signature
+// carve-out alone; with no carve-out left, the set is gone.
 
 /**
  * Build a canonical signature for a tool call, used to detect loops.
  *
- * The sig captures the operation, not the agent's prose around it.
- * Two calls to show_to_user with the same file but different captions
- * are the same operation. Two file_reads on
- * slides_..._<timestamp>_000.png are the same operation.
+ * The identity is the tool `name` plus EVERY argument it was given, keys sorted
+ * so JSON ordering does not matter. Two normalizations survive, and each is
+ * stated here because each one CAN make two different values compare equal:
  *
- * Behavior is verbatim from v1 runtime.ts:261-293:
- *   1. Drop fields that are agent prose (PROSE_FIELDS).
- *   2. Replace 6+ digit numeric runs in remaining strings with "*"
- *      (catches timestamps, large UUIDs).
- *   3. Truncate long string values to a short prefix.
- *   4. Sort keys so JSON ordering doesn't matter.
+ *   1. RUNS OF 6+ DIGITS inside strings become `*`. The one deliberate collapse
+ *      left, narrow and load-bearing: re-reading the same re-rendered artifact
+ *      (`/tmp/render_1738422123_000.png` vs `…_1738422999_000.png`) is one
+ *      operation, not two. RESIDUAL, NAMED: two genuinely DISTINCT all-numeric
+ *      ids of 6+ digits also collapse. Nothing on the owner's live surface passes
+ *      such an id (Gmail/Drive/Graph ids are alphanumeric), so this is kept as it
+ *      was rather than moved in a fix that was not about it.
+ *   2. VALUES LONGER THAN `LONG_VALUE_CHARS` are CAPPED, never dropped, to
+ *      `head…[len=N#digest]` — a readable prefix, the exact length, and a digest
+ *      of the WHOLE value. Two 500-character queries differing only at the tail
+ *      therefore stay DISTINCT; the pre-2026-09-22 form kept `head…[len=N]` with
+ *      no digest and did not. Over-long arrays keep their head and fold the tail
+ *      into the same kind of digest, for the same reason.
  */
 export function canonicalToolSignature(
   name: string,
   args: Record<string, unknown> | undefined,
 ): string {
   if (!args) return `${name}:{}`;
+  const scrubDigits = (s: string): string => s.replace(/\d{6,}/g, '*');
+  const cap = (s: string): string =>
+    s.length > LONG_VALUE_CHARS
+      ? `${s.slice(0, VALUE_PREFIX_CHARS)}…[len=${s.length}#${fnv1a32(s)}]`
+      : s;
   const normalized: Record<string, unknown> = {};
-  // Truncate long values to a stable prefix instead of a blob marker. The
-  // pre-2026-05-06 implementation replaced every >80-char string with the
-  // literal "<prose>", which collapsed distinct exec commands (grep vs
-  // sed vs python3) into the same signature, three real, different exec
-  // calls would trip the loop detector and the fourth got blocked. The
-  // PROSE_FIELDS drop above already removes truly free-form agent text;
-  // here we just want to ignore late variation (timestamps, trailing
-  // arguments) within the same operation.
-  const fingerprintLong = (s: string): string =>
-    s.length > 80 ? `${s.slice(0, 60)}…[len=${s.length}]` : s;
-  const proseFields = proseFieldsFor(name);
   for (const k of Object.keys(args).sort()) {
-    if (proseFields.has(k)) continue;
     const v = args[k];
     if (typeof v === 'string') {
-      const s = v.replace(/\d{6,}/g, '*');
-      normalized[k] = fingerprintLong(s);
+      normalized[k] = cap(scrubDigits(v));
     } else if (typeof v === 'number' || typeof v === 'boolean' || v === null) {
       normalized[k] = v;
     } else if (Array.isArray(v)) {
-      normalized[k] = v.slice(0, 5).map((item) => {
-        if (typeof item === 'string') {
-          const s = item.replace(/\d{6,}/g, '*');
-          return fingerprintLong(s);
-        }
-        return item;
-      });
+      const head: unknown[] = v.slice(0, ARRAY_HEAD_ITEMS).map((item: unknown) =>
+        (typeof item === 'string' ? cap(scrubDigits(item)) : item));
+      if (v.length > ARRAY_HEAD_ITEMS) {
+        // The TAIL IS FOLDED IN, NOT DROPPED. Two 7-item arrays that share a
+        // 5-item head are two different asks and must not share a signature —
+        // the same defect the prose allow-list had, one type down.
+        let tail: string;
+        try { tail = JSON.stringify(v.slice(ARRAY_HEAD_ITEMS)); } catch { tail = `unserializable:${v.length}`; }
+        head.push(`…[n=${v.length}#${fnv1a32(scrubDigits(tail))}]`);
+      }
+      normalized[k] = head;
     } else {
       try {
-        const s = JSON.stringify(v);
-        normalized[k] = fingerprintLong(s);
+        normalized[k] = cap(scrubDigits(JSON.stringify(v)));
       } catch {
         normalized[k] = '<unserializable>';
       }

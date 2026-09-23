@@ -167,20 +167,20 @@ export function runRefusalGates(
   }
 
   // ── Thrash-gate refusal (per-canonical-signature) ──
-  // The iteration-top thrash detector added this signature to the
-  // gate when it caught the agent repeating the same call. The
-  // gate refuses ONLY this exact (tool, normalized_args) combo, 
-  // the agent can keep calling the same tool with DIFFERENT args.
-  // The refusal message names the exact call so DeepSeek can't
-  // miss it (unlike a buried system message). Refusal count tracks
-  // how many times the agent ignored the gate.
+  // The iteration-top thrash detector added this signature to the gate when it caught the
+  // agent repeating the same call. The gate refuses ONLY this exact (tool, args) combo — the
+  // agent can keep calling the same tool with DIFFERENT args — and the message names the exact
+  // call so DeepSeek can't miss it (unlike a buried system message). Refusal count tracks how
+  // many times the agent ignored the gate. WHAT THE MESSAGE MAY CLAIM IS BOUNDED BY WHAT THE
+  // SIGNATURE MEASURES (owner ruling 2026-09-22, argued in full at `pre-call-gates/thrash-gate.ts`):
+  // it may say the result is already here only because `canonicalToolSignature` carries EVERY argument.
   if (state.thrashGatedSignatures.length > 0 && !isA2AReplyTool) {
     const thisSig = canonicalToolSignature(tc.name, tc.arguments);
     if (state.thrashGatedSignatures.includes(thisSig)) {
       const argsPart = thisSig.includes(':') ? thisSig.slice(thisSig.indexOf(':') + 1) : '{}';
       const refusal =
         `BLOCKED by engine thrash gate, \`${tc.name}(${argsPart})\` is refused. ` +
-        `You've already called this exact signature multiple times and have the result from the first call.\n\n` +
+        `You've already called this tool with these exact arguments; the first call's result is in this conversation.\n\n` +
         `Pick a different next action:\n` +
         `  (a) Call \`${tc.name}\` with DIFFERENT args (a different id / target) if you have more to read.\n` +
         `  (b) Call work_update(action="status", status='complete', result='...', evidence=[...]) using the data you've already gathered.\n` +

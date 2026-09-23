@@ -33,13 +33,16 @@ import { TOOL_CATEGORIES } from '../categories.js';
 
 // Surviving hand lists, imported from the light modules that own them (all
 // type-only / leaf imports, so none drags in the circular agent/tools.ts).
-import {
-  SEARCH_TOOLS,
-  GENERATION_TOOLS,
-  COORDINATION_TOOLS,
-  MUTATING_TOOLS,
-} from '../../agent/v2/classifiers/loop.js';
+// loop.SEARCH_TOOLS / GENERATION_TOOLS / COORDINATION_TOOLS / MUTATING_TOOLS were
+// four hand lists here until 2026-09-22. THE MECHANISM THEY SERVED IS DELETED, not
+// relocated: `canonicalToolSignature` no longer strips a prose-field allow-list, so
+// there is no carve-out set to keep a tool in and no list left to police. See the
+// header of `agent/v2/classifiers/loop.ts` for the owner ruling and the production
+// defect (five `user_gmail_search` date ranges collapsing to one signature —
+// a runtime-generated twin that no set named and that the registry-exhaustive scan
+// in section (e) below could not see, because the twins are not in `TOOL_CATEGORIES`).
 import { STRUCTURING_OPS } from '../../agent/v2/classifiers/hoarding.js';
+import { canonicalToolSignature } from '../../agent/v2/classifiers/loop.js';
 import { TOOL_CATEGORY, WORK_OP_CONCURRENCY } from '../../agent/v2/classifiers/concurrency.js';
 import { isWorkOp } from '../work-verbs.js';
 import { RECEIPT_TOOLS, RECEIPT_EXEMPT } from '../../receipts/store.js';
@@ -68,10 +71,9 @@ function isRealTool(name: string): boolean {
 
 // Every surviving hand list, as {label, names}. Record maps contribute their KEYS.
 const HAND_LISTS: Array<{ label: string; names: string[] }> = [
-  { label: 'loop.SEARCH_TOOLS (signature: query is identity)', names: [...SEARCH_TOOLS] },
-  { label: 'loop.GENERATION_TOOLS (signature: prompt is identity)', names: [...GENERATION_TOOLS] },
-  { label: 'loop.COORDINATION_TOOLS (signature: payload is identity)', names: [...COORDINATION_TOOLS] },
-  { label: 'loop.MUTATING_TOOLS (signature: content is identity)', names: [...MUTATING_TOOLS] },
+  // The four loop-signature sets were RETIRED 2026-09-22 with the prose allow-list
+  // they existed to patch (see the import block above). Nothing replaces them: a
+  // signature that carries every argument has no set to be absent from.
   // hoarding.LOADING_TOOLS was RETIRED 2026-07-08: the anti-hoarding counter now
   // ticks on measured result SIZE (LOADING_RESULT_MIN_TOKENS), not a curated
   // reader name-set, so there is no reader list left to drift. STRUCTURING_TOOLS
@@ -143,34 +145,10 @@ describe('tool-list conformance — coverage-critical derived predicates', () =>
     expect(classifyTool('show_to_user')).toBe('delivery');
   });
 
-  // MUTATING_TOOLS membership is an ARG-SCHEMA fact (a free-text content field
-  // that must stay in the loop signature), per the set's own docblock, NOT an
-  // effect classification. Until the 2026-07-21 sweep the set happened to be a
-  // strict subset of effectful-action; the sweep added content-identity tools
-  // whose EFFECT class is bookkeeping (iterative editors and memory writers).
-  // Keep the coherence bound honest: every member is either effectful-action or
-  // named here with the shared reason, so an accidental retrieval/delivery tool
-  // landing in the set still fails the build.
-  it('MUTATING_TOOLS members are effectful-action or acknowledged content-identity bookkeeping', () => {
-    const CONTENT_IDENTITY_BOOKKEEPING = new Set([
-      // Arg shape carries content-identity (distinct calls are distinct work),
-      // effect class is bookkeeping: iterative technique/scratchpad/memory
-      // writers, squad sharing, typing, watermarking.
-      'pdf_watermark', 'keyboard_type', 'scratchpad_set',
-      'save_technique', 'update_technique', 'squad_share', 'vault_remember',
-    ]);
-    const incoherent = [...MUTATING_TOOLS].filter(
-      (n) => classifyTool(n) !== 'effectful-action' && !CONTENT_IDENTITY_BOOKKEEPING.has(n),
-    );
-    expect(incoherent, `MUTATING_TOOLS members neither effectful nor acknowledged: ${incoherent.join(', ')}`).toEqual([]);
-    // The ledger itself stays honest: every acknowledged name is a real tool
-    // actually in the set, and none silently became effectful (if one does,
-    // remove it from the ledger).
-    const stale = [...CONTENT_IDENTITY_BOOKKEEPING].filter(
-      (n) => !MUTATING_TOOLS.has(n) || classifyTool(n) === 'effectful-action' || !isRealTool(n),
-    );
-    expect(stale, `CONTENT_IDENTITY_BOOKKEEPING stale entries: ${stale.join(', ')}`).toEqual([]);
-  });
+  // The MUTATING_TOOLS coherence bound was RETIRED 2026-09-22 with the set. It
+  // asked "is every member of the content-identity carve-out a tool whose effect
+  // class makes that plausible" — a question that only exists when membership of a
+  // list decides whether an argument survives into a signature. It no longer does.
 });
 
 describe('tool-list conformance — SEND_TO_PEOPLE covers every channel send (security surface)', () => {
@@ -332,70 +310,43 @@ describe('tool-list conformance — RECEIPT_TOOLS covers the whole comms-send su
     expect(deadTier, `RECEIPT_TOOLS keys not real tools: ${deadTier.join(', ')}`).toEqual([]);
     expect(deadExempt, `RECEIPT_EXEMPT exact entries not real tools: ${deadExempt.join(', ')}`).toEqual([]);
   });
-  // ── Loop-signature content-field accounting (2026-07-21 incident class) ──
-  // Twin of section (e) in deploy/check-tool-conformance.mjs (which scans the
-  // built dist at release time; this scans src at dev time). A tool whose
-  // operation identity IS its content field must keep that field in its loop
-  // signature via a carve-out set, or be acknowledged here with a reason.
-  // Burned twice the same way: file_append (D5, 2026-07-08) and
-  // office_append_to_word_document (2026-07-21, a Word doc abandoned mid-build
-  // when the 4th legitimate append was STOP-blocked as a "loop").
-  it('every content-bearing tool keeps its identity field in the loop signature (or is acknowledged)', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const { fileURLToPath } = await import('node:url');
-    const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-    const CONTENT_FIELD_ACK: Record<string, string> = {
-      canvas_read: 'repeat-reads of the same canvas are the classic verification spiral; collapsing distinct prompts is intended',
-      web_fetch: 'operation identity rides the url arg (non-prose); prompt collapse is harmless',
-      web_browse: 'operation identity rides the url arg (non-prose); text collapse is harmless',
-      history_expand: 'operation identity rides the message-id arg (non-prose); prompt collapse is harmless',
+  // ── Loop-signature identity, 2026-09-22: THE ACCOUNTING IS GONE BECAUSE THE
+  //    THING IT ACCOUNTED FOR IS GONE ──
+  // What stood here was a derivation SCAN: walk every tool definition in src,
+  // find the ones carrying a free-text `content|text|message|payload|prompt` arg,
+  // and demand each be named in a carve-out set or in a four-entry ack ledger,
+  // because `canonicalToolSignature` would otherwise strip that arg. It had a
+  // structural blind spot that put the defect into production: it iterated
+  // `REGISTRY` — the names literally declared in `tools/categories.ts` — and the
+  // `user_`-prefixed twins are minted at RUNTIME, so no twin could ever be a hit
+  // and no twin was ever in a set. `user_gmail_search` lost its `query`, five
+  // distinct date-range searches became one signature, and the engine refused the
+  // work while asserting the model already had the result.
+  //
+  // The scan is replaced by the invariant it was approximating, asked DIRECTLY of
+  // the function and over the twins as well: no argument key is ever dropped.
+  // There is nothing to classify, so there is nothing to omit.
+  it('⚠ THE LOOP SIGNATURE DROPS NO ARGUMENT, FOR ANY TOOL OR ITS user_ TWIN', () => {
+    const args: Record<string, unknown> = {
+      // the 13 names v1's PROSE_FIELDS allow-list dropped, plus ordinary args
+      caption: 'c', message: 'm', content: 'k', text: 't', payload: 'p',
+      summary: 's', description: 'd', query: 'q', reason: 'r', note: 'n',
+      notes: 'nn', change_summary: 'cs', instructions: 'i',
+      prompt: 'pr', path: '/x', max_results: 40,
     };
-    const PRESERVED_BY_SET: Array<[Set<string>, Set<string>]> = [
-      [SEARCH_TOOLS, new Set(['query'])],
-      [GENERATION_TOOLS, new Set(['description', 'prompt', 'text'])],
-      [COORDINATION_TOOLS, new Set(['payload', 'message'])],
-      [MUTATING_TOOLS, new Set(['content', 'text', 'message'])],
-    ];
-    const CONTENT_FIELD_RE = /\b(content|text|message|payload|prompt)\s*:\s*\{[^}]{0,200}type:\s*['"](?:string|array)['"]/;
-    const files: string[] = [];
-    (function walk(d: string) {
-      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-        const fp = path.join(d, e.name);
-        if (e.isDirectory()) { if (!fp.includes('__tests__') && !fp.includes('node_modules')) walk(fp); }
-        else if (e.name.endsWith('.ts')) files.push(fp);
-      }
-    })(srcRoot);
-    const hits = new Map<string, string>();
-    for (const f of files) {
-      const text = fs.readFileSync(f, 'utf8');
-      const nameRe = /name:\s*['"]([a-z0-9_]+)['"]/g;
-      const marks: Array<{ name: string; i: number }> = [];
-      let mm: RegExpExecArray | null;
-      while ((mm = nameRe.exec(text))) marks.push({ name: mm[1], i: mm.index });
-      for (let k = 0; k < marks.length; k++) {
-        if (!REGISTRY.has(marks[k].name)) continue;
-        const end = k + 1 < marks.length ? marks[k + 1].i : Math.min(text.length, marks[k].i + 9000);
-        const slice = text.slice(marks[k].i, end);
-        if (!slice.includes('input_schema')) continue;
-        const cm = slice.match(CONTENT_FIELD_RE);
-        if (cm && !hits.has(marks[k].name)) hits.set(marks[k].name, cm[1]);
-      }
-    }
-    expect(hits.size, 'content-field derivation scan found suspiciously few tools; scan pattern broken?').toBeGreaterThanOrEqual(10);
-    const unclassified: string[] = [];
-    for (const [name, field] of hits) {
-      const preserved = PRESERVED_BY_SET.some(([set, fields]) => set.has(name) && fields.has(field));
-      if (!preserved && !(name in CONTENT_FIELD_ACK)) unclassified.push(`${name} (${field})`);
+    const keys = Object.keys(args);
+    const everyName = [...REGISTRY, ...[...REGISTRY].map((n) => `user_${n}`)];
+    expect(everyName.length).toBeGreaterThan(200);
+    const dropped: string[] = [];
+    for (const name of everyName) {
+      const sig = canonicalToolSignature(name, args);
+      for (const k of keys) if (!sig.includes(`"${k}":`)) dropped.push(`${name}.${k}`);
     }
     expect(
-      unclassified,
-      `content-bearing tool(s) whose identity field is stripped from the loop signature: ${unclassified.join(', ')}. ` +
-      `Distinct calls collapse to one signature and the 4th gets STOP-blocked mid-work (the abandoned-Word-doc class). ` +
-      `Add each to the right set in classifiers/loop.ts (usually MUTATING_TOOLS) or acknowledge it here AND in ` +
-      `deploy/check-tool-conformance.mjs with a reason.`,
+      dropped.slice(0, 20),
+      `loop signature dropped argument(s): ${dropped.slice(0, 20).join(', ')}${dropped.length > 20 ? ` (+${dropped.length - 20} more)` : ''}. ` +
+      `Distinct calls then collapse to one signature, the gate refuses real work, and its message asserts ` +
+      `"you already have the result from the first call" — which is only true when the match is full-args identity.`,
     ).toEqual([]);
-    const deadAck = Object.keys(CONTENT_FIELD_ACK).filter((n) => !isRealTool(n));
-    expect(deadAck, `CONTENT_FIELD_ACK entries not real tools: ${deadAck.join(', ')}`).toEqual([]);
   });
 });

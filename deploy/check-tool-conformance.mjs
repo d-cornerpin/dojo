@@ -111,10 +111,14 @@ const keys = (mod, modName, sym) => {
 };
 
 const HAND_LISTS = [
-  ['loop.SEARCH_TOOLS', iter(loop, 'loop', 'SEARCH_TOOLS')],
-  ['loop.GENERATION_TOOLS', iter(loop, 'loop', 'GENERATION_TOOLS')],
-  ['loop.COORDINATION_TOOLS', iter(loop, 'loop', 'COORDINATION_TOOLS')],
-  ['loop.MUTATING_TOOLS', iter(loop, 'loop', 'MUTATING_TOOLS')],
+  // loop.SEARCH_TOOLS / GENERATION_TOOLS / COORDINATION_TOOLS / MUTATING_TOOLS retired
+  // 2026-09-22 (owner ruling). The entries are DELETED rather than left to trip the
+  // `__missing` arm, and here is where they went, per this gate's own instruction: the
+  // MECHANISM is gone. `canonicalToolSignature` no longer strips a prose-field
+  // allow-list, so there is no carve-out set for a tool to be missing from. The four
+  // sets existed only to re-admit arguments the allow-list had dropped; with every
+  // argument in the signature by construction, the lists have no subject. See the
+  // header of packages/server/src/agent/v2/classifiers/loop.ts.
   // hoarding.LOADING_TOOLS retired 2026-07-08 (anti-hoarding now counts measured result SIZE,
   // not a reader name-set).
   // hoarding.STRUCTURING_TOOLS retired by PHASE-2 T8V (`5a50446`, "24 tool verbs become six,
@@ -237,73 +241,59 @@ if (!SEND_TO_PEOPLE_NA || !Array.isArray(USER_TWINNED_SEND_PREFIXES) || !RECEIPT
   if (deadExempt.length) exhaustErrors.push(`RECEIPT_EXEMPT exact entries that are not real tools: ${deadExempt.join(', ')}`);
 }
 
-// ── (e) loop-signature content-field accounting (2026-07-21 incident class) ──
-// The loop detector strips prose-named fields from call signatures. A tool whose
-// operation identity IS its content field (document builders, content-bearing
-// sends) then collapses distinct calls into one signature, and the 4th
-// legitimate call gets STOP-blocked mid-work. Burned twice the same way:
-// file_append (D5, 2026-07-08) and office_append_to_word_document (production
-// incident 2026-07-21, a Word doc abandoned mid-build). This derivation scan
-// makes the classification EXHAUSTIVE over the real tool surface: every
-// registered tool carrying a free-text content-ish arg must either keep that
-// field in its signature via a carve-out set, or be acknowledged with a reason.
-const CONTENT_FIELD_ACK = {
-  canvas_read: 'repeat-reads of the same canvas are the classic verification spiral; collapsing distinct prompts is intended',
-  web_fetch: 'operation identity rides the url arg (non-prose); prompt collapse is harmless',
-  web_browse: 'operation identity rides the url arg (non-prose); text collapse is harmless',
-  history_expand: 'operation identity rides the message-id arg (non-prose); prompt collapse is harmless',
-};
-const PRESERVED_BY_SET = [
-  [loop.SEARCH_TOOLS, new Set(['query'])],
-  [loop.GENERATION_TOOLS, new Set(['description', 'prompt', 'text'])],
-  [loop.COORDINATION_TOOLS, new Set(['payload', 'message'])],
-  [loop.MUTATING_TOOLS, new Set(['content', 'text', 'message'])],
-];
-const CONTENT_FIELD_RE = /\b(content|text|message|payload|prompt)\s*:\s*\{[^}]{0,200}type:\s*['"](?:string|array)['"]/;
+// ── (e) loop-signature identity: NO ARGUMENT IS EVER DROPPED (owner ruling, 2026-09-22) ──
+// WHAT THIS SECTION USED TO BE, AND WHY IT IS NOT THAT ANY MORE. It was a
+// derivation SCAN over the built dist: find every tool whose input schema carries
+// a free-text `content|text|message|payload|prompt` arg and demand each one be
+// named in a `canonicalToolSignature` carve-out set (SEARCH/GENERATION/
+// COORDINATION/MUTATING_TOOLS) or in a four-entry ack ledger — because the
+// signature otherwise STRIPPED that arg and the 4th legitimate call got blocked
+// mid-work. It was built after the abandoned-Word-doc incident, and it had a
+// structural blind spot that put the next one into production anyway: it iterated
+// `REGISTRY`, the names declared in `tools/categories.ts`, and the `user_` twins
+// are minted at RUNTIME. No twin could ever be a hit; no twin was ever in a set.
+// On 2026-09-22 `user_gmail_search` lost its `query`, five distinct date-range
+// searches became ONE signature, and the engine refused real work while telling
+// the model it already had the result.
+//
+// The allow-list is deleted. This section now asks the built function the
+// invariant the scan was approximating — DIRECTLY, over every registered name AND
+// every `user_` twin, which is the half the scan could not reach.
 const contentErrors = [];
-const contentHits = new Map();
+const SIG_PROBE_ARGS = {
+  caption: 'c', message: 'm', content: 'k', text: 't', payload: 'p',
+  summary: 's', description: 'd', query: 'q', reason: 'r', note: 'n',
+  notes: 'nn', change_summary: 'cs', instructions: 'i',
+  prompt: 'pr', path: '/x', max_results: 40,
+};
+let sigProbeNames = 0;
 {
-  const distRoot = path.join(PKG_BASE, 'server/dist');
-  const jsFiles = [];
-  (function walk(d) {
-    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-      const p = path.join(d, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (e.name.endsWith('.js')) jsFiles.push(p);
-    }
-  })(distRoot);
-  for (const f of jsFiles) {
-    const text = fs.readFileSync(f, 'utf8');
-    const nameRe = /name:\s*['"]([a-z0-9_]+)['"]/g;
-    const marks = [];
-    let mm;
-    while ((mm = nameRe.exec(text))) marks.push({ name: mm[1], i: mm.index });
-    for (let k = 0; k < marks.length; k++) {
-      if (!REGISTRY.has(marks[k].name)) continue;
-      const end = k + 1 < marks.length ? marks[k + 1].i : Math.min(text.length, marks[k].i + 9000);
-      const slice = text.slice(marks[k].i, end);
-      if (!slice.includes('input_schema')) continue;
-      const cm = slice.match(CONTENT_FIELD_RE);
-      if (cm && !contentHits.has(marks[k].name)) contentHits.set(marks[k].name, cm[1]);
-    }
-  }
-}
-if (contentHits.size < 10) {
-  contentErrors.push(`content-field derivation scan found only ${contentHits.size} tool(s), the dist scan pattern looks broken.`);
-}
-for (const [name, field] of contentHits) {
-  const preserved = PRESERVED_BY_SET.some(([set, fields]) => set && set.has(name) && fields.has(field));
-  if (!preserved && !(name in CONTENT_FIELD_ACK)) {
+  const sign = loop?.canonicalToolSignature;
+  if (typeof sign !== 'function') {
     contentErrors.push(
-      `'${name}' carries operation identity in free-text arg '${field}' but no carve-out set preserves it: ` +
-      `distinct calls collapse to one loop signature and the 4th gets STOP-blocked mid-work (the abandoned-Word-doc class). ` +
-      `Add it to the right set in packages/server/src/agent/v2/classifiers/loop.ts (usually MUTATING_TOOLS) ` +
-      `or acknowledge it in CONTENT_FIELD_ACK here AND in tool-list-conformance.test.ts with a reason.`,
+      'loop.canonicalToolSignature has VANISHED from the product. Either the loop signature was ' +
+      'retired — in which case delete this section and say where — or the build is wrong.',
     );
+  } else {
+    const keys = Object.keys(SIG_PROBE_ARGS);
+    const names = [...REGISTRY, ...[...REGISTRY].map((n) => `user_${n}`)];
+    sigProbeNames = names.length;
+    const dropped = [];
+    for (const name of names) {
+      const sig = sign(name, SIG_PROBE_ARGS);
+      for (const k of keys) if (!sig.includes(`"${k}":`)) dropped.push(`${name}.${k}`);
+    }
+    if (dropped.length) {
+      contentErrors.push(
+        `the loop signature DROPPED argument(s): ${dropped.slice(0, 20).join(', ')}` +
+        `${dropped.length > 20 ? ` (+${dropped.length - 20} more)` : ''}. ` +
+        `Distinct calls then collapse to one signature, the thrash gate refuses genuine work, and its ` +
+        `message claims "you already have the result from the first call" — a sentence that is only true ` +
+        `when a signature match IS full-args identity. Fix canonicalToolSignature; do not add a carve-out set.`,
+      );
+    }
   }
 }
-const deadAck = Object.keys(CONTENT_FIELD_ACK).filter((n) => !isRealTool(n));
-if (deadAck.length) contentErrors.push(`CONTENT_FIELD_ACK entries that are not real tools: ${deadAck.join(', ')}`);
 
 // ── (f) declared comms-to-people tier lock (lanes & lineage P7b) ──
 // The comms-to-people decision is DECLARED at the tool definition site
@@ -402,7 +392,7 @@ console.log(
   `${CANARY.length} derived classifications correct, ${sendTools.length} channel sends covered by SEND_TO_PEOPLE, ` +
   `${REGISTRY.size} registry tools all accounted for (SEND_TO_PEOPLE deny / NA ledger), ` +
   `receipt tiers + user_ send-twin parity exhaustive, ` +
-  `${contentHits.size} content-bearing tools all loop-signature-classified, ` +
+  `${sigProbeNames} tool names (registry + user_ twins) keep every argument in the loop signature, ` +
   `reachesPeople declarations equal SEND_TO_PEOPLE bases, ` +
   `every parameter the descriptions advertise is one the schema declares`,
 );

@@ -336,9 +336,19 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
       // delivery channel. We also persist as `role: 'user'` so the
       // dashboard renders it AND any next assemble cycle keeps seeing
       // it (the floor's queue latch is one-shot per turn).
+      // ⚠ WHAT THIS SENTENCE MAY CLAIM IS BOUNDED BY WHAT THE SIGNATURE MEASURES
+      // (owner ruling, 2026-09-22). It used to say "You already have the result
+      // from the first call" off a signature that dropped a prose-field allow-list
+      // — so five `user_gmail_search` calls with FIVE DIFFERENT date ranges matched
+      // one signature and the engine asserted something false about work it had not
+      // done. `canonicalToolSignature` now carries every argument, so a match IS
+      // "the model asked for the same work" and the claim is earned. It says
+      // EVERY TIME on what basis, so a future change to the signature that weakens
+      // the identity has to come past this line to leave the sentence standing.
       const steerMsg =
-        `[Engine thrash gate] You've called \`${thrash.toolName}(${argsPart})\` ${thrash.count}× on this turn (and its continuation). ` +
-        `You already have the result from the first call; further calls with these exact args are refused.\n\n` +
+        `[Engine thrash gate] You've called \`${thrash.toolName}(${argsPart})\` ${thrash.count}× on this turn (and its continuation), ` +
+        `with the SAME arguments every time. The first call's result is already in this conversation; ` +
+        `further calls with these exact args are refused.\n\n` +
         `Your next action MUST be one of:\n` +
         `  (a) Call \`${thrash.toolName}\` with DIFFERENT args (e.g., a different id / target) if you genuinely have more to read.\n` +
         `  (b) Reply to the user with the answer you can give using the data you already have.\n` +

@@ -203,7 +203,9 @@ const ENGINE_START_ACK_AFTER_MS = 30000;
 const THRASH_TURN_WINDOW = 1; // current turn and this many before it
 const DUPLICATE_SIG_LIMIT = 4;
 
-function detectTaskThrashing(agentId: string): {
+// EXPORTED FOR DRIVING, NOT CALLING (2026-09-22): production still reaches this only via `PreCallGatesContext.detectTaskThrashing`
+// (a step must not point back at the loop). The export lets `__tests__/the-thrash-gate-reads-the-whole-call.test.ts` drive the owner's live defect against the REAL detector rather than a copy of its counting.
+export function detectTaskThrashing(agentId: string): {
   thrashing: boolean;
   toolName?: string;
   signature?: string;
