@@ -16,6 +16,13 @@
 -- already on the owner's stable box stays locked out, because a stored grants
 -- object always beats the default.
 --
+-- ONE STORED DECISION IS OVERRIDDEN, DELIBERATELY (review F1): an agent whose
+-- owner deliberately REVOKED these groups before this migration GAINS THEM
+-- BACK. That is the ruling's intent — the revocation predates the rule that
+-- these groups are a birthright — and this sentence exists so nobody reads the
+-- backfill as preserving it. A revocation made AFTER this migration sticks
+-- (no boot-time re-floor; pinned by test).
+--
 -- ── WHAT IT TOUCHES, PRECISELY ──
 --   * a row whose `$.grants.tools.categories` is an ARRAY not containing
 --     'Open Work (what you still owe)'                        → append it
