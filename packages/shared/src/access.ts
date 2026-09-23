@@ -264,10 +264,47 @@ export function holdsAnyTechniqueGrant(grants: AccessGrants): boolean {
  * `send_to_agent`, `broadcast_to_group` and `complete_task` — intra-dojo
  * coordination and its own lifecycle. Nothing here reaches a human, an
  * integration, a credential or the network.
+ *
+ * ── THE FOURTH AND FIFTH LABELS: THE WORK TRACKER (owner ruling, 2026-09-22) ──
+ * OWNER, VERBATIM: *"By default, all agents should have this ability. It defeats the entire purpose
+ * of the dojo and you have gates that prevent the agents from working if they don't open a task."*
+ *
+ * THE SELF-CONTRADICTION, MEASURED ON THE OWNER'S BOX: a live agent called `work_open` and was told
+ * *"Permission denied: work_open is in the 'Open Work…' or 'Work Tracker…' tool group, which is not
+ * in this agent's grants"* IN THE SAME TURN the engine's own start-ack hint
+ * (`agent/v2/steps/assemble/start-ack-door.ts`) told it *"their request is being worked as a tracked
+ * job."* The engine does not merely prefer the tracker, it DEPENDS on it: the going-idle re-prompt,
+ * the close-out gate (`steps/execute/tracker-floors.ts`, `steps/execute/refusal-gates.ts`), the
+ * promise floor (`steps/post-call-classify/promise-floor.ts`), the auto-open at 6 work calls, the
+ * PM's re-drives and the thrash ladder's every escape hatch all name a work verb as the way OUT —
+ * and under the old three-label default every one of those doors opened onto a refusal. Ruling 10e
+ * (the tracker, the PM and the re-drives exist so a weak model finishes a long job) cannot be true
+ * of a platform whose default withholds the tracker from every agent it creates. The six verbs
+ * reach nothing outside the dojo — they write rows in this box's own `work` table, the same class
+ * as the files and the lifecycle the other three labels already grant.
+ *
+ * ⚠ A CREATION DEFAULT AND A ONE-TIME BACKFILL, NOT A FLOOR. Existing agents gain the groups once,
+ * through migration `168_work_tracker_default_grant.sql` (whose header carries the incident in full,
+ * and the STABLE-BRIDGE ledger Entry 50 its safety argument). NOTHING re-applies this list at boot:
+ * `access/materialize.ts` writes only where no grants are declared, deliberately, so an owner who
+ * revokes a work group in the Access panel KEEPS it revoked across restarts. A default the platform
+ * re-imposes every boot is not a default, it is a boot rewriter, and reverting the owner is the
+ * exact defect the four retired boot reconcilers were deleted for.
  */
 export const MOST_RESTRICTIVE_GRANTS: AccessGrants = {
   v: 1,
-  tools: { categories: ['Meta', 'File & System', 'Managing Other Agents'], allow: [], deny: [] },
+  tools: {
+    categories: [
+      'Meta', 'File & System', 'Managing Other Agents',
+      // The work tracker — see above. `168_work_tracker_default_grant.sql` names the same two
+      // strings, and `the-work-tracker-is-not-optional.test.ts` pins all five against the real
+      // `TOOL_CATEGORIES` labels so a re-label cannot turn any of them into a dead grant.
+      'Open Work (what you still owe)',
+      'Work Tracker (projects, tasks, reminders, promises)',
+    ],
+    allow: [],
+    deny: [],
+  },
   integrations: {
     plaud: false,
     credentials: false,

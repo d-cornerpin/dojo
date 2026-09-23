@@ -140,8 +140,12 @@ describe('the collapsed header says what this agent is, in one plain line', () =
   });
 
   it('the floor agent reads as the floor — nothing claimed that is not held', () => {
+    // 3 → 5 (owner ruling, 2026-09-22): the two work-tracker groups are part of
+    // the floor now. The count is DERIVED from the object, so it moved with it —
+    // which is the property this line exists to hold. Still "talks to no one" and
+    // "no connections": a tracker row is inside this box.
     expect(accessDigest(cloneGrants(MOST_RESTRICTIVE_GRANTS), { runsPrograms: false }))
-      .toBe('3 tool groups · talks to no one · no connections');
+      .toBe('5 tool groups · talks to no one · no connections');
   });
 
   it('⚠ IT IS DERIVED, NOT REMEMBERED — every clause moves when the object moves', () => {
@@ -485,11 +489,20 @@ describe('nothing on this panel speaks the dojo\'s internal language', () => {
   });
 
   it('⚠ AND THE PRESET GRANTS THEMSELVES DID NOT MOVE — words only', () => {
-    // A6 is a language pass over the presets, not a re-grant. The four objects
+    // A6 was a language pass over the presets, not a re-grant. The four objects
     // are asserted field by field in `the-access-panel.test.ts`; this is the
-    // clause that says this task changed only the sentence beside them.
+    // clause that says A6 changed only the sentence beside them.
+    //
+    // THE ONE DELIBERATE MOVE SINCE, and it is a grant not a word: the owner's
+    // 2026-09-22 ruling put the two work-tracker groups into the floor. The pin
+    // is updated rather than loosened so the NEXT silent re-grant still fails
+    // here — see `the-work-tracker-is-not-optional.test.ts` for why these two.
     const byId = (id: string) => ACCESS_PRESETS.find((p) => p.id === id)!;
-    expect(byId('most_restrictive').grants.tools.categories).toEqual(['Meta', 'File & System', 'Managing Other Agents']);
+    expect(byId('most_restrictive').grants.tools.categories).toEqual([
+      'Meta', 'File & System', 'Managing Other Agents',
+      'Open Work (what you still owe)',
+      'Work Tracker (projects, tasks, reminders, promises)',
+    ]);
     expect(byId('full_trust').grants.tools.categories).toBe('*');
     expect(byId('operator').grants.channels.imessage).toBe('owner');
     expect(byId('reader').grants.channels.master).toBe(false);

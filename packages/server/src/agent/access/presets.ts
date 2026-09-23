@@ -129,7 +129,10 @@ export const ACCESS_PRESETS: readonly AccessPreset[] = [
   preset(
     'most_restrictive',
     'Most restrictive',
-    'Its own files and nothing else. No people, no accounts, no keys. Every new agent starts here.',
+    // "and its own task list" (owner ruling, 2026-09-22): the floor now carries
+    // the two work-tracker groups, and a preset whose sentence still said "and
+    // nothing else" would be the panel lying about what the button applies.
+    'Its own files and its own task list. No people, no accounts, no keys. Every new agent starts here.',
     () => { /* the constant itself — ruling 2's default, unmodified */ },
   ),
   preset(
