@@ -38,7 +38,8 @@
 // | the token at rest | behaviourally — the RAW column is read, bypassing the decode point | a second writer of the column in a module outside this test's imports (that is `secret-at-rest.test.ts` clause 4's census, which now names this column) |
 // | the token in logs | behaviourally — every `createLogger` call in the whole import graph is captured, on every ending in the `endings` table **including the two arms of `fetchLogin`** (answers-without-a-login, and throws) | a write to stdout/stderr that does not go through `createLogger`; **and, the blind spot that actually bit: A BRANCH NO ROW DRIVES.** The capture is total over the graph and worth nothing on code never executed — a `tok:` leak on `fetchLogin`'s catch arm survived at 31/31 because no test made that call throw |
 // | the token in a broadcast frame | behaviourally — every `broadcast()` call is captured and the WHOLE array is serialised, on all TEN endings in the `endings` table, each of which DECLARES the terminal frame it must emit so the ending's own frame is asserted to have fired (not merely that some frame did) | an ending added to the loop and not added to the `endings` table — though it would have to be added without a frame declaration to hide, since a declared frame that never fires is a failure; a frame emitted by a module this file does not import. **This row was MISSING in the first cut and the gap was real** — the only frame clause ran on the happy path, where `userAnswer` always named a user, so a `login ?? token` leak short-circuited and survived at 29/29 |
-// | the token in a response body | behaviourally — the real Hono router is driven and its JSON is read as text, and the enumerated path list is asserted EQUAL to `githubRouter.routes`, so a new route fails this file before it can go unchecked | a route mounted on a DIFFERENT router (this walks `githubRouter` only); a response assembled outside these four handlers |
+// | the token in a response body | behaviourally — the real Hono router is driven and its JSON is read as text, and the enumerated path list is asserted EQUAL to `githubRouter.routes` minus middleware (`ALL /*`, and the absence of any middleware today is itself pinned), so a new route on this router fails this file before it can go unchecked — **including one registered with `.all()`** | a route mounted on a DIFFERENT router, or onto this one through a computed/dynamic mount that never appears in `githubRouter.routes`; a response assembled outside these handlers. **The earlier version of this row claimed the only escape was a different router, and that was the THIRD overclaim this table has had to correct**: the filter discarded every `ALL`-method entry, so a real `.all('/leak', h)` handler returning the token hid on this very router at 33/33 |
+// | the frame types the feature can emit | a SOURCE census of `broadcast({ type: 'github:…' })` over the whole server source, asserted equal to a declared four, each cross-checked against the `WsEvent` union and `EVENT_BATCHABLE` | a type built by concatenation or held in a variable; a frame broadcast by a package this scan does not cover. It answers "what CAN be emitted", which is why it is a source census and not a behavioural sweep — a sweep only ever proves what DID fire |
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -681,10 +682,21 @@ describe('the token reaches no log line, no broadcast frame, and no response bod
       e.afterStart?.();
       await vi.advanceTimersByTimeAsync(20_000);
 
+      // FIX ROUND 3 / E2. This filter named the two terminal types, so "frameless by design"
+      // was pinned against two of the four frames rather than against A FRAME: review added
+      // `broadcast({ type: 'github:disconnected' })` to `cancelDeviceFlow()` and rode 33/33.
+      // No token could ride it — the leak sweep below runs over the UNFILTERED frame array —
+      // but the correctness claim was wrong, and it is one T5 cares about: a spurious
+      // `github:disconnected` tells the card the account was disconnected when the user merely
+      // cancelled a sign-in, on a box that still holds a working token.
+      //
+      // It now filters by EXCLUSION: every `github:` frame except `device_code`, which is
+      // excluded for the stated reason that `startDeviceFlow` emits it on every path before any
+      // ending is reached. A frame type invented tomorrow is therefore covered by default.
       const terminals = h.frames.filter(
-        f => f.type === 'github:connected' || f.type === 'github:connect_failed');
+        f => String(f.type).startsWith('github:') && f.type !== 'github:device_code');
       if (e.terminal === null) {
-        expect(terminals, `${e.name}: expected NO terminal frame, by design`).toEqual([]);
+        expect(terminals, `${e.name}: expected NO frame after the device code, by design`).toEqual([]);
       } else {
         // R3: THIS ending's own frame, not "some frame" — `github:device_code` always fires.
         expect(
@@ -702,6 +714,58 @@ describe('the token reaches no log line, no broadcast frame, and no response bod
       }
       cancelDeviceFlow();
       vi.useRealTimers();
+    }
+  });
+
+  it('the frame types this feature can emit are exactly the four declared — T5 inherits this', () => {
+    // FIX ROUND 3 / E2, the half that outlives this task. The clause above pins what each
+    // ENDING emits; this pins what the FEATURE can emit at all, so a fifth frame type cannot
+    // appear on the wire without a human editing this list. T5 owns the card that reads these
+    // frames, and an undeclared frame type reaching it is a surprise rather than a contract.
+    //
+    // A SOURCE CENSUS rather than a behavioural sweep, deliberately: a behavioural sweep proves
+    // what DID fire, and the claim here is about what CAN. Scanned over the whole server source,
+    // not the four T4 modules, so a github frame emitted from a module this feature does not own
+    // still has to be declared.
+    const DECLARED_FRAME_TYPES = [
+      'github:connect_failed',  // device-flow.ts `fail()` — the P3 honest ending
+      'github:connected',       // device-flow.ts, after a grant is sealed
+      'github:device_code',     // device-flow.ts `startDeviceFlow`, on every path
+      'github:disconnected',    // routes/github.ts `POST /disconnect`
+    ];
+    const emitted = new Set<string>();
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name !== '__tests__' && entry.name !== 'node_modules') walk(p);
+        } else if (entry.name.endsWith('.ts')) {
+          const code = fs.readFileSync(p, 'utf8')
+            .split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+          for (const m of code.matchAll(/broadcast\(\s*\{\s*type:\s*'(github:[^']+)'/g)) {
+            emitted.add(m[1]);
+          }
+        }
+      }
+    };
+    walk(SRC);
+    // Non-vacuity first: a reader that finds nothing would pass the equality below trivially.
+    expect(emitted.size, 'the frame reader found no github frames at all — it is broken')
+      .toBeGreaterThan(0);
+    expect(
+      [...emitted].sort(),
+      'the set of github frame types this server can broadcast changed. Declare it here, add '
+      + 'it to `WsEvent` + `EVENT_BATCHABLE` in packages/shared/src/ws.ts, and tell T5 what '
+      + 'the card should do with it.',
+    ).toEqual(DECLARED_FRAME_TYPES);
+    // ...and each declared type is a real member of the closed union, not a typo that would
+    // broadcast a frame no dashboard has a case for.
+    const wsSource = fs.readFileSync(
+      path.resolve(SRC, '../../shared/src/ws.ts'), 'utf8');
+    for (const t of DECLARED_FRAME_TYPES) {
+      expect(wsSource, `${t} is broadcast but not declared in the WsEvent union`)
+        .toContain(`type: '${t}'`);
+      expect(wsSource, `${t} has no EVENT_BATCHABLE row`).toContain(`'${t}':`);
     }
   });
 
@@ -725,8 +789,31 @@ describe('the token reaches no log line, no broadcast frame, and no response bod
     // What this buys: when T5 (or anyone) adds a route, THIS clause fails first and names it,
     // so the author is told to extend the response-body check rather than inheriting a note
     // nobody reads. The blind spot is now a failing test instead of a paragraph.
+    //
+    // ── FIX ROUND 3 / E1: THE FILTER WAS DISCARDING REAL HANDLERS ──
+    // The first cut filtered `r.method !== 'ALL'`. The INTENT was to drop middleware, which Hono
+    // records as `ALL /*`. But `githubRouter.all('/leak', h)` — a real, reachable handler — is
+    // recorded as `ALL /leak`, and the same filter threw it away: review registered exactly that,
+    // returning the live token in its body, and rode 33/33 GREEN. A one-word difference in how a
+    // route is registered was enough to leave it undiscoverable.
+    //
+    // So the filter now excludes ONLY middleware — method AND path — and the clause below pins
+    // the fact that makes that safe, measured rather than assumed: this router registers no
+    // middleware today, so the exclusion currently removes NOTHING. If that ever stops being
+    // true the pin fails and somebody re-reads this comment, which is the point.
+    const middleware = githubRouter.routes.filter(r => r.method === 'ALL' && r.path === '/*');
+    expect(
+      middleware,
+      'this router grew middleware. The exclusion below now removes something real — re-check '
+      + 'that it still only removes middleware, and that no `.all()` handler hides behind it.',
+    ).toEqual([]);
+
     const real = [...new Set(
-      githubRouter.routes.filter(r => r.method !== 'ALL').map(r => `${r.method} ${r.path}`),
+      githubRouter.routes
+        // Middleware only. A real `.all('/path', h)` handler is NOT middleware and must be
+        // enumerated — discarding it by METHOD ALONE is how a leaking route hid at 33/33.
+        .filter(r => !(r.method === 'ALL' && r.path === '/*'))
+        .map(r => `${r.method} ${r.path}`),
     )].sort();
     const declared = ROUTE_PATHS.map(([m, p]) => `${m} ${p}`).sort();
     expect(real.length, 'the router exposes no routes — this clause would pass over nothing')
