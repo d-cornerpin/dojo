@@ -5391,6 +5391,20 @@
       "to": 7119,
       "by": "DOJO-REPORT T5 - the GitHub card is mounted on the Integrations tab",
       "why": "+2 / -0, and they are the whole edit: one `import { GitHubSettings }` and one `<GitHubSettings />` inside the existing `{activeTab === 'integrations' && (<div className=\"scards\"> ... </div>)}`, immediately after `<PlaudSettings />`. This is the MINIMUM POSSIBLE raise on this file - a card cannot appear on a page without being imported and rendered there, and no line in this 7,117-line file may be deleted to pay for two without changing a surface T5 does not own. THE CARD ITSELF IS ELSEWHERE BY DESIGN: `components/GitHubSettings.tsx` (199 lines, under the plan's 200 budget and well under the 240 growth line), zero props, in the `PlaudSettings.tsx` shape - so the pressure this file has historically absorbed went into a new leaf file instead of into the page, which is the direction the ratchet exists to push. And the DECIDABLE half went further out still, into `lib/github-card.ts`, where the server's vitest can import it: this page has no test runner, so a rule left in the `.tsx` is a rule nothing holds. NOTHING ELSE IN THIS FILE MOVED - `git diff --numstat` reads `2 0`, so the two lines are the entire claim. THE DIRECTION IS UNCHANGED: 7119 may only fall from here without another by-hand gate-side edit."
+    },
+    {
+      "path": "packages/dashboard/src/lib/api.ts",
+      "from": 2497,
+      "to": 2539,
+      "by": "DOJO-REPORT T6 - the report wire shape and the five thin wrappers behind the Post button",
+      "why": "+42 / -0, measured: 31 code, 10 comment, 1 blank. THE RAISE IS FORCED BY THE SAME FACT T5's RECORD NAMES ONE LINE ABOVE: this file is the dashboard's ONE door module - `request<T>()` holds the auth token, the CSRF header and the 401 redirect, and nothing outside it calls `fetch`. A card that reached the network another way would be a second, unauthenticated door, which is the defect this file exists to prevent. THE GROWTH IS IRREDUCIBLE IN THREE PARTS. (1) The 31 code lines are `ReportBrief` + `ReportRow` restated (the plan's duplicate-type note: `packages/dashboard` CANNOT import from `packages/server`, and the house rule is RESTATE, never remap - a client that guesses the wire shape is a lie held together by a remap, the `.26` Health-page lesson), `ReportDelivery`, and five wrappers, one per route. Not one is optional: GET / draws the card, GET /:id is the re-read after an edit, PATCH is the owner's own text, POST /approve is the ONLY door to posting in the product, POST /cancel is the safe direction. (2) The 10 comment lines are the duplicate-type note in the exact shape T5 established for `GithubStatus`, plus the one-line warning on `approveReport` that it is D4's single door - a reader who adds a sixth wrapper needs to meet that sentence in this file, not in a plan. (3) THE ALTERNATIVES WERE MEASURED. Moving the block to a new `lib/report-api.ts`: REFUSED - it would duplicate `request<T>()` or export it for one caller, and relocating code to dodge a number is the accounting this gate exists to prevent. Dropping the restated types and typing the responses `unknown`: REFUSED - the card would then re-derive the shape at every access site, which is the remap the house rule forbids. WHAT HOLDS THE CLAIM: `gateway/routes/__tests__/only-the-card-can-post-a-report.test.ts` drives all five real routes and reads the bytes of every answer, so a field renamed on the wire fails there rather than rendering a blank card. THE DIRECTION IS UNCHANGED: 2539 may only fall from here without another by-hand gate-side edit."
+    },
+    {
+      "path": "packages/shared/src/ws.ts",
+      "from": 1203,
+      "to": 1230,
+      "by": "DOJO-REPORT T6 - `report:resolved`, the frame that stops the owner being asked twice",
+      "why": "+27 / -0, measured: 6 code, 20 comment, 1 blank, and NOTHING ABOVE THEM WAS EDITED - one interface appended beside `ReportPendingEvent`, one union member, one `EVENT_BATCHABLE` row. THE SIX CODE LINES ARE THE MINIMUM THE TYPE SYSTEM ACCEPTS: `WsEvent` is a CLOSED union and `EVENT_BATCHABLE` is `Record<WsEvent['type'], boolean>`, so a frame cannot be broadcast without being declared and cannot be declared without also declaring its batching behaviour - T3's record one raise above says the same thing about `report:pending`. THE 20 COMMENT LINES CARRY WHAT THE TYPE CANNOT, and each is a decision a reader would otherwise re-litigate: WHY THE FRAME EXISTS AT ALL (the card can be open in two dashboard tabs; a decision in one must clear the card in the other, or a live Post button sits in front of someone for an already-delivered report), WHAT ACTUALLY PREVENTS THE SECOND DELIVERY (the store's one-shot conditional UPDATE - this frame stops the owner being ASKED twice, and saying so here is what stops a later reader treating the frame as the safety mechanism), WHY `posted` COVERS BOTH DELIVERIES (contract C3: `markPosted` and `markExported` both consume the one approval, so a report that left as a file is as finished as one that left as an issue), and WHY IT CARRIES NO BRIEF (the text a human approved for a public page travels the authenticated route the card can re-read, never a broadcast frame - D4). The `EVENT_BATCHABLE: false` row's own 3 lines say why it may not be batched: a consent decision arriving late is the one frame a gate cannot tolerate. THE ALTERNATIVE WAS MEASURED: reusing `report:pending` with a status field. REFUSED - the pending frame means 'a decision is owed' and is consumed by a card that draws a Post button; overloading it would make every listener branch on a field, and the T5 review's own generalisation is that an instrument claiming more than it measures is the defect class of this whole program. WHAT HOLDS THE CLAIM: the report frame census in `only-the-card-can-post-a-report.test.ts` asserts the emittable `report:*` set is exactly these two AND that each has a union member and an `EVENT_BATCHABLE` row in this file. THE DIRECTION IS UNCHANGED: 1230 may only fall from here without another by-hand gate-side edit."
     }
   ],
   "maxNewFileLines": 400,
@@ -5411,7 +5425,7 @@
     "packages/dashboard/src/components/TwilioSettings.tsx": 563,
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
     "packages/dashboard/src/lib/access-summary.ts": 113,
-    "packages/dashboard/src/lib/api.ts": 2497,
+    "packages/dashboard/src/lib/api.ts": 2539,
     "packages/dashboard/src/lib/manifest-edits.ts": 205,
     "packages/dashboard/src/lib/voice/voice-client.ts": 873,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 452,
@@ -5655,7 +5669,7 @@
     "packages/shared/src/outcome.ts": 270,
     "packages/shared/src/types.ts": 631,
     "packages/shared/src/visibility.ts": 989,
-    "packages/shared/src/ws.ts": 1203,
+    "packages/shared/src/ws.ts": 1230,
     "watchdog/src/auto-rollback.ts": 333,
     "watchdog/src/index.ts": 1217,
     "packages/server/src/agent/v2/outbound-ledger.ts": 459,
