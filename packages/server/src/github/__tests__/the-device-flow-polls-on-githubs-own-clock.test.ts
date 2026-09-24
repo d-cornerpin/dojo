@@ -37,7 +37,8 @@
 // | when the loop STOPS | behaviourally — call counts stop growing, the flow goes null, a frame is broadcast | a second loop started by a module this file never imports |
 // | the token at rest | behaviourally — the RAW column is read, bypassing the decode point | a second writer of the column in a module outside this test's imports (that is `secret-at-rest.test.ts` clause 4's census, which now names this column) |
 // | the token in logs | behaviourally — every `createLogger` call in the whole import graph is captured | a write to stdout/stderr that does not go through `createLogger` |
-// | the token in a response body | behaviourally — the real Hono router is driven and its JSON is read as text | a route added to the router after this file was written (the clause reads every registered path, so a new one is covered only if it is reachable from the four paths asserted) |
+// | the token in a broadcast frame | behaviourally — every `broadcast()` call is captured and the WHOLE array is serialised, on all SIX endings the loop has (both grant paths, expiry by GitHub's word, denial, an unknown refusal, lifetime reached) | an ending added to the loop later and not added to the `endings` table; a frame emitted by a module this file does not import. **This row was MISSING in the first cut and the gap was real** — the only frame clause ran on the happy path alone, where `userAnswer` always named a user, so a `login ?? token` leak short-circuited and survived at 29/29 |
+// | the token in a response body | behaviourally — the real Hono router is driven and its JSON is read as text | a route added to the router after this file was written (the clause enumerates four paths; it does not walk the router, so a fifth route returning the token would not be seen) |
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -492,6 +493,86 @@ describe('the token reaches no log line, no broadcast frame, and no response bod
       .toBeGreaterThan(0);
     for (const line of h.logLines) expect(line).not.toContain(TOKEN);
     expect(JSON.stringify(h.frames)).not.toContain(TOKEN);
+  });
+
+  // ── THE LOGIN-NULL BRANCH, AND WHY IT GETS ITS OWN CLAUSE ──
+  // FIX ROUND 1 / B1. Review planted a TYPE-LEGAL leak — `login: login ?? verdict.accessToken`,
+  // which compiles because `login` is `string | null` — and rode 29/29 GREEN. The clause above
+  // could not see it: it stages `userAnswer = { login: 'octocat' }`, so `??` short-circuits and
+  // the leak never fires. `userAnswer` was assigned to that same object in every test in the
+  // file, so the `GET /user` FAILURE path was never driven at all — which also left three
+  // things unproven that depend on it: `saveGithubAccount(null, …)` (the branch that motivates
+  // the nullable signature), `GithubConnectedEvent.login: null` (the branch `ws.ts`'s own doc
+  // comment exists to describe), and the T5 hand-off telling the card to render the null case.
+  //
+  // The lesson, which is the same one this file already learned once about its literal scanner:
+  // A LEAK ASSERTION IS ONLY AS GOOD AS THE PATHS IT IS DRIVEN DOWN. One happy path is one path.
+  it('a grant whose /user call fails connects anyway, names nobody, and still leaks nothing', async () => {
+    vi.useFakeTimers();
+    setClientId();
+    userAnswer = {};                                   // GitHub grants, but will not name the user
+    tokenAnswers = [{ access_token: TOKEN, scope: 'public_repo' }];
+    await startDeviceFlow();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    // A missing NAME, never a missing connection — the reason `saveGithubAccount` takes
+    // `login: string | null` rather than the brief's `login: string`.
+    expect(getGithubToken(), 'setup: the grant must have landed for this to assert anything').toBe(TOKEN);
+    expect(getGithubAccount()?.login).toBeNull();
+    expect(getGithubAccount()?.scope).toBe('public_repo');
+    expect(githubStatus().connected).toBe(true);
+    expect(githubStatus().login).toBeNull();
+    expect(githubStatus().reauthRequired).toBe(false);
+
+    // The frame is asserted WHOLE, not probed field by field: an extra field carrying the
+    // token would pass `login === null` and fail this.
+    expect(h.frames.filter(f => f.type === 'github:connected'))
+      .toEqual([{ type: 'github:connected', login: null }]);
+    expect(JSON.stringify(h.frames)).not.toContain(TOKEN);
+    for (const line of h.logLines) expect(line).not.toContain(TOKEN);
+  });
+
+  it('NO frame carries the token, on any ending the loop has', async () => {
+    // The generalisation of B1, so the next ending added to the loop is covered by construction
+    // rather than by someone remembering. Each row stages one terminal outcome; the two that
+    // GRANT are the ones where a token exists to leak at all, and they assert it arrived
+    // (non-vacuity) before asserting it did not travel.
+    const endings: Array<[string, () => void, boolean]> = [
+      ['granted, user named', () => { tokenAnswers = [{ access_token: TOKEN, scope: 'public_repo' }]; }, true],
+      ['granted, user NOT named', () => { userAnswer = {}; tokenAnswers = [{ access_token: TOKEN, scope: 'public_repo' }]; }, true],
+      ['expired on GitHub\'s word', () => { tokenAnswers = [{ error: 'expired_token' }]; }, false],
+      ['denied on GitHub', () => { tokenAnswers = [{ error: 'access_denied' }]; }, false],
+      ['an error we have never seen', () => { tokenAnswers = [{ error: 'the_moon_is_wrong' }]; }, false],
+      ['lifetime reached', () => { deviceCodeAnswer = { ...deviceCodeAnswer, expires_in: 10 }; }, false],
+    ];
+    for (const [name, stage, grants] of endings) {
+      // Each ending gets a clean slate; `beforeEach` runs per `it`, not per iteration.
+      db().prepare('DELETE FROM github_account').run();
+      h.frames = []; h.logLines = []; calls = [];
+      tokenAnswers = [{ error: 'authorization_pending' }];
+      userAnswer = { login: 'octocat' };
+      deviceCodeAnswer = {
+        device_code: 'dc-fixture', user_code: 'WDJB-MJHT',
+        verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5,
+      };
+      vi.useFakeTimers();
+      setClientId();
+      stage();
+      await startDeviceFlow();
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      expect(h.frames.length, `${name}: no frame at all — this ending proves nothing`).toBeGreaterThan(0);
+      if (grants) {
+        expect(getGithubToken(), `${name}: setup — the token must have landed`).toBe(TOKEN);
+      }
+      expect(JSON.stringify(h.frames), `${name}: a broadcast frame carried the token`)
+        .not.toContain(TOKEN);
+      for (const line of h.logLines) {
+        expect(line, `${name}: a log line carried the token`).not.toContain(TOKEN);
+      }
+      cancelDeviceFlow();
+      vi.useRealTimers();
+    }
   });
 
   it('every /api/github route answers without the token in its body', async () => {

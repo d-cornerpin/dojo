@@ -105,10 +105,22 @@ const FETCH_BEARING_IN_CLOSURE: readonly string[] = [
   // THE PATH, measured rather than guessed — four hops, and the tool is not on any of them:
   //   cat/report.ts → gateway/routes/update.ts → gateway/server.ts → gateway/routes/github.ts
   //   → github/device-flow.ts
-  // Hop 2 is `gateway/server.ts`, which imports EVERY router because that is what a server
-  // does. That is the identical route `gateway/routes/config.ts`, `setup-deps.ts`, `system.ts`,
-  // `techniques.ts`, `upload.ts`, `google/auth.ts`, `microsoft/auth.ts` and `twilio/client.ts`
-  // already take into this list. T4 adds a module to that fan-out; it adds no edge to the tool.
+  //
+  // ⚠ AND HOP 2 IS NOT A RUNTIME EDGE AT ALL, WHICH IS THE FACT THAT SETTLES IT.
+  // `gateway/routes/update.ts:11` reads `import type { AppEnv } from '../server.js'` — a
+  // TYPE-ONLY import, ERASED AT COMPILE TIME. Nothing is required, nothing is evaluated, and
+  // the emitted `.js` has no such edge. Re-running this file's own walk with type-only edges
+  // dropped, the closure falls from 532 modules to 464 and `gateway/server.ts`,
+  // `gateway/routes/github.ts` and ALL FOUR `github/*` modules are NOT REACHABLE FROM THE TOOL
+  // AT RUNTIME. The same is true of the whole router fan-out that put `gateway/routes/config.ts`,
+  // `setup-deps.ts`, `system.ts`, `techniques.ts` and `upload.ts` on this list: it is a phantom
+  // of the static walk.
+  //
+  // That is NOT a hole, and the direction matters: the walk over-approximates, so it considers
+  // MORE modules reachable than really are, never fewer. Keeping the over-approximation is
+  // correct — a type-only edge can become a runtime edge in a one-word edit, and this census
+  // should notice that before it happens, not after. But the safety case is stronger than
+  // "everything fans out from the server", and the strongest true statement belongs here.
   //
   // WHY IT IS NOT A WAY OUT, in the three terms this file is written in:
   //   * The handler's and the gather's OWN one-hop import lists are pinned EXACTLY below and
@@ -122,9 +134,19 @@ const FETCH_BEARING_IN_CLOSURE: readonly string[] = [
   //   * Its four entry points are reachable only from `POST /api/github/*`, behind the owner's
   //     own authenticated session, never from a tool call.
   //
-  // ⚠ FOR T7: the poster is a DIFFERENT case and must not borrow this reason. A module that
-  // calls `POST /repos/:owner/:repo/issues` with a rendered brief IS a way out, and its
-  // appearance here is the moment to check prong A — the poster must also be on
+  // ⚠ FOR T7, AND THIS IS THE REUSABLE FORM OF THE ARGUMENT ABOVE. Do not reason from fan-out
+  // breadth — "lots of things are reachable from the server" proves nothing about anybody. The
+  // two questions that actually separate a phantom edge from a way out are:
+  //
+  //   1. IS IT RUNTIME-REACHABLE from the handler, with type-only edges dropped? (This module:
+  //      NO. A poster imported by `gateway/routes/reports.ts` behind the Post button: also
+  //      almost certainly no — but MEASURE it, do not assume it.)
+  //   2. DOES ANY EXPORTED FUNCTION ACCEPT CALLER-SUPPLIED CONTENT THAT REACHES THE WIRE?
+  //      (This module: NO — see the entry-point audit above. A poster: YES, unavoidably, because
+  //      its whole job is to carry a rendered brief to `POST /repos/:owner/:repo/issues`.)
+  //
+  // Question 2 is the one that decides it, and the poster fails it by construction. So the
+  // poster's appearance here is the moment to check prong A as well: it must ALSO be on
   // ALLOWED_CONSENT_CALLERS, because posting is what consumes the owner's one approval.
   'github/device-flow.ts',
   'agent/model.ts', 'agent/runtime.ts', 'agent/site-snapshot.ts', 'agent/tools/definitions.ts',
