@@ -474,6 +474,78 @@ function unprovenEdgesIn(code: string): string[] {
   return unproven;
 }
 
+// ── THE CLASSIFICATION READER (T7 fix round 2, G1) ────────────────────────────────────────
+//
+// Fix round 1 derived `CONSENT_EXPORTS`'s completeness from the store's own source, so the list
+// can no longer be short by accident. Round 2's finding is the layer under that: THE READER THAT
+// DERIVES IT NEEDED THE SAME FIXTURES EVERY OTHER READER IN THIS FILE HAS. Written as
+// `/export function (\w+)/` + `/SET\s+status\s*=/`, it was blind to two door shapes that really
+// do move an approval, both planted by review at 61/61 green:
+//
+//   (a) `SET updated_at = datetime('now'), status = 'awaiting_approval'`  — status not FIRST
+//   (b) `export const unpostB = (id) => transition(…)`                     — an arrow-const export
+//
+// ⚠ AND THE NAIVE WIDENING IS WRONG, which is why this is a scan rather than a looser regex.
+// "Look for `status` anywhere after SET" goes RED on `attachDraft`, whose status sits in its
+// WHERE and not its SET — it reads the state, it does not move it. The write list is the text
+// between `SET` and whatever ENDS it, so the scan bounds at `WHERE` (or the end of the SQL
+// literal, or the statement's semicolon) and looks only inside that.
+//
+// The fixture table below was written BEFORE this reader and is what shaped it: both reviewer
+// doors, the comma list, the arrow-const, `async`, a one-hop delegation — and, in the other
+// direction, `attachDraft`'s real text, a SELECT, a private writer and a status in a string.
+// That is the discipline this file has learned three times and had not applied to its newest
+// reader: WHEN YOU BUILD A CENSUS, THE READER IS THE PART THAT NEEDS THE FIXTURES.
+
+/** Top-level declarations in source order — exported or not, `function`, `const`, `class`. */
+const TOP_LEVEL = /^(?:export\s+)?(?:async\s+)?(?:function|const|let|var|class)\s+(\w+)/gm;
+
+/**
+ * The columns a statement WRITES: from `SET` to whatever ends the assignment list. Bounding at
+ * `WHERE` is the whole point — a predicate that READS `status` is not a door that moves it.
+ *
+ * ⚠ THE STOP SET EXCLUDES `'`, AND THE FIXTURE TABLE IS WHY. The first cut stopped at any quote,
+ * which is wrong twice over: `SET updated_at = datetime('now'), status = 'x'` cuts at the quote
+ * inside `datetime('now')` — BEFORE the column it exists to find — and both of review's planted
+ * doors carry exactly that. SQL literals are single-quoted INSIDE a backtick template, so only a
+ * backtick or a statement's semicolon can end one. Two of the six CAUGHT rows went red on the
+ * first run of this reader and that is the table doing its job.
+ */
+function setClausesIn(code: string): string[] {
+  const out: string[] = [];
+  for (const m of code.matchAll(/\bSET\b/gi)) {
+    const rest = code.slice((m.index ?? 0) + m[0].length);
+    const stop = rest.search(/\bWHERE\b|[`;]/i);
+    out.push(stop === -1 ? rest : rest.slice(0, stop));
+  }
+  return out;
+}
+
+const writesStatus = (body: string): boolean =>
+  setClausesIn(body).some(clause => /\bstatus\s*=/i.test(clause));
+
+/**
+ * Every EXPORTED binding in a module whose body moves `status`, directly or through ONE hop into
+ * a private writer in the same file. The one hop is not decoration: an exported wrapper over a
+ * module-private `UPDATE … SET status` moves the approval exactly as surely as the write does,
+ * and is the shape anybody avoiding this census would reach for first.
+ */
+function statusWriters(source: string): string[] {
+  const src = stripComments(source);
+  const decls = [...src.matchAll(TOP_LEVEL)]
+    .map(m => ({ name: m[1], at: m.index ?? 0, exported: m[0].startsWith('export') }));
+  const bodyOf = (i: number): string =>
+    src.slice(decls[i].at, i + 1 < decls.length ? decls[i + 1].at : src.length);
+
+  const direct = new Set(decls.filter((_, i) => writesStatus(bodyOf(i))).map(d => d.name));
+  const privateWriters = decls.filter(d => !d.exported && direct.has(d.name)).map(d => d.name);
+
+  const doors = decls.filter((d, i) => d.exported && (
+    direct.has(d.name) || privateWriters.some(p => new RegExp(`\\b${p}\\s*\\(`).test(bodyOf(i)))
+  ));
+  return [...new Set(doors.map(d => d.name))].sort();
+}
+
 function resolveSpec(fromFile: string, spec: string): string | null {
   if (!spec.startsWith('.')) return null;   // a package, not a module of ours
   const base = path.resolve(path.dirname(fromFile), spec);
@@ -681,10 +753,10 @@ describe('an edge to the store needs the allowlist unless it PROVES it binds no 
   // constant is not a hole in the READER, it is a hole in the SUBJECT — and the reader reports
   // green with total confidence. The blind-spot column is written by asking "how would I get
   // past this NOW?", and yesterday's honest answer was: ADD A DOOR IN THE SAME COMMIT AS THE
-  // CENSOR'S BLIND SPOT. That answer is now closed by the classification clause under prong A;
-  // today's answer is "give the store a transition that never writes `status`", which cannot
-  // move an approval by definition. These two rows pin the pair so the next author sees both
-  // halves: a named door is caught, and an innocent neighbour still passes silently.
+  // CENSOR'S BLIND SPOT. That answer is closed by the classification clause under prong A, whose
+  // own escapes are enumerated beside its fixture table rather than here. These two rows pin the
+  // pair so the next author sees both halves: a named door is caught, and an innocent neighbour
+  // still passes silently.
   it('a braced static import of the BACKWARDS door is not innocent either (T7 F1)', () => {
     expect(
       unprovenEdgesIn(`import { getReport, releaseApproval } from './store.js';`),
@@ -716,6 +788,79 @@ describe('an edge to the store needs the allowlist unless it PROVES it binds no 
   it('an unproven edge to some OTHER module is not the store\'s business', () => {
     // The caller resolves specifiers; this reader deliberately does not know what the store is.
     expect(unprovenEdgesIn(`import * as logger from './logger.js';`)).toEqual(['./logger.js']);
+  });
+});
+
+// ── THE CLASSIFICATION READER'S OWN VOCABULARY (fix round 2, G1) ─────────────────────────
+// Pinned in BOTH directions before anything rests on it. The dangerous direction here is the
+// FALSE NEGATIVE — a door the reader cannot see is a door that never has to be classified, and
+// the census above then reports green about a list that is short. The FALSE POSITIVE direction
+// matters too and is the reason this is a bounded scan: `attachDraft` reads `status` in its
+// WHERE, and a reader that called that a door would send its next author to widen the rule
+// rather than to read it.
+
+describe('the classification reader sees every shape a status-moving door takes', () => {
+  const CAUGHT: ReadonlyArray<readonly [string, string]> = [
+    ['the plain form', `export function markPosted(id: string) {\n  return transition(\`UPDATE dojo_reports SET status = 'posted', issue_url = ? WHERE id = ? AND status = 'approved'\`, [u, id], id);\n}`],
+    // Review's planted door (a): the SET list is a COMMA LIST and status is not first.
+    ['status LAST in a comma list', `export function unpostA(id: string) {\n  return transition(\`UPDATE dojo_reports SET updated_at = datetime('now'), status = 'awaiting_approval' WHERE id = ?\`, [id], id);\n}`],
+    // Review's planted door (b): not a `function` declaration at all.
+    ['an arrow-const export', `export const unpostB = (id: string) => transition(\`UPDATE dojo_reports SET status = 'awaiting_approval' WHERE id = ?\`, [id], id);`],
+    ['an exported async function', `export async function slowDoor(id: string) {\n  await db.run(\`UPDATE dojo_reports SET status = 'cancelled' WHERE id = ?\`, id);\n}`],
+    ['a multi-line SET list', `export function markExported(id: string) {\n  return transition(\`UPDATE dojo_reports\n      SET export_path = ?, posted_at = datetime('now'),\n          status = 'posted'\n    WHERE id = ? AND status = 'approved'\`, [p, id], id);\n}`],
+    // The shape anybody avoiding this census reaches for first.
+    ['an export that delegates to a private writer', `function reallyDoIt(id: string) {\n  return db.run(\`UPDATE dojo_reports SET status = 'awaiting_approval' WHERE id = ?\`, id);\n}\nexport const undo = (id: string) => reallyDoIt(id);`],
+  ];
+
+  const IGNORED: ReadonlyArray<readonly [string, string]> = [
+    // THE FALSE POSITIVE THE NAIVE WIDENING PRODUCES — `attachDraft`'s real text. Its `status`
+    // is a PREDICATE: it reads the state to refuse a row that has moved on. Not a door.
+    ['attachDraft — status in the WHERE, never in the SET', `export function attachDraft(id: string) {\n  return transition(\`UPDATE dojo_reports\n        SET brief_json = ?, telemetry_json = ?, bundle_path = ?, updated_at = datetime('now')\n      WHERE id = ? AND status = 'drafting'\`, [b, t, p, id], id);\n}`],
+    ['a SELECT that reads status', `export function getReport(id: string) {\n  return db.prepare(\`SELECT id, status, lane FROM dojo_reports WHERE id = ?\`).get(id);\n}`],
+    ['a status named in a message string', `export function refusal(status: string): string {\n  return \`This report is \${status} and cannot be cancelled.\`;\n}`],
+    // A private writer with no exported caller cannot be imported, so it is nobody's door.
+    ['a PRIVATE writer nothing exports', `function hidden(id: string) {\n  return db.run(\`UPDATE dojo_reports SET status = 'cancelled' WHERE id = ?\`, id);\n}`],
+  ];
+
+  for (const [label, code] of CAUGHT) {
+    it(`sees ${label}`, () => {
+      expect(statusWriters(code).length, `the reader is blind to ${label}: a door like this could `
+        + 'be added to report/store.ts and never have to be classified').toBeGreaterThan(0);
+    });
+  }
+
+  for (const [label, code] of IGNORED) {
+    it(`ignores ${label}`, () => {
+      expect(statusWriters(code), `${label} was called a door; the next author will be sent to `
+        + 'widen this rule instead of reading it').toEqual([]);
+    });
+  }
+
+  // ⚠ THE BLIND-SPOT COLUMN, WRITTEN BY ASKING THE QUESTION FRESH RATHER THAN BY EDITING THE
+  // OLD SENTENCE. Round 1's answer to "how would I get past this NOW?" was "a transition that
+  // never writes `status`" — which was FALSE in the direction that matters (two shapes that do
+  // write it walked past), and is only one of the ways through even now. The honest list:
+  //
+  //   1. TWO HOPS. An export → a private helper → another private writer. One hop is covered;
+  //      the second is not, and the remedy if it ever appears is to iterate to a fixed point.
+  //   2. SQL ASSEMBLED FROM FRAGMENTS. `SET ${SET_POSTED} WHERE …` puts no `status =` in the
+  //      literal. Compensating guard, and the reason this is not urgent: `check-sql-prepares`
+  //      requires every prepared statement to be an INLINE LITERAL, so a fragment-assembled
+  //      statement fails a blocking gate before it reaches this one.
+  //   3. A DOOR THAT MOVES THE APPROVAL WITHOUT WRITING `status`. The status column IS the
+  //      approval state, so this is the narrowest of the three — but "narrow" is what round 1
+  //      said about its own blind spot, so it is written down rather than dismissed.
+  //   4. A lower-case `set status =` inside a string the SQL gate does not prepare. The scan is
+  //      case-insensitive, so this one is closed; it is listed because it was checked.
+
+  it('agrees with the store\'s real text — the reader is not measuring a fixture-shaped world', () => {
+    const store = fs.readFileSync(path.join(SRC, STORE_REL), 'utf8');
+    const found = statusWriters(store);
+    expect(found, 'the reader found no doors in the real store — it is broken').not.toEqual([]);
+    expect(found, 'attachDraft/editBrief read `status` in a WHERE and must never be classified '
+      + 'as doors that MOVE it').not.toContain('attachDraft');
+    expect(found).not.toContain('editBrief');
+    expect(found).not.toContain('getReport');
   });
 });
 
@@ -797,15 +942,10 @@ describe('A — only a named list may consume the owner\'s one approval', () => 
   // longer "add a door in the same commit as the censor's blind spot"; it is "give the store a
   // transition that does not write `status`", which cannot move an approval by definition.
   it('every status-moving door in the store is classified as consent-moving or not', () => {
-    const store = fs.readFileSync(path.join(SRC, STORE_REL), 'utf8');
-    // Each exported function's own body: from its declaration to the next one (or EOF).
-    const starts = [...store.matchAll(/export function (\w+)/g)];
-    const movers: string[] = [];
-    for (let i = 0; i < starts.length; i++) {
-      const from = starts[i].index ?? 0;
-      const to = i + 1 < starts.length ? starts[i + 1].index ?? store.length : store.length;
-      if (/SET\s+status\s*=/.test(store.slice(from, to))) movers.push(starts[i][1]);
-    }
+    // The reader is `statusWriters`, pinned in both directions by its own fixture table above —
+    // including the two shapes round 1's inline version could not see and the one false positive
+    // the obvious widening produces.
+    const movers = statusWriters(fs.readFileSync(path.join(SRC, STORE_REL), 'utf8'));
     expect(movers.length, 'no status-moving door was found at all — this reader is broken')
       .toBeGreaterThan(3);
     expect(

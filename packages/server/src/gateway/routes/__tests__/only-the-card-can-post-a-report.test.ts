@@ -188,8 +188,16 @@ describe('nothing but the approve route may spend an approval', () => {
       markExported: 'gateway/routes/reports.ts',
       releaseApproval: 'gateway/routes/reports.ts',
       markPosted: 'report/post.ts',
+      // ── ADDED IN FIX ROUND 2 (G2), BECAUSE THE IMPORT CENSUS CITES THIS CLAUSE ──
+      // `cancelReport` is deliberately NOT a consent export over there: it destroys an approval
+      // rather than moving it toward delivery, and its comment hands the residual hazard — a
+      // second module making somebody's pending report disappear — to "the call-site census".
+      // That citation was writing a cheque this map did not cover: `cancelReport` was not in it,
+      // so the hazard was assigned to a guard that was not watching. It is now.
+      cancelReport: 'gateway/routes/reports.ts',
     };
-    const hits: Record<string, string[]> = { approveOnce: [], markExported: [], releaseApproval: [], markPosted: [] };
+    // Derived, never a second list: a name in OWNERS with no bucket was a silent pass.
+    const hits: Record<string, string[]> = Object.fromEntries(Object.keys(OWNERS).map(k => [k, []]));
     const walk = (dir: string): void => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         const p = path.join(dir, e.name);
