@@ -245,6 +245,24 @@ const TYPE_ONLY =
  * of the same specifier — so a file holding BOTH `import type { T } from './x.js'` and
  * `import { v } from './x.js'` keeps the runtime edge, which is the safe direction.
  *
+ * ── THE INVARIANT THAT MAKES THIS SOUND, AND IT IS STRUCTURAL RATHER THAN A HAPPY FIXTURE ──
+ * The dangerous direction is the FALSE NEGATIVE: a real value edge mistaken for an erased one
+ * would vanish from prong B's set silently. The fixture table below drives that direction, but
+ * fixtures only cover what somebody thought of, and `stripComments` drops only lines that START
+ * with a comment marker — so a TRAILING `// import type { T } from './x.js'` beside a real value
+ * import looks like it should steal that import's credit. It cannot, and here is why:
+ *
+ *   EVERY `TYPE_ONLY` MATCH NECESSARILY CONTAINS `from '…'`, WHICH `SPEC` ALSO MATCHES.
+ *
+ * So any text that produces a spurious CREDIT produces a spurious OCCURRENCE in the same breath,
+ * and the two cancel. Credits can therefore never exceed occurrences for a given specifier, and
+ * a plain value import always contributes an occurrence WITHOUT a credit. Together those two
+ * facts mean A REAL EDGE CAN NEVER BE FULLY CONSUMED — not by a trailing comment, not by a block
+ * comment on the same line, not by a type import inside a string literal, and not by any future
+ * text this file has not imagined. The property holds by construction, not by enumeration, which
+ * is the direction this whole file was rewritten in three times.
+ * (Recorded at the reviewer's request, fix round 1: it is stronger than the table alone conveys.)
+ *
  * ⚠ WHAT IT CANNOT SEE, and the direction the blindness runs: an `import { type T } from '…'`
  * with ONLY inline type members is erased by TypeScript and is NOT matched here, so it counts as
  * a runtime edge. That is an over-read, and an over-read fails SAFE — it can only put more
@@ -445,6 +463,14 @@ describe('the erasure reader drops only the edges TypeScript actually erases', (
     ['a star re-export', `export * from './x.js';`],
     // The safe direction, stated as a fixture: a file holding both keeps the runtime edge.
     ['both spellings to one module', `import type { A } from './x.js';\nimport { b } from './x.js';`],
+    // ── THE INVARIANT ABOVE, DRIVEN (fix round 1, the reviewer's own four probes) ──
+    // `stripComments` only drops lines that START with a marker, so each of these looks like it
+    // should steal the real import's credit. None can: the text that creates the credit creates
+    // an occurrence too. These are the demonstration; the paragraph above is the proof.
+    ['a trailing comment naming a type import', `import { b } from './x.js'; // import type { A } from './x.js';`],
+    ['a block comment on the same line', `import { b } from './x.js'; /* import type { A } from './x.js'; */`],
+    ['a type import inside a string literal', `const s = "import type { A } from './x.js';";\nimport { b } from './x.js';`],
+    ['a value import AFTER a real type import', `import type { A } from './x.js';\nconst z = 1;\nimport { b } from './x.js';`],
   ];
 
   for (const [label, code] of ERASED) {

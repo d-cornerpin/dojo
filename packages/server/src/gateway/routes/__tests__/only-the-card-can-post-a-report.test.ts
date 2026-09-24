@@ -78,7 +78,7 @@ vi.mock('../../ws.js', () => ({
 import { runMigrations } from '../../../db/migrations.js';
 import { reportsRouter } from '../reports.js';
 import {
-  createReport, attachDraft, submitForApproval, getReport, cancelReport, type ReportBrief,
+  createReport, attachDraft, submitForApproval, getReport, listOpenReports, type ReportBrief,
 } from '../../../report/store.js';
 import { saveGithubAccount, disconnectGithub } from '../../../github/account.js';
 import { briefEditsFor, briefIsPostable, postTargetSentence, type BriefFields }
@@ -201,6 +201,43 @@ describe('nothing but the approve route may spend an approval', () => {
   it('answers 404 — not 409 — for an id that does not exist', async () => {
     const res = await post('/00000000-0000-4000-8000-000000000000/approve');
     expect(res.status).toBe(404);
+  });
+
+  it('a connected box is refused BEFORE the approval is spent', async () => {
+    // ── FIX ROUND 1 / F1. THE CLAUSE THAT HOLDS AN ORDERING, NOT AN ANSWER ──
+    // The 503 that stands in for T7's poster sits ABOVE `approveOnce` on purpose, and until this
+    // clause existed NOTHING held that position. Review moved the block one statement down and
+    // rode 39/39 green — and under that mutant a connected box's Post SPENDS the owner's one
+    // approval, moves the row out of `awaiting_approval` (so it leaves `listOpenReports()` and
+    // leaves the card), and only then refuses. The report is stranded in `approved` with no
+    // delivery and no way back, and it can never be approved again — because that is C3's
+    // one-approval-one-delivery contract working exactly as designed, which is what makes the
+    // failure silent rather than loud.
+    //
+    // ⚠ T7 IS SENT STRAIGHT AT THIS LINE (report §10.1a: "delete the 503 block, move
+    // `approveOnce` above the branch"). This clause is what catches a wrong move, so it asserts
+    // the ORDERING — approval unspent, row still on the card, still decidable — and not merely
+    // that the answer is a 503.
+    saveGithubAccount('octocat', TOKEN, 'public_repo');
+    const id = awaiting('ds1-503503503503');
+
+    const res = await post(`/${id}/approve`);
+    expect(res.status).toBe(503);
+    expect(String((await bodyOf(res)).error)).toContain('not wired up');
+
+    expect(getReport(id)?.status,
+      'the approval was spent on a delivery that could not happen — D4').toBe('awaiting_approval');
+    expect(listOpenReports().map(r => r.id),
+      'the report left the card without ever being delivered').toContain(id);
+    expect(getReport(id)?.approvedAt, 'a decision was recorded that nobody made').toBeNull();
+    expect(getReport(id)?.exportPath ?? null).toBeNull();
+    expect(getReport(id)?.postedAt).toBeNull();
+
+    // ...and it is still the owner's to decide the moment a sender exists.
+    disconnectGithub();
+    const later = await post(`/${id}/approve`);
+    expect(later.status, 'the report could not be decided after the refusal').toBe(200);
+    expect(getReport(id)?.status).toBe('posted');
   });
 
   it('a decision broadcasts report:resolved so a second tab stops showing the card', async () => {

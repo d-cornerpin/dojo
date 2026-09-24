@@ -102,9 +102,8 @@ function editRefusal(status: ReportStatus): string {
 }
 
 // ── the two reads the card lives on ─────────────────────────────────────────────────────
-// `listOpenReports` is `awaiting_approval` ONLY (contract C1): a drafting row has no brief to
-// show and a decided one is already decided. A card with no decision in it is how a gate
-// becomes a habit.
+// `listOpenReports` is `awaiting_approval` ONLY (C1): a drafting row has no brief to show and a
+// decided one is already decided. A card with no decision in it is how a gate becomes a habit.
 reportsRouter.get('/', (c) => {
   return c.json({ ok: true, data: listOpenReports() });
 });
@@ -189,9 +188,10 @@ reportsRouter.post('/:id/approve', (c) => {
   // `markExported` CONSUMES the approval, exactly as `markPosted` does (C3): D4 binds the export
   // door too, so one approval is one delivery whichever way the report leaves.
   const delivered = markExported(id, exported.filePath);
-  if (!delivered) {
-    return c.json({ ok: false, error: 'This report was already delivered.' }, 409);
-  }
+  // ⚠ UNREACHABLE THROUGH THIS ROUTE, AND THAT IS NOT AN OVERSIGHT (review N1). `approveOnce`
+  // above has already won the row, so `markExported` can only answer null under a race no
+  // caller can produce today. Defensive depth, deliberately untested: no clause can reach it.
+  if (!delivered) return c.json({ ok: false, error: 'This report was already delivered.' }, 409);
   broadcast({ type: 'report:resolved', data: { id, status: 'posted' } });
   return c.json({ ok: true, data: {
     status: delivered.status,
