@@ -74,6 +74,53 @@ describe('the tool cannot post, structurally', () => {
     expect(DEF!.description).toContain('YOU CANNOT SEND ANYTHING');
   });
 
+  // ⚠ THE PRIVACY INSTRUCTION IS LOAD-BEARING CODE, NOT PROSE (final review, FR-2).
+  //
+  // Privacy hard rule 1 — the brief must not carry quotes, user content, names, file contents
+  // or credentials — has three enforcement legs, and this is the only clause over the first.
+  // Leg (b), the mechanical scrub, sits UPSTREAM of the agent: it cleans what `gather` shows
+  // it. That is the stronger placement, and it is also the reason this clause exists — with
+  // the scrub before the agent rather than at the exit, NOTHING MECHANICAL STANDS BETWEEN THE
+  // BRIEF AND THE PUBLIC PAGE. The instruction below and the owner's preview card are the
+  // whole of the protection, so the instruction is a shipped safeguard and is pinned like one.
+  //
+  // Measured before it was written: the final reviewer deleted this entire paragraph from the
+  // shipped description and the full suite SURVIVED. The only assertion over the description
+  // anywhere in the tree was the "YOU CANNOT SEND ANYTHING" clause above, and
+  // `registry-order.test.ts` compares the registry projection against the source projection,
+  // so both sides move together and it pins nothing about content.
+  //
+  // BYTE-ANCHORED ON THE SENTENCES THAT MATTER, not on the paragraph's shape: a prompt-tuning
+  // pass may reflow, reorder or re-word around these, and must not be able to drop any of them
+  // without being told what it is dropping. The phases guide at `tools/docs/dojo_report.md`
+  // carries the same rule at more length and is deliberately NOT asserted here — measured, it
+  // never reaches the packaged build (`build-package.sh` copies migrations and templates only),
+  // so it is documentation. The description is compiled code and reaches production.
+  it('carries the MAY-NOT-CONTAIN rule into production, because the description IS the safeguard', () => {
+    const LOAD_BEARING: readonly [string, string][] = [
+      ['the rule is addressed to the brief', 'WHAT YOUR BRIEF MAY CONTAIN'],
+      ['...and says WHY, which is the part that generalises', 'because this becomes a PUBLIC page'],
+      ['no conversation quotes', 'quotes from the conversation'],
+      ['nothing the user wrote', 'anything the user wrote'],
+      ['no names, no addresses', 'anyone\'s name or address'],
+      ['no file contents', 'file contents'],
+      ['no file paths', 'file paths'],
+      ['no credentials', 'credentials'],
+      ['the positive instruction that makes the refusals actionable', 'Describe the SHAPE'],
+      ['...and its complement', 'never the content'],
+      ['the attachment is not the agent\'s to write', 'cannot add to it'],
+    ];
+    for (const [why, sentence] of LOAD_BEARING) {
+      expect(
+        DEF!.description,
+        `the shipped tool description no longer says: ${sentence} (${why}). This paragraph is `
+        + 'the ONLY thing standing between the agent and a public page besides the owner\'s own '
+        + 'eyes — the scrubber runs upstream of the agent, not at the exit. If it is being '
+        + 'reworded, keep every sentence above and update this list deliberately.',
+      ).toContain(sentence);
+    }
+  });
+
   // ── T3 ADDITIONS, REWORDED IN FIX ROUND 1 ─────────────────────────────────────────────
   // These clauses read ONE FILE'S OWN TEXT, and after review that is exactly what they now
   // claim. The first wording — "imports nothing that could carry a report off the box" — was

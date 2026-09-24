@@ -98,6 +98,7 @@ import {
 } from '../account.js';
 import { githubStatus } from '../status.js';
 import { githubRouter } from '../../gateway/routes/github.js';
+import { frameTypesIn, codeOf } from '../../gateway/__tests__/frame-census.js';
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const CLIENT_ID = 'Ov23liFIXTURECLIENT';
@@ -208,52 +209,11 @@ function literalsIn(src: string): Set<string> {
   return out;
 }
 
-/**
- * Every frame type a file can `broadcast(…)`, IN EVERY SPELLING THE REPO CAN WRITE.
- *
- * ── T5 / FINDING N2: WHY THIS REPLACED A ONE-LINE REGEX ──
- * The census used `/broadcast\(\s*\{\s*type:\s*'(github:[^']+)'/`, which sees SINGLE-QUOTED,
- * `type`-FIRST keys and nothing else. `type: "github:x"`, a backtick, and
- * `broadcast({ error, type: 'github:x' })` were all invisible — so the clause that claims to
- * pin "every frame this feature can emit" was silently narrower than its own sentence, and a
- * fifth frame type could have shipped by being punctuated differently. That is the same defect
- * this file's own literal scanner already had once, and T3's answer to it is the one taken
- * here: a real (small) scanner, plus a FIXTURE TABLE that pins the spellings it sees and the
- * ones it declares itself blind to.
- *
- * Depth-1 keys only, so a nested `{ meta: { type: 'x' } }` is not read as a frame type. Strings
- * are consumed properly, so a brace inside a literal cannot end the object early.
- */
-function frameTypesIn(code: string): string[] {
-  const out: string[] = [];
-  const CALL = 'broadcast(';
-  for (let i = code.indexOf(CALL); i !== -1; i = code.indexOf(CALL, i + 1)) {
-    let j = i + CALL.length;
-    while (j < code.length && /\s/.test(code[j])) j++;
-    // `broadcast(frame)` — a variable. Declared blind spot: there is no literal to read.
-    if (code[j] !== '{') continue;
-    let depth = 0;
-    let flat = '';
-    for (; j < code.length; j++) {
-      const c = code[j];
-      if (c === "'" || c === '"' || c === '`') {
-        let lit = c;
-        for (j++; j < code.length && code[j] !== c; j++) {
-          if (code[j] === '\\') { lit += code[j]; j++; if (j >= code.length) break; }
-          lit += code[j];
-        }
-        lit += c;
-        flat += depth === 1 ? lit : ' ';
-        continue;
-      }
-      if (c === '{') { depth++; flat += depth === 1 ? '{' : ' '; continue; }
-      if (c === '}') { depth--; if (depth === 0) break; flat += ' '; continue; }
-      flat += depth === 1 ? c : ' ';
-    }
-    for (const m of flat.matchAll(/(?:^|[{,\s])type\s*:\s*(['"`])([^'"`]+)\1/g)) out.push(m[2]);
-  }
-  return out;
-}
+// The frame-type reader MOVED to `gateway/__tests__/frame-census.ts` in the final review's fix
+// round (FR-5) and is imported at the top of this file. It was copied nowhere: the `report:`
+// census next door had been written as a narrower regex while claiming to follow this file's
+// pattern, and a copied instrument drifts from its original the moment one of the two improves.
+// One reader, two censuses, and the SPELLINGS table below still pins its behaviour from here.
 
 const realFetch = globalThis.fetch;
 
@@ -839,9 +799,9 @@ describe('the token reaches no log line, no broadcast frame, and no response bod
         if (entry.isDirectory()) {
           if (entry.name !== '__tests__' && entry.name !== 'node_modules') walk(p);
         } else if (entry.name.endsWith('.ts')) {
-          const code = fs.readFileSync(p, 'utf8')
-            .split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
-          for (const t of frameTypesIn(code)) if (t.startsWith('github:')) emitted.add(t);
+          for (const t of frameTypesIn(codeOf(fs.readFileSync(p, 'utf8')))) {
+            if (t.startsWith('github:')) emitted.add(t);
+          }
         }
       }
     };

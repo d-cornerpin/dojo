@@ -39,6 +39,16 @@
 // disabling need a DOM runner. They are listed as unheld in the T6 report rather than implied
 // to be covered by this file's name. The one static substitute that was cheap — T5's
 // setStatus-style census, refusing a second state-setter outside the refetch — is below.
+//
+// ── WHAT THE TWO SOURCE CENSUSES IN THIS FILE CAN AND CANNOT SEE (final review, FR-5) ──
+// A source census is only as good as its reader, and a reader with no declared blind spots is
+// a reader whose author has stopped asking. Written by asking "how would I get past this NOW?",
+// never by editing the previous sentence.
+//
+// | Census | Seen how | Blind to |
+// |---|---|---|
+// | the `report:` frame types this server can emit | the SHARED balanced-object scanner in `gateway/__tests__/frame-census.ts` — the same function the `github:` census uses, not a copy of it — over the whole server source with `__tests__` skipped, driven by the SPELLINGS table beside the clause (any quote, any key order, any whitespace, any alphabet, depth-1 only, strings consumed so a brace in a literal cannot end the object), each declared type cross-checked against the `WsEvent` union and its `EVENT_BATCHABLE` row. **This census shipped as a bare `/type\s*:\s*['"`](report:[a-z_]+)['"`]/` with no table and no column, describing itself as "T4/T5's pattern"; measured against that reader, 5 of this table's 17 rows are RED** — `'report:' + kind`, and every type carrying a capital, a digit, a hyphen or a dot | a type held in a variable (`type: kind`), a literal used as the SUFFIX of a concatenation, the whole frame held in a variable, a QUOTED KEY, and a TERNARY — all five pinned as BLIND rows in the table, so the blindness is a claim that can be refuted rather than a silence. Anchoring on `broadcast(` is a deliberate narrowing over the old any-`type:` regex: **measured before the swap, all four `report:` literals in the server source sit inside a `broadcast({…})` call**, so nothing real was lost. A frame broadcast from a package this walk does not cover is outside it entirely |
+// | the card replaces its list from the door and never merges a frame | a count of `setReports(` in the card's own source, comments dropped, with a non-vacuity guard | an ALIASED setter (`const s = setReports; s(m)`) — declared at the clause, and a deliberate evasion rather than the optimise-the-refetch edit this exists to catch. The full answer is a DOM runner |
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -81,6 +91,7 @@ import {
   createReport, attachDraft, submitForApproval, getReport, listOpenReports, type ReportBrief,
 } from '../../../report/store.js';
 import { saveGithubAccount, disconnectGithub } from '../../../github/account.js';
+import { frameTypesIn, codeOf } from '../../__tests__/frame-census.js';
 import { briefEditsFor, briefIsPostable, duplicateQuestion, postTargetSentence, type BriefFields }
   from '../../../../../dashboard/src/lib/report-edits.js';
 
@@ -789,9 +800,62 @@ describe('the route list and the frame list check themselves', () => {
     }
   });
 
+  // ── THE SPELLING FIXTURE TABLE (final review, FR-5) ──────────────────────────────────
+  // T3's banked rule, written into this plan three times before it reached this file: WHEN YOU
+  // BUILD A CENSUS, THE READER IS THE PART THAT NEEDS THE FIXTURES. This census shipped with a
+  // bare regex, no table and no blind-spot column, under a comment claiming it followed
+  // "T4/T5's pattern" — and the ledger recorded the gap as "parity, no work owed". Measured
+  // against the github census's reader on the same inputs, that withdrawal overshot: `[a-z_]+`
+  // requires a lower-case character after the colon, so `broadcast({ type: 'report:' + kind })`
+  // and every type carrying a capital, a digit or a hyphen were invisible — an unbounded family
+  // of frame types could have shipped at 2/2 green.
+  //
+  // The reader is now the SAME FUNCTION the github census uses (`gateway/__tests__/frame-census
+  // .ts`), not a copy of it, and this table pins what it does with THIS prefix. The trade taken
+  // deliberately: the old regex read `type:` anywhere in a file, this one is anchored on
+  // `broadcast(`. Measured before the swap — all four `report:` literals in the server source
+  // are inside a `broadcast({…})` call, so nothing real was lost, and what was gained is the
+  // whole alphabet plus the concatenation case.
+  const SPELLINGS: ReadonlyArray<readonly [string, string, string[]]> = [
+    ['single quotes, type first', "broadcast({ type: 'report:a' });", ['report:a']],
+    ['double quotes', 'broadcast({ type: "report:b" });', ['report:b']],
+    ['backticks', 'broadcast({ type: `report:c` });', ['report:c']],
+    ['type NOT first', "broadcast({ data, type: 'report:d' });", ['report:d']],
+    ['newlines and odd spacing', "broadcast({\n  data,\n  type   :\n    'report:e',\n});", ['report:e']],
+    ['a nested object is NOT a frame type', "broadcast({ type: 'report:f', data: { type: 'x' } });", ['report:f']],
+    ['a brace inside a literal does not end the object', "broadcast({ data: 'a { brace', type: 'report:g' });", ['report:g']],
+    // ── THE TWO SHAPES THE OLD READER WAS BLIND TO, AND THE REASON THIS ROUND EXISTS ──
+    // Both were measured green against the old regex while the census claimed to pin every
+    // frame this server can emit. They are now loud: the concatenation surfaces its literal
+    // prefix and fails the declared-set equality BY NAME, and a capital, a digit or a hyphen
+    // is simply read.
+    ['a type built by concatenation surfaces its literal prefix', "broadcast({ type: 'report:' + kind });", ['report:']],
+    ['a capital in the type', "broadcast({ type: 'report:Resolved' });", ['report:Resolved']],
+    ['a digit in the type', "broadcast({ type: 'report:v2' });", ['report:v2']],
+    ['a hyphen in the type', "broadcast({ type: 'report:brief-edited' });", ['report:brief-edited']],
+    ['a dotted type', "broadcast({ type: 'report.pending' });", ['report.pending']],
+    // ── STILL BLIND, declared rather than closed (identical to the github census's list,
+    //    which is now a fact rather than a claim, because it is literally the same reader) ──
+    ['BLIND: a type held in a variable', 'broadcast({ type: kind });', []],
+    ['BLIND: a literal used as the SUFFIX of a concatenation', "broadcast({ type: prefix + 'report:x' });", []],
+    ['BLIND: the whole frame held in a variable', 'broadcast(frame);', []],
+    ['BLIND: a quoted key', "broadcast({ 'type': 'report:x' });", []],
+    ['BLIND: a ternary', "broadcast({ type: ok ? 'report:a' : 'report:b' });", []],
+  ];
+
+  it('the frame-type reader sees every spelling, and says which it cannot', () => {
+    for (const [name, source, expected] of SPELLINGS) {
+      expect(frameTypesIn(source), name).toEqual(expected);
+    }
+    // Non-vacuity on both sides: a reader answering [] always, or everything always, would
+    // otherwise pass half this table in silence.
+    expect(SPELLINGS.some(([, , e]) => e.length > 0)).toBe(true);
+    expect(SPELLINGS.some(([, , e]) => e.length === 0)).toBe(true);
+  });
+
   it('the report frame types this server can emit are exactly the two declared', () => {
-    // A SOURCE census (T4/T5's pattern), scoped to the `report:` prefix. It answers "what CAN be
-    // emitted", which a behavioural sweep cannot: a sweep only ever proves what DID fire.
+    // A SOURCE census, scoped to the `report:` prefix. It answers "what CAN be emitted", which
+    // a behavioural sweep cannot: a sweep only ever proves what DID fire.
     const DECLARED = ['report:pending', 'report:resolved'];
     const emitted = new Set<string>();
     const walk = (dir: string): void => {
@@ -799,9 +863,9 @@ describe('the route list and the frame list check themselves', () => {
         const p = path.join(dir, e.name);
         if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'node_modules') walk(p); continue; }
         if (!e.name.endsWith('.ts')) continue;
-        const code = fs.readFileSync(p, 'utf8').split('\n')
-          .filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
-        for (const m of code.matchAll(/type\s*:\s*['"`](report:[a-z_]+)['"`]/g)) emitted.add(m[1]);
+        for (const t of frameTypesIn(codeOf(fs.readFileSync(p, 'utf8')))) {
+          if (t.startsWith('report:')) emitted.add(t);
+        }
       }
     };
     walk(SRC);
