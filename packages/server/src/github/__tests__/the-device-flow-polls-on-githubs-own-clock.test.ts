@@ -39,7 +39,7 @@
 // | the token in logs | behaviourally — every `createLogger` call in the whole import graph is captured, on every ending in the `endings` table **including the two arms of `fetchLogin`** (answers-without-a-login, and throws) | a write to stdout/stderr that does not go through `createLogger`; **and, the blind spot that actually bit: A BRANCH NO ROW DRIVES.** The capture is total over the graph and worth nothing on code never executed — a `tok:` leak on `fetchLogin`'s catch arm survived at 31/31 because no test made that call throw |
 // | the token in a broadcast frame | behaviourally — every `broadcast()` call is captured and the WHOLE array is serialised, on all TEN endings in the `endings` table, each of which DECLARES the terminal frame it must emit so the ending's own frame is asserted to have fired (not merely that some frame did) | an ending added to the loop and not added to the `endings` table — though it would have to be added without a frame declaration to hide, since a declared frame that never fires is a failure; a frame emitted by a module this file does not import. **This row was MISSING in the first cut and the gap was real** — the only frame clause ran on the happy path, where `userAnswer` always named a user, so a `login ?? token` leak short-circuited and survived at 29/29 |
 // | the token in a response body | behaviourally — the real Hono router is driven and its JSON is read as text, and the enumerated path list is asserted EQUAL to `githubRouter.routes` minus middleware (`ALL /*`, and the absence of any middleware today is itself pinned), so a new route on this router fails this file before it can go unchecked — **including one registered with `.all()`** | a route mounted on a DIFFERENT router, or onto this one through a computed/dynamic mount that never appears in `githubRouter.routes`; a response assembled outside these handlers. **The earlier version of this row claimed the only escape was a different router, and that was the THIRD overclaim this table has had to correct**: the filter discarded every `ALL`-method entry, so a real `.all('/leak', h)` handler returning the token hid on this very router at 33/33 |
-// | the frame types the feature can emit | a SOURCE census of `broadcast({ type: 'github:…' })` over the whole server source, asserted equal to a declared four, each cross-checked against the `WsEvent` union and `EVENT_BATCHABLE` | a type built by concatenation or held in a variable; a frame broadcast by a package this scan does not cover. It answers "what CAN be emitted", which is why it is a source census and not a behavioural sweep — a sweep only ever proves what DID fire |
+// | the frame types the feature can emit | a SOURCE census of `broadcast({ … type: '…' … })` over the whole server source, asserted equal to a declared four, each cross-checked against the `WsEvent` union and `EVENT_BATCHABLE`. **T5 / finding N2:** the reader was a single regex that saw SINGLE-QUOTED, `type`-FIRST keys only — `type: "github:x"`, a backtick, or `{ error, type: 'github:x' }` were all invisible, so the census was narrower than its own row claimed. It is now a small scanner over the balanced object literal (any quote, any key order, any whitespace, depth-1 keys only) with a **spelling fixture table** in front of it — T3's banked pattern, applied here because a source census is only as good as its reader and this file has now learned that twice | STILL BLIND, and these are declared rather than closed: a type held in a variable (`type: kind`, `broadcast(frame)`) and a literal used as the SUFFIX of a concatenation (`prefix + 'github:x'`) — the scanner records neither and cannot; a frame broadcast by a package this scan does not cover. **A type built as `'github:' + kind` is NOT blind**: the reader surfaces the literal prefix `github:`, which lands in the census set and fails the declared-four equality by name — the fixture table found that while asserting the opposite, and the row records reality. A `broadcast({type:'github:…'})` written inside a TRAILING comment is an over-read, which fails safe (it forces a declaration). It answers "what CAN be emitted", which is why it is a source census and not a behavioural sweep — a sweep only ever proves what DID fire |
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -204,6 +204,53 @@ function literalsIn(src: string): Set<string> {
       i++; out.add(lit); continue;
     }
     i++;
+  }
+  return out;
+}
+
+/**
+ * Every frame type a file can `broadcast(…)`, IN EVERY SPELLING THE REPO CAN WRITE.
+ *
+ * ── T5 / FINDING N2: WHY THIS REPLACED A ONE-LINE REGEX ──
+ * The census used `/broadcast\(\s*\{\s*type:\s*'(github:[^']+)'/`, which sees SINGLE-QUOTED,
+ * `type`-FIRST keys and nothing else. `type: "github:x"`, a backtick, and
+ * `broadcast({ error, type: 'github:x' })` were all invisible — so the clause that claims to
+ * pin "every frame this feature can emit" was silently narrower than its own sentence, and a
+ * fifth frame type could have shipped by being punctuated differently. That is the same defect
+ * this file's own literal scanner already had once, and T3's answer to it is the one taken
+ * here: a real (small) scanner, plus a FIXTURE TABLE that pins the spellings it sees and the
+ * ones it declares itself blind to.
+ *
+ * Depth-1 keys only, so a nested `{ meta: { type: 'x' } }` is not read as a frame type. Strings
+ * are consumed properly, so a brace inside a literal cannot end the object early.
+ */
+function frameTypesIn(code: string): string[] {
+  const out: string[] = [];
+  const CALL = 'broadcast(';
+  for (let i = code.indexOf(CALL); i !== -1; i = code.indexOf(CALL, i + 1)) {
+    let j = i + CALL.length;
+    while (j < code.length && /\s/.test(code[j])) j++;
+    // `broadcast(frame)` — a variable. Declared blind spot: there is no literal to read.
+    if (code[j] !== '{') continue;
+    let depth = 0;
+    let flat = '';
+    for (; j < code.length; j++) {
+      const c = code[j];
+      if (c === "'" || c === '"' || c === '`') {
+        let lit = c;
+        for (j++; j < code.length && code[j] !== c; j++) {
+          if (code[j] === '\\') { lit += code[j]; j++; if (j >= code.length) break; }
+          lit += code[j];
+        }
+        lit += c;
+        flat += depth === 1 ? lit : ' ';
+        continue;
+      }
+      if (c === '{') { depth++; flat += depth === 1 ? '{' : ' '; continue; }
+      if (c === '}') { depth--; if (depth === 0) break; flat += ' '; continue; }
+      flat += depth === 1 ? c : ' ';
+    }
+    for (const m of flat.matchAll(/(?:^|[{,\s])type\s*:\s*(['"`])([^'"`]+)\1/g)) out.push(m[2]);
   }
   return out;
 }
@@ -717,6 +764,46 @@ describe('the token reaches no log line, no broadcast frame, and no response bod
     }
   });
 
+  // ── THE SPELLING FIXTURE TABLE (T5 / finding N2, T3's banked pattern) ──
+  // The census below is a source scan, and a source scan is only as good as its reader. This
+  // table is the reader's own test: every spelling the repo could legally use to broadcast a
+  // frame, and every shape the reader DECLARES itself blind to. Without it, widening the
+  // reader would be a claim with nothing behind it — which is exactly how the one-quote regex
+  // it replaced went four rounds of review while describing itself as a total census.
+  const SPELLINGS: ReadonlyArray<readonly [string, string, string[]]> = [
+    ['single quotes, type first', "broadcast({ type: 'github:a' });", ['github:a']],
+    ['double quotes', 'broadcast({ type: "github:b" });', ['github:b']],
+    ['backticks', 'broadcast({ type: `github:c` });', ['github:c']],
+    ['type NOT first', "broadcast({ login, type: 'github:d' });", ['github:d']],
+    ['newlines and odd spacing', "broadcast({\n  login,\n  type   :\n    'github:e',\n});", ['github:e']],
+    ['trailing fields', "broadcast({ type: 'github:f', error: 'x' });", ['github:f']],
+    ['two calls in one file', "broadcast({ type: 'github:g' });\nbroadcast({ type: \"github:h\" });", ['github:g', 'github:h']],
+    ['a non-github frame is read and then filtered by the caller', "broadcast({ type: 'plaud:x' });", ['plaud:x']],
+    ['a nested object is NOT a frame type', "broadcast({ type: 'github:i', meta: { type: 'github:nested' } });", ['github:i']],
+    ['a brace inside a literal does not end the object', "broadcast({ error: 'a { brace', type: 'github:j' });", ['github:j']],
+    // ── A CONCATENATION IS NOT BLIND ANY MORE, AND THIS ROW IS HOW THAT WAS FOUND ──
+    // The table was written expecting `[]` here, because that is what the old row claimed.
+    // The reader returns the literal PREFIX instead — and that is the better outcome, so the
+    // fixture records reality rather than the other way round: `'github:'` lands in the census
+    // set, fails the declared-four equality by name, and sends a human to look. A blind spot
+    // became a loud failure, which is the whole reason to pin the reader's behaviour.
+    ['a type built by concatenation surfaces its literal prefix', "broadcast({ type: 'github:' + kind });", ['github:']],
+    // ── STILL BLIND, declared rather than closed ──
+    ['BLIND: a type held in a variable', 'broadcast({ type: kind });', []],
+    ['BLIND: a literal used as the SUFFIX of a concatenation', "broadcast({ type: prefix + 'github:x' });", []],
+    ['BLIND: the whole frame held in a variable', 'broadcast(frame);', []],
+  ];
+
+  it('the frame-type reader sees every spelling, and says which it cannot', () => {
+    for (const [name, source, expected] of SPELLINGS) {
+      expect(frameTypesIn(source), name).toEqual(expected);
+    }
+    // Non-vacuity on both sides: a reader that returned [] always, or everything always,
+    // would otherwise pass half this table in silence.
+    expect(SPELLINGS.some(([, , e]) => e.length > 0)).toBe(true);
+    expect(SPELLINGS.some(([, , e]) => e.length === 0)).toBe(true);
+  });
+
   it('the frame types this feature can emit are exactly the four declared — T5 inherits this', () => {
     // FIX ROUND 3 / E2, the half that outlives this task. The clause above pins what each
     // ENDING emits; this pins what the FEATURE can emit at all, so a fifth frame type cannot
@@ -742,9 +829,7 @@ describe('the token reaches no log line, no broadcast frame, and no response bod
         } else if (entry.name.endsWith('.ts')) {
           const code = fs.readFileSync(p, 'utf8')
             .split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
-          for (const m of code.matchAll(/broadcast\(\s*\{\s*type:\s*'(github:[^']+)'/g)) {
-            emitted.add(m[1]);
-          }
+          for (const t of frameTypesIn(code)) if (t.startsWith('github:')) emitted.add(t);
         }
       }
     };

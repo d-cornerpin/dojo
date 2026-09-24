@@ -16,6 +16,7 @@ import { RouterTest } from '../components/RouterTest';
 import { GoogleWorkspaceSettings } from '../components/GoogleWorkspaceSettings';
 import { MicrosoftWorkspaceSettings } from '../components/MicrosoftWorkspaceSettings';
 import { PlaudSettings } from '../components/PlaudSettings';
+import { GitHubSettings } from '../components/GitHubSettings';
 import { TwilioSettings } from '../components/TwilioSettings';
 import { ScreenShareSettings } from '../components/ScreenSharePanel';
 import { CollapseChevron } from '../components/CollapseToggle';
@@ -157,6 +158,7 @@ export const Settings = () => {
         <div className="scards">
           <ScreenShareSettings />
           <PlaudSettings />
+          <GitHubSettings />
         </div>
       )}
       {activeTab === 'voice' && <VoiceTab />}

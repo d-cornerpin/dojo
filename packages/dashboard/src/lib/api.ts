@@ -751,6 +751,44 @@ export const refreshPlaud = async (): Promise<ApiResponse<{ connected: boolean; 
   return request<{ connected: boolean; email: string | null }>('/plaud/refresh', { method: 'POST' });
 };
 
+// ── GitHub integration (DOJO-REPORT T5) ──
+// Device flow: the user presses Connect, the server asks GitHub for a code,
+// the user types it at github.com/login/device, and the server polls until
+// GitHub answers. No redirect and no callback route, so it works over a
+// tunnel — unlike the Google/Microsoft cards above.
+//
+// `GithubStatus` is declared twice ON PURPOSE: once server-side in
+// `github/status.ts`, once here, because `packages/dashboard` cannot import
+// from `packages/server`. Same eleven fields, same names, same types; the
+// route serves that shape and this client NEVER re-derives or remaps it (the
+// `.26` Health-page lesson: a client that guesses the wire shape is a lie held
+// together by a remap). If the two ever disagree, the server's is right — and
+// `the-github-card-reports-connection-truth.test.ts` fails from both sides.
+export interface GithubStatus {
+  connected: boolean;
+  login: string | null;
+  scope: string | null;
+  connectedAt: string | null;
+  /** The LAST LIVE OUTCOME of a real GitHub call. Not a heartbeat, not a guess. */
+  lastOkAt: string | null;
+  lastError: string | null;
+  /** The seal will not open, or GitHub refused the credential. Served, never re-derived. */
+  reauthRequired: boolean;
+  clientIdConfigured: boolean;
+  loginInProgress: boolean;
+  userCode: string | null;
+  verificationUri: string | null;
+}
+export const getGithubStatus = async (): Promise<ApiResponse<GithubStatus>> =>
+  request<GithubStatus>('/github/status');
+export const connectGithub = async (): Promise<ApiResponse<{
+  userCode: string; verificationUri: string; expiresAt: number; intervalMs: number;
+}>> => request('/github/connect', { method: 'POST' });
+export const cancelGithubConnect = async (): Promise<ApiResponse<{ cancelled: boolean }>> =>
+  request('/github/cancel-connect', { method: 'POST' });
+export const disconnectGithub = async (): Promise<ApiResponse<{ disconnected: boolean }>> =>
+  request('/github/disconnect', { method: 'POST' });
+
 // ── Agent credentials vault ──
 // Encrypted store for third-party API credentials that agents collect
 // while building techniques. Separate from secrets.yaml (platform-
