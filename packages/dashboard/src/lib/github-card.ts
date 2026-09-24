@@ -119,6 +119,52 @@ export const describeScope = (scope: string | null): string => {
 };
 
 /**
+ * What the card says it is ABOUT to ask for, before the user presses Connect.
+ *
+ * ── FIX ROUND 1 (review F3). WHY THIS IS NOT A STRING IN THE JSX, WHICH IS WHERE IT WAS ──
+ * The card carried its own copy of this sentence, worded differently ("private repos" rather
+ * than "private repositories") so that no grep over the tested wording found it. That copy was
+ * exactly what `describeScope` above exists to forbid: a CONSTANT claim about the user's
+ * private code, living in the one file with no test runner. Both sentences now hang off
+ * `GITHUB_EXPECTED_SCOPE`, which the server-side suite pins to the engine's own
+ * `GITHUB_OAUTH_SCOPE` — so if the scope this box asks for ever widens, neither sentence can
+ * keep reassuring anybody. A census over `GitHubSettings.tsx` refuses a third copy.
+ *
+ * The difference from `describeScope`: that one describes what GitHub GRANTED (past tense, read
+ * from the ledger), this one describes what we will ASK FOR (future tense, read from the
+ * constant). They are different claims and only one of them has a ledger behind it.
+ */
+export const scopeRequestSentence = (): string => {
+  if (GITHUB_EXPECTED_SCOPE === 'public_repo') {
+    return 'It asks for one permission: creating issues on public repositories. '
+      + 'It cannot read your private repositories.';
+  }
+  return `It asks GitHub for "${GITHUB_EXPECTED_SCOPE}". `
+    + 'Check what that permission allows before you connect.';
+};
+
+/** A sign-in that stopped after it had started. */
+export const CONNECT_FAILED_FALLBACK = 'The GitHub sign-in stopped without connecting.';
+/** A sign-in that never started — `POST /connect` refused it. A different question. */
+export const CONNECT_REFUSED_FALLBACK = 'GitHub would not start a sign-in.';
+
+/**
+ * The text of a sign-in that did not finish — from the `github:connect_failed` frame, or from a
+ * refused `POST /connect`.
+ *
+ * ── FIX ROUND 1: the decidable half of the one state with no ledger behind it ──
+ * The T5 report listed this as unheld because it is an EVENT, with no door to drive. That is
+ * true of the WIRING and false of the DECISION. A failed sign-in that renders an empty box, or
+ * the word `null`, tells the user nothing went wrong when something did — which is nearer a
+ * claim about the connection than a cosmetic slip, and that is this module's own test for what
+ * belongs here.
+ */
+export const problemText = (err: string | null | undefined, fallback: string): string => {
+  const text = (err ?? '').trim();
+  return text === '' ? fallback : text;
+};
+
+/**
  * The connected-state headline. T4 hand-off note 6: `GET /user` is called once with the fresh
  * token and is not retried, so a network hiccup at that moment costs the NAME and never the
  * connection. The card must render that case as a connection without a name — printing

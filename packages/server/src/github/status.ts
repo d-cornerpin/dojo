@@ -66,11 +66,33 @@ export interface GithubStatus {
  * A 403 is on it only in the two spellings that are unambiguously about permission; a 403 rate
  * limit is not a broken connection and must not read as one.
  *
- * `\b401\b`, not `includes('401')`: `401k-planner` is a repository name, and the naive spelling
- * turns one into a revoked token.
+ * ── FIX ROUND 1 (review F1): A NUMERAL 401 IN PROSE IS NOT A STATUS CODE ──
+ * This list began with `\b401\b`, which was already one step better than `includes('401')` —
+ * it refuses `401k-planner`, a repository name. It was not enough, and the gap ran the wrong
+ * way. `\b401\b` matches the number in ANY context, so *"Could not comment on issue 401"* and
+ * *"Failed to update issue #401 on d-cornerpin/dojo"* both read as a revoked credential and
+ * would tell an owner whose connection works perfectly that it stopped working — the exact
+ * false YES the paragraph above says this predicate chose against.
+ *
+ * ISSUE NUMBERS ARE T7's WHOLE DOMAIN. T7 builds `findIssueBySignature`, `createIssue` and
+ * `commentOnIssue`, and naming the issue it could not comment on is the obvious sentence to
+ * write into this very column.
+ *
+ * So the bare number counts only where it is PRESENTED AS A STATUS CODE — sentence-initial,
+ * bracketed, or introduced by a status word. That is an anchor on the shapes an auth failure
+ * actually takes, rather than an attempt to enumerate the prose it must not match, which is
+ * unbounded. (The reviewer's suggested pattern was measured before being adopted and still
+ * fired on their own first example; this one is driven against both directions in the fixture
+ * table, 34 rows.)
+ *
+ * T7 HAND-OFF: do not put an issue number in a `noteGithubFailure` message. The anchors below
+ * make the common spellings safe, but the honest contract is that this column carries the
+ * platform's verdict about the CALL, not identifiers from its payload.
  */
 const AUTH_REFUSAL = [
-  /\b401\b/,
+  /^\s*401\b/,
+  /[([]\s*401\b/,
+  /\b(?:http|https|status|code|error|answered|returned|responded|replied|received|rejected|refused|failed)\s+(?:code\s+)?401\b/i,
   /bad credentials/i,
   /unauthoriz(?:ed|ation)/i,
   /requires authentication/i,

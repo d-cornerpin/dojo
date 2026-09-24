@@ -32,6 +32,9 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 vi.mock('../../../logger.js', () => {
   const noop = (): void => {};
@@ -68,7 +71,8 @@ import {
   GITHUB_OAUTH_SCOPE, GITHUB_DEVICE_CODE_URL, cancelDeviceFlow, startDeviceFlow,
 } from '../../../github/device-flow.js';
 import {
-  githubCardState, connectLabel, describeScope, connectedAs,
+  githubCardState, connectLabel, describeScope, connectedAs, scopeRequestSentence,
+  problemText, CONNECT_FAILED_FALLBACK, CONNECT_REFUSED_FALLBACK,
   GITHUB_EXPECTED_SCOPE, type GithubCardStatus,
 } from '../../../../../dashboard/src/lib/github-card.js';
 
@@ -223,22 +227,52 @@ describe('the last live outcome is the ledger, and an auth refusal is a reconnec
   // failure. A false YES tells someone their working connection is broken. So the predicate is
   // narrow on purpose, and the rows below pin both sides of that.
   const AUTH_FIXTURES: ReadonlyArray<readonly [string, boolean]> = [
-    ['401 Bad credentials', true],                                  // GitHub's literal body
-    ['GitHub answered 401.', true],                                 // T4's own test fixture
+    // ── The credential sentences. These carry the signal with no number at all. ──
     ['Bad credentials', true],
     ['Requires authentication', true],                              // GitHub's 401 on /issues
     ['GitHub refused: unauthorized', true],
     ['403 Forbidden — token has not been granted the required scopes', true],
     ['Resource not accessible by personal access token (insufficient scope)', true],
+    // ── 401 PRESENTED AS A STATUS CODE: sentence-initial, bracketed, or introduced by a
+    //    status word. These are the only shapes in which the bare number counts. ──
+    ['401 Bad credentials', true],                                  // GitHub's literal body
+    ['401 Unauthorized', true],                                     // the status line verbatim
+    ['GitHub answered 401.', true],                                 // T4's own test fixture
+    ['HTTP 401', true],
+    ['Request failed with status code 401', true],
+    ['GitHub returned 401', true],
+    ['Received 401 from api.github.com', true],
+    ['(401)', true],
+    // ── 🔴 THE FIX-ROUND-1 ROWS (review F1). A NUMERAL 401 IN PROSE IS NOT A STATUS CODE. ──
+    // Every one of these read as AUTH-FAILURE before the fix — the reviewer drove them through
+    // `\b401\b`, which matches the number in ANY context. That is the false YES this module's
+    // header says it chose against: it tells an owner whose connection works perfectly that it
+    // "stopped working" and invites them to Disconnect.
+    //
+    // NOT HYPOTHETICAL — ISSUE NUMBERS ARE T7's WHOLE DOMAIN. T7 builds `findIssueBySignature`,
+    // `createIssue` and `commentOnIssue`, and a failure sentence naming the issue it could not
+    // comment on is the obvious thing to write into the very column T5 taught to be read as a
+    // verdict. The fixture table was one row short on exactly the axis it was built for: it
+    // pinned the SUFFIX case (`401k-planner`) and had no row for 401 standing alone as a number.
+    ['Could not comment on issue 401', false],
+    ['Failed to update issue #401 on d-cornerpin/dojo', false],
+    ['Search returned issue 401 but the comment was refused (500)', false],
+    ['Could not open an issue (HTTP 500) after 401 ms', false],
+    ['Timed out after 401 ms', false],
+    ['Rate limited; retry after 401 seconds', false],
+    ['Commented on issue 401 but could not label it', false],
+    // ADVERSARIAL: `401` inside a longer token must not match. A naive `includes('401')`
+    // passes every credential row above and fails this one.
+    ['Could not open an issue on 401k-planner', false],
+    // ── The transient blips. A connection that is fine must never read as broken. ──
     ['403 API rate limit exceeded for user', false],                // a 403 that is NOT auth
     ['404 Not Found', false],
     ['422 Validation Failed: issues are disabled for this repository', false],
     ['Could not reach GitHub (socket hang up).', false],
     ['500 Internal Server Error', false],
+    ['GitHub answered 502.', false],
+    ['AbortError: The operation was aborted due to timeout', false],
     ['The repository is archived and cannot accept issues.', false],
-    // ADVERSARIAL: `401` inside a longer token must not match. A naive `includes('401')`
-    // passes every row above and fails this one.
-    ['Could not open an issue on 401k-planner', false],
     ['', false],
   ];
 
@@ -420,6 +454,26 @@ describe('the card reads the served shape, and re-derives nothing', () => {
     ).toBe('connecting');
   });
 
+  it('an open sign-in outranks a cleared client id too — the fourth precedence leg', () => {
+    // ── ADDED IN FIX ROUND 1 (review F2), and it is the M4 shape one leg over ──
+    // The header says "CONNECTING WINS OVER EVERYTHING." Three legs were held by clauses; this
+    // one was held by the sentence. The reviewer's probe — requiring `clientIdConfigured` for
+    // `'connecting'` — rode 28/28, because no case reached `loginInProgress` with the client id
+    // cleared. T4 pins that combination as a real loop ending: the owner clears
+    // `github_client_id` while a device flow is open.
+    //
+    // Cheaper consequence than M4's (a flicker in a transient window, not a lie about a
+    // connection), and closed for the same reason M4 was: a leg of a precedence argument held
+    // by prose is a leg nothing holds.
+    const s: GithubCardStatus = {
+      connected: false, clientIdConfigured: false, loginInProgress: true,
+      reauthRequired: false, scope: null,
+      userCode: 'WDJB-MJHT', verificationUri: 'https://github.com/login/device',
+    };
+    expect(githubCardState(s), 'a code is on screen and the card called the box unconfigured')
+      .toBe('connecting');
+  });
+
   it('a sign-in with no code to type is NOT the connecting state', () => {
     // T4 hand-off note 5: the flow is one module variable in one process, so a restart
     // mid-sign-in can leave the flag without the code. A code panel with nothing in it is a
@@ -494,6 +548,111 @@ describe('a connection with no name is a connection, not a null', () => {
     expect(body.data.connected).toBe(true);
     expect(body.data.login).toBeNull();
     expect(connectedAs(body.data.login as string | null)).toBe('Connected');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('a sign-in that failed says why, and the sentence is not invented at the call site', () => {
+  // ── ADDED IN FIX ROUND 1: the reviewer's cheap extraction ──
+  // §2b listed the `problem` state as unheld because it is an EVENT with no door to drive.
+  // That is true of the WIRING and false of the DECISION: "what text do I show when the frame
+  // or the 400 carried no error?" is a pure function of an optional string, and by the module's
+  // own test — would being wrong be a lie about a connection? — a failed sign-in showing no
+  // reason at all is nearer a connection claim than a cosmetic slip.
+  it('passes a real sentence through untouched', () => {
+    expect(problemText('That sign-in code expired. Press Connect to get a new one.', CONNECT_FAILED_FALLBACK))
+      .toBe('That sign-in code expired. Press Connect to get a new one.');
+  });
+
+  it('never renders an empty box, a null or an undefined', () => {
+    for (const absent of [null, undefined, '', '   ']) {
+      for (const fallback of [CONNECT_FAILED_FALLBACK, CONNECT_REFUSED_FALLBACK]) {
+        const text = problemText(absent, fallback);
+        expect(text, `problemText(${JSON.stringify(absent)})`).toBe(fallback);
+        expect(text.trim().length).toBeGreaterThan(0);
+        expect(text).not.toContain('null');
+        expect(text).not.toContain('undefined');
+      }
+    }
+  });
+
+  it('the two fallbacks are different sentences — they answer different questions', () => {
+    // One is "your sign-in stopped", the other is "it never started". A user who sees the
+    // wrong one looks in the wrong place.
+    expect(CONNECT_FAILED_FALLBACK).not.toBe(CONNECT_REFUSED_FALLBACK);
+    for (const s of [CONNECT_FAILED_FALLBACK, CONNECT_REFUSED_FALLBACK]) {
+      expect(s.trim()).toMatch(/\.$/);
+    }
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('the card holds no copy of a rule the lib is guarding', () => {
+  // ── ADDED IN FIX ROUND 1 (review F3 + the refetch-on-event extraction) ──
+  // `packages/dashboard` has no test runner, so a rule that gets RE-TYPED into the .tsx escapes
+  // every guard the lib carries. These two clauses are source censuses over the component —
+  // this plan's own instrument, used five times in T4 — and each catches one specific edit.
+  const cardSource = fs.readFileSync(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+      '../../../../../dashboard/src/components/GitHubSettings.tsx'), 'utf8');
+
+  it('the reassurance about private repositories exists in ONE place, behind the guarded constant', () => {
+    // F3. The card carried a second, differently-worded copy of the sentence `describeScope`
+    // exists to make honest ("private repos" vs "private repositories"), so no grep over the
+    // tested string found it. That copy is a CONSTANT claim about the user's private code
+    // sitting in the one file nothing tests — precisely what §2 calls "the rule with teeth".
+    expect(cardSource.length, 'the census read an empty file — it is broken')
+      .toBeGreaterThan(0);
+    expect(
+      cardSource,
+      'the card hardcodes a claim about private repositories again. That sentence belongs in '
+      + '`lib/github-card.ts` behind GITHUB_EXPECTED_SCOPE, where a test holds it and where the '
+      + 'scope cross-check reaches it.',
+    ).not.toMatch(/private repo/i);
+    // ...and the sentence really does exist, in the place that IS guarded.
+    expect(scopeRequestSentence()).toMatch(/private repositories/i);
+  });
+
+  it('state is replaced from the door, never merged from a frame', () => {
+    // THE REFETCH-ON-EVENT IDIOM, held statically. §2b named this the gap most worth a DOM
+    // runner: an "optimisation" that merged a frame's fields into card state would reintroduce
+    // the invented-freshness defect this whole card is written against, and nothing would
+    // notice. A runner is still the full answer — but the feared edit has one visible shape,
+    // a second `setStatus(`, and that is cheap to refuse.
+    const calls = [...cardSource.matchAll(/setStatus\(/g)];
+    expect(calls.length, 'the card stopped setting its status at all — this census is broken')
+      .toBeGreaterThan(0);
+    expect(
+      calls.length,
+      'a second `setStatus(` appeared. If it merges fields from a WebSocket frame into the '
+      + 'card\'s state, that is the invented-freshness defect: the card would show a freshness '
+      + 'no door served. Refetch from `GET /status` instead.',
+    ).toBe(1);
+    // ...and the one call is inside `loadStatus`, not inside a subscribe handler.
+    //
+    // THE FIRST READER HERE WAS WRONG AND THE SUITE SAID SO, which is the reason to write the
+    // reader rather than assume it: "the nearest preceding `const <name> =`" answered `result`,
+    // because `const result = await api.getGithubStatus()` sits between the declaration and the
+    // call. A census is only as good as its reader — the lesson this task already banked twice
+    // — so this walks `loadStatus`'s actual body instead of guessing at its name.
+    const declStart = cardSource.indexOf('const loadStatus');
+    expect(declStart, 'the card no longer declares `loadStatus` — this census is broken')
+      .toBeGreaterThan(-1);
+    let bodyEnd = cardSource.indexOf('{', declStart);
+    for (let depth = 0, i = bodyEnd; i < cardSource.length; i++) {
+      if (cardSource[i] === '{') depth++;
+      else if (cardSource[i] === '}' && --depth === 0) { bodyEnd = i; break; }
+    }
+    const body = cardSource.slice(declStart, bodyEnd);
+    // Non-vacuity: a walk that returned an empty or runaway body would pass the range check
+    // below for the wrong reason.
+    expect(body, 'the extracted `loadStatus` body is not the one that calls the door')
+      .toContain('api.getGithubStatus');
+    expect(
+      calls[0].index! > declStart && calls[0].index! < bodyEnd,
+      'the single `setStatus(` moved out of `loadStatus` — state is no longer replaced by what '
+      + 'the door served',
+    ).toBe(true);
   });
 });
 

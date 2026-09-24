@@ -3,7 +3,8 @@ import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useToast } from '../hooks/useToast';
 import { formatDateShort } from '../lib/dates';
-import { githubCardState, connectLabel, describeScope, connectedAs } from '../lib/github-card';
+import { githubCardState, connectLabel, describeScope, connectedAs, scopeRequestSentence,
+  problemText, CONNECT_FAILED_FALLBACK, CONNECT_REFUSED_FALLBACK } from '../lib/github-card';
 
 // ── Settings → Integrations → GitHub (DOJO-REPORT T5) ──
 // Connecting GitHub turns a problem report from a file you paste by hand into an issue your
@@ -66,7 +67,7 @@ export const GitHubSettings = () => {
       }),
       subscribe('github:connect_failed', (msg: unknown) => {
         const m = msg as { error?: string };
-        setProblem(m.error ?? 'The GitHub sign-in stopped without connecting.');
+        setProblem(problemText(m.error, CONNECT_FAILED_FALLBACK));
         loadStatus();
       }),
       subscribe('github:disconnected', () => { setProblem(null); loadStatus(); }),
@@ -81,7 +82,7 @@ export const GitHubSettings = () => {
     setBusy(false);
     // An unconfigured or unreachable box answers 400 with a SENTENCE. Render it — a spinner
     // that never resolves is the shape this replaces.
-    if (!result.ok) setProblem(result.error ?? 'GitHub would not start a sign-in.');
+    if (!result.ok) setProblem(problemText(result.error, CONNECT_REFUSED_FALLBACK));
     loadStatus();
   };
 
@@ -149,10 +150,9 @@ export const GitHubSettings = () => {
             Your agent can file problem reports as issues on the Dojo&apos;s public issue
             tracker, posted as you.
           </p>
-          <p className="text-xs text-ui/40">
-            It asks for one permission: creating issues on public repositories. It can&apos;t
-            read your private repos.
-          </p>
+          {/* Derived from GITHUB_EXPECTED_SCOPE, never retyped here — a hardcoded copy is a
+              claim about the user's private code in the one file with no test runner. */}
+          <p className="text-xs text-ui/40">{scopeRequestSentence()}</p>
           <button className="btn btn--primary btn--sm" onClick={handleConnect} disabled={busy}>
             {connectLabel(status)}
           </button>
