@@ -519,9 +519,28 @@ export interface HealerProposalEvent {
   };
 }
 
+/**
+ * DOJO-REPORT T3 — emitted when an agent SUBMITS a problem report for the owner's
+ * decision (`dojo_report`'s `submit` phase, the tool's last act). The dashboard's
+ * report preview card re-runs its list on this event so a freshly-filed report
+ * appears live instead of only after a reload, exactly as `healer:proposal` does
+ * for the Healer's consent decisions.
+ *
+ * It is a PING, not a payload: `id` and `title` are enough to draw a card stub, and
+ * the card fetches the brief and the telemetry over HTTP. The brief is the text a
+ * human is about to approve for a PUBLIC page, so it travels the route that can be
+ * authenticated and re-read, never a broadcast frame. Nothing about this event
+ * posts anything — the owner's Post button is the only door.
+ */
+export interface ReportPendingEvent {
+  type: 'report:pending';
+  data: { id: string; title: string };
+}
+
 export type WsEvent =
   | AgentStatusEvent
   | HealerProposalEvent
+  | ReportPendingEvent
   | VideoJobUpdateEvent
   | GenerationJobUpdateEvent
   | EngineActivityEvent
@@ -1074,6 +1093,9 @@ export const EVENT_BATCHABLE: Record<WsEvent['type'], boolean> = {
   'agent:terminated': false,
   'agent:message': false,
   'healer:proposal': false,
+  // A consent decision the owner has to make. Batching would delay the card behind
+  // an unrelated flush, which is the one frame a gate must not arrive late.
+  'report:pending': false,
   'video_job:update': false,
   'generation_job:update': false,
   'engine:activity': false,

@@ -101,6 +101,9 @@ export const SEND_TO_PEOPLE: readonly string[] = [
 export const SEND_TO_PEOPLE_NA: Readonly<Record<string, string>> = {
   // ── clearly non-comms families (humane prefix globs) ──
   'load_tool_docs': 'meta: loads a tool schema',
+  // DOJO-REPORT T3: it files a report for the people who build the platform and structurally
+  // cannot deliver it — the owner's Post button on the preview card is the only door out.
+  'dojo_report': 'files a platform problem report for the owner to approve; sends nothing itself',
   'file_*': 'local filesystem, not a comms channel',
   'exec': 'runs a local program (argv, no shell), not a comms channel',
   'shell': 'local shell script, not a comms channel — same decision as exec, whose door it split from at PHASE-5 T3',

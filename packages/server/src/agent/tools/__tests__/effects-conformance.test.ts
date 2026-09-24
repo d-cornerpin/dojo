@@ -276,13 +276,20 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
   // static census is 321 + 2 and the twin census is 117 + 2 — the twin count moving IS
   // the check that the loop reached them, the inverse of T3's check that `shell` did
   // not accidentally acquire one.
-  it('the census is T0\'s 320 static definitions + T3\'s `shell` + T77b\'s two drafts, 119 user_ twins, 442 at runtime', () => {
-    expect(BASE.length).toBe(323);
+  //
+  // DOJO-REPORT T3 moves the static and runtime censuses by exactly ONE and leaves the twin
+  // census alone: `dojo_report` is a NEW core definition in `definitions.ts` with no `user_`
+  // twin — it reaches no person on an owner channel, so the full-parity loop does not mint
+  // one. TWINS.length holding at 119 IS the check that it did not accidentally acquire one,
+  // the same check T3's `shell` earned.
+  it('the census is T0\'s 320 static definitions + T3\'s `shell` + T77b\'s two drafts + DOJO-REPORT\'s `dojo_report`, 119 user_ twins, 443 at runtime', () => {
+    expect(BASE.length).toBe(324);
     expect(BASE.filter((d) => d.name === 'shell')).toHaveLength(1);
     expect(BASE.filter((d) => d.name === 'gmail_draft' || d.name === 'outlook_draft')).toHaveLength(2);
+    expect(BASE.filter((d) => d.name === 'dojo_report')).toHaveLength(1);
     expect(TWINS.length).toBe(119);
-    expect(ALL.length).toBe(442);
-    expect(new Set(ALL.map((d) => d.name)).size).toBe(442);
+    expect(ALL.length).toBe(443);
+    expect(new Set(ALL.map((d) => d.name)).size).toBe(443);
   });
 
   it('EVERY definition declares its effects, and every declaration is well formed', () => {
@@ -371,9 +378,11 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // preset — a capability loss with no error anywhere.
     // T77b moves both by TWO: the two draft definitions, each with the `fs_read` its
     // `attachments` field earns, plus their two twins (127 base → 149 runtime).
+    // DOJO-REPORT T3 moves both by ONE: `dojo_report` declares the single `fs_write` it
+    // performs (the local evidence bundle). No twin, so base and runtime move together.
     const effectful = BASE.filter((d) => d.effects.length > 0);
-    expect(effectful.length).toBe(127);
-    expect(ALL.filter((d) => d.effects.length > 0).length).toBe(149);
+    expect(effectful.length).toBe(128);
+    expect(ALL.filter((d) => d.effects.length > 0).length).toBe(150);
     // T8 Step 3 moves this by EIGHT, and the tripwire is what earned it:
     // `pdf_create.filename` and the seven `output_filename` siblings are BARE
     // NAMES, not paths. Their old `fs_write from: args.<name>` declaration
@@ -550,8 +559,11 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // This is DRIVEN, not asserted about the source: a source-text check that "the
     // right identifier appears" is not the same as calling it for a tool outside
     // the core and reading the answer.
-    expect(toolDefinitions.length).toBe(112);
-    expect(ALL.length).toBe(442);
+    // DOJO-REPORT T3: core 112 → 113 and runtime 442 → 443. `dojo_report` is declared in
+    // `definitions.ts`, so it lands INSIDE the core array — which is why `outsideCore`
+    // below does not move. Both numbers moving together is the check on that claim.
+    expect(toolDefinitions.length).toBe(113);
+    expect(ALL.length).toBe(443);
 
     const core = new Set(toolDefinitions.map((d) => d.name));
     const outsideCore = ALL.filter((d) => !core.has(d.name));

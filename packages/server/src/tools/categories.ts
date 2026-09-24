@@ -14,7 +14,10 @@ import type { ToolDefinition } from '../agent/tools/types.js';
 export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   {
     label: 'Meta',
-    tools: ['load_tool_docs'],
+    // DOJO-REPORT T3: `dojo_report` joins the category every agent already holds, so
+    // reporting a platform problem is default-granted with no new label and no backfill
+    // (owner ruling D5). Appended, never reordered — the label string is a cached prefix.
+    tools: ['load_tool_docs', 'dojo_report'],
   },
   {
     label: 'File & System',

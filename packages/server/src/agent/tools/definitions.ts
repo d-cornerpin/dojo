@@ -2859,6 +2859,37 @@ export const toolDefinitions: ToolDefinition[] = [
     concurrency: 'serial',
     maxResultTokens: 1000,
   },
+  {
+    name: 'dojo_report',
+    description: 'File a problem report about the Dojo platform itself, for the people who build it. Use this when the user says something went wrong with the platform and wants it fixed — "that wasn\'t right, why did that happen, let\'s get this fixed in the Dojo". Three calls: `gather` gives you the evidence for a bounded recent window (at most 20 turns / 120 minutes); `draft` takes your write-up; `submit` shows it to the user for approval.\n\nYOU CANNOT SEND ANYTHING. `submit` puts a preview card in front of the user with your exact text; only the user pressing Post on that card can publish it, and only they can edit it. Say so when you tell them you have filed it.\n\nWHAT YOUR BRIEF MAY CONTAIN: your own abstracted description of the failure. WHAT IT MAY NOT CONTAIN, because this becomes a PUBLIC page: quotes from the conversation, anything the user wrote, anyone\'s name or address, file contents, file paths, or credentials. Describe the SHAPE ("a tool call was refused by a permission gate the engine had just told me to use"), never the content. A separate machine-built attachment carries the timings, token counts and tool names — you do not write it and cannot add to it.\n\nPick `lane` from the fixed list: tool-error (a tool refused or broke), wrong-answer (the platform answered, incorrectly), silence (nothing came back), permission (a gate refused something it should have allowed), other.',
+    effects: [{ kind: 'fs_write', from: 'fixed:the local report bundle under ~/.dojo/reports' }],
+    input_schema: {
+      type: 'object',
+      properties: {
+        phase: {
+          type: 'string',
+          enum: ['gather', 'draft', 'submit'],
+          description: 'Which step you are on. Call them in this order.',
+        },
+        turns: { type: 'number', description: 'gather only. How many recent turns to look at. Capped at 20.' },
+        minutes: { type: 'number', description: 'gather only. How far back in minutes. Capped at 120.' },
+        report_id: { type: 'string', description: 'draft and submit. The id `gather` gave you.' },
+        lane: {
+          type: 'string',
+          enum: ['tool-error', 'wrong-answer', 'silence', 'permission', 'other'],
+          description: 'draft only. The failure lane, from the fixed list.',
+        },
+        title: { type: 'string', description: 'draft only. One line, under 80 characters, no user content.' },
+        what_happened: { type: 'string', description: 'draft only.' },
+        what_should_have_happened: { type: 'string', description: 'draft only.' },
+        why_it_went_wrong: { type: 'string', description: 'draft only. Your reasoning about the cause.' },
+        fix_ideas: { type: 'string', description: 'draft only. What you think would fix it.' },
+      },
+      required: ['phase'],
+    },
+    concurrency: 'serial',
+    maxResultTokens: 12000,
+  },
 ];
 
 // Phase 3 (2026-05-04), register definition-level concurrency overrides

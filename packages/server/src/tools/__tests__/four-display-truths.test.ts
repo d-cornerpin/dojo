@@ -238,14 +238,28 @@ describe('T54 — CONTROL: bookkeeping filtering is otherwise unmoved', () => {
     'work_validate',
   ];
 
-  it('the hidden set is exactly the pinned 108 names (arg-less, as the registry is read)', () => {
+  // NAMES THAT JOINED THE HIDDEN SET AFTER T54, each one argued here. This list exists so
+  // the T54 pin above stays HISTORY — it records what the hidden set was the day the three
+  // names left, and a later arrival must not be able to edit that record. Both lists are
+  // read together below; only this one may grow, and only with a reason.
+  const HIDDEN_SINCE_T54: readonly string[] = [
+    // DOJO-REPORT T3: `dojo_report` is a Meta tool, like `load_tool_docs` beside it, and
+    // hidden is the right answer rather than a tolerated one. Its user-facing surface is
+    // the preview card the engine puts on the dashboard, where the owner reads the exact
+    // text and decides — three chat chips for gather/draft/submit would be precisely the
+    // chip noise T54 removed, sitting next to the card that is the actual decision.
+    'dojo_report',
+  ];
+
+  it('the hidden set is exactly the pinned 108 names plus the arrivals since (arg-less, as the registry is read)', () => {
+    const pinned = [...HIDDEN_AT_T54, ...HIDDEN_SINCE_T54];
     const hidden = [...new Set(TOOL_CATEGORIES.flatMap((c) => c.tools))]
       .filter((n) => classifyTool(n) === 'bookkeeping').sort();
-    const gained = hidden.filter((n) => !HIDDEN_AT_T54.includes(n));
-    const lost = HIDDEN_AT_T54.filter((n) => !hidden.includes(n));
+    const gained = hidden.filter((n) => !pinned.includes(n));
+    const lost = pinned.filter((n) => !hidden.includes(n));
     expect(gained, `tool(s) that newly went HIDDEN — the chip-noise class returning: ${gained.join(', ')}`).toEqual([]);
     expect(lost, `tool(s) that newly grew a chip without a ruling: ${lost.join(', ')}`).toEqual([]);
-    expect(hidden.length).toBe(108);
+    expect(hidden.length).toBe(108 + HIDDEN_SINCE_T54.length);
   });
 
   it('the three names T54 moved are gone from the hidden set and nothing else went with them', () => {

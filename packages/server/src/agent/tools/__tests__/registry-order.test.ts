@@ -63,8 +63,10 @@ describe('tool registry (PHASE-5 T1 Step 2)', () => {
   it('reports effect coverage from the REGISTRY, which is what T7 s exit gate consumes', () => {
     const cov = effectCoverage();
     // UX-REPAIR T77b: 438 → 442. Two new draft definitions and their two `user_` twins.
-    expect(cov.total).toBe(442);
-    expect(cov.declared).toBe(442);
+    // DOJO-REPORT T3: 442 → 443. `dojo_report`, one core tool, no `user_` twin — it reaches
+    // no person on an owner channel, so the parity loop does not mint one for it.
+    expect(cov.total).toBe(443);
+    expect(cov.declared).toBe(443);
     // T8 Step 3: 125 → 126. `history_get` gained the fs_read it always
     // performed, when the recall door converted to the facade and the missing
     // declaration refused it (RULING P5-R14, corrected at the site).
@@ -88,7 +90,10 @@ describe('tool registry (PHASE-5 T1 Step 2)', () => {
     // UX-REPAIR T77b, 145 → 149: `gmail_draft` and `outlook_draft` plus their two `user_`
     // twins, each declaring the `fs_read` its `attachments` field earns. Deliberately NOT
     // a `send` effect — a draft delivers to nobody.
-    expect(cov.effectful).toBe(149);
+    // DOJO-REPORT T3: 149 → 150. `dojo_report` declares the one `fs_write` it performs —
+    // the local evidence bundle under `~/.dojo/reports`. It declares no `net` and no `send`,
+    // which is the census confirming the tool cannot publish rather than us asserting it.
+    expect(cov.effectful).toBe(150);
     // PHASE-5 T3, and this number corrects an assumption rather than confirming
     // one: `proc` is 18, not 1. T1 already declared `proc` on 17 tools that run
     // a subprocess with no shell and no resource argument (all eight Plaud verbs
