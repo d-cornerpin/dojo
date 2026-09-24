@@ -61,7 +61,11 @@ export interface SettingsFacts {
 
 export interface TelemetrySources {
   readonly reportId: string;
-  readonly createdAt: string;         // ISO
+  // The report row's own `created_at`, as the DATABASE wrote it: `datetime('now')`, i.e. UTC
+  // in the zoneless `YYYY-MM-DD HH:MM:SS` shape. Said plainly because this comment used to
+  // read "ISO" and no production caller ever passed one — `iso()` owns the conversion, and
+  // FR-4 is what it cost to have the comment and the caller disagree.
+  readonly createdAt: string;
   readonly signature: string;
   readonly lane: string;
   readonly platformVersion: string;

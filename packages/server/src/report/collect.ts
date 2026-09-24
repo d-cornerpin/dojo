@@ -64,14 +64,23 @@ export const str = (v: unknown): string | null => (typeof v === 'string' ? v : n
  * reads both stored shapes as UTC. A NULL `ended_at` — an OPEN turn, which is
  * exactly what a `silence`-lane report captures — yields NULL, never a
  * fabricated duration. Ordered by the primary key, so the sort is free.
+ *
+ * ── `turns` IS THE ONE READER THE AGENT CAN NARROW, SO IT TAKES THE NUMBER (FR-3) ──
+ * The other five caps bound a table the asker never named. This one is `window.turns`, which
+ * is PUBLISHED in the attachment and said to the agent in words — so the resolved window has
+ * to reach the `LIMIT`, not merely be reported beside it. It used to bind `COLLECTOR_CAPS.turns`
+ * and nothing else, which published a five-turn window over twenty turns of evidence.
+ *
+ * `Math.min` is here and not only in `resolveWindow` on purpose: the cap must bind at the
+ * statement, so a future caller that computes a number some other way cannot widen the read.
  */
-export function readTurns(agentId: string, since: string): Row[] {
+export function readTurns(agentId: string, since: string, turns: number): Row[] {
   return getDb().prepare(
     `SELECT kind, subject_kind, lane, exit_reason, answered, effectful_calls, started_at, ended_at,
             CAST(ROUND((julianday(ended_at) - julianday(started_at)) * 86400000) AS INTEGER) AS duration_ms
        FROM turns WHERE agent_id = ? AND started_at >= ?
       ORDER BY turn_number DESC LIMIT ?`,
-  ).all(agentId, since, COLLECTOR_CAPS.turns) as Row[];
+  ).all(agentId, since, Math.min(turns, COLLECTOR_CAPS.turns)) as Row[];
 }
 
 /**

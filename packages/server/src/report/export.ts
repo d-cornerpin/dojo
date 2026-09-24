@@ -38,7 +38,7 @@
 
 import { getReport } from './store.js';
 import { writeReportFile } from './bundle.js';
-import { renderIssueBody, renderIssueTitle } from './issue-body.js';
+import { issueLabelsFor, renderIssueBody, renderIssueTitle, reportVersion } from './issue-body.js';
 import { reportRepo } from './repo.js';
 
 /**
@@ -95,8 +95,15 @@ export function exportReport(id: string): ExportResult | null {
   // Built with `encodeURIComponent`, NOT `URLSearchParams`: the latter writes form encoding, so
   // a space becomes `+` and a brief containing a literal `+` becomes a brief containing a space
   // on the public page. Percent-encoding round-trips both.
+  // ── ONE LABEL SET, BOTH DOORS (final review, FR-6) ──
+  // This used to be the literal `labels=dojo-report` while `post.ts` sent `issueLabelsFor(...)`,
+  // so a hand-pasted report arrived without the version label a posted one carries and dropped
+  // out of every version-filtered triage view. Same function, same row, same answer. The comma
+  // is left UNENCODED between labels because that separator is GitHub's, not a value: each
+  // label is encoded on its own.
+  const labels = issueLabelsFor(reportVersion(row) ?? '').map(encodeURIComponent).join(',');
   const query = [
-    'labels=dojo-report',
+    `labels=${labels}`,
     `title=${encodeURIComponent(renderIssueTitle(row.brief))}`,
     `body=${encodeURIComponent(body)}`,
   ].join('&');

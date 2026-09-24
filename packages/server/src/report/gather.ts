@@ -115,7 +115,9 @@ export function gatherEvidence(agentId: string, req: WindowRequest, now: Date = 
   const since = sqlStamp(window.sinceIso);
   const sinceMs = now.getTime() - window.minutes * 60_000;
 
-  const turnRows = readTurns(agentId, since);
+  // The RESOLVED window, not the standing cap: `window.turns` is what the attachment publishes
+  // and what the agent is told, so it is what the reader must apply (FR-3).
+  const turnRows = readTurns(agentId, since, window.turns);
   const callRows = readCalls(agentId, since);
   const auditRows = readAudit(agentId, since);
   const failureRows = readFailures(agentId, since);

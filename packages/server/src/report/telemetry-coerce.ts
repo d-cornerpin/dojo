@@ -66,9 +66,36 @@ import {
 export const nonNeg = (n: number | null | undefined): number | null =>
   typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : null;
 
-/** A 'timestamp'. Anything `Date.parse` rejects is not an instant. */
-export const iso = (s: string | null | undefined): string | null =>
-  typeof s === 'string' && !Number.isNaN(Date.parse(s)) ? new Date(s).toISOString() : null;
+/**
+ * SQLite's `datetime('now')`: a UTC instant, written with a space and no zone. Anchored, so
+ * only that exact shape is re-read — every other string keeps going to the standard parser.
+ */
+const SQLITE_UTC_STAMP = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
+
+/**
+ * A 'timestamp'. Anything `Date.parse` rejects is not an instant.
+ *
+ * ── THE STAMP IS ALREADY UTC, AND SAYING SO IS A PRIVACY TERM (final review, FR-4) ──
+ * The one field of this kind is `report.created_at`, fed from `dojo_reports.created_at`,
+ * whose default is `datetime('now')` — UTC, in the zoneless `YYYY-MM-DD HH:MM:SS` shape.
+ * That is not ISO 8601, so the bare `new Date(s)` this used to be fell to V8's LEGACY
+ * parser, which reads a zoneless stamp as LOCAL; `toISOString()` then re-spelled it as UTC
+ * and the attachment shipped an instant shifted by the reporter's own offset.
+ *
+ * The accuracy half is a wrong platform fact on a public page. The other half is the reason
+ * this is in the privacy contract rather than in the formatting: the gap between that stamp
+ * and the issue's own tracker timestamp IS the reporter's UTC offset — a location fact about
+ * the user, disclosed by the platform, that no whitelist row declares and no owner approved.
+ * The whitelist admits WHAT a field may say; this is the one place that decides what it MEANS.
+ *
+ * `collect.ts` documents the identical trap in its header and defends against it with
+ * `julianday`; the conversion below is that defence at the other end of the same hand-off.
+ */
+export const iso = (s: string | null | undefined): string | null => {
+  if (typeof s !== 'string') return null;
+  const instant = SQLITE_UTC_STAMP.test(s) ? `${s.replace(' ', 'T')}Z` : s;
+  return Number.isNaN(Date.parse(instant)) ? null : new Date(instant).toISOString();
+};
 
 /**
  * An 'enum'. The domain is the FIELD'S — inline `members`, or the live

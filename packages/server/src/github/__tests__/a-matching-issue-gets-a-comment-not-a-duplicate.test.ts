@@ -352,6 +352,37 @@ describe('no match files one issue, with the title, the labels and the body', ()
     expect(row.postedAt).toBeTruthy();
   });
 
+  // ⚠ THE LABELS ARE PART OF "THE SAME DELIVERY", AND THEY HAD DRIFTED (final review, FR-6).
+  //
+  // D2's load-bearing word is SAME: the export is the identical report handed over by hand
+  // instead of by token. The bytes were held from both ends and the labels were held from
+  // neither — the poster sent `issueLabelsFor(reportVersion(row))` while the prefilled link
+  // carried the literal `labels=dojo-report`, so every hand-pasted report arrived WITHOUT the
+  // version label and vanished from version-filtered triage. The only clause over that line
+  // was `toContain('labels=dojo-report')`, which is true of both spellings.
+  //
+  // This clause is the diff itself, driven through both doors for ONE row, so neither door can
+  // be changed alone. It is deliberately not a comparison against a literal list: a literal
+  // would be a third source of truth, and three copies drift faster than two.
+  it('the labels on the prefilled link are the labels the poster sends, for the same row', async () => {
+    const id = approved();
+    const linked = new URL(exportReport(id)!.newIssueUrl).searchParams.get('labels');
+    await postApprovedReport(id);
+    const posted = (JSON.parse(writes()[0].body) as { labels: string[] }).labels;
+
+    // Non-vacuity on both sides before they are compared: two empty label sets also match, and
+    // the version label is the whole point — a report with no version label is the defect.
+    expect(posted, 'the poster sent no labels at all — this comparison would prove nothing')
+      .toContain('dojo-report');
+    expect(posted.some(l => /^v\d/.test(l)), 'the fixture row carries no version label').toBe(true);
+    expect(linked, 'the prefilled link carries no labels at all').not.toBeNull();
+    expect(
+      (linked ?? '').split(','),
+      'the prefilled link and the posted issue no longer carry the same labels — a hand-pasted '
+      + 'report will not show up in the triage filters a posted one does (D2: the SAME report)',
+    ).toEqual(posted);
+  });
+
   it('the bytes posted to GitHub are the bytes of the file an unconnected box writes', async () => {
     // D4 spans BOTH doors: the report an owner pastes by hand and the one the platform sends
     // are the same text, or the consent gate only covers one of them.

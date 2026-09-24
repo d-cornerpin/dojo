@@ -219,6 +219,56 @@ describe('the per-collector row caps bind against a seeded body', () => {
   });
 });
 
+// ⚠ THE NUMBER ON THE PUBLIC PAGE IS THE NUMBER THE COLLECTOR APPLIED (final review, FR-3).
+//
+// `window.turns` is published in the attachment (`sources.windowTurns`) AND said to the agent
+// in words ("this is the last N turns"). It was resolved and then never applied: `readTurns`
+// bound its `LIMIT` to `COLLECTOR_CAPS.turns` and to nothing else, so `dojo_report
+// {phase:"gather", turns:5}` answered `window.turns: 5` beside up to twenty turn entries. That
+// is I1's defect class one field over — a bounded-looking window that is not the bound — and
+// I1 was ruled Important.
+//
+// The two clauses below are the two directions, and BOTH are needed. The first alone would be
+// satisfied by deleting the cap; the second alone is satisfied by the defect itself. What
+// makes them bite is that the same body is seeded for both: one collector, one table, two asks,
+// two different answers.
+describe('the turn count the attachment PUBLISHES is the turn count the reader applied', () => {
+  it('a five-turn ask returns five turns, not the standing twenty', () => {
+    seedAtNow(COLLECTOR_CAPS.turns * 2);
+    const ev = gatherEvidence(AGENT, { turns: 5 }, NOW);
+    expect(ev.sources.windowTurns, 'the ask was inside the cap and must be honoured as asked').toBe(5);
+    expect(
+      ev.sources.turns.length,
+      'the attachment claims a five-turn window and carries more than five turns',
+    ).toBe(5);
+  });
+
+  it('...and the cap still binds when the ask is above it — the ask cannot raise the bound', () => {
+    seedAtNow(COLLECTOR_CAPS.turns * 2);
+    const ev = gatherEvidence(AGENT, { turns: 500 }, NOW);
+    expect(ev.sources.windowTurns).toBe(REPORT_WINDOW_MAX_TURNS);
+    expect(ev.sources.windowTruncated).toBe(true);
+    expect(ev.sources.turns.length, 'an oversized ask reached past the collector cap')
+      .toBe(COLLECTOR_CAPS.turns);
+  });
+
+  it('holds as an invariant across every ask, including no ask at all', () => {
+    seedAtNow(COLLECTOR_CAPS.turns * 2);
+    for (const req of [{}, { turns: 1 }, { turns: 5 }, { turns: 20 }, { turns: 500 },
+      { turns: -3 }, { turns: Number.NaN }]) {
+      const ev = gatherEvidence(AGENT, req, NOW);
+      // Non-vacuity: an always-empty reader satisfies "at most" for free, and an always-empty
+      // window is the exact defect this file was written to catch.
+      expect(ev.sources.turns.length, JSON.stringify(req)).toBeGreaterThan(0);
+      expect(
+        ev.sources.turns.length,
+        `${JSON.stringify(req)}: the attachment publishes ${ev.sources.windowTurns} turns and carries `
+        + `${ev.sources.turns.length}`,
+      ).toBeLessThanOrEqual(ev.sources.windowTurns);
+    }
+  });
+});
+
 // ⚠ THE BLOCK THE FIRST CUT DID NOT HAVE. Each clause seeds one row inside, one exactly on
 // the boundary second, and one a single second outside — so a predicate that stopped binding
 // (or bound in the wrong UNIT) changes the answer here and nowhere else in the suite.

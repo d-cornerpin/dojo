@@ -59,7 +59,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { createReport, attachDraft, submitForApproval, type ReportBrief } from '../store.js';
 import { bundleDir, writeBundle } from '../bundle.js';
 import { exportReport, PREFILL_MAX_BODY_CHARS } from '../export.js';
-import { renderIssueBody, renderIssueTitle } from '../issue-body.js';
+import { issueLabelsFor, renderIssueBody, renderIssueTitle } from '../issue-body.js';
 import { reportRepo, DOJO_REPORT_REPO_DEFAULT } from '../repo.js';
 
 const BRIEF: ReportBrief = {
@@ -177,9 +177,28 @@ describe('the prefilled link is usable, or it says it is not', () => {
     const { newIssueUrl, bodyWasTrimmed } = exportReport(id)!;
     expect(newIssueUrl.startsWith('https://github.com/')).toBe(true);
     expect(newIssueUrl).toContain(`${DOJO_REPORT_REPO_DEFAULT}/issues/new`);
-    expect(newIssueUrl).toContain('labels=dojo-report');
     expect(newIssueUrl).toContain(encodeURIComponent(BRIEF.title));
     expect(bodyWasTrimmed).toBe(false);
+    // FR-6: the labels come from `issueLabelsFor`, never from a literal in this module. The
+    // clause below used to read `toContain('labels=dojo-report')`, which is true of the label
+    // SET and of the single label that was drifting away from it — it could not tell them apart.
+    expect(new URL(newIssueUrl).searchParams.get('labels')?.split(','))
+      .toEqual(issueLabelsFor(''));
+  });
+
+  it('a report that knows its version puts the version label on the link too', () => {
+    // The divergence FR-6 found was invisible on a version-less fixture, which is the only
+    // shape this file had. The poster-side half of the comparison — the same labels on the real
+    // POST body for one row — is driven in
+    // `github/__tests__/a-matching-issue-gets-a-comment-not-a-duplicate.test.ts`.
+    const r = createReport('agent-1', 'tool-error', 'ds1-aaaaaaaaaaaa');
+    attachDraft(r.id, BRIEF, { ...TELEMETRY, platform: { version: '3.1.28' } },
+      writeBundle(r.id, 'agent-1', { evidence: BUNDLE_MARKER }).path);
+    submitForApproval(r.id);
+    const labels = new URL(exportReport(r.id)!.newIssueUrl).searchParams.get('labels')?.split(',');
+    expect(labels, 'a version-filtered triage view will not show this hand-pasted report')
+      .toEqual(['dojo-report', 'v3.1.28']);
+    expect(labels).toEqual(issueLabelsFor('3.1.28'));
   });
 
   it('a long brief trims the LINK, never the file, and says so', () => {

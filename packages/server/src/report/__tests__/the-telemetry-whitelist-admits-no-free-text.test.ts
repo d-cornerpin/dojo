@@ -5,6 +5,7 @@ import {
   TELEMETRY_WHITELIST, TELEMETRY_SCHEMA_VERSION, UNRECOGNISED, ABSENT, whitelistField, enumMembers,
 } from '../telemetry-whitelist.js';
 import { buildTelemetry, type TelemetrySources } from '../telemetry-build.js';
+import { iso } from '../telemetry-coerce.js';
 
 const KINDS = ['enum', 'count', 'millis', 'bytes', 'timestamp', 'ordinal', 'bool', 'version', 'digest'];
 
@@ -443,5 +444,83 @@ describe('(6) a null source is ABSENT, and a sentinel is never a member', () => 
                 latencyMs: 1, inputTokensEstimated: false }],
     }));
     expect((out.calls as Record<string, unknown>[])[0].request_type).toBe('standard');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// (7) THE ONE TIMESTAMP ON THE ATTACHMENT IS UTC — ON EVERY BOX (final review, FR-4).
+//
+// `report.created_at` is the whitelist's only `'timestamp'` row and `iso()` is its only
+// coercer. The value handed to it is the `dojo_reports.created_at` column, whose DEFAULT is
+// SQLite's `datetime('now')` — a UTC instant written as `YYYY-MM-DD HH:MM:SS`, with no `T`
+// and no zone. That shape is not ISO 8601, so `new Date(s)` falls to V8's LEGACY parser,
+// which reads a zoneless stamp as LOCAL time; the instant is then re-spelled as UTC by
+// `toISOString()` and comes out shifted by the reporter's own offset.
+//
+// TWO THINGS ARE WRONG WITH THAT AND ONLY ONE OF THEM IS ACCURACY:
+//   • the attachment states a time the box did not record, on a public page; and
+//   • the difference between that stamp and the issue's own GitHub timestamp is the
+//     reporter's UTC offset — a location fact about the user, published by the platform,
+//     which no whitelist row declares and no owner approved. `collect.ts` names this exact
+//     trap in its header and defends against it with `julianday`; this is the same trap one
+//     file over, at the T1/T3 boundary, where nothing owned it.
+//
+// THE CLAUSES BELOW PIN THE BOX'S ZONE THEMSELVES rather than trusting the runner's. A clause
+// that only asserted an exact ISO string would be unfalsifiable on a machine at UTC+0 — there
+// is nothing to fail there — so `TZ` is set to a HALF-HOUR zone for the duration, which also
+// refuses a "round to whole hours" repair.
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('(7) the stored stamp is UTC, and the attachment says so on every box', () => {
+  /** Byte-for-byte what `datetime('now')` writes into `dojo_reports.created_at`. */
+  const STORED = '2026-09-24 07:00:00';
+  const SAME_INSTANT = '2026-09-24T07:00:00.000Z';
+
+  /** +05:30. A whole-hour zone would let a fix that rounds to hours ride green. */
+  const inZone = <T>(tz: string, fn: () => T): T => {
+    const before = process.env.TZ;
+    process.env.TZ = tz;
+    try { return fn(); } finally {
+      if (before === undefined) delete process.env.TZ; else process.env.TZ = before;
+    }
+  };
+
+  it('the reporter\'s offset never reaches the stamp — the stored shape is read as UTC', () => {
+    // Non-vacuity: prove the zone actually took, or the assertion below is about nothing.
+    inZone('Asia/Kolkata', () => {
+      expect(new Date(STORED).toISOString(),
+        'TZ did not take in this runtime — this clause would pass over an unshifted parse')
+        .not.toBe(SAME_INSTANT);
+      expect(iso(STORED), 'the stored UTC stamp was shifted by the reporter\'s offset').toBe(SAME_INSTANT);
+    });
+  });
+
+  it('...and the same stamp on a third zone gives the same instant, so nothing is local', () => {
+    const answers = ['Asia/Kolkata', 'America/Los_Angeles', 'Europe/Berlin', 'UTC']
+      .map(tz => inZone(tz, () => iso(STORED)));
+    expect(new Set(answers).size,
+      'the attachment\'s timestamp depends on where the reporter is sitting').toBe(1);
+    expect(answers[0]).toBe(SAME_INSTANT);
+  });
+
+  it('carries that instant onto the attachment itself, through the real builder', () => {
+    inZone('Asia/Kolkata', () => {
+      const out = buildTelemetry(sources({ createdAt: STORED }));
+      expect((out.report as Record<string, unknown>).created_at).toBe(SAME_INSTANT);
+    });
+  });
+
+  it('an already-ISO stamp is not shifted the other way', () => {
+    // The repair must not become a second conversion applied to a value that needs none.
+    inZone('Asia/Kolkata', () => {
+      expect(iso(SAME_INSTANT)).toBe(SAME_INSTANT);
+      expect(iso('2026-09-24T07:00:00Z')).toBe(SAME_INSTANT);
+      expect(iso('2026-09-24T07:00:00+05:30')).toBe('2026-09-24T01:30:00.000Z');
+    });
+  });
+
+  it('still fails CLOSED on anything that is not an instant', () => {
+    for (const bad of [null, undefined, '', 'yesterday', '2026-13-45 99:99:99', 'taxes.pdf']) {
+      expect(iso(bad as string | null | undefined), `${String(bad)} was read as a time`).toBeNull();
+    }
   });
 });
