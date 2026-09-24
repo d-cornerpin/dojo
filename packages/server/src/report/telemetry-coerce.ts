@@ -85,12 +85,21 @@ export const asEnum = (path: string, value: string | null | undefined, toolName?
 /**
  * A 'version' or a 'digest'. Takes a PATH, never a bare string: the domain
  * belongs to the field, and a field declaring no `pattern` gets the sentinel.
+ *
+ * N1 — THE `typeof` GUARD IS LOAD-BEARING, NOT DEFENSIVE NOISE.
+ * `RegExp.prototype.test` coerces its argument through `toString()`, so a
+ * `Buffer` or a `String` object whose text matches PASSES the test — and this
+ * function returns the VALUE, not the matched text, so the raw object would land
+ * in the attachment (`{"type":"Buffer","data":[…]}`). The declared parameter type
+ * does not stop it: `gather.ts` fills these fields from `better-sqlite3`, which
+ * hands back `any`, and a BLOB column is a realistic route. The other coercers
+ * all hold their type — this one dropped the guard in the C2 rewrite.
  */
 export const asShape = (path: string, value: string | null | undefined): string => {
   const f = whitelistField(path);
   if (!f || f.pattern === undefined) return UNRECOGNISED;
   if (value === null || value === undefined) return ABSENT;
-  return f.pattern.test(value) ? value : UNRECOGNISED;
+  return typeof value === 'string' && f.pattern.test(value) ? value : UNRECOGNISED;
 };
 
 /**

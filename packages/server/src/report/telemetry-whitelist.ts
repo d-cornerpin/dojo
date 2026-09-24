@@ -27,12 +27,12 @@
 // the sets the platform already owns cannot drift into a frozen copy here.
 //
 // The string-shaped kinds — `'version'` and `'digest'` — cannot enumerate their
-// domain, so they declare its STRUCTURE: an anchored `pattern` for the exact shape
-// of the platform artifact that field carries. `report.signature` is `ds1-` plus
-// twelve hex digits because that is precisely what `report/signature.ts` mints;
-// `report.schema` is the schema constant and only that. A shared "safe characters"
-// filter was tried here first and review killed it — `telemetry-coerce.ts` carries
-// that argument and the rule it leaves: NO COERCER TAKES A STRING WITHOUT A PATH.
+// domain, so they declare its STRUCTURE: an anchored, UNFLAGGED, FULLY BOUNDED
+// `pattern` for the exact shape of the artifact that field carries. Unbounded is
+// not a shape: `platform.version` is the only `family` here, and its prerelease
+// tail is capped at short lowercase tokens so `1.2.3-SarahDivorceSettlement` and a
+// 500-character tail are both off-domain (N3). A shared "safe characters" filter
+// was tried first and review killed it: NO COERCER TAKES A STRING WITHOUT A PATH.
 //
 // ── WHAT IS DELIBERATELY ABSENT FROM V1, SO NOBODY "HELPFULLY" ADDS IT ──
 //
@@ -89,8 +89,8 @@ export interface TelemetryField {
   readonly membersFrom?: 'tool-registry' | 'tool-input-schema';
   /**
    * REQUIRED for kinds 'version' and 'digest', forbidden on every other kind. The
-   * ANCHORED shape of the platform artifact this field carries — this field's own
-   * domain, never a shared "safe characters" filter.
+   * ANCHORED, FLAGLESS, length-BOUNDED shape of the artifact this field carries.
+   * Flags are refused by test: `/m` turns ^ and $ into LINE anchors (N2).
    */
   readonly pattern?: RegExp;
 }
@@ -119,7 +119,7 @@ export const TELEMETRY_WHITELIST: readonly TelemetryField[] = [
     members: ['tool-error', 'wrong-answer', 'silence', 'permission', 'other'] },
   // ── the box ──
   { path: 'platform.version',         kind: 'version',   source: 'gateway/routes/update.ts getCurrentVersion()',
-    pattern: /^\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?$/ },   // a semver, and nothing that is not one
+    pattern: /^\d+\.\d+\.\d+(-[a-z0-9]{1,8}(\.[a-z0-9]{1,8}){0,2})?$/ },  // N3: BOUNDED semver
   { path: 'platform.os',              kind: 'enum',      source: 'process.platform',
     members: ['darwin', 'linux', 'win32', 'other'] },
   { path: 'platform.node_major',      kind: 'count',     source: 'process.versions.node' },

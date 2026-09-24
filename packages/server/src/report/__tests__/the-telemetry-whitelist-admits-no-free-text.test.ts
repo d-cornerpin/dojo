@@ -127,7 +127,11 @@ describe('(1) the whitelist cannot express free text', () => {
       const rx = f.pattern!.source;
       expect(rx.startsWith('^'), `${f.path}'s pattern is not anchored at the start`).toBe(true);
       expect(rx.endsWith('$'), `${f.path}'s pattern is not anchored at the end`).toBe(true);
-      expect(f.pattern!.global, `${f.path}'s pattern is stateful (/g)`).toBe(false);
+      // N2: `.source` and `.global` cannot see the flag that actually defeats anchoring.
+      // `/m` turns ^ and $ into LINE anchors — byte-identical source, global false — so
+      // `/^ds1-[0-9a-f]{12}$/m` matches "ds1-000000000000\n<any prose at all>". `/y` is
+      // stateful like `/g` and makes .test() alternate on repeat calls. No flag is legal.
+      expect(f.pattern!.flags, `${f.path}'s pattern carries flags: /${f.pattern!.flags}`).toBe('');
     }
   });
 
@@ -298,6 +302,11 @@ describe('(5) a version or digest is checked against its OWN declared shape', ()
     ['ip address', '192.168.1.24'],
     ['64-char blob', 'A'.repeat(64)],
     ['65-char blob', 'A'.repeat(65)],
+    // N2 behaviourally, not just declaratively: a valid digest, a newline, then prose.
+    // JS `$` is strict end-of-input WITHOUT /m; with /m it is a line anchor and this
+    // whole string is admitted. The flags clause declares the rule; this one feels it.
+    ['digest then a newline then prose', 'ds1-000000000000\nthe model kept saying my wife Sarah was wrong'],
+    ['version then a newline then prose', '3.1.28\nmy wife Sarah was wrong'],
   ];
 
   for (const [label, probe] of PROBES) {
@@ -327,6 +336,46 @@ describe('(5) a version or digest is checked against its OWN declared shape', ()
     for (const bad of ['ds1-9F2C1A0B4D77', 'ds1-9f2c1a0b4d7', 'ds1-9f2c1a0b4d777', 'ds2-9f2c1a0b4d77']) {
       expect((buildTelemetry(sources({ signature: bad })).report as Record<string, unknown>).signature,
         `signature admitted ${bad}`).toBe(UNRECOGNISED);
+    }
+  });
+
+  it('bounds the version tail, so a "family" shape cannot carry a word or a wall of text', () => {
+    // N3: `platform.version` is the only declared FAMILY rather than an exact artifact,
+    // and an unbounded tail is not a shape. The tail is capped at short lowercase tokens.
+    const ver = (v: string): unknown =>
+      (buildTelemetry(sources({ platformVersion: v })).platform as Record<string, unknown>).version;
+    for (const healthy of ['3.1.28', '1.0.0', '3.2.0-rc.1', '3.1.28-dev.1', '4.0.0-beta.2']) {
+      expect(ver(healthy), `version refused the healthy shape ${healthy}`).toBe(healthy);
+    }
+    for (const bad of ['1.2.3-SarahDivorceSettlement', `1.2.3-${'A'.repeat(500)}`,
+      `1.2.3-${'a'.repeat(40)}`, '1.2.3-rc.1.2.3.4', '1.2.3.4', 'v3.1.28', '3.1.28 ']) {
+      expect(ver(bad), `version admitted ${bad.slice(0, 32)}`).toBe(UNRECOGNISED);
+    }
+  });
+
+  it('refuses a non-string whose toString() would satisfy the pattern', () => {
+    // N1: `RegExp.test` coerces through toString(), and `asShape` returns the VALUE.
+    // Without the typeof guard a Buffer lands in the attachment as {"type":"Buffer",…}.
+    // `TelemetrySources` declares these as `string`, but gather.ts fills them from
+    // better-sqlite3, which returns `any` — a BLOB column is the realistic route.
+    const hostile: unknown[] = [
+      Buffer.from('ds1-9f2c1a0b4d77'),
+      new String('ds1-9f2c1a0b4d77'),
+      { toString: () => 'ds1-9f2c1a0b4d77' },
+      ['ds1-9f2c1a0b4d77'],
+    ];
+    for (const value of hostile) {
+      const out = buildTelemetry(sources({
+        signature: value as string, platformVersion: value as string,
+      }));
+      const report = out.report as Record<string, unknown>;
+      const platform = out.platform as Record<string, unknown>;
+      expect(typeof report.signature, 'signature emitted a non-string').toBe('string');
+      expect(typeof platform.version, 'version emitted a non-string').toBe('string');
+      expect(report.signature).toBe(UNRECOGNISED);
+      expect(platform.version).toBe(UNRECOGNISED);
+      expect(JSON.stringify(out)).not.toContain('Buffer');
+      expect(JSON.stringify(out)).not.toContain('ds1-9f2c1a0b4d77');
     }
   });
 });
