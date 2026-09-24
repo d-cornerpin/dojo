@@ -21,8 +21,9 @@
 // added something and must say so" rather than "you avoided the five words we thought of".
 // Three prongs, each answering a different question:
 //
-//   A. WHO MAY CONSUME AN APPROVAL? The importers of `report/store.ts`'s consent-critical
-//      exports must equal a named list, repo-wide. Today that list is the store's own test.
+//   A. WHO MAY CONSUME AN APPROVAL? ANY edge to `report/store.ts` requires its importer to be
+//      on a named list, UNLESS the edge is a braced static import binding only non-consent
+//      names — the one spelling whose names are provable. Today that list is the store's own test.
 //      **T7 adds exactly one more: the gateway route behind the owner's Post button.** That
 //      is the point of this prong — when T7 lands, the diff that grants posting rights is a
 //      one-line edit to a list called ALLOWED_CONSENT_CALLERS, in a file called this, and a
@@ -44,9 +45,15 @@
 // ALREADY-reachable fetch-bearing module gained a new call site — which is why prong C is
 // paired with the exact one-hop pins rather than trusted alone. What it guarantees is that
 // the graph behind this tool cannot change SHAPE without a human editing one of the four
-// lists below. What it no longer does is mistake one SPELLING for the whole language: fix
-// round 2 pins all six import forms and all seven binding forms as fixtures, because round 1
-// read one of each and reported green while a module held the doors.
+// lists below.
+//
+// What it no longer does is ENUMERATE. Three rounds of review beat three enumerations — five
+// forbidden names, then one import spelling out of six, then two readers pinned against
+// different vocabularies so a dynamic `await import(…)` bound a door at 26/26 green. An
+// enumerator must be exhaustive; an evader only has to be surprising. So prong A now asks for
+// a PROOF OF INNOCENCE instead of evidence of guilt, and the fixture tables below pin the
+// rule's vocabulary in both directions — the nine specifier forms the walk sees, and the one
+// form out of nine that can prove which names it binds.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -132,44 +139,71 @@ function specifiersOf(file: string): string[] {
   return specifiersIn(fs.readFileSync(file, 'utf8'));
 }
 
-/**
- * ── N1 (fix round 2): EVERY SPELLING THAT BINDS A CONSENT DOOR ──
- *
- * The first cut read ONE form — `import { approveOnce } from '…'` — and review measured two
- * escapes straight through it, each 7/7 green while a module held the doors:
- *
- *   import * as reportStore from '…/store.js';   // then reportStore.approveOnce(id)
- *   export { approveOnce as consume } from '…/store.js';   // a re-export barrel
- *
- * These are not hypothetical spellings: the repo already uses them 33 times (18 namespace,
- * 15 re-export barrels), five of the namespace ones on door modules shaped exactly like
- * `report/store.ts`. A census that reads one of six spellings is the same defect as the
- * five-name blacklist this file was written to replace, one layer up.
- *
- * ⚠ A STAR BINDS EVERYTHING, SO A STAR IS A CONSENT BINDING — unconditionally, with no
- * attempt to check whether `ns.approveOnce` is ever written. That check would be defeated by
- * `ns['approve' + 'Once']`, and a census that can be defeated by string concatenation is
- * decoration. The house rule this creates is a good one and is stated so nobody files it as
- * a bug: IF YOU WANT THE REPORT STORE, NAME WHAT YOU WANT. A module needing only `getReport`
- * writes the braced form and passes.
- */
-function consentBindingsIn(code: string): string[] {
-  const clean = stripComments(code);
-  const specs: string[] = [];
-  const bindsAConsentName = (clause: string): boolean =>
-    clause.split(',')
-      .map(s => s.trim().split(/\s+as\s+/)[0].replace(/^type\s+/, '').trim())
-      .some(n => CONSENT_EXPORTS.includes(n));
+/** The one form whose bound names are STATICALLY PROVABLE. Everything else is an assumption. */
+const BRACED_STATIC = /(?:import|export)\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/g;
 
-  // `import { … } from '…'` and `export { … } from '…'` — the named forms, either direction.
-  for (const m of clean.matchAll(/(?:import|export)\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/g)) {
-    if (bindsAConsentName(m[1])) specs.push(m[2]);
+const bindsAConsentName = (clause: string): boolean =>
+  clause.split(',')
+    .map(s => s.trim().split(/\s+as\s+/)[0].replace(/^type\s+/, '').trim())
+    .some(n => CONSENT_EXPORTS.includes(n));
+
+/**
+ * ── N3 (fix round 3): THE RULE IS INVERTED. STOP ENUMERATING SPELLINGS. ──
+ *
+ * Rounds 1 and 2 both enumerated the ways a door could be bound, and both were beaten by a
+ * way nobody had listed — five names, then one spelling out of six, then the two readers
+ * pinned against DIFFERENT vocabularies: the walk saw `await import('…')` edges, the consent
+ * reader saw only static `from`-bearing forms, so
+ *
+ *   const { approveOnce } = await import('../../report/store.js');
+ *
+ * bound a consent door at 26/26 green. That is not an exotic spelling — the tree holds 502
+ * relative `await import(…)` calls, 479 of them destructuring, 91 inside `gateway/routes`,
+ * which is exactly where T7's posting route lands. Nothing binds dynamically today (measured
+ * zero), so the promise held by luck while failing under the codebase's dominant idiom.
+ *
+ * Enumeration loses because the enumerator has to be exhaustive and the evader only has to be
+ * surprising. So the question this function asks is inverted:
+ *
+ *   NOT "does this edge bind a consent name?"  (unbounded, needs a complete list of spellings)
+ *   BUT "does this edge PROVE it binds no consent name?"  (bounded, one spelling can do it)
+ *
+ * ANY edge to the store — in any of the nine spellings `SPEC` provably sees — requires its
+ * importer to be on `ALLOWED_CONSENT_CALLERS`, UNLESS the edge is the braced static form and
+ * its name list contains no consent name. Dynamic, namespace, re-export, bare and default
+ * edges are consent-binding BY DEFAULT: the same direction as round 2's star ruling, now
+ * applied uniformly instead of case by case. A new import syntax invented tomorrow lands on
+ * the safe side without this file being touched.
+ *
+ * ⚠ THE TRADE, STATED SO NOBODY FILES IT AS A BUG. A file that dynamically imports the store
+ * and destructures ONLY `getReport` is FLAGGED, and that is correct rather than tolerated:
+ * destructured names from an `await import(…)` are not statically provable (`const { [k]: f }`
+ * is legal, and so is reaching the namespace object afterwards). Such a file has two honest
+ * remedies — convert the edge to the braced static form, which is the spelling that carries
+ * its own proof, or be added to the allowlist and reviewed. Both are cheap; neither is silent.
+ * The house rule is unchanged and now load-bearing: IF YOU WANT THE REPORT STORE, NAME WHAT
+ * YOU WANT, STATICALLY.
+ *
+ * Returns the specifier of every edge that does NOT carry that proof. The caller resolves
+ * them, so an unproven edge to some other module is simply not the store's business.
+ */
+function unprovenEdgesIn(code: string): string[] {
+  const clean = stripComments(code);
+  // One proof token per provably-innocent braced edge, keyed by specifier.
+  const proofs = new Map<string, number>();
+  for (const m of clean.matchAll(BRACED_STATIC)) {
+    if (bindsAConsentName(m[1])) continue;
+    proofs.set(m[2], (proofs.get(m[2]) ?? 0) + 1);
   }
-  // `import * as ns from '…'`, `export * from '…'`, `export * as ns from '…'` — all bind all.
-  for (const m of clean.matchAll(/(?:import|export)\s*\*(?:\s*as\s+[A-Za-z_$][\w$]*)?\s*from\s*['"]([^'"]+)['"]/g)) {
-    specs.push(m[1]);
+  const unproven: string[] = [];
+  for (const spec of specifiersIn(clean)) {
+    const left = proofs.get(spec) ?? 0;
+    // A file may hold BOTH an innocent braced edge and a dynamic one to the same module.
+    // Each proof covers exactly one edge; the surplus edge stays unproven, as it should.
+    if (left > 0) { proofs.set(spec, left - 1); continue; }
+    unproven.push(spec);
   }
-  return specs;
+  return unproven;
 }
 
 function resolveSpec(fromFile: string, spec: string): string | null {
@@ -210,13 +244,16 @@ function allSourceFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** Files that BIND a consent door from the report store, in any spelling. */
+/** Files holding an edge to the report store that does not prove it binds no consent door. */
 function consentImporters(): string[] {
   const hits: string[] = [];
   for (const file of allSourceFiles(SRC)) {
-    for (const spec of consentBindingsIn(fs.readFileSync(file, 'utf8'))) {
+    for (const spec of unprovenEdgesIn(fs.readFileSync(file, 'utf8'))) {
       const target = resolveSpec(file, spec);
-      if (target && path.relative(SRC, target) === STORE_REL) hits.push(path.relative(SRC, file));
+      if (target && path.relative(SRC, target) === STORE_REL) {
+        hits.push(path.relative(SRC, file));
+        break;
+      }
     }
   }
   return [...new Set(hits)].sort();
@@ -256,34 +293,61 @@ describe('the specifier reader sees every import spelling that creates an edge',
   });
 });
 
-describe('the consent reader sees every spelling that binds a door', () => {
-  const BINDS: readonly [string, string][] = [
+// ── THE RULE'S OWN VOCABULARY (fix round 3, N3) ──────────────────────────────────────────
+// These fixtures no longer enumerate "spellings that bind a door" — that list is unbounded
+// and lost three times. They enumerate the ONE spelling that carries a proof, and assert that
+// everything else falls on the safe side. Read as a pair with the table above: the walk sees
+// nine specifier forms, and eight of those nine can never prove their names.
+
+describe('an edge to the store needs the allowlist unless it PROVES it binds no door', () => {
+  const UNPROVEN: readonly [string, string][] = [
+    // ── carries a consent name outright ──
     ['braced named', `import { approveOnce } from './store.js';`],
     ['braced and renamed', `import { approveOnce as ok } from './store.js';`],
     ['braced among innocents', `import { getReport, markPosted, createReport } from './store.js';`],
-    // The two escapes review measured straight through the round-1 census, both 7/7 green.
+    // ── round 2's escapes: binds everything, proves nothing ──
     ['namespace', `import * as reportStore from './store.js';`],
     ['re-export barrel', `export { approveOnce as consume } from './store.js';`],
     ['star re-export', `export * from './store.js';`],
     ['star re-export, named', `export * as store from './store.js';`],
+    // ── round 3's escapes: the codebase's dominant idiom, 502 relative call sites ──
+    ['dynamic destructuring a door', `const { approveOnce } = await import('./store.js');`],
+    ['dynamic destructuring and renaming', `const { markPosted: mp } = await import('./store.js');`],
+    ['dynamic held as a namespace', `const s = await import('./store.js');\nawait s.markExported(id, p);`],
+    ['require', `const s = require('./store.js');`],
+    // ── and the two forms that bind without naming anything at all ──
+    ['bare side-effect', `import './store.js';`],
+    ['default', `import store from './store.js';`],
   ];
 
-  for (const [label, code] of BINDS) {
-    it(`treats a ${label} import of the store as a consent binding`, () => {
-      expect(consentBindingsIn(code), `a ${label} import walks past the census: ${code}`)
+  for (const [label, code] of UNPROVEN) {
+    it(`treats a ${label} edge to the store as needing the allowlist`, () => {
+      expect(unprovenEdgesIn(code), `a ${label} edge walks past the census: ${code}`)
         .toContain('./store.js');
     });
   }
 
-  it('lets an innocent named import through — the rule is "name what you want"', () => {
-    expect(consentBindingsIn(`import { getReport, listOpenReports } from './store.js';`)).toEqual([]);
+  it('lets an innocent BRACED STATIC import through — the one form that proves its names', () => {
+    expect(unprovenEdgesIn(`import { getReport, listOpenReports } from './store.js';`)).toEqual([]);
   });
 
-  it('a star binds every export, so it is a binding whether or not a door is ever written', () => {
-    // No `reportStore.approveOnce` anywhere in this fixture, and it still counts. Checking for
-    // the member access would be defeated by `ns['approve' + 'Once']`.
-    expect(consentBindingsIn(`import * as s from './store.js';\nreturn s.getReport(id);`))
+  it('a dynamic import destructuring ONLY getReport is still flagged, and that is the trade', () => {
+    // Nothing here touches a door. It is flagged anyway, because `const { [k]: f } = await
+    // import(…)` is legal and the namespace object is reachable after the await — a dynamic
+    // name is not statically provable. The remedy is to write the braced form, or be reviewed.
+    expect(unprovenEdgesIn(`const { getReport } = await import('./store.js');`))
       .toContain('./store.js');
+  });
+
+  it('a proof covers one edge, not the file — a braced import beside a dynamic one still fails', () => {
+    const code = `import { getReport } from './store.js';\n`
+      + `const { approveOnce } = await import('./store.js');`;
+    expect(unprovenEdgesIn(code), 'an innocent edge laundered a guilty one').toContain('./store.js');
+  });
+
+  it('an unproven edge to some OTHER module is not the store\'s business', () => {
+    // The caller resolves specifiers; this reader deliberately does not know what the store is.
+    expect(unprovenEdgesIn(`import * as logger from './logger.js';`)).toEqual(['./logger.js']);
   });
 });
 
@@ -302,9 +366,14 @@ describe('A — only a named list may consume the owner\'s one approval', () => 
   it('the importers of the consent doors are exactly the allowlist', () => {
     expect(
       consentImporters(),
-      'A file imported approveOnce/markPosted/markExported without being named in '
-      + 'ALLOWED_CONSENT_CALLERS. Those three doors CONSUME the owner\'s single approval (D4). '
-      + 'If this is the T7 posting route, add it to that list — the edit is the review.',
+      'A file holds an edge to report/store.ts that does not PROVE it binds no consent door, '
+      + 'and is not named in ALLOWED_CONSENT_CALLERS. approveOnce/markPosted/markExported '
+      + 'CONSUME the owner\'s single approval (D4).\n'
+      + 'Two honest fixes: (1) if the edge is dynamic, namespace, re-export, bare or default, '
+      + 'rewrite it as `import { theNames } from \'…/store.js\'` — the braced static form is the '
+      + 'only one whose names are statically provable, and an innocent one passes silently; '
+      + '(2) if it really does consume an approval — this is the T7 posting route — add it to '
+      + 'ALLOWED_CONSENT_CALLERS, and that one-line edit IS the review.',
     ).toEqual([...ALLOWED_CONSENT_CALLERS].sort());
   });
 
@@ -322,8 +391,9 @@ describe('B — nothing behind the report tool can consume one', () => {
     const inClosure = consentImporters().filter(f => CLOSURE.modules.includes(f));
     expect(
       inClosure,
-      `these modules are reachable from the dojo_report handler AND import a consent door: `
-      + `${inClosure.join(', ')}. The tool must not be able to reach the approval it exists to ask for.`,
+      `these modules are reachable from the dojo_report handler AND hold an unproven edge to `
+      + `report/store.ts: ${inClosure.join(', ')}. The tool must not be able to reach the `
+      + `approval it exists to ask for — not even through a dynamic import.`,
     ).toEqual([]);
   });
 });
