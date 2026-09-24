@@ -11,7 +11,7 @@
 // with `the-report-tool-cannot-post.test.ts` at 10/10 green and the whole T3 set at 115/115.
 //
 // The module graph offers no isolation on its own. The transitive import closure from the
-// handler is 526 modules; 37 of them call `fetch(`; `gateway/routes/update.ts` is ONE HOP away
+// handler is 528 modules; 37 of them call `fetch(`; `gateway/routes/update.ts` is ONE HOP away
 // and holds four `fetch('https://api.github.com/repos/…')` calls; and `report/store.ts` — also
 // one hop — EXPORTS the two one-shot approval doors. A blacklist of five spellings in front of
 // that is name discipline wearing structure's clothes.
@@ -40,10 +40,13 @@
 //
 // ── WHAT THIS FILE HONESTLY DOES NOT CLAIM ──
 // It is a static import census, not a capability system. It cannot see a computed specifier,
-// and prong C cannot notice that an ALREADY-reachable fetch-bearing module gained a new call
-// site — which is why prong C is paired with the exact one-hop pins rather than trusted alone.
-// What it guarantees is that the graph behind this tool cannot change SHAPE without a human
-// editing one of the four lists below.
+// nor a door reached through a value passed in at runtime, and prong C cannot notice that an
+// ALREADY-reachable fetch-bearing module gained a new call site — which is why prong C is
+// paired with the exact one-hop pins rather than trusted alone. What it guarantees is that
+// the graph behind this tool cannot change SHAPE without a human editing one of the four
+// lists below. What it no longer does is mistake one SPELLING for the whole language: fix
+// round 2 pins all six import forms and all seven binding forms as fixtures, because round 1
+// read one of each and reported green while a module held the doors.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -106,13 +109,67 @@ const FETCH_BEARING_IN_CLOSURE: readonly string[] = [
 // Comment lines are dropped before a specifier is read. Four `await import('…')` mentions in
 // the toolbox's header prose would otherwise be counted as real edges and reported as holes,
 // and a walk that reports holes it invented teaches readers to ignore its holes.
+//
+// ── N2 (fix round 2): THE BARE IMPORT ──
+// The first cut read `from '…'`, `import('…')` and `require('…')`. A side-effect import —
+// `import './x.js';` — has no `from` and no parenthesis, so it was invisible, and one exists
+// in the tree today: the real closure is 528 modules, not the 526 this file measured. Neither
+// missed module calls `fetch`, so prong C was complete BY LUCK, NOT BY LAW. The `\bimport\s*`
+// alternation is the whole fix, and the clause below pins every spelling the repo uses.
 
-const SPEC = /(?:from\s*|import\s*\(\s*|require\s*\(\s*)['"]([^'"]+)['"]/g;
+const SPEC = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s*)['"]([^'"]+)['"]/g;
 const isComment = (line: string): boolean => /^\s*(\/\/|\*|\/\*)/.test(line);
 
+const stripComments = (code: string): string =>
+  code.split('\n').filter(l => !isComment(l)).join('\n');
+
+/** Every module specifier in a piece of code, in any spelling that creates an EDGE. */
+function specifiersIn(code: string): string[] {
+  return [...stripComments(code).matchAll(SPEC)].map(m => m[1]);
+}
+
 function specifiersOf(file: string): string[] {
-  const code = fs.readFileSync(file, 'utf8').split('\n').filter(l => !isComment(l)).join('\n');
-  return [...code.matchAll(SPEC)].map(m => m[1]);
+  return specifiersIn(fs.readFileSync(file, 'utf8'));
+}
+
+/**
+ * ── N1 (fix round 2): EVERY SPELLING THAT BINDS A CONSENT DOOR ──
+ *
+ * The first cut read ONE form — `import { approveOnce } from '…'` — and review measured two
+ * escapes straight through it, each 7/7 green while a module held the doors:
+ *
+ *   import * as reportStore from '…/store.js';   // then reportStore.approveOnce(id)
+ *   export { approveOnce as consume } from '…/store.js';   // a re-export barrel
+ *
+ * These are not hypothetical spellings: the repo already uses them 33 times (18 namespace,
+ * 15 re-export barrels), five of the namespace ones on door modules shaped exactly like
+ * `report/store.ts`. A census that reads one of six spellings is the same defect as the
+ * five-name blacklist this file was written to replace, one layer up.
+ *
+ * ⚠ A STAR BINDS EVERYTHING, SO A STAR IS A CONSENT BINDING — unconditionally, with no
+ * attempt to check whether `ns.approveOnce` is ever written. That check would be defeated by
+ * `ns['approve' + 'Once']`, and a census that can be defeated by string concatenation is
+ * decoration. The house rule this creates is a good one and is stated so nobody files it as
+ * a bug: IF YOU WANT THE REPORT STORE, NAME WHAT YOU WANT. A module needing only `getReport`
+ * writes the braced form and passes.
+ */
+function consentBindingsIn(code: string): string[] {
+  const clean = stripComments(code);
+  const specs: string[] = [];
+  const bindsAConsentName = (clause: string): boolean =>
+    clause.split(',')
+      .map(s => s.trim().split(/\s+as\s+/)[0].replace(/^type\s+/, '').trim())
+      .some(n => CONSENT_EXPORTS.includes(n));
+
+  // `import { … } from '…'` and `export { … } from '…'` — the named forms, either direction.
+  for (const m of clean.matchAll(/(?:import|export)\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/g)) {
+    if (bindsAConsentName(m[1])) specs.push(m[2]);
+  }
+  // `import * as ns from '…'`, `export * from '…'`, `export * as ns from '…'` — all bind all.
+  for (const m of clean.matchAll(/(?:import|export)\s*\*(?:\s*as\s+[A-Za-z_$][\w$]*)?\s*from\s*['"]([^'"]+)['"]/g)) {
+    specs.push(m[1]);
+  }
+  return specs;
 }
 
 function resolveSpec(fromFile: string, spec: string): string | null {
@@ -153,23 +210,82 @@ function allSourceFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** Files importing any consent export FROM the report store, by named import. */
+/** Files that BIND a consent door from the report store, in any spelling. */
 function consentImporters(): string[] {
-  const block = /import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/g;
   const hits: string[] = [];
   for (const file of allSourceFiles(SRC)) {
-    const code = fs.readFileSync(file, 'utf8').split('\n').filter(l => !isComment(l)).join('\n');
-    for (const m of code.matchAll(block)) {
-      const target = resolveSpec(file, m[2]);
-      if (!target || path.relative(SRC, target) !== STORE_REL) continue;
-      const names = m[1].split(',').map(s => s.trim().split(/\s+as\s+/)[0].replace(/^type\s+/, '').trim());
-      if (CONSENT_EXPORTS.some(c => names.includes(c))) hits.push(path.relative(SRC, file));
+    for (const spec of consentBindingsIn(fs.readFileSync(file, 'utf8'))) {
+      const target = resolveSpec(file, spec);
+      if (target && path.relative(SRC, target) === STORE_REL) hits.push(path.relative(SRC, file));
     }
   }
   return [...new Set(hits)].sort();
 }
 
 const CLOSURE = closureFrom(HANDLER);
+
+// ⚠ THE READERS ARE TESTED BEFORE ANYTHING THEY READ IS TRUSTED (fix round 2, N1 + N2).
+// Everything below this file's two regexes rests on them seeing what is actually written in
+// the repo. Round 1 shipped a census that read ONE import spelling out of six and reported
+// green while a module held the approval doors — the same defect as the five-name blacklist
+// this file replaced, moved one layer up. So the spellings are pinned as fixtures, here,
+// where a missing form is a failing clause rather than a silent hole in a 528-module walk.
+
+describe('the specifier reader sees every import spelling that creates an edge', () => {
+  const FORMS: readonly [string, string][] = [
+    ['named', `import { a } from './x.js';`],
+    ['default', `import d from './x.js';`],
+    ['namespace', `import * as n from './x.js';`],
+    // N2: no `from`, no parenthesis — invisible to the round-1 reader, and one exists today.
+    ['bare side-effect', `import './x.js';`],
+    ['dynamic', `const m = await import('./x.js');`],
+    ['require', `const m = require('./x.js');`],
+    ['re-export named', `export { a } from './x.js';`],
+    ['re-export star', `export * from './x.js';`],
+    ['re-export star as', `export * as n from './x.js';`],
+  ];
+
+  for (const [label, code] of FORMS) {
+    it(`sees a ${label} import`, () => {
+      expect(specifiersIn(code), `the walk is blind to the ${label} form: ${code}`).toEqual(['./x.js']);
+    });
+  }
+
+  it('still ignores a specifier that only appears in prose', () => {
+    expect(specifiersIn(`// the old \`await import('../agent/tools.js')\` hack\nconst x = 1;`)).toEqual([]);
+  });
+});
+
+describe('the consent reader sees every spelling that binds a door', () => {
+  const BINDS: readonly [string, string][] = [
+    ['braced named', `import { approveOnce } from './store.js';`],
+    ['braced and renamed', `import { approveOnce as ok } from './store.js';`],
+    ['braced among innocents', `import { getReport, markPosted, createReport } from './store.js';`],
+    // The two escapes review measured straight through the round-1 census, both 7/7 green.
+    ['namespace', `import * as reportStore from './store.js';`],
+    ['re-export barrel', `export { approveOnce as consume } from './store.js';`],
+    ['star re-export', `export * from './store.js';`],
+    ['star re-export, named', `export * as store from './store.js';`],
+  ];
+
+  for (const [label, code] of BINDS) {
+    it(`treats a ${label} import of the store as a consent binding`, () => {
+      expect(consentBindingsIn(code), `a ${label} import walks past the census: ${code}`)
+        .toContain('./store.js');
+    });
+  }
+
+  it('lets an innocent named import through — the rule is "name what you want"', () => {
+    expect(consentBindingsIn(`import { getReport, listOpenReports } from './store.js';`)).toEqual([]);
+  });
+
+  it('a star binds every export, so it is a binding whether or not a door is ever written', () => {
+    // No `reportStore.approveOnce` anywhere in this fixture, and it still counts. Checking for
+    // the member access would be defeated by `ns['approve' + 'Once']`.
+    expect(consentBindingsIn(`import * as s from './store.js';\nreturn s.getReport(id);`))
+      .toContain('./store.js');
+  });
+});
 
 describe('the walk itself is sound', () => {
   it('reaches a real graph and leaves no unresolved relative specifier', () => {
