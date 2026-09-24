@@ -36,9 +36,9 @@
 // | what the loop WAITS | behaviourally — fake timers, counting real token-endpoint calls between advances | a wait implemented with something other than a timer (a busy loop, `Atomics.wait`) |
 // | when the loop STOPS | behaviourally — call counts stop growing, the flow goes null, a frame is broadcast | a second loop started by a module this file never imports |
 // | the token at rest | behaviourally — the RAW column is read, bypassing the decode point | a second writer of the column in a module outside this test's imports (that is `secret-at-rest.test.ts` clause 4's census, which now names this column) |
-// | the token in logs | behaviourally — every `createLogger` call in the whole import graph is captured | a write to stdout/stderr that does not go through `createLogger` |
-// | the token in a broadcast frame | behaviourally — every `broadcast()` call is captured and the WHOLE array is serialised, on all SIX endings the loop has (both grant paths, expiry by GitHub's word, denial, an unknown refusal, lifetime reached) | an ending added to the loop later and not added to the `endings` table; a frame emitted by a module this file does not import. **This row was MISSING in the first cut and the gap was real** — the only frame clause ran on the happy path alone, where `userAnswer` always named a user, so a `login ?? token` leak short-circuited and survived at 29/29 |
-// | the token in a response body | behaviourally — the real Hono router is driven and its JSON is read as text | a route added to the router after this file was written (the clause enumerates four paths; it does not walk the router, so a fifth route returning the token would not be seen) |
+// | the token in logs | behaviourally — every `createLogger` call in the whole import graph is captured, on every ending in the `endings` table **including the two arms of `fetchLogin`** (answers-without-a-login, and throws) | a write to stdout/stderr that does not go through `createLogger`; **and, the blind spot that actually bit: A BRANCH NO ROW DRIVES.** The capture is total over the graph and worth nothing on code never executed — a `tok:` leak on `fetchLogin`'s catch arm survived at 31/31 because no test made that call throw |
+// | the token in a broadcast frame | behaviourally — every `broadcast()` call is captured and the WHOLE array is serialised, on all TEN endings in the `endings` table, each of which DECLARES the terminal frame it must emit so the ending's own frame is asserted to have fired (not merely that some frame did) | an ending added to the loop and not added to the `endings` table — though it would have to be added without a frame declaration to hide, since a declared frame that never fires is a failure; a frame emitted by a module this file does not import. **This row was MISSING in the first cut and the gap was real** — the only frame clause ran on the happy path, where `userAnswer` always named a user, so a `login ?? token` leak short-circuited and survived at 29/29 |
+// | the token in a response body | behaviourally — the real Hono router is driven and its JSON is read as text, and the enumerated path list is asserted EQUAL to `githubRouter.routes`, so a new route fails this file before it can go unchecked | a route mounted on a DIFFERENT router (this walks `githubRouter` only); a response assembled outside these four handlers |
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -87,7 +87,7 @@ vi.mock('../../gateway/ws.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import {
-  GITHUB_OAUTH_SCOPE, GITHUB_DEVICE_CODE_URL, GITHUB_TOKEN_URL,
+  GITHUB_OAUTH_SCOPE, GITHUB_DEVICE_CODE_URL, GITHUB_TOKEN_URL, GITHUB_USER_URL,
   DEVICE_POLL_MIN_INTERVAL_MS, DEVICE_POLL_MAX_LIFETIME_MS, DEVICE_HTTP_TIMEOUT_MS,
   verdictFor, startDeviceFlow, cancelDeviceFlow, deviceFlowInProgress,
 } from '../device-flow.js';
@@ -139,6 +139,40 @@ function installFetch(): void {
 }
 
 const tokenCalls = (): number => calls.filter(c => c.url === GITHUB_TOKEN_URL).length;
+
+/** Every route the response-body clause drives. Checked against `githubRouter.routes`. */
+const ROUTE_PATHS: ReadonlyArray<readonly [string, string]> = [
+  ['GET', '/status'], ['POST', '/connect'], ['POST', '/cancel-connect'], ['POST', '/disconnect'],
+];
+
+/** Wrap the installed fetch so ONE url throws, leaving every other answer intact. */
+function throwOn(url: string, message: string): void {
+  const inner = globalThis.fetch;
+  globalThis.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
+    if (String(input) === url) {
+      calls.push({ url: String(input), body: '' });
+      throw new Error(message);
+    }
+    return (inner as typeof fetch)(input as never, init);
+  }) as unknown as typeof fetch;
+}
+
+/** `GET /user` throws — a network error, a timeout, or a 5xx HTML page hitting `res.json()`. */
+const throwOnUserCall = (): void => throwOn(GITHUB_USER_URL, 'socket hang up');
+/** The token endpoint is unreachable. */
+const throwOnTokenCall = (): void => throwOn(GITHUB_TOKEN_URL, 'connect ECONNREFUSED');
+
+/** The owner clears the client id DURING the device-code round trip, between the two reads. */
+function clearClientIdOnDeviceCode(): void {
+  const inner = globalThis.fetch;
+  globalThis.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
+    const res = await (inner as typeof fetch)(input as never, init);
+    if (String(input) === GITHUB_DEVICE_CODE_URL) {
+      db().prepare("DELETE FROM config WHERE key = 'github_client_id'").run();
+    }
+    return res;
+  }) as unknown as typeof fetch;
+}
 
 /**
  * Every string literal in a source file, with comments removed first.
@@ -532,20 +566,104 @@ describe('the token reaches no log line, no broadcast frame, and no response bod
     for (const line of h.logLines) expect(line).not.toContain(TOKEN);
   });
 
+  // ── THE `/user` CALL THAT THROWS, WHICH IS A DIFFERENT BRANCH FROM THE ONE ABOVE ──
+  // FIX ROUND 2 / R1. The clause above drives `GET /user` ANSWERING WITHOUT A LOGIN. It never
+  // drives `GET /user` THROWING — and those are two different arms of `fetchLogin`. The catch
+  // arm has the token in scope as its own parameter and writes a `logger.warn`, so review
+  // planted `tok: token` on that line and rode 31/31 GREEN: the arm was entered by no test in
+  // the file. (`installFetch` answers 200 for every non-device, non-token URL, and the one test
+  // that installs a throwing fetch makes the TOKEN endpoint throw first, so the loop ends before
+  // any grant and `fetchLogin` is never reached at all.)
+  //
+  // IT IS AN ORDINARY PRODUCTION PATH, not an exotic one: `fetch` throws on a network error or
+  // on `AbortSignal.timeout`, and `res.json()` throws on a non-JSON body — which is exactly what
+  // `api.github.com` sends when it serves a 5xx HTML error page. A 502 immediately after a
+  // successful grant enters this arm holding a live token.
+  //
+  // This is the SECOND time the same lesson has been collected in this file, one branch over:
+  // A LEAK ASSERTION IS ONLY AS GOOD AS THE PATHS IT IS DRIVEN DOWN. The `endings` table below
+  // now carries this branch as a row so it cannot come uncovered again.
+  it('a grant whose /user call THROWS still connects, names nobody, and leaks nothing', async () => {
+    vi.useFakeTimers();
+    setClientId();
+    tokenAnswers = [{ access_token: TOKEN, scope: 'public_repo' }];
+    throwOnUserCall();
+
+    await startDeviceFlow();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(getGithubToken(), 'setup: the grant must have landed for this to assert anything').toBe(TOKEN);
+    expect(getGithubAccount()?.login).toBeNull();
+    expect(githubStatus().connected).toBe(true);
+    expect(h.frames.filter(f => f.type === 'github:connected'))
+      .toEqual([{ type: 'github:connected', login: null }]);
+
+    // The catch arm MUST have run, or every assertion below passes over a branch nothing took.
+    expect(
+      h.logLines.some(l => l.includes('would not name the user')),
+      'setup: the /user catch arm never ran — the token-in-the-log assertion proves nothing',
+    ).toBe(true);
+    for (const line of h.logLines) expect(line).not.toContain(TOKEN);
+    expect(JSON.stringify(h.frames)).not.toContain(TOKEN);
+  });
+
   it('NO frame carries the token, on any ending the loop has', async () => {
     // The generalisation of B1, so the next ending added to the loop is covered by construction
-    // rather than by someone remembering. Each row stages one terminal outcome; the two that
-    // GRANT are the ones where a token exists to leak at all, and they assert it arrived
-    // (non-vacuity) before asserting it did not travel.
-    const endings: Array<[string, () => void, boolean]> = [
-      ['granted, user named', () => { tokenAnswers = [{ access_token: TOKEN, scope: 'public_repo' }]; }, true],
-      ['granted, user NOT named', () => { userAnswer = {}; tokenAnswers = [{ access_token: TOKEN, scope: 'public_repo' }]; }, true],
-      ['expired on GitHub\'s word', () => { tokenAnswers = [{ error: 'expired_token' }]; }, false],
-      ['denied on GitHub', () => { tokenAnswers = [{ error: 'access_denied' }]; }, false],
-      ['an error we have never seen', () => { tokenAnswers = [{ error: 'the_moon_is_wrong' }]; }, false],
-      ['lifetime reached', () => { deviceCodeAnswer = { ...deviceCodeAnswer, expires_in: 10 }; }, false],
+    // rather than by someone remembering.
+    //
+    // ── FIX ROUND 2 / R2 + R3, and they are the same defect in two places ──
+    // R2: the first cut called itself "all SIX endings" and `pollUntilAnswered` has more than
+    // six. The unreachable endpoint — an ending T4 ADDED ON PURPOSE for P3 — was missing, as
+    // were the client-id race and cancellation.
+    // R3: the non-vacuity guard was `frames.length > 0`, which `startDeviceFlow`'s own
+    // `github:device_code` frame satisfies on EVERY row. Review deleted `fail()`'s broadcast
+    // entirely and this clause stayed green — its message promised more than its line checked.
+    //
+    // Both are fixed the same way: every row DECLARES the terminal frame it must emit, so the
+    // guard asserts THIS ENDING'S OWN frame fired rather than that some frame did, and a new
+    // ending cannot be added to the loop without a row here saying what it broadcasts.
+    // `terminal: null` means FRAMELESS BY DESIGN and is asserted as such — cancellation is a
+    // silent `return`, which is correct (the user who pressed Cancel already knows) and is now
+    // pinned as a decision rather than left as an absence.
+    interface Ending {
+      name: string;
+      /** Runs before `startDeviceFlow()`. */
+      stage: () => void;
+      /** Runs after `startDeviceFlow()` resolves, before the clock advances. */
+      afterStart?: () => void;
+      /** The frame this ending MUST emit — or null when it is frameless BY DESIGN. */
+      terminal: 'github:connected' | 'github:connect_failed' | null;
+      /** True when a real token exists on this path, i.e. there is something to leak. */
+      grants: boolean;
+    }
+    const GRANT = { access_token: TOKEN, scope: 'public_repo' };
+    const endings: Ending[] = [
+      { name: 'granted, user named', terminal: 'github:connected', grants: true,
+        stage: () => { tokenAnswers = [GRANT]; } },
+      { name: 'granted, user NOT named', terminal: 'github:connected', grants: true,
+        stage: () => { userAnswer = {}; tokenAnswers = [GRANT]; } },
+      { name: 'granted, /user THROWS', terminal: 'github:connected', grants: true,
+        stage: () => { tokenAnswers = [GRANT]; throwOnUserCall(); } },
+      { name: "expired on GitHub's word", terminal: 'github:connect_failed', grants: false,
+        stage: () => { tokenAnswers = [{ error: 'expired_token' }]; } },
+      { name: 'denied on GitHub', terminal: 'github:connect_failed', grants: false,
+        stage: () => { tokenAnswers = [{ error: 'access_denied' }]; } },
+      { name: 'an error we have never seen', terminal: 'github:connect_failed', grants: false,
+        stage: () => { tokenAnswers = [{ error: 'the_moon_is_wrong' }]; } },
+      { name: 'lifetime reached', terminal: 'github:connect_failed', grants: false,
+        stage: () => { deviceCodeAnswer = { ...deviceCodeAnswer, expires_in: 10 }; } },
+      { name: 'the endpoint cannot be reached', terminal: 'github:connect_failed', grants: false,
+        stage: () => { throwOnTokenCall(); } },
+      // The one narrow way `pollUntilAnswered`'s own NOT_CONFIGURED arm is reachable: the owner
+      // clears the client id DURING the device-code round trip, between the two reads.
+      { name: 'the client id vanishes mid-handshake', terminal: 'github:connect_failed', grants: false,
+        stage: () => { clearClientIdOnDeviceCode(); } },
+      // Frameless BY DESIGN: the human who pressed Cancel does not need to be told.
+      { name: 'cancelled by the user', terminal: null, grants: false,
+        stage: () => {}, afterStart: () => { cancelDeviceFlow(); } },
     ];
-    for (const [name, stage, grants] of endings) {
+
+    for (const e of endings) {
       // Each ending gets a clean slate; `beforeEach` runs per `it`, not per iteration.
       db().prepare('DELETE FROM github_account').run();
       h.frames = []; h.logLines = []; calls = [];
@@ -555,20 +673,32 @@ describe('the token reaches no log line, no broadcast frame, and no response bod
         device_code: 'dc-fixture', user_code: 'WDJB-MJHT',
         verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5,
       };
+      installFetch();
       vi.useFakeTimers();
       setClientId();
-      stage();
+      e.stage();
       await startDeviceFlow();
+      e.afterStart?.();
       await vi.advanceTimersByTimeAsync(20_000);
 
-      expect(h.frames.length, `${name}: no frame at all — this ending proves nothing`).toBeGreaterThan(0);
-      if (grants) {
-        expect(getGithubToken(), `${name}: setup — the token must have landed`).toBe(TOKEN);
+      const terminals = h.frames.filter(
+        f => f.type === 'github:connected' || f.type === 'github:connect_failed');
+      if (e.terminal === null) {
+        expect(terminals, `${e.name}: expected NO terminal frame, by design`).toEqual([]);
+      } else {
+        // R3: THIS ending's own frame, not "some frame" — `github:device_code` always fires.
+        expect(
+          terminals.map(f => f.type),
+          `${e.name}: the ending's own frame never fired — every assertion below proves nothing`,
+        ).toEqual([e.terminal]);
       }
-      expect(JSON.stringify(h.frames), `${name}: a broadcast frame carried the token`)
+      if (e.grants) {
+        expect(getGithubToken(), `${e.name}: setup — the token must have landed`).toBe(TOKEN);
+      }
+      expect(JSON.stringify(h.frames), `${e.name}: a broadcast frame carried the token`)
         .not.toContain(TOKEN);
       for (const line of h.logLines) {
-        expect(line, `${name}: a log line carried the token`).not.toContain(TOKEN);
+        expect(line, `${e.name}: a log line carried the token`).not.toContain(TOKEN);
       }
       cancelDeviceFlow();
       vi.useRealTimers();
@@ -577,16 +707,35 @@ describe('the token reaches no log line, no broadcast frame, and no response bod
 
   it('every /api/github route answers without the token in its body', async () => {
     saveGithubAccount('octocat', TOKEN, 'public_repo');
-    const paths: Array<[string, string]> = [
-      ['GET', '/status'], ['POST', '/connect'], ['POST', '/cancel-connect'], ['POST', '/disconnect'],
-    ];
-    for (const [method, p] of paths) {
+    for (const [method, p] of ROUTE_PATHS) {
       const res = await githubRouter.request(p, { method });
       const text = await res.text();
       expect(text.length, `${method} ${p} answered with an empty body`).toBeGreaterThan(0);
       expect(text, `${method} ${p} put the token in its response body`).not.toContain(TOKEN);
       expect(text).not.toContain('access_token');
     }
+  });
+
+  it('...and that list IS every route the router has — it cannot go stale', () => {
+    // FIX ROUND 2. The clause above enumerates four literal paths, which was a DECLARED blind
+    // spot: a fifth route returning the token would not be seen. The disposition was "T5's
+    // problem", but an unowned blind spot is a blind spot that stays — and Hono publishes
+    // `githubRouter.routes`, so the enumeration can simply be checked against reality.
+    //
+    // What this buys: when T5 (or anyone) adds a route, THIS clause fails first and names it,
+    // so the author is told to extend the response-body check rather than inheriting a note
+    // nobody reads. The blind spot is now a failing test instead of a paragraph.
+    const real = [...new Set(
+      githubRouter.routes.filter(r => r.method !== 'ALL').map(r => `${r.method} ${r.path}`),
+    )].sort();
+    const declared = ROUTE_PATHS.map(([m, p]) => `${m} ${p}`).sort();
+    expect(real.length, 'the router exposes no routes — this clause would pass over nothing')
+      .toBeGreaterThan(0);
+    expect(
+      real,
+      'a route exists that the token-in-the-body clause above does not drive. Add it to '
+      + 'ROUTE_PATHS — and if it can reach a token, say why it is safe.',
+    ).toEqual(declared);
   });
 
   it('GET /status is the card\'s whole truth — connected, who, and the live flow', async () => {
