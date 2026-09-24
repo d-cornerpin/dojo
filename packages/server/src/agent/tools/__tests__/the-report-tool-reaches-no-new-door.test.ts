@@ -47,6 +47,15 @@
 // the graph behind this tool cannot change SHAPE without a human editing one of the four
 // lists below.
 //
+// ⚠ AND ONE MORE THING IT DID NOT CLAIM UNTIL T7's FIX ROUND, BECAUSE NOBODY HAD ASKED: that
+// the SUBJECT list is complete. Every prong here is a statement about `CONSENT_EXPORTS`, and
+// that constant was maintained by REMEMBERING to add to it. `releaseApproval` shipped outside
+// it and the reviewer's alias probe rode both prongs green — the blind spot arrived in the same
+// commit as the door it failed to see, which is the worst possible timing and the most likely.
+// Membership is now DERIVED from `report/store.ts`'s own source (see the classification clause
+// under prong A) and declared either way, so the completeness this file's three prongs rest on
+// is itself a failing clause rather than an author's memory.
+//
 // What it no longer does is ENUMERATE. Three rounds of review beat three enumerations — five
 // forbidden names, then one import spelling out of six, then two readers pinned against
 // different vocabularies so a dynamic `await import(…)` bound a door at 26/26 green. An
@@ -63,8 +72,47 @@ const SRC = path.resolve(__dirname, '..', '..', '..');
 const HANDLER = path.join(SRC, 'agent', 'tools', 'cat', 'report.ts');
 const STORE_REL = 'report/store.ts';
 
-/** The doors that consume an owner's one approval. Named here so the census has a subject. */
-const CONSENT_EXPORTS = ['approveOnce', 'markPosted', 'markExported'];
+/**
+ * The doors that MOVE an owner's one approval. Named here so the census has a subject.
+ *
+ * ── `releaseApproval` IS ON THIS LIST, AND THE LIST'S NAME IS WHAT MISLED ITS AUTHOR (T7 F1) ──
+ * It is a BACKWARDS door: it hands a decision back rather than spending it, so "the doors that
+ * CONSUME an approval" — this constant's old sentence — read as an argument for leaving it off,
+ * and it shipped off. The census's question is not "who may spend it" but **WHO MAY MOVE IT**,
+ * and the consequence of the narrower reading was measured by review rather than imagined:
+ * `const undo = releaseApproval; undo(id)` in `report/collect.ts` — runtime-reachable from the
+ * tool, on no allowlist — rode BOTH prongs green at 58/58, while the identical alias on
+ * `approveOnce` went RED 2 F / 56 P. One word of difference.
+ *
+ * The class it closes is a D4 violation: the route's `await postApprovedReport(...)` is a real
+ * yield point with the row sitting in `approved`, and anything that flips it back there while
+ * the issue lands gives one approval two issues.
+ *
+ * ⚠ THE LIST IS NO LONGER MAINTAINED BY REMEMBERING. The clause "every status-moving door in
+ * the store is classified" below reads `report/store.ts` and requires EVERY exported transition
+ * to be named either here or in `NON_CONSENT_TRANSITIONS` — so the next door added to that file
+ * cannot be silently absent from the guard that exists to police it, which is exactly how this
+ * one was.
+ */
+const CONSENT_EXPORTS = ['approveOnce', 'markPosted', 'markExported', 'releaseApproval'];
+
+/**
+ * The store's other status-moving exports, and why each is NOT a consent door. Declared rather
+ * than left absent: an absence is what F1 was.
+ *
+ *   `submitForApproval`  drafting → awaiting_approval. It ASKS for a decision; it makes none,
+ *                        and a row it moves has never held an approval.
+ *   `cancelReport`       → cancelled, legal from `approved` too. It is the SAFE DIRECTION: it
+ *                        destroys an approval rather than moving it toward delivery, and
+ *                        nothing is published by it. A second caller of this one could discard
+ *                        someone's pending report, which is a denial, not a publication — a
+ *                        real hazard, and a different guard's (the call-site census in
+ *                        `gateway/routes/__tests__/only-the-card-can-post-a-report.test.ts`
+ *                        covers the call side). BOUNDARY DECIDED, NOT FORGOTTEN: if this file
+ *                        ever has to answer "who may make a report disappear", this is the name
+ *                        to move.
+ */
+const NON_CONSENT_TRANSITIONS = ['submitForApproval', 'cancelReport'];
 
 /**
  * PRONG A's LIST. Every file in `packages/server/src` that imports a consent export.
@@ -627,6 +675,30 @@ describe('an edge to the store needs the allowlist unless it PROVES it binds no 
     expect(unprovenEdgesIn(`import { getReport, listOpenReports } from './store.js';`)).toEqual([]);
   });
 
+  // ── THE ROW THAT LET F1 THROUGH, REWRITTEN THE WAY THE STANDING RULE ASKS ──
+  // The clause above is the one `releaseApproval` walked out of: a braced static import is
+  // "innocent" exactly when none of its names is in CONSENT_EXPORTS, so a door missing from that
+  // constant is not a hole in the READER, it is a hole in the SUBJECT — and the reader reports
+  // green with total confidence. The blind-spot column is written by asking "how would I get
+  // past this NOW?", and yesterday's honest answer was: ADD A DOOR IN THE SAME COMMIT AS THE
+  // CENSOR'S BLIND SPOT. That answer is now closed by the classification clause under prong A;
+  // today's answer is "give the store a transition that never writes `status`", which cannot
+  // move an approval by definition. These two rows pin the pair so the next author sees both
+  // halves: a named door is caught, and an innocent neighbour still passes silently.
+  it('a braced static import of the BACKWARDS door is not innocent either (T7 F1)', () => {
+    expect(
+      unprovenEdgesIn(`import { getReport, releaseApproval } from './store.js';`),
+      'handing the approval BACK is moving it, and the census asks who may move it',
+    ).toContain('./store.js');
+  });
+
+  it('...and aliasing it after import changes nothing, because the EDGE is what is judged', () => {
+    // The reviewer's exact probe. The call-site census cannot see `undo(id)`; this one never
+    // looks at call sites — it judges the import, which the alias cannot avoid needing.
+    const code = `import { releaseApproval } from './store.js';\nconst undo = releaseApproval;`;
+    expect(unprovenEdgesIn(code)).toContain('./store.js');
+  });
+
   it('a dynamic import destructuring ONLY getReport is still flagged, and that is the trade', () => {
     // Nothing here touches a door. It is flagged anyway, because `const { [k]: f } = await
     // import(…)` is legal and the namespace object is reachable after the await — a dynamic
@@ -693,8 +765,9 @@ describe('A — only a named list may consume the owner\'s one approval', () => 
     expect(
       consentImporters(),
       'A file holds an edge to report/store.ts that does not PROVE it binds no consent door, '
-      + 'and is not named in ALLOWED_CONSENT_CALLERS. approveOnce/markPosted/markExported '
-      + 'CONSUME the owner\'s single approval (D4).\n'
+      + 'and is not named in ALLOWED_CONSENT_CALLERS. approveOnce mints the owner\'s single '
+      + 'approval, markPosted and markExported spend it, and releaseApproval hands it back — '
+      + 'all four MOVE it, which is the question this census asks (D4).\n'
       + 'Two honest fixes: (1) if the edge is dynamic, namespace, re-export, bare or default, '
       + 'rewrite it as `import { theNames } from \'…/store.js\'` — the braced static form is the '
       + 'only one whose names are statically provable, and an innocent one passes silently; '
@@ -705,10 +778,45 @@ describe('A — only a named list may consume the owner\'s one approval', () => 
 
   it('the doors it names are the doors the store actually exports', () => {
     const store = fs.readFileSync(path.join(SRC, STORE_REL), 'utf8');
-    for (const name of CONSENT_EXPORTS) {
+    for (const name of [...CONSENT_EXPORTS, ...NON_CONSENT_TRANSITIONS]) {
       expect(store, `report/store.ts no longer exports ${name} — this census is guarding a ghost`)
         .toContain(`export function ${name}(`);
     }
+  });
+
+  // ── THE OTHER HALF, ADDED IN T7's FIX ROUND — AND IT IS THE HALF F1 NEEDED ──
+  // The clause above asks "is every name we police still real?". Nothing asked the converse:
+  // "is every real door policed?" `releaseApproval` shipped outside CONSENT_EXPORTS and rode
+  // both prongs green, because a list maintained by REMEMBERING to add to it is a list that one
+  // day is not added to — and the day it happens is the day a door is written, which is the day
+  // the author is thinking about the door and not about the censor.
+  //
+  // So membership is now derived from the store's own source and must be DECLARED either way. A
+  // new transition lands on neither list and fails here, naming itself, with both remedies
+  // spelled out. Asked the standing way — "how would I get past this NOW?" — the answer is no
+  // longer "add a door in the same commit as the censor's blind spot"; it is "give the store a
+  // transition that does not write `status`", which cannot move an approval by definition.
+  it('every status-moving door in the store is classified as consent-moving or not', () => {
+    const store = fs.readFileSync(path.join(SRC, STORE_REL), 'utf8');
+    // Each exported function's own body: from its declaration to the next one (or EOF).
+    const starts = [...store.matchAll(/export function (\w+)/g)];
+    const movers: string[] = [];
+    for (let i = 0; i < starts.length; i++) {
+      const from = starts[i].index ?? 0;
+      const to = i + 1 < starts.length ? starts[i + 1].index ?? store.length : store.length;
+      if (/SET\s+status\s*=/.test(store.slice(from, to))) movers.push(starts[i][1]);
+    }
+    expect(movers.length, 'no status-moving door was found at all — this reader is broken')
+      .toBeGreaterThan(3);
+    expect(
+      movers.sort(),
+      'report/store.ts exports a transition that writes `status` and this file classifies it as '
+      + 'neither consent-moving nor not. Two honest fixes: (1) if it can move a report toward or '
+      + 'away from delivery, add it to CONSENT_EXPORTS — that one-word edit IS the review, and '
+      + 'note that a BACKWARDS door counts (T7 F1: the question is who may MOVE the approval, '
+      + 'not who may spend it); (2) if it cannot, add it to NON_CONSENT_TRANSITIONS with the '
+      + 'reason, beside the two that are already there.',
+    ).toEqual([...CONSENT_EXPORTS, ...NON_CONSENT_TRANSITIONS].sort());
   });
 });
 
