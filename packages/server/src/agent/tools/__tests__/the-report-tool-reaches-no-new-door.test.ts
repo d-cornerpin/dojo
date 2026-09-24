@@ -98,6 +98,35 @@ const GATHER_IMPORTS: readonly string[] = [
  * why before editing this list.
  */
 const FETCH_BEARING_IN_CLOSURE: readonly string[] = [
+  // ── APPENDED BY DOJO-REPORT T4, and this comment IS the review the clause demanded ──
+  // `github/device-flow.ts` calls `fetch` three times and is now in the closure. It was read
+  // before it was added, and here is what the reading found.
+  //
+  // THE PATH, measured rather than guessed — four hops, and the tool is not on any of them:
+  //   cat/report.ts → gateway/routes/update.ts → gateway/server.ts → gateway/routes/github.ts
+  //   → github/device-flow.ts
+  // Hop 2 is `gateway/server.ts`, which imports EVERY router because that is what a server
+  // does. That is the identical route `gateway/routes/config.ts`, `setup-deps.ts`, `system.ts`,
+  // `techniques.ts`, `upload.ts`, `google/auth.ts`, `microsoft/auth.ts` and `twilio/client.ts`
+  // already take into this list. T4 adds a module to that fan-out; it adds no edge to the tool.
+  //
+  // WHY IT IS NOT A WAY OUT, in the three terms this file is written in:
+  //   * The handler's and the gather's OWN one-hop import lists are pinned EXACTLY below and
+  //     are UNCHANGED by T4 — nothing in `report/` names anything in `github/`.
+  //   * Prong B is green: no module in the closure imports a consent door, and T4 added none.
+  //   * The two endpoints it posts to are GitHub's OAUTH endpoints (`/login/device/code`,
+  //     `/login/oauth/access_token`) plus `GET /user`. None of them accepts content; there is
+  //     no body a brief could ride out on, and no function here takes a report, a brief or an
+  //     agent id as an argument. Compare `gateway/routes/update.ts`, already on this list,
+  //     which really does hold four `api.github.com/repos/…` calls.
+  //   * Its four entry points are reachable only from `POST /api/github/*`, behind the owner's
+  //     own authenticated session, never from a tool call.
+  //
+  // ⚠ FOR T7: the poster is a DIFFERENT case and must not borrow this reason. A module that
+  // calls `POST /repos/:owner/:repo/issues` with a rendered brief IS a way out, and its
+  // appearance here is the moment to check prong A — the poster must also be on
+  // ALLOWED_CONSENT_CALLERS, because posting is what consumes the owner's one approval.
+  'github/device-flow.ts',
   'agent/model.ts', 'agent/runtime.ts', 'agent/site-snapshot.ts', 'agent/tools/definitions.ts',
   'agent/tools/types.ts', 'agent/web-tools.ts', 'gateway/routes/config.ts',
   'gateway/routes/setup-deps.ts', 'gateway/routes/system.ts', 'gateway/routes/techniques.ts',

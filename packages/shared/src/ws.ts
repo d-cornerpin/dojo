@@ -601,6 +601,10 @@ export type WsEvent =
   | PlaudConnectedEvent
   | PlaudDisconnectedEvent
   | PlaudLoginFailedEvent
+  | GithubDeviceCodeEvent
+  | GithubConnectedEvent
+  | GithubDisconnectedEvent
+  | GithubConnectFailedEvent
   | GroupCreatedEvent
   | GroupDeletedEvent
   | BackfillProgressEvent
@@ -923,6 +927,38 @@ export interface PlaudLoginFailedEvent {
   error: string;
 }
 
+// ── GitHub (device flow) auth events — DOJO-REPORT T4 ──
+// Top-level fields, not a `data` envelope, matching the Plaud four above: an out-of-band
+// connect card wants the fields. NO FRAME CARRIES A TOKEN and none ever may — the card
+// re-reads `GET /api/github/status`, whose shape has no token field at all.
+
+export interface GithubDeviceCodeEvent {
+  type: 'github:device_code';
+  userCode: string;
+  verificationUri: string;
+  /** Epoch ms — GITHUB'S OWN `expires_in` as an instant, so the card counts down honestly
+   *  rather than inventing a deadline of its own. */
+  expiresAt: number;
+}
+
+export interface GithubConnectedEvent {
+  type: 'github:connected';
+  /** Null when GitHub granted a token but would not name the user: a missing NAME, never a
+   *  missing connection. */
+  login: string | null;
+}
+
+export interface GithubDisconnectedEvent {
+  type: 'github:disconnected';
+}
+
+export interface GithubConnectFailedEvent {
+  type: 'github:connect_failed';
+  /** A plain sentence for the card, and the loop's ONLY unhappy ending. Nothing re-dials, so
+   *  this frame is the last word until a human presses Connect (NO-DOOMED-DIALS P3). */
+  error: string;
+}
+
 // ── Agent group lifecycle ──
 
 export interface GroupCreatedEvent {
@@ -1139,6 +1175,12 @@ export const EVENT_BATCHABLE: Record<WsEvent['type'], boolean> = {
   'plaud:connected': false,
   'plaud:disconnected': false,
   'plaud:login_failed': false,
+  // T4: all four false, for the Plaud reason — a connect card is a human standing at a screen
+  // waiting for a code, and a frame held behind an unrelated flush is a card that looks broken.
+  'github:device_code': false,
+  'github:connected': false,
+  'github:disconnected': false,
+  'github:connect_failed': false,
   'group:created': false,
   'group:deleted': false,
   'backfill:progress': false,

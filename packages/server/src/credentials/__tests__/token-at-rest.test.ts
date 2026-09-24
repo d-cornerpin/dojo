@@ -284,11 +284,24 @@ describe('PHASE-5 T10 D1 (4): the refusals, held as a census over the source', (
     //     the column is stored has to answer for it (it still does: a sealed value
     //     is non-empty, an empty one stays empty).
     // google/reauth-notice.ts reads the DOMAIN field only, never the column.
+    //
+    // DOJO-REPORT T4 adds a THIRD provider to the same two-module shape, and it is listed
+    // here for the same two reasons the pairs above are:
+    //   github/account.ts    — the storage owner. `saveGithubAccount` seals into
+    //     `github_account.access_token`; `getGithubToken` opens it. One write, one read.
+    //   github/device-flow.ts — the OAuth exchange, where `access_token`/`accessToken` are
+    //     fields of GITHUB'S OWN JSON, not columns. No SQL, no crypto.
+    // The refusal above it (P5-R13) covers this token too and is measured for it in
+    // `github/__tests__/the-device-flow-polls-on-githubs-own-clock.test.ts`: after a save,
+    // `agent_credentials` is empty. This file's own first clause scopes its offender scan to
+    // `(google|microsoft)/`, so it does not re-measure that for `github/`; that is why the
+    // GitHub suite asserts it directly rather than relying on this one.
     const allowed = new Set([
       'google/accounts.ts', 'microsoft/accounts.ts',
       'google/auth.ts', 'microsoft/auth.ts',
       'migration/checks.ts', 'google/reauth-notice.ts',
       'credentials/at-rest.ts', 'credentials/seal-existing.ts',
+      'github/account.ts', 'github/device-flow.ts',
     ]);
     const namers = sourceFiles()
       .filter(f => /\b(?:access_token|refresh_token|accessToken|refreshToken)\b/.test(fs.readFileSync(f, 'utf-8')))

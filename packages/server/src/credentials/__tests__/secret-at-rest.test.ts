@@ -237,6 +237,14 @@ describe('PHASE-5 T6C (4): the plaintext-credential surface is enumerated, pinne
     // The clauses that hold it: `credentials/__tests__/token-at-rest.test.ts`.
     '071_workspace_accounts.sql:access_token': 'SEALED AT REST (T10/D1) — google_accounts + microsoft_accounts OAuth access tokens',
     '071_workspace_accounts.sql:refresh_token': 'SEALED AT REST (T10/D1) — google_accounts + microsoft_accounts OAuth refresh tokens',
+    // DOJO-REPORT T4 — the user's own GitHub token for posting problem reports; sealed by
+    // `github/account.ts`, never in `agent_credentials` (RULING P5-R13). It is declared in a
+    // ONE-ROW TABLE rather than hidden in a `config` key SPECIFICALLY so this clause can see
+    // it: a token in `config.value` would carry no credential-shaped column name and would
+    // pass this census by being invisible to it, which is the seam the clause exists to keep
+    // honest. There is no refresh token — an OAuth App's device-flow token does not expire,
+    // which is the whole reason D3 could forbid shipping a client secret.
+    '170_github_account.sql:access_token': 'SEALED AT REST (DOJO-REPORT T4) — the user\'s own GitHub OAuth token, in its own table',
     // NOT A CREDENTIAL — one-shot nonces bound to a single held call. They
     // authorise one action on this box; they authenticate to nothing.
     '069_destructive_approvals.sql:token': 'NOT A CREDENTIAL — one-shot approval nonce bound to a specific held call',
@@ -319,6 +327,20 @@ describe('PHASE-5 T6C (4): the plaintext-credential surface is enumerated, pinne
     //     one TEXT field instead of the three columns twilio_config got. It runs
     //     no SQL. It is in the list because this clause keys on the NAMES, and
     //     scoping it out by directory is exactly the heuristic the phase refuses.
+    //   github/account.ts — ADDED BY DOJO-REPORT T4. The storage owner for the
+    //     user's own GitHub token: `saveGithubAccount` is its ONE write point
+    //     (through `sealSecretColumn`) and `getGithubToken` its ONE read point
+    //     (through `openSecretColumn`). Same shape as the two `accounts.ts`
+    //     above, one provider later. RULING P5-R13 is why it is a table of its
+    //     own and not an `agent_credentials` row.
+    //   github/device-flow.ts — ADDED BY DOJO-REPORT T4, and for the SAME reason
+    //     `google/auth.ts` and `microsoft/auth.ts` are here: the name is a field
+    //     of the PROVIDER'S JSON RESPONSE, not a column. `verdictFor` reads
+    //     `body.access_token` off GitHub's token-endpoint answer and hands it
+    //     straight to `saveGithubAccount`. It runs no SQL against the column and
+    //     holds no crypto. The BRIEF for T4 predicted one new file here and the
+    //     measurement found two — recorded rather than worked around, because a
+    //     module that touches a token in flight is exactly what this list is for.
     // Eight further files name the account TABLES (counts, existence checks)
     // and touch no token — which is why this clause keys on the COLUMNS.
     const namers = sourceFiles()
@@ -328,6 +350,8 @@ describe('PHASE-5 T6C (4): the plaintext-credential surface is enumerated, pinne
     expect(namers).toEqual([
       'credentials/at-rest.ts',
       'credentials/seal-existing.ts',
+      'github/account.ts',
+      'github/device-flow.ts',
       'google/accounts.ts',
       'google/auth.ts',
       'microsoft/accounts.ts',
