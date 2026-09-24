@@ -844,9 +844,12 @@ describe('the classification reader sees every shape a status-moving door takes'
   //   1. TWO HOPS. An export → a private helper → another private writer. One hop is covered;
   //      the second is not, and the remedy if it ever appears is to iterate to a fixed point.
   //   2. SQL ASSEMBLED FROM FRAGMENTS. `SET ${SET_POSTED} WHERE …` puts no `status =` in the
-  //      literal. Compensating guard, and the reason this is not urgent: `check-sql-prepares`
-  //      requires every prepared statement to be an INLINE LITERAL, so a fragment-assembled
-  //      statement fails a blocking gate before it reaches this one.
+  //      literal. OPEN — the T7 terminal review MEASURED the claimed compensating guard and it
+  //      does not hold: `check-sql-prepares` COUNTS runtime-assembled statements (384 in the
+  //      tree) and exits 0; the plant was actually blocked by the since-removed 240-line
+  //      growth wall, an accident. Nothing structural refuses a fragment-assembled door today.
+  //      The remedy (follow `SET ${IDENT}` to its declaration via the one-hop machinery above)
+  //      is a FINAL-WHOLE-BRANCH-REVIEW item, on the record there.
   //   3. A DOOR THAT MOVES THE APPROVAL WITHOUT WRITING `status`. The status column IS the
   //      approval state, so this is the narrowest of the three — but "narrow" is what round 1
   //      said about its own blind spot, so it is written down rather than dismissed.
