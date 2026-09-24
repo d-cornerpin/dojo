@@ -58,7 +58,8 @@ vi.mock('../../db/connection.js', async () => {
 import { runMigrations } from '../../db/migrations.js';
 import { createReport, attachDraft, submitForApproval, type ReportBrief } from '../store.js';
 import { bundleDir, writeBundle } from '../bundle.js';
-import { exportReport, renderReportMarkdown, PREFILL_MAX_BODY_CHARS } from '../export.js';
+import { exportReport, PREFILL_MAX_BODY_CHARS } from '../export.js';
+import { renderIssueBody, renderIssueTitle } from '../issue-body.js';
 import { reportRepo, DOJO_REPORT_REPO_DEFAULT } from '../repo.js';
 
 const BRIEF: ReportBrief = {
@@ -112,8 +113,17 @@ describe('the export writes the brief to this box and nothing else leaves', () =
 
   it('carries the brief and the telemetry, and NOT the raw bundle', () => {
     const id = seeded();
-    const written = fs.readFileSync(exportReport(id)!.filePath, 'utf8');
-    for (const value of Object.values(BRIEF)) expect(written).toContain(value);
+    const result = exportReport(id)!;
+    const written = fs.readFileSync(result.filePath, 'utf8');
+    // ⚠ FOUR FIELDS, NOT FIVE, SINCE T7 — and the fifth is checked one line down rather than
+    // dropped. The file is now byte-identical to the ISSUE BODY, and an issue carries its title
+    // in its own field, so the title rides in the prefilled link's `title=` instead.
+    for (const [key, value] of Object.entries(BRIEF)) {
+      if (key === 'title') continue;
+      expect(written, `\`${key}\` is missing from the exported file`).toContain(value);
+    }
+    expect(new URL(result.newIssueUrl).searchParams.get('title'),
+      'the owner\'s title reaches neither the file nor the link').toBe(renderIssueTitle(BRIEF));
     expect(written, 'the telemetry attachment is missing from the export').toContain('dojo-telemetry-1');
     expect(written, 'the RAW BUNDLE reached a file the owner is told to paste in public (D1)')
       .not.toContain(BUNDLE_MARKER);
@@ -198,16 +208,23 @@ describe('the prefilled link is usable, or it says it is not', () => {
 });
 
 describe('the export body and the issue body are one renderer, not two', () => {
-  it('renderReportMarkdown is what the file holds — the exporter adds nothing of its own', () => {
+  it('renderIssueBody is what the file holds — the exporter adds nothing of its own', () => {
+    // T6's clause, re-pointed rather than retired: the renderer moved to `issue-body.ts` (T7
+    // took the plan's "replace it and re-point this module" option), so this now asserts the
+    // exported file IS the issue body. The other half — that the bytes POSTED to GitHub are
+    // these same bytes — is driven in
+    // `github/__tests__/a-matching-issue-gets-a-comment-not-a-duplicate.test.ts`.
     const id = seeded();
     const result = exportReport(id)!;
-    const rendered = renderReportMarkdown({
+    const rendered = renderIssueBody({
       id, brief: BRIEF, telemetry: TELEMETRY, signature: 'ds1-aaaaaaaaaaaa', lane: 'tool-error',
       createdAt: '', agentId: 'agent-1', status: 'approved', bundlePath: null, updatedAt: '',
       approvedAt: null, postedAt: null, issueUrl: null, issueNumber: null, exportPath: null,
     });
-    // Compared on the parts that do not carry a timestamp: the whole brief, verbatim.
-    for (const value of Object.values(BRIEF)) expect(rendered).toContain(value);
+    // Non-vacuity before the comparison: two empty strings are also byte-identical.
+    for (const [key, value] of Object.entries(BRIEF)) {
+      if (key !== 'title') expect(rendered).toContain(value);
+    }
     expect(fs.readFileSync(result.filePath, 'utf8')).toBe(rendered);
   });
 });

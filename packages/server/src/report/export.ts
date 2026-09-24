@@ -6,12 +6,16 @@
 // load-bearing word is **same**: this is not a lesser path, it is the identical sanitized brief
 // delivered by hand instead of by token.
 //
-// ── ONE RENDERER, NOT TWO ──
-// `renderReportMarkdown` is the single place a report becomes text. The plan's rule is that the
-// exported file and the posted issue body cannot drift, and the only way to hold that is for
-// both to call one function. ⚠ T7 HAND-OFF: `renderIssueBody` must DELEGATE to this (or replace
-// it and re-point this module). A second renderer is a second brief, and the owner only approved
-// one of them.
+// ── ONE RENDERER, NOT TWO — AND IT NOW LIVES IN `issue-body.ts` (T7) ──
+// T6 built the renderer here and handed T7 the choice: delegate to it, or replace it and
+// re-point this module. T7 took the second, which is what the plan's T7 instructs ("import
+// `renderIssueBody`/`renderIssueTitle` instead of its own copy"). The file this module writes
+// is now BYTE-IDENTICAL to the issue body the poster sends — same renderer, same call, no
+// wrapper — and the clause that holds it compares the POSTED bytes against this file's bytes
+// for the same row. A second renderer would be a second brief, and the owner only approved one.
+//
+// The TITLE rides the same way: the prefilled link carries `renderIssueTitle`, so a report
+// pasted by hand arrives with the title, the label and the body the platform would have sent.
 //
 // ── WHAT IS DELIBERATELY ABSENT ──
 // THE BUNDLE. D1: *"the raw bundle NEVER leaves the box in v1 by any automatic path."* This
@@ -32,8 +36,9 @@
 // the file — open it and paste". The file on disk is always whole.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { getReport, type ReportBrief, type ReportRow } from './store.js';
+import { getReport } from './store.js';
 import { writeReportFile } from './bundle.js';
+import { renderIssueBody, renderIssueTitle } from './issue-body.js';
 import { reportRepo } from './repo.js';
 
 /**
@@ -52,44 +57,6 @@ export interface ExportResult {
   newIssueUrl: string;
   /** True when the LINK carries a pointer instead of the brief. The file is whole either way. */
   bodyWasTrimmed: boolean;
-}
-
-const HEADINGS: ReadonlyArray<readonly [keyof ReportBrief, string]> = [
-  ['whatHappened', 'What happened'],
-  ['whatShouldHaveHappened', 'What should have happened'],
-  ['whyItWentWrong', 'Why it went wrong'],
-  ['fixIdeas', 'Fix ideas'],
-];
-
-/**
- * A report as markdown: the five brief fields VERBATIM, then the machine-built attachment.
- *
- * Verbatim is the whole contract. D4 says the user sees the exact text before anything posts, so
- * nothing here escapes, wraps, trims or re-flows what the owner read on the card — a renderer
- * that "helped" would publish something the owner never approved. The text sits between blank
- * lines rather than inside a fence for the same reason: a fence must escape a brief holding one.
- */
-export function renderReportMarkdown(row: ReportRow): string {
-  const brief = row.brief;
-  if (!brief) return '';
-  const parts = [`# ${brief.title}`, ''];
-  for (const [key, heading] of HEADINGS) {
-    parts.push(`## ${heading}`, '', brief[key], '');
-  }
-  parts.push(
-    '## Technical attachment',
-    '',
-    'Built by the platform from a fixed field whitelist. No conversation content, no file',
-    'contents, no names — and nothing the agent wrote reaches it.',
-    '',
-    '```json',
-    JSON.stringify(row.telemetry ?? {}, null, 2),
-    '```',
-    '',
-    `<!-- dojo-report ${row.signature} -->`,
-    '',
-  );
-  return parts.join('\n');
 }
 
 /** The short body a link falls back to. Names where the real text is, and what to search for. */
@@ -118,7 +85,7 @@ export function exportReport(id: string): ExportResult | null {
   const row = getReport(id);
   if (!row || !row.brief) return null;
 
-  const markdown = renderReportMarkdown(row);
+  const markdown = renderIssueBody(row);
   const filePath = writeReportFile(id, 'report.md', markdown);
 
   const encodedFull = encodeURIComponent(markdown);
@@ -130,7 +97,7 @@ export function exportReport(id: string): ExportResult | null {
   // on the public page. Percent-encoding round-trips both.
   const query = [
     'labels=dojo-report',
-    `title=${encodeURIComponent(row.brief.title)}`,
+    `title=${encodeURIComponent(renderIssueTitle(row.brief))}`,
     `body=${encodeURIComponent(body)}`,
   ].join('&');
   return {

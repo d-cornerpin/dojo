@@ -17,13 +17,14 @@
 //     between the click and the post makes the preview decoration. That is D4.
 //
 //  3. POSTED IS TERMINAL, by both doors. `markExported` consumes the approval exactly as
-//     `markPosted` does — D4 binds the export path too, so one approval is one delivery
-//     whichever way the report leaves.
+//     `markPosted` does — D4 binds the export path too. `releaseApproval` (T7) is the one
+//     backwards door: conditional on `approved`, so it can only give back an approval that
+//     delivered nothing.
 //
-//  4. AN UNKNOWN STATUS IS TERMINAL. A hand-edited database, a restored backup or a
-//     future writer can put a value here this release never approved (no CHECK,
-//     deliberately — migration 169 argues why). Such a row reads back as `cancelled`:
-//     never listed, named by no transition, never postable. That is the safe direction.
+//  4. AN UNKNOWN STATUS IS TERMINAL. A hand-edited database, a restored backup or a future
+//     writer can put a value here this release never approved (no CHECK, deliberately —
+//     migration 169 argues why). Such a row reads back as `cancelled`: never listed, named
+//     by no transition, never postable. The safe direction.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
@@ -85,13 +86,11 @@ export function getReport(id: string): ReportRow | null {
 }
 
 /**
- * Every transition in this module funnels through here. One statement, one bound
- * `WHERE`, one verdict — so no door can accidentally grow a read-then-write.
- *
- * `id` is a NAMED parameter and not `params[params.length - 1]`, which is what it was:
- * every door happens to bind the id last, so reading it back by position was correct
- * today and silently wrong the first time a door appended a parameter after it — the
- * right UPDATE, then the WRONG row handed back as the post-transition state.
+ * Every transition in this module funnels through here. One statement, one bound `WHERE`, one
+ * verdict — so no door can accidentally grow a read-then-write. `id` is a NAMED parameter and
+ * not `params[params.length - 1]`, which is what it was: every door happens to bind the id
+ * last, so reading it back by position was correct today and silently wrong the first time a
+ * door appended a parameter after it — the right UPDATE, the WRONG row handed back.
  */
 function transition(sql: string, params: unknown[], id: string): ReportRow | null {
   const info = getDb().prepare(sql).run(...params as never[]);
@@ -136,13 +135,13 @@ export function attachDraft(
 }
 
 /**
- * The HUMAN's edit door. Legal only while the row is awaiting their decision, and it
- * carries the five brief fields only — anything else in the patch lands on the floor
- * rather than in a public issue body. The read and the write share one transaction so the
- * merge sees a CONSISTENT brief; the state guard is still the UPDATE's own `WHERE`. ⚠ It
- * is the one door that can THROW rather than answer: in WAL a deferred transaction writing
- * after another connection committed raises SQLITE_BUSY_SNAPSHOT. A caller needs a catch as
- * well as a null branch (contract line C8 for T6).
+ * The HUMAN's edit door. Legal only while the row is awaiting their decision, and it carries
+ * the five brief fields only — anything else in the patch lands on the floor rather than in a
+ * public issue body. The read and the write share one transaction so the merge sees a
+ * CONSISTENT brief; the state guard is still the UPDATE's own `WHERE`. ⚠ It is the one door
+ * that can THROW rather than answer: in WAL a deferred transaction writing after another
+ * connection committed raises SQLITE_BUSY_SNAPSHOT. A caller needs a catch as well as a null
+ * branch (contract line C8 for T6).
  */
 export function editBrief(id: string, patch: Partial<ReportBrief>): ReportRow | null {
   const db = getDb();
@@ -195,6 +194,27 @@ export function markPosted(id: string, issueUrl: string, issueNumber: number): R
             updated_at = datetime('now')
       WHERE id = ? AND status = 'approved'`,
     [issueUrl, issueNumber, id], id,
+  );
+}
+
+/**
+ * THE DELIVERY DID NOT HAPPEN — HAND THE DECISION BACK (T7). The one transition that runs
+ * BACKWARDS, and T6's seam makes it necessary: the route mints the approval and only then sends
+ * (C3's consume-then-send order). When the send does not happen — GitHub unreachable, a refused
+ * credential, a duplicate the owner has not answered — the row would otherwise sit in
+ * `approved` forever, off the card (C1 lists `awaiting_approval` only) and refused by
+ * `approveOnce`: a report stranded by its own consent gate, which is the failure D4 exists to
+ * prevent. So the approval is RETURNED, `approved_at` with it — nothing was delivered, so no
+ * decision was made. ⚠ SAFE BECAUSE IT IS CONDITIONAL, and for no other reason: the `WHERE`
+ * binds `status = 'approved'`, so a row `markPosted`/`markExported` already won is `posted` and
+ * this changes nothing. One approval is still one delivery.
+ */
+export function releaseApproval(id: string): ReportRow | null {
+  return transition(
+    `UPDATE dojo_reports
+        SET status = 'awaiting_approval', approved_at = NULL, updated_at = datetime('now')
+      WHERE id = ? AND status = 'approved'`,
+    [id], id,
   );
 }
 

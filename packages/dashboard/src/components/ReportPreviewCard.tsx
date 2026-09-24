@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useToast } from '../hooks/useToast';
-import { briefEditsFor, briefIsPostable, postTargetSentence, type BriefFields } from '../lib/report-edits';
+import { briefEditsFor, briefIsPostable, postTargetSentence, type BriefFields, type DuplicateMatch } from '../lib/report-edits';
+import { DeliveredPanel, DuplicatePanel } from './ReportDeliveryPanel';
 
 // ── THE PREVIEW CARD — THE ONLY DOOR TO POSTING (DOJO-REPORT T6) ──
 //
@@ -47,6 +48,7 @@ export const ReportPreviewCard = () => {
   const [github, setGithub] = useState<api.GithubStatus | null>(null);
   const [form, setForm] = useState<BriefFields | null>(null);
   const [delivery, setDelivery] = useState<api.ReportDelivery | null>(null);
+  const [duplicate, setDuplicate] = useState<DuplicateMatch | null>(null);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -80,14 +82,21 @@ export const ReportPreviewCard = () => {
 
   const report = reports[0] ?? null;
 
-  const handlePost = async (): Promise<void> => {
+  // THE ONE DOOR, and the only place this card sends anything. `choice` is the owner's answer to
+  // a duplicate the door already showed them — absent on the ordinary press, which is what makes
+  // the question a question. A failure leaves the report ON THE CARD: the route hands the
+  // approval back when nothing was delivered, so pressing Post again is a fresh decision, not a
+  // retry of one already spent.
+  const handlePost = async (choice?: api.PostChoice): Promise<void> => {
     if (!report) return;
     setBusy(true);
     setProblem(null);
-    const result = await api.approveReport(report.id);
+    const result = await api.approveReport(report.id, choice);
     setBusy(false);
     if (!result.ok) { setProblem(result.error); void load(); return; }
+    if (result.data.duplicate) { setDuplicate(result.data.duplicate); void load(); return; }
     setDelivery(result.data);
+    setDuplicate(null);
     setForm(null);
     void load();
   };
@@ -121,32 +130,19 @@ export const ReportPreviewCard = () => {
     void load();
   };
 
-  if (delivery) {
+  if (delivery) return <DeliveredPanel delivery={delivery} onDone={() => setDelivery(null)} />;
+
+  // NOTHING WAS POSTED and the approval has been handed back, so all three answers are live
+  // decisions — including "Not now", which simply returns to the preview with the report still
+  // waiting. The card never answers this question on the owner's behalf.
+  if (duplicate) {
     return (
-      <div className="fixed bottom-4 right-4 z-[200] w-[min(30rem,calc(100vw-2rem))] glass-card p-4 space-y-3">
-        <h3 className="card-header">Your report is ready to post</h3>
-        {delivery.issueUrl ? (
-          <p className="text-xs text-ui/80">
-            Posted. <a className="text-cp-teal underline" href={delivery.issueUrl} target="_blank" rel="noreferrer">Open the issue</a>
-          </p>
-        ) : (
-          <div className="space-y-2">
-            <p className="text-xs text-ui/80">Saved on this Mac:</p>
-            <p className="text-[11px] text-ui/60 break-all bg-ui/[0.04] rounded p-2">{delivery.exportPath}</p>
-            <p className="text-xs text-ui/80">
-              {delivery.bodyWasTrimmed
-                ? 'It is too long to prefill, so the full text is in the file — open it and paste.'
-                : 'The link below opens a new issue with the text already filled in.'}
-            </p>
-            {delivery.newIssueUrl && (
-              <a className="text-xs text-cp-teal underline break-all" href={delivery.newIssueUrl} target="_blank" rel="noreferrer">
-                Open a new issue with this text
-              </a>
-            )}
-          </div>
-        )}
-        <button className="px-3 py-1 text-xs rounded glass-btn-secondary" onClick={() => setDelivery(null)}>Done</button>
-      </div>
+      <DuplicatePanel
+        match={duplicate} busy={busy}
+        onAdd={() => { void handlePost({ addToExisting: duplicate.number }); }}
+        onSeparate={() => { void handlePost({ postSeparately: true }); }}
+        onDismiss={() => { setDuplicate(null); }}
+      />
     );
   }
 
@@ -206,7 +202,7 @@ export const ReportPreviewCard = () => {
 
       {form === null ? (
         <div className="flex items-center gap-2">
-          <button className="px-3 py-1 text-xs rounded glass-btn-primary" onClick={handlePost} disabled={busy}>
+          <button className="px-3 py-1 text-xs rounded glass-btn-primary" onClick={() => { void handlePost(); }} disabled={busy}>
             Post
           </button>
           <button className="px-3 py-1 text-xs rounded glass-btn-secondary" onClick={() => { setProblem(null); setForm(brief); }} disabled={busy}>

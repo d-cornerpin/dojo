@@ -48,6 +48,25 @@ export function briefIsPostable(b: BriefFields): { ok: true } | { ok: false; rea
   return { ok: true };
 }
 
+/** What the door tells the card when the tracker already carries this signature (T7). */
+export interface DuplicateMatch { number: number; url: string; title: string }
+
+/**
+ * THE SECOND CONSENT SENTENCE, and it is a QUESTION rather than a statement.
+ *
+ * The platform found an open issue carrying this report's signature and posted NOTHING. The
+ * owner now chooses, and the sentence has to make both options honest: adding to the existing
+ * thread publishes their words on someone else's issue, and posting separately files a second
+ * one. It names the issue by NUMBER AND TITLE so the choice can be checked before it is made —
+ * a bare "we found a duplicate" asks somebody to agree to a page they have not seen.
+ */
+export function duplicateQuestion(match: DuplicateMatch): string {
+  const title = match.title.trim();
+  const named = title === '' ? `issue #${match.number}` : `#${match.number} “${title}”`;
+  return `Someone has already reported this — ${named}. Add your details to that issue instead, `
+    + 'or post a separate one?';
+}
+
 /** The fields of the served `GithubStatus` this decision reads. Declared structurally, never
  *  imported: pulling in `lib/api.ts` would drag `fetch` and the auth token into a module the
  *  server's vitest imports directly. A real `githubStatus()` result satisfies it. */

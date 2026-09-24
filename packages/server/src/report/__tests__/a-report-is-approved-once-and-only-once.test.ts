@@ -35,7 +35,7 @@ import { getDb } from '../../db/connection.js';
 import { runMigrations } from '../../db/migrations.js';
 import {
   createReport, getReport, attachDraft, editBrief, submitForApproval, approveOnce, markPosted,
-  markExported, cancelReport, listOpenReports, type ReportBrief,
+  markExported, cancelReport, listOpenReports, releaseApproval, type ReportBrief,
 } from '../store.js';
 import { deriveReportSignature, dominantToken, FAILURE_LANES, isFailureLane } from '../signature.js';
 import {
@@ -143,6 +143,70 @@ describe('the approval is one-shot', () => {
     expect(markExported(r.id, '/tmp/x/again.md')).toBeNull();
     expect(markPosted(r.id, 'https://example.invalid/3', 3)).toBeNull();
     expect(getReport(r.id)?.exportPath).toBe('/tmp/x/report.md');
+  });
+});
+
+// ── the one transition that runs backwards (T7) ─────────────────────────────────────────
+// The route mints the approval BEFORE it sends (C3's consume-then-send, so nothing can be
+// delivered that was not approved). An approval that buys no delivery therefore has to be
+// given back, or the row sits in `approved` forever: off `listOpenReports` (C1) and refused by
+// `approveOnce`. Everything below is about that door being narrow enough to be safe.
+
+describe('an approval that bought no delivery is handed back', () => {
+  const ready = (signature: string): string => {
+    const r = createReport('agent-1', 'tool-error', signature);
+    attachDraft(r.id, BRIEF, {}, '/tmp/x/bundle.json');
+    submitForApproval(r.id);
+    return r.id;
+  };
+
+  it('puts the row back on the card and un-stamps a decision nobody got the benefit of', () => {
+    const id = ready('ds1-a1a1a1a1a1a1');
+    approveOnce(id);
+    expect(listOpenReports().map(r => r.id)).not.toContain(id);
+
+    expect(releaseApproval(id)?.status).toBe('awaiting_approval');
+    expect(getReport(id)?.approvedAt, 'a decision was left recorded that bought nothing').toBeNull();
+    expect(getReport(id)?.postedAt).toBeNull();
+    expect(listOpenReports().map(r => r.id), 'the report never came back to the card').toContain(id);
+  });
+
+  it('REFUSES a delivered row — a posted report can never be un-posted', () => {
+    const id = ready('ds1-b2b2b2b2b2b2');
+    approveOnce(id);
+    markPosted(id, 'https://example.invalid/5', 5);
+    expect(releaseApproval(id), 'a delivered report was handed back to the card').toBeNull();
+    expect(getReport(id)?.status).toBe('posted');
+    expect(getReport(id)?.issueNumber).toBe(5);
+
+    const exported = ready('ds1-c3c3c3c3c3c3');
+    approveOnce(exported);
+    markExported(exported, '/tmp/x/report.md');
+    expect(releaseApproval(exported)).toBeNull();
+    expect(getReport(exported)?.exportPath).toBe('/tmp/x/report.md');
+  });
+
+  it('refuses every status but `approved`, so it can only ever give back an approval', () => {
+    const drafting = createReport('agent-1', 'other', 'ds1-d4d4d4d4d4d4');
+    expect(releaseApproval(drafting.id)).toBeNull();
+    const submitted = ready('ds1-e5e5e5e5e5e5');
+    expect(releaseApproval(submitted)).toBeNull();
+    cancelReport(submitted);
+    expect(releaseApproval(submitted)).toBeNull();
+    expect(releaseApproval('00000000-0000-4000-8000-000000000000')).toBeNull();
+  });
+
+  it('one approval is still one delivery after a round trip through the card', () => {
+    const id = ready('ds1-f6f6f6f6f6f6');
+    approveOnce(id);
+    releaseApproval(id);
+    // The owner may edit again — the text is no longer frozen, because nothing was published.
+    expect(editBrief(id, { title: 'the owner tightened it' })?.brief?.title)
+      .toBe('the owner tightened it');
+    expect(approveOnce(id)?.status).toBe('approved');
+    expect(markPosted(id, 'https://example.invalid/6', 6)?.status).toBe('posted');
+    expect(markExported(id, '/tmp/x/report.md'), 'a second delivery followed one approval').toBeNull();
+    expect(releaseApproval(id)).toBeNull();
   });
 });
 

@@ -33,12 +33,15 @@
 //  5. `approveOnce` ANSWERING NULL IS "ALREADY DECIDED", NEVER 404 (contract C4). The row is
 //     there; it is simply no longer awaiting a decision, and the sentence says so.
 //
+//  6. NOTHING IS DELIVERED, NOTHING IS SPENT (T7). The approval is minted before the send
+//     (C3's consume-then-send), so when the send does not happen the decision is handed BACK
+//     with `releaseApproval` — a report may never strand in `approved` with nothing delivered.
+//
 // ── WHERE THE REQUEST SCHEMA LIVES, AND WHY IT IS NOT IN `config/schema.ts` ──
-// The plan names `config/schema.ts`. Measured at this HEAD it is 240 lines, its growth baseline
-// is 240, and the growth detector's crossing line for an unpinned file is exactly 240 (60% of
-// the 400-line cap) — so ANY addition to it, including a comment, fails a blocking gate.
-// Splitting is the plan's own instruction for that case, and the seam it leaves is the better
-// one: this door's ACCEPT list and its REFUSE list are one decision, and they are now adjacent.
+// The plan names `config/schema.ts`. Measured at T6's HEAD it is 240 lines against a 240 growth
+// baseline and the crossing line for an unpinned file is exactly 240 — so ANY addition to it,
+// including a comment, fails a blocking gate. Splitting is the plan's own instruction for that
+// case, and this door's ACCEPT list and REFUSE list are one decision, now adjacent.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { Hono } from 'hono';
@@ -47,9 +50,10 @@ import type { AppEnv } from '../server.js';
 import { githubStatus } from '../../github/status.js';
 import { exportReport } from '../../report/export.js';
 import {
-  approveOnce, cancelReport, editBrief, getReport, listOpenReports, markExported,
+  approveOnce, cancelReport, editBrief, getReport, listOpenReports, markExported, releaseApproval,
   type ReportStatus,
 } from '../../report/store.js';
+import { DUPLICATE_ANSWER_HELP, parsePostChoice, postApprovedReport } from '../../report/post.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../ws.js';
 import { routeFailure } from './route-failure.js';
@@ -158,26 +162,45 @@ reportsRouter.patch('/:id', async (c) => {
 
 // ── THE ONE DOOR ────────────────────────────────────────────────────────────────────────
 
-reportsRouter.post('/:id/approve', (c) => {
+reportsRouter.post('/:id/approve', async (c) => {
   const id = c.req.param('id');
   const existing = getReport(id);
   if (!existing) return c.json({ ok: false, error: NOT_FOUND }, 404);
 
-  // ⚠ THE T7 SEAM, AHEAD OF `approveOnce` ON PURPOSE. When a token is here the sender is T7's
-  // `postApprovedReport(id)`. Until that exists a connected box is told plainly and the owner's
-  // approval IS NOT SPENT — the report is still `awaiting_approval`, still on the card, still
-  // theirs to decide. Burning the one approval to discover there is nobody to deliver it is the
-  // shape D4 exists to prevent. T7 replaces this block and keeps the order: consume, then send.
-  if (githubStatus().connected) {
-    return c.json({ ok: false, error: 'Posting to GitHub is not wired up in this build yet. Your '
-      + 'report is untouched and still waiting for you.' }, 503);
-  }
+  // OPTIONAL body: it carries the owner's answer to a duplicate this door already showed them,
+  // and nothing else. Unreadable is the same as no answer, never a 500.
+  const choice = parsePostChoice(await c.req.json().catch(() => null));
+  if (choice === 'invalid') return c.json({ ok: false, error: DUPLICATE_ANSWER_HELP }, 400);
 
+  // ⚠ THE T7 SEAM. T6 stood a 503 here because there was no sender; the poster exists now, so
+  // the block is REPLACED by the send and the ORDER is the one C3 pins — CONSUME, THEN SEND, so
+  // nothing can be delivered that was not approved. T6's clause held an ORDERING, not an answer:
+  // "the owner's one approval is never spent on a delivery that cannot happen". The other half
+  // of that property is below — when nothing is delivered, the decision is handed back.
   const approved = approveOnce(id);
   // C4: the row exists. It is simply no longer awaiting a decision.
   if (!approved) {
     return c.json({ ok: false, error: 'This report was already decided — it is '
       + `${existing.status}. One approval, one delivery.` }, 409);
+  }
+
+  if (githubStatus().connected) {
+    const outcome = await postApprovedReport(id, choice);
+    if (outcome.kind === 'created' || outcome.kind === 'commented') {
+      broadcast({ type: 'report:resolved', data: { id, status: 'posted' } });
+      return c.json({ ok: true, data: { status: 'posted', exportPath: null,
+        issueUrl: outcome.issueUrl, issueNumber: outcome.issueNumber } });
+    }
+    // NOTHING LEFT THE BOX, so the approval bought no delivery and is returned: the row goes
+    // back on the card, decidable, nothing recorded against it. Leaving it `approved` would
+    // strand it — off the list the card reads (C1) and refused by `approveOnce` forever.
+    releaseApproval(id);
+    if (outcome.kind === 'duplicate-found') {
+      return c.json({ ok: true, data: { status: 'awaiting_approval', issueUrl: null,
+        issueNumber: null, exportPath: null, duplicate: outcome.match } });
+    }
+    return routeFailure(c, logger, new Error(outcome.error),
+      { status: 502, level: 'warn', message: outcome.error });
   }
 
   const exported = exportReport(id);
@@ -188,19 +211,16 @@ reportsRouter.post('/:id/approve', (c) => {
   // `markExported` CONSUMES the approval, exactly as `markPosted` does (C3): D4 binds the export
   // door too, so one approval is one delivery whichever way the report leaves.
   const delivered = markExported(id, exported.filePath);
-  // ⚠ UNREACHABLE THROUGH THIS ROUTE, AND THAT IS NOT AN OVERSIGHT (review N1). `approveOnce`
-  // above has already won the row, so `markExported` can only answer null under a race no
-  // caller can produce today. Defensive depth, deliberately untested: no clause can reach it.
+  // ⚠ UNREACHABLE THROUGH THIS ROUTE, AND NOT AN OVERSIGHT (review N1). `approveOnce` above has
+  // already won the row, so `markExported` can only answer null under a race no caller can
+  // produce today. Defensive depth, deliberately untested: no clause can reach it.
   if (!delivered) return c.json({ ok: false, error: 'This report was already delivered.' }, 409);
   broadcast({ type: 'report:resolved', data: { id, status: 'posted' } });
+  // `newIssueUrl`/`bodyWasTrimmed` are beyond the plan's four and needed rather than nice: without
+  // them the owner is told a file was written and given no way to post it, which is half of D2.
   return c.json({ ok: true, data: {
-    status: delivered.status,
-    issueUrl: delivered.issueUrl,
-    issueNumber: delivered.issueNumber,
-    exportPath: delivered.exportPath,
-    // Beyond the plan's four, and needed by the card rather than nice to have: without these the
-    // owner is told a file was written and given no way to post it, which is half of D2.
-    newIssueUrl: exported.newIssueUrl,
+    status: delivered.status, issueUrl: delivered.issueUrl, issueNumber: delivered.issueNumber,
+    exportPath: delivered.exportPath, newIssueUrl: exported.newIssueUrl,
     bodyWasTrimmed: exported.bodyWasTrimmed,
   } });
 });

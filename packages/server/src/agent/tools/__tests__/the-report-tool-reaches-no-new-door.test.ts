@@ -99,6 +99,29 @@ const ALLOWED_CONSENT_CALLERS: readonly string[] = [
   // ⚠ T7 ADDS A SECOND ENTRY. Its poster calls `markPosted`, so it must be named here AND on
   // FETCH_BEARING_IN_CLOSURE — see the note at the head of that list, which is written for it.
   'gateway/routes/reports.ts',
+  // ── APPENDED BY DOJO-REPORT T7. THIS IS THE ONE-LINE EDIT, AND IT IS THE REVIEW ──
+  // THE EDGE IS THE BRACED STATIC FORM, and it binds one consent door by name:
+  //
+  //   import { getReport, markPosted, type ReportRow } from './store.js';
+  //
+  // `markPosted` is the SECOND HALF of the one-shot. `approveOnce` (the route, above) mints the
+  // owner's decision; this module spends it, and only ever after GitHub has ACCEPTED the report
+  // — the row is not touched on any failure path, which is why a poster that is called twice
+  // cannot deliver twice. The `WHERE status = 'approved'` in `markPosted` is what makes that
+  // structural rather than conventional.
+  //
+  // WHY THIS MODULE AND NOT ANOTHER: it is the only thing in the tree that can turn an approved
+  // report into an issue. The complementary claim — that it is the only module that CALLS
+  // `markPosted` — is held from the other direction by the call-site census in
+  // `gateway/routes/__tests__/only-the-card-can-post-a-report.test.ts`, which T7 widened from
+  // `approveOnce` alone to all four doors (mint, both spends, and the release).
+  //
+  // ⚠ IT IS ALSO ON FETCH_BEARING_IN_CLOSURE'S SIBLING BELOW (`github/issues.ts`, which holds
+  // the actual outbound calls). Both lists, as that note demanded.
+  'report/post.ts',
+  // The poster's own suite, which drives the doors to prove nothing posts without an approval —
+  // the same reason the store's lifecycle test is the first entry on this list.
+  'github/__tests__/a-matching-issue-gets-a-comment-not-a-duplicate.test.ts',
 ];
 
 /** PRONG C's exact one-hop pins. Adding an import to either file fails this file. */
@@ -174,6 +197,40 @@ const FETCH_BEARING_IN_CLOSURE: readonly string[] = [
   // poster's appearance here is the moment to check prong A as well: it must ALSO be on
   // ALLOWED_CONSENT_CALLERS, because posting is what consumes the owner's one approval.
   'github/device-flow.ts',
+  // ── APPENDED BY DOJO-REPORT T7, AND THIS ENTRY DOES NOT BORROW THE ONE ABOVE ──
+  // `github/issues.ts` holds the three calls that reach GitHub's issues: one unauthenticated
+  // search and two authenticated writes. The T4 entry above answers the two questions this list
+  // asks and gets NO for both. This module answers NO and **YES**, and the difference is the
+  // whole reason it is written out rather than waved at the neighbour's paragraph.
+  //
+  //   1. RUNTIME-REACHABLE FROM THE TOOL? NO — measured, not assumed. The path in the
+  //      over-approximating walk is cat/report.ts → gateway/routes/update.ts → gateway/server.ts
+  //      → gateway/routes/reports.ts → report/post.ts → github/issues.ts, and hop 2 is
+  //      `import type { AppEnv }`, ERASED AT COMPILE TIME. Re-running this file's own walk with
+  //      type-only edges dropped: 538 modules over-approximating, 464 at runtime, and
+  //      `report/post.ts`, `github/issues.ts`, `report/issue-body.ts` and `report/repo.ts` are
+  //      ALL ABSENT from the runtime set. The clause "the gateway is NOT runtime-reachable from
+  //      the tool" pins the fact this rests on, and prong B measures on the runtime closure.
+  //
+  //   2. DOES AN EXPORTED FUNCTION CARRY CALLER-SUPPLIED CONTENT TO THE WIRE? **YES.**
+  //      `createIssue(repo, title, body, labels)` exists to carry a rendered brief to
+  //      `POST /repos/:owner/:repo/issues`. T4's argument — "none of these endpoints accepts
+  //      content" — IS NOT AVAILABLE HERE and must not be reused. What makes it safe is a
+  //      different fact, and it is a fact about the CALLER rather than the callee:
+  //
+  //        * its only caller is `report/post.ts`, which is on ALLOWED_CONSENT_CALLERS above and
+  //          refuses every row that is not already `approved` — measured as ZERO network calls,
+  //          not as a returned error;
+  //        * the only thing that can produce an `approved` row is `approveOnce`, called from
+  //          exactly one place in the tree: the route behind the owner's Post button (D4);
+  //        * the body it carries is `renderIssueBody(row)` — the platform's own renderer over a
+  //          row the owner has READ, never a string a caller hands in.
+  //
+  //      So the content door is real and the gate in front of it is the owner's consent, which
+  //      is the only gate that was ever going to be adequate for a module whose job is to
+  //      publish. A future edit that lets some other module call `createIssue` fails prong A at
+  //      `report/post.ts`'s call-site census before it fails anything here.
+  'github/issues.ts',
   'agent/model.ts', 'agent/runtime.ts', 'agent/site-snapshot.ts', 'agent/tools/definitions.ts',
   'agent/tools/types.ts', 'agent/web-tools.ts', 'gateway/routes/config.ts',
   'gateway/routes/setup-deps.ts', 'gateway/routes/system.ts', 'gateway/routes/techniques.ts',
@@ -200,7 +257,28 @@ const FETCH_BEARING_IN_CLOSURE: readonly string[] = [
 // missed module calls `fetch`, so prong C was complete BY LUCK, NOT BY LAW. The `\bimport\s*`
 // alternation is the whole fix, and the clause below pins every spelling the repo uses.
 
-const SPEC = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s*)['"]([^'"]+)['"]/g;
+// ── INV-1 (T3's closing hand-off, closed by T7): THE BACKTICK SPECIFIER ──
+// The reader saw `'…'` and `"…"` and nothing else, so `await import(\`./x.js\`)` and
+// `require(\`./x.js\`)` — both legal, both non-interpolated, both ordinary — were invisible at
+// EVERY hop. Under the inverted rule a dynamic edge is consent-binding BY DEFAULT, so a
+// backtick dynamic import of the store would have walked past prong A entirely. Measured at
+// this HEAD: ZERO occurrences in `packages/server/src`, which is exactly the condition T3 named
+// as "complete by luck, not by law" — it stops being true without warning.
+//
+// The fix is one delimiter alternation with a BACKREFERENCE, so the closing delimiter must
+// match the opening one and `'x\`` is not a specifier. The two type-aware readers below
+// (`TYPE_ONLY`, `BRACED_STATIC`) are deliberately NOT widened: a backtick is illegal in a
+// static `import … from` clause, and every direction the asymmetry can be wrong in is the safe
+// one — an edge this reader sees and they do not is an edge that keeps its runtime status and
+// cannot prove its names, which is precisely how an unproven edge is supposed to behave.
+//
+// ⚠ AND THE WIDENING IMMEDIATELY FOUND A LATENT OVER-READ, WHICH IS WHY `\n` IS EXCLUDED TOO.
+// `cat/report.ts:131` ends a template with "a lane from `" and line 132 opens the next one with
+// "+ `" — so "from ` … `" is a perfectly good backtick-delimited string, and the reader called
+// the prose between them a module specifier. The exact pins caught it on the first run rather
+// than a reviewer catching it later. A module specifier NEVER contains a newline, so excluding
+// one costs nothing real and closes the class for every delimiter, single quotes included.
+const SPEC = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s*)(['"`])([^'"`\n]+)\1/g;
 const isComment = (line: string): boolean => /^\s*(\/\/|\*|\/\*)/.test(line);
 
 const stripComments = (code: string): string =>
@@ -208,7 +286,7 @@ const stripComments = (code: string): string =>
 
 /** Every module specifier in a piece of code, in any spelling that creates an EDGE. */
 function specifiersIn(code: string): string[] {
-  return [...stripComments(code).matchAll(SPEC)].map(m => m[1]);
+  return [...stripComments(code).matchAll(SPEC)].map(m => m[2]);
 }
 
 function specifiersOf(file: string): string[] {
@@ -424,6 +502,11 @@ describe('the specifier reader sees every import spelling that creates an edge',
     ['bare side-effect', `import './x.js';`],
     ['dynamic', `const m = await import('./x.js');`],
     ['require', `const m = require('./x.js');`],
+    // INV-1, T7: the two forms a backtick is legal in. Zero occurrences in the tree today,
+    // which is why this row exists — the reader must see a spelling before somebody writes it,
+    // not after. (A backtick cannot appear in a static `import … from` clause at all.)
+    ['dynamic with backticks', 'const m = await import(`./x.js`);'],
+    ['require with backticks', 'const m = require(`./x.js`);'],
     ['re-export named', `export { a } from './x.js';`],
     ['re-export star', `export * from './x.js';`],
     ['re-export star as', `export * as n from './x.js';`],
@@ -437,6 +520,26 @@ describe('the specifier reader sees every import spelling that creates an edge',
 
   it('still ignores a specifier that only appears in prose', () => {
     expect(specifiersIn(`// the old \`await import('../agent/tools.js')\` hack\nconst x = 1;`)).toEqual([]);
+  });
+
+  it('will not read the prose BETWEEN two strings as a specifier', () => {
+    // The real shape, from `cat/report.ts`: a template ending in "… a lane from `" followed by
+    // a continuation line opening with "+ `". A specifier has no newline in it.
+    const code = 'const s = `a lane from `\n        + `[${LANES.join()}], and the rest`;';
+    expect(specifiersIn(code), 'the reader invented an edge out of prose').toEqual([]);
+  });
+
+  it('will not pair a quote with a backtick to invent a specifier', () => {
+    // The backreference is what makes the widening safe: without it, `'…\`` and `\`…'` become
+    // specifiers, and a walk that invents edges reports holes nobody can close.
+    expect(specifiersIn('const m = await import(\'./x.js`);')).toEqual([]);
+  });
+
+  it('sees a backtick edge to the store as UNPROVEN, like every other dynamic one', () => {
+    // The pair the widening exists for: the reader must see the edge (above), and the rule must
+    // then refuse it (here). Either half alone is a hole.
+    expect(unprovenEdgesIn('const { approveOnce } = await import(`./store.js`);'))
+      .toContain('./store.js');
   });
 });
 

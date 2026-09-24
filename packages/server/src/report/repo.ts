@@ -30,3 +30,56 @@ export function reportRepo(): string {
   const override = (process.env.DOJO_REPORT_REPO ?? '').trim();
   return REPO_SLUG.test(override) ? override : DOJO_REPORT_REPO_DEFAULT;
 }
+
+/** GitHub treats `Owner/Name` and `owner/name` as one repository, so this must too. */
+const sameRepo = (a: string, b: string): boolean =>
+  a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** True when nothing has redirected this box's reports somewhere else. */
+export function reportRepoIsDefault(): boolean {
+  return sameRepo(reportRepo(), DOJO_REPORT_REPO_DEFAULT);
+}
+
+// ── THE DEVELOPMENT BOX MAY NOT FILE ON THE REAL TRACKER ────────────────────────────────
+//
+// The owner's development machine runs this build constantly, with real reports in the
+// database and a real GitHub connection. The whole feature's happy path ends in a PUBLIC
+// issue on the Dojo's own tracker, so the difference between "T8's live proof" and "six
+// fixture issues filed under the owner's name" is one environment variable. `DOJO_DEV_BOX=1`
+// declares a box that must never file on the default repository; `DOJO_REPORT_REPO` is how
+// such a box exercises the real path anyway, against a scratch repository of its own.
+//
+// ── WHY THE FLAG IS LATCHED RATHER THAN RE-READ ──
+// A refusal that reads `process.env` at the moment of the call is a refusal any later write
+// can lift — a test helper restoring a saved environment, a config loader, a `delete` in a
+// `finally`. The flag is therefore read at module load AND re-read on every call, and the
+// latch only ever CLOSES: once this process has seen the flag, nothing can clear it. That is
+// the only shape whose safety does not depend on the order in which code happens to run.
+let devBoxSeen = process.env.DOJO_DEV_BOX === '1';
+
+function isDevBox(): boolean {
+  if (process.env.DOJO_DEV_BOX === '1') devBoxSeen = true;
+  return devBoxSeen;
+}
+
+export type RepoVerdict = { ok: true } | { ok: false; error: string };
+
+/**
+ * THE LAST GATE BEFORE THE WIRE. Every door that WRITES to GitHub asks this first, with the
+ * repository it is about to write to — so the check cannot be separated from the send by any
+ * amount of code, environment manipulation or time between them.
+ *
+ * It validates the slug as well as the box, because a caller that built a repository string
+ * some other way must not be able to walk past the validation `reportRepo` performs.
+ */
+export function assertPostableRepo(repo: string): RepoVerdict {
+  if (!REPO_SLUG.test(repo.trim())) {
+    return { ok: false, error: `\`${repo}\` is not an owner/name repository, so nothing was sent.` };
+  }
+  if (isDevBox() && sameRepo(repo, DOJO_REPORT_REPO_DEFAULT)) {
+    return { ok: false, error: 'This box is marked DOJO_DEV_BOX=1, so it will not file an issue '
+      + `on ${DOJO_REPORT_REPO_DEFAULT}. Point DOJO_REPORT_REPO at a scratch repository to `
+      + 'exercise the real path, or clear the flag on a box that is meant to report.' };
+  }
+  return { ok: true };
+}

@@ -81,11 +81,44 @@ import {
   createReport, attachDraft, submitForApproval, getReport, listOpenReports, type ReportBrief,
 } from '../../../report/store.js';
 import { saveGithubAccount, disconnectGithub } from '../../../github/account.js';
-import { briefEditsFor, briefIsPostable, postTargetSentence, type BriefFields }
+import { briefEditsFor, briefIsPostable, duplicateQuestion, postTargetSentence, type BriefFields }
   from '../../../../../dashboard/src/lib/report-edits.js';
 
 const SRC = path.resolve(__dirname, '..', '..', '..');
 const CARD = path.resolve(SRC, '../../dashboard/src/components/ReportPreviewCard.tsx');
+const DELIVERY_PANEL = path.resolve(SRC, '../../dashboard/src/components/ReportDeliveryPanel.tsx');
+
+// ── THE STUBBED GITHUB ───────────────────────────────────────────────────────────────────
+// Installed for EVERY clause in this file, not only the ones that mean to post. The approve
+// route reaches the network the moment a token is present, and a suite that leaves the real
+// `fetch` in place would file issues on a public tracker from a test run. The default script
+// is "no duplicate, then the issue is created", so a clause that does not care about GitHub
+// still gets a plausible answer rather than a socket error.
+interface GithubCall { method: string; url: string; body: string }
+let ghCalls: GithubCall[] = [];
+let searchAnswer: () => Promise<Response> | Response = () => jsonRes(200, { items: [] });
+let writeAnswer: () => Promise<Response> | Response =
+  () => jsonRes(201, { number: 7, html_url: 'https://github.com/d-cornerpin/dojo/issues/7' });
+
+function jsonRes(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status, headers: { 'content-type': 'application/json' },
+  });
+}
+
+const realFetch = globalThis.fetch;
+const ghWrites = (): GithubCall[] => ghCalls.filter(c => c.method === 'POST');
+
+function installFetch(): void {
+  globalThis.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
+    const url = String(input);
+    ghCalls.push({
+      method: (init?.method ?? 'GET').toUpperCase(), url,
+      body: typeof init?.body === 'string' ? init.body : '',
+    });
+    return url.includes('/search/issues') ? await searchAnswer() : await writeAnswer();
+  }) as unknown as typeof fetch;
+}
 
 const BRIEF: ReportBrief = {
   title: 't', whatHappened: 'a', whatShouldHaveHappened: 'b',
@@ -107,7 +140,10 @@ function awaiting(signature = 'ds1-aaaaaaaaaaaa', brief: ReportBrief = BRIEF): s
 }
 
 const get = async (p: string): Promise<Response> => reportsRouter.request(p);
-const post = async (p: string): Promise<Response> => reportsRouter.request(p, { method: 'POST' });
+const post = async (p: string, body?: unknown): Promise<Response> =>
+  reportsRouter.request(p, body === undefined ? { method: 'POST' } : {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
 const patch = async (p: string, body: unknown): Promise<Response> =>
   reportsRouter.request(p, {
     method: 'PATCH',
@@ -124,10 +160,15 @@ beforeEach(() => {
   mockDb.current = d;
   runMigrations();
   frames.length = 0;
+  ghCalls = [];
+  searchAnswer = () => jsonRes(200, { items: [] });
+  writeAnswer = () => jsonRes(201, { number: 7, html_url: 'https://github.com/d-cornerpin/dojo/issues/7' });
+  installFetch();
   disconnectGithub();
 });
 
 afterEach(() => {
+  globalThis.fetch = realFetch;
   mockDb.current?.close();
   mockDb.current = null;
 });
@@ -135,25 +176,41 @@ afterEach(() => {
 // ── 1. ONE DOOR ─────────────────────────────────────────────────────────────────────────
 
 describe('nothing but the approve route may spend an approval', () => {
-  it('approveOnce is called from exactly one place in the tree', () => {
-    const hits: string[] = [];
+  it('every door that mints, spends or returns an approval has exactly one call site', () => {
+    // T7 WIDENED THIS FROM `approveOnce` ALONE. The import half of the claim (prong A of
+    // `the-report-tool-reaches-no-new-door.test.ts`) has always covered all three consent
+    // doors; this half only ever covered the mint, so `markPosted` — the door that SPENDS the
+    // approval — could have grown a second caller at full green. `releaseApproval` is here for
+    // the opposite reason: it hands a decision BACK, and a second caller could quietly
+    // un-approve rows the owner had decided.
+    const OWNERS: Readonly<Record<string, string>> = {
+      approveOnce: 'gateway/routes/reports.ts',
+      markExported: 'gateway/routes/reports.ts',
+      releaseApproval: 'gateway/routes/reports.ts',
+      markPosted: 'report/post.ts',
+    };
+    const hits: Record<string, string[]> = { approveOnce: [], markExported: [], releaseApproval: [], markPosted: [] };
     const walk = (dir: string): void => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         const p = path.join(dir, e.name);
         if (e.isDirectory()) { if (e.name !== '__tests__') walk(p); continue; }
-        if (!p.endsWith('.ts') || p.includes('.test.')) continue;
+        if (!p.endsWith('.ts') || p.includes('.test.') || p.endsWith('report/store.ts')) continue;
         const src = fs.readFileSync(p, 'utf8');
-        if (/\bapproveOnce\s*\(/.test(src) && !p.endsWith('report/store.ts')) hits.push(p);
+        for (const name of Object.keys(OWNERS)) {
+          if (new RegExp(`\\b${name}\\s*\\(`).test(src)) hits[name].push(path.relative(SRC, p));
+        }
       }
     };
     walk(SRC);
-    expect(
-      hits.map(h => path.relative(SRC, h)).sort(),
-      'a second module CALLS approveOnce. The owner\'s one approval is spent by the route '
-      + 'behind the Post button and by nothing else (D4). If this is a legitimate new door, it '
-      + 'must also be added to ALLOWED_CONSENT_CALLERS in '
-      + 'agent/tools/__tests__/the-report-tool-reaches-no-new-door.test.ts.',
-    ).toEqual(['gateway/routes/reports.ts']);
+    for (const [name, owner] of Object.entries(OWNERS)) {
+      expect(
+        hits[name].sort(),
+        `a second module CALLS ${name}. The owner's one approval is minted, spent and returned `
+        + 'in one place each (D4). If this is a legitimate new door, it must also be added to '
+        + 'ALLOWED_CONSENT_CALLERS in '
+        + 'agent/tools/__tests__/the-report-tool-reaches-no-new-door.test.ts.',
+      ).toEqual([owner]);
+    }
   });
 
   it('the PATCH door calls editBrief and can never reach attachDraft (contract C2)', () => {
@@ -203,41 +260,114 @@ describe('nothing but the approve route may spend an approval', () => {
     expect(res.status).toBe(404);
   });
 
-  it('a connected box is refused BEFORE the approval is spent', async () => {
-    // ── FIX ROUND 1 / F1. THE CLAUSE THAT HOLDS AN ORDERING, NOT AN ANSWER ──
-    // The 503 that stands in for T7's poster sits ABOVE `approveOnce` on purpose, and until this
-    // clause existed NOTHING held that position. Review moved the block one statement down and
-    // rode 39/39 green — and under that mutant a connected box's Post SPENDS the owner's one
-    // approval, moves the row out of `awaiting_approval` (so it leaves `listOpenReports()` and
-    // leaves the card), and only then refuses. The report is stranded in `approved` with no
-    // delivery and no way back, and it can never be approved again — because that is C3's
-    // one-approval-one-delivery contract working exactly as designed, which is what makes the
-    // failure silent rather than loud.
+  it('a delivery that could not happen spends no approval, and strands no report', async () => {
+    // ── THE T7 REPLACEMENT OF T6's F1 CLAUSE — SAME PROPERTY, REAL NETWORK REFUSAL ──
+    // T6 stood a 503 ahead of `approveOnce` because there was no sender, and this clause held
+    // the ORDERING rather than the answer: review moved that block one statement down and rode
+    // 39/39 green, which left a connected box's Post SPENDING the owner's one approval on a
+    // delivery that could not happen. T7 deleted the 503 — so the clause is REPLACED, NOT
+    // DELETED, because the property was never "a 503 happens". It is:
     //
-    // ⚠ T7 IS SENT STRAIGHT AT THIS LINE (report §10.1a: "delete the 503 block, move
-    // `approveOnce` above the branch"). This clause is what catches a wrong move, so it asserts
-    // the ORDERING — approval unspent, row still on the card, still decidable — and not merely
-    // that the answer is a 503.
+    //    THE OWNER'S ONE APPROVAL IS NEVER SPENT ON A DELIVERY THAT CANNOT HAPPEN.
+    //
+    // Now driven the way it will actually fail in the world: GitHub is connected, the report is
+    // approved, and the network refuses. `postApprovedReport` leaves the row alone by design, so
+    // it is the ROUTE that must hand the decision back — otherwise the row sits in `approved`,
+    // off `listOpenReports()` (C1) and refused by `approveOnce` forever, delivered to nobody.
     saveGithubAccount('octocat', TOKEN, 'public_repo');
-    const id = awaiting('ds1-503503503503');
+    searchAnswer = () => { throw new Error('connect ECONNREFUSED 140.82.121.6:443'); };
+    const id = awaiting('ds1-502502502502');
 
     const res = await post(`/${id}/approve`);
-    expect(res.status).toBe(503);
-    expect(String((await bodyOf(res)).error)).toContain('not wired up');
+    expect(res.status, 'an upstream refusal was reported as something other than a bad gateway')
+      .toBe(502);
+    expect(String((await bodyOf(res)).error).length).toBeGreaterThan(10);
+    expect(ghWrites(), 'the duplicate check failed and the report was filed anyway').toEqual([]);
 
-    expect(getReport(id)?.status,
-      'the approval was spent on a delivery that could not happen — D4').toBe('awaiting_approval');
+    const row = getReport(id)!;
+    expect(row.status, 'the approval was spent on a delivery that could not happen — D4')
+      .toBe('awaiting_approval');
     expect(listOpenReports().map(r => r.id),
       'the report left the card without ever being delivered').toContain(id);
-    expect(getReport(id)?.approvedAt, 'a decision was recorded that nobody made').toBeNull();
-    expect(getReport(id)?.exportPath ?? null).toBeNull();
-    expect(getReport(id)?.postedAt).toBeNull();
+    expect(row.approvedAt, 'a decision was recorded that nobody made').toBeNull();
+    expect(row.postedAt).toBeNull();
+    expect(row.issueUrl).toBeNull();
+    expect(row.exportPath ?? null).toBeNull();
 
-    // ...and it is still the owner's to decide the moment a sender exists.
-    disconnectGithub();
+    // ...and it is still the owner's to decide the moment the network comes back. Pressing Post
+    // again is a fresh human act, not a retry (P3) — and it is only possible because the row is
+    // still there to press Post on.
+    searchAnswer = () => jsonRes(200, { items: [] });
     const later = await post(`/${id}/approve`);
     expect(later.status, 'the report could not be decided after the refusal').toBe(200);
     expect(getReport(id)?.status).toBe('posted');
+    expect(getReport(id)?.issueNumber).toBe(7);
+  });
+
+  it('a credential GitHub refuses leaves the report decidable and the card honest', async () => {
+    saveGithubAccount('octocat', TOKEN, 'public_repo');
+    writeAnswer = () => jsonRes(401, { message: 'Bad credentials' });
+    const id = awaiting('ds1-401401401401');
+
+    expect((await post(`/${id}/approve`)).status).toBe(502);
+    expect(getReport(id)?.status).toBe('awaiting_approval');
+    expect(listOpenReports().map(r => r.id)).toContain(id);
+  });
+
+  // ── THE ROUTE-LEVEL [1,0] MATRIX (T6 §10.1a2, the reviewer's C3 caveat) ────────────────
+  // T2 holds this at the STORE: two doors that both read an awaiting row produce exactly one
+  // approval. T6 could only drive the approve→approve half, because `markPosted` had no route
+  // until now. Both orders are driven here, at the route, with a GENUINE overlap — the second
+  // request arrives while the first is still waiting on GitHub — and the measurement is the
+  // same one T2 makes: the deliveries that actually happened, counted, `[1, 0]`.
+
+  it('post-then-export: a second door arrives mid-flight and delivers nothing', async () => {
+    saveGithubAccount('octocat', TOKEN, 'public_repo');
+    const id = awaiting('ds1-aaaa0000aaaa');
+
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    searchAnswer = async () => { await held; return jsonRes(200, { items: [] }); };
+
+    const posting = post(`/${id}/approve`);          // connection A: connected, in flight
+    await new Promise(r => setTimeout(r, 5));
+
+    // Mid-flight the row is APPROVED and OFF the card, so no second press can be offered...
+    expect(getReport(id)?.status).toBe('approved');
+    expect(listOpenReports().map(r => r.id)).not.toContain(id);
+
+    // ...and a second connection that takes the OTHER delivery door is refused anyway. (The
+    // account is put back before A resumes: this is a second tab pressing Disconnect, not a
+    // box that lost its token.)
+    disconnectGithub();
+    const exporting = await post(`/${id}/approve`);
+    saveGithubAccount('octocat', TOKEN, 'public_repo');
+    release();
+    const posted = await posting;
+
+    expect(posted.status).toBe(200);
+    expect(exporting.status, 'the export door delivered a report the poster had already won')
+      .toBe(409);
+    const row = getReport(id)!;
+    expect([row.issueUrl === null ? 0 : 1, row.exportPath === null ? 0 : 1],
+      'one approval produced more or fewer than one delivery').toEqual([1, 0]);
+    expect(ghWrites()).toHaveLength(1);
+  });
+
+  it('export-then-post: the file wins and the poster never reaches the network', async () => {
+    const id = awaiting('ds1-bbbb0000bbbb');       // unconnected: the export door
+    const exporting = await post(`/${id}/approve`);
+    expect(exporting.status).toBe(200);
+
+    saveGithubAccount('octocat', TOKEN, 'public_repo');
+    ghCalls = [];
+    const posting = await post(`/${id}/approve`);
+
+    expect(posting.status).toBe(409);
+    expect(ghCalls, 'a delivered report reached GitHub on a second press').toEqual([]);
+    const row = getReport(id)!;
+    expect([row.issueUrl === null ? 0 : 1, row.exportPath === null ? 0 : 1],
+      'one approval produced more or fewer than one delivery').toEqual([0, 1]);
   });
 
   it('a decision broadcasts report:resolved so a second tab stops showing the card', async () => {
@@ -246,6 +376,78 @@ describe('nothing but the approve route may spend an approval', () => {
     expect(frames.map(f => f.type)).toContain('report:resolved');
     expect(frames.find(f => f.type === 'report:resolved')?.data)
       .toEqual({ id, status: 'posted' });
+  });
+});
+
+// ── a duplicate is a QUESTION, and the approval waits for the answer ────────────────────
+
+describe('someone already reported this — the owner chooses, the platform does not', () => {
+  const MATCH = {
+    number: 42, title: 'work_open refuses a granted category', state: 'open',
+    html_url: 'https://github.com/d-cornerpin/dojo/issues/42',
+  };
+  const withMatch = (signature: string): void => {
+    searchAnswer = () => jsonRes(200, { items: [{ ...MATCH, body: `dojo-sig: ${signature}` }] });
+  };
+
+  it('offers the existing issue, posts nothing, and gives the decision back', async () => {
+    saveGithubAccount('octocat', TOKEN, 'public_repo');
+    const signature = 'ds1-dddd0000dddd';
+    withMatch(signature);
+    const id = awaiting(signature);
+
+    const res = await post(`/${id}/approve`);
+    expect(res.status).toBe(200);
+    const data = (await bodyOf(res)).data!;
+    expect(data.duplicate, 'the card was given nothing to ask about').toMatchObject({ number: 42 });
+    expect(data.issueUrl).toBeNull();
+    expect(ghWrites(), 'a second issue was filed while the owner was being asked').toEqual([]);
+
+    // The question can only be ASKED if the report is still on the card to ask about.
+    expect(getReport(id)?.status).toBe('awaiting_approval');
+    expect(getReport(id)?.approvedAt).toBeNull();
+    expect(listOpenReports().map(r => r.id)).toContain(id);
+  });
+
+  it('“add to it” comments on that issue and records the delivery against it', async () => {
+    saveGithubAccount('octocat', TOKEN, 'public_repo');
+    writeAnswer = () => jsonRes(201, { html_url: `${MATCH.html_url}#issuecomment-9` });
+    const id = awaiting('ds1-eeee0000eeee');
+
+    const res = await post(`/${id}/approve`, { addToExisting: 42 });
+    expect(res.status).toBe(200);
+    expect((await bodyOf(res)).data?.issueNumber).toBe(42);
+    expect(ghWrites()).toHaveLength(1);
+    expect(ghWrites()[0].url).toContain('/issues/42/comments');
+    expect(getReport(id)?.status).toBe('posted');
+    expect(frames.find(f => f.type === 'report:resolved')?.data).toEqual({ id, status: 'posted' });
+  });
+
+  it('“post separately” files its own issue even with a match on the tracker', async () => {
+    saveGithubAccount('octocat', TOKEN, 'public_repo');
+    const signature = 'ds1-ffff0000ffff';
+    withMatch(signature);
+    const id = awaiting(signature);
+
+    const res = await post(`/${id}/approve`, { postSeparately: true });
+    expect(res.status).toBe(200);
+    expect((await bodyOf(res)).data?.issueNumber).toBe(7);
+    expect(ghWrites()[0].url.endsWith('/issues')).toBe(true);
+  });
+
+  it('refuses an answer it does not recognise, before anything is approved', async () => {
+    saveGithubAccount('octocat', TOKEN, 'public_repo');
+    const id = awaiting('ds1-9999aaaa9999');
+    for (const body of [
+      { addToExisting: 'the first one' }, { addToExisting: -3 }, { postSeparately: 'yes' },
+      { addToExisting: 42, postSeparately: true }, { somethingElse: true }, [1, 2],
+    ]) {
+      const res = await post(`/${id}/approve`, body);
+      expect(res.status, `a body of ${JSON.stringify(body)} was accepted`).toBe(400);
+    }
+    expect(getReport(id)?.status, 'an unreadable answer spent the owner\'s approval')
+      .toBe('awaiting_approval');
+    expect(ghCalls, 'an unreadable answer reached the network').toEqual([]);
   });
 });
 
@@ -424,6 +626,13 @@ describe('what the card shows is what leaves, byte for byte', () => {
     fixIdeas: 'Add the label. <script>alert(1)</script> 100% of the time.',
   };
 
+  // ⚠ WHERE THE TITLE GOES CHANGED IN T7, AND THE CLAUSE HAD TO LEARN IT RATHER THAN DROP IT.
+  // One renderer now serves both doors, and its output is an ISSUE BODY — which carries no
+  // title, because an issue carries its title in its own field. So the title is checked where
+  // it actually rides now: the prefilled link on the export path, and the POSTed `title` on the
+  // GitHub path. Four fields in the body plus one in the title is still all five; a clause that
+  // quietly stopped checking the title would be the same claim with a hole in it.
+
   it('the bytes the card is served are the bytes that reach the exported file', async () => {
     const id = awaiting('ds1-eeeeeeeeeeee', HOSTILE);
     const served = (await bodyOf(await get(`/${id}`))).data?.brief as ReportBrief;
@@ -434,30 +643,43 @@ describe('what the card shows is what leaves, byte for byte', () => {
 
     const res = await post(`/${id}/approve`);
     expect(res.status).toBe(200);
-    const exportPath = String((await bodyOf(res)).data?.exportPath);
-    const written = fs.readFileSync(exportPath, 'utf8');
+    const data = (await bodyOf(res)).data!;
+    const written = fs.readFileSync(String(data.exportPath), 'utf8');
     for (const key of Object.keys(HOSTILE) as Array<keyof ReportBrief>) {
+      if (key === 'title') continue;
       expect(written, `\`${key}\` was mangled between the card and the file`)
         .toContain(HOSTILE[key]);
     }
+    // ...and the title reaches the issue form, verbatim, inside the prefilled link.
+    const prefilled = new URL(String(data.newIssueUrl)).searchParams;
+    expect(String(prefilled.get('title')), 'the owner\'s title never reached the issue form')
+      .toContain(HOSTILE.title);
+    expect(prefilled.get('body'), 'the link carries a different body from the file')
+      .toBe(written);
   });
 
   it('an edited brief posts the EDITED text exactly', async () => {
     // A distinctive original, so "the old text is gone" is a real claim: the shared fixture's
     // one-letter fields appear inside almost any English sentence.
-    const ORIGINAL = { ...BRIEF, title: 'THE-TITLE-THE-AGENT-WROTE' };
+    saveGithubAccount('octocat', TOKEN, 'public_repo');
+    const ORIGINAL = { ...BRIEF, title: 'THE-TITLE-THE-AGENT-WROTE', fixIdeas: 'THE-FIX-THE-AGENT-WROTE' };
     const id = awaiting('ds1-ffffffffffff', ORIGINAL);
     const EDITED = 'a title the owner wrote, with *stars* and a #hash';
-    expect((await patch(`/${id}`, { title: EDITED })).status).toBe(200);
+    const EDITED_FIX = 'the fix the OWNER wrote instead';
+    expect((await patch(`/${id}`, { title: EDITED, fixIdeas: EDITED_FIX })).status).toBe(200);
 
     // The card re-reads before the owner presses Post: saving is never approving.
     const reread = (await bodyOf(await get(`/${id}`))).data?.brief as ReportBrief;
     expect(reread.title).toBe(EDITED);
 
-    const res = await post(`/${id}/approve`);
-    const written = fs.readFileSync(String((await bodyOf(res)).data?.exportPath), 'utf8');
-    expect(written).toContain(EDITED);
-    expect(written, 'the text the owner replaced was published anyway').not.toContain(ORIGINAL.title);
+    expect((await post(`/${id}/approve`)).status).toBe(200);
+    const sent = JSON.parse(ghWrites()[0].body) as { title: string; body: string };
+    expect(sent.title).toContain(EDITED);
+    expect(sent.title, 'the title the owner replaced was published anyway')
+      .not.toContain(ORIGINAL.title);
+    expect(sent.body).toContain(EDITED_FIX);
+    expect(sent.body, 'the text the owner replaced was published anyway')
+      .not.toContain(ORIGINAL.fixIdeas);
   });
 });
 
@@ -631,6 +853,40 @@ describe('the card renders, and decides nothing on its own', () => {
     for (const forbidden of ['api.github.com', 'fetch(', 'approveOnce']) {
       expect(src, `the card reached ${forbidden} directly`).not.toContain(forbidden);
     }
+  });
+
+  // ── T7: the duplicate question is a SECOND consent sentence, and it lives in the lib too ──
+  // The panel was split out of the card when this question arrived (the card was at 235 lines
+  // against the growth detector's 240-line crossing). A split is only safe if the census follows
+  // it: an unwatched .tsx is exactly where a second copy of a claim about the owner's words goes.
+
+  it('the delivery panel decides nothing, names no host, and copies no sentence', () => {
+    const src = fs.readFileSync(DELIVERY_PANEL, 'utf8')
+      .split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+    expect(src.length, 'the comment stripper ate the panel — this census is broken').toBeGreaterThan(800);
+    expect(src, 'the panel must render the lib\'s question, not its own').toContain('duplicateQuestion');
+    for (const forbidden of ['api.github.com', 'fetch(', 'approveOnce', 'useState']) {
+      expect(src, `the delivery panel reached ${forbidden}`).not.toContain(forbidden);
+    }
+    expect(src.toLowerCase()).not.toContain('already reported this');
+  });
+
+  it('the question names the issue it is asking about, and offers both answers', () => {
+    const asked = duplicateQuestion({
+      number: 42, url: 'https://github.com/d-cornerpin/dojo/issues/42',
+      title: 'work_open refuses a granted category',
+    });
+    expect(asked, 'the owner is asked to agree to an issue they cannot identify').toContain('42');
+    expect(asked).toContain('work_open refuses a granted category');
+    expect(asked.toLowerCase()).toContain('add your details');
+    expect(asked.toLowerCase(), 'the second answer was not offered').toContain('separate');
+  });
+
+  it('a match with no title is still identified, and never prints an empty quotation', () => {
+    const asked = duplicateQuestion({ number: 7, url: 'https://example.invalid/7', title: '   ' });
+    expect(asked).toContain('#7');
+    expect(asked).not.toContain('“”');
+    expect(asked).not.toContain('undefined');
   });
 
   it('the brief is rendered verbatim — no markdown renderer stands between it and the owner', () => {
