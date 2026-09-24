@@ -496,6 +496,20 @@ function unprovenEdgesIn(code: string): string[] {
 // direction, `attachDraft`'s real text, a SELECT, a private writer and a status in a string.
 // That is the discipline this file has learned three times and had not applied to its newest
 // reader: WHEN YOU BUILD A CENSUS, THE READER IS THE PART THAT NEEDS THE FIXTURES.
+//
+// ── THE FRAGMENT WIDENING (final whole-branch review) ──────────────────────────────────────
+// A fourth cut, for the same reason as the first three. Round 2's blind-spot column declared
+// SQL-assembled-from-fragments OPEN and then disposed of it by citing `check-sql-prepares`;
+// the T7 terminal review MEASURED that citation and it was false — the gate counts assembled
+// statements and exits 0, and the only thing that stopped the planted door was an unrelated
+// 240-line growth wall that this branch removes on purpose. Reproduced at branch HEAD before
+// anything was changed: a fragment-assembled `awaiting_approval` door exported from the real
+// `report/store.ts` rode 72/72 GREEN with the SQL gate green beside it.
+//
+// So the reader now FOLLOWS THE FRAGMENT: five new CAUGHT rows and two new IGNORED rows first,
+// then `fragmentsIn`/`expandFragments` below. Both halves matter, and the IGNORED half is not
+// decoration — the cheap "widening" (any `${` after SET is a door) passes every CAUGHT row and
+// is exactly the mistake the naive `status anywhere after SET` widening makes on `attachDraft`.
 
 /** Top-level declarations in source order — exported or not, `function`, `const`, `class`. */
 const TOP_LEVEL = /^(?:export\s+)?(?:async\s+)?(?:function|const|let|var|class)\s+(\w+)/gm;
@@ -521,8 +535,58 @@ function setClausesIn(code: string): string[] {
   return out;
 }
 
-const writesStatus = (body: string): boolean =>
-  setClausesIn(body).some(clause => /\bstatus\s*=/i.test(clause));
+/**
+ * A module-level string constant this file can prove the whole text of: `const NAME = '…'`,
+ * one complete literal, ending at a `;` or a newline. THE NARROWNESS IS THE POINT — a
+ * declaration this pattern cannot read whole is NOT registered, so `${NAME}` stays unresolved,
+ * and unresolved is guilty three lines below. A concatenation (`'a' + b`), an escaped quote, a
+ * function call, an imported name and a name declared twice all fall out on that safe side.
+ */
+const FRAGMENT_DECL = /\b(?:const|let|var)\s+(\w+)\s*(?::\s*[^=\n]+)?=\s*(['"`])([\s\S]*?)\2\s*(?=[;\n])/g;
+
+function fragmentsIn(src: string): ReadonlyMap<string, string> {
+  const out = new Map<string, string>();
+  const twice = new Set<string>();
+  for (const m of src.matchAll(FRAGMENT_DECL)) {
+    const [, name, quote, body] = m;
+    // The lazy body can only contain its own delimiter by having been EXTENDED past a failed
+    // lookahead — i.e. the declaration is not one plain literal. A backslash means an escape
+    // this reader does not interpret. Either way: not provable, so not registered.
+    if (body.includes(quote) || body.includes('\\')) continue;
+    if (out.has(name)) twice.add(name);
+    out.set(name, body);
+  }
+  for (const n of twice) out.delete(n);   // shadowed: which text reaches the SQL is not provable
+  return out;
+}
+
+/**
+ * ⚠ THE FRAGMENT DOOR, CLOSED (final whole-branch review). Splice every fragment this file can
+ * prove into the source BEFORE the SET clauses are cut out of it, then judge the result.
+ *
+ * TWO SEAMS, because SQL is assembled two ways in this tree: interpolation (`SET ${FRAG}`) and
+ * concatenation (`'… SET ' + FRAG + ' WHERE …'`). The concat seam must be spliced BEFORE the
+ * clauses are cut, because `setClausesIn` stops at a backtick and the seam's own quote would
+ * end the clause before the columns arrived.
+ *
+ * AN UNKNOWN NAME BECOMES `${name}` RATHER THAN BEING LEFT ALONE, so both seams fail the same
+ * way: the residue test below sees it. That is the inverted rule this whole file converged on —
+ * a SET clause is innocent only if it PROVES it names no status column, and a column list that
+ * cannot be read (a runtime `join`, an imported constant, a second hop) proves nothing.
+ */
+function expandFragments(code: string, frags: ReadonlyMap<string, string>): string {
+  const sub = (name: string): string => frags.get(name) ?? `\${${name}}`;
+  return code
+    .replace(/(['"`])\s*\+\s*(\w+)\s*\+\s*\1/g, (_whole, _q: string, name: string) => sub(name))
+    .replace(/\$\{\s*(\w+)\s*\}/g, (whole, name: string) => frags.get(name) ?? whole);
+}
+
+const writesStatus = (body: string, frags: ReadonlyMap<string, string>): boolean =>
+  setClausesIn(expandFragments(body, frags)).some(
+    // ONE HOP, and the second hop needs no fixed point because it lands on the GUILTY side:
+    // a fragment built from another fragment still carries a `${` after one pass.
+    clause => /\bstatus\s*=/i.test(clause) || clause.includes('${'),
+  );
 
 /**
  * Every EXPORTED binding in a module whose body moves `status`, directly or through ONE hop into
@@ -532,12 +596,14 @@ const writesStatus = (body: string): boolean =>
  */
 function statusWriters(source: string): string[] {
   const src = stripComments(source);
+  // Module-wide: a fragment is declared beside the doors, not inside them.
+  const frags = fragmentsIn(src);
   const decls = [...src.matchAll(TOP_LEVEL)]
     .map(m => ({ name: m[1], at: m.index ?? 0, exported: m[0].startsWith('export') }));
   const bodyOf = (i: number): string =>
     src.slice(decls[i].at, i + 1 < decls.length ? decls[i + 1].at : src.length);
 
-  const direct = new Set(decls.filter((_, i) => writesStatus(bodyOf(i))).map(d => d.name));
+  const direct = new Set(decls.filter((_, i) => writesStatus(bodyOf(i), frags)).map(d => d.name));
   const privateWriters = decls.filter(d => !d.exported && direct.has(d.name)).map(d => d.name);
 
   const doors = decls.filter((d, i) => d.exported && (
@@ -810,6 +876,27 @@ describe('the classification reader sees every shape a status-moving door takes'
     ['a multi-line SET list', `export function markExported(id: string) {\n  return transition(\`UPDATE dojo_reports\n      SET export_path = ?, posted_at = datetime('now'),\n          status = 'posted'\n    WHERE id = ? AND status = 'approved'\`, [p, id], id);\n}`],
     // The shape anybody avoiding this census reaches for first.
     ['an export that delegates to a private writer', `function reallyDoIt(id: string) {\n  return db.run(\`UPDATE dojo_reports SET status = 'awaiting_approval' WHERE id = ?\`, id);\n}\nexport const undo = (id: string) => reallyDoIt(id);`],
+    // ── THE FRAGMENT DOOR (final whole-branch review) ─────────────────────────────────────
+    // Blind spot #2 below was declared OPEN and disposed of by citing `check-sql-prepares`.
+    // MEASURED AT BRANCH HEAD, that gate does not hold it: it COUNTS runtime-assembled
+    // statements (384 of them in this tree) and exits 0. The planted door rode 72/72 green
+    // and the only thing that ever stopped it was the 240-line growth wall — an accident,
+    // and one removed on purpose in the same batch. So the rows below come first and the
+    // reader follows them, which is this file's four-times-learned lesson.
+    ['SQL assembled from a module-level fragment', `const SET_BACK = \`status = 'awaiting_approval', updated_at = datetime('now')\`;\nexport function unpostC(id: string) {\n  return transition(\`UPDATE dojo_reports SET \${SET_BACK} WHERE id = ?\`, [id], id);\n}`],
+    // Interpolation is not the only seam: `'… SET ' + FRAG + ' WHERE …'` assembles the same
+    // statement with no `${` in it at all, and the SQL gate counts that shape too.
+    ['a fragment spliced in by CONCATENATION rather than interpolation', `const SET_BACK = \`status = 'awaiting_approval'\`;\nexport function unpostD(id: string) {\n  return transition('UPDATE dojo_reports SET ' + SET_BACK + ' WHERE id = ?', [id], id);\n}`],
+    // One hop resolves; the second lands on the GUILTY side, which is the opposite of the
+    // two-hop delegation limit in blind spot #1 and is why this one needs no fixed point.
+    ['a fragment built from another fragment — hop two is unresolved, and unresolved is guilty', `const INNER = \`status = 'approved'\`;\nconst OUTER = \`\${INNER}, updated_at = datetime('now')\`;\nexport function unpostE(id: string) {\n  return transition(\`UPDATE dojo_reports SET \${OUTER} WHERE id = ?\`, [id], id);\n}`],
+    ['a fragment imported from another module — not resolvable here, therefore a door', `import { SET_BACK } from './sql.js';\nexport function unpostF(id: string) {\n  return transition(\`UPDATE dojo_reports SET \${SET_BACK} WHERE id = ?\`, [id], id);\n}`],
+    // THE HOUSE IDIOM, measured: 16 production sites in this tree write `SET ${…}` and 14 of
+    // them are `${sets.join(', ')}` (google/accounts, work/tracker-store, vault/store,
+    // twilio/auth, gateway/routes/agents …). This is not an exotic spelling — it is the way
+    // this codebase writes a partial update, which is exactly what a report store would grow.
+    // A column list built at runtime can never be statically resolved, so it is never innocent.
+    ['the house idiom — a SET list joined from an array at runtime', `export function patch(id: string, sets: string[]) {\n  return transition(\`UPDATE dojo_reports SET \${sets.join(', ')} WHERE id = ?\`, [id], id);\n}`],
   ];
 
   const IGNORED: ReadonlyArray<readonly [string, string]> = [
@@ -820,6 +907,16 @@ describe('the classification reader sees every shape a status-moving door takes'
     ['a status named in a message string', `export function refusal(status: string): string {\n  return \`This report is \${status} and cannot be cancelled.\`;\n}`],
     // A private writer with no exported caller cannot be imported, so it is nobody's door.
     ['a PRIVATE writer nothing exports', `function hidden(id: string) {\n  return db.run(\`UPDATE dojo_reports SET status = 'cancelled' WHERE id = ?\`, id);\n}`],
+    // ── THE FALSE-POSITIVE HALF OF THE FRAGMENT WIDENING ──────────────────────────────────
+    // THE RULE IS "FOLLOW THE FRAGMENT", NOT "CONDEMN EVERY INTERPOLATION". A fragment that
+    // resolves to text naming no status column is as innocent as the same text written inline;
+    // without this row the widening would be free to become `SET` + `${` = door, which sends
+    // the next author to widen the rule instead of reading it — the same mistake the naive
+    // `status anywhere after SET` widening makes on `attachDraft`.
+    ['a fragment that names no status column', `const TOUCH = \`updated_at = datetime('now')\`;\nexport function touch(id: string) {\n  return transition(\`UPDATE dojo_reports SET \${TOUCH} WHERE id = ?\`, [id], id);\n}`],
+    // The `WHERE` bound survives the widening: an interpolation in the predicate is a thing the
+    // statement READS by, not a column it writes.
+    ['an interpolation in the WHERE is a predicate, not a door', `export function touchAll(pred: string) {\n  return transition(\`UPDATE dojo_reports SET updated_at = datetime('now') WHERE \${pred}\`, [], '');\n}`],
   ];
 
   for (const [label, code] of CAUGHT) {
@@ -841,20 +938,32 @@ describe('the classification reader sees every shape a status-moving door takes'
   // never writes `status`" — which was FALSE in the direction that matters (two shapes that do
   // write it walked past), and is only one of the ways through even now. The honest list:
   //
-  //   1. TWO HOPS. An export → a private helper → another private writer. One hop is covered;
-  //      the second is not, and the remedy if it ever appears is to iterate to a fixed point.
-  //   2. SQL ASSEMBLED FROM FRAGMENTS. `SET ${SET_POSTED} WHERE …` puts no `status =` in the
-  //      literal. OPEN — the T7 terminal review MEASURED the claimed compensating guard and it
-  //      does not hold: `check-sql-prepares` COUNTS runtime-assembled statements (384 in the
-  //      tree) and exits 0; the plant was actually blocked by the since-removed 240-line
-  //      growth wall, an accident. Nothing structural refuses a fragment-assembled door today.
-  //      The remedy (follow `SET ${IDENT}` to its declaration via the one-hop machinery above)
-  //      is a FINAL-WHOLE-BRANCH-REVIEW item, on the record there.
+  //   1. TWO HOPS OF DELEGATION. An export → a private helper → another private writer. One hop
+  //      is covered; the second is not, and the remedy if it ever appears is to iterate to a
+  //      fixed point. ⚠ NOTE THE ASYMMETRY WITH FRAGMENTS BELOW: a second hop of DELEGATION is
+  //      missed (unsafe), a second hop of FRAGMENT is caught (safe), because an unexpanded
+  //      `${…}` is evidence of itself and a function call is not.
+  //   2. SQL ASSEMBLED FROM FRAGMENTS — CLOSED by the final whole-branch review, and closed
+  //      because the guard that was cited never held it. The T7 terminal review planted
+  //      `transition(\`… SET ${SET_BACK} …\`)` and it rode 72/72 green; `check-sql-prepares`
+  //      COUNTS runtime-assembled statements (384 in this tree) and exits 0, so the only thing
+  //      that ever stopped that plant was the 240-line growth wall, removed on purpose in the
+  //      same batch. `expandFragments` now splices both seams — interpolation and concatenation
+  //      — and an UNRESOLVABLE column list (a runtime `join`, an imported constant, a second
+  //      fragment hop, a shadowed name) is a door by default. THE RESIDUAL, stated: a fragment
+  //      whose declaration this file cannot read whole is CAUGHT rather than resolved, so the
+  //      cost of the closure is a false positive that has to be argued, never a silent pass.
   //   3. A DOOR THAT MOVES THE APPROVAL WITHOUT WRITING `status`. The status column IS the
   //      approval state, so this is the narrowest of the three — but "narrow" is what round 1
   //      said about its own blind spot, so it is written down rather than dismissed.
   //   4. A lower-case `set status =` inside a string the SQL gate does not prepare. The scan is
   //      case-insensitive, so this one is closed; it is listed because it was checked.
+  //   5. ASKED FRESH, NOT EDITED — "how would I get past this NOW?". The honest answer left is a
+  //      statement assembled across MIXED delimiters (`'… SET ' + FRAG + \` WHERE …\``): the
+  //      concat seam requires the same quote on both sides, and a mixed one leaves the clause
+  //      cut at the backtick. Measured in this tree: zero occurrences of that shape. It is
+  //      written here rather than closed because closing it means teaching this reader where
+  //      JavaScript string literals begin and end, which is a parser, not a scan.
 
   it('agrees with the store\'s real text — the reader is not measuring a fixture-shaped world', () => {
     const store = fs.readFileSync(path.join(SRC, STORE_REL), 'utf8');
