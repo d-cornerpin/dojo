@@ -5370,6 +5370,13 @@
       "to": 1161,
       "by": "DOJO-REPORT T3 - `ReportPendingEvent`, the frame that tells the dashboard a report is waiting on the owner",
       "why": "+22 / -0: a 12-line doc comment, a 4-line `ReportPendingEvent` interface, one union member, and one `EVENT_BATCHABLE` entry with its 2-line reason. THE RAISE IS FORCED BY THE FILE'S OWN DESIGN, which is the point of that design. `WsEvent` is a CLOSED union here and `EVENT_BATCHABLE` is declared `Record<WsEvent['type'], boolean>`, so a new event type cannot be added anywhere else and cannot be added here without also declaring its batching behaviour. WHY THE EVENT IS NEEDED AT ALL: the plan's architecture pins the report flow as 'mirroring the healer_proposals file-row -> WS-ping -> GET-list -> POST-decision flow'. The ping is the load-bearing half - without it the owner's consent card (T6) appears only on a page reload, which is how a consent gate quietly becomes something nobody sees. It is emitted from exactly one place, `dojo_report`'s `submit` phase. WHAT IT DELIBERATELY DOES NOT CARRY: the brief. The frame is `{id, title}` and nothing more; the text a human is about to approve for a public page travels the authenticated HTTP route the card can re-read, never a broadcast frame. `'report:pending': false` in the batchable record is the same answer `healer:proposal` gives, for the same reason: a decision a human owes must not wait behind an unrelated flush. Minimum honest cost is +6; the extra 16 are the doc comment, which review confirmed as the house's accepted trade. THE DIRECTION IS UNCHANGED: 1161 may only fall from here without another by-hand gate-side edit."
+    },
+    {
+      "path": "packages/shared/src/ws.ts",
+      "from": 1161,
+      "to": 1203,
+      "by": "DOJO-REPORT T4 - the four GitHub device-flow frames the connect card waits on",
+      "why": "+42 / -0, and NOTHING WAS EDITED ABOVE THEM: four `Github*Event` interfaces appended beside the four Plaud ones, four union members, four `EVENT_BATCHABLE` rows, one 4-line section header and three field doc comments. THE RAISE IS FORCED BY THE SAME DESIGN AS THE RAISE DIRECTLY ABOVE IT, which is exactly why that entry recorded the direction rather than the number: `WsEvent` is a CLOSED union in this file and `EVENT_BATCHABLE` is declared `Record<WsEvent['type'], boolean>`, so an event cannot be declared anywhere else and cannot be declared here without also declaring its batching behaviour. That is a feature - it is what stops a frame going on the wire with nobody having decided whether a human may wait for it behind a flush. WHY FOUR AND NOT ONE, which is the real question a +42 has to answer: device flow is an OUT-OF-BAND connect and its card has four distinct states a page reload must not be required to see - here is your code (`github:device_code`), it worked (`github:connected`), it is gone (`github:disconnected`), and it stopped and here is why (`github:connect_failed`). The `plaud:*` four next door are the same four states for the same reason, and this is the house shape for this kind of card rather than four events invented for this task. THE FOURTH IS THE NO-DOOMED-DIALS ONE: P3 requires the loop to fail honestly TO A HUMAN, and `github:connect_failed` is the only path by which it can - without it the poll would stop silently and the card would show a code that is already dead, which is the exact defect census row 39 is written to refuse. WHAT NO FRAME CARRIES: a token. Not one of the four has a token field and none ever may; the card re-reads `GET /api/github/status`, whose shape has no token field either, and the suite drives the real router and reads the bytes of every answer to prove it. Minimum honest cost is +25 (4 interfaces, 4 union members, 4 batchable rows); the extra 17 are the section header and three field docs stating what a NULL login means, that `expiresAt` is GitHub's own `expires_in` and not a deadline of ours, and that the failure frame is the last word until a human presses Connect - the same trade review accepted on the entry above. THE DIRECTION IS UNCHANGED: 1203 may only fall from here without another by-hand gate-side edit."
     }
   ],
   "maxNewFileLines": 400,
@@ -5634,7 +5641,7 @@
     "packages/shared/src/outcome.ts": 270,
     "packages/shared/src/types.ts": 631,
     "packages/shared/src/visibility.ts": 989,
-    "packages/shared/src/ws.ts": 1161,
+    "packages/shared/src/ws.ts": 1203,
     "watchdog/src/auto-rollback.ts": 333,
     "watchdog/src/index.ts": 1217,
     "packages/server/src/agent/v2/outbound-ledger.ts": 459,
