@@ -30,6 +30,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach } from 'vitest';
 import fs from 'node:fs';
+import path from 'node:path';
 import { getDb } from '../../db/connection.js';
 import { runMigrations } from '../../db/migrations.js';
 import {
@@ -37,7 +38,13 @@ import {
   markExported, cancelReport, listOpenReports, type ReportBrief,
 } from '../store.js';
 import { deriveReportSignature, dominantToken, FAILURE_LANES, isFailureLane } from '../signature.js';
-import { bundleDir, writeBundle, readBundle, writeReportFile } from '../bundle.js';
+import {
+  bundleDir, writeBundle, readBundle, writeReportFile,
+  MAX_REPORT_DIRS, REPORT_BUNDLE_MAX_BYTES,
+} from '../bundle.js';
+import {
+  noteHandedCredentialValues, redactedPlaceholderFor, forgetHandedCredentialValues,
+} from '../../credentials/secret-values.js';
 
 const BRIEF: ReportBrief = {
   title: 'work_open refused a task the engine had just demanded',
@@ -285,6 +292,32 @@ describe('the bundle stays on disk and is scrubbed', () => {
     expect(() => JSON.parse(fs.readFileSync(out.path, 'utf8'))).not.toThrow();
   });
 
+  // ── THE CAP BINDS THE FINAL BYTES, MARKER INCLUDED ──
+  // The one shape that breaches a cap by announcing it: the marker names the keys it
+  // dropped, and a key NAME is unbounded. Measured before the fix: 100 keys of 40,000
+  // characters wrote 4,001,111 bytes against a 2,000,000 cap while honestly reporting
+  // `truncated: true`. A cap that holds only for well-behaved callers is not a cap.
+  it('caps the truncation marker itself — a bundle with enormous KEY NAMES', () => {
+    const r = createReport('agent-1', 'other', 'ds1-aaaabbbbcccc');
+    const bundle: Record<string, number> = {};
+    for (let i = 0; i < 100; i++) bundle[String(i).padStart(3, '0') + 'k'.repeat(39_997)] = 1;
+    const out = writeBundle(r.id, 'agent-1', bundle);
+    expect(out.truncated).toBe(true);
+    expect(out.bytes).toBeLessThanOrEqual(REPORT_BUNDLE_MAX_BYTES);
+    expect(fs.statSync(out.path).size).toBeLessThanOrEqual(REPORT_BUNDLE_MAX_BYTES);
+    const doc = JSON.parse(fs.readFileSync(out.path, 'utf8')) as { truncated: boolean; keptKeys: string[] };
+    expect(doc.truncated).toBe(true);
+    // The keys are what made it enormous, so they are what goes — not the marker.
+    expect(doc.keptKeys).toEqual([]);
+  });
+
+  it('still names the keys it dropped when naming them fits', () => {
+    const r = createReport('agent-1', 'other', 'ds1-ddddeeeeffff');
+    const out = writeBundle(r.id, 'agent-1', { turns: 'x'.repeat(3_000_000), calls: 1 });
+    const doc = JSON.parse(fs.readFileSync(out.path, 'utf8')) as { keptKeys: string[] };
+    expect(doc.keptKeys).toEqual(['turns', 'calls']);
+  });
+
   it('answers null for a report that has no bundle on this box', () => {
     expect(readBundle('no-such-report-id')).toBeNull();
   });
@@ -302,5 +335,74 @@ describe('the bundle stays on disk and is scrubbed', () => {
     const p = writeReportFile(r.id, 'report.md', '# hello');
     expect(p.startsWith(bundleDir(r.id))).toBe(true);
     expect(fs.readFileSync(p, 'utf8')).toBe('# hello');
+  });
+
+  // ── THE SCRUB, held by a clause rather than by the describe block's title ──
+  // `redactHandedCredentials` is per-AGENT, so the second half is the control: the same
+  // bytes written under a different agent id keep the value. Without it this clause would
+  // also pass if the scrub matched nothing at all.
+  it('scrubs a credential THIS agent handled out of the bytes it writes', () => {
+    const SECRET = 'sk-live-9f2c1a0b4d77e3';
+    noteHandedCredentialValues('agent-holder', [SECRET]);
+    try {
+      const mine = createReport('agent-holder', 'other', 'ds1-555555555555');
+      const out = writeBundle(mine.id, 'agent-holder', {
+        toolCalls: [{ header: `Authorization: Bearer ${SECRET}` }],
+      });
+      const onDisk = fs.readFileSync(out.path, 'utf8');
+      expect(onDisk).not.toContain(SECRET);
+      expect(onDisk).toContain(redactedPlaceholderFor('agent-holder', SECRET));
+
+      // CONTROL: another agent never handled it, so nothing is rewritten for them.
+      const theirs = createReport('agent-other', 'other', 'ds1-666666666666');
+      const out2 = writeBundle(theirs.id, 'agent-other', {
+        toolCalls: [{ header: `Authorization: Bearer ${SECRET}` }],
+      });
+      expect(fs.readFileSync(out2.path, 'utf8')).toContain(SECRET);
+    } finally {
+      forgetHandedCredentialValues('agent-holder');
+    }
+  });
+});
+
+// ── THE PATH BOUNDARY ──
+// This block exists because of what rests on it OUTSIDE this file. `report/bundle.ts`
+// holds a `node:fs` import that `deploy/checks/effect-import-exclusions.mjs` admits and
+// the argued `no-restricted-imports` 82→83 raise pays for, and BOTH argue the same
+// sentence: the path segments cannot express `..` or a separator, so no agent can steer
+// the destination. An argued exception to a security gate may not rest on an untested
+// regex — these clauses are that sentence, driven.
+describe('nothing can be steered out of the reports directory', () => {
+  const HOSTILE = ['../../x', '..', '../etc', 'a/b', '/abs', 'x\0y', '.hidden', 'a'.repeat(200), ''];
+  const reportsRoot = (): string => path.dirname(bundleDir('probe'));
+
+  it('refuses a traversal REPORT ID at every door that takes one', () => {
+    for (const id of HOSTILE) {
+      const where = JSON.stringify(id);
+      expect(() => bundleDir(id), `bundleDir(${where})`).toThrow();
+      expect(() => writeBundle(id, 'agent-1', { x: 1 }), `writeBundle(${where})`).toThrow();
+      expect(() => writeReportFile(id, 'report.md', 'x'), `writeReportFile(${where})`).toThrow();
+      // The reader refuses too, but as a reader: a malformed id is "no bundle here".
+      expect(readBundle(id), `readBundle(${where})`).toBeNull();
+    }
+  });
+
+  it('and the ids the platform actually mints all land inside that directory', () => {
+    // The generator side of the same claim: the door is only safe if what the platform
+    // puts through it always passes. 50 real ids, every one contained.
+    const root = path.resolve(reportsRoot());
+    for (let i = 0; i < 50; i++) {
+      const r = createReport('agent-1', 'other', 'ds1-777777777777');
+      expect(() => bundleDir(r.id)).not.toThrow();
+      expect(path.resolve(bundleDir(r.id)).startsWith(root + path.sep)).toBe(true);
+    }
+  });
+
+  it('keeps the newest MAX_REPORT_DIRS report directories and sweeps the rest', () => {
+    for (let i = 0; i < MAX_REPORT_DIRS + 5; i++) {
+      const r = createReport('agent-1', 'other', 'ds1-888888888888');
+      writeBundle(r.id, 'agent-1', { i });
+    }
+    expect(fs.readdirSync(reportsRoot()).length).toBeLessThanOrEqual(MAX_REPORT_DIRS);
   });
 });

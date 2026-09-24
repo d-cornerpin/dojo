@@ -5,28 +5,25 @@
 // machine IS the privacy model, so every rule below is owner ruling D4 rather than
 // bookkeeping:
 //
-//  1. EVERY TRANSITION IS A CONDITIONAL UPDATE, never a read-then-write. The guard
-//     lives in the `WHERE`, so the DATABASE decides who won; `info.changes` is the
-//     verdict and `null` means "the row was not in the state this door serves". A
-//     `SELECT` + `if` here is the whole bug: two Post clicks, two GitHub issues.
-//     Same shape `destructive_approvals` + `consumeApproval` settled on
-//     (`agent/destructive-gate.ts`), for the same reason.
+//  1. EVERY TRANSITION IS A CONDITIONAL UPDATE, never a read-then-write. The guard lives
+//     in the `WHERE`, so the DATABASE decides who won; `info.changes` is the verdict and
+//     `null` means "the row was not in the state this door serves". A `SELECT` + `if` is
+//     the whole bug: two Post clicks, two GitHub issues. Same shape
+//     `destructive_approvals` + `consumeApproval` settled on, for the same reason.
 //
-//  2. THE APPROVER SEES THE TEXT THAT POSTS. `attachDraft` is legal only from
-//     `drafting` — before any human has looked — and `editBrief` only from
-//     `awaiting_approval`, the human's own edit door. Neither is legal from
-//     `approved`: text that can change between the click and the post makes the
-//     preview decoration. That is not a convenience; it is D4.
+//  2. THE APPROVER SEES THE TEXT THAT POSTS. `attachDraft` is legal only from `drafting`
+//     — before any human has looked — and `editBrief` only from `awaiting_approval`, the
+//     human's own edit door. Neither is legal from `approved`: text that can change
+//     between the click and the post makes the preview decoration. That is D4.
 //
-//  3. POSTED IS TERMINAL, by both doors. `markExported` consumes the approval
-//     exactly as `markPosted` does — D4 binds the export path too, so one approval
-//     is one delivery whichever way the report leaves.
+//  3. POSTED IS TERMINAL, by both doors. `markExported` consumes the approval exactly as
+//     `markPosted` does — D4 binds the export path too, so one approval is one delivery
+//     whichever way the report leaves.
 //
 //  4. AN UNKNOWN STATUS IS TERMINAL. A hand-edited database, a restored backup or a
-//     future writer can put a value here this release never approved (the schema has
-//     no CHECK, deliberately — migration 169 argues why). Such a row reads back as
-//     `cancelled`: never listed, named by no transition, so it can never become
-//     `approved`. Refusing to post is the safe direction.
+//     future writer can put a value here this release never approved (no CHECK,
+//     deliberately — migration 169 argues why). Such a row reads back as `cancelled`:
+//     never listed, named by no transition, never postable. That is the safe direction.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
@@ -90,11 +87,16 @@ export function getReport(id: string): ReportRow | null {
 /**
  * Every transition in this module funnels through here. One statement, one bound
  * `WHERE`, one verdict — so no door can accidentally grow a read-then-write.
+ *
+ * `id` is a NAMED parameter and not `params[params.length - 1]`, which is what it was:
+ * every door happens to bind the id last, so reading it back by position was correct
+ * today and silently wrong the first time a door appended a parameter after it — the
+ * right UPDATE, then the WRONG row handed back as the post-transition state.
  */
-function transition(sql: string, params: unknown[]): ReportRow | null {
+function transition(sql: string, params: unknown[], id: string): ReportRow | null {
   const info = getDb().prepare(sql).run(...params as never[]);
   if (info.changes !== 1) return null;
-  return getReport(params[params.length - 1] as string);
+  return getReport(id);
 }
 
 export function createReport(agentId: string, lane: FailureLane, signature: string): ReportRow {
@@ -129,16 +131,18 @@ export function attachDraft(
     `UPDATE dojo_reports
         SET brief_json = ?, telemetry_json = ?, bundle_path = ?, updated_at = datetime('now')
       WHERE id = ? AND status = 'drafting'`,
-    [JSON.stringify(brief), JSON.stringify(telemetry), bundlePath, id],
+    [JSON.stringify(brief), JSON.stringify(telemetry), bundlePath, id], id,
   );
 }
 
 /**
  * The HUMAN's edit door. Legal only while the row is awaiting their decision, and it
  * carries the five brief fields only — anything else in the patch lands on the floor
- * rather than in a public issue body. The read and the write share one transaction:
- * the merge needs the current brief, and a bare read-then-write would let a
- * concurrent edit be silently overwritten.
+ * rather than in a public issue body. The read and the write share one transaction so the
+ * merge sees a CONSISTENT brief; the state guard is still the UPDATE's own `WHERE`. ⚠ It
+ * is the one door that can THROW rather than answer: in WAL a deferred transaction writing
+ * after another connection committed raises SQLITE_BUSY_SNAPSHOT. A caller needs a catch as
+ * well as a null branch (contract line C8 for T6).
  */
 export function editBrief(id: string, patch: Partial<ReportBrief>): ReportRow | null {
   const db = getDb();
@@ -167,7 +171,7 @@ export function submitForApproval(id: string): ReportRow | null {
     `UPDATE dojo_reports
         SET status = 'awaiting_approval', updated_at = datetime('now')
       WHERE id = ? AND status = 'drafting' AND brief_json IS NOT NULL`,
-    [id],
+    [id], id,
   );
 }
 
@@ -190,7 +194,7 @@ export function markPosted(id: string, issueUrl: string, issueNumber: number): R
         SET status = 'posted', issue_url = ?, issue_number = ?, posted_at = datetime('now'),
             updated_at = datetime('now')
       WHERE id = ? AND status = 'approved'`,
-    [issueUrl, issueNumber, id],
+    [issueUrl, issueNumber, id], id,
   );
 }
 
@@ -201,7 +205,7 @@ export function markExported(id: string, exportPath: string): ReportRow | null {
         SET status = 'posted', export_path = ?, posted_at = datetime('now'),
             updated_at = datetime('now')
       WHERE id = ? AND status = 'approved'`,
-    [exportPath, id],
+    [exportPath, id], id,
   );
 }
 
@@ -211,6 +215,6 @@ export function cancelReport(id: string): ReportRow | null {
     `UPDATE dojo_reports
         SET status = 'cancelled', updated_at = datetime('now')
       WHERE id = ? AND status IN ('drafting', 'awaiting_approval', 'approved')`,
-    [id],
+    [id], id,
   );
 }

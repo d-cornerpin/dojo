@@ -4,30 +4,28 @@
 // Owner ruling D1: "Raw evidence still stays local in the bundle, referenced by
 // report ID." This module is that sentence, made structural.
 //
-//  · IT IS DISK, NOT DATABASE, and that is a privacy decision before it is a size
-//    one. Nothing here is ever queried; what it must be is ABSENT from every backup,
-//    every migration export and every `VACUUM INTO` rehearsal copy, and a blob in
-//    SQLite is in all three. `~/.dojo/reports/<id>/` mirrors the house's agent-scoped
-//    diagnostic-artefact convention (`agent/v2/receipt.ts`), sweep discipline included.
+//  · DISK, NOT DATABASE — a privacy decision before a size one. Nothing here is queried;
+//    what it must be is ABSENT from every backup, every migration export and every
+//    `VACUUM INTO` copy, and a blob in SQLite is in all three. `~/.dojo/reports/<id>/`
+//    mirrors the receipts convention (`agent/v2/receipt.ts`).
 //
-//  · THE PATH IS RESOLVED PER CALL, never at module load. A module-level `dojoDir(...)`
-//    constant freezes the home at first import and writes into the developer's real
-//    `~/.dojo` during a test run — the incident `home.ts` exists for.
+//  · RESOLVED PER CALL, never at module load: a module-level `dojoDir(...)` freezes the
+//    home at first import and writes into the developer's real `~/.dojo` in a test run.
 //
-//  · EVERY PATH SEGMENT IS VALIDATED, which is how this module holds its own `node:fs`
-//    import honestly: the report id must be the uuid the platform minted and a file
-//    name must be a platform literal. No argument here can be steered into a directory
-//    of an agent's choosing — the claim its entry in
-//    `deploy/checks/effect-import-exclusions.mjs` makes.
+//  · SEGMENTS VALIDATED **AND** THE RESULT RE-CHECKED FOR CONTAINMENT. That pair is how
+//    this module holds `node:fs` honestly, and it is the claim
+//    `effect-import-exclusions.mjs` and the argued lint raise both rest on: the regexes
+//    cannot express `..` or a separator (lexical), `ensureDir` refuses a resolved path
+//    outside the reports root (structural). Widening either one alone opens nothing.
 //
 //  · THE SCRUB IS BELT, NOT BRACES. `redactHandedCredentials` runs over the whole
-//    serialized document before it touches the disk. The privacy gate is that the
-//    bundle never leaves; this is here because a local file full of live tokens is a
-//    hazard in its own right.
+//    serialized document before it touches disk. The gate is that the bundle never
+//    leaves; this is here because a local file of live tokens is its own hazard.
 //
-//  · OVER THE CAP, IT WRITES A WHOLE DOCUMENT, NOT A PREFIX. JSON truncated at a byte
-//    offset cannot be parsed, so the reader cannot tell "too big" from "corrupt". A cap
-//    breach writes a small, valid object that SAYS it is a truncation.
+//  · OVER THE CAP IT WRITES A WHOLE DOCUMENT, NOT A PREFIX — and THE CAP BINDS THAT
+//    DOCUMENT TOO. Truncated JSON cannot be parsed, so a breach writes a small valid
+//    object that SAYS so; because that object names the keys it dropped it is
+//    re-measured and stripped. A 4 MB "truncation" is a cap announcing its own breach.
 // ════════════════════════════════════════════════════════════════════════════
 
 import fs from 'node:fs';
@@ -41,8 +39,7 @@ export const REPORT_BUNDLE_MAX_BYTES = 2_000_000;
 export const MAX_REPORT_DIRS = 50;
 
 const BUNDLE_FILE = 'bundle.json';
-// The two path-segment shapes. Neither can express `..` or a separator, which is what
-// lets this module hold `node:fs` directly and say no agent can steer the destination.
+// The two path-segment shapes: neither can express `..` or a separator (header, bullet 3).
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const SAFE_FILENAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\.[A-Za-z0-9]{1,8}$/;
 
@@ -57,8 +54,10 @@ export function bundleDir(reportId: string): string {
 }
 
 /**
- * Keep the newest `MAX_REPORT_DIRS` report directories, oldest first by mtime. Runs on
- * every write; best-effort and never throws, because a failed sweep must not fail a report.
+ * Newest `MAX_REPORT_DIRS` directories survive, oldest first by mtime. Runs on every
+ * write; never throws, because a failed sweep must not fail a report. ⚠ Overwriting
+ * `bundle.json` does NOT bump its DIRECTORY's mtime, so a re-written report still sorts
+ * old and a live row can outlive its bundle — `readBundle` null is normal, not corruption.
  */
 function sweepOldReportDirs(keep: string): void {
   try {
@@ -67,9 +66,7 @@ function sweepOldReportDirs(keep: string): void {
       .filter((e) => e.isDirectory() && e.name !== keep)
       .map((e) => {
         const abs = path.join(root, e.name);
-        let mtime = 0;
-        try { mtime = fs.statSync(abs).mtimeMs; } catch { mtime = 0; }
-        return { abs, mtime };
+        try { return { abs, mtime: fs.statSync(abs).mtimeMs }; } catch { return { abs, mtime: 0 }; }
       })
       .sort((a, b) => a.mtime - b.mtime);
     // `keep` is newest by construction (just written), so it is counted, never swept.
@@ -79,17 +76,19 @@ function sweepOldReportDirs(keep: string): void {
   } catch { /* no reports directory yet, or an unreadable home — not this write's problem */ }
 }
 
-/** Create `~/.dojo/reports/<id>` owner-only and return it. */
+/** Owner-only `~/.dojo/reports/<id>`. The containment check is the STRUCTURAL half of the
+ *  traversal claim — a regex is exactly what a later edit widens by accident. */
 function ensureDir(reportId: string): string {
+  const root = path.resolve(dojoDir('reports'));
   const dir = bundleDir(reportId);
+  if (!path.resolve(dir).startsWith(root + path.sep)) {
+    throw new Error(`report directory escaped the reports root: ${dir}`);
+  }
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 }
 
-/**
- * Serialize, scrub, cap, write. The returned `bytes` is what is ON DISK, so a caller
- * that reports size to a human reports the truth rather than the intent.
- */
+/** Serialize, scrub, cap, write. `bytes` is what is ON DISK, never what was intended. */
 export function writeBundle(reportId: string, agentId: string, bundle: unknown): {
   path: string; bytes: number; truncated: boolean;
 } {
@@ -97,13 +96,16 @@ export function writeBundle(reportId: string, agentId: string, bundle: unknown):
   let text = redactHandedCredentials(agentId, JSON.stringify(bundle, null, 2) ?? 'null');
   const truncated = Buffer.byteLength(text, 'utf8') > REPORT_BUNDLE_MAX_BYTES;
   if (truncated) {
-    const keptKeys = (bundle && typeof bundle === 'object' && !Array.isArray(bundle))
-      ? Object.keys(bundle as Record<string, unknown>).slice(0, 100)
-      : [];
-    text = JSON.stringify({
+    const marker = (keptKeys: string[]): string => JSON.stringify({
       truncated: true, reason: 'bundle exceeded REPORT_BUNDLE_MAX_BYTES',
       maxBytes: REPORT_BUNDLE_MAX_BYTES, keptKeys,
     }, null, 2);
+    text = marker((bundle && typeof bundle === 'object' && !Array.isArray(bundle))
+      ? Object.keys(bundle as Record<string, unknown>).slice(0, 100)
+      : []);
+    // THE CAP BINDS THE FINAL BYTES. 100 keys 40 KB long each make a 4 MB "truncation":
+    // the key NAMES are unbounded, so the marker must be measured, not assumed small.
+    if (Buffer.byteLength(text, 'utf8') > REPORT_BUNDLE_MAX_BYTES) text = marker([]);
   }
   fs.writeFileSync(file, text, { encoding: 'utf8', mode: 0o600 });
   sweepOldReportDirs(safeId(reportId));
@@ -117,11 +119,9 @@ export function readBundle(reportId: string): unknown | null {
   } catch { return null; }
 }
 
-/**
- * Write a sibling file in the report's own directory — the export path D2 takes when
- * GitHub is not connected. THROWS on a name that is not a platform literal, rather
- * than sanitizing one: a caller passing a path is a bug to fix, not input to clean.
- */
+/** A sibling file in the report's own directory — D2's export path. THROWS on a non-literal
+ *  name rather than sanitizing one: a caller passing a path is a bug to fix, not input to
+ *  clean. No cap, no scrub: its text is the SANITIZED BRIEF, never raw evidence (T6). */
 export function writeReportFile(reportId: string, filename: string, text: string): string {
   if (!SAFE_FILENAME.test(filename)) throw new Error(`not a platform file name: ${JSON.stringify(filename)}`);
   const file = path.join(ensureDir(reportId), filename);
