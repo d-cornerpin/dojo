@@ -795,6 +795,19 @@
       "disposition": "Phase 5 rebuilds permissions; the approval flow (exact command, once) is on the preserve list."
     },
     {
+      "name": "dojo_reports",
+      "definedIn": "packages/server/src/db/migrations/169_dojo_reports.sql",
+      "agentLink": "agent_id",
+      "stateColumn": "status",
+      "terminalStates": [
+        "posted",
+        "cancelled"
+      ],
+      "workShaped": true,
+      "why": "A problem report the agent drafted and the OWNER has not yet decided on: drafting -> awaiting_approval -> approved -> posted | cancelled (report/store.ts). The same shape as `healer_proposals` and `destructive_approvals` and declared true for the same reason — a per-agent row with a terminal state that a person is owed a decision on — rather than argued down on the grounds that it tracks a REPORT rather than a job. It is emphatically NOT a second work tracker: nothing claims it, nothing is assigned it, it has no parent/child edge, no delivery, no adjudication and no scheduler, and no agent-facing surface reads it (the `dojo_report` tool reaches it only through `report/store.ts`). The state column exists for exactly one reason, owner ruling D4: `approved` must be reachable ONCE and must be CONSUMED by whichever door delivers the report, which is an atomic conditional UPDATE and not a lifecycle.",
+      "disposition": "DOJO-REPORT T2 (2026-09-23). Readers arrive in the same feature: T3's `dojo_report` tool, T6's preview-card routes, T7's poster. The raw evidence it references deliberately does NOT live here — it is on disk at `~/.dojo/reports/<id>/bundle.json`, which is what keeps it out of every backup and every VACUUM INTO copy (D1)."
+    },
+    {
       "name": "agents",
       "definedIn": "packages/server/src/db/migrations.ts",
       "agentLink": "parent_agent",

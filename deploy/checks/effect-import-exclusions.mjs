@@ -90,7 +90,11 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
     why: 'mechanic 5\'s resolution point: the gate loop resolves an attachment id to its recorded path BEFORE it mints the capability, with the same reader the handler uses. Same structural reason as path-resolve.ts; it was split out of transcription.ts so the executor need not pull the STT engines into every dispatch.',
   },
 
-  // ── AGENT-TRIGGERED, PLATFORM-NAMED (17 statements / 12 files) ────────────
+  // ── AGENT-TRIGGERED, PLATFORM-NAMED (19 statements / 14 files) ────────────
+  // The two counts in this section header and the next were RE-DERIVED at DOJO-REPORT T2
+  // (2026-09-23), not incremented: both had drifted one file behind the list they describe.
+  // `node_modules/.bin/eslint packages/server/src --no-inline-config -f json`, grouping the
+  // `no-restricted-imports` messages by the class each file is declared under.
   {
     file: 'gateway/routes/update.ts',
     klass: 'agent-triggered',
@@ -157,8 +161,13 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
     klass: 'agent-triggered',
     why: 'the custom-voice store under the platform voice directory; entries are keyed by id, and the directory is a literal.',
   },
+  {
+    file: 'report/bundle.ts',
+    klass: 'agent-triggered',
+    why: 'DOJO-REPORT T2. The local evidence bundle at `~/.dojo/reports/<id>/bundle.json`, the receipts convention. `dojo_report` makes it run, and NOT ONE BYTE OF THE DESTINATION COMES FROM THE AGENT: the directory is a platform literal, `<id>` is the uuid `report/store.ts` minted, and both path segments are refused unless they match `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` (plus one extension for a file name) — a regex that cannot express `..` or a separator, so a traversal is not a thing this module can be talked into. The CONTENT is agent-adjacent and is handled where content is handled: the whole document goes through `redactHandedCredentials` before it touches the disk, and a document over `REPORT_BUNDLE_MAX_BYTES` is replaced by a truncation marker rather than written as a prefix. Routing it through `agent/effects/fs.ts` was refused for RULING P5-R12\'s stated reason: the capability would name a path the agent never chose, recording an agent-facing fs site that does not exist.',
+  },
 
-  // ── PLATFORM-INTERNAL (43 statements / 37 files) — no tool path at all ────
+  // ── PLATFORM-INTERNAL (42 statements / 36 files) — no tool path at all ────
   { file: 'index.ts', klass: 'platform-internal', why: 'boot. It runs once before any agent exists.' },
   { file: 'logger.ts', klass: 'platform-internal', why: 'the log sink itself, at a platform path. Everything imports it, which is exactly why a graph walk cannot classify this tree.' },
   { file: 'log-rotation.ts', klass: 'platform-internal', why: 'the log sink\'s rotation, split out of logger.ts by T74b so the keep policy and its two guards could be stated and tested. Same file, same platform path, same reach as logger.ts: it is handed the live log path by logger.ts and touches only that file and its one backup.' },
