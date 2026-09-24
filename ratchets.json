@@ -5405,6 +5405,27 @@
       "to": 1230,
       "by": "DOJO-REPORT T6 - `report:resolved`, the frame that stops the owner being asked twice",
       "why": "+27 / -0, measured: 6 code, 20 comment, 1 blank, and NOTHING ABOVE THEM WAS EDITED - one interface appended beside `ReportPendingEvent`, one union member, one `EVENT_BATCHABLE` row. THE SIX CODE LINES ARE THE MINIMUM THE TYPE SYSTEM ACCEPTS: `WsEvent` is a CLOSED union and `EVENT_BATCHABLE` is `Record<WsEvent['type'], boolean>`, so a frame cannot be broadcast without being declared and cannot be declared without also declaring its batching behaviour - T3's record one raise above says the same thing about `report:pending`. THE 20 COMMENT LINES CARRY WHAT THE TYPE CANNOT, and each is a decision a reader would otherwise re-litigate: WHY THE FRAME EXISTS AT ALL (the card can be open in two dashboard tabs; a decision in one must clear the card in the other, or a live Post button sits in front of someone for an already-delivered report), WHAT ACTUALLY PREVENTS THE SECOND DELIVERY (the store's one-shot conditional UPDATE - this frame stops the owner being ASKED twice, and saying so here is what stops a later reader treating the frame as the safety mechanism), WHY `posted` COVERS BOTH DELIVERIES (contract C3: `markPosted` and `markExported` both consume the one approval, so a report that left as a file is as finished as one that left as an issue), and WHY IT CARRIES NO BRIEF (the text a human approved for a public page travels the authenticated route the card can re-read, never a broadcast frame - D4). The `EVENT_BATCHABLE: false` row's own 3 lines say why it may not be batched: a consent decision arriving late is the one frame a gate cannot tolerate. THE ALTERNATIVE WAS MEASURED: reusing `report:pending` with a status field. REFUSED - the pending frame means 'a decision is owed' and is consumed by a card that draws a Post button; overloading it would make every listener branch on a field, and the T5 review's own generalisation is that an instrument claiming more than it measures is the defect class of this whole program. WHAT HOLDS THE CLAIM: the report frame census in `only-the-card-can-post-a-report.test.ts` asserts the emittable `report:*` set is exactly these two AND that each has a union member and an `EVENT_BATCHABLE` row in this file. THE DIRECTION IS UNCHANGED: 1230 may only fall from here without another by-hand gate-side edit."
+    },
+    {
+      "path": "packages/server/src/config/schema.ts",
+      "from": 240,
+      "to": 300,
+      "by": "DOJO-REPORT gate-side batch 2026-09-24 - the 240 crossing trap, closed on purpose",
+      "why": "+0 code — this raise adds NO lines; it converts an ACCIDENTAL wall into an argued ceiling. The file sat at EXACTLY 240, the rule-2 crossing (0.6*400), so any addition failed check-growth for a reason unrelated to the edit — the trap bit a T7 reviewer live (five unrelated lines). Prescribed by the T6 and T7 reviews jointly: close gate-side and deliberately, before someone meets it under time pressure. Ceiling 300 = ~25% headroom for a feature-core file; decrease-only from here. SEQUENCING NOTE: this wall was ALSO the accidental blocker of the fragment-SQL census blind spot (T7 terminal review) — the census citation is corrected in the sibling product commit; the real widening is a final-whole-branch-review item."
+    },
+    {
+      "path": "packages/server/src/report/store.ts",
+      "from": 240,
+      "to": 300,
+      "by": "DOJO-REPORT gate-side batch 2026-09-24 - the 240 crossing trap, closed on purpose",
+      "why": "+0 code — this raise adds NO lines; it converts an ACCIDENTAL wall into an argued ceiling. The file sat at EXACTLY 240, the rule-2 crossing (0.6*400), so any addition failed check-growth for a reason unrelated to the edit — the trap bit a T7 reviewer live (five unrelated lines). Prescribed by the T6 and T7 reviews jointly: close gate-side and deliberately, before someone meets it under time pressure. Ceiling 300 = ~25% headroom for a feature-core file; decrease-only from here. SEQUENCING NOTE: this wall was ALSO the accidental blocker of the fragment-SQL census blind spot (T7 terminal review) — the census citation is corrected in the sibling product commit; the real widening is a final-whole-branch-review item."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/reports.ts",
+      "from": 240,
+      "to": 300,
+      "by": "DOJO-REPORT gate-side batch 2026-09-24 - the 240 crossing trap, closed on purpose",
+      "why": "+0 code — this raise adds NO lines; it converts an ACCIDENTAL wall into an argued ceiling. The file sat at EXACTLY 240, the rule-2 crossing (0.6*400), so any addition failed check-growth for a reason unrelated to the edit — the trap bit a T7 reviewer live (five unrelated lines). Prescribed by the T6 and T7 reviews jointly: close gate-side and deliberately, before someone meets it under time pressure. Ceiling 300 = ~25% headroom for a feature-core file; decrease-only from here. SEQUENCING NOTE: this wall was ALSO the accidental blocker of the fragment-SQL census blind spot (T7 terminal review) — the census citation is corrected in the sibling product commit; the real widening is a final-whole-branch-review item."
     }
   ],
   "maxNewFileLines": 400,
@@ -5458,9 +5479,12 @@
     "packages/server/src/agent/provider-error.ts": 345,
     "packages/server/src/agent/runtime.ts": 1739,
     "packages/server/src/agent/shared-state.ts": 415,
+    "packages/server/src/config/schema.ts": 300,
     "packages/server/src/credentials/store.ts": 412,
     "packages/server/src/agent/stream-patience.ts": 473,
+    "packages/server/src/gateway/routes/reports.ts": 300,
     "packages/server/src/providers/anthropic-sdk.ts": 516,
+    "packages/server/src/report/store.ts": 300,
     "packages/server/src/services/ollama-lock.ts": 448,
     "packages/server/src/healer/auto-fix.ts": 421,
     "packages/server/src/agent/spawner.ts": 1459,
