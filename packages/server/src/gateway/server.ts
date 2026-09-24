@@ -34,6 +34,7 @@ import { googleRouter } from './routes/google.js';
 import { microsoftRouter } from './routes/microsoft.js';
 import { plaudRouter } from './routes/plaud.js';
 import { githubRouter } from './routes/github.js';
+import { reportsRouter } from './routes/reports.js';
 import { credentialsRouter } from './routes/credentials.js';
 import { contactsRouter } from './routes/contacts.js';
 import { twilioRouter } from './routes/twilio.js';
@@ -274,6 +275,7 @@ export function createServer() {
   app.route('/api/microsoft', microsoftRouter); // /api/microsoft/status, /api/microsoft/callback, etc.
   app.route('/api/plaud', plaudRouter);     // /api/plaud/status, /api/plaud/connect, etc.
   app.route('/api/github', githubRouter);   // /api/github/status, /api/github/connect, etc.
+  app.route('/api/reports', reportsRouter); // the report preview card — the ONLY door to posting
   app.route('/api/credentials', credentialsRouter); // agent credentials vault CRUD
   app.route('/api/contacts', contactsRouter); // DOJO contacts store CRUD
   app.route('/api/twilio', twilioRouter); // Twilio SMS + Voice (webhooks + config + numbers)

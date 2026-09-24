@@ -73,7 +73,32 @@ const CONSENT_EXPORTS = ['approveOnce', 'markPosted', 'markExported'];
 const ALLOWED_CONSENT_CALLERS: readonly string[] = [
   // The store's own lifecycle test — it drives the doors to prove they are one-shot.
   'report/__tests__/a-report-is-approved-once-and-only-once.test.ts',
-  // T7 APPENDS ITS GATEWAY ROUTE HERE, and nowhere else, and that edit is the review.
+  // ── APPENDED BY DOJO-REPORT T6, AND THIS IS THE ONE-LINE EDIT THE HEADER PROMISED ──
+  // The gateway route behind the owner's Post button. (The header above says T7; the route
+  // landed in T6, which is where the card and its doors are built. The grant is the same one.)
+  //
+  // THE EDGE IS THE BRACED STATIC FORM, which is the only spelling whose bound names are
+  // statically provable, and it binds two consent doors by name:
+  //
+  //   import {
+  //     approveOnce, cancelReport, editBrief, getReport, listOpenReports, markExported,
+  //     type ReportStatus,
+  //   } from '../../report/store.js';
+  //
+  // `approveOnce` mints the owner's decision and `markExported` spends it — the export door is
+  // bound by D4 exactly as the poster is (contract C3), so one approval is one delivery
+  // whichever way the report leaves. `editBrief` is the owner's own edit door and consumes
+  // nothing. Nothing else in the file reaches the store, and there is no dynamic import.
+  //
+  // WHY THIS FILE AND NOT ANOTHER: `POST /api/reports/:id/approve` is the ONLY call site of
+  // `approveOnce` in the tree — held from the other direction by the source census in
+  // `gateway/routes/__tests__/only-the-card-can-post-a-report.test.ts`, which asserts the
+  // call-site set equals exactly `['gateway/routes/reports.ts']`. Prong A here answers "who may
+  // BIND a door"; that clause answers "who may CALL one". Neither is sufficient alone.
+  //
+  // ⚠ T7 ADDS A SECOND ENTRY. Its poster calls `markPosted`, so it must be named here AND on
+  // FETCH_BEARING_IN_CLOSURE — see the note at the head of that list, which is written for it.
+  'gateway/routes/reports.ts',
 ];
 
 /** PRONG C's exact one-hop pins. Adding an import to either file fails this file. */
@@ -190,6 +215,54 @@ function specifiersOf(file: string): string[] {
   return specifiersIn(fs.readFileSync(file, 'utf8'));
 }
 
+// ── T6 / N4: A TYPE-ONLY EDGE IS NOT AN EDGE AT RUNTIME, AND PRONG B HAD TO LEARN IT ────────
+//
+// The FETCH_BEARING_IN_CLOSURE note above already measured this and wrote the argument down for
+// whoever landed the gateway route: `gateway/routes/update.ts:11` reads
+// `import type { AppEnv } from '../server.js'`, TypeScript ERASES it, and the emitted `.js` has
+// no such edge — so `gateway/server.ts` and everything it fans out to are phantoms of the static
+// walk, not modules the tool can reach.
+//
+// T6 is when that stops being a note. `gateway/routes/reports.ts` legitimately binds two consent
+// doors, `gateway/server.ts` legitimately mounts it, and the over-approximating walk therefore
+// puts the owner's Post button inside "the tool's closure". Prong B asserts that set is EMPTY, so
+// on the phantom edge alone it would fail for a route that is not reachable from any tool call —
+// a guard that fires on a fact it cannot be satisfied about teaches people to edit the guard.
+//
+// So prong B — and ONLY prong B — is measured on the RUNTIME closure, with type-only edges
+// dropped. Prong C keeps the over-approximation deliberately: a type-only edge becomes a runtime
+// edge in a one-word deletion, and the fetch manifest should notice that while it is still cheap.
+// The two closures are asserted against each other below, and the fact the whole argument rests
+// on — that `gateway/server.ts` is NOT runtime-reachable from the handler — is pinned rather than
+// assumed, so the day somebody adds a real edge, this file says so before prong B does.
+//
+// MEASURED AT THIS HEAD: 532 modules over-approximating, 464 at runtime.
+const TYPE_ONLY =
+  /(?:\bimport|\bexport)\s+type\s+(?:\{[^}]*\}|[A-Za-z_$][\w$]*|\*\s+as\s+[A-Za-z_$][\w$]*)\s*from\s*['"]([^'"]+)['"]/g;
+
+/**
+ * Specifiers that survive erasure. One credit per type-only edge, spent against one occurrence
+ * of the same specifier — so a file holding BOTH `import type { T } from './x.js'` and
+ * `import { v } from './x.js'` keeps the runtime edge, which is the safe direction.
+ *
+ * ⚠ WHAT IT CANNOT SEE, and the direction the blindness runs: an `import { type T } from '…'`
+ * with ONLY inline type members is erased by TypeScript and is NOT matched here, so it counts as
+ * a runtime edge. That is an over-read, and an over-read fails SAFE — it can only put more
+ * modules in prong B's set, never fewer.
+ */
+function runtimeSpecifiersIn(code: string): string[] {
+  const clean = stripComments(code);
+  const credits = new Map<string, number>();
+  for (const m of clean.matchAll(TYPE_ONLY)) credits.set(m[1], (credits.get(m[1]) ?? 0) + 1);
+  const kept: string[] = [];
+  for (const spec of specifiersIn(clean)) {
+    const left = credits.get(spec) ?? 0;
+    if (left > 0) { credits.set(spec, left - 1); continue; }
+    kept.push(spec);
+  }
+  return kept;
+}
+
 /** The one form whose bound names are STATICALLY PROVABLE. Everything else is an assumption. */
 const BRACED_STATIC = /(?:import|export)\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/g;
 
@@ -269,15 +342,18 @@ function resolveSpec(fromFile: string, spec: string): string | null {
   return null;
 }
 
-function closureFrom(entry: string): { modules: string[]; unresolved: string[] } {
+function closureFrom(entry: string, runtimeOnly = false): { modules: string[]; unresolved: string[] } {
   const seen = new Set<string>();
   const unresolved: string[] = [];
   const stack = [path.resolve(entry)];
+  const read = (f: string): string[] => (runtimeOnly
+    ? runtimeSpecifiersIn(fs.readFileSync(f, 'utf8'))
+    : specifiersOf(f));
   while (stack.length > 0) {
     const file = stack.pop()!;
     if (seen.has(file)) continue;
     seen.add(file);
-    for (const spec of specifiersOf(file)) {
+    for (const spec of read(file)) {
       const resolved = resolveSpec(file, spec);
       if (resolved) stack.push(resolved);
       else if (spec.startsWith('.')) unresolved.push(`${path.relative(SRC, file)} -> ${spec}`);
@@ -311,6 +387,8 @@ function consentImporters(): string[] {
 }
 
 const CLOSURE = closureFrom(HANDLER);
+/** The same walk with erased edges dropped — what the tool can reach when the process runs. */
+const RUNTIME = closureFrom(HANDLER, true);
 
 // ⚠ THE READERS ARE TESTED BEFORE ANYTHING THEY READ IS TRUSTED (fix round 2, N1 + N2).
 // Everything below this file's two regexes rests on them seeing what is actually written in
@@ -342,6 +420,44 @@ describe('the specifier reader sees every import spelling that creates an edge',
   it('still ignores a specifier that only appears in prose', () => {
     expect(specifiersIn(`// the old \`await import('../agent/tools.js')\` hack\nconst x = 1;`)).toEqual([]);
   });
+});
+
+// ── THE ERASURE READER'S OWN VOCABULARY (T6 / N4) ───────────────────────────────────────
+// Prong B now rests on this function, so it is pinned in BOTH directions before it is trusted —
+// the discipline this file learned three times. The false-negative direction is the dangerous
+// one: a runtime edge mistaken for a type-only edge would vanish from prong B's set.
+
+describe('the erasure reader drops only the edges TypeScript actually erases', () => {
+  const ERASED: readonly [string, string][] = [
+    ['import type, braced', `import type { A } from './x.js';`],
+    ['import type, default', `import type A from './x.js';`],
+    ['import type, namespace', `import type * as N from './x.js';`],
+    ['export type, braced', `export type { A } from './x.js';`],
+    ['multi-line braced type import', `import type {\n  A,\n  B,\n} from './x.js';`],
+  ];
+  const KEPT: readonly [string, string][] = [
+    ['a plain value import', `import { a } from './x.js';`],
+    ['a value import with an INLINE type member', `import { a, type B } from './x.js';`],
+    ['a default value import', `import a from './x.js';`],
+    ['a namespace import', `import * as n from './x.js';`],
+    ['a bare side-effect import', `import './x.js';`],
+    ['a dynamic import', `const m = await import('./x.js');`],
+    ['a star re-export', `export * from './x.js';`],
+    // The safe direction, stated as a fixture: a file holding both keeps the runtime edge.
+    ['both spellings to one module', `import type { A } from './x.js';\nimport { b } from './x.js';`],
+  ];
+
+  for (const [label, code] of ERASED) {
+    it(`drops ${label}`, () => {
+      expect(runtimeSpecifiersIn(code), `${label} survived erasure: ${code}`).toEqual([]);
+    });
+  }
+  for (const [label, code] of KEPT) {
+    it(`keeps ${label}`, () => {
+      expect(runtimeSpecifiersIn(code), `${label} was erased and it is real: ${code}`)
+        .toContain('./x.js');
+    });
+  }
 });
 
 // ── THE RULE'S OWN VOCABULARY (fix round 3, N3) ──────────────────────────────────────────
@@ -411,6 +527,36 @@ describe('the walk itself is sound', () => {
     // A census with holes reporting green is a false green.
     expect(CLOSURE.unresolved, `unresolved relative import(s): ${CLOSURE.unresolved.join(', ')}`).toEqual([]);
   });
+
+  it('the runtime closure is a real subset that still reaches everything the tool uses', () => {
+    expect(RUNTIME.modules).toContain('agent/tools/cat/report.ts');
+    expect(RUNTIME.modules).toContain('report/gather.ts');
+    expect(RUNTIME.modules).toContain('report/store.ts');
+    expect(RUNTIME.unresolved).toEqual([]);
+    // Non-vacuity in both directions: it must be smaller than the over-approximation (or the
+    // erasure reader is doing nothing) and it must not have collapsed (or prong B sees nothing).
+    expect(RUNTIME.modules.length).toBeLessThan(CLOSURE.modules.length);
+    expect(RUNTIME.modules.length).toBeGreaterThan(100);
+    for (const m of RUNTIME.modules) expect(CLOSURE.modules).toContain(m);
+  });
+
+  it('the gateway is NOT runtime-reachable from the tool — the fact prong B rests on', () => {
+    // The whole safety case for measuring prong B on the runtime closure is this one fact. It is
+    // pinned rather than assumed, so a real (non-erased) edge from the tool's graph into the
+    // server announces itself HERE, with this explanation beside it, rather than as a bare prong
+    // B failure someone is tempted to "fix" by editing the allowlist.
+    for (const phantom of ['gateway/server.ts', 'gateway/routes/reports.ts', 'gateway/routes/github.ts']) {
+      expect(CLOSURE.modules, `${phantom} left the over-approximating walk — re-read N4`)
+        .toContain(phantom);
+      expect(
+        RUNTIME.modules,
+        `${phantom} became RUNTIME-reachable from the dojo_report handler. It was a phantom of `
+        + 'the static walk (an erased `import type` in gateway/routes/update.ts). Something now '
+        + 'imports it for real, and the tool that cannot send may be able to reach the door that '
+        + 'can. Read the diff before touching anything else in this file.',
+      ).not.toContain(phantom);
+    }
+  });
 });
 
 describe('A — only a named list may consume the owner\'s one approval', () => {
@@ -438,12 +584,15 @@ describe('A — only a named list may consume the owner\'s one approval', () => 
 });
 
 describe('B — nothing behind the report tool can consume one', () => {
-  it('no module in the handler\'s import closure imports a consent door', () => {
-    const inClosure = consentImporters().filter(f => CLOSURE.modules.includes(f));
+  it('no module RUNTIME-reachable from the handler imports a consent door', () => {
+    // N4: measured on the RUNTIME closure, because an erased `import type` is not a way to reach
+    // anything. The clause directly above pins the fact that makes this safe; prong C keeps the
+    // over-approximation, so nothing is traded away.
+    const inClosure = consentImporters().filter(f => RUNTIME.modules.includes(f));
     expect(
       inClosure,
-      `these modules are reachable from the dojo_report handler AND hold an unproven edge to `
-      + `report/store.ts: ${inClosure.join(', ')}. The tool must not be able to reach the `
+      `these modules are reachable from the dojo_report handler AT RUNTIME AND hold an unproven `
+      + `edge to report/store.ts: ${inClosure.join(', ')}. The tool must not be able to reach the `
       + `approval it exists to ask for — not even through a dynamic import.`,
     ).toEqual([]);
   });

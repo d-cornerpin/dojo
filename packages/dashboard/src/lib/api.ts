@@ -2494,4 +2494,46 @@ export const cancelGenerationJob = async (
   });
 };
 
+// ── Problem reports (DOJO-REPORT T6) ──
+// `ReportBrief`/`ReportRow` are declared twice ON PURPOSE: once server-side in
+// `report/store.ts`, once here, because `packages/dashboard` cannot import from
+// `packages/server`. Same fields, same names, same types; the route serves that
+// shape and this client NEVER re-derives or remaps it. If the two ever disagree,
+// the server's is right — and `only-the-card-can-post-a-report.test.ts` drives
+// the real routes, so a field renamed on the wire fails there.
+export interface ReportBrief {
+  title: string; whatHappened: string; whatShouldHaveHappened: string;
+  whyItWentWrong: string; fixIdeas: string;
+}
+export interface ReportRow {
+  id: string; agentId: string;
+  status: 'drafting' | 'awaiting_approval' | 'approved' | 'posted' | 'cancelled';
+  lane: string; signature: string;
+  brief: ReportBrief | null; telemetry: Record<string, unknown> | null;
+  bundlePath: string | null; createdAt: string; updatedAt: string;
+  approvedAt: string | null; postedAt: string | null;
+  issueUrl: string | null; issueNumber: number | null; exportPath: string | null;
+}
+/** What the ONE door answers. `issueUrl` on a connected box, `exportPath` on an unconnected one. */
+export interface ReportDelivery {
+  status: string; issueUrl: string | null; issueNumber: number | null;
+  exportPath: string | null; newIssueUrl?: string; bodyWasTrimmed?: boolean;
+}
+export const listOpenReports = async (): Promise<ApiResponse<ReportRow[]>> =>
+  request<ReportRow[]>('/reports');
+export const getReport = async (id: string): Promise<ApiResponse<ReportRow>> =>
+  request<ReportRow>(`/reports/${encodeURIComponent(id)}`);
+/** Only the fields the owner actually changed. An empty patch is refused by the door. */
+export const editReportBrief = async (
+  id: string, edits: Partial<ReportBrief>,
+): Promise<ApiResponse<ReportRow>> =>
+  request<ReportRow>(`/reports/${encodeURIComponent(id)}`, {
+    method: 'PATCH', body: JSON.stringify(edits),
+  });
+/** THE ONE DOOR (owner ruling D4). Nothing else in this file can publish a report. */
+export const approveReport = async (id: string): Promise<ApiResponse<ReportDelivery>> =>
+  request<ReportDelivery>(`/reports/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+export const cancelReport = async (id: string): Promise<ApiResponse<{ status: string }>> =>
+  request(`/reports/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
+
 export { getToken, clearToken };

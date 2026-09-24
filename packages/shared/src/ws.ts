@@ -537,10 +537,33 @@ export interface ReportPendingEvent {
   data: { id: string; title: string };
 }
 
+/**
+ * DOJO-REPORT T6 — the owner DECIDED. Emitted by `POST /api/reports/:id/approve` and
+ * `/cancel`, the only two doors that resolve a report, and by nothing else.
+ *
+ * It exists for a reason the pending frame does not cover: the card can be open in two
+ * dashboard tabs, and a decision made in one must clear the card in the other. Without it the
+ * second tab keeps a Post button in front of someone for a report that is already delivered,
+ * and the only thing standing between that and a second issue is the store's one-shot UPDATE.
+ * That UPDATE is the real guarantee; this frame is what stops the owner being asked twice.
+ * Status-stamped for the same reason `healer:proposal` is — the surfaces converge on the answer
+ * rather than each remembering its own.
+ *
+ * `posted` covers BOTH deliveries, because both consume the one approval (contract C3): a
+ * report that left as a file is as finished as one that left as an issue. Like its sibling it
+ * is a PING — no brief, no telemetry, no link. The text a human approved for a public page
+ * travels the authenticated route the card can re-read, never a broadcast frame.
+ */
+export interface ReportResolvedEvent {
+  type: 'report:resolved';
+  data: { id: string; status: 'posted' | 'cancelled' };
+}
+
 export type WsEvent =
   | AgentStatusEvent
   | HealerProposalEvent
   | ReportPendingEvent
+  | ReportResolvedEvent
   | VideoJobUpdateEvent
   | GenerationJobUpdateEvent
   | EngineActivityEvent
@@ -1132,6 +1155,10 @@ export const EVENT_BATCHABLE: Record<WsEvent['type'], boolean> = {
   // A consent decision the owner has to make. Batching would delay the card behind
   // an unrelated flush, which is the one frame a gate must not arrive late.
   'report:pending': false,
+  // The other half of the same gate: a decision the owner has ALREADY made, clearing the card
+  // in every other tab. Batching it would leave a live Post button in front of a delivered
+  // report, which is the one frame a consent gate must not arrive late.
+  'report:resolved': false,
   'video_job:update': false,
   'generation_job:update': false,
   'engine:activity': false,

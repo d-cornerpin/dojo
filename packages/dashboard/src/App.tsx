@@ -20,6 +20,7 @@ import { Settings } from './pages/Settings';
 import { Costs } from './pages/Costs';
 import * as api from './lib/api';
 import { PostMigrationBanner } from './components/PostMigrationBanner';
+import { ReportPreviewCard } from './components/ReportPreviewCard';
 import { ThemeProvider } from './themes/ThemeProvider';
 import { OrbProvider } from './components/orb/OrbProvider';
 import { ActiveAgentProvider } from './components/ActiveAgentProvider';
@@ -191,6 +192,7 @@ const Dojo3Shell = () => {
         <RightDockProvider>
           <TechniqueSessionProvider>
             <PostMigrationBanner />
+            <ReportPreviewCard />
             <GlobalAlerts />
             <NavigationHandler />
             <div className="h-dvh w-full overflow-hidden relative z-[1]">
