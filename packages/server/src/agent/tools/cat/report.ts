@@ -21,12 +21,18 @@
 //     separation is structural, and the behavioural proof is next door in
 //     `the-agents-words-never-reach-the-telemetry.test.ts`.
 //
-//  3. EVIDENCE IS RE-READ AT DRAFT, NOT CARRIED. `gatherEvidence` is a pure
-//     bounded read, so `draft` simply runs it again rather than parking a
-//     megabyte of rows in module state between two tool calls. That also makes a
-//     server restart between the phases a non-event: there is no cache to miss,
-//     and the second read is strictly fresher than the first. The cost is six
-//     more indexed queries on a call the user is already waiting on deliberately.
+//  3. EVIDENCE IS RE-READ AT DRAFT — AGAINST THE WINDOW `gather` RESOLVED, NEVER
+//     A FRESH DEFAULT. The first cut re-gathered with `{}`, and review caught what
+//     that meant: `resolveWindow({})` can never set `truncated`, so
+//     `window.truncated` was a CONSTANT `false` on every attachment this feature
+//     could produce. An agent that asked for a week was told the truth in prose
+//     and the public page was told `false` — a live wrong value on the artifact.
+//     So the agent's ASK is remembered per report (a `{turns, minutes}` pair, not
+//     the megabyte of rows), and `draft` resolves the same ask again. Rows stay
+//     re-read, which keeps the evidence fresh and keeps module state tiny; only
+//     the WINDOW is carried, because the window is the one thing `draft` cannot
+//     re-derive. A miss REFUSES rather than falling back to the standing window —
+//     a silent default is the defect, so it must not be the fallback.
 //
 //  4. NOTHING THROWS TO THE LOOP. Every arm returns `{ content, isError }`; a
 //     refused transition returns the reason the door gives, never an exception —
@@ -42,6 +48,28 @@ import { buildTelemetry } from '../../../report/telemetry-build.js';
 import { writeBundle } from '../../../report/bundle.js';
 import { attachDraft, createReport, getReport, submitForApproval, type ReportBrief } from '../../../report/store.js';
 import { deriveReportSignature, isFailureLane, FAILURE_LANES } from '../../../report/signature.js';
+import type { WindowRequest } from '../../../report/window.js';
+
+/**
+ * THE AGENT'S ASK, REMEMBERED PER REPORT — the whole of the cross-phase state, and it is
+ * deliberately the ASK rather than the ANSWER. Storing the resolved `GatherWindow` would
+ * freeze `sinceIso` at gather time, so a draft five minutes later would describe a window
+ * that ended before the report was written; storing the ask re-resolves it against the
+ * clock while keeping `truncated` honest about what the agent actually requested.
+ *
+ * Bounded, and evicted oldest-first: a Map keyed by report id with no ceiling is a leak
+ * that only shows up on a box that never restarts, which is the box this runs on.
+ */
+const ASKED_WINDOW = new Map<string, WindowRequest>();
+const MAX_REMEMBERED_ASKS = 32;
+
+function rememberAsk(reportId: string, req: WindowRequest): void {
+  if (ASKED_WINDOW.size >= MAX_REMEMBERED_ASKS) {
+    const oldest = ASKED_WINDOW.keys().next().value;
+    if (oldest !== undefined) ASKED_WINDOW.delete(oldest);
+  }
+  ASKED_WINDOW.set(reportId, req);
+}
 
 const ok = (content: string): { content: string; isError: boolean } => ({ content, isError: false });
 const bad = (content: string): { content: string; isError: boolean } => ({ content, isError: true });
@@ -88,9 +116,11 @@ export const reportHandlers: ToolHandlerMap = {
     // A provisional signature on the `'other'` lane: the row needs one at INSERT
     // and the agent has not chosen a lane yet. `draft` re-derives it for real.
     if (phase === 'gather') {
-      const ev = gatherEvidence(agentId, { turns: num(args.turns), minutes: num(args.minutes) });
+      const asked: WindowRequest = { turns: num(args.turns), minutes: num(args.minutes) };
+      const ev = gatherEvidence(agentId, asked);
       const signature = deriveReportSignature(getCurrentVersion(), 'other', ev.dominant);
       const row = createReport(agentId, 'other', signature);
+      rememberAsk(row.id, asked);
       return ok([
         `Report ${row.id} opened. ${windowNote(ev.window)}`,
         '',
@@ -120,7 +150,16 @@ export const reportHandlers: ToolHandlerMap = {
       const missing = BRIEF_ARGS.filter(k => text(args[k]) === '');
       if (missing.length > 0) return bad(`These parts of the brief are empty: ${missing.join(', ')}. All five are required.`);
 
-      const ev = gatherEvidence(agentId, {});
+      // THE SAME ASK `gather` RESOLVED. A miss means the process restarted or 32 newer
+      // reports pushed this one out; either way the honest answer is "gather again", not a
+      // standing window nobody asked for silently stamped onto the public attachment.
+      const asked = ASKED_WINDOW.get(reportId);
+      if (!asked) {
+        return bad(`The window \`gather\` resolved for ${reportId} is no longer held (the server `
+          + 'restarted, or too many reports were opened after it). Call phase="gather" again and draft '
+          + 'against the id it returns — drafting now would attach a window nobody asked for.');
+      }
+      const ev = gatherEvidence(agentId, asked);
       const signature = deriveReportSignature(getCurrentVersion(), lane, ev.dominant);
       const brief: ReportBrief = {
         title: text(args.title), whatHappened: text(args.what_happened),
@@ -156,6 +195,8 @@ export const reportHandlers: ToolHandlerMap = {
         + 'been submitted. Only a drafting report with a brief can be put in front of the user.');
     }
     const title = row.brief?.title ?? 'Problem report';
+    // The report is the owner's now; nothing this tool can do reaches it again.
+    ASKED_WINDOW.delete(reportId);
     broadcast({ type: 'report:pending', data: { id: row.id, title } });
     return ok(`Filed as \`${row.id}\`. A preview card is now on the dashboard showing your brief and the `
       + 'telemetry attachment. Nothing is sent until the user presses Post on that card. You cannot press it.');

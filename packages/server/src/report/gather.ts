@@ -149,7 +149,15 @@ export function gatherEvidence(agentId: string, req: WindowRequest, now: Date = 
   const hits = new Map<string, number>();
   for (const f of failureRows) hits.set(str(f.tool_name) ?? '', num(f.hit_count));
 
-  const tail = toolCallsFromTail(recentTail(agentId, { limit: COLLECTOR_CAPS.toolCalls }));
+  // WINDOW-BOUNDED, and the filter is here because `recentTail` has no time argument to
+  // pass one to. Without it a tool call from last Tuesday rode into the attachment with
+  // `result: null`, wearing the same shape as an in-window call whose audit row was
+  // missing — two different facts rendering identically, on a public page. `createdAt` is
+  // the row's own stamp in the same text shape `sqlStamp` produces, so one comparison form
+  // governs every collector.
+  const tail = toolCallsFromTail(
+    recentTail(agentId, { limit: COLLECTOR_CAPS.toolCalls }).filter(m => m.createdAt >= since),
+  );
   const toolCalls: ToolCallFacts[] = tail.slice(-COLLECTOR_CAPS.toolCalls).map((c) => {
     const outcome = c.id ? outcomes.get(c.id) : undefined;
     const { argShape, argsTotalBytes } = shapeOfArgs(c.name, c.args);

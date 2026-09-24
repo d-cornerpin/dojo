@@ -74,12 +74,17 @@ describe('the tool cannot post, structurally', () => {
     expect(DEF!.description).toContain('YOU CANNOT SEND ANYTHING');
   });
 
-  // ── T3 ADDITIONS ──────────────────────────────────────────────────────────────────────
-  // The clause above forbids five NAMES. A name list is only as good as the module graph it
-  // rests on, so these two measure the graph itself: the handler's whole IMPORT surface, and
-  // the outbound door at the bottom of any posting path.
+  // ── T3 ADDITIONS, REWORDED IN FIX ROUND 1 ─────────────────────────────────────────────
+  // These clauses read ONE FILE'S OWN TEXT, and after review that is exactly what they now
+  // claim. The first wording — "imports nothing that could carry a report off the box" — was
+  // false about the graph: the reviewer added a posting module under an unlisted name, called
+  // it from `submit`, performed a real outbound POST, and every clause in this file stayed
+  // green. A one-hop name scan cannot see 526 modules. The graph is measured next door in
+  // `the-report-tool-reaches-no-new-door.test.ts`, which is the guard that refuses that
+  // demonstration; these two remain because a file that names a host or calls `fetch` itself
+  // is worth catching at the cheapest possible altitude, and because they say what they do.
 
-  it('imports nothing that could carry a report off the box', () => {
+  it('names no outbound module in its OWN import list (one hop — the graph is censused next door)', () => {
     const imports = [...handlerSrc().matchAll(/from\s+'([^']+)'/g)].map(m => m[1]);
     expect(imports.length).toBeGreaterThan(0);
     for (const spec of imports) {
@@ -89,9 +94,10 @@ describe('the tool cannot post, structurally', () => {
     }
   });
 
-  it('never names fetch, so the one door out of the process is not open here', () => {
+  it('never names fetch IN ITS OWN BODY, so the cheapest way out is not open here', () => {
     // `writeBundle`/`writeReportFile` write to `~/.dojo`; `broadcast` reaches a local socket.
-    // An outbound HTTPS call is the only thing that could publish, and it has one spelling.
+    // This does NOT prove the closure holds no `fetch` — 37 modules in it do. That is prong C
+    // of the census next door, which pins them by name so a NEW one fails the build.
     expect(handlerSrc()).not.toMatch(/\bfetch\s*\(/);
   });
 

@@ -23,6 +23,7 @@ import { getDb } from '../../db/connection.js';
 import { runMigrations } from '../../db/migrations.js';
 import { reportHandlers } from '../../agent/tools/cat/report.js';
 import { getReport, listOpenReports } from '../store.js';
+import { readBundle } from '../bundle.js';
 import type { ToolCall } from '@dojo/shared';
 
 const AGENT = 'kevin-report-words';
@@ -86,10 +87,68 @@ describe('the agent\'s five strings land in the brief and only in the brief', ()
     expect(JSON.parse(telemetry!)).toHaveProperty('report.lane', 'permission');
   });
 
+  // ⚠ THE SETUP IS ASSERTED BEFORE THE PROPERTY IS, and the ordering is the whole clause.
+  // The first cut read `getReport(id)?.bundlePath ? readBundle(id) : null` and stringified
+  // the result: with an empty `bundle_path` that is the string `"null"`, which contains no
+  // marker, so the assertion passed over nothing while the agent's five markers sat in
+  // `bundle.json` on disk. Worse, T2's own contract C7 documents a null `readBundle` as
+  // NORMAL for a live report (the 50-directory sweep), so the clause disarmed itself under
+  // a condition the design calls routine. A missing bundle must fail the SETUP — loudly,
+  // naming what is missing — and never quietly satisfy the assertion.
   it('puts none of them in the local evidence bundle either — the agent writes only the brief', async () => {
     const id = await driveToDraft();
-    const bundle = JSON.stringify(getReport(id)?.bundlePath ? await import('../bundle.js').then(m => m.readBundle(id)) : null);
-    expect(bundle).not.toContain('SEVENTEEN');
+    const row = getReport(id);
+    expect(row?.bundlePath, 'no bundle_path was recorded — the assertion below would pass over nothing').toBeTruthy();
+    const bundle = readBundle(id);
+    expect(bundle, 'readBundle answered null — the assertion below would pass over the string "null"').not.toBeNull();
+    // A positive control: this IS the right report's bundle, so "the markers are absent"
+    // is a fact about a populated document rather than about an empty one.
+    const text = JSON.stringify(bundle);
+    expect(text.length, 'the bundle is empty — nothing to be private about').toBeGreaterThan(100);
+    expect(text).toContain('window');
+    expect(text).not.toContain('SEVENTEEN');
+  });
+});
+
+// ── I1: the window on the artifact is the window the agent asked for ────────────────────
+// The brief pins it — "`truncated: true` is set (and surfaced in the telemetry as
+// `window.truncated`) whenever a cap bit". The first cut re-gathered at `draft` with `{}`,
+// so `resolveWindow` never capped anything and the field was a CONSTANT `false` on every
+// attachment the feature could produce: the agent was told the truth in prose and the
+// public page was told `false`. These clauses run THROUGH THE HANDLER, because the shipped
+// assertion ran against a direct `gatherEvidence` call and proved plumbing production never
+// reached.
+describe('the window stamped on the attachment is the one the agent asked for', () => {
+  it('a capped ask reaches the STORED attachment as truncated: true', async () => {
+    const gathered = await call({ phase: 'gather', turns: 500, minutes: 10080 });
+    expect(gathered.content).toContain('The window is capped');
+    const id = /Report ([0-9a-f-]{36}) opened/.exec(gathered.content)?.[1];
+    const drafted = await call({ phase: 'draft', report_id: id, lane: 'other', ...MARK });
+    expect(drafted.isError, drafted.content).toBe(false);
+
+    const window = (getReport(id!)?.telemetry as { window?: Record<string, unknown> } | null)?.window;
+    expect(window, 'the attachment carries no window block at all').toBeDefined();
+    expect(window).toEqual({ minutes: 120, turns: 20, truncated: true });
+  });
+
+  it('an ask inside the cap is NOT reported as truncated', async () => {
+    const gathered = await call({ phase: 'gather', turns: 5, minutes: 15 });
+    const id = /Report ([0-9a-f-]{36}) opened/.exec(gathered.content)?.[1];
+    await call({ phase: 'draft', report_id: id, lane: 'other', ...MARK });
+    const window = (getReport(id!)?.telemetry as { window?: Record<string, unknown> } | null)?.window;
+    expect(window).toEqual({ minutes: 15, turns: 5, truncated: false });
+  });
+
+  it('refuses to draft when the resolved window is no longer held, rather than inventing one', async () => {
+    const gathered = await call({ phase: 'gather', turns: 500 });
+    const id = /Report ([0-9a-f-]{36}) opened/.exec(gathered.content)?.[1];
+    // Thirty-two newer reports evict the ask, which is the same state a restart leaves.
+    for (let i = 0; i < 33; i++) await call({ phase: 'gather' });
+    const drafted = await call({ phase: 'draft', report_id: id, lane: 'other', ...MARK });
+    expect(drafted.isError).toBe(true);
+    expect(drafted.content).toContain('no longer held');
+    // And nothing was written: a refused draft leaves the row exactly as it was.
+    expect(getReport(id!)?.brief).toBeNull();
   });
 });
 
