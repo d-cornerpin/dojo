@@ -316,7 +316,12 @@ describe('SWEEP CORE-2 item 2 — the Healer\'s deterministic tier is unchanged 
     // target each take the hold path.
     expect(evaluateScratchZoneAutoApprove('exec', { command: 'rm -rf /tmp/x && cat /etc/passwd' })).toBeNull();
     expect(evaluateScratchZoneAutoApprove('exec', { command: 'mv /tmp/a /tmp/b' })).toBeNull();
-    expect(evaluateScratchZoneAutoApprove('exec', { command: `rm -rf ${path.join(process.cwd(), 'nope')}` })).toBeNull();
+    // The out-of-zone target must be out-of-zone BY CONSTRUCTION, never derived
+    // from process.cwd(): the zone includes /tmp (resolved /private/tmp), so a
+    // checkout living under the scratchpad put cwd IN-zone and the product's
+    // correct auto-approve read as this clause's failure (ritual v3.2.0 round-1
+    // triage, 2026-09-26).
+    expect(evaluateScratchZoneAutoApprove('exec', { command: 'rm -rf /opt/dojo-definitely-not-scratch/nope' })).toBeNull();
     expect(evaluateScratchZoneAutoApprove('file_write', { command: 'rm -rf /tmp/x' })).toBeNull();
   });
 });
