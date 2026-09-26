@@ -197,7 +197,7 @@ agentsRouter.post('/', async (c) => {
 
     // T11 Step 1b: who made this agent. This route is the dashboard create form, so a
     // person made it — unless the caller DECLARES otherwise, which is how the behavioral
-    // harness stamps its BehaviorBot and its five fixture peers as disposable. An
+    // harness stamps its the harness bot and its five fixture peers as disposable. An
     // unrecognised value falls back to 'user' (parseCreatedByKind returns null), so a
     // typo can only ever NARROW what a sweep may touch, never widen it.
     const createdByKind = parseCreatedByKind(body.createdByKind) ?? 'user';
@@ -461,7 +461,7 @@ agentsRouter.put('/:id', async (c) => {
   }
 
   // T11 Step 1b: who created this agent (migration 134), settable here for the same reason
-  // permissions are — the behavioral harness RECONCILES its long-lived BehaviorBot on every
+  // permissions are — the behavioral harness RECONCILES its long-lived the harness bot on every
   // run rather than recreating it, so a bot that predates the column has no other way to
   // record what it has always been. WRITE-ONCE: an agent that already carries a kind keeps
   // it, so this can adopt an unstamped row and can never relabel a person's agent as

@@ -2047,7 +2047,7 @@ async function runPMReview(): Promise<void> {
     // one. `resolveTaskAnswerPointer` reads the ask's own recorded receipt (via T11's task→ask
     // edge) or the task's answered turn; it returns null rather than anything inferred, so a
     // row with nothing behind it reads exactly as it does today. See its header for why the
-    // review could not do this before: kelly's ~40 `history_search` calls on S4 were searching
+    // review could not do this before: the PM's ~40 `history_search` calls on S4 were searching
     // lanes the answer does not live in, because the payload gave it nothing to open.
     const answerPointer = resolveTaskAnswerPointer(cTask.id);
     const deliveredLine = answerPointer

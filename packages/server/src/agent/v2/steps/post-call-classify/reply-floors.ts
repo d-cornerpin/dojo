@@ -86,7 +86,7 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
   // something to a NAMED THIRD PARTY when the LEDGER says otherwise.
   //
   // ⚠ THE TRIGGER IS NO LONGER THE PROSE, and the owner is why. On 2026-08-01 this floor
-  // fired three times on the words "told Michael" quoted out of a wedding transcript he had
+  // fired three times on the words "told <a name>" quoted out of a transcript he had
   // asked about, each fire ordering "do it NOW" — double answers, a re-done delivery, and a
   // false accusation made by a regex. `agent/v2/claimed-delivery.ts` is the rekey: the prose
   // only NARROWS (which party does the reply name), and the FIRING is a row — an owed

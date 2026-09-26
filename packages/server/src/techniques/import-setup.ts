@@ -2,7 +2,7 @@
 // Imported-Technique Setup (Share)
 // ════════════════════════════════════════
 //
-// The placeholder surface Yoshi drives after a technique arrives in a shared
+// The placeholder surface the Trainer drives after a technique arrives in a shared
 // package: read the staged manifest, substitute a value the user supplied, ask
 // what is still unfilled, and finalize.
 //
@@ -32,7 +32,7 @@ const logger = createLogger('technique-import-setup');
 /**
  * Read the import manifest for a technique, if it has one. Returns null
  * for techniques that weren't imported (i.e. were created locally).
- * Used by Yoshi tools to discover placeholder lists and remaining
+ * Used by the Trainer tools to discover placeholder lists and remaining
  * setup work.
  */
 export function readImportManifest(directoryPath: string): ImportedManifest | null {

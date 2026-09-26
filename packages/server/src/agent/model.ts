@@ -2933,7 +2933,7 @@ const FREE_LOCAL_PROVIDER_TYPES = new Set(['ollama', 'local']);
 // summariser, the continuity brief, the classifiers, ask-title, the vision-caption fallback,
 // the web-tool extractor, canvas, browser, voice, the router probe — dialled with no
 // controller anywhere and no signal at all, so `stopAgent` had nothing to reach them with.
-// MEASURED (dev log, MrMeSeeks `a504e5c9`, 2026-09-21): the call the 04:22:42 stop failed to
+// MEASURED (dev log, a test agent `a504e5c9`, 2026-09-21): the call the 04:22:42 stop failed to
 // abort was `memory/summarize.ts`'s, dialled 04:22:25.273 by the turn-budget checkpoint and
 // completed 04:27:10.615 after 285,328 ms — not the turn's own call, which had finished at
 // 04:22:16.150 and correctly de-registered.

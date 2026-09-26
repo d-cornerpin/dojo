@@ -28,7 +28,7 @@
 // what is dangerous and lets the rest by, which is REDACTION, the exact mechanism
 // owner ruling D1 rejects, reintroduced inside the file that exists to replace
 // it. Fifteen of twenty-three hostile probes walked straight through it —
-// `taxes.pdf`, `Sarah-divorce-settlement.docx`, `Dave-Cliff`, `DavesMacStudio`,
+// `taxes.pdf`, `Sarah-divorce-settlement.docx`, `Firstname-Lastname`, `OwnersMacStudio`,
 // `mothers_maiden_name`, `AKIAIOSFODNN7EXAMPLE`, a 64-character blob — and
 // end-to-end the builder emitted `report.signature = "taxes.pdf"`: the exact
 // string the suite's flagship clause exists to keep off a public issue, arriving

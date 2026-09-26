@@ -48,7 +48,7 @@
 //
 // The paragraph above is why T20 shipped as an id-ONLY pass, and it counted the price of that
 // choice honestly: 17 obligation lines in stored summaries carried no id and were left. Round
-// 7 measured what the price bought. On 2026-08-11, FIVE stored summaries for BehaviorBot still
+// 7 measured what the price bought. On 2026-08-11, FIVE stored summaries for the harness bot still
 // said "the fence and roof quotes are still parked, waiting on Bob's address" — ten separate
 // lines, not one of them citing an id — while every one of that agent's 131 commitment rows
 // was terminal (87 naming Bob, all `abandoned`, newest closed 2026-08-06). The week-overview

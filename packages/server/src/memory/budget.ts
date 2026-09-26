@@ -34,7 +34,7 @@
 // context receipts joined to their own `cost_records` row (same agent, same instant),
 // against the live tools payload measured at 70,006 chars for the primary agent —
 //
-//     Kevin, n=289 calls:  3.88 – 3.93 chars per token
+//     the primary agent, n=289 calls:  3.88 – 3.93 chars per token
 //                          per-call p10 3.78 · median 3.92 · p90 3.99
 //
 //     /4    2% UNDER the measured cost   ← survivor

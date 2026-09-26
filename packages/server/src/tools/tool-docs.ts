@@ -241,7 +241,7 @@ export const SUB_AGENT_ALWAYS_LOADED = [
   // half of it: "a load_tool_docs round-trip is the friction that makes a weak model skip the
   // tracker entirely." Byte cost declared, because on this list byte cost has been the
   // deciding argument before — and MEASURED off a live ronin's own tools array rather than
-  // estimated: `work_open`'s declaration is 10,129 chars, 22.7% of BehaviorBot's 44,632-char
+  // estimated: `work_open`'s declaration is 10,129 chars, 22.7% of the harness bot's 44,632-char
   // array. (The investigation's "~5.5 KB" was the `input_schema` alone; the full entry is
   // nearly twice that. It is also NOT the largest entry in the file — `work_update`'s 13,174
   // is, and this list already carried it, which is the whole asymmetry.) The cost is spent

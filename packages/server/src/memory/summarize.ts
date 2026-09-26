@@ -188,7 +188,7 @@ export type SummaryResult =
  * compacted destroys the rows". It closed the no-model and model-threw paths and left the
  * one that actually fired: a call that RETURNS, with nothing in it.
  *
- * Measured, 2026-08-10 22:56:03 (`dojo.log`, agent 57b52025): the background drain's
+ * Measured, 2026-08-10 22:56:03 (`dojo.log`, a harness agent): the background drain's
  * 60s wall clock aborted an in-flight summariser at 59,968ms; the provider closed the
  * stream with outputTokens=1; `estimateTokens('')` is 0, which is ≤ targetTokens * 1.5,
  * so the empty string was returned as a SUMMARY and `createLeafSummary` marked all 51

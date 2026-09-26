@@ -17,7 +17,7 @@
 -- reference. It picked the agent one, so the `created_at >= ?` half became a filter applied to
 -- every row that agent ever wrote, and the `ORDER BY` became a temp B-tree over the survivors.
 -- Measured on the owner's body (45,233 rows, 502 distinct agents, the busiest agent holding
--- 23,133 rows and Kelly 14,457):
+-- 23,133 rows and the PM 14,457):
 --
 --     BEFORE   SEARCH audit_log USING INDEX idx_audit_log_agent_id (agent_id=?)
 --              USE TEMP B-TREE FOR ORDER BY

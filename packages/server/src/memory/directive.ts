@@ -81,12 +81,12 @@ export function getActiveUserDirective(
   // The sentinel branch above says it "stops an A2A inbound from being pinned as the ACTIVE
   // USER DIRECTIVE", and it only ever did so on turns that carried `'__none__'`. On a wake
   // whose counterparty never resolved — `turns.kind` NULL, `conv_key` NULL, which is what
-  // BehaviorBot's turns 5121 and 5122 were — the pin ran UNSCOPED, and the newest
+  // the harness bot's turns 5121 and 5122 were — the pin ran UNSCOPED, and the newest
   // substantive unanswered row in a fan-out is whichever helper answered LAST.
   //
   // What that produced, measured (W61 §2b, and the store's seqs 70613 / 70633 / 70654 /
-  // 70662): the pin OSCILLATED. Healer answers, the block holds Healer's piece; Ticky
-  // delivers, it holds Ticky's and Healer's is gone; the agent re-asks Healer, it flips
+  // 70662): the pin OSCILLATED. Healer answers, the block holds Healer's piece; a sub-agent
+  // delivers, it holds a sub-agent's and Healer's is gone; the agent re-asks Healer, it flips
   // back. Every recovery attempt destroyed the piece the previous attempt recovered, so the
   // agent could never hold both, so it could never compile, so the engine redrove and it
   // ground again. The model's own recorded words for the state: "I keep going in circles."

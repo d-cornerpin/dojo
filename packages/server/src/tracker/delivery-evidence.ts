@@ -143,9 +143,9 @@ export function findDeliveryEvidenceForTask(taskId: string): TaskDeliveryEvidenc
 // The Key-2 payload orders the PM to *"Read the file/audit log/output referenced in evidence
 // BEFORE validating"* (`pm-agent.ts:1596`) and PM-SOUL forbids rejecting for non-dereference
 // (*"NEVER reject because you didn't dereference"*, `PM-SOUL.md:61-66`) — while the payload
-// itself selects only the work row's own prose. On S4 (2026-08-10) kelly wrote 7
+// itself selects only the work row's own prose. On S4 (2026-08-10) the PM wrote 7
 // `validation_review_miss` rows over 383 s and made ~40 `history_search` calls that could not
-// have worked: the rundown is an owner-lane row in BehaviorBot's conversation and the pieces
+// have worked: the rundown is an owner-lane row in the harness bot's conversation and the pieces
 // are `lane='a2a'` rows. The rule and the payload were in direct contradiction.
 //
 // This resolves ONE dereferenceable pointer per row from records the engine already keeps, in

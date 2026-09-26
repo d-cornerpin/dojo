@@ -304,7 +304,7 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
   }
   lines.push('');
   // T85 — THIS LINE NAMES WHAT THE CALL CARRIES, AND `alwaysLoaded` IS THAT, NOT THE DECLARATION.
-  // Measured on the release golden (`cache-prefix.kevin.txt`): it named 30 always-loaded tools
+  // Measured on the release golden (`cache-prefix.the primary agent.txt`): it named 30 always-loaded tools
   // including `complete_task` while the tools array on the same request held 29 — `getFilteredTools`
   // strips `complete_task` from any agent that must not self-terminate (`surface.ts:301-309`), the
   // primary included. Prose promising a tool the primary cannot call, and a model that trusts the

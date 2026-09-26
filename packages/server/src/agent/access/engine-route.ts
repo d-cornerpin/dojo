@@ -19,11 +19,11 @@
 // safety argument. MEASURED on the owner's box at `ac945a99`, it is not true of
 // this path, and the correction belongs in the code rather than only in a report:
 //
-//     agent_id                              tool        channel    n
-//     57b52025-…  (BehaviorBot, ronin)      auto-route  imessage  152
-//     57b52025-…                            auto-route  email       7
-//     57b52025-…                            engine-ack  imessage     3
-//     kevin       (the primary)             auto-route  —           0
+//     agent         tool        channel    n
+//     a ronin bot   auto-route  imessage  152
+//     a ronin bot   auto-route  email       7
+//     a ronin bot   engine-ack  imessage     3
+//     the primary   auto-route  —           0
 //
 // Every engine-routed human delivery this box has ever made was sent by an agent
 // that holds NO channel grant, and the primary has made none. A1's snapshot read

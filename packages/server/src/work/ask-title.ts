@@ -62,7 +62,7 @@
 // T9 asked the model BEFORE the write opened and made ingest WAIT for the
 // answer under a bounded race (`ASK_TITLE_TIMEOUT_MS = 5000`, `Promise.race`).
 // That bound was measured rather than inherited: driven on the box 2026-08-03
-// through this exact path (POST /api/chat/kevin/messages, wall clock at the
+// through this exact path (POST /api/chat/the primary agent/messages, wall clock at the
 // caller, system tier = the floor model), NINE samples ran 2296 / 2577 / 2847 /
 // 3246 / 3622 / 3670 / 3727 / 4215 / 5198 ms — median 3622, max 5198. So every
 // inbound ask paid 2.3–5.2 s before its row landed. The owner read that number

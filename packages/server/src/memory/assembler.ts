@@ -1271,7 +1271,7 @@ async function assembleMessageContext(
     // normalisation WITHOUT the rest of the integrity pass. A first message that is a user
     // message whose blocks are all `tool_result` satisfies that loop and is exactly what
     // Anthropic rejects, which is 3 of the detect window's 17 day-0 divergences, all on
-    // `kelly`. `applyIntegrityPass` does the role normalisation AND strips the leading
+    // `the PM`. `applyIntegrityPass` does the role normalisation AND strips the leading
     // tool_result AND repairs the pairing AND refuses a trailing assistant — the loop it
     // replaces was a strictly weaker copy of its first clause, so it is DELETED, not kept
     // beside it. Requirement C9's "no PM bypass" is now true of the assembler as well as
@@ -1328,7 +1328,7 @@ async function assembleMessageContext(
   // TIME IT MOVES; that is the same bill as a byte changing there, paid twice.
   //
   // WHAT REPLACES IT: nothing, because the lanes render unconditionally now. That is
-  // STRICTLY MORE scaffolding than the gate ever granted, so Mike's 2026-06-06 photo-album
+  // STRICTLY MORE scaffolding than the gate ever granted, so a contact's 2026-06-06 photo-album
   // incident — the reason the post-compaction re-fire exists at all, an agent that could not
   // tell it should re-establish procedural context — is covered a fortiori rather than
   // weakened. The tokens are real and they are paid ONCE: after the first turn they are

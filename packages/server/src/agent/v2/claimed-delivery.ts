@@ -2,8 +2,8 @@
 // THE CLAIMED-DELIVERY FLOOR'S TRIGGER — PHASE-4 T4, the owner's live fixture.
 //
 // ── WHAT WENT WRONG, IN PRODUCTION, ON THE OWNER'S OWN SERVER (2026-08-01) ───────────────
-// He asked about a wedding transcript. The reply quoted it, the transcript said "told
-// Michael" (Michael was the groom), and the floor fired. Twice more after that — once when
+// He asked about a transcript. The reply quoted it, the transcript said "told <a name>",
+// and the floor fired on those two words. Twice more after that — once when
 // he pasted the steer's own text back at the agent — and every fire carried "do it NOW",
 // so the agent answered twice and re-did a delivery nobody had asked for. Three false
 // accusations from one English word.

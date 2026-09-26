@@ -142,10 +142,10 @@ async function resolveSpawnSquad(opts: {
 // UX-REPAIR ROUND 11 T43a — CAPABILITY TRUTH AT THE DELEGATION DOOR
 // ════════════════════════════════════════════════════════════════════════════
 //
-// THE INCIDENT (round-11 S5-A). BehaviorBot called `list_agents` before delegating. The door
+// THE INCIDENT (round-11 S5-A). the harness bot called `list_agents` before delegating. The door
 // answered name / status / classification / group / activity and NOTHING about what any of
-// them can DO, so it handed a WEB RESEARCH assignment to kelly — the PM, who holds no web
-// tools. She could only punt it to kevin, and the punt then satisfied her piece of the join
+// them can DO, so it handed a WEB RESEARCH assignment to the PM — the PM, who holds no web
+// tools. She could only punt it to the primary agent, and the punt then satisfied her piece of the join
 // (that half is T43b/c). The one fact the choice needed was the one fact the door withheld.
 //
 // SAME FAMILY AS T29's CHANNEL-DOOR TRUTH: the surface the agent reads AT the decision moment
@@ -154,8 +154,8 @@ async function resolveSpawnSquad(opts: {
 //
 // STEP-0 (the task's own STOP gate: "derive from the REAL tool-grant source, do not
 // hard-code; STOP if per-agent grants are not derivable") — PASSED, measured through that
-// source on the dev body 2026-08-15: Kevin 407 granted tools, Healer 242, Ticky 241,
-// BehaviorBot 240, Dreamer 168, Imaginer 156, KELLY 47 — and Kelly holds nothing from `Web`,
+// measured on a worn-in body 2026-08-15, granted-tool counts per agent: 407, 242, 241, 240,
+// 168, 156 and 47 — and the lowest of them holds nothing from `Web`,
 // `Communication`, `Gmail`, `Google Calendar` or `Google Drive / Docs / Sheets`. The
 // incident's premise is a property of the grants, and the grants are readable.
 //

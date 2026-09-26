@@ -13,7 +13,7 @@
 // ── WHY THIS IS KEYED ON DECLARED FIELDS AND NEVER ON VALUE SHAPES ──
 // The obvious redactor matches what a secret LOOKS like: `sk-...`, 32+ hex
 // chars, "password=". That is prose-keying, the disease this overhaul exists to
-// remove — it fires on a wedding transcript that happens to quote a token, and
+// remove — it fires on any transcript that happens to quote a token, and
 // it stays silent on the credential that does not match the pattern anyone
 // thought of. So the key here is the SCHEMA: a tool declares, on its own
 // definition, that a field carries credential material, and this module redacts

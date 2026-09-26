@@ -22,7 +22,7 @@
 // red is one generation later and permanent: a turn that calls no tool and merely RESTATES
 // *"it's already filed — sitting on your dashboard (report 067df9fa)"* has no such input, so it
 // bound nothing and its stamp was immune for ever. Measured on the live body, that shape is not
-// exotic — it is 5 of the 8 known false-filed stamps, including all three of BehaviorBot's
+// exotic — it is 5 of the 8 known false-filed stamps, including all three of the harness bot's
 // survivors, whose replies the round-3 record quotes verbatim.
 //
 // So the binding is the ID ITSELF, wherever a recorded row of this agent names it:
@@ -92,7 +92,7 @@ const STANDING_REPORT_STATUSES: readonly ReportStatus[] = ['awaiting_approval', 
 // Round-2 review F1: these were one statement with `(turn_number = ? OR (seq BETWEEN ? AND ?))`
 // and the plan collapsed to a scan of every message row of the agent — 18.7 ms, and 52.4 ms for
 // one `recentlyAnsweredAsks(3)`, on EVERY model call. Split, each arm keeps its index. Measured
-// again after round 3's rule change (BehaviorBot, 38,872 messages):
+// again after round 3's rule change (the harness bot, 38,872 messages):
 //   turn arm  `SEARCH m USING INDEX ix_msg_turn (agent_id=? AND turn_number>? AND <?)`  0.148 ms
 //   span arm  `SEARCH m USING INDEX idx_messages_agent_id (agent_id=? AND rowid>? …)`   0.022 ms
 //   the whole read, three asks, per model call                                          1.007 ms
@@ -113,7 +113,7 @@ const REPORTS_NAMED_IN_SPAN = `SELECT DISTINCT r.id AS id, r.status AS status
           AND m.role IN ('assistant', 'tool')`;
 
 /** How far back the turn arm reaches. ONE, and the number is measured rather than chosen: at 1
- *  it catches the no-id restatement (BehaviorBot's 83265, which called no tool and named no id
+ *  it catches the no-id restatement (the harness bot's 83265, which called no tool and named no id
  *  one turn after the work) and adds nothing else; at 2 it starts voiding *"How many centimetres
  *  are there in one metre?"*. The cheapest honest reach, and the residual it leaves is stated at
  *  `answerStillStands`. */
@@ -169,7 +169,7 @@ function agentHasWithdrawnReport(agentId: string): boolean {
  *     new turn;
  *   * the TURN arm — the kit-driven agent writes its call rows AFTER the answer row inside one
  *     turn, which is why the window deliberately reaches past the answer;
- *   * ONE TURN BACK — the restatement that names no id at all (BehaviorBot 83265: no tool call,
+ *   * ONE TURN BACK — the restatement that names no id at all (the harness bot 83265: no tool call,
  *     no id, one turn after the work that died).
  *
  * FIVE OVER-VOID SHAPES ARE MEASURED AND ACCEPTED: two asks batched into one turn void together

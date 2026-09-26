@@ -47,7 +47,7 @@
 // owner's own database (22 report rows, 16 agents holding any, and 0 non-terminal rows on the whole
 // box today):
 //
-//   widest REAL agent (BehaviorBot, the ritual's own, 5 settled)        5 rows / 1,452 bytes
+//   widest REAL agent (the harness bot, the ritual's own, 5 settled)        5 rows / 1,452 bytes
 //   every one-row agent                                                        1,014-1,136 bytes
 //   126 of the box's 138 agents                                                NOTHING AT ALL
 //   widest REALISTIC shape — 5 rows, all five states, every legend line         2,262 bytes

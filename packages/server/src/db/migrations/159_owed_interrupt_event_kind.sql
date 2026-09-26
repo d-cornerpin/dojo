@@ -4,7 +4,7 @@
 -- (`agent/v2/steps/post-call-classify/owed-interrupt.ts`) already knows which asks a running
 -- turn owes an answer to — it holds the message rows and quotes them into a re-prompt — and
 -- then keeps only the QUOTED PROSE. Settlement, three seconds later on the same turn, closed
--- one of those asks on the OTHER ask's delivery (agent 57b52025, 2026-08-10 23:01:18: seq
+-- one of those asks on the OTHER ask's delivery (a harness agent, 2026-08-10 23:01:18: seq
 -- 60569 "quick one — what's 15% of $240?" closed on delivery 6a20d864, the e-ink research
 -- bubble; the real answer landed at 23:03:25 from the next turn). Two engine mechanisms,
 -- opposite verdicts, and the ledger took the wrong one because the right one had recorded

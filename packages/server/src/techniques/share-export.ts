@@ -5,7 +5,7 @@
 // Packages a technique + its supporting files into a portable `.dojo`
 // zip that another Dojo install can import. Secrets are stripped by
 // scrub.ts and replaced with {{NEEDS_FROM_USER:LABEL}} placeholders;
-// Yoshi (trainer) does a second pass to flag any patterns the
+// the Trainer (trainer) does a second pass to flag any patterns the
 // deterministic scrubber missed and writes the README that walks the
 // importer through setup.
 
@@ -153,13 +153,13 @@ function applyScrub(entries: FileEntry[]): { entries: FileEntry[]; redactions: R
 }
 
 /**
- * Ask Yoshi (the trainer model) to:
+ * Ask the Trainer (the trainer model) to:
  *   1. Flag any remaining secret-shaped strings the regexes missed.
  *   2. Write a README.md that walks the importer through any setup
  *      steps (placeholders, manual steps, external accounts needed).
  *
  * Returns { readme, additionalRedactions }. additionalRedactions are
- * applied to the entries after Yoshi's pass.
+ * applied to the entries after the Trainer's pass.
  *
  * If the model call fails for any reason we fall back to a
  * deterministically-generated README so export still succeeds.
@@ -314,7 +314,7 @@ function buildFallbackReadme(
  *
  * The zip layout:
  *   manifest.json          — format identifier + technique meta + placeholder list
- *   README.md              — Yoshi-generated setup instructions
+ *   README.md              — the Trainer-generated setup instructions
  *   TECHNIQUE.md           — the main instructions (scrubbed)
  *   <relative-paths>...   — every other supporting file (scrubbed if text)
  */

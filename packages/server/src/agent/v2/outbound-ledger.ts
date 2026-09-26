@@ -185,7 +185,7 @@ export function mostRecentDeliveryTo(
  * The missed-reply enforcer's "you already replied" evidence was `a2a_replies` alone, and
  * `recordA2AReply` writes a row ONLY when the reply BINDS to an inbound assign message
  * (`findInboundAssignByThread`) — a binding that needs a `thread_id` the sender may omit. On
- * 2026-08-15 kevin's ANSWER to BehaviorBot was DELIVERED and left no `a2a_replies` row, so the
+ * 2026-08-15 the primary agent's ANSWER to the harness bot was DELIVERED and left no `a2a_replies` row, so the
  * enforcer told him the peer "got nothing" five seconds later and he re-sent the same answer.
  *
  * The fact was already here, in the ledger this module exists to read: a VERIFIED,

@@ -300,7 +300,7 @@ const NOT_A_TOOL_CHIP =
  * mid-turn it is the ONLY delivery in existence, so the delivery arm closes the ask on it.
  *
  * MEASURED, not reasoned about — three investigate-shaped asks driven through the real door
- * (`POST /api/chat/kevin/messages`) at the SHIPPED build `587693e`, 2026-08-09, all three
+ * (`POST /api/chat/the primary agent/messages`) at the SHIPPED build `587693e`, 2026-08-09, all three
  * marked `done` on the ack, seconds after the question arrived and tens of seconds before
  * the answer existed:
  *
@@ -360,7 +360,7 @@ const NOT_A_SUPERSEDED_BUBBLE =
  * it. So this narrowing asks a fact that is already true when the delivery lands, and it needs
  * no turn record at all.
  *
- * MEASURED THROUGH THE REAL DOOR at `ba49131`, one request, floor model, BehaviorBot:
+ * MEASURED THROUGH THE REAL DOOR at `ba49131`, one request, floor model, the harness bot:
  *   turn 4526, ask:9eaab2ba — `done` at +4.2 s on delivery a6c01865, whose message was
  *   "On it — reading both files now."; `ct0_receipt_repointed` at +12.0 s. A 7.754 s window in
  *   which `openObligations` told the MODEL, mid-turn, that it owed the person nothing.
@@ -388,7 +388,7 @@ const NOT_A_START_ACK =
  * ⚠ UX-REPAIR ROUND 6 T25 — THE EIGHTH NARROWING: A DELIVERY THE ENGINE ALREADY SAID DID NOT
  * ANSWER THIS ASK.
  *
- * THE LEDGER, agent 57b52025, 2026-08-10, one turn:
+ * THE LEDGER, a harness agent, 2026-08-10, one turn:
  *   23:00:35  "Compare the three best e-ink tablets under $400…"      → turn 4655's subject
  *   23:00:43  "quick one — what's 15% of $240?"          arrived 8 s INTO the running turn
  *   23:01:15  the RESEARCH bubble lands (delivery 6a20d864) — no math in it

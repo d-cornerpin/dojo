@@ -141,7 +141,7 @@ export const Techniques = () => {
     try {
       const result = await uploadTechniquePackage(file);
       // Route to the training mat for setup. Needs_setup techniques land
-      // in the trainer chat with the import context pre-loaded so Yoshi
+      // in the trainer chat with the import context pre-loaded so the Trainer
       // walks the user through any placeholders.
       navigate(`/techniques/${result.techniqueId}/edit`);
     } catch (err) {

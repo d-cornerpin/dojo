@@ -138,13 +138,13 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
     ) {
       // ── UX-REPAIR ROUND 13 T62 — NOT-DOING, RULED, so it is not silently re-litigated ──
       // Round-13 S5: the line this hint asks for came back with the two helpers' names
-      // SWAPPED ("Ticky's on real 3-year cost … Healer's on food quality") while the work
+      // SWAPPED ("a sub-agent's on real 3-year cost … Healer's on food quality") while the work
       // itself was assigned exactly right. Step-0 re-queried the turn record directly (turn
       // 4946, dev body): the model's own `send_to_agent` row (seq 66563) carries agent and
-      // brief ADJACENT in one object — call_00 healer/COST, call_01 ticky/FOOD QUALITY — and
+      // brief ADJACENT in one object — call_00 healer/COST, call_01 a sub-agent/FOOD QUALITY — and
       // the results (seq 66566) came back in the same order, each bound by `tool_use_id`, so
       // a positional swap is structurally impossible at that seam; the piece rows confirm
-      // healer=cost, ticky=food. The model had the truth in context, 7 seconds old, and
+      // healer=cost, a sub-agent=food. The model had the truth in context, 7 seconds old, and
       // misspoke anyway. NO structural contributor exists, so there is nothing to fix here:
       // any "fix" would be the engine reading the model's sentence and judging its content,
       // which is the standing prose-classification ban. Recorded, not forgotten.

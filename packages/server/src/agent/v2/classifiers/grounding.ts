@@ -3,7 +3,7 @@
 //
 // Catches the worst class of failure for a trusted assistant: telling the user
 // it DID something it never did. The observed case — the agent texted "Already
-// done. Sent it to <a third party> a minute ago…" with NO send_to_agent / A2A /
+// done. Sent it to <a name> a minute ago…" with NO send_to_agent / A2A /
 // message tool call anywhere in the turn. The third party never got the message;
 // the user believed they had.
 //
@@ -30,7 +30,7 @@
 //
 // The reason the paragraph above is dangerous rather than merely stale is the reason this
 // phase carries the caution at all: the owner watched this exact prose trigger fire three
-// times on the words "told Michael" quoted out of a wedding transcript, each fire ordering
+// times on the words "told <a name>" quoted out of a transcript, each fire ordering
 // "do it NOW", producing double answers and a re-done delivery. A comment still teaching
 // "high precision, cheap to detect" is a live invitation to the next writer to key an
 // honesty floor on prose. Honesty floors are RECEIPT-KEYED, never prose-keyed (research 21,

@@ -22,7 +22,7 @@
 //   MISS "Noted — the roof quote to Bob is recorded as a commitment; I'll email it once…"
 // Which is the whole argument for this module's shape: the TEXT cannot tell them apart and
 // the LEDGER can, so the text may only ever narrow and the row must fire. Research 21's
-// binding caution, and the owner's own "told Michael" incident, say the same thing from the
+// binding caution, and the owner's own "told <a name>" incident, say the same thing from the
 // other direction — honesty floors are receipt-keyed, never prose-keyed.
 //
 // ── THE TRIGGER ─────────────────────────────────────────────────────────────────────────

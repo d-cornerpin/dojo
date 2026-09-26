@@ -1433,8 +1433,8 @@ export function settlePieceWithoutResult(
 // UX-REPAIR ROUND 11 T43 leg (c) — THE JOIN EDGE FOLLOWS THE WORK
 // ════════════════════════════════════════════════════════════════════════════════
 //
-// THE INCIDENT. BehaviorBot delegated research to kelly, the PM, who holds no web tools.
-// Kelly punted it to kevin and replied with a hand-off note; `landPiece` settled her piece on
+// THE INCIDENT. the harness bot delegated research to the PM, the PM, who holds no web tools.
+// the PM punted it to the primary agent and replied with a hand-off note; `landPiece` settled her piece on
 // that note ("the delegated piece came back"), the countdown reached zero with ONE research
 // stream in hand, and the compile steer told the model the pieces were back.
 //
@@ -2008,7 +2008,7 @@ export function agedObligations(agentId: string): Obligation[] {
  * PHASE-4 T4 — THE OBLIGATION HALF OF THE CLAIMED-DELIVERY FLOOR (the owner's live fixture).
  *
  * The floor that steers a model claiming a delivery it never made was keyed on PROSE, and on
- * 2026-08-01 the owner caught it firing three times on the words "told Michael" in a wedding
+ * 2026-08-01 the owner caught it firing three times on the words "told <a name>" in a
  * transcript he had asked about — each fire ordering the agent to "do it NOW", which produced
  * double answers and a re-done delivery. Research 21's binding caution names that class
  * exactly: honesty floors are receipt-keyed, never prose-keyed.
@@ -2042,8 +2042,8 @@ export interface OwedSendObligation {
  * Every obligation this agent still owes that a delivery would discharge, newest first.
  *
  * The caller matches the claimed recipient against `counterpartyName`/`counterpartyId` through
- * the canonical identity matcher rather than by substring, so "Michael" in a transcript cannot
- * become an accusation and an ask from Michael cannot be missed because he is stored by address.
+ * the canonical identity matcher rather than by substring, so a NAME in a transcript cannot
+ * become an accusation and an ask from a real contact cannot be missed because they are stored by address.
  */
 export function owedSendObligations(agentId: string, limit = 50): OwedSendObligation[] {
   return getDb().prepare(`

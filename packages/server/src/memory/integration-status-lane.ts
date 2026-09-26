@@ -36,7 +36,7 @@
 //                     contradict a claim THE AGENT remembers making, and 16,432 of those rows
 //                     are `agent_id='system'` inbox polls firing on a timer — an unscoped MAX
 //                     would tick every 30 seconds and churn the tail with nothing the agent
-//                     did having changed. Agent-scoped on the dev body: kevin 146 google / 34
+//                     did having changed. Agent-scoped on the dev body: the primary agent 146 google / 34
 //                     microsoft. COVERAGE IS PARTIAL AND THE ERROR IS ONE-WAY: not every tool
 //                     logs a row, so this stamp can be OLDER than the true last call, never
 //                     newer. Understating freshness is safe here; overstating it is W84.

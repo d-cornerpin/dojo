@@ -303,7 +303,7 @@ async function labelsThatDidNotSurvive(
  * one on a public repository. `post.ts` always passes labels and the list is never empty — it
  * always contains `dojo-report` — so the old request was one only a collaborator on the
  * destination repository could make. The owner met a 403 live at 00:24Z on 2026-09-26: connected
- * as `dcliff9`, filing against a repository owned by `d-cornerpin`, nothing posted. So: ask with
+ * as `the owner's account`, filing against a repository owned by `d-cornerpin`, nothing posted. So: ask with
  * the labels; if that is refused on a status GitHub uses for a field it will not take, ask ONCE
  * more without them. The labels are triage convenience and the `dojo-sig:` trailer in the BODY
  * already carries the identity triage actually keys on.

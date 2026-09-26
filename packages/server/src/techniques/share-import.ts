@@ -4,7 +4,7 @@
 //
 // Accepts a .dojo.zip package produced by share-export.ts, validates
 // it, writes the contents into a new technique directory in
-// `needs_setup` state, and stages the placeholder list for Yoshi to
+// `needs_setup` state, and stages the placeholder list for the Trainer to
 // walk the user through during the training-mat session.
 
 import fs from 'node:fs';
@@ -145,7 +145,7 @@ export async function importTechnique(zipBuffer: Buffer): Promise<ImportResult> 
     throw new Error('Package is missing TECHNIQUE.md.');
   }
 
-  // ── 4. Persist the import manifest for Yoshi to read during setup ──
+  // ── 4. Persist the import manifest for the Trainer to read during setup ──
   const importManifestPath = path.join(dirPath, 'IMPORT_MANIFEST.json');
   fs.writeFileSync(importManifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
 

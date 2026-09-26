@@ -214,7 +214,7 @@ export async function runOwedInterrupt(
       // Until now the only thing that survived this block was the QUOTED PROSE inside the
       // re-prompt, which no predicate can read as evidence — so three seconds later, at the
       // same turn's finalize, settlement closed one of these very asks on the OTHER ask's
-      // delivery (agent 57b52025, 2026-08-10 23:01:18, ask seq 60569 on delivery 6a20d864).
+      // delivery (a harness agent, 2026-08-10 23:01:18, ask seq 60569 on delivery 6a20d864).
       // The subjects are now recorded BY ID on their own spine rows, which is what the
       // settlement authority's eighth narrowing reads. Written through `work/`, the spine's
       // single writer; best-effort, because a bookkeeping failure must never cost the

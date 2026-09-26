@@ -37,7 +37,7 @@ export const stoppedAgents = new Set<string>();
 // T83 — THE RUN'S OWN STOP FENCE, because `stoppedAgents` is clearable FROM OUTSIDE. Two
 // legitimate doors lift it — a fresh user message (`routes/chat.ts`) and reset-session
 // (`routes/agents.ts`) — both meaning "the NEXT run may proceed", neither able to say "…but
-// the run you stopped is still unwinding". Measured (MrMeSeeks `a504e5c9`, 2026-09-21): stop
+// the run you stopped is still unwinding". Measured (a test agent `a504e5c9`, 2026-09-21): stop
 // 04:22:42.167; reset-session lifted the flag 04:25:23.307; the stopped turn's budget
 // checkpoint then queued `turn-budget-continuation` at 04:27:10.624 unrefused and the chain
 // resumed on turn 73. SELF-CLEANING BY CONSTRUCTION: raised only when `activeRuns` says a run
@@ -91,7 +91,7 @@ export function queueSelfWake(agentId: string, reason: string): boolean {
 // T83 — THE ABORT REGISTRY: A SET PER AGENT, BEHIND ONE DOOR.
 //
 // It was `Map<string, AbortController>` — ONE controller per agent, written and deleted by key
-// from three files. Two measured facts (dev log, MrMeSeeks `a504e5c9`, 2026-09-21) say that
+// from three files. Two measured facts (dev log, a test agent `a504e5c9`, 2026-09-21) say that
 // shape cannot carry a stop:
 //
 //   1. ONLY ONE CALL SITE EVER REGISTERED — `v2/steps/call-llm/model-call.ts`, for the TURN's

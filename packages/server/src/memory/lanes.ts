@@ -366,7 +366,7 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
   // W81: `chars.pad` is NEW, and it is the one term the scratchpad's move added. The pad was
   // unbounded — the lane declared `maxTokens: Infinity` and the agent writes it itself — and
   // an unbounded lane cannot declare the reserve a post-budget lane must have. 4,000 chars is
-  // ~4x the largest pad on the worn-in dev body (kevin, 1,046) and the block TRUNCATES rather
+  // ~4x the largest pad on the worn-in dev body (the primary agent, 1,046) and the block TRUNCATES rather
   // than drops, so the cap costs the tail of a runaway pad and never the pad itself.
   'lane.scratchpad': { chars: { pad: 4000 } },
 
@@ -541,7 +541,7 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       + 'LANE_LIMITS[\'lane.scratchpad\'].chars.pad = 4,000 — NEW at W81 for the reason '
       + '`chars.title` is new next door: the pad was unbounded, and an unbounded lane cannot '
       + 'declare a reserve. 4,000 chars is ~4x the largest pad on the worn-in dev body '
-      + '(kevin, 1,046 chars) and the block truncates rather than drops, so the cap costs the '
+      + '(the primary agent, 1,046 chars) and the block truncates rather than drops, so the cap costs the '
       + 'tail of a runaway pad and never the pad itself. '
       + 'WHY IT IS A RESERVE AT ALL: `scratchpad_set`, `scratchpad_clear` and `reset_session` '
       + 'all rewrite `agents.config.scratchpad` MID-CONVERSATION, and the block sat at '

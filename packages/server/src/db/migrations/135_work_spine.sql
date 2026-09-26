@@ -258,7 +258,7 @@ WHERE a.agent_id IS NOT NULL;
 --
 -- `projects` has NO agent column at all, so `work.agent_id` is resolved: first task's
 -- assignee, else `created_by` (which on both measured bodies is an agent id for all but a
--- handful of rows: 'user' x2 and 'kevin'/'dreamer', which ARE agent ids). Where it lands on
+-- handful of rows: 'user' x2 and '<agent-id>'/'dreamer', which ARE agent ids). Where it lands on
 -- a literal 'user', the row is an orphan by construction rather than a lie.
 --
 -- Status vocabulary MEASURED on the lived-in reference body, not taken from the code's

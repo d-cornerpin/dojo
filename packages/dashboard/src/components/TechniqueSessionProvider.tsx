@@ -12,7 +12,7 @@ import { useWebSocket } from '../hooks/useWebSocket';
  *
  * The owner's vision: building or editing a technique should NOT bounce the user to
  * a separate dark page. Instead the persistent dojo3 chat BECOMES the trainer
- * (Ticky / Yoshi) conversation — it slides left — and the Technique Mat (the
+ * (a sub-agent / the Trainer) conversation — it slides left — and the Technique Mat (the
  * form) docks on the right. This provider owns everything trainer-specific so
  * the persistent <Chat> only has to (a) target the trainer agent while a
  * session is active, (b) prepend build/edit context to the first outgoing

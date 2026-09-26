@@ -18,7 +18,7 @@
 //      explicitly says images larger than 1568 px on the long side
 //      get server-side resized anyway, so doing it on our end loses
 //      nothing for them and saves tokens on every subsequent retrieval.
-//      Mike's 2026-06-06 vision-delegate incident traced back to this.
+//      a contact's 2026-06-06 vision-delegate incident traced back to this.
 //
 // Strategy: probe dimensions cheaply with `sips -g`. If either the
 // byte budget is overshot OR the longest edge exceeds 1568 px, resize

@@ -387,7 +387,7 @@ export function executeUpdateTechnique(agentId: string, _agentName: string, clas
 }
 
 // ── technique_set_placeholder ──
-// Used during import setup. After Yoshi asks the user for a secret/value,
+// Used during import setup. After the Trainer asks the user for a secret/value,
 // he calls this to write it into the technique files in place of the
 // {{NEEDS_FROM_USER:LABEL}} marker.
 
@@ -438,7 +438,7 @@ export function executeTechniqueSetPlaceholder(agentId: string, classification: 
 }
 
 // ── technique_finalize ──
-// Used during import setup. Once every placeholder is filled Yoshi calls
+// Used during import setup. Once every placeholder is filled the Trainer calls
 // this to flip the technique out of needs_setup into draft state and
 // remove the staged import manifest.
 

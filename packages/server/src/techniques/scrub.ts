@@ -4,7 +4,7 @@
 //
 // Deterministic pass that replaces recognized secret patterns in technique
 // files with {{NEEDS_FROM_USER:LABEL}} placeholders before the package is
-// shipped to another Dojo. Followed by a Trainer (Yoshi) review pass that
+// shipped to another Dojo. Followed by a Trainer (the Trainer) review pass that
 // catches anything the regexes miss and writes the README.
 
 export interface Redaction {
@@ -210,7 +210,7 @@ export function scrubFiles(files: Array<{ path: string; content: string }>): Scr
 
 /**
  * Apply a placeholder substitution map back to a previously-scrubbed
- * file. Used on the import side once Yoshi has collected values from
+ * file. Used on the import side once the Trainer has collected values from
  * the user.
  */
 export function applyPlaceholders(content: string, values: Record<string, string>): string {

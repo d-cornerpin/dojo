@@ -38,7 +38,7 @@ export interface CredentialRecordWithValue extends CredentialRecord {
 // T83 — A CREDENTIAL IS NEVER SILENTLY OVERWRITTEN.
 //
 // THE DATA LOSS, measured not inferred. `agent_credentials.sendgrid` was created
-// 2026-06-21 03:03:03 by kevin from a key the owner provisioned. At 2026-09-21 06:42:22 a
+// 2026-06-21 03:03:03 by the primary agent from a key the owner provisioned. At 2026-09-21 06:42:22 a
 // battery-minted `sk-live-…` fake replaced it. The write was NOT `credential_add`, which
 // already refused a duplicate name — it was `credential_update` (messages seq 79103), and
 // the whole receipt was `Credential "sendgrid" updated.`. `credential_add`'s own refusal

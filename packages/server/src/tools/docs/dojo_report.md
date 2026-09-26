@@ -102,7 +102,7 @@ Describe the SHAPE, never the content:
 
 - Good: *"A tool call was refused by a permission gate the engine had just told me to use."*
 - Good: *"A 40 KB argument was rejected with no size named in the refusal."*
-- Bad: *"I couldn't read /Users/dave/taxes.pdf."* — that is a path, and it is the user's.
+- Bad: *"I couldn't read /Users/<you>/taxes.pdf."* — that is a path, and it is the user's.
 - Bad: *"The user asked me to email Sarah about the settlement and..."* — that is their content.
 
 ## The attachment you do not write
