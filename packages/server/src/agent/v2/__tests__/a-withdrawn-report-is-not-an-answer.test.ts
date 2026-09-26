@@ -31,19 +31,28 @@
 // answered). So suppression may not be weakened by one byte for anything BUT a withdrawn-report
 // answer. §3 is that clause, and it is what the over-widening mutant fails.
 //
-// ── MUTATION RECORD. Each planted in `answered-edge.ts`, measured, then reverted by restoring
-// the byte-identical file (sha256 `60469cc6` re-asserted after every one):
+// ── WHAT EACH SECTION HOLDS ─────────────────────────────────────────────────────────────────
+//   §1 the Arm B shape at unit level, one clause per carrier   §5 one owner, and the window's shape
+//   §2 the per-status table, three reads apiece                §6 the fail-open: LOUD, and open
+//   §3 what must not move (the anti-repetition half)           §7 the accepted collateral, recorded
+//   §4 the fifth carrier on its own
 //
-//   M1  predicate dropped from read 1  (`recentlyAnsweredAsks`)      8 F / 18 P  §1 §2 §3 §5
-//   M2  predicate dropped from read 2  (`answeredPairsForMessages`)  6 F / 20 P  §1 §2 §5
-//   M3  predicate dropped from carrier 5 (`recordedAnswer…`)         7 F / 19 P  §1 §2 §4 §5
-//   M4  predicate INVERTED                                          10 F / 16 P  §1 §2 §3 §4
-//   M5  predicate OVER-WIDENED (voids standing rows too)             8 F / 18 P  §3 (8 of 9)
+// ── MUTATION RECORD. Each planted in `answered-edge.ts`, measured, then reverted by restoring
+// the byte-identical file (sha256 `22215f26` re-asserted after every one):
+//
+//   M1  predicate dropped from read 1  (`recentlyAnsweredAsks`)      11 F / 20 P  §1 §2 §3 §5 §6 §7
+//   M2  predicate dropped from read 2  (`answeredPairsForMessages`)   6 F / 25 P  §1 §2 §5
+//   M3  predicate dropped from carrier 5 (`recordedAnswer…`)          7 F / 24 P  §1 §2 §4 §5
+//   M4  predicate INVERTED                                           13 F / 18 P  §1 §2 §3 §4 §6 §7
+//   M5  predicate OVER-WIDENED (voids standing rows too)              9 F / 22 P  §3 (8 of 9) §6
+//   M6  the fail-open's ERROR log deleted                             1 F / 30 P  §6
+//   M7  the fail-open flipped to fail-CLOSED                          1 F / 30 P  §6
 //
 // M4 leaves §2's three STANDING rows green, and that is the reason §3 arms the cheap gate in its
 // own `beforeEach`: with no withdrawn report on the agent the predicate short-circuits, so an
 // inversion is invisible to any clause that does not put one there. M5 is the only mutant §1 and
-// §2 cannot see at all — it is what the unchanged-behaviour clauses exist for.
+// §2 cannot see at all — it is what the unchanged-behaviour clauses exist for. M6 and M7 are the
+// review's F4: before §6 existed, flipping the fail-open left 111 clauses green.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -53,6 +62,29 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
+
+/** The logger, captured. §6 asserts a line the product MUST say out loud; a spy is the only way to
+ *  hold "and it shouts" as a clause rather than as a hope. */
+const h = vi.hoisted(() => {
+  const calls = {
+    debug: [] as unknown[][], info: [] as unknown[][],
+    warn: [] as unknown[][], error: [] as unknown[][],
+  };
+  return {
+    calls,
+    logger: {
+      debug: (...a: unknown[]) => { calls.debug.push(a); },
+      info: (...a: unknown[]) => { calls.info.push(a); },
+      warn: (...a: unknown[]) => { calls.warn.push(a); },
+      error: (...a: unknown[]) => { calls.error.push(a); },
+    },
+  };
+});
+
+vi.mock('../../../logger.js', async (orig) => ({
+  ...(await orig<typeof import('../../../logger.js')>()),
+  createLogger: () => h.logger,
+}));
 
 vi.mock('../../../db/connection.js', async () => {
   const os = await import('node:os');
@@ -129,7 +161,7 @@ function seedMessage(p: {
  *  agents: `[{"type":"tool_use","name":"dojo_report","input":{"phase":…,"report_id":…}}]`). */
 function seedToolCall(p: {
   id: string; turnNumber: number; phase: string; reportId: string | null;
-  tool?: string; agentId?: string;
+  tool?: string; agentId?: string; conversationId?: string;
 }): string {
   const input: Record<string, unknown> = { phase: p.phase };
   if (p.reportId !== null) input.report_id = p.reportId;
@@ -140,7 +172,7 @@ function seedToolCall(p: {
     `INSERT INTO messages (id, agent_id, conversation_id, role, content, turn_number, created_at,
                            display_kind)
      VALUES (?, ?, ?, 'assistant', ?, ?, ?, 'tool-turn')`,
-  ).run(p.id, p.agentId ?? AGENT, CONV, content, p.turnNumber, nextAt());
+  ).run(p.id, p.agentId ?? AGENT, p.conversationId ?? CONV, content, p.turnNumber, nextAt());
   return p.id;
 }
 
@@ -157,7 +189,9 @@ function seedReport(id: string, status: string, agentId = AGENT): string {
 interface Episode { askId: string; answerId: string }
 
 /**
- * ONE ANSWERED ASK, with the report work recorded inside the episode that answered it.
+ * ONE ANSWERED ASK, with the report work recorded inside the WINDOW the stamp spans — raw turn
+ * equality plus the ask→answer `seq` range, which is all the predicate claims (§7 holds the
+ * collateral that phrasing admits; "the answering episode" would overstate it).
  *
  * `shape` is the measured difference between the two real arms, and both are seeded here:
  *   'same-turn'  — the kit-driven agent (BehaviorBot, six asks): the calls and the answer share
@@ -287,11 +321,19 @@ describe('§1 the ARM B shape: cancel the card, and the stamp stops being eviden
     // "Older messages retrieved by meaning" — that is the recall lane's ordinary job and
     // touching its retrieval is out of this task's blast radius. What it loses is the part that
     // made it a false RECORD: the engine's "engine record … do NOT re-run the work" framing.
+    //
+    // ⚠ THE POSITIVE HALF IS THE CLAUSE (review F6). Written negative-only, this would have stayed
+    // green if the lane rendered NOTHING AT ALL — which would make the title's "may still be
+    // recalled" a claim the test never checked. It now asserts the sentence IS there, under the
+    // retrieval head, so the day the lane stops emitting it this clause fails and the disclosure in
+    // the fix report gets corrected instead of quietly rotting.
     const rid = seedReport('rep-residual', 'awaiting_approval');
     const e = seedAnsweredReportAsk({ key: 'b3', reportIds: [rid] });
     db().prepare("UPDATE dojo_reports SET status = 'cancelled' WHERE id = ?").run(rid);
 
     const lane = laneText(renderRecallLane(laneCtx({ msgHits: [{ sourceId: e.answerId }] })));
+    expect(lane).toContain('Older messages retrieved by meaning');
+    expect(lane).toContain('sitting on your dashboard as a preview card');
     expect(lane).not.toContain('Do NOT re-run the work');
     expect(lane).not.toContain('ALREADY ANSWERED');
   });
@@ -540,13 +582,156 @@ describe('§5 the predicate has one home and every read applies it', () => {
     }
   });
 
+  it('each arm of the window is its OWN statement, and neither is assembled at runtime', () => {
+    // Review F1: the two arms were one statement with `(turn_number = ? OR (seq BETWEEN …))`, and
+    // an OR across two indexes gets neither — 18.7 ms per call on the ritual's own agent, 52.4 ms
+    // for one `recentlyAnsweredAsks(3)`, on EVERY model call. Split, each arm is indexed (0.023 /
+    // 0.022 ms; the whole read 0.253 ms). This clause holds the SHAPE that makes that true, because
+    // the timings themselves are not assertable in a unit test: two literal statements, each with
+    // exactly one row filter, and no `${}` in either — the SQL gate prepares literals against the
+    // migrated schema and a builder would put both beyond its reach.
+    const edge = codeOf('agent/v2/answered-edge.ts');
+    expect(edge).toContain('AND m.turn_number = ?');
+    expect(edge).toContain('AND m.seq >= ? AND m.seq <= ?');
+    expect(edge, 'the OR is what defeated both indexes; it must not come back')
+      .not.toMatch(/m\.turn_number = \?\s*OR/);
+    expect(edge.match(/SELECT DISTINCT \(SELECT status FROM dojo_reports/g) ?? []).toHaveLength(2);
+    for (const stmt of edge.split('const REPORT_STATUSES_IN_').slice(1)) {
+      expect(stmt.split('`')[1] ?? '', 'a runtime-assembled arm is invisible to the SQL gate')
+        .not.toContain('${');
+    }
+  });
+
   it('the predicate reads ROWS, never prose: no answer-shaped text test anywhere near it', () => {
     const edge = codeOf('agent/v2/answered-edge.ts');
     for (const smell of ['preview card', 'dashboard as a', 'looksLikeAnswer', 'CLOSEOUT']) {
       expect(edge).not.toContain(smell);
     }
     // The only text pattern it may carry is the tool_use ENVELOPE prefilter, which
-    // `substantiveReplySince` above it already used before this task.
-    expect(edge.match(/\[\{%/g) ?? []).toHaveLength(2);
+    // `substantiveReplySince` above it already used before this task: once there (a NOT LIKE), and
+    // once in each of the window's two arms — which is the count that changes if a third arm, or a
+    // prose match wearing the same shape, is ever added.
+    expect(edge.match(/\[\{%/g) ?? []).toHaveLength(3);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §6 — THE INSTRUMENT FAILING IS LOUD, AND IT FAILS OPEN (review F4).
+//
+// `answerStillStands` catches its own throw and returns `true` — the ONE place this fix silently
+// reverts to the pre-fix behaviour, and unpinned it left 111 clauses green when the reviewer flipped
+// it. The direction is ADJUDICATED and stays `true`: a throw is the INSTRUMENT failing, not
+// ambiguity about whether the person was answered, and failing closed would void EVERY answered ask
+// on the agent (all three reads filter through this), which re-opens the owner's repeat-yourself
+// incident across the board on one malformed row. What was missing is that it said nothing. Both
+// halves are held below, and both are mutant-proven.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** Make the WINDOW queries — and only those — throw, so the predicate's own catch is exercised.
+ *  Everything else on the connection passes straight through, including the gate and the answer-row
+ *  resolve, so the failure lands exactly where the clause says it does. */
+function breakTheWindowQuery(): () => void {
+  const real = db();
+  mockDb.current = new Proxy(real, {
+    get(target, prop, recv) {
+      if (prop === 'prepare') {
+        return (sql: string, ...rest: unknown[]) => {
+          if (sql.includes('json_each')) throw new Error('no such function: json_each');
+          return (target.prepare as (s: string, ...r: unknown[]) => unknown)(sql, ...rest);
+        };
+      }
+      const v = Reflect.get(target, prop, recv);
+      return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+    },
+  }) as Database.Database;
+  return () => { mockDb.current = real; };
+}
+
+describe('§6 the instrument failing is LOUD, and it fails OPEN', () => {
+  it('a throw in the window query keeps every answer listed AND shouts at error level', () => {
+    const rid = seedReport('rep-loud', 'cancelled');
+    const plain = seedPlainAnsweredAsk('loud', 'what time is the call?', 'Three o\'clock.');
+    const e = seedAnsweredReportAsk({ key: 'loud2', reportIds: [rid] });
+    // Positive control on the fixture: with the instrument WORKING, the report ask is voided and
+    // the ordinary ask is not. A green below cannot come from nothing having been withdrawn.
+    expect(listedAskIds()).toEqual([plain.askId]);
+
+    h.calls.error.length = 0;
+    const restore = breakTheWindowQuery();
+    try {
+      // FAILS OPEN, both halves of what that means: the withdrawn ask is listed again (the pre-fix
+      // behaviour, and the cost of this direction) AND the ORDINARY ask keeps its anti-repetition,
+      // which is the reason the direction is `true` rather than `false`.
+      expect(listedAskIds()).toEqual([e.askId, plain.askId]);
+      expect(recordedAnswerInConversation(AGENT, CONV)).toBe(THE_CLAIM);
+    } finally {
+      restore();
+    }
+
+    // …and it is on the record at ERROR, naming the ask it could not check. A silent revert to the
+    // behaviour this task exists to remove is how the defect comes back.
+    expect(h.calls.error.length, 'the fail-open must not be silent').toBeGreaterThan(0);
+    const [message, meta] = h.calls.error[0] as [string, Record<string, unknown>];
+    expect(message).toContain('withdrawn-report check could not run');
+    expect(message).toContain('STANDS');
+    expect(meta).toMatchObject({ answerMessageId: e.answerId });
+    expect(String(meta.error)).toContain('json_each');
+    // The word every operator greps for. It is an ERROR, not a warn and not a debug.
+    expect(h.calls.warn).toHaveLength(0);
+  });
+
+  it('the gate\'s own catch is the same direction, and a DB with no report table changes nothing', () => {
+    const e = seedPlainAnsweredAsk('nogate', 'did the invoice go out?', 'Yes, this morning.');
+    db().prepare('DROP TABLE dojo_reports').run();
+    // No report table means no reports, which is the same answer as "no withdrawn report" — the
+    // pre-fix behaviour, reached without an error line because nothing failed: there is nothing
+    // to check on that box.
+    h.calls.error.length = 0;
+    expect(listedAskIds()).toEqual([e.askId]);
+    expect(h.calls.error).toHaveLength(0);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §7 — THE ACCEPTED COLLATERAL, WRITTEN DOWN (review F3 / F7).
+//
+// The window is RAW CONTAINMENT, not a binding to the ask, and the review measured four over-void
+// shapes it admits. Two are held here so the behaviour is RECORDED rather than merely tolerated: a
+// future task that narrows the window (the `dojo_reports.ask_id` column the investigation named)
+// turns these red, which is the moment to delete them — they are characterization, and they say so.
+//
+// WHY THIS IS THE ACCEPTED DIRECTION, measured over the live body rather than assumed: 8 of 4,240
+// answered asks on gate-armed agents are voided, and ALL EIGHT are genuine report asks — zero
+// collateral in production today. The enabling fan-out is 89 of 4,511 stamped asks (~2%), and it
+// additionally needs that batch to hold report work that later dies. An over-void costs one
+// unrelated ask its anti-repetition — the owner may hear an answer twice, which 2026-08-05 chooses
+// out loud — while the under-void direction IS the round-2 red.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§7 characterization: the over-void shapes the window admits', () => {
+  it('two asks stamped by ONE turn are voided together (the batch shape)', () => {
+    const rid = seedReport('rep-batch', 'cancelled');
+    const e = seedAnsweredReportAsk({ key: 'batch', reportIds: [rid], shape: 'same-turn', turn: 7 });
+    // A second ask the SAME turn answered — `setAnswerMessageId` stamps every row it served.
+    const other = seedMessage({ id: 'ask-batch-2', role: 'user', content: 'and what is the weather?' });
+    db().prepare('UPDATE messages SET answer_message_id = ?, served_by_turn = 7 WHERE id = ?')
+      .run(e.answerId, other);
+
+    expect(listedAskIds(), 'accepted collateral: the batch partner loses its stamp too').toEqual([]);
+  });
+
+  it('a report call in ANOTHER conversation inside the seq span voids a dashboard ask', () => {
+    const rid = seedReport('rep-elsewhere', 'cancelled');
+    const askId = seedMessage({ id: 'ask-span', role: 'user', content: 'can you check the roof quote?' });
+    seedToolCall({
+      id: 'call-elsewhere', turnNumber: 44, phase: 'submit', reportId: rid,
+      conversationId: 'conv-somewhere-else',
+    });
+    const answerId = seedMessage({ id: 'ans-span', role: 'assistant', content: 'It was 2,400.', turnNumber: 45 });
+    db().prepare('UPDATE messages SET answer_message_id = ?, served_by_turn = 45 WHERE id = ?')
+      .run(answerId, askId);
+
+    expect(listedAskIds(), 'accepted collateral: the span arm is agent-scoped, not conversation-scoped')
+      .toEqual([]);
   });
 });
