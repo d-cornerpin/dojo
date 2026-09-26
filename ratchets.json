@@ -5475,6 +5475,27 @@
       "to": 232,
       "by": "DOJO-REPORT round-3 fix (2026-09-26) - the withdrawal predicate splits off onto its own seam",
       "why": "NOT A RAISE IN EITHER DIRECTION THAT NEEDS ARGUING - a LOWER and a new pin, and the reason is the second raise's own closing sentence: 'a third raise on this file should be treated as a signal to split the answered edge along a real seam, not to argue again.' Round 3's red needed a wider binding (a restatement that only NAMES a report was immune for ever), so instead of a third ceiling the withdrawal predicate LEFT: `agent/v2/answered-edge.ts` 1004 -> 818 (-186, tightened to its measured count) and the predicate now lives in `report/withdrawn-claim.ts` (232, new pin, under the 400 new-file cap and pinned anyway because an unpinned file at 232 is 8 lines under the growth detector's 240-line trigger and nothing else would watch it). THE SEAM IS REAL, not a line-count dodge: the edge's own header declares it the ONE place this tree answers 'has the person heard from us'; the predicate answers 'is the thing we told them about still there?' out of `dojo_reports`, whose vocabulary lives next door in `report/store.ts` - two questions, two homes, and the edge now imports the question and keeps no status literal and no `dojo_reports` SQL (pinned by a clause). Net across the two files: +46 lines for a binding that goes from 3 of 8 known false-filed stamps to 8 of 8, measured over the live corpus at 13 voided of 4,242 answered asks (3.06 per 1000) with every one of the 13 a genuine report ask and zero non-report collateral. Both files may only shrink from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts",
+      "from": 385,
+      "to": 407,
+      "by": "DOJO-REPORT round-4 fix (2026-09-26) - the report-state lane needs an injection site",
+      "why": "385 -> 407 (+22; numstat 22/0 - 18 comment, 4 code). A NEW LANE HAS TO BE INJECTED SOMEWHERE, and this file is the tail assembler: the 4 code lines are the same four the `engine.open-work` block beside them has had since 2026-07-16 - build, push-if-non-null, catch, warn - plus the import. THE 18 COMMENT LINES ARE ROUND 4's FINDING, and it is the finding three rounds of suppression missed: rounds 2-3 silenced the engine's re-answer RECORD about a withdrawn report card, and round 4 proved on three fresh agents that with every one of those blocks PROVABLY ABSENT from the literal messages array the model still said 'it's sitting on your dashboard as a preview card under ID 0f6f237c-...' - reading its OWN earlier reply out of the fresh tail, true when written, while nothing in the engine ever said what became of the card (`listOpenReports` had exactly one consumer, the dashboard's HTTP route). A reader who deletes those lines deletes the reason the lane exists and will 'simplify' it back out as duplication of the withdrawal predicate, which is a DIFFERENT mechanism at a DIFFERENT layer (that one refuses to assert; this one contradicts). The position argument is in them too and it is load-bearing for the cache-prefix law: the push sits beside `engine.open-commitments`, past `volatileFrom`, because both are CURRENT STATE rather than retrieval - moving it ahead of `msg.turn-context` would re-bill the cached prefix on every turn, which is the one thing this tree's non-negotiable #10 forbids. THE ALTERNATIVES WERE MEASURED. (a) NO COMMENT, just the four lines: REFUSED - every other injection in this file carries its incident, and this is the fourth round of the same defect. (b) PUT THE LANE INSIDE THE RECALL LANE beside the commitments snapshot it copies: REFUSED and it would have been a defect - `buildRecallLaneMessage` returns EMPTY_BLOCKS when the turn's query text is 10 characters or shorter, so 'ok?' as a re-ask would have silently dropped the report record, and the recall lane needs an embedding this read does not. (c) A PROMPT-REGISTRY ENTRY instead of a direct push: REFUSED for this round - the three engine blocks beside it are all registry-exempt with the same dated marker and the same stated migration, and adding a registry entry would touch the prefix machinery this change is forbidden to move. From 407 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/lanes.ts",
+      "from": 1194,
+      "to": 1201,
+      "by": "DOJO-REPORT round-4 fix (2026-09-26) - the new lane is declared, therefore protected",
+      "why": "1194 -> 1201 (+7; numstat 7/0 - 6 comment, 1 code). THE CODE IS ONE LINE: `'engine.report-state': 'lane.loop-tail'` in `POST_BUDGET_ENTRY_LANE`. It is not optional and it is not bookkeeping - `memory/__tests__/assembly-repair-lane-census.test.ts` requires the set of `engine.*` literals actually pushed by the engine and the set declared in this table to be IDENTICAL, so an undeclared lane fails that census, and `isProtectedLaneId` reads this table to decide what the priority repair may drop. An undeclared lane would be droppable filler; a withdrawn card's true state is the correction the model needs. The 6 comment lines say both of those things at the entry, because the next reader to add a lane needs to know that declaring it here is what makes it protected. From 1201 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/report/state-lane.ts",
+      "from": null,
+      "to": 217,
+      "by": "DOJO-REPORT round-4 fix (2026-09-26) - the engine finally says what happened to the card",
+      "why": "NOT A RAISE - a new file at 217, under `maxNewFileLines` (400), pinned deliberately because at 217 it is 23 lines under the growth detector's 240-line trigger for unlisted files and nothing else would watch it. It is the ROUND-4 fix: a bounded, engine-authored view of this agent's own recent `dojo_reports` rows, so a stale claim in the agent's own conversation history is contradicted by a fresher engine record it can see. Modelled structurally on `engine.open-commitments` (the tree's existing answer to this class: a snapshot that says in words that it supersedes earlier mentions). Bounds measured by rendering it against a copy of the owner's own database: 7 days, 5 rows, the busiest agent 1,397 bytes, one-row agents 969-1,081, and 126 of the box's 138 agents render NOTHING because empty is ABSENT. Read-only over report state - no status writer, so the consent census is untouched. From 217 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -5534,6 +5555,7 @@
     "packages/server/src/gateway/routes/reports.ts": 300,
     "packages/server/src/github/issues.ts": 415,
     "packages/server/src/providers/anthropic-sdk.ts": 516,
+    "packages/server/src/report/state-lane.ts": 217,
     "packages/server/src/report/store.ts": 300,
     "packages/server/src/report/withdrawn-claim.ts": 232,
     "packages/server/src/services/ollama-lock.ts": 448,
@@ -5576,7 +5598,7 @@
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 246,
     "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 435,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
-    "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 385,
+    "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 407,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 165,
     "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 225,
     "packages/server/src/agent/v2/steps/execute/index.ts": 295,
@@ -5667,7 +5689,7 @@
     "packages/server/src/memory/budget.ts": 573,
     "packages/server/src/memory/compaction.ts": 1613,
     "packages/server/src/memory/deliveries-lane.ts": 257,
-    "packages/server/src/memory/lanes.ts": 1194,
+    "packages/server/src/memory/lanes.ts": 1201,
     "packages/server/src/memory/message-store.ts": 1153,
     "packages/server/src/memory/recall-lane.ts": 901,
     "packages/server/src/memory/recall.ts": 510,
