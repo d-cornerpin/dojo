@@ -239,16 +239,35 @@ const ALLOWED_CONSENT_CALLERS: readonly string[] = [
   'github/__tests__/a-label-github-silently-dropped-is-measured-and-said.test.ts',
 ];
 
-/** PRONG C's exact one-hop pins. Adding an import to either file fails this file. */
+/** PRONG C's exact one-hop pins. Adding an import to either file fails this file.
+ *
+ * ── THREE EDGES MOVED IN THE RITUAL v3.2.0 ROUND-1 FIX ROUND, AND HERE IS THE READING ──
+ * The size fix split two files at the growth gate's line, so three specifiers changed. Every
+ * one is a LOCAL module in this feature's own directory, and the property this census exists
+ * for — no new way OUT — is strengthened rather than loosened by all three:
+ *
+ *  · `+ ../../../report/bounds.js` (handler) and `+ ./bounds.js` (gather): the character
+ *    budgets and one pure function over an already-collected document. The file imports
+ *    NOTHING — no clock, no database, no network — so it adds no edge of its own to either
+ *    closure. It exists because `window.ts` could not hold F1 and F2 and stay under 240 lines.
+ *  · `+ ./report-prose.js` (handler): the words the tool says, moved out of `cat/report.ts`
+ *    on the seam the fix report named. `the-report-tool-cannot-post.test.ts` now reads BOTH
+ *    files for the five forbidden references, so prose left the file and not the census.
+ *  · `+ ./log-slice.js` and `− ../logger.js` (gather): the seventh collector — the log read,
+ *    its window filter and the rule that stops a report re-swallowing the last report's
+ *    payload. `gather.ts` no longer imports the logger AT ALL, which is a narrowing: the
+ *    one module that can read back what this feature wrote is now a single named door.
+ */
 const HANDLER_IMPORTS: readonly string[] = [
-  '../../../gateway/routes/update.js', '../../../gateway/ws.js', '../../../report/bundle.js',
-  '../../../report/gather.js', '../../../report/signature.js', '../../../report/store.js',
-  '../../../report/telemetry-build.js', '../../../report/window.js', '../handler.js',
+  '../../../gateway/routes/update.js', '../../../gateway/ws.js', '../../../report/bounds.js',
+  '../../../report/bundle.js', '../../../report/gather.js', '../../../report/signature.js',
+  '../../../report/store.js', '../../../report/telemetry-build.js', '../../../report/window.js',
+  '../handler.js', './report-prose.js',
 ];
 const GATHER_IMPORTS: readonly string[] = [
-  '../credentials/secret-values.js', '../gateway/routes/update.js', '../logger.js',
-  '../memory/message-store.js', './arg-shape.js', './collect.js', './signature.js',
-  './telemetry-build.js', './window.js',
+  '../credentials/secret-values.js', '../gateway/routes/update.js',
+  '../memory/message-store.js', './arg-shape.js', './bounds.js', './collect.js',
+  './log-slice.js', './signature.js', './telemetry-build.js', './window.js',
 ];
 
 /**

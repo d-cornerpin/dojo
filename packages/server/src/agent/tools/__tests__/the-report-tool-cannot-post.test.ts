@@ -38,8 +38,17 @@ import { MOST_RESTRICTIVE_GRANTS } from '@dojo/shared';
 
 const DEF = toolDefinitions.find(d => d.name === 'dojo_report');
 
+/**
+ * THE HANDLER'S OWN SOURCE — BOTH FILES OF IT (ritual v3.2.0 round-1 fix round).
+ *
+ * The words the tool says moved to `cat/report-prose.ts` when the size fix pushed `report.ts`
+ * past the growth gate's line. A structural claim read off ONE of two files is a claim with a
+ * hole in it exactly where the split is, so the census reads the pair and concatenates them:
+ * whatever the handler is made of, none of it may name a network module or an approval door.
+ */
+const HANDLER_FILES = ['report.ts', 'report-prose.ts'] as const;
 const handlerSrc = (): string =>
-  fs.readFileSync(path.join(__dirname, '..', 'cat', 'report.ts'), 'utf8');
+  HANDLER_FILES.map(f => fs.readFileSync(path.join(__dirname, '..', 'cat', f), 'utf8')).join('\n');
 
 describe('the tool exists, is default-granted, and rides load_tool_docs', () => {
   it('is declared, has a handler, and is last in the array (append-only)', () => {
