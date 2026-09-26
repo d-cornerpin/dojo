@@ -204,6 +204,12 @@ describe('GitHub answers 201 and keeps none of the labels', () => {
     expect(note, 'the note does not say the report posted').toMatch(/posted/i);
     expect(note, 'the note does not name write access as GitHub\'s documented reason')
       .toMatch(/write access/i);
+    // THE POSITIVE CONTROL FOR F3's CLAUSE BELOW. A full drop is the ONE case GitHub's documented
+    // rule explains, so this arm must carry the citation. Without this assertion, "delete the
+    // explanation from both branches" would satisfy the partial-drop clause and quietly take away
+    // the only lead the owner has on the case that really is a permission.
+    expect(note, 'the full drop stopped citing GitHub\'s own rule for it')
+      .toContain('are silently dropped otherwise');
     expect(note, 'the note does not point triage at the trailer').toContain('dojo-sig');
   });
 
@@ -232,12 +238,53 @@ describe('GitHub answers 201 and keeps none of the labels', () => {
   it('a PARTIAL drop names only what is actually missing', async () => {
     // The property is a DIFFERENCE, not a boolean. A version-filtered triage view loses this
     // report while a `dojo-report` sweep still finds it, and the sentence must say which.
+    //
+    // ⚠ REWRITTEN BY THE FIX ROUND (F2), BECAUSE THE OLD DISCRIMINATING ASSERTION COULD NOT FAIL.
+    // It was `.not.toMatch(/dropped[^.]*\bdojo-report\b/)` — the label name AFTER the word
+    // "dropped" — and the sentence prints the dropped list BEFORE that word, so no label name ever
+    // follows it before the next full stop. The pattern matched neither an honest note nor a
+    // fabricated one, and the mutant `dropped = kept.length < sent.length ? sent : []` ("something
+    // is missing, so blame them all") rode all 21 clauses of this file green. The replacement
+    // reads the STRUCTURED measurement off the log line, where the difference is a JSON array
+    // rather than a turn of phrase, and then reads the sentence as the code actually writes it.
+    readBack = () => issueWithLabels(['dojo-report']);
+    const { note } = await postAndNote(approvedReport());
+
+    const line = logLines.find(l => l.includes('silently dropped'));
+    expect(line, `no measurement line in:\n${logLines.join('\n')}`).toBeTruthy();
+    expect(line, 'the measurement blamed a label GitHub gave back')
+      .toContain('"dropped":["v3.1.28"]');
+    expect(line, 'the measurement lost the label that survived')
+      .toContain('"kept":["dojo-report"]');
+
+    expect(note, 'a surviving label was reported as dropped').toBeTruthy();
+    expect(note, 'the sentence does not say WHICH label went missing')
+      .toMatch(/v3\.1\.28 was dropped/);
+    expect(note, 'the sentence does not say which label GitHub kept')
+      .toContain('with only dojo-report');
+    expect(note, 'the sentence claims `dojo-report` was dropped when GitHub kept it')
+      .not.toMatch(/dojo-report,? v3\.1\.28 (?:was|were) dropped/);
+  });
+
+  it('a PARTIAL drop does not explain itself with a rule the surviving label refutes', async () => {
+    // F3. GitHub's documented rule drops EVERY label from an account without push access, so a
+    // label that came back is a measurement that this account CAN label this issue. Citing that
+    // rule here sends the owner to fix a permission they demonstrably have — a fabricated cause in
+    // the module whose sibling states the opposite doctrine: when the body cannot be read it SAYS
+    // the body could not be read rather than filling the hole with a plausible story
+    // (`github/refusal.ts`). The honest answer to "why" here is that nothing measured it.
     readBack = () => issueWithLabels(['dojo-report']);
     const { note } = await postAndNote(approvedReport());
     expect(note, 'a surviving label was reported as dropped').toBeTruthy();
-    expect(note).toContain('v3.1.28');
-    expect(note, 'the note claims `dojo-report` was dropped when GitHub kept it')
-      .not.toMatch(/dropped[^.]*\bdojo-report\b/);
+    for (const cause of ['no write access', 'are silently dropped otherwise', 'GitHub does that']) {
+      expect(note, `a partial drop blamed "${cause}", which the label GitHub kept disproves`)
+        .not.toContain(cause);
+    }
+    // ...and it does not go quiet either: not knowing is a thing to SAY, not a gap to leave.
+    expect(note, 'the sentence neither explains the drop nor admits that nothing measured why')
+      .toMatch(/will not guess/);
+    expect(note, 'the owner is not told who can put the missing label back')
+      .toMatch(/write access/i);
   });
 });
 
@@ -266,6 +313,13 @@ describe('a reporter GitHub accepts labels from is told nothing', () => {
 });
 
 // ── 3. NO FABRICATION — a check that could not run claims nothing ────────────────────────
+// ⚠ THE LAST TWO ARMS ARE THE FIX ROUND's F4, AND THEY ARE ABOUT THE ARRAY'S CONTENTS.
+// `null is never "none"` was applied to the PRESENCE of the `labels` array and not to what is in
+// it: an unreadable element was FILTERED AWAY, so `labels:[{"id":1}]` — an issue carrying one label
+// whose name could not be read — answered `[]`, byte-for-byte what a genuinely unlabelled issue
+// answers. The owner was then told "GitHub saved the issue with no labels at all" about an issue
+// that has one, from a measurement that never happened. The mixed arm is the same defect one step
+// quieter: it used to fabricate a PARTIAL drop, which is the harder one to notice.
 
 describe('a read-back that cannot be believed says nothing about labels', () => {
   for (const [label, answer] of [
@@ -274,6 +328,10 @@ describe('a read-back that cannot be believed says nothing about labels', () => 
     ['the body will not parse', () => new Response('<html>502</html>', { status: 200 })],
     ['`labels` is absent from the answer', () => jsonRes(200, { number: ISSUE })],
     ['`labels` is not an array', () => jsonRes(200, { number: ISSUE, labels: 'dojo-report' })],
+    ['the one label on the issue carries no readable name',
+      () => jsonRes(200, { number: ISSUE, labels: [{ id: 1, color: 'ededed' }] })],
+    ['one label reads and the other does not',
+      () => jsonRes(200, { number: ISSUE, labels: [{ id: 1, name: 'dojo-report' }, { id: 2 }] })],
   ] as [string, () => Response][]) {
     it(`${label}: the report still posted, and nothing is claimed`, async () => {
       readBack = answer;

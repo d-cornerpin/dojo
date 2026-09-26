@@ -111,6 +111,14 @@ let ghCalls: GithubCall[] = [];
 let searchAnswer: () => Promise<Response> | Response = () => jsonRes(200, { items: [] });
 let writeAnswer: () => Promise<Response> | Response =
   () => jsonRes(201, { number: 7, html_url: 'https://github.com/d-cornerpin/dojo/issues/7' });
+/**
+ * THE READ-BACK OF THE CREATED ISSUE (T8 LIVE, D-B). GitHub answers 201 to a create from an account
+ * without push access and SAVES THE ISSUE UNLABELLED, so the poster asks which labels are actually
+ * on it. The default here is the collaborator's case — the label survives — because that is what
+ * every clause in this file that is not about labels should be arranging.
+ */
+let readBackAnswer: () => Response =
+  () => jsonRes(200, { number: 7, labels: [{ id: 1, name: 'dojo-report' }] });
 
 function jsonRes(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -124,11 +132,11 @@ const ghWrites = (): GithubCall[] => ghCalls.filter(c => c.method === 'POST');
 function installFetch(): void {
   globalThis.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
     const url = String(input);
-    ghCalls.push({
-      method: (init?.method ?? 'GET').toUpperCase(), url,
-      body: typeof init?.body === 'string' ? init.body : '',
-    });
-    return url.includes('/search/issues') ? await searchAnswer() : await writeAnswer();
+    const method = (init?.method ?? 'GET').toUpperCase();
+    ghCalls.push({ method, url, body: typeof init?.body === 'string' ? init.body : '' });
+    if (url.includes('/search/issues')) return await searchAnswer();
+    if (method === 'GET' && /\/issues\/\d+$/.test(url)) return readBackAnswer();
+    return await writeAnswer();
   }) as unknown as typeof fetch;
 }
 
@@ -177,6 +185,7 @@ beforeEach(() => {
   ghCalls = [];
   searchAnswer = () => jsonRes(200, { items: [] });
   writeAnswer = () => jsonRes(201, { number: 7, html_url: 'https://github.com/d-cornerpin/dojo/issues/7' });
+  readBackAnswer = () => jsonRes(200, { number: 7, labels: [{ id: 1, name: 'dojo-report' }] });
   installFetch();
   disconnectGithub();
 });
@@ -472,6 +481,74 @@ describe('someone already reported this — the owner chooses, the platform does
     expect(getReport(id)?.status, 'an unreadable answer spent the owner\'s approval')
       .toBe('awaiting_approval');
     expect(ghCalls, 'an unreadable answer reached the network').toEqual([]);
+  });
+});
+
+// ── the labels GitHub kept, on the answer the card reads ────────────────────────────────
+// THE SECOND FACT THIS DOOR CARRIES BESIDE THE DELIVERY (T8 LIVE, D-B), AND IT IS PINNED HERE FOR
+// THE SAME REASON `duplicate` IS. GitHub needs push access to set labels on a new issue and needs
+// nothing to OPEN one, so an ordinary user's report is answered 201 and saved UNLABELLED, silently
+// — measured on the wire on 2026-09-26. `github/issues.ts` reads the labels back off the issue it
+// just filed and `report/post.ts` carries the sentence; three suites next door hold that half.
+//
+// NONE OF THEM DRIVES THIS ROUTE. Before this clause, deleting `labelsDropped` from the JSON at
+// `reports.ts:202` — or renaming the wire field on one side — left the whole server suite, `npm run
+// gates` and `npm run typecheck` green (the dashboard's field is optional), while the owner pressed
+// Post as a non-collaborator and was shown a clean delivery with nothing said. That is the exact
+// live defect of 2026-09-26, silently restored. The measurement being right is worth nothing if it
+// stops at the wire, so the route's own answer is read here, and the panel census below requires the
+// .tsx to read the same field — the two halves of the `duplicate` pattern, for the same field type.
+
+describe('the labels GitHub did not keep reach the card on the answer it reads', () => {
+  it('a 201 that kept no labels puts the server\'s measured sentence on the route\'s JSON', async () => {
+    saveGithubAccount('octocat', TOKEN, 'public_repo');
+    readBackAnswer = () => jsonRes(200, { number: 7, labels: [] });   // what live issue #4 answers
+    const id = awaiting('ds1-la0000000000');
+
+    const res = await post(`/${id}/approve`);
+    expect(res.status).toBe(200);
+    const data = (await bodyOf(res)).data!;
+
+    // THE DELIVERY IS A SUCCESS. Nothing failed: the issue is on the tracker and the row says so.
+    expect(data.status).toBe('posted');
+    expect(data.issueNumber).toBe(7);
+    expect(getReport(id)?.status).toBe('posted');
+    // Non-vacuity: the measurement really was taken, over the wire, on this press.
+    expect(ghCalls.some(c => c.method === 'GET' && /\/issues\/7$/.test(c.url)),
+      'the poster never read the labels back, so this clause measures nothing').toBe(true);
+
+    // ...AND THE CARD IS TOLD THE ISSUE IS NOT THE ONE THE OWNER PRESSED POST FOR.
+    expect(typeof data.labelsDropped, 'the route answered no sentence for the card to render')
+      .toBe('string');
+    expect(String(data.labelsDropped), 'the sentence does not name the label that did not survive')
+      .toContain('dojo-report');
+    expect(String(data.labelsDropped), 'the sentence does not say the report posted')
+      .toMatch(/posted/i);
+  });
+
+  it('labels that survive put nothing on the answer, so the card stays quiet', async () => {
+    // The other half, and the reason the clause above cannot be satisfied by a constant: on the
+    // majority case — a collaborator, whose labels GitHub keeps — this field must be absent.
+    saveGithubAccount('octocat', TOKEN, 'public_repo');
+    readBackAnswer = () => jsonRes(200, { number: 7, labels: [{ id: 1, name: 'dojo-report' }] });
+    const id = awaiting('ds1-la1111111111');
+
+    const data = (await bodyOf(await post(`/${id}/approve`))).data!;
+    expect(data.status).toBe('posted');
+    expect(data.labelsDropped ?? null,
+      'a delivery that kept its labels told the owner they were dropped').toBeNull();
+  });
+
+  it('the comment path answers no label claim at all', async () => {
+    // Adding to an existing issue sends no labels, so there is nothing to have dropped. A route
+    // that answered a sentence here would be describing a request it never made.
+    saveGithubAccount('octocat', TOKEN, 'public_repo');
+    writeAnswer = () => jsonRes(201, { html_url: 'https://github.com/d-cornerpin/dojo/issues/42#issuecomment-9' });
+    const id = awaiting('ds1-la2222222222');
+
+    const data = (await bodyOf(await post(`/${id}/approve`, { addToExisting: 42 }))).data!;
+    expect(data.status).toBe('posted');
+    expect(data.labelsDropped ?? null, 'the comment path claimed something about labels').toBeNull();
   });
 });
 
@@ -1011,6 +1088,19 @@ describe('the card renders, and decides nothing on its own', () => {
       .split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
     expect(src.length, 'the comment stripper ate the panel — this census is broken').toBeGreaterThan(800);
     expect(src, 'the panel must render the lib\'s question, not its own').toContain('duplicateQuestion');
+    // T8's field, held the same way and for the same reason. `packages/dashboard` has no test
+    // runner, so the panel's half of the wire is only checkable as text: the route clause above
+    // proves the door ANSWERS `labelsDropped`, and this proves the panel READS it. A rename on one
+    // side only — the shape that leaves every other instrument green — is red on one of the two.
+    // There is no lib rule to import for this one, deliberately: the sentence is the SERVER's,
+    // measured against the issue GitHub actually saved, and the panel decides nothing about it.
+    //
+    // ⚠ ANCHORED WITH `\b`, MEASURED RATHER THAN ASSUMED: written first as
+    // `.toContain('delivery.labelsDropped')`, this clause PASSED the rename it exists to catch,
+    // because `delivery.labelsDroppedNote` contains `delivery.labelsDropped`. A field name is a
+    // whole token or it is not the same field.
+    expect(src, 'the panel stopped reading the measured label drop off the door\'s own answer')
+      .toMatch(/delivery\.labelsDropped\b/);
     for (const forbidden of ['api.github.com', 'fetch(', 'approveOnce', 'useState']) {
       expect(src, `the delivery panel reached ${forbidden}`).not.toContain(forbidden);
     }
