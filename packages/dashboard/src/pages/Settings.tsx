@@ -5414,13 +5414,25 @@ const HealerCard = ({ models }: { models: Model[] }) => {
       // The API returns immediately after spawning the Healer.
       // If the LLM was triggered, poll until the Healer agent finishes.
       if (result.data.llmTriggered) {
+        // The configured id, read once: the default is 'healer' and the owner may have changed both
+        // the id and the display name.
+        const healerSetting = await api.getSetting('healer_agent_id');
+        const healerAgentId = healerSetting.ok && healerSetting.data.value ? healerSetting.data.value : 'healer';
         const pollForCompletion = async () => {
           for (let i = 0; i < 60; i++) { // Poll for up to 5 minutes
             await new Promise(r => setTimeout(r, 5000));
             const agents = await api.getAgents();
             if (agents.ok) {
-              const healer = agents.data.find((a: { name: string; status: string }) => a.name === 'Healer' && a.status === 'working');
-              if (!healer) break; // Healer finished or terminated
+              // ⚠ RESOLVED BY ID, NOT BY NAME (2026-09-26, the owner's rule that nothing may rely on
+              // a specific agent name). This read `a.name === 'Healer'`, so a renamed Healer was
+              // never seen finishing and the poll spun its full 60 × 5 s, while a user's own agent
+              // called "Healer" could end the poll early. `healer_agent_id` is a config key the
+              // server already reads the same way (`tools/tool-docs.ts`), and it is resolved once
+              // above this loop rather than per tick.
+              const healer = agents.data.find(
+                (a: { id: string; status: string }) => a.id === healerAgentId && a.status === 'working',
+              );
+              if (!healer) break; // the Healer finished or was terminated
             }
           }
         };

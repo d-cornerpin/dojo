@@ -619,7 +619,7 @@ export function executeLoadToolDocs(agentId: string, toolNames: string[]): strin
 // ── Always-loaded tools lookup per agent (from DB) ──
 
 import { getDb } from '../db/connection.js';
-import { getPrimaryAgentId } from '../config/platform.js';
+import { getPrimaryAgentId, isDreamerAgent } from '../config/platform.js';
 
 // Resolve which always-loaded tool set to use for a given agent. This runs
 // synchronously at call time, so we can't `await import()`. Instead we read
@@ -649,11 +649,19 @@ function getDefaultForAgent(agentId: string): string[] {
     const healerRow = db.prepare("SELECT value FROM config WHERE key = 'healer_agent_id'").get() as { value: string } | undefined;
     if (healerRow && agentId === healerRow.value) return HEALER_AGENT_ALWAYS_LOADED;
 
-    // Non-system agents: check by name (Dreamer) or classification
-    const row = db.prepare('SELECT name, classification FROM agents WHERE id = ?').get(agentId) as
-      | { name: string; classification: string }
+    // ⚠ THE DREAMER IS RESOLVED BY ITS CONFIGURED ID, LIKE EVERY OTHER SERVICE AGENT ABOVE.
+    // This line read `row?.name === 'Dreamer'` until 2026-09-26 and it broke the owner's rule that
+    // nothing may rely on a specific agent name — in both directions, measured on a scratch DB:
+    // rename the Dreamer and it silently dropped to the sub-agent loadout (losing what the platform
+    // grants it); name YOUR OWN agent "Dreamer" and it silently gained the Dreamer's vault tools.
+    // `isDreamerAgent` is the accessor `config/platform.ts` already provides for exactly this, and
+    // the comment four lines above already said the primary "falls back to the platform config
+    // default (name-free) rather than a hardcoded id" — the file knew the rule and broke it once.
+    if (isDreamerAgent(agentId)) return DREAMER_AGENT_ALWAYS_LOADED;
+    // Everything else is decided by CLASSIFICATION, a column, never by what the row is called.
+    const row = db.prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as
+      | { classification: string }
       | undefined;
-    if (row?.name === 'Dreamer') return DREAMER_AGENT_ALWAYS_LOADED;
     if (row && ['ronin', 'apprentice'].includes(row.classification)) {
       return SUB_AGENT_ALWAYS_LOADED;
     }
