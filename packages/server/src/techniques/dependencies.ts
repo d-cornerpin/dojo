@@ -242,7 +242,7 @@ export function extractFileReferences(markdownContent: string): FileReference[] 
   //       - `# e.g., "..."` (abbreviation in a comment)
   //       - `example.com` (a domain, not a file)
   //       - `/tmp/campaign.yaml` (a path *used by the code*, not shipped)
-  //       - `"/Users/jane/documents/proposal.pdf"` (literal in argv data)
+  //       - `"/Users/<you>/documents/proposal.pdf"` (literal in argv data)
   //
   //     Every one of those would get flagged as "missing file" on a
   //     legitimate technique. The real M365 export failure was 14

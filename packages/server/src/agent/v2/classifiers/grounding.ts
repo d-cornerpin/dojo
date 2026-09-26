@@ -111,8 +111,8 @@ const DENIAL_PATTERNS: RegExp[] = [
 // A delivery word must be present for a BARE "not yet" to count as a delivery denial.
 const DELIVERY_CONTEXT = /\b(?:sent|send|sending|text|texted|texting|e-?mail|e-?mailed|message|messaged|forward|forwarded|deliver|delivered|relay|relayed|passed on|got it to|get it to)\b/i;
 
-// Optional recipient extraction from the denial text ("haven't sent it to Sam yet",
-// "did I get it to Nova?"). null when the denial names no one, the caller then
+// Optional recipient extraction from the denial text ("haven't sent it to <a name> yet",
+// "did I get it to <a name>?"). null when the denial names no one, the caller then
 // consults the ledger recipient-agnostically over a short window.
 const DENIAL_RECIPIENT = /\b(?:to|for|with)\s+([A-Z][a-zA-Z]+)\b/;
 
