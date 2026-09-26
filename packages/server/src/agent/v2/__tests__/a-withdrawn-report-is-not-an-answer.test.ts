@@ -1,0 +1,552 @@
+// ════════════════════════════════════════════════════════════════════════════════════════
+// A WITHDRAWN REPORT IS NOT AN ANSWER — the v3.2.0 release ritual's round-2 RED.
+//
+// THE RED, measured on the dev box through real HTTP doors only (two independent arms, two
+// clean scratch agents, an ordinary paraphrased re-ask and no byte-identical repetition):
+//
+//   ask for a bug report  ->  row reaches `awaiting_approval`, the ask gets its answer stamp
+//   POST /api/reports/:id/cancel  ->  `cancelled`, 0 rows in `awaiting_approval`
+//   POST /api/chat/:id/new-session, three ordinary asks, then a PARAPHRASED re-ask
+//   ->  the model is handed `RECENTLY ANSWERED … do NOT re-execute this work` and a VERBATIM
+//       quote of its own *"Written up and sitting on your dashboard as a preview card"*
+//   ->  it never calls `dojo_report` again and tells the owner to press Post on a card that
+//       does not exist. In the control arm it said the same thing in the SAME TURN as a tool
+//       error stating the row was cancelled, and then ended the turn in silence.
+//
+// THE ROOT CAUSE is one layer below both blocks: `dojo_report` is the only user-facing door in
+// the engine that writes no `deliveries` row (0 in the whole database, ever), so the "answered"
+// stamp and the card it claims have NO EDGE between them and nothing can notice a withdrawal.
+// `agent/v2/answered-edge.ts` owns every read on that path, so ONE predicate there
+// (`answerStillStands`) is inherited by all five carriers rather than being re-derived at each.
+//
+// THE LAW: owner ruling 2026-08-05, the governing priority — ambiguity about whether the owner
+// was answered resolves toward ANSWERING AGAIN, never toward silence or a quiet close. The
+// direction `answerReceiptForAsk`'s docstring used to argue (owner transcript 2026-07-23, "erring
+// toward answered can only ever SUPPRESS a second announcement") was overruled thirteen days
+// later, and its premise is false here: the artefact is GONE.
+//
+// ── AND THE OTHER HALF OF THE BAR (§3) ──────────────────────────────────────────────────────
+// The owner has a standing complaint that agents REPEAT THEMSELVES, and this machinery is what
+// stops that (his 2026-08-09 incident: an agent re-investigating a question it had just
+// answered). So suppression may not be weakened by one byte for anything BUT a withdrawn-report
+// answer. §3 is that clause, and it is what the over-widening mutant fails.
+//
+// ── MUTATION RECORD. Each planted in `answered-edge.ts`, measured, then reverted by restoring
+// the byte-identical file (sha256 `60469cc6` re-asserted after every one):
+//
+//   M1  predicate dropped from read 1  (`recentlyAnsweredAsks`)      8 F / 18 P  §1 §2 §3 §5
+//   M2  predicate dropped from read 2  (`answeredPairsForMessages`)  6 F / 20 P  §1 §2 §5
+//   M3  predicate dropped from carrier 5 (`recordedAnswer…`)         7 F / 19 P  §1 §2 §4 §5
+//   M4  predicate INVERTED                                          10 F / 16 P  §1 §2 §3 §4
+//   M5  predicate OVER-WIDENED (voids standing rows too)             8 F / 18 P  §3 (8 of 9)
+//
+// M4 leaves §2's three STANDING rows green, and that is the reason §3 arms the cheap gate in its
+// own `beforeEach`: with no withdrawn report on the agent the predicate short-circuits, so an
+// inversion is invisible to any clause that does not put one there. M5 is the only mutant §1 and
+// §2 cannot see at all — it is what the unchanged-behaviour clauses exist for.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const mockDb: { current: Database.Database | null } = { current: null };
+
+vi.mock('../../../db/connection.js', async () => {
+  const os = await import('node:os');
+  const p = await import('node:path');
+  return {
+    getDb: () => {
+      if (!mockDb.current) throw new Error('test DB not initialized');
+      return mockDb.current;
+    },
+    closeDb: vi.fn(),
+    getDbPath: () => p.join(os.tmpdir(), 'dojo-withdrawn-report-test', 'dojo.db'),
+  };
+});
+
+import { runMigrations } from '../../../db/migrations.js';
+import {
+  RECENTLY_ANSWERED_LIMIT,
+  answeredPairsForMessages,
+  answerStillStands,
+  recentlyAnsweredAsks,
+  recordedAnswerInConversation,
+  renderRecentlyAnsweredBlock,
+} from '../answered-edge.js';
+import { renderRecallLane, type RecallLaneContext, type RecallLanePayload } from '../../../memory/recall-lane.js';
+import type { LaneRender } from '../../../memory/lanes.js';
+// ⚠ THE CONSENT DOORS ARE DELIBERATELY NOT IMPORTED. `approveOnce` / `markPosted` /
+// `markExported` / `releaseApproval` MOVE the owner's one approval, and
+// `tools/__tests__/the-report-tool-reaches-no-new-door.test.ts` census-checks that only a NAMED
+// allowlist holds an edge to them. A read-side test does not need to spend an approval to know
+// what `approved` and `posted` mean — §2 sets those states on the row — so this file stays off
+// that allowlist rather than widening it for its own convenience.
+import { attachDraft, cancelReport, createReport, getReport, submitForApproval } from '../../../report/store.js';
+import { engineText } from './engine-sources.js';
+
+const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
+/** Comments stripped, the way the prefix-lane conformance clauses strip them: a module header
+ *  that NAMES a thing must not be what satisfies (or trips) a structural clause. */
+const stripComments = (text: string): string => text
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+const codeOf = (rel: string): string => stripComments(read(rel));
+
+const AGENT = 'reporter';
+const OTHER_AGENT = 'reporter-two';
+const CONV = 'conv-dashboard';
+
+/** The claim the round-2 red served for a cancelled row, carried verbatim. */
+const THE_CLAIM =
+  "Written up and sitting on your dashboard as a preview card — I can't send it myself; "
+  + 'only you pressing Post on that card puts it in front of the Dojo\'s builders.';
+
+const db = (): Database.Database => mockDb.current!;
+
+let clock = 0;
+/** Monotonic, one second apart, so `ORDER BY created_at DESC` is deterministic. */
+const nextAt = (): number => (clock += 1000);
+
+function seedMessage(p: {
+  id: string; role: 'user' | 'assistant'; content: string;
+  turnNumber?: number | null; agentId?: string; conversationId?: string | null;
+}): string {
+  db().prepare(
+    `INSERT INTO messages (id, agent_id, conversation_id, role, content, turn_number, created_at,
+                           channel, sender_id, display_kind)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'dashboard', 'owner', ?)`,
+  ).run(p.id, p.agentId ?? AGENT, p.conversationId === undefined ? CONV : p.conversationId,
+    p.role, p.content, p.turnNumber ?? null, nextAt(),
+    p.role === 'user' ? 'user-text' : 'agent-text');
+  return p.id;
+}
+
+/** A recorded `tool_use` row, written the shape the engine writes it (measured on the repro
+ *  agents: `[{"type":"tool_use","name":"dojo_report","input":{"phase":…,"report_id":…}}]`). */
+function seedToolCall(p: {
+  id: string; turnNumber: number; phase: string; reportId: string | null;
+  tool?: string; agentId?: string;
+}): string {
+  const input: Record<string, unknown> = { phase: p.phase };
+  if (p.reportId !== null) input.report_id = p.reportId;
+  const content = JSON.stringify([{
+    type: 'tool_use', id: `call-${p.id}`, name: p.tool ?? 'dojo_report', input,
+  }]);
+  db().prepare(
+    `INSERT INTO messages (id, agent_id, conversation_id, role, content, turn_number, created_at,
+                           display_kind)
+     VALUES (?, ?, ?, 'assistant', ?, ?, ?, 'tool-turn')`,
+  ).run(p.id, p.agentId ?? AGENT, CONV, content, p.turnNumber, nextAt());
+  return p.id;
+}
+
+/** A report row in an exact state. Direct INSERT on purpose: this file tests a READ, and the
+ *  doors are exercised for real in §1's last clause. */
+function seedReport(id: string, status: string, agentId = AGENT): string {
+  db().prepare(
+    `INSERT INTO dojo_reports (id, agent_id, status, lane, signature)
+     VALUES (?, ?, ?, 'other', ?)`,
+  ).run(id, agentId, status, `sig-${id}`);
+  return id;
+}
+
+interface Episode { askId: string; answerId: string }
+
+/**
+ * ONE ANSWERED ASK, with the report work recorded inside the episode that answered it.
+ *
+ * `shape` is the measured difference between the two real arms, and both are seeded here:
+ *   'same-turn'  — the kit-driven agent (BehaviorBot, six asks): the calls and the answer share
+ *                  one turn, and the call row lands AFTER the answer row;
+ *   'cross-turn' — Arm B on the dev box: the calls are recorded on turn N (seq 83301/83303/
+ *                  83305) and the ask's stamp points at turn N+1's reply (seq 83314), because
+ *                  the engine's "you have not spoken yet this turn" hint opens a new turn.
+ */
+function seedAnsweredReportAsk(p: {
+  key: string; reportIds: Array<string | null>; shape?: 'same-turn' | 'cross-turn';
+  askContent?: string; answerContent?: string; turn?: number; tool?: string;
+}): Episode {
+  const shape = p.shape ?? 'cross-turn';
+  const turn = p.turn ?? 1;
+  const askId = seedMessage({
+    id: `ask-${p.key}`, role: 'user',
+    content: p.askContent ?? 'Something went wrong earlier and I want it flagged. Twice this afternoon…',
+  });
+  if (shape === 'cross-turn') {
+    p.reportIds.forEach((rid, i) => seedToolCall({
+      id: `call-${p.key}-${i}`, turnNumber: turn, phase: rid === null ? 'gather' : 'submit',
+      reportId: rid, tool: p.tool,
+    }));
+  }
+  const answerId = seedMessage({
+    id: `ans-${p.key}`, role: 'assistant', content: p.answerContent ?? THE_CLAIM,
+    turnNumber: shape === 'cross-turn' ? turn + 1 : turn,
+  });
+  if (shape === 'same-turn') {
+    // The calls land after the answer row, inside the same turn: the `turn_number` arm of the
+    // window is the only thing that can see them.
+    p.reportIds.forEach((rid, i) => seedToolCall({
+      id: `call-${p.key}-${i}`, turnNumber: turn, phase: rid === null ? 'gather' : 'submit',
+      reportId: rid, tool: p.tool,
+    }));
+  }
+  db().prepare('UPDATE messages SET answer_message_id = ?, served_by_turn = ? WHERE id = ?')
+    .run(answerId, turn, askId);
+  return { askId, answerId };
+}
+
+/** An ordinary answered ask with no report anywhere near it. */
+function seedPlainAnsweredAsk(key: string, ask: string, answer: string): Episode {
+  const askId = seedMessage({ id: `ask-${key}`, role: 'user', content: ask });
+  const answerId = seedMessage({ id: `ans-${key}`, role: 'assistant', content: answer, turnNumber: 90 });
+  db().prepare('UPDATE messages SET answer_message_id = ?, served_by_turn = 90 WHERE id = ?')
+    .run(answerId, askId);
+  return { askId, answerId };
+}
+
+const listedAskIds = (): string[] =>
+  recentlyAnsweredAsks(AGENT, CONV, RECENTLY_ANSWERED_LIMIT).map((a) => a.askId);
+
+const injectedBlock = (): string | null =>
+  renderRecentlyAnsweredBlock(recentlyAnsweredAsks(AGENT, CONV, RECENTLY_ANSWERED_LIMIT));
+
+function laneCtx(over: Partial<RecallLaneContext> = {}): RecallLaneContext {
+  return {
+    agentId: AGENT, includeVault: false, excludeIds: new Set<string>(),
+    msgHits: [], vaultHits: [], alreadyAnsweredAskIds: new Set<string>(), ...over,
+  };
+}
+const laneText = (r: LaneRender<RecallLanePayload> | null): string =>
+  (r?.messages?.[0]?.content as string | undefined) ?? '';
+/** The verbatim-quote carrier, rendered: what `msg.relevant-memory` would actually inject. */
+const quotedAnswerFor = (e: Episode): string =>
+  laneText(renderRecallLane(laneCtx({ msgHits: [{ sourceId: e.askId }] })));
+
+beforeEach(() => {
+  clock = Date.UTC(2026, 8, 26, 9, 0, 0);
+  mockDb.current = new Database(':memory:');
+  runMigrations();
+  for (const id of [AGENT, OTHER_AGENT]) {
+    db().prepare(
+      `INSERT INTO agents (id, name, status, session_started_at)
+       VALUES (?, ?, 'idle', '1970-01-01')`,
+    ).run(id, id);
+  }
+  db().prepare(
+    `INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, created_at)
+     VALUES (?, ?, 'dashboard', NULL, 'owner', datetime('now'))`,
+  ).run(CONV, AGENT);
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §1 — ARM B AT UNIT LEVEL. The whole red, in one clause per carrier.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§1 the ARM B shape: cancel the card, and the stamp stops being evidence', () => {
+  it('with the card STILL on the dashboard, every carrier speaks exactly as before', () => {
+    const rid = seedReport('rep-standing', 'awaiting_approval');
+    const e = seedAnsweredReportAsk({ key: 'b1', reportIds: [rid] });
+
+    expect(listedAskIds()).toEqual([e.askId]);
+    expect(injectedBlock()).toContain('Something went wrong earlier');
+    expect(answeredPairsForMessages(AGENT, [e.askId]).get(e.askId)?.answerContent).toBe(THE_CLAIM);
+    expect(quotedAnswerFor(e)).toContain('sitting on your dashboard');
+    expect(recordedAnswerInConversation(AGENT, CONV)).toBe(THE_CLAIM);
+    // The predicate's own verdict, stated once so the clauses below cannot pass for the wrong
+    // reason (a seeding mistake reads as "voided" everywhere).
+    expect(answerStillStands(AGENT, ...spanOf(e))).toBe(true);
+  });
+
+  it('the card WITHDRAWN: both reads drop it, the injected block carries nothing about it', () => {
+    const rid = seedReport('rep-gone', 'awaiting_approval');
+    const e = seedAnsweredReportAsk({ key: 'b2', reportIds: [rid] });
+    const before = injectedBlock();
+    expect(before).toContain('Something went wrong earlier'); // the RED's own input
+
+    db().prepare("UPDATE dojo_reports SET status = 'cancelled' WHERE id = ?").run(rid);
+
+    // READ 1 — `engine.recently-answered`'s list AND the recall lane's dedup set.
+    expect(listedAskIds()).toEqual([]);
+    expect(injectedBlock()).toBeNull();
+    // READ 2 — the verbatim-quote carrier.
+    expect(answeredPairsForMessages(AGENT, [e.askId, e.answerId]).size).toBe(0);
+    // …and the block that quote rides in no longer asserts anything as answered.
+    const lane = quotedAnswerFor(e);
+    expect(lane).not.toContain('ALREADY ANSWERED');
+    expect(lane).not.toContain('Do NOT re-run the work');
+    // CARRIER 5 — the ghosted-ask ladder's second rung.
+    expect(recordedAnswerInConversation(AGENT, CONV)).toBeNull();
+  });
+
+  it('DOCUMENTED RESIDUAL: the withdrawn claim may still be RECALLED, stripped of authority', () => {
+    // Honest about what this fix does NOT do. A hit on the ANSWER row still renders under
+    // "Older messages retrieved by meaning" — that is the recall lane's ordinary job and
+    // touching its retrieval is out of this task's blast radius. What it loses is the part that
+    // made it a false RECORD: the engine's "engine record … do NOT re-run the work" framing.
+    const rid = seedReport('rep-residual', 'awaiting_approval');
+    const e = seedAnsweredReportAsk({ key: 'b3', reportIds: [rid] });
+    db().prepare("UPDATE dojo_reports SET status = 'cancelled' WHERE id = ?").run(rid);
+
+    const lane = laneText(renderRecallLane(laneCtx({ msgHits: [{ sourceId: e.answerId }] })));
+    expect(lane).not.toContain('Do NOT re-run the work');
+    expect(lane).not.toContain('ALREADY ANSWERED');
+  });
+
+  it('BOTH measured window shapes are covered: cross-turn (Arm B) and same-turn (the kit)', () => {
+    const cross = seedReport('rep-cross', 'cancelled');
+    const same = seedReport('rep-same', 'cancelled');
+    const a = seedAnsweredReportAsk({ key: 'w1', reportIds: [cross], shape: 'cross-turn', turn: 10 });
+    const b = seedAnsweredReportAsk({ key: 'w2', reportIds: [same], shape: 'same-turn', turn: 20 });
+
+    expect(answerStillStands(AGENT, ...spanOf(a))).toBe(false);
+    expect(answerStillStands(AGENT, ...spanOf(b))).toBe(false);
+    expect(listedAskIds()).toEqual([]);
+  });
+
+  it('END TO END THROUGH THE REAL DOORS: `cancelReport()` is what voids it', () => {
+    const row = createReport(AGENT, 'wrong-answer', 'sig-live');
+    attachDraft(row.id, {
+      lane: 'wrong-answer', signature: 'sig-live',
+      brief: {
+        title: 'a title', whatHappened: 'x', whatShouldHaveHappened: 'y',
+        whyItWentWrong: 'z', fixIdeas: 'w',
+      },
+      telemetry: {}, bundlePath: '/tmp/bundle.json',
+    });
+    expect(submitForApproval(row.id)?.status).toBe('awaiting_approval');
+    const e = seedAnsweredReportAsk({ key: 'live', reportIds: [row.id] });
+    expect(listedAskIds()).toEqual([e.askId]);
+
+    expect(cancelReport(row.id)?.status).toBe('cancelled');
+    expect(getReport(row.id)?.status).toBe('cancelled');
+    expect(listedAskIds()).toEqual([]);
+    expect(recordedAnswerInConversation(AGENT, CONV)).toBeNull();
+  });
+
+  it('and a row that walks ON to approved and posted keeps standing at every step', () => {
+    const row = createReport(AGENT, 'wrong-answer', 'sig-posted');
+    attachDraft(row.id, {
+      lane: 'wrong-answer', signature: 'sig-posted',
+      brief: {
+        title: 'a title', whatHappened: 'x', whatShouldHaveHappened: 'y',
+        whyItWentWrong: 'z', fixIdeas: 'w',
+      },
+      telemetry: {}, bundlePath: '/tmp/bundle.json',
+    });
+    expect(submitForApproval(row.id)?.status).toBe('awaiting_approval');
+    const e = seedAnsweredReportAsk({ key: 'posted', reportIds: [row.id] });
+    // The two states past the card are set on the row, not spent through the consent doors —
+    // see the import note at the top of this file.
+    for (const status of ['approved', 'posted']) {
+      db().prepare('UPDATE dojo_reports SET status = ? WHERE id = ?').run(status, row.id);
+      expect(getReport(row.id)?.status).toBe(status);
+      expect(listedAskIds()).toEqual([e.askId]);
+      expect(recordedAnswerInConversation(AGENT, CONV)).toBe(THE_CLAIM);
+    }
+  });
+});
+
+/** The predicate's own two arguments, read off the rows the seeding wrote. */
+function spanOf(e: Episode): [number, string] {
+  const r = db().prepare(
+    'SELECT seq, answer_message_id AS ans FROM messages WHERE id = ?',
+  ).get(e.askId) as { seq: number; ans: string };
+  return [r.seq, r.ans];
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §2 — THE PER-STATUS TABLE. Every report state × every read, in one place, so the direction
+// of each state is a row somebody can read rather than a sentence somebody remembers.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+const TABLE: Array<{ status: string; stands: boolean; why: string }> = [
+  { status: 'awaiting_approval', stands: true, why: 'the preview card is on the dashboard' },
+  { status: 'approved', stands: true, why: 'decided, waiting on the transport' },
+  { status: 'posted', stands: true, why: 'delivered — and this is also the export door\'s state' },
+  { status: 'cancelled', stands: false, why: 'WITHDRAWN: nothing is on the dashboard' },
+  { status: 'drafting', stands: false, why: 'PREMATURE: round 1\'s false-filed shape, never submitted' },
+  { status: 'exported', stands: false, why: 'not a status this release writes — rule 4\'s safe direction' },
+];
+
+describe('§2 the per-status table, over all three reads', () => {
+  for (const row of TABLE) {
+    it(`${row.status} -> ${row.stands ? 'LISTED and QUOTED' : 'VOID'} (${row.why})`, () => {
+      const rid = seedReport(`rep-${row.status}`, row.status);
+      const e = seedAnsweredReportAsk({ key: `t-${row.status}`, reportIds: [rid] });
+
+      // read 1 — the list `engine.recently-answered` renders and the lane dedups against
+      expect(listedAskIds()).toEqual(row.stands ? [e.askId] : []);
+      // read 2 — the verbatim answer quote
+      expect(answeredPairsForMessages(AGENT, [e.askId]).has(e.askId)).toBe(row.stands);
+      expect(quotedAnswerFor(e).includes('sitting on your dashboard')).toBe(row.stands);
+      // carrier 5 — the no-reply ladder's recorded-answer quote
+      expect(recordedAnswerInConversation(AGENT, CONV)).toBe(row.stands ? THE_CLAIM : null);
+      // and the predicate itself, so a table row cannot pass by accident of seeding
+      expect(answerStillStands(AGENT, ...spanOf(e))).toBe(row.stands);
+    });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §3 — WHAT MUST NOT MOVE. The owner's standing complaint is that agents REPEAT THEMSELVES;
+// this machinery is what stops that. Every clause here runs with a withdrawn report ALREADY on
+// the agent (so the predicate's cheap gate is armed and the join really runs) and asserts the
+// answer is listed and quoted anyway.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§3 suppression is untouched for everything but a withdrawn-report answer', () => {
+  beforeEach(() => {
+    // The gate is armed for every clause below: this agent HAS a cancelled report.
+    seedReport('rep-unrelated-cancelled', 'cancelled');
+  });
+
+  it('an ordinary ask with no report anywhere is listed, paired and quoted, unchanged', () => {
+    const e = seedPlainAnsweredAsk('plain', 'how much was the Asana plan?', 'About $395 a year.');
+    expect(listedAskIds()).toEqual([e.askId]);
+    expect(injectedBlock()).toContain('how much was the Asana plan');
+    expect(answeredPairsForMessages(AGENT, [e.askId]).get(e.askId)?.answerContent)
+      .toBe('About $395 a year.');
+    expect(quotedAnswerFor(e)).toContain('About $395 a year.');
+    expect(recordedAnswerInConversation(AGENT, CONV)).toBe('About $395 a year.');
+  });
+
+  it('BYTE-IDENTICAL: the block a plain conversation renders does not move when a report is cancelled', () => {
+    seedPlainAnsweredAsk('p1', 'what is the boat insurance number?', 'It is 44-291.');
+    seedPlainAnsweredAsk('p2', 'and the policy start date?', 'March 3rd.');
+    const rid = seedReport('rep-byte', 'awaiting_approval');
+    const before = injectedBlock();
+    db().prepare("UPDATE dojo_reports SET status = 'cancelled' WHERE id = ?").run(rid);
+    // No ask on this agent was answered by an episode that filed `rep-byte`, so not one byte of
+    // the block may change.
+    expect(injectedBlock()).toBe(before);
+  });
+
+  it('a turn that RE-FILED after a cancel still stands (Arm A: one withdrawn row, one live)', () => {
+    const gone = seedReport('rep-arm-a-gone', 'cancelled');
+    const live = seedReport('rep-arm-a-live', 'awaiting_approval');
+    const e = seedAnsweredReportAsk({ key: 'arma', reportIds: [gone, live] });
+    expect(answerStillStands(AGENT, ...spanOf(e))).toBe(true);
+    expect(listedAskIds()).toEqual([e.askId]);
+    expect(quotedAnswerFor(e)).toContain('sitting on your dashboard');
+  });
+
+  it('a `gather`-only episode binds no row, so nothing is voided', () => {
+    const e = seedAnsweredReportAsk({ key: 'gather', reportIds: [null] });
+    expect(answerStillStands(AGENT, ...spanOf(e))).toBe(true);
+    expect(listedAskIds()).toEqual([e.askId]);
+  });
+
+  it('a report_id that resolves to NO row is not a withdrawal', () => {
+    const e = seedAnsweredReportAsk({ key: 'ghost', reportIds: ['rep-never-existed'] });
+    expect(answerStillStands(AGENT, ...spanOf(e))).toBe(true);
+    expect(listedAskIds()).toEqual([e.askId]);
+  });
+
+  it('ANOTHER TOOL\'s call in the episode is not a report call', () => {
+    const rid = seedReport('rep-other-tool', 'cancelled');
+    const e = seedAnsweredReportAsk({ key: 'othertool', reportIds: [rid], tool: 'work_update' });
+    expect(answerStillStands(AGENT, ...spanOf(e))).toBe(true);
+    expect(listedAskIds()).toEqual([e.askId]);
+  });
+
+  it('another AGENT\'s cancelled report cannot void this agent\'s answer', () => {
+    const theirs = seedReport('rep-theirs', 'cancelled', OTHER_AGENT);
+    const e = seedAnsweredReportAsk({ key: 'scope', reportIds: [theirs] });
+    expect(answerStillStands(AGENT, ...spanOf(e))).toBe(true);
+    expect(listedAskIds()).toEqual([e.askId]);
+  });
+
+  it('a report filed AFTER the answer landed belongs to a later ask, not this one', () => {
+    const e = seedPlainAnsweredAsk('earlier', 'did the invoice go out?', 'Yes, this morning.');
+    const later = seedReport('rep-later', 'cancelled');
+    // A different, LATER episode files and loses a report. The earlier answer is untouched.
+    seedToolCall({ id: 'call-later', turnNumber: 91, phase: 'submit', reportId: later });
+    expect(answerStillStands(AGENT, ...spanOf(e))).toBe(true);
+    expect(listedAskIds()).toContain(e.askId);
+  });
+
+  it('the LIST SHORTENS, it does not reach further back for a fourth ask', () => {
+    // Four answered asks, the newest of them a withdrawn report. The block must show the two
+    // remaining newest — NOT pull the fourth-oldest up to refill the cap, which would put a
+    // claim in front of the model it was never going to see and change the lane's dedup set.
+    const p1 = seedPlainAnsweredAsk('s1', 'oldest question?', 'oldest answer.');
+    const p2 = seedPlainAnsweredAsk('s2', 'middle question?', 'middle answer.');
+    const p3 = seedPlainAnsweredAsk('s3', 'newer question?', 'newer answer.');
+    const rid = seedReport('rep-shorten', 'cancelled');
+    seedAnsweredReportAsk({ key: 'shorten', reportIds: [rid] });
+
+    expect(listedAskIds()).toEqual([p3.askId, p2.askId]);
+    expect(injectedBlock()).not.toContain('oldest question');
+    expect(recentlyAnsweredAsks(AGENT, CONV, RECENTLY_ANSWERED_LIMIT).length)
+      .toBeLessThan(RECENTLY_ANSWERED_LIMIT);
+    // The pair reader is not shortened by the cap, so p1 is still quotable by MEANING — that
+    // path is unchanged, which is the point of not refilling.
+    expect(answeredPairsForMessages(AGENT, [p1.askId]).has(p1.askId)).toBe(true);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §4 — THE FIFTH CARRIER, on its own. `no-reply.ts`'s second steer quotes
+// `recordedAnswerInConversation` under "you already answered this … Do not re-do the work".
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§4 the ghosted-ask ladder is not handed a withdrawn claim to restate', () => {
+  it('the newest settled ask is a withdrawn report: the rung gets nothing', () => {
+    seedPlainAnsweredAsk('older', 'what time is the call?', 'Three o\'clock.');
+    const rid = seedReport('rep-fifth', 'awaiting_approval');
+    seedAnsweredReportAsk({ key: 'fifth', reportIds: [rid] });
+    expect(recordedAnswerInConversation(AGENT, CONV)).toBe(THE_CLAIM);
+
+    db().prepare("UPDATE dojo_reports SET status = 'cancelled' WHERE id = ?").run(rid);
+
+    // Null, not the OLDER answer: this read is scoped to the newest settled ask, and quoting a
+    // different one would put a claim in front of the model that was never on offer.
+    expect(recordedAnswerInConversation(AGENT, CONV)).toBeNull();
+    expect(recordedAnswerInConversation(AGENT, CONV)).not.toBe('Three o\'clock.');
+  });
+
+  it('a standing answer is still handed over, verbatim', () => {
+    const rid = seedReport('rep-fifth-live', 'awaiting_approval');
+    seedAnsweredReportAsk({ key: 'fifthlive', reportIds: [rid] });
+    expect(recordedAnswerInConversation(AGENT, CONV)).toBe(THE_CLAIM);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §5 — ONE OWNER, STRUCTURALLY. The reason the predicate lives in `answered-edge.ts` is that a
+// carrier cannot inherit a check it has to remember to make.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§5 the predicate has one home and every read applies it', () => {
+  it('all three reads in the edge call the SAME predicate, and nothing else defines one', () => {
+    const edge = codeOf('agent/v2/answered-edge.ts');
+    // Its definition, plus exactly one call from each of the three reads.
+    expect(edge.match(/answerStillStands\(/g) ?? []).toHaveLength(4);
+    expect(edge).toContain('STANDING_REPORT_STATUSES');
+  });
+
+  it('no carrier re-derives report state at its own injection site', () => {
+    // THE ENGINE HALF comes from the shared derivation, never by path: carriers 1 and 5 live in
+    // `agent/v2/steps/`, PHASE-6 moves code within that tree, and a by-path negative clause goes
+    // QUIET instead of red when its subject moves (`__tests__/guard-corpus-census.test.ts`).
+    const corpus = [stripComments(engineText()), codeOf('memory/recall-lane.ts')];
+    for (const code of corpus) {
+      expect(code).not.toContain('dojo_reports');
+      expect(code).not.toContain('awaiting_approval');
+    }
+  });
+
+  it('the predicate reads ROWS, never prose: no answer-shaped text test anywhere near it', () => {
+    const edge = codeOf('agent/v2/answered-edge.ts');
+    for (const smell of ['preview card', 'dashboard as a', 'looksLikeAnswer', 'CLOSEOUT']) {
+      expect(edge).not.toContain(smell);
+    }
+    // The only text pattern it may carry is the tool_use ENVELOPE prefilter, which
+    // `substantiveReplySince` above it already used before this task.
+    expect(edge.match(/\[\{%/g) ?? []).toHaveLength(2);
+  });
+});
