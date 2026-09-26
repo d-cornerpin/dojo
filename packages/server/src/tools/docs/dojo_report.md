@@ -1,8 +1,45 @@
 # dojo_report
 
-File a problem report about the Dojo platform itself, for the people who build it.
+THE USER WANTS THE PEOPLE WHO BUILD THE DOJO TO KNOW ABOUT A PROBLEM WITH THE DOJO ITSELF — that is what this tool is for, and it is the only tool that does it. You gather the evidence, you write the problem up in your own words, and it lands on the user's dashboard as an issue they can post to the Dojo's public issue tracker. Every agent holds it by default.
 
-Use this when the user says something went wrong with the platform and wants it fixed — *"that wasn't right, why did that happen, let's get this fixed in the Dojo"*. This is for defects in the PLATFORM (a tool that refused something it should have allowed, an answer that came back wrong, a turn that produced nothing), not for problems in the user's own work.
+## Reach for it when the user's words point at telling the makers
+
+REACH FOR IT WHEN THE USER'S WORDS POINT AT TELLING THE MAKERS. People say that a hundred different ways, so what follows is EXAMPLES, NOT A PATTERN TO MATCH:
+
+- "that wasn't right, why did that happen, let's get this fixed in the Dojo"
+- "can we let DOJO know about this?"
+- "can we get that fixed?"
+- "report this problem"
+- "tell the Dojo devs"
+- "can we report this"
+- "submit a bug"
+- "let them know this is broken"
+- "file an issue"
+- "this is a platform problem"
+
+The list does not end there and is not meant to: if the SENSE of what they said is that the people who build this platform should know about this, this is the tool. Do not wait for a particular phrase, and do not require the word "bug".
+
+## This is about the platform, not about your situation
+
+THIS IS ABOUT THE PLATFORM, NOT ABOUT YOUR SITUATION. In scope: the engine, the tools, the dashboard, how a turn went, your own machinery misbehaving.
+
+THE WRONG BRANCHES, every one of which burns the turn: investigating your own grants or permissions; asking whether you need a permission for this; delegating to another agent or asking a peer for help; retrying the thing that just failed; fixing the user's immediate situation instead of reporting it.
+
+When the user's words point at REPORTING, none of those is the answer and this tool is — you already hold it, so there is nothing to request and nobody to ask.
+
+## If you are not sure that is what they meant, ask
+
+IF YOU ARE NOT SURE THAT IS WHAT THEY MEANT, ASK — ONE SHORT LINE, THEN ACT:
+
+> "Do you want me to file this as a problem report to the Dojo's developers?"
+
+Asking costs one sentence. Guessing silently costs the whole turn, in either direction: a problem that never gets reported, or a write-up nobody asked for. Ask once, take the answer, act on it — and do not ask at all when their words already say it plainly.
+
+Nothing in the engine decides this for you. There is no classifier and no gate that reads the user's words and routes them here; the judgement is yours, which is why the cues above are written out and why the one-line question exists.
+
+## Why this wording exists
+
+T8, 2026-09-26, with the owner watching. A staged agent was handed the owner's own designed phrase — *"That wasn't right. Why did that happen? Let's get this fixed in the Dojo."* — and did not reach for this tool. It investigated its own grants, delegated to another agent to ask for a permission, was correctly refused, and burned the whole loop until a human said "no — file this as a problem report about the platform." Pointed at the tool, it then executed the three phases perfectly. The machinery was right and the trigger comprehension was wrong, so everything above this line exists to make the first reach automatic: the recognition cues, the list that says out loud it is not exhaustive, the named wrong branches (the exact branches that run was lost in), and the one-line question for when it is genuinely unclear.
 
 ## This tool cannot post. Read this part twice.
 

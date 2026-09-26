@@ -18,6 +18,15 @@
 // creation with no new label, no `access.ts` change and no backfill migration. The
 // always-loaded clause is the cache-prefix law (roadmap non-negotiable #10) written as a
 // test: this tool's schema must ride `load_tool_docs` and must never widen the cached head.
+//
+// ── THE FILE NOW HOLDS TWO INSTRUCTION PINS OVER ONE SHIPPED STRING (T8, 2026-09-26) ────
+// It is named for the first property it carried, and that name is still true. What it is
+// FOR is the shipped `dojo_report` description — the only copy of that text that reaches
+// production — and it now pins two independent things in it: the PRIVACY rule (FR-2, below)
+// and the TRIGGER (T8, at the bottom). They live in one file on purpose. Both are anchored
+// on sentences inside the same string, so whoever rewords that string meets both lists in
+// one place instead of updating one and silently dropping the other. There is ONE mechanism
+// here — a table of (why, sentence) pairs checked in a loop — used twice, not two.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -153,5 +162,145 @@ describe('the tool cannot post, structurally', () => {
       { kind: 'fs_write', from: 'fixed:the local report bundle under ~/.dojo/reports' },
     ]);
     expect(DEF!.effects.some(e => e.kind === 'net' || e.kind === 'send')).toBe(false);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// ⚠ THE TRIGGER IS LOAD-BEARING TOO (T8, 2026-09-26, the owner watching).
+//
+// THE MEASURED DEFECT. A staged agent was handed the owner's own designed phrase — "That
+// wasn't right. Why did that happen? Let's get this fixed in the Dojo." — and did NOT reach
+// for `dojo_report`. It investigated its own grants, delegated to another agent to ask for a
+// permission, was correctly refused, and burned the whole loop until a human said "file this
+// as a problem report about the platform." Pointed at the tool it then ran gather → draft →
+// submit perfectly. So nothing in T1-T7's machinery was wrong; the RECOGNITION was, and the
+// recognition lives entirely in the wording the agent reads. That makes the cues and the
+// discriminator below the same class of thing as FR-2's privacy paragraph: shipped text
+// doing a job no other code does, therefore pinned.
+//
+// SAME MECHANISM AS FR-2, DELIBERATELY — a table of (why, sentence) pairs checked in a loop,
+// byte-anchored on the sentences that carry the load and nothing else. A prompt-tuning pass
+// may reflow, reorder or re-word around them; it may not drop one without being told which.
+//
+// WHY THE .md IS ASSERTED HERE WHEN FR-2 REFUSED TO ASSERT IT. FR-2's reason was measured
+// and still holds: `packages/server/src/tools/docs/*.md` never reaches the packaged build
+// (`deploy/build-package.sh` copies `dist` + migrations + templates only, and `tsc` does not
+// emit .md, so `dist/tools/docs/` does not exist — verified on both the local dist and
+// `deploy/dist/.../server/dist/tools/`). In PRODUCTION `load_tool_docs('dojo_report')`
+// therefore returns `formatToolDoc(def)`, i.e. THE DESCRIPTION. But on the DEV BOX the
+// server runs `tsx watch src/index.ts`, so `index-generator.ts`'s override path resolves
+// inside `src/` and the .md IS copied verbatim into `~/.dojo/tools/dojo_report.md` (verified
+// by diff on the live box: byte-identical to the source file). Every behavioural run —
+// including the T8 run this clause exists because of — reads the .md. If a cue lives in one
+// surface and not the other, the live proof stops testing what ships. So the TRIGGER
+// sentences are required in BOTH; the privacy paragraph's placement is unchanged.
+// ════════════════════════════════════════════════════════════════════════════════════════
+const overrideDoc = (): string =>
+  fs.readFileSync(path.join(__dirname, '..', '..', '..', 'tools', 'docs', 'dojo_report.md'), 'utf8');
+
+// The recognition cues. The owner's instruction, verbatim: "a user might say 'Can we let
+// DOJO know about this?' or 'Can we get that fixed?' or 'Report this problem' or many other
+// ways to say it." The three owner phrasings plus the family, and — the part that makes it a
+// trigger rather than a matcher — the sentences that say out loud the list is not exhaustive.
+const TRIGGER_CUES: readonly [string, string][] = [
+  ['what it is, in the user\'s own terms, first', 'THE PEOPLE WHO BUILD THE DOJO TO KNOW ABOUT A PROBLEM WITH THE DOJO ITSELF'],
+  ['...and that no other tool does it', 'it is the only tool that does it'],
+  ['the cue instruction itself', 'REACH FOR IT WHEN THE USER'],
+  ['the list is OPEN-ENDED and says so', 'EXAMPLES, NOT A PATTERN TO MATCH'],
+  ['...and says so a second time, after the list', 'The list does not end there and is not meant to'],
+  ['the owner\'s own designed phrase, the one the live run missed', 'let\'s get this fixed in the Dojo'],
+  ['owner phrasing 2', 'can we let DOJO know about this?'],
+  ['owner phrasing 3', 'can we get that fixed?'],
+  ['owner phrasing 4', 'report this problem'],
+  ['the family: the devs', 'tell the Dojo devs'],
+  ['the family: report', 'can we report this'],
+  ['the family: bug', 'submit a bug'],
+  ['the family: broken', 'let them know this is broken'],
+  ['the family: issue', 'file an issue'],
+  ['the family: platform', 'this is a platform problem'],
+  ['SENSE over phrase — the instruction that generalises past the list', 'if the SENSE of what they said is'],
+  ['...stated as a prohibition too, because a floor model waits for the magic word', 'Do not wait for a particular phrase'],
+];
+
+// The discriminator. Every clause below names a branch the live run actually took.
+const TRIGGER_DISCRIMINATOR: readonly [string, string][] = [
+  ['the discriminator, as a heading the model cannot skim past', 'THIS IS ABOUT THE PLATFORM, NOT ABOUT YOUR SITUATION'],
+  ['what the platform IS, so "platform" is not an abstraction', 'the engine, the tools, the dashboard'],
+  ['the wrong branches are named as wrong', 'THE WRONG BRANCHES'],
+  ['...branch 1 of the live run: it investigated its own grants', 'investigating your own grants or permissions'],
+  ['...branch 2 of the live run: it delegated to a peer to ask for a permission', 'delegating to another agent or asking a peer for help'],
+  ['...and the near-miss branch: fixing the situation instead of reporting it', 'fixing the user\'s immediate situation instead of reporting it'],
+  ['the positive resolution, so the paragraph is not purely a list of refusals', 'none of those is the answer and this tool is'],
+  ['the grant fact that kills the permission hunt at the root (D5)', 'there is nothing to request and nobody to ask'],
+];
+
+// The ambiguity door (the owner's own suggestion: "perhaps the agent needs a way to ask if
+// that's what the user is asking for if the agent is unclear"). OR2 keeps this in the
+// WORDING and out of the engine: no gate reads the user's words and routes them here.
+const AMBIGUITY_DOOR: readonly [string, string][] = [
+  ['the door is opened explicitly, and closed again with "then act"', 'IF YOU ARE NOT SURE THAT IS WHAT THEY MEANT, ASK'],
+  ['the exact question is MODELLED, not described', 'Do you want me to file this as a problem report to the Dojo\'s developers?'],
+  ['asking is cheap', 'Asking costs one sentence'],
+  ['...and a wrong silent branch is expensive, which is the asymmetry that decides it', 'Guessing silently costs the whole turn'],
+  ['one question, then act — never a loop of clarifications', 'Ask once, take the answer, act on it'],
+  ['...and not a shield for stalling on words that are already plain', 'do not ask at all when their words already say it plainly'],
+];
+
+describe('the agent can tell that the user just asked for THIS tool (T8)', () => {
+  const surfaces = (): [string, string][] => [
+    ['the shipped tool description (definitions.ts — the only copy production reads)', DEF!.description],
+    ['the dev-box override doc (tools/docs/dojo_report.md — what every behavioural run reads)', overrideDoc()],
+  ];
+
+  it('leads with what the user wants and carries the OPEN-ENDED cue list, on both surfaces', () => {
+    for (const [surface, text] of surfaces()) {
+      for (const [why, sentence] of TRIGGER_CUES) {
+        expect(
+          text,
+          `${surface} no longer says: ${sentence} (${why}). T8 measured a staged agent missing this `
+          + 'tool on the owner\'s own phrase; these sentences are the fix and there is no other '
+          + 'mechanism behind them — the tool index in the system prompt lists the NAME only. If '
+          + 'the wording is being revised, keep every sentence and update this list deliberately.',
+        ).toContain(sentence);
+      }
+    }
+  });
+
+  it('names the wrong branches the live run actually took, on both surfaces', () => {
+    for (const [surface, text] of surfaces()) {
+      for (const [why, sentence] of TRIGGER_DISCRIMINATOR) {
+        expect(
+          text,
+          `${surface} no longer says: ${sentence} (${why}). This is the discriminator that would `
+          + 'have saved the T8 run: the tool is for a problem with the PLATFORM, and a grant hunt '
+          + 'or a hand-off to a peer is the wrong branch when the user\'s words point at reporting.',
+        ).toContain(sentence);
+      }
+    }
+  });
+
+  it('offers the one-line clarifying question rather than a silent guess, on both surfaces', () => {
+    for (const [surface, text] of surfaces()) {
+      for (const [why, sentence] of AMBIGUITY_DOOR) {
+        expect(
+          text,
+          `${surface} no longer says: ${sentence} (${why}). The ambiguity door is the owner\'s own `
+          + 'suggestion and it is guidance, not machinery: OR2 keeps the engine out of judging what '
+          + 'the user meant, so if this sentence goes, nothing else asks.',
+        ).toContain(sentence);
+      }
+    }
+  });
+
+  it('keeps the trigger BEHIND the cache breakpoint: the description may grow, the prefix may not', () => {
+    // The cue rewrite adds ~1.4 KB to a description that is already 1.9 KB. That is only
+    // affordable because this tool is not always-loaded (clause above), so the bytes ride the
+    // session-loaded tail behind `cacheBreakpointIndex` and cost only an agent that asks.
+    // The tool INDEX line in the cached system prefix is names-only (`tools/categories.ts`
+    // renders `\`name\`` and nothing else), so no amount of description text can move it.
+    expect(DEF!.description.length).toBeGreaterThan(2000);
+    for (const name of ['dojo_report']) {
+      expect(TOOL_CATEGORIES.find(c => c.tools.includes(name))!.label).toBe('Meta');
+    }
   });
 });
