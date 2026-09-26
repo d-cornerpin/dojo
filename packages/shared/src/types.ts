@@ -476,8 +476,8 @@ export interface DagResponse {
 // ── Multi-Agent ──
 
 export interface PermissionManifest {
-  file_read: string[] | '*';
-  file_write: string[] | '*';
+  file_read: string[] | '*' | 'none';
+  file_write: string[] | '*' | 'none';
   file_delete: string[] | 'none';
   /** Programs the agent may run through `exec({argv})` — argv, no shell. */
   exec_allow: string[];

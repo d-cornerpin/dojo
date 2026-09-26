@@ -121,14 +121,30 @@ export const DEFAULT_SUBAGENT_PERMISSIONS: PermissionManifest = {
 // Widening only, and only into the agent's OWN directory: `'*'` is left alone
 // rather than expanded into a list (turning a wildcard into an enumeration would
 // NARROW it), and no agent gains a path belonging to another.
+//
+// ── AND `'none'` IS LEFT ALONE TOO, WHICH IS THE THIRD SHAPE THIS MISSED ──
+// `'none'` is a LIVE stored value on these two fields (the zod `pathList` admits
+// it, `tracker/pm-agent.ts` writes it, 13 rows on the owner's body carry it) and
+// it means DENY-ALL. Guarding only `'*'` sent it down the list branch, where
+// `[...'none', artifact]` STRING-SPREAD it into `["n","o","n","e", …]` — four
+// one-letter ALLOW patterns in `grant_rule`, serialized into any child spawned
+// from it. Deny-all stays deny-all: the artifact path is NOT added, because
+// `'none'` is the one value whose whole meaning is that there is nothing to
+// widen. Same shape as `scope.ts`'s `pathSubset`, which leads with the same
+// guard. The incident, its blast radius and the security clause are held by
+// `__tests__/deny-all-is-not-four-letters.test.ts` rather than repeated here.
 
 /** `~/.dojo/uploads/<agentId>/**` — this agent's own artifact directory. */
 export function artifactPathFor(agentId: string): string {
   return path.join(homeDir(), '.dojo', 'uploads', agentId, '**');
 }
 
-function withArtifactPath(value: string[] | '*', agentId: string): string[] | '*' {
+function withArtifactPath(
+  value: string[] | '*' | 'none',
+  agentId: string,
+): string[] | '*' | 'none' {
   if (value === '*') return '*';
+  if (value === 'none') return 'none';   // deny-all has nothing to widen
   const artifact = artifactPathFor(agentId);
   return value.includes(artifact) ? value : [...value, artifact];
 }
