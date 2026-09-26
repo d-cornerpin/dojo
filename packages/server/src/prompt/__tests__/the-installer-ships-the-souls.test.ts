@@ -31,6 +31,11 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../../../../..');
 const GATE = path.join(REPO_ROOT, 'deploy/checks/check-shipped-souls.mjs');
 const REPO_TEMPLATES = path.join(REPO_ROOT, 'templates');
+// T8 (2026-09-26): the same gate now also asks for the hand-written TOOL MANUALS, which the
+// compiled `tools/index-generator.js` reads from one hop off its own location. Measured defect:
+// `build-package.sh` never shipped `src/tools/docs`, so `load_tool_docs` served the GENERATED
+// short doc on every installed box and nothing said so.
+const REPO_TOOL_DOCS = path.join(REPO_ROOT, 'packages/server/src/tools/docs');
 
 const WORK = path.join(realOs.tmpdir(), 'dojo-t55-shipped-souls');
 
@@ -51,6 +56,14 @@ function buildArtifact(name: string, opts: {
   truncate?: string[];
   wrongDepth?: boolean;
   noDist?: boolean;
+  /** The tool-manual copy step dropped entirely — the T8 defect as it shipped. */
+  stripManuals?: boolean;
+  omitManuals?: string[];
+  truncateManuals?: string[];
+  /** The manuals shipped where nothing reads them (`dist/docs`, not `dist/tools/docs`). */
+  manualsWrongDepth?: boolean;
+  /** No compiled generator: the anchor the manuals' path is computed from is missing. */
+  noGenerator?: boolean;
 } = {}): string {
   const root = path.join(WORK, name);
   fs.rmSync(root, { recursive: true, force: true });
@@ -76,6 +89,31 @@ function buildArtifact(name: string, opts: {
         ? '# Stub\n\nYou are the agent.\n'                     // the in-code stub, in a smaller hat
         : fs.readFileSync(path.join(REPO_TEMPLATES, f), 'utf8');
       fs.writeFileSync(path.join(dest, f), body);
+    }
+  }
+
+  // The compiled tool-doc generator and its manuals, exactly where build-package.sh puts them.
+  // The generator's one line is reproduced verbatim because the gate MIRRORS it to know where to
+  // look — a fixture that wrote some other spelling would be testing a different question.
+  if (!opts.noDist && !opts.noGenerator) {
+    const tools = path.join(platform, 'packages/server/dist/tools');
+    fs.mkdirSync(tools, { recursive: true });
+    fs.writeFileSync(
+      path.join(tools, 'index-generator.js'),
+      "const TOOL_DOCS_SOURCE_DIR = path.resolve(__dirname, './docs');\n",
+    );
+    if (!opts.stripManuals) {
+      const docsDest = opts.manualsWrongDepth
+        ? path.join(platform, 'packages/server/dist/docs')
+        : path.join(tools, 'docs');
+      fs.mkdirSync(docsDest, { recursive: true });
+      for (const f of fs.readdirSync(REPO_TOOL_DOCS).filter((f) => f.endsWith('.md'))) {
+        if (opts.omitManuals?.includes(f)) continue;
+        const body = opts.truncateManuals?.includes(f)
+          ? '# stub\n'                                          // hollowed: reads like the generated doc
+          : fs.readFileSync(path.join(REPO_TOOL_DOCS, f), 'utf8');
+        fs.writeFileSync(path.join(docsDest, f), body);
+      }
     }
   }
   return root;
@@ -166,6 +204,67 @@ describe('the installer proves the souls shipped', () => {
     // …and every named floor must actually be a file the repo ships, or the gate asserts a ghost.
     const shipped = fs.readdirSync(REPO_TEMPLATES);
     for (const m of floor.matchAll(/'([^']+)'/g)) expect(shipped).toContain(m[1]);
+  });
+
+  // ── T8 (2026-09-26): THE HAND-WRITTEN TOOL MANUALS GET THE SOULS' TREATMENT ──
+  // Measured, not hypothetical: `src/tools/docs/*.md` was never packaged, so `load_tool_docs`
+  // served the GENERATED short doc for `dojo_report`, `image_create` and `image_generate_internal`
+  // on every installed box. build-package.sh now copies them and asserts by DISCOVERY; discovery
+  // cannot refuse a deletion, so the gate carries the named floor — same split, same reason as
+  // REQUIRED_SOULS above.
+
+  it('RED: the manuals copy step dropped — nothing at dist/tools/docs — refuses', () => {
+    const r = runGate([buildArtifact('no-manuals', { stripManuals: true }), '--require-artifact']);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('dojo_report.md');
+  });
+
+  it('RED: dojo_report.md missing from an otherwise complete artifact refuses', () => {
+    const r = runGate([
+      buildArtifact('no-report-manual', { omitManuals: ['dojo_report.md'] }), '--require-artifact',
+    ]);
+    expect(r.code).toBe(1);
+    expect(r.out, 'the refusal does not name the manual that is missing').toContain('dojo_report.md');
+  });
+
+  it('RED: a manual shipped hollowed refuses — presence is not enough', () => {
+    const r = runGate([
+      buildArtifact('stub-manual', { truncateManuals: ['image_create.md'] }), '--require-artifact',
+    ]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('image_create.md');
+  });
+
+  it('RED: manuals shipped at the WRONG DEPTH refuse — the generator resolves ONE directory', () => {
+    // The mutant that passed the first version of build-package.sh's own assert: copied into
+    // `dist/docs`, present in the package, invisible to the code that reads them.
+    const r = runGate([buildArtifact('manuals-wrong-depth', { manualsWrongDepth: true }), '--require-artifact']);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('dojo_report.md');
+  });
+
+  it('RED: no compiled tool-doc generator — the anchor the manuals\' path is computed from', () => {
+    const r = runGate([buildArtifact('no-generator', { noGenerator: true }), '--require-artifact']);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('index-generator.js');
+  });
+
+  it('RED: a repo that DELETED a floor manual cannot pass on the strength of its siblings', () => {
+    // C1 of the packaging fix, as a clause. The build-time assert derives its expectation from the
+    // source directory, so a manual deleted there is simply not expected and the build stays green.
+    // The floor is the half that bites — and every name on it must be a file the repo really ships,
+    // or the gate asserts a ghost and refuses every build instead.
+    const src = fs.readFileSync(GATE, 'utf8');
+    const floor = /const REQUIRED_TOOL_MANUALS = \[([\s\S]*?)\];/.exec(src)?.[1] ?? '';
+    for (const f of ['dojo_report.md', 'image_create.md', 'image_generate_internal.md']) {
+      expect(floor, `${f} must be a NAMED floor, not only discovered at build time`).toContain(f);
+    }
+    const shipped = fs.readdirSync(REPO_TOOL_DOCS);
+    for (const m of floor.matchAll(/'([^']+)'/g)) expect(shipped).toContain(m[1]);
+    // ...and the floor says out loud what retiring one requires, so the next reader does not
+    // quietly delete a line to make a red gate green.
+    expect(src, 'the floor does not tell a reader what deleting a manual on purpose requires')
+      .toMatch(/DELETING A MANUAL ON PURPOSE|RETIRING A MANUAL ON PURPOSE/);
   });
 
   it('CONTROL: the gate is declared in the manifest and invoked by release.sh', () => {
