@@ -175,7 +175,18 @@ describe('the three phases are a one-way street to the owner', () => {
     const id = await driveToDraft();
     const submitted = await call({ phase: 'submit', report_id: id });
     expect(submitted.isError, submitted.content).toBe(false);
-    expect(submitted.content).toContain('You cannot press it');
+    // ROUND-5 RED: the assertion is the FACT, not the capitalisation. This read
+    // `toContain('You cannot press it')` and caught the round-5 rewording of this very result —
+    // which changed the sentence ("…and you cannot press it for them") while keeping the fact.
+    // It asserts the fact case-insensitively now, and gains the other half of the same truth:
+    // the result may not use the lane's reserved delivery words about a row that reached nobody
+    // (`report-prose.ts`'s `submitHead`, pinned in full by
+    // `the-engine-says-what-happened-to-the-card.test.ts` §5b).
+    expect(submitted.content.toLowerCase()).toContain('you cannot press it');
+    for (const reserved of ['filed', 'posted', 'sent', 'delivered', 'published']) {
+      expect(new RegExp(`\\b${reserved}\\b`, 'i').test(String(submitted.content)),
+        `the submit result says "${reserved}" about a row that has reached nobody`).toBe(false);
+    }
     expect(getReport(id)?.status).toBe('awaiting_approval');
     expect(listOpenReports().map(r => r.id)).toContain(id);
   });

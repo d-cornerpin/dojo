@@ -91,6 +91,7 @@ import {
 import { POST_BUDGET_ENTRY_LANE, isProtectedLaneId } from '../../memory/lanes.js';
 import { engineFileContaining, engineText } from '../../agent/v2/__tests__/engine-sources.js';
 import { cancelReport, createReport, submitForApproval, attachDraft } from '../store.js';
+import { draftHead, gatherHead, submitHead } from '../../agent/tools/cat/report-prose.js';
 
 /** The lane's own source, for the structural clauses. */
 const laneSource = (): string => fs.readFileSync(
@@ -577,6 +578,63 @@ describe('§5 it does not tick, and it does not touch the prefix', () => {
     for (const forbidden of ['DEFAULT_ALWAYS_LOADED_TOOLS', 'definitions.js', 'systemPrompt']) {
       expect(laneSource()).not.toContain(forbidden);
     }
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §5b — ONE VOCABULARY ACROSS THE TOOL AND THE LANE (ritual round-5 red).
+//
+// The blast reded on an HONEST reply. The tool's submit result opened with *"Filed as `<id>`"* for a
+// row that had reached nobody, the model paraphrased it — *"Report is filed as a preview card on your
+// dashboard … Nothing has been sent to the Dojo builders yet. Press Post…"* — and the release gate
+// read the first three words as a delivery claim. Meanwhile THIS lane's legend, which the agent reads
+// on the same turn, defines the same word the other way: *"FILED means it reached the builders"*, and
+// it renders PREVIEW CARD UP for exactly that row. One word, two meanings, one release.
+//
+// The lane's legend is the definition, so the TOOL moved. These clauses hold the vocabulary at both
+// ends, because a word that means two things is not a thing one file can keep straight alone.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** The lane's reserved DELIVERY words: they mean the report reached the Dojo builders. */
+const RESERVED_DELIVERY_WORDS = ['filed', 'posted', 'sent', 'delivered', 'published'];
+
+describe('§5b the tool and the lane speak one vocabulary', () => {
+  it('the SUBMIT result contains none of the lane\'s reserved delivery words', () => {
+    const head = submitHead('acf33045-1111-4000-8000-000000000000');
+    for (const word of RESERVED_DELIVERY_WORDS) {
+      expect(new RegExp(`\\b${word}\\b`, 'i').test(head),
+        `the submit result says "${word}" about a row that has reached nobody — that is the round-5 red`)
+        .toBe(false);
+    }
+    // …and it says what IS true, in the lane's own words.
+    expect(head).toContain('Submitted as');
+    expect(head).toContain('PREVIEW CARD UP');
+    expect(head).toContain('NOTHING has reached the Dojo builders');
+    expect(head).toMatch(/pressing Post/);
+    expect(head).toContain('you cannot press it for them');
+  });
+
+  it('the lane renders the reserved word ONLY for a row that really reached the builders', () => {
+    seedReport({ id: 'vocab-posted', status: 'posted', updatedAt: daysAgo(0), issueUrl: 'https://example.invalid/i/1' });
+    expect(block()).toContain('— FILED');
+    db().prepare('DELETE FROM dojo_reports').run();
+    // Every NOT-delivered state: the reserved word may not appear as a row's state word.
+    for (const status of ['awaiting_approval', 'drafting', 'approved', 'cancelled']) {
+      db().prepare('DELETE FROM dojo_reports').run();
+      seedReport({ id: `vocab-${status}`, status, updatedAt: daysAgo(0) });
+      const rows = block().split('\n').filter((l) => /^\d+\. /.test(l)).join('\n');
+      expect(rows, `a ${status} row may not wear a delivery word`).not.toMatch(/— FILED|— POSTED|— SENT/);
+    }
+  });
+
+  it('gather and draft keep their NEGATIVE uses — round 1\'s fix, true under both readings', () => {
+    // The sweep's deliberate carve-out, asserted so a future "one vocabulary" pass does not delete a
+    // live guard: these say the words only to DENY them, and they are pinned elsewhere by
+    // `the-handoff-cannot-be-truncated-away.test.ts`.
+    const g = gatherHead('abc', { askedFor: '20 turns', turns: 20, minutes: 120, truncated: false } as never).join('\n');
+    expect(g).toContain('NOTHING IS FILED');
+    expect(g).toContain('Do not tell them it is filed');
+    expect(draftHead('abc', 'permission', 'sig').join('\n')).toContain('STILL NOT FILED');
   });
 });
 
