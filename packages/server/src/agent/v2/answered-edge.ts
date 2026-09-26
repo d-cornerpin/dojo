@@ -215,8 +215,8 @@ export function substantiveReplySince(agentId: string, sinceMs: number): boolean
 // WHAT IT IS KEYED ON: ROWS, NEVER WORDS. The trigger is not "the answer mentions a report" —
 // a prose classifier here is the exact shape the deliverable-claim floor was removed for TWICE
 // (see this file's header), and there is still no regex in this file and no text read. It is a
-// row-to-row join the engine already records: the `tool_use` row the answering episode wrote →
-// its `report_id` → `dojo_reports.status`. No migration, no new column, no new writer.
+// row-to-row join the engine already records: the `tool_use` rows inside the stamp's own window →
+// their `report_id` → `dojo_reports.status`. No migration, no new column, no new writer.
 // ════════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -242,9 +242,18 @@ const STANDING_REPORT_STATUSES: readonly ReportStatus[] = ['awaiting_approval', 
 const REPORT_TOOL_NAME = 'dojo_report';
 
 /**
- * THE CHEAP GATE, and it is also the blast-radius statement: an agent that has never withdrawn
- * a report cannot have a withdrawn-report answer, so every read below is byte-identical to what
- * it emitted before this task and pays one indexed lookup to prove it.
+ * THE CHEAP GATE, and it is also the blast-radius statement: an agent with NO non-standing report
+ * row cannot have a withdrawn-report answer, so every read below returns exactly what it returned
+ * before this task and pays one tiny-table read to prove it. `drafting` is non-standing, so an
+ * in-flight or abandoned draft arms the gate as well — deliberate (a `drafting` row IS round 1's
+ * false-filed shape), and the reason this is not phrased as "never withdrew a report".
+ *
+ * COST, measured readonly on the owner's box: the plan is `SCAN dojo_reports` — there is no index
+ * on `agent_id`, only `(status, created_at)`, `signature` and the PK — at **0.010 ms over 14 rows**.
+ * Left as a scan deliberately: the index-using form is `status IN (<the non-standing values>)`, and
+ * a closed IN-list cannot express "anything this release does not recognise", which is the safe
+ * direction `report/store.ts`'s rule 4 takes and the one row of the per-status table nothing else
+ * holds. It grows with every report ever filed; when that table stops being tiny, index `agent_id`.
  *
  * A database with no `dojo_reports` table (a hand-built test fixture) has no reports at all,
  * which is the same answer — this is not a swallowed failure, it is the truth on that box.
@@ -261,38 +270,87 @@ function agentHasWithdrawnReport(agentId: string): boolean {
   }
 }
 
+// ── THE TWO ARMS, AS TWO STATEMENTS, AND THE REASON IS 207× ──────────────────────────────
+// They were ONE statement carrying `(m.turn_number = ? OR (m.seq >= ? AND m.seq <= ?))`, and an OR
+// across two different indexes gets NEITHER. Measured readonly on BehaviorBot — 38,872 messages,
+// and it is the release ritual's own agent: the plan was `SEARCH m USING INDEX
+// idx_messages_agent_id (agent_id=?)`, i.e. every message row of the agent with `json_each` over
+// each `[{%` one, at 18.7 ms — and `recentlyAnsweredAsks(limit=3)` runs on EVERY model call,
+// uncached, so 52.4 ms per call, growing with the agent's lifetime. Split, each arm gets the index
+// its plan names: turn arm `ix_msg_turn (agent_id=? AND turn_number=?)` 0.023 ms; span arm
+// `idx_messages_agent_id (agent_id=? AND rowid>? AND rowid<?)` — `seq` IS the rowid — 0.022 ms.
+// The whole read goes 52.4 ms -> 0.253 ms. Identical answer: each arm is its own `DISTINCT` and the
+// union is taken below, which is all the predicate ever asked of the set.
+//
+// WRITTEN OUT TWICE ON PURPOSE. A shared fragment with `${…}` in it would make both statements
+// unpreparable as written, and the SQL gate prepares every literal statement in this tree against
+// the migrated schema — that check is worth more than the eleven duplicated lines.
+//
+// `content LIKE '[{%'` is the same structural prefilter `substantiveReplySince` above already uses
+// to tell a tool_use envelope from prose — it reads the JSON frame, never the words — and the
+// `CASE WHEN json_valid` guard is what makes `json_each` unable to throw on a prose row whatever
+// the planner decides to evaluate first.
+const REPORT_STATUSES_IN_TURN = `SELECT DISTINCT (SELECT status FROM dojo_reports
+                         WHERE id = json_extract(j.value, '$.input.report_id')
+                           AND agent_id = m.agent_id) AS status
+         FROM messages m,
+              json_each(CASE WHEN json_valid(m.content) THEN m.content ELSE '[]' END) j
+        WHERE m.agent_id = ? AND m.turn_number = ?
+          AND m.role = 'assistant' AND m.content LIKE '[{%'
+          AND json_extract(j.value, '$.name') = ?
+          AND json_extract(j.value, '$.input.report_id') IS NOT NULL`;
+const REPORT_STATUSES_IN_SPAN = `SELECT DISTINCT (SELECT status FROM dojo_reports
+                         WHERE id = json_extract(j.value, '$.input.report_id')
+                           AND agent_id = m.agent_id) AS status
+         FROM messages m,
+              json_each(CASE WHEN json_valid(m.content) THEN m.content ELSE '[]' END) j
+        WHERE m.agent_id = ? AND m.seq >= ? AND m.seq <= ?
+          AND m.role = 'assistant' AND m.content LIKE '[{%'
+          AND json_extract(j.value, '$.name') = ?
+          AND json_extract(j.value, '$.input.report_id') IS NOT NULL`;
+
 /**
  * Does the answer this stamp points at STILL STAND — i.e. may it be listed and quoted as
  * something the person already has?
  *
- * `false` ONLY when the answering episode filed `dojo_report` rows and every row it bound has
- * left the standing set. A turn that filed nothing, a turn whose report is still on the card, and
- * a turn that re-filed after a cancel (one withdrawn row AND one standing row — measured, Arm A)
- * all still stand: this refuses exactly one shape, an answer whose only artefacts are gone.
+ * `false` ONLY when `dojo_report` rows are bound inside the window below and every one of them has
+ * left the standing set. A stamp with no report call in its window, one whose report is still on
+ * the card, and one that re-filed after a cancel (a withdrawn row AND a standing row — measured,
+ * Arm A) all still stand: this refuses one shape, an answer whose only artefacts are gone.
  *
- * ── WHY THE WINDOW IS THE EPISODE AND NOT "THE ANSWERING TURN" ──
- * The investigation's shape was `turn_number = <the answer's turn>`, and MEASURED ON THE REPRO
- * AGENTS IT MISSES THE REPRO: in Arm B the `dojo_report` calls are recorded on turn 1
- * (`messages.seq` 83301/83303/83305) while the ask's stamp points at turn 2's reply (seq
- * 83314) — the engine's "you have not spoken yet this turn" hint opens a NEW turn and the
- * answer lands there. On the kit-driven agent the two coincide (BehaviorBot, six asks, every
- * one `served_by_turn == answer.turn_number`). Both shapes are real, so the window is the union
- * of both, and both arms are bounded by the answer row itself: the rows BETWEEN the ask and its
- * answer (`ix_msg_agent_seq`), plus the answer's own turn (`ix_msg_turn`) for a turn that spoke
- * first and filed afterwards. It can reach neither before the ask nor past the answer.
+ * ── WHAT THE WINDOW IS, AND WHAT IT IS NOT ──
+ * It is RAW CONTAINMENT, and calling it "the answering episode" (as this comment did) overstates
+ * it: rows whose `turn_number` equals the stamp's turn, plus rows whose `seq` falls between the ask
+ * and its answer. Agent-scoped — NOT conversation-scoped, while the reads it filters are. Both arms
+ * are needed and each was measured against the two real shapes: Arm B records the `dojo_report`
+ * calls on turn 1 (seq 83301/83303/83305) while the stamp points at turn 2's reply (seq 83314),
+ * because the engine's "you have not spoken yet this turn" hint opens a new turn — the SPAN arm
+ * catches that; the kit-driven agent (BehaviorBot, six asks, `served_by_turn == answer.turn_number`)
+ * writes its call rows AFTER the answer row inside one turn — the TURN arm catches that, and it is
+ * why the window deliberately reaches past the answer.
  *
- * `content LIKE '[{%'` is the same structural prefilter `substantiveReplySince` above already
- * uses to tell a tool_use envelope from prose — it reads the JSON frame, never the words — and
- * the `CASE WHEN json_valid` guard is what makes `json_each` unable to throw on a prose row
- * whatever the planner decides to evaluate first.
+ * FOUR OVER-VOID SHAPES ARE MEASURED AND ACCEPTED, stated because the previous wording ("it can
+ * reach neither before the ask nor past the answer") was false in both halves: (a) two asks batched
+ * into ONE turn void together, because `setAnswerMessageId` stamps every row with that
+ * `served_by_turn`; (b) the span arm does the same for anything answered between the pair; (c) a
+ * report call in ANOTHER conversation inside the seq span voids a dashboard ask; (d) the turn arm
+ * also reaches call rows written BEFORE the ask.
  *
- * ⚠ THE ANSWER ROW IS RESOLVED HERE, BEHIND THE GATE, AND NOT BY THE CALLERS. Its two columns
- * could have ridden along on each read's own query — and one of those reads is the one
- * `conversation-identity-is-the-fk.test.ts` pins BY ITS SQL TEXT (`AND conversation_id = ?`),
- * which a self-join has to alias away. A clause that then passes on a DIFFERENT read's
- * unqualified copy of that string is exactly the silent re-pointing this repo's guard-corpus
- * census exists to stop, so the reads keep their SQL and the span is resolved once, here, only
- * when the gate is open.
+ * THE DIRECTION IS THE RULING'S, AND THE COLLATERAL IS MEASURED, NOT ASSUMED. Over the live body:
+ * 8 of 4,240 answered asks on gate-armed agents are voided and ALL EIGHT are genuine report asks —
+ * zero collateral; the enabling fan-out is 89 of 4,511 stamped asks (~2%) and it additionally needs
+ * that batch to hold report work that later dies; spans are short (mean 6.0 rows, max 81, none over
+ * 100). An over-void costs one unrelated ask its anti-repetition — the owner may hear an answer
+ * twice, which 2026-08-05 chooses in those words — while the under-void direction IS the round-2
+ * red. Narrowing it to a true ask-binding wants the `dojo_reports.ask_id` column the investigation
+ * named; until then this is the honest description of what it does.
+ *
+ * ⚠ THE ANSWER ROW IS RESOLVED HERE, BEHIND THE GATE, AND NOT BY THE CALLERS. Its two columns could
+ * have ridden along on each read's own query — and one of those reads is the one
+ * `conversation-identity-is-the-fk.test.ts` pins BY ITS SQL TEXT (`AND conversation_id = ?`), which
+ * a self-join has to alias away. A clause that then passes on a DIFFERENT read's unqualified copy of
+ * that string is the silent re-pointing the guard-corpus census exists to stop, so the reads keep
+ * their SQL and the span is resolved once, here, only when the gate is open.
  */
 export function answerStillStands(
   agentId: string, askSeq: number, answerMessageId: string | null | undefined,
@@ -301,30 +359,39 @@ export function answerStillStands(
   if (!answerMessageId) return true;
   let statuses: Array<string | null>;
   try {
-    const ans = getDb().prepare(
+    const db = getDb();
+    const ans = db.prepare(
       'SELECT seq, turn_number AS turn FROM messages WHERE id = ? AND agent_id = ?',
     ).get(answerMessageId, agentId) as { seq: number; turn: number | null } | undefined;
-    // A stamp whose answer row is gone (a cleared history) has no episode to check, and it
+    // A stamp whose answer row is gone (a cleared history) has no window to check, and it
     // counted as answered before this task — it still does.
     if (!ans) return true;
-    statuses = (getDb().prepare(
-      `SELECT DISTINCT (SELECT status FROM dojo_reports
-                         WHERE id = json_extract(j.value, '$.input.report_id')
-                           AND agent_id = m.agent_id) AS status
-         FROM messages m,
-              json_each(CASE WHEN json_valid(m.content) THEN m.content ELSE '[]' END) j
-        WHERE m.agent_id = ? AND m.role = 'assistant' AND m.content LIKE '[{%'
-          AND (m.turn_number = ? OR (m.seq >= ? AND m.seq <= ?))
-          AND json_extract(j.value, '$.name') = ?
-          AND json_extract(j.value, '$.input.report_id') IS NOT NULL`,
-    ).all(agentId, ans.turn, askSeq, ans.seq, REPORT_TOOL_NAME) as
-      Array<{ status: string | null }>).map((r) => r.status);
-  } catch {
+    const arm = (sql: string, params: unknown[]): Array<string | null> =>
+      (db.prepare(sql).all(...params as never[]) as Array<{ status: string | null }>)
+        .map((r) => r.status);
+    statuses = ans.turn === null ? [] : arm(REPORT_STATUSES_IN_TURN, [agentId, ans.turn, REPORT_TOOL_NAME]);
+    statuses = statuses.concat(arm(REPORT_STATUSES_IN_SPAN, [agentId, askSeq, ans.seq, REPORT_TOOL_NAME]));
+  } catch (err) {
+    // ⚠ FAIL OPEN — ARGUED, NOT CONVENIENT, AND SAID OUT LOUD. A throw here is the INSTRUMENT
+    // failing, not ambiguity about whether the person was answered, and the 2026-08-05 priority
+    // governs the second question rather than the first. Failing CLOSED would void EVERY answered
+    // ask on the agent — all three reads filter through this — so one malformed row would re-open
+    // the owner's 2026-08-09 repeat-yourself incident across the board; failing open loses only
+    // the withdrawal check, which is precisely the pre-fix behaviour. So it stays `true` and it
+    // SHOUTS, because a silent revert to the behaviour this task exists to remove is how the defect
+    // comes back. Pinned by "the instrument failing is LOUD, and it fails OPEN" — deleting this log
+    // or flipping the direction is RED there.
+    logger.error(
+      'answered-edge: the withdrawn-report check could not run, so this answer stamp STANDS '
+      + '(pre-fix behaviour) — until this is fixed a cancelled report card can be asserted as live',
+      { askSeq, answerMessageId, error: err instanceof Error ? err.message : String(err) },
+      agentId,
+    );
     return true;
   }
   // A call whose id resolves to NO row binds nothing — there is no artefact to contradict the
   // claim, so the stamp is left alone. Only a row that EXISTS and has left the standing set is
-  // a withdrawal, and one standing row anywhere in the episode is enough to keep the answer.
+  // a withdrawal, and one standing row anywhere in the window is enough to keep the answer.
   const bound = statuses.filter((s): s is string => s !== null);
   if (bound.length === 0) return true;
   return bound.some((s) => (STANDING_REPORT_STATUSES as readonly string[]).includes(s));
