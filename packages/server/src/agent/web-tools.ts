@@ -230,7 +230,17 @@ export async function webFetch(
       response = await fetch(currentUrl, {
         headers: {
           'User-Agent': 'DOJO/1.0 (agent-fetch)',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8',
+          // The trailing `*/*;q=0.1` is LOAD-BEARING, not politeness. Without it this
+          // header is an HTML-ONLY offer, and a strict JSON API reads it as "this client
+          // does not accept what I serve" and answers 415 Unsupported Media Type — so
+          // web_fetch could not read ANY JSON API. Measured against api.github.com,
+          // every endpoint: bare `text/html` → 415; `*/*` → 200; `application/json` →
+          // 200; `text/html,*/*;q=0.1` → 200. Appending the catch-all at q=0.1 is the
+          // MINIMAL measured form: HTML still wins the negotiation for ordinary pages
+          // (so stripHtmlTags keeps getting the HTML it expects, and a content-negotiating
+          // site still serves its human page), while a JSON-only origin now has something
+          // it is allowed to answer with instead of a 415.
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.1',
         },
         signal: AbortSignal.timeout(15000),
         redirect: 'manual',
