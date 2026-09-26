@@ -55,7 +55,7 @@ vi.mock('../../db/connection.js', async () => {
 });
 
 import { runMigrations } from '../../db/migrations.js';
-import { clearPlatformConfigCache } from '../../config/platform.js';
+import { clearPlatformConfigCache, getDashboardHiddenAgentIds } from '../../config/platform.js';
 import {
   DREAMER_AGENT_ALWAYS_LOADED, SUB_AGENT_ALWAYS_LOADED, getAgentAlwaysLoadedTools,
 } from '../tool-docs.js';
@@ -150,6 +150,64 @@ describe('§2 naming your own agent after a service agent grants it nothing', ()
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
+// §2c — THE FIFTH SITE, WHICH LIVED INSIDE THE ACCESSOR MODULE (review H2).
+//
+// `config/platform.ts` is the module every other fix in this file routes THROUGH, and it carried a
+// name comparison of its own: `getDashboardHiddenAgentIds()` ran
+//
+//     SELECT id FROM agents WHERE name IN ('Dreamer', 'Healer')
+//
+// beside its config-id read, as a "legacy name match" for historical agents. The rename direction was
+// safe (the config arm still resolves a renamed service agent), but the IMPOSTOR direction was not: a
+// user's own agent merely CALLED `Healer` or `Dreamer` lands in the dashboard-hidden set, and its
+// tracker tasks vanish from the owner's view — silently, with no error anywhere.
+//
+// ⚠ AND §3's BANNER WAS FALSE WHILE THIS SITE SAT IN THE TREE. It said "Four sites existed; this is
+// what stops the fifth", and the fifth was already there: the census matched only
+// `name === 'Literal'`, so a name inside a SQL string was invisible to it. The widening is in §3, with
+// the same fixture-table treatment the reader got — because a census whose headline outruns its
+// matcher is worse than no census: it tells the next author the shape is covered.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§2c the dashboard-hidden set is resolved by config id, never by display name', () => {
+  it('RED BEFORE THE FIX: a user agent NAMED "Healer" is not hidden from the tracker', () => {
+    setConfig('healer_agent_id', 'healer');
+    setConfig('dreamer_agent_id', 'dreamer');
+    setConfig('pm_agent_id', 'pm');
+    seedAgent('healer', 'Healer');            // the real one, resolved by id
+    seedAgent('agent-88', 'Healer');          // the user's own, same name, different id
+
+    const hidden = getDashboardHiddenAgentIds();
+    expect(hidden.has('healer'), 'the configured Healer is still hidden').toBe(true);
+    expect(hidden.has('agent-88'),
+      'a user agent called "Healer" was hidden from the tracker — its tasks vanish from the owner\'s view')
+      .toBe(false);
+  });
+
+  it('RED BEFORE THE FIX: the same for a user agent named "Dreamer"', () => {
+    setConfig('dreamer_agent_id', 'dreamer');
+    seedAgent('dreamer', 'Dreamer');
+    seedAgent('agent-99', 'Dreamer');
+    const hidden = getDashboardHiddenAgentIds();
+    expect(hidden.has('dreamer')).toBe(true);
+    expect(hidden.has('agent-99')).toBe(false);
+  });
+
+  it('a RENAMED service agent stays hidden — the config arm is what does the work', () => {
+    setConfig('healer_agent_id', 'healer');
+    seedAgent('healer', 'Doc Holiday');
+    expect(getDashboardHiddenAgentIds().has('healer')).toBe(true);
+  });
+
+  it('the set still holds all three roles, and still excludes Trainer and Imaginer by charter', () => {
+    for (const [k, v] of [['pm_agent_id', 'pm'], ['healer_agent_id', 'healer'], ['dreamer_agent_id', 'dreamer'],
+      ['trainer_agent_id', 'trainer'], ['imaginer_agent_id', 'imaginer']]) setConfig(k, v);
+    const hidden = getDashboardHiddenAgentIds();
+    expect([...hidden].sort()).toEqual(['dreamer', 'healer', 'pm']);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
 // §3 — THE CENSUS: no shipped surface may compare an agent row's NAME to a literal.
 //
 // Four sites existed; this is what stops the fifth. It reads the shipped surfaces only (tests do not
@@ -209,17 +267,45 @@ describe('§3 the census: nothing shipped decides behaviour from an agent\'s dis
     expect(roles.every((r) => /^[A-Z][A-Za-z]*$/.test(r))).toBe(true);
   });
 
-  it('no shipped file compares a name field to a service-agent ROLE name', () => {
+  /**
+   * THE SHAPES A NAME-RELIANT SITE CAN WEAR — widened after review H2 falsified the old banner.
+   *
+   * The first cut matched `name === 'Role'` and nothing else, so the FIFTH site (`config/platform.ts`'s
+   * `SELECT id FROM agents WHERE name IN ('Dreamer', 'Healer')`) was invisible to it while sitting in
+   * the tree, and the census reported 0 offenders under a heading that claimed it "stops the fifth".
+   * A census whose headline outruns its matcher is worse than none: it tells the next author the shape
+   * is already covered.
+   *
+   * Each entry is a shape with a name, so a failure says WHICH kind of reliance it found.
+   */
+  function nameReliantShapes(roles) {
+    const R = `(?:${roles.join('|')})`;
+    return [
+      // row.name === 'Healer' · agent.name !== "Dreamer" · name == 'PM'
+      { id: 'equality', re: new RegExp(`\\b(?:\\w+\\??\\.)?name\\s*[!=]==?\\s*['"\`]${R}['"\`]`, 'g') },
+      // SQL: WHERE name IN ('Dreamer','Healer') · name = 'Healer' · name LIKE 'Dreamer'
+      { id: 'name-in-sql', re: new RegExp(`\\bname\\s*(?:=|IN|LIKE)\\s*\\(?\\s*['"]${R}['"]`, 'gi') },
+      // ['Dreamer','Healer'].includes(a.name) · NAMES.includes(row.name) with a role literal nearby
+      { id: 'includes', re: new RegExp(`\\[[^\\]]*['"]${R}['"][^\\]]*\\]\\s*\\.includes\\s*\\([^)]*\\bname\\b`, 'g') },
+      // switch (agent.name) { case 'Healer':
+      { id: 'switch-case', re: new RegExp(`case\\s+['"]${R}['"]\\s*:`, 'g') },
+    ];
+  }
+
+  it('no shipped file decides behaviour from a display name, in ANY of the four shapes', () => {
     const roles = roleNamesFromPlatform();
-    const SHAPE = new RegExp(`\\b(?:\\w+\\??\\.)?name\\s*===\\s*'(${roles.join('|')})'`, 'g');
-    const offenders: string[] = [];
+    const shapes = nameReliantShapes(roles);
+    const offenders = [];
     for (const file of shippedFiles()) {
       const text = fs.readFileSync(file, 'utf8');
       text.split('\n').forEach((line, i) => {
         // Comments are not logic. They still ship, which is the mechanical scrub's business.
         if (/^\s*(?:\/\/|\*|\/\*)/.test(line)) return;
-        for (const m of line.matchAll(SHAPE)) {
-          offenders.push(`${path.relative(SRC, file)}:${i + 1}  ${line.trim()}  (role "${m[1]}")`);
+        for (const shape of shapes) {
+          shape.re.lastIndex = 0;
+          if (shape.re.test(line)) {
+            offenders.push(`${shape.id}  ${path.relative(SRC, file)}:${i + 1}  ${line.trim().slice(0, 110)}`);
+          }
         }
       });
     }
@@ -228,27 +314,44 @@ describe('§3 the census: nothing shipped decides behaviour from an agent\'s dis
       + 'getHealerAgentId) or resolve the id from config').toEqual([]);
   });
 
-  it('CONTROL: the census catches the four real sites and ignores what is not the defect', () => {
-    // A guard that cannot fail is not a guard. The four strings below are the audit's own four
-    // verbatim sites; the innocents are the shapes the first cut wrongly flagged.
+  it('THE FIXTURE TABLE: every shape caught, and role words in prose ignored', () => {
     const roles = roleNamesFromPlatform();
-    const SHAPE = new RegExp(`\\b(?:\\w+\\??\\.)?name\\s*===\\s*'(${roles.join('|')})'`, 'g');
-    for (const planted of [
-      "if (row?.name === 'Dreamer') return DREAMER_AGENT_ALWAYS_LOADED;",
-      "if (!(agent.name === 'Dreamer' || isDreamer(agentId))) {",
-      "if (agent.name === 'Dreamer' || isDreamerAgent(agentId)) {",
-      "const healer = agents.data.find((a: { name: string }) => a.name === 'Healer' && a.status === 'working');",
-    ]) {
-      expect([...planted.matchAll(SHAPE)].length, planted).toBeGreaterThan(0);
-    }
-    for (const innocent of [
-      "const from = headers.find(h => h.name === 'From')?.value ?? '';",
-      "if (e.name === 'TimeoutError' || e.name === 'AbortError') return true;",
-      "if (name === 'NotAllowedError' || name === 'SecurityError') {",
-      "if (row.name === agentName) return true;",
+    const shapes = nameReliantShapes(roles);
+    const fires = (line) => shapes.filter((sh) => { sh.re.lastIndex = 0; return sh.re.test(line); }).map((sh) => sh.id);
+
+    const CAUGHT = [
+      // the audit's four, verbatim
+      ["if (row?.name === 'Dreamer') return DREAMER_AGENT_ALWAYS_LOADED;", 'equality'],
+      ["if (!(agent.name === 'Dreamer' || isDreamer(agentId))) {", 'equality'],
+      ["if (agent.name === 'Dreamer' || isDreamerAgent(agentId)) {", 'equality'],
+      ["const healer = agents.data.find((a: { name: string }) => a.name === 'Healer' && a.status === 'working');", 'equality'],
+      // review H2's fifth site, verbatim — invisible to the first cut
+      ["      `SELECT id FROM agents WHERE name IN ('Dreamer', 'Healer')`,", 'name-in-sql'],
+      // the variants the review named
+      ['if (row.name !== "Healer") return;', 'equality'],
+      ["if (agent.name == 'PM') hide();", 'equality'],
+      ["db.prepare(`SELECT id FROM agents WHERE name = 'Healer'`)", 'name-in-sql'],
+      ["db.prepare(\"SELECT id FROM agents WHERE name LIKE 'Dreamer'\")", 'name-in-sql'],
+      ["if (['Dreamer', 'Healer'].includes(a.name)) return true;", 'includes'],
+      ["switch (agent.name) { case 'Healer':", 'switch-case'],
+    ];
+    const IGNORED = [
+      // role words in PROSE and in product vocabulary — the false-positive half
+      "const label = 'Healer diagnostics';",
+      "logger.info('the Dreamer finished its batch', { agentId });",
+      "return get('healer_agent_name', 'Healer');",                       // the accessor's own default
+      "if (isHealerAgent(agentId)) return HEALER_AGENT_ALWAYS_LOADED;",   // the correct form
       "const isPrimary = id === getPrimaryAgentId();",
-    ]) {
-      expect([...innocent.matchAll(SHAPE)].length, innocent).toBe(0);
+      "const from = headers.find(h => h.name === 'From')?.value ?? '';",  // a Gmail header
+      "if (e.name === 'TimeoutError' || e.name === 'AbortError') return true;",
+      "SELECT id FROM agents WHERE classification = 'sensei'",            // by role column, not name
+      "if (row.name === agentName) return true;",                         // a variable, not a literal
+    ];
+    for (const [line, want] of CAUGHT) {
+      expect(fires(line), line).toContain(want);
+    }
+    for (const line of IGNORED) {
+      expect(fires(line), line).toEqual([]);
     }
   });
 
