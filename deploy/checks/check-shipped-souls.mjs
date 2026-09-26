@@ -91,6 +91,27 @@ const REQUIRED_SOULS = [
   'PM-SOUL.md', 'TRAINER-SOUL.md', 'HEALER-SOUL.md', 'IMAGINER-SOUL.md', 'DREAMER-SOUL.md',
 ];
 
+// ── THE HAND-WRITTEN TOOL MANUALS — THE SAME DEFECT, MEASURED 2026-09-26 (T8) ──
+// `tools/index-generator.ts` copies an override verbatim out of `path.resolve(__dirname, './docs')`
+// — `src/tools/docs` under tsx, `dist/tools/docs` in a packaged install — and `build-package.sh`
+// never shipped that directory. So `fs.existsSync` was false on every installed box, every agent
+// read the GENERATED short doc instead of the manual, and nothing said so: the runtime cannot tell
+// "no override was ever written" from "the override was lost in packaging". The copy and a
+// DISCOVERY-based assert now live in build-package.sh, and discovery is the right default there —
+// a manual added tomorrow is covered for free. What discovery cannot do is refuse a DELETION: a
+// source directory with one fewer manual ships one fewer and reports a clean sweep. That is what
+// this floor is, and it is the same argument REQUIRED_SOULS is (W24/W25 · T59).
+//
+// ⚠ RETIRING A MANUAL ON PURPOSE MEANS DELETING ITS LINE HERE, IN THE SAME COMMIT, WITH THE REASON
+// WRITTEN IN THAT COMMIT. That edit is meant to be seen and reviewed: this list is the only thing
+// standing between "we retired that manual deliberately" and "every agent silently lost it".
+const REQUIRED_TOOL_MANUALS = ['dojo_report.md', 'image_create.md', 'image_generate_internal.md'];
+
+// Present but gutted is the same outcome as absent, exactly as for a soul. The smallest real
+// manual measured 2,327 B, so this can only catch an empty or hollowed copy; byte-identity below
+// is what catches the rest when the artifact was built from this tree.
+const MIN_MANUAL_BYTES = 512;
+
 let failed = false;
 const fail = (...lines) => { failed = true; for (const l of lines) console.error(l); };
 
@@ -231,7 +252,85 @@ for (const file of repoSouls) {
   );
 }
 
-// ════════ 4. control: this gate refuses what it is supposed to refuse ════════
+// ════════ 4. the hand-written tool manuals, at the path THEIR reader computes ════════
+// Same rule as §1/§3 and for the same reason: ask the artifact, from the code's own anchor. The
+// anchor here is the COMPILED generator (`dist/tools/index-generator.js`), because the directory
+// it reads is one hop from its own location — so a copy that landed "somewhere" cannot pass. Only
+// the NAMED floor is asserted; discovery lives in build-package.sh, beside the copy it guards.
+const REPO_TOOL_DOCS = path.join(ROOT, 'packages/server/src/tools/docs');
+const shippedGenerator = path.join(platformDir, 'packages', 'server', 'dist', 'tools', 'index-generator.js');
+let manualsPassed = 0;
+if (!fs.existsSync(shippedGenerator)) {
+  fail(
+    `✗ the artifact has no ${path.relative(platformDir, shippedGenerator)} — the compiled tool-doc`,
+    '  generator is not where the server build puts it, so the directory it reads its manuals from',
+    '  cannot be computed from its own anchor. Either the server build did not land in the payload,',
+    '  or the shipped layout moved; both are findings, and neither may be assumed away.',
+    '',
+  );
+} else {
+  const shippedDocsDir = path.resolve(path.dirname(shippedGenerator), './docs');
+  // The mirror's own sanity clause, the sibling of the one at §1: this hop is `index-generator`'s
+  // line, not a path typed twice. If that module stops resolving `'./docs'` from its own directory,
+  // every verdict below would be about some other directory entirely — so say THAT instead.
+  if (!/TOOL_DOCS_SOURCE_DIR = path\.resolve\(__dirname, ['"]\.\/docs['"]\)/.test(fs.readFileSync(shippedGenerator, 'utf8'))) {
+    fail(
+      `✗ ${path.relative(platformDir, shippedGenerator)} no longer resolves its overrides as`,
+      '  `path.resolve(__dirname, \'./docs\')`. This gate mirrors that line to know where to look, so the',
+      '  mirror must be rewritten in the same commit as the code — a stale mirror measures the wrong place.',
+      '',
+    );
+  }
+  for (const file of REQUIRED_TOOL_MANUALS) {
+    const inRepo = path.join(REPO_TOOL_DOCS, file);
+    if (!fs.existsSync(inRepo)) {
+      fail(
+        `✗ ${path.relative(ROOT, inRepo)} is not in the repo — the named floor cannot be asserted.`,
+        '  If this manual was retired on purpose, delete its line from REQUIRED_TOOL_MANUALS in this',
+        '  file, in the same commit, with the reason. Otherwise every agent just lost it silently.',
+        '',
+      );
+      continue;
+    }
+    const shipped = path.join(shippedDocsDir, file);
+    const label = path.relative(platformDir, shipped);
+    if (!fs.existsSync(shipped)) {
+      fail(
+        `✗ ${file} — NOT in the artifact at ${label}`,
+        '  This is build-package.sh\'s tool-manual copy step not having run, or having run somewhere the',
+        '  compiled generator does not look. `load_tool_docs` then serves the GENERATED short doc to every',
+        '  agent on every installed box, and no log line says the manual was lost.',
+        '',
+      );
+      continue;
+    }
+    const bytes = fs.readFileSync(shipped);
+    if (bytes.length < MIN_MANUAL_BYTES) {
+      fail(
+        `✗ ${file} — shipped at ${bytes.length} bytes, below the ${MIN_MANUAL_BYTES}-byte floor.`,
+        '  A hollowed manual reads like the generated doc it was written to replace.',
+        '',
+      );
+      continue;
+    }
+    if (sameTree && !fs.readFileSync(inRepo).equals(bytes)) {
+      fail(
+        `✗ ${file} — the shipped copy is not the repo manual (${bytes.length} B shipped vs ${fs.statSync(inRepo).size} B in ${path.relative(ROOT, REPO_TOOL_DOCS)}).`,
+        `  The artifact declares version ${artifactVersion}, the same tree this check runs in, so the two`,
+        '  must be byte-identical. A drifted copy means the manual an agent reads is not the one here.',
+        '',
+      );
+      continue;
+    }
+    manualsPassed += 1;
+    console.log(
+      `PASS  ${String(bytes.length).padStart(6)} B  ${file}  →  ${label}`
+      + (sameTree ? '  (byte-identical to the repo manual)' : ''),
+    );
+  }
+}
+
+// ════════ 5. control: this gate refuses what it is supposed to refuse ════════
 // Ships WITH the gate and runs on every invocation, so "the detector still bites" is a fact
 // this file proves about itself rather than something someone checked once. Same practice as
 // check-gate-manifest.mjs §7 and check-must-consume.mjs's planted-fault selftest.
@@ -257,6 +356,18 @@ for (const file of repoSouls) {
       why: 'the depth is recomputed from the compiled module, never hard-coded',
       ok: path.resolve(distPromptDir, '../../../../templates') === shippedTemplatesDir,
     },
+    {
+      id: 'a-tool-manual-missing-from-the-artifact-is-refused',
+      why: 'the T8 failure — the manuals copy step dropped, or landed where the generator does not look',
+      ok: REQUIRED_TOOL_MANUALS.some(
+        (f) => !fs.existsSync(path.join(platformDir, '__no_such_platform__', 'packages/server/dist/tools/docs', f)),
+      ),
+    },
+    {
+      id: 'every-named-floor-manual-is-a-file-the-repo-actually-ships',
+      why: 'a floor naming a manual that does not exist asserts a ghost and refuses every build',
+      ok: REQUIRED_TOOL_MANUALS.every((f) => fs.existsSync(path.join(REPO_TOOL_DOCS, f))) || failed,
+    },
   ];
   const bad = controls.filter((c) => !c.ok);
   if (bad.length) {
@@ -273,5 +384,6 @@ if (failed) {
 }
 console.log(
   `✓ shipped souls: ${repoSouls.length} template(s) present at the path the compiled assembler computes`
-  + `${sameTree ? ', all byte-identical to templates/' : ` (artifact version ${artifactVersion}; byte-identity not asserted across trees)`}`,
+  + `${sameTree ? ', all byte-identical to templates/' : ` (artifact version ${artifactVersion}; byte-identity not asserted across trees)`}`
+  + `; ${manualsPassed}/${REQUIRED_TOOL_MANUALS.length} named tool manual(s) present where the compiled generator resolves them`,
 );
