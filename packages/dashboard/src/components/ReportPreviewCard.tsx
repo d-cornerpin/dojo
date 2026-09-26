@@ -45,6 +45,9 @@ const briefOf = (r: api.ReportRow): BriefFields => ({
 
 export const ReportPreviewCard = () => {
   const [reports, setReports] = useState<api.ReportRow[]>([]);
+  // The DESTINATION, from the same answer the rows came in — so the consent sentence can never
+  // name a repository a different fetch resolved. `''` until the list door has answered.
+  const [destination, setDestination] = useState('');
   const [github, setGithub] = useState<api.GithubStatus | null>(null);
   const [form, setForm] = useState<BriefFields | null>(null);
   const [delivery, setDelivery] = useState<api.ReportDelivery | null>(null);
@@ -60,7 +63,7 @@ export const ReportPreviewCard = () => {
   // brief at all, so the answer to "what is now true" comes from the door that owns it.
   const load = async (): Promise<void> => {
     const [rows, gh] = await Promise.all([api.listOpenReports(), api.getGithubStatus()]);
-    if (rows.ok) setReports(rows.data);
+    if (rows.ok) { setReports(rows.data); setDestination(rows.destinationRepo ?? ''); }
     if (gh.ok) setGithub(gh.data);
   };
 
@@ -158,6 +161,7 @@ export const ReportPreviewCard = () => {
           connected: github?.connected ?? false,
           login: github?.login ?? null,
           loginInProgress: github?.loginInProgress ?? false,
+          repo: destination,
         })}
       </p>
 

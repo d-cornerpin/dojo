@@ -73,7 +73,11 @@ export function parsePostChoice(body: unknown): PostChoice | undefined | 'invali
 }
 
 export type PostOutcome =
-  | { kind: 'created'; issueUrl: string; issueNumber: number }
+  // `labelsDropped` is null on the ordinary path and a SENTENCE when GitHub refused the labelled
+  // issue and accepted it bare (T8). It is carried rather than swallowed because the delivery
+  // then differs from the one the owner pressed Post for, in a way only they can act on: an
+  // unlabelled issue on a public tracker needs a human to file it under the right label.
+  | { kind: 'created'; issueUrl: string; issueNumber: number; labelsDropped: string | null }
   | { kind: 'commented'; issueUrl: string; issueNumber: number }
   | { kind: 'duplicate-found'; match: IssueMatch }
   | { kind: 'failed'; error: string };
@@ -144,5 +148,16 @@ export async function postApprovedReport(id: string, choice?: PostChoice): Promi
   );
   if (!created.ok) return failed(created.error);
   record(row, created.url, created.number);
-  return { kind: 'created', issueUrl: created.url, issueNumber: created.number };
+  // THE LOG IS THE OTHER RECORD. The row has no column for it — a dropped label is a fact about
+  // one delivery attempt, not about the report — so it is logged here beside the issue number
+  // that proves the report actually landed, and handed to the route for the card.
+  if (created.labelsDropped !== null) {
+    logger.warn('the report was filed without its labels', {
+      reportId: row.id, issueNumber: created.number, detail: created.labelsDropped,
+    });
+  }
+  return {
+    kind: 'created', issueUrl: created.url, issueNumber: created.number,
+    labelsDropped: created.labelsDropped,
+  };
 }

@@ -187,6 +187,34 @@ const ALLOWED_CONSENT_CALLERS: readonly string[] = [
   // FAILS, which is the point, so `markPosted` is never reached) and it is a test file, so it
   // adds no reachable path to any door in the product.
   'github/__tests__/a-refusal-carries-githubs-own-explanation.test.ts',
+  // ── APPENDED BY THE T8 LIVE-FIX ROUND. TWO ENTRIES, ONE REASON, AND IT IS THE REVIEW ──
+  //
+  // 1. `the-labels-are-best-effort.test.ts` — the label-retry suite. GitHub needs write access to
+  //    set labels on a new issue and none to open one, so `createIssue`'s always-labelled request
+  //    403'd for every reporter who is not a collaborator on the destination repository. The
+  //    property under test is what the POSTER does with that refusal, and the poster will not look
+  //    at a row that is not `approved`. Unlike the two suites above it drives cases that SUCCEED,
+  //    so `markPosted` IS reached — deliberately: "the report landed" is a claim about the row and
+  //    the tracker, and a suite that only read the return value would have accepted a delivery
+  //    nobody recorded.
+  //
+  // 2. `the-drafted-lane-is-the-lane-that-posts.test.ts` — the persist seam. `attachDraft` did not
+  //    write the agent's lane or the derived digest, so the row kept gather's provisional pair and
+  //    a posted issue contradicted its own attachment. Two of its clauses drive the real
+  //    `postApprovedReport` to read the digest the DEDUPE searched for, which needs an approval.
+  //
+  // THE EDGES ARE BOTH THE BRACED STATIC FORM, and each binds `approveOnce` plus, in the first
+  // file, `markPosted`'s spend reached only THROUGH `report/post.ts` — never imported directly:
+  //
+  //   import {
+  //     createReport, attachDraft, submitForApproval, approveOnce, getReport, type ReportBrief,
+  //   } from '../../report/store.js';
+  //
+  // Neither file is reachable from the product: both are test files, so they add no path to any
+  // door. The call-site census in `only-the-card-can-post-a-report.test.ts` still holds the
+  // complementary claim — `approveOnce`'s only PRODUCT call site is the route behind Post.
+  'github/__tests__/the-labels-are-best-effort.test.ts',
+  'report/__tests__/the-drafted-lane-is-the-lane-that-posts.test.ts',
 ];
 
 /** PRONG C's exact one-hop pins. Adding an import to either file fails this file. */

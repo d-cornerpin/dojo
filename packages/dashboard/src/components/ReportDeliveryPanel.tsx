@@ -21,9 +21,21 @@ export const DeliveredPanel = ({ delivery, onDone }: {
   <div className="fixed bottom-4 right-4 z-[200] w-[min(30rem,calc(100vw-2rem))] glass-card p-4 space-y-3">
     <h3 className="card-header">Your report is ready to post</h3>
     {delivery.issueUrl ? (
-      <p className="text-xs text-ui/80">
-        Posted. <a className="text-cp-teal underline" href={delivery.issueUrl} target="_blank" rel="noreferrer">Open the issue</a>
-      </p>
+      <div className="space-y-2">
+        <p className="text-xs text-ui/80">
+          Posted. <a className="text-cp-teal underline" href={delivery.issueUrl} target="_blank" rel="noreferrer">Open the issue</a>
+        </p>
+        {/* THE REPORT LANDED AND IS NOT QUITE WHAT WAS APPROVED (T8). GitHub needs write access
+            to set labels on a new issue and needs none to open one, so an outside reporter's
+            labelled request is refused and the bare one succeeds. The sentence is the SERVER's,
+            verbatim — it carries GitHub's own words and the evidence for them, and only the
+            owner can label the issue now. Rendered as a notice, not an error: nothing failed. */}
+        {delivery.labelsDropped && (
+          <p className="text-xs text-ui/80 bg-cp-amber/10 border border-cp-amber/25 rounded-lg p-2 whitespace-pre-wrap">
+            {delivery.labelsDropped}
+          </p>
+        )}
+      </div>
     ) : (
       <div className="space-y-2">
         <p className="text-xs text-ui/80">Saved on this Mac:</p>

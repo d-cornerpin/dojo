@@ -172,7 +172,13 @@ export const reportHandlers: ToolHandlerMap = {
         ...ev.sources, reportId, createdAt: existing.createdAt, signature, lane,
       });
       const written = writeBundle(reportId, agentId, ev.bundle);
-      const row = attachDraft(reportId, brief, telemetry, written.path);
+      // THE LANE AND THE SIGNATURE GO WITH THE BRIEF. Both were derived above from the agent's
+      // chosen lane, and the telemetry in this same call already carries them; a row left on
+      // gather's provisional `'other'` pair would publish an issue that contradicts its own
+      // attachment and would drop the lane out of the poster's dedupe key.
+      const row = attachDraft(reportId, {
+        lane, signature, brief, telemetry, bundlePath: written.path,
+      });
       if (!row) {
         return bad(`Report ${reportId} is ${existing.status}, not drafting — a brief may only be attached `
           + 'before anyone has seen it. Open a new report with phase="gather".');

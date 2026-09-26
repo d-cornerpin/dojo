@@ -327,3 +327,81 @@ describe('PART 4 — R6 completeness invariant: every held tool name appears lit
     expect(TOOL_CATEGORIES.length).toBeGreaterThan(10);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════
+// PART 5 — THE ONE ANNOTATED ENTRY (DOJO-REPORT T8, owner-approved).
+//
+// THE MEASURED DEFECT. The T8 live run handed a floor-model agent the owner's
+// own designed phrase — "That wasn't right. Why did that happen? Let's get this
+// fixed in the Dojo." — and it did not reach for `dojo_report`. It investigated
+// its own grants, delegated to a peer to ask for a permission, was refused, and
+// burned the turn; pointed at the tool by a human it then ran gather → draft →
+// submit perfectly. The cause is a seam, not a bug: ALL of the trigger language
+// lives in the DESCRIPTION, which sits behind `load_tool_docs`, so at the moment
+// of deciding the agent's only cue was the bare name on this index line.
+//
+// THE FIX IS ONE PHRASE, AND THIS PART HOLDS BOTH HALVES OF IT:
+//   * the annotation is PRESENT and says what the tool is FOR, in the words a
+//     user would use — the same standard the description's own trigger pins are
+//     held to in `agent/tools/__tests__/the-report-tool-cannot-post.test.ts`;
+//   * the annotation is the ONLY one. The index is names-only by design and the
+//     tokens are the reason; a second entry must be a deliberate argued edit
+//     with its own golden re-record, never a habit this suite waved through.
+//
+// ⚠ AND A THIRD HALF, WHICH IS WHY THIS IS NOT MERELY A `toContain`: an agent
+// that does NOT hold `dojo_report` must get a byte-identical line to before.
+// PART 1's cache gate already proves that for the full-access fixture (which
+// holds `load_tool_docs` alone in Meta) — this part states it as the rule.
+// ════════════════════════════════════════════════════════════════════════
+
+/** What the annotation has to convey, each with the reason it is load-bearing. */
+const INDEX_NOTE_ANCHORS: readonly [string, string][] = [
+  ['it is a REPORT, not a diagnosis or a fix', 'report'],
+  ['the subject is the DOJO ITSELF — the discriminator the live run got wrong', 'the Dojo itself'],
+  ['a PROBLEM, the word a user reaches for before "bug" or "issue"', 'problem'],
+  ['...and WHO receives it, which is what makes filing it the answer', 'the people who build it'],
+];
+
+describe('PART 5 — the index says what `dojo_report` is for, not just that it exists', () => {
+  const META_HOLDER = makeTools(['load_tool_docs', 'dojo_report', 'file_read']);
+
+  it('annotates the entry — a bare name is what the live run failed on', () => {
+    const output = generateToolIndex(META_HOLDER, ['load_tool_docs']);
+    const meta = output.split('\n').find(l => l.startsWith('**Meta:**'));
+    expect(meta, 'no Meta line in the index — this part is blind').toBeTruthy();
+    expect(meta, 'the Meta line lists `dojo_report` as a bare name again, which is the exact '
+      + 'state the T8 live run failed in: at decision time the agent has no cue what it is for')
+      .not.toBe('**Meta:** `load_tool_docs`, `dojo_report`');
+    for (const [why, phrase] of INDEX_NOTE_ANCHORS) {
+      expect(meta, `the index annotation no longer says: ${phrase} (${why})`).toContain(phrase);
+    }
+    // The name itself is still literally present, backtick-wrapped — R6's instrument
+    // reads exactly that, so the annotation may not replace the name with prose.
+    expect(meta).toContain('`dojo_report`');
+    assertEveryNameAppearsLiterally(META_HOLDER, output);
+  });
+
+  it('annotates NOTHING else — the index is names-only and the tokens are the reason', () => {
+    const output = generateToolIndex(ALL_ACCESS_PRIMARY, ['load_tool_docs']);
+    // Every category line's entries, flattened. A parenthesis immediately after a
+    // backticked name is an annotation; there must be no such thing here, because
+    // ALL_ACCESS_PRIMARY does not hold `dojo_report`.
+    const categoryLines = output.split('\n').filter(l => /^\*\*[^*]+:\*\* `/.test(l));
+    expect(categoryLines.length, 'no category lines were rendered — this clause is blind')
+      .toBeGreaterThan(5);
+    for (const line of categoryLines) {
+      expect(line, `an unannounced annotation appeared on: ${line.slice(0, 60)}`)
+        .not.toMatch(/` \(/);
+    }
+  });
+
+  it('an agent WITHOUT the tool gets the line it got before — the annotation rides the NAME', () => {
+    // The cache-prefix consequence, stated as a rule rather than left to PART 1's
+    // fixture: the annotation is attached to a tool, so withholding the tool
+    // withholds the phrase. A note keyed on the CATEGORY would have widened every
+    // agent's cached prefix, including the ones that cannot call the tool.
+    const without = generateToolIndex(makeTools(['load_tool_docs', 'file_read']), ['load_tool_docs']);
+    expect(without).toContain('**Meta:** `load_tool_docs`\n');
+    expect(without).not.toContain('the Dojo itself');
+  });
+});

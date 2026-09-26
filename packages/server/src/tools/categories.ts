@@ -4,6 +4,7 @@
 // ════════════════════════════════════════
 
 import type { ToolDefinition } from '../agent/tools/types.js';
+import { renderIndexName } from './index-notes.js';
 
 // Tool-index representation (remediation C / tool-index slimming): the index
 // lists tool NAMES grouped by category, dropping per-tool descriptions. The
@@ -338,8 +339,10 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
     if (rendered.length === 0) continue;
 
     // One line per category: the names, comma-joined. The model can
-    // load_tool_docs any of them for the full schema.
-    lines.push(`**${category.label}:** ${rendered.map(n => `\`${n}\``).join(', ')}`);
+    // load_tool_docs any of them for the full schema. The INDEX_NOTES lookup is
+    // the IDENTITY for every name but its one entry, so an agent that does not
+    // hold that tool gets a byte-identical line — the annotation rides the NAME.
+    lines.push(`**${category.label}:** ${rendered.map(renderIndexName).join(', ')}`);
     rendered.forEach(n => listed.add(n));
     lines.push('');
   }

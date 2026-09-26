@@ -59,7 +59,7 @@ beforeEach(() => { runMigrations(); getDb().prepare('DELETE FROM dojo_reports').
 describe('the approval is one-shot', () => {
   it('approves exactly once and refuses the second call', () => {
     const r = createReport('agent-1', 'tool-error', 'ds1-aaaaaaaaaaaa');
-    attachDraft(r.id, BRIEF, { report: { schema: 'dojo-telemetry-1' } }, '/tmp/x/bundle.json');
+    attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: { report: { schema: 'dojo-telemetry-1' } }, bundlePath: '/tmp/x/bundle.json' });
     submitForApproval(r.id);
     expect(approveOnce(r.id)?.status).toBe('approved');
     expect(approveOnce(r.id)).toBeNull();
@@ -73,7 +73,7 @@ describe('the approval is one-shot', () => {
 
   it('refuses approval on a cancelled row', () => {
     const r = createReport('agent-1', 'other', 'ds1-cccccccccccc');
-    attachDraft(r.id, BRIEF, {}, '/tmp/x/bundle.json');
+    attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: {}, bundlePath: '/tmp/x/bundle.json' });
     submitForApproval(r.id);
     cancelReport(r.id);
     expect(approveOnce(r.id)).toBeNull();
@@ -81,7 +81,7 @@ describe('the approval is one-shot', () => {
 
   it('posts exactly once, and only from approved', () => {
     const r = createReport('agent-1', 'tool-error', 'ds1-dddddddddddd');
-    attachDraft(r.id, BRIEF, {}, '/tmp/x/bundle.json');
+    attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: {}, bundlePath: '/tmp/x/bundle.json' });
     expect(markPosted(r.id, 'https://example.invalid/1', 1)).toBeNull(); // not approved yet
     submitForApproval(r.id);
     approveOnce(r.id);
@@ -92,9 +92,9 @@ describe('the approval is one-shot', () => {
 
   it('lists only rows a human still has to decide', () => {
     const a = createReport('agent-1', 'tool-error', 'ds1-eeeeeeeeeeee');
-    attachDraft(a.id, BRIEF, {}, '/tmp/x/bundle.json'); submitForApproval(a.id);
+    attachDraft(a.id, { lane: a.lane, signature: a.signature, brief: BRIEF, telemetry: {}, bundlePath: '/tmp/x/bundle.json' }); submitForApproval(a.id);
     const b = createReport('agent-1', 'silence', 'ds1-ffffffffffff');
-    attachDraft(b.id, BRIEF, {}, '/tmp/x/bundle.json'); submitForApproval(b.id);
+    attachDraft(b.id, { lane: b.lane, signature: b.signature, brief: BRIEF, telemetry: {}, bundlePath: '/tmp/x/bundle.json' }); submitForApproval(b.id);
     approveOnce(b.id); markPosted(b.id, 'https://example.invalid/2', 2);
     expect(listOpenReports().map(x => x.id)).toEqual([a.id]);
   });
@@ -107,7 +107,7 @@ describe('the approval is one-shot', () => {
   // `SELECT` + `if` does not.
   it('two doors that BOTH read an awaiting row still produce exactly one approval', () => {
     const r = createReport('agent-1', 'tool-error', 'ds1-999999999999');
-    attachDraft(r.id, BRIEF, {}, '/tmp/x/bundle.json');
+    attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: {}, bundlePath: '/tmp/x/bundle.json' });
     submitForApproval(r.id);
 
     const seenByDoorA = getReport(r.id);
@@ -122,7 +122,7 @@ describe('the approval is one-shot', () => {
 
   it('the losing door does not re-stamp approved_at — the approval keeps its own moment', () => {
     const r = createReport('agent-1', 'tool-error', 'ds1-888888888888');
-    attachDraft(r.id, BRIEF, {}, '/tmp/x/bundle.json');
+    attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: {}, bundlePath: '/tmp/x/bundle.json' });
     submitForApproval(r.id);
     expect(approveOnce(r.id)?.approvedAt).toBeTruthy();
     // `datetime('now')` is second-granular, so two calls in the same second would agree by
@@ -135,7 +135,7 @@ describe('the approval is one-shot', () => {
 
   it('an export consumes the approval too — one approval is one delivery, by either door', () => {
     const r = createReport('agent-1', 'other', 'ds1-777777777777');
-    attachDraft(r.id, BRIEF, {}, '/tmp/x/bundle.json');
+    attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: {}, bundlePath: '/tmp/x/bundle.json' });
     expect(markExported(r.id, '/tmp/x/report.md')).toBeNull(); // not approved yet
     submitForApproval(r.id);
     approveOnce(r.id);
@@ -155,7 +155,7 @@ describe('the approval is one-shot', () => {
 describe('an approval that bought no delivery is handed back', () => {
   const ready = (signature: string): string => {
     const r = createReport('agent-1', 'tool-error', signature);
-    attachDraft(r.id, BRIEF, {}, '/tmp/x/bundle.json');
+    attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: {}, bundlePath: '/tmp/x/bundle.json' });
     submitForApproval(r.id);
     return r.id;
   };
@@ -213,16 +213,16 @@ describe('an approval that bought no delivery is handed back', () => {
 describe('the approver sees the text that posts', () => {
   it('refuses a draft swap on a row a human is already looking at', () => {
     const r = createReport('agent-1', 'tool-error', 'ds1-121212121212');
-    attachDraft(r.id, BRIEF, {}, '/tmp/x/bundle.json');
+    attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: {}, bundlePath: '/tmp/x/bundle.json' });
     submitForApproval(r.id);
-    expect(attachDraft(r.id, { ...BRIEF, title: 'something else entirely' }, {}, '/tmp/y/b.json'))
+    expect(attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: { ...BRIEF, title: 'something else entirely' }, telemetry: {}, bundlePath: '/tmp/y/b.json' }))
       .toBeNull();
     expect(getReport(r.id)?.brief?.title).toBe(BRIEF.title);
   });
 
   it('refuses an edit after approval — the text may not change between click and post', () => {
     const r = createReport('agent-1', 'tool-error', 'ds1-131313131313');
-    attachDraft(r.id, BRIEF, {}, '/tmp/x/bundle.json');
+    attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: {}, bundlePath: '/tmp/x/bundle.json' });
     submitForApproval(r.id);
     expect(editBrief(r.id, { title: 'the human tightened it' })?.brief?.title)
       .toBe('the human tightened it');
@@ -233,7 +233,7 @@ describe('the approver sees the text that posts', () => {
 
   it('an edit carries only the five brief fields, whatever else is handed in', () => {
     const r = createReport('agent-1', 'other', 'ds1-141414141414');
-    attachDraft(r.id, BRIEF, {}, '/tmp/x/bundle.json');
+    attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: {}, bundlePath: '/tmp/x/bundle.json' });
     submitForApproval(r.id);
     const patched = editBrief(r.id, { fixIdeas: 'ship the label', smuggled: 'x' } as Partial<ReportBrief>);
     expect(patched?.brief).toEqual({ ...BRIEF, fixIdeas: 'ship the label' });
@@ -249,7 +249,7 @@ describe('the approver sees the text that posts', () => {
 describe('posted is terminal', () => {
   const post = (): string => {
     const r = createReport('agent-1', 'tool-error', 'ds1-161616161616');
-    attachDraft(r.id, BRIEF, { report: { schema: 'dojo-telemetry-1' } }, '/tmp/x/bundle.json');
+    attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: { report: { schema: 'dojo-telemetry-1' } }, bundlePath: '/tmp/x/bundle.json' });
     submitForApproval(r.id);
     approveOnce(r.id);
     markPosted(r.id, 'https://example.invalid/7', 7);
@@ -258,7 +258,7 @@ describe('posted is terminal', () => {
 
   it('refuses every door that would change a delivered report', () => {
     const id = post();
-    expect(attachDraft(id, { ...BRIEF, title: 'rewritten' }, {}, '/tmp/z/b.json')).toBeNull();
+    expect(attachDraft(id, { lane: 'tool-error', signature: 'ds1-161616161616', brief: { ...BRIEF, title: 'rewritten' }, telemetry: {}, bundlePath: '/tmp/z/b.json' })).toBeNull();
     expect(editBrief(id, { title: 'rewritten' })).toBeNull();
     expect(submitForApproval(id)).toBeNull();
     expect(approveOnce(id)).toBeNull();
@@ -268,7 +268,7 @@ describe('posted is terminal', () => {
 
   it('and the row still says what was actually sent', () => {
     const id = post();
-    attachDraft(id, { ...BRIEF, title: 'rewritten' }, {}, '/tmp/z/b.json');
+    attachDraft(id, { lane: 'tool-error', signature: 'ds1-161616161616', brief: { ...BRIEF, title: 'rewritten' }, telemetry: {}, bundlePath: '/tmp/z/b.json' });
     const row = getReport(id);
     expect(row?.status).toBe('posted');
     expect(row?.brief?.title).toBe(BRIEF.title);
@@ -281,7 +281,7 @@ describe('posted is terminal', () => {
     // A hand-edited database, a restored backup, a future writer. The migration header
     // promises the READER survives it; this is that promise, exercised.
     const r = createReport('agent-1', 'other', 'ds1-171717171717');
-    attachDraft(r.id, BRIEF, {}, '/tmp/x/bundle.json');
+    attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: {}, bundlePath: '/tmp/x/bundle.json' });
     getDb().prepare('UPDATE dojo_reports SET status = ? WHERE id = ?').run('sideways', r.id);
     expect(submitForApproval(r.id)).toBeNull();
     expect(approveOnce(r.id)).toBeNull();

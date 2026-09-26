@@ -111,7 +111,7 @@ const realFetch = globalThis.fetch;
 /** A report sitting exactly where the poster is allowed to find it. */
 function approved(): string {
   const r = createReport('agent-1', 'tool-error', SIGNATURE);
-  attachDraft(r.id, BRIEF, TELEMETRY, '/tmp/never-opened/bundle.json');
+  attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: TELEMETRY, bundlePath: '/tmp/never-opened/bundle.json' });
   submitForApproval(r.id);
   approveOnce(r.id);
   return r.id;

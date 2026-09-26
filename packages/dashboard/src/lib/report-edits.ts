@@ -67,10 +67,15 @@ export function duplicateQuestion(match: DuplicateMatch): string {
     + 'or post a separate one?';
 }
 
-/** The fields of the served `GithubStatus` this decision reads. Declared structurally, never
- *  imported: pulling in `lib/api.ts` would drag `fetch` and the auth token into a module the
- *  server's vitest imports directly. A real `githubStatus()` result satisfies it. */
-export interface PostTarget { connected: boolean; login: string | null; loginInProgress: boolean }
+/** The fields of the served `GithubStatus` this decision reads, plus the DESTINATION the report
+ *  route serves beside the rows. Declared structurally, never imported: pulling in `lib/api.ts`
+ *  would drag `fetch` and the auth token into a module the server's vitest imports directly. A
+ *  real `githubStatus()` result satisfies the first three. */
+export interface PostTarget {
+  connected: boolean; login: string | null; loginInProgress: boolean;
+  /** `owner/name`, as the server's `reportRepo()` resolved it. `''` = the box has not said yet. */
+  repo: string;
+}
 
 /**
  * THE MOST LOAD-BEARING SENTENCE IN THE FEATURE. D4: the user sees the exact text, and knows
@@ -84,16 +89,28 @@ export interface PostTarget { connected: boolean; login: string | null; loginInP
  * publishes a public issue, because a sign-in can be open on top of a live connection. That is
  * the consent gate stating the opposite of what happens. `loginInProgress` is in the shape above
  * so that its IRRELEVANCE here is visible rather than forgotten.
+ *
+ * ⚠ IT NAMES THE REPOSITORY, AND THAT IS A T8 FIX RATHER THAN A FLOURISH. The sentence used to
+ * say *"the Dojo's issue tracker"* and stop. `DOJO_REPORT_REPO` redirects the destination, and on
+ * the box the T8 live run used it was pointed at a scratch repository — so the most load-bearing
+ * sentence in the feature named a page that was not the page, to the one person whose consent the
+ * whole gate exists to obtain. Both branches name it, because BOTH deliveries go there: the
+ * connected one files the issue, and the unconnected one writes a file whose prefilled link
+ * (`export.ts`) opens `https://github.com/<repo>/issues/new`.
  */
 export function postTargetSentence(s: PostTarget): string {
+  const slug = s.repo.trim();
+  // An empty slug is "this box has not told us yet", and the honest answer is the generic phrase.
+  // Substituting the default repository here would be this module GUESSING a destination — the
+  // same class of wrong as the sentence it replaces, one step further from the evidence.
+  const where = slug === '' ? 'the Dojo\'s issue tracker' : `the GitHub repository ${slug}`;
   if (!s.connected) {
     return 'GitHub isn\'t connected, so this will be saved as a file on this Mac with a link '
-      + 'you can paste into an issue yourself. Nothing is sent.';
+      + `you can paste into a new issue on ${where} yourself. Nothing is sent.`;
   }
   const who = (s.login ?? '').trim();
   // A missing NAME is never a missing connection (T4: `GET /user` is called once and not
   // retried). Printing `as null` would be the shape of bug this exists to make impossible.
   const asWho = who === '' ? 'the GitHub account connected to this Mac' : who;
-  return `This will be posted as a public issue on the Dojo's issue tracker, as ${asWho}. `
-    + 'Anyone can read it.';
+  return `This will be posted as a public issue on ${where}, as ${asWho}. Anyone can read it.`;
 }

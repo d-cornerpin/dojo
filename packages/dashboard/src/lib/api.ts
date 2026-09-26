@@ -2500,7 +2500,7 @@ export const cancelGenerationJob = async (
 // `packages/server`. Same fields, same names, same types; the route serves that shape and
 // this client NEVER re-derives or remaps it. If the two ever disagree the server's is right,
 // and `only-the-card-can-post-a-report.test.ts` drives the real routes, so a field renamed
-// on the wire fails there.
+// on the wire fails there. `destinationRepo` on the LIST answer is a per-BOX fact served beside the rows — the `owner/name` the poster and the export both resolve to, which the consent sentence names and this client never re-derives.
 export interface ReportBrief {
   title: string; whatHappened: string; whatShouldHaveHappened: string;
   whyItWentWrong: string; fixIdeas: string;
@@ -2514,15 +2514,15 @@ export interface ReportRow {
   approvedAt: string | null; postedAt: string | null;
   issueUrl: string | null; issueNumber: number | null; exportPath: string | null;
 }
-/** What the ONE door answers: `issueUrl` connected, `exportPath` not, `duplicate` = ask first (T7). */
+/** What the ONE door answers: `issueUrl` connected, `exportPath` not, `duplicate` = ask first (T7). `labelsDropped` = the issue landed, but GitHub refused its labels and only a human can add them (T8). */
 export interface ReportDelivery {
   status: string; issueUrl: string | null; issueNumber: number | null;
   exportPath: string | null; newIssueUrl?: string; bodyWasTrimmed?: boolean;
-  duplicate?: { number: number; url: string; title: string } | null;
+  duplicate?: { number: number; url: string; title: string } | null; labelsDropped?: string | null;
 }
 /** The owner's answer to "someone already reported this". No answer = they were never asked. */
 export type PostChoice = { addToExisting: number } | { postSeparately: true };
-export const listOpenReports = async (): Promise<ApiResponse<ReportRow[]>> =>
+export const listOpenReports = async (): Promise<ApiResponse<ReportRow[]> & { destinationRepo?: string }> =>
   request<ReportRow[]>('/reports');
 export const getReport = async (id: string): Promise<ApiResponse<ReportRow>> =>
   request<ReportRow>(`/reports/${encodeURIComponent(id)}`);

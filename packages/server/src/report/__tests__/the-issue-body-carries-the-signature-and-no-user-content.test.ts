@@ -81,7 +81,7 @@ const SIGNATURE = 'ds1-abcdef123456';
 function seeded(brief: ReportBrief = BRIEF, telemetry: Record<string, unknown> = TELEMETRY): ReportRow {
   const r = createReport('agent-1', 'tool-error', SIGNATURE);
   const bundlePath = writeBundle(r.id, 'agent-1', { evidence: BUNDLE_MARKER }).path;
-  attachDraft(r.id, brief, telemetry, bundlePath);
+  attachDraft(r.id, { lane: r.lane, signature: r.signature, brief, telemetry, bundlePath });
   return getReport(r.id)!;
 }
 

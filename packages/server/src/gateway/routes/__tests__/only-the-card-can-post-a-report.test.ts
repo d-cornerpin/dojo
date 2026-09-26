@@ -91,6 +91,7 @@ import {
   createReport, attachDraft, submitForApproval, getReport, listOpenReports, type ReportBrief,
 } from '../../../report/store.js';
 import { saveGithubAccount, disconnectGithub } from '../../../github/account.js';
+import { DOJO_REPORT_REPO_DEFAULT } from '../../../report/repo.js';
 import { frameTypesIn, codeOf } from '../../__tests__/frame-census.js';
 import { briefEditsFor, briefIsPostable, duplicateQuestion, postTargetSentence, type BriefFields }
   from '../../../../../dashboard/src/lib/report-edits.js';
@@ -139,13 +140,15 @@ const TELEMETRY = { report: { schema: 'dojo-telemetry-1' } };
 
 /** An invented literal. No real token appears in this file. */
 const TOKEN = 'gho_fixture-token-value-never-real';
+/** The destination the consent sentence names, for the clauses that are not about the destination. */
+const REPO = DOJO_REPORT_REPO_DEFAULT;
 
 const db = (): Database.Database => mockDb.current!;
 
 /** A report sitting exactly where the Post button finds it. */
 function awaiting(signature = 'ds1-aaaaaaaaaaaa', brief: ReportBrief = BRIEF): string {
   const r = createReport('agent-1', 'tool-error', signature);
-  attachDraft(r.id, brief, TELEMETRY, '/tmp/x/bundle.json');
+  attachDraft(r.id, { lane: r.lane, signature: r.signature, brief, telemetry: TELEMETRY, bundlePath: '/tmp/x/bundle.json' });
   submitForApproval(r.id);
   return r.id;
 }
@@ -182,6 +185,8 @@ afterEach(() => {
   globalThis.fetch = realFetch;
   mockDb.current?.close();
   mockDb.current = null;
+  // The destination clauses set it; a leak would redirect every later clause's poster.
+  delete process.env.DOJO_REPORT_REPO;
 });
 
 // ── 1. ONE DOOR ─────────────────────────────────────────────────────────────────────────
@@ -268,7 +273,7 @@ describe('nothing but the approve route may spend an approval', () => {
 
   it('refuses approval on a report that was never submitted', async () => {
     const r = createReport('agent-1', 'other', 'ds1-cccccccccccc');
-    attachDraft(r.id, BRIEF, TELEMETRY, '/tmp/x/bundle.json');
+    attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: TELEMETRY, bundlePath: '/tmp/x/bundle.json' });
     const res = await post(`/${r.id}/approve`);
     expect(res.status).toBe(409);
     expect(getReport(r.id)?.status).toBe('drafting');
@@ -476,7 +481,7 @@ describe('the card is shown exactly the rows that still hold a decision (contrac
   it('lists awaiting_approval only — never a draft, never an already-decided row', async () => {
     const open = awaiting('ds1-111111111111');
     const drafting = createReport('agent-1', 'other', 'ds1-222222222222');
-    attachDraft(drafting.id, BRIEF, TELEMETRY, '/tmp/x/bundle.json');
+    attachDraft(drafting.id, { lane: drafting.lane, signature: drafting.signature, brief: BRIEF, telemetry: TELEMETRY, bundlePath: '/tmp/x/bundle.json' });
     const decided = awaiting('ds1-333333333333');
     await post(`/${decided}/approve`);
 
@@ -572,7 +577,7 @@ describe('the edit door is narrow and only-what-changed (T66b)', () => {
 
   it('refuses an edit on a report nobody has been asked about yet', async () => {
     const r = createReport('agent-1', 'other', 'ds1-dddddddddddd');
-    attachDraft(r.id, BRIEF, TELEMETRY, '/tmp/x/bundle.json');
+    attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: TELEMETRY, bundlePath: '/tmp/x/bundle.json' });
     expect((await patch(`/${r.id}`, { title: 'x' })).status).toBe(409);
     expect(getReport(r.id)!.brief!.title).toBe(BRIEF.title);
   });
@@ -707,7 +712,7 @@ describe('what the card shows is what leaves, byte for byte', () => {
 describe('the card\'s sentence and the route\'s branch answer the same question', () => {
   it('an unconnected box promises a file, and gets a file', async () => {
     const id = awaiting();
-    expect(postTargetSentence({ connected: false, login: null, loginInProgress: false }))
+    expect(postTargetSentence({ connected: false, login: null, loginInProgress: false, repo: REPO }))
       .toContain('Nothing is sent');
     const res = await post(`/${id}/approve`);
     const data = (await bodyOf(res)).data!;
@@ -717,7 +722,7 @@ describe('the card\'s sentence and the route\'s branch answer the same question'
 
   it('a connected box promises a PUBLIC issue under the owner\'s own name', () => {
     saveGithubAccount('octocat', TOKEN, 'public_repo');
-    const sentence = postTargetSentence({ connected: true, login: 'octocat', loginInProgress: false });
+    const sentence = postTargetSentence({ connected: true, login: 'octocat', loginInProgress: false, repo: REPO });
     expect(sentence).toContain('public');
     expect(sentence, 'the card must name WHICH GitHub identity posts').toContain('octocat');
   });
@@ -731,15 +736,84 @@ describe('the card\'s sentence and the route\'s branch answer the same question'
     // "saved as a file on this Mac, nothing is sent" at the exact moment the route publishes a
     // public issue. That is a consent gate telling the truth's opposite, which is D4 inverted.
     saveGithubAccount('octocat', TOKEN, 'public_repo');
-    const sentence = postTargetSentence({ connected: true, login: 'octocat', loginInProgress: true });
+    const sentence = postTargetSentence({ connected: true, login: 'octocat', loginInProgress: true, repo: REPO });
     expect(sentence).toContain('public');
     expect(sentence).not.toContain('Nothing is sent');
   });
 
   it('a connection with no name says so instead of printing null', () => {
-    const sentence = postTargetSentence({ connected: true, login: null, loginInProgress: false });
+    const sentence = postTargetSentence({ connected: true, login: null, loginInProgress: false, repo: REPO });
     expect(sentence).toContain('public');
     expect(sentence).not.toContain('null');
+  });
+});
+
+// ── THE SENTENCE NAMES THE DESTINATION, AND THE DESTINATION IS THE SERVER'S (T8 finding 5) ──
+//
+// The live T8 card read *"This will be posted as a public issue on the Dojo's issue tracker, as
+// dcliff9"* while `DOJO_REPORT_REPO` pointed at `d-cornerpin/dojo-report-live-test`. The
+// destination the owner was shown and the destination the poster used were different pages, in
+// the one sentence whose whole job is to say where their words go. Two halves to the fix and both
+// are here: the sentence NAMES the repository, and the repository it names is the one the SERVER
+// resolved — `reportRepo()`, the same function `post.ts` and `export.ts` call.
+
+describe('the card is told WHERE the report goes, by the door that decides it', () => {
+  it('names the repository in both branches — the issue one and the paste-a-file one', () => {
+    const connected = postTargetSentence({
+      connected: true, login: 'octocat', loginInProgress: false, repo: 'd-cornerpin/dojo-scratch',
+    });
+    expect(connected, 'the connected sentence does not say which repository receives the issue')
+      .toContain('d-cornerpin/dojo-scratch');
+    // The unconnected branch writes a file whose prefilled link opens `/<repo>/issues/new`, so
+    // it has a destination too and the card may not be vaguer about it.
+    const unconnected = postTargetSentence({
+      connected: false, login: null, loginInProgress: false, repo: 'd-cornerpin/dojo-scratch',
+    });
+    expect(unconnected).toContain('d-cornerpin/dojo-scratch');
+    expect(unconnected).toContain('Nothing is sent');
+  });
+
+  it('serves the OVERRIDDEN repository, not the default, beside the rows the card draws', async () => {
+    process.env.DOJO_REPORT_REPO = 'd-cornerpin/dojo-report-live-test';
+    awaiting();
+    const body = await bodyOf(await get('/'));
+    expect(body.ok).toBe(true);
+    expect((body as unknown as { destinationRepo?: string }).destinationRepo,
+      'the list door did not tell the card where the report goes')
+      .toBe('d-cornerpin/dojo-report-live-test');
+    // …and the sentence built from that answer names the scratch repository rather than the
+    // Dojo's own tracker. This is the live T8 defect, end to end.
+    const sentence = postTargetSentence({
+      connected: true, login: 'dcliff9', loginInProgress: false,
+      repo: (body as unknown as { destinationRepo?: string }).destinationRepo ?? '',
+    });
+    expect(sentence).toContain('d-cornerpin/dojo-report-live-test');
+    // ⚠ NOT `not.toContain(DOJO_REPORT_REPO_DEFAULT)` — the override literally begins with the
+    // default's own slug, so that assertion can never pass on this fixture and would have to be
+    // weakened to nothing. The claim that actually matters is that the OLD, unqualified phrase
+    // is gone: that phrase is what the owner read while his report went somewhere else.
+    expect(sentence, 'the card still describes the destination as the Dojo\'s own tracker while '
+      + 'the poster files on a scratch repository').not.toContain('the Dojo\'s issue tracker');
+  });
+
+  it('falls back to the generic phrase rather than GUESSING a repository', () => {
+    // An empty slug means the list door has not answered yet. Substituting the default here
+    // would be the card inventing a destination — the same class of wrong as the sentence this
+    // fix replaces, one step further from the evidence.
+    const sentence = postTargetSentence({
+      connected: true, login: 'octocat', loginInProgress: false, repo: '',
+    });
+    expect(sentence).toContain('the Dojo\'s issue tracker');
+    expect(sentence).not.toContain(DOJO_REPORT_REPO_DEFAULT);
+    expect(sentence, 'an empty destination rendered as an empty phrase').not.toContain('repository ,');
+  });
+
+  it('the default box says the default repository, so the clause above is not the only path', async () => {
+    delete process.env.DOJO_REPORT_REPO;
+    awaiting();
+    const body = await bodyOf(await get('/'));
+    expect((body as unknown as { destinationRepo?: string }).destinationRepo)
+      .toBe(DOJO_REPORT_REPO_DEFAULT);
   });
 });
 

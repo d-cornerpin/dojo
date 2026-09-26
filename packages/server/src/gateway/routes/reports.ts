@@ -54,6 +54,7 @@ import {
   type ReportStatus,
 } from '../../report/store.js';
 import { DUPLICATE_ANSWER_HELP, parsePostChoice, postApprovedReport } from '../../report/post.js';
+import { reportRepo } from '../../report/repo.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../ws.js';
 import { routeFailure } from './route-failure.js';
@@ -108,8 +109,13 @@ function editRefusal(status: ReportStatus): string {
 // ── the two reads the card lives on ─────────────────────────────────────────────────────
 // `listOpenReports` is `awaiting_approval` ONLY (C1): a drafting row has no brief to show and a
 // decided one is already decided. A card with no decision in it is how a gate becomes a habit.
+// `destinationRepo` rides BESIDE the rows rather than on them: it is a per-box fact, not a per-
+// report one, and the card's consent sentence has to name it (T8 finding 5 — the sentence said
+// "the Dojo's issue tracker" while `DOJO_REPORT_REPO` pointed at a scratch repository). It is the
+// SERVER's answer on purpose: `reportRepo()` is the function the poster and the export both call,
+// so the card cannot name a destination the delivery would not use.
 reportsRouter.get('/', (c) => {
-  return c.json({ ok: true, data: listOpenReports() });
+  return c.json({ ok: true, data: listOpenReports(), destinationRepo: reportRepo() });
 });
 
 reportsRouter.get('/:id', (c) => {
@@ -188,8 +194,12 @@ reportsRouter.post('/:id/approve', async (c) => {
     const outcome = await postApprovedReport(id, choice);
     if (outcome.kind === 'created' || outcome.kind === 'commented') {
       broadcast({ type: 'report:resolved', data: { id, status: 'posted' } });
+      // `labelsDropped` rides the SUCCESS answer (T8): the report landed, so this is not an
+      // error — but the issue on the tracker is not the one the owner pressed Post for, and
+      // only they can label it. Absent on the comment path, which carries no labels at all.
       return c.json({ ok: true, data: { status: 'posted', exportPath: null,
-        issueUrl: outcome.issueUrl, issueNumber: outcome.issueNumber } });
+        issueUrl: outcome.issueUrl, issueNumber: outcome.issueNumber,
+        labelsDropped: outcome.kind === 'created' ? outcome.labelsDropped : null } });
     }
     // NOTHING LEFT THE BOX, so the approval bought no delivery and is returned: the row goes
     // back on the card, decidable, nothing recorded against it. Leaving it `approved` would

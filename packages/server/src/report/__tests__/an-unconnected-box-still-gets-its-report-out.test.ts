@@ -82,7 +82,7 @@ function seeded(brief: ReportBrief = BRIEF, withBundle = true): string {
   if (withBundle) {
     bundlePath = writeBundle(r.id, 'agent-1', { evidence: BUNDLE_MARKER }).path;
   }
-  attachDraft(r.id, brief, TELEMETRY, bundlePath);
+  attachDraft(r.id, { lane: r.lane, signature: r.signature, brief, telemetry: TELEMETRY, bundlePath });
   submitForApproval(r.id);
   return r.id;
 }
@@ -192,8 +192,7 @@ describe('the prefilled link is usable, or it says it is not', () => {
     // POST body for one row — is driven in
     // `github/__tests__/a-matching-issue-gets-a-comment-not-a-duplicate.test.ts`.
     const r = createReport('agent-1', 'tool-error', 'ds1-aaaaaaaaaaaa');
-    attachDraft(r.id, BRIEF, { ...TELEMETRY, platform: { version: '3.1.28' } },
-      writeBundle(r.id, 'agent-1', { evidence: BUNDLE_MARKER }).path);
+    attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: { ...TELEMETRY, platform: { version: '3.1.28' } }, bundlePath: writeBundle(r.id, 'agent-1', { evidence: BUNDLE_MARKER }).path });
     submitForApproval(r.id);
     const labels = new URL(exportReport(r.id)!.newIssueUrl).searchParams.get('labels')?.split(',');
     expect(labels, 'a version-filtered triage view will not show this hand-pasted report')

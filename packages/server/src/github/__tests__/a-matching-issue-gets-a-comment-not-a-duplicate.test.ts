@@ -122,7 +122,7 @@ const openIssue = (n: number, body: string): unknown => ({
 /** A report sitting exactly where the poster is allowed to find it. */
 function approved(signature = SIGNATURE, brief: ReportBrief = BRIEF): string {
   const r = createReport('agent-1', 'tool-error', signature);
-  attachDraft(r.id, brief, TELEMETRY, '/tmp/never-opened/bundle.json');
+  attachDraft(r.id, { lane: r.lane, signature: r.signature, brief, telemetry: TELEMETRY, bundlePath: '/tmp/never-opened/bundle.json' });
   submitForApproval(r.id);
   approveOnce(r.id);
   return r.id;
@@ -156,7 +156,7 @@ afterEach(() => {
 describe('the poster refuses everything that is not an approved report', () => {
   it('a report still awaiting its owner performs NO NETWORK CALL AT ALL', async () => {
     const r = createReport('agent-1', 'tool-error', SIGNATURE);
-    attachDraft(r.id, BRIEF, TELEMETRY, '/tmp/x/bundle.json');
+    attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: TELEMETRY, bundlePath: '/tmp/x/bundle.json' });
     submitForApproval(r.id);
 
     const outcome = await postApprovedReport(r.id);
@@ -167,10 +167,10 @@ describe('the poster refuses everything that is not an approved report', () => {
 
   it('a drafting, a cancelled, a posted and an unknown report all reach nothing', async () => {
     const drafting = createReport('agent-1', 'other', 'ds1-111111111111');
-    attachDraft(drafting.id, BRIEF, TELEMETRY, '/tmp/x/bundle.json');
+    attachDraft(drafting.id, { lane: drafting.lane, signature: drafting.signature, brief: BRIEF, telemetry: TELEMETRY, bundlePath: '/tmp/x/bundle.json' });
 
     const cancelled = createReport('agent-1', 'other', 'ds1-222222222222');
-    attachDraft(cancelled.id, BRIEF, TELEMETRY, '/tmp/x/bundle.json');
+    attachDraft(cancelled.id, { lane: cancelled.lane, signature: cancelled.signature, brief: BRIEF, telemetry: TELEMETRY, bundlePath: '/tmp/x/bundle.json' });
     submitForApproval(cancelled.id);
     cancelReport(cancelled.id);
 
@@ -456,7 +456,7 @@ describe('a development box cannot file an issue on the real tracker', () => {
     const store = await import('../../report/store.js');
 
     const r = store.createReport('agent-1', 'tool-error', SIGNATURE);
-    store.attachDraft(r.id, BRIEF, TELEMETRY, '/tmp/x/bundle.json');
+    store.attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: TELEMETRY, bundlePath: '/tmp/x/bundle.json' });
     store.submitForApproval(r.id);
     store.approveOnce(r.id);
 
@@ -473,7 +473,7 @@ describe('a development box cannot file an issue on the real tracker', () => {
     const post = await import('../../report/post.js');
     const store = await import('../../report/store.js');
     const r = store.createReport('agent-1', 'tool-error', SIGNATURE);
-    store.attachDraft(r.id, BRIEF, TELEMETRY, '/tmp/x/bundle.json');
+    store.attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: TELEMETRY, bundlePath: '/tmp/x/bundle.json' });
     store.submitForApproval(r.id);
     store.approveOnce(r.id);
 
@@ -493,7 +493,7 @@ describe('a development box cannot file an issue on the real tracker', () => {
     const post = await import('../../report/post.js');
     const store = await import('../../report/store.js');
     const r = store.createReport('agent-1', 'tool-error', SIGNATURE);
-    store.attachDraft(r.id, BRIEF, TELEMETRY, '/tmp/x/bundle.json');
+    store.attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry: TELEMETRY, bundlePath: '/tmp/x/bundle.json' });
     store.submitForApproval(r.id);
     store.approveOnce(r.id);
 

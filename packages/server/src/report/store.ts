@@ -122,15 +122,60 @@ export function listOpenReports(limit = 50): ReportRow[] {
   ).all(limit) as DbRow[]).map(toReport);
 }
 
-/** The agent's one write. Legal only while nobody has seen the report yet. */
-export function attachDraft(
-  id: string, brief: ReportBrief, telemetry: Record<string, unknown>, bundlePath: string,
-): ReportRow | null {
+/**
+ * THE AGENT'S ONE WRITE — and it carries the report's IDENTITY, not only its text.
+ *
+ * ── WHY THE LANE AND THE SIGNATURE ARE IN HERE (T8 fix round) ──
+ * `createReport` writes a PROVISIONAL pair at gather time: the row needs a lane and a signature
+ * at INSERT and the agent has not chosen a lane yet, so the lane is hard-coded `'other'` and the
+ * digest is keyed on it. The first cut of this door then wrote only the brief, the telemetry and
+ * the bundle path — so the provisional pair SURVIVED the agent's choice, and the live T8 run
+ * measured exactly what that costs:
+ *
+ *   row       `ds1-cbf0fd308acc` = sha256("0.0.0|other|tool:exec:denied")
+ *   telemetry `ds1-47375b28d43f` = sha256("0.0.0|wrong-answer|tool:exec:denied")
+ *
+ * One posted issue, two answers. `issue-body.ts` renders `row.lane` in its header and
+ * `dojo-sig: row.signature` in its trailer, while the telemetry block inside that SAME body says
+ * `wrong-answer` and the other digest — a public page contradicting itself in two of its own
+ * fields. And `post.ts` dedupes on `row.signature`, so a digest always keyed on `'other'` drops
+ * the lane out of the pinned `sha256(version|lane|dominant)` key and collapses distinct lanes
+ * over one dominant failure into a single bucket. The identity is therefore written HERE, at the
+ * one seam where the agent's choice is known, and by the same call that writes the telemetry it
+ * has to agree with.
+ *
+ * ── STILL LEGAL ONLY FROM `drafting` (contract C2) ──
+ * Unchanged, and the reason is unchanged: the approver sees the text that posts, and now also the
+ * lane and the digest that post. `WHERE status = 'drafting'` is the whole guard.
+ *
+ * ── ONE OBJECT, NOT SIX POSITIONAL ARGUMENTS ──
+ * `signature` and `bundlePath` are both bare strings. Positionally adjacent, a transposition
+ * typechecks and silently writes a filesystem path into the column a public issue trailer is
+ * rendered from. Named fields make that unrepresentable — the same reason `transition` takes `id`
+ * by name rather than reading it back off the end of the parameter array.
+ */
+export interface ReportDraft {
+  /** The lane the AGENT chose. Replaces gather's provisional `'other'`. */
+  lane: FailureLane;
+  /** The digest derived from THAT lane — the one the telemetry in this same call carries. */
+  signature: string;
+  brief: ReportBrief;
+  telemetry: Record<string, unknown>;
+  /** A RECORDED STRING, never opened here (contract C6). */
+  bundlePath: string;
+}
+
+export function attachDraft(id: string, draft: ReportDraft): ReportRow | null {
+  // Same refusal `createReport` makes, for the same reason: the lane rides onto a public page as
+  // an enum, and a value outside the closed set is a caller's bug, never a lane.
+  if (!isFailureLane(draft.lane)) throw new Error(`not a failure lane: ${JSON.stringify(draft.lane)}`);
   return transition(
     `UPDATE dojo_reports
-        SET brief_json = ?, telemetry_json = ?, bundle_path = ?, updated_at = datetime('now')
+        SET lane = ?, signature = ?, brief_json = ?, telemetry_json = ?, bundle_path = ?,
+            updated_at = datetime('now')
       WHERE id = ? AND status = 'drafting'`,
-    [JSON.stringify(brief), JSON.stringify(telemetry), bundlePath, id], id,
+    [draft.lane, draft.signature, JSON.stringify(draft.brief), JSON.stringify(draft.telemetry),
+      draft.bundlePath, id], id,
   );
 }
 

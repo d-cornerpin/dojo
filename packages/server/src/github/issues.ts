@@ -42,6 +42,12 @@
 // patterns match text only GITHUB writes and the old ledger line could not carry it, so a
 // revoked scope read as a working connection — and nothing invents a cause.
 //
+// ── THE LABELS ARE BEST-EFFORT (T8 fix round) ──
+// GitHub needs WRITE access to set `labels` on a new issue and none to OPEN one, so the
+// always-labelled request `createIssue` used to send 403'd for every reporter who is not a
+// collaborator on the destination repository. It now asks once more without them, and says so.
+// The whole argument is on `createIssue`.
+//
 // ── NO `net-guard` ──
 // The same call `google/`, `microsoft/`, `twilio/` and `gateway/routes/update.ts` all make:
 // that guard exists for attacker-influenceable URLs. The host here is a fixed product
@@ -52,6 +58,7 @@
 import { getGithubToken, noteGithubFailure, noteGithubOk } from './account.js';
 import {
   githubsWords, readRefusal, refusalDetail, reportRefusal, reportUnreadableAnswer,
+  type GithubRefusal,
 } from './refusal.js';
 import { assertPostableRepo } from '../report/repo.js';
 import { createLogger } from '../logger.js';
@@ -146,34 +153,118 @@ function writeHeaders(token: string): Record<string, string> {
 }
 
 /**
+ * The two statuses GitHub answers when it will not accept a FIELD of the payload from this
+ * account: 403 for a permission it does not hold, 422 for a value it will not validate. Neither
+ * creates an issue, so a second smaller request is a fresh attempt and never a duplicate.
+ */
+const LABEL_RETRY_STATUSES: ReadonlySet<number> = new Set([403, 422]);
+
+/**
+ * The one POST. `labels` is OMITTED ENTIRELY when empty rather than sent as `[]`: an empty array
+ * is still an instruction to set this issue's labels, and the whole point of the second attempt is
+ * to ask for nothing this account may not have.
+ */
+function postIssue(
+  repo: string, token: string, title: string, body: string, labels: string[],
+): Promise<Response> {
+  return fetch(`${GITHUB_API}/repos/${repo}/issues`, {
+    method: 'POST',
+    headers: writeHeaders(token),
+    body: JSON.stringify(labels.length === 0 ? { title, body } : { title, body, labels }),
+    signal: AbortSignal.timeout(ISSUE_HTTP_TIMEOUT_MS),
+  });
+}
+
+/**
+ * What the owner is told when the labels did not survive: the EXPERIMENT, not a theory. The same
+ * title, body and token were refused with labels and accepted without them — a controlled result,
+ * with GitHub's own words riding along. Nothing here invents a cause.
+ */
+function labelsDroppedNote(labels: string[], refusal: GithubRefusal): string {
+  return `The issue was filed WITHOUT its labels (${labels.join(', ')}). GitHub refused the `
+    + `labelled version (HTTP ${refusal.status}) and accepted the same issue with the labels `
+    + `removed, so this account can file here but cannot set labels here. ${githubsWords(refusal)} `
+    + 'Nothing else changed: the `dojo-sig:` trailer in the body carries what triage needs.';
+}
+
+/**
  * File the issue. The repository is checked FIRST, at the wire, so no amount of code or
  * environment manipulation between a caller's decision and this call can put a development
  * box's fixture report on the Dojo's public tracker.
+ *
+ * ── THE LABELS ARE BEST-EFFORT, AND THAT IS A RELEASE BLOCKER'S FIX (T8) ──
+ * GitHub requires WRITE access to set `labels` on a new issue and requires nothing at all to OPEN
+ * one on a public repository. `post.ts` always passes labels and the list is never empty — it
+ * always contains `dojo-report` — so the old request was one only a collaborator on the
+ * destination repository could make. The owner met it live at 00:24Z on 2026-09-26: connected as
+ * `dcliff9`, filing against a repository owned by `d-cornerpin`, 403, nothing posted. Every
+ * ordinary user of a shipped Dojo stands in that same relation to `d-cornerpin/dojo`, and a
+ * reporting feature only its own maintainers can use is not a reporting feature. So: ask with the
+ * labels; if that is refused on a status GitHub uses for a field it will not take, ask ONCE more
+ * without them. The labels are triage convenience and the `dojo-sig:` trailer in the BODY already
+ * carries the identity triage actually keys on.
+ *
+ * ── A MEASUREMENT, NOT A PREDICTION — WHICH IS WHY IT IS A RETRY AND NOT A PRE-CHECK ──
+ * A permission pre-check costs a call on the HAPPY path and asks a different question than the one
+ * that matters (`permissions.push` on a repository is not "may I label an issue"). The retry
+ * ANSWERS the question instead: either the smaller request succeeds, and the labels provably were
+ * the obstacle, or it fails, and the owner gets GitHub's own words about a refusal that had
+ * nothing to do with labels. Nothing is ever inferred from a status code alone.
+ *
+ * ── AND WHY THE TRIGGER IS THE STATUS, NOT A BODY THAT MENTIONS LABELS ──
+ * The one place this diverges from the brief's literal wording, deliberately. The live 403's body
+ * has never been seen — capturing it is what the sibling fix round exists for — so a retry gated
+ * on GitHub's prose containing "label" might simply not fire against the defect it was written
+ * for. Status + "labels were actually sent" cannot miss, and cannot misreport either: a 403 about
+ * something else fails honestly one refused POST later, carrying GitHub's sentence for the
+ * label-less attempt, the request that asked for the least. Being wrong here costs one refused
+ * POST; the narrow version being wrong costs the release blocker. The control is that a call
+ * carrying NO labels retries nothing at all.
  */
 export async function createIssue(
   repo: string, title: string, body: string, labels: string[],
-): Promise<IssueWriteResult<{ number: number; url: string }>> {
+): Promise<IssueWriteResult<{ number: number; url: string; labelsDropped: string | null }>> {
   const postable = assertPostableRepo(repo);
   if (!postable.ok) return postable;
   const token = getGithubToken();
   if (!token) return { ok: false, error: NOT_CONNECTED };
   try {
-    const res = await fetch(`${GITHUB_API}/repos/${repo}/issues`, {
-      method: 'POST',
-      headers: writeHeaders(token),
-      body: JSON.stringify({ title, body, labels }),
-      signal: AbortSignal.timeout(ISSUE_HTTP_TIMEOUT_MS),
-    });
-    if (!res.ok) return await reportRefusal('file the issue', res);
-    const answer = await res.json() as { number?: unknown; html_url?: unknown };
-    if (typeof answer.number !== 'number' || typeof answer.html_url !== 'string') {
-      return reportUnreadableAnswer('file the issue', res.status);
+    const res = await postIssue(repo, token, title, body, labels);
+    if (!res.ok) {
+      // NOTHING TO DROP, OR NOT A REFUSAL A SMALLER REQUEST COULD SURVIVE: fail honestly, here,
+      // with GitHub's own explanation. This is the control branch and it performs ONE call.
+      if (labels.length === 0 || !LABEL_RETRY_STATUSES.has(res.status)) {
+        return await reportRefusal('file the issue', res);
+      }
+      // The body is read for the LOG and for the owner's note. No ledger write yet: the attempt
+      // is not over, and recording a failure the next line may disprove is how a working
+      // connection ends up flagged broken.
+      const refusal = await readRefusal(res);
+      logger.warn('github refused the labelled issue; asking again with no labels', {
+        labels: labels.join(', '), detail: refusalDetail(refusal),
+      });
+      const bare = await postIssue(repo, token, title, body, []);
+      // The second refusal is the one reported: it is the answer to the SMALLEST request this
+      // module can make, so its sentence is the honest account of "this could not be filed".
+      if (!bare.ok) return await reportRefusal('file the issue', bare);
+      return await readCreated(bare, labelsDroppedNote(labels, refusal));
     }
-    noteGithubOk();
-    return { ok: true, number: answer.number, url: answer.html_url };
+    return await readCreated(res, null);
   } catch (err) {
     return unreachable('file the issue', err);
   }
+}
+
+/** GitHub accepted it. One reader for both attempts, so neither can drift from the other. */
+async function readCreated(
+  res: Response, labelsDropped: string | null,
+): Promise<IssueWriteResult<{ number: number; url: string; labelsDropped: string | null }>> {
+  const answer = await res.json() as { number?: unknown; html_url?: unknown };
+  if (typeof answer.number !== 'number' || typeof answer.html_url !== 'string') {
+    return reportUnreadableAnswer('file the issue', res.status);
+  }
+  noteGithubOk();
+  return { ok: true, number: answer.number, url: answer.html_url, labelsDropped };
 }
 
 /** Add this report to an issue that already exists. Same gate, same ledger, same silence about numbers. */
