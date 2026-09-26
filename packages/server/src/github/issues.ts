@@ -43,9 +43,8 @@
 // revoked scope read as a working connection — and nothing invents a cause.
 //
 // ── THE LABELS ARE BEST-EFFORT (T8 fix round) ──
-// GitHub needs WRITE access to set `labels` on a new issue and none to OPEN one. If it refuses
-// the labelled request, `createIssue` asks once more without them and says so. The whole
-// argument is on `createIssue`.
+// GitHub needs WRITE access to set `labels` on a new issue and none to OPEN one. If it refuses the
+// labelled request, `createIssue` asks once more without them and says so; the argument is there.
 //
 // ── AND GITHUB USUALLY DOES NOT REFUSE. IT ACCEPTS AND DISCARDS (T8 LIVE, D-B) ──
 // Measured on the wire, 2026-09-26: the platform sent `labels:["dojo-report","v0.0.0"]`, GitHub
@@ -216,11 +215,14 @@ function labelsDroppedNote(labels: string[], refusal: GithubRefusal): string {
 /**
  * THE LABELS THE CREATED ISSUE ACTUALLY HAS — or `null`, meaning NOT MEASURED.
  *
- * `null` is never "none". A read-back that 404s, 500s, answers an HTML error page or answers an
- * issue with no `labels` array tells us nothing, and reporting nothing is the only honest move:
- * "your labels were dropped" is a claim, and a claim nobody measured is what this whole fix
- * round exists to remove. One call, bounded by the same timeout as the writes, best-effort —
- * the report has already landed and no failure here may take that back.
+ * `null` is never "none". A read-back that 404s, 500s, answers an HTML error page, answers an issue
+ * with no `labels` array, or answers an array holding a label WITH NO READABLE NAME tells us nothing,
+ * and reporting nothing is the only honest move: "your labels were dropped" is a claim, and a claim
+ * nobody measured is what this whole fix round exists to remove. That rule reaches the ELEMENTS and
+ * not only the array (fix round F4): an unreadable element used to be filtered away, so
+ * `labels:[{"id":1}]` answered `[]` — byte-for-byte what a genuinely unlabelled issue answers — and
+ * the owner was told about a full drop nobody had measured. One call, bounded by the same timeout as
+ * the writes, best-effort — the report has already landed and no failure here may take that back.
  *
  * NO LEDGER WRITE, deliberately. The WRITE succeeded one line earlier, so the credential
  * demonstrably works; `github/status.ts`'s `looksLikeAuthFailure` reads the ledger to decide
@@ -238,15 +240,14 @@ async function labelsOnIssue(repo: string, token: string, issueNumber: number): 
   };
   try {
     const res = await fetch(`${GITHUB_API}/repos/${repo}/issues/${issueNumber}`, {
-      headers: authHeaders(token),
-      signal: AbortSignal.timeout(ISSUE_HTTP_TIMEOUT_MS),
+      headers: authHeaders(token), signal: AbortSignal.timeout(ISSUE_HTTP_TIMEOUT_MS),
     });
     if (!res.ok) return cannotTell(`GitHub answered HTTP ${res.status}`);
     const answer = await res.json() as { labels?: unknown };
     if (!Array.isArray(answer.labels)) return cannotTell('the answer carried no `labels` array');
-    return answer.labels
-      .map(l => (typeof l === 'string' ? l : (l as { name?: unknown } | null)?.name))
-      .filter((n): n is string => typeof n === 'string' && n !== '');
+    const names = answer.labels.map(l => typeof l === 'string' ? l : (l as { name?: unknown } | null)?.name);
+    if (names.every(n => typeof n === 'string' && n !== '')) return names as string[];
+    return cannotTell('a label in the answer carried no readable name');
   } catch (err) {
     return cannotTell(err instanceof Error ? err.message : String(err));
   }
@@ -254,27 +255,29 @@ async function labelsOnIssue(repo: string, token: string, issueNumber: number): 
 
 /**
  * What the owner is told when GitHub took the labels and then did not keep them: the MEASURED
- * DIFFERENCE first, then GitHub's own documented rule as the explanation — cited, not inferred.
- * A partial drop names only what is actually missing, because a report that kept `dojo-report`
- * and lost `v3.1.28` is still in a label sweep and out of every version-filtered view.
+ * DIFFERENCE, naming only what is actually missing — a report that kept `dojo-report` and lost
+ * `v3.1.28` is still in a label sweep and out of every version-filtered view — and then GitHub's
+ * documented rule as the cause ONLY WHERE THAT RULE FITS THE MEASUREMENT (fix round F3): it drops
+ * EVERY label, so a label that SURVIVED refutes it, and the sentence used to cite it on a partial
+ * drop anyway — sending the owner to fix a permission the measurement proves they already have.
  */
 function silentlyDroppedNote(sent: string[], kept: string[], dropped: string[]): string {
-  return `Your report posted. It asked for the label${sent.length === 1 ? '' : 's'} `
-    + `${sent.join(', ')}, and GitHub saved the issue `
-    + `${kept.length === 0 ? 'with no labels at all' : `with only ${kept.join(', ')}`} — `
-    + `${dropped.join(', ')} ${dropped.length === 1 ? 'was' : 'were'} dropped. GitHub does that `
-    + 'when the account filing has no write access to the repository; its own reference for '
-    + 'creating an issue says labels "are silently dropped otherwise". Only someone with write '
-    + 'access can add them now, and nothing triage needs is missing: the `dojo-sig:` trailer is '
-    + 'in the issue body, which is what a search finds this report by.';
+  const why = kept.length === 0
+    ? 'GitHub does that when the account filing has no write access to the repository; its own reference '
+      + 'for creating an issue says labels "are silently dropped otherwise". Only someone with write '
+      + 'access can add them now, and '
+    : 'What removed the rest is not something this box can see, and it will not guess — what GitHub KEPT '
+      + 'shows this account can label issues here. Someone with write access can add them, and ';
+  return `Your report posted. It asked for the label${sent.length === 1 ? '' : 's'} ${sent.join(', ')}, and `
+    + `GitHub saved the issue ${kept.length === 0 ? 'with no labels at all' : `with only ${kept.join(', ')}`} — `
+    + `${dropped.join(', ')} ${dropped.length === 1 ? 'was' : 'were'} dropped. ${why}nothing triage needs is `
+    + 'missing: the `dojo-sig:` trailer is in the issue body, which is what a search finds this report by.';
 }
 
 /**
- * The read-back, as one step: measure, compare, and answer the sentence or `null`.
- *
- * The comparison is the property. A version of this that merely asked "does the issue have any
- * labels" would miss a partial drop, and one that trusted the request would never fire at all —
- * which is the state that shipped.
+ * The read-back, as one step: measure, compare, and answer the sentence or `null`. THE COMPARISON IS
+ * THE PROPERTY: a version of this that merely asked "does the issue have any labels" would miss a
+ * partial drop, and one that trusted the request would never fire at all — the state that shipped.
  */
 async function labelsThatDidNotSurvive(
   repo: string, token: string, issueNumber: number, sent: string[],
@@ -369,10 +372,7 @@ export async function createIssue(
     // an account without write access is answered 201 and saved unlabelled, silently. Ask.
     const accepted = await readCreated(res, null);
     if (!accepted.ok || labels.length === 0) return accepted;
-    return {
-      ...accepted,
-      labelsDropped: await labelsThatDidNotSurvive(repo, token, accepted.number, labels),
-    };
+    return { ...accepted, labelsDropped: await labelsThatDidNotSurvive(repo, token, accepted.number, labels) };
   } catch (err) {
     return unreachable('file the issue', err);
   }
