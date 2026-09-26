@@ -135,6 +135,56 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
     since: '2026-08-30',
     reason: '3.1.18, UPDATE-INTEGRITY U0: `park_namespace_empty` was demoted from refusal tier to report tier, because it asserted an environmental precondition ("no agent is mid-delegation") that one user\'s box did not meet — and the boot died there, permanently. The applied checksum is the ONE historical version of this file across every published tag (v3.1.17 and v3.1.17-preflight.23..33 all carry blob 862d3ff; measured, not assumed). What changed is one _bridge_assert ROW and its comment: `ok` is now the constant 1 and the count moved into `detail`. _bridge_assert is a TEMP table this file creates and drops, so the PERSISTENT SCHEMA and every row this file writes to a real table are byte-for-byte what a box on the amended file would produce. The only behavioural delta is the one intended: a body with open `park:%` keys no longer aborts. Any box carrying this checksum already crossed the bridge with zero parks, so on that box the two versions are not merely equivalent in schema, they took the identical branch.',
   },
+  // ── THE NAMES/PII SCRUB'S THREE, 2026-09-26 — a DIFFERENT and stronger warrant ──────────
+  //
+  // The three above carry real deltas (temp tables, a refusal tier, which historical rows a rescue
+  // carried) and each had to be argued down to "equivalent on this body". These three do not: the
+  // scrub edited ONLY `--` comment lines, so the EXECUTABLE SQL IS BYTE-IDENTICAL. Measured, not
+  // asserted — strip every line whose first non-space characters are `--` from the applied version
+  // and from the file on disk, and hash what is left:
+  //
+  //     135_work_spine.sql                1b5588eb8d40ec32…  ==  1b5588eb8d40ec32…
+  //     159_owed_interrupt_event_kind.sql 4fff758c01f96a6d…  ==  4fff758c01f96a6d…
+  //     171_report_read_indexes.sql       6daf355b40767a03…  ==  6daf355b40767a03…
+  //
+  // and in all three the whole diff is ONE line, and that line starts `--` on both sides. So the
+  // recipe did not change: a box that applied the pre-scrub file produced exactly the schema and
+  // exactly the rows the current file produces. There is no "equivalent on this body" step.
+  //
+  // WHY THE EDIT HAPPENED AT ALL, since "never touch an applied migration" is the ordinary rule:
+  // migrations are RAW-COPIED into the package (`deploy/build-package.sh:57-58`), so a dev-box agent
+  // name inside one genuinely ships to every user's disk, and the owner's rule of 2026-09-26 forbids
+  // that. The same legitimate reason will recur, which is why the freeze is now MECHANISED rather
+  // than declared: `check-migration-freeze.mjs` fails any commit that touches
+  // `db/migrations/**` without adding a matching entry here, because `KNOWN_DIVERGENCES` cannot
+  // pre-approve a future edit — amend again and the triple stops matching and the ERROR returns.
+  //
+  // `appliedChecksum` for 135 is the PRE-SCRUB FILE's checksum rather than a value read from this
+  // box: this box's `_migrations` row carries a NULL checksum (applied before the column existed) so
+  // it reports `unverifiable`, and the entry exists for the boxes that DID record one. 159 and 171
+  // were read from this box and their recorded values ARE the pre-scrub file's checksum, which is
+  // what proves those rows were written by the pre-scrub bytes.
+  {
+    file: '135_work_spine.sql',
+    appliedChecksum: '92e5fc365d32bb5b4b3105aee855c62a6834c7f1a55b1e0c1ed9e02515e9ea73',
+    fileChecksum: '9e7ad3d7674780361817a863ac45c76da6dedb21e83211cba77924e7e00a9df4',
+    since: '2026-09-26',
+    reason: 'Names/PII scrub (owner rule 2026-09-26): one comment line, a dev-box agent id in an example of what `created_by` holds, rewritten to \'<agent-id>\'. Executable SQL is BYTE-IDENTICAL with `--` lines stripped (1b5588eb8d40ec32…, both sides), and the entire file diff is that one comment line. Migrations are raw-copied into the package, so the name really did ship. appliedChecksum is the pre-scrub FILE checksum: this box recorded NULL (pre-checksum-column) and this entry is for boxes that recorded one.',
+  },
+  {
+    file: '159_owed_interrupt_event_kind.sql',
+    appliedChecksum: 'ebf258ba4f3d66785424c22294f52959a573ef2df75dea8b7422a07498ec7944',
+    fileChecksum: 'a655149bf43beecdc0667ba0a855ec3cee75568814e8b2c98cdc66d234399d49',
+    since: '2026-09-26',
+    reason: 'Names/PII scrub (owner rule 2026-09-26): one comment line naming a dev-box harness agent by UUID, rewritten to \'a harness agent\'. Executable SQL BYTE-IDENTICAL with `--` lines stripped (4fff758c01f96a6d…, both sides); the whole diff is that one comment line. The recorded checksum on the dev box equals the pre-scrub file\'s checksum, which is what proves the row was written by those bytes.',
+  },
+  {
+    file: '171_report_read_indexes.sql',
+    appliedChecksum: '7ca4208b4cd4b85a1df92040ab377accc2ba98ddbd13b8c281738e0045951cec',
+    fileChecksum: 'ecaffb89ecfcd2fe1157c9a459f49e7098d72b1a889845949941e1afe64a3930',
+    since: '2026-09-26',
+    reason: 'Names/PII scrub (owner rule 2026-09-26): one comment line naming a dev-box agent, rewritten by role. Executable SQL BYTE-IDENTICAL with `--` lines stripped (6daf355b40767a03…, both sides); the whole diff is that one comment line. Recorded checksum on the dev box equals the pre-scrub file\'s checksum.',
+  },
 ];
 
 type Db = ReturnType<typeof getDb>;
