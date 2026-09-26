@@ -49,7 +49,7 @@ import { writeBundle } from '../../../report/bundle.js';
 import { attachDraft, createReport, getReport, submitForApproval, type ReportBrief } from '../../../report/store.js';
 import { deriveReportSignature, isFailureLane, FAILURE_LANES } from '../../../report/signature.js';
 import { ATTACHMENT_ECHO_CHARS, boundDocumentArrays } from '../../../report/bounds.js';
-import { draftHead, gatherHead, renderBrief } from './report-prose.js';
+import { draftHead, gatherHead, renderBrief, submitHead } from './report-prose.js';
 import type { WindowRequest } from '../../../report/window.js';
 
 /**
@@ -193,7 +193,8 @@ export const reportHandlers: ToolHandlerMap = {
     // The report is the owner's now; nothing this tool can do reaches it again.
     ASKED_WINDOW.delete(reportId);
     broadcast({ type: 'report:pending', data: { id: row.id, title } });
-    return ok(`Filed as \`${row.id}\`. A preview card is now on the dashboard showing your brief and the `
-      + 'telemetry attachment. Nothing is sent until the user presses Post on that card. You cannot press it.');
+    // The words live in `report-prose.ts` with the argument for them — round 5's red was this
+    // result's opening word, not its substance.
+    return ok(submitHead(row.id));
   },
 };

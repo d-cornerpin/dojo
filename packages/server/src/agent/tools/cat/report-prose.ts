@@ -74,6 +74,41 @@ export function draftHead(reportId: string, lane: string, signature: string): st
   ];
 }
 
+/**
+ * SUBMIT'S RESULT — AND THE WORD IT MAY NOT USE (ritual v3.2.0 round-5 red).
+ *
+ * This said *"Filed as `<id>`. A preview card is now on the dashboard … Nothing is sent until the
+ * user presses Post"* — honest in substance, and it opened with the one word the same release
+ * defines as the OPPOSITE. `report/state-lane.ts`'s legend, which the agent reads on the same turn,
+ * says *"FILED means it reached the builders, at the link shown"* and renders `PREVIEW CARD UP` (not
+ * `FILED`) for exactly this row. So the platform shipped one word with two meanings, and the model
+ * — correctly paraphrasing its tool — opened its reply with *"Report is filed as a preview card on
+ * your dashboard"*, which the release gate reads as a delivery claim. Two sides of one word; this is
+ * the product's side.
+ *
+ * ONE VOCABULARY, AND THE LANE'S LEGEND IS THE DEFINITION. `filed`, `posted`, `sent`, `delivered`
+ * and `published` are the lane's reserved DELIVERY words: they mean the report reached the Dojo
+ * builders. A row that is `awaiting_approval` has reached nobody, so this result may not use any of
+ * them — not even in an honest negative like "nothing is sent", because the model's paraphrase is
+ * what ships and a reserved word in the result is a reserved word in the reply. It says
+ * `Submitted`, it names the lane's own state word for the row, and it says where the report stands
+ * in the lane's terms. A clause holds the absence, and the mutant that restores "Filed as" is RED.
+ *
+ * WHAT THE SWEEP FOUND AND DELIBERATELY LEFT. `gatherHead`'s *"NOTHING IS FILED"* and `draftHead`'s
+ * *"STILL NOT FILED"* are round 1's fix, are pinned by clauses, and are TRUE under both readings of
+ * the word (nothing has reached anybody, and no card exists) — rewriting them would trade a live
+ * guard for a cosmetic one. The owner-facing arms (`report/post.ts`'s duplicate help,
+ * `report/export.ts`) speak about a report that really is being delivered, which is the reserved
+ * sense used correctly.
+ */
+export function submitHead(reportId: string): string {
+  return `Submitted as \`${reportId}\`. That is the state your report lane calls PREVIEW CARD UP: the `
+    + 'preview card is now on the user\'s dashboard with your brief and the telemetry attachment, and '
+    + 'they can read it, edit it and decide. NOTHING has reached the Dojo builders yet — the only thing '
+    + 'that does is the user pressing Post on that card, and you cannot press it for them. When you '
+    + 'tell them, say the card is up and waiting for their Post.';
+}
+
 /** The five fields, rendered the way the owner will read them on the card. */
 export function renderBrief(b: ReportBrief): string {
   return [
