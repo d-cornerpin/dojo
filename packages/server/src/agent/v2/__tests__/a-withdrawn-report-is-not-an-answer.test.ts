@@ -31,28 +31,54 @@
 // answered). So suppression may not be weakened by one byte for anything BUT a withdrawn-report
 // answer. §3 is that clause, and it is what the over-widening mutant fails.
 //
+// ── ROUND 3 · THE SECOND GENERATION, AND WHY THE BINDING CHANGED ────────────────────────────
+// Rounds 1-2 bound `tool_use.input.report_id` — the id an agent PASSES BACK. Round 3's pre-flight
+// check caught what that misses, on a clean agent, through the real doors: a turn that calls NO
+// TOOL and merely restates *"it's already filed — sitting on your dashboard (report 067df9fa)"*
+// binds nothing, so its stamp was immune FOR EVER. Worse, the three of BehaviorBot's six stamps
+// that survived round 2's fix are the three whose attempts reached only `gather` — and `gather`
+// takes no report_id, it ISSUES one.
+//
+// THE BINDING IS NOW THE PLATFORM'S OWN MINTED ID, wherever a recorded row of this agent names it:
+// the call's JSON input, the `tool_result` that issued it ("Report <uuid> opened."), or the agent's
+// own reply naming it — at any generation, in the short 8-character form the model writes. Chosen
+// on measurements over 4,242 live answered asks, not on taste; the alternatives (report-lifetime
+// windows, wider turn reach) and their collateral are in `report/withdrawn-claim.ts`'s header and
+// in `.superpowers/sdd/DOJO-REPORT-PLAN/round3-red-fix-report.md`. Coverage: 8/8 of the known bad
+// stamps. Cost: 13 of 4,242 (3.06/1000), and every one of the 13 is a genuine report ask.
+//
+// ── AND THE OTHER HALF OF THE BAR (§3) ──────────────────────────────────────────────────────
+// The owner has a standing complaint that agents REPEAT THEMSELVES, and this machinery is what
+// stops that (his 2026-08-09 incident: an agent re-investigating a question it had just answered).
+// So suppression may not be weakened by one byte for anything BUT a withdrawn-report answer. §3 is
+// that clause, and it is what the over-widening mutant fails.
+//
 // ── WHAT EACH SECTION HOLDS ─────────────────────────────────────────────────────────────────
-//   §1 the Arm B shape at unit level, one clause per carrier   §5 one owner, and the window's shape
-//   §2 the per-status table, three reads apiece                §6 the fail-open: LOUD, and open
-//   §3 what must not move (the anti-repetition half)           §7 the accepted collateral, recorded
-//   §4 the fifth carrier on its own
+//   §1 the reproduction shapes, one clause per carrier AND per generation
+//   §2 the per-status table, three reads apiece        §5 one owner, the window, the one needle
+//   §3 what must not move (the anti-repetition half)   §6 the fail-open: LOUD, and open
+//   §4 the fifth carrier on its own                    §7 the accepted collateral, recorded
 //
-// ── MUTATION RECORD. Each planted in `answered-edge.ts`, measured, then reverted by restoring
-// the byte-identical file (sha256 `22215f26` re-asserted after every one):
+// ── MUTATION RECORD. Each planted in the product file named, measured, then reverted by restoring
+// the byte-identical file (sha256 `52f38270` for `agent/v2/answered-edge.ts` and `e6d99ba6` for
+// `report/withdrawn-claim.ts`, re-asserted after every one):
 //
-//   M1  predicate dropped from read 1  (`recentlyAnsweredAsks`)      11 F / 20 P  §1 §2 §3 §5 §6 §7
-//   M2  predicate dropped from read 2  (`answeredPairsForMessages`)   6 F / 25 P  §1 §2 §5
-//   M3  predicate dropped from carrier 5 (`recordedAnswer…`)          7 F / 24 P  §1 §2 §4 §5
-//   M4  predicate INVERTED                                           13 F / 18 P  §1 §2 §3 §4 §6 §7
-//   M5  predicate OVER-WIDENED (voids standing rows too)              9 F / 22 P  §3 (8 of 9) §6
-//   M6  the fail-open's ERROR log deleted                             1 F / 30 P  §6
-//   M7  the fail-open flipped to fail-CLOSED                          1 F / 30 P  §6
+//   M1  predicate dropped from read 1  (`recentlyAnsweredAsks`)      15 F / 21 P  §1 §2 §3 §5 §6 §7
+//   M2  predicate dropped from read 2  (`answeredPairsForMessages`)   7 F / 29 P  §1 §2 §5
+//   M3  predicate dropped from carrier 5 (`recordedAnswer…`)          9 F / 27 P  §1 §2 §4 §5
+//   M4  predicate INVERTED                                           17 F / 19 P  §1 §2 §3 §4 §6 §7
+//   M5  predicate OVER-WIDENED (voids standing rows too)             10 F / 26 P  §1 §3 §6
+//   M6  the fail-open's ERROR log deleted                             1 F / 35 P  §6
+//   M7  the fail-open flipped to fail-CLOSED                          1 F / 35 P  §6
+//   M8  RE-IMMUNIZE gen 1.5 + 2: id-naming restricted to envelopes    3 F / 33 P  §1 §5
+//   M9  RE-IMMUNIZE gen 2: the 8-hex short form dropped               3 F / 33 P  §1 §5 §6
+//   M10 RE-IMMUNIZE the mute shape: the one-turn reach removed         1 F / 35 P  §1
 //
 // M4 leaves §2's three STANDING rows green, and that is the reason §3 arms the cheap gate in its
 // own `beforeEach`: with no withdrawn report on the agent the predicate short-circuits, so an
-// inversion is invisible to any clause that does not put one there. M5 is the only mutant §1 and
-// §2 cannot see at all — it is what the unchanged-behaviour clauses exist for. M6 and M7 are the
-// review's F4: before §6 existed, flipping the fail-open left 111 clauses green.
+// inversion is invisible to any clause that does not put one there. M5 is the mutant §2 cannot see
+// at all — it is what the unchanged-behaviour clauses exist for. M8/M9/M10 are round 3's own bar:
+// each one re-immunizes exactly one generation, and each is red on the clause for that generation.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -103,11 +129,12 @@ import { runMigrations } from '../../../db/migrations.js';
 import {
   RECENTLY_ANSWERED_LIMIT,
   answeredPairsForMessages,
-  answerStillStands,
   recentlyAnsweredAsks,
   recordedAnswerInConversation,
   renderRecentlyAnsweredBlock,
 } from '../answered-edge.js';
+// ROUND 3: the predicate is its own module now, beside the state machine whose rows it reads.
+import { answerStillStands } from '../../../report/withdrawn-claim.js';
 import { renderRecallLane, type RecallLaneContext, type RecallLanePayload } from '../../../memory/recall-lane.js';
 import type { LaneRender } from '../../../memory/lanes.js';
 // ⚠ THE CONSENT DOORS ARE DELIBERATELY NOT IMPORTED. `approveOnce` / `markPosted` /
@@ -233,6 +260,60 @@ function seedAnsweredReportAsk(p: {
   return { askId, answerId };
 }
 
+/**
+ * ROUND 3's SHAPES — the generations the `input.report_id` binding could not reach.
+ *
+ *  'gather-only'  — BehaviorBot 83209/83220: the turn calls `dojo_report phase=gather`, which
+ *                   takes no report_id and ISSUES one; the only trace is the platform's own
+ *                   tool_result row, "Report <uuid> opened.". The reply then lies about it.
+ *  'restates-id'  — the round-3 scratch reproduction (83389/83391): NO tool call at all, the
+ *                   reply names the report ("report 067df9fa" — the short form the model uses).
+ *  'restates-mute'— BehaviorBot 83265: no tool call, no id, one turn after the work that died.
+ */
+function seedRound3Ask(p: {
+  key: string; reportId: string; shape: 'gather-only' | 'restates-id' | 'restates-mute';
+  turn?: number;
+}): Episode {
+  const turn = p.turn ?? 30;
+  if (p.shape === 'restates-mute') {
+    // The previous turn carries the platform-witnessed work; THIS turn carries only prose.
+    seedToolCall({ id: `call-${p.key}-prev`, turnNumber: turn - 1, phase: 'submit', reportId: p.reportId });
+    seedMessage({ id: `ans-${p.key}-prev`, role: 'assistant', content: 'Filed it.', turnNumber: turn - 1 });
+  }
+  const askId = seedMessage({
+    id: `ask-${p.key}`, role: 'user', content: 'That refusal problem I raised — can you get it in front of them?',
+  });
+  if (p.shape === 'gather-only') {
+    seedToolCall({ id: `call-${p.key}`, turnNumber: turn, phase: 'gather', reportId: null });
+    seedToolResult({
+      id: `res-${p.key}`, turnNumber: turn,
+      content: `Report ${p.reportId} opened. Window: the last 20 turns within the last 120 minutes.`,
+    });
+  }
+  const answerId = seedMessage({
+    id: `ans-${p.key}`, role: 'assistant', turnNumber: turn,
+    content: p.shape === 'restates-id'
+      ? `It's already filed as far as I'm able — the write-up is sitting on your dashboard as a `
+        + `preview card (report ${p.reportId.slice(0, 8)}, tool-error lane).`
+      : 'Already filed — the write-up is sitting on your dashboard as a preview card, and the only '
+        + 'step left is you pressing Post; I can\'t publish it myself.',
+  });
+  db().prepare('UPDATE messages SET answer_message_id = ?, served_by_turn = ? WHERE id = ?')
+    .run(answerId, turn, askId);
+  return { askId, answerId };
+}
+
+/** A recorded `tool_result` row — the platform's OWN words, which is where `gather` puts the id. */
+function seedToolResult(p: { id: string; turnNumber: number; content: string }): string {
+  const content = JSON.stringify([{ type: 'tool_result', tool_use_id: `call-${p.id}`, content: p.content }]);
+  db().prepare(
+    `INSERT INTO messages (id, agent_id, conversation_id, role, content, turn_number, created_at,
+                           display_kind)
+     VALUES (?, ?, ?, 'tool', ?, ?, ?, 'tool-turn')`,
+  ).run(p.id, AGENT, CONV, content, p.turnNumber, nextAt());
+  return p.id;
+}
+
 /** An ordinary answered ask with no report anywhere near it. */
 function seedPlainAnsweredAsk(key: string, ask: string, answer: string): Episode {
   const askId = seedMessage({ id: `ask-${key}`, role: 'user', content: ask });
@@ -336,6 +417,56 @@ describe('§1 the ARM B shape: cancel the card, and the stamp stops being eviden
     expect(lane).toContain('sitting on your dashboard as a preview card');
     expect(lane).not.toContain('Do NOT re-run the work');
     expect(lane).not.toContain('ALREADY ANSWERED');
+  });
+
+  it('ROUND 3 · GENERATION 1.5 — a `gather`-only turn binds through the RESULT that issued the id', () => {
+    // BehaviorBot 83209 and 83220, and the reason rounds 1-2 could not reach them: `gather` takes
+    // no report_id, it ISSUES one, so the agent's own call row names nothing. The platform's
+    // tool_result row does — "Report <uuid> opened." — and that row is recorded like any other.
+    const rid = seedReport('8a1b2c3d-0000-4000-8000-000000000001', 'cancelled');
+    const e = seedRound3Ask({ key: 'gatheronly', reportId: rid, shape: 'gather-only', turn: 30 });
+    expect(answerStillStands(AGENT, ...spanOf(e))).toBe(false);
+    expect(listedAskIds()).toEqual([]);
+    expect(answeredPairsForMessages(AGENT, [e.askId]).size).toBe(0);
+    expect(recordedAnswerInConversation(AGENT, CONV)).toBeNull();
+  });
+
+  it('ROUND 3 · GENERATION 2 — a restatement that only NAMES the report is bound by that name', () => {
+    // The round-3 red itself, on a clean agent: no tool call in the turn at all, the reply says
+    // "(report 067df9fa)" — the 8-character short form the model writes. Immune for ever under the
+    // old binding; bound now, because the id is the platform's own and it recognises it.
+    const rid = seedReport('067df9fa-1111-4000-8000-000000000002', 'cancelled');
+    const e = seedRound3Ask({ key: 'restated', reportId: rid, shape: 'restates-id', turn: 40 });
+    expect(answerStillStands(AGENT, ...spanOf(e))).toBe(false);
+    expect(listedAskIds()).toEqual([]);
+    expect(recordedAnswerInConversation(AGENT, CONV)).toBeNull();
+    // …and the SHORT form is what did it: the full uuid never appears in that reply.
+    const ans = db().prepare('SELECT content FROM messages WHERE id = ?').get(e.answerId) as { content: string };
+    expect(ans.content).not.toContain(rid);
+    expect(ans.content).toContain(rid.slice(0, 8));
+  });
+
+  it('ROUND 3 · GENERATION 2, MUTE — no call and no id, one turn after the work that died', () => {
+    // BehaviorBot 83265: the hardest shape, and the reason the window reaches ONE turn back.
+    const rid = seedReport('9c8b7a65-2222-4000-8000-000000000003', 'cancelled');
+    const e = seedRound3Ask({ key: 'mute', reportId: rid, shape: 'restates-mute', turn: 50 });
+    const ans = db().prepare('SELECT content FROM messages WHERE id = ?').get(e.answerId) as { content: string };
+    expect(ans.content).not.toContain(rid.slice(0, 8)); // it names nothing at all
+    expect(answerStillStands(AGENT, ...spanOf(e))).toBe(false);
+    expect(listedAskIds()).toEqual([]);
+  });
+
+  it('…and TWO turns back is NOT reached — the residual, stated as a clause', () => {
+    // Measured: reaching two turns back is what starts voiding "How many centimetres are there in
+    // one metre?" on the live corpus, so the reach stops at one and this is the cost. 0 stamps of
+    // the live 4,242 have this shape; closing it properly wants `dojo_reports.ask_id`.
+    const rid = seedReport('7d6e5f44-3333-4000-8000-000000000004', 'cancelled');
+    const e = seedRound3Ask({ key: 'far', reportId: rid, shape: 'restates-mute', turn: 60 });
+    // Push the work one turn further back than the window reaches.
+    db().prepare('UPDATE messages SET turn_number = 57 WHERE id IN (?, ?)')
+      .run('call-far-prev', 'ans-far-prev');
+    expect(answerStillStands(AGENT, ...spanOf(e))).toBe(true);
+    expect(listedAskIds()).toEqual([e.askId]);
   });
 
   it('BOTH measured window shapes are covered: cross-turn (Arm B) and same-turn (the kit)', () => {
@@ -468,8 +599,8 @@ describe('§3 suppression is untouched for everything but a withdrawn-report ans
   });
 
   it('a turn that RE-FILED after a cancel still stands (Arm A: one withdrawn row, one live)', () => {
-    const gone = seedReport('rep-arm-a-gone', 'cancelled');
-    const live = seedReport('rep-arm-a-live', 'awaiting_approval');
+    const gone = seedReport('rep-a-gone', 'cancelled');
+    const live = seedReport('rep-b-live', 'awaiting_approval');
     const e = seedAnsweredReportAsk({ key: 'arma', reportIds: [gone, live] });
     expect(answerStillStands(AGENT, ...spanOf(e))).toBe(true);
     expect(listedAskIds()).toEqual([e.askId]);
@@ -488,9 +619,23 @@ describe('§3 suppression is untouched for everything but a withdrawn-report ans
     expect(listedAskIds()).toEqual([e.askId]);
   });
 
-  it('ANOTHER TOOL\'s call in the episode is not a report call', () => {
+  it('ROUND 3 CHANGED THIS ONE: the binding is the ID, not the tool that named it', () => {
+    // It used to assert the opposite — `$.name = 'dojo_report'` was part of the key, so a
+    // `work_update` call carrying the same id bound nothing. Round 3's red is why that key is
+    // gone: the failing shape called NO TOOL AT ALL and merely restated "it's filed (report
+    // 067df9fa)", so a tool name cannot be what makes a row evidence. What makes it evidence is
+    // that it names an id THIS PLATFORM MINTED for THIS agent. Measured cost of dropping the
+    // tool key: zero additional collateral over 4,242 live answered asks.
     const rid = seedReport('rep-other-tool', 'cancelled');
     const e = seedAnsweredReportAsk({ key: 'othertool', reportIds: [rid], tool: 'work_update' });
+    expect(answerStillStands(AGENT, ...spanOf(e))).toBe(false);
+    expect(listedAskIds()).toEqual([]);
+  });
+
+  it('a row naming NOTHING binds nothing, whatever tool it called', () => {
+    // The other half of the same rule, and the one that keeps the widening honest.
+    seedReport('rep-elsewhere-only', 'cancelled');
+    const e = seedAnsweredReportAsk({ key: 'noname', reportIds: [null], tool: 'work_update' });
     expect(answerStillStands(AGENT, ...spanOf(e))).toBe(true);
     expect(listedAskIds()).toEqual([e.askId]);
   });
@@ -552,7 +697,7 @@ describe('§4 the ghosted-ask ladder is not handed a withdrawn claim to restate'
   });
 
   it('a standing answer is still handed over, verbatim', () => {
-    const rid = seedReport('rep-fifth-live', 'awaiting_approval');
+    const rid = seedReport('rep-5-live', 'awaiting_approval');
     seedAnsweredReportAsk({ key: 'fifthlive', reportIds: [rid] });
     expect(recordedAnswerInConversation(AGENT, CONV)).toBe(THE_CLAIM);
   });
@@ -564,11 +709,19 @@ describe('§4 the ghosted-ask ladder is not handed a withdrawn claim to restate'
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§5 the predicate has one home and every read applies it', () => {
-  it('all three reads in the edge call the SAME predicate, and nothing else defines one', () => {
+  it('all three reads call the SAME predicate, and only ONE module defines it', () => {
     const edge = codeOf('agent/v2/answered-edge.ts');
-    // Its definition, plus exactly one call from each of the three reads.
-    expect(edge.match(/answerStillStands\(/g) ?? []).toHaveLength(4);
-    expect(edge).toContain('STANDING_REPORT_STATUSES');
+    const claim = codeOf('report/withdrawn-claim.ts');
+    // Three calls in the edge — one per read — and no definition: round 3 moved the predicate to
+    // its own module rather than taking a third ceiling raise on the edge.
+    expect(edge.match(/answerStillStands\(/g) ?? []).toHaveLength(3);
+    expect(edge).toContain("from '../../report/withdrawn-claim.js'");
+    expect(edge, 'the edge must not re-acquire the report vocabulary it just handed over')
+      .not.toContain('STANDING_REPORT_STATUSES');
+    expect(edge).not.toContain('dojo_reports');
+    // …and the definition is there, exactly once.
+    expect(claim.match(/export function answerStillStands/g) ?? []).toHaveLength(1);
+    expect(claim).toContain('STANDING_REPORT_STATUSES');
   });
 
   it('no carrier re-derives report state at its own injection site', () => {
@@ -590,28 +743,37 @@ describe('§5 the predicate has one home and every read applies it', () => {
     // the timings themselves are not assertable in a unit test: two literal statements, each with
     // exactly one row filter, and no `${}` in either — the SQL gate prepares literals against the
     // migrated schema and a builder would put both beyond its reach.
-    const edge = codeOf('agent/v2/answered-edge.ts');
-    expect(edge).toContain('AND m.turn_number = ?');
-    expect(edge).toContain('AND m.seq >= ? AND m.seq <= ?');
-    expect(edge, 'the OR is what defeated both indexes; it must not come back')
-      .not.toMatch(/m\.turn_number = \?\s*OR/);
-    expect(edge.match(/SELECT DISTINCT \(SELECT status FROM dojo_reports/g) ?? []).toHaveLength(2);
-    for (const stmt of edge.split('const REPORT_STATUSES_IN_').slice(1)) {
+    const claim = codeOf('report/withdrawn-claim.ts');
+    expect(claim).toContain('AND m.turn_number BETWEEN ? AND ?');
+    expect(claim).toContain('AND m.seq >= ? AND m.seq <= ?');
+    expect(claim, 'the OR is what defeated both indexes; it must not come back')
+      .not.toMatch(/m\.turn_number BETWEEN \? AND \?\s*OR/);
+    expect(claim.match(/SELECT DISTINCT r\.id AS id, r\.status AS status/g) ?? []).toHaveLength(2);
+    for (const stmt of claim.split('const REPORTS_NAMED_IN_').slice(1)) {
       expect(stmt.split('`')[1] ?? '', 'a runtime-assembled arm is invisible to the SQL gate')
         .not.toContain('${');
     }
   });
 
-  it('the predicate reads ROWS, never prose: no answer-shaped text test anywhere near it', () => {
+  it('the ONLY text it matches is an id the platform minted — never a word, never a phrase', () => {
+    const claim = codeOf('report/withdrawn-claim.ts');
     const edge = codeOf('agent/v2/answered-edge.ts');
-    for (const smell of ['preview card', 'dashboard as a', 'looksLikeAnswer', 'CLOSEOUT']) {
+    for (const smell of ['preview card', 'dashboard as a', 'looksLikeAnswer', 'CLOSEOUT', 'already filed']) {
+      expect(claim).not.toContain(smell);
       expect(edge).not.toContain(smell);
     }
-    // The only text pattern it may carry is the tool_use ENVELOPE prefilter, which
-    // `substantiveReplySince` above it already used before this task: once there (a NOT LIKE), and
-    // once in each of the window's two arms — which is the count that changes if a third arm, or a
-    // prose match wearing the same shape, is ever added.
-    expect(edge.match(/\[\{%/g) ?? []).toHaveLength(3);
+    // Round 3's rule DOES match text, and this is the clause that keeps it narrow: every LIKE in
+    // the module takes its needle from `substr(r.id, 1, 8)` — the first 8 hex of a UUID this
+    // platform minted, read out of `dojo_reports` — and from nothing else. A phrase list, a lane
+    // word or a hand-written id would fail here.
+    const likes = claim.match(/LIKE[^\n]*/g) ?? [];
+    expect(likes.length).toBe(2);
+    for (const like of likes) expect(like).toContain("'%' || substr(r.id, 1, 8) || '%'");
+    expect(claim).not.toMatch(/LIKE\s*'%[a-zA-Z]/);
+    // The tool_use ENVELOPE prefilter is gone with the JSON: the id-naming rule needs prose rows,
+    // and the edge keeps exactly one (`substantiveReplySince`'s NOT LIKE, which predates all this).
+    expect(edge.match(/\[\{%/g) ?? []).toHaveLength(1);
+    expect(claim).not.toContain('json_each');
   });
 });
 
@@ -636,7 +798,9 @@ function breakTheWindowQuery(): () => void {
     get(target, prop, recv) {
       if (prop === 'prepare') {
         return (sql: string, ...rest: unknown[]) => {
-          if (sql.includes('json_each')) throw new Error('no such function: json_each');
+          // Keyed on the window statements' own shape (the `substr(r.id, …)` needle), so the gate
+          // read and the answer-row resolve still work and the failure lands where §6 says.
+          if (sql.includes('substr(r.id')) throw new Error('database disk image is malformed');
           return (target.prepare as (s: string, ...r: unknown[]) => unknown)(sql, ...rest);
         };
       }
@@ -675,7 +839,7 @@ describe('§6 the instrument failing is LOUD, and it fails OPEN', () => {
     expect(message).toContain('withdrawn-report check could not run');
     expect(message).toContain('STANDS');
     expect(meta).toMatchObject({ answerMessageId: e.answerId });
-    expect(String(meta.error)).toContain('json_each');
+    expect(String(meta.error)).toContain('malformed');
     // The word every operator greps for. It is an ERROR, not a warn and not a debug.
     expect(h.calls.warn).toHaveLength(0);
   });
