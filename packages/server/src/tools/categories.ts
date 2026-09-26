@@ -303,6 +303,18 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
     lines.push('- **Hand off technique authorship to the trainer agent.** `save_technique` / `update_technique` / `publish_technique` / `delete_technique` are reserved for the trainer agent only, the engine refuses them from anyone else. **Why:** techniques are shareable across dojos; that only works if every file the technique needs is inside the technique\'s own directory and every external install (npm/brew/git/model) is declared in `dependencies.json`. If you create a script somewhere arbitrary on disk and reference it from TECHNIQUE.md, the technique silently breaks on every other user\'s machine. To avoid this, **don\'t write files for a future technique on your own**, when you realize a piece of work could become a reusable technique, send the trainer a message describing what you want with any custom file contents inline (use `file_read` to grab existing scripts), and they\'ll build it correctly. You can still `technique_read` and `use_technique` freely, those stay open to every agent.');
   }
   lines.push('');
+  // T85 — THIS LINE NAMES WHAT THE CALL CARRIES, AND `alwaysLoaded` IS THAT, NOT THE DECLARATION.
+  // Measured on the release golden (`cache-prefix.kevin.txt`): it named 30 always-loaded tools
+  // including `complete_task` while the tools array on the same request held 29 — `getFilteredTools`
+  // strips `complete_task` from any agent that must not self-terminate (`surface.ts:301-309`), the
+  // primary included. Prose promising a tool the primary cannot call, and a model that trusts the
+  // line spends a turn finding out. The caller now passes `partitionToolsForApiCall(...).alwaysLoaded`
+  // — the SAME head `model.ts` puts on the wire, so the two cannot drift again.
+  // KNOCK-ON, RECORDED RATHER THAN DISCOVERED: `isPrimaryClass` above reads this same argument, so
+  // the 7-reflex block now renders for an agent that HOLDS `work_open` + `file_append` +
+  // `scratchpad_set`, not one that merely declares them. Byte-identical for every real primary (all
+  // three survive its filter); an agent that declared them without the permission to hold them was
+  // being taught reflexes it could not perform.
   lines.push(`**Always-loaded tools**: ${alwaysLoaded.join(', ')}`);
   lines.push('');
 

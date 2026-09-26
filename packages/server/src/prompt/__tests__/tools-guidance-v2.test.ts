@@ -36,6 +36,10 @@ vi.mock('../../microsoft/auth.js', () => ({
   getMicrosoftWorkspaceConfig: () => ({ accountEmail: '' }),
 }));
 
+// T85: the surface is a mutable holder so a clause can state the agent's REAL tool surface
+// (`null` = the four fakes every pre-T85 clause was written against, byte-for-byte).
+const surfaceOverride: { current: ToolDefinition[] | null } = { current: null };
+
 vi.mock('../../agent/tools/surface.js', () => {
   const fakeTools: ToolDefinition[] = [
     {
@@ -59,10 +63,11 @@ vi.mock('../../agent/tools/surface.js', () => {
       input_schema: { type: 'object', properties: {}, required: [] },
     },
   ];
-  return { getFilteredTools: () => fakeTools };
+  return { getFilteredTools: () => surfaceOverride.current ?? fakeTools };
 });
 
 beforeEach(() => {
+  surfaceOverride.current = null;
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE agents (
@@ -158,5 +163,91 @@ describe('Phase 5 v2 tools-guidance content', () => {
     const prompt = assembleSystemPrompt('primary', 'test-model');
     const approxTokens = Math.ceil(prompt.length / 4);
     expect(approxTokens).toBeLessThan(6000); // hard ceiling — would mean we missed something big
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// T85 — THE "Always-loaded tools" LINE ADVERTISES WHAT THE CALL CARRIES.
+//
+// ── THE GAP, MEASURED ON THE RELEASE GOLDEN (both auditors, independently) ──
+// `checks/golden/cache-prefix.kevin.txt` is the real assembled prefix for the primary agent. Line
+// 118 named THIRTY always-loaded tools, `complete_task` among them; the `===TOOLS===` array on the
+// same request carried TWENTY-NINE. `getFilteredTools` strips `complete_task` from any agent that
+// must not self-terminate (`agent/tools/surface.ts:301-309`) — the primary included, because it has
+// nothing to complete to — while the line rendered `getAgentAlwaysLoadedTools`, the DECLARATION. So
+// the cached system block promised a tool the call did not carry, and a model that trusted it spent
+// a turn finding out.
+//
+// The fix is one expression, not a second opinion: the assembler now passes
+// `partitionToolsForApiCall(...).alwaysLoaded` — the very head `model.ts` puts on the wire.
+//
+// ⚠ THIS MOVES THE CACHED PREFIX BY DESIGN (-15 bytes, `, complete_task`), so the kit's byte-exact
+// cache-prefix golden goes red until it is deliberately re-blessed. That is the intended cost of
+// the prompt stopping the lie; the delta is pinned below so the re-bless is auditable.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+import { PRIMARY_AGENT_ALWAYS_LOADED, partitionToolsForApiCall } from '../../tools/tool-docs.js';
+
+const asTools = (names: string[]): ToolDefinition[] =>
+  names.map((name) => ({
+    name, description: `doc for ${name}`, input_schema: { type: 'object', properties: {}, required: [] },
+  }));
+
+/** Make `getAgentAlwaysLoadedTools('primary')` resolve to PRIMARY_AGENT_ALWAYS_LOADED: it reads the
+ *  config table for the primary's id, and this harness's schema has no such table. */
+function declarePrimaryInConfig(): void {
+  mockDb.current!.exec('CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)');
+  mockDb.current!.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('primary_agent_id', 'primary')").run();
+}
+
+const advertisedLine = (prompt: string): string => {
+  const line = prompt.split('\n').find((l) => l.startsWith('**Always-loaded tools**:'));
+  expect(line, 'the assembled prompt carries no **Always-loaded tools** line at all').toBeTruthy();
+  return line as string;
+};
+
+describe('T85 — the advertised always-loaded set is the shipped one', () => {
+  it('the primary\'s line does NOT name `complete_task`, because its array does not carry it', () => {
+    declarePrimaryInConfig();
+    // The primary's REAL surface: every declared name except the one `getFilteredTools` strips.
+    const surface = asTools(PRIMARY_AGENT_ALWAYS_LOADED.filter((n) => n !== 'complete_task'));
+    surfaceOverride.current = surface;
+
+    const line = advertisedLine(assembleSystemPrompt('primary', 'test-model'));
+    const expected = `**Always-loaded tools**: ${PRIMARY_AGENT_ALWAYS_LOADED.filter((n) => n !== 'complete_task').join(', ')}`;
+    expect(line).toBe(expected);
+    expect(line, 'the prompt still advertises a tool the request array does not carry').not.toContain('complete_task');
+
+    // The re-bless delta, pinned where a reviewer can see it: the old line was the declaration.
+    const declarationLine = `**Always-loaded tools**: ${PRIMARY_AGENT_ALWAYS_LOADED.join(', ')}`;
+    expect(Buffer.byteLength(declarationLine) - Buffer.byteLength(line)).toBe(', complete_task'.length);
+  });
+
+  it('the advertised names EQUAL the shipped array\'s head names, in order', () => {
+    declarePrimaryInConfig();
+    // A surface narrower than the declaration in three more places, so the clause is about the
+    // rule and not about `complete_task`: two permission strips and a policy strip.
+    const withheld = new Set(['complete_task', 'exec', 'file_write', 'imessage_send']);
+    const surface = asTools(PRIMARY_AGENT_ALWAYS_LOADED.filter((n) => !withheld.has(n)));
+    surfaceOverride.current = surface;
+
+    const advertised = advertisedLine(assembleSystemPrompt('primary', 'test-model'))
+      .replace('**Always-loaded tools**: ', '').split(', ');
+    const shippedHead = partitionToolsForApiCall('primary', surface, PRIMARY_AGENT_ALWAYS_LOADED)
+      .alwaysLoaded.map((t) => t.name);
+
+    expect(advertised).toEqual(shippedHead);
+    for (const name of withheld) {
+      expect(advertised, `${name} is advertised but is not on the agent's surface`).not.toContain(name);
+    }
+  });
+
+  it('CONTROL: a surface that holds everything declared is advertised in full', () => {
+    // Without this the clauses above would pass an implementation that simply dropped names.
+    declarePrimaryInConfig();
+    surfaceOverride.current = asTools(PRIMARY_AGENT_ALWAYS_LOADED);
+    const line = advertisedLine(assembleSystemPrompt('primary', 'test-model'));
+    expect(line).toBe(`**Always-loaded tools**: ${PRIMARY_AGENT_ALWAYS_LOADED.join(', ')}`);
+    expect(line).toContain('complete_task');
   });
 });

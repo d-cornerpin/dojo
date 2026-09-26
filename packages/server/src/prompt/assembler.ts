@@ -31,7 +31,7 @@ import { getTwilioConfig } from '../twilio/auth.js';
 // its consumer died with v1 generateToolsGuidance, and the design law says
 // one contract for every model, curation tightness, not forked verbosity.)
 import { generateToolIndex } from '../tools/categories.js';
-import { getAgentAlwaysLoadedTools } from '../tools/tool-docs.js';
+import { getAgentAlwaysLoadedTools, partitionToolsForApiCall } from '../tools/tool-docs.js';
 import { homeDir } from '../home.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
 
@@ -750,12 +750,12 @@ Tools default to **compact**: focused summaries, not raw dumps. The engine caps 
 `);
   lines.push('');
 
-  // 3. Tool index, names grouped by category, no per-tool descriptions; the
-  // always-loaded set is enumerated once at the top instead of marked on every
-  // entry. A primary agent (~165 tools) lands near ~1.4K tokens here.
-  const alwaysLoaded = getAgentAlwaysLoadedTools(agentId);
+  // 3. Tool index, names grouped by category, no per-tool descriptions; the always-loaded set enumerated once at the top instead of marked on every entry. ~1.4K tokens for a primary.
+  // T85 — what it advertises is what the CALL CARRIES: `partitionToolsForApiCall`'s head, the same expression `model.ts` builds the wire array from, never what the role DECLARES.
+  // The measured defect (30 advertised vs 29 shipped) and the argument live at the line that renders it, in `tools/categories.ts`'s `generateToolIndex`.
+  const shippedAlwaysLoaded = partitionToolsForApiCall(agentId, agentTools, getAgentAlwaysLoadedTools(agentId)).alwaysLoaded.map((t) => t.name);
   lines.push('Your current tools, rebuilt every turn, if it\'s listed, you have it now. Don\'t tell the user a capability is missing from memory or an old message; check here (or just try it) first.');
-  lines.push(generateToolIndex(agentTools, alwaysLoaded));
+  lines.push(generateToolIndex(agentTools, shippedAlwaysLoaded));
   lines.push('');
 
   // 3. Brief, single-line notes per tool category (the v1 long blocks
