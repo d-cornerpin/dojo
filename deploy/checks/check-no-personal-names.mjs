@@ -20,9 +20,15 @@
 //     written down here. On a box with no database the roster half SKIPS, loudly, and says what it
 //     could not check — a skip is never silence.
 //   · THE PATTERN HALF holds only SHAPES — a home-directory username, an email address, a personal
-//     GitHub handle in prose — never an instance of one. Every pattern has a fixture row below
-//     proving what it catches AND what it must ignore (the census-reader law of this branch: a
-//     matcher with no negative fixtures is a matcher nobody has tested).
+//     GitHub handle in prose, a UUID named as an agent's — never an instance of one. Every pattern
+//     has a fixture row below proving what it catches AND what it must ignore (the census-reader law
+//     of this branch: a matcher with no negative fixtures is a matcher nobody has tested).
+//   · TWO MORE RUNTIME READS join the roster, for the same reason it exists (review M1 found all
+//     three of these shapes riding GREEN when planted verbatim from the audit): the box's own GITHUB
+//     HANDLE and git identity, and the LIVE AGENT UUIDs. Both are derived at check time and neither
+//     is written down. Each has a STRUCTURAL partner that works on a box where the read is empty —
+//     `github-handle-beside-our-org` and `agent-uuid-in-context` — because a gate whose cover depends
+//     on the checking box's own data passes trivially in CI.
 //
 // ── WHAT COUNTS AS A SHIPPED SURFACE ──
 // The same corpus rules the other gates use, and they are not a guess:
@@ -111,15 +117,19 @@ const ALLOWLIST = [
   {
     path: 'packages/server/src/vault/maintenance.ts',
     date: '2026-09-26',
-    owner: 'OWNER — the v3.2.0 audit\'s §10 question',
+    owner: 'owner-confirmed fictional 2026-09-26',
     reason:
-      'The Dreamer\'s archive-processing PROMPT illustrates conversation attribution with example '
-      + 'party tags and two example sentences. The names in it are the same class the audit could not '
-      + 'settle — "whether Bob, Ben, Sarah, Josh, Marcus, Alex Chen, Verve Health and Sarah Chen are '
-      + 'fictional or real … Owner\'s call" — and one of them is literally on that list. Rewriting a '
-      + 'prompt\'s examples changes what every Dreamer run is taught, so it waits for his word rather '
-      + 'than being guessed at by a scrub. Resolve with the §10 answer, in the same pass as the other '
-      + 'fixture names.',
+      'ADJUDICATED, and this entry now records an answer rather than a question. The Dreamer\'s '
+      + 'archive-processing PROMPT illustrates conversation attribution with example party tags and two '
+      + 'example sentences. The audit could not settle "whether Bob, Ben, Sarah, Josh, Marcus, Alex '
+      + 'Chen, Verve Health and Sarah Chen are fictional or real … Owner\'s call"; the OWNER RULED ON '
+      + '2026-09-26 THAT ALL OF THE FIXTURE NAMES ARE FICTIONAL, so no real person is named here and '
+      + 'there is nothing to scrub. The exemption stays because the hit is a COLLISION, not a leak: '
+      + 'the gate matches the live roster, and the invented example agent name happens to equal an '
+      + 'agent on the box being checked — it would re-fire on any box whose owner used the same word. '
+      + 'What is NOT settled by that ruling, and is deliberately left alone here, is whether a prompt '
+      + 'should teach by example agent NAMES at all; rewriting it changes what every Dreamer run is '
+      + 'taught, which is a behaviour change and not a scrub\'s business.',
   },
 ];
 
@@ -140,6 +150,12 @@ function liveRoster() {
 }
 
 // GitHub's own service paths. `github.com/login/device` is the device-flow URL, not a person.
+/** Words that occupy the handle position but name nobody — the scrub's own replacement vocabulary. */
+const HANDLE_PLACEHOLDERS = new Set([
+  'you', 'your-user', 'your-handle', 'username', 'user', 'someone', 'somebody', 'me', 'owner',
+  'the-owner', 'anyone', 'handle', 'account', 'redacted', 'example', 'org', 'repo',
+]);
+
 const NOT_AN_ACCOUNT = new Set([
   'login', 'repos', 'user', 'users', 'orgs', 'settings', 'apps', 'marketplace', 'features',
   'pricing', 'about', 'explore', 'topics', 'notifications', 'search', 'codespaces', 'sponsors',
@@ -162,6 +178,62 @@ const ROSTER_EXEMPT_FILES = new Map([
   ['packages/server/src/services/capabilities.ts', 'names a vendor voice in a capability example'],
 ]);
 
+/**
+ * ── HALF 1b: THE MACHINE'S OWN IDENTITIES, DERIVED AT CHECK TIME (review M1) ─────────────
+ *
+ * The audit's §1.5 hit was `` as `dcliff9`, filing against a repository owned by `d-cornerpin` `` — a
+ * personal GitHub handle in prose. The first cut of this gate said that shape was "left to the roster
+ * half", and the review is right that it cannot be: a GitHub handle is not an agent name, so nothing
+ * in the roster would ever match it.
+ *
+ * It cannot be listed here either — that is this file's one rule. So it is DERIVED, the same way the
+ * roster is: from the product's own record of the connected account (`github_account.login`), and from
+ * this checkout's git identity. Whatever the box knows about who it is, the gate knows too, and
+ * nothing is written down. The product's own org and repo are subtracted, because those are the
+ * product's public address rather than anybody's personal handle.
+ *
+ * ⚠ AND IT IS NOT ENOUGH ON ITS OWN, stated because a derived set can be EMPTY: on the box this was
+ * written on, `github_account` holds no row and `git config user.name` is unset, so the derived set is
+ * empty and the audit's own line would still ride green. That is what `github-handle-beside-our-org`
+ * below is for — a structural shape that needs no name at all.
+ */
+function derivedIdentities() {
+  const out = new Set();
+  const dbPath = path.join(process.env.DOJO_HOME ?? os.homedir(), '.dojo/data/dojo.db');
+  if (fs.existsSync(dbPath)) {
+    try {
+      const rows = execSync(`sqlite3 -readonly ${JSON.stringify(dbPath)} "SELECT login FROM github_account"`,
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      for (const l of rows.split('\n').map((x) => x.trim()).filter(Boolean)) out.add(l);
+    } catch { /* no table on an older box: the structural shape still runs */ }
+  }
+  for (const key of ['user.name', 'user.email']) {
+    try {
+      const v = execSync(`git config --get ${key}`, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      if (!v) continue;
+      out.add(key === 'user.email' ? v.split('@')[0] : v);
+    } catch { /* unset */ }
+  }
+  const slug = publicSlug();
+  if (slug) for (const part of slug.split('/')) out.delete(part);
+  return [...out].filter((n) => n.length >= 3 && /^[A-Za-z0-9._-]+$/.test(n));
+}
+
+/**
+ * Agent UUIDs from the live table (review M1): the audit's §3.1 shipped one FIVE times as a literal.
+ * A UUID is an identifier of a specific machine's agent, which is exactly what the rule calls
+ * identifiable information — and like the roster, the list is read at check time and never stored.
+ */
+function liveAgentIds() {
+  const dbPath = path.join(process.env.DOJO_HOME ?? os.homedir(), '.dojo/data/dojo.db');
+  if (!fs.existsSync(dbPath)) return [];
+  try {
+    const out = execSync(`sqlite3 -readonly ${JSON.stringify(dbPath)} "SELECT id FROM agents WHERE length(id) >= 32"`,
+      { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+    return out.split('\n').map((s) => s.trim()).filter((s) => /^[0-9a-f-]{32,}$/i.test(s));
+  } catch { return []; }
+}
+
 // ── HALF TWO: THE PATTERN SET — shapes only, never instances ────────────────
 // Each entry: what it is, the matcher, and the reason a near-miss must NOT fire.
 const PATTERNS = [
@@ -181,6 +253,35 @@ const PATTERNS = [
     why: 'an address that is not one of the documented example domains is somebody\'s real inbox',
   },
   {
+    id: 'github-handle-beside-our-org',
+    // The audit's §1.5 line, caught WITHOUT knowing any handle: a line that names the product's own
+    // GitHub org AND carries a different backticked/quoted identifier is naming somebody's account
+    // beside our address. That co-occurrence is what makes it precise where "as `<word>`" alone was a
+    // false-positive machine (it matched "as `claimed`" and reported 100+).
+    // Two conjuncts, and both are needed. (1) A HANDLE POSITION word — `as`, `owned by`, `account`,
+    // `user`, `handle` — immediately before a quoted token, which is how a handle is written in prose.
+    // (2) The product's own org somewhere on the same line, which is what made the audit's line a leak
+    // rather than a note. The position word is the part that stops `` A `dojo-report` label sweep ``
+    // (a LABEL beside our org) from being read as somebody's account — the first cut flagged exactly
+    // that, and a label is product vocabulary.
+    re: /\b(?:as|owned\s+by|account|user|handle|authenticated\s+as|filing\s+as)\s+[`'"]([A-Za-z][A-Za-z0-9-]{2,38})[`'"]/gi,
+    why: 'a personal handle written beside the product\'s own org is the audit\'s own worst prose shape',
+    orgAware: true,
+    needsOrgOnLine: true,
+  },
+  {
+    id: 'agent-uuid-in-context',
+    // A UUID next to a word that says it is an AGENT's. The audit's §3.1 shape is exactly this:
+    // `createdBy: '57b52025-…'` and `agent 57b52025-…`, five times in one shipped file.
+    //
+    // ⚠ A BARE-UUID PATTERN WAS TRIED FIRST AND WAS WRONG: it flagged Microsoft's published
+    // `CLIENT_ID`/`MSA_TENANT_ID` constants (vendor identifiers) and an `ask:` WORK-row id in a comment
+    // example. Neither identifies a person or an agent. The context word is what makes this precise,
+    // and the exact live-agent-id pass below is what catches a UUID with no context word at all.
+    re: /\b(?:agent|agent_?id|createdBy|created_by\w*|owner_?agent)\b[^\n]{0,24}?\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/gi,
+    why: 'a UUID named as an agent\'s identifies one machine\'s agent',
+  },
+  {
     id: 'personal-github-handle',
     // A GitHub URL naming an account, or prose that says "GitHub user/handle/account <x>". The
     // product's own org and repo are subtracted at match time (read from `report/repo.ts`).
@@ -189,7 +290,11 @@ const PATTERNS = [
     // (``filing as `<handle>``) — and it reported 100+ findings across the tree, because "as
     // `claimed`" and every other backticked word in every comment matched it. It is recorded rather
     // than quietly dropped: a pattern that fires on ordinary prose gets the gate disabled, which is
-    // worse than the leak. The prose shape is left to the roster half and to review.
+    // worse than the leak. ⚠ AN EARLIER VERSION OF THIS NOTE THEN CLAIMED THE PROSE SHAPE WAS "LEFT
+    // TO THE ROSTER HALF", AND REVIEW M1 CORRECTLY CALLED THAT FALSE: a GitHub handle is not an agent
+    // name, so no roster read can ever see it. The shape is now covered by
+    // `github-handle-beside-our-org` above, which earns its precision from TWO conjuncts instead of
+    // one loose one — see its own note.
     // A URL naming an account AND NOTHING ELSE (`github.com/<who>` with no repo path), or prose that
     // says "GitHub user/handle/account <x>". `github.com/<org>/<repo>` is a SOFTWARE ADDRESS — the
     // product's own, an upstream CLI it shells out to, a vendor's price list — and those are public
@@ -236,6 +341,31 @@ const FIXTURES = [
   ['// authenticated as `the owner\'s account`, nothing posted', null],
   ['// the product\'s public address: github.com/<SLUG>/issues', null],   // SLUG substituted at runtime
   ['// no handle here at all, just prose about GitHub', null],
+
+  // ── review M1: the handle-beside-our-org shape. TWO conjuncts, so both halves get ignored rows ──
+  ['// the bot authenticates as `qwertyuser`, filing against <SLUG>, nothing posted', 'github-handle-beside-our-org'],
+  ['// <SLUG> issues are opened by user `zzuser` on the owner\'s behalf', 'github-handle-beside-our-org'],
+  ['// a repository owned by `someperson` — see <SLUG>', 'github-handle-beside-our-org'],
+  // ⚠ THE FALSE POSITIVE THAT THE FIRST CUT ACTUALLY PRODUCED, kept as a permanent row: a LABEL name
+  // beside our org is product vocabulary, and the only thing separating it from a handle is the
+  // absence of a handle-position word. This exact line is live in `github/issues.ts`.
+  ['// `<SLUG>` — arrives unlabelled. A `dojo-report` label sweep finds none of them, and', null],
+  ['// the handle position with no org on the line: authenticated as `qwertyuser`', null],
+  ['// our own org in the handle position: a repository owned by `<ORG>`, see <SLUG>', null],
+  ['// the placeholder the scrub itself writes: filing as `<you>` against <SLUG>', null],
+  ['// a generic word in the handle position: the user `you` in <SLUG> docs', null],
+  ['// prose about <SLUG> with no quoted token at all', null],
+
+  // ── review M1: a UUID named as an AGENT's. The context word is the whole precision argument ──
+  // (Synthetic UUIDs, per this table's one rule. The audit's real instance is a LIVE agent id on the
+  // owner's box, and quoting it here to prove a shape would ship exactly what the shape forbids.)
+  ['{ createdBy: \'7f3a91c2-4d5e-4a6b-8c7d-9e0f1a2b3c4d\' },', 'agent-uuid-in-context'],
+  ['// agent 7f3a91c2-4d5e-4a6b-8c7d-9e0f1a2b3c4d owns the row', 'agent-uuid-in-context'],
+  ['const agentId = \'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\';', 'agent-uuid-in-context'],
+  // The two shapes that made a bare-UUID pattern unusable, kept so nobody widens it back:
+  ['const CLIENT_ID = \'9e5f94bc-e8a4-4e73-b8be-63364c29d753\'; // Microsoft\'s published id', null],
+  ['// the work row: ask:11111111-2222-3333-4444-555555555555', null],
+  ['// a plain uuid in a doc example: 11111111-2222-3333-4444-555555555555', null],
 ];
 
 function runPatterns(text) {
@@ -243,6 +373,24 @@ function runPatterns(text) {
   for (const p of PATTERNS) {
     p.re.lastIndex = 0;
     for (const m of text.matchAll(p.re)) {
+      if (p.needsOrgOnLine) {
+        const slug = publicSlug();
+        const org = slug ? slug.split('/')[0] : null;
+        if (!org || !text.toLowerCase().includes(org.toLowerCase())) continue;
+      }
+      if (p.id === 'github-handle-beside-our-org') {
+        // A placeholder in the handle position is the CURE, not the disease — the scrub's own
+        // replacements read `as \`<you>\`` and `the user \`you\``, and a gate that flags its own
+        // remedy trains people to disable it.
+        const got = (m[1] ?? '').toLowerCase();
+        if (HANDLE_PLACEHOLDERS.has(got) || got.startsWith('<')) continue;
+      }
+      if (p.orgAware) {
+        const slug = publicSlug();
+        const parts = new Set((slug ?? '').split('/').map((x) => x.toLowerCase()));
+        const got = ((m[1] ?? m[2]) ?? '').toLowerCase();
+        if (parts.has(got)) continue;      // the product's own org or repo, written beside itself
+      }
       if (p.id === 'personal-github-handle') {
         const slug = publicSlug();
         const org = slug ? slug.split('/')[0].toLowerCase() : null;
@@ -262,7 +410,7 @@ function selfTest() {
   let bad = 0;
   console.log('── fixture table: the pattern half, caught and ignored ──');
   for (const [textRaw, want] of FIXTURES) {
-    const text = textRaw.replace('<SLUG>', slug);
+    const text = textRaw.replaceAll('<SLUG>', slug).replaceAll('<ORG>', slug.split('/')[0]);
     const hits = runPatterns(text);
     const got = hits.length ? hits[0].id : null;
     const ok = got === want;
@@ -278,6 +426,27 @@ function selfTest() {
     ['// asked Michael about it', 'Michael', true],
     ['const sticky = true;', 'Ticky', false],
   ];
+  // ── review M1's second shape: an agent name written LOWERCASE as DATA. The rule is deliberately
+  // narrower than the case-sensitive one — quoted only — because that is what separates the audit's
+  // `createdBy: 'kevin'` from a vendor voice id or an ordinary English word that happens to collide.
+  const quotedLower = [
+    ["    { serviceName: 'sendgrid', createdBy: 'kevin', createdOn: '2026-06-21' },", 'Kevin', true],
+    ["const owner = \"kevin\";", 'Kevin', true],
+    ['const owner = `kevin`;', 'Kevin', true],
+    ["// prose about kevin outside any quotes", 'Kevin', false],
+    ["const kevinCount = 1;   // an identifier, not data", 'Kevin', false],
+    ["// a quote that spans no name: 'the primary agent'", 'Kevin', false],
+    ["  am_michael: { language: 'en-us' },", 'Michael', false],
+    ["  { voice: 'am_michael' },", 'Michael', false],
+  ];
+  console.log('── an agent name written lowercase as DATA (quoted only) ──');
+  for (const [line, name, want] of quotedLower) {
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const got = new RegExp(`['\"\`][^'\"\`\n]*\\b${esc}\\b[^'\"\`\n]*['\"\`]`, 'i').test(line);
+    const ok = got === want;
+    if (!ok) bad++;
+    console.log(`  ${ok ? '✓' : '✗'} ${String(got).padEnd(5)} want ${String(want).padEnd(5)} "${name}" in ${line.trim().slice(0, 52)}`);
+  }
   console.log('── roster matching is whole-word, so vendor identifiers are not names ──');
   for (const [line, name, want] of wordOnly) {
     const got = new RegExp(`\\b${name}\\b`).test(line);
@@ -291,6 +460,8 @@ function selfTest() {
 // ── THE SCAN ────────────────────────────────────────────────────────────────
 const roles = roleNames();
 const roster = liveRoster();
+const handles = derivedIdentities();
+const agentIds = liveAgentIds();
 const files = shippedFiles();
 
 const selfTestBad = selfTest();
@@ -307,7 +478,15 @@ const rosterNeedles = roster.names
   .filter((n) => !roles.has(n.toLowerCase()))
   // CASE-SENSITIVE: an agent called `Nova` is a name; the vendor voice id `nova` is an identifier,
   // and the two must not be the same finding. Whole-word, so `am_michael` and `sticky` are not names.
-  .map((n) => ({ name: n, re: new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`) }));
+  .map((n) => {
+    const esc = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return {
+      name: n,
+      re: new RegExp(`\\b${esc}\\b`),
+      // the same needle, case-insensitively, but ONLY inside a quoted string (see the site below)
+      lower: new RegExp(`['"\`][^'"\`\n]*\\b${esc}\\b[^'"\`\n]*['"\`]`, 'i'),
+    };
+  });
 
 const findings = [];
 for (const rel of files) {
@@ -317,8 +496,22 @@ for (const rel of files) {
   const lines = text.split('\n');
   const rosterExempt = ROSTER_EXEMPT_FILES.has(rel);
   lines.forEach((line, i) => {
-    if (!rosterExempt) for (const { name, re } of rosterNeedles) {
+    if (!rosterExempt) for (const { name, re, lower } of rosterNeedles) {
       if (re.test(line)) findings.push({ rel, line: i + 1, kind: 'agent-name', detail: name, text: line.trim() });
+      // ⚠ THE LOWERCASE PASS, and review M1 is why it exists: the roster match is case-SENSITIVE so a
+      // vendor voice id (`nova`) is not an agent called `Nova` — and that let the audit's own worst
+      // finding ride green, because `createdBy: 'kevin'` is the roster name in a LIVE STRING LITERAL.
+      // Case-insensitivity is therefore restricted to QUOTED strings: an agent id written as data is
+      // the shape that shipped, while a bare lowercase identifier stays exempt.
+      else if (lower.test(line)) findings.push({ rel, line: i + 1, kind: 'agent-name-in-string', detail: name, text: line.trim() });
+    }
+    for (const id of agentIds) {
+      if (line.includes(id)) findings.push({ rel, line: i + 1, kind: 'live-agent-id', detail: id, text: line.trim() });
+    }
+    for (const h of handles) {
+      if (new RegExp(`\\b${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(line)) {
+        findings.push({ rel, line: i + 1, kind: 'derived-identity', detail: h, text: line.trim() });
+      }
     }
     for (const h of runPatterns(line)) {
       findings.push({ rel, line: i + 1, kind: h.id, detail: h.captured ?? h.match, text: line.trim() });
@@ -329,6 +522,10 @@ for (const rel of files) {
 // ── THE REPORT. It names the FILE and the LINE; it prints the offending token only as a length and
 // a class, because this gate's own output is pasted into commit messages and issues.
 console.log(`\n── scanned ${files.length} shipped file(s) ──`);
+console.log(`  identities derived at check time: ${handles.length} handle(s) (github_account.login + git `
+  + `config, product org/repo subtracted), ${agentIds.length} live agent id(s)`
+  + (handles.length === 0 ? ' — ⚠ NO handle derivable on this box, so the structural '
+    + '`github-handle-beside-our-org` shape is the only handle cover here' : ''));
 console.log(roster.available
   ? `  roster: ${rosterNeedles.length} live agent name(s) read from the database at check time `
     + `(${roster.names.length} agent row(s) total; role names excluded, nothing written to this file)`
@@ -338,9 +535,21 @@ console.log(roster.available
 
 
 
+// Two shapes catching the same token at the same site is the intended overlap (a derived handle is
+// also structurally a handle beside the org; a live agent id is also a UUID in context) — report each
+// KIND once and no more, so the count is a count of problems rather than of rules.
+const deduped = [];
+const seenFinding = new Set();
+for (const f of findings) {
+  const key = `${f.rel}\u0000${f.line}\u0000${f.kind}\u0000${f.detail}`;
+  if (seenFinding.has(key)) continue;
+  seenFinding.add(key);
+  deduped.push(f);
+}
+
 const allowed = new Map(ALLOWLIST.map((a) => [a.path, a]));
-const honoured = new Set(findings.filter((f) => allowed.has(f.rel)).map((f) => f.rel));
-const live = findings.filter((f) => !allowed.has(f.rel));
+const honoured = new Set(deduped.filter((f) => allowed.has(f.rel)).map((f) => f.rel));
+const live = deduped.filter((f) => !allowed.has(f.rel));
 const stale = ALLOWLIST.filter((a) => !honoured.has(a.path));
 
 if (ALLOWLIST.length > 0) {
@@ -364,14 +573,15 @@ for (const f of live) {
 }
 if (live.length === 0) {
   console.log(`✓ no personal or agent names in the shipped surfaces`
-    + (ALLOWLIST.length ? ` (${ALLOWLIST.length} allowlisted above, awaiting their owner)` : ''));
+    + (ALLOWLIST.length ? ` (${ALLOWLIST.length} allowlisted above, each with its adjudication)` : ''));
   process.exit(0);
 }
 console.error(`\n✗ names gate: ${live.length} finding(s) in ${byFile.size} shipped file(s).`);
 for (const [rel, list] of byFile) {
   console.error(`  ${rel}`);
   for (const f of list) {
-    const shown = VERBOSE ? f.detail : `${f.kind === 'agent-name' ? 'agent name' : f.kind}, ${String(f.detail).length} chars`;
+    const kind = f.kind === 'agent-name' ? 'agent name' : f.kind;
+    const shown = VERBOSE ? `${kind} → ${f.detail}` : `${kind}, ${String(f.detail).length} chars`;
     console.error(`    :${f.line}  ${shown}`);
     if (VERBOSE) console.error(`        ${f.text.slice(0, 120)}`);
   }
