@@ -18,6 +18,7 @@ import type { AccessGrants, AgentDetail, Model, Message, AgentMessage } from '@d
 import { cloneGrants, deriveOrigin, legacyOriginInputs, NEW_SESSION_DIVIDER} from '@dojo/shared';
 import { noteRouteFailure } from './route-failure.js';
 import { resolveChildScope } from '../../agent/scope.js';
+import { deleteAllWorkForAgent } from '../../work/purge-sweep.js';
 import { getAgentPermissions } from '../../agent/permissions.js';
 import { renameAgent } from '../../prompt/agent-rename.js';
 // UX-ACCESS A2: the owner-side half of the grant door — same resolver, same
@@ -704,9 +705,13 @@ agentsRouter.post('/:id/purge', (c) => {
   db.prepare('DELETE FROM context_items WHERE agent_id = ?').run(id);
   db.prepare('DELETE FROM large_files WHERE agent_id = ?').run(id);
   db.prepare('DELETE FROM audit_log WHERE agent_id = ?').run(id);
+  // BACKLOG WAVE-1A: the work spine was the one store this door walked past — `work.agent_id`
+  // has no FK and no cascade on purpose (135, PART 0 rider 1), so every purge left the agent's
+  // schedulable work behind, `on_deck` timers included. The FK order lives with the rows.
+  const workRows = deleteAllWorkForAgent(id);
   db.prepare('DELETE FROM agents WHERE id = ?').run(id);
 
-  logger.info('Agent permanently deleted', { agentId: id });
+  logger.info('Agent permanently deleted', { agentId: id, workRows });
   return c.json({ ok: true, data: { agentId: id, deleted: true } });
 });
 
