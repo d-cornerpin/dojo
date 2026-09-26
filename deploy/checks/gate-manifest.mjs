@@ -64,6 +64,16 @@ export const GATES = [
     why: 'NUL and C0 control bytes make a file BINARY to plain grep, which then reports no match and looks clean — that is how the dev-instrument ship gate spent months blind to the two largest files in this tree. Bidi/zero-width characters are the render-time version of the same trick. Early in the chain on purpose: every gate after it greps something.',
   },
   {
+    id: 'no-personal-names',
+    tier: 'blocking',
+    phase: 'pre-build',
+    script: 'deploy/checks/check-no-personal-names.mjs',
+    args: [],
+    title: 'Names/PII gate (no person or agent name in anything that ships)',
+    fail: 'Names/PII gate: a shipped surface carries a person\'s or an agent\'s name. NOT publishing.',
+    why: 'The owner\'s rule of 2026-09-26 — "in no code, comments, or documentation that goes live should we be including any agents names, peoples names, identifiable information of any kind" — and the v3.2.0 audit measured the shipped tree breaking it in 109 places across 51 files, one of them the owner\'s own credential inventory as string literals in a live data structure. Comments SHIP: `tsconfig.base.json` sets no `removeComments`, so a worker\'s measurement note naming the box\'s agents reaches every user\'s disk, and the repository is PUBLIC. The one-time scrub is batches A-C; this is what stops the inflow, because notes naming agents are a steady-state habit rather than a one-off mess. TWO HALVES, and neither may embed a name in this repo: the ROSTER half reads `agents.name` from the local database AT CHECK TIME (nothing written down, whole-word and case-sensitive so a vendor voice id is not a name, role names subtracted by reading `config/platform.ts`\'s own defaults) and SKIPS LOUDLY with no database rather than passing silently; the PATTERN half holds SHAPES only — a home-path username, an email address, a quoted GitHub handle — each with a fixture row proving what it catches AND what it ignores, and the gate refuses if its own fixture table fails. Early, pre-build, beside byte-hygiene: it is a text scan over tracked files and needs no build.',
+  },
+  {
     id: 'size-ratchets',
     tier: 'blocking',
     phase: 'pre-build',
