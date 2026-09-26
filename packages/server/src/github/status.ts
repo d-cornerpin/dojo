@@ -58,6 +58,27 @@ export interface GithubStatus {
  * READS it, so the reading is done here, in one exported place, with a fixture table in front
  * of it rather than a claim that the shapes are known.
  *
+ * ── WHAT THE COLUMN ACTUALLY CONTAINED, AND FOR HOW LONG (C1) ──
+ * SIX of the nine patterns below were UNREACHABLE CODE until `github/refusal.ts` was taught to
+ * put GitHub's own `message` in the line it records. `bad credentials`, `unauthorized`,
+ * `requires authentication`, `required scopes`, `insufficient scope` and
+ * `not accessible by personal access token` are strings GITHUB writes in a response body, and no
+ * writer of this column had ever passed one through: T4's message was the platform's own
+ * sentence, and T7's was a fixed verb plus a status code. So this predicate was built for input
+ * the ledger was never fed.
+ *
+ * The cost was not cosmetic and it was not the 401 case. `(HTTP 401)` matches the status-word
+ * anchor below, so the one shape everyone tested worked. A REVOKED SCOPE does not answer 401:
+ * GitHub answers 403 with `Resource not accessible by personal access token`, the recorded line
+ * was `GitHub refused to file the issue (HTTP 403).`, nothing matched, and the card told an owner
+ * whose token could no longer file anything that the connection was working — a stored claim
+ * outranking the live outcome, the exact inversion this module exists to refuse.
+ *
+ * Provider text now reaches this reader, so all nine patterns are live. The narrowness below
+ * therefore stopped being decoration and started being the thing doing the work — which is why
+ * the fixture table was re-driven against the real bodies GitHub sends, both directions, rather
+ * than extended only on the side that now passes.
+ *
  * ── THE DIRECTION IT IS WRONG IN IS CHOSEN ──
  * A false NO costs the reconnect prompt and nothing else: `lastError` is still rendered
  * verbatim in a warning, so the owner still sees the failure and can still press Disconnect. A
@@ -87,7 +108,10 @@ export interface GithubStatus {
  *
  * T7 HAND-OFF: do not put an issue number in a `noteGithubFailure` message. The anchors below
  * make the common spellings safe, but the honest contract is that this column carries the
- * platform's verdict about the CALL, not identifiers from its payload.
+ * platform's verdict about the CALL, not identifiers from its payload. (C1 widened that column
+ * to carry GITHUB's sentence about the call as well, which is the same contract one party over:
+ * provider prose, never a payload identifier. GitHub's rate-limit body names a numeric user id,
+ * and `API rate limit exceeded for user ID 401.` is a row in the fixture table for that reason.)
  */
 const AUTH_REFUSAL = [
   /^\s*401\b/,

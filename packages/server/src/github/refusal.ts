@@ -147,29 +147,49 @@ export function refusalDetail(refusal: GithubRefusal): string {
  * Report a refusal an AUTHENTICATED call received: log it in full, record it on the connection
  * ledger, and hand the caller the sentence its card will show.
  *
- * ── THREE DESTINATIONS, DELIBERATELY NOT THE SAME SENTENCE ──
- *   LOG    — EVERYTHING GitHub said, verbatim, including a body that would not parse. This is
- *            the half that was missing, and the whole reason this module exists.
- *   CARD   — the plain sentence PLUS GitHub's own `message`. The owner is the only person who
- *            can re-grant a scope or unblock a repository, and they cannot fix what nobody tells
- *            them. GitHub's `message` is provider text, not user content, so the scrub boundary
- *            is not crossed by putting it in front of them.
- *   LEDGER — the base sentence ALONE, unchanged from T7 ON PURPOSE. `github/status.ts`'s
- *            `looksLikeAuthFailure` READS that column to decide whether to tell the owner their
- *            connection is broken, and it chose its error direction deliberately: a false YES
- *            invites someone to tear down a working connection. Feeding provider prose into a
- *            predicate is an auth-behaviour change and is not this fix round's to make. It also
- *            keeps `issues.ts`'s no-issue-number rule structurally safe, since the ledger line
- *            is still built only from the caller's own fixed verb and the status code.
+ * ── TWO DESTINATIONS, AND THE LEDGER NOW CARRIES WHAT THE PREDICATE READS ──
+ *   LOG            — EVERYTHING GitHub said, verbatim, including a body that would not parse.
+ *                    This is the half that was missing, and the whole reason this module exists.
+ *   CARD + LEDGER  — ONE sentence: the plain statement PLUS GitHub's own `message`, via
+ *                    `githubsWords` and no second reader. The owner is the only person who can
+ *                    re-grant a scope, and they cannot fix what nobody tells them. GitHub's
+ *                    `message` is provider text, not user content, so the scrub boundary is not
+ *                    crossed by putting it in front of them; an unreadable body degrades to the
+ *                    honest absence phrase, never to a raw HTML slice, which is log-only.
+ *
+ * ── WHY THE LEDGER LINE CHANGED (C1) ──
+ * The first cut of this module kept the ledger line at T7's status-code sentence on purpose,
+ * because `github/status.ts`'s `looksLikeAuthFailure` reads that column and feeding provider
+ * prose into a predicate looked like an auth-behaviour change to defer. Deferring it left a
+ * WORSE state than either end: SIX of that predicate's nine patterns — `bad credentials`,
+ * `unauthorized`, `requires authentication`, `required scopes`, `insufficient scope`,
+ * `not accessible by personal access token` — are strings GITHUB writes, in bodies that had no
+ * route to the column. They were unreachable code. T5 built a reader for input the ledger was
+ * never fed, and the consequence is not cosmetic: GitHub refuses a missing scope with a 403 and
+ * the sentence `Resource not accessible by personal access token`, the old ledger line said only
+ * `(HTTP 403)`, no pattern matched, and the Settings card told an owner whose token could no
+ * longer file anything that the connection was fine.
+ *
+ * The 401 case masked it. `(HTTP 401)` matches the status-word anchor, so the one shape anybody
+ * tested worked and the six prose patterns were never missed.
+ *
+ * THE ERROR DIRECTION IS UNCHANGED AND WAS RE-MEASURED AGAINST THIS NEW INPUT CLASS. A false YES
+ * — telling an owner a working connection is broken — is still what the predicate is narrow
+ * against, so every real transient body GitHub sends (both rate-limit spellings, 429, 500, 502,
+ * 404, 410, 422, archived, SAML, IP allow list) is a row in the fixture table asserting NO, and
+ * the unreachable-socket path in `issues.ts` never comes through here at all.
+ *
+ * `issues.ts`'s no-issue-number rule is unaffected: the addition is GITHUB's sentence about the
+ * call, not an identifier from this box's payload.
  */
 export async function reportRefusal(
   what: string, res: Response,
 ): Promise<{ ok: false; error: string }> {
   const refusal = await readRefusal(res);
-  const recorded = `GitHub refused to ${what} (HTTP ${refusal.status}).`;
+  const recorded = `GitHub refused to ${what} (HTTP ${refusal.status}). ${githubsWords(refusal)}`;
   logger.warn(`github refused to ${what}`, { detail: refusalDetail(refusal) });
   noteGithubFailure(recorded);
-  return { ok: false, error: `${recorded} ${githubsWords(refusal)}` };
+  return { ok: false, error: recorded };
 }
 
 /**

@@ -228,6 +228,131 @@ describe("a refusal reaches the log in GitHub's own words", () => {
       'GitHub refused the credential and the card still shows a working connection').toBe(true);
   });
 
+  for (const door of DOORS.filter(d => d.name !== 'duplicate search')) {
+    it(`${door.name}: GitHub's own message reaches the LEDGER, not just the log`, async () => {
+      // ── THE C1 PROPERTY, AND THE HALF A FIXTURE TABLE CANNOT SEE ──
+      // `github/status.ts` holds nine auth patterns and SIX of them match text only GITHUB writes
+      // — `bad credentials`, `unauthorized`, `requires authentication`, `required scopes`,
+      // `insufficient scope`, `not accessible by personal access token`. T5 put a 34-row fixture
+      // table in front of that reader and every row was green, because every row was hand-written
+      // INTO the reader. Nothing checked whether the column it reads had ever carried such a
+      // sentence, and it had not: the first cut of `refusal.ts` recorded `(HTTP 403).` and stopped.
+      // So this clause reads the COLUMN, after a real Post press, and requires the provider's own
+      // words to be in it.
+      door.arrange(() => jsonRes(403, REFUSAL_BODY));
+      const card = await door.drive(approved());
+      const ledger = getGithubAccount()?.lastError ?? '';
+      expect(ledger, "the ledger column dropped GitHub's explanation on the floor")
+        .toContain(REFUSAL_BODY.message);
+      expect(ledger, 'the ledger no longer says which status GitHub answered with')
+        .toContain('403');
+      // ONE sentence for both audiences: the card shows what the ledger holds, so the owner and
+      // the predicate are reading the same evidence and cannot disagree about it.
+      expect(card, 'the card and the ledger tell two different stories about one refusal')
+        .toBe(ledger);
+      expect(ledger, 'a raw body reached a column the card renders verbatim').not.toContain('{');
+    });
+  }
+
+  it('a 403 SCOPE refusal now reads as a reconnect — the defect C1 closes', async () => {
+    // THE LIVE SHAPE THE MASKED PATTERNS WERE FOR. A revoked or missing scope is GitHub's 403
+    // `Resource not accessible by personal access token`, and 403 carries no numeral this
+    // predicate can use — so before C1 no pattern matched, `reauthRequired` stayed false, and the
+    // Settings card told an owner whose token could no longer file anything that the connection
+    // was working. The 401 case hid it: `(HTTP 401)` matches the status-word anchor on its own.
+    writeAnswer = () => jsonRes(403, REFUSAL_BODY);
+    await DOORS[0].drive(approved());
+    expect(getGithubAccount()?.lastError ?? '', 'setup: the refusal was never recorded')
+      .toContain(REFUSAL_BODY.message);
+    expect(
+      githubStatus().reauthRequired,
+      'GitHub will not let this token file anything and the card still claims a working connection',
+    ).toBe(true);
+  });
+
+  // ── AND THE DIRECTION C1 HAD TO NOT BREAK ──
+  // Provider prose reaching a predicate is how a false YES is made, and a false YES tells an owner
+  // their working connection is broken. Every row is a real GitHub body on a real transient,
+  // driven through the real poster so the sentence measured is the sentence written.
+  const TRANSIENTS: ReadonlyArray<readonly [string, () => Response]> = [
+    ['a primary rate limit', () => jsonRes(403, {
+      message: 'API rate limit exceeded for user ID 12345.',
+      documentation_url: 'https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting',
+    })],
+    ['a secondary rate limit', () => jsonRes(403, {
+      message: 'You have exceeded a secondary rate limit and have been temporarily blocked from '
+        + 'content creation. Please retry your request again later.',
+    })],
+    ['a 429', () => jsonRes(429, { message: 'Too Many Requests' })],
+    ['a 500', () => jsonRes(500, { message: 'Server Error' })],
+    ['a 502 behind an HTML error page', () =>
+      new Response('<html><body>Bad gateway</body></html>', { status: 502 })],
+    ['a 422 validation failure', () => jsonRes(422, {
+      message: 'Validation Failed',
+      errors: [{ resource: 'Issue', field: 'labels', code: 'invalid' }],
+    })],
+  ];
+
+  for (const [name, answer] of TRANSIENTS) {
+    it(`${name} does NOT ask the owner to reconnect a connection that works`, async () => {
+      writeAnswer = answer;
+      await DOORS[0].drive(approved());
+      expect(getGithubAccount()?.lastError, `setup: ${name} recorded nothing, so this proves nothing`)
+        .toBeTruthy();
+      expect(
+        githubStatus().reauthRequired,
+        `${name} was read as a revoked credential. That is the false YES the predicate is narrow `
+        + 'against: it tells someone their working connection is broken and invites them to tear '
+        + 'it down.',
+      ).toBe(false);
+      // ...and the connection is still reported as what it is.
+      expect(githubStatus().connected, `${name} also lost the connection itself`).toBe(true);
+    });
+  }
+
+  it('a dead socket is not a revoked credential either — the path that skips `refusal.ts`', async () => {
+    // `issues.ts`'s `unreachable()` writes this column WITHOUT going through `refusal.ts`, so it
+    // keeps its own sentence shape and has to be checked in it. A timeout is the most common
+    // failure this box will ever record, and the most expensive one to misread.
+    globalThis.fetch = vi.fn(async (input: unknown) => {
+      if (String(input).includes('/search/issues')) return jsonRes(200, { items: [] });
+      throw new Error('The operation was aborted due to timeout');
+    }) as unknown as typeof fetch;
+    await DOORS[0].drive(approved());
+    expect(getGithubAccount()?.lastError ?? '', 'setup: the timeout recorded nothing')
+      .toContain('timeout');
+    expect(githubStatus().reauthRequired, 'a timeout was read as a revoked credential').toBe(false);
+  });
+
+  it('the mark CLEARS at every clear-point, so a fixed connection stops nagging', async () => {
+    // Reachability bought an obligation: a mark that can now be raised by a 403 must be cleared by
+    // the three things that end a failure. The upsert arm of `saveGithubAccount` is the one the
+    // owner actually walks — the card said Reconnect, so the row already exists — and it clears
+    // `last_error` in a different statement from the insert's.
+    const raise = async (): Promise<void> => {
+      writeAnswer = () => jsonRes(403, REFUSAL_BODY);
+      await DOORS[0].drive(approved());
+      expect(githubStatus().reauthRequired, 'setup: the mark was never raised').toBe(true);
+    };
+
+    await raise();
+    writeAnswer = () => jsonRes(201, { number: 8, html_url: 'https://x.invalid/8' });
+    const ok = await postApprovedReport(approved());
+    expect(ok.kind, 'setup: the second post had to succeed to clear anything').toBe('created');
+    expect(githubStatus().reauthRequired, 'a successful post left the reconnect prompt up')
+      .toBe(false);
+
+    await raise();
+    saveGithubAccount('octocat', TOKEN, 'public_repo');       // the reconnect the card asked for
+    expect(githubStatus().reauthRequired, 'reconnecting did not clear the prompt to reconnect')
+      .toBe(false);
+
+    await raise();
+    disconnectGithub();
+    expect(githubStatus().reauthRequired, 'a disconnected box still asks for a reconnect')
+      .toBe(false);
+  });
+
   it('an OK answer with an unreadable shape is NOT reported as a refusal', async () => {
     // `GitHub refused to file the issue (HTTP 201)` was the old sentence: a cause invented from
     // a status code that said the opposite. The honest answer is that the outcome is unknown.

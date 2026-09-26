@@ -222,6 +222,13 @@ describe('the last live outcome is the ledger, and an auth refusal is a reconnec
   // only as good as the spellings it has actually been shown. Every row is a message the
   // platform can really write: GitHub's own bodies, and T7's wrappers around them.
   //
+  // ⚠ THAT CLAIM WAS HALF FALSE FOR THREE TASKS, AND C1 IS WHERE IT STOPPED BEING. "GitHub's own
+  // bodies" were rows in this table and nowhere else: no writer of `last_error` had ever put one
+  // there, so six patterns passed a fixture in front of a column their input could not reach. The
+  // C1 block below is the same six spellings in the sentences the column now really holds, and the
+  // load-bearing clause under the table is what keeps a hand-written row from standing in for a
+  // pattern doing work again.
+  //
   // THE DIRECTION IT FAILS IN IS CHOSEN. A false NO costs the reconnect prompt and nothing
   // else — `lastError` is still rendered verbatim in a warning, so the owner still sees the
   // failure. A false YES tells someone their working connection is broken. So the predicate is
@@ -232,7 +239,12 @@ describe('the last live outcome is the ledger, and an auth refusal is a reconnec
     ['Requires authentication', true],                              // GitHub's 401 on /issues
     ['GitHub refused: unauthorized', true],
     ['403 Forbidden — token has not been granted the required scopes', true],
-    ['Resource not accessible by personal access token (insufficient scope)', true],
+    // ── SPLIT IN C1. This was ONE row carrying two spellings — `not accessible by personal
+    //    access token` and `insufficient scope` — so either pattern could be deleted and the row
+    //    still passed on the other. Two rows, one spelling each, is what makes both load-bearing;
+    //    the clause below strikes each spelling out and requires the row to go quiet.
+    ['Resource not accessible by personal access token', true],     // GitHub's literal 403 body
+    ['The request had insufficient scope for this operation', true],
     // ── 401 PRESENTED AS A STATUS CODE: sentence-initial, bracketed, or introduced by a
     //    status word. These are the only shapes in which the bare number counts. ──
     ['401 Bad credentials', true],                                  // GitHub's literal body
@@ -264,6 +276,72 @@ describe('the last live outcome is the ledger, and an auth refusal is a reconnec
     // ADVERSARIAL: `401` inside a longer token must not match. A naive `includes('401')`
     // passes every credential row above and fails this one.
     ['Could not open an issue on 401k-planner', false],
+    // ── 🔴 THE C1 ROWS: THE LINES THE LEDGER ACTUALLY HOLDS NOW ──
+    // Everything above this marker is a spelling, tested in isolation. These are the WHOLE
+    // SENTENCES `github/refusal.ts` writes into `last_error`, prefix and all, because until C1 the
+    // column carried ONLY `GitHub refused to <verb> (HTTP <status>).` — and the six prose patterns
+    // in this predicate match text GITHUB writes, which had no route into it. They were
+    // unreachable code: a fixture table proving a reader works, in front of a column the reader's
+    // input never reached.
+    //
+    // The 401 rows hid it. `(HTTP 401)` matches the status-word anchor, so the shape everyone
+    // tested passed. THE ROW THAT MATTERED IS THE NEXT ONE: GitHub refuses a revoked or missing
+    // scope with a 403, no numeral in this predicate can help, and before C1 the card told an
+    // owner whose token could no longer file anything that the connection was working.
+    ['GitHub refused to file the issue (HTTP 403). GitHub said: Resource not accessible by '
+      + 'personal access token (https://docs.github.com/rest/issues/issues#create-an-issue)', true],
+    ['GitHub refused to add the comment (HTTP 403). GitHub said: Your token has not been granted '
+      + "the required scopes to execute this operation. The 'createIssue' field requires one of "
+      + "the following scopes: ['public_repo'], but your token has only been granted the: [] "
+      + 'scopes.', true],
+    // Verbatim from `curl https://api.github.com/user` with a bogus bearer, September 2026 —
+    // message, help link and all. These two are the bodies GitHub really sends on 401.
+    ['GitHub refused to file the issue (HTTP 401). GitHub said: Bad credentials '
+      + '(https://docs.github.com/rest)', true],
+    ['GitHub refused to file the issue (HTTP 401). GitHub said: Requires authentication '
+      + '(https://docs.github.com/rest)', true],
+    // ── ...AND THE OTHER DIRECTION, WHICH IS THE ONE C1 HAD TO NOT BREAK ──
+    // Provider prose reaching a predicate is how a false YES gets made: one wrong word in a
+    // rate-limit body and an owner is told to tear down a connection that works. Every row below
+    // is a real GitHub refusal body on a real transient, wearing the same new prefix.
+    ['GitHub refused to file the issue (HTTP 403). GitHub said: API rate limit exceeded for user '
+      + 'ID 12345. (https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting)',
+      false],
+    // ADVERSARIAL, AND NOT HYPOTHETICAL: GitHub's rate-limit body names a numeric USER ID, so the
+    // T7 hand-off ("this column carries a verdict, never an identifier") now has a second party
+    // writing to it. An owner whose GitHub user id is 401 must not be told to reconnect.
+    ['GitHub refused to file the issue (HTTP 403). GitHub said: API rate limit exceeded for user '
+      + 'ID 401. (https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting)',
+      false],
+    ['GitHub refused to file the issue (HTTP 403). GitHub said: You have exceeded a secondary '
+      + 'rate limit and have been temporarily blocked from content creation. Please retry your '
+      + 'request again later.', false],
+    ['GitHub refused to file the issue (HTTP 429). GitHub said: Too Many Requests', false],
+    ['GitHub refused to file the issue (HTTP 500). GitHub said: Server Error', false],
+    // A 502 from a gateway is an HTML page, so the honest-absence phrase is what lands here.
+    ['GitHub refused to file the issue (HTTP 502). GitHub sent no readable explanation.', false],
+    ['GitHub refused to file the issue (HTTP 503). GitHub sent no readable explanation.', false],
+    ['GitHub refused to file the issue (HTTP 404). GitHub said: Not Found '
+      + '(https://docs.github.com/rest/issues/issues#create-an-issue)', false],
+    ['GitHub refused to file the issue (HTTP 410). GitHub said: Issues are disabled for this repo',
+      false],
+    ['GitHub refused to file the issue (HTTP 403). GitHub said: Repository was archived so is '
+      + 'read-only.', false],
+    ['GitHub refused to file the issue (HTTP 422). GitHub said: Validation Failed', false],
+    // ADVERSARIAL: GitHub's IP-allow-list 403 contains the word "authorization" — and
+    // `unauthoriz(ed|ation)` does NOT match it, which is the difference between a pattern and a
+    // substring search. Reconnecting fixes nothing here, so a reconnect prompt would be a lie.
+    ['GitHub refused to file the issue (HTTP 403). GitHub said: Although you appear to have the '
+      + 'correct authorization credentials, the acme organization has an IP allow list enabled, '
+      + 'and 203.0.113.4 is not permitted to access this resource.', false],
+    ['GitHub refused to file the issue (HTTP 403). GitHub said: Resource protected by organization '
+      + 'SAML enforcement. You must grant your OAuth token access to an organization within this '
+      + 'enterprise.', false],
+    // `issues.ts`'s `unreachable()` writes this column too, and it never goes through
+    // `refusal.ts` — so the socket failures keep their own shape, and must stay quiet in it.
+    ['Could not reach GitHub to file the issue: The operation was aborted due to timeout', false],
+    ['Could not reach GitHub to add the comment: connect ETIMEDOUT 140.82.114.6:443', false],
+    ['Could not reach GitHub to file the issue: fetch failed', false],
     // ── The transient blips. A connection that is fine must never read as broken. ──
     ['403 API rate limit exceeded for user', false],                // a 403 that is NOT auth
     ['404 Not Found', false],
@@ -283,6 +361,100 @@ describe('the last live outcome is the ledger, and an auth refusal is a reconnec
     // Non-vacuity on BOTH sides: a reader stuck on one answer passes half a table silently.
     expect(AUTH_FIXTURES.some(([, v]) => v)).toBe(true);
     expect(AUTH_FIXTURES.some(([, v]) => !v)).toBe(true);
+  });
+
+  // ── ADDED IN C1: THE SIX PATTERNS THAT PASSED THIS TABLE WHILE BEING DEAD ──
+  // A green fixture table is not evidence that a pattern does any work. Six of the nine patterns
+  // in `looksLikeAuthFailure` match text only GITHUB writes, the column they read carried none of
+  // it until C1, and this table said TRUE for all six anyway — because the rows testing them were
+  // hand-written spellings, and hand-written spellings are reachable by definition.
+  //
+  // So each spelling is struck out of a row the table asserts TRUE, and the row must GO QUIET.
+  // That is what makes the pattern load-bearing rather than decorative: if anything else in the
+  // row carried the verdict (a `401`, a second spelling — which is exactly what the split row
+  // above was doing), the strike leaves the answer TRUE and this fails. It is the self-mutating
+  // half of the property; the production half — that the ledger really receives these sentences —
+  // is driven through the real poster in
+  // `github/__tests__/a-refusal-carries-githubs-own-explanation.test.ts`.
+  const PROVIDER_SPELLINGS: ReadonlyArray<readonly [string, string]> = [
+    ['bad credentials', 'Bad credentials'],
+    ['unauthorized', 'GitHub refused: unauthorized'],
+    ['requires authentication', 'Requires authentication'],
+    ['required scopes', '403 Forbidden — token has not been granted the required scopes'],
+    ['insufficient scope', 'The request had insufficient scope for this operation'],
+    ['not accessible by personal access token',
+      'Resource not accessible by personal access token'],
+  ];
+
+  it('each of the six provider-text patterns is LOAD-BEARING on a row of this table', () => {
+    for (const [spelling, row] of PROVIDER_SPELLINGS) {
+      expect(
+        AUTH_FIXTURES.some(([m, v]) => v && m === row),
+        `the table no longer carries the TRUE row that holds "${spelling}" up`,
+      ).toBe(true);
+      expect(looksLikeAuthFailure(row), `"${row}"`).toBe(true);
+      const struck = row.replace(new RegExp(spelling, 'i'), 'xxx');
+      expect(struck, `the strike-out did not change "${row}" — this clause is broken`)
+        .not.toBe(row);
+      expect(
+        looksLikeAuthFailure(struck),
+        `"${spelling}" is not what makes this row an auth failure — something else in it is, so `
+        + `deleting the pattern would leave the table green. Row: "${row}"`,
+      ).toBe(false);
+    }
+    expect(PROVIDER_SPELLINGS.length, 'a provider-text pattern lost its row').toBe(6);
+  });
+
+  // ── ADDED IN C1: THE MARK MUST CLEAR, OR A FIXED CONNECTION NAGS FOREVER ──
+  // Making `reauthRequired` reachable for real auth failures is the point of C1, and it buys a
+  // second obligation with it: the three places that end a failure must end THIS one. Before C1
+  // the only sentence that could raise the mark was a `(HTTP 401)` line; a provider-text 403 now
+  // raises it too, so each clear-point is re-driven from that starting state rather than from the
+  // one shape that already worked.
+  const SCOPE_REFUSAL = 'GitHub refused to file the issue (HTTP 403). GitHub said: Resource not '
+    + 'accessible by personal access token';
+
+  it('noteGithubOk clears a provider-text auth refusal', async () => {
+    noteGithubFailure(SCOPE_REFUSAL);
+    expect((await getStatus()).data.reauthRequired, 'setup: the mark was never raised').toBe(true);
+    noteGithubOk();
+    const body = await getStatus();
+    expect(body.data.lastError).toBeNull();
+    expect(body.data.reauthRequired, 'a working connection is still being told to reconnect')
+      .toBe(false);
+  });
+
+  it('saveGithubAccount clears it on BOTH arms — the fresh insert and the reconnect upsert', async () => {
+    // THE UPSERT ARM IS THE ONE THAT MATTERS and it had no clause. The row already exists (the
+    // owner is RE-connecting, which is what the card just told them to do), so this goes through
+    // `ON CONFLICT(id) DO UPDATE`, a separate `last_error = NULL` written in a separate place from
+    // the INSERT's. A reconnect that left the old refusal behind would re-raise the mark the
+    // moment the card reloaded, and the owner would be told to reconnect a connection they had
+    // just reconnected.
+    noteGithubFailure(SCOPE_REFUSAL);
+    expect((await getStatus()).data.reauthRequired, 'setup: the mark was never raised').toBe(true);
+    saveGithubAccount('octocat', TOKEN, GITHUB_OAUTH_SCOPE);   // upsert over the existing row
+    let body = await getStatus();
+    expect(body.data.lastError, 'the reconnect upsert kept the refusal it was curing').toBeNull();
+    expect(body.data.reauthRequired).toBe(false);
+
+    // ...and the INSERT arm, reached by deleting the row first.
+    noteGithubFailure(SCOPE_REFUSAL);
+    disconnectGithub();
+    saveGithubAccount('octocat', TOKEN, GITHUB_OAUTH_SCOPE);
+    body = await getStatus();
+    expect(body.data.lastError).toBeNull();
+    expect(body.data.reauthRequired).toBe(false);
+  });
+
+  it('disconnectGithub clears it — with no row there is nothing left to nag about', async () => {
+    noteGithubFailure(SCOPE_REFUSAL);
+    expect((await getStatus()).data.reauthRequired, 'setup: the mark was never raised').toBe(true);
+    disconnectGithub();
+    const body = await getStatus();
+    expect(body.data.lastError).toBeNull();
+    expect(body.data.reauthRequired).toBe(false);
+    expect(githubCardState(body.data as unknown as GithubCardStatus)).toBe('disconnected');
   });
 
   it('reauth also covers the half-state a rotated master key leaves behind', async () => {

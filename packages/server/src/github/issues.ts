@@ -37,8 +37,10 @@
 // line and threw the body away — so a live 403 left one sentence behind and debugging it was
 // blind. Every non-OK answer from all three calls now goes through `refusal.ts` — which is also
 // where the two authenticated doors' ledger write now happens: the log gets GitHub's words
-// verbatim (including an unparseable body, labelled as such), the owner gets the plain sentence
-// plus GitHub's `message`, the LEDGER LINE IS UNCHANGED from T7, and nothing invents a cause.
+// verbatim (including an unparseable body, labelled as such), the owner AND THE LEDGER get the
+// plain sentence plus GitHub's `message` — C1, because six of `looksLikeAuthFailure`'s nine
+// patterns match text only GITHUB writes and the old ledger line could not carry it, so a
+// revoked scope read as a working connection — and nothing invents a cause.
 //
 // ── NO `net-guard` ──
 // The same call `google/`, `microsoft/`, `twilio/` and `gateway/routes/update.ts` all make:
