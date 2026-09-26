@@ -419,7 +419,7 @@ export interface PostBudgetLane {
   id: string;
   slot: number;
   reserveTokens: number;
-  /** Where the number came from. A reserve with no derivation is a rumour. */
+  /** Where the number came from; a reserve with no derivation is a rumour. ⚠ NOT DOCUMENTATION — IT SHIPS: `assembler.ts` interpolates it into `report.grants[].reason`, so it reaches an assembly receipt. Roles and measurements, never a name (owner's rule, 2026-09-26). */
   measured: string;
 }
 
@@ -541,7 +541,7 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       + 'LANE_LIMITS[\'lane.scratchpad\'].chars.pad = 4,000 — NEW at W81 for the reason '
       + '`chars.title` is new next door: the pad was unbounded, and an unbounded lane cannot '
       + 'declare a reserve. 4,000 chars is ~4x the largest pad on the worn-in dev body '
-      + '(the primary agent, 1,046 chars) and the block truncates rather than drops, so the cap costs the '
+      + '(the primary agent\'s, at 1,046 chars) and the block truncates rather than drops, so the cap costs the '
       + 'tail of a runaway pad and never the pad itself. '
       + 'WHY IT IS A RESERVE AT ALL: `scratchpad_set`, `scratchpad_clear` and `reset_session` '
       + 'all rewrite `agents.config.scratchpad` MID-CONVERSATION, and the block sat at '

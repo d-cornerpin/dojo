@@ -142,10 +142,10 @@ async function resolveSpawnSquad(opts: {
 // UX-REPAIR ROUND 11 T43a — CAPABILITY TRUTH AT THE DELEGATION DOOR
 // ════════════════════════════════════════════════════════════════════════════
 //
-// THE INCIDENT (round-11 S5-A). the harness bot called `list_agents` before delegating. The door
+// THE INCIDENT (round-11 S5-A). The harness bot called `list_agents` before delegating. The door
 // answered name / status / classification / group / activity and NOTHING about what any of
-// them can DO, so it handed a WEB RESEARCH assignment to the PM — the PM, who holds no web
-// tools. She could only punt it to the primary agent, and the punt then satisfied her piece of the join
+// them can DO, so it handed a WEB RESEARCH assignment to the PM, who holds no web tools. The PM
+// could only punt it to the primary agent, and the punt then satisfied her piece of the join
 // (that half is T43b/c). The one fact the choice needed was the one fact the door withheld.
 //
 // SAME FAMILY AS T29's CHANNEL-DOOR TRUTH: the surface the agent reads AT the decision moment

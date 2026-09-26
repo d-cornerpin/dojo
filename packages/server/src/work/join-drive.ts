@@ -433,7 +433,7 @@ export function joinRedriveIsBlind(workId: string, turnNumber: number | null): b
  * 45 tool calls (run bmrplgdg33l).
  *
  * ── UX-REPAIR ROUND 11 T43b — "ARE THESE ACTUALLY THE DELIVERABLES?" ──
- * Round-11 S5-A: the PM (the PM, no web tools) could not do her research stream, so she sent a
+ * Round-11 S5-A: the PM (no web tools) could not do her research stream, so she sent a
  * HAND-OFF note naming the primary agent. A non-empty, non-FAIL terminal reply settles a piece, so the
  * join completed with ONE research stream in hand and this steer told the model the pieces
  * were back. ~6m20s from "pieces back" to answer, recovered only because the model improvised:

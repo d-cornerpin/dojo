@@ -94,7 +94,7 @@ export function startTurn(params: TurnStartParams): number {
  *
  * WHY MAX AND NOT "THE OPEN TURN", measured before choosing: 139 of 3,090 live turn rows
  * have `ended_at IS NULL`, because a turn that dies never reaches `finalizeTurn` — and
- * `the primary agent`, the agent both prompt goldens are bound to, held an open row at turn 246 while
+ * the PRIMARY agent, the one both prompt goldens are bound to, held an open row at turn 246 while
  * 264 had already been allocated. That reader would have answered eighteen turns stale on
  * the one agent every prompt gate watches.
  *
@@ -137,16 +137,16 @@ export const CONTINUITY_BRIEF_HORIZON_TURNS = 3;
  * A threshold is written as `currentTurn + horizon` and read as `currentTurn < threshold`.
  * It had no upper bound, so a value from a DIFFERENT numbering era never expires — it is
  * permanently in the future, and the lane it gates fires on every turn for the rest of the
- * agent's life. Three of the five agents holding one were in that state:
+ * agent's life. Three of five held one (IDs below; the two configurable ones as platform.ts defaults):
  *
  *     agent      stored   current turn   verdict before      verdict after
- *     the primary agent        1598            264   valid for 1,334     expired
+ *     primary      1598            264   valid for 1,334     expired
  *     healer        122              9   valid for 113       expired
  *     imaginer       19              0   valid for 19        expired
  *     dreamer        24             27   expired             expired
- *     the PM          11            730   expired             expired
+ *     pm             11            730   expired             expired
  *
- * `the primary agent` is the agent both prompt goldens are bound to, so its brief and its whole
+ * The primary agent is the one both prompt goldens are bound to, so its brief and its whole
  * post-compaction scaffolding block had been permanently admitted.
  *
  * ── WHERE "ABSURD" COMES FROM ───────────────────────────────────────────────────────────

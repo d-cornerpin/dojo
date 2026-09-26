@@ -375,7 +375,7 @@ export function selectRowsSkippedAsDelivered(
 // DEFAULT POSTURE, not a failure — and `recordValidationEscalation` was called unconditionally
 // at ask time, writing a stamp that `work/tracker-view.ts:323-324` records as *"a permanent
 // stamp … one shot per row, forever"*. One silent turn ended the story, on a row that could
-// never be escalated again. the primary agent's turn was compliance, not a drop.
+// never be escalated again. The primary agent's turn was compliance, not a drop.
 //
 // OR2's shape is engine detects → steers → VERIFIES via delivery records → bounded retry →
 // the platform's own surface. This is that, with both numbers CARRIED rather than chosen:

@@ -1433,8 +1433,8 @@ export function settlePieceWithoutResult(
 // UX-REPAIR ROUND 11 T43 leg (c) — THE JOIN EDGE FOLLOWS THE WORK
 // ════════════════════════════════════════════════════════════════════════════════
 //
-// THE INCIDENT. the harness bot delegated research to the PM, the PM, who holds no web tools.
-// the PM punted it to the primary agent and replied with a hand-off note; `landPiece` settled her piece on
+// THE INCIDENT. The harness bot delegated research to the PM, who holds no web tools.
+// The PM punted it to the primary agent and replied with a hand-off note; `landPiece` settled her piece on
 // that note ("the delegated piece came back"), the countdown reached zero with ONE research
 // stream in hand, and the compile steer told the model the pieces were back.
 //

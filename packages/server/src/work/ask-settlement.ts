@@ -300,7 +300,7 @@ const NOT_A_TOOL_CHIP =
  * mid-turn it is the ONLY delivery in existence, so the delivery arm closes the ask on it.
  *
  * MEASURED, not reasoned about — three investigate-shaped asks driven through the real door
- * (`POST /api/chat/the primary agent/messages`) at the SHIPPED build `587693e`, 2026-08-09, all three
+ * (`POST /api/chat/:agentId/messages`, the primary) at the SHIPPED build `587693e`, 2026-08-09, all three
  * marked `done` on the ack, seconds after the question arrived and tens of seconds before
  * the answer existed:
  *
