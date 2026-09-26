@@ -2736,6 +2736,7 @@ describe('HL3: model-visible means logged (the runtime invariant, driven)', () =
       'RECENT OUTBOUND (engine-verified):',     // engine.recent-outbound
       'RECENTLY ANSWERED in this conversation', // engine.recently-answered
       'OPEN WORK',                              // engine.open-work
+      '═══ YOUR DOJO BUG REPORTS',               // engine.report-state — derived from dojo_reports
       'Peers:',                                 // msg.peer-status
       '## Possibly Relevant Techniques',        // msg.technique-weak
       '## Other Techniques That Might Also Apply',

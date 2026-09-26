@@ -101,7 +101,10 @@ describe('the priority repair recognises post-budget lanes instead of refusing',
   });
 
   it('C10.3 the same holds for the engine-side injections and for `lane.deliveries`', () => {
-    for (const id of ['engine.open-work', 'engine.recent-outbound', 'engine.recently-answered', 'msg.deliveries']) {
+    for (const id of ['engine.open-work', 'engine.recent-outbound', 'engine.recently-answered',
+      // ROUND-4 RED: the report-state lane rides the tail like the three above. A withdrawn
+      // card's true state is not droppable filler — it is the correction the model needs.
+      'engine.report-state', 'msg.deliveries']) {
       const r = repair(overBudget(id));
       expect(r.after.ok, `${id} should repair`).toBe(true);
       expect(r.droppedLaneIds, `${id} must not be dropped`).not.toContain(id);
