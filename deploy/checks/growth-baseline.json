@@ -1,5 +1,6 @@
 {
  "_comment": [
+  "HAND-MOVED, 2026-09-26, ONE entry, gate-side-only: packages/server/src/agent/v2/answered-edge.ts 743 -> 937 for the DOJO-REPORT round-2 red fix, argued in full in ratchets.json's $raises and in the product commit. +194 (+205/-11; 143 comment/blank, 62 code): one predicate (answerStillStands) and the three reads of the answered edge that list or quote a settled ask now applying it, so a recently-answered stamp whose dojo_report row has been WITHDRAWN stops being served to the model as evidence - the defect had an owner told to press Post on a preview card that was cancelled, and then a direct ask ending in silence. The comment lines are owner ruling 2026-08-05 (which overruled this file's own 2026-07-23 direction and was never swept into it), the measured correction to the recommended window shape, and the per-status reasoning; they are the reason the raise is worth taking rather than the reason to trim, and 13 lines of genuine de-duplication were taken first. Moved BY HAND rather than by --record for the reason the earlier hand-moves give in full: a blanket re-record silently resets the headroom of every other file that has drifted since e53d0b83, which is the absorption this detector exists to prevent. recordedAt/recordedAtCommit deliberately untouched.",
   "Growth baseline for deploy/checks/check-growth.mjs. Refreshed with --record,",
   "in a gate-side-only commit, deliberately. A file more than 25% above its entry",
   "here fails; an unpinned file that was at or below 60% of ratchets.json",
@@ -238,7 +239,7 @@
   "packages/server/src/agent/turn-state.ts": 239,
   "packages/server/src/agent/unattended-budget.ts": 106,
   "packages/server/src/agent/v2/ack-copy.ts": 303,
-  "packages/server/src/agent/v2/answered-edge.ts": 743,
+  "packages/server/src/agent/v2/answered-edge.ts": 937,
   "packages/server/src/agent/v2/attempt-record.ts": 72,
   "packages/server/src/agent/v2/channel-auth.ts": 72,
   "packages/server/src/agent/v2/claimed-delivery.ts": 215,
