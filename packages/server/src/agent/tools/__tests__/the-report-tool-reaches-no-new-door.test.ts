@@ -170,6 +170,23 @@ const ALLOWED_CONSENT_CALLERS: readonly string[] = [
   // The poster's own suite, which drives the doors to prove nothing posts without an approval —
   // the same reason the store's lifecycle test is the first entry on this list.
   'github/__tests__/a-matching-issue-gets-a-comment-not-a-duplicate.test.ts',
+  // ── APPENDED BY THE T8 403 FIX ROUND. THE ONE-LINE EDIT, AND IT IS THE REVIEW ──
+  // The refusal-honesty suite. It mints an approval for the same reason the two suites above do:
+  // the property under test is what the POSTER does on a refused GitHub call, and the poster
+  // will not look at a row that is not `approved`. It drives the real `postApprovedReport`
+  // rather than the wire directly, deliberately — the path a Post press takes is the path the
+  // provider's explanation has to survive.
+  //
+  // THE EDGE IS THE BRACED STATIC FORM:
+  //
+  //   import {
+  //     createReport, attachDraft, submitForApproval, approveOnce, type ReportBrief,
+  //   } from '../../report/store.js';
+  //
+  // `approveOnce` is the only consent door it binds; it spends nothing (every case it drives
+  // FAILS, which is the point, so `markPosted` is never reached) and it is a test file, so it
+  // adds no reachable path to any door in the product.
+  'github/__tests__/a-refusal-carries-githubs-own-explanation.test.ts',
 ];
 
 /** PRONG C's exact one-hop pins. Adding an import to either file fails this file. */

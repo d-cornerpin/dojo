@@ -32,6 +32,14 @@
 //     was spent on. The column carries the platform's verdict about the CALL, never an
 //     identifier from its payload.
 //
+// ── A REFUSAL CARRIES GITHUB'S OWN EXPLANATION (T8 fix round) ──
+// GitHub explains every refusal in its body, and the first cut of this module read the status
+// line and threw the body away — so a live 403 left one sentence behind and debugging it was
+// blind. Every non-OK answer from all three calls now goes through `refusal.ts` — which is also
+// where the two authenticated doors' ledger write now happens: the log gets GitHub's words
+// verbatim (including an unparseable body, labelled as such), the owner gets the plain sentence
+// plus GitHub's `message`, the LEDGER LINE IS UNCHANGED from T7, and nothing invents a cause.
+//
 // ── NO `net-guard` ──
 // The same call `google/`, `microsoft/`, `twilio/` and `gateway/routes/update.ts` all make:
 // that guard exists for attacker-influenceable URLs. The host here is a fixed product
@@ -40,6 +48,9 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getGithubToken, noteGithubFailure, noteGithubOk } from './account.js';
+import {
+  githubsWords, readRefusal, refusalDetail, reportRefusal, reportUnreadableAnswer,
+} from './refusal.js';
 import { assertPostableRepo } from '../report/repo.js';
 import { createLogger } from '../logger.js';
 
@@ -90,9 +101,20 @@ export async function findIssueBySignature(repo: string, signature: string): Pro
     headers: API_HEADERS,
     signal: AbortSignal.timeout(ISSUE_HTTP_TIMEOUT_MS),
   });
-  if (res.status === 403 || res.status === 429) throw new Error(RATE_LIMITED);
   if (!res.ok) {
-    throw new Error(`GitHub could not check for an existing report (HTTP ${res.status}).`);
+    // T8 fix round: the search used to throw a sentence built from the status code alone, and a
+    // 403 was relabelled a rate limit WITHOUT LOOKING. The relabelling stays — on an
+    // unauthenticated read a 403 is GitHub's rate limiter in practice, and the owner-facing
+    // sentence should say something they can act on — but GitHub's own words now ride along in
+    // the thrown error and land in the log, so a 403 that was something else is legible instead
+    // of being silently reclassified. No ledger write: this call carries no credential, and a
+    // rate-limited anonymous read says nothing about the owner's token (see the header).
+    const refusal = await readRefusal(res);
+    logger.warn('github refused the duplicate check', { detail: refusalDetail(refusal) });
+    const base = res.status === 403 || res.status === 429
+      ? RATE_LIMITED
+      : `GitHub could not check for an existing report (HTTP ${res.status}).`;
+    throw new Error(`${base} ${githubsWords(refusal)}`);
   }
   const body = await res.json() as { items?: unknown };
   const items: SearchItem[] = Array.isArray(body.items) ? body.items as SearchItem[] : [];
@@ -106,13 +128,6 @@ export async function findIssueBySignature(repo: string, signature: string): Pro
 }
 
 export type IssueWriteResult<T> = ({ ok: true } & T) | { ok: false; error: string };
-
-/** A refusal GitHub stated. Recorded for the card AND for the connection ledger, verbatim. */
-function refused(what: string, status: number): { ok: false; error: string } {
-  const error = `GitHub refused to ${what} (HTTP ${status}).`;
-  noteGithubFailure(error);
-  return { ok: false, error };
-}
 
 /** A call that never got an answer: a dead socket, a timeout, an HTML page where JSON was due. */
 function unreachable(what: string, err: unknown): { ok: false; error: string } {
@@ -147,10 +162,10 @@ export async function createIssue(
       body: JSON.stringify({ title, body, labels }),
       signal: AbortSignal.timeout(ISSUE_HTTP_TIMEOUT_MS),
     });
-    if (!res.ok) return refused('file the issue', res.status);
+    if (!res.ok) return await reportRefusal('file the issue', res);
     const answer = await res.json() as { number?: unknown; html_url?: unknown };
     if (typeof answer.number !== 'number' || typeof answer.html_url !== 'string') {
-      return refused('file the issue', res.status);
+      return reportUnreadableAnswer('file the issue', res.status);
     }
     noteGithubOk();
     return { ok: true, number: answer.number, url: answer.html_url };
@@ -174,7 +189,7 @@ export async function commentOnIssue(
       body: JSON.stringify({ body }),
       signal: AbortSignal.timeout(ISSUE_HTTP_TIMEOUT_MS),
     });
-    if (!res.ok) return refused('add the comment', res.status);
+    if (!res.ok) return await reportRefusal('add the comment', res);
     const answer = await res.json() as { html_url?: unknown };
     noteGithubOk();
     return { ok: true, url: typeof answer.html_url === 'string' ? answer.html_url : '' };
