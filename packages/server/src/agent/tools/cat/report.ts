@@ -48,7 +48,7 @@ import { buildTelemetry } from '../../../report/telemetry-build.js';
 import { writeBundle } from '../../../report/bundle.js';
 import { attachDraft, createReport, getReport, submitForApproval, type ReportBrief } from '../../../report/store.js';
 import { deriveReportSignature, isFailureLane, FAILURE_LANES } from '../../../report/signature.js';
-import type { WindowRequest } from '../../../report/window.js';
+import type { GatherWindow, WindowRequest } from '../../../report/window.js';
 
 /**
  * THE AGENT'S ASK, REMEMBERED PER REPORT — the whole of the cross-phase state, and it is
@@ -83,6 +83,35 @@ function windowNote(w: { turns: number; minutes: number; truncated: boolean; ask
     ? `You asked for ${w.askedFor}. The window is capped, so this is the last ${w.turns} turns `
       + `within the last ${w.minutes} minutes — the cap is deliberate and cannot be raised from a tool call.`
     : `Window: the last ${w.turns} turns within the last ${w.minutes} minutes.`;
+}
+
+/**
+ * THE HEAD OF THE GATHER RESULT — THE TRUTH AND THE INSTRUCTION, ABOVE ANY EVIDENCE.
+ *
+ * Ritual v3.2.0 round 1: the hand-off was the LAST thing in this result, behind the evidence,
+ * and `maxResultTokens: 12000` truncates from the END. On two of three attempts the engine ate
+ * it — the row stranded in `drafting`, no card ever existed, and the model told the owner
+ * *"already filed — the draft is sitting on your dashboard waiting for you to hit Post"*. That
+ * is what makes the tail unusable for an instruction: a severed result does not read as broken,
+ * it reads as FINISHED, so the model invents the only story that fits. Id, state of the world,
+ * and the whole next call go first, where truncation cannot reach them.
+ */
+function gatherHead(reportId: string, w: GatherWindow): string[] {
+  return [
+    `Report ${reportId} opened. NOTHING IS FILED AND NOTHING IS ON THE USER'S DASHBOARD YET: the draft is not `
+    + 'written, there is no preview card, and the user cannot see any of this until you finish the two calls below. '
+    + 'Do not tell them it is filed.',
+    '',
+    `NEXT — call dojo_report with phase="draft", report_id="${reportId}", a lane from [${FAILURE_LANES.join(', ')}], `
+    + 'and your five-part write-up (title, what_happened, what_should_have_happened, why_it_went_wrong, fix_ideas). '
+    + 'Describe the SHAPE of the failure — no quotes from the conversation, no file paths, no names, no file '
+    + 'contents. Then phase="submit" with the same report_id — that is what puts the card in front of them.',
+    '',
+    windowNote(w),
+    'The evidence below is size-bounded; its own `bounds` section names anything dropped. A shortened or '
+    + 'engine-truncated bundle does NOT block you and is not a reason to gather again — you already have what '
+    + 'the brief needs.',
+  ];
 }
 
 /** The five fields, rendered the way the owner will read them on the card. */
@@ -122,15 +151,11 @@ export const reportHandlers: ToolHandlerMap = {
       const row = createReport(agentId, 'other', signature);
       rememberAsk(row.id, asked);
       return ok([
-        `Report ${row.id} opened. ${windowNote(ev.window)}`,
+        ...gatherHead(row.id, ev.window),
         '',
-        'EVIDENCE (local only — this raw material never leaves this machine; a separate',
-        'machine-built attachment carries the timings and tool names onto the issue):',
+        'EVIDENCE (local only — this raw material never leaves this machine; a separate machine-built '
+        + 'attachment carries the timings and tool names onto the issue):',
         JSON.stringify(ev.bundle, null, 2),
-        '',
-        `Next: call dojo_report with phase="draft", report_id="${row.id}", a lane from `
-        + `[${FAILURE_LANES.join(', ')}], and your five-part write-up. Describe the SHAPE of the `
-        + 'failure — no quotes from the conversation, no file paths, no names, no file contents.',
       ].join('\n'));
     }
 
@@ -183,14 +208,18 @@ export const reportHandlers: ToolHandlerMap = {
         return bad(`Report ${reportId} is ${existing.status}, not drafting — a brief may only be attached `
           + 'before anyone has seen it. Open a new report with phase="gather".');
       }
+      // THE SAME ORDERING LAW AS `gather`, ONE PHASE LATER. The attachment rendered below grows with the
+      // window (up to 200 tool-call facts), so the hand-off cannot sit behind it: a draft whose `submit` line
+      // was truncated away is a brief nobody ever sees, on a row that reads `drafting` for ever.
       return ok([
-        `Draft saved on ${reportId} (lane ${lane}, signature ${signature}).`,
+        `Draft saved on ${reportId} (lane ${lane}, signature ${signature}). STILL NOT FILED — no card exists and the user cannot see this yet.`,
+        `NEXT — call dojo_report with phase="submit", report_id="${reportId}": that call, and only that call, puts the preview card in front of the user.`,
+        '',
         'THIS IS THE EXACT TEXT THE USER WILL SEE. Re-read it now: if it quotes the conversation,',
         'names anyone, or carries a file path or file contents, call draft again with it fixed.',
         '', renderBrief(brief), '',
         'MACHINE-BUILT ATTACHMENT (you did not write this and cannot add to it):',
         JSON.stringify(telemetry, null, 2),
-        '', `Next: phase="submit", report_id="${reportId}".`,
       ].join('\n'));
     }
 
