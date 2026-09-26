@@ -55,6 +55,7 @@ import type { AssembledContext } from '../../../../memory/assembler.js';
 import { collectMessageLaneIds } from '../../../../memory/message-lane-tag.js';
 import { renderDeliveriesLaneMessage } from '../../../../memory/deliveries-lane.js';
 import { buildOpenWorkInjection } from '../../../../work/obligations.js';
+import { buildReportStateInjection } from '../../../../report/state-lane.js';
 import { getRecentOutbound, renderRecentOutboundBlock } from '../../outbound-ledger.js';
 import {
   recentlyAnsweredAsks, renderRecentlyAnsweredBlock, RECENTLY_ANSWERED_LIMIT,
@@ -239,6 +240,27 @@ export async function injectAndRecord(
   // does not stop being true because the turn is an A2A or an engine one.
   if (ctx.openCommitmentsLane) {
     pushEngineMessage(messages, ctx.openCommitmentsLane, 'engine.open-commitments'); // registry-exempt(2026-09-01): the STATE half of lane.relevant-memory, computed by the assembler and ordered by the loop; migrate with the volatile-injection registry refactor
+  }
+
+  // ── ROUND-4 RED: THE REPORT-STATE LANE, BESIDE THE SNAPSHOT IT IS MODELLED ON ─────────
+  // Rounds 2-3 suppressed the engine's re-answer RECORD about a withdrawn report card; round 4
+  // proved that was a carrier and not the cause. With every such block provably absent the model
+  // still said "it's sitting on your dashboard as a preview card" — reading its OWN earlier reply
+  // in the fresh tail, true when written, while nothing in the engine ever said what became of the
+  // card. So the engine says it, in the shape this tree already uses for this class (the snapshot
+  // above): current state, read at assembly time, superseding earlier mentions in words.
+  // HERE, next to that snapshot, for its two reasons: both are CURRENT STATE rather than
+  // retrieval, and both ride past `volatileFrom` so the cached prefix is untouched. EMPTY IS
+  // ABSENT — `buildReportStateInjection` returns null, so the 126 of 138 agents on the owner's box
+  // that never filed a report pay nothing. Its own try/catch, exactly like the open-work block: a
+  // lane that cannot build must not cost the turn its other lanes.
+  try {
+    const reportStateBlock = buildReportStateInjection(agentId);
+    if (reportStateBlock) pushEngineMessage(messages, reportStateBlock, 'engine.report-state'); // registry-exempt(2026-09-26): per-turn report-row state read mid-iteration, like engine.open-work; migrate with the volatile-injection registry refactor
+  } catch (err) {
+    logger.warn('REPORT STATE injection FAILED — a withdrawn report card is NOT contradicted in front of the model this call', {
+      agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
   }
 
   // ── THE RECALL LANE (SWEEP CORE-2 item 4; `SWEEP-C.md` T4, owner GO 2026-07-26) ──

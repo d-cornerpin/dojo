@@ -769,6 +769,13 @@ export const POST_BUDGET_ENTRY_LANE: Record<string, string> = {
   'engine.open-work': 'lane.loop-tail',
   'engine.recent-outbound': 'lane.loop-tail',
   'engine.recently-answered': 'lane.loop-tail',
+  // ROUND-4 RED: the report-state lane. It rides the tail like the three above — pushed directly
+  // by `pre-call-injections.ts`, past `volatileFrom`, beside the commitments snapshot it is
+  // modelled on — and it is declared HERE because the census in
+  // `assembly-repair-lane-census.test.ts` requires the injected `engine.*` literals and this
+  // table to be the SAME SET, and because being declared is what makes it protected from the
+  // priority repair (a report card's true state is not droppable filler).
+  'engine.report-state': 'lane.loop-tail',
 };
 
 /**
