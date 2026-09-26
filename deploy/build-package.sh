@@ -62,8 +62,10 @@ cp -r "$PROJECT_ROOT/packages/server/src/db/migrations" "$DEST/platform/packages
 # `dist/tools/docs` in a packaged install (`tsconfig`: rootDir `src`, outDir `dist`). `tsc`
 # does not copy `.md` files and this script never did either, so on every installed box
 # `fs.existsSync` was false and every tool with a hand-written manual silently fell back to the
-# GENERATED doc — `load_tool_docs` served the short version of `dojo_report`, `image_create` and
-# `image_generate_internal` to every agent, on every box, and nothing said so. The runtime
+# GENERATED doc — `load_tool_docs` served the short version of `dojo_report` and `image_create` to
+# every agent, on every box, and nothing said so. (A third manual, `image_generate_internal.md`,
+# was in that directory when this was measured; it named an unregistered tool, so it was the one
+# file the defect could not hurt, and it was retired at T85.) The runtime
 # CANNOT tell "no override was ever written" from "the override was lost in packaging", which is
 # why the fix is here rather than there. Identical problem, landing spot and reason as the
 # migrations copy directly above.

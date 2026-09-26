@@ -208,10 +208,16 @@ describe('the installer proves the souls shipped', () => {
 
   // ── T8 (2026-09-26): THE HAND-WRITTEN TOOL MANUALS GET THE SOULS' TREATMENT ──
   // Measured, not hypothetical: `src/tools/docs/*.md` was never packaged, so `load_tool_docs`
-  // served the GENERATED short doc for `dojo_report`, `image_create` and `image_generate_internal`
-  // on every installed box. build-package.sh now copies them and asserts by DISCOVERY; discovery
-  // cannot refuse a deletion, so the gate carries the named floor — same split, same reason as
-  // REQUIRED_SOULS above.
+  // served the GENERATED short doc for every manual on every installed box. build-package.sh now
+  // copies them and asserts by DISCOVERY; discovery cannot refuse a deletion, so the gate carries
+  // the named floor — same split, same reason as REQUIRED_SOULS above.
+  //
+  // T85: the floor was three names and is two. `image_generate_internal.md` named a tool that is
+  // not registered, and `index-generator.ts` only ever reads an override for a name in
+  // `registryToolDefinitions()`, so that manual could not reach a model by any path — the floor was
+  // promising one of three it could not keep. Retired in the pair of commits this clause's floor
+  // edit belongs to; `tools/__tests__/the-manual-names-what-the-tool-takes.test.ts` is what stops
+  // the next ghost manual being born.
 
   it('RED: the manuals copy step dropped — nothing at dist/tools/docs — refuses', () => {
     const r = runGate([buildArtifact('no-manuals', { stripManuals: true }), '--require-artifact']);
@@ -256,7 +262,7 @@ describe('the installer proves the souls shipped', () => {
     // or the gate asserts a ghost and refuses every build instead.
     const src = fs.readFileSync(GATE, 'utf8');
     const floor = /const REQUIRED_TOOL_MANUALS = \[([\s\S]*?)\];/.exec(src)?.[1] ?? '';
-    for (const f of ['dojo_report.md', 'image_create.md', 'image_generate_internal.md']) {
+    for (const f of ['dojo_report.md', 'image_create.md']) {
       expect(floor, `${f} must be a NAMED floor, not only discovered at build time`).toContain(f);
     }
     const shipped = fs.readdirSync(REPO_TOOL_DOCS);
