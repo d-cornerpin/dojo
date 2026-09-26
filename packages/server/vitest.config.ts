@@ -42,5 +42,32 @@ export default defineConfig({
     setupFiles: ['./vitest.setup.ts'],
     // Injected into every worker before its setup file runs.
     env: { DOJO_TEST_HOME_ROOT: runRoot },
+    // ── WHY THESE TWO NUMBERS EXIST (backlog wave 1b item 3, 2026-09-26) ──────────────────
+    // Until now this suite ran on vitest's DEFAULT 5,000ms per-test budget — a number nobody
+    // in this repository ever chose, sized for tests that do arithmetic. These tests compile
+    // module graphs, run migrations and walk the whole source tree inside the measured window.
+    // MEASURED on this box: 20 full-suite runs at v3.2.0 produced 14 clause failures across
+    // SEVEN files, every one of them `Test timed out in 5000ms`, all inside 2 of the 20 runs —
+    // the box had a slow patch and the whole family went together:
+    //
+    //   credentials/a-credential-is-never-silently-overwritten  (3)  <- the ledgered one
+    //   tracker/version-gap-reconcile (2) · migration/manifest-version (2)
+    //   memory/prefix-lane-conformance (2) · agent/the-stop-button-stops-the-agent (2)
+    //   agent/child-scope (2) · agent/a-declared-patience-turn-end-does-not-auto-redial (1)
+    //
+    // Not one of those is a product defect and not one is a slow test: the credential clause
+    // that fails most often is three assertions on a schema object behind a FIRST cold
+    // `await import('../tools.js')`, measured at 3.16-3.22s of the 5s on an IDLE box.
+    //
+    // SIXTEEN files had already worked around this privately with their own `vi.setConfig` —
+    // 8 at 20s, 6 at 15s, 2 at 30s. That is one judgement being re-made sixteen times, and
+    // every file that has not yet been bitten is one that has not yet been unlucky.
+    //
+    // A per-test timeout is a HANG DETECTOR, not a performance assertion — it exists so a
+    // deadlocked test fails instead of hanging the run. 30s is ~9x the slowest legitimate cold
+    // clause measured here and still reports a genuine hang inside one release-gate run.
+    // Anything that needs to assert speed must assert it, not ride this default.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
   },
 });

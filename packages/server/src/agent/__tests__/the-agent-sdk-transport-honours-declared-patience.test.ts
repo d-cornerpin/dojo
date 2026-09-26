@@ -181,26 +181,91 @@ const seedAgentSdk = (
  * cannot discover a timer that gets registered only partway through its own run. Stepping in
  * small increments gives the pending chain a fresh microtask-flush opportunity between each one.
  *
- * MEASURED, not guessed: driven with `console.log` instrumentation before this helper existed,
- * `callModel`'s own pre-dispatch chain (DB reads, `checkBudget`, `sanitizeOrphanToolBlocks`,
- * `validateAtProviderBoundary`, the dynamic `tools/tool-docs.js` import) consumes roughly
- * 250,000–300,000ms of ADVANCED fake time on its own — each `await` hop only progresses one
- * step per `advanceTimersByTimeAsync` call when nothing is yet due to fire — before `query()` is
- * even reached and the derived-patience timer gets scheduled. `MAX_ADVANCE_MS` below is sized
- * with a wide margin over "that overhead, plus the largest derived bound this file declares", so
- * it does not need retuning if either side drifts slightly; the actual bound fired is what §B
- * independently verifies, not the number this loop advances by.
+ * MEASURED, and RE-MEASURED 2026-09-26 because the first number here was wrong in a way that
+ * mattered. The original note claimed `callModel`'s pre-dispatch chain (DB reads, `checkBudget`,
+ * `sanitizeOrphanToolBlocks`, `validateAtProviderBoundary`, the dynamic `tools/tool-docs.js`
+ * import) consumed 250,000–300,000ms of ADVANCED fake time on its own, which read as "the budget
+ * is mostly overhead, with a wide margin". Instrumented again, the sweep consumes 632,000–635,000
+ * of the 2,000,000 — and 630,000 of that IS the largest derived bound this file declares
+ * (max(600s, 60s) + 30s margin). The chain's own overhead is 2–5 steps, not 250,000. So the
+ * margin is not wide in the dimension that fails: the 1,352–1,369 spare iterations are worth 24ms of
+ * REAL time solo and a median 292ms under a full suite, which is why the loop below stops using fake
+ * milliseconds as its give-up condition. The
+ * actual bound fired is still what §B independently verifies, never the number this loop advances
+ * by.
  */
 const MAX_ADVANCE_MS = 2_000_000;
 
-async function advanceUntilSettled<T>(promise: Promise<T>, totalMs = MAX_ADVANCE_MS, stepMs = 1_000): Promise<T | unknown> {
-  let settled: { value: T } | { error: unknown } | null = null;
-  promise.then((value) => { settled = { value }; }, (error) => { settled = { error }; });
-  for (let elapsed = 0; elapsed < totalMs && !settled; elapsed += stepMs) {
+/**
+ * ── THE FLAKE THIS FIXES (backlog wave 1b item 3, 2026-09-26) ──
+ * This file flaked 2/7 FULL-SUITE runs ("promise did not settle within 2000000ms of advanced
+ * fake time") while passing every solo run, and the cause is in the loop below rather than in
+ * anything it tests. MEASURED on the box, with the loop instrumented:
+ *
+ *   solo                     632,000-633,000 fake ms consumed, in 11-12 ms of REAL time
+ *   inside a full-suite run  631,000-648,000 fake ms consumed, in 34-717 ms of REAL time (40 samples)
+ *
+ * 630,000 of that is the bound this section exists to fire (max(600s, 60s) + 30s margin), so the
+ * sweep is ~633 iterations of a 2,000-iteration budget and the spare 1,352-1,369 iterations are the
+ * entire margin. Priced in the only currency that matters here — REAL time, at the loop's own
+ * measured cost per iteration — that margin is 24ms solo, and 73-1,503ms (median 292ms) under a
+ * full suite.
+ *
+ * That is the defect: the budget is denominated in FAKE milliseconds, and what it is actually
+ * waiting for is a REAL chain (`callModel`'s DB reads, the dynamic `tools/tool-docs.js` import,
+ * vite's transform RPC to the main process). Fake time advances at the loop's own speed no matter
+ * how slowly the real chain moves, so ONE off-thread stall of a few hundred milliseconds — routine
+ * when 20 workers share one transform pipeline — exhausts the budget before the chain has armed the
+ * timer, and the helper declares a settled promise unsettled. Nothing about the product is involved.
+ * (CPU saturation alone does NOT reproduce it, measured 0/11 under 24 and 60 busy cores: hogs slow
+ * the loop and the chain alike and so RAISE the margin. Only an off-thread stall breaks the ratio.)
+ *
+ * THE SHAPE OF THE FIX: a fake-time sweep is no longer the give-up condition, it is one attempt.
+ * Between sweeps the helper waits in REAL time — through a `setTimeout` captured before any fake
+ * clock was installed — so a chain that is blocked on real work gets the one thing it needs, and
+ * the only thing that ends the wait is a REAL deadline. The healthy path is byte-for-byte as fast
+ * as before (it settles inside the first sweep), and the failure message now distinguishes "the
+ * promise is stuck" from "this loop ran out of turns", which is what cost three ritual rounds of
+ * misattribution.
+ */
+const REAL_SETTLE_BUDGET_MS = 30_000;
+
+/** Captured while the clock is still real: `vi.useFakeTimers()` replaces `globalThis.setTimeout`,
+ *  and a loop that needs to wait for REAL work cannot do it on the fake one. */
+const realSetTimeout = globalThis.setTimeout;
+const waitRealMs = (ms: number): Promise<void> => new Promise<void>((resolve) => { realSetTimeout(resolve, ms); });
+
+/** One sweep of the fake clock: advance `totalMs` in `stepMs` steps, stopping early once the
+ *  predicate says there is nothing left to wait for. */
+async function sweepFakeClock(done: () => boolean, totalMs: number, stepMs: number): Promise<void> {
+  for (let elapsed = 0; elapsed < totalMs && !done(); elapsed += stepMs) {
     await vi.advanceTimersByTimeAsync(stepMs);
   }
-  if (!settled) throw new Error(`promise did not settle within ${totalMs}ms of advanced fake time`);
-  return 'error' in settled ? (settled as { error: unknown }).error : (settled as { value: T }).value;
+}
+
+async function advanceUntilSettled<T>(
+  promise: Promise<T>, totalMs = MAX_ADVANCE_MS, stepMs = 1_000, realBudgetMs = REAL_SETTLE_BUDGET_MS,
+): Promise<T | unknown> {
+  let outcome: { value: T } | { error: unknown } | null = null;
+  promise.then((value) => { outcome = { value }; }, (error) => { outcome = { error }; });
+  const isSettled = (): boolean => outcome !== null;
+  const realStart = vi.getRealSystemTime();
+  let realElapsed = 0;
+  while (!isSettled()) {
+    await sweepFakeClock(isSettled, totalMs, stepMs);
+    if (isSettled()) break;
+    realElapsed = vi.getRealSystemTime() - realStart;
+    if (realElapsed > realBudgetMs) break;
+    // The chain is waiting on something the fake clock cannot deliver. Real work needs real time.
+    await waitRealMs(5);
+  }
+  if (outcome === null) {
+    throw new Error(
+      `promise did not settle after ${realElapsed}ms of REAL time, each pass advancing `
+      + `${totalMs}ms of fake time — the chain is genuinely stuck, not merely slow`,
+    );
+  }
+  return 'error' in outcome ? (outcome as { error: unknown }).error : (outcome as { value: T }).value;
 }
 
 /**
@@ -209,14 +274,29 @@ async function advanceUntilSettled<T>(promise: Promise<T>, totalMs = MAX_ADVANCE
  * measured reason — a timer scheduled partway through `callModel`'s own pre-dispatch chain is
  * only discovered by a LATER step — so "it never settled" is a statement about the whole
  * advanced window, not about the instant the chain happened to reach `query()`.
+ *
+ * It carries the same real-time repair, and it needs it for a SECOND reason: "it never settled"
+ * is the ANSWER THIS ONE WANTS, so a chain that stalled before it ever reached `query()` would
+ * hand back a true-looking `false`. `dialled` is the caller's proof that the thing whose silence
+ * is being measured actually happened — the sweep is not judged until it does, and the real
+ * deadline is the only way out. (Today's caller also asserts `queryCalls` afterwards, so the
+ * stall shows up as a red rather than a vacuous pass; this makes it neither.)
  */
-async function settlesWithin(promise: Promise<unknown>, totalMs = MAX_ADVANCE_MS, stepMs = 1_000): Promise<boolean> {
-  let settled = false;
-  promise.then(() => { settled = true; }, () => { settled = true; });
-  for (let elapsed = 0; elapsed < totalMs && !settled; elapsed += stepMs) {
-    await vi.advanceTimersByTimeAsync(stepMs);
+async function settlesWithin(
+  promise: Promise<unknown>, dialled: () => boolean = () => true,
+  totalMs = MAX_ADVANCE_MS, stepMs = 1_000, realBudgetMs = REAL_SETTLE_BUDGET_MS,
+): Promise<boolean> {
+  let done = false;
+  promise.then(() => { done = true; }, () => { done = true; });
+  const isSettled = (): boolean => done;
+  const realStart = vi.getRealSystemTime();
+  for (;;) {
+    await sweepFakeClock(isSettled, totalMs, stepMs);
+    if (isSettled()) return true;
+    if (dialled()) return false;
+    if (vi.getRealSystemTime() - realStart > realBudgetMs) return false;
+    await waitRealMs(5);
   }
-  return settled;
 }
 
 /** Real-time poll — §D's external-abort control needs the dial to have HAPPENED before it cuts it. */
@@ -365,7 +445,7 @@ describe('T81d §B — the real dispatch attaches the derived bound, or nothing 
     promise.catch(() => {}); // avoid an unhandled-rejection warning while time advances
     let settled: boolean;
     try {
-      settled = await settlesWithin(promise);
+      settled = await settlesWithin(promise, () => agentSdk.queryCalls.length >= 1);
     } finally {
       vi.useRealTimers();
     }

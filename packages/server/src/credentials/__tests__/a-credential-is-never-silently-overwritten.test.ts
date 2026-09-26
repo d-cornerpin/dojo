@@ -27,7 +27,7 @@
 // the caller saying, on the record, which specific existing value it is ending.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -51,6 +51,33 @@ vi.mock('../../config/loader.js', () => ({
 
 const OWNER_AGENT = 'kevin';
 const BATTERY_AGENT = 'behaviorbot';
+
+// ── WHY THIS HOOK EXISTS (backlog wave 1b item 3, 2026-09-26) ──────────────────────────────
+// This file flaked on ONE clause — "both write tools declare the overwrite flag in their
+// schema", `Test timed out in 5000ms` — and only under full-suite load. The clause is three
+// assertions on a schema object; what it actually spends its time on is the FIRST cold
+// `await import('../tools.js')` in the worker, which drags in the whole tool-definition chain.
+// MEASURED here: 3.16-3.22s of that 5s budget on an IDLE box (vitest's own per-test report),
+// and with the machine saturated it goes over 5s every time (20/20 reproduced with 24 busy
+// cores). Nothing is slow about the clause; a cold module compile is simply not something a
+// per-test budget should be paying for, and vitest's 5s default is a budget for a TEST.
+//
+// The `beforeEach` below already says the neighbouring half of this out loud: re-importing the
+// chain per clause (via `vi.resetModules()`) cost ~2.5s each and starved neighbouring suites.
+// This is the same fact from the other side — pay the compile ONCE, in a hook with a bound
+// sized for cold work, and every clause's `await import()` is a module-cache read afterwards.
+// The imports stay dynamic and every clause keeps its own; nothing about what they prove moves.
+//
+// THE CONTRACT OF THIS LIST: it is the set of modules the clauses import COLD. A clause that
+// reaches for a module nobody warmed here is paying for a compile inside its own budget again,
+// which is the whole defect. It is deliberately NOT a wildcard — a hook that imported the world
+// would hide which module is expensive.
+beforeAll(async () => {
+  await Promise.all([
+    import('../store.js'),
+    import('../tools.js'),
+  ]);
+}, 120_000);
 
 beforeEach(() => {
   // NO `vi.resetModules()` here, deliberately. The store and the tool module hold no
