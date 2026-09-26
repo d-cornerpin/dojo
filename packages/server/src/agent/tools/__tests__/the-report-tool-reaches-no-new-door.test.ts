@@ -36,8 +36,11 @@
 //   C. HAS A NEW WAY OUT APPEARED BEHIND THE TOOL? The fetch-bearing modules in the closure
 //      are pinned as a sorted manifest. A new outbound module reachable from the tool — the
 //      exact shape of the reviewer's demonstration — is not in the manifest and fails here.
-//      Plus the tightest clause of the three: the handler's and the gather's OWN one-hop
-//      import lists are pinned exactly, so adding ANY import to either is a reviewed act.
+//      Plus the tightest clause of the three: the one-hop import lists of BOTH files the handler
+//      is made of (`cat/report.ts` and `cat/report-prose.ts`) and of the gather are pinned
+//      exactly, so adding ANY import to any of the three is a reviewed act. It reads two files
+//      for the handler because it once read one of two and a door walked through the gap — see
+//      `PROSE_IMPORTS`.
 //
 // ── WHAT THIS FILE HONESTLY DOES NOT CLAIM ──
 // It is a static import census, not a capability system. It cannot see a computed specifier,
@@ -263,6 +266,33 @@ const HANDLER_IMPORTS: readonly string[] = [
   '../../../report/bundle.js', '../../../report/gather.js', '../../../report/signature.js',
   '../../../report/store.js', '../../../report/telemetry-build.js', '../../../report/window.js',
   '../handler.js', './report-prose.js',
+];
+/**
+ * ⚠ THE PROSE HALF IS PINNED TOO, AND IT IS PINNED BECAUSE IT WAS MEASURED UNPINNED (fix-round-2
+ * review M1). After the split the handler is TWO files and this clause read one of them, so its
+ * own promise — "adding ANY import to either file fails this file" — was half true. What rode
+ * through the gap, green at 94/94 on both censuses: a new `cat/prose-helper.ts`, imported by
+ * `report-prose.ts` and called inside `renderBrief`, opening
+ * `https.request({ host: 'api.github.com', path: '/repos/x/y/issues', method: 'POST' })` with the
+ * brief's title in the body. The identical edge on `report.ts` went RED on this same pin, which is
+ * what proves the hole was the SPLIT and not something this census never had.
+ *
+ * Nothing else in the file covers it: prong C's manifest greps `\bfetch\s*\(` and `node:https` is
+ * invisible to it; the sibling census's specifier scan rejects `node:*` only when one of the
+ * handler's own two files names it, not one module further; prongs A and B only see a store edge.
+ * So the pin is the guard, and the pin has to cover every file the handler is made of.
+ *
+ * Three local specifiers today, all type-or-constant reads inside this feature. A prose file has
+ * no business importing anything else, which is exactly why a change here must be a reviewed act.
+ */
+const PROSE_IMPORTS: readonly string[] = [
+  '../../../report/signature.js', '../../../report/store.js', '../../../report/window.js',
+];
+/** The handler's own source, file by file, each with its exact pin. One clause, two subjects, and
+ *  the failure message names WHICH file moved — the split must not cost the diagnosis either. */
+const ONE_HOP_PINS: readonly { rel: string; pins: readonly string[] }[] = [
+  { rel: 'agent/tools/cat/report.ts', pins: HANDLER_IMPORTS },
+  { rel: 'agent/tools/cat/report-prose.ts', pins: PROSE_IMPORTS },
 ];
 const GATHER_IMPORTS: readonly string[] = [
   '../credentials/secret-values.js', '../gateway/routes/update.js',
@@ -1174,12 +1204,22 @@ describe('B — nothing behind the report tool can consume one', () => {
 });
 
 describe('C — no new way out has appeared behind the report tool', () => {
-  it('the handler imports exactly its declared list — one hop, pinned', () => {
-    expect(
-      [...new Set(specifiersOf(HANDLER))].sort(),
-      'cat/report.ts gained or lost an import. Every module it can reach directly is pinned '
-      + 'because a blacklist of five names is what this file exists to replace.',
-    ).toEqual([...HANDLER_IMPORTS].sort());
+  it('the handler imports exactly its declared list — one hop, pinned, BOTH of its files', () => {
+    // Non-vacuity: the loop really does read two files, so a future split cannot silently drop
+    // one back out of the census the way the last one did.
+    expect(ONE_HOP_PINS.length, 'the one-hop pin stopped covering the whole handler').toBe(2);
+    for (const { rel, pins } of ONE_HOP_PINS) {
+      const found = [...new Set(specifiersOf(path.join(SRC, rel)))].sort();
+      expect(found.length, `${rel} has no imports at all — the reader is looking at nothing`)
+        .toBeGreaterThan(0);
+      expect(
+        found,
+        `${rel} gained or lost an import. Every module either half of the handler can reach `
+        + 'directly is pinned, because a blacklist of five names is what this file exists to '
+        + 'replace — and because an outbound door one hop behind the PROSE rode both censuses '
+        + 'green until this pin covered it (fix-round-2 review M1).',
+      ).toEqual([...pins].sort());
+    }
   });
 
   it('the gather imports exactly its declared list — one hop, pinned', () => {

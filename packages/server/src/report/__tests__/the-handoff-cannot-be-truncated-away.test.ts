@@ -530,10 +530,14 @@ describe('the draft phase obeys the same two laws — order AND size', () => {
 
     const stored = getReport(id)!.telemetry as Record<string, unknown[]>;
     const echoed = JSON.parse(drafted.content.slice(drafted.content.indexOf('{'))) as Record<string, unknown[]>;
-    expect(echoed.tools.length, 'the echo was not trimmed — this clause is vacuous')
-      .toBeLessThan(stored.tools.length);
+    // ⚠ THE LOAD-BEARING ASSERTION GOES FIRST (fix-round-2 review NIT-6). With the vacuity guard
+    // ahead of it, the exact implementation this clause exists to refuse — bounding `telemetry`
+    // before `attachDraft` — failed on "the echo was not trimmed … vacuous" instead of on the
+    // message written for that author. Both are needed; only one of them diagnoses.
     expect(stored.tools.length, 'THE PUBLISHED ATTACHMENT WAS BOUNDED — the echo\'s trim reached the row')
       .toBe(COLLECTOR_CAPS.toolCalls);
+    expect(echoed.tools.length, 'the echo was not trimmed — this clause is vacuous')
+      .toBeLessThan(stored.tools.length);
     expect(echoed.echoBounds, 'the trimmed copy does not say what it left out').toBeTruthy();
     expect(JSON.stringify(echoed.echoBounds)).toContain('tools: showing the ');
 
