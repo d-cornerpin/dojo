@@ -18,30 +18,47 @@
 // current state that says in words that it supersedes earlier mentions.
 //
 // WHAT EACH SECTION HOLDS
-//   §1 the three round-4 shapes: the lane carries the contradiction the reply needed
-//   §2 the per-status table: every state's rendered truth, D4's consent gate in each line
-//   §3 empty is ABSENT — no rows, no bytes, no slot
-//   §4 the bound: 7 days, 5 rows, and the elision is never silent
-//   §5 the tail's own laws: byte-identical 90 minutes later, and the cache-prefix position
-//   §6 the wiring: one injection site, declared, protected, with its own failure path
+//   §1  the three round-4 shapes: the lane carries the contradiction the reply needed
+//   §2  the per-status table: every state's rendered truth, D4's consent gate in each line
+//   §2b a LIVE card is never elided, never ages out, and is never called history (review F1)
+//   §3  empty is ABSENT — no rows, no bytes, no slot
+//   §4  the bounds: the settled cap, the live cap, and both worst cases measured (review F3)
+//   §5  the tail's laws + the prefix proof, closed under resolver-legal spellings (review F2)
+//   §6  the wiring: one injection site, declared, protected, with its own failure path
 //
-// MUTATION RECORD. Each planted in the product file named, measured, then reverted by restoring the
-// byte-identical file (sha256 `f2661cbc` for `report/state-lane.ts` and `0fe765d1` for
-// `steps/call-llm/pre-call-injections.ts`, re-asserted after every one):
+// ── THE REVIEW'S THREE FINDINGS, AND WHY §2b EXISTS AT ALL ───────────────────────────────────
+// F1 (MEDIUM) was the mirror image of the defect this lane closes. The block makes a NEGATIVE
+// completeness claim, so only a non-terminal row can falsify it — and the first cut let one be
+// elided by the 5-row cap or aged out by the 7-day horizon. The superseding sentence then told the
+// model that a TRUE "your card is waiting" line was history: the agent says nothing is pending, the
+// user never presses Post, and a real report dies at the consent gate. Non-terminal rows now never
+// age out and are never elided, and when the live safety cap IS hit the block WITHHOLDS its negative
+// claim instead of lying about what it left out.
 //
-//   M1  the injection site DELETED — the lane never reaches the model   4 F / 22 P  §3 §5 §6
-//   M2  `cancelled` rendered as a standing card                          3 F / 23 P  §1 §2
-//   M3  the row bound removed (no LIMIT)                                 1 F / 25 P  §4
-//   M4  the superseding sentence dropped from the block                  1 F / 25 P  §1
-//   M5  the recorded instant swapped for a wall-clock reading            1 F / 25 P  §5
-//   M6  the 7-day window removed (every report ever, for ever)           1 F / 25 P  §3
-//   M7  EMPTY IS ABSENT broken (an empty header instead of null)          3 F / 23 P  §1 §3
+// ── MUTATION RECORD. Each planted in the product file named, measured, then reverted by restoring
+// the byte-identical file (sha256 `a0c0283d` for `report/state-lane.ts`, `0fe765d1` for
+// `steps/call-llm/pre-call-injections.ts`, `8ab9a96d` for `prompt/registry/entries.ts`, re-asserted
+// after every one). 35 clauses:
+//
+//   M1  the injection site DELETED — the lane never reaches the model   4 F / 31 P  §3 §5 §6
+//   M2  `cancelled` rendered as a standing card                          3 F / 32 P  §1 §2
+//   M3  the SETTLED row bound removed (no LIMIT)                         1 F / 34 P  §4
+//   M4  the superseding sentence dropped from the block                  3 F / 32 P  §1 §4 §5
+//   M5  the recorded instant swapped for a wall-clock reading            1 F / 34 P  §5
+//   M6  the 7-day window removed for settled rows                        2 F / 33 P  §2b §3
+//   M7  EMPTY IS ABSENT broken (an empty header instead of null)          4 F / 31 P  §1 §2b §3
+//   M8  F2: the reviewer's EXACT plant — a second, EXTENSIONLESS
+//       importer of this lane in a prefix file                           1 F / 34 P  §5
+//   M9  F1: the UNIFORM horizon restored (live rows age out)             3 F / 32 P  §2b
+//   M10 F1: the row cap applied to live rows (a card can be elided)      2 F / 33 P  §2b §4
+//   M11 F1: the negative completeness claim made UNCONDITIONAL           1 F / 34 P  §4
 //
 // M1 is the one that matters most and it is caught STRUCTURALLY rather than behaviourally: a unit
 // test cannot see the model's context, so §3/§5/§6 read the injection site out of the engine corpus
 // (`engine-sources.ts`, never by path — the guard-corpus census refuses a second hand-rolled walk).
-// M2's first cut reded only 2 clauses because the legend still said the word; §1's shape-0 clause now
-// asserts the ROW form, so a mis-rendered row cannot pass wearing the legend's clothes.
+// M8 is the review's own successful attack on the PROOF rather than the code: against the first cut
+// it was GREEN (the clause grepped a literal string under `moduleResolution: "bundler"`), and the
+// reader is closed under resolver-legal spellings now, with a fixture table of caught/ignored rows.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -67,7 +84,8 @@ vi.mock('../../db/connection.js', async () => {
 
 import { runMigrations } from '../../db/migrations.js';
 import {
-  REPORT_STATE_HEAD, REPORT_STATE_MAX_ROWS, REPORT_STATE_TAIL, REPORT_STATE_WINDOW_DAYS,
+  REPORT_STATE_HEAD, REPORT_STATE_LIVE_CAP, REPORT_STATE_MAX_ROWS, REPORT_STATE_TAIL,
+  REPORT_STATE_WINDOW_DAYS,
   buildReportStateInjection, recentReportRows, renderReportStateBlock,
 } from '../state-lane.js';
 import { POST_BUDGET_ENTRY_LANE, isProtectedLaneId } from '../../memory/lanes.js';
@@ -237,6 +255,74 @@ describe('§2 every state renders the truth that decides what the user can see',
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
+// §2b — F1 (review, MEDIUM): A STANDING CARD IS NEVER ELIDED AND NEVER AGES OUT.
+//
+// The block makes a NEGATIVE completeness claim, so only a non-terminal row can falsify it — and
+// falsifying it kills a real report at the consent gate: the superseding sentence would tell the
+// model that a TRUE "your card is waiting" line "is history and no longer applies", the agent says
+// nothing is pending, the user never presses Post. The two reachable shapes the reviewer measured
+// are the first two clauses here.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§2b a live card cannot be elided, aged out, or called history', () => {
+  it('SHAPE A — five cancels today + one standing card: the cap must not squeeze the card out', () => {
+    for (let i = 0; i < REPORT_STATE_MAX_ROWS; i++) {
+      seedReport({ id: `fresh-cancel-${i}`, status: 'cancelled', updatedAt: daysAgo(0.001 * i) });
+    }
+    const card = seedReport({ id: 'the-live-card', status: 'awaiting_approval', updatedAt: daysAgo(3) });
+    const b = block();
+    expect(b, 'the card the user is looking at RIGHT NOW was elided by the row cap').toContain(card);
+    expect(b).toContain(`${card} — PREVIEW CARD UP`);
+    // …and it is FIRST: a live card outranks five settled ones for the turn that has to answer.
+    expect(b.indexOf(card)).toBeLessThan(b.indexOf('fresh-cancel-0'));
+    // The completeness claim is now TRUE, so it is still made.
+    expect(b).toContain('Every report of yours that is still LIVE is listed above');
+  });
+
+  it('SHAPE B — a NINE-DAY-OLD standing card still renders (non-terminal rows never age out)', () => {
+    const old = seedReport({ id: 'nine-days-old-card', status: 'awaiting_approval', updatedAt: daysAgo(9) });
+    seedReport({ id: 'fresh-cancel', status: 'cancelled', updatedAt: daysAgo(0) });
+    const read = recentReportRows(AGENT);
+    expect(read.live.map((r) => r.id)).toEqual([old]);
+    const b = block();
+    expect(b, 'an aged-out standing card is the F1 defect: the block would call a true claim history')
+      .toContain(`${old} — PREVIEW CARD UP`);
+    expect(b).toContain('however old it is');
+  });
+
+  it('the other two non-terminal states age out no more than the card does', () => {
+    seedReport({ id: 'old-draft', status: 'drafting', updatedAt: daysAgo(30) });
+    seedReport({ id: 'old-approved', status: 'approved', updatedAt: daysAgo(400) });
+    const read = recentReportRows(AGENT);
+    expect(read.live.map((r) => r.id).sort()).toEqual(['old-approved', 'old-draft']);
+    expect(block()).toContain('UNFINISHED');
+    expect(block()).toContain('APPROVED, SENDING');
+  });
+
+  it('CONTROL — a TERMINAL row DOES age out, which is what keeps the block small', () => {
+    // The horizon is safe for terminal rows for one measured reason: `cancelReport` stamps
+    // `updated_at = datetime('now')`, so a withdrawn row is always fresh at the instant of
+    // withdrawal. An 8-day-old cancelled row is a cancel nobody has asked about since.
+    seedReport({ id: 'old-cancel', status: 'cancelled', updatedAt: daysAgo(8) });
+    seedReport({ id: 'old-posted', status: 'posted', updatedAt: daysAgo(8) });
+    expect(recentReportRows(AGENT).settled).toHaveLength(0);
+    expect(buildReportStateInjection(AGENT)).toBeNull();
+  });
+
+  it('the cancel door itself keeps the horizon honest: cancelling REFRESHES updated_at', () => {
+    const row = createReport(AGENT, 'wrong-answer', 'sig-h');
+    db().prepare("UPDATE dojo_reports SET created_at = ?, updated_at = ? WHERE id = ?")
+      .run(daysAgo(20), daysAgo(20), row.id);
+    expect(recentReportRows(AGENT).live.map((r) => r.id)).toEqual([row.id]); // drafting: never ages
+    expect(cancelReport(row.id)?.status).toBe('cancelled');
+    const read = recentReportRows(AGENT);
+    expect(read.live).toHaveLength(0);
+    expect(read.settled.map((r) => r.id), 'the 7-day clock runs from the CANCEL, not the filing')
+      .toEqual([row.id]);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
 // §3 — EMPTY IS ABSENT.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
@@ -246,9 +332,11 @@ describe('§3 an agent with no recent reports renders nothing at all', () => {
     expect(renderReportStateBlock([])).toBeNull();
   });
 
-  it('rows OUTSIDE the window → still null (126 of 138 agents on the owner\'s box are this case)', () => {
+  it('a SETTLED row outside the window → still null (126 of 138 agents on the owner\'s box are this case)', () => {
     seedReport({ id: 'ancient', status: 'cancelled', updatedAt: daysAgo(REPORT_STATE_WINDOW_DAYS + 1) });
-    expect(recentReportRows(AGENT).rows).toHaveLength(0);
+    const read = recentReportRows(AGENT);
+    expect(read.settled).toHaveLength(0);
+    expect(read.live).toHaveLength(0);
     expect(buildReportStateInjection(AGENT)).toBeNull();
   });
 
@@ -269,32 +357,61 @@ describe('§4 the read is bounded and says so', () => {
     for (let i = 0; i < REPORT_STATE_MAX_ROWS + 3; i++) {
       seedReport({ id: `row-${i}`, status: 'cancelled', updatedAt: daysAgo(i * 0.01) });
     }
-    const { rows, totalInWindow } = recentReportRows(AGENT);
-    expect(rows).toHaveLength(REPORT_STATE_MAX_ROWS);
-    expect(totalInWindow).toBe(REPORT_STATE_MAX_ROWS + 3);
-    expect(rows[0].id).toBe('row-0'); // newest updated_at
+    const read = recentReportRows(AGENT);
+    expect(read.settled).toHaveLength(REPORT_STATE_MAX_ROWS);
+    expect(read.settledInWindow).toBe(REPORT_STATE_MAX_ROWS + 3);
+    expect(read.settled[0].id).toBe('row-0'); // newest updated_at
     const b = block();
     expect((b.match(/^\d+\. /gm) ?? [])).toHaveLength(REPORT_STATE_MAX_ROWS);
     // The elision states the bound rather than implying completeness the read does not have.
-    expect(b).toContain(`Showing the ${REPORT_STATE_MAX_ROWS} most recently changed of ${REPORT_STATE_MAX_ROWS + 3}`);
-    expect(b).not.toContain('That is every report');
+    expect(b).toContain(`these are the ${REPORT_STATE_MAX_ROWS} most recently changed of ${REPORT_STATE_MAX_ROWS + 3}`);
+    expect(b).toContain('Older WITHDRAWN/FILED reports are not listed');
   });
 
-  it('inside the cap it claims completeness for the window, and nothing wider', () => {
+  it('inside the cap it claims completeness for the LIVE set, and nothing wider', () => {
     seedReport({ id: 'one', status: 'cancelled', updatedAt: daysAgo(0) });
     const b = block();
-    expect(b).toContain(`That is every report of yours changed in the last ${REPORT_STATE_WINDOW_DAYS} days`);
-    expect(b).toContain('Anything not listed is not on their dashboard');
+    expect(b).toContain('Every report of yours that is still LIVE is listed above, however old it is');
+    expect(b).toContain('anything not listed is settled, and not a card on their dashboard');
+    expect(b).not.toContain('Older WITHDRAWN/FILED reports are not listed');
   });
 
-  it('the whole block stays small enough to ride a tail — the widest real agent is 1,397 bytes', () => {
-    for (let i = 0; i < REPORT_STATE_MAX_ROWS; i++) {
-      seedReport({ id: `wide-${i}-0000-0000-0000-00000000000${i}`, status: 'cancelled', updatedAt: daysAgo(i * 0.01) });
+  it('F3 the WIDEST REALISTIC shape is measured, not the cheapest one: five distinct states', () => {
+    // The review's F3: the first cut measured five IDENTICAL rows (one legend line, 1,452 B) and
+    // guarded at 2,000 — a bound its own widest case breaches. Five DISTINCT states render every
+    // legend line, which is the real worst case a live agent can reach, and it measures 2,262 B.
+    const states = ['awaiting_approval', 'drafting', 'approved', 'cancelled', 'posted'];
+    states.forEach((status, i) => seedReport({
+      id: `0000000${i}-1111-4000-8000-000000000000`, status, updatedAt: daysAgo(i * 0.01),
+      issueUrl: status === 'posted' ? 'https://github.com/d-cornerpin/dojo-report-live-test/issues/123' : undefined,
+    }));
+    const b = block();
+    // Every legend line is present — this is what makes it the widest shape.
+    for (const word of ['WITHDRAWN means', 'UNFINISHED means', 'PREVIEW CARD UP means',
+      'APPROVED, SENDING means', 'FILED means']) expect(b).toContain(word);
+    const bytes = Buffer.byteLength(b, 'utf8');
+    expect(bytes).toBeGreaterThan(2_000);           // it really is the wide one
+    expect(bytes, 'measured 2,262 B — the guard is set from the measurement, with headroom for '
+      + 'one more state word, and NOT from the cheapest fixture').toBeLessThan(2_400);
+  });
+
+  it('F1 the PATHOLOGICAL bound: the live cap is the ceiling, and hitting it withholds the claim', () => {
+    // Non-terminal rows never age out and are never elided, so the live safety cap is the only
+    // thing bounding this block. Measured at the cap: 4,033 B, and the negative completeness claim
+    // is WITHHELD rather than asserted over a list that is admittedly short.
+    for (let i = 0; i <= REPORT_STATE_LIVE_CAP; i++) {
+      seedReport({ id: `live-${String(i).padStart(2, '0')}`, status: 'awaiting_approval', updatedAt: daysAgo(i * 0.01) });
     }
-    const bytes = Buffer.byteLength(block(), 'utf8');
-    expect(bytes).toBeGreaterThan(400);
-    expect(bytes, 'a per-turn tail block that grows unbounded re-bills the whole history behind it')
-      .toBeLessThan(2_000);
+    const read = recentReportRows(AGENT);
+    expect(read.live).toHaveLength(REPORT_STATE_LIVE_CAP);
+    expect(read.liveTruncated).toBe(true);
+    const b = block();
+    expect(b).toContain('⚠ INCOMPLETE');
+    expect(b).toContain('Do NOT tell the user that nothing of theirs is pending');
+    expect(b, 'the false negative claim is the F1 defect — it must be absent here')
+      .not.toContain('anything not listed is settled');
+    expect(Buffer.byteLength(b, 'utf8'), 'measured 4,033 B at the cap with five settled rows')
+      .toBeLessThan(4_600);
   });
 });
 
@@ -318,6 +435,29 @@ describe('§5 it does not tick, and it does not touch the prefix', () => {
       .toBe(before);
   });
 
+  it('F5 THE SUPERSEDING SENTENCE, on its own: the whole point of the lane, in one clause', () => {
+    // The review's F5: this sentence had exactly one guard and it was shape 0's nine-assertion
+    // clause, so any future narrowing of that clause would have removed the sentence's only cover.
+    // It is the mechanism — everything else here is plumbing around it.
+    seedReport({ id: 'sup-1', status: 'cancelled', updatedAt: daysAgo(0) });
+    const b = block();
+    // (i) it supersedes, and it says WHAT it supersedes — including the agent's own replies, which
+    //     is where round 4 proved the claim actually lives.
+    expect(b).toContain('This supersedes every earlier mention of a report in this conversation');
+    expect(b).toContain('including your own replies');
+    expect(b).toContain('those were true when written and this is true NOW');
+    // (ii) it states the consent gate, so "filed" cannot be read as "sent".
+    expect(b).toContain('A report reaches the Dojo ONLY when the user presses Post');
+    // (iii) it names the failure's OWN vocabulary — the three phrases the four red rounds produced.
+    for (const phrase of ['sitting on your dashboard', 'preview card', 'waiting for you to press Post']) {
+      expect(b).toContain(phrase);
+    }
+    // (iv) and it gives the instruction, conditioned on the row rather than on the words.
+    expect(b).toContain('not listed below as PREVIEW CARD UP');
+    expect(b).toContain('history and no longer applies');
+    expect(b).toContain('do not repeat it as the current state');
+  });
+
   it('CONTROL — when a row actually changes, the bytes change', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-26T12:00:00Z'));
@@ -338,6 +478,65 @@ describe('§5 it does not tick, and it does not touch the prefix', () => {
     expect(at("'engine.report-state'")).toBeLessThan(at("'msg.current-time'"));
   });
 
+  // ── F2 (review, MEDIUM): THE READER IS CLOSED UNDER RESOLVER-LEGAL SPELLINGS ──────────────
+  // The first cut grepped the literal string `report/state-lane.js`. This tree is
+  // `moduleResolution: "bundler"`, so the reviewer planted a SECOND importer in a prefix file
+  // WITHOUT the extension, leaked the lane's header into the cached prefix, and it typechecked
+  // clean while this clause stayed green and every prefix suite stayed green. The code was right;
+  // the guard was not closed under new syntax. It matches the MODULE now, not a string.
+
+  /** Every module specifier a file imports, whatever syntax carried it. */
+  function importSpecifiers(src: string): string[] {
+    const out: string[] = [];
+    for (const re of [
+      /\bfrom\s*['"]([^'"]+)['"]/g,                 // import … from '…' / export … from '…'
+      /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,     // await import('…')
+      /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,    // require('…')
+      /\bimport\s+['"]([^'"]+)['"]/g,               // side-effect import '…'
+    ]) for (const m of src.matchAll(re)) out.push(m[1]);
+    return out;
+  }
+  /** Does this specifier resolve to THIS module, under any extension the resolver accepts? */
+  const resolvesToLane = (spec: string): boolean =>
+    spec.replace(/\.(?:[cm]?[jt]sx?)$/, '').split('/').pop() === 'state-lane';
+
+  it('F2 the importer reader is CLOSED: a fixture table of caught and ignored specifiers', () => {
+    const CAUGHT = [
+      "import { x } from '../../../../report/state-lane.js';",   // the real one
+      "import { x } from '../../../../report/state-lane';",      // the reviewer's plant
+      "import { x } from '../report/state-lane.ts';",
+      "import { x } from './state-lane';",
+      "import { x } from './state-lane.mjs';",
+      "const { x } = await import('../../report/state-lane.js');",
+      "export { x } from '../report/state-lane';",
+      "import '../report/state-lane.js';",
+    ];
+    const IGNORED = [
+      "import { x } from '../report/state-lane-extra.js';",      // a different module
+      "import { x } from '../report/state-laneX';",
+      "import { x } from '../memory/recall-lane.js';",
+      "// a comment naming report/state-lane.js is not an import",
+      "const s = 'report/state-lane.js';                        // a string is not an import",
+    ];
+    for (const line of CAUGHT) {
+      expect(importSpecifiers(line).some(resolvesToLane), line).toBe(true);
+    }
+    for (const line of IGNORED) {
+      expect(importSpecifiers(line).some(resolvesToLane), line).toBe(false);
+    }
+    // The basename rule is exact only while ONE module in the tree carries that name.
+    const named: string[] = [];
+    const walkNames = (dir: string): void => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const abs = path.join(dir, e.name);
+        if (e.isDirectory()) { if (e.name !== '__tests__') walkNames(abs); continue; }
+        if (/^state-lane\.[cm]?[jt]sx?$/.test(e.name)) named.push(abs);
+      }
+    };
+    walkNames(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..'));
+    expect(named).toHaveLength(1);
+  });
+
   it('THE PREFIX CANNOT MOVE: one importer, and it is the POST-assembly tail step', () => {
     // The decisive structural proof, and it is three facts rather than a promise.
     // (1) `volatileFrom` is the LENGTH of the array the assembler returns — its own words:
@@ -356,7 +555,7 @@ describe('§5 it does not tick, and it does not touch the prefix', () => {
         const abs = path.join(dir, e.name);
         if (e.isDirectory()) { if (e.name !== '__tests__') walk(abs); continue; }
         if (!e.name.endsWith('.ts') || e.name.endsWith('.test.ts')) continue;
-        if (fs.readFileSync(abs, 'utf8').includes("report/state-lane.js")) {
+        if (importSpecifiers(fs.readFileSync(abs, 'utf8')).some(resolvesToLane)) {
           importers.push(path.relative(src, abs));
         }
       }
