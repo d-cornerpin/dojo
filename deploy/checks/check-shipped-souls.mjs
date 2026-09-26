@@ -105,7 +105,24 @@ const REQUIRED_SOULS = [
 // ⚠ RETIRING A MANUAL ON PURPOSE MEANS DELETING ITS LINE HERE, IN THE SAME COMMIT, WITH THE REASON
 // WRITTEN IN THAT COMMIT. That edit is meant to be seen and reviewed: this list is the only thing
 // standing between "we retired that manual deliberately" and "every agent silently lost it".
-const REQUIRED_TOOL_MANUALS = ['dojo_report.md', 'image_create.md', 'image_generate_internal.md'];
+// (The "same commit" half of that rule is the one thing this repo cannot honour literally: the
+// pre-commit hook refuses gate files and product code in one commit, and the manuals live under
+// `packages/`. A retirement is therefore an ADJACENT PAIR — this line's deletion and the file's —
+// and each of the two commit messages names the other. Nothing else about the rule changes.)
+//
+// ── RETIRED 2026-09-26 (T85): `image_generate_internal.md` ──
+// It named a tool that does not exist. `imaginer/imaginer-agent.ts:63-64` records the tool being
+// unregistered ("it never worked"), there is no `name: 'image_generate_internal'` in the whole
+// server source, and `tools/index-generator.ts:84-116` writes `~/.dojo/tools/<name>.md` ONLY for
+// names in `registryToolDefinitions()` — the override lookup (`:96-97`) lives inside that loop. So
+// the manual could not reach the one directory `tools/tool-doc-read.ts` reads from, and
+// `load_tool_docs` intersects every requested name with `getFilteredTools` before reading anything
+// (`agent/tools/cat/meta.ts:97-105`), which is a third lock on the same door. A floor that named it
+// promised a manual no model could ever be served: of the three this gate guaranteed, two were real.
+// Measured on the packaged artifact by the installed-box audit (§1e): after a real generator run,
+// `image_generate_internal.md` was MISSING from the generated directory while all 443 registry
+// manuals were present.
+const REQUIRED_TOOL_MANUALS = ['dojo_report.md', 'image_create.md'];
 
 // Present but gutted is the same outcome as absent, exactly as for a soul. The smallest real
 // manual measured 2,327 B, so this can only catch an empty or hollowed copy; byte-identity below
