@@ -1,0 +1,100 @@
+-- 171 (BACKLOG WAVE-1A): THE TWO READS THE REPORT PATH DOES ON EVERY AGENT GET AN INDEX EACH.
+--
+-- Two indexes, one file, because they are one change: both are read by the DOJO-REPORT path,
+-- both were measured on the owner's own body, and neither creates, deletes or rewrites a row.
+--
+-- ════════════════════════════════════════════════════════════════════════════════════════
+-- (1) `audit_log (agent_id, created_at)` — THE HIGHEST-VOLUME TABLE THIS PLATFORM WRITES.
+--
+-- `report/collect.ts`'s `readAudit` is the tool-call-outcomes half of a report bundle:
+--
+--     SELECT action_type, target, result, detail, call_id, created_at
+--       FROM audit_log WHERE agent_id = ? AND created_at >= ?
+--      ORDER BY created_at DESC, id DESC LIMIT ?
+--
+-- `audit_log` already had TWO single-column indexes — `idx_audit_log_agent_id (agent_id)` and
+-- `idx_audit_log_created_at (created_at)` — and SQLite can only use ONE of them per table
+-- reference. It picked the agent one, so the `created_at >= ?` half became a filter applied to
+-- every row that agent ever wrote, and the `ORDER BY` became a temp B-tree over the survivors.
+-- Measured on the owner's body (45,233 rows, 502 distinct agents, the busiest agent holding
+-- 23,133 rows and Kelly 14,457):
+--
+--     BEFORE   SEARCH audit_log USING INDEX idx_audit_log_agent_id (agent_id=?)
+--              USE TEMP B-TREE FOR ORDER BY
+--     AFTER    SEARCH audit_log USING INDEX idx_audit_log_agent_created (agent_id=? AND created_at>?)
+--
+-- The composite answers BOTH halves and returns its rows already in `created_at` order inside
+-- one agent, so the sort disappears too. Column order is `(agent_id, created_at)` and not the
+-- reverse because every reader in the tree is agent-scoped first: the equality column has to
+-- lead or the range cannot be seeked. Verified against every other reader of this table (the
+-- audit-panel route and the cost/tool-failure siblings) — all filter `agent_id = ?`, so none
+-- is made worse and several can use the same index.
+--
+-- `idx_audit_log_agent_id` IS DELIBERATELY LEFT IN PLACE. The composite makes it logically
+-- redundant — SQLite will seek the composite on a bare `agent_id = ?` using the leading column —
+-- so dropping it would save write amplification on the busiest table here. It is NOT dropped:
+-- this file's whole safety argument is that it creates and never destroys, and an index drop on
+-- a lived-in 45K-row table is a separate decision with a separate rollback story. Recorded as an
+-- observation, not done quietly.
+--
+-- ════════════════════════════════════════════════════════════════════════════════════════
+-- (2) `dojo_reports (agent_id)` — THE ANSWERED-EDGE GATE, WHICH TODAY SCANS.
+--
+-- `report/withdrawn-claim.ts`'s `agentHasWithdrawnReport` is the cheap gate in front of the
+-- whole withdrawn-report machinery, and it runs on the model-call path:
+--
+--     SELECT 1 AS ok FROM dojo_reports WHERE agent_id = ? AND status NOT IN (…) LIMIT 1
+--
+-- `169_dojo_reports.sql` gave that table `(status, created_at)` and `(signature)` — the two
+-- read patterns it had then — so this one had no index at all and the plan was `SCAN
+-- dojo_reports`. That module says so itself, in the comment above the function, and ends with
+-- the instruction this file is carrying out: *"It grows with every report ever filed; when that
+-- table stops being tiny, index `agent_id`."*
+--
+-- IT IS STILL TINY, AND THAT IS WHY NOW. 40 rows on the owner's body, measured at 0.010 ms —
+-- so this buys nothing today and cannot be justified as a speed-up. It is bought BEFORE it is
+-- needed because the cost of adding it now is one B-tree over 40 rows, while the cost of
+-- noticing later is a per-model-call full scan of a table that only ever grows, on a gate whose
+-- entire design rationale (that comment's "affordable" scan) silently expires. The `status NOT
+-- IN (…)` half stays a filter ON PURPOSE and must not be indexed: the module's rule 4 needs
+-- "anything this release does not recognise" to arm the gate, and a closed IN-list cannot say
+-- that. So this index covers the equality and leaves the open-ended half alone, exactly as the
+-- function is written.
+--
+-- ════════════════════════════════════════════════════════════════════════════════════════
+-- ── WHY IT IS SAFE ON A LIVED-IN BODY ──
+-- ADDITIVE, CREATE-ONLY, and the strongest form of it: `CREATE INDEX IF NOT EXISTS` twice, on
+-- two names that appear nowhere else in the chain. No `ALTER`, no `DROP`, no `INSERT`, no
+-- `UPDATE`, no backfill, no trigger, no view, no table rebuild. An index is DERIVED data — it
+-- carries no fact the table does not already hold, so there is no shape for it to get wrong and
+-- nothing for it to lose. Both tables are read-only to this file.
+--
+-- The failure classes this is NOT: it is not the `.23`/`135` class (nothing here can RAISE on a
+-- row of any shape — an index build reads values, it does not parse them, and neither column is
+-- JSON or has a CHECK); not the `139` class (the file is final at the moment it ships); not a
+-- `<NNN>b` bridge file, so the string-sort caveat does not apply; not a rewrite of anything.
+-- Both statements are transaction-safe, so `applyOne`'s wrapper holds — no `VACUUM`, no fts5
+-- rebuild, no `PRAGMA`.
+--
+-- The one real cost is the one-time build, and it is bounded and measured (below, and in
+-- STABLE-BRIDGE Entry 53): the big index is one pass over 45,233 rows.
+--
+-- A fresh install applies both against empty tables and is correct: it has audited nothing and
+-- filed nothing.
+--
+-- ── NEXT-RELEASE AUDIT NOTE ──
+-- `idx_audit_log_agent_created` — WRITER: nobody (derived). READERS, by plan rather than by
+-- name, since an index is chosen and not called: `report/collect.ts`'s `readAudit` is the reader
+-- it is FOR; `gateway/routes/*`'s audit reads and anything else filtering `audit_log` by
+-- `agent_id` may also take it. No agent-facing surface names it.
+-- `idx_dojo_reports_agent_id` — WRITER: nobody (derived). READER it is FOR:
+-- `report/withdrawn-claim.ts`'s `agentHasWithdrawnReport`. `dojo_reports`' other readers
+-- (`report/store.ts`, `gateway/routes/reports.ts`, `report/post.ts`) keep using the `status` and
+-- `signature` indexes from 169. Guarded by `db/__tests__/migration-171-report-read-indexes.test.ts`,
+-- whose plan clauses go red if either index is renamed or dropped.
+
+-- (1) The report gather's audit read — equality then range, in that order.
+CREATE INDEX IF NOT EXISTS idx_audit_log_agent_created ON audit_log (agent_id, created_at);
+
+-- (2) The answered-edge gate's own column. Bought before the scan stops being tiny.
+CREATE INDEX IF NOT EXISTS idx_dojo_reports_agent_id ON dojo_reports (agent_id);
