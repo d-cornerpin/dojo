@@ -755,10 +755,7 @@ export async function completeAgent(
     // consolidated notice at cycle END instead (spawnNextDreamerBatch). Skip the per-batch
     // note for it; every other agent still gets its normal per-completion note.
     const { isDreamerAgent: isDreamer } = await import('../config/platform.js');
-    // The NAME arm was dropped 2026-09-26 (owner's rule: no reliance on specific agent names). A
-    // user's own agent called "Dreamer" used to stop getting its per-completion parent notice; the
-    // id predicate beside it was always the right one and is already imported above.
-    if (!isDreamer(agentId)) {
+    if (!isDreamer(agentId)) {   // name arm dropped 2026-09-26: an agent CALLED "Dreamer" lost its notice
       postAgentNotice({
         toAgentId: agent.parent_agent,
         fromName: agent.name ?? 'sub-agent',
@@ -997,9 +994,7 @@ export async function completeAgent(
   // Pre-2026-04-30 the catch here swallowed all errors silently, hiding the
   // v1.15.100 json_set bug for who-knows-how-long. Log them instead.
   const { isDreamerAgent } = await import('../config/platform.js');
-  // Same drop, same date, same reason: a user agent NAMED "Dreamer" used to have
-  // `markDreamerArchivesProcessed` run against its archives.
-  if (isDreamerAgent(agentId)) {
+  if (isDreamerAgent(agentId)) {   // same drop: an agent CALLED "Dreamer" had its archives marked
     try {
       const { markDreamerArchivesProcessed } = await import('../vault/maintenance.js');
       markDreamerArchivesProcessed(agentId, status);
