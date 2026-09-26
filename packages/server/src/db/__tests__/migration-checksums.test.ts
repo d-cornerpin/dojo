@@ -236,12 +236,22 @@ describe('divergence adjudication', () => {
     // tier, so a box that already crossed the bridge diverges from the file it applied.
     // The list is pinned rather than counted: a new entry is a new claim about somebody
     // else's database, and it should have to be typed here to ship.
+    //
+    // THE NAMES/PII SCRUB'S THREE (2026-09-26, review H1) are a DIFFERENT class and the
+    // pin is why they are visible at all: the scrub edited only `--` comment lines, so
+    // the executable SQL is byte-identical, but `_migrations.checksum` hashes the WHOLE
+    // file — so every box that applied them diverges and logs at ERROR for ever. This
+    // clause went RED on the commit that added them, before any review did, which is the
+    // pin working: THREE ALREADY-APPLIED MIGRATIONS CHANGED and a human had to type that.
     const { KNOWN_DIVERGENCES } = await import('../migration-checksums.js');
     const files = KNOWN_DIVERGENCES.map(d => d.file).sort();
     expect(files).toEqual([
+      '135_work_spine.sql',
       '135b_stable_work_spine.sql',
       '144_task_runs_absorbed.sql',
       '146_task_log_absorbed.sql',
+      '159_owed_interrupt_event_kind.sql',
+      '171_report_read_indexes.sql',
     ]);
     for (const d of KNOWN_DIVERGENCES) {
       expect(d.appliedChecksum).toMatch(/^[0-9a-f]{64}$/);
