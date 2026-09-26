@@ -215,6 +215,28 @@ const ALLOWED_CONSENT_CALLERS: readonly string[] = [
   // complementary claim — `approveOnce`'s only PRODUCT call site is the route behind Post.
   'github/__tests__/the-labels-are-best-effort.test.ts',
   'report/__tests__/the-drafted-lane-is-the-lane-that-posts.test.ts',
+  // ── APPENDED BY THE T8 LIVE ROUND (D-B). THE ONE-LINE EDIT, AND IT IS THE REVIEW ──
+  //
+  // `a-label-github-silently-dropped-is-measured-and-said.test.ts` — the read-back suite. GitHub
+  // does NOT refuse a non-collaborator's labelled create; it answers 201 and saves the issue
+  // without the labels, silently, as its own reference for *Create an issue* says it does. So the
+  // label retry named two entries up has never fired, the owner was told nothing, and a
+  // `dojo-report` label sweep silently misses every outside report. The property under test is
+  // what the POSTER reports after a create GitHub ACCEPTED — which means the approval must be
+  // minted and, on every arm, SPENT: "the report landed and the labels did not" is a claim about
+  // the row and the tracker together, and a suite reading only the return value would accept a
+  // delivery nobody recorded. Same shape as `the-labels-are-best-effort.test.ts` beside it.
+  //
+  // THE EDGE IS THE BRACED STATIC FORM, and it binds `approveOnce` only — `markPosted`'s spend is
+  // reached through `report/post.ts` and is never imported here:
+  //
+  //   import {
+  //     createReport, attachDraft, submitForApproval, approveOnce, getReport, type ReportBrief,
+  //   } from '../../report/store.js';
+  //
+  // It is a test file, so it adds no reachable path to any door in the product, and the call-site
+  // census in `only-the-card-can-post-a-report.test.ts` still holds the complementary claim.
+  'github/__tests__/a-label-github-silently-dropped-is-measured-and-said.test.ts',
 ];
 
 /** PRONG C's exact one-hop pins. Adding an import to either file fails this file. */

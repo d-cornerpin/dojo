@@ -27,9 +27,13 @@ export const DeliveredPanel = ({ delivery, onDone }: {
         </p>
         {/* THE REPORT LANDED AND IS NOT QUITE WHAT WAS APPROVED (T8). GitHub needs write access
             to set labels on a new issue and needs none to open one, so an outside reporter's
-            labelled request is refused and the bare one succeeds. The sentence is the SERVER's,
-            verbatim — it carries GitHub's own words and the evidence for them, and only the
-            owner can label the issue now. Rendered as a notice, not an error: nothing failed. */}
+            labels do not survive — usually because GitHub answers 201 and SAVES THE ISSUE
+            WITHOUT THEM, silently, which is what it did live on 2026-09-26 and what its own
+            reference says it does (T8 LIVE D-B); occasionally because it refuses the labelled
+            request outright. The server measures which labels are actually on the issue after
+            filing it, and this sentence is the SERVER's, verbatim — it carries the measured
+            difference plus GitHub's own documented reason, and only someone with write access can
+            label the issue now. Rendered as a notice, not an error: nothing failed. */}
         {delivery.labelsDropped && (
           <p className="text-xs text-ui/80 bg-cp-amber/10 border border-cp-amber/25 rounded-lg p-2 whitespace-pre-wrap">
             {delivery.labelsDropped}

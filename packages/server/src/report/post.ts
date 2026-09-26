@@ -73,10 +73,14 @@ export function parsePostChoice(body: unknown): PostChoice | undefined | 'invali
 }
 
 export type PostOutcome =
-  // `labelsDropped` is null on the ordinary path and a SENTENCE when GitHub refused the labelled
-  // issue and accepted it bare (T8). It is carried rather than swallowed because the delivery
-  // then differs from the one the owner pressed Post for, in a way only they can act on: an
-  // unlabelled issue on a public tracker needs a human to file it under the right label.
+  // `labelsDropped` is null when the labels arrived, and a SENTENCE when they did not — by
+  // either of the two routes GitHub takes: it refuses the labelled create and accepts it bare
+  // (T8), or it answers 201 and saves the issue without them, which is what it documents itself
+  // as doing for an account without write access and what it did live on 2026-09-26 (T8 LIVE
+  // D-B). Carried rather than swallowed because the delivery then differs from the one the owner
+  // pressed Post for, in a way only a human with write access can act on. Null is never
+  // "measured and fine": a read-back that could not be believed also answers null, and the
+  // reason is logged in `github/issues.ts` rather than guessed at here.
   | { kind: 'created'; issueUrl: string; issueNumber: number; labelsDropped: string | null }
   | { kind: 'commented'; issueUrl: string; issueNumber: number }
   | { kind: 'duplicate-found'; match: IssueMatch }

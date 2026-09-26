@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
-// THE THREE CALLS THAT REACH GITHUB'S ISSUES (DOJO-REPORT T7).
+// THE FOUR CALLS THAT REACH GITHUB'S ISSUES (DOJO-REPORT T7, T8).
 //
-// One unauthenticated READ and two authenticated WRITES. Nothing here decides anything: the
+// Two READS and two authenticated WRITES. Nothing here decides anything: the
 // decision — whether this report may leave at all — was made by the owner on the preview card
 // and is held by the one-shot approval in `report/store.ts`. This module is the wire.
 //
@@ -43,10 +43,31 @@
 // revoked scope read as a working connection — and nothing invents a cause.
 //
 // ── THE LABELS ARE BEST-EFFORT (T8 fix round) ──
-// GitHub needs WRITE access to set `labels` on a new issue and none to OPEN one, so the
-// always-labelled request `createIssue` used to send 403'd for every reporter who is not a
-// collaborator on the destination repository. It now asks once more without them, and says so.
-// The whole argument is on `createIssue`.
+// GitHub needs WRITE access to set `labels` on a new issue and none to OPEN one. If it refuses
+// the labelled request, `createIssue` asks once more without them and says so. The whole
+// argument is on `createIssue`.
+//
+// ── AND GITHUB USUALLY DOES NOT REFUSE. IT ACCEPTS AND DISCARDS (T8 LIVE, D-B) ──
+// Measured on the wire, 2026-09-26: the platform sent `labels:["dojo-report","v0.0.0"]`, GitHub
+// answered **201**, and the created issue has **no labels**. GitHub's REST reference for
+// *Create an issue* says so in its own words — *"Only users with push access can set labels for
+// new issues. Labels are silently dropped otherwise."* So the retry above has NEVER FIRED for
+// the case it was written for (0 hits over the whole live log and its rotation, including the
+// owner's issue #3, whose empty labels an earlier hand-off wrongly attributed to it — THAT
+// CLAIM IS WITHDRAWN), the owner was told nothing, and `labelsDropped` was null on the one path
+// that actually loses them. Every successful create that ASKED for labels is now READ BACK and
+// compared with what was sent; a difference is recorded as a difference and nothing more.
+// `labelsThatDidNotSurvive` carries the reasoning, including why a read-back rather than the
+// 201 body nobody captured.
+//
+// ── SO TRIAGE MUST NOT KEY ON THE LABEL, AND DOES NOT HAVE TO ──
+// Every report filed by a NON-COLLABORATOR — which is every ordinary user filing against
+// `d-cornerpin/dojo` — arrives unlabelled. A `dojo-report` label sweep finds none of them, and
+// that is not a bug to fix here: it is GitHub's rule. **THE RELIABLE TRIAGE PATH IS A SEARCH ON
+// THE `dojo-sig:` TRAILER**, which `report/issue-body.ts` writes into the body GitHub accepts in
+// full — `is:issue "ds1-…"` for one report, `is:issue "dojo-sig:"` for the intake sweep. It is
+// the same key `findIssueBySignature` dedupes on, so the habit and the product read one key. The
+// label stays because it works for collaborators and costs nothing when it does not.
 //
 // ── NO `net-guard` ──
 // The same call `google/`, `microsoft/`, `twilio/` and `gateway/routes/update.ts` all make:
@@ -147,9 +168,14 @@ function unreachable(what: string, err: unknown): { ok: false; error: string } {
   return { ok: false, error };
 }
 
-/** The headers a WRITE carries. The token is read here and nowhere else in this module. */
+/** The headers an AUTHENTICATED call carries. The token is read here and nowhere else. */
+function authHeaders(token: string): Record<string, string> {
+  return { ...API_HEADERS, Authorization: `Bearer ${token}` };
+}
+
+/** The headers a WRITE carries. */
 function writeHeaders(token: string): Record<string, string> {
-  return { ...API_HEADERS, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  return { ...authHeaders(token), 'Content-Type': 'application/json' };
 }
 
 /**
@@ -188,6 +214,83 @@ function labelsDroppedNote(labels: string[], refusal: GithubRefusal): string {
 }
 
 /**
+ * THE LABELS THE CREATED ISSUE ACTUALLY HAS — or `null`, meaning NOT MEASURED.
+ *
+ * `null` is never "none". A read-back that 404s, 500s, answers an HTML error page or answers an
+ * issue with no `labels` array tells us nothing, and reporting nothing is the only honest move:
+ * "your labels were dropped" is a claim, and a claim nobody measured is what this whole fix
+ * round exists to remove. One call, bounded by the same timeout as the writes, best-effort —
+ * the report has already landed and no failure here may take that back.
+ *
+ * NO LEDGER WRITE, deliberately. The WRITE succeeded one line earlier, so the credential
+ * demonstrably works; `github/status.ts`'s `looksLikeAuthFailure` reads the ledger to decide
+ * whether to tell the owner their connection is broken, and a failed read of our own issue
+ * after a successful post is exactly the false YES the T5 fix round was spent on.
+ *
+ * Both spellings of `labels` are read. GitHub's schemas give it as objects (`{id, name, …}`) on
+ * the issue representation and as bare strings elsewhere; understanding only one would report a
+ * total drop on every collaborator's issue, which is a false alarm on the majority case.
+ */
+async function labelsOnIssue(repo: string, token: string, issueNumber: number): Promise<string[] | null> {
+  const cannotTell = (why: string): null => {
+    logger.warn('could not read the labels back off the issue that was just filed', { issueNumber, why });
+    return null;
+  };
+  try {
+    const res = await fetch(`${GITHUB_API}/repos/${repo}/issues/${issueNumber}`, {
+      headers: authHeaders(token),
+      signal: AbortSignal.timeout(ISSUE_HTTP_TIMEOUT_MS),
+    });
+    if (!res.ok) return cannotTell(`GitHub answered HTTP ${res.status}`);
+    const answer = await res.json() as { labels?: unknown };
+    if (!Array.isArray(answer.labels)) return cannotTell('the answer carried no `labels` array');
+    return answer.labels
+      .map(l => (typeof l === 'string' ? l : (l as { name?: unknown } | null)?.name))
+      .filter((n): n is string => typeof n === 'string' && n !== '');
+  } catch (err) {
+    return cannotTell(err instanceof Error ? err.message : String(err));
+  }
+}
+
+/**
+ * What the owner is told when GitHub took the labels and then did not keep them: the MEASURED
+ * DIFFERENCE first, then GitHub's own documented rule as the explanation — cited, not inferred.
+ * A partial drop names only what is actually missing, because a report that kept `dojo-report`
+ * and lost `v3.1.28` is still in a label sweep and out of every version-filtered view.
+ */
+function silentlyDroppedNote(sent: string[], kept: string[], dropped: string[]): string {
+  return `Your report posted. It asked for the label${sent.length === 1 ? '' : 's'} `
+    + `${sent.join(', ')}, and GitHub saved the issue `
+    + `${kept.length === 0 ? 'with no labels at all' : `with only ${kept.join(', ')}`} — `
+    + `${dropped.join(', ')} ${dropped.length === 1 ? 'was' : 'were'} dropped. GitHub does that `
+    + 'when the account filing has no write access to the repository; its own reference for '
+    + 'creating an issue says labels "are silently dropped otherwise". Only someone with write '
+    + 'access can add them now, and nothing triage needs is missing: the `dojo-sig:` trailer is '
+    + 'in the issue body, which is what a search finds this report by.';
+}
+
+/**
+ * The read-back, as one step: measure, compare, and answer the sentence or `null`.
+ *
+ * The comparison is the property. A version of this that merely asked "does the issue have any
+ * labels" would miss a partial drop, and one that trusted the request would never fire at all —
+ * which is the state that shipped.
+ */
+async function labelsThatDidNotSurvive(
+  repo: string, token: string, issueNumber: number, sent: string[],
+): Promise<string | null> {
+  const kept = await labelsOnIssue(repo, token, issueNumber);
+  if (kept === null) return null;
+  const present = new Set(kept);
+  const dropped = sent.filter(l => !present.has(l));
+  if (dropped.length === 0) return null;
+  logger.warn('github silently dropped labels off an issue it accepted', {
+    issueNumber, sent, kept, dropped,
+  });
+  return silentlyDroppedNote(sent, kept, dropped);
+}
+
+/**
  * File the issue. The repository is checked FIRST, at the wire, so no amount of code or
  * environment manipulation between a caller's decision and this call can put a development
  * box's fixture report on the Dojo's public tracker.
@@ -196,13 +299,24 @@ function labelsDroppedNote(labels: string[], refusal: GithubRefusal): string {
  * GitHub requires WRITE access to set `labels` on a new issue and requires nothing at all to OPEN
  * one on a public repository. `post.ts` always passes labels and the list is never empty — it
  * always contains `dojo-report` — so the old request was one only a collaborator on the
- * destination repository could make. The owner met it live at 00:24Z on 2026-09-26: connected as
- * `dcliff9`, filing against a repository owned by `d-cornerpin`, 403, nothing posted. Every
- * ordinary user of a shipped Dojo stands in that same relation to `d-cornerpin/dojo`, and a
- * reporting feature only its own maintainers can use is not a reporting feature. So: ask with the
- * labels; if that is refused on a status GitHub uses for a field it will not take, ask ONCE more
- * without them. The labels are triage convenience and the `dojo-sig:` trailer in the BODY already
- * carries the identity triage actually keys on.
+ * destination repository could make. The owner met a 403 live at 00:24Z on 2026-09-26: connected
+ * as `dcliff9`, filing against a repository owned by `d-cornerpin`, nothing posted. So: ask with
+ * the labels; if that is refused on a status GitHub uses for a field it will not take, ask ONCE
+ * more without them. The labels are triage convenience and the `dojo-sig:` trailer in the BODY
+ * already carries the identity triage actually keys on.
+ *
+ * ── THE RETRY'S FATE, ADJUDICATED ON THE MEASUREMENT (T8 LIVE, D-B) ──
+ * It has never fired. GitHub's answer to a non-collaborator's labelled create is 201-and-discard,
+ * not a refusal, so the mechanism this retry was built for does not reach it — and the earlier
+ * claim that it explained the owner's unlabelled issue #3 is WITHDRAWN. IT STAYS ANYWAY, and the
+ * argument is reachability rather than frequency: the 00:24Z 403 above was REAL, its body was
+ * never captured, and Phase B's finding puts its cause at *unknown* — explicitly not "labels".
+ * Deleting the one branch that turns an unexplained 403 on a labelled create into a delivered
+ * report, on the evidence that it has not fired since, would confuse "has not happened lately"
+ * with "cannot happen", and would re-plant a release blocker on a guess. Cost of keeping it: one
+ * extra POST on a create GitHub already refused, bounded at one, four branches of it held by
+ * clauses with dead mutants. What the measurement DOES buy is a DEMOTION — the retry is no longer
+ * the platform's account of a missing label, because it never was; the read-back is.
  *
  * ── A MEASUREMENT, NOT A PREDICTION — WHICH IS WHY IT IS A RETRY AND NOT A PRE-CHECK ──
  * A permission pre-check costs a call on the HAPPY path and asks a different question than the one
@@ -247,9 +361,18 @@ export async function createIssue(
       // The second refusal is the one reported: it is the answer to the SMALLEST request this
       // module can make, so its sentence is the honest account of "this could not be filed".
       if (!bare.ok) return await reportRefusal('file the issue', bare);
+      // NO READ-BACK ON THIS ARM. The request that succeeded sent no labels, so there is nothing
+      // to compare and the retry's own controlled sentence is the whole account.
       return await readCreated(bare, labelsDroppedNote(labels, refusal));
     }
-    return await readCreated(res, null);
+    // GITHUB ACCEPTED IT — WHICH DOES NOT MEAN IT KEPT THE LABELS. See the header: a create from
+    // an account without write access is answered 201 and saved unlabelled, silently. Ask.
+    const accepted = await readCreated(res, null);
+    if (!accepted.ok || labels.length === 0) return accepted;
+    return {
+      ...accepted,
+      labelsDropped: await labelsThatDidNotSurvive(repo, token, accepted.number, labels),
+    };
   } catch (err) {
     return unreachable('file the issue', err);
   }

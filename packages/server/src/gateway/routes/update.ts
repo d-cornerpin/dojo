@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import type { AppEnv } from '../server.js';
 import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
@@ -28,6 +29,14 @@ const logger = createLogger('updater');
 const GITHUB_REPO = 'd-cornerpin/dojo';
 const PLATFORM_DIR = path.join(homeDir(), '.dojo', 'platform');
 const DOJO_DIR = path.join(homeDir(), '.dojo');
+
+// THIS MODULE'S OWN DIRECTORY, DERIVED THE ONLY WAY AN ESM MODULE CAN DERIVE IT.
+// `packages/server` is `"type": "module"`, so there is NO `__dirname` here at runtime — not
+// under `tsx` in development and not under plain `node` over `dist/` either. Reading one is a
+// `ReferenceError`. `getCurrentVersion()` read one for a whole release; the note on that
+// function is the full account. Same spelling as `tools/index-generator.ts` and
+// `healer/healer-agent.ts`, which is this tree's established way of asking.
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 // Per-update backup directories live as siblings of PLATFORM_DIR:
 //   ~/.dojo/platform                  (current install)
@@ -185,31 +194,99 @@ let cleanupState: CleanupState = {
   error: null,
 };
 
-export function getCurrentVersion(): string {
-  // Try reading from the installed platform's package.json first
-  try {
-    const pkgPath = path.join(PLATFORM_DIR, 'package.json');
-    if (fs.existsSync(pkgPath)) {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-      return pkg.version ?? '0.0.0';
-    }
-  } catch { /* fall through */ }
+/**
+ * WHAT THIS PLATFORM ANSWERS WHEN IT CANNOT READ ITS OWN VERSION. NOT `'0.0.0'`.
+ *
+ * That literal is why a real defect cost a release: it is VALID SEMVER, so it walked past all
+ * three honest-absence mechanisms this tree already had — `reportVersion()` answers null only
+ * for a non-version, `issueLabelsFor()` drops the `v…` label only for a non-version, and the
+ * telemetry whitelist's `platform.version` admits only a bounded semver. A plausible-looking
+ * lie defeats every instrument built to catch an honest absence; a sentinel re-arms all three.
+ *
+ * Angle-bracketed to match `telemetry-whitelist.ts`'s `<absent>`/`<unrecognised>`, and free of
+ * a `-` deliberately: `parseVersion` below reads the first `-` as a pre-release suffix, and a
+ * sentinel that parses as "0 with a pre-release" is one pretending to be ordered.
+ */
+export const VERSION_UNREADABLE = '<unreadable>';
 
-  // Fallback: read from source package.json (dev mode)
+/** Reasons already reported. Only the LOG LINE is deduplicated; the answer never is. */
+const versionFailuresReported = new Set<string>();
+
+/** The sentinel, and the reason it is the sentinel, on the record. Never silent. */
+function versionUnreadable(reason: string): string {
+  if (!versionFailuresReported.has(reason)) {
+    versionFailuresReported.add(reason);
+    logger.error('the platform cannot read its own version', { reason, answering: VERSION_UNREADABLE });
+  }
+  return VERSION_UNREADABLE;
+}
+
+/**
+ * THE VERSION THIS BUILD IS. One authority, read by the update check, the rollback ordering
+ * gate, the release-step ledger, the export manifest, the boot episode and — every one of them
+ * published — the report tool's signature, issue header, `dojo-version:` trailer and label.
+ *
+ * ── THE ESM BUG, AND WHY THE SUITE COULD NOT SEE IT (T8 LIVE, D-A) ──
+ * The dev branch walked up from `__dirname` inside `try { … } catch { }`. There is no
+ * `__dirname` in this module — `packages/server` is `"type": "module"`, so the identifier is
+ * undeclared under `tsx` AND under plain `node` over `dist/`, and reading it throws
+ * `ReferenceError`. The empty `catch` ate the throw and the function answered `'0.0.0'`.
+ * It survived a release because VITEST CANNOT REACH IT: vite-node wraps every module in a
+ * function whose parameters include `__dirname`, so the broken line worked in the suite, which
+ * read `3.1.28` while the dev box read `0.0.0` — and nothing compared the two. Live cost,
+ * 2026-09-26: two public issues stamped `v0.0.0`, both report signatures keyed on `0.0.0`.
+ * Full reasoning and the live evidence:
+ * `__tests__/the-version-is-read-the-way-an-esm-module-must-read-it.test.ts`, which drives this
+ * function in a CHILD PROCESS under the repo's real `tsx` with `typeof __dirname` printed
+ * beside the answer as its control, so re-planting the bug is red rather than invisible.
+ *
+ * ── AND NOTHING IS SWALLOWED ──
+ * Every way out that is not a version names its reason and answers the sentinel. A manifest
+ * that exists and will not PARSE stops here rather than falling through to the source walk,
+ * deliberately: on a packaged install a corrupt `~/.dojo/platform/package.json` is the fact
+ * worth reporting, and letting a source tree that happens to be lying around answer for it is
+ * how a broken install reads as a healthy one.
+ */
+export function getCurrentVersion(): string {
+  // ── 1. THE INSTALLED PLATFORM. Present on every packaged install; this is production. ──
+  const installed = path.join(PLATFORM_DIR, 'package.json');
   try {
-    // Walk up from dist/server to find root package.json
-    let dir = __dirname;
+    if (fs.existsSync(installed)) {
+      const pkg = JSON.parse(fs.readFileSync(installed, 'utf-8')) as { version?: unknown };
+      if (typeof pkg.version === 'string' && pkg.version !== '') return pkg.version;
+      return versionUnreadable(`${installed} declares no version`);
+    }
+  } catch (err) {
+    return versionUnreadable(`${installed} could not be read: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // ── 2. DEVELOPMENT. Walk up from THIS MODULE to the repository's own manifest. ──
+  // Six levels reaches the root from both layouts this module ships in:
+  // `src/gateway/routes/` and `dist/gateway/routes/`. The walk does not stop at the first
+  // `package.json` it meets — `packages/server/package.json` is `@dojo/server` at its own
+  // version, which is not the platform's — it stops at the one NAMED `dojo-platform`.
+  try {
+    let dir = MODULE_DIR;
     for (let i = 0; i < 6; i++) {
       const pkgPath = path.join(dir, 'package.json');
       if (fs.existsSync(pkgPath)) {
-        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-        if (pkg.name === 'dojo-platform') return pkg.version ?? '0.0.0';
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) as { name?: unknown; version?: unknown };
+        if (pkg.name === 'dojo-platform') {
+          if (typeof pkg.version === 'string' && pkg.version !== '') return pkg.version;
+          return versionUnreadable(`${pkgPath} declares no version`);
+        }
       }
       dir = path.dirname(dir);
     }
-  } catch { /* fall through */ }
+  } catch (err) {
+    return versionUnreadable(
+      `the source manifest walk from ${MODULE_DIR} failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 
-  return '0.0.0';
+  return versionUnreadable(
+    `no installed platform at ${PLATFORM_DIR} and no dojo-platform package.json within six levels above ${MODULE_DIR}`,
+  );
 }
 
 // Parse "X.Y.Z" or a preflight tag "X.Y.Z-preflight.N" into a comparable shape.

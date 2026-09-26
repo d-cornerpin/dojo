@@ -109,13 +109,26 @@ const refused = (status: number, message: string): Response =>
 function installFetch(): void {
   globalThis.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
     const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
     const headers = (init?.headers ?? {}) as Record<string, string>;
     calls.push({
-      method: (init?.method ?? 'GET').toUpperCase(), url,
+      method, url,
       body: typeof init?.body === 'string' ? init.body : '',
       auth: headers.Authorization ?? headers.authorization ?? null,
     });
     if (url.includes('/search/issues')) return jsonRes(200, { items: [] });
+    // ── THE READ-BACK OF A CREATED ISSUE (added with the silent-drop round, D-B) ──
+    // THIS FILE'S PREMISE IS A REPORTER WHOSE LABELS SURVIVE, so the issue comes back carrying
+    // exactly what the accepted request asked for. Modelling it matters: without this branch the
+    // stub answers a create body to a GET, the read-back finds no `labels` array and correctly
+    // logs that it could not tell — a fact about the STUB, not about GitHub, which would then be
+    // read as noise on the clean arm below. The DROP is another file's property
+    // (`a-label-github-silently-dropped-is-measured-and-said.test.ts`); here it must not happen.
+    if (method === 'GET' && /\/repos\/.+\/issues\/\d+$/.test(url)) {
+      const last = creates().at(-1);
+      const asked = last ? ((JSON.parse(last.body) as { labels?: string[] }).labels ?? []) : [];
+      return jsonRes(200, { number: 7, labels: asked.map((name, id) => ({ id, name })) });
+    }
     const nth = creates().length - 1;
     const answer = createAnswers[Math.min(nth, createAnswers.length - 1)];
     return answer();
