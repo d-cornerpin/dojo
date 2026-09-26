@@ -136,34 +136,14 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
     reason: '3.1.18, UPDATE-INTEGRITY U0: `park_namespace_empty` was demoted from refusal tier to report tier, because it asserted an environmental precondition ("no agent is mid-delegation") that one user\'s box did not meet — and the boot died there, permanently. The applied checksum is the ONE historical version of this file across every published tag (v3.1.17 and v3.1.17-preflight.23..33 all carry blob 862d3ff; measured, not assumed). What changed is one _bridge_assert ROW and its comment: `ok` is now the constant 1 and the count moved into `detail`. _bridge_assert is a TEMP table this file creates and drops, so the PERSISTENT SCHEMA and every row this file writes to a real table are byte-for-byte what a box on the amended file would produce. The only behavioural delta is the one intended: a body with open `park:%` keys no longer aborts. Any box carrying this checksum already crossed the bridge with zero parks, so on that box the two versions are not merely equivalent in schema, they took the identical branch.',
   },
   // ── THE NAMES/PII SCRUB'S THREE, 2026-09-26 — a DIFFERENT and stronger warrant ──────────
-  //
-  // The three above carry real deltas (temp tables, a refusal tier, which historical rows a rescue
-  // carried) and each had to be argued down to "equivalent on this body". These three do not: the
-  // scrub edited ONLY `--` comment lines, so the EXECUTABLE SQL IS BYTE-IDENTICAL. Measured, not
-  // asserted — strip every line whose first non-space characters are `--` from the applied version
-  // and from the file on disk, and hash what is left:
-  //
-  //     135_work_spine.sql                1b5588eb8d40ec32…  ==  1b5588eb8d40ec32…
-  //     159_owed_interrupt_event_kind.sql 4fff758c01f96a6d…  ==  4fff758c01f96a6d…
-  //     171_report_read_indexes.sql       6daf355b40767a03…  ==  6daf355b40767a03…
-  //
-  // and in all three the whole diff is ONE line, and that line starts `--` on both sides. So the
-  // recipe did not change: a box that applied the pre-scrub file produced exactly the schema and
-  // exactly the rows the current file produces. There is no "equivalent on this body" step.
-  //
-  // WHY THE EDIT HAPPENED AT ALL, since "never touch an applied migration" is the ordinary rule:
-  // migrations are RAW-COPIED into the package (`deploy/build-package.sh:57-58`), so a dev-box agent
-  // name inside one genuinely ships to every user's disk, and the owner's rule of 2026-09-26 forbids
-  // that. The same legitimate reason will recur, which is why the freeze is now MECHANISED rather
-  // than declared: `check-migration-freeze.mjs` fails any commit that touches
-  // `db/migrations/**` without adding a matching entry here, because `KNOWN_DIVERGENCES` cannot
-  // pre-approve a future edit — amend again and the triple stops matching and the ERROR returns.
-  //
-  // `appliedChecksum` for 135 is the PRE-SCRUB FILE's checksum rather than a value read from this
-  // box: this box's `_migrations` row carries a NULL checksum (applied before the column existed) so
-  // it reports `unverifiable`, and the entry exists for the boxes that DID record one. 159 and 171
-  // were read from this box and their recorded values ARE the pre-scrub file's checksum, which is
-  // what proves those rows were written by the pre-scrub bytes.
+  // The three above carry real deltas and each had to be argued down to "equivalent on this body".
+  // These three do not: the scrub edited ONLY `--` lines, so the EXECUTABLE SQL IS BYTE-IDENTICAL —
+  // strip every `--` line from both versions and the hashes match (per-entry below, measured). The
+  // recipe did not change, so a box that applied the pre-scrub file produced exactly today's schema
+  // and rows. Migrations are RAW-COPIED into the package (`deploy/build-package.sh:57-58`), so a
+  // dev-box agent name inside one genuinely ships, which is why the edit was legitimate — and why the
+  // freeze is now MECHANISED (`check-migration-freeze.mjs` fails a `db/migrations/**` commit with no
+  // matching entry here) rather than declared: this ledger cannot pre-approve a future edit.
   {
     file: '135_work_spine.sql',
     appliedChecksum: '92e5fc365d32bb5b4b3105aee855c62a6834c7f1a55b1e0c1ed9e02515e9ea73',
