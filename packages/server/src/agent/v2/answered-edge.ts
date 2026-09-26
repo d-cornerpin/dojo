@@ -45,6 +45,10 @@ import { NON_ANSWERING_DISPLAY_KINDS } from '../../work/ask-settlement.js';
 import { taskScope, tsToMs, type TrackerStatus } from '../../work/tracker-view.js';
 import { setTrackerStatus } from '../../work/tracker-store.js';
 import { recordedInstant } from '../../memory/message-stamp.js';
+// TYPE ONLY, and deliberately: the withdrawal predicate below names report STATES, so the
+// compiler must see the same closed set `report/store.ts` declares. No value crosses this
+// import, so the report store's doors — the only writers of that column — stay one-way.
+import type { ReportStatus } from '../../report/store.js';
 
 const logger = createLogger('answered-edge');
 
@@ -87,9 +91,23 @@ const NO_RECEIPT: AnswerReceipt = {
  * The two records are unioned deliberately rather than ranked. The ticket's
  * `result_delivery_id` is the strong form and is what every new row gets; the mig-113 stamp
  * covers rows written before the ticket existed AND any send path whose delivery record is
- * still missing. Erring toward "answered" here can only ever SUPPRESS a second
- * announcement; erring the other way re-tells a person something they already have, which
- * is the defect this machinery exists to prevent (owner transcript 2026-07-23).
+ * still missing. The union stands on the T8c measurement below — nineteen rows a person WAS
+ * answered on — and on nothing else.
+ *
+ * ⚠ WHAT THIS PARAGRAPH USED TO SAY, AND WHO OVERRULED IT. It read: *"Erring toward 'answered'
+ * here can only ever SUPPRESS a second announcement; erring the other way re-tells a person
+ * something they already have, which is the defect this machinery exists to prevent (owner
+ * transcript 2026-07-23)."* The GOVERNING priority is owner ruling **2026-08-05**, thirteen days
+ * later (`DESIGN-2BUGS/DESIGN.md:46`): *"the user asks the agent to do something and it does it.
+ * Period."* — when evidence of an answer is absent OR AMBIGUOUS the system errs toward SERVING
+ * THE ASK AGAIN, and the no-double-answer protection survives strictly SUBORDINATE to it ("it is
+ * politeness, and it may never cost the owner an answer"). `work/ask-settlement.ts:28-36` records
+ * that reversal by name for its own header; this file was not swept with it, and the round-2 red
+ * is what that cost. So the 2026-07-23 direction is not authority for suppressing anything: its
+ * *"can only ever suppress"* premise is false the moment the earlier work has been WITHDRAWN,
+ * which is what `answerStillStands` (below) checks for every read that lists or quotes a settled
+ * ask. This function's own union is unchanged — its direction rests on the measurement, not on
+ * the overruled precedent.
  */
 export function answerReceiptForAsk(messageId: string | null | undefined): AnswerReceipt {
   if (!messageId) return NO_RECEIPT;
@@ -173,6 +191,145 @@ export function substantiveReplySince(agentId: string, sinceMs: number): boolean
   ).get(agentId, sinceMs);
 }
 
+// ════════════════════════════════════════════════════════════════════════════════
+// DOES THIS ANSWER STILL STAND? — ONE PREDICATE, APPLIED BY EVERY READ BELOW THAT
+// LISTS OR QUOTES A SETTLED ASK (DOJO-REPORT round-2 red).
+//
+// THE DEFECT, and it is a MISSING EDGE. The reads below answer "has the person heard from us"
+// off `messages.answer_message_id` alone, and nothing on that path ever looks at the ARTEFACT
+// the answer announced. `dojo_report` is the one user-facing door in this tree that writes no
+// `deliveries` row — 0 rows in the whole dev database, ever — so the stamp and the preview card
+// it claimed have NO EDGE between them and nothing can notice when the card is withdrawn.
+// Cancel the card, re-ask in an ordinary paraphrase, and the model is handed "do NOT re-execute
+// this work" plus a verbatim quote of its own *"sitting on your dashboard as a preview card"*.
+// The reproduction is not repeated here: `__tests__/a-withdrawn-report-is-not-an-answer.test.ts`
+// carries both arms, door by door, in its header.
+//
+// THE LAW THIS SERVES — owner ruling 2026-08-05, the governing priority: when evidence of an
+// answer is absent OR AMBIGUOUS the system errs toward SERVING THE ASK AGAIN, and the
+// no-double-answer protection is subordinate to it. See `answerReceiptForAsk` above for what
+// that ruling overruled in this file. The priority's one declared limit ("it does not extend to
+// answering twice", `overhaul-plans/UX-REPAIR.md:355`) does not reach this case: the row was
+// withdrawn, so re-filing produces ONE card, not two.
+//
+// WHAT IT IS KEYED ON: ROWS, NEVER WORDS. The trigger is not "the answer mentions a report" —
+// a prose classifier here is the exact shape the deliverable-claim floor was removed for TWICE
+// (see this file's header), and there is still no regex in this file and no text read. It is a
+// row-to-row join the engine already records: the `tool_use` row the answering episode wrote →
+// its `report_id` → `dojo_reports.status`. No migration, no new column, no new writer.
+// ════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * The report states in which the artefact — or its delivery — STILL STANDS, so the answer that
+ * announced it is still true and is listed and quoted exactly as before.
+ *
+ * Reasoned per state rather than as a list, because the direction of each is the whole ruling:
+ *   * `awaiting_approval` — the preview card is on the owner's dashboard. The claim is true;
+ *   * `approved`          — decided, waiting on the transport. Still standing;
+ *   * `posted`            — delivered, by `markPosted` OR by `markExported` (the export door
+ *                           writes `status='posted'` with `export_path`, so "exported" is this
+ *                           state and needs no entry of its own);
+ *   * `cancelled`         — WITHDRAWN. Nothing is on the dashboard; the claim is false;
+ *   * `drafting`          — the claim was PREMATURE. This is round 1's false-filed shape: a
+ *                           brief attached, nobody ever asked, and the agent announcing a card
+ *                           that was never submitted. Void.
+ * Anything this release does not recognise falls outside the set and is therefore treated as
+ * withdrawn — the same safe direction `report/store.ts`'s rule 4 takes for an unknown status.
+ */
+const STANDING_REPORT_STATUSES: readonly ReportStatus[] = ['awaiting_approval', 'approved', 'posted'];
+
+/** The one tool whose recorded calls this predicate reads, by the name on the call row. */
+const REPORT_TOOL_NAME = 'dojo_report';
+
+/**
+ * THE CHEAP GATE, and it is also the blast-radius statement: an agent that has never withdrawn
+ * a report cannot have a withdrawn-report answer, so every read below is byte-identical to what
+ * it emitted before this task and pays one indexed lookup to prove it.
+ *
+ * A database with no `dojo_reports` table (a hand-built test fixture) has no reports at all,
+ * which is the same answer — this is not a swallowed failure, it is the truth on that box.
+ */
+function agentHasWithdrawnReport(agentId: string): boolean {
+  const marks = STANDING_REPORT_STATUSES.map(() => '?').join(', ');
+  try {
+    return getDb().prepare(
+      `SELECT 1 AS ok FROM dojo_reports
+        WHERE agent_id = ? AND status NOT IN (${marks}) LIMIT 1`,
+    ).get(agentId, ...STANDING_REPORT_STATUSES) !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Does the answer this stamp points at STILL STAND — i.e. may it be listed and quoted as
+ * something the person already has?
+ *
+ * `false` ONLY when the answering episode filed `dojo_report` rows and every row it bound has
+ * left the standing set. A turn that filed nothing, a turn whose report is still on the card, and
+ * a turn that re-filed after a cancel (one withdrawn row AND one standing row — measured, Arm A)
+ * all still stand: this refuses exactly one shape, an answer whose only artefacts are gone.
+ *
+ * ── WHY THE WINDOW IS THE EPISODE AND NOT "THE ANSWERING TURN" ──
+ * The investigation's shape was `turn_number = <the answer's turn>`, and MEASURED ON THE REPRO
+ * AGENTS IT MISSES THE REPRO: in Arm B the `dojo_report` calls are recorded on turn 1
+ * (`messages.seq` 83301/83303/83305) while the ask's stamp points at turn 2's reply (seq
+ * 83314) — the engine's "you have not spoken yet this turn" hint opens a NEW turn and the
+ * answer lands there. On the kit-driven agent the two coincide (BehaviorBot, six asks, every
+ * one `served_by_turn == answer.turn_number`). Both shapes are real, so the window is the union
+ * of both, and both arms are bounded by the answer row itself: the rows BETWEEN the ask and its
+ * answer (`ix_msg_agent_seq`), plus the answer's own turn (`ix_msg_turn`) for a turn that spoke
+ * first and filed afterwards. It can reach neither before the ask nor past the answer.
+ *
+ * `content LIKE '[{%'` is the same structural prefilter `substantiveReplySince` above already
+ * uses to tell a tool_use envelope from prose — it reads the JSON frame, never the words — and
+ * the `CASE WHEN json_valid` guard is what makes `json_each` unable to throw on a prose row
+ * whatever the planner decides to evaluate first.
+ *
+ * ⚠ THE ANSWER ROW IS RESOLVED HERE, BEHIND THE GATE, AND NOT BY THE CALLERS. Its two columns
+ * could have ridden along on each read's own query — and one of those reads is the one
+ * `conversation-identity-is-the-fk.test.ts` pins BY ITS SQL TEXT (`AND conversation_id = ?`),
+ * which a self-join has to alias away. A clause that then passes on a DIFFERENT read's
+ * unqualified copy of that string is exactly the silent re-pointing this repo's guard-corpus
+ * census exists to stop, so the reads keep their SQL and the span is resolved once, here, only
+ * when the gate is open.
+ */
+export function answerStillStands(
+  agentId: string, askSeq: number, answerMessageId: string | null | undefined,
+): boolean {
+  if (!agentHasWithdrawnReport(agentId)) return true;
+  if (!answerMessageId) return true;
+  let statuses: Array<string | null>;
+  try {
+    const ans = getDb().prepare(
+      'SELECT seq, turn_number AS turn FROM messages WHERE id = ? AND agent_id = ?',
+    ).get(answerMessageId, agentId) as { seq: number; turn: number | null } | undefined;
+    // A stamp whose answer row is gone (a cleared history) has no episode to check, and it
+    // counted as answered before this task — it still does.
+    if (!ans) return true;
+    statuses = (getDb().prepare(
+      `SELECT DISTINCT (SELECT status FROM dojo_reports
+                         WHERE id = json_extract(j.value, '$.input.report_id')
+                           AND agent_id = m.agent_id) AS status
+         FROM messages m,
+              json_each(CASE WHEN json_valid(m.content) THEN m.content ELSE '[]' END) j
+        WHERE m.agent_id = ? AND m.role = 'assistant' AND m.content LIKE '[{%'
+          AND (m.turn_number = ? OR (m.seq >= ? AND m.seq <= ?))
+          AND json_extract(j.value, '$.name') = ?
+          AND json_extract(j.value, '$.input.report_id') IS NOT NULL`,
+    ).all(agentId, ans.turn, askSeq, ans.seq, REPORT_TOOL_NAME) as
+      Array<{ status: string | null }>).map((r) => r.status);
+  } catch {
+    return true;
+  }
+  // A call whose id resolves to NO row binds nothing — there is no artefact to contradict the
+  // claim, so the stamp is left alone. Only a row that EXISTS and has left the standing set is
+  // a withdrawal, and one standing row anywhere in the episode is enough to keep the answer.
+  const bound = statuses.filter((s): s is string => s !== null);
+  if (bound.length === 0) return true;
+  return bound.some((s) => (STANDING_REPORT_STATUSES as readonly string[]).includes(s));
+}
+
 /**
  * The agent's OWN recorded answer in this conversation, most recent first.
  *
@@ -181,16 +338,29 @@ export function substantiveReplySince(agentId: string, sinceMs: number): boolean
  * agent's own words rather than re-serving them itself). It is the answered edge walked in
  * the other direction — from the ask to the reply — and it lives here so the edge has one
  * home rather than a hand-written two-table join inside the loop.
+ *
+ * ⚠ THE FIFTH CARRIER OF THE ROUND-2 RED, and the predicate above is why it is now safe. Its
+ * one consumer is the ghosted-ask ladder's second rung (`steps/post-call-classify/no-reply.ts`,
+ * *"you already answered this in this conversation. Your recorded answer: … Do not re-do the
+ * work and do not stay silent."*), which quotes this string under the same authority framing as
+ * the two prompt-assembly reads. A withdrawn-report answer returns `null` here and the rung
+ * simply does not fire — it does not reach further back for an OLDER answer, because this read
+ * is scoped to the newest settled ask and quoting a different one would put a claim in front of
+ * the model that was never on offer.
  */
 export function recordedAnswerInConversation(agentId: string, conversationId: string): string | null {
   const r = getDb().prepare(
-    `SELECT m2.content AS answer
+    `SELECT m2.content AS answer, m1.seq AS ask_seq, m2.id AS ans_id
        FROM messages m1 JOIN messages m2 ON m2.id = m1.answer_message_id
       WHERE m1.agent_id = ? AND m1.role = 'user' AND m1.conversation_id = ?
         AND m1.answer_message_id IS NOT NULL AND m2.role = 'assistant'
       ORDER BY m1.created_at DESC LIMIT 1`,
-  ).get(agentId, conversationId) as { answer: string } | undefined;
-  return r?.answer ?? null;
+  ).get(agentId, conversationId) as
+    | { answer: string; ask_seq: number; ans_id: string }
+    | undefined;
+  if (!r) return null;
+  if (!answerStillStands(agentId, r.ask_seq, r.ans_id)) return null;
+  return r.answer;
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -231,17 +401,33 @@ export interface AnsweredAsk {
  * deliberately recency-ordered: it is a ledger of this thread's settled questions, not a
  * search. What it CANNOT do — reach across a session or conversation boundary, or say what
  * the answer actually was — is the recall lane's half (`memory/recall-lane.ts`).
+ *
+ * ⚠ AND IT DROPS AN ANSWER WHOSE ARTEFACT IS GONE (`answerStillStands`). This read feeds BOTH
+ * failing carriers of the round-2 red — the `engine.recently-answered` block itself
+ * (`steps/call-llm/pre-call-injections.ts`) and the recall lane's dedup set
+ * (`memory/recall-lane.ts`) — which is exactly why the predicate belongs here and not at
+ * either injection site.
+ *
+ * THE LIST SHORTENS; IT DOES NOT REACH FURTHER BACK. A voided row is filtered out of the rows
+ * this query already returned and nothing older is pulled up to replace it. Refilling would put
+ * a fourth, older ask in front of the model that it was not going to see AND drop that ask's
+ * pair out of the recall lane (which dedups against this set) — two behaviour changes on asks
+ * that have nothing to do with the withdrawn report. Shortening changes neither.
  */
 export function recentlyAnsweredAsks(
   agentId: string, conversationId: string, limit: number,
 ): AnsweredAsk[] {
   const rows = getDb().prepare(
-    `SELECT id, content, created_at FROM messages
+    `SELECT id, content, created_at, seq, answer_message_id FROM messages
       WHERE agent_id = ? AND conversation_id = ? AND role = 'user'
         AND answer_message_id IS NOT NULL
       ORDER BY created_at DESC LIMIT ?`,
-  ).all(agentId, conversationId, limit) as Array<{ id: string; content: string; created_at: number }>;
-  return rows.map((r) => ({ askId: r.id, askContent: r.content, askAt: r.created_at }));
+  ).all(agentId, conversationId, limit) as Array<{
+    id: string; content: string; created_at: number; seq: number; answer_message_id: string;
+  }>;
+  return rows
+    .filter((r) => answerStillStands(agentId, r.seq, r.answer_message_id))
+    .map((r) => ({ askId: r.id, askContent: r.content, askAt: r.created_at }));
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -305,6 +491,12 @@ export interface AnsweredPair {
  * Scope is NOT widened: `agent_id` binds both halves, so one agent's recall can never surface
  * another's answer. The returned map holds ONE object per pair, reachable under BOTH ids —
  * which is what lets a caller dedup a pair whose two halves both hit.
+ *
+ * ⚠ AND A PAIR WHOSE ARTEFACT IS GONE IS NOT RETURNED (`answerStillStands`). This is the read
+ * that carries the VERBATIM ANSWER — the *"Written up and sitting on your dashboard as a
+ * preview card"* quote the round-2 red served for a `cancelled` row — so the predicate is
+ * applied here for the same reason it is applied to `recentlyAnsweredAsks`: one question, one
+ * owner, and every downstream carrier inherits the answer rather than re-deriving it.
  */
 export function answeredPairsForMessages(
   agentId: string, messageIds: readonly string[],
@@ -314,16 +506,18 @@ export function answeredPairsForMessages(
   const marks = messageIds.map(() => '?').join(',');
   const rows = getDb().prepare(
     `SELECT ask.id AS ask_id, ask.content AS ask_content, ask.created_at AS ask_at,
-            ans.id AS ans_id, ans.content AS ans_content, ans.created_at AS ans_at
+            ans.id AS ans_id, ans.content AS ans_content, ans.created_at AS ans_at,
+            ask.seq AS ask_seq
        FROM messages ask JOIN messages ans ON ans.id = ask.answer_message_id
       WHERE ask.agent_id = ? AND ans.agent_id = ?
         AND ask.role = 'user' AND ans.role = 'assistant'
         AND (ask.id IN (${marks}) OR ans.id IN (${marks}))`,
   ).all(agentId, agentId, ...messageIds, ...messageIds) as Array<{
     ask_id: string; ask_content: string; ask_at: number;
-    ans_id: string; ans_content: string; ans_at: number;
+    ans_id: string; ans_content: string; ans_at: number; ask_seq: number;
   }>;
   for (const r of rows) {
+    if (!answerStillStands(agentId, r.ask_seq, r.ans_id)) continue;
     const pair: AnsweredPair = {
       askId: r.ask_id, askContent: r.ask_content, askAt: r.ask_at,
       answerId: r.ans_id, answerContent: r.ans_content, answerAt: r.ans_at,
