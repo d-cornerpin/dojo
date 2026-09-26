@@ -4,8 +4,8 @@
 // `toolDefinitions` is not a list of things the platform can do. It IS the
 // payload: `agent/model.ts` projects `{name, description, input_schema}` out of
 // it straight onto the provider request, and BOTH prompt goldens
-// (`cache-prefix.kevin.txt`, `assembled-context.json`) hash exactly that
-// projection. So this module is governed by the cache-prefix law (roadmap
+// (the PRIMARY-AGENT cache-prefix golden, and `assembled-context.json`) hash
+// exactly that projection. So this module is governed by the cache-prefix law (roadmap
 // non-negotiable #10, OR7, research 25) rather than by ordinary refactoring
 // taste:
 //
