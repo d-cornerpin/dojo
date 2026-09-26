@@ -284,12 +284,28 @@ export function getDashboardHiddenAgentIds(): Set<string> {
     for (const r of rows) {
       if (r.value) ids.add(r.value);
     }
-    // Legacy name match — catches historical agents whose IDs aren't current
-    // but whose projects/tasks may still exist in the DB.
-    const nameRows = db.prepare(
-      `SELECT id FROM agents WHERE name IN ('Dreamer', 'Healer')`,
-    ).all() as Array<{ id: string }>;
-    for (const r of nameRows) ids.add(r.id);
+    // ⚠ THE LEGACY NAME ARM IS GONE (2026-09-26, review H2), AND IT IS A DROP RATHER THAN A RE-KEY.
+    //
+    // It read `SELECT id FROM agents WHERE name IN ('Dreamer', 'Healer')`, described as a catch for
+    // historical agents whose ids are no longer current. What it actually did was hide a USER's own
+    // agent merely CALLED Healer or Dreamer: its tracker tasks vanished from the owner's view, with no
+    // error anywhere. This module is the rename-safe accessor every other caller routes through, so a
+    // display-name comparison here was the worst place in the tree for one.
+    //
+    // I looked for an honest re-key and there is none, which is why this says DROP out loud. There is
+    // no column that records "this row used to be the Healer": the service agents' classification is
+    // `sensei`, and so are the primary's, the Trainer's and the Imaginer's — and the docstring above
+    // says Trainer and Imaginer are deliberately NOT in this set, so classification cannot carry it.
+    // Comparing against `getHealerAgentName()` instead of a literal would satisfy the letter of the
+    // rule and reintroduce the exact defect, because a user's agent called by the configured name
+    // would be hidden again.
+    //
+    // WHAT THE DROP COSTS, measured rather than waved at: a historical service-agent row whose id is
+    // no longer in `config` stops being hidden. On the owner's box the number of rows in that state is
+    // ZERO (`SELECT … WHERE name IN ('Dreamer','Healer') AND id NOT IN (SELECT value FROM config …)`
+    // returns nothing), the path that used to create such rows refuses to now
+    // (`autoCreateAssignTask`), and the dashboard's tracker view already carves out an exception to
+    // SHOW disputed tasks assigned to these agents so the owner can intervene if one ever appears.
   } catch {
     /* DB may not be ready; return empty set so nothing gets hidden */
   }
