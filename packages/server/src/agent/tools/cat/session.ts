@@ -209,6 +209,19 @@ export const sessionHandlers: ToolHandlerMap = {
       // from appearing in the fresh tail, summaries are the ONLY way
       // the agent retains context across a reset.
 
+      // W4 (two-phase-loader audit, 2026-09-26) — THE OTHER DOOR ALREADY DID THIS. The
+      // dashboard's new-session route clears the session-loaded tool docs
+      // (`gateway/routes/chat.ts:418-422`) and this tool did not (grep count 0), so an agent
+      // reset through the TOOL — the Healer's path for a wedged agent, and a self-reset —
+      // kept every tool it had loaded, and its array never returned to the always-loaded
+      // head until the process restarted. `clearSessionLoadedTools` is also what sets the
+      // rehydration flag, so the decision survives the next turn (`tool-docs.ts:279-285`:
+      // "A reset is a DECISION to forget"). Dynamic import keeps this handler off that graph.
+      try {
+        const { clearSessionLoadedTools } = await import('../../../tools/tool-docs.js');
+        clearSessionLoadedTools(resolvedId);
+      } catch { /* ignore */ }
+
       // Set session boundary and clear stale continuity brief + session
       // scratchpad. Scratchpad is session-scoped (its own tool docs promise
       // it "auto-clears on session reset"); leaving it behind bleeds the
