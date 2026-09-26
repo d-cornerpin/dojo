@@ -320,146 +320,25 @@ describe('the flag reaches the model, and the owner\'s own edits still work', ()
       // FIX ROUND (review IMPORTANT B-1): and the same for the OTHER destroy door.
       expect(/confirm:\s*true/.test(src), `${f} deletes without declaring it`).toBe(true);
     }
-    // The remediation purge is a non-agent destroyer too, and says so.
-    const purge = fs.readFileSync(path.join(SRC_ROOT, 'credentials/battery-residue-purge.ts'), 'utf-8');
-    expect(/confirm:\s*true/.test(purge)).toBe(true);
+    // The third writer this census used to check — `credentials/battery-residue-purge.ts`, the T83
+    // remediation — was deleted on 2026-09-26 (see the tombstone at the foot of this file). Two
+    // non-agent writers remain, and both are live doors rather than a one-shot script.
   });
 });
 
-// ── The purge, and what the owner is left looking at ─────────────────────────
-
-describe('the battery residue is purged, and the clobbered slots are not hidden', () => {
-  /**
-   * The live store's own rows, provenance included — because provenance is exactly what the
-   * purge checks. `BEHAVIORBOT_ID` is the agent id the audit read out of
-   * `agent_credentials.created_by_agent_id` on this box; a fixture that seeded some other id
-   * would prove only that the purge refuses to act, which is the NEXT clause's job.
-   */
-  const BEHAVIORBOT_ID = '57b52025-0b0f-40a6-b916-9efdb9a642a3';
-  async function seedResidue(): Promise<void> {
-    const { addCredential } = await import('../store.js');
-    const stamp = (name: string, by: string | null, at: string): void => {
-      mockDb.current!.prepare(
-        'UPDATE agent_credentials SET created_by_agent_id = ?, created_at = ?, updated_at = ? WHERE service_name = ?',
-      ).run(by, at, at, name);
-    };
-    addCredential('acme_t5b', { api_key: 'x' }, 'ACME API key', BEHAVIORBOT_ID);
-    stamp('acme_t5b', BEHAVIORBOT_ID, '2026-08-02 09:35:24');
-    addCredential('t6_probe', { api_key: 'x' }, 'probe', BEHAVIORBOT_ID);
-    stamp('t6_probe', BEHAVIORBOT_ID, '2026-08-03 04:03:49');
-    addCredential('t6b_probe', { api_key: 'x' }, 'T6B probe', null);
-    stamp('t6b_probe', null, '2026-08-03 05:56:23');
-    addCredential('stripe', { api_key: 'sk-live-x' }, 'Stripe, sk-live prefix', BEHAVIORBOT_ID);
-    stamp('stripe', BEHAVIORBOT_ID, '2026-09-21 06:28:51');
-    addCredential('stripe_live', { api_key: 'real' }, 'the owner\'s real Stripe key', OWNER_AGENT);
-    stamp('stripe_live', OWNER_AGENT, '2026-06-21 03:03:03');
-    addCredential('openweather', { api_key: 'sk-live-x' }, 'OpenWeather (rotated)', BEHAVIORBOT_ID);
-    stamp('openweather', BEHAVIORBOT_ID, '2026-08-04 09:25:43');
-    await seedOwnersKey();
-  }
-
-  it('THE RED: the enumerated synthetic rows go, and the owner\'s lookalikes stay', async () => {
-    await seedResidue();
-    const { purgeBatteryResidue } = await import('../battery-residue-purge.js');
-    const report = purgeBatteryResidue();
-
-    const names = (mockDb.current!.prepare('SELECT service_name FROM agent_credentials ORDER BY service_name')
-      .all() as Array<{ service_name: string }>).map((r) => r.service_name);
-    expect(names).not.toContain('acme_t5b');
-    expect(names).not.toContain('t6_probe');
-    expect(names).not.toContain('stripe');
-    expect(names, 'the owner\'s own Stripe row is a DIFFERENT row').toContain('stripe_live');
-    expect(names, 'a clobbered slot that IS the owner\'s is annotated, never deleted').toContain('sendgrid');
-    // FIX ROUND (review CRITICAL B-2): `openweather` is battery litter, not an owner slot —
-    // row a9427f42 was CREATED by BehaviorBot at 2026-08-04 09:25:43, so it goes with the rest
-    // of the litter and its false "your real OpenWeather key" note goes with it.
-    expect(names, 'a row the battery created is not a row the battery overwrote').not.toContain('openweather');
-    expect(report.deleted).toContain('stripe');
-    expect(report.deleted).toContain('openweather');
-    expect(report.annotated).toEqual(['sendgrid']);
-  });
-
-  it('THE RED (review CRITICAL B-2): an annotation is REFUSED when provenance does not match', async () => {
-    const { addCredential } = await import('../store.js');
-    // A `sendgrid` row that is NOT the owner's June one — the battery's, same name. The old
-    // annotate path matched on name alone and would have told the owner their real key was
-    // destroyed, about a row the battery made itself.
-    addCredential('sendgrid', { api_key: 'sk-live-x' }, 'battery sendgrid', BEHAVIORBOT_ID);
-    const { purgeBatteryResidue } = await import('../battery-residue-purge.js');
-    const report = purgeBatteryResidue();
-
-    expect(report.annotated, 'a statement to the owner made on a name match').toEqual([]);
-    expect(report.keptForReview).toContain('sendgrid');
-    const desc = (mockDb.current!.prepare('SELECT description FROM agent_credentials WHERE service_name = ?')
-      .get('sendgrid') as { description: string }).description;
-    expect(desc).not.toMatch(/NEEDS RE-ENTRY/i);
-  });
-
-  it('the annotation is what the owner will actually read, on the surface they read it on', async () => {
-    await seedResidue();
-    const { purgeBatteryResidue } = await import('../battery-residue-purge.js');
-    purgeBatteryResidue();
-
-    const desc = (mockDb.current!.prepare('SELECT description FROM agent_credentials WHERE service_name = ?')
-      .get('sendgrid') as { description: string }).description;
-    expect(desc).toMatch(/NEEDS RE-ENTRY/i);
-    expect(desc, 'the owner has to be told what happened').toMatch(/overwrote/i);
-    expect(desc, 'and that the old value is not coming back').toMatch(/unrecoverable/i);
-    // The original text is kept, not replaced: it is the only surviving description
-    // of what the slot was FOR.
-    expect(desc).toContain('SendGrid API key provided by David on 2026-06-21');
-
-    const { listCredentials } = await import('../store.js');
-    const listed = listCredentials().find((r) => r.serviceName === 'sendgrid');
-    expect(listed?.description, 'the dashboard Credentials tab and credential_list read this field')
-      .toMatch(/NEEDS RE-ENTRY/i);
-  });
-
-  it('an annotation never touches the stored value', async () => {
-    await seedResidue();
-    const before = storedValue();
-    const { purgeBatteryResidue } = await import('../battery-residue-purge.js');
-    purgeBatteryResidue();
-    expect(storedValue()).toBe(before);
-  });
-
-  it('WHEN IN DOUBT, KEEP: a row whose provenance does not match the audit is reported, not deleted', async () => {
-    const { addCredential } = await import('../store.js');
-    // Same NAME as an enumerated residue row, but the owner made it — not the battery.
-    addCredential('acme_t5b', { api_key: 'x' }, 'the owner\'s own', OWNER_AGENT);
-    const { purgeBatteryResidue } = await import('../battery-residue-purge.js');
-    const report = purgeBatteryResidue();
-
-    const names = (mockDb.current!.prepare('SELECT service_name FROM agent_credentials').all() as Array<{ service_name: string }>)
-      .map((r) => r.service_name);
-    expect(names, 'a purge that deletes on name alone is a purge that eats real rows').toContain('acme_t5b');
-    expect(report.keptForReview).toContain('acme_t5b');
-  });
-
-  it('it is idempotent — a second run deletes nothing and re-annotates nothing', async () => {
-    await seedResidue();
-    const { purgeBatteryResidue } = await import('../battery-residue-purge.js');
-    purgeBatteryResidue();
-    const descAfterOne = (mockDb.current!.prepare('SELECT description FROM agent_credentials WHERE service_name = ?')
-      .get('sendgrid') as { description: string }).description;
-
-    const second = purgeBatteryResidue();
-    expect(second.deleted).toEqual([]);
-    expect(second.annotated).toEqual([]);
-    const descAfterTwo = (mockDb.current!.prepare('SELECT description FROM agent_credentials WHERE service_name = ?')
-      .get('sendgrid') as { description: string }).description;
-    expect(descAfterTwo).toBe(descAfterOne);
-  });
-
-  it('dryRun reports exactly what a real run would do, and changes nothing', async () => {
-    await seedResidue();
-    const { purgeBatteryResidue } = await import('../battery-residue-purge.js');
-    const planned = purgeBatteryResidue({ dryRun: true });
-    const namesAfter = (mockDb.current!.prepare('SELECT service_name FROM agent_credentials').all() as Array<{ service_name: string }>)
-      .map((r) => r.service_name);
-    expect(namesAfter).toContain('acme_t5b');
-    expect(planned.deleted).toContain('acme_t5b');
-    const real = purgeBatteryResidue();
-    expect(real.deleted.sort()).toEqual(planned.deleted.sort());
-  });
-});
+// ── THE PURGE BLOCK IS GONE, WITH THE MODULE IT TESTED ──────────────────────
+//
+// `credentials/battery-residue-purge.ts` was DELETED on 2026-09-26 under the owner's rule that no
+// agent names, people's names or identifiable information may appear in anything that ships. It was
+// the one hit in the v3.2.0 audit that carried the owner's real credential inventory as STRING
+// LITERALS IN A LIVE DATA STRUCTURE — his actual service-account names, the date one was
+// provisioned, and a dev-box agent id five times — and comments ship (`removeComments` is unset), so
+// those bytes reached every user's disk in `dist/credentials/battery-residue-purge.js`.
+//
+// It could go outright rather than be scrubbed because it was DEAD: the repo's own reachability
+// walk (`deploy/checks/check-wiring.mjs`) classified it "reached only through a test", and this
+// block was that test. A one-shot remediation with zero production callers belongs in `deploy/` or
+// the kit, never in `src/`, and the rows it was written to delete were the dev box's own.
+//
+// The clauses that guarded the LIVE doors are all above and untouched: the overwrite refusal, the
+// delete confirmation, the audit rows, and the census of the two non-agent writers.

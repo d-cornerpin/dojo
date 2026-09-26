@@ -127,12 +127,14 @@ describe('PHASE-5 T6C (2): a platform secret does not move into the agent-reacha
       'credentials/tools.ts': 'the agent-facing tools themselves — this IS the agent surface',
       'gateway/routes/credentials.ts': 'the dashboard panel the owner manages his own credentials from',
       'screen-share/manager.ts': 'the saved VNC password, stored on the user\'s explicit opt-in',
-      // T83. It holds no platform secret and reads no VALUE — it deletes six enumerated
-      // battery-minted rows by name (each checked against the provenance the audit verified)
-      // and rewrites two DESCRIPTIONS so the owner learns their SendGrid and OpenWeather
-      // slots were clobbered and must be re-entered. The answer to "may every agent read
-      // this?" is moot: there is nothing here to read.
-      'credentials/battery-residue-purge.ts': 'the T83 remediation — deletes battery residue and annotates the two slots it overwrote',
+      // ── TOMBSTONE, 2026-09-26 ──────────────────────────────────────────────────
+      // `credentials/battery-residue-purge.ts` was the fourth importer and is DELETED. Under the
+      // owner's rule that nothing shipping may carry agent names, people's names or identifiable
+      // information, it was the worst hit in the v3.2.0 audit: it held his real credential-account
+      // names and a dev-box agent id as string literals in a live data structure, and comments ship.
+      // It was dead (reached only by its own test), so it went rather than being scrubbed. A
+      // one-shot remediation belongs in `deploy/` or the kit, not in `src/`. Do not re-add it here
+      // without the data half rewritten.
     };
 
     // A file imports the store either by its full path from elsewhere, or as
