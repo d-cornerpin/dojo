@@ -11,6 +11,10 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST_DIR="$SCRIPT_DIR/dist"
 OUTPUT_NAME="dojo-platform"
 
+# Same convention as deploy/release.sh: a build that cannot ship a correct package says which
+# file is wrong and stops, rather than producing one that is quietly missing something.
+fail() { echo "" >&2; echo "❌ $*" >&2; exit 1; }
+
 echo "🥋 Building DOJO Platform package..."
 echo ""
 
@@ -52,6 +56,59 @@ cp "$PROJECT_ROOT/packages/server/package.json" "$DEST/platform/packages/server/
 # Copy migrations to where the compiled code expects them (dist/db/migrations)
 mkdir -p "$DEST/platform/packages/server/dist/db"
 cp -r "$PROJECT_ROOT/packages/server/src/db/migrations" "$DEST/platform/packages/server/dist/db/migrations"
+# ── HAND-WRITTEN TOOL MANUALS, TO WHERE THE COMPILED GENERATOR LOOKS FOR THEM ──
+# `tools/index-generator.ts` resolves overrides from its OWN module directory —
+# `path.resolve(__dirname, './docs')` — which is `src/tools/docs` under tsx in development and
+# `dist/tools/docs` in a packaged install (`tsconfig`: rootDir `src`, outDir `dist`). `tsc`
+# does not copy `.md` files and this script never did either, so on every installed box
+# `fs.existsSync` was false and every tool with a hand-written manual silently fell back to the
+# GENERATED doc — `load_tool_docs` served the short version of `dojo_report`, `image_create` and
+# `image_generate_internal` to every agent, on every box, and nothing said so. The runtime
+# CANNOT tell "no override was ever written" from "the override was lost in packaging", which is
+# why the fix is here rather than there. Identical problem, landing spot and reason as the
+# migrations copy directly above.
+DOCS_SRC="$PROJECT_ROOT/packages/server/src/tools/docs"
+# NON-VACUITY, BEFORE THE COPY. An empty or moved source directory must not reach the check
+# below and pass it by having nothing to check — and it must say so in this script's own words
+# rather than as `cp`'s "No such file or directory", which is what it did when measured.
+[[ -n "$(find "$DOCS_SRC" -maxdepth 1 -name '*.md' -print -quit 2>/dev/null)" ]] \
+    || fail "no hand-written tool manuals in $DOCS_SRC — either that directory moved (and this copy now ships nothing) or the packaging check below would prove nothing. Nothing was shipped."
+mkdir -p "$DEST/platform/packages/server/dist/tools/docs"
+cp "$DOCS_SRC/"*.md "$DEST/platform/packages/server/dist/tools/docs/"
+# ...AND THE BUILD REFUSES TO PRODUCE A PACKAGE THAT IS MISSING ONE — ASKING THE ARTIFACT, NOT
+# THIS SCRIPT. The check below does NOT reuse the destination the copy above wrote to: it takes
+# the COMPILED generator out of the package and re-runs that module's own two lines
+# (`path.dirname(fileURLToPath(import.meta.url))` then `path.resolve(__dirname, './docs')`) with
+# `import.meta.url` standing in for the packaged file's own URL, then requires every `.md` in the
+# source directory to be present at the directory that computation produces, by NAME and with a
+# non-zero count. MEASURED, NOT ASSUMED: written first as a check against the same variable the
+# copy used, it PASSED a mutant that copied the manuals into `dist/docs` — shipped somewhere,
+# invisible to the runtime — which is the failure `deploy/checks/check-shipped-souls.mjs` exists
+# to state: ask where the code looks, never where the script meant to put it.
+node --input-type=module -e '
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+const [gen, src] = process.argv.slice(1);
+const die = (m) => { console.error(m); process.exit(1); };
+if (!fs.existsSync(gen)) die(`the package carries no compiled tool-doc generator at ${gen}`);
+// SELF-CHECK: this recomputation mirrors source that can change. If the generator stops
+// resolving its overrides from its own directory, the mirror is wrong and must be rewritten
+// rather than silently measuring the wrong place.
+// (`\x27` is the single quote: this whole script is single-quoted for the shell, so it cannot
+// be written literally. Spelled as `.` first, which MATCHED `\x27../docs\x27` — a generator
+// resolving somewhere else entirely — so the wildcard was the wrong tool here too.)
+if (!/TOOL_DOCS_SOURCE_DIR = path\.resolve\(__dirname, ["\x27]\.\/docs["\x27]\)/.test(fs.readFileSync(gen, "utf8"))) {
+  die(`${gen} no longer resolves its overrides as path.resolve(__dirname, "./docs") — this packaging check mirrors that line and must be updated with it`);
+}
+const dir = path.resolve(path.dirname(fileURLToPath(pathToFileURL(gen).href)), "./docs");
+const want = fs.readdirSync(src).filter((f) => f.endsWith(".md")).sort();
+if (want.length === 0) die(`no hand-written tool manuals in ${src} — this check would pass by having nothing to check`);
+const missing = want.filter((f) => !fs.existsSync(path.join(dir, f)));
+if (missing.length > 0) die(`${missing.join(", ")} did not reach ${dir}, which is where the compiled generator looks`);
+console.log(`   ✓ ${want.length} tool manual(s) present where the compiled generator resolves them: ${want.join(" ")}`);
+' "$DEST/platform/packages/server/dist/tools/index-generator.js" "$DOCS_SRC" \
+    || fail "the hand-written tool manuals did not reach the place the packaged generator reads them from (detail above). Every installed box would silently serve the generated doc instead. Nothing was shipped."
 # Copy startup scripts (ensure-system-deps.sh runs on every server boot
 # from the platform tree, so it ships with every update).
 mkdir -p "$DEST/platform/packages/server/scripts"
