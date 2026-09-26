@@ -32,7 +32,10 @@
 //     window (20 → 66 entries), the gather result crossed the tool's 12,000-token
 //     cap, and the engine — which truncates from the END — destroyed the hand-off
 //     instruction that drives the rest of the feature. Rows say HOW MANY;
-//     `BUNDLE_SECTION_CHARS` says HOW BIG, which is the unit the token cap is in.
+//     CHARACTERS are the unit a token cap is in, and they live next door in
+//     `bounds.ts` — split out when the round-1 review's F1/F2 grew them past the
+//     size this file may be. The seam is the question each answers: HOW FAR BACK
+//     AND HOW MANY ROWS here, HOW BIG THE DOCUMENT MAY BE there.
 //
 // `REPORT_BUNDLE_MAX_BYTES` is deliberately NOT here — it is the byte cap on
 // what reaches disk and it belongs with the writer that enforces it
@@ -52,101 +55,6 @@ export const REPORT_WINDOW_MAX_MINUTES = 120;
 export const COLLECTOR_CAPS = {
   turns: 20, calls: 60, toolCalls: 200, work: 25, toolFailures: 25,
 } as const;
-
-/**
- * PER-SECTION SIZE BUDGETS FOR THE BUNDLE THE AGENT READS, IN RENDERED CHARACTERS.
- * Same discipline as `COLLECTOR_CAPS`, one unit over: rows above, characters here,
- * because the thing that broke is a TOKEN cap and a row is not a number of tokens.
- *
- * ── THE ARITHMETIC, AND IT IS THE WHOLE POINT OF THE NUMBERS ──
- * `dojo_report` declares `maxResultTokens: 12000` (`agent/tools/definitions.ts`), i.e. a
- * 48,000-character budget, and the engine truncates from the END. A MAXIMAL gather result
- * must therefore fit with room to spare, and it does:
- *
- *     sections   6,000 + 5,600 + 5,000 + 4,000 + 3,500 + 1,000 + 1,000  =  26,100 chars
- *     `window` object + the outer braces and key names                  ≈     400 chars
- *     the `bounds` notes, worst case (one per section, ~120 chars each)  ≈   1,000 chars
- *     the head — id, the not-yet-filed truth, the draft instruction      ≈   1,800 chars
- *     ------------------------------------------------------------------------------
- *     worst case                                    ≈ 29,300 chars ≈ 7,325 tokens
- *
- * That is 61% of the 12,000-token cap and inside the 9,000-token target this fix was given,
- * so the engine's truncation is never reached by the shape of the evidence alone. Measured
- * rather than left as arithmetic: a body seeded past EVERY row cap with deliberately fat rows
- * (282,660 characters of raw material, 5.9× the engine's whole char budget) renders a result
- * of 27,495 characters — 6,874 tokens — and `the-handoff-cannot-be-truncated-away.test.ts`
- * fails if that ever crosses the target.
- *
- * The budgets are in RENDERED characters — what the item costs inside
- * `JSON.stringify(bundle, null, 2)`, measured by `renderedCost` below, not the compact form —
- * because the pretty printer inflates a row by 1.24×–2.11× (measured over the seven real row
- * shapes) and a bound that ignores that is a bound that does not hold. `logs` gets the largest
- * share because it is the section that ran away, and it is still ~14 real entries deep;
- * `turns` gets enough for all twenty of them, because twenty turns is the window this tool
- * tells the agent it is looking at and the spine of any story it can write.
- */
-export const BUNDLE_SECTION_CHARS = {
-  logs: 6_000, turns: 5_600, auditLog: 5_000, toolCalls: 4_000, calls: 3_500,
-  work: 1_000, toolFailures: 1_000,
-} as const;
-
-/** The ceiling the arithmetic above is derived against — the ritual's target, not the cap. */
-export const REPORT_RESULT_TARGET_TOKENS = 9_000;
-
-/**
- * WHAT ONE ITEM COSTS IN THE RENDERED BUNDLE. Its own pretty form, plus the four spaces
- * every one of its lines gains at depth two (`{ logs: [ <item> ] }`), plus its comma and
- * newline. Exact rather than a fudge factor: a single item with hundreds of short fields
- * inflates by lines, not by bytes, and a ratio-based estimate is wrong exactly there.
- */
-function renderedCost(item: unknown): number {
-  const s = JSON.stringify(item, null, 2) ?? 'null';
-  return s.length + 4 * s.split('\n').length + 2;
-}
-
-/** One section after bounding: what survived, and the note that says what did not. */
-export interface BoundedSections {
-  sections: Record<string, unknown[]>;
-  /** One honest line per section that dropped anything. Empty when nothing was dropped. */
-  notes: string[];
-}
-
-/**
- * NEWEST-FIRST, BUDGET-BOUNDED, AND THE DROP IS SAID OUT LOUD.
- *
- * Every section arrives newest-first (each reader's `ORDER BY … DESC`, and `gather.ts`
- * reverses the one list that does not), so what survives is a PREFIX and "showing newest
- * K of N" is literally true. A section stops at the first item that does not fit rather
- * than skipping it and taking a smaller one behind it — a hole in the middle of a
- * newest-first list would make the note a lie, and an honest note is the whole reason a
- * bound is allowed to drop evidence at all.
- *
- * A section with no budget of its own is NOT silently unbounded: it would be a new
- * collector nobody sized, so it is passed through and `gather.ts`'s own test census is
- * what refuses one. (There is no such section today.)
- */
-export function boundBundleSections(raw: Record<string, readonly unknown[]>): BoundedSections {
-  const sections: Record<string, unknown[]> = {};
-  const notes: string[] = [];
-  for (const [name, items] of Object.entries(raw)) {
-    const budget = (BUNDLE_SECTION_CHARS as Record<string, number | undefined>)[name];
-    if (budget === undefined) { sections[name] = [...items]; continue; }
-    const kept: unknown[] = [];
-    let used = 0;
-    for (const item of items) {
-      const cost = renderedCost(item);
-      if (used + cost > budget) break;
-      kept.push(item);
-      used += cost;
-    }
-    sections[name] = kept;
-    if (kept.length < items.length) {
-      notes.push(`${name}: showing newest ${kept.length} of ${items.length} in this window — `
-        + 'older entries were dropped to keep this evidence under its size budget.');
-    }
-  }
-  return { sections, notes };
-}
 
 /** What the agent asked for. Both absent means "the standing window", which is the cap. */
 export interface WindowRequest { turns?: number | null; minutes?: number | null }

@@ -30,7 +30,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { redactHandedCredentials } from '../credentials/secret-values.js';
-import { readLogEntries } from '../logger.js';
 import { recentTail } from '../memory/message-store.js';
 import { getCurrentVersion } from '../gateway/routes/update.js';
 import { shapeOfArgs, toolCallsFromTail } from './arg-shape.js';
@@ -38,9 +37,9 @@ import {
   readAudit, readCalls, readFailures, readSettings, readTurns, readWork,
   num, numOrNull, sqlStamp, str, type Row,
 } from './collect.js';
-import {
-  COLLECTOR_CAPS, boundBundleSections, resolveWindow, type GatherWindow, type WindowRequest,
-} from './window.js';
+import { boundBundleSections } from './bounds.js';
+import { agentLogSlice } from './log-slice.js';
+import { COLLECTOR_CAPS, resolveWindow, type GatherWindow, type WindowRequest } from './window.js';
 import type { DominantFailure } from './signature.js';
 import type { CallFacts, TelemetrySources, ToolCallFacts, TurnFacts, WorkFacts } from './telemetry-build.js';
 
@@ -98,33 +97,6 @@ function dominantOf(
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([exitReason, count]) => ({ exitReason, count }));
   return { toolFailures, turnExits };
-}
-
-/** This tool's own name, as the log rows spell it; a clause asks the live registry whether a
- *  tool of this name still exists, so a rename cannot leave this silently matching nothing. */
-const SELF_TOOL = 'dojo_report';
-
-/**
- * A REPORT DOES NOT RE-SWALLOW THE LAST REPORT (ritual v3.2.0 round 1). `tools/index.ts` logs
- * `Executing tool` with every call's ARGUMENTS verbatim, so a `draft` call's five-part write-up
- * lands in the engine log — 3,596 characters, measured on the dev box — and the NEXT gather
- * reads it back as evidence. Each report inflated the next (20 → 66 log entries, 9,333 → 35,994
- * chars over three attempts), which is why the round's retry lane could not have cleared it.
- *
- * The discriminator is STRUCTURAL — the row's own `meta.tool` field naming this tool — never a
- * search for prose. The row SURVIVES, because "this tool ran, at this time" is real evidence
- * about a report-tool failure; only the payload is replaced by the reference. Its type comes
- * from the READER, not from `@dojo/shared`: this file's import list is pinned by
- * `the-report-tool-reaches-no-new-door.test.ts`, and a size fix must not widen it.
- */
-type LogRow = ReturnType<typeof readLogEntries>[number];
-function withoutOwnPayload(e: LogRow): LogRow {
-  if (e.meta?.tool !== SELF_TOOL) return e;
-  return {
-    ...e,
-    meta: { tool: SELF_TOOL, omitted: 'this tool\'s own arguments — a report refers to an '
-      + 'earlier report by its id and never re-swallows its text' },
-  };
 }
 
 /** THE SCRUB. One pass over the whole serialized document, exactly as `writeBundle` does. */
@@ -203,12 +175,9 @@ export function gatherEvidence(agentId: string, req: WindowRequest, now: Date = 
     ageMinutes: Math.max(0, Math.round((now.getTime() - num(r.opened_at)) / 60_000)),
   }));
 
-  // `readLogEntries` has neither an agent filter nor a window (measured); filtering
-  // its OUTPUT is not a new collector, which is why this is a `.filter` and not SQL.
-  // Newest-first, as the reader returns it — which is the order the bound keeps.
-  const logs = readLogEntries({ limit: COLLECTOR_CAPS.toolCalls })
-    .filter(e => e.agentId === agentId && e.timestamp >= window.sinceIso)
-    .map(withoutOwnPayload);
+  // The seventh collector, next door: this agent's log lines in the window, newest first, with
+  // no earlier report's payload read back in (`log-slice.ts` argues why that rule exists).
+  const logs = agentLogSlice(agentId, window.sinceIso, COLLECTOR_CAPS.toolCalls);
 
   // ── THE BUNDLE IS BOUNDED IN CHARACTERS, SECTION BY SECTION, AND SAYS WHAT IT DROPPED ──
   // Why, and the arithmetic, are with the budgets in `window.ts`. Here: `bounds` goes FIRST in

@@ -48,7 +48,9 @@ import { buildTelemetry } from '../../../report/telemetry-build.js';
 import { writeBundle } from '../../../report/bundle.js';
 import { attachDraft, createReport, getReport, submitForApproval, type ReportBrief } from '../../../report/store.js';
 import { deriveReportSignature, isFailureLane, FAILURE_LANES } from '../../../report/signature.js';
-import type { GatherWindow, WindowRequest } from '../../../report/window.js';
+import { ATTACHMENT_ECHO_CHARS, boundDocumentArrays } from '../../../report/bounds.js';
+import { draftHead, gatherHead, renderBrief } from './report-prose.js';
+import type { WindowRequest } from '../../../report/window.js';
 
 /**
  * THE AGENT'S ASK, REMEMBERED PER REPORT — the whole of the cross-phase state, and it is
@@ -76,52 +78,6 @@ const bad = (content: string): { content: string; isError: boolean } => ({ conte
 
 const text = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 const num = (v: unknown): number | null => (typeof v === 'number' ? v : null);
-
-/** The sentence a truncated window gets. Plain words, never a silent trim. */
-function windowNote(w: { turns: number; minutes: number; truncated: boolean; askedFor: string }): string {
-  return w.truncated
-    ? `You asked for ${w.askedFor}. The window is capped, so this is the last ${w.turns} turns `
-      + `within the last ${w.minutes} minutes — the cap is deliberate and cannot be raised from a tool call.`
-    : `Window: the last ${w.turns} turns within the last ${w.minutes} minutes.`;
-}
-
-/**
- * THE HEAD OF THE GATHER RESULT — THE TRUTH AND THE INSTRUCTION, ABOVE ANY EVIDENCE.
- *
- * Ritual v3.2.0 round 1: the hand-off was the LAST thing in this result, behind the evidence,
- * and `maxResultTokens: 12000` truncates from the END. On two of three attempts the engine ate
- * it — the row stranded in `drafting`, no card ever existed, and the model told the owner
- * *"already filed — the draft is sitting on your dashboard waiting for you to hit Post"*. That
- * is what makes the tail unusable for an instruction: a severed result does not read as broken,
- * it reads as FINISHED, so the model invents the only story that fits. Id, state of the world,
- * and the whole next call go first, where truncation cannot reach them.
- */
-function gatherHead(reportId: string, w: GatherWindow): string[] {
-  return [
-    `Report ${reportId} opened. NOTHING IS FILED AND NOTHING IS ON THE USER'S DASHBOARD YET: the draft is not `
-    + 'written, there is no preview card, and the user cannot see any of this until you finish the two calls below. '
-    + 'Do not tell them it is filed.',
-    '',
-    `NEXT — call dojo_report with phase="draft", report_id="${reportId}", a lane from [${FAILURE_LANES.join(', ')}], `
-    + 'and your five-part write-up (title, what_happened, what_should_have_happened, why_it_went_wrong, fix_ideas). '
-    + 'Describe the SHAPE of the failure — no quotes from the conversation, no file paths, no names, no file '
-    + 'contents. Then phase="submit" with the same report_id — that is what puts the card in front of them.',
-    '',
-    windowNote(w),
-    'The evidence below is size-bounded; its own `bounds` section names anything dropped. A shortened or '
-    + 'engine-truncated bundle does NOT block you and is not a reason to gather again — you already have what '
-    + 'the brief needs.',
-  ];
-}
-
-/** The five fields, rendered the way the owner will read them on the card. */
-function renderBrief(b: ReportBrief): string {
-  return [
-    `TITLE: ${b.title}`, '', `WHAT HAPPENED\n${b.whatHappened}`, '',
-    `WHAT SHOULD HAVE HAPPENED\n${b.whatShouldHaveHappened}`, '',
-    `WHY IT WENT WRONG\n${b.whyItWentWrong}`, '', `FIX IDEAS\n${b.fixIdeas}`,
-  ].join('\n');
-}
 
 /** The five brief fields on the wire. Named once; the schema and this list are the pair. */
 const BRIEF_ARGS = [
@@ -208,18 +164,22 @@ export const reportHandlers: ToolHandlerMap = {
         return bad(`Report ${reportId} is ${existing.status}, not drafting — a brief may only be attached `
           + 'before anyone has seen it. Open a new report with phase="gather".');
       }
-      // THE SAME ORDERING LAW AS `gather`, ONE PHASE LATER. The attachment rendered below grows with the
-      // window (up to 200 tool-call facts), so the hand-off cannot sit behind it: a draft whose `submit` line
-      // was truncated away is a brief nobody ever sees, on a row that reads `drafting` for ever.
+      // THE SAME TWO LAWS AS `gather`, ONE PHASE LATER (round-1 review F2). ORDER: the hand-off
+      // is at the head, because a draft whose `submit` line was truncated away is a brief nobody
+      // ever sees on a row that reads `drafting` for ever. SIZE: the echo below is bounded, because
+      // it is the attachment and the attachment grows with the window — measured at 88,098 chars ≈
+      // 22,025 tokens on a maximal one, 1.8× over the cap. ⚠ THE ECHO IS A COPY AND ONLY THE COPY
+      // IS TRIMMED: `attachDraft` above already stored `telemetry` whole, so nothing published is
+      // bounded here, and `draftHead` says exactly that in words the model can act on.
+      const echo = boundDocumentArrays(telemetry, ATTACHMENT_ECHO_CHARS);
       return ok([
-        `Draft saved on ${reportId} (lane ${lane}, signature ${signature}). STILL NOT FILED — no card exists and the user cannot see this yet.`,
-        `NEXT — call dojo_report with phase="submit", report_id="${reportId}": that call, and only that call, puts the preview card in front of the user.`,
+        ...draftHead(reportId, lane, signature),
         '',
         'THIS IS THE EXACT TEXT THE USER WILL SEE. Re-read it now: if it quotes the conversation,',
         'names anyone, or carries a file path or file contents, call draft again with it fixed.',
         '', renderBrief(brief), '',
-        'MACHINE-BUILT ATTACHMENT (you did not write this and cannot add to it):',
-        JSON.stringify(telemetry, null, 2),
+        'MACHINE-BUILT ATTACHMENT (you did not write this and cannot add to it). Trimmed copy for reading:',
+        JSON.stringify({ echoBounds: echo.notes, ...echo.doc }, null, 2),
       ].join('\n'));
     }
 
