@@ -1299,6 +1299,15 @@ describe('§12 an escape cannot forge a closer', () => {
     "sudo perl -e 'qx{echo {}; rm -rf \\x7d /}'", // composition: an encoded closer inside a nest
     "sudo ruby -e '%x{a{b}; rm -rf \\} ~}'",
   ];
+  /**
+   * ⚠ AN ESCAPED CLOSER WITH NO REAL CLOSER AFTER IT — the rows that prove the fail-closed question is
+   * asked of the STRUCTURE-HONEST reading. Unescaped, `qx{ls \}` looks closed: body `ls `, nothing
+   * floorable, ALLOWED. Masked, it is an unterminated quote operator and refuses. A mutant taking
+   * `unclosed` from the unescaped reading survived every clause until these existed.
+   */
+  const FORGED_UNTERMINATED: readonly string[] = [
+    "sudo perl -e 'qx{ls \\}'", "sudo ruby -e '%x(id \\)'",
+  ];
 
   it('every forged-closer spelling is refused, EVERY policy, BOTH roles', () => {
     for (const who of [PRIMARY, WORKER]) {
@@ -1313,6 +1322,19 @@ describe('§12 an escape cannot forge a closer', () => {
     for (const line of FORGED) {
       expect(String(shell(line, PRIMARY).rule), line).toMatch(/^global-exec-deny/);
     }
+  });
+
+  it('⚠ THE FAIL-CLOSED QUESTION IS ASKED OF THE STRUCTURE-HONEST READING', () => {
+    for (const who of [PRIMARY, WORKER]) {
+      underEach((p) => {
+        for (const line of FORGED_UNTERMINATED) {
+          expect(shellAllows(line, who), `${p}/${who}: ${line}`).toBe(false);
+        }
+      });
+    }
+    policyRow.current = 'free';
+    // …and it refuses as an unreadable line, since there is no floor pattern in these to name
+    expect(String(shell(FORGED_UNTERMINATED[0], PRIMARY).rule)).toBe('sudo-unparseable-options');
   });
 
   it('the body is read WHOLE — the escape is not a delimiter', () => {
