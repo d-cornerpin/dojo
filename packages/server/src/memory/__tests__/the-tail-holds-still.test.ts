@@ -484,6 +484,11 @@ describe('T69b §4 — the tail is ordered most-stable-first and the deliberate 
     // answered turn; the recall lane moves on every ask. That is the required order, and both
     // of the first two were on the wrong side of it at `2557747`.
     expect(at('engine.open-commitments')).toBeLessThan(at('engine.recently-answered'));
+    // identity-fix review F1: the other-threads lane's slot is pinned pairwise like its
+    // eight neighbours — held only by the last-four clause before this line, so a move to
+    // the FRONT of the stable group rode green while re-billing every block behind it.
+    expect(at('msg.integration-status')).toBeLessThan(at('engine.other-threads'));
+    expect(at('engine.other-threads')).toBeLessThan(at('engine.recently-answered'));
     expect(at('engine.recently-answered')).toBeLessThan(at('msg.relevant-memory'));
     // The send-keyed blocks are stabler than all three and stay in front of them.
     expect(at('engine.recent-outbound')).toBeLessThan(at('engine.open-commitments'));
