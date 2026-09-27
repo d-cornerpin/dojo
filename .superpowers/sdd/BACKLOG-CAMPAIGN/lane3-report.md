@@ -132,11 +132,29 @@ argued rather than discovered). Mutation: short-circuit the branch → 2 red; re
 
 ## Verification (round 2, in the worktree)
 
-`npm run typecheck` exit 0 · `npm run gates` exit 0 · ratchets clean (no `ratchets.json` edit in either
-round) · the four touched suites green · kit `release-ritual-selftest` 84/0. The `@dojo/shared` shadow
-trap was closed before any suite ran: the worktree carries its own
+`npm run typecheck` exit 0 · `npm run gates` exit 0 · **full server suite 7,383 of 7,385**, the two
+failures re-run green in isolation (52/52) and are the shared-`os.tmpdir()` class of concern 5 —
+`the-installer-ships-the-souls` lost its synthetic artifacts to a parallel lane mid-run ("no built
+artifact"), and `a-stop-stops-the-media-generators`' timing control flipped under load; neither touches
+anything this lane changed · the four touched suites green · kit `release-ritual-selftest` 84/0.
+
+The `@dojo/shared` shadow trap was closed before any suite ran: the worktree carries its own
 `packages/server/node_modules/@dojo/shared -> ../../../shared` and its own built `packages/shared/dist`,
 verified with `require.resolve` pointing INSIDE the worktree.
+
+TWO THINGS THE FULL RUN FOUND, both fixed in-round rather than reported as residue:
+
+* **The tree's own guard-corpus census refused my clause** (`a637c88e`). The L3-F1 clause reached into
+  `agent/v2/steps` by a typed path — the second hand-rolled walk that census exists to refuse. It now
+  asks `engine-sources.ts` for the engine file CONTAINING the declaration, which is strictly stronger:
+  `engineFileContaining` throws when two engine files carry the same needle, so the clause also proves
+  the declaration is UNIQUE among the step packages.
+* **The growth detector refused the calibrator** at 311 lines (60% of the 400-line new-file cap), and
+  the gate's two remedies are split or pin. Pinned at 311 in a gate-side-only commit (`7e5a8fe5`) with
+  the argument for not splitting: of the 82 new lines only ~25 are code, and separating guard 4's
+  reasoning from the four-line predicate it governs is the "rule in a file nobody opens" failure. **It
+  is a pin, not a raise** — the file may only shrink from here, no existing entry moved, and the raises
+  items 1 and 3 still want remain argued (concern 1) rather than taken.
 
 ## Concerns
 
