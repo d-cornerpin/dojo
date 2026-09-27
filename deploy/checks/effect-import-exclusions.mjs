@@ -162,6 +162,24 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
     why: 'the custom-voice store under the platform voice directory; entries are keyed by id, and the directory is a literal.',
   },
   {
+    file: 'agent/brokers/sudo-probe.ts',
+    klass: 'agent-triggered',
+    why: 'SUDO POLICY v3.2.2 (owner ruling 2026-09-26). A tool call makes it run, and NOT ONE CHARACTER '
+      + 'OF WHAT IT EXECUTES COMES FROM THE AGENT: the probe is the compile-time constant '
+      + '`execFile(\'sudo\', [\'-n\', \'true\'])` — no interpolation, no argument, nothing read from the '
+      + 'command being authorized. It asks sudo itself one question ("would you prompt for a password?") '
+      + 'and `true` is a no-op, deliberately, because probing with the REAL command would RUN it when the '
+      + 'answer is yes. ROUTING IT THROUGH `agent/effects/proc.ts` WAS TRIED AND IS WRONG, for RULING '
+      + 'P5-R12\'s stated reason: `execFileAuthorized` calls `requireAuthorized({op:\'proc\', '
+      + 'program:\'sudo\'})`, and the per-call capability the gate loop resolved names the program the '
+      + 'AGENT asked for (`/bin/zsh`, or its argv[0]) — never `sudo`. The call would either fail on every '
+      + 'box or force a capability for a program no agent requested, recording an agent-facing proc site '
+      + 'that does not exist. RESIDUAL, stated: this spawns one short-lived process per sudo-shaped '
+      + 'command on a box whose sudo prompts, bounded by a 1.5s timeout and cached per process after the '
+      + 'first answer. It reads no path and writes nothing — a clause in '
+      + '`sudo-is-a-policy-not-a-wall.test.ts` holds that no module in the sudo family writes a file.',
+  },
+  {
     file: 'report/bundle.ts',
     klass: 'agent-triggered',
     why: 'DOJO-REPORT T2. The local evidence bundle at `~/.dojo/reports/<id>/bundle.json`, the receipts convention. `dojo_report` makes it run, and NOT ONE BYTE OF THE DESTINATION COMES FROM THE AGENT: the directory is a platform literal, `<id>` is the uuid `report/store.ts` minted, and both path segments are refused unless they match `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` (plus one extension for a file name) — a regex that cannot express `..` or a separator, so a traversal is not a thing this module can be talked into. The CONTENT is agent-adjacent and is handled where content is handled: the whole document goes through `redactHandedCredentials` before it touches the disk, and a document over `REPORT_BUNDLE_MAX_BYTES` is replaced by a truncation marker rather than written as a prefix. Routing it through `agent/effects/fs.ts` was refused for RULING P5-R12\'s stated reason: the capability would name a path the agent never chose, recording an agent-facing fs site that does not exist.',

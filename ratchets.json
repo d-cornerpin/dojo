@@ -5657,10 +5657,54 @@
       "to": 514,
       "by": "FRESHBOX merge (2026-09-27), coordinator-applied — review-granted (+10 total against -32 shrinkage elsewhere in the bundle)",
       "why": "freshbox item D server surface (review: grant)"
+    },
+    {
+      "path": "packages/dashboard/src/pages/Settings.tsx",
+      "from": 7124,
+      "to": 7187,
+      "by": "SUDO POLICY (owner ruling 2026-09-26, ships v3.2.2) - a new Settings card, which is what this file is for",
+      "why": "7119 -> 7187 (+68: one `SudoPolicyCard` component and its one-line mount). THIS FILE IS THE SETTINGS PAGE and a new setting is the file doing its job rather than growing past it. TRIM-FIRST IS BANKED AND STRUCTURAL: every DECISION - the three values, their order, the labels, the hints, what an unknown stored value means, the unconditional floor note and the password warning - lives in `dashboard/src/lib/sudo-policy.ts` (81 lines, new), which is the pattern every other rule in that folder follows and which a clause enforces by slicing the component out of this file and proving it spells no policy word itself. What remains here is JSX, two pieces of state, a load and a save. REFUSED: inlining the labels and hints to avoid a new file, which would put the copy beyond the reach of any test that does not mount the page; REFUSED: a generic key/value settings row instead of a dropdown, which cannot carry the floor note the owner most needs to read. From 7187 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/brokers/proc.ts",
+      "from": 375,
+      "to": 379,
+      "by": "SUDO POLICY (v3.2.2) - one authorization branch, four lines",
+      "why": "375 -> 379 (+4: an import, a two-line comment and ONE statement). The broker gained an authorization branch, which is the narrowest possible footprint for it: the decision, the parser, every refusal string and the whole security argument live in `agent/brokers/sudo-policy.ts` (275 lines, new), and the site carries `if (isSudoLine(trimmed)) return authorizeSudoLine(trimmed, (i) => authorizeOneCommand(grant, i, kind));` plus the sentence saying why the order matters. The floor list also LOST an entry (`'sudo *'`), so the net is +4 against a change that added a whole feature. REFUSED: putting the decision back inline to stay at 375, which was measured at +43 and would have put the security argument in the middle of a grant evaluator. From 379 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/destructive-gate.ts",
+      "from": 583,
+      "to": 587,
+      "by": "SUDO POLICY (v3.2.2) - the `gated` classification, one line plus its reason",
+      "why": "583 -> 587 (+4: an import, a two-line note and ONE condition). `gated` REUSES this file's machinery rather than inventing consent - the hold, the card, `approve_destructive_action`, the one-shot signature-bound approval, the expiry - exactly as the Healer's identity-file writes above it already do, so the whole feature costs one `isDestructiveCall` arm. The two comment lines say why `blocked` and `free` are deliberately NOT classified, which is the part a reader would otherwise re-derive as a bug (`blocked` is refused at the floor, and classifying `free` would hold every sudo line on a box configured not to hold any). From 587 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/brokers/sudo-policy.ts",
+      "from": 0,
+      "to": 275,
+      "by": "SUDO POLICY (v3.2.2) - the ruling, the parser and the decision, in one place",
+      "why": "NEW ENTRY at 275, pinned on arrival rather than waiting for the 240-line cap to notice. It holds the owner's ruling and its premise (the platform's own `IMSG_INSTALL_HINT` prints two `sudo cp` lines FOR THE AGENT TO RUN and then refused to let it), the policy accessor with its fail-safe reading of an unknown value, the option parser, the decision, and every refusal string. MOST OF IT IS THE ARGUMENT AND THE ARGUMENT IS LOAD-BEARING: why sudo is a TRANSPARENT WRAPPER for authorization and the strip must precede the policy (delete that and `free` becomes a hole through the floor), why the strip is not `slice(5)` (`sudo -u root rm -rf /` leaves a line matching NO floor pattern), why an unparseable line FAILS CLOSED with the two rejected alternatives measured, why `gated` returns ALLOW here, and why no sudoers file is ever written. A reader who deletes any of those paragraphs re-derives a security hole. From 275 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/brokers/sudo-probe.ts",
+      "from": 0,
+      "to": 83,
+      "by": "SUDO POLICY (v3.2.2) - the honest failure, probed rather than waited on",
+      "why": "NEW ENTRY at 83. `sudo -n true` asks sudo itself whether it would prompt, so a box with no NOPASSWD rule gets a truthful actionable message instead of a turn that hangs until the tool timeout. The argument that earns the lines: why a PROBE and not a tighter timeout (a timeout cannot tell 'waiting for a password' from 'this build is slow'), why it probes with `true` and NEVER the real command (a probe with side effects is not a probe), why the negative answer is cached, and why nothing here writes sudoers. From 83 it may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/lib/sudo-policy.ts",
+      "from": 0,
+      "to": 81,
+      "by": "SUDO POLICY (v3.2.2) - the dropdown's rule, testable without mounting a page",
+      "why": "NEW ENTRY at 81. The values, their order, the labels, the hints, the unknown-value rule, the password warning and the UNCONDITIONAL floor note. It exists so the copy is reachable by a clause: the note that `sudo rm -rf /` is refused under EVERY setting has to render under all three values, and if it lived in the `free` hint then switching to `gated` would hide it - which is exactly the surprise that becomes a 'permissions are broken' report. From 81 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
   "files": {
+    "packages/server/src/agent/brokers/sudo-probe.ts": 83,
+    "packages/server/src/agent/brokers/sudo-policy.ts": 275,
     "packages/dashboard/src/components/AccessControls.tsx": 141,
     "packages/dashboard/src/components/AccessManifest.tsx": 239,
     "packages/dashboard/src/components/AttachmentChips.tsx": 465,
@@ -5678,6 +5722,7 @@
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
     "packages/dashboard/src/lib/access-summary.ts": 113,
     "packages/dashboard/src/lib/api.ts": 2539,
+    "packages/dashboard/src/lib/sudo-policy.ts": 81,
     "packages/dashboard/src/lib/manifest-edits.ts": 205,
     "packages/dashboard/src/lib/voice/voice-client.ts": 873,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 452,
@@ -5686,7 +5731,7 @@
     "packages/dashboard/src/pages/Costs.tsx": 686,
     "packages/dashboard/src/pages/Health.tsx": 662,
     "packages/dashboard/src/pages/Memory.tsx": 499,
-    "packages/dashboard/src/pages/Settings.tsx": 7124,
+    "packages/dashboard/src/pages/Settings.tsx": 7187,
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
@@ -5694,9 +5739,9 @@
     "packages/server/src/agent/agent-status.ts": 233,
     "packages/server/src/agent/brokers/deny.ts": 385,
     "packages/server/src/agent/brokers/grants.ts": 344,
-    "packages/server/src/agent/brokers/proc.ts": 375,
+    "packages/server/src/agent/brokers/proc.ts": 379,
     "packages/server/src/agent/browser.ts": 412,
-    "packages/server/src/agent/destructive-gate.ts": 583,
+    "packages/server/src/agent/destructive-gate.ts": 587,
     "packages/server/src/agent/effects/capability.ts": 308,
     "packages/server/src/agent/effects/fs.ts": 258,
     "packages/server/src/agent/effects/scopes.ts": 349,
