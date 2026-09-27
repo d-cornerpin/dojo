@@ -397,11 +397,9 @@ function markOobeComplete(): void {
   const db = new Database(dbPath);
   try {
     db.pragma('journal_mode = WAL');
-    db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('setup_complete', 'true')").run();
-    // Also mark in 'config' table which is what the OOBE checks
-    try {
-      db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('setup_completed', 'true')").run();
-    } catch { /* table may not exist */ }
+    // ONE key, the one every reader uses. This also wrote `setup_complete`, which NOTHING reads;
+    // migration 177 removes that row and its header carries the full argument (audit finding 4).
+    db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('setup_completed', 'true')").run();
   } finally {
     db.close();
   }

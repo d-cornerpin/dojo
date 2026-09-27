@@ -1,0 +1,43 @@
+-- 177 (FRESH-BOX AUDIT, finding 4): DELETE THE `setup_complete` ROW NOTHING EVER READ.
+--
+-- `migration/import.ts`'s `markOobeComplete()` wrote TWO config rows after a machine-to-machine
+-- migration: `setup_complete` and `setup_completed`. Only the second is real. Every reader in the
+-- tree uses `setup_completed` — `config/platform.ts:114`, `config/setup-state.ts:54`,
+-- `index.ts:143` and `:208`, and `gateway/routes/config.ts`'s platform-key list — and a tree-wide
+-- grep finds NO reader of `setup_complete`. The write has been removed; this removes the row.
+--
+-- ⚠ WHY THIS IS COSMETIC AND NOT A RESCUE, which is the question the audit left open.
+-- The audit asked whether a migrating box loses `setup_completed` and is therefore left
+-- PERMANENTLY AGENTLESS. It is not, for TWO independent reasons, each measured:
+--
+--   1. `import.ts` Step 7 restores the ENTIRE `~/.dojo` tree INCLUDING `data/dojo.db` — its own
+--      comment says "with a consistent DB snapshot in data/dojo.db … we copy it all in —
+--      database, prompts, techniques, … config". So the SOURCE box's whole `config` table, real
+--      `setup_completed` row included, arrives intact before this function runs at all.
+--   2. `markOobeComplete()` wrote `setup_completed` anyway, on the very next line.
+--
+-- So no box has ever been stuck by this, and NO HEALING READ IS OWED. A reader that accepted
+-- either spelling would be new machinery guarding a state that cannot occur — and it would make
+-- the typo permanent by giving it a meaning. The honest repair is to delete the row so the next
+-- auditor is not misled by it a second time, which is exactly how this stayed invisible: the dev
+-- box carries BOTH rows, so the real one always answered.
+--
+-- ── WHY IT IS SAFE ON A LIVED-IN BODY ──
+-- One `DELETE` of one key that no code path reads. Nothing can regress: a box mid-OOBE has no such
+-- row, and a box past OOBE keeps `setup_completed`, which is the row every reader consults. The
+-- statement names the orphan spelling EXACTLY and can therefore never touch the canonical key —
+-- `key = 'setup_complete'` is an equality, not a prefix or a LIKE.
+--
+-- Not the `.23`/`135` class (no JSON, no CHECK, no column value parsed — it cannot RAISE on a row
+-- of any shape). Not the `139` class (final when it ships). Not a `<NNN>b` bridge file. No DDL.
+-- IDEMPOTENT BY ITS PREDICATE: after the first run no row matches. A fresh install has no such row
+-- and this is a no-op there.
+--
+-- ── NEXT-RELEASE AUDIT NOTE ──
+-- WRITER of `setup_complete`: nobody, from now on. WRITER of `setup_completed`:
+-- `config/setup-state.ts`'s `markSetupCompleted()` and `migration/import.ts`'s
+-- `markOobeComplete()`. Guarded by
+-- `migration/__tests__/a-migrated-box-keeps-its-setup-flag.test.ts`, which drives the real
+-- restore-shaped fixture.
+
+DELETE FROM config WHERE key = 'setup_complete';
