@@ -123,13 +123,9 @@ const FILTERED_TOOLS_CACHE_MAX = 512;
  * level). Any change to these flips the fingerprint, so the memo self-invalidates
  * on a per-agent row change without hunting the diffuse agents-table write sites.
  */
-function computeAgentToolFingerprint(agentId: string): string {
+function computeAgentToolFingerprint(agentId: string, sudoPolicy: string): string {
   const primary = isPrimaryAgent(agentId) ? '1' : '0';
   const pm = isPMAgent(agentId) ? '1' : '0';
-  // The primary's exec description states the box's sudo policy (below), so the policy is
-  // part of what the cached surface was computed FROM — omit it here and an owner flipping
-  // gated→blocked keeps handing the agent a description that promises holds it can't have.
-  const sudoPolicy = getSudoPolicy();
   const row = getDb()
     .prepare('SELECT permissions, spawn_depth, created_by, tools_policy, group_id, classification, task_id FROM agents WHERE id = ?')
     .get(agentId) as {
@@ -158,12 +154,17 @@ function computeAgentToolFingerprint(agentId: string): string {
 
 export function getFilteredTools(agentId: string): ToolDefinition[] {
   const generation = getToolConfigGeneration();
-  const fingerprint = computeAgentToolFingerprint(agentId);
+  // ONE policy read for both the cache key and the computed value. Review finding on the
+  // first cut of this change: fingerprint and description each called getSudoPolicy(), so
+  // a flip landing between the reads stored the NEW text under the OLD key — a stale
+  // description that nothing invalidates, because no policy write bumps the generation.
+  const sudoPolicy = getSudoPolicy();
+  const fingerprint = computeAgentToolFingerprint(agentId, sudoPolicy);
   const cached = filteredToolsCache.get(agentId);
   if (cached && cached.generation === generation && cached.fingerprint === fingerprint) {
     return cached.tools;
   }
-  const tools = computeFilteredTools(agentId);
+  const tools = computeFilteredTools(agentId, sudoPolicy);
   // Callers treat the list as read-only (filter/map/some/find, audited); freeze
   // the container outside production so a future in-place mutation of the shared
   // cached array trips loudly instead of silently corrupting every agent's cache.
@@ -207,7 +208,7 @@ const agentDenySetCache = new Map<string, DenySetCacheEntry>();
 
 export function getAgentDenySet(agentId: string): Set<string> {
   const generation = getToolConfigGeneration();
-  const fingerprint = computeAgentToolFingerprint(agentId);
+  const fingerprint = computeAgentToolFingerprint(agentId, getSudoPolicy());
   const cached = agentDenySetCache.get(agentId);
   if (cached && cached.generation === generation && cached.fingerprint === fingerprint) {
     return cached.deny;
@@ -225,7 +226,7 @@ export function getAgentDenySet(agentId: string): Set<string> {
 // PHASE-5 T4: `resolveSpawnSquad` moved to `agent/tools/cat/agents.ts` with
 // `spawn_agent`, its only caller (re-derived at that HEAD).
 
-function computeFilteredTools(agentId: string): ToolDefinition[] {
+function computeFilteredTools(agentId: string, sudoPolicy: string): ToolDefinition[] {
   const manifest = getAgentPermissions(agentId);
 
   // Get tools policy from DB
@@ -325,6 +326,29 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
   // This prevents loops where the agent tries a disallowed command 20+
   // times because the generic description says "run a command" without
   // specifying which commands are allowed.
+  //
+  // THE SUDO DOOR IS PART OF THE TRUTH (v3.2.2 blast, live): a model believes its
+  // tools, and every primary on an updated box also carries months of remembered
+  // pre-feature refusals ("sudo is prohibited"). Unless the description names the
+  // door, the primary never issues a sudo call at all and the policy broker —
+  // which intercepts sudo BEFORE the allowlist (proc.ts:188) — goes unreached.
+  // So the sentence renders for the BOX PRIMARY under gated/free on BOTH command
+  // tools, whatever the shape of its allowlist; a finite allowlist adds the
+  // review-demanded caveat that sudo raises privilege without widening the grant.
+  const primaryHere = isPrimaryAgent(agentId);
+  const sudoDoorSentence = (finiteList: boolean): string => {
+    if (!primaryHere) return '';
+    const caveat = finiteList
+      ? ' The command inside the sudo line must still be one of your permitted commands — sudo raises privilege, it does not widen your command list.'
+      : '';
+    if (sudoPolicy === 'gated') {
+      return ' Administrator commands: as this box\'s primary agent you may issue a `sudo` command — it will not run immediately; it is HELD and the owner is asked to approve it on their dashboard, and the tool result will say so. Do not treat that hold as a failure and do not retry it.' + caveat;
+    }
+    if (sudoPolicy === 'free') {
+      return ' Administrator commands: as this box\'s primary agent you may issue a `sudo` command — the box\'s sudo policy runs it directly, subject to a safety floor that refuses catastrophic commands.' + caveat;
+    }
+    return '';
+  };
   if (hasExec && manifest.exec_allow[0] !== '*') {
     const allowedCmds = manifest.exec_allow.join(', ');
     // FN-8: only suggest complete_task(status="blocked") to agents that can
@@ -333,24 +357,31 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
     const blockedHint = canSelfComplete
       ? 'use send_to_agent to ask an agent with broader permissions, or call complete_task(status="blocked")'
       : 'use send_to_agent to ask an agent with broader permissions, or tell the user you are blocked';
-    // The blast for v3.2.2 caught the sentence below being a lie to the one agent the sudo
-    // feature exists for: told "Any other command will be blocked", the primary never ISSUES
-    // a sudo command at all, so the policy broker — which intercepts sudo before this
-    // allowlist is consulted — goes unreached on every box. The description must state the
-    // door that actually exists. Primary only; the sub-agent wall is taught by the wall
-    // itself, and a `blocked` policy means the flat sentence is simply true.
-    const sudoSentence = isPrimaryAgent(agentId) && getSudoPolicy() === 'gated'
-      ? ' Administrator commands are the exception: as this box\'s primary agent you may issue a `sudo` command even though it is not in the list — it will not run immediately; it is HELD and the owner is asked to approve it on their dashboard, and the tool result will say so. Do not treat that hold as a failure and do not retry it.'
-      : isPrimaryAgent(agentId) && getSudoPolicy() === 'free'
-        ? ' Administrator commands are the exception: as this box\'s primary agent you may issue a `sudo` command even though it is not in the list — the box\'s sudo policy runs it directly, subject to a safety floor that refuses catastrophic commands.'
-        : '';
     filtered = filtered.map(t => {
       if (t.name !== 'exec') return t;
       return {
         ...t,
-        description: `Execute a shell command. You can ONLY run these commands: ${allowedCmds}. Any other command will be blocked.${sudoSentence} If you need a command that's not in this list, ${blockedHint}. Has a 30-second timeout.`,
+        description: `Execute a shell command. You can ONLY run these commands: ${allowedCmds}. Any other command will be blocked.${sudoDoorSentence(true)} If you need a command that's not in this list, ${blockedHint}. Has a 30-second timeout.`,
       };
     });
+  } else if (hasExec && sudoDoorSentence(false) !== '') {
+    // The DEFAULT primary manifest is exec_allow ['*'] — the branch above never runs
+    // for it, which is exactly how the first cut of this fix missed the only agent
+    // most boxes have. The generic description gets the same door sentence appended.
+    filtered = filtered.map(t => (t.name === 'exec'
+      ? { ...t, description: `${t.description}${sudoDoorSentence(false)}` }
+      : t));
+  }
+  {
+    // The script tool is the other road a sudo line travels (authorizeShellScript);
+    // a primary that favors `shell` over `exec` must read the same door.
+    const shellFinite = ((manifest.shell_allow ?? manifest.exec_allow)[0] ?? '*') !== '*';
+    const shellSentence = sudoDoorSentence(shellFinite);
+    if (shellSentence !== '') {
+      filtered = filtered.map(t => (t.name === 'shell'
+        ? { ...t, description: `${t.description}${shellSentence}` }
+        : t));
+    }
   }
 
   if (hasFileRead && manifest.file_read !== '*' && Array.isArray(manifest.file_read)) {
