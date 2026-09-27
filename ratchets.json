@@ -5755,12 +5755,33 @@
       "to": 421,
       "by": "SECURITY REVIEW FIX ROUND (2026-09-27) - the privilege pass, per simple command",
       "why": "379 -> 421 (+42: the privilege pass and the two notes that say why it is where it is). This is the loop the review's S1 lived in: `parts` authorized the whole line as ONE string for every separator the old grammar did not unpack. The pass runs BEFORE the grant pass, over every simple command, and carries TWO fixes the round measured rather than assumed - the per-segment FLOOR (`ls | rm -rf /` was ALLOWED for a scoped agent; the floor is meant to be unoverridable and was escapable by a pipe for every command in it, not just sudo) and the fail-closed refusal for a token the grammar cannot place. REFUSED: making every segment the GRANT question too, which is what the first cut did - `exec-argv-corpus.test.ts` §D caught that an agent granted ['ls','cat','echo','git *','node'] lost `ls | grep`, and taking a capability away is the owner's decision under RULING P5-R5. From 421 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/brokers/sudo-policy.ts",
+      "from": 503,
+      "to": 633,
+      "by": "RE-REVIEW FIX + \"one policy\" ruling (2026-09-27) - the inversion, the one resolver, the second door",
+      "why": "503 -> 633 (+130). THE SECOND NO-GO WAS THIS FILE FAILING OPEN, so most of what lands is the argument that stops it happening a third time. RC1: `privilegeTokenIsQuotedData` returned \"it is data\" BY DEFAULT - its loop refused only when the token sat at word 0 - so `echo $(sudo rm -rf /)` was ALLOWED to a SUB-AGENT under `blocked`, and the module's own comment asserted the opposite of the code. It is now ONE CONJUNCTION over the collected occurrences, deliberately written so the DEFAULT IS THE LAST STATEMENT and a mutant can flip it (the first cut's distributed early-returns made the default unfalsifiable: flipping it changed nothing because every row was refused earlier - a default nothing can flip is a default nobody has verified). RC2: ONE RESOLVER, because `isSudoLine` walked wrappers and `parseSudo` did not, and two readers of one fact allowed `env X=1 sudo rm -rf /` under `free`. RC3: a wrapper's own arguments are consumed. AND THE OWNER'S \"one policy\" RULING adds the administrator-privileges construct and `osascript`, with the same inverted default - which is why there is no spelling list to maintain: three wrappers the reviewer invented and one of mine die unlisted, and so does an invented AppleScript spelling. REFUSED: extending `EXEC_WRAPPERS` to cover the reviewer's three, which is what the review explicitly said cannot work. From 633 it may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/lib/sudo-policy.ts",
+      "from": 83,
+      "to": 85,
+      "by": "\"one policy\" ruling - the copy names admin privileges, not only sudo",
+      "why": "83 -> 85 (+2). The setting governs sudo AND the macOS administrator-privileges prompt, so copy that said only \"sudo\" would leave an owner hunting for a second switch that does not exist. The floor note OPENS with \"ONE POLICY, EVERY ADMIN DOOR\" and names the osascript prompt before it lists the floor."
+    },
+    {
+      "path": "packages/dashboard/src/pages/Settings.tsx",
+      "from": 7188,
+      "to": 7189,
+      "by": "\"one policy\" ruling - one line naming the second door on the card",
+      "why": "7188 -> 7189 (+1). The card blurb names both doors in the one place an owner meets the setting."
     }
   ],
   "maxNewFileLines": 400,
   "files": {
     "packages/server/src/agent/brokers/sudo-probe.ts": 83,
-    "packages/server/src/agent/brokers/sudo-policy.ts": 503,
+    "packages/server/src/agent/brokers/sudo-policy.ts": 633,
     "packages/dashboard/src/components/AccessControls.tsx": 141,
     "packages/dashboard/src/components/AccessManifest.tsx": 239,
     "packages/dashboard/src/components/AttachmentChips.tsx": 465,
@@ -5778,7 +5799,7 @@
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
     "packages/dashboard/src/lib/access-summary.ts": 113,
     "packages/dashboard/src/lib/api.ts": 2539,
-    "packages/dashboard/src/lib/sudo-policy.ts": 83,
+    "packages/dashboard/src/lib/sudo-policy.ts": 85,
     "packages/dashboard/src/lib/manifest-edits.ts": 205,
     "packages/dashboard/src/lib/voice/voice-client.ts": 873,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 452,
@@ -5787,7 +5808,7 @@
     "packages/dashboard/src/pages/Costs.tsx": 686,
     "packages/dashboard/src/pages/Health.tsx": 662,
     "packages/dashboard/src/pages/Memory.tsx": 499,
-    "packages/dashboard/src/pages/Settings.tsx": 7188,
+    "packages/dashboard/src/pages/Settings.tsx": 7189,
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
