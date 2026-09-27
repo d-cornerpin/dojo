@@ -251,8 +251,17 @@ describe('divergence adjudication', () => {
       '144_task_runs_absorbed.sql',
       '146_task_log_absorbed.sql',
       '159_owed_interrupt_event_kind.sql',
+      '168_work_tracker_default_grant.sql',
       '171_report_read_indexes.sql',
     ]);
+    // ⚠ `165_work_effort_meter.sql` IS ABSENT ON PURPOSE. It diverges on the dev box and logs at
+    // ERROR, and it stays that way: the applied checksum matches no version of the file in this
+    // repository's history, so the divergence cannot be shown to be comment-only and an
+    // adjudication would be a fabricated warrant. Pinned so a future worker cannot quietly add it
+    // to make a log line go away — adding it here must come with the applied bytes.
+    expect(files, '165 must not be adjudicated without its applied bytes').not.toContain(
+      '165_work_effort_meter.sql',
+    );
     for (const d of KNOWN_DIVERGENCES) {
       expect(d.appliedChecksum).toMatch(/^[0-9a-f]{64}$/);
       expect(d.fileChecksum).toMatch(/^[0-9a-f]{64}$/);

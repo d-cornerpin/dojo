@@ -158,6 +158,16 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
     since: '2026-09-26',
     reason: 'Names/PII scrub (owner rule 2026-09-26): one comment line naming a dev-box harness agent by UUID, rewritten to \'a harness agent\'. Executable SQL BYTE-IDENTICAL with `--` lines stripped (4fff758c01f96a6d…, both sides); the whole diff is that one comment line. The recorded checksum on the dev box equals the pre-scrub file\'s checksum, which is what proves the row was written by those bytes.',
   },
+  // ⚠ `165_work_effort_meter.sql` IS DELIBERATELY ABSENT: its applied checksum matches no version
+  // of the file in this repo's history, so the divergence cannot be shown to be comment-only and
+  // an entry would be a fabricated warrant. Pinned by the ledger test; argued in the lane report.
+  {
+    file: '168_work_tracker_default_grant.sql',
+    appliedChecksum: '8a9fc56b1ea5cf1ea5f99a324afa512e8d39a70d382574ce399190cfc3d5dbeb',
+    fileChecksum: '20e4a56aa984282f8261719ac6efe58182820a811a24e8458db64d482d881e85',
+    since: '2026-09-26',
+    reason: 'Review F1/F4 follow-up (commit 755dda36) added a SEVEN-LINE `--` header paragraph after this box applied the file, stating the one stored decision the backfill deliberately overrides (an owner who revoked these groups before the migration gains them back; a revocation after it sticks). The entire diff is those seven comment lines — executable SQL is BYTE-IDENTICAL with `--` lines stripped (252bbe6efe7e92c5… both sides, 1,302 non-comment bytes, so the comparison is not vacuous), and the applied checksum is exactly the file at its previous commit d51cbba2, which is what proves the row was written by those bytes. The recipe did not change, so this box produced the same rows the current file would.',
+  },
   {
     file: '171_report_read_indexes.sql',
     appliedChecksum: '7ca4208b4cd4b85a1df92040ab377accc2ba98ddbd13b8c281738e0045951cec',
