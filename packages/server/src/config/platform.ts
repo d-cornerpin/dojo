@@ -18,7 +18,7 @@ let householdCache: string[] | null = null;
 function loadCache(): void {
   try {
     const db = getDb();
-    const rows = db.prepare("SELECT key, value FROM config WHERE key IN ('platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'pm_agent_enabled', 'trainer_agent_id', 'trainer_agent_name', 'trainer_agent_enabled', 'imaginer_agent_id', 'imaginer_agent_name', 'imaginer_enabled', 'healer_agent_id', 'healer_agent_name', 'dreamer_agent_id', 'dreamer_agent_name', 'household_agent_ids', 'setup_completed')").all() as Array<{ key: string; value: string }>;
+    const rows = db.prepare("SELECT key, value FROM config WHERE key IN ('platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'pm_agent_enabled', 'trainer_agent_id', 'trainer_agent_name', 'trainer_agent_enabled', 'imaginer_agent_id', 'imaginer_agent_name', 'imaginer_enabled', 'healer_agent_id', 'healer_agent_name', 'dreamer_agent_id', 'dreamer_agent_name', 'household_agent_ids', 'setup_completed', 'sudo_policy')").all() as Array<{ key: string; value: string }>;
     cache = {};
     for (const row of rows) {
       cache[row.key] = row.value;
@@ -38,6 +38,21 @@ export function clearPlatformConfigCache(): void {
   cache = {};
   cacheLoaded = false;
   householdCache = null;
+}
+
+// ── Sudo policy (owner ruling 2026-09-26, ships v3.2.2) ──
+
+/**
+ * The RAW `sudo_policy` row, or `null` when the box has never set one.
+ *
+ * Deliberately raw and deliberately here: this module owns config reads and the CACHE, and
+ * `agent/brokers/sudo-policy.ts` owns what the word MEANS — including that an unrecognised value
+ * reads as the shipped default rather than as `free`. Splitting it that way keeps the widening
+ * decision in the broker, where the floor argument lives, instead of in a config getter.
+ */
+export function getSudoPolicyRaw(): string | null {
+  if (!cacheLoaded) loadCache();
+  return cache['sudo_policy'] ?? null;
 }
 
 // ── Platform ──

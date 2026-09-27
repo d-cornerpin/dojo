@@ -5,7 +5,7 @@
 // own sensitive-file scan, in one place, asked of a RESOLVED command.
 //
 // ── THE THREE THINGS IT REFUSES, AND WHY EACH EXISTS ──
-// 1. THE GLOBAL EXEC DENY (`rm -rf /`, `rm -rf ~`, `sudo *`, `chmod 777 *`) —
+// 1. THE GLOBAL EXEC DENY (`rm -rf /`, `rm -rf ~`, `chmod 777 *`; `sudo *` is a policy now) —
 //    unoverridable, checked on the WHOLE line before any construct is unpacked,
 //    so a deny cannot be hidden inside a `for` header.
 // 2. THE `secrets.yaml` SUBSTRING (v2.3.19, Scenario 3 finding) — a file_write
@@ -36,16 +36,17 @@ import path from 'node:path';
 import { foldPath } from '../fs-case.js';
 import { resolveHomePath as resolvePath } from '../path-resolve.js';
 import { GLOBAL_EXEC_DENY_SUBSTRINGS, isSensitivePath } from './deny.js';
+import { authorizeSudoLine, isSudoLine } from './sudo-policy.js';
 import {
   evaluateRules, matchCommandPattern, matchCommandDenyPattern, type Grant,
 } from './grants.js';
 import type { ResolvedArgv, ResolvedCommand } from './resolve.js';
 import { allow, deny, type Verdict } from './types.js';
 
-/** Hard-coded, unoverridable, and NOT a `grant_rule` row: a table row is a row
- *  somebody can delete, and these four are the platform's floor. Verbatim from
- *  `permissions.ts:GLOBAL_EXEC_DENY`. */
-const GLOBAL_EXEC_DENY: readonly string[] = ['rm -rf /', 'rm -rf ~', 'sudo *', 'chmod 777 *'];
+/** Hard-coded, unoverridable, NOT a `grant_rule` row: the platform's floor. Was FOUR — `'sudo *'` left
+ *  it (v3.2.2 ruling) and is a per-box POLICY; THESE THREE STILL BITE INSIDE A SUDO LINE UNDER EVERY
+ *  POLICY, because the wrapper comes off and this pipeline re-runs over the inner command first. */
+const GLOBAL_EXEC_DENY: readonly string[] = ['rm -rf /', 'rm -rf ~', 'chmod 777 *'];
 
 /** Verbatim from `tools.ts:SENSITIVE_FILE_READING_COMMANDS` — the obvious
  *  readers and the exfiltration shapes. Not a full shell parser and never
@@ -164,6 +165,9 @@ function authorizeOneCommand(grant: Grant, command: string, kind: 'proc' | 'shel
   const trimmed = command.trim();
   const globals = globalExecDeny(trimmed);
   if (globals) return globals;
+
+  // SUDO: a transparent wrapper. Strip it, re-run THIS function over the inner command, policy last.
+  if (isSudoLine(trimmed)) return authorizeSudoLine(trimmed, (i) => authorizeOneCommand(grant, i, kind));
 
   const baseCommand = trimmed.split(/\s+/)[0];
   const verdict = evaluateRules(grant, kind, (pattern, mode) =>

@@ -25,6 +25,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getPrimaryAgentName, isHealerAgent } from '../config/platform.js';
 import { isProtectedIdentityPath } from './permissions.js';
+import { getSudoPolicy, isSudoLine } from './brokers/sudo-policy.js';
 import { getAgentPermissions } from './manifest.js';
 import { grantForManifest } from './brokers/grants.js';
 import { authorizeExecShapedArgs, execCallText, execDoorFor } from './brokers/exec-seam.js';
@@ -87,6 +88,9 @@ export function isDestructiveCall(
     const text = execCallText(toolName, args);
     if (text === null) return 'destructive shell command';
     if (DESTRUCTIVE_EXEC_RE.test(text)) return 'destructive shell command';
+    // SUDO UNDER `gated` (v3.2.2): asked HERE because this machinery already asks. `blocked`/`free` are
+    // deliberately not classified — `sudo-policy.ts` argues both.
+    if (isSudoLine(text.trim()) && getSudoPolicy() === 'gated') return 'sudo (box policy: gated)';
   }
   // FU-4: the Healer now holds full primary-equivalent write ('*'), so a
   // file_write/file_patch/file_append to one of the owner's identity/config files

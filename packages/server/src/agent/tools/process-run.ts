@@ -17,6 +17,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { resolveHomePath, isExistingDirectory } from '../path-resolve.js';
+import { sudoWouldHang } from '../brokers/sudo-probe.js';
 import { coerceNumberArg } from './pagination.js';
 import { execFileAuthorized } from '../effects/proc.js';
 
@@ -138,6 +139,16 @@ export async function runProcess(input: {
   audit: ProcessAudit;
 }): Promise<string> {
   const { auditTarget, file, argv, timeout, cwd, note, audit } = input;
+  // ── HONEST FAILURE FOR SUDO (owner ruling 2026-09-26, v3.2.2) ──
+  // A sudo line on a box with no NOPASSWD rule does not fail — it BLOCKS on a password prompt nobody
+  // can type into, and the turn dies on the timeout with nothing to read. `sudoWouldHang` probes it
+  // in ~1.5s and the answer names the ONE command a human runs once. Checked HERE, at the single
+  // execution seam, so both the shell door and the argv door are covered by one check.
+  const hang = await sudoWouldHang(auditTarget);
+  if (hang) {
+    audit(auditTarget, 'error', 'sudo requires a password on this box; nothing was run');
+    return hang;
+  }
   try {
     const { stdout, stderr } = await execFileAuthorized(file, argv, {
       timeout,
