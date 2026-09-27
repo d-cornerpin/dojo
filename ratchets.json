@@ -5863,6 +5863,13 @@
       "why": "1169 -> 1315 (+146: 104 comment, and the file is 425 code lines of 1315). THE CONFIRMATION PASS FOUND ONE ROOT CAUSE AND MEASURING IT EXPOSED A FAR LARGER ONE. Root: the balanced scan decoded escapes BEFORE counting delimiters, so a closer written as an escape became a STRUCTURAL closer and a qx{} body was read as the fragment before it - my own round-9 principle (each reader decodes as much as its own question needs) applied everywhere except here. The structure scan now reads a MASK where escapes cannot forge a delimiter, indices still line up because the mask is the same length, and only the extracted slice is decoded. THREE READERS, THREE AMOUNTS, argued at the site. ⚠ AND THAT FIX ALONE REFUSED NOTHING: with the body finally read correctly as `rm -rf } /`, the floor still did not match, because GLOBAL_EXEC_DENY matches exactly or by prefix and ONE EXTRA OPERAND defeats it - measured with no escape and no interpreter anywhere, `sudo rm -rf } /`, `sudo rm -rf x /`, `sudo rm -rf --no-preserve-root /` and `sudo /bin/rm -rf } /` were all ALLOWED, each deleting / exactly as `sudo rm -rf /` does. So a privileged inner command is asked about each OPERAND separately and each FLAG separately, scoped to privileged lines because the matcher is shared with every exec_deny rule in the tree and widening IT was refused two rounds ago so `echo \"rm -rf /\"` keeps working. TWO REGRESSIONS MY OWN CORPUS CAUGHT: the masking hid the awk literal, because a backslash in a body has TWO possible owners (the shell's, already spent; the language's, still live) and reading it one way breaks the other - so both readings are scanned and unioned, with `unclosed` taken from the masked one; and the depth-bound clause was measuring a multiplier rather than a bound. ONE FALSE REFUSAL FIXED: a quote operator inside an open string is not a quote operator. THREE BRANCHES DELETED rather than decorated with clauses, because mutants proved nothing could falsify them (the mask's numeric alternatives, the bare program+operand candidate, the second word reading). AND R5-1 AGAIN: the residual gained a THIRD member, spelled right in the line - the floor's three patterns are literal strings, so `rm -r -f /`, `rm -fr /`, `rm -rfv /` and the long forms are allowed. Named, not closed, with the contained fix and its judgement calls written down: that is what the rule asks, and inventing a floor-matcher change unreviewed in the last minutes of a round is how two false refusals happened earlier today. 16 mutants planted, 15 killed, 1 a labelled size guard. From 1315 it may only shrink."
     },
     {
+      "path": "packages/server/src/agent/brokers/sudo-policy.ts",
+      "from": 1315,
+      "to": 1320,
+      "by": "RE-CONFIRM text correction (2026-09-27) - member 3 covers operand quoting too",
+      "why": "1315 -> 1320 (+5, all comment). The reviewer measured `sudo rm -rf '/'` and `sudo perl -e \"qx{rm -rf '/'}\"` ALLOWED under `free`: operand QUOTING defeats a literal pattern exactly as a synonym flag does, because the pattern is compared to TEXT and `'/'` is not the text `/`. Member 3 now names both families and lists both, and it records the ASYMMETRY rather than smoothing it - `chmod 777 '*'` IS refused, since that entry is prefix-matched and the quoting lands past the compared part. Owner ruling is LEAVE IT, SHIP DOCUMENTED, so the rows are also pinned by a clause whose header tells the next reader that a failure there is GOOD NEWS and that the clause and this paragraph change together. No behaviour change."
+    },
+    {
       "path": "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts",
       "from": 259,
       "to": 260,
@@ -5881,7 +5888,7 @@
   "files": {
     "packages/server/src/agent/brokers/sudo-probe.ts": 83,
     "packages/server/src/agent/brokers/sudo-copy.ts": 168,
-    "packages/server/src/agent/brokers/sudo-policy.ts": 1315,
+    "packages/server/src/agent/brokers/sudo-policy.ts": 1320,
     "packages/dashboard/src/components/AccessControls.tsx": 141,
     "packages/dashboard/src/components/AccessManifest.tsx": 239,
     "packages/dashboard/src/components/AttachmentChips.tsx": 465,
