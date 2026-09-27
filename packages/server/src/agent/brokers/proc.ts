@@ -37,9 +37,10 @@ import { foldPath } from '../fs-case.js';
 import { resolveHomePath as resolvePath } from '../path-resolve.js';
 import { GLOBAL_EXEC_DENY_SUBSTRINGS, isSensitivePath } from './deny.js';
 import {
-  SUDO_UNPLACEABLE_REASON, authorizeSudoLine, isSudoLine, mentionsPrivilegeToken,
-  privilegeTokenIsQuotedData, privilegedInnerCommands,
+  authorizeSudoLine, isSudoLine, mentionsPrivilegeToken, privilegeTokenIsQuotedData,
+  privilegedInnerCommands,
 } from './sudo-policy.js';
+import { SUDO_UNPLACEABLE_REASON } from './sudo-copy.js';
 import { execSimpleCommands } from '../exec-grammar.js';
 import {
   evaluateRules, matchCommandPattern, matchCommandDenyPattern, type Grant,

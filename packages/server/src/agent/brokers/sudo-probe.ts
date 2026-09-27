@@ -26,9 +26,8 @@
 import { execFile } from 'node:child_process';
 import os from 'node:os';
 import { createLogger } from '../../logger.js';
-import {
-  SUDO_PROBE_TIMEOUT_MS, getSudoPolicy, isSudoLine, sudoPasswordPromptMessage,
-} from './sudo-policy.js';
+import { getSudoPolicy, isSudoLine } from './sudo-policy.js';
+import { SUDO_PROBE_TIMEOUT_MS, sudoPasswordPromptMessage } from './sudo-copy.js';
 
 const logger = createLogger('sudo-probe');
 

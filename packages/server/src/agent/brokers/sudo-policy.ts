@@ -61,15 +61,11 @@ import { commandWords, execSimpleCommands } from '../exec-grammar.js';
 // `types.js` is a leaf (no broker imports), so the verdict helpers come from there rather than
 // from `proc.ts` — which imports THIS module, and would be a cycle.
 import { allow, deny, type Verdict } from './types.js';
-
-/** The three values, and the only three. */
-export type SudoPolicy = 'blocked' | 'gated' | 'free';
-
-/** Shipped default, per the ruling. A box that has never been configured GATES. */
-export const SUDO_POLICY_DEFAULT: SudoPolicy = 'gated';
-
-/** The config row's key. One spelling, exported, so the route, the cache and the UI agree. */
-export const SUDO_POLICY_KEY = 'sudo_policy';
+// The vocabulary and every word an agent reads live in a LEAF — see that file's header for why.
+import {
+  SUDO_BLOCKED_REASON, SUDO_INTERACTIVE_SHELL_REASON, SUDO_NOT_PRIMARY_REASON, SUDO_POLICY_DEFAULT,
+  SUDO_UNPARSEABLE_REASON, type SudoPolicy,
+} from './sudo-copy.js';
 
 /**
  * The box's policy, read through the platform-config cache.
@@ -133,6 +129,33 @@ function unquoteValue(word: string): string {
  * shell is refused under every policy, including `free`.
  */
 const SUDO_SHELL_OPTS: ReadonlySet<string> = new Set(['-i', '--login', '-s', '--shell']);
+
+/**
+ * ⚠ `su`'S OPTIONS ARE NOT `sudo`'S, AND THE THIRD REVIEW CAUGHT ME PORTING ONE TABLE TO BOTH (F1).
+ *
+ * Measured, primary under `free`: `su - root`, `su -l root`, `su -m root`,
+ * `su --preserve-environment root`, `su --shell=/bin/sh root` and `su --login=x root` were all refused
+ * — and `su --login root` and `su -s /bin/sh root` were **ALLOWED**, an unbounded interactive root
+ * shell. SIX SPELLINGS OF ONE OPTION FAMILY CAUGHT AND THE PLAIN LONG FORM NOT, which is the exact
+ * failure this file already carries a paragraph about (`--prompt="pw: "`): one option, a caught
+ * spelling and an uncaught one. It recurred in the table I added one round earlier.
+ *
+ * TWO DIFFERENCES, BOTH REAL GRAMMAR rather than defensive guessing:
+ *   · `su -s`/`--shell` TAKES A VALUE (which shell to start). `sudo -s` is a boolean asking for one.
+ *     Reading su's `-s` as sudo's left `/bin/sh root` looking like the command to run.
+ *   · `su`'s ONLY command source is `-c`/`--command`. Everything else it accepts — `-l`, `--login`,
+ *     `-`, `-m`, `-p`, `-f`, a bare username — starts an INTERACTIVE ROOT SHELL, so there is nothing
+ *     for the floor, the grants or the scan to read and the answer is the one `sudo -i` already gets:
+ *     refused under every policy, `free` included. Trailing operands are still handed to the floor as
+ *     the inner text, because `su root sh -c "rm -rf /"` must be refused by the most specific true
+ *     thing about it rather than by the shell rule.
+ * An UNKNOWN `su` option that really takes a value fails in the safe direction: it does not swallow
+ * its value, the value reads as the username, and the line lands on the interactive-shell refusal.
+ */
+const SU_OPTS_WITH_VALUE: ReadonlySet<string> = new Set([
+  '-c', '--command', '-s', '--shell', '-g', '--group', '-G', '--supp-group',
+  '-w', '--whitelist-environment',
+]);
 
 export interface ParsedSudo {
   /** The command as it would read with sudo and its options removed. '' when there is none. */
@@ -250,12 +273,12 @@ function bareWord(word: string): string {
  * direction: the scan only ever runs after a word already known to be an exec wrapper, and finding the
  * privilege word later in that wrapper's argv is exactly what the wrapper would execute.
  */
-function privilegeWordIndex(words: readonly string[]): number | null {
+function wrappedProgramIndex(words: readonly string[], wanted: (bare: string) => boolean): number | null {
   let i = 0;
   let wrapped = false;
   while (i < words.length) {
     const w = bareWord(words[i]).toLowerCase();
-    if (PRIVILEGE_PROGRAMS.has(w)) return i;
+    if (wanted(w)) return i;
     if (EXEC_WRAPPERS.has(w)) { wrapped = true; i += 1; continue; }
     // Inside a wrapper's own argv (its flags, its values, `VAR=value`) keep looking; outside one, the
     // first ordinary program ends the walk — `echo sudo` is data, not a privileged line.
@@ -263,6 +286,17 @@ function privilegeWordIndex(words: readonly string[]): number | null {
     return null;
   }
   return null;
+}
+
+/**
+ * ⚠ ONE WALK, TWO QUESTIONS — and RC2 is why it is one function rather than two copies. That round's
+ * defect was `isSudoLine` walking wrappers while `parseSudo` did not: two readers of one fact, and
+ * `env X=1 sudo rm -rf /` ran under `free`. My own probe then found the SAME shape one layer down —
+ * `sudo env sh -c "rm -rf /"` was ALLOWED, because the body classifier tested word 0 (`env`) and
+ * stopped. A second walk would have been a third reader; this is the first one, asked twice.
+ */
+function privilegeWordIndex(words: readonly string[]): number | null {
+  return wrappedProgramIndex(words, (w) => PRIVILEGE_PROGRAMS.has(w));
 }
 
 /**
@@ -320,20 +354,11 @@ export function isSudoLine(trimmed: string): boolean {
  * ordinary automation capability the owner never gave up.
  */
 export function osascriptBodyIsUnseeable(operands: readonly string[]): boolean {
-  // ⚠ NAMED `operands`, NOT `args`: `effects-conformance.test.ts` walks handler modules for `args.<name>`
-  // to census which tool parameters are read, and `args.length` here was reported as an undeclared
-  // parameter called `length`. The census is pattern-based and right to be; the collision was mine.
-  let sawInline = false;
-  for (let i = 0; i < operands.length; i++) {
-    const o = operands[i];
-    if (o === '-e' || o === '--expression') { sawInline = true; i += 1; continue; }
-    if (o === '-l' || o === '--language' || o === '-s') { i += 1; continue; }
-    if (o === '-' || o === '/dev/stdin' || o.startsWith('<')) return true;   // stdin or a redirect
-    if (o.startsWith('-')) continue;                                         // an ordinary flag
-    return true;                                                            // a FILE operand
-  }
-  // No operand at all: seeable if an inline body was given, and a bare `osascript` reads stdin.
-  return !sawInline;
+  // ⚠ NOW A READING OF THE ONE CLASSIFIER rather than a second answer to the same question (F3). It
+  // kept its name and its clauses because the osascript door asks it by name, but `unseeable` and
+  // `interactive` both mean the same thing here: not proven inert.
+  const body = interpreterBody(['osascript', ...operands].join(' '));
+  return body === null ? false : body.kind !== 'readable';
 }
 
 /**
@@ -458,13 +483,6 @@ export function authorizeAdminPrivilegeRequest(agentId: string): Verdict {
   return allow(`admin-privileges-policy:${policy}`);
 }
 
-/** The refusal for a privilege token the grammar cannot place — fail closed by construction. */
-export const SUDO_UNPLACEABLE_REASON =
-  'Global deny: this line contains `sudo` (or `doas`) somewhere the permission broker cannot place — '
-  + 'inside a substitution, a nested quote or a construct it does not parse. A line whose structure '
-  + 'cannot be read is not run as root. Write the privileged command as its own plain line so the '
-  + 'floor, your grants and the box policy can all see it.';
-
 /**
  * Strip `sudo` and its options, returning the command sudo would actually run.
  *
@@ -514,12 +532,14 @@ export function parseSudo(trimmed: string): ParsedSudo {
       i += 1; break;
     }
     if (t === '-n' || t === '--non-interactive') { nonInteractive = true; i += 1; continue; }
-    if (SUDO_SHELL_OPTS.has(t)) {
+    if (!isSu && SUDO_SHELL_OPTS.has(t)) {
       // `sudo -i` / `sudo -s` MAY be followed by a command; with nothing after it, it is a shell.
+      // NOT for `su`, whose `-s` takes a value and whose `--login` is followed by a USERNAME: reading
+      // this branch for su is what made `su --login root` authorize `root` as the command (F1).
       const rest = tokens.slice(i + 1).join(' ');
       return rest.length === 0
         ? { inner: '', interactiveShell: true, nonInteractive, quotedOptionValue }
-        : { ...parseInner(rest), nonInteractive, quotedOptionValue };
+        : finish(rest, nonInteractive, quotedOptionValue);
     }
     if (t.includes('=')) {
       // ⚠ S2: THIS BRANCH USED TO SHORT-CIRCUIT THE QUOTE CHECK BELOW, so `--prompt="pw: "` produced
@@ -530,7 +550,7 @@ export function parseSudo(trimmed: string): ParsedSudo {
       if (/['"]/.test(t.slice(t.indexOf('=') + 1))) quotedOptionValue = true;
       i += 1; continue;
     }
-    if (SUDO_OPTS_WITH_VALUE.has(t)) {
+    if ((isSu ? SU_OPTS_WITH_VALUE : SUDO_OPTS_WITH_VALUE).has(t)) {
       // A value that opens a quote means the real value spans tokens we cannot count.
       if (/['"]/.test(tokens[i + 1] ?? '')) quotedOptionValue = true;
       i += 2; continue;
@@ -553,13 +573,18 @@ export function parseSudo(trimmed: string): ParsedSudo {
     // `authorizeSudoLine` owns that question for every spelling at once. A mutant proved the branch
     // I first wrote here could not be falsified — nothing changed when it went — so it is gone rather
     // than kept as a second answer to a question already answered. The clause stays.
-    return { ...parseInner(commandFromOption), nonInteractive, quotedOptionValue };
+    return finish(commandFromOption, nonInteractive, quotedOptionValue);
   }
   const rest = tokens.slice(i).join(' ');
-  // Nothing left to run: `su`, `su root`, `sudo -i` — an unbounded INTERACTIVE ROOT SHELL, refused
-  // under every policy including `free`, because there is no inner command to reason about.
+  // ⚠ F1: `su` WITHOUT `-c` IS A ROOT PROMPT, whatever else is on the line. `inner` still carries the
+  // trailing text so the floor can read it first — `su root sh -c "rm -rf /"` is refused as the floor
+  // pattern it is, not as a shell request — and `interactiveShell` is what makes the plain forms
+  // (`su --login root`, `su -s /bin/sh root`, `su root`) refuse under every policy.
+  if (isSu) return { inner: rest, interactiveShell: true, nonInteractive, quotedOptionValue };
+  // Nothing left to run: `sudo -i`, `sudo -s` — an unbounded INTERACTIVE ROOT SHELL, refused under
+  // every policy including `free`, because there is no inner command to reason about.
   if (rest.length === 0) return { inner: '', interactiveShell: true, nonInteractive, quotedOptionValue };
-  return { ...parseInner(rest), nonInteractive, quotedOptionValue };
+  return finish(rest, nonInteractive, quotedOptionValue);
 }
 
 /**
@@ -590,59 +615,256 @@ export function privilegedInnerCommands(trimmed: string): string[] {
   // `parseSudo` on an ordinary line strips its first word and would name a command nobody is running.
   if (!isSudoLine(trimmed)) return [];
   const parsed = parseSudo(trimmed);
-  if (parsed.inner.length === 0) return [];
-  const out: string[] = [];
-  const visit = (command: string, depth: number): void => {
-    for (const seg of execSimpleCommands(command)) {
-      out.push(seg);
-      const body = depth < 3 ? interpreterBody(seg) : null;
-      if (body !== null && body.length > 0) visit(body, depth + 1);
-    }
-  };
-  visit(parsed.inner, 0);
-  return out;
+  return parsed.inner.length === 0 ? [] : unwrapBodies(parsed.inner).commands;
 }
 
-/** The command string an interpreter was handed, or `null` if this is not an interpreter call. */
-function interpreterBody(seg: string): string | null {
+export interface Unwrapped {
+  /** Every command the text would run, one interpreter deeper, for the floor to be asked about. */
+  readonly commands: string[];
+  /** A body at ANY depth whose quotes do not balance — what was extracted is not what runs. */
+  readonly unparseable: boolean;
+  /** A body at ANY depth that is a root prompt or arrives on a stream. */
+  readonly interactive: boolean;
+}
+
+/**
+ * ⚠ ONE WALK RETURNING BOTH THE COMMANDS AND THE FINDINGS, and a failing clause is why it is one.
+ *
+ * My first cut classified only the TOP body and collected commands separately, so
+ * `sudo sh -c "sh -c \"rm -rf /\""` was ALLOWED: the outer body's quotes balance, the INNER one's do
+ * not, and the finding had nowhere to travel. Two walks over one structure is the two-readers shape
+ * this campaign keeps paying for — so the recursion happens once and reports everything it saw.
+ *
+ * Takes a COMMAND TEXT, never a privileged line, and calls no parser above it: `parseSudo` reaches
+ * this through `parseInner`, and a walk that called back into `parseSudo` would not terminate.
+ */
+function unwrapBodies(command: string, depth = 0): Unwrapped {
+  const commands: string[] = [];
+  let unparseable = false;
+  let interactive = false;
+  for (const seg of execSimpleCommands(command)) {
+    commands.push(seg);
+    const body = interpreterBody(seg);
+    if (body === null) continue;
+    if (body.kind === 'unparseable') unparseable = true;
+    if (body.kind === 'interactive') interactive = true;
+    if (depth >= 3 || body.inline === null || body.inline.text.length === 0) continue;
+    const deeper: string[] = [];
+    // A SHELL body is commands; ANOTHER LANGUAGE's body reaches a shell through its string literals.
+    if (body.inline.language === 'shell') deeper.push(body.inline.text);
+    else {
+      const literals = quotedLiterals(body.inline.text);
+      deeper.push(...literals);
+      // ⚠ AND THE LITERALS JOINED, because the ARGV form spells one command across several of them:
+      // `subprocess.run(['rm','-rf','/'])` and `perl -e 'exec "rm", "-rf", "/"'` were both ALLOWED —
+      // each literal alone is harmless and the floor pattern only exists in their sequence.
+      if (literals.length > 1) deeper.push(literals.join(' '));
+    }
+    for (const text of deeper) {
+      const below = unwrapBodies(text, depth + 1);
+      commands.push(...below.commands);
+      unparseable = unparseable || below.unparseable;
+      interactive = interactive || below.interactive;
+    }
+  }
+  return { commands, unparseable, interactive };
+}
+
+/** Interpreters whose inline body IS SHELL, so each statement in it is a command the floor knows. */
+const SHELL_INTERPRETERS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash']);
+
+/**
+ * …and the interpreters whose body is ANOTHER LANGUAGE, with the option that carries it (F2).
+ *
+ * THE THIRD REVIEW MEASURED ALL OF THESE AS ALLOWED under `free`, and they are ordinary spellings a
+ * model writes: `sudo python3 -c "import os; os.system('rm -rf /')"`, `sudo perl -e "system('…')"`,
+ * `sudo ruby -e`, `sudo node -e "require('child_process').execSync('…')"`, `sudo php -r`,
+ * `sudo awk "BEGIN{system(\"…\")}"`. Round 6b closed this class for `sh -c` and left its siblings
+ * open; the ruling is about what runs as root, so they are in scope by the same sentence.
+ *
+ * ⚠ HOW A NON-SHELL BODY IS READ, without this file learning six languages: its SHELL REACH IS ITS
+ * QUOTED STRING LITERALS. `os.system`, `system`, `execSync`, `exec`, backticks and `awk`'s `system()`
+ * all take a SHELL COMMAND as a string, so every literal in the body is handed to the floor as a
+ * command. It is crude in the direction that costs nothing — a literal that happens to read
+ * `rm -rf /` is refused whether or not it reaches a shell, and that is the answer we want either way.
+ */
+const CODE_INTERPRETERS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['python', ['-c']], ['python3', ['-c']], ['python2', ['-c']],
+  ['perl', ['-e', '-E']], ['ruby', ['-e']], ['node', ['-e', '--eval', '-p', '--print']],
+  ['php', ['-r']], ['osascript', ['-e', '--expression']],
+]);
+/** Any interpreter this file knows how to ask about, by bare program name. */
+const isInterpreterName = (bare: string): boolean =>
+  SHELL_INTERPRETERS.has(bare) || CODE_INTERPRETERS.has(bare) || PROGRAM_TEXT_INTERPRETERS.has(bare);
+
+/** `awk`'s program is its first bare operand rather than an option's value. */
+const PROGRAM_TEXT_INTERPRETERS: ReadonlySet<string> = new Set(['awk', 'gawk', 'nawk']);
+
+/**
+ * ⚠ EACH INTERPRETER'S OPTIONS THAT TAKE A VALUE — and F1 is why this table exists at all rather than
+ * being assumed: the SAME MISTAKE one layer down would read `osascript -l JavaScript -e '…'` as having
+ * a FILE OPERAND called `JavaScript` and refuse ordinary automation, or read `awk -f prog.awk` as a
+ * flag and miss that the program is in a file nobody here can see. The value is METADATA to step over.
+ */
+const INTERPRETER_METADATA_OPTS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['osascript', ['-l', '--language', '-s']],
+  ['sh', ['-o']], ['bash', ['-o', '--rcfile', '--init-file']], ['zsh', ['-o']],
+  ['dash', ['-o']], ['ksh', ['-o']], ['ash', ['-o']],
+  ['python', ['-W', '-X']], ['python3', ['-W', '-X']], ['python2', ['-W', '-X']],
+  ['node', ['-r', '--require', '--input-type']], ['perl', ['-I', '-M']],
+  ['ruby', ['-I', '-r']], ['php', ['-d']], ['awk', ['-v', '--assign']],
+  ['gawk', ['-v', '--assign']], ['nawk', ['-v', '--assign']],
+]);
+/** …and the options whose value is a PROGRAM FILE: the body, in a place the broker cannot read it. */
+const INTERPRETER_FILE_OPTS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['awk', ['-f', '--file']], ['gawk', ['-f', '--file']], ['nawk', ['-f', '--file']],
+  ['php', ['-f']], ['python', ['-m']], ['python3', ['-m']], ['python2', ['-m']],
+]);
+
+export interface PrivilegedBody {
+  /**
+   * `readable` — the broker holds the body text and the floor can be asked about it.
+   * `unseeable` — a FILE or a redirect: nobody here can read it, but it has a NAME, so the policy
+   *               governs it exactly as `osascript /tmp/x.scpt` has since round 6.
+   * `interactive` — a root PROMPT, or a body arriving on a STREAM. Refused under every policy.
+   * `unparseable` — a body whose quotes DO NOT BALANCE once escaping is undone, so the text this
+   *               function extracted is not the text that will run. Refused under every policy, with
+   *               the wording that says how to rewrite it — never called a shell request, because it
+   *               is not one and the message an agent reads has to be true.
+   */
+  readonly kind: 'readable' | 'unseeable' | 'interactive' | 'unparseable';
+  /** The inline body when there is one, EVEN IF `kind` is not `readable` — see the decoy note. */
+  readonly inline: { readonly language: 'shell' | 'code'; readonly text: string } | null;
+}
+
+/**
+ * ⚠ ONE CLASSIFIER FOR EVERY PRIVILEGED INTERPRETER (F2 + F3, and it unifies round 6's osascript rule).
+ *
+ * F3 was the doctrine applied to one door and not the other: `osascript /tmp/x.scpt` HELD while
+ * `sudo sh /tmp/x.sh` ran, and bare `sudo sh` — an unbounded root shell reading stdin — was not
+ * classified at all while `sudo -i` and `su root` both were. One rule now answers for all of them.
+ *
+ * THE LINE BETWEEN `unseeable` AND `interactive` IS WHETHER THE BODY HAS A NAME, and it is the whole
+ * of the judgement here: a FILE can be inspected by the owner on the card and named in the audit trail,
+ * so the policy may allow it under `free`; a body on a STREAM — stdin, `-`, `sh -s`, the receiving end
+ * of a pipe — can never be read by anyone, not the broker and not the owner, so no policy setting can
+ * make it reviewable and it is refused under every one. That also makes `curl … | sudo sh` refused
+ * under `free`, which is a capability consequence the release note states rather than hides: the same
+ * work is available as `curl -o f && sudo sh f`, where there is a path a human can look at.
+ *
+ * ⚠ AN UNREADABLE BODY BEATS AN INLINE ONE, which is round 6's decoy lesson generalised:
+ * `osascript -e 'benign' -` and `sudo sh -s <<< "rm -rf /"` both LOOK readable and both also execute
+ * something the broker never sees. The inline text is still returned so the floor gets everything it
+ * can read — that is why `sudo sh -s <<< "rm -rf /"` is refused by the FLOOR naming `rm -rf /` rather
+ * than by the shell rule — but the KIND is decided by the part nobody can read.
+ */
+export function interpreterBody(seg: string): PrivilegedBody | null {
   const words = commandWords(seg);
-  if (!INTERPRETERS.has(bareWord(words[0] ?? '').toLowerCase())) return null;
-  for (let w = 1; w < words.length; w += 1) {
-    const word = words[w];
-    if (word.startsWith('--command=')) return unquoteValue(word.slice('--command='.length));
+  const at = wrappedProgramIndex(words, isInterpreterName);
+  if (at === null) return null;
+  const program = bareWord(words[at]).toLowerCase();
+  const isShell = SHELL_INTERPRETERS.has(program);
+  const bodyOpts = CODE_INTERPRETERS.get(program);
+  const programText = PROGRAM_TEXT_INTERPRETERS.has(program);
+  const language: 'shell' | 'code' = isShell ? 'shell' : 'code';
+  const metadata = INTERPRETER_METADATA_OPTS.get(program) ?? [];
+  const fileOpts = INTERPRETER_FILE_OPTS.get(program) ?? [];
+  const carriesBody = (word: string): boolean => isShell
     // ⚠ ANY SHORT-FLAG CLUSTER ENDING IN `c`, because `-lc` and `-ec` are the same option spelled
     // shorter and a floor that only knows `-c` is a floor with a documented spelling and an
     // undocumented one. That is precisely how the `--prompt="pw: "` bug hid.
-    if (word === '--command' || /^-[a-z]*c$/i.test(word)) return unquoteValue(words[w + 1] ?? '');
+    // ⚠ `c` ANYWHERE IN THE CLUSTER, not only last: `sh -cx 'rm -rf /'` runs the command with xtrace,
+    // and my first cut required the `c` to END the cluster — so `-cx` read as an ordinary flag and its
+    // body read as a FILE OPERAND. One option, a caught spelling and an uncaught one, for the third
+    // time in this campaign; the pattern is the lesson, not the spelling.
+    ? (word === '--command' || /^-[a-z]*c[a-z]*$/i.test(word))
+    : (bodyOpts?.includes(word) ?? false);
+  let inline: { language: 'shell' | 'code'; text: string } | null = null;
+  let unreadable: 'stream' | 'file' | null = null;
+  for (let w = at + 1; w < words.length; w += 1) {
+    const word = words[w];
+    const eq = word.indexOf('=');
+    if (carriesBody(word)) {
+      inline ??= { language, text: unquoteValue(words[w + 1] ?? '') };
+      w += 1; continue;
+    }
+    if (eq > 0 && carriesBody(word.slice(0, eq))) {
+      inline ??= { language, text: unquoteValue(word.slice(eq + 1)) };
+      continue;
+    }
+    if (fileOpts.includes(word) || (eq > 0 && fileOpts.includes(word.slice(0, eq)))) {
+      unreadable ??= 'file';                                            // the body, but in a file
+      if (eq < 0) w += 1;
+      continue;
+    }
+    if (metadata.includes(word)) { w += 1; continue; }                  // a value we do not care about
+    if (eq > 0 && metadata.includes(word.slice(0, eq))) continue;
+    // A HERE-STRING IS READABLE — it is right there in the line — so the floor gets its text.
+    if (word === '<<<') { inline ??= { language, text: unquoteValue(words[w + 1] ?? '') }; w += 1; continue; }
+    if (word.startsWith('<')) { unreadable ??= 'file'; continue; }      // `< file`, or a heredoc header
+    if (word === '-' || word === '/dev/stdin' || (isShell && word === '-s')) { unreadable = 'stream'; continue; }
+    if (word.startsWith('-')) continue;                                 // an ordinary flag
+    if (programText) { inline ??= { language, text: unquoteValue(word) }; continue; }
+    unreadable ??= 'file';                                              // a FILE operand
   }
-  return null;
+  // ⚠ AN ESCAPED QUOTE DEFEATS THE WORD TOKENIZER, AND MY OWN PROBE CAUGHT IT: in
+  // `su root -c "python3 -c \"os.system('rm -rf /')\""` the inner body's `\"` does not open a quoted
+  // span, so the body arrives as the fragment `"os.system('rm` and the literal the floor needs is in
+  // another token. The fragment's quotes do not balance, which is measurable, so the line is refused
+  // as unreadable rather than judged on a fragment. Same rule for a shell body spelled that way.
+  if (inline !== null && !quotesBalance(inline.text)) return { kind: 'unparseable', inline };
+  if (unreadable === 'stream') return { kind: 'interactive', inline };
+  if (unreadable === 'file') return { kind: 'unseeable', inline };
+  // No body at all is a root PROMPT: `sudo sh`, `sudo bash`, `sudo python3` are `sudo -i` by another
+  // name, and the review is right that the one classified and the others not was the sharpest gap.
+  return inline === null ? { kind: 'interactive', inline: null } : { kind: 'readable', inline };
+}
+
+/** Escaping undone: a body written into another string carries `\"` where a quote is meant, and a
+ *  literal ending `rm -rf /\` matches no floor pattern while `rm -rf /` does. Measured, not assumed —
+ *  `sudo awk "BEGIN{system(\"rm -rf /\")}"` was ALLOWED until this existed. */
+const unescape = (text: string): string => text.replace(/\\(.)/g, '$1');
+
+/** Do the quotes balance once escaping is undone? If not, what was extracted is not what will run. */
+function quotesBalance(text: string): boolean {
+  const bare = unescape(text);
+  return (bare.split('"').length - 1) % 2 === 0 && (bare.split("'").length - 1) % 2 === 0;
+}
+
+/** Every quoted string literal in a non-shell body — see `CODE_INTERPRETERS` for why these are it. */
+function quotedLiterals(text: string): string[] {
+  return [...unescape(text).matchAll(/'([^']*)'|"([^"]*)"/g)]
+    .map((m) => (m[1] ?? m[2] ?? '').trim())
+    .filter((s) => s.length > 0);
 }
 
 /** One more layer, for a nested wrapper. */
-function parseInner(rest: string): { inner: string; interactiveShell: boolean } {
+function parseInner(rest: string): { inner: string; interactiveShell: boolean; unparseable: boolean } {
   if (isSudoLine(rest)) {
     const again = parseSudo(rest);
-    return { inner: again.inner, interactiveShell: again.interactiveShell };
+    return { inner: again.inner, interactiveShell: again.interactiveShell, unparseable: again.quotedOptionValue };
   }
-  return { inner: rest, interactiveShell: false };
+  // ⚠ F3: A PRIVILEGED INTERPRETER WITH NO READABLE BODY IS A ROOT PROMPT. `sudo sh`, `sudo sh -s`,
+  // `echo … | sudo sh`, `sudo python3` — each is `sudo -i` spelled differently, and the review is
+  // right that classifying one and not the others was the sharpest remaining gap. A NAMED body
+  // (`sudo sh /tmp/x.sh`) is `unseeable` instead, which the policy already governs because the line
+  // is a privileged line: refused under `blocked`, held under `gated`, allowed under `free`.
+  // ⚠ AT ANY DEPTH, not only the top one: an inner body's unbalanced quotes are the same defect as an
+  // outer one's, and `sudo sh -c "sh -c \"rm -rf /\""` is how that was measured.
+  const found = unwrapBodies(rest);
+  return { inner: rest, interactiveShell: found.interactive, unparseable: found.unparseable };
 }
 
-/** The `blocked` refusal, VERBATIM what the floor said before this change. */
-export const SUDO_BLOCKED_REASON = 'Global deny: command starting with "sudo" is prohibited';
-
-/**
- * THE ROLE WALL (owner ruling 2026-09-27: *"ONLY the main agent gets Sudo access ever."*).
- *
- * It speaks in the FLOOR's voice — "Global deny" — and not in the policy's, because that is what it
- * is: no value of `sudo_policy` reaches this refusal, so telling a sub-agent that the policy refused
- * it would be false and would send it to the owner asking for a setting change that cannot help.
- * It names the ONE route that exists instead, which is the same courtesy every other floor refusal in
- * this tree extends: say what is impossible, then say what is possible.
- */
-export const SUDO_NOT_PRIMARY_REASON =
-  'Global deny: sudo is reserved to the primary agent and no permission setting changes that. This '
-  + 'is a role boundary, not a grant you can be given. If the work genuinely needs administrator '
-  + 'rights, hand it to the primary agent (send_to_agent) and let it decide.';
+/** One place where a parsed inner becomes the result, so no call site can forget a signal. */
+function finish(rest: string, nonInteractive: boolean, quotedOptionValue: boolean): ParsedSudo {
+  const p = parseInner(rest);
+  return {
+    inner: p.inner,
+    interactiveShell: p.interactiveShell,
+    nonInteractive,
+    quotedOptionValue: quotedOptionValue || p.unparseable,
+  };
+}
 
 /**
  * THE DECISION, and the ORDER OF THESE THREE STEPS IS THE SECURITY PROPERTY.
@@ -709,18 +931,6 @@ export function authorizeSudoLine(
   return allow(`sudo-policy:${policy}(${inner.rule})`);
 }
 
-/** The refusal for a sudo line whose options this parser cannot read — see `authorizeSudoLine`. */
-export const SUDO_UNPARSEABLE_REASON =
-  'Refused: this sudo line has a quoted option value, and the permission broker cannot reliably tell '
-  + 'where sudo\'s own options end and your command begins — so it will not guess. Rewrite it with the '
-  + 'command plain after sudo (for example `sudo cp a b` rather than `sudo -p "…" cp a b`).';
-
-/** The interactive-root-shell refusal — no inner command exists to authorize. */
-export const SUDO_INTERACTIVE_SHELL_REASON =
-  'Refused: `sudo` with no command asks for an interactive root shell, which has nothing the '
-  + 'permission broker can check. Run the specific command you need through sudo instead, so the '
-  + 'floor and your grants can both see it.';
-
 /**
  * Does THIS call need the owner's approval before it runs? `gated` + a sudo line, and nothing else.
  *
@@ -762,79 +972,3 @@ export function isSudoHoldRequired(toolName: string, args: Record<string, unknow
   }
 }
 
-/**
- * THE OWNER'S CARD for a held primary sudo call (`gated`).
- *
- * Plain language, engine-fixed, never model-authored — the same discipline the Healer's card states.
- * It says WHAT was asked, that nothing has happened, what declining costs (nothing), and it does NOT
- * recommend approval: an administrator command on the owner's own Mac is his call, and a card that
- * nudges is a card that gets clicked through.
- */
-export function sudoOwnerCardCopy(command: string): {
-  title: string; description: string; proposedFix: string; evidence: readonly string[];
-} {
-  return {
-    title: 'Your agent wants to run an administrator command',
-    description:
-      'Your main agent is asking to run something as administrator (sudo) on this Mac. Nothing has '
-      + 'run yet, and nothing will unless you approve it. Declining changes nothing at all. Approve it '
-      + 'only if you recognise this as something you asked for — and if you would rather not be asked '
-      + 'each time, Settings → Security → sudo policy has a setting for that in both directions.',
-    proposedFix: `Run this as administrator: ${command}`,
-    evidence: [
-      'Administrator commands can change or remove anything on this Mac, so the agent pauses first.',
-      'The platform\'s hard limits still apply: it cannot erase the disk or read your credentials '
-      + 'file, whatever you choose here.',
-    ],
-  };
-}
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// HONEST FAILURE — the password prompt, and the ONE command a human runs once.
-//
-// A non-interactive `sudo` on a box without a NOPASSWD rule does not fail: it BLOCKS on a password
-// prompt nobody will ever type into, and the turn dies on a timeout with no explanation. That is
-// the failure mode `gated` and `free` would otherwise ship with, and it looks like the feature is
-// broken rather than unconfigured.
-//
-// ⚠ NO AUTOMATIC SUDOERS WRITING IN v1, by instruction and on merit: a process that edits its own
-// sudoers to grant itself root is the shape every hardening guide exists to prevent, and it would
-// have to run as root to do it. The platform PRINTS ONE LINE; a human runs it once.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-/** How long a probe may take before the box is treated as password-gated. */
-export const SUDO_PROBE_TIMEOUT_MS = 1_500;
-
-/**
- * The sudoers drop-in the message tells the human to install, and the scope is argued rather than
- * maximal.
- *
- * SCOPED TO THE USER, NOT TO A COMMAND LIST. A command-scoped rule (`NOPASSWD: /bin/cp`) reads
- * safer and is not: the whole point of the policy is that the agent runs the commands the OWNER's
- * box needs, which is not a list anybody can write in advance, and a half-list produces exactly the
- * silent hang this message exists to end — for the commands somebody forgot. The real boundary is
- * the one the broker enforces on every line (the floor, the sensitive-path scan, the agent's
- * grants), and `blocked` remains the setting for a box that wants no sudo at all.
- */
-export function sudoersDropInLine(username: string): string {
-  return `${username} ALL=(ALL) NOPASSWD: ALL`;
-}
-
-/**
- * The truthful, actionable answer when sudo would hang.
- *
- * It names WHAT happened (not a refusal — an unconfigured box), the ONE command to run, where it
- * goes, and the alternative (set the policy to `blocked`) so the reader is not cornered into
- * granting root to make a message go away.
- */
-export function sudoPasswordPromptMessage(username: string, policy: SudoPolicy): string {
-  return 'Refused, and this is a box-setup gap rather than a permission denial: `sudo` on this '
-    + 'machine wants a password, and nothing here can type one — a non-interactive sudo would hang '
-    + 'at the prompt until the turn times out, so it is not attempted.\n\n'
-    + `The sudo policy is \`${policy}\`, so the command is allowed in principle. To make it actually `
-    + 'work, a HUMAN runs this ONCE, by hand, in a terminal on this Mac:\n\n'
-    + `    echo '${sudoersDropInLine(username)}' | sudo tee /etc/sudoers.d/dojo && sudo chmod 0440 /etc/sudoers.d/dojo\n\n`
-    + 'That grants passwordless sudo to this user account. Nothing in the platform writes that file '
-    + 'for you, on purpose. If you would rather not grant it, set Settings → Security → sudo policy '
-    + 'to `blocked` and the agent will stop asking.';
-}
