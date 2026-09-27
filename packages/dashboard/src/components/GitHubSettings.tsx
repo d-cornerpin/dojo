@@ -23,7 +23,8 @@ import { githubCardState, connectLabel, describeScope, connectedAs, scopeRequest
 // holds that as behaviour rather than as this paragraph.
 //
 // ── WHY THE DECISIONS ARE NOT IN THIS FILE ──
-// `packages/dashboard` has no test runner. Every rule where being wrong is a LIE ABOUT A
+// This package has a component runner now (happy-dom, 2026-09-26), and it does not change where
+// these live: every rule where being wrong is a LIE ABOUT A
 // CONNECTION — which of the four states to draw, how to describe the permission GitHub actually
 // granted, how to render a grant with no name — lives in `lib/github-card.ts` and is driven
 // from the server's suite against the real doors. What is left here is JSX, the four
@@ -151,7 +152,7 @@ export const GitHubSettings = () => {
             tracker, posted as you.
           </p>
           {/* Derived from GITHUB_EXPECTED_SCOPE, never retyped here — a hardcoded copy is a
-              claim about the user's private code in the one file with no test runner. */}
+              claim about the user's private code that no component test can judge. */}
           <p className="text-xs text-ui/40">{scopeRequestSentence()}</p>
           <button className="btn btn--primary btn--sm" onClick={handleConnect} disabled={busy}>
             {connectLabel(status)}

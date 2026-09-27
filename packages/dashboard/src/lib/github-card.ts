@@ -125,7 +125,7 @@ export const describeScope = (scope: string | null): string => {
  * The card carried its own copy of this sentence, worded differently ("private repos" rather
  * than "private repositories") so that no grep over the tested wording found it. That copy was
  * exactly what `describeScope` above exists to forbid: a CONSTANT claim about the user's
- * private code, living in the one file with no test runner. Both sentences now hang off
+ * private code, sitting where no component test can judge it. Both sentences now hang off
  * `GITHUB_EXPECTED_SCOPE`, which the server-side suite pins to the engine's own
  * `GITHUB_OAUTH_SCOPE` — so if the scope this box asks for ever widens, neither sentence can
  * keep reassuring anybody. A census over `GitHubSettings.tsx` refuses a third copy.

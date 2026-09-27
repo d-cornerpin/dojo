@@ -10,7 +10,7 @@
 // activity") was true underneath and invisible on top.
 //
 // ── WHY A LIB FILE AND NOT A TERNARY IN THE CARD ──
-// `packages/dashboard` has no test runner. The established arrangement is that a
+// A component runner landed on 2026-09-26; the arrangement it does not replace is that a
 // decision worth arguing with lives here as a pure function and is driven from the
 // server suite (`report-edits.ts`, `github-card.ts`, `access-edits.ts` and five
 // others do exactly this). "Is there work to stop, and what do I call it" is such a

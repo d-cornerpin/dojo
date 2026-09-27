@@ -11,9 +11,9 @@
 // ── WHY THIS IS NOT IN `Settings.tsx` ──
 // T66b's editor states the invariant as "TWO DOORS, ONE SAVE": each door owns its own columns,
 // the user sees one button, and a field the user did not touch is never mentioned in any
-// request. That second half is the anti-trap, and it is the half a `.tsx` file cannot prove —
-// `packages/dashboard` has no test runner, so every rule that lives inside the component is a
-// rule nothing checks. Both new doors REFUSE their field by name on the identity door
+// request. That second half is the anti-trap, and it is the half a `.tsx` file cannot prove: a
+// component test (this package has had a runner since 2026-09-26) can assert what was RENDERED,
+// not what a door would accept. Both new doors REFUSE their field by name on the identity door
 // (`gateway/routes/config.ts`), so an "only what changed" bug here is not a cosmetic one: it
 // either 400s the whole save or silently clears a number nobody meant to clear.
 //

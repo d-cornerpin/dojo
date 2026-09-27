@@ -12,8 +12,8 @@
 // nothing tells him the value exists, is safe, or where to look.
 //
 // ── WHY A RULE HERE AND A CHIP THERE ──
-// `packages/dashboard` has no test runner (BACKLOG, four+ component rules are
-// held only by honesty notes), so the DECISION — is this span a placeholder, and
+// A component runner arrived on 2026-09-26; the rules that are DECISIONS still belong
+// in a pure module the server suite can drive. So the DECISION — is this span a placeholder, and
 // which handle does it name — lives in this pure module where the server's suite
 // can drive it, and `components/Markdown.tsx` does nothing but draw what it is
 // told. The precedent is `lib/dates.ts` + `server/src/__tests__/dashboard-dates.test.ts`.

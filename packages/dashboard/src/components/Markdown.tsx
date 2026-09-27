@@ -333,8 +333,8 @@ function processInline(text: string, baseKey: number): React.ReactNode {
   // the exception here and the segment walk is the DEFAULT, so that a broken or disabled guard
   // fails toward drawing chips rather than toward leaking the raw token back onto the page. A
   // mutation run showed the other arrangement ("guard the chip path") let `if (false)` restore
-  // the original bug with every clause still green, and `packages/dashboard` has no test runner
-  // to catch that behaviourally (its own BACKLOG item).
+  // the original bug with every clause still green — and the component runner this package gained
+  // on 2026-09-26 does not cover this path yet, so the arrangement is still the guard.
   if (segments.length === 1 && segments[0].kind === 'text') {
     return processInlineFormatting(text, baseKey);
   }

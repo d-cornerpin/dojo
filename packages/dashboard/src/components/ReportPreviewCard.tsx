@@ -17,7 +17,8 @@ import { DeliveredPanel, DuplicatePanel } from './ReportDeliveryPanel';
 // another was published. A clause reads this file and refuses the import.
 //
 // ── THE DECISIONS ARE NOT IN THIS FILE ──
-// `packages/dashboard` has no test runner. The sentence that says where the report goes, the
+// This package gained a component runner on 2026-09-26; these decisions stay where they are.
+// The sentence that says where the report goes, the
 // only-what-moved edit rule, and the "is this postable" check all live in `lib/report-edits.ts`
 // and are driven from the server's suite against the real doors. What is left here is JSX, two
 // subscriptions and the busy flags. ⚠ THE CONSENT SENTENCE MUST NOT BE COPIED INTO THIS FILE:

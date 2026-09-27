@@ -57,6 +57,18 @@ export async function forgetSessionScratch(agentId: string): Promise<void> {
     clearSessionLoadedTools(agentId);
   } catch { /* best-effort — never the reason a reset fails */ }
   try {
+    // ⚠ THE WIDENING HERE IS CALLER COUNT, NOT SCOPE (final sweep C, B7 — 2026-09-26).
+    // This clear had TWO doors before the smallfry round and has FIVE now, because every session
+    // boundary routes through this one cleaner. Its docstring in `turn-state.ts` records the one
+    // prior failure this function already had, and the axis matters: that incident was a WIDER
+    // BODY — clearing both drain ladders instead of the human one — which handed the unserved-wake
+    // drain two extra passes per session start and was caught by `fanout-serves-all-pieces`
+    // tripping the platform's own wake budget. The body is untouched here; what changed is how
+    // many doors reach it, and each of those doors is a session RESET, which is the one event the
+    // spin-guard is supposed to forget. The risk the incident names — more self-wakes — scales
+    // with passes per reset, not with the number of doors that can cause a reset, so five doors
+    // clearing once each is the same blast radius as two doors clearing once each. A future edit
+    // that widens the BODY re-opens the incident; adding a sixth session door does not.
     const { clearServedConversations } = await import('./turn-state.js');
     clearServedConversations(agentId);
   } catch { /* best-effort — never the reason a reset fails */ }

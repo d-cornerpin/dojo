@@ -96,17 +96,17 @@ export const a2aTurnRetries = new Map<string, number>();
 // always follows the conversation the turn is actually answering. See
 // getWaitingHumanConversations (agent/v2/counterparty.ts).
 
-/** Reset the per-agent turn-continuity scratch state on a new session. The
- *  "served" signal itself is DB-derived, so there's nothing to clear there; this resets the
- *  human-conversation drain spin-guard (durable since T10) and the cross-turn untracked-work
- *  counter.
+/** Reset the per-agent turn-continuity scratch state on a new session. The "served" signal is
+ *  DB-derived, so nothing is cleared there; this resets the human-conversation drain spin-guard
+ *  (durable since T10) and the cross-turn untracked-work counter.
  *
- *  SCOPE IS DELIBERATE AND IT IS THE OLD SCOPE. The Map this replaced was `drainHead` — the
- *  HUMAN drain only. Clearing both ladders here would hand the unserved-wake drain two extra
- *  passes on every session start, i.e. MORE self-wakes, on the one path a session reset
- *  touches. RULING 5 moved this counter's storage; it does not get to move its semantics, and
- *  the wider clear was caught by `fanout-serves-all-pieces` tripping the platform's own wake
- *  budget before it was caught by reading the diff. */
+ *  SCOPE IS DELIBERATE AND IT IS THE OLD SCOPE. The Map this replaced was `drainHead` — the HUMAN
+ *  drain only. Clearing both ladders would hand the unserved-wake drain two extra passes on every
+ *  session start, i.e. MORE self-wakes, on the one path a session reset touches; that wider clear
+ *  was caught by `fanout-serves-all-pieces` tripping the platform's own wake budget before anyone
+ *  caught it by reading the diff. RULING 5 moved this counter's storage, not its semantics.
+ *  ⚠ 2026-09-26: the DOORS reaching this went 2 → 5, all through `session-forget.ts`, which is
+ *  where that widening's risk argument lives — caller count moved, the body's scope did not. */
 export function clearServedConversations(agentId: string): void {
   clearDrainLadder(agentId, 'human_conversation');
   untrackedWorkAcrossTurns.delete(agentId);
