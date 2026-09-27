@@ -75,7 +75,7 @@
 -- WRITER: this file, once. Going forward the two `work/occurrences.ts` paths keep `adjudications`
 -- swept, `work/purge-sweep.ts` keeps the agent-scoped case, and `work/tracker-store.ts` already
 -- swept its own. READERS of the rows removed: none. Guarded by
--- `db/__tests__/migration-175-orphaned-work-references.test.ts` and by the work-side census in
+-- `db/__tests__/migration-176-orphaned-work-references.test.ts` and by the work-side census in
 -- `work/__tests__/a-deleted-work-row-leaves-no-verdict.test.ts`.
 
 -- ── 1. THE VERDICT WHOSE QUESTION IS GONE ──

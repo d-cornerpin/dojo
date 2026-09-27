@@ -50,7 +50,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 
 import { runMigrations } from '../migrations.js';
 
-const MIGRATION_175 = '175_orphaned_work_references.sql';
+const MIGRATION_175 = '176_orphaned_work_references.sql';
 const MIGRATION_SQL = fs.readFileSync(
   path.join(__dirname, '..', 'migrations', MIGRATION_175), 'utf-8',
 );
