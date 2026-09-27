@@ -44,7 +44,10 @@ import { grantForManifest } from '../grants.js';
 import { authorizeArgv, authorizeShellScript } from '../proc.js';
 import { authorizeAppleScript } from '../applescript.js';
 import { resolveArgvArg, resolveCommandArg } from '../resolve.js';
-import { SUDO_NOT_PRIMARY_REASON, SUDO_UNPLACEABLE_REASON, isSudoHoldRequired } from '../sudo-policy.js';
+import {
+  PRIVILEGE_PROGRAMS, SUDO_NOT_PRIMARY_REASON, SUDO_UNPLACEABLE_REASON, isSudoHoldRequired,
+  mentionsPrivilegeToken, osascriptBodyIsUnseeable,
+} from '../sudo-policy.js';
 import type { PermissionManifest } from '@dojo/shared';
 
 const base = {
@@ -133,6 +136,23 @@ const EVASIONS: readonly string[] = [
   // case and whitespace, which AppleScript tolerates and so must the detector
   `osascript -e 'do shell script "id" With Administrator Privileges'`,
   `osascript -e 'do shell script "id" with admin privileges'`,
+  // ── OR-SUDO-2, final micro-round: `su` is an admin door and it SHIPS on macOS
+  'su -c "whoami" root',
+  'su root -c whoami',
+  'su - root -c whoami',
+  'true; su -c "rm -rf /" root',
+  'echo $(su -c whoami root)',
+  '/usr/bin/su -c whoami root',
+  'SU -c whoami root',
+  // ── OR-SUDO-2's doctrine on an UNSEEABLE body: an admin-capable interpreter invoked on content the
+  //    broker cannot read is NOT proven inert, so the policy governs it.
+  'osascript /tmp/x.scpt',
+  'osascript -l JavaScript /tmp/x.js',
+  'osascript -',
+  'osascript /dev/stdin',
+  'osascript',
+  'cat /tmp/x.scpt | osascript',
+  'osascript < /tmp/x.scpt',
   // already caught before this round, kept so a regression is visible
   '/usr/bin/sudo whoami',
   'sudo sudo rm -rf /',
@@ -485,5 +505,104 @@ describe('§6 the AppleScript admin-privileges door', () => {
     // an ordinary osascript is NOT privileged — refusing it would lose a capability nobody gave up
     policyRow.current = 'blocked';
     expect(shellAllows(`osascript -e 'display dialog "hi"'`, WORKER)).toBe(true);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §7 — THE LAST TWO DOORS (OR-SUDO-2, final micro-round). Both resolve under the existing ruling.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§7 `su`, and a body the broker cannot read', () => {
+  const SU_ROWS: readonly string[] = [
+    'su -c "whoami" root', 'su root -c whoami', 'su - root -c whoami',
+    '/usr/bin/su -c whoami root', 'SU -c whoami root', 'env su -c whoami root',
+    'true; su -c whoami root', 'echo $(su -c whoami root)',
+  ];
+  const UNSEEABLE: readonly string[] = [
+    'osascript /tmp/x.scpt', 'osascript -l JavaScript /tmp/x.js', 'osascript -',
+    'osascript /dev/stdin', 'osascript', 'cat /tmp/x.scpt | osascript', 'osascript < /tmp/x.scpt',
+  ];
+
+  it('`su` is refused to a SUB-AGENT under every policy — it is the same role boundary', () => {
+    underEach((p) => {
+      for (const line of SU_ROWS) {
+        const v = shell(line, WORKER);
+        expect(v.allowed, `${p}: ${line}`).toBe(false);
+      }
+    });
+  });
+
+  it('`su` answers to the POLICY for the primary, like every other door', () => {
+    policyRow.current = 'blocked';
+    for (const line of SU_ROWS) expect(shellAllows(line, PRIMARY), line).toBe(false);
+    policyRow.current = 'gated';
+    for (const script of ['su -c whoami root', 'su root -c whoami']) {
+      expect(isSudoHoldRequired('shell', { script }), script).toBe(true);
+    }
+    policyRow.current = 'free';
+    expect(shellAllows('su root -c whoami', PRIMARY)).toBe(true);
+  });
+
+  it('⚠ `su -c "rm -rf /" root` FAILS CLOSED rather than slipping the floor', () => {
+    // `-c` carries a COMMAND STRING, so it is value-taking and the shared quote check catches it. Without
+    // that, the inner would be `"rm -rf /" root` — the stray quote in front of the floor prefix, exactly
+    // the `--prompt="pw: "` shape. Refused under every policy, for both roles.
+    for (const who of [WORKER, PRIMARY]) {
+      underEach((p) => expect(shellAllows('su -c "rm -rf /" root', who), `${p}/${who}`).toBe(false));
+    }
+  });
+
+  it('AN UNSEEABLE BODY IS NOT PROVEN INERT, so the policy governs it', () => {
+    // The doctrine, not a new rule: admin-shaped and not proven inert ⇒ refuse or hold.
+    underEach((p) => {
+      for (const line of UNSEEABLE) expect(shellAllows(line, WORKER), `${p}: ${line}`).toBe(false);
+    });
+    policyRow.current = 'blocked';
+    for (const line of UNSEEABLE) expect(shellAllows(line, PRIMARY), line).toBe(false);
+    policyRow.current = 'gated';
+    for (const script of ['osascript /tmp/x.scpt', 'osascript -']) {
+      expect(isSudoHoldRequired('shell', { script }), script).toBe(true);
+    }
+    policyRow.current = 'free';
+    expect(shellAllows('osascript /tmp/x.scpt', PRIMARY)).toBe(true);
+  });
+
+  it('⚠ AN INLINE `-e` BODY IS SEEABLE AND STILL RUNS — the capability is not lost', () => {
+    // The line between the two is whether the phrase check can READ the body. Refusing ordinary
+    // automation would delete a capability the owner never gave up.
+    underEach((p) => {
+      for (const line of [
+        `osascript -e 'display dialog "hi"'`,
+        `osascript -e 'tell application "Music" to play'`,
+        `osascript -l JavaScript -e 'Application("Finder").name()'`,
+        `osascript -e 'do shell script "ls -la"'`,
+      ]) {
+        expect(shellAllows(line, WORKER), `${p}: ${line}`).toBe(true);
+      }
+    });
+  });
+
+  it('⚠ THE SOUND FLOOR AND THE PROGRAM SET ARE THE SAME SET — they drifted once', () => {
+    // `su` and `osascript` went into `PRIVILEGE_PROGRAMS` and not into the detector regex, so the walk
+    // saw them and the floor did not — and `echo $(su -c whoami root)` escaped, because a substitution
+    // is precisely the case only the floor can catch. Every program must be a token the floor knows.
+    for (const program of PRIVILEGE_PROGRAMS) {
+      expect(mentionsPrivilegeToken(`echo $(${program} x)`), program).toBe(true);
+      expect(mentionsPrivilegeToken(`true; ${program} x`), program).toBe(true);
+    }
+    // and the short one does not swallow the long one
+    expect(PRIVILEGE_PROGRAMS.has('su') && PRIVILEGE_PROGRAMS.has('sudo')).toBe(true);
+    expect(mentionsPrivilegeToken('echo sudoku')).toBe(false);
+    expect(mentionsPrivilegeToken('echo subdirectory')).toBe(false);
+  });
+
+  it('the seeable/unseeable boundary is decided by the OPERANDS, and it is a unit', () => {
+    expect(osascriptBodyIsUnseeable(['-e', `'display dialog "hi"'`])).toBe(false);
+    expect(osascriptBodyIsUnseeable(['-l', 'JavaScript', '-e', `'x'`])).toBe(false);
+    expect(osascriptBodyIsUnseeable(['/tmp/x.scpt'])).toBe(true);
+    expect(osascriptBodyIsUnseeable(['-'])).toBe(true);
+    expect(osascriptBodyIsUnseeable(['/dev/stdin'])).toBe(true);
+    expect(osascriptBodyIsUnseeable([])).toBe(true);           // bare osascript reads stdin
+    expect(osascriptBodyIsUnseeable(['-l', 'JavaScript', '/tmp/x.js'])).toBe(true);
   });
 });

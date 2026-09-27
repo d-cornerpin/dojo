@@ -155,6 +155,17 @@ function segmentCommand(seg: Tok[]): string | null {
 }
 
 /**
+ * The WORDS of one simple command, with quoted spans, `$( )` and backticks kept whole.
+ *
+ * Exported because `agent/brokers/sudo-policy.ts` was splitting on `/\s+/` and a quoted `-e` body then
+ * looked like several words — so `osascript -e 'display dialog "hi"'` read as having a FILE OPERAND
+ * (`dialog`) and was refused. One tokenizer, one answer to "what are this command's words".
+ */
+export function commandWords(command: string): string[] {
+  return tokenize(command).filter((t) => !t.op).map((t) => t.text);
+}
+
+/**
  * EVERY SIMPLE COMMAND THE LINE CONTAINS — the v3.2.2 security review's S1 view.
  *
  * ── WHY THIS EXISTS BESIDE `execInnerCommands` RATHER THAN REPLACING IT ──────────────────────

@@ -57,7 +57,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getSudoPolicyRaw, isPrimaryAgent } from '../../config/platform.js';
-import { execSimpleCommands } from '../exec-grammar.js';
+import { commandWords, execSimpleCommands } from '../exec-grammar.js';
 // `types.js` is a leaf (no broker imports), so the verdict helpers come from there rather than
 // from `proc.ts` — which imports THIS module, and would be a cycle.
 import { allow, deny, type Verdict } from './types.js';
@@ -95,6 +95,11 @@ const SUDO_OPTS_WITH_VALUE: ReadonlySet<string> = new Set([
   '-u', '--user', '-g', '--group', '-h', '--host', '-p', '--prompt', '-C', '--close-from',
   '-D', '--chdir', '-R', '--chroot', '-T', '--command-timeout', '-U', '--other-user',
   '-r', '--role', '-t', '--type',
+  // `su`'s command option (OR-SUDO-2). It carries a COMMAND STRING, so it is value-taking, and the
+  // shared quote check then fail-closes `su -c "rm -rf /" root` — whose inner would otherwise come out
+  // as `"rm -rf /" root`, with the stray quote in front of the floor prefix. Exactly the shape the
+  // `--prompt="pw: "` bug had, caught here before it could ship a second time.
+  '-c', '--command',
 ]);
 
 /**
@@ -140,8 +145,18 @@ export interface ParsedSudo {
  * NOT matched, and each is a real word a model writes: `sudoku`, `pseudo`, `sudo_policy`,
  * `mysudo` — the boundary is a shell word boundary, not a substring.
  */
+/**
+ * ⚠ THE SET HERE MUST MATCH `PRIVILEGE_PROGRAMS`, AND IT DRIFTED ONCE. `su` and `osascript` were added
+ * to the program set and not to this regex, so the precise walk saw them and the SOUND FLOOR did not —
+ * which meant `echo $(su -c whoami root)` escaped, because a substitution is exactly the case only the
+ * floor can catch. Caught by the corpus row for it. The clause below pins the two lists as the same set
+ * so the next addition cannot drift the same way.
+ *
+ * `sudo` precedes `su` in the alternation and the trailing boundary excludes a letter, so `sudo` is
+ * never matched as `su` + `do`.
+ */
 const PRIVILEGE_TOKEN_RE =
-  /(^|[\s;|&()<>{}`$'"\\/])\\?['"]?(sudo|doas)['"]?($|[\s;|&()<>=]|['"])/i;
+  /(^|[\s;|&()<>{}`$'"\\/])\\?['"]?(sudo|doas|osascript|su)['"]?($|[\s;|&()<>=]|['"])/i;
 
 export function mentionsPrivilegeToken(raw: string): boolean {
   return PRIVILEGE_TOKEN_RE.test(raw) || mentionsAdminPrivileges(raw);
@@ -225,8 +240,16 @@ function privilegeWordIndex(words: readonly string[]): number | null {
   return null;
 }
 
-/** The programs that ARE the privilege. `osascript` is here by the owner's "one policy" ruling. */
-const PRIVILEGE_PROGRAMS: ReadonlySet<string> = new Set(['sudo', 'doas', 'osascript']);
+/**
+ * The programs that ARE the privilege — every admin-privilege door, per OR-SUDO-2.
+ *
+ * `osascript` and `su` are here by that ruling rather than by a new ask: `su -c "…" root` is plainly an
+ * admin-privilege door and `su` SHIPS ON MACOS, so leaving it out would have made the wall's stated
+ * purpose untrue by one more spelling. (`pkexec` and `runuser` are deliberately absent: they are not
+ * installed on a stock macOS volume, and a floor entry for a program that cannot run is a line nobody
+ * can test. The day either appears, this set is where it goes.)
+ */
+export const PRIVILEGE_PROGRAMS: ReadonlySet<string> = new Set(['sudo', 'doas', 'osascript', 'su']);
 
 /**
  * Is this ONE SIMPLE COMMAND a privileged one? Wrapper-aware, case-folded, quote- and
@@ -237,11 +260,55 @@ const PRIVILEGE_PROGRAMS: ReadonlySet<string> = new Set(['sudo', 'doas', 'osascr
  * the owner never asked to lose; `with administrator privileges` is the part that reaches root.
  */
 export function isSudoLine(trimmed: string): boolean {
-  const words = trimmed.trim().split(/\s+/).filter(Boolean);
+  const words = commandWords(trimmed);
   const at = privilegeWordIndex(words);
   if (at === null) return false;
   if (bareWord(words[at]).toLowerCase() !== 'osascript') return true;
-  return mentionsAdminPrivileges(trimmed);
+  // The admin phrase in an INLINE body is seeable and decides the question.
+  if (mentionsAdminPrivileges(trimmed)) return true;
+  // …and a body the broker CANNOT READ is not proven inert, which is the doctrine.
+  return osascriptBodyIsUnseeable(words.slice(at + 1));
+}
+
+/**
+ * ⚠ AN ADMIN-CAPABLE INTERPRETER INVOKED ON CONTENT THE BROKER CANNOT READ (OR-SUDO-2's doctrine
+ * applied, not a new rule): *admin-shaped and not proven inert ⇒ refuse or hold.*
+ *
+ * `osascript file.scpt`, `osascript -`, `osascript /dev/stdin`, `osascript < file` — the script body is
+ * somewhere this function cannot see, and `with administrator privileges` inside it reaches root. It is
+ * therefore NOT PROVEN INERT and the policy governs it: held under `gated`, refused for a sub-agent and
+ * under `blocked`, allowed under `free`.
+ *
+ * ── ⚠ WHY NOT READ THE FILE AND PROVE IT PHRASE-FREE, which would be better if it were safe ──
+ * MEASURED, AND THE RACE CANNOT BE CLOSED CHEAPLY. Proving inertness by reading is only sound if what
+ * was read is what executes, and this tree has nowhere to bind that: `Verdict` carries `allowed`, a rule
+ * id and a reason — no channel for a content hash — and the execution seam's own check
+ * (`agent/effects/proc.ts` → `requireAuthorized({op:'proc', program})`) verifies the PROGRAM and never
+ * the argument's content. So a read here would be a TOCTOU window an agent can drive: write a benign
+ * script, get it authorized, rewrite it before `osascript` opens it. Closing it means threading a hash
+ * from the broker to the exec seam and re-hashing there — a real plumbing change to two modules and a
+ * shared type, which is not a micro-round. SO THIS SHIPS THE HOLD, and the cheaper proof is left as a
+ * named improvement rather than a quiet risk.
+ *
+ * ⚠ AN INLINE `-e` BODY IS STILL SEEABLE AND STILL ALLOWED. `osascript -e 'display dialog "hi"'` runs
+ * for any agent under every policy, because the phrase check can read it — refusing it would delete an
+ * ordinary automation capability the owner never gave up.
+ */
+export function osascriptBodyIsUnseeable(operands: readonly string[]): boolean {
+  // ⚠ NAMED `operands`, NOT `args`: `effects-conformance.test.ts` walks handler modules for `args.<name>`
+  // to census which tool parameters are read, and `args.length` here was reported as an undeclared
+  // parameter called `length`. The census is pattern-based and right to be; the collision was mine.
+  let sawInline = false;
+  for (let i = 0; i < operands.length; i++) {
+    const o = operands[i];
+    if (o === '-e' || o === '--expression') { sawInline = true; i += 1; continue; }
+    if (o === '-l' || o === '--language' || o === '-s') { i += 1; continue; }
+    if (o === '-' || o === '/dev/stdin' || o.startsWith('<')) return true;   // stdin or a redirect
+    if (o.startsWith('-')) continue;                                         // an ordinary flag
+    return true;                                                            // a FILE operand
+  }
+  // No operand at all: seeable if an inline body was given, and a bare `osascript` reads stdin.
+  return !sawInline;
 }
 
 /**
@@ -300,12 +367,12 @@ export function privilegeTokenIsQuotedData(raw: string, segments: readonly strin
   // deliberately allowed. The occurrence machinery below is the right judge: `osascript -e '… with
   // administrator privileges'` refuses because `osascript` is not a provably inert program, while an
   // inert program quoting the phrase is data. The AppleScript door is separate and does not rely on this.
-  const occurrences: Array<{ word: string; index: number; program: string }> = [];
+  const occurrences: Array<{ word: string; index: number; program: string; seg: string }> = [];
   for (const seg of segments) {
     const words = seg.trim().split(/\s+/).filter(Boolean);
     const program = bareWord(words[0] ?? '').toLowerCase();
     words.forEach((word, index) => {
-      if (PRIVILEGE_TOKEN_RE.test(word)) occurrences.push({ word, index, program });
+      if (PRIVILEGE_TOKEN_RE.test(word)) occurrences.push({ word, index, program, seg });
     });
     // ⚠ THE ADMIN PHRASE IS THREE WORDS, so a per-word scan can never see it — and the empty-conjunction
     // guard then refused `echo "with administrator privileges"`, which is prose. Measured by the clause
@@ -314,15 +381,28 @@ export function privilegeTokenIsQuotedData(raw: string, segments: readonly strin
     // `osascript -e '… with administrator privileges'` refuses because `osascript` is not inert.
     if (mentionsAdminPrivileges(seg)) {
       const at = words.findIndex((w) => /^\W*with$/i.test(w) || /^\W*with\b/i.test(w));
-      occurrences.push({ word: seg, index: at <= 0 ? 0 : at, program });
+      occurrences.push({ word: seg, index: at <= 0 ? 0 : at, program, seg });
     }
   }
   // Mentioned in the raw line and carried by NO segment word — a construct header the segmenter drops,
   // a shape it reports opaquely — is not proven, and the empty conjunction must not read as proof.
   if (occurrences.length === 0) return false;
-  return occurrences.every((o) => o.index > 0
-    && !EXECUTING_CONTEXT_RE.test(o.word)
-    && INERT_PROGRAMS.has(o.program));
+  return occurrences.every((o) => {
+    // ⚠ A WORD-0 OCCURRENCE IS PROVEN INERT WHEN THE PRECISE LAYER SAYS SO, and that exception exists
+    // because `osascript` and `su` joined the crude detector: an ordinary
+    // `osascript -e 'display dialog "hi"'` has the token in PROGRAM position, so the blanket word-0
+    // refusal turned every benign automation line into an unplaceable refusal — measured by the clause
+    // that keeps that capability. `isSudoLine` is the precise layer, it could READ this whole segment,
+    // and it returned false: for `osascript` that means a seeable, phrase-free body, and for `sudo`/`su`
+    // it never returns false at word 0 at all. A verdict from the layer that can see everything is proof;
+    // this is not a hole, it is the one place the two layers are allowed to disagree.
+    // THE EXECUTING-CONTEXT TEST BINDS FIRST, AT EVERY POSITION. `$(sudo whoami)` is ALSO a word-0
+    // occurrence — the tokenizer hands the whole substitution back as one opaque word — so applying the
+    // word-0 exception before this test excused it, and the corpus caught that immediately.
+    if (EXECUTING_CONTEXT_RE.test(o.word)) return false;
+    if (o.index === 0) return !isSudoLine(o.seg);
+    return INERT_PROGRAMS.has(o.program);
+  });
 }
 
 /** Programs proven not to execute their arguments — the allowlist the inversion rests on. */
@@ -371,7 +451,7 @@ export const SUDO_UNPLACEABLE_REASON =
  * the ORDINARY spellings a model writes cannot slip a floor pattern past the broker.
  */
 export function parseSudo(trimmed: string): ParsedSudo {
-  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  const tokens = commandWords(trimmed);
   // RC2: START AFTER THE PRIVILEGE WORD THE ONE RESOLVER FOUND, not after token 0. `env X=1 sudo …`
   // used to leave `X=1 sudo …` as the inner command and the floor matched nothing.
   const at = privilegeWordIndex(tokens);
