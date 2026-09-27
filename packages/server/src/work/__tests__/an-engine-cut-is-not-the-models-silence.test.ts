@@ -69,6 +69,10 @@ import { askIdForMessage, claimAsk, stampClaimingTurn } from '../store.js';
 import { MAX_ASK_RE_SERVES, RE_SERVE_MARKER, settleAsk } from '../ask-settlement.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { turnWasEngineCut } from '../exit-attribution.js';
+// ⚠ NOT BY PATH for anything under `agent/v2`. `guard-corpus-census.test.ts` refuses a guard that
+// names the driver or the step packages itself: PHASE-6 is draining `loop.ts`, so such a guard stops
+// seeing its subject at some cut — and a NEGATIVE clause stops seeing it SILENTLY.
+import { engineFileContaining, engineText } from '../../agent/v2/__tests__/engine-sources.js';
 
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
@@ -139,8 +143,11 @@ beforeEach(() => {
 
 describe('§1 the loop cap reaches the turn record as itself', () => {
   it('the teardown derivation can emit `iteration_cap`', () => {
-    const derivation = read('agent/v2/steps/teardown/finalize-record.ts');
-    expect(derivation).toContain("'iteration_cap'");
+    expect(engineText()).toContain("'iteration_cap'");
+    // and it is the DERIVATION that carries it, not a comment somewhere in the engine
+    const home = engineFileContaining('const exitReason: TurnExitReason')!;
+    expect(home.text.slice(home.text.indexOf('const exitReason: TurnExitReason'), 
+      home.text.indexOf('const exitReason: TurnExitReason') + 420)).toContain("'iteration_cap'");
   });
 
   it('the loop threads its cap to teardown the way it threads the spin brake', () => {
@@ -148,10 +155,11 @@ describe('§1 the loop cap reaches the turn record as itself', () => {
     // is a STEP of `loop.ts`, so importing `MAX_TOOL_LOOPS` back out of the loop would be a cycle.
     // `toolPhaseEndedBySpinBrake` solved the identical problem — a turn-local fact the loop knows
     // and teardown needs — with a `TurnContext` field threaded through `TeardownContext`.
-    expect(read('agent/turn-context.ts')).toMatch(/toolLoopCapReached/);
-    expect(read('agent/v2/loop.ts')).toMatch(/toolLoopCapReached\s*=\s*true/);
-    expect(read('agent/v2/steps/preflight/step-contexts.ts')).toMatch(/toolLoopCapReached/);
-    expect(read('agent/v2/steps/teardown/index.ts')).toMatch(/toolLoopCapReached/);
+    expect(read('agent/turn-context.ts')).toMatch(/toolLoopCapReached/);   // not an engine file
+    const engine = engineText();
+    expect(engine).toMatch(/toolLoopCapReached\s*=\s*true/);      // the loop latches it
+    expect((engine.match(/toolLoopCapReached/g) ?? []).length,
+      'latched, threaded, declared and read').toBeGreaterThanOrEqual(4);
     // and the classifier lives in its own module, not inside the 1,300-line authority
     expect(read('work/ask-settlement.ts')).toMatch(/exit-attribution\.js/);
   });
@@ -162,7 +170,7 @@ describe('§1 the loop cap reaches the turn record as itself', () => {
     // or deliberately left model-attributable. A new word added to that ternary chain with no
     // decision here would be charged a rung by default, silently, which is this file's whole defect
     // in a new coat.
-    const writer = read('agent/v2/steps/teardown/finalize-record.ts');
+    const writer = engineFileContaining('const exitReason: TurnExitReason')!.text;
     const chain = writer.slice(writer.indexOf('const exitReason: TurnExitReason'));
     const emitted = [...chain.slice(0, 400).matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
     expect(emitted).toContain('iteration_cap');          // the fix's own proof: it is writable now

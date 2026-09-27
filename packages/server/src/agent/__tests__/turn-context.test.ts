@@ -79,6 +79,7 @@ const THE_DRIVER_CARRIES = [
   // The spin-brake pair is split across the `execute` and `callLLM` spans in OPPOSITE
   // directions, so it is the one family here that by value would be wrong twice over.
   'toolPhaseEndedBySpinBrake',
+  'toolLoopCapReached',
   'spinBrakeGraceCalls',
   'ownerAffinityConversationId',
   'ownerAffinityDestination',

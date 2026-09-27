@@ -423,7 +423,7 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     //     its own denominator, so a floor silently lost in the move fails loudly.
     const FLOORS = [
       'output-grind', 'empty-response', 'ungrounded-claim', 'delivery-denial', 'failed-save-claim',
-      'uncommitted-promise',
+      'uncommitted-promise', 'false-delivery-claim',
       'silent-closeout', 'add-notes-stop', 'going-idle-in-progress', 'owed-interrupt',
       'promise-floor', 'a2a-handoff-floor', 'reminder-silence', 'ghosted-ask',
       'ghosted-ask-answer', 'a2a-missed-reply', 'tracker-closeout',

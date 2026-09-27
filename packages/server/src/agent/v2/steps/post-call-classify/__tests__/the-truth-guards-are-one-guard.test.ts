@@ -58,13 +58,18 @@ describe('§1 one prologue, not four', () => {
   });
 });
 
-describe('§2 four declared predicates, ordered by the declared table', () => {
-  it('the set is exactly the four truth guards, in the truth band', () => {
+describe('§2 the declared predicates, ordered by the declared table', () => {
+  it('the set is exactly the truth guards, in the truth band', () => {
     expect(TRUTH_GUARDS.map((g) => g.floor)).toEqual([
-      'ungrounded-claim',    // 10 — a delivery no send tool made
-      'delivery-denial',     // 11 — a denial the receipt ledger contradicts
-      'failed-save-claim',   // 12 — a save every vault call rejected
-      'uncommitted-promise', // 13 — a recorded commitment the work ledger does not hold
+      'ungrounded-claim',     // 10 — a delivery no send tool made
+      'delivery-denial',      // 11 — a denial the receipt ledger contradicts
+      'failed-save-claim',    // 12 — a save every vault call rejected
+      'uncommitted-promise',  // 13 — a recorded commitment the work ledger does not hold
+      // 14 — THE ARM C FIND (2026-09-26). A FIFTH noun, and the merger's whole point is that adding
+      // one is a table entry: same prologue, same loop, same exit. It reads THIS TURN'S TOOL RESULTS
+      // rather than a ledger, because `dojo_report` writes no `deliveries` row and guard 10 is
+      // therefore blind to it. Decision in `agent/v2/refused-delivery.ts`, like 10's and 13's.
+      'false-delivery-claim',
     ]);
   });
 

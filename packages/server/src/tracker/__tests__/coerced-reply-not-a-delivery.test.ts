@@ -213,7 +213,7 @@ describe('turn-outcome conformance: brake outranks answered (the engine)', () =>
     const src = exitReasonHome();
     const idx = src.indexOf('const exitReason: TurnExitReason = ');
     expect(idx).toBeGreaterThan(-1);
-    const ternary = src.slice(idx, idx + 260);
+    const ternary = src.slice(idx, idx + 420);   // C2 widened the derivation by one arm
     expect(ternary).toMatch(/const exitReason: TurnExitReason = toolPhaseEndedBySpinBrake \? 'brake'/);
     const brakeAt = ternary.indexOf('toolPhaseEndedBySpinBrake');
     const answerAt = ternary.indexOf('answerRow ?');
@@ -232,7 +232,10 @@ describe('turn-outcome conformance: brake outranks answered (the engine)', () =>
     // requirement that still holds. What the requirement actually says is ORDER and
     // ARGUMENT — the stamps run after finalize and receive the same outcome — so that is
     // what is asserted.
-    expect(src.slice(idx, idx + 600)).toMatch(/finalizeTurn\(\s*agentId, turnNumber, exitReason/);
+    // The window is 900, not 600: C2 added an `iteration_cap` arm to the ternary (the tool-loop cap
+    // was being recorded as the model's own silence) and the old slice ended mid-derivation. This
+    // clause's own note above argues against fixed slices for exactly this reason.
+    expect(src.slice(idx, idx + 900)).toMatch(/finalizeTurn\(\s*agentId, turnNumber, exitReason/);
     const afterFinalize = src.slice(src.indexOf('finalizeTurn(\n', idx));
     const stampAt = afterFinalize.indexOf('stampTasksAtTurnFinalize({');
     expect(stampAt).toBeGreaterThan(-1);

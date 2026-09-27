@@ -56,6 +56,7 @@
 /** Every floor that may steer the model. One id per floor — never two floors sharing one. */
 export type SteerFloorId =
   | 'ungrounded-claim' | 'delivery-denial' | 'failed-save-claim' | 'uncommitted-promise'
+  | 'false-delivery-claim'
   | 'ghosted-ask' | 'ghosted-ask-answer' | 'silent-closeout' | 'delegation-exit'
   | 'reminder-silence'
   | 'start-ack' | 'start-ack-reminder' | 'owed-interrupt' | 'promise-floor'
@@ -92,6 +93,11 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
   // one is about the platform's own record of something still owed — but it is in the same
   // band, because "the promise is recorded" is a statement of fact and it is untrue.
   { id: 'uncommitted-promise',   priority: 13, why: 'reply says the promise is recorded and the work ledger holds nothing' },
+  // THE ARM C FIND, the fifth truth guard: it reads THIS TURN'S TOOL RESULTS, not a ledger, because
+  // `dojo_report` writes NO `deliveries` row and so guard 10 cannot see it at all. At the band's FOOT
+  // only because the four above predate it — on consequence it argues for a place beside 10, and the
+  // table takes integers; re-ranking a live table is a bigger change than this find.
+  { id: 'false-delivery-claim',  priority: 14, why: 'reply says the artifact was delivered and the only tool that could send it ERRORED this turn' },
 
   { id: 'ghosted-ask',           priority: 20, why: 'a direct human ask ended in silence' },
   { id: 'ghosted-ask-answer',    priority: 21, why: 'ghosted twice; hand the model its own recorded answer' },

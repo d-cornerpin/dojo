@@ -124,7 +124,7 @@ describe('the declared precedence table', () => {
     }
   });
 
-  it('covers the whole re-derived steer surface: 26 staged + 1 converted + 1 new noun = 28 floors', () => {
+  it('covers the whole re-derived steer surface: 26 staged + 1 converted + 1 new noun + 1 Arm C = 29 floors', () => {
     // §T0-PINS F derived 26 setting sites at `1249866`, re-derived unchanged by T3.
     //
     // PHASE-4 T4 adds the 27th, and the number moved for a reason worth stating rather than
@@ -164,8 +164,12 @@ describe('the declared precedence table', () => {
     // the person's own receipt row and onto `sys.compaction-continuity`, both asserted
     // there. Priority 60 stays RETIRED and is never reused — see the tombstone in the
     // table itself.
-    expect(STEER_PRECEDENCE.length).toBe(28);
+    expect(STEER_PRECEDENCE.length).toBe(29);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'output-grind').length).toBe(1);
+    // THE ARM C FLOOR (2026-09-26): an agent asserted "submitted!" in the same turn its report
+    // tool returned `is_error` saying the report was cancelled. The truth band's four could not see
+    // it — `ungrounded-claim` reads the DELIVERIES ledger and `dojo_report` writes no such row.
+    expect(STEER_PRECEDENCE.filter((f) => f.id === 'false-delivery-claim').length).toBe(1);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'reminder-silence').length).toBe(1);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'uncommitted-promise').length).toBe(1);
     // The retired number is a GAP, not a reallocation.

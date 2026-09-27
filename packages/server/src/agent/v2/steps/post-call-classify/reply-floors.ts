@@ -29,6 +29,7 @@ import { channelLabel, findRecentDeliveries, findRecentDeliveriesKeyed, relative
 import { isNearDuplicateText } from '../../classifiers/loop.js';
 import { detectDeliveryDenial } from '../../classifiers/grounding.js';
 import { claimedDeliverySteer, decideClaimedDelivery } from '../../claimed-delivery.js';
+import { claimsDelivery, decideRefusedDelivery, refusedDeliverySteer } from '../../refused-delivery.js';
 import {
   decideUncommittedPromise, openedBoardWorkSince, uncommittedPromiseSteer,
 } from '../../recorded-commitment.js';
@@ -253,6 +254,25 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
         agentId, turnNumber, wentToMemory: promise.wentToMemory,
       }, agentId);
       return { content: uncommittedPromiseSteer(promise) };
+    },
+  },
+
+  // ── 14 · THE ARM C FIND — "submitted!" in the same turn a tool result said the report was
+  // CANCELLED with no brief to submit. `ungrounded-claim` (10) could not see it: it reads the
+  // DELIVERIES LEDGER and `dojo_report` writes no `deliveries` row, ever. So this asks
+  // `failed-save-claim`'s question — does THIS TURN'S TOOL RECORD refute the sentence? — with the
+  // noun changed to a delivery. Decision, vocabulary and steer: `agent/v2/refused-delivery.ts`.
+  {
+    floor: 'false-delivery-claim',
+    gate: (state, _ctx, reply) =>
+      !steerFired(state.steerQueue, 'false-delivery-claim') && claimsDelivery(reply),
+    decide: (state, ctx) => {
+      const refused = decideRefusedDelivery(state.toolResults);
+      if (!refused) return null;
+      logger.info('v2 false-delivery-claim floor fired: the reply claims a delivery this turn\'s report tool refused, re-entering', {
+        agentId: ctx.agentId, refused: refused.refused,
+      }, ctx.agentId);
+      return { content: refusedDeliverySteer(refused) };
     },
   },
 ];
