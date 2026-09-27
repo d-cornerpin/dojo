@@ -683,6 +683,9 @@ function operandCandidates(words: readonly string[]): string[] {
     // ⚠ NO BARE `program operand` FORM. The first cut emitted one; a mutant deleting it changed nothing,
     // because no floor entry is a program plus a bare operand — `rm -rf /` needs its flags and
     // `chmod 777 *` is prefix-matched already. Deleted rather than kept as unverifiable noise.
+    // The `> 1` guard is a SIZE guard and has no verdict consequence — a mutant removing it changed
+    // nothing, because a single-operand reconstruction equals the command and is filtered out below. It
+    // stays to keep the candidate list small; nobody should write a clause for it.
     if (operands.length > 1) out.push([program, ...flags, operand].join(' '));
     // ⚠ AND ONE FLAG AT A TIME, which is not decoration: `rm -rf --no-preserve-root /` has a SINGLE
     // operand, so no amount of operand-splitting reaches it — and it is the canonical way to actually
@@ -773,6 +776,21 @@ const SHELL_INTERPRETERS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'd
  *   2. A LANGUAGE API THAT NEEDS NO SHELL. `shutil.rmtree('/')`, `fs.rmSync('/', {recursive:true})` —
  *      the damage is done by the runtime itself and no shell command is ever spelled, so there is no
  *      text for a text floor to match.
+ *   3. ⚠ A FLOOR PATTERN IN A SPELLING THE FLOOR'S OWN LIST DOES NOT CARRY — and this one is spelled
+ *      right there in the line, which is why it is called out separately rather than folded into the
+ *      sentence below. `GLOBAL_EXEC_DENY` holds three literal strings, so it knows `rm -rf /` and does
+ *      not know its synonyms. Measured, primary under `free`, after every fix in this file:
+ *        sudo rm -r -f /        sudo rm -fr /         sudo rm -rfv /
+ *        sudo rm --recursive --force /                sudo rm -r --force /
+ *        sudo chmod -R 777 /etc                       sudo /bin/rm -r -f /
+ *      NOT INTRODUCED HERE and not narrowable by anything in this module: it is the floor's VOCABULARY,
+ *      shared with every `exec_deny` rule in the tree, and `main` behaves identically for unprivileged
+ *      lines. Closing it means asking the floor's patterns SEMANTICALLY for privileged commands — same
+ *      program, pattern's flag letters present among the command's flags, pattern's operand among the
+ *      command's operands — which is a contained change to how those three patterns are matched, with
+ *      its own judgement calls (a long flag's letter, `chmod -R 777 /etc` becoming refused) that belong
+ *      in a round of their own rather than in a last-minute edit. NAMED HERE because the rule of this
+ *      campaign is that the code's words must never claim more than the code does.
  *
  * ⚠ AND WHAT IS **NOT** IN THAT LIST, each measured rather than assumed, because a residual that names
  * things the code already catches is the same defect as one that omits things it does not:
@@ -783,10 +801,16 @@ const SHELL_INTERPRETERS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'd
  * DELIMITERS (`qx{echo {}; rm -rf /}`) die on the balanced scan; and an ENCODED SPACE
  * (`qx{rm -rf\x20/}`) dies because the escapes are decoded before the floor reads the text.
  *
- * So the one honest statement, true of the code as it stands: **under `free`, a payload THE LINE DOES
- * NOT SPELL — waiting on a substitution, a format or a variable, or carried out by a language API
- * instead of a shell command — is outside the floor's reach.** Every shape in which the payload IS in
- * the line, in any quoting or encoding this file knows of, is refused under every policy.
+ * So the honest statement, in two parts because the residual has two shapes and one sentence cannot hold
+ * both: under `free`, (a) A PAYLOAD THE LINE DOES NOT SPELL — waiting on a substitution, a format or a
+ * variable, or carried out by a language API instead of a shell command — is outside the floor's reach;
+ * and (b) A PAYLOAD THE LINE DOES SPELL is refused in every quoting, nesting and encoding THIS MODULE
+ * knows of, but only in the flag spellings THE FLOOR'S OWN THREE PATTERNS carry.
+ *
+ * ⚠ (b) IS DELIBERATELY WEAKER THAN THE SENTENCE IT REPLACES. The previous version claimed "any quoting
+ * or encoding this file knows of" and stopped there, which read as a guarantee about the whole line; it
+ * was true of this module and false of the outcome, because the floor it hands text to knows three
+ * literal strings. That gap is member 3 above.
  */
 const CODE_INTERPRETERS: ReadonlyMap<string, readonly string[]> = new Map([
   ['python', ['-c']], ['python3', ['-c']], ['python2', ['-c']],
