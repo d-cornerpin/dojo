@@ -252,6 +252,27 @@ describe('the turn count the attachment PUBLISHES is the turn count the reader a
       .toBe(COLLECTOR_CAPS.turns);
   });
 
+  // FR-3's OTHER HALF, the one the ledger carried as "site-level min unguarded (3 lines)"
+  // (BACKLOG.md 2026-09-24). `readTurns` binds `Math.min(turns, COLLECTOR_CAPS.turns)` AT THE
+  // STATEMENT, and its own comment says why: "the cap must bind at the statement, so a future
+  // caller that computes a number some other way cannot widen the read." Every clause above
+  // reaches it through `gatherEvidence`, which resolves the window FIRST — so deleting the
+  // site-level `Math.min` leaves all of them green, because `resolveWindow` had already clamped
+  // the number. This calls the collector DIRECTLY with a number no resolver produced, which is
+  // exactly the future caller the comment is defending against.
+  it('the collector clamps a number NO resolver produced — the min binds at the statement', async () => {
+    seedAtNow(COLLECTOR_CAPS.turns * 2);
+    const { readTurns } = await import('../collect.js');
+    const since = '1970-01-01 00:00:00';
+    expect(
+      readTurns(AGENT, since, 10_000).length,
+      'a caller that hands readTurns an unclamped number widened the read past the collector cap',
+    ).toBe(COLLECTOR_CAPS.turns);
+    // ...and it is a MIN, not a floor: a smaller number is still honoured, so the clamp cannot
+    // be satisfied by ignoring the argument altogether.
+    expect(readTurns(AGENT, since, 3).length).toBe(3);
+  });
+
   it('holds as an invariant across every ask, including no ask at all', () => {
     seedAtNow(COLLECTOR_CAPS.turns * 2);
     for (const req of [{}, { turns: 1 }, { turns: 5 }, { turns: 20 }, { turns: 500 },

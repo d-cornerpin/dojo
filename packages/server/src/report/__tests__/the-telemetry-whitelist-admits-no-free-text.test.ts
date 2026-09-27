@@ -484,6 +484,22 @@ describe('(7) the stored stamp is UTC, and the attachment says so on every box',
     }
   };
 
+  // ⚠ THE TRIPWIRE THE LEDGER ASKED FOR: "the 'timestamp'-row-count tripwire"
+  // (BACKLOG.md 2026-09-24, ledgered minors). Everything in this section reasons from ONE
+  // premise — stated in the header as fact — that `report.created_at` is the whitelist's only
+  // `'timestamp'` row and `iso()` is its only coercer. The premise is what makes the section
+  // sufficient: a SECOND timestamp field sourced from a column in a different shape (an epoch
+  // integer, an ISO string with a zone, a `strftime` projection) would be coerced by the same
+  // `iso()` with none of these clauses covering it, and the section would still be green while
+  // the attachment published a shifted instant again. So the premise is now a CLAUSE. A field
+  // added tomorrow either re-reads this section or fails here, by name.
+  it('there is exactly ONE timestamp field, so this section\'s premise cannot rot', () => {
+    const stamps = TELEMETRY_WHITELIST.filter(f => f.kind === 'timestamp').map(f => f.path);
+    expect(stamps, 'a new `timestamp` field was declared: `iso()` coerces it too, and the UTC '
+      + 'clauses below only cover `report.created_at`. Re-read section (7) and extend it to the '
+      + 'new field\'s own stored shape before pinning this list.').toEqual(['report.created_at']);
+  });
+
   it('the reporter\'s offset never reaches the stamp — the stored shape is read as UTC', () => {
     // Non-vacuity: prove the zone actually took, or the assertion below is about nothing.
     inZone('Asia/Kolkata', () => {

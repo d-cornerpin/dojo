@@ -405,3 +405,61 @@ describe('PART 5 — the index says what `dojo_report` is for, not just that it 
     expect(without).not.toContain('the Dojo itself');
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// PART 6 — THE SEVEN-REFLEX BLOCK RENDERS ON A PREDICATE, AND NOW THE PREDICATE IS PINNED.
+//
+// BACKLOG.md 2026-09-26 (bundle re-review F1): "the seven-reflex index block renders on a
+// predicate no clause pins (two-clause pin recommended)".
+//
+// `isPrimaryClass` is `alwaysLoaded ⊇ {work_open, file_append, scratchpad_set}` — three names,
+// no role, no id. Two things made that worth pinning rather than reading:
+//
+//   1. THE PREDICATE'S INPUT CHANGED UNDER IT. T85 moved the caller from the DECLARED
+//      always-loaded list to `partitionToolsForApiCall(...).alwaysLoaded` — the head that
+//      actually goes on the wire — because the prose was promising `complete_task` to an agent
+//      whose surface strips it. `isPrimaryClass` reads that same argument, so the knock-on was
+//      that this block follows what an agent HOLDS rather than what its role declares. That
+//      was recorded in a comment and asserted nowhere.
+//   2. BOTH DIRECTIONS COST SOMETHING REAL. Too narrow and a primary silently drops to the
+//      one-paragraph version that DeepSeek V4 Pro was measured skimming past — the whole
+//      reason the structured block exists. Too wide and ~7 KB of reflexes enters the cached
+//      prefix of every sub-agent that happens to hold three common tools, teaching several of
+//      them (`work_open` close-out, trainer hand-off) to an agent that cannot perform them.
+//
+// So: one clause per direction, keyed on the THREE NAMES the predicate actually reads.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('PART 6 — the seven-reflex block follows the three names its predicate reads', () => {
+  const THREE = ['work_open', 'file_append', 'scratchpad_set'];
+  const ALL = ['load_tool_docs', ...THREE, 'file_read'];
+
+  it('RENDERS for an agent holding all three — the structured block, not the paragraph', () => {
+    const index = generateToolIndex(makeTools(ALL), ['load_tool_docs', ...THREE]);
+    expect(index).toContain('**Seven reflexes worth building:**');
+    // A sample of the block's own bullets, so "renders" means the reflexes and not just the heading.
+    expect(index).toContain('**Document > memory.**');
+    expect(index).toContain('**Default ON tracker');
+    expect(index).toContain('**Never read a timestamp without a timezone label.**');
+    // ...and the short paragraph is NOT also emitted (they are the two arms of one `else`).
+    expect(index).not.toContain('**Before defaulting to `exec`**, scan the index below for a purpose-built tool that fits the task');
+  });
+
+  it.each(THREE)('does NOT render when %s is missing from the always-loaded head', (dropped) => {
+    const head = ['load_tool_docs', ...THREE.filter((n) => n !== dropped)];
+    const index = generateToolIndex(makeTools(ALL), head);
+    expect(index).not.toContain('**Seven reflexes worth building:**');
+    expect(index).not.toContain('**Document > memory.**');
+    // The other arm is what such an agent gets, and it is still a complete instruction.
+    expect(index).toContain('Tools listed below by category.');
+    expect(index).toContain('**Before defaulting to `exec`**');
+  });
+
+  it('reads the HEAD it is handed, not the tool universe — the T85 knock-on, asserted', () => {
+    // All three tools EXIST for this agent; none of them is in the always-loaded head. An
+    // agent that merely declares them (or holds them behind `load_tool_docs`) is not taught
+    // reflexes that assume they are one call away.
+    const index = generateToolIndex(makeTools(ALL), ['load_tool_docs']);
+    expect(index).not.toContain('**Seven reflexes worth building:**');
+  });
+});
