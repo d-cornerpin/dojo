@@ -1,3 +1,4 @@
+import { fullDiskAccessInstructions, FULL_DISK_ACCESS_VERIFY } from '@dojo/shared';
 import { useState, useEffect, useCallback } from 'react';
 import { request } from '../lib/api';
 
@@ -585,7 +586,7 @@ export const SetupPermissions = () => {
       apiKey: 'full-disk-access',
       label: 'Full Disk Access',
       description: 'Allows agents to read protected files like iMessage database',
-      hint: 'Click "Open Settings" first — this triggers macOS to add "node" to the Full Disk Access list. Then look for "node" in the list and toggle it ON. If you don\'t see it, click "+", press Cmd+Shift+G, and type the path from running "which node" in Terminal. You may need to restart the DOJO server after granting this.',
+      hint: `${fullDiskAccessInstructions(permissions.serverExecPath)} ${FULL_DISK_ACCESS_VERIFY}`,
     },
     {
       key: 'automation',

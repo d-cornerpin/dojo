@@ -419,6 +419,7 @@ setupDepsRouter.get('/permissions/check', (c) => {
       accessibility: checkPermission('accessibility'),
       full_disk: checkPermission('full-disk-access'),
       automation: checkPermission('automation'),
+      serverExecPath: process.execPath,   // see `@dojo/shared/full-disk-access`
     },
   });
 });

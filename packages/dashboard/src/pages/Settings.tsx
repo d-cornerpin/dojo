@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useSearchParams } from 'react-router-dom';
 import type { Provider, Model, GenerationParamSpec, VoiceOption, EditProviderRequest } from '@dojo/shared';
+import { fullDiskAccessInstructions, fullDiskAccessWhy, FULL_DISK_ACCESS_VERIFY } from '@dojo/shared';
 import * as api from '../lib/api';
 import {
   numberEditsFor, numInput,
@@ -241,6 +242,7 @@ const parseSenders = (raw: string | undefined): SafeSender[] => {
 
 const IMBridgeSettings = () => {
   const [enabled, setEnabled] = useState(false);
+  const [serverExecPath, setServerExecPath] = useState<string | null>(null);
   const [senders, setSenders] = useState<SafeSender[]>([]);
   const [newAddress, setNewAddress] = useState('');
   const [newName, setNewName] = useState('');
@@ -255,6 +257,9 @@ const IMBridgeSettings = () => {
 
   useEffect(() => {
     const load = async () => {
+      // `permissions/check` reports which executable does the reading; only the server knows it.
+      void api.request<Record<string, string>>('/api/setup/permissions/check')
+        .then(r => { if (r.ok && r.data?.serverExecPath) setServerExecPath(r.data.serverExecPath); });
       const [enabledResult, sendersResult, defaultResult] = await Promise.all([
         api.getSetting('imessage_enabled'),
         api.getSetting('imessage_approved_senders'),
@@ -416,7 +421,7 @@ const IMBridgeSettings = () => {
       <div>
         <div className="scard__title">iMessage Bridge</div>
         <div className="scard__desc">
-          Enable to send and receive messages with your agent via iMessage. Requires Full Disk Access for Terminal in System Settings &gt; Privacy &amp; Security &gt; Full Disk Access.
+          Enable to send and receive messages with your agent via iMessage. {fullDiskAccessWhy()}
         </div>
       </div>
 
@@ -660,7 +665,7 @@ const IMBridgeSettings = () => {
 
       {enabled && (
         <div className="alert-banner alert-warning">
-          If the bridge fails to read messages, ensure Terminal has Full Disk Access: System Settings &gt; Privacy &amp; Security &gt; Full Disk Access &gt; Enable Terminal.
+          {fullDiskAccessInstructions(serverExecPath)} {FULL_DISK_ACCESS_VERIFY}
         </div>
       )}
     </div>

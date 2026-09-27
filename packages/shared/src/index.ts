@@ -8,3 +8,4 @@ export * from './markers.js';
 export * from './outcome.js';
 export * from './access.js';
 export * from './tool-docs-health.js';
+export * from './full-disk-access.js';
