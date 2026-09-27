@@ -369,6 +369,16 @@ export function authorizeProc(
   const segments = execSimpleCommands(resource.raw);
   let privilegedSeen = false;
   for (const seg of segments) {
+    // ⚠ THE FLOOR, PER SEGMENT, AND IT WAS NOT BITING EITHER. The review noted `sudo;rm -rf /` as
+    // giving "no root, but an unchecked `rm -rf /` (pre-existing prefix-floor property)" — and my own
+    // §4 clause measured the plainer form: `ls | rm -rf /` was ALLOWED for a scoped agent, because the
+    // floor read the head program of the whole line. The floor is meant to be UNOVERRIDABLE, and it was
+    // escapable by a pipe for every command in it, not just sudo.
+    // SAFE BY CONSTRUCTION, which is why it belongs in this round rather than the owner's queue: the
+    // floor is `rm -rf /`, `rm -rf ~`, `chmod 777 *` and the credentials file. None of those is a
+    // capability anybody can lose, so asking about every segment can only refuse the catastrophic.
+    const floored = globalExecDeny(seg);
+    if (floored) return floored;
     if (!isSudoLine(seg)) continue;
     privilegedSeen = true;
     const v = authorizeSudoLine(seg, grant.agentId, (i) => authorizeOneCommand(grant, i));
