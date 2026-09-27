@@ -29,20 +29,20 @@ export const SUDO_POLICY_KEY = 'sudo_policy';
 export const SUDO_POLICY_ORDER: readonly SudoPolicy[] = ['blocked', 'gated', 'free'];
 
 export const SUDO_POLICY_LABELS: Record<SudoPolicy, string> = {
-  blocked: 'Blocked — sudo is refused',
-  gated: 'Gated — sudo needs approval (default)',
-  free: 'Free — sudo runs without asking',
+  blocked: 'Blocked — admin commands are refused',
+  gated: 'Gated — admin commands need your approval (default)',
+  free: 'Free — admin commands run without asking',
 };
 
 export const SUDO_POLICY_HINTS: Record<SudoPolicy, string> = {
   blocked:
-    'Your MAIN AGENT’s sudo commands are refused outright, the way they were before this setting '
+    'Your MAIN AGENT’s ADMIN commands (sudo, and the macOS administrator-privileges prompt) are refused '
     + 'existed. Pick this if you would rather nothing here touch anything needing administrator rights.',
   gated:
-    'Your MAIN AGENT’s sudo command is held and you get a card to approve or decline — one approval, '
+    'Your MAIN AGENT’s ADMIN command is held and you get a card to approve or decline — one approval, '
     + 'one run, and nothing runs while it waits. This is the shipped default.',
   free:
-    'Your MAIN AGENT’s sudo commands run like any other command. The safety floor still applies (see '
+    'Your MAIN AGENT’s ADMIN commands run like any other command. The safety floor still applies (see '
     + 'below), and it is still limited to the commands its own permissions allow.',
 };
 
@@ -53,9 +53,11 @@ export const SUDO_POLICY_HINTS: Record<SudoPolicy, string> = {
  * three and it is the thing an owner is most likely to get wrong about `free`.
  */
 export const SUDO_FLOOR_NOTE =
-  'This setting governs your MAIN AGENT ONLY. Every other agent on this Dojo is refused sudo outright '
-  + 'under all three settings — a role boundary that no setting changes. And under every setting the '
-  + 'platform’s hard floor still applies inside a sudo command: '
+  'ONE POLICY, EVERY ADMIN DOOR: this covers sudo AND the AppleScript / osascript “with administrator '
+  + 'privileges” prompt, which reaches the same power under a different name. It governs your MAIN '
+  + 'AGENT ONLY — every other agent is refused admin rights outright under all three settings, a role '
+  + 'boundary that no setting changes. And under every setting the platform’s hard floor still applies '
+  + 'inside an admin command: '
   + 'sudo rm -rf /, sudo rm -rf ~, sudo chmod 777 and anything touching the credentials file are '
   + 'refused. Sudo is unwrapped and the whole permission check re-runs on the command inside it, so '
   + 'this setting can never widen an agent past its own permissions.';

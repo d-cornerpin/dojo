@@ -4762,16 +4762,17 @@ const SudoPolicyCard = () => {
   const warning = sudoPolicyWarning(policy);
   return (
     <div className="tile space-y-3 max-w-4xl" data-testid="sudo-policy-card">
-      <div className="scard__title">Administrator commands (sudo)</div>
+      <div className="scard__title">Administrator privileges</div>
       <p className="text-xs text-ui/40">
         This Mac is your main agent&rsquo;s machine. Choose how much it may do as administrator
-        &mdash; every other agent is refused sudo whatever you pick.
+        &mdash; every other agent is refused admin rights whatever you pick. One setting covers both doors:
+        <code>sudo</code> and the macOS &ldquo;with administrator privileges&rdquo; prompt.
       </p>
       <div>
-        <label className="flabel" htmlFor="sudo-policy">sudo policy</label>
+        <label className="flabel" htmlFor="sudo-policy">admin privileges policy</label>
         <select
           id="sudo-policy"
-          aria-label="sudo policy"
+          aria-label="admin privileges policy"
           value={policy}
           disabled={!loaded || saving}
           onChange={(e) => void choose(e.target.value as SudoPolicy)}

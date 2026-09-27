@@ -48,9 +48,22 @@ describe('§1 the values, the default, and what an unknown row means', () => {
     }
   });
 
+  it('⚠ THE COPY SAYS ADMIN PRIVILEGES, NOT ONLY SUDO — owner ruling "one policy"', () => {
+    // The setting governs sudo AND the macOS "with administrator privileges" prompt. Copy that said
+    // only "sudo" would leave an owner thinking the osascript door is a separate switch, and there
+    // isn't one — so every label, and the note, name the broader thing.
+    for (const p of SUDO_POLICY_ORDER) {
+      expect(SUDO_POLICY_LABELS[p].toLowerCase(), p).toContain('admin');
+      expect(SUDO_POLICY_HINTS[p].toLowerCase(), p).toContain('admin');
+    }
+    expect(SUDO_FLOOR_NOTE).toContain('ONE POLICY, EVERY ADMIN DOOR');
+    expect(SUDO_FLOOR_NOTE).toContain('administrator');
+    expect(SUDO_FLOOR_NOTE.toLowerCase()).toContain('osascript');
+  });
+
   it('the floor note leads with the ROLE BOUNDARY, the bigger surprise', () => {
     expect(SUDO_FLOOR_NOTE).toContain('MAIN AGENT ONLY');
-    expect(SUDO_FLOOR_NOTE).toContain('refused sudo outright');
+    expect(SUDO_FLOOR_NOTE).toContain('refused admin rights outright');
     expect(SUDO_FLOOR_NOTE).toContain('role boundary');
     // and it is the FIRST sentence, not a footnote after the floor list
     expect(SUDO_FLOOR_NOTE.indexOf('MAIN AGENT ONLY')).toBeLessThan(SUDO_FLOOR_NOTE.indexOf('rm -rf /'));
@@ -120,7 +133,7 @@ describe('§4 the component renders what the rule decides, and nothing it invent
     expect(src).toContain('SUDO_POLICY_ORDER.map');
     expect(src).toContain('SUDO_FLOOR_NOTE');
     // the dropdown is reachable and labelled
-    expect(src).toContain('aria-label="sudo policy"');
+    expect(src).toContain('aria-label="admin privileges policy"');
     // and no hand-typed policy word survives in the component
     const card = src.slice(src.indexOf('const SudoPolicyCard'), src.indexOf('const SecurityTab'));
     for (const word of ["'blocked'", "'gated'", "'free'"]) {
