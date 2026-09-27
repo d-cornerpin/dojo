@@ -62,9 +62,16 @@ name (42). Every entry must be a non-empty tool name string.`
 
 ## 2. W1 — WHAT SHIPPED
 
-New module `packages/server/src/agent/always-loaded-tools.ts` (174 lines), exported so the
-`POST /api/agents` `'none'` string-spread fix on the backlog reuses it rather than fixing the same
-cast twice.
+New module `packages/server/src/agent/always-loaded-tools.ts` (174 lines), exported so both spawn
+paths share one predicate.
+
+> **CORRECTION (review C, L3-F1's sibling finding L5-F1 — 2026-09-26).** The sentence that stood here
+> said this module is exported so the backlog's `POST /api/agents` `'none'` fix could **reuse** it.
+> **IT MUST NOT BE REUSED THERE.** That backlog line is the **file_read / file_write grant** path,
+> where `'none'` is a *documented scalar* — clause 1 ("must be an array") would refuse a
+> documented-valid value. The two are not the same cast and not the same shape. Anyone picking up that
+> backlog item writes a predicate for a field whose legal domain includes a scalar; this validator is
+> for a field whose legal domain does not.
 
 * **THE CAP IS DERIVED.** `alwaysLoadedMax()` returns `PRIMARY_AGENT_ALWAYS_LOADED.length`. A
   review that shrinks the primary shrinks the cap in the same edit.
@@ -78,7 +85,10 @@ cast twice.
   owns the user-facing refusal. It answers **`INVALID_ARGS`**, deliberately not
   `PERMISSION_DENIED`: an argument problem reported as a permission problem is the T80a incident
   one field over, and `classifyToolResult` reads the code, never the prose.
-* **THE SPAWNER KEEPS A THROW AS THE FLOOR** for its three callers.
+* **THE SPAWNER KEEPS A THROW AS THE FLOOR** for **both** of its callers —
+  `agent/tools/cat/agents.ts:355` (the `spawn_agent` handler) and `vault/maintenance.ts:1876` (the
+  Dreamer's curation spawn). **CORRECTED (L5-F1):** this line said "three callers", and the count was
+  the throw's whole justification. There are two.
 * **THE SWALLOWED WRITE IS GONE.** `catch { /* column may not exist on very old databases */ }`
   is discharged by migration 022 — it could only ever hide a real fault behind a
   successful-looking spawn.
@@ -97,9 +107,16 @@ registry. The eight broken suites were that graph change made visible. The valid
 takes an optional `KnownTools` (`{ has(name): boolean }`); `toolDefinitionsByName()` satisfies it
 and so does a bare `Set`. The handler passes it; the floor does not.
 
-**What that costs, stated plainly:** an unknown name arriving through the dashboard create route
-or an engine spawn is still written (it is then dropped at `byName` exactly as before — no new
-failure mode, just an un-closed one). The cap and the shape are closed for all three callers. If
+**What that costs, stated plainly — CORRECTED (L5-F1), and the correction makes it smaller:** the
+original sentence claimed an unknown name arriving "through the dashboard create route or an engine
+spawn" is still written. **The dashboard route does not exist as a path for this field:**
+`always_loaded_tools` / `alwaysLoadedTools` appears **nowhere under `gateway/`**, and the Dreamer's
+spawn does not pass the field either (its params are parentId, name, systemPrompt, classification,
+timeout, persist, toolsPolicy, permissions, initialMessage). So the only live caller that passes it is
+the handler, which **does** carry the registry — meaning existence is in fact **closed on every
+reachable path today**, and the residual is a guard against a FUTURE caller rather than a live hole.
+The cap and the shape are closed for both callers, on both branches (the no-registry branch is now
+pinned by its own clauses — review C, L5-F2). If
 the owner wants existence closed at the floor too, the honest fix is to give the spawner a
 registry it can reach without the v2 graph, which is a separate piece of work and not a line in
 this one.
@@ -198,8 +215,10 @@ One guard broken at a time in the PRODUCT, the owning test file run, restore ver
 
 1. **W3 is untouched**, as scoped: restart rehydration still imports CALLED names as well as
    loaded ones. Seam C bounds its RESULT; it does not change what it imports.
-2. **The `POST /api/agents` `'none'` fix** (backlog item) is not wired. The validator is exported
-   for it and clause 1 is the clause that catches it, but the route was not in this lane.
+2. **The `POST /api/agents` `'none'` fix** (backlog item) is not wired, and **this validator is the
+   wrong tool for it** — see the correction in §2. That backlog line is the file-grant path, where
+   `'none'` is a documented scalar; clause 1 would refuse it. Whoever takes that item writes a
+   predicate for a domain that legally includes a scalar.
 3. **No existence check at the spawner floor** — §2, with the measurement and the cost.
 4. **`ratchets.json` untouched**, so the tree has one red gate; see §6.
 
