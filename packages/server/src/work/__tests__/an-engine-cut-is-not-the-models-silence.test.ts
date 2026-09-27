@@ -68,6 +68,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn } from '../store.js';
 import { MAX_ASK_RE_SERVES, RE_SERVE_MARKER, settleAsk } from '../ask-settlement.js';
 import { insertMessage } from '../../memory/message-store.js';
+import { turnWasEngineCut } from '../exit-attribution.js';
 
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
@@ -286,6 +287,52 @@ describe('§3 a genuine silence is charged exactly as it was', () => {
     claimedAsk('m-1', 1);
     expect(finalize('m-1', 1)).toBe('reopened');
     expect(rungsFor('m-1')).toBe(1);
+  });
+
+  it('A CUT CANNOT STAND DOWN A ROW THE SILENCES ALREADY WALKED TO THE BOUND', () => {
+    // MUTATION GAP, found by MC4 and closed here. Dropping `!engineCut` from the stand-down guard
+    // survived every other clause: in a cut-only history no rung is ever spent, so `spent` never
+    // reaches the bound and the branch is unreachable. The shape that CAN reach it is a MIXED
+    // history — three genuine silences, then the engine cuts the fourth turn — and there the mutant
+    // parks an ask on a turn the model never got to finish, which is the whole defect.
+    claimedAsk('m-1', 1);
+    for (let i = 0; i < MAX_ASK_RE_SERVES; i++) {
+      seedTurn(1 + i, 'no_reply_intended');
+      expect(finalize('m-1', 1 + i)).toBe('reopened');
+      reclaim('m-1', 2 + i);
+    }
+    expect(rungsFor('m-1')).toBe(MAX_ASK_RE_SERVES);   // at the bound
+    seedTurn(1 + MAX_ASK_RE_SERVES, 'iteration_cap');
+    expect(finalize('m-1', 1 + MAX_ASK_RE_SERVES), 'the cut must not spend the last rung').toBe('reopened');
+    expect(workFor('m-1').state).toBe('open');
+    expect(transitionsFor('m-1').some((t) => t.to === 'blocked')).toBe(false);
+    // And the very next SILENCE still stands it down: the bound is intact, only the cut is exempt.
+    reclaim('m-1', 2 + MAX_ASK_RE_SERVES);
+    seedTurn(2 + MAX_ASK_RE_SERVES, 'no_reply_intended');
+    expect(finalize('m-1', 2 + MAX_ASK_RE_SERVES)).toBe('held');
+    expect(workFor('m-1').state).toBe('blocked');
+  });
+
+  it('a NULL turn number is not a cut — the bound stays armed', () => {
+    // MUTATION GAP (MC7). `turnNumber == null` reading as a cut disarms the ladder for every caller
+    // that settles without a turn, and nothing else in this file passes null.
+    claimedAsk('m-1', 1);
+    expect(settleAsk(askIdForMessage('m-1'), {
+      agentId: AGENT, turnNumber: null, at: 'finalize',
+    }).verdict).toBe('reopened');
+    expect(rungsFor('m-1')).toBe(1);
+  });
+
+  it('a classifier that CANNOT READ the record does not invent a cut', () => {
+    // MUTATION GAP (MC8), and asserted on the CLASSIFIER rather than through the settlement: the
+    // settlement's own evidence read joins `turns` too, so breaking that table throws before this
+    // question is ever asked. The catch belongs to `turnWasEngineCut`, so the clause belongs there.
+    // The fail direction is load-bearing: failing OPEN would silently disarm the bound the first time
+    // the read broke, and a broken read is exactly when nobody is watching.
+    seedTurn(1, 'iteration_cap');
+    expect(turnWasEngineCut(AGENT, 1), 'readable and a cut').toBe(true);
+    db().exec('DROP TABLE turns');
+    expect(turnWasEngineCut(AGENT, 1), 'unreadable ⇒ NOT a cut, so the bound stays armed').toBe(false);
   });
 
   it('`unknown` is not read as a cut', () => {
