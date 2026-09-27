@@ -10,7 +10,7 @@ import {
 import { isPastFirstRun, markFirstRunComplete } from '../../config/setup-state.js';
 import { LoginSchema } from '../../config/schema.js';
 import { createLogger } from '../../logger.js';
-import { isPMEnabled, isTrainerEnabled } from '../../config/platform.js';
+import { isPMEnabled, isTrainerEnabled, getPrimaryAgentId } from '../../config/platform.js';
 import type { SetupStatus } from '@dojo/shared';
 import type { AppEnv } from '../server.js';
 
@@ -98,6 +98,29 @@ setupRouter.post('/complete', async (c) => {
     return c.json({ ok: false, error: 'Password must be set before completing setup' }, 400);
   }
 
+  // ── PROVISION-FIRST, ENFORCED (fresh-box audit, finding 3) ──────────────────────────────
+  // Everything below this line depends on the primary agent existing: `agents.parent_agent`
+  // references it, so all five residents refuse without it. This route used to run the whole
+  // block anyway and log that they had spawned, which was false — the audited fresh box ended up
+  // with ZERO agents, five residents retrying every 5 seconds forever, and a success line in the
+  // log. Only a restart cured it, because the boot path creates the primary.
+  //
+  // REFUSING IS THE RECOVERABLE ANSWER and completing is not: refuse and the box is still in OOBE,
+  // so the caller can provision and come straight back. Complete without a primary and the OOBE
+  // window is shut (`markFirstRunComplete()` below), which is why a restart was the only way out.
+  // The shipped wizard already calls `provision-agent` first, so this changes nothing for it —
+  // it closes the door on the abort, the reload and the non-UI client.
+  const primaryId = getPrimaryAgentId();
+  if (!getDb().prepare('SELECT id FROM agents WHERE id = ?').get(primaryId)) {
+    logger.warn('Refused to complete setup: no primary agent exists yet', { primaryId });
+    return c.json({
+      ok: false,
+      error: 'Setup cannot complete before the primary agent is created, because every other '
+        + 'agent is parented to it. Create it first (POST /api/setup/provision-agent, which the '
+        + 'setup wizard calls for you) and then complete setup.',
+    }, 400);
+  }
+
   const secret = getJwtSecret();
   const token = jwt.sign({ userId: 'admin' }, secret, { expiresIn: JWT_EXPIRY });
 
@@ -125,7 +148,6 @@ setupRouter.post('/complete', async (c) => {
     try {
       const { ensurePMAgentRunning } = await import('../../tracker/pm-agent.js');
       ensurePMAgentRunning();
-      logger.info('PM agent spawned during setup completion');
     } catch (err) {
       logger.error('Failed to spawn PM agent', {
         error: err instanceof Error ? err.message : String(err),
@@ -138,7 +160,6 @@ setupRouter.post('/complete', async (c) => {
     try {
       const { ensureTrainerAgentRunning } = await import('../../techniques/trainer-agent.js');
       ensureTrainerAgentRunning();
-      logger.info('Trainer agent spawned during setup completion');
     } catch (err) {
       logger.error('Failed to spawn Trainer agent', {
         error: err instanceof Error ? err.message : String(err),
@@ -150,7 +171,6 @@ setupRouter.post('/complete', async (c) => {
   try {
     const { ensureHealerAgentRunning } = await import('../../healer/healer-agent.js');
     ensureHealerAgentRunning();
-    logger.info('Healer agent ensured during setup completion');
   } catch (err) {
     logger.error('Failed to ensure Healer agent', {
       error: err instanceof Error ? err.message : String(err),
@@ -161,12 +181,21 @@ setupRouter.post('/complete', async (c) => {
   try {
     const { ensureDreamerAgentRunning } = await import('../../vault/maintenance.js');
     ensureDreamerAgentRunning();
-    logger.info('Dreamer agent ensured during setup completion');
   } catch (err) {
     logger.error('Failed to ensure Dreamer agent', {
       error: err instanceof Error ? err.message : String(err),
     });
   }
+
+  // WHAT ACTUALLY EXISTS, read rather than assumed. The four lines this replaces each claimed a
+  // resident had spawned immediately after calling its ensure function, without looking — and on
+  // the audited box all four were false. One statement of the measured truth beats four guesses.
+  const residents = (getDb().prepare(
+    "SELECT id FROM agents WHERE status != 'terminated' ORDER BY id",
+  ).all() as Array<{ id: string }>).map(r => r.id);
+  logger.info('Setup completion finished; agents now present', {
+    count: residents.length, agents: residents,
+  });
 
   // Re-run system group assignment now that all agents exist
   try {

@@ -1,3 +1,4 @@
+import { primaryReady } from '../agent/primary-ready.js';
 import { getDb } from '../db/connection.js';
 import { deleteAllForAgent } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
@@ -53,13 +54,7 @@ export function ensureTrainerAgentRunning(): void {
   logger.info('Trainer agent auto-spawn check triggered', { trainerId, trainerName });
 
   // Ensure the primary agent exists before creating Trainer (parent_agent FK constraint)
-  const primaryExists = db.prepare('SELECT id FROM agents WHERE id = ?').get(primaryId);
-  if (!primaryExists) {
-    logger.warn('Primary agent not yet created, deferring Trainer agent spawn', { primaryId });
-    // Retry after a short delay
-    setTimeout(() => ensureTrainerAgentRunning(), 5000);
-    return;
-  }
+  if (!primaryReady('Trainer agent', primaryId, () => ensureTrainerAgentRunning())) return;
 
   const trainer = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(trainerId) as { id: string; status: string } | undefined;
 

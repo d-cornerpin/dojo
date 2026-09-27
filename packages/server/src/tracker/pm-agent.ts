@@ -1,3 +1,4 @@
+import { primaryReady } from '../agent/primary-ready.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { turnContext } from '../agent/turn-context.js';
@@ -251,13 +252,7 @@ export function ensurePMAgentRunning(): void {
   logger.info('PM agent auto-spawn check triggered', { pmId, pmName });
 
   // Ensure the primary agent exists before creating PM (parent_agent FK constraint)
-  const primaryExists = db.prepare('SELECT id FROM agents WHERE id = ?').get(primaryId);
-  if (!primaryExists) {
-    logger.warn('Primary agent not yet created, deferring PM agent spawn', { primaryId });
-    // Retry after a short delay
-    setTimeout(() => ensurePMAgentRunning(), 5000);
-    return;
-  }
+  if (!primaryReady('PM agent', primaryId, () => ensurePMAgentRunning())) return;
 
   const pm = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(pmId) as { id: string; status: string } | undefined;
 

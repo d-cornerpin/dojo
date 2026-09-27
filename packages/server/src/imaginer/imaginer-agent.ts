@@ -21,6 +21,7 @@
 // the actual image-producing model is picked from the image_generation
 // capability list in Settings → Dojo → Imaginer.
 
+import { primaryReady } from '../agent/primary-ready.js';
 import { getDb } from '../db/connection.js';
 import { deleteAllForAgent } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
@@ -97,12 +98,7 @@ export function ensureImaginerAgentRunning(): void {
   logger.info('Imaginer auto-spawn check triggered', { imaginerId, imaginerName });
 
   // Can't create before the primary agent exists — parent_agent FK.
-  const primaryExists = db.prepare('SELECT id FROM agents WHERE id = ?').get(primaryId);
-  if (!primaryExists) {
-    logger.warn('Primary agent not yet created — deferring Imaginer spawn', { primaryId });
-    setTimeout(() => ensureImaginerAgentRunning(), 5000);
-    return;
-  }
+  if (!primaryReady('Imaginer', primaryId, () => ensureImaginerAgentRunning())) return;
 
   const existing = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(imaginerId) as
     | { id: string; status: string }

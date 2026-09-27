@@ -10,6 +10,7 @@
 // between cycles and wakes when a cycle fires.
 // ════════════════════════════════════════
 
+import { primaryReady } from '../agent/primary-ready.js';
 import fs from 'node:fs';
 import { CHARS_PER_TOKEN } from '../memory/budget.js'; // PHASE-3 T2: was a private 3 (§T0-C #6)
 import { HEALER_WORKING_STUCK_MINUTES } from '../agent/stuck-thresholds.js';
@@ -414,12 +415,7 @@ export function ensureHealerAgentRunning(): void {
 
   logger.info('Healer auto-spawn check triggered', { healerId, healerName });
 
-  const primaryExists = db.prepare('SELECT id FROM agents WHERE id = ?').get(primaryId);
-  if (!primaryExists) {
-    logger.warn('Primary agent not yet created, deferring Healer spawn', { primaryId });
-    setTimeout(() => ensureHealerAgentRunning(), 5000);
-    return;
-  }
+  if (!primaryReady('Healer', primaryId, () => ensureHealerAgentRunning())) return;
 
   // Clean up any old temporary Healer agents (from before permanent resident approach).
   // SWEEP CORE-2 item 2: this was the tree's only name-scoped status write. It now selects

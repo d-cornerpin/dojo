@@ -5,6 +5,7 @@
 // Engine-level pruning runs before the Dreamer is spawned.
 // ════════════════════════════════════════
 
+import { primaryReady } from '../agent/primary-ready.js';
 import fs from 'node:fs';
 import { estimateTokens } from '../memory/budget.js';
 import path from 'node:path';
@@ -853,12 +854,7 @@ export function ensureDreamerAgentRunning(): void {
 
   logger.info('Dreamer auto-spawn check triggered', { dreamerId, dreamerName });
 
-  const primaryExists = db.prepare('SELECT id FROM agents WHERE id = ?').get(primaryId);
-  if (!primaryExists) {
-    logger.warn('Primary agent not yet created, deferring Dreamer spawn', { primaryId });
-    setTimeout(() => ensureDreamerAgentRunning(), 5000);
-    return;
-  }
+  if (!primaryReady('Dreamer', primaryId, () => ensureDreamerAgentRunning())) return;
 
   const existing = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(dreamerId) as
     | { id: string; status: string }
