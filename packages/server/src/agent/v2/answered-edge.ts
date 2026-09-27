@@ -45,6 +45,7 @@ import { NON_ANSWERING_DISPLAY_KINDS } from '../../work/ask-settlement.js';
 import { taskScope, tsToMs, type TrackerStatus } from '../../work/tracker-view.js';
 import { setTrackerStatus } from '../../work/tracker-store.js';
 import { recordedInstant } from '../../memory/message-stamp.js';
+import { withSessionBoundary } from '../../memory/session-boundary.js';
 // ROUND 3: the withdrawal predicate moved to its own module beside the report store (see the
 // banner below). This file imports the QUESTION, not the report vocabulary — no status literal
 // and no `dojo_reports` SQL survives here, which is the clause `a-withdrawn-report-is-not-an-
@@ -200,43 +201,41 @@ export function substantiveReplySince(agentId: string, sinceMs: number): boolean
 // "you already answered this" record — each ask `answerStillStands` first. It answers a question
 // this file deliberately does NOT own: *"is the artefact that answer announced still there?"*
 // `dojo_report` is the only user-facing door that writes no `deliveries` row, so the stamp and
-// the preview card it claimed have no edge between them, and for three release-ritual rounds the
-// engine served a cancelled card to the model as an engine record under "do NOT re-execute this
-// work". The predicate, its measurements and the argument for its one text match (a UUID the
-// PLATFORM minted, never a phrase) are in `report/withdrawn-claim.ts`, beside the state machine
-// that owns those rows — moved there in round 3 rather than taking a third ceiling raise on this
-// file, which is what the second raise's own note said to do.
+// the card it claimed have no edge, and for three release-ritual rounds the engine served a
+// cancelled card to the model under "do NOT re-execute this work". The predicate, its
+// measurements and the argument for its one text match live in `report/withdrawn-claim.ts`,
+// beside the state machine that owns those rows.
 //
 // WHAT STAYS HERE IS THE EDGE: answeredness, and the three reads that publish it.
 // ════════════════════════════════════════════════════════════════════════════════
 
-
 /**
- * The agent's OWN recorded answer in this conversation, most recent first.
+ * The agent's OWN recorded answer in this conversation, newest first, IN THE CURRENT SESSION.
  *
  * The engine hands this back to the model to restate when a question it already answered is
- * ghosted a second time (OR2: the engine never speaks as the agent, so it quotes the
- * agent's own words rather than re-serving them itself). It is the answered edge walked in
- * the other direction — from the ask to the reply — and it lives here so the edge has one
- * home rather than a hand-written two-table join inside the loop.
+ * ghosted a second time (OR2: the engine never speaks as the agent, so it quotes the agent's own
+ * words rather than re-serving them itself). It is the answered edge walked the other way — ask
+ * to reply — and it lives here so the edge has one home rather than a join inside the loop.
  *
- * ⚠ THE FIFTH CARRIER OF THE ROUND-2 RED, and the predicate above is why it is now safe. Its
- * one consumer is the ghosted-ask ladder's second rung (`steps/post-call-classify/no-reply.ts`,
- * *"you already answered this in this conversation. Your recorded answer: … Do not re-do the
- * work and do not stay silent."*), which quotes this string under the same authority framing as
- * the two prompt-assembly reads. A withdrawn-report answer returns `null` here and the rung
- * simply does not fire — it does not reach further back for an OLDER answer, because this read
- * is scoped to the newest settled ask and quoting a different one would put a claim in front of
- * the model that was never on offer.
+ * ⚠ THE FIFTH CARRIER OF THE ROUND-2 RED, and it is now bounded on BOTH axes. Its one consumer is
+ * the ghosted-ask ladder's second rung (`steps/post-call-classify/no-reply.ts`, *"you already
+ * answered this in this conversation. Your recorded answer: … Do not re-do the work and do not
+ * stay silent."*) — an imperative, which is exactly why a reset must silence it: after a reset the
+ * owner asked to be forgotten, and an engine record ordering the model not to re-do the work
+ * overrides him. Two ways this returns `null` and the rung simply does not fire: a
+ * withdrawn-report answer, and an answer from before the boundary. Neither reaches further back
+ * for an OLDER answer — this read is scoped to the newest settled ask, and quoting a different
+ * one would put a claim in front of the model that was never on offer.
  */
 export function recordedAnswerInConversation(agentId: string, conversationId: string): string | null {
+  const session = withSessionBoundary(agentId, 'm1.created_at');
   const r = getDb().prepare(
     `SELECT m2.content AS answer, m1.seq AS ask_seq, m2.id AS ans_id
        FROM messages m1 JOIN messages m2 ON m2.id = m1.answer_message_id
       WHERE m1.agent_id = ? AND m1.role = 'user' AND m1.conversation_id = ?
-        AND m1.answer_message_id IS NOT NULL AND m2.role = 'assistant'
+        AND m1.answer_message_id IS NOT NULL AND m2.role = 'assistant'${session.sql}
       ORDER BY m1.created_at DESC LIMIT 1`,
-  ).get(agentId, conversationId) as
+  ).get(agentId, conversationId, ...session.params) as
     | { answer: string; ask_seq: number; ans_id: string }
     | undefined;
   if (!r) return null;
@@ -276,34 +275,35 @@ export interface AnsweredAsk {
 }
 
 /**
- * The last `limit` asks of ONE conversation that carry an answer stamp.
+ * The last `limit` asks of ONE conversation, IN THE CURRENT SESSION, that carry an answer stamp.
  *
- * This is `engine.recently-answered`'s read. It is deliberately conversation-scoped and
- * deliberately recency-ordered: it is a ledger of this thread's settled questions, not a
- * search. What it CANNOT do — reach across a session or conversation boundary, or say what
- * the answer actually was — is the recall lane's half (`memory/recall-lane.ts`).
+ * `engine.recently-answered`'s read: a ledger of this thread's settled questions, not a search.
+ * It cannot reach across a conversation boundary, it cannot reach across a SESSION boundary, and
+ * it cannot say what the answer was — that last part is the recall lane's half.
  *
- * ⚠ AND IT DROPS AN ANSWER WHOSE ARTEFACT IS GONE (`answerStillStands`). This read feeds BOTH
- * failing carriers of the round-2 red — the `engine.recently-answered` block itself
- * (`steps/call-llm/pre-call-injections.ts`) and the recall lane's dedup set
- * (`memory/recall-lane.ts`) — which is exactly why the predicate belongs here and not at
- * either injection site.
+ * ⚠ THE SESSION HALF OF THAT SENTENCE WAS FALSE UNTIL 2026-09-26, and the reason it was believed
+ * is worth carrying: a reset writes `agents.session_started_at` and NOTHING ELSE, so the same
+ * `conversation_id` outlived every reset and a conversation-scoped read read straight through it.
+ * Measured — 3,930 of 3,931 dividers had a prior stamped ask in the same conversation, and one
+ * reach is byte-verified from a receipt. `memory/session-boundary.ts` owns the clause, the
+ * INTEGER/TEXT trap it wraps, and the cited list of reads that must NOT bind it.
  *
- * THE LIST SHORTENS; IT DOES NOT REACH FURTHER BACK. A voided row is filtered out of the rows
- * this query already returned and nothing older is pulled up to replace it. Refilling would put
- * a fourth, older ask in front of the model that it was not going to see AND drop that ask's
- * pair out of the recall lane (which dedups against this set) — two behaviour changes on asks
- * that have nothing to do with the withdrawn report. Shortening changes neither.
+ * ⚠ AND IT DROPS AN ANSWER WHOSE ARTEFACT IS GONE (`answerStillStands`), for both carriers it
+ * feeds: this block and the recall lane's dedup set. THE LIST SHORTENS; IT DOES NOT REACH FURTHER
+ * BACK — a voided row is filtered from rows already returned and nothing older is pulled up,
+ * which would put an unexpected fourth ask in front of the model and drop its pair out of the
+ * recall lane. Shortening changes neither.
  */
 export function recentlyAnsweredAsks(
   agentId: string, conversationId: string, limit: number,
 ): AnsweredAsk[] {
+  const session = withSessionBoundary(agentId);
   const rows = getDb().prepare(
     `SELECT id, content, created_at, seq, answer_message_id FROM messages
       WHERE agent_id = ? AND conversation_id = ? AND role = 'user'
-        AND answer_message_id IS NOT NULL
+        AND answer_message_id IS NOT NULL${session.sql}
       ORDER BY created_at DESC LIMIT ?`,
-  ).all(agentId, conversationId, limit) as Array<{
+  ).all(agentId, conversationId, ...session.params, limit) as Array<{
     id: string; content: string; created_at: number; seq: number; answer_message_id: string;
   }>;
   return rows

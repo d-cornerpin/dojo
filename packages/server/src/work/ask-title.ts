@@ -87,6 +87,7 @@ import { createLogger } from '../logger.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { withUnit } from '../db/unit.js';
 import { getDb } from '../db/connection.js';
+import { withSessionBoundary } from '../memory/session-boundary.js';
 import { askIdForMessage } from './store.js';
 import { patchWork } from './tracker-store.js';
 import {
@@ -213,36 +214,35 @@ export function acceptModelTitle(agentId: string, raw: string | null | undefined
 }
 
 /**
- * Ask the system model for this ask's title. `null` means "leave the ticket its
- * own identifier".
+ * Ask the system model for this ask's title. `null` means "leave the ticket its own id".
  *
- * Never throws: this runs behind a message that has already landed, and a
- * failure to name a ticket may never become anything louder than a log line.
+ * Never throws: this runs behind a message that has already landed, and a failure to
+ * name a ticket may never become anything louder than a log line.
  *
- * The two imports are dynamic for the reason the other two system-model callers
- * are (`agent/v2/classifiers/multistep.ts:280`, `voice/voice-ws.ts:1270`): the
- * model module reaches back into the message store, so a static import here is
- * a cycle.
+ * The two imports are dynamic for the reason the other two system-model callers are
+ * (`agent/v2/classifiers/multistep.ts:280`, `voice/voice-ws.ts:1270`): the model module
+ * reaches back into the message store, so a static import here is a cycle.
  */
 /**
  * The earlier owner-lane messages of this conversation, oldest first, or `[]`.
  *
- * Read-only, bounded, and never throws: a title is a nicety and a database that
- * cannot answer this question must not cost the caller anything. Scoped by
- * conversation AND lane AND role, so agent traffic and other threads can never
- * leak into the naming of this ticket, and by `seq` so only messages that
- * genuinely came BEFORE this one are shown.
+ * Read-only, bounded, never throws: a title is a nicety and a database that cannot
+ * answer must not cost the caller anything. Scoped by conversation AND lane AND role
+ * AND THE CURRENT SESSION (`memory/session-boundary.ts`), and by `seq`. The session
+ * half is 2026-09-26: a ticket titled out of a forgotten session is the reset showing
+ * through on the one surface that outlives it — the ask's name, in the tracker.
  */
-function priorOwnerContext(agentId: string, conversationId: string | null | undefined, messageId: string): string[] {
+export function priorOwnerContext(agentId: string, conversationId: string | null | undefined, messageId: string): string[] {
   if (!conversationId) return [];
   try {
+    const session = withSessionBoundary(agentId);
     const rows = getDb().prepare(
       `SELECT content FROM messages
         WHERE agent_id = ? AND conversation_id = ? AND lane = 'owner' AND role = 'user'
-          AND retired_at IS NULL
+          AND retired_at IS NULL${session.sql}
           AND seq < (SELECT seq FROM messages WHERE id = ?)
         ORDER BY seq DESC LIMIT ?`,
-    ).all(agentId, conversationId, messageId, ASK_TITLE_CONTEXT_MESSAGES) as Array<{ content: string | null }>;
+    ).all(agentId, conversationId, ...session.params, messageId, ASK_TITLE_CONTEXT_MESSAGES) as Array<{ content: string | null }>;
     const texts = rows
       .map((r) => (r.content ?? '').replace(/\s+/g, ' ').trim())
       .filter((s) => s.length > 0)

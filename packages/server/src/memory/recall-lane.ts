@@ -45,9 +45,10 @@
 // It does not widen scope. Both halves of a pair are bound to `agent_id` by the reader, the
 // vault lookups stay `personalOnly` and agent-scoped exactly as they were, and a hit whose
 // row the assembled tail already carries is dropped rather than quoted twice. An ask that
-// `engine.recently-answered` already names in THIS conversation is dropped too — that block
-// is the within-conversation ledger, this is the cross-boundary one, and one statement gets
-// one owner.
+// `engine.recently-answered` already names in THIS SESSION of this conversation is dropped too —
+// that block is the within-session ledger, this is the cross-boundary one, one statement one owner.
+// ⚠ 2026-09-26: that ledger is session-bounded now, so a reset RELEASES its asks here — which is
+// why a released pair carries `PRE_RESET_PAIR_TAG` instead of an order.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -63,6 +64,7 @@ import {
   answeredPairsForMessages, recentlyAnsweredAsks, RECENTLY_ANSWERED_LIMIT, type AnsweredPair,
 } from '../agent/v2/answered-edge.js';
 import { recordedInstant } from './message-stamp.js';
+import { PRE_RESET_PAIR_TAG, sessionBoundaryMs } from './session-boundary.js';
 import {
   obligationVerdict, liveCommitments, hasCommitmentHistory, openBoardCounts,
   type LiveCommitment, type BoardCounts,
@@ -189,7 +191,7 @@ export interface RecallLanePayload {
    * / `answerAt` and hold the RECORDED INSTANT, in the stamp the fresh tail already uses.
    * `answerAtMs` is the ORDERING key and is never rendered — see the sort below.
    */
-  pairs: Array<{ ask: string; answer: string; askAt: string; answerAt: string; answerAtMs: number }>;
+  pairs: Array<{ ask: string; answer: string; askAt: string; answerAt: string; answerAtMs: number; preReset?: boolean }>;
   /** Raw recalled lines that are not part of a pair, chronological. */
   msgLines: string[];
   vaultLines: string[];
@@ -222,8 +224,8 @@ const PAIRS_HEAD =
   'Questions you have ALREADY ANSWERED (engine record, read from the answer stamps — the ' +
   'question was asked and you answered it. Do NOT re-run the work: restate what you ' +
   'concluded, or point at the earlier answer):';
-const PAIR_ROW = (askAt: string, ask: string, answerAt: string, answer: string) =>
-  `\n- ${askAt} you were asked: "${ask}"\n  → you answered ${answerAt}: "${answer}"`;
+const PAIR_ROW = (askAt: string, ask: string, answerAt: string, answer: string, preReset = false) =>
+  `\n- ${askAt} you were asked: "${ask}"\n  → you answered ${answerAt}: "${answer}"${preReset ? PRE_RESET_PAIR_TAG : ''}`;
 // Carried verbatim from the block this replaces: the framing states the precedence
 // deterministically, because conflict arbitration is the engine's job, not the model's.
 const MSG_HEAD =
@@ -244,18 +246,14 @@ export const UNRESOLVED_OBLIGATION_MARK =
 // whose own header says "context only" would undercut the one claim it exists to make. So it
 // is emitted as its own block, outside the `END RELEVANT MEMORY` frame.
 //
-// T69b MOVED IT FROM LAST TO FIRST, and it is now its OWN MESSAGE rather than a second half
-// of the recall message. The position sentence that stood here ("the last thing in the lane
-// because that is the recency-salient position") was written against the retrieved half only
-// and was costing a full re-bill of this block on every ask; `toLaneRender` below carries the
-// measurement and the re-decision.
+// T69b MOVED IT FROM LAST TO FIRST, and it is now its OWN MESSAGE; `toLaneRender` below carries
+// the measurement and the re-decision, including the position sentence it overturns.
 //
-// The three parts are dsh's (`deepseek-harness-findings.md` P2.3, from their shipped
-// strings): (i) a COMPLETE replacement, (ii) an explicit statement that earlier versions no
-// longer apply, (iii) a negative instruction naming the failure mode. The failure mode here
-// is not hypothetical — it is the exact vocabulary five recorded replies used ("still
-// parked", "waiting on Bob's address", "pending", "outstanding", "on deck"), so the negative
-// instruction names those words.
+// The three parts are dsh's (`deepseek-harness-findings.md` P2.3, from their shipped strings):
+// (i) a COMPLETE replacement, (ii) earlier versions no longer apply, (iii) a negative
+// instruction naming the failure mode, which here is not hypothetical: it is the exact vocabulary
+// five recorded replies used ("still parked", "waiting on a contact's address", "pending",
+// "outstanding", "on deck"), so the negative instruction names those words.
 //
 // ── T69b: THE HEADER STAMP IS GONE, AND ITS ROW AGES WITH IT ────────────────────────────
 // HL5 ruled "the stamp is an INSTANT, not a clock", and T67b then keyed that instant to the
@@ -348,7 +346,7 @@ function renderSnapshot(s: { total: number; rows: string[]; board: BoardCounts }
 export function renderRecalledBlock(p: RecallLanePayload): string | null {
   const parts: string[] = [];
   if (p.pairs.length > 0) {
-    parts.push(PAIRS_HEAD + p.pairs.map((x) => PAIR_ROW(x.askAt, x.ask, x.answerAt, x.answer)).join(''));
+    parts.push(PAIRS_HEAD + p.pairs.map((x) => PAIR_ROW(x.askAt, x.ask, x.answerAt, x.answer, x.preReset)).join(''));
   }
   if (p.msgLines.length > 0) parts.push(`${MSG_HEAD}\n${p.msgLines.join('\n')}`);
   if (p.vaultLines.length > 0) parts.push(`${VAULT_HEAD}\n${p.vaultLines.join('\n')}`);
@@ -435,6 +433,7 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
   // THE COMPLETION-TRUTH KEY, asked of its owner. Both halves of a pair are agent-bound by the
   // reader, so this cannot reach another agent's answer.
   const pairs = ids.length > 0 ? answeredPairsForMessages(ctx.agentId, ids) : new Map<string, AnsweredPair>();
+  const boundaryMs = sessionBoundaryMs(ctx.agentId);  // read once here, so the renderer stays a pure function of the payload
 
   const seenPairs = new Set<string>();
   const pairRows: RecallLanePayload['pairs'] = [];
@@ -457,6 +456,7 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
         askAt: recordedInstant(pair.askAt),
         answerAt: recordedInstant(pair.answerAt),
         answerAtMs: pair.answerAt,
+        ...(boundaryMs !== null && pair.askAt < boundaryMs ? { preReset: true } : {}),  // the ASK's instant decides: it is what the imperative is about
       });
       continue;
     }
