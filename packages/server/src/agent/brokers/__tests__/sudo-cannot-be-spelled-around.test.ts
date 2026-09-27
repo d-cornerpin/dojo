@@ -229,6 +229,28 @@ describe('§1 the evasion corpus, through the real shell door', () => {
     });
   });
 
+  it('A WRAPPED sudo ROUTES THROUGH THE POLICY, it is not merely refused', () => {
+    // MUTATION GAP (MI4/MI5): un-sharing the resolver or dropping the wrapper's own-argument scan left
+    // every clause green, because the inversion refuses these lines ANYWAY — as unplaceable. Refusing
+    // for the wrong reason is not the same as recognising: the whole point of the walk is that a wrapped
+    // sudo is a SUDO LINE, so the policy and the role wall govern it like any other.
+    policyRow.current = 'free';
+    for (const line of [
+      'timeout 5 sudo whoami', 'nice -n 10 sudo whoami', 'stdbuf -o0 sudo whoami',
+      'xargs -I{} sudo whoami', 'env X=1 sudo whoami', 'env FOO=bar BAZ=1 sudo whoami',
+    ]) {
+      expect(shellAllows(line, PRIMARY), `free/primary: ${line}`).toBe(true);
+      // …and the SAME line is role-walled for a sub-agent, which only happens if it was RECOGNISED
+      const v = shell(line, WORKER);
+      expect(v.allowed === false && v.reason, `worker: ${line}`).toBe(SUDO_NOT_PRIMARY_REASON);
+    }
+    // under `gated` each one reaches the owner's card rather than executing
+    policyRow.current = 'gated';
+    for (const script of ['timeout 5 sudo whoami', 'env X=1 sudo whoami', 'nice -n 10 sudo whoami']) {
+      expect(isSudoHoldRequired('shell', { script }), script).toBe(true);
+    }
+  });
+
   it('`doas` is treated as the same privilege escalation', () => {
     // Not installed on stock macOS today. A floor that waits for it to be installed is wrong once.
     underEach(() => expect(shellAllows('doas rm -rf /', PRIMARY)).toBe(false));
