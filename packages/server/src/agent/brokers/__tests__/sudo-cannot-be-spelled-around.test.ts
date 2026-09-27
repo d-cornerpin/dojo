@@ -26,6 +26,9 @@
 //   §3 the `gated` hold, segmented (a hold that only sees head position executes unasked)
 //   §4 no capability lost — the grant question is unchanged
 //   §5 the argv door, which shares the authority
+//   §7 `su`, and a body the broker cannot read
+//   §8 a privileged line read ONE INTERPRETER DEEPER — my own probe's table, and the floor entries
+//      the module header promised would bite inside a sudo line and did not
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -46,7 +49,7 @@ import { authorizeAppleScript } from '../applescript.js';
 import { resolveArgvArg, resolveCommandArg } from '../resolve.js';
 import {
   PRIVILEGE_PROGRAMS, SUDO_NOT_PRIMARY_REASON, SUDO_UNPLACEABLE_REASON, isSudoHoldRequired,
-  mentionsPrivilegeToken, osascriptBodyIsUnseeable,
+  mentionsPrivilegeToken, osascriptBodyIsUnseeable, privilegeTokenIsQuotedData, privilegedInnerCommands,
 } from '../sudo-policy.js';
 import type { PermissionManifest } from '@dojo/shared';
 
@@ -521,6 +524,10 @@ describe('§7 `su`, and a body the broker cannot read', () => {
   const UNSEEABLE: readonly string[] = [
     'osascript /tmp/x.scpt', 'osascript -l JavaScript /tmp/x.js', 'osascript -',
     'osascript /dev/stdin', 'osascript', 'cat /tmp/x.scpt | osascript', 'osascript < /tmp/x.scpt',
+    // ⚠ A DECOY INLINE BODY BESIDE A STDIN BODY. `-e 'benign'` makes the line LOOK seeable, and the
+    // stdin body still executes. Found by mutating the stdin row away: every other unseeable spelling
+    // survived it through the bare-`osascript` fallback, so this is the one shape that pins the rule.
+    `osascript -e 'display dialog "hi"' -`,
   ];
 
   it('`su` is refused to a SUB-AGENT under every policy — it is the same role boundary', () => {
@@ -604,5 +611,143 @@ describe('§7 `su`, and a body the broker cannot read', () => {
     expect(osascriptBodyIsUnseeable(['/dev/stdin'])).toBe(true);
     expect(osascriptBodyIsUnseeable([])).toBe(true);           // bare osascript reads stdin
     expect(osascriptBodyIsUnseeable(['-l', 'JavaScript', '/tmp/x.js'])).toBe(true);
+    expect(osascriptBodyIsUnseeable(['-e', `'x'`, '-'])).toBe(true);        // the decoy, as a unit
+  });
+
+  it('⚠ THE DATA PROOF IS FAIL-CLOSED **STANDING ALONE**, not because of its caller', () => {
+    // `proc.ts` only asks this when no segment was placed as privileged, so `!isSudoLine(seg)` at word 0
+    // is always true THERE — which made the word-0 predicate unfalsifiable from the corpus and let a
+    // mutant widening it to `return true` survive. That is the same disease as the default nothing could
+    // flip. Asked DIRECTLY, without that ordering in front of it, the proof must still refuse.
+    expect(privilegeTokenIsQuotedData('sudo whoami', ['sudo whoami'])).toBe(false);
+    expect(privilegeTokenIsQuotedData('su -c whoami root', ['su -c whoami root'])).toBe(false);
+    expect(privilegeTokenIsQuotedData('doas whoami', ['doas whoami'])).toBe(false);
+    const admin = `osascript -e 'do shell script "id" with administrator privileges'`;
+    expect(privilegeTokenIsQuotedData(admin, [admin])).toBe(false);
+    // …and the capability the word-0 exception exists for is still proven inert.
+    const benign = `osascript -e 'display dialog "hi"'`;
+    expect(privilegeTokenIsQuotedData(benign, [benign])).toBe(true);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §8 — A PRIVILEGED LINE IS READ ONE INTERPRETER DEEPER.
+//
+// ⚠ THIS SECTION IS A DEFECT I FOUND IN MY OWN FEATURE, after §1–§7 were green and the mutants were
+// run. Probing the matrix by hand (`free`, primary, `exec_allow: ['*']`) through the real door:
+//
+//     su root -c "rm -rf /"              ALLOWED   rule `exec-grant`
+//     su root                            ALLOWED   an unbounded interactive ROOT SHELL
+//     sudo sh -c "rm -rf /"              ALLOWED
+//     su root -c "ls; rm -rf /"          ALLOWED   the `;` is inside the quotes
+//     su root -c "cat ~/.ssh/id_rsa"     ALLOWED   while the same command bare is refused
+//
+// TWO CAUSES, AND BOTH ARE THE SAME MISTAKE — a floor that reads a string the shell does not run:
+//   1. `su [opts] [user] -c <command>` is NOT `sudo [opts] <command…>`. The option loop broke on the
+//      USERNAME, so `-c` was never reached and the inner came out as `root -c "rm -rf /"`, whose
+//      program is `root`: allowed by a `*` grant, and matching no floor PREFIX.
+//   2. A command inside `sh -c "…"` is ONE QUOTED WORD to the segmenter, so no segment ever carried
+//      `rm`. That only became reachable when this branch took `sudo *` out of the floor — while it was
+//      there, every sudo line was refused outright and this could not matter. It is a regression this
+//      feature would have shipped, not a pre-existing gap, which is why it is fixed here.
+//
+// The owner's non-negotiable is the standard being applied: the other three floor entries AND the
+// sensitive-read scan bite INSIDE a privileged line under EVERY policy, `free` included.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§8 the floor, inside a privileged line', () => {
+  const FLOORED: readonly string[] = [
+    // `su`'s user-operand grammar, every spelling of it
+    'su root -c "rm -rf /"', 'su -c "rm -rf /" root', 'su --command="rm -rf /" root',
+    'su - root -c "rm -rf ~"', 'su root -c "chmod 777 *"', 'su root -c "ls; rm -rf /"',
+    // a privileged interpreter body, including a combined short flag and a nested one
+    'sudo sh -c "rm -rf /"', 'su root sh -c "rm -rf /"', 'sudo bash -lc "rm -rf /"',
+    `sudo sh -c "sh -c 'rm -rf /'"`, 'sudo sh -c "ls && rm -rf ~"', 'sudo zsh -c "rm -rf /"',
+    // and the credentials file, which is a substring rule rather than a prefix one
+    'su root -c "cat ~/.dojo/secrets.yaml"', 'sudo sh -c "echo x >> ~/.dojo/secrets.yaml"',
+  ];
+
+  it('the three floor entries bite inside a privileged line, EVERY policy, BOTH roles', () => {
+    for (const who of [PRIMARY, WORKER]) {
+      underEach((p) => {
+        for (const line of FLOORED) expect(shellAllows(line, who), `${p}/${who}: ${line}`).toBe(false);
+      });
+    }
+  });
+
+  it('and the refusal is the FLOOR speaking, not the policy or the grant', () => {
+    // The distinction matters: a policy refusal is a setting the owner can change, and these must not
+    // be. Under `free` — where the policy allows everything — the floor is the only thing left.
+    policyRow.current = 'free';
+    for (const line of FLOORED) {
+      const v = shell(line, PRIMARY);
+      expect(String(v.rule), line).toMatch(/^global-exec-(deny|substring)/);
+    }
+  });
+
+  it('the SENSITIVE-READ scan bites inside too — it splits on whitespace and quotes defeated it', () => {
+    policyRow.current = 'free';
+    for (const line of ['su root -c "cat ~/.ssh/id_rsa"', 'sudo sh -c "cat ~/.ssh/id_rsa"']) {
+      const v = shell(line, PRIMARY);
+      expect(v.allowed, line).toBe(false);
+      expect(String(v.rule), line).toBe('exec-sensitive-read');
+    }
+  });
+
+  it('an unbounded INTERACTIVE ROOT SHELL is refused under every policy, `free` included', () => {
+    // There is no inner command, so there is nothing for the floor, the grants or the scan to read —
+    // and `free` means "the primary may run privileged COMMANDS", not "hand out an unexamined root
+    // prompt". `su root` reaching the grant pass as the program `root` is how it got through.
+    underEach((p) => {
+      for (const line of ['su', 'su root', 'su - root', 'sudo -i', 'sudo -s', 'su root -c ""']) {
+        expect(shellAllows(line, PRIMARY), `${p}: ${line}`).toBe(false);
+      }
+    });
+  });
+
+  it('⚠ AN AMBIGUOUS COMMAND OPTION FAILS CLOSED rather than being guessed at', () => {
+    // `su root -c rm -rf /` gives `-c` the single word `rm` and leaves `-rf /` over. Real `su` passes
+    // those to the shell as positional parameters, so `rm` would run with no arguments — but the floor
+    // must not rest on this parser's reading of another program's argument handling.
+    underEach((p) => {
+      for (const line of ['su root -c rm -rf /', 'su -c rm root -rf /']) {
+        expect(shellAllows(line, PRIMARY), `${p}: ${line}`).toBe(false);
+      }
+    });
+  });
+
+  it('NO CAPABILITY LOST — the ordinary privileged lines the owner asked for still run', () => {
+    policyRow.current = 'free';
+    for (const line of [
+      'su root -c whoami', 'su -c whoami root', 'su root --command=whoami', 'su - root -c "ls -la"',
+      'su root -c "ls -la" root', 'sudo sh -c "apt-get update && apt-get -y upgrade"',
+      'sudo bash -c "echo hi"', 'sudo apt-get install -y ripgrep',
+      'sudo cp bin/imsg /opt/homebrew/bin/',
+    ]) {
+      expect(shellAllows(line, PRIMARY), line).toBe(true);
+    }
+  });
+
+  it('⚠ AND THE SCOPE LINE IS DELIBERATE: an UNPRIVILEGED `sh -c` body is unchanged', () => {
+    // `sh -c "rm -rf /"` under a `*` grant is allowed on `main` and is still allowed here. Widening the
+    // floor for unprivileged lines is a live behaviour change beyond this feature's remit; the owner's
+    // ruling is about what runs AS ROOT. Pinned so a later reader sees a decision, not an oversight.
+    underEach(() => {
+      expect(shellAllows('sh -c "rm -rf /"', PRIMARY)).toBe(true);
+      expect(shellAllows('bash -lc "rm -rf ~"', PRIMARY)).toBe(true);
+    });
+  });
+
+  it('the unwrap is a unit: what a privileged line would really run', () => {
+    expect(privilegedInnerCommands('sudo sh -c "rm -rf /"')).toContain('rm -rf /');
+    expect(privilegedInnerCommands('su root -c "ls; rm -rf /"')).toEqual(['ls', 'rm -rf /']);
+    expect(privilegedInnerCommands('sudo bash -lc "rm -rf /"')).toContain('rm -rf /');
+    expect(privilegedInnerCommands('sudo whoami')).toEqual(['whoami']);
+    // an ordinary line has none, and the guard is what makes that true standing alone
+    expect(privilegedInnerCommands('ls -la')).toEqual([]);
+    expect(privilegedInnerCommands('sh -c "rm -rf /"')).toEqual([]);
+    // bounded: a nest deeper than the limit terminates instead of spinning
+    const nested = `sudo sh -c "sh -c 'sh -c \\"sh -c ls\\"'"`;
+    expect(privilegedInnerCommands(nested).length).toBeLessThan(12);
   });
 });
