@@ -7,6 +7,10 @@
 import { createLogger } from '../logger.js';
 import { readToolDoc } from './tool-doc-read.js';
 import { resolveToolAlias } from './aliases.js';
+import {
+  LOAD_TOOL_DOCS_MAX_PER_CALL, evictionNote, forgetSessionLoadedTools, getSessionLoadedTools,
+  loadToolDocsOverflowRefusal, markToolsLoaded,
+} from './tool-session-set.js';
 import type { ToolDefinition } from '../agent/tools/types.js';
 
 const logger = createLogger('tool-docs');
@@ -257,27 +261,14 @@ export const SUB_AGENT_ALWAYS_LOADED = [
 ];
 
 // ── Per-session tool loading state ──
-// Maps agent ID -> set of tool names that have been loaded via load_tool_docs in this session
-
-const sessionLoadedTools: Map<string, Set<string>> = new Map();
-
-export function getSessionLoadedTools(agentId: string): Set<string> {
-  return sessionLoadedTools.get(agentId) ?? new Set();
-}
-
-export function markToolsLoaded(agentId: string, toolNames: string[]): void {
-  let loaded = sessionLoadedTools.get(agentId);
-  if (!loaded) {
-    loaded = new Set();
-    sessionLoadedTools.set(agentId, loaded);
-  }
-  for (const name of toolNames) {
-    loaded.add(name);
-  }
-}
+// Maps agent ID -> set of tool names loaded via load_tool_docs in this session. The state and
+// its W2 ceiling live in `tool-session-set.ts` (that file's header carries the two numbers and
+// the eviction argument); they are re-exported here because this module's name is the door
+// every caller already knows.
+export { getSessionLoadedTools, markToolsLoaded } from './tool-session-set.js';
 
 export function clearSessionLoadedTools(agentId: string): void {
-  sessionLoadedTools.delete(agentId);
+  forgetSessionLoadedTools(agentId);
   // A reset is a DECISION to forget. Leaving the rehydration flag set is what makes it
   // stick: without this the next turn would re-import the pre-reset history's tool names
   // and hand the agent back the session it was just told to drop.
@@ -584,36 +575,44 @@ export function executeLoadToolDocs(agentId: string, toolNames: string[]): strin
   if (!Array.isArray(toolNames) || toolNames.length === 0) {
     return 'Error: tools parameter must be a non-empty array of tool names';
   }
+  // W2 THE FLOOR. The handler refuses the RAW array first (`cat/meta.ts`) — that is the number
+  // the model actually asked for — and this covers any other caller with the same sentence from
+  // the same owner. Both read `LOAD_TOOL_DOCS_MAX_PER_CALL`; neither carries a literal.
+  if (toolNames.length > LOAD_TOOL_DOCS_MAX_PER_CALL) return loadToolDocsOverflowRefusal(toolNames.length);
 
   const results: string[] = [];
   const loaded: string[] = [];
-  const notFound: string[] = [];
+  // W2 §2.5 — A MISSING MANUAL IS NOT A MISSING TOOL, and it used to be reported as one: the
+  // existence test was `readToolDoc(name)`, a DOC-FILE lookup, so a real tool whose generated
+  // `.md` never landed came back as "Tools not found: x" — a lie about the tool, hiding a
+  // doc-generation failure behind a naming verdict. Existence is not this function's question:
+  // every name here was already intersected with `getFilteredTools(agentId)` by the handler (the
+  // precondition `readToolDoc`'s own docstring states), so it IS real and callable — it is
+  // marked loaded, and the absent manual is reported as a fact about this INSTALL. "No such
+  // tool" stays where its authority is: the handler's registry-backed `describeNameFailure` (T80a).
+  const manualMissing: string[] = [];
 
   for (const name of toolNames) {
     const doc = readToolDoc(name);
-    if (doc) {
-      results.push(doc);
-      loaded.push(name);
-    } else {
-      notFound.push(name);
-    }
+    loaded.push(name);
+    if (doc) results.push(doc);
+    else manualMissing.push(name);
   }
 
-  if (loaded.length > 0) {
-    markToolsLoaded(agentId, loaded);
-    logger.info('Tool docs loaded into session', { agentId, tools: loaded });
-  }
+  const evicted = markToolsLoaded(agentId, loaded);
+  logger.info('Tool docs loaded into session', { agentId, tools: loaded });
 
-  let output = '';
+  const parts: string[] = [];
   if (results.length > 0) {
-    output += `Loaded documentation for ${loaded.length} tool(s). These tools are now available to call directly.\n\n`;
-    output += results.join('\n\n---\n\n');
+    parts.push(`Loaded documentation for ${results.length} tool(s). These tools are now available to call directly.\n\n`
+      + results.join('\n\n---\n\n'));
   }
-  if (notFound.length > 0) {
-    output += `\n\nTools not found: ${notFound.join(', ')}`;
+  if (manualMissing.length > 0) {
+    parts.push(`Loaded, but no manual is available on this install for: ${manualMissing.join(', ')}. `
+      + 'Those tools are real and callable — the generated documentation is missing, not the tool.');
   }
-
-  return output || 'No valid tool names provided.';
+  const output = parts.join('\n\n');
+  return evicted.length > 0 ? output + evictionNote(evicted) : output;
 }
 
 // ── Always-loaded tools lookup per agent (from DB) ──

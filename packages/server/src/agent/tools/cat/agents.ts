@@ -41,6 +41,8 @@ import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../../../work
 import { noteUnsettled } from '../../../work/store.js';
 import { skipOpenOccurrencesAsComplete } from '../../../work/occurrences.js';
 import { spawnAgent, terminateAgent, completeAgent, applySpawnTimeoutDecision } from '../../spawner.js';
+import { validateAlwaysLoadedTools } from '../../always-loaded-tools.js';
+import { toolDefinitionsByName } from '../definitions.js';
 import { createGroup, assignAgentToGroup } from '../../groups.js';
 import { friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer } from '../../tool-helpers.js';
 
@@ -342,6 +344,9 @@ export const agentsHandlers: ToolHandlerMap = {
       return { content, isError };
     }
 
+    // W1 (always-loaded-tools.ts): capped + name-checked ahead of the insert, so a refusal leaves no half-built agent. INVALID_ARGS, never PERMISSION_DENIED — T80a, one field over.
+    const declared = validateAlwaysLoadedTools(args.always_loaded_tools, toolDefinitionsByName());
+    if (!declared.ok) { auditLog(agentId, 'spawn_agent', args.name as string | null, 'denied', declared.error.slice(0, 200)); return { content: declared.error, isError: true, errorCode: 'INVALID_ARGS' as const }; }
     // v2.3.19 (Scenario 7 finding), wrap in try/catch so raw SQLite
     // errors ("FOREIGN KEY constraint failed", etc.) don't leak to
     // the agent. friendlyDbError translates them into actionable
@@ -368,7 +373,7 @@ export const agentsHandlers: ToolHandlerMap = {
         groupId: squad.groupId,
         initialMessage: args.initial_message as string | undefined,
         equippedTechniques: args.techniques as string[] | undefined,
-        alwaysLoadedTools: args.always_loaded_tools as string[] | undefined,
+        alwaysLoadedTools: declared.names,
         autoStart: args.auto_start as boolean | undefined,
       });
       // Delegation assignment (demolition Phase 1.7, the Brookstom modeling

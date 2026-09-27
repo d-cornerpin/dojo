@@ -40,6 +40,7 @@ import { resolveToolAlias } from '../../../tools/aliases.js';
 import { describeNameFailure } from '../../../tools/name-help.js';
 import { getFilteredTools } from '../surface.js';
 import { getAllToolDefinitions } from '../definitions.js';
+import { LOAD_TOOL_DOCS_MAX_PER_CALL, loadToolDocsOverflowRefusal } from '../../../tools/tool-session-set.js';
 
 export const metaHandlers: ToolHandlerMap = {
   async load_tool_docs({ agentId, args }) {
@@ -61,6 +62,21 @@ export const metaHandlers: ToolHandlerMap = {
       content = 'Error: tools parameter must be a non-empty array. Pass at least one tool name. Example: load_tool_docs({tools: ["web_fetch"]}).';
       isError = true;
       return { content, isError };
+    }
+    // ── W2: THE PER-CALL CAP, ON THE NUMBER THE MODEL ACTUALLY ASKED FOR ──
+    // Here rather than inside `executeLoadToolDocs` (which keeps the same refusal as a floor)
+    // because by then the array has been narrowed to this agent's accessible names: a 40-name
+    // request with 6 permitted would pass a cap measured after the filter. The bound exists to
+    // stop a RUNAWAY REQUEST, so it is measured on the request. The number and the sentence are
+    // owned by `tools/tool-session-set.ts`; nothing here carries a literal.
+    //
+    // NOT `maxItems` on the schema, deliberately: `load_tool_docs` is in every agent's
+    // always-loaded set, so its definition sits INSIDE the cached prompt prefix — adding a
+    // keyword there moves the cache-prefix golden and re-bills every agent's prefix once, for a
+    // guard the handler can enforce with zero prefix bytes. Recorded as a strictly-better
+    // follow-on for whenever a task is already moving that golden.
+    if (requestedTools.length > LOAD_TOOL_DOCS_MAX_PER_CALL) {
+      return { content: loadToolDocsOverflowRefusal(requestedTools.length), isError: true, errorCode: 'INVALID_ARGS' };
     }
     // C27 hook 3: an old (renamed) tool name resolves to the NEW tool's
     // docs; collect a note so the model learns the new name.

@@ -8,6 +8,7 @@ import { resolveChildScope } from './scope.js';
 import { resolveSpawnGrants, GrantRefusedError } from './access/authorize.js';
 import { getAccessGrants } from './access/read.js';
 import { inheritedCreatorKind } from './created-by-kind.js';
+import { validateAlwaysLoadedTools } from './always-loaded-tools.js';
 import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
 import { sendAgentMessage } from './agent-bus.js';
 import { postAgentNotice } from './agent-notice.js';
@@ -108,8 +109,8 @@ export interface SpawnParams {
   initialMessage?: string;
   /** Technique IDs to equip on this agent (pre-loaded into context) */
   equippedTechniques?: string[];
-  /** Custom always-loaded tools for this agent (overrides role defaults) */
-  alwaysLoadedTools?: string[];
+  /** Custom always-loaded tools for this agent (overrides role defaults). RAW: `validateAlwaysLoadedTools` owns the typing (W1). */
+  alwaysLoadedTools?: unknown;
   /**
    * If false, skip the initial wakeup. The agent is spawned but stays idle
    * until it gets a real message (a task assignment, an A2A poke, etc.). Use
@@ -348,12 +349,11 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     taskId ?? null,
   );
 
-  // Set custom always_loaded_tools if provided by the parent
-  if (alwaysLoadedTools && alwaysLoadedTools.length > 0) {
-    try {
-      db.prepare('UPDATE agents SET always_loaded_tools = ? WHERE id = ?').run(JSON.stringify(alwaysLoadedTools), agentId);
-    } catch { /* column may not exist on very old databases */ }
-  }
+  // W1 THE FLOOR for all three callers (the handler owns the good message and refuses before any
+  // row exists). The swallowed `catch` went with it: see `always-loaded-tools.ts`'s header.
+  const declared = validateAlwaysLoadedTools(alwaysLoadedTools);
+  if (!declared.ok) throw new Error(declared.error);
+  if (declared.names.length > 0) db.prepare('UPDATE agents SET always_loaded_tools = ? WHERE id = ?').run(JSON.stringify(declared.names), agentId);
 
   logger.info('Agent spawned', {
     agentId,
