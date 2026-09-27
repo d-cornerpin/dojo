@@ -5545,6 +5545,13 @@
       "to": 964,
       "by": "BACKLOG LANE-2 A-5b merge (2026-09-26), coordinator-applied on merged reality",
       "why": "lane 2 asked 977->980 (+3: import, comment, field) but lane 1's purge extraction shrank the file to 961 first; merged truth is 964 — a net LOWER than the old pin, recorded here so the arithmetic is auditable"
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts",
+      "from": 407,
+      "to": 433,
+      "by": "BACKLOG LANE-6 collapsing carve-out merge (2026-09-26), coordinator-applied",
+      "why": "+26 (+30/−4; 12 code, 14 comment/blank). The 12 code lines are ONE MORE MEMBER OF AN EXISTING FAMILY: a third `deliveredAs…` flag beside `deliveredAsStartLine` and `deliveredAsCompiledAnswer`, one clause on the demote condition, one clause on the promotion opener, and a four-line delegation to `answer-to-a-live-ask.ts`, which holds the predicate, the delivery and the whole argument (197 lines, unpinned). THE DECISION COULD NOT MOVE OUT OF THIS FILE: the three flags are read by the demote condition at this seam, and that condition IS the defect's site — the demotion keyed on co-occurrence with a tool call, which `shared/visibility.ts` states as a definition and which is false whenever the model answers and acts in one response. Measured cost of the definition: 7 of 204 human-triggered turns ended with the person shown nothing but a dimmed note. REFUSED: keying the carve-out on `hasUnansweredUser` (the investigation's Option A) — it turned five reviewed CONTROL clauses in three sibling suites red, each a statement of owner rulings 2026-07-10 / 2026-07-23 / 2026-08-12, and mutant M2 re-"
     }
   ],
   "maxNewFileLines": 400,
@@ -5683,7 +5690,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 286,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 417,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
-    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 407,
+    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 433,
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 235,
