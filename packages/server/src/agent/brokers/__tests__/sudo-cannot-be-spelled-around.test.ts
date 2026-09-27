@@ -1197,6 +1197,23 @@ describe('§11 R5 — delimiters that nest are counted', () => {
     expect(interpreterBody("perl -e 'qx{echo {}; ls}'")?.kind).toBe('readable');
   });
 
+  it('⚠ AND THE REMAINDER STILL REACHES THE FLOOR, so the refusal names the most specific true thing', () => {
+    // A mutant that dropped the remainder kept every verdict identical and changed only WHICH message
+    // the agent reads — from "you tried to delete the filesystem" to "I could not parse your options".
+    // Both are refusals; only one of them is useful, and the same principle already governs
+    // `su root sh -c "rm -rf /"` in §8. So the rule id is the assertion.
+    policyRow.current = 'free';
+    for (const [line, rule] of [
+      ["sudo perl -e 'qx{echo {; rm -rf /'", 'global-exec-deny:rm -rf /'],
+      ["sudo ruby -e '%x(echo (; rm -rf /'", 'global-exec-deny:rm -rf /'],
+      ["sudo perl -e 'qx[echo [; rm -rf ~'", 'global-exec-deny:rm -rf ~'],
+    ] as const) {
+      expect(String(shell(line, PRIMARY).rule), line).toBe(rule);
+    }
+    // …and an unterminated nest with NOTHING floorable in it is still refused, by the parse
+    expect(String(shell("sudo perl -e 'qx{echo {; ls'", PRIMARY).rule)).toBe('sudo-unparseable-options');
+  });
+
   it('⚠ AN ENCODED SPACE IS STILL A SPACE — the bytes are in the line', () => {
     policyRow.current = 'free';
     for (const line of [
