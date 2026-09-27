@@ -4,6 +4,7 @@
 
 import { createLogger } from '../logger.js';
 import { openAgentCall, STOPPED_BY_USER } from './abortable-call.js';
+import { stripHtmlTags } from './html-text.js';
 import { getSearchApiKey } from '../config/loader.js';
 import { checkPermission } from './permissions.js';
 import { assertPublicHttpTarget, NetGuardError } from './net-guard.js';
@@ -80,37 +81,13 @@ export async function webSearch(
     logger.info('Web search queued', { query, queuePosition }, agentId);
   }
 
-  // ── A-6: THE STOP REACHES THE SEARCH (the media dials' door, one family over) ──
-  // `turn` scope: the executor is holding this turn open on the call, so a turn teardown is a
-  // reason to cut it — unlike the image dial, which deliberately outlives its turn.
-  // ⚠ THE SLOT OPENS INSIDE THE QUEUE, not before it. A search can sit behind the 1.1 s rate
-  // limiter for several seconds, and a slot opened before the wait would hold a registration
-  // for a call that is not on the wire — `countAbortable` would report work the box is not
-  // doing, which is the exact untruth A-5b's affordance is being built to avoid.
+  // A-6. The slot opens INSIDE the queue: a registration for a call still waiting behind the
+  // 1.1 s rate limiter would report work the box is not doing. `turn` scope, clock composed.
   return enqueueSearch(async () => {
     const slot = openAgentCall(agentId, 'turn', AbortSignal.timeout(15000));
     try {
-      return await dialSearch(agentId, query, count, apiKey, slot);
-    } catch (err) {
-      // A STOP ARRIVES AS A THROW AND MUST NOT WEAR THE PROVIDER'S CLOTHES. `fetch` rejects
-      // with an `AbortError` whichever member of the composed signal fired, so the discriminator
-      // is the slot's own controller — never the message, never the composed signal.
-      if (slot.cutByStop()) return STOPPED_BY_USER;
-      throw err;
-    } finally {
-      slot.release();
-    }
-  });
-}
-
-/** The search dial itself. Split out so the slot's `finally` covers every early return. */
-async function dialSearch(
-  agentId: string, query: string, count: number, apiKey: string,
-  slot: { signal: AbortSignal; refused: boolean; cutByStop: () => boolean },
-): Promise<string> {
-  {
-    if (slot.refused) return STOPPED_BY_USER;
-    const searchUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${Math.min(count, 20)}`;
+      if (slot.refused) return STOPPED_BY_USER;
+      const searchUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${Math.min(count, 20)}`;
 
     logger.info('Web search executing', { query, count }, agentId);
 
@@ -173,38 +150,18 @@ async function dialSearch(
     }).join('\n\n');
 
     return `Search results for "${query}":\n\n${formatted}`;
-  }
+    } catch (err) {
+      // The discriminator is this call's OWN controller, never the message: a composed clock
+      // rejects with the same `AbortError` a stop does.
+      if (slot.cutByStop()) return STOPPED_BY_USER;
+      throw err;
+    } finally {
+      slot.release();
+    }
+  });
 }
 
 // ── Web Fetch ──
-
-function stripHtmlTags(html: string): string {
-  // Remove script and style blocks entirely
-  let text = html.replace(/<script[\s\S]*?<\/script>/gi, '');
-  text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
-  // Remove HTML comments
-  text = text.replace(/<!--[\s\S]*?-->/g, '');
-  // Replace br and p tags with newlines
-  text = text.replace(/<br\s*\/?>/gi, '\n');
-  text = text.replace(/<\/p>/gi, '\n\n');
-  text = text.replace(/<\/div>/gi, '\n');
-  text = text.replace(/<\/h[1-6]>/gi, '\n\n');
-  text = text.replace(/<li>/gi, '- ');
-  text = text.replace(/<\/li>/gi, '\n');
-  // Strip remaining tags
-  text = text.replace(/<[^>]+>/g, '');
-  // Decode common HTML entities
-  text = text.replace(/&amp;/g, '&');
-  text = text.replace(/&lt;/g, '<');
-  text = text.replace(/&gt;/g, '>');
-  text = text.replace(/&quot;/g, '"');
-  text = text.replace(/&#39;/g, "'");
-  text = text.replace(/&nbsp;/g, ' ');
-  // Clean up whitespace
-  text = text.replace(/\n{3,}/g, '\n\n');
-  text = text.replace(/[ \t]+/g, ' ');
-  return text.trim();
-}
 
 function extractDomain(url: string): string {
   try {
@@ -235,11 +192,8 @@ export async function webFetch(
 
   logger.info('Web fetch', { url, domain, hasPrompt: !!prompt }, agentId);
 
-  // ── A-6: THE STOP REACHES THE FETCH, AND EVERY REDIRECT HOP OF IT ──
-  // One slot for the whole hop loop rather than one per hop: five hops are one call as far as
-  // the user is concerned, and a stop pressed on hop three must not be survived by hop four.
-  // `turn` scope — the executor holds the turn open on this. The caller's 15 s clock is
-  // COMPOSED rather than replaced, so a slow page still times out as a page, not as a stop.
+  // A-6. ONE slot for the whole redirect loop — a stop on hop three must not be survived by
+  // hop four — with the 15 s clock composed, so a slow page still times out as a page.
   const slot = openAgentCall(agentId, 'turn', AbortSignal.timeout(15000));
   if (slot.refused) { slot.release(); return STOPPED_BY_USER; }
 
@@ -319,21 +273,16 @@ export async function webFetch(
     } else {
       text = body;
     }
-  // ⚠ RELEASED AT THE END OF THE TRANSPORT, NOT AT THE END OF THE FUNCTION. Everything below
-  // this block is the prompt-extraction model call, which registers its own slot through
-  // `callModel`; holding this one open across it would report two in-flight calls for one, and
-  // `countAbortable` is about to become something a user READS (A-5b). Idempotent by identity,
-  // so the early-return releases above are not double frees.
+  // ⚠ Released at the end of the TRANSPORT, not of the function: what follows is the
+  // prompt-extraction model call, which registers its own slot through `callModel`.
   } catch (err) {
     if (err instanceof NetGuardError) {
       logger.warn('Web fetch refused by the network guard', { url, address: err.address, reason: err.message }, agentId);
       return `Permission denied: ${err.message}`;
     }
     const msg = err instanceof Error ? err.message : String(err);
-    // THE STOP IS ANSWERED FIRST. Below this line sits a ladder that turns an `AbortError`
-    // into "request timed out. The server is slow or unresponsive." — the user's own button
-    // wearing a provider's failure, which is the A-5 defect this family inherited. The slot's
-    // own controller is the discriminator, so the composed 15 s clock still reads as a clock.
+    // ANSWERED FIRST: the ladder below turns an `AbortError` into "request timed out. The server
+    // is slow or unresponsive." — the user's own button wearing a provider's failure.
     if (slot.cutByStop()) { slot.release(); return STOPPED_BY_USER; }
     // A network-layer fetch failure (timeout / DNS / refused / TLS) to an EXTERNAL
     // url is environmental, and this branch already HANDLES it: it returns actionable

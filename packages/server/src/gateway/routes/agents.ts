@@ -940,16 +940,8 @@ function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
     uptime,
     model,
     dreamerIgnore: row.dreamer_ignore === 1,
-    // ── A-5b: THE WORK THE STOP BUTTON WOULD CUT, SAID OUT LOUD ──
-    // A READ of the live abort registry — no new column, no new writer, no new frame. The
-    // dashboard gated its Stop button on `status === 'working'`, so a background media job
-    // that outlives its turn (a video render, a narration, an image delivery that waits for
-    // idle) left the agent reading `idle` with work on the wire that the button WOULD have
-    // cut. `packages/dashboard/src/lib/stop-affordance.ts` is the rule that reads this.
-    inFlight: {
-      turn: countAbortable(agentId, 'turn'),
-      background: countAbortable(agentId, 'background'),
-    },
+    // A-5b: a READ of the live abort registry — no column, no writer, no frame. Rule: `stop-affordance.ts`.
+    inFlight: { turn: countAbortable(agentId, 'turn'), background: countAbortable(agentId, 'background') },
   };
 }
 

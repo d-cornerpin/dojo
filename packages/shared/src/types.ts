@@ -231,21 +231,8 @@ export interface AgentDetail extends Agent {
    * layer entirely — Dreamer never sees them. Toggleable on the agent
    * detail page. Falls through from the group's flag if either is set. */
   dreamerIgnore?: boolean;
-  /**
-   * HOW MANY OF THIS AGENT'S CALLS THE STOP BUTTON WOULD ACTUALLY CUT, RIGHT NOW (A-5b).
-   *
-   * A-5 made every media dial and (A-6) every web/workspace transport abortable by the owner's
-   * stop. It did not make that work VISIBLE: an agent whose turn has ended while a video render
-   * or a narration is still on the wire reads `status: 'idle'`, so the Stop button — gated on
-   * `status === 'working'` — was not offered for work the button would have cut. The owner's
-   * ruling is that the button stops ALL of an agent's activity; this is the field that lets a
-   * surface SAY so.
-   *
-   * Read live off the abort registry, not stored: `turn` is work a turn is waiting on,
-   * `background` is work that deliberately outlives its turn (a video poll, an image delivery
-   * that waits for idle). Absent on payloads from a server that predates this field, which is
-   * why every reader must treat `undefined` as "no claim" rather than as zero.
-   */
+  /** A-5b: calls a stop would cut NOW, live off the abort registry. `background` outlives its
+   *  turn, so an `idle` row can be stoppable; absent = no claim, not zero. See `stop-affordance.ts`. */
   inFlight?: { turn: number; background: number };
 }
 
