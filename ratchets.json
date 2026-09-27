@@ -5580,6 +5580,13 @@
       "to": 433,
       "by": "BACKLOG LANE-4 merge (2026-09-26), coordinator-applied",
       "why": "lane 4 item 2: the credential-placeholder chip drawing — Markdown.tsx only draws, the decidable rule lives in lib/credential-placeholder.ts (lane4-report.md item 2); coordinator-applied"
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/agents.ts",
+      "from": 1533,
+      "to": 1538,
+      "by": "BACKLOG LANE-5 caps merge (2026-09-26), coordinator-applied",
+      "why": "W1 cap refusal at the handler: the spawner's write happens after the agent INSERT, so a spawner-only refusal leaves a half-built agent (lane5-report.md section 6)"
     }
   ],
   "maxNewFileLines": 400,
@@ -5646,7 +5653,7 @@
     "packages/server/src/healer/auto-fix.ts": 421,
     "packages/server/src/agent/spawner.ts": 1459,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
-    "packages/server/src/agent/tools/cat/agents.ts": 1533,
+    "packages/server/src/agent/tools/cat/agents.ts": 1538,
     "packages/server/src/agent/tools/cat/comms.ts": 914,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
