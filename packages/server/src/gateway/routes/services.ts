@@ -40,6 +40,10 @@ export function recordProviderSuccess(providerId: string): void {
   }
   providerLastSuccess.set(providerId, new Date().toISOString());
   providerErrorCounts.set(providerId, 0);
+  // v3.2.3 layer 3: a call that actually worked is the only evidence that beats a
+  // recorded permanent failure, so it closes the breaker too. (The owner's manual
+  // retry is the other way — `POST /api/services/providers/:id/clear-breaker`.)
+  noteProviderSuccess(providerId);
 }
 
 export function recordProviderError(providerId: string): void {
@@ -52,6 +56,7 @@ export function recordProviderError(providerId: string): void {
   }
 }
 import { getProviderCredential } from '../../config/loader.js';
+import { noteProviderSuccess, clearProviderBreaker, openBreakers_readonly } from '../../providers/billing-breaker.js';
 import { routeFailure } from './route-failure.js';
 import { homeDir } from '../../home.js';
 
@@ -296,6 +301,22 @@ servicesRouter.get('/presence', (c) => {
 });
 
 // POST /presence — set user presence status
+// ── v3.2.3 LAYER 3: THE OWNER'S MANUAL RETRY, which is what makes a non-self-closing
+//    breaker fair. The card says "top up or switch"; when they have, this is the button's
+//    door: clear the wall and let the next call try for real. It answers whether anything
+//    WAS open, so a dashboard can say "nothing was blocked" instead of implying it fixed
+//    something. GET lists what is open, so the Health card can render the state.
+servicesRouter.get('/providers/breakers', (c) => {
+  return c.json({ ok: true, data: { breakers: openBreakers_readonly() } });
+});
+
+servicesRouter.post('/providers/:id/clear-breaker', (c) => {
+  const providerId = c.req.param('id');
+  const wasOpen = clearProviderBreaker(providerId);
+  logger.info('Provider breaker cleared from the dashboard', { providerId, wasOpen });
+  return c.json({ ok: true, data: { providerId, wasOpen } });
+});
+
 servicesRouter.post('/presence', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body?.status || !['in_dojo', 'away'].includes(body.status)) {

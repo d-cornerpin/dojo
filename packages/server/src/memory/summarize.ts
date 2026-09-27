@@ -2,6 +2,7 @@ import { callModel } from '../agent/model.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { estimateTokens } from './budget.js';
+import { noteSummaryWriterFailure } from '../providers/billing-breaker.js';
 
 const logger = createLogger('memory-summarize');
 
@@ -326,8 +327,16 @@ export async function generateSummary(params: {
     // PHASE-3 T5: this used to truncate the RAW input and persist it. The model failing is
     // not a reason to write the conversation back into the summary store verbatim.
     const message = err instanceof Error ? err.message : String(err);
+    // ── v3.2.3 LAYER 3: A WALL IS NOT A BAD MINUTE ──
+    // The incident: this catch fired ~4,000 times per prompt against a provider
+    // answering 402, and every failure was logged and forgotten. The classifier now
+    // separates PERMANENT (no balance, dead credential, refused access) from
+    // transient, and a permanent one opens the provider's breaker — which the chunk
+    // loop reads at the top of its next iteration and stops. Transient failures are
+    // untouched: they still return `ok:false` and get retried by the next drain.
+    const permanent = noteSummaryWriterFailure(modelId, message, agentId);
     logger.error('SUMMARY_REFUSED summarization model call failed', {
-      error: message, depth, targetTokens,
+      error: message, depth, targetTokens, permanent: permanent ?? 'transient',
     }, agentId);
     return { ok: false, reason: `summarizer model call failed: ${message}` };
   }

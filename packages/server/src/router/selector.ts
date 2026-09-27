@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { turnContext } from '../agent/turn-context.js';
 import { createLogger } from '../logger.js';
+import { mayDialProvider } from '../providers/billing-breaker.js';
 import { isRateLimited } from './rate-limits.js';
 import { getDailySpend } from '../costs/tracker.js';
 import { checkBudget } from '../costs/budget.js';
@@ -185,6 +186,19 @@ export function selectModel(
     for (const model of models) {
       // Skip excluded models
       if (excluded.has(model.model_id)) continue;
+
+      // ── v3.2.3 LAYER 3: DO NOT OFFER A PROVIDER THAT IS OUT OF MONEY ──
+      // The incident's auto-router kept ranking the CHEAPEST model first, which was the
+      // one answering 402 — so every turn paid a full round trip to a wall before falling
+      // back. The public report measured that tax at +15-20 s per turn. A provider whose
+      // breaker is OPEN is not a candidate: the owner has been carded and nothing here can
+      // change the answer. It comes back the moment they clear it or a call succeeds.
+      if (!mayDialProvider(model.provider_id)) {
+        logger.debug('Model skipped: its provider is circuit-broken (permanent failure)', {
+          modelId: model.model_id, providerId: model.provider_id,
+        }, agentId);
+        continue;
+      }
 
       // Skip models lacking required capabilities (e.g., tools, vision)
       if (required.length > 0) {
