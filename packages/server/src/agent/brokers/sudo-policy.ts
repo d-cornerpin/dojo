@@ -776,21 +776,26 @@ const SHELL_INTERPRETERS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'd
  *   2. A LANGUAGE API THAT NEEDS NO SHELL. `shutil.rmtree('/')`, `fs.rmSync('/', {recursive:true})` —
  *      the damage is done by the runtime itself and no shell command is ever spelled, so there is no
  *      text for a text floor to match.
- *   3. ⚠ A FLOOR PATTERN IN A SPELLING THE FLOOR'S OWN LIST DOES NOT CARRY — and this one is spelled
- *      right there in the line, which is why it is called out separately rather than folded into the
- *      sentence below. `GLOBAL_EXEC_DENY` holds three literal strings, so it knows `rm -rf /` and does
- *      not know its synonyms. Measured, primary under `free`, after every fix in this file:
- *        sudo rm -r -f /        sudo rm -fr /         sudo rm -rfv /
- *        sudo rm --recursive --force /                sudo rm -r --force /
- *        sudo chmod -R 777 /etc                       sudo /bin/rm -r -f /
- *      NOT INTRODUCED HERE and not narrowable by anything in this module: it is the floor's VOCABULARY,
- *      shared with every `exec_deny` rule in the tree, and `main` behaves identically for unprivileged
- *      lines. Closing it means asking the floor's patterns SEMANTICALLY for privileged commands — same
- *      program, pattern's flag letters present among the command's flags, pattern's operand among the
- *      command's operands — which is a contained change to how those three patterns are matched, with
- *      its own judgement calls (a long flag's letter, `chmod -R 777 /etc` becoming refused) that belong
- *      in a round of their own rather than in a last-minute edit. NAMED HERE because the rule of this
- *      campaign is that the code's words must never claim more than the code does.
+ *   3. ⚠ A FLOOR PATTERN IN A SPELLING THE FLOOR'S OWN LIST DOES NOT CARRY — spelled right there in the
+ *      line, which is why it is a member of its own rather than folded into the sentence below.
+ *      `GLOBAL_EXEC_DENY` holds THREE LITERAL STRINGS, so it carries neither FLAG SYNONYMS nor OPERAND
+ *      QUOTING. Measured, primary under `free`, after every fix in this file:
+ *        flags:    sudo rm -r -f /     sudo rm -fr /     sudo rm -rfv /     sudo /bin/rm -r -f /
+ *                  sudo rm --recursive --force /         sudo rm -r --force /    sudo chmod -R 777 /etc
+ *        operands: sudo rm -rf '/'     sudo rm -rf "/"   sudo rm -rf \/    sudo rm -rf ''/''
+ *                  sudo perl -e "qx{rm -rf '/'}"         (the same gap reached through a quote operator)
+ *      A QUOTED OPERAND DEFEATS THE LITERAL PATTERN EXACTLY AS A SYNONYM FLAG DOES, and for one reason:
+ *      the pattern is compared to text, and `'/'` is not the text `/`. (`chmod 777 '*'` IS refused —
+ *      that entry is prefix-matched, so the quoting lands past the part being compared. One entry
+ *      catching a shape its neighbours miss is the same asymmetry this campaign keeps finding.)
+ *      NOT INTRODUCED HERE and not narrowable from this module: it is the floor's VOCABULARY, shared
+ *      with every `exec_deny` rule in the tree, and `main` behaves identically for unprivileged lines.
+ *      Closing it means asking those three patterns SEMANTICALLY for privileged commands — same program,
+ *      the pattern's flag letters present among the command's flags, the pattern's operand among the
+ *      command's operands COMPARED UNQUOTED — a contained change with its own judgement calls (what a
+ *      long flag's letter means; `chmod -R 777 /etc` flipping to refused) that belong in a round of
+ *      their own. ⚠ OWNER RULING: LEAVE IT, SHIP DOCUMENTED. It is pinned by a clause so that the day
+ *      somebody closes it, this paragraph is forced to change with it.
  *
  * ⚠ AND WHAT IS **NOT** IN THAT LIST, each measured rather than assumed, because a residual that names
  * things the code already catches is the same defect as one that omits things it does not:
@@ -805,7 +810,7 @@ const SHELL_INTERPRETERS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'd
  * both: under `free`, (a) A PAYLOAD THE LINE DOES NOT SPELL — waiting on a substitution, a format or a
  * variable, or carried out by a language API instead of a shell command — is outside the floor's reach;
  * and (b) A PAYLOAD THE LINE DOES SPELL is refused in every quoting, nesting and encoding THIS MODULE
- * knows of, but only in the flag spellings THE FLOOR'S OWN THREE PATTERNS carry.
+ * knows of — but only in the FLAG and OPERAND spellings THE FLOOR'S OWN THREE PATTERNS carry.
  *
  * ⚠ (b) IS DELIBERATELY WEAKER THAN THE SENTENCE IT REPLACES. The previous version claimed "any quoting
  * or encoding this file knows of" and stopped there, which read as a guarantee about the whole line; it
