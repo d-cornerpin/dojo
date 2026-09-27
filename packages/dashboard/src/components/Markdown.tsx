@@ -1,5 +1,10 @@
 import { useState } from 'react';
 import { LinkPreview } from './LinkPreview';
+import {
+  splitCredentialPlaceholders,
+  credentialChipTitle,
+  CREDENTIAL_CHIP_LABEL,
+} from '../lib/credential-placeholder';
 
 /**
  * Lightweight markdown renderer for chat messages.
@@ -278,6 +283,25 @@ function renderUrl(url: string, key: number): React.ReactNode[] {
 
 // Render an explicit markdown link [text](url) where the visible text and
 // the href can differ. Same trailing-junk rule applied to the href.
+/**
+ * A credential the platform is holding, drawn where its value would have been.
+ *
+ * The engine substitutes a redacted-credential placeholder on the wire and is right to (see
+ * `secret-values.ts`); until this chip existed the dashboard drew that token as body text, so the
+ * owner read gibberish exactly where a value should be, with nothing to say the value was safe or
+ * where it lived. The DECISION of what is a placeholder belongs to `lib/credential-placeholder.ts`
+ * — this component only draws.
+ *
+ * The token's literal text is deliberately absent from this file, including from these comments:
+ * its own clause forbids it, so that the pattern cannot be quietly re-implemented here and drift
+ * from the engine's.
+ */
+const CredentialChip = ({ tag }: { tag: string | null }) => (
+  <span className="pill pill--draft" title={credentialChipTitle(tag)}>
+    <i className="dot" />{CREDENTIAL_CHIP_LABEL}
+  </span>
+);
+
 function renderMarkdownLink(text: string, url: string, key: number): React.ReactNode {
   let href = url.trim();
   const trailMatch = href.match(HREF_TRAIL_JUNK_RE);
@@ -295,7 +319,36 @@ function renderMarkdownLink(text: string, url: string, key: number): React.React
 // `**https://x.com**` renders as bold containing a clickable link instead
 // of bold containing plain text. The bold/italic content is recursively
 // processed for URLs to make this work.
+/**
+ * A credential placeholder is a SUBSTITUTION, not a formatting token, so it is split out BEFORE
+ * the formatting pass rather than competing inside it. Two reasons, and the second is the one that
+ * matters: no formatting rule can reinterpret part of the span, and the decision of what IS a
+ * placeholder stays in one pure, suite-driven function instead of becoming another regex in this
+ * file. Ordinary runs then go through the formatting pass exactly as before.
+ */
 function processInline(text: string, baseKey: number): React.ReactNode {
+  const segments = splitCredentialPlaceholders(text);
+
+  // FAST PATH ONLY — and it is written in this direction deliberately. The plain-text case is
+  // the exception here and the segment walk is the DEFAULT, so that a broken or disabled guard
+  // fails toward drawing chips rather than toward leaking the raw token back onto the page. A
+  // mutation run showed the other arrangement ("guard the chip path") let `if (false)` restore
+  // the original bug with every clause still green, and `packages/dashboard` has no test runner
+  // to catch that behaviourally (its own BACKLOG item).
+  if (segments.length === 1 && segments[0].kind === 'text') {
+    return processInlineFormatting(text, baseKey);
+  }
+
+  return (
+    <span key={baseKey}>
+      {segments.map((s, i) => (s.kind === 'credential'
+        ? <CredentialChip key={`c${baseKey}-${i}`} tag={s.tag} />
+        : <span key={`t${baseKey}-${i}`}>{processInlineFormatting(s.text, baseKey * 100 + i)}</span>))}
+    </span>
+  );
+}
+
+function processInlineFormatting(text: string, baseKey: number): React.ReactNode {
   const parts: React.ReactNode[] = [];
   let remaining = text;
   let key = baseKey * 1000;
