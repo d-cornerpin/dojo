@@ -56,6 +56,7 @@ import { collectMessageLaneIds } from '../../../../memory/message-lane-tag.js';
 import { renderDeliveriesLaneMessage } from '../../../../memory/deliveries-lane.js';
 import { buildOpenWorkInjection } from '../../../../work/obligations.js';
 import { buildReportStateInjection } from '../../../../report/state-lane.js';
+import { buildOtherThreadsInjection } from '../../../../memory/other-threads-lane.js';
 import { getRecentOutbound, renderRecentOutboundBlock } from '../../outbound-ledger.js';
 import {
   recentlyAnsweredAsks, renderRecentlyAnsweredBlock, RECENTLY_ANSWERED_LIMIT,
@@ -263,13 +264,6 @@ export async function injectAndRecord(
     }, agentId);
   }
 
-  // ── THE RECALL LANE (SWEEP CORE-2 item 4; `SWEEP-C.md` T4, owner GO 2026-07-26) ──
-  // Per-message semantic recall, and the conclusions it carries from the answer stamps. The
-  // assembler computed and fitted it (`ctx.recallLane`); this is where it enters the array,
-  // past `volatileFrom`, because its content is retrieved against the LIVE ASK and a lane like
-  // that may not sit in the cached prefix — it sat at slot 400, ahead of the fresh tail, until
-  // this task. Injected for EVERY counterparty, not only human turns: the per-turn recall query
-  // has an A2A/engine branch of its own and recall on those turns is the reason it has one.
   // ── RULING P3-R1 (PHASE-3 T3): msg.peer-status, RESTORED. ──
   // The entry has been registered at MessageSlot.PeerStatus (1875) since `5cb1758` and
   // NO injection site has ever existed, so the live idle/working state the 2026-07-16
@@ -325,6 +319,12 @@ export async function injectAndRecord(
   // here called `relativeTimeAgo(a.askAt)` off the wall clock, so the block moved at every
   // bucket boundary as well; it states the recorded instant now.
   if (counterparty.kind === 'user' && turnCtx.conversationId) {
+    // HEAD 2 — THE OTHER-THREADS LANE: same gate as the ledger below; it says the thread above is ONE
+    // thread (the owner's 2026-09-24 false denial). AHEAD of that ledger on most-stable-first —
+    // `the-tail-holds-still.test.ts` §4 caught it placed the other way: this moves only when ANOTHER
+    // thread moves. EMPTY IS ABSENT; no try/catch, the builder owns its own and WARNs.
+    const otherThreads = buildOtherThreadsInjection(agentId, turnCtx.conversationId);
+    if (otherThreads) pushEngineMessage(messages, otherThreads, 'engine.other-threads'); // registry-exempt(2026-09-26): per-turn cross-conversation state read mid-iteration, like engine.open-work; migrate with the volatile-injection registry refactor
     try {
       const answeredBlock = renderRecentlyAnsweredBlock(
         recentlyAnsweredAsks(agentId, turnCtx.conversationId, RECENTLY_ANSWERED_LIMIT),

@@ -769,13 +769,13 @@ export const POST_BUDGET_ENTRY_LANE: Record<string, string> = {
   'engine.open-work': 'lane.loop-tail',
   'engine.recent-outbound': 'lane.loop-tail',
   'engine.recently-answered': 'lane.loop-tail',
-  // ROUND-4 RED: the report-state lane. It rides the tail like the three above — pushed directly
-  // by `pre-call-injections.ts`, past `volatileFrom`, beside the commitments snapshot it is
-  // modelled on — and it is declared HERE because the census in
-  // `assembly-repair-lane-census.test.ts` requires the injected `engine.*` literals and this
-  // table to be the SAME SET, and because being declared is what makes it protected from the
-  // priority repair (a report card's true state is not droppable filler).
+  // The two engine-authored STATE lanes (round-4 red; HEAD 2). Both ride the tail like the three
+  // above — pushed by `pre-call-injections.ts`, past `volatileFrom` — and both are declared HERE for
+  // two reasons: `assembly-repair-lane-census.test.ts` requires the injected `engine.*` literals and
+  // this table to be the SAME SET, and being declared protects a lane from the priority repair.
+  // Neither is droppable filler — a card's true state, and the fact another thread EXISTS.
   'engine.report-state': 'lane.loop-tail',
+  'engine.other-threads': 'lane.loop-tail',
 };
 
 /**

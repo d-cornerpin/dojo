@@ -49,3 +49,14 @@ export function summaryPartyTag(m: Message): string | null {
   // assistant (self) / tool work — tag with the conversation it was part of
   return conversationLabel(m.conversationId);
 }
+
+/** The label a RECALLED row carries in assembly, or null. THE HEADER'S RULE, applied to the assembly
+ *  path for the first time (2026-09-26): the recall lane — the ONE cross-conversation retrieval in
+ *  assembly — rendered `- [ts] role: content` with no party, and INBOUND rows hid it by carrying
+ *  `[SOURCE: …]` while own-output carried nothing, so a recalled "Got it, I'll check" arrived
+ *  UNATTRIBUTED (the owner's 2026-09-24 incident). SUPPRESSED for the served conversation, where it
+ *  is not news; a peer thread stays unlabelled by the rule above. */
+export function recalledRowLabel(rowConversationId: string | null | undefined, servedConversationId: string | null | undefined): string | null {
+  if (!rowConversationId || rowConversationId === servedConversationId) return null;
+  return conversationLabel(rowConversationId);
+}

@@ -5,36 +5,33 @@
 // 2,600-line file, and repositioned.
 //
 // ── WHY IT MOVED POSITION, WHICH IS THE WHOLE OF THE CACHE HALF ──────────────────────────
-// The lane sat at `MessageSlot.RelevantMemory = 400`: ahead of the fresh tail (1100) and far
-// ahead of the volatile boundary `msg.turn-context` (1850). Its CONTENT, meanwhile, has been
-// re-derived from the live ask on every turn since PHASE-3 T3 gave it a per-turn query. That
-// is the one combination roadmap non-negotiable #10 forbids and SWEEP-C T4's rider names
+// The lane sat at `MessageSlot.RelevantMemory = 400`: ahead of the fresh tail (1100) and far ahead of
+// the volatile boundary `msg.turn-context` (1850), while its CONTENT has been re-derived from the live
+// ask on every turn since PHASE-3 T3 gave it a per-turn query. That is the one combination roadmap
+// non-negotiable #10 forbids and SWEEP-C T4's rider names
 // outright: *"a lane whose content changes with the live ask CANNOT sit at its current
 // position (MessageSlot 400, ahead of the fresh tail) — per-turn retrieval rides the TAIL
 // (behind MessageSlot.TurnContext); the front-position lane may hold only session-stable
 // content. Position is decided here in the plan, not at runtime."*
 //
 // `MessageSlot.RecalledMemory = 1870` sits between the deliveries lane (1860) and peer-status
-// (1875), so the preserved near-tail order 1850 -> 1875 -> 1900 is untouched and adding a
-// number BETWEEN two existing ones renumbers nothing (the same move as Events=1050 and
-// Deliveries=1860). It goes AFTER deliveries because it is the more volatile of the two: a
-// delivery row changes when the agent sends, this changes with every ask.
+// (1875), so the near-tail order 1850 -> 1875 -> 1900 is untouched and a number BETWEEN two existing
+// ones renumbers nothing (the same move as Events=1050 and Deliveries=1860). AFTER deliveries because
+// it is the more volatile: a delivery changes when the agent sends, this with every ask.
 //
-// The read still happens in the assembler — it owns the window policy and knows whether this
-// is a scaffolding turn — and the LOOP appends the rendered block past `volatileFrom`. That
-// is the deliveries-lane split in mirror image, and it is what keeps the dev context-dump
-// honest about content it no longer emits itself.
+// The read still happens in the assembler — it owns the window policy and knows whether this is a
+// scaffolding turn — and the LOOP appends the rendered block past `volatileFrom`: the deliveries-lane
+// split in mirror image, keeping the dev context-dump honest about content it no longer emits.
 //
 // ── WHY IT CARRIES ANSWERS NOW, WHICH IS THE OWNER'S INCIDENT ────────────────────────────
-// 2026-08-09: his agent investigated a question, answered it, and minutes later investigated
-// it again from scratch. CORE-1 fixed the re-serve half. This is the other half — an agent
-// should know what it already did.
+// 2026-08-09: his agent investigated a question, answered it, and minutes later investigated it
+// again from scratch. CORE-1 fixed the re-serve half; this is the other half — an agent should
+// know what it already did.
 //
-// The lane used to recall RAW ROWS and nothing else. A similarity hit on an old question
-// surfaced THE QUESTION; the answer was a different row that had to win the same search on
-// its own merits, and nothing tied them together. So the model could be shown that it had
-// once been asked something, with no way to see what it had concluded — and re-doing the work
-// is the rational response to that prompt.
+// The lane used to recall RAW ROWS and nothing else. A similarity hit on an old question surfaced
+// THE QUESTION; the answer was a different row that had to win the same search on its own merits,
+// with nothing tying them together — so the model could be shown it had once been asked something
+// and have no way to see what it concluded, and re-doing the work is the rational response.
 //
 // The fix is not a new memory of answers. `messages.answer_message_id` (migration 113) is
 // already the completion-truth stamp, `agent/v2/answered-edge.ts` is already its one owner,
@@ -47,8 +44,9 @@
 // row the assembled tail already carries is dropped rather than quoted twice. An ask that
 // `engine.recently-answered` already names in THIS SESSION of this conversation is dropped too —
 // that block is the within-session ledger, this is the cross-boundary one, one statement one owner.
-// ⚠ 2026-09-26: that ledger is session-bounded now, so a reset RELEASES its asks here — which is
-// why a released pair carries `PRE_RESET_PAIR_TAG` instead of an order.
+// ⚠ 2026-09-26: that ledger is session-bounded now, so a reset RELEASES its asks here, and a released
+// pair carries `PRE_RESET_PAIR_TAG` instead of an order. HEAD 2: a recalled row from another thread
+// carries its PARTY (`recalledRowLabel`), which is this tree's own rule reaching assembly at last.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -65,6 +63,7 @@ import {
 } from '../agent/v2/answered-edge.js';
 import { recordedInstant } from './message-stamp.js';
 import { PRE_RESET_PAIR_TAG, sessionBoundaryMs } from './session-boundary.js';
+import { recalledRowLabel } from './party-label.js';
 import {
   obligationVerdict, liveCommitments, hasCommitmentHistory, openBoardCounts,
   type LiveCommitment, type BoardCounts,
@@ -178,6 +177,7 @@ export interface RecallLaneContext {
   vaultHits: RecallVaultHit[];
   /** Asks `engine.recently-answered` is already naming this turn. One statement, one owner. */
   alreadyAnsweredAskIds: Set<string>;
+  conversationId?: string | null;   // served conversation: a recalled row from ANOTHER thread gets a party label, one from this thread does not
   /** T67b: FN-1 unfiled-archive snippets, already capped by `unfiledArchiveBridgeLines`. */
   bridgeLines?: string[];
 }
@@ -395,14 +395,13 @@ export function renderCommitmentsBlock(p: RecallLanePayload): string | null {
 // a split slot would have added.
 //
 // ── HL5's OWN POSITION ARGUMENT, RE-DECIDED IN THE OPEN ─────────────────────────────────
-// The snapshot's note says it is last in the lane "because that is the recency-salient
-// position". That argument was made against the RETRIEVED half only, and it is now paid for
-// in cache on every turn. It is overturned here, narrowly: the snapshot moves ahead of a
-// block whose own header calls itself "context only, not live conversation", and it is still
-// inside the volatile tail, still after the entire conversation, and still ahead of only
-// ~2,500 chars. The two things the salience argument actually protects it from — an EARLIER
-// mention of what is owed, and a rival enumeration — are both still behind it or suppressed
-// (`renderRecallLane` drops obligation-shaped vault hits while the snapshot publishes).
+// The snapshot's note says it is last in the lane "because that is the recency-salient position".
+// That argument was made against the RETRIEVED half only and is now paid for in cache on every turn.
+// Overturned here, narrowly: the snapshot moves ahead of a block whose own header calls itself
+// "context only, not live conversation", and it is still inside the volatile tail, still after the
+// entire conversation, still ahead of only ~2,500 chars. The two things the salience argument
+// actually protects it from — an EARLIER mention of what is owed, and a rival enumeration — are both
+// still behind it or suppressed (obligation-shaped vault hits are dropped while it publishes).
 // ════════════════════════════════════════════════════════════════════════════════════════
 function toLaneRender(p: RecallLanePayload): LaneRender<RecallLanePayload> | null {
   const commitments = renderCommitmentsBlock(p);
@@ -417,7 +416,7 @@ function toLaneRender(p: RecallLanePayload): LaneRender<RecallLanePayload> | nul
 const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim();
 
 /** SQLite row shape for a recalled raw message. */
-interface RecallRow { id: string; role: string; content: string; created_at: string; agent_id: string }
+interface RecallRow { id: string; role: string; content: string; created_at: string; agent_id: string; conversation_id: string | null }
 
 /**
  * Build the lane from hits that have already been retrieved.
@@ -462,7 +461,7 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
     }
     if (msgCandidates.length >= msgRowCap()) continue;
     const row = db.prepare(
-      `SELECT id, agent_id, role, content, datetime(created_at/1000,'unixepoch') AS created_at
+      `SELECT id, agent_id, role, content, conversation_id, datetime(created_at/1000,'unixepoch') AS created_at
          FROM messages WHERE id = ?`,
     ).get(id) as RecallRow | undefined;
     if (!row || typeof row.content !== 'string') continue;
@@ -471,9 +470,10 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
     if (row.agent_id !== ctx.agentId) continue;
     if (row.content.trim().startsWith('[') && row.content.includes('"type"')) continue; // tool JSON rows
     if (isSyntheticRow(row.content)) continue;
+    const party = recalledRowLabel(row.conversation_id, ctx.conversationId);  // HEAD 2; rule + suppression argument in `party-label.ts`
     msgCandidates.push({
       at: row.created_at,
-      line: `- [${row.created_at}] ${row.role}: ${oneLine(row.content).slice(0, askChars())}`,
+      line: `- [${row.created_at}]${party ? ` (${party})` : ''} ${row.role}: ${oneLine(row.content).slice(0, askChars())}`,
     });
   }
   msgCandidates.sort((a, b) => a.at.localeCompare(b.at));
@@ -882,7 +882,7 @@ export async function buildRecallLaneMessage(
     }
 
     const render = renderRecallLane({
-      agentId, includeVault, excludeIds, msgHits, vaultHits, alreadyAnsweredAskIds, bridgeLines,
+      agentId, includeVault, excludeIds, msgHits, vaultHits, alreadyAnsweredAskIds, bridgeLines, conversationId,
     });
     // Read off the PAYLOAD the fitted render carries, not off `messages[0]` by position: after
     // `truncate` has run the array may hold one message or two, and which one it is depends on

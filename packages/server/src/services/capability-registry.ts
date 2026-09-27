@@ -167,6 +167,56 @@ export function describeSmsRecipients(r: SmsReachability, limit = 3): string {
   return rest > 0 ? `${shown} and ${rest} more` : shown;
 }
 
+/**
+ * A CHANNEL the agent can RECEIVE on, and whether inbound is live right now.
+ *
+ * ── WHY THIS EXISTS, and it is the owner's 2026-09-24 incident ──────────────────────────────
+ * An agent held two conversation silos for the same person, was asked about one from the other,
+ * and replied that it had *"no way to see"* the other thread. It had every way: the inbound was
+ * live, the rows were in its own database, and `history_search` is unscoped. What it did not have
+ * was a STATEMENT. `listIntegrationStatuses` publishes google/microsoft/plaud — the three families
+ * whose TOKENS can rot — and channels were never in it, so an agent with a live iMessage thread
+ * was told nothing about iMessage either way and inferred incapability from absence. That is the
+ * W84 shape exactly: *"a blank where a last use would go … a model that reads it as 'so it has
+ * never worked' has been taught the defect by the block meant to cure it."*
+ *
+ * ⚠ DELIBERATELY NOT AN `IntegrationStatus`, and this is the one design call here. That shape is
+ * TOKEN HEALTH: a per-family success ledger, a tool-NAME → family map, an unresolved-failure count.
+ * A channel has no token, no tool-name family and no ledger, so a fourth family would leave three
+ * of those fields permanently null and add three exceptions to the lane's own "every family has a
+ * ledger or a stated reason" census. Its own shape, same lane, same supersession sentence.
+ *
+ * `configured` is the gate for printing, exactly as it is for the integration families: a channel
+ * the owner never set up has no truth to publish, while one that IS set up is precisely what a
+ * false memory forms around. A configured-but-down channel is the negative control, not an
+ * omission.
+ */
+export interface ChannelStatus {
+  name: 'imessage' | 'sms' | 'teams' | 'email';
+  /** What the owner calls it. */
+  displayName: string;
+  configured: boolean;
+  /** Inbound arrives without the agent asking (a poller/webhook is live for it). */
+  inboundLive: boolean;
+}
+
+/**
+ * Every channel family, in a fixed order so the block is byte-deterministic.
+ *
+ * Derived from `getChannelCapabilities()` rather than re-reading config, so this cannot drift from
+ * what the doors themselves believe — the C28 P-6 rule the integration lane already follows.
+ */
+export function listChannelStatuses(): ChannelStatus[] {
+  const c = getChannelCapabilities();
+  const inboundMailbox = c.mailboxes.some((m) => m.monitorInbound);
+  return [
+    { name: 'email', displayName: 'Email', configured: c.mailboxes.length > 0, inboundLive: inboundMailbox },
+    { name: 'imessage', displayName: 'iMessage', configured: c.imessage.configured, inboundLive: c.imessage.configured },
+    { name: 'sms', displayName: 'SMS', configured: c.twilio.configured && c.twilio.smsEnabled, inboundLive: c.twilio.enabled && c.twilio.smsEnabled },
+    { name: 'teams', displayName: 'Teams', configured: c.teams.available, inboundLive: c.teams.available },
+  ];
+}
+
 export function listIntegrationStatuses(): IntegrationStatus[] {
   const statuses: IntegrationStatus[] = [];
 
