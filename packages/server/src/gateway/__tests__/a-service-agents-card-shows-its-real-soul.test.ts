@@ -32,7 +32,15 @@ import path from 'node:path';
 import fs from 'node:fs';
 import Database from 'better-sqlite3';
 
-const HOME_DIR_NAME = 'dojo-t40-soul-surface';
+// ⚠ PER-PROCESS, AND THAT IS THE FIX FOR A MEASURED FLAKE (backlog 2026-09-26, lanes 3-4:
+// "a FIXED os.tmpdir() path (needs per-run suffix) ... the temp-dir ENOENT under concurrent
+// lanes — same family"). The path was a CONSTANT under the shared system temp dir, and
+// `beforeEach` opens with `rmSync(HOME, {recursive:true})`. Two vitest workers running this
+// file — or its sibling in the same family — therefore deleted each other's fixture mid-run,
+// and the loser failed with ENOENT on a file it had just written. `process.pid` is visible
+// both here and inside the HOISTED mock factory below (which cannot see this module's
+// bindings), so one process can never reach another's directory.
+const HOME_DIR_NAME = `dojo-t40-soul-surface-${process.pid}`;
 
 // The platform resolves `~/.dojo` in exactly one place — `src/home.ts` — so that is
 // what a test redirects. Computed inside the factory, which runs before this module's
@@ -40,7 +48,7 @@ const HOME_DIR_NAME = 'dojo-t40-soul-surface';
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
-  const dir = p.join(o.tmpdir(), 'dojo-t40-soul-surface');
+  const dir = p.join(o.tmpdir(), `dojo-t40-soul-surface-${process.pid}`);
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
@@ -90,6 +98,13 @@ function setConfig(key: string, value: string): void {
 }
 
 beforeEach(async () => {
+  // The directory name is written TWICE — here and in the hoisted factory, which cannot see
+  // this module's bindings. This refuses a drift between the two copies rather than silently
+  // exercising a directory the platform under test is not using.
+  const { homeDir } = await import('../../home.js');
+  if (homeDir() !== HOME) {
+    throw new Error(`fixture drift: the home.js mock resolves ${homeDir()}, this test writes ${HOME}`);
+  }
   fs.rmSync(HOME, { recursive: true, force: true });
   fs.mkdirSync(PROMPTS, { recursive: true });
   fs.mkdirSync(path.join(HOME, '.dojo', 'logs'), { recursive: true });
