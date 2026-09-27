@@ -76,7 +76,14 @@ export const FORCED_WALL_CLOCK_MS = 180_000;
 /** Why an agent is latched. Both mean "no future pass can win". */
 export type IncompressibleReason = 'no_yield' | 'summaries_exceed_budget';
 
-interface Latch { reason: IncompressibleReason; since: string; assembledTokens: number; budgetTokens: number }
+interface Latch {
+  reason: IncompressibleReason;
+  since: string;
+  assembledTokens: number;
+  budgetTokens: number;
+  /** The message high-water mark when this latched. A history that GREW is a different history. */
+  seqAtLatch: number;
+}
 
 const lowYieldBackoffUntil = new Map<string, number>();
 const incompressible = new Map<string, Latch>();
@@ -101,10 +108,26 @@ export function incompressibleCardText(reason: IncompressibleReason): string {
 export function compactionIsBraked(agentId: string, force: boolean): boolean {
   const latch = incompressible.get(agentId);
   if (latch) {
-    logger.info('Compaction skipped: this agent\'s memory is latched INCOMPRESSIBLE', {
-      reason: latch.reason, since: latch.since, force,
+    // ⚠ A LATCH IS ABOUT A HISTORY, NOT ABOUT AN AGENT — and an existing clause taught me the
+    // difference. `the-clock-does-not-overrule-the-token-math` drives a forced pass that wins
+    // nothing (which latches) and then, on the SAME agent, a state that genuinely should compact;
+    // a latch that outlived the first history silently refused the second. So the latch clears
+    // once the agent has gained enough new rows to make a future pass a different question —
+    // `MIN_COMPACTABLE_ROWS`, the same floor that decides a region is worth compacting at all.
+    // On the incident box this costs ONE bounded pass every six prompts instead of an unbounded
+    // pass on every prompt, and it re-latches immediately, which is the honest trade: the
+    // platform re-checks reality rather than trusting a stale fact for ever.
+    const now = messageHighWater(agentId);
+    if (now - latch.seqAtLatch < MIN_COMPACTABLE_ROWS) {
+      logger.info('Compaction skipped: this agent\'s memory is latched INCOMPRESSIBLE', {
+        reason: latch.reason, since: latch.since, force, rowsSinceLatch: now - latch.seqAtLatch,
+      }, agentId);
+      return true;
+    }
+    logger.info('Compaction latch released: the history has grown since it latched', {
+      rowsSinceLatch: now - latch.seqAtLatch,
     }, agentId);
-    return true;
+    incompressible.delete(agentId);
   }
   if (force) return false;
   return (lowYieldBackoffUntil.get(agentId) ?? 0) > Date.now();
@@ -129,6 +152,8 @@ export function noteForcedOutcome(
   agentId: string,
   force: boolean,
   result: { leafCreated: number; condensedCreated: number; tokensReclaimed: number },
+  summaryTokens = 0,
+  assemblyBudgetTokens = 0,
 ): Latch | null {
   const created = result.leafCreated + result.condensedCreated;
   const wonNothing = created === 0 && result.tokensReclaimed < FORCED_YIELD_FLOOR_TOKENS;
@@ -139,7 +164,19 @@ export function noteForcedOutcome(
   }
   noteLowYield(agentId);
   if (!force) return null;
-  return latchIncompressible(agentId, 'no_yield', 0, 0);
+  // ⚠ TERMINALITY IS DECIDED ON EVIDENCE, NOT PREDICTION — and an existing clause is why.
+  // The first cut latched BEFORE the work whenever summaries already exceeded the assembly
+  // budget. `the-clock-does-not-overrule-the-token-math`'s "THE TOKEN PATH IS UNTOUCHED" clause
+  // drives exactly that shape and expects a summary to be written: raw rows outside the fresh
+  // tail can still be summarised even when the summaries are large, so "summaries over budget"
+  // is a guess about the future and a forced pass is entitled to try once. What latches is a
+  // forced pass that RAN and won nothing. The summaries fact survives only to name the reason,
+  // which is what makes the card say something true about this agent rather than generic.
+  const reason: IncompressibleReason =
+    assemblyBudgetTokens > 0 && summaryTokens > assemblyBudgetTokens
+      ? 'summaries_exceed_budget'
+      : 'no_yield';
+  return latchIncompressible(agentId, reason, summaryTokens, assemblyBudgetTokens);
 }
 
 /**
@@ -156,11 +193,25 @@ export function latchIfSummariesExceedBudget(
   return latchIncompressible(agentId, 'summaries_exceed_budget', summaryTokens, assemblyBudgetTokens);
 }
 
+/** `MAX(seq)` for this agent — `seq` IS the messages rowid alias (T10). 0 when unreadable. */
+function messageHighWater(agentId: string): number {
+  try {
+    const row = getDb().prepare('SELECT MAX(seq) AS hi FROM messages WHERE agent_id = ?')
+      .get(agentId) as { hi: number | null } | undefined;
+    return row?.hi ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 function latchIncompressible(
   agentId: string, reason: IncompressibleReason, assembledTokens: number, budgetTokens: number,
 ): Latch | null {
   if (incompressible.has(agentId)) return null;   // one latch, one card
-  const latch: Latch = { reason, since: new Date().toISOString(), assembledTokens, budgetTokens };
+  const latch: Latch = {
+    reason, since: new Date().toISOString(), assembledTokens, budgetTokens,
+    seqAtLatch: messageHighWater(agentId),
+  };
   incompressible.set(agentId, latch);
   logger.error('Compaction latched INCOMPRESSIBLE: no further pass can reclaim anything', {
     reason, assembledTokens, budgetTokens,

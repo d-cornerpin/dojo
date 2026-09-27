@@ -56,7 +56,7 @@ vi.mock('../../gateway/ws.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import {
-  compactionIsBraked, noteForcedOutcome, latchIfSummariesExceedBudget, isIncompressible,
+  compactionIsBraked, noteForcedOutcome, isIncompressible,
   forcedCompactionOptions, summaryWriterUnavailable, incompressibleCardText,
   FORCED_MAX_CHUNKS_PER_RUN, FORCED_WALL_CLOCK_MS, LOW_YIELD_BACKOFF_MS,
   __resetBrakesForTests,
@@ -285,15 +285,31 @@ describe('§2 the forced path has brakes and a terminal state', () => {
     expect(frames.filter(f => f.code === 'MEMORY_INCOMPRESSIBLE').length).toBe(1);
   });
 
-  it('summaries that already exceed the budget latch BEFORE a single model call', () => {
-    // Her shape: ~86K of summaries against what a 64K-window model will admit.
-    expect(latchIfSummariesExceedBudget(AGENT, 86_000, 50_000), 'nothing left to summarise').toBeTruthy();
+  it('the summaries fact names the REASON, and never predicts terminality on its own', () => {
+    // ⚠ THE CORRECTION AN EXISTING CLAUSE FORCED. The first cut latched before the work whenever
+    // summaries already exceeded the assembly budget — and `the-clock-does-not-overrule-the-token-
+    // math`'s "THE TOKEN PATH IS UNTOUCHED" clause is a counterexample: raw rows outside the fresh
+    // tail can still be summarised when the summaries are large, so a forced pass is entitled to
+    // try once. Terminality is decided on EVIDENCE; the summaries fact only names the reason.
+    // Her shape — 86K of summaries against what a 64K-window model admits — after a pass that won
+    // nothing:
+    expect(noteForcedOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 }, 86_000, 50_000))
+      .toBeTruthy();
     expect(isIncompressible(AGENT)).toBe('summaries_exceed_budget');
     expect(incompressibleCardText('summaries_exceed_budget')).toContain('summaries alone fill the window');
-    // The control: summaries inside the budget are ordinary pressure, not a wall.
+
+    // Same empty pass, summaries INSIDE the budget: still terminal (the pass won nothing), but the
+    // card must not claim the summaries are the problem.
     __resetBrakesForTests();
-    expect(latchIfSummariesExceedBudget(AGENT, 20_000, 50_000)).toBeNull();
-    expect(isIncompressible(AGENT)).toBeNull();
+    expect(noteForcedOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 }, 20_000, 50_000))
+      .toBeTruthy();
+    expect(isIncompressible(AGENT)).toBe('no_yield');
+
+    // And a pass that WON never latches, whatever the summaries say — the counterexample, pinned.
+    __resetBrakesForTests();
+    expect(noteForcedOutcome(AGENT, true, { leafCreated: 2, condensedCreated: 0, tokensReclaimed: 30_000 }, 86_000, 50_000))
+      .toBeNull();
+    expect(isIncompressible(AGENT), 'a forced pass that summarised something is not terminal').toBeNull();
   });
 
   it('a pass that WON resets everything — the fix must not become "compaction never runs"', () => {

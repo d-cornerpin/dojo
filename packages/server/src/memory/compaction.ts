@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { withLock } from '../db/with-lock.js';
 import { MIN_COMPACTABLE_ROWS, compactionIsBraked, noteLowYield, noteForcedOutcome,
-  latchIfSummariesExceedBudget, summaryWriterUnavailable } from './compaction-brakes.js';  // v3.2.3 L1
+  summaryWriterUnavailable } from './compaction-brakes.js';  // v3.2.3 L1
 import { cachedAssembledEstimate, cachedToolPayloadTokens } from './assembled-estimate-cache.js';
 export { forcedCompactionOptions } from './compaction-brakes.js';   // the emergency path's bounds, published where its callers already look
 import { createLogger } from '../logger.js';
@@ -567,7 +567,6 @@ async function runCheckAndCompact(
   // See `estimateAssembledTokens`'s own `ceilingModelId` doc for the full incident this closes.
   const assembled = await cachedAssembledEstimate(agentId, contextWindow, modelId, () => estimateAssembledTokens(agentId, contextWindow, modelId, { ceilingModelId: turnModelId }));
   const totalTokens = assembled.total;
-  if (latchIfSummariesExceedBudget(agentId, assembled.summaryTokens, Math.max(0, contextWindow - assembled.reserveTokens))) return NO_COMPACTION;
   const activeThreshold = getContextThreshold();
   const rawThreshold = activeThreshold * contextWindow;
   // T82a: the SAME provider-aware ceiling `memory/budget.ts`'s admission budget keys on
@@ -768,7 +767,7 @@ async function runCheckAndCompact(
 
     const result = { leafCreated, condensedCreated, tokensReclaimed: Math.max(tokensReclaimed, 0) };
 
-    noteForcedOutcome(agentId, Boolean(force), result);   // v3.2.3 L1: the brake sets even on force
+    noteForcedOutcome(agentId, Boolean(force), result, assembled.summaryTokens, Math.max(0, contextWindow - assembled.reserveTokens));   // v3.2.3 L1
     broadcast({
       type: 'memory:compaction',
       agentId,
@@ -853,7 +852,7 @@ async function runCheckAndCompact(
 
     const result = { leafCreated, condensedCreated: 0, tokensReclaimed: 0 };
 
-    noteForcedOutcome(agentId, Boolean(force), result);   // v3.2.3 L1: the brake sets even on force
+    noteForcedOutcome(agentId, Boolean(force), result, assembled.summaryTokens, Math.max(0, contextWindow - assembled.reserveTokens));   // v3.2.3 L1
     broadcast({
       type: 'memory:compaction',
       agentId,

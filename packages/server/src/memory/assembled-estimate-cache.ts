@@ -21,14 +21,20 @@
 // the re-stringify, so that is what this file removes.
 //
 // ── THE KEY IS THE FACTS, NOT A CLOCK ──
-// `(agentId, MAX(seq), messageCount, summaryCount, modelId, contextWindow)`. Every input
-// the estimate depends on either appears in that tuple or is derived from rows the
-// tuple's first three pin:
+// `(agentId, MAX(seq), messageCount, SUM(message tokens), summaryCount, SUM(summary tokens),
+// modelId, contextWindow)`:
 //
 //   · a new message → `MAX(seq)` moves (seq is the rowid alias, T10),
 //   · a new or dropped summary → `summaryCount` moves,
 //   · a different model or window → the last two move,
 //   · the agent's tool surface changes → its own key, below.
+//
+// ⚠ THE TWO SUMS ARE THERE BECAUSE COUNTS ARE NOT SIZES, and an existing clause proved it: the
+// first cut keyed on counts alone, and `the-clock-does-not-overrule-the-token-math` rebuilds its
+// fixture between clauses with the SAME row count and a different `token_count` per row. The cache
+// served the small history's estimate to the big one, the gate read "under threshold", and a
+// compaction that should have run did not. On a real box the same shape is an edited row or a
+// token_count backfill. Two more indexed aggregates, and the key now moves when the SIZE moves.
 //
 // There is NO time-to-live on purpose. A TTL would be a guess about staleness when
 // the facts are cheap to read exactly (two indexed `MAX`/`COUNT` reads, sub-
@@ -70,11 +76,11 @@ let misses = 0;
  */
 function factsKey(agentId: string, modelId: string | undefined, contextWindow: number): string {
   const db = getDb();
-  const m = db.prepare('SELECT MAX(seq) AS r, COUNT(*) AS n FROM messages WHERE agent_id = ?')
-    .get(agentId) as { r: number | null; n: number } | undefined;
-  const s = db.prepare('SELECT COUNT(*) AS n FROM summaries WHERE agent_id = ?')
-    .get(agentId) as { n: number } | undefined;
-  return `${agentId}|${m?.r ?? 0}|${m?.n ?? 0}|${s?.n ?? 0}|${modelId ?? '-'}|${contextWindow}`;
+  const m = db.prepare('SELECT MAX(seq) AS r, COUNT(*) AS n, COALESCE(SUM(token_count), 0) AS t FROM messages WHERE agent_id = ?')
+    .get(agentId) as { r: number | null; n: number; t: number } | undefined;
+  const s = db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(token_count), 0) AS t FROM summaries WHERE agent_id = ?')
+    .get(agentId) as { n: number; t: number } | undefined;
+  return `${agentId}|${m?.r ?? 0}|${m?.n ?? 0}|${m?.t ?? 0}|${s?.n ?? 0}|${s?.t ?? 0}|${modelId ?? '-'}|${contextWindow}`;
 }
 
 /**
