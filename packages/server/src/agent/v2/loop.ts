@@ -644,11 +644,11 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       logger.warn('v2 hit MAX_TOOL_LOOPS, auto-continuing with fresh turn', {
         agentId, maxLoops: MAX_TOOL_LOOPS,
       }, agentId);
-      // T79 FIX WAVE, FINDING 2: same reasoning as the turn-budget checkpoint's continuation
-      // path — read BEFORE the park message is built, so an undelivered circling verdict rides
-      // this SAME tail-side system row rather than waiting on the poke sweep's 60s tick behind
-      // a `working` guard this never-idle agent may not clear for hours. `null` leaves `sysMsg`
-      // byte-identical to before this fix.
+      turnCtx.toolLoopCapReached = true;   // C2: teardown records the CUT, not the model's intent
+      // T79 FIX WAVE, FINDING 2: same reasoning as the turn-budget checkpoint's continuation path —
+      // read BEFORE the park message is built, so an undelivered circling verdict rides this SAME
+      // tail-side system row rather than waiting on the poke sweep's 60s tick behind a `working`
+      // guard this never-idle agent may not clear for hours. `null` leaves `sysMsg` unchanged.
       const circlingLine = pendingCirclingVerdictParkLine(agentId);
       const sysMsg = (
         `[System: This turn reached ${MAX_TOOL_LOOPS} tool calls. Starting a fresh turn ` +

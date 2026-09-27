@@ -44,7 +44,7 @@ export async function finalizeTurnRecord(
   const {
     agentId, turnCtx, turnNumber, chosenConvKey, chosenConversationId, lastAssembledAtIso,
     terminalAnswerRowId, triggerWorkId,
-    toolPhaseEndedBySpinBrake, counterparty, isA2ATurn, isEngineTurn, turnStartedAt,
+    toolPhaseEndedBySpinBrake, toolLoopCapReached, counterparty, isA2ATurn, isEngineTurn, turnStartedAt,
     inboundChannel, inboundContext, db,
   } = ctx;
 
@@ -53,33 +53,27 @@ export async function finalizeTurnRecord(
   // plain assistant reply row. The runtime recovery site covers turns that
   // threw before reaching this finally (outcome='error').
   try {
-    // Truthful answer key (2026-07-22): outcome='answered' means a genuine
-    // user-facing reply was DELIVERED this turn, recorded at the delivery
-    // sites themselves. The old SELECT here counted ANY non-JSON assistant
-    // text (mid-turn captions, narration), which marked silent-ending turns
-    // answered: asks got stamped, the completion ack stood down (the
-    // silent-completion defect), and ticket stamps inflated.
+    // Truthful answer key (2026-07-22): outcome='answered' means a genuine user-facing reply was
+    // DELIVERED this turn, recorded at the delivery sites themselves. The old SELECT counted ANY
+    // non-JSON assistant text (mid-turn captions, narration), which marked silent-ending turns
+    // answered: asks got stamped, the completion ack stood down, and ticket stamps inflated.
     const answerRow = terminalAnswerRowId ? { id: terminalAnswerRowId } : undefined;
     // 1g: the RECEIPT the key points at. `terminalAnswerRowId` names the message row;
-    // `terminalDeliveryForTurn` names the `deliveries` row that proves it left the
-    // building — `result_delivery_id`, the thing the key was an embryo of. Recorded on
-    // the finalize log so the two halves of the answered edge are readable together,
-    // and a missing receipt beside a set key is a visible fact rather than a silence.
+    // `terminalDeliveryForTurn` names the `deliveries` row that proves it left the building —
+    // `result_delivery_id`, the thing the key was an embryo of. Recorded on the finalize log so both
+    // halves of the answered edge read together, and a missing receipt beside a set key is visible.
     const terminalDeliveryId = answerRow
       ? terminalDeliveryForTurn(agentId, turnNumber, turnCtx.root?.conversationId ?? null)
       : null;
-    // PHASE-2 T4: "did this turn park?" was a LIKE over a conv_key namespace, which is why
-    // it had to be time-bounded and could match another turn's park. The same fact is now a
-    // row: the trigger's own ticket has a join under it. `exitReason` semantics unchanged.
-    // SWEEP-A TB2: the same ROW fact the disposition below needs — "did this turn delegate
-    // the ask it was serving?" — read once and used twice, so the exit reason and the
-    // waiting-on-owner disposition can never disagree about it.
+    // PHASE-2 T4: "did this turn park?" was a LIKE over a conv_key namespace, so it had to be
+    // time-bounded and could match another turn's park. The same fact is now a row: the trigger's own
+    // ticket has a join under it. SWEEP-A TB2: that ROW fact is also what the disposition below needs
+    // — read once, used twice, so the exit reason and the waiting-on-owner verdict cannot disagree.
     const delegatedThisTurn = triggerWorkId ? joinState(triggerWorkId) !== null : false;
     const parkedRow = !answerRow && delegatedThisTurn ? { parked: 1 } : undefined;
-    // T6: "did this turn hand off to a peer instead of answering?" was a probe of the
-    // second physical table — being IN that table WAS the handoff signal. The equivalent
-    // fact on one table is the a2a lane, and it must exclude this agent's inbound peer
-    // traffic (role='user'), which was never in the probe's reach either.
+    // T6: "did this turn hand off to a peer instead of answering?" probed the second physical table
+    // — being IN it WAS the signal. The one-table equivalent is the a2a lane, excluding this agent's
+    // inbound peer traffic (role='user'), which was never in the probe's reach either.
     const handoffRow = !answerRow && !parkedRow ? db.prepare(
       `SELECT 1 FROM messages WHERE agent_id = ? AND turn_number = ? AND lane = 'a2a'
           AND role IN ('assistant','tool') LIMIT 1`,
@@ -89,8 +83,14 @@ export async function finalizeTurnRecord(
     // `answered` is whether a genuine user-facing reply was DELIVERED — the truthful-answer
     // key, which is `terminalAnswerRowId` and nothing else. A turn can end 'brake' having
     // answered, and that pair is now representable instead of being flattened to one word.
+    // ⚠ C2 — `iteration_cap` IS WRITTEN HERE NOW AND NEVER WAS BEFORE (0 rows in 10,934 turns): the
+    // cap fell through to `no_reply_intended`, a claim about the MODEL'S INTENT for a turn it never
+    // got to finish, and the ask ladder spends a rung on that word. AFTER `answered` so a
+    // capped-but-answered turn stays representable; before `park`/`handoff` — the cap is WHY it
+    // ended. Meaning: `work/exit-attribution.ts`.
     const exitReason: TurnExitReason = toolPhaseEndedBySpinBrake ? 'brake'
       : answerRow ? 'answered'
+      : toolLoopCapReached ? 'iteration_cap'
       : parkedRow ? 'park'
       : handoffRow ? 'handoff'
       : 'no_reply_intended';

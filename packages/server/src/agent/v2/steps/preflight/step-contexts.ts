@@ -106,7 +106,7 @@ export function runStepContexts(
     agentId, turnCtx, turnNumber, db,
     chosenConvKey, chosenConversationId, lastAssembledAtIso: turnCtx.lastAssembledAtIso,
     terminalAnswerRowId: sc.terminalAnswerRowId, triggerWorkId,
-    toolPhaseEndedBySpinBrake: turnCtx.toolPhaseEndedBySpinBrake,
+    toolPhaseEndedBySpinBrake: turnCtx.toolPhaseEndedBySpinBrake, toolLoopCapReached: turnCtx.toolLoopCapReached,
     turnInjectedTechniqueId: turnCtx.turnInjectedTechniqueId,
     counterparty, isA2ATurn, isEngineTurn, turnStartedAt,
     inboundChannel, inboundContext,

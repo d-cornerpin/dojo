@@ -109,7 +109,7 @@ export interface TeardownContext {
   readonly lastAssembledAtIso: string | null;
   readonly terminalAnswerRowId: string | null;
   readonly triggerWorkId: string | null;
-  readonly toolPhaseEndedBySpinBrake: boolean;
+  readonly toolPhaseEndedBySpinBrake: boolean; readonly toolLoopCapReached: boolean;   // C2: the cap latched -> the ENGINE ended the turn
   readonly turnInjectedTechniqueId: string | null;
   readonly counterparty: TurnCounterparty;
   readonly isA2ATurn: boolean;

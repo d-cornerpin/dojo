@@ -51,6 +51,7 @@
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
+import { engineCutHandBackReason, turnWasEngineCut } from './exit-attribution.js';
 import { createLogger } from '../logger.js';
 import { recordServingTurnByRowid, START_ACK_ORIGIN_INTENT } from '../memory/message-store.js';
 import {
@@ -497,19 +498,17 @@ function receiptIsASupersededBubble(ask: AskRow, turnNumber: number | null): boo
 //   ask:ec6392a5  handed back on 4285 and 4286 and served a third time on 4287 (45 seconds).
 //
 // THE LADDER, on OR2's shape (steer → tell the owner) and bounded PER ROW:
-//   serves 1..MAX_ASK_RE_SERVES+1  the ask goes back OPEN and the drain re-serves it. The
-//                                  count rides on the transition reason, so the record says
-//                                  "serve 3 of 4" rather than leaving a reader to add up.
-//   beyond that                    THE RE-SERVE STANDS DOWN. The ask is not closed, not
-//                                  abandoned and not forgotten: it is HELD `blocked`, which
-//                                  is an OWED state the OPEN WORK surface renders, so the
-//                                  model keeps being reminded it owes this answer while the
-//                                  drain — whose queue is `state = 'open'` — stops picking it
-//                                  up. A steer the model can still act on, and a row the
-//                                  owner can still see, instead of a spin.
+//   serves 1..MAX_ASK_RE_SERVES+1  the ask goes back OPEN and the drain re-serves it. The count rides
+//                                  on the transition reason, so the record says "serve 3 of 4".
+//   beyond that                    THE RE-SERVE STANDS DOWN — for a MODEL silence only (C2:
+//                                  `work/exit-attribution.ts`; an engine cut never gets here).
+//                                  The ask is not closed, not abandoned and not forgotten: it is
+//                                  HELD `blocked`, an OWED state the OPEN WORK surface renders, so
+//                                  the model keeps being reminded while the drain — whose queue is
+//                                  `state = 'open'` — stops picking it up.
 //
-// The counter is a COUNT over the row's own durable log, never a maintained integer — the
-// same discipline `join-drive.ts` uses for its ladder, and for the same reason.
+// The counter is a COUNT over the row's own durable log, never a maintained integer — the same
+// discipline `join-drive.ts` uses for its ladder, and for the same reason.
 //
 // ⚠ HANDED UP, stated rather than left to be discovered: OR2's LAST rung — the platform
 // telling the OWNER in its own voice — is not wired here. `recordFloorGhost` is the surface
@@ -764,16 +763,19 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   // At turn finalize the question is settled: this turn is over, nothing was delivered for
   // this ask, and the person is still waiting. It goes back — visible.
   if (ask.state === 'open') return out('unchanged', 'already open and waiting');
+  // C2: WHO ended the turn decides whether the ladder moves (`work/exit-attribution.ts`): a cut is handed back on this same path, spends nothing, and can never reach the stand-down.
+  const engineCut = turnWasEngineCut(ask.agent_id, ctx.turnNumber);
   const spent = reServesSpent(workId);
-  if (spent >= MAX_ASK_RE_SERVES) return standDownReServe(ask, ctx, actorId, spent, out);
-  const reason = `re-opened: turn ${ctx.turnNumber ?? '?'} finalized with no delivery that answers this ask — `
-    + `the person is still waiting, so the ask is visible again rather than parked `
-    + `(serve ${spent + 2} of ${MAX_ASK_RE_SERVES + 1})`;
+  if (!engineCut && spent >= MAX_ASK_RE_SERVES) return standDownReServe(ask, ctx, actorId, spent, out);
+  const reason = engineCut ? engineCutHandBackReason(ctx.turnNumber)
+    : `re-opened: turn ${ctx.turnNumber ?? '?'} finalized with no delivery that answers this ask — `
+      + `the person is still waiting, so the ask is visible again rather than parked `
+      + `(serve ${spent + 2} of ${MAX_ASK_RE_SERVES + 1})`;
   const r = transition(workId, {
     to: 'open', by: 'agent', actorId, expectedState: ask.state, reason,
   });
   if (r.kind !== 'applied') return out('unchanged', `re-open refused: ${r.kind}`);
-  recordReServe(workId, spent + 1, 'the turn finalized without delivering an answer');
+  if (!engineCut) recordReServe(workId, spent + 1, 'the turn finalized without delivering an answer');
   logger.info('ask re-opened: its turn finalized without delivering an answer', {
     agentId: ask.agent_id, workId, turnNumber: ctx.turnNumber, from: ask.state,
     reServe: spent + 1, bound: MAX_ASK_RE_SERVES,
