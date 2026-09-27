@@ -415,17 +415,11 @@ chatRouter.post('/:agentId/new-session', async (c) => {
     // (Previously this called replaceContextItems(agentId, []) which
     // wiped all summaries, causing post-reset amnesia.)
 
-    // Clear session-loaded tool docs
-    try {
-      const { clearSessionLoadedTools } = await import('../../tools/tool-docs.js');
-      clearSessionLoadedTools(agentId);
-    } catch { /* ignore */ }
-    // Clear per-conversation served tracking so a fresh session doesn't treat
-    // pre-reset conversations as already answered.
-    try {
-      const { clearServedConversations } = await import('../../agent/turn-state.js');
-      clearServedConversations(agentId);
-    } catch { /* ignore */ }
+    // Forget the per-session scratch: the loaded tool docs (so the API array returns to the
+    // always-loaded head) and the turn-continuity scratch (so a fresh session doesn't treat
+    // pre-reset conversations as already answered). This door was the ONLY one of five doing
+    // both; `agent/session-forget.ts` is now the single owner of that answer.
+    await (await import('../../agent/session-forget.js')).forgetSessionScratch(agentId);
 
     // 3. Set session boundary — messages before this are excluded from context
     //    Use SQLite datetime format (not ISO) to match the messages table format

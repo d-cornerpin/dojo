@@ -978,10 +978,11 @@ function wakeupDreamer(cycleMessage: string): void {
   // Clear accumulated compaction summaries (context items)
   db.prepare('DELETE FROM context_items WHERE agent_id = ?').run(dreamerId);
 
-  // Clear session-loaded tool docs (fire-and-forget, best effort)
-  import('../tools/tool-docs.js')
-    .then(({ clearSessionLoadedTools }) => clearSessionLoadedTools(dreamerId))
-    .catch(() => { /* ignore */ });
+  // Forget the per-session scratch (fire-and-forget, best effort — this function is sync).
+  // SMALLFRY 2026-09-26: the tool-docs half was here, the turn-continuity half was not. A no-op
+  // for a service agent with no human conversations, called anyway so the five doors give ONE
+  // answer rather than four — measurement in `agent/session-forget.ts`.
+  void import('../agent/session-forget.js').then(({ forgetSessionScratch }) => forgetSessionScratch(dreamerId));
 
   logger.debug('Dreamer session reset for fresh context', { dreamerId });
 

@@ -237,6 +237,12 @@ systemRouter.post('/system/reset-idle-sessions', async (c) => {
         rehomeUnclaimedEngineEvents(agent.id, boundary);
       } catch { /* best-effort carry-over, never block the reset */ }
 
+      // SMALLFRY 2026-09-26: this sweep wrote the boundary and forgot NEITHER the loaded tool
+      // docs NOR the turn-continuity scratch — the only door of five that missed both. The
+      // comment above says the reset "matches agents.ts / reset_session so all reset paths
+      // behave alike"; this is the line that makes that sentence true.
+      await (await import('../../agent/session-forget.js')).forgetSessionScratch(agent.id);
+
       // The row's created_at is stamped by the writer at insert time, which is at-or-after
       // `boundary` (computed a few lines up), so the divider still lands inside the new
       // session for every `created_at >= session_started_at` query. The broadcast below

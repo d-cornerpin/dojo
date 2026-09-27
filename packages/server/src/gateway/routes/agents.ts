@@ -615,11 +615,10 @@ agentsRouter.post('/:id/reset-session', async (c) => {
       const { rehomeUnclaimedEngineEvents } = await import('../../agent/v2/counterparty.js');
       rehomeUnclaimedEngineEvents(id, boundary);
     } catch { /* best-effort carry-over, never block the reset */ }
-    // Clear per-conversation served tracking on reset (turn-continuity state).
-    try {
-      const { clearServedConversations } = await import('../../agent/turn-state.js');
-      clearServedConversations(id);
-    } catch { /* ignore */ }
+    // Forget the per-session scratch. SMALLFRY 2026-09-26: this door cleared the
+    // turn-continuity state and NOT the session-loaded tool docs, so an agent reset from the
+    // agent card kept every tool it had loaded (measurement in `agent/session-forget.ts`).
+    await (await import('../../agent/session-forget.js')).forgetSessionScratch(id);
 
     // 3. Insert UI divider + broadcast.
     const dividerId = uuidv4();

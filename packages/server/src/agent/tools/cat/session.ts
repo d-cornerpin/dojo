@@ -215,12 +215,12 @@ export const sessionHandlers: ToolHandlerMap = {
       // reset through the TOOL — the Healer's path for a wedged agent, and a self-reset —
       // kept every tool it had loaded, and its array never returned to the always-loaded
       // head until the process restarted. `clearSessionLoadedTools` is also what sets the
-      // rehydration flag, so the decision survives the next turn (`tool-docs.ts:279-285`:
-      // "A reset is a DECISION to forget"). Dynamic import keeps this handler off that graph.
-      try {
-        const { clearSessionLoadedTools } = await import('../../../tools/tool-docs.js');
-        clearSessionLoadedTools(resolvedId);
-      } catch { /* ignore */ }
+      // rehydration flag, so the decision survives the next turn (`tool-docs.ts`: "A reset is
+      // a DECISION to forget"). Dynamic import keeps this handler off that graph.
+      // SMALLFRY 2026-09-26: this door also lacked `clearServedConversations`, which the chat
+      // route had — one of the four different answers five doors gave. Both now come from the
+      // single owner, `agent/session-forget.ts`, whose header carries the measurement.
+      await (await import('../../session-forget.js')).forgetSessionScratch(resolvedId);
 
       // Set session boundary and clear stale continuity brief + session
       // scratchpad. Scratchpad is session-scoped (its own tool docs promise
