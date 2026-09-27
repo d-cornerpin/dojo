@@ -196,6 +196,45 @@ describe('§5 THE UNCHANGED-BEHAVIOUR SIDE — the corpus is never refused', () 
     if (v.ok) expect(v.names).toEqual([...names]);
   });
 
+  // ── THE NO-REGISTRY BRANCH — the one the engine's own spawn actually takes (review C, L5-F2) ──
+  // Every clause above hands in `KNOWN`. `vault/maintenance.ts:1876` — the Dreamer's spawn, and the
+  // second of `spawnAgent`'s two callers — has no registry in scope, so `spawnAgent` calls
+  // `validateAlwaysLoadedTools(alwaysLoadedTools)` with ONE argument and clause 5 is skipped by
+  // design (`KnownTools` documents that seam: a caller with no registry skips rather than guesses).
+  // That is the branch the floor runs on for the engine's own spawns, and it had no
+  // unchanged-behaviour clause at all.
+  it.each([
+    ['one name', ['exec']],
+    ['the corpus-shaped three', ['exec', 'file_read', 'file_write']],
+    ['a specialist eleven', SUB_AGENT_ALWAYS_LOADED.slice(0, 11)],
+  ])('NO REGISTRY: %s passes through unchanged, in declaration order', (_label, names) => {
+    const v = validateAlwaysLoadedTools(names);
+    expect(v.ok, v.ok ? '' : v.error).toBe(true);
+    if (v.ok) expect(v.names).toEqual([...names]);
+  });
+
+  it('NO REGISTRY: the shape, element, cap and de-duplication clauses all still bite', () => {
+    // Skipping clause 5 must skip ONLY clause 5 — the floor is not off on this branch.
+    expect(validateAlwaysLoadedTools('none').ok, 'a scalar passed the no-registry branch').toBe(false);
+    expect(validateAlwaysLoadedTools(['exec', 42]).ok).toBe(false);
+    expect(validateAlwaysLoadedTools(['exec', '   ']).ok).toBe(false);
+    const over = Array.from({ length: alwaysLoadedMax() + 1 }, (_, i) => `tool_${i}`);
+    expect(validateAlwaysLoadedTools(over).ok, 'the cap is off without a registry').toBe(false);
+    const dupes = validateAlwaysLoadedTools(['work_open', 'work_open']);
+    expect(dupes.ok && dupes.names).toEqual(['work_open']);
+  });
+
+  it('NO REGISTRY: an invented name is ACCEPTED, which is the documented difference', () => {
+    // Stated as a clause rather than left implicit: without a registry the validator cannot know a
+    // name is invented, and guessing would refuse real tools whose manual is missing (W2's false
+    // negative). The handler path, which HAS the registry, is where an invented name is refused —
+    // and §4 above pins that. If this ever starts failing, someone gave this branch a registry and
+    // the two paths stopped differing, which is a change worth arguing rather than discovering.
+    const v = validateAlwaysLoadedTools(['not_a_real_tool']);
+    expect(v.ok && v.names).toEqual(['not_a_real_tool']);
+    expect(validateAlwaysLoadedTools(['not_a_real_tool'], KNOWN).ok).toBe(false);
+  });
+
   it('hands the spawner an EMPTY array for an absent declaration, so no UPDATE is issued at all', () => {
     // The pre-guard write was `if (alwaysLoadedTools && alwaysLoadedTools.length > 0)`.
     // `names: []` preserves exactly that: a spawn with no declaration still writes nothing,
