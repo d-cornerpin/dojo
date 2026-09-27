@@ -2,6 +2,7 @@ import { KokoroTTS, TextSplitterStream } from 'kokoro-js';
 import { env as transformersEnv } from '@huggingface/transformers';
 import path from 'node:path';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { createLogger } from '../logger.js';
 import { KOKORO_MODEL_ID, KOKORO_CACHE_DIR, ensureKokoroFiles, isKokoroFullyDownloaded } from './model-manager.js';
 import { listCustomVoices, installCustomVoicePatch } from './custom-voices.js';
@@ -54,8 +55,11 @@ try {
  * `npm install` doesn't wipe 330 MB.
  */
 function migrateLegacyKokoroCache(): void {
-  // Walk up from this file: src/voice/tts-service.ts → repo root
-  const here = path.dirname(new URL(import.meta.url).pathname);
+  // Walk up from this file: src/voice/tts-service.ts → repo root.
+  // ⚠ `fileURLToPath`, never `new URL(…).pathname`: a `file:` URL is percent-encoded, so an
+  // install path with a space in it comes back as `/Users/dave/My%20Apps/...` and the migration
+  // below silently finds nothing. Same family as `getCurrentVersion`'s T8 fix.
+  const here = path.dirname(fileURLToPath(import.meta.url));
   const repoRoot = path.resolve(here, '../../../..');
   const legacyRoot = path.join(repoRoot, 'node_modules/@huggingface/transformers/.cache');
   const legacyKokoro = path.join(legacyRoot, 'onnx-community/Kokoro-82M-v1.0-ONNX');
