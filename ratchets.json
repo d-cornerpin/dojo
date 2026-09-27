@@ -5629,6 +5629,34 @@
       "to": 585,
       "by": "PATHFIX merge (2026-09-27), coordinator-applied — the lane's argued floor",
       "why": "fileURLToPath needs an import (+1) and the line that shipped broken carries a one-line pointer (+1). import.meta.dirname measured at 583 exactly and REFUSED: the census pins fileURLToPath as the family's ONE idiom in these files by name; a third idiom minted mid-release-fix is how a family gets three (pathfix report concern 1)."
+    },
+    {
+      "path": "packages/dashboard/src/pages/Settings.tsx",
+      "from": 7119,
+      "to": 7124,
+      "by": "FRESHBOX merge (2026-09-27), coordinator-applied — review-granted (+10 total against -32 shrinkage elsewhere in the bundle)",
+      "why": "freshbox item D: the FDA instruction imports the one shared constant — the import is what makes the one-source mutant impossible (review: grant)"
+    },
+    {
+      "path": "packages/server/src/prompt/assembler.ts",
+      "from": 1901,
+      "to": 1904,
+      "by": "FRESHBOX merge (2026-09-27), coordinator-applied — review-granted (+10 total against -32 shrinkage elsewhere in the bundle)",
+      "why": "freshbox item C: the profile seeds nobody — substitution + the unsubstituted-token guard (review: grant)"
+    },
+    {
+      "path": "packages/dashboard/src/components/SetupDeps.tsx",
+      "from": 672,
+      "to": 673,
+      "by": "FRESHBOX merge (2026-09-27), coordinator-applied — review-granted (+10 total against -32 shrinkage elsewhere in the bundle)",
+      "why": "freshbox item D OOBE surface, same shared constant (review: grant)"
+    },
+    {
+      "path": "packages/server/src/gateway/routes/setup-deps.ts",
+      "from": 513,
+      "to": 514,
+      "by": "FRESHBOX merge (2026-09-27), coordinator-applied — review-granted (+10 total against -32 shrinkage elsewhere in the bundle)",
+      "why": "freshbox item D server surface (review: grant)"
     }
   ],
   "maxNewFileLines": 400,
@@ -5644,7 +5672,7 @@
     "packages/dashboard/src/components/PermissionsEditor.tsx": 448,
     "packages/dashboard/src/components/PlaudSettings.tsx": 254,
     "packages/dashboard/src/components/RouterConfig.tsx": 545,
-    "packages/dashboard/src/components/SetupDeps.tsx": 672,
+    "packages/dashboard/src/components/SetupDeps.tsx": 673,
     "packages/dashboard/src/components/TechniqueSessionProvider.tsx": 533,
     "packages/dashboard/src/components/TwilioSettings.tsx": 563,
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
@@ -5658,7 +5686,7 @@
     "packages/dashboard/src/pages/Costs.tsx": 686,
     "packages/dashboard/src/pages/Health.tsx": 662,
     "packages/dashboard/src/pages/Memory.tsx": 499,
-    "packages/dashboard/src/pages/Settings.tsx": 7119,
+    "packages/dashboard/src/pages/Settings.tsx": 7124,
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
@@ -5803,7 +5831,7 @@
     "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2957,
     "packages/server/src/gateway/routes/memory.ts": 632,
-    "packages/server/src/gateway/routes/setup-deps.ts": 513,
+    "packages/server/src/gateway/routes/setup-deps.ts": 514,
     "packages/server/src/gateway/routes/tracker.ts": 959,
     "packages/server/src/gateway/routes/twilio.ts": 501,
     "packages/server/src/gateway/routes/update.ts": 1249,
@@ -5839,7 +5867,7 @@
     "packages/server/src/microsoft/tools-write.ts": 2212,
     "packages/server/src/migration/checks.ts": 537,
     "packages/server/src/migration/import.ts": 408,
-    "packages/server/src/prompt/assembler.ts": 1901,
+    "packages/server/src/prompt/assembler.ts": 1904,
     "packages/server/src/prompt/registry/entries.ts": 638,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
