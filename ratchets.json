@@ -5587,6 +5587,13 @@
       "to": 1538,
       "by": "BACKLOG LANE-5 caps merge (2026-09-26), coordinator-applied",
       "why": "W1 cap refusal at the handler: the spawner's write happens after the agent INSERT, so a spawner-only refusal leaves a half-built agent (lane5-report.md section 6)"
+    },
+    {
+      "path": "packages/server/src/memory/embeddings.ts",
+      "from": null,
+      "to": 319,
+      "by": "BACKLOG LANE-2FIX merge (2026-09-26), coordinator-applied — the tighter of the two options the implementer offered",
+      "why": "L2-3 wired the embedder's awaited agent path through openAgentCall (+6 lines after their own footprint cut 27->6); another lane had spent the growth headroom (file at 313 vs 313.75 ceiling at base). Pin at current size, decrease-only from here. The net-zero alternative (move the slot out) was REFUSED on principle: it would take openAgentCall out of the file that owns the dial, needing exactly the rides-the-door exemption this round exists to delete (lane2-report.md appendix)."
     }
   ],
   "maxNewFileLines": 400,
@@ -5873,6 +5880,7 @@
     "packages/server/src/memory/work-board-lane.ts": 266,
     "packages/server/src/memory/integration-status-lane.ts": 461,
     "packages/server/src/tools/name-help.ts": 355,
-    "packages/dashboard/src/components/Markdown.tsx": 433
+    "packages/dashboard/src/components/Markdown.tsx": 433,
+    "packages/server/src/memory/embeddings.ts": 319
   }
 }
