@@ -313,3 +313,51 @@ describe('the census — no table that references agents is forgotten', () => {
     expect(fkViolations()).toEqual([]);
   });
 });
+
+// ── ONE UNIT: A PURGE THAT FAILS PART-WAY LEAVES THE AGENT WHOLE ─────────────────────────
+
+describe('the purge is one transaction', () => {
+  it('⚠ a failure at the LAST statement rolls back every delete before it', async () => {
+    // Before this door was one unit it was a bare run of `db.prepare().run()` calls, so a
+    // failure part-way left a HALF-PURGED agent: side rows gone, agent still listed, and no
+    // way for the operator to tell. The failure is injected with a trigger on the final
+    // statement rather than by breaking a collaborator, so every earlier delete really has
+    // run and really has to be undone.
+    seedAgent('doomed');
+    seedSideRows('doomed');
+    insertMessage({ agentId: 'doomed', role: 'user', content: 'hi' });
+    const before = sideRowCount('doomed');
+    const messagesBefore = n('SELECT COUNT(*) AS n FROM messages WHERE agent_id = ?', 'doomed');
+    expect(messagesBefore).toBeGreaterThan(0);
+
+    db().exec(`CREATE TRIGGER purge_boom BEFORE DELETE ON agents
+               BEGIN SELECT RAISE(ABORT, 'injected failure at the last statement'); END`);
+    try {
+      const res = await purge('doomed');
+      // However the route reports it, it must NOT report success.
+      expect(res.status).not.toBe(200);
+    } finally {
+      db().exec('DROP TRIGGER purge_boom');
+    }
+
+    // EVERY row is back. This is the clause `withUnit` exists for.
+    expect(sideRowCount('doomed')).toEqual(before);
+    expect(n('SELECT COUNT(*) AS n FROM messages WHERE agent_id = ?', 'doomed')).toBe(messagesBefore);
+    expect(n('SELECT COUNT(*) AS n FROM agents WHERE id = ?', 'doomed')).toBe(1);
+    expect(fkViolations()).toEqual([]);
+  });
+
+  it('NEGATIVE CONTROL — with no trigger the same fixture purges clean', async () => {
+    // Without this, the clause above would pass on a door that never deletes anything.
+    seedAgent('doomed');
+    seedSideRows('doomed');
+    insertMessage({ agentId: 'doomed', role: 'user', content: 'hi' });
+
+    expect((await purge('doomed')).status).toBe(200);
+
+    expect(sideRowCount('doomed')).toEqual({
+      audit_log: 0, grant_rule: 0, briefings: 0, context_items: 0, summaries: 0,
+    });
+    expect(n('SELECT COUNT(*) AS n FROM agents WHERE id = ?', 'doomed')).toBe(0);
+  });
+});
