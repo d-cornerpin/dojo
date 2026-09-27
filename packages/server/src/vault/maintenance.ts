@@ -979,9 +979,8 @@ function wakeupDreamer(cycleMessage: string): void {
   db.prepare('DELETE FROM context_items WHERE agent_id = ?').run(dreamerId);
 
   // Forget the per-session scratch (fire-and-forget, best effort — this function is sync).
-  // SMALLFRY 2026-09-26: the tool-docs half was here, the turn-continuity half was not. A no-op
-  // for a service agent with no human conversations, called anyway so the five doors give ONE
-  // answer rather than four — measurement in `agent/session-forget.ts`.
+  // SMALLFRY 2026-09-26: the tool-docs half was here, the turn-continuity half was not; a no-op for
+  // a service agent, called anyway so the five doors give ONE answer (see `agent/session-forget.ts`).
   void import('../agent/session-forget.js').then(({ forgetSessionScratch }) => forgetSessionScratch(dreamerId));
 
   logger.debug('Dreamer session reset for fresh context', { dreamerId });
