@@ -2973,10 +2973,6 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
 async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier, purpose } = params;
 
-  // so the model-call-failure recovery path can be exercised end-to-end. Remove for release.
-  // C23: import wrapped so a partial uninstall no-ops instead of throwing on every model
-  // call; a genuine forced error still throws AFTER the try. release.sh also blocks shipping.
-
   // ── Universal orphan tool_use/tool_result sanitization ──
   // Runs BEFORE provider dispatch so ALL code paths (Anthropic, OpenAI, Ollama,
   // Agent SDK) get clean messages. The assembler has its own sanitization, but
