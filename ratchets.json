@@ -5622,6 +5622,13 @@
       "to": 317,
       "by": "BACKLOG INFRA lane merge (2026-09-27), coordinator-applied — the lane DECLARED this raise in its report and the coordinator missed it at merge; slice C caught the red",
       "why": "KNOWN_DIVERGENCES is a data table; an entry's minimum shape is 7 lines and the 168 adjudication is trimmed to it (a 14-line explanation cut to 3). The alternative — a rule in a file nobody opens — is the failure mode the table exists to prevent (infra-bundle-report.md item 2)."
+    },
+    {
+      "path": "packages/server/src/voice/model-manager.ts",
+      "from": 583,
+      "to": 585,
+      "by": "PATHFIX merge (2026-09-27), coordinator-applied — the lane's argued floor",
+      "why": "fileURLToPath needs an import (+1) and the line that shipped broken carries a one-line pointer (+1). import.meta.dirname measured at 583 exactly and REFUSED: the census pins fileURLToPath as the family's ONE idiom in these files by name; a third idiom minted mid-release-fix is how a family gets three (pathfix report concern 1)."
     }
   ],
   "maxNewFileLines": 400,
@@ -5875,7 +5882,7 @@
     "packages/server/src/vault/store.ts": 1205,
     "packages/server/src/vault/tools.ts": 641,
     "packages/server/src/voice/hume-engine.ts": 605,
-    "packages/server/src/voice/model-manager.ts": 583,
+    "packages/server/src/voice/model-manager.ts": 585,
     "packages/server/src/voice/stt-service.ts": 538,
     "packages/server/src/voice/voice-ws.ts": 2299,
     "packages/server/src/work/ask-remediation.ts": 314,
