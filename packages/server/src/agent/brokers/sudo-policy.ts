@@ -680,10 +680,10 @@ function operandCandidates(words: readonly string[]): string[] {
   const operands = rest.filter((w) => !w.startsWith('-'));
   const out: string[] = [];
   for (const operand of operands) {
-    if (operands.length > 1) {
-      out.push([program, ...flags, operand].join(' '));
-      out.push([program, operand].join(' '));
-    }
+    // ⚠ NO BARE `program operand` FORM. The first cut emitted one; a mutant deleting it changed nothing,
+    // because no floor entry is a program plus a bare operand — `rm -rf /` needs its flags and
+    // `chmod 777 *` is prefix-matched already. Deleted rather than kept as unverifiable noise.
+    if (operands.length > 1) out.push([program, ...flags, operand].join(' '));
     // ⚠ AND ONE FLAG AT A TIME, which is not decoration: `rm -rf --no-preserve-root /` has a SINGLE
     // operand, so no amount of operand-splitting reaches it — and it is the canonical way to actually
     // delete `/`. Asking `rm -rf /` of it is the whole point.
@@ -693,12 +693,11 @@ function operandCandidates(words: readonly string[]): string[] {
 }
 
 function perOperandCandidates(command: string): string[] {
-  // ⚠ BOTH WORD READINGS, because the quote-aware tokenizer DROPS SHELL OPERATORS: `rm -rf ) /`
-  // tokenizes to [rm, -rf, /] — one operand, no candidates — and `%x(rm -rf \x29 /)` stayed ALLOWED on
-  // exactly that. The plain split keeps `)` as a word, so the operand pass can step over it.
-  const quoteAware = operandCandidates(commandWords(command));
-  const whitespace = operandCandidates(command.trim().split(/\s+/).filter(Boolean));
-  return [...new Set([...quoteAware, ...whitespace])].filter((c) => c !== command.trim());
+  // ⚠ THE QUOTE-AWARE READING ALONE, and that is measured rather than assumed. I added a second,
+  // whitespace-split reading for `rm -rf ) /`, where the quote-aware tokenizer DROPS the `)` operator —
+  // and a mutant removing it changed no verdict, because dropping the operator is precisely what leaves
+  // `rm -rf /` behind. The second reading was solving a problem the first one already solved.
+  return operandCandidates(commandWords(command)).filter((c) => c !== command.trim());
 }
 
 function unwrapBodies(command: string, depth = 0): Unwrapped {
@@ -1048,10 +1047,14 @@ interface ScannedText {
  *     a rule rather than fix one.
  */
 function maskEscapes(text: string): string {
-  return text.replace(
-    /\\(x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]{1,6}\}|u[0-9a-fA-F]{4}|[0-7]{1,3}|[\s\S])/g,
-    (m) => 'X'.repeat(m.length),
-  );
+  // ⚠ ONE ALTERNATIVE, BECAUSE THE OTHERS COULD NOT BE FALSIFIED. The first cut listed `\xHH`, `\uHHHH`,
+  // `\u{…}` and octal forms separately; mutants deleting them changed nothing, and the reason is
+  // structural rather than lucky: an escape's TAIL is alphanumeric, never a delimiter, so blanking the
+  // two-character escape is enough — `\x7d` leaves `7d`, which no counter cares about. (`\u{7d}`'s
+  // braces do survive, and they survive BALANCED, so they cannot change a count either.) A predicate
+  // nothing can flip is a predicate nobody has verified, so the four went rather than being decorated
+  // with a clause that proves nothing.
+  return text.replace(/\\[\s\S]/g, (m) => 'X'.repeat(m.length));
 }
 
 /**
