@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { useState, useEffect, type CSSProperties } from 'react';
 import type { AgentDetail, Model } from '@dojo/shared';
 import * as api from '../lib/api';
+import { stopAffordance } from '../lib/stop-affordance';
 import { useActiveAgent } from './ActiveAgentProvider';
 import { resolveAgentHue, ORB_PALETTE, CHAMPAGNE_HUE } from '../lib/agent-hue';
 
@@ -126,6 +127,9 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged, ind
   const isAuto = agent.modelId === 'auto';
 
   const isWorking = agent.status === 'working';
+  // A-5b: the Stop button is offered by the RULE, not by `isWorking` — a background media job
+  // outlives its turn, so an agent reading `idle` can still have work the button would cut.
+  const stop = stopAffordance(agent);
   const isTerminated = agent.status === 'terminated';
   const canDismiss = agent.classification !== 'sensei' && !isTerminated;
   const canDelete = agent.classification !== 'sensei' && isTerminated;
@@ -270,15 +274,16 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged, ind
       </dl>
 
       {/* Inline actions: stop (working), dismiss (non-sensei active) */}
-      {(isWorking || canDismiss) && (
+      {(stop.show || canDismiss) && (
         <div className="tagrow" style={{ marginTop: 11 }} onClick={(e) => e.stopPropagation()}>
-          {isWorking && (
+          {stop.show && (
             <button
               type="button"
               className="group__action"
+              title={stop.why}
               onClick={async (e) => { e.stopPropagation(); await api.stopAgent(agent.id); onModelChanged(); }}
             >
-              Stop
+              {stop.label}
             </button>
           )}
           {canDismiss && (

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { getAgentRuntime } from '../../agent/runtime.js';
+import { countAbortable } from '../../agent/shared-state.js';
 import { spawnAgent, terminateAgent } from '../../agent/spawner.js';
 import { parseCreatedByKind } from '../../agent/created-by-kind.js';
 import { stopAgent } from '../../agent/runtime.js';
@@ -939,6 +940,16 @@ function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
     uptime,
     model,
     dreamerIgnore: row.dreamer_ignore === 1,
+    // ── A-5b: THE WORK THE STOP BUTTON WOULD CUT, SAID OUT LOUD ──
+    // A READ of the live abort registry — no new column, no new writer, no new frame. The
+    // dashboard gated its Stop button on `status === 'working'`, so a background media job
+    // that outlives its turn (a video render, a narration, an image delivery that waits for
+    // idle) left the agent reading `idle` with work on the wire that the button WOULD have
+    // cut. `packages/dashboard/src/lib/stop-affordance.ts` is the rule that reads this.
+    inFlight: {
+      turn: countAbortable(agentId, 'turn'),
+      background: countAbortable(agentId, 'background'),
+    },
   };
 }
 
