@@ -19,11 +19,7 @@ export const MODELS_DIR = path.join(VOICE_ROOT, 'models');
 export const KOKORO_CACHE_DIR = path.join(VOICE_ROOT, 'kokoro');
 /** Legacy locations checked as a fallback so existing installs aren't forced to re-download. */
 const KOKORO_LEGACY_HF_CACHE = path.join(homeDir(), '.cache', 'huggingface');
-// ⚠ `fileURLToPath`, NEVER `new URL(…).pathname` — THE LAW, AND IT SHIPPED BROKEN ONCE.
-// A `file:` URL is PERCENT-ENCODED, so `.pathname` hands back `/Users/dave/My%20Apps/dojo`
-// for any install path with a space in it — and every path derived from it then misses. This
-// is the same family as `getCurrentVersion`'s T8 fix, and it is a USER-FACING break: voice
-// silently loses its legacy cache lookup on any install under a spaced directory.
+// ⚠ `fileURLToPath`, NEVER `.pathname`: a `file:` URL is %-encoded, so a spaced install path loses this lookup silently (census: `__tests__/this-files-own-path-has-one-idiom`).
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const KOKORO_LEGACY_NODE_MODULES_CACHE = path.join(repoRoot, 'node_modules/@huggingface/transformers/.cache');
 

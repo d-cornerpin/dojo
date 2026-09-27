@@ -5,7 +5,7 @@
 // The v3.2.1 release gate went red on `a-deleted-thing-keeps-no-embedding.test.ts` §6, and only
 // in the LIVE tree. The line was `path.dirname(new URL(import.meta.url).pathname)`. A `file:`
 // URL is PERCENT-ENCODED: this repo's real path contains spaces, so `.pathname` answered
-// `/Users/…/Claude%20Code%20Projects/Agent%20Dojo%20Refresh/dojo/…` and the migration file it
+// `/…/Claude%20Code%20Projects/Agent%20Dojo%20Refresh/dojo/…` and the migration file it
 // resolved "did not exist".
 //
 // What makes it worth a census rather than a fix: **every worktree verification in this campaign
@@ -125,7 +125,7 @@ describe('a module asks where it is with fileURLToPath', () => {
   it('⚠ THE REPRODUCTION, in one assertion: the two idioms DISAGREE on a spaced path', () => {
     // This is the whole bug, at unit level, independent of where the suite happens to run. It is
     // also the clause that would have caught the voice files without a spaced checkout.
-    const spaced = '/Users/dave/Claude Code Projects/Agent Dojo Refresh/dojo/packages/server/src/voice/x.ts';
+    const spaced = '/tmp/An Owner Dir/Claude Code Projects/Agent Dojo Refresh/dojo/packages/server/src/voice/x.ts';
     const url = new URL(`file://${encodeURI(spaced)}`).href;
 
     expect(new URL(url).pathname, 'the defect: %20 survives into what is used as a filesystem path')
@@ -136,7 +136,7 @@ describe('a module asks where it is with fileURLToPath', () => {
     // And the derivation the two voice files actually do — four levels up to the repo root — is
     // right under the law and wrong under the defect.
     const REPO_ROOT_OF = (p: string) => path.resolve(path.dirname(p), '../../../..');
-    expect(REPO_ROOT_OF(fileURLToPath(url))).toBe('/Users/dave/Claude Code Projects/Agent Dojo Refresh/dojo');
+    expect(REPO_ROOT_OF(fileURLToPath(url))).toBe('/tmp/An Owner Dir/Claude Code Projects/Agent Dojo Refresh/dojo');
     expect(REPO_ROOT_OF(new URL(url).pathname), 'the shipped defect derived a directory that does not exist')
       .toContain('%20');
   });
