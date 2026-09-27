@@ -1,48 +1,48 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
-// LANE-3 — THE LEDGER TELLS AN ENGINE UTILITY DIAL FROM A REAL AGENT TURN.
+// THE LEDGER TELLS AN ENGINE UTILITY DIAL FROM A REAL AGENT TURN — BY DECLARATION.
 //
 // ── THE DEFECT, AND WHAT IT COST TWICE ──
 // `cost_records.request_type` is the only field that says WHAT a model call was, and three of the
-// four `recordCost` sites in `agent/model.ts` wrote the turn's label for every call that reached
-// them:
+// four `recordCost` sites in `agent/model.ts` stamped the turn's label on everything that reached
+// them (`routerTier ?? 'agent_turn'` on the OpenAI-compatible path, which is what the declared floor
+// model runs on). The platform dials a model for fourteen other reasons — the router probe, the
+// multistep classifier, briefing, retrieval, summarize ×2, the canvas/browser/system-control vision
+// reads, the web-fetch extract, vault extraction, the technique share-export, ask-title, the voice
+// fast-opener and the runtime's image captioner — and every one of them landed as `agent_turn`. A
+// consumer asking "how big is a turn on this box" got probe rows in the answer and fell back to size
+// heuristics to guess which rows were real. That happened twice.
 //
-//     callOllamaModel        requestType: routerTier ?? 'ollama'
-//     callOpenAIModel        requestType: routerTier ?? 'agent_turn'      ← the dev box's own path
-//     callAnthropicSdkModel  requestType: routerTier ?? 'agent-sdk'
-//     dialModel              requestType: routerTier ?? (tools ? 'agent_turn' : 'completion')  ← right
+// ── AND THE FIRST FIX WAS WRONG IN THE OTHER DIRECTION (review C, L3-F1) ──
+// The first pass keyed the label on the `tools` flag — `routerTier ?? (tools ? 'agent_turn' :
+// 'completion')`. That reads the CARGO and calls it the KIND, and the two come apart at exactly one
+// place: `agent/runtime.ts`'s capability gate sets `useTools = false` for a REAL, user-facing turn
+// whenever the model lacks the tools capability ("This model can't use tools, the agent will reply
+// with text only"), and `v2/steps/call-llm/model-call.ts` passes that value straight through. So on
+// such a box EVERY turn recorded `completion` and NO row said `agent_turn` at all — the same
+// consumer question answered wrongly, one direction over. The suite could not see it, because it
+// asserted "at tools:false, no site writes a turn label", which is precisely the wrong assertion for
+// a real turn that ships no schemas.
 //
-// But the platform dials a model for fourteen other reasons, and every one of them passes
-// `tools: false`: the router's probe, the multistep classifier, briefing, retrieval, summarize
-// (twice), the canvas and browser vision reads, the web-fetch extract, vault extraction, the
-// technique share-export, ask-title, the voice turn and the healer's own read. On the
-// OpenAI-compatible path — which is what the declared floor model runs on — all of them landed in
-// the ledger as `agent_turn`, indistinguishable from a real turn. A consumer asking "how big is a
-// turn on this box" got probe rows in the answer and had to fall back to size heuristics to guess
-// which rows were real; that happened twice.
+// ── WHAT IT KEYS ON NOW: A DECLARATION, MADE WHERE THE TRUTH IS KNOWN ──
+// `ModelCallParams.purpose` is declared by the ONE dial that is a served agent turn
+// (`model-call.ts`), and every recordCost site reads `routerTier ?? purpose ?? 'completion'`. The
+// call site is the only place that knows what the call IS; a transport cannot infer it, and neither
+// can its cargo. Three consequences, all asserted below: a toolless TURN is still a turn; an
+// undeclared dial is a `completion` on every transport; and a router tier still wins over both,
+// because the router's decision is the truth about that particular call.
 //
-// ── THE FIX IS THE SIBLING'S OWN EXPRESSION, NOT A NEW IDEA ──
-// `dialModel` already had it right. The other three now read the same way, so the rule is one
-// sentence: A DIAL THAT SHIPS NO TOOLS ARRAY IS NOT AN AGENT TURN. `'completion'` is deliberately
-// the existing word rather than a new one — `report/telemetry-whitelist.ts:154-157` already
-// declares it a member of this column's domain ("this list is its only domain", and the set is
-// MEASURED), so no reader meets a string it does not know, and the four rows that mean "a real
-// turn" keep the labels they have always had.
+// `'completion'` is deliberately the EXISTING word — `report/telemetry-whitelist.ts` already declares
+// it in this column's only domain, and that domain is MEASURED — so no reader meets a novel string.
+// The transport words `'ollama'` and `'agent-sdk'` are gone from this column ON PURPOSE: they named
+// the pipe, not the purpose, and the pipe is already in `provider_id`. Historical rows keep them and
+// the whitelist keeps them as members, so old data stays readable.
 //
 // ── WHY THIS SUITE READS THE SOURCE AND EVALUATES IT ──
-// The property is a property of an EXPRESSION, not of a function this suite could call:
-// `recordCost` takes `requestType` as a parameter, so a unit test that drove it would only prove
-// that the ledger stores what it is handed. `agent/model.ts` cannot be imported here either (its
-// module graph starts a platform). So each `requestType:` expression is extracted from the source
-// and EVALUATED under both conditions, which is stronger than a grep and covers a site added
-// tomorrow for free.
-//
-// ── THE RESIDUAL, NAMED RATHER THAN GLOSSED ──
-// `tools` is a sound discriminator for every utility dial this tree has (all fourteen pass
-// `tools: false`, asserted below), but it is a PROXY: a utility dial that wanted tools would still
-// be labelled a turn. The honest end state is an explicit purpose on `ModelCallParams` carried into
-// a `call_purpose` column, which needs ratchet raises on three files this lane may not touch; the
-// lane report argues that raise. What this clause pins is that no site may go back to labelling a
-// toolless dial a turn.
+// The property belongs to an EXPRESSION, not to a function this suite could call: `recordCost` takes
+// `requestType` as a parameter, so driving it would only prove the ledger stores what it is handed,
+// and `agent/model.ts` cannot be imported here (its module graph starts a platform). So each
+// `requestType:` expression is extracted from the source and EVALUATED under every combination that
+// matters — which is stronger than a grep and covers a site added tomorrow for free.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
@@ -53,6 +53,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../../../../..');
 const MODEL_TS = path.join(REPO_ROOT, 'packages/server/src/agent/model.ts');
+const TURN_DIAL = path.join(REPO_ROOT, 'packages/server/src/agent/v2/steps/call-llm/model-call.ts');
 
 /** Every `requestType:` expression handed to a `recordCost` call in `agent/model.ts`. */
 function requestTypeExpressions(): string[] {
@@ -60,81 +61,118 @@ function requestTypeExpressions(): string[] {
   return [...src.matchAll(/requestType:\s*(.+?),\n/g)].map((m) => m[1].trim());
 }
 
-/** What that expression evaluates to for a given (routerTier, tools) — the two inputs it reads. */
-function evaluate(expr: string, routerTier: string | undefined, tools: boolean): unknown {
+/** What the expression evaluates to for a given (routerTier, purpose, tools). `tools` is passed so a
+ *  site that goes BACK to reading the cargo is still evaluable — and still caught. */
+function evaluate(expr: string, routerTier: string | undefined, purpose: string | undefined, tools: boolean): unknown {
   // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-  return new Function('routerTier', 'tools', `return (${expr});`)(routerTier, tools);
+  return new Function('routerTier', 'purpose', 'tools', `return (${expr});`)(routerTier, purpose, tools);
 }
 
-/** The labels that mean "this row was a real agent turn". */
-const TURN_LABELS = new Set(['agent_turn', 'ollama', 'agent-sdk']);
+/** The label a served agent turn must carry, and the one an undeclared dial must carry. */
+const TURN = 'agent_turn';
+const UTILITY = 'completion';
+/** Words that have ever meant "a real turn" in this column — none may be written for a utility dial. */
+const TURN_LABELS = new Set([TURN, 'ollama', 'agent-sdk']);
 
-describe('LANE-3 — the ledger is being asked about something', () => {
+describe('the ledger is being asked about something', () => {
   it('every recordCost site in model.ts was found, and there are at least four', () => {
     const exprs = requestTypeExpressions();
     expect(exprs.length, `no requestType: expressions found in ${MODEL_TS} — the extraction anchor `
       + 'changed and every clause below would pass on an empty list').toBeGreaterThanOrEqual(4);
-    // Each one must be evaluable with the two inputs it is allowed to read. A site that started
-    // reading a third thing is a finding here rather than a silent skip.
     for (const expr of exprs) {
-      expect(() => evaluate(expr, undefined, true), `not evaluable from (routerTier, tools): ${expr}`).not.toThrow();
+      expect(() => evaluate(expr, undefined, TURN, true), `not evaluable from (routerTier, purpose, tools): ${expr}`).not.toThrow();
     }
   });
 });
 
-describe('LANE-3 — a toolless dial is never recorded as an agent turn', () => {
-  it('RED-CRITICAL: with no router tier and no tools, no site writes a turn label', () => {
+describe('a served agent turn is recorded as a turn — with or without tools', () => {
+  it('RED-CRITICAL: the NON-TOOL-CAPABLE BOX — a declared turn that ships no tools is still a turn', () => {
+    // L3-F1, the measured shape: `runtime.ts`'s capability gate hands `tools:false` to a real turn,
+    // so this combination IS a live production state, not a hypothetical. Before the declaration
+    // every site answered 'completion' here and no row on such a box said `agent_turn` at all.
     for (const expr of requestTypeExpressions()) {
-      const value = evaluate(expr, undefined, false);
       expect(
-        TURN_LABELS.has(String(value)),
-        `\`${expr}\` records ${JSON.stringify(value)} for an engine utility dial (tools:false). `
-        + 'That is a turn label, so probe/classifier/summarizer spend is indistinguishable from a '
-        + 'real turn in cost_records — the defect this clause exists for. Mirror dialModel: '
-        + "routerTier ?? (tools ? '<turn label>' : 'completion').",
-      ).toBe(false);
-      expect(value, `\`${expr}\` should record the ledger's existing word for a non-turn dial`).toBe('completion');
+        evaluate(expr, undefined, TURN, false),
+        `\`${expr}\` records "${String(evaluate(expr, undefined, TURN, false))}" for a REAL agent turn `
+        + 'on a model without the tools capability. On that box no row says agent_turn at all, which is '
+        + 'the consumer question this file exists for, answered wrongly in the other direction. The kind '
+        + 'must read the DECLARATION (`purpose`), never the cargo (`tools`).',
+      ).toBe(TURN);
     }
   });
 
-  it('a real turn keeps the label it has always had', () => {
-    const labels = requestTypeExpressions().map((e) => String(evaluate(e, undefined, true)));
-    // Every site must still name a turn when tools ride, and the three transports keep their own
-    // word — this is what stops the fix being "label everything completion".
-    for (const label of labels) expect(TURN_LABELS.has(label), `turn label lost: ${label}`).toBe(true);
-    expect(new Set(labels)).toEqual(new Set(['agent_turn', 'ollama', 'agent-sdk']));
+  it('a declared turn WITH tools is a turn too — the ordinary box', () => {
+    for (const expr of requestTypeExpressions()) {
+      expect(evaluate(expr, undefined, TURN, true)).toBe(TURN);
+    }
+  });
+
+  it('the turn dial is the ONE site that declares the purpose, and it declares this one', () => {
+    const src = fs.readFileSync(TURN_DIAL, 'utf-8');
+    expect(src, `${TURN_DIAL} no longer declares purpose: 'agent_turn' — the only served-turn dial `
+      + 'stopped saying what it is, so every row on every box becomes a completion')
+      .toMatch(/purpose:\s*'agent_turn'/);
+  });
+});
+
+describe('an engine utility dial is never recorded as a turn', () => {
+  it('RED-CRITICAL: an UNDECLARED dial writes the utility word, tools or no tools', () => {
+    for (const expr of requestTypeExpressions()) {
+      for (const tools of [false, true]) {
+        const value = String(evaluate(expr, undefined, undefined, tools));
+        expect(
+          TURN_LABELS.has(value),
+          `\`${expr}\` records ${JSON.stringify(value)} for an undeclared (engine utility) dial at `
+          + `tools:${tools}. Probe/classifier/summarizer spend then reads as a real turn in `
+          + 'cost_records, which is the original defect.',
+        ).toBe(false);
+        expect(value, `\`${expr}\` should record the ledger's existing word for a non-turn dial`).toBe(UTILITY);
+      }
+    }
   });
 
   it('a router tier still wins over both — the router decision is the truth about that call', () => {
     for (const expr of requestTypeExpressions()) {
-      expect(evaluate(expr, 'budget_fallback', false)).toBe('budget_fallback');
-      expect(evaluate(expr, 'light', true)).toBe('light');
+      expect(evaluate(expr, 'budget_fallback', undefined, false)).toBe('budget_fallback');
+      expect(evaluate(expr, 'light', TURN, true)).toBe('light');
+    }
+  });
+
+  it('no site reads the `tools` flag any more — the cargo cannot decide the kind', () => {
+    // The structural half of L3-F1: an expression that mentions `tools` has gone back to inferring.
+    for (const expr of requestTypeExpressions()) {
+      expect(expr, `\`${expr}\` reads the tools flag; that is what mislabelled every turn on a `
+        + 'non-tool-capable model').not.toMatch(/\btools\b/);
     }
   });
 });
 
-describe('LANE-3 — the premise the proxy rests on', () => {
-  it('every engine utility dial in the tree passes tools: false', () => {
-    // If a utility caller ever stops passing it, `tools` stops being a sound discriminator and the
-    // explicit-purpose design the report argues for becomes required rather than preferable.
+describe('the premise: exactly one dial declares a purpose', () => {
+  it('all FOURTEEN engine utility dials stay undeclared', () => {
+    // L3-F3: the first version of this clause named twelve. `system-control.ts` and `web-tools.ts`
+    // were the two it missed, and the count is asserted so a fifteenth dial cannot appear unpinned.
     const callers = [
-      'router/probe.ts', 'agent/v2/classifiers/multistep.ts', 'memory/briefing.ts',
-      'memory/retrieval.ts', 'memory/summarize.ts', 'agent/canvas-view.ts', 'agent/browser.ts',
-      'vault/extraction.ts', 'techniques/share-export.ts', 'work/ask-title.ts', 'voice/voice-ws.ts',
-      'agent/runtime.ts',
+      'agent/browser.ts', 'agent/canvas-view.ts', 'agent/runtime.ts', 'agent/system-control.ts',
+      'agent/v2/classifiers/multistep.ts', 'agent/web-tools.ts', 'memory/briefing.ts',
+      'memory/retrieval.ts', 'memory/summarize.ts', 'router/probe.ts', 'techniques/share-export.ts',
+      'vault/extraction.ts', 'voice/voice-ws.ts', 'work/ask-title.ts',
     ];
+    expect(callers.length).toBe(14);
     for (const rel of callers) {
       const src = fs.readFileSync(path.join(REPO_ROOT, 'packages/server/src', rel), 'utf-8');
-      expect(src, `${rel} calls the model but no longer passes tools: false`).toMatch(/tools:\s*false/);
+      expect(src, `${rel} is expected to be an engine utility dial but no longer passes tools: false`)
+        .toMatch(/tools:\s*false/);
+      expect(src, `${rel} now declares a purpose — if it became a served turn that is a real change, `
+        + 'and this clause is where it is argued rather than discovered')
+        .not.toMatch(/purpose:\s*'/);
     }
   });
 
-  it("'completion' is already a declared member of the column's domain", () => {
-    // The whitelist is that column's only domain (its own comment), so a value outside it renders
-    // `<unrecognised>` in a report. This is why the fix reuses the existing word.
+  it("'completion' and 'agent_turn' are both declared members of the column's domain", () => {
     const wl = fs.readFileSync(path.join(REPO_ROOT, 'packages/server/src/report/telemetry-whitelist.ts'), 'utf-8');
     const block = /call\.request_type[\s\S]*?\]\s*\}/.exec(wl)?.[0] ?? '';
-    for (const member of ['agent_turn', 'ollama', 'agent-sdk', 'completion']) {
+    // The two words in use, plus the two transport words history still carries.
+    for (const member of [TURN, UTILITY, 'ollama', 'agent-sdk']) {
       expect(block, `the request_type domain no longer declares ${member}`).toContain(member);
     }
   });

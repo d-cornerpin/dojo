@@ -442,7 +442,7 @@ export interface ModelCallParams {
    * arrive inside content and don't use this callback.
    */
   onReasoningChunk?: (chunk: string) => void;
-  routerTier?: string; // populated by auto-router
+  routerTier?: string; purpose?: string; // routerTier: the auto-router's tier. purpose: WHAT THIS CALL IS, for the cost ledger's `request_type` — the served-turn path declares 'agent_turn' (`v2/steps/call-llm/model-call.ts`); every engine utility dial leaves it unset and records 'completion'. Never inferred from `tools`: `runtime.ts`'s tools gate turns a REAL turn toolless on a model without the capability.
   // External abort signal, when fired, the underlying SDK call aborts
   // and callModel throws. Used by the runtime's stop button to actually
   // cancel in-flight calls (vs. v1's pre-fix behavior where stop only
@@ -1033,7 +1033,7 @@ async function callOllamaModel(
   params: ModelCallParams,
   modelInfo: { providerId: string; apiModelId: string; contextWindow: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null; measuredPrefillTokensPerSec: number | null },
 ): Promise<ModelCallResult> {
-  const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
+  const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier, purpose } = params;
   const baseUrl = (modelInfo.providerBaseUrl ?? 'http://localhost:11434').replace(/\/+$/, '');
   const ollamaModelName = modelInfo.apiModelId;
 
@@ -1364,7 +1364,7 @@ async function callOllamaModel(
       inputTokens,
       outputTokens,
       latencyMs,
-      requestType: routerTier ?? (tools ? 'ollama' : 'completion'),
+      requestType: routerTier ?? purpose ?? 'completion',
     });
 
     recordProviderSuccess(modelInfo.providerId);
@@ -1895,7 +1895,7 @@ async function callOpenAIModel(
   params: ModelCallParams,
   modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; providerAuthType: string; providerBehavesLike: string | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null; measuredPrefillTokensPerSec: number | null; thinkingEnabled: boolean; capabilities: string[] },
 ): Promise<ModelCallResult> {
-  const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
+  const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier, purpose } = params;
   const startTime = Date.now();
 
   // T73b: resolved HERE rather than at the watchdog below, because the HTTP client is built
@@ -2373,7 +2373,7 @@ async function callOpenAIModel(
       agentId, modelId,
       providerId: modelInfo.providerId,
       inputTokens: uncachedInputTokens, outputTokens, latencyMs,
-      requestType: routerTier ?? (tools ? 'agent_turn' : 'completion'),
+      requestType: routerTier ?? purpose ?? 'completion',
       cacheReadTokens,
       // Step 3: the post-trim estimate, i.e. the one describing the request that went out.
       estimatedInputTokens: finalInputEstimate,
@@ -2674,7 +2674,7 @@ async function callAnthropicSdkModel(
   params: ModelCallParams,
   modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[]; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null; measuredPrefillTokensPerSec: number | null },
 ): Promise<ModelCallResult> {
-  const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
+  const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier, purpose } = params;
 
   // Dynamic import, gracefully fail if SDK not installed
   const { callAnthropicViaSdk, AgentSdkVisionUnsupportedError, AgentSdkPatienceExceededError } = await import('../providers/anthropic-sdk.js');
@@ -2765,7 +2765,7 @@ async function callAnthropicSdkModel(
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
         latencyMs,
-        requestType: routerTier ?? (tools ? 'agent-sdk' : 'completion'),
+        requestType: routerTier ?? purpose ?? 'completion',
         cacheReadTokens: result.cacheReadTokens,
         cacheCreationTokens: result.cacheCreationTokens,
       });
@@ -2971,7 +2971,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
 }
 
 async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
-  const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
+  const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier, purpose } = params;
 
   // so the model-call-failure recovery path can be exercised end-to-end. Remove for release.
   // C23: import wrapped so a partial uninstall no-ops instead of throwing on every model
@@ -3415,7 +3415,7 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
       inputTokens,
       outputTokens,
       latencyMs,
-      requestType: routerTier ?? (tools ? 'agent_turn' : 'completion'),
+      requestType: routerTier ?? purpose ?? 'completion',
       cacheReadTokens,
       cacheCreationTokens,
       // T2 Step 3 recorded this as "the same sum this transport's hard cap compares against

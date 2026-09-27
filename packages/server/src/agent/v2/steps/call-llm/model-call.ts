@@ -166,6 +166,8 @@ export async function callWithRetryAndFallback(
         // cached stable system block so it can't invalidate the cached prefix.
         systemVolatile: ctx.systemVolatile,
         tools: useTools,
+        // The ledger's kind, DECLARED by the only dial that is a served turn — never inferred from `tools`, which `runtime.ts`'s capability gate turns off for a real turn.
+        purpose: 'agent_turn',
         routerTier: routerTier ?? undefined,
         // Real abort signal, when stopAgent fires controller.abort(), the
         // underlying SDK call (Anthropic/OpenAI/Ollama) actually cancels
