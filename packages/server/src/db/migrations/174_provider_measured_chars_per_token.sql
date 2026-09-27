@@ -1,0 +1,64 @@
+-- 174 (LANE-3): THE ESTIMATOR'S DIVISOR BECOMES SOMETHING THE PLATFORM OBSERVES.
+--
+-- Same owner ruling migration 167 was written under, 2026-09-22, verbatim: "never ask the user for
+-- a number the platform can observe." 167 did it for prefill throughput. This does it for the OTHER
+-- hand-set number in the budget: `memory/budget.ts`'s `CHARS_PER_TOKEN = 4`.
+--
+-- WHAT THAT 4 IS, AND WHAT IS NOW KNOWN ABOUT IT. Every token estimate in this tree is
+-- `ceil(chars / 4)`. `budget.ts`'s own header records the derivation (/4 was 2% under the measured
+-- cost, /3.5 12% over, /3 30% over) and ends with an instruction to whoever comes next: "Step 3
+-- records the provider's own `input_tokens` beside this estimate on every call, so the error is
+-- measured and trending. Re-derive before changing it; never tune it." Nobody re-derived it. The
+-- behavioural harness did, from these very rows, and measured the estimate running 1.88-2.08x UNDER
+-- what the provider billed on requests dominated by dense JSON tool schemas — which is not a
+-- contradiction of the header, it is a DIFFERENT POPULATION: 4 chars/token is about right for
+-- prose and about twice too generous for a 72 KB tools array. One global constant cannot be right
+-- for both, and the honest resolution is to stop asserting it and start observing it.
+--
+-- WHAT THE LEDGER ALREADY KNOWS. Migration 149 put both halves of the comparison in every row:
+-- `estimated_input_tokens` (what the estimator said this request's input would cost) and
+-- `estimator_chars_per_token` (the divisor that produced that estimate), beside the provider's own
+-- billed counts — `input_tokens` plus, since 086, `cache_read_tokens` and `cache_creation_tokens`.
+-- So for any row where the estimate exists and the billed counts are real:
+--
+--     chars            = estimated_input_tokens * estimator_chars_per_token
+--     billed tokens    = input_tokens + cache_read_tokens + cache_creation_tokens
+--     chars per token  = chars / billed tokens          ← EXACT for that request, not a bound
+--
+-- and the MINIMUM of those ratios over a provider's recent rows is the one divisor that does not
+-- under-estimate any population that box has actually been asked to process. It approaches the
+-- truth from ABOVE (a smaller divisor means a LARGER estimate), which is the safe side of every
+-- decision an estimate feeds: admission plans smaller, compaction fires sooner, the pre-dial gate
+-- refuses sooner. An over-measured box is a cautious box, exactly as 167's under-measured box is.
+--
+-- WHY TWO COLUMNS, AND WHY ON `providers`. The divisor is a property of the TOKENISER, and the
+-- tokeniser travels with the serving endpoint, which is where 163/164/166/167 all put its siblings
+-- for reasons that have not changed. `measured_chars_per_token` is the reading;
+-- `measured_chars_per_token_at` is when it was established, and the stamp is not decoration: the
+-- reading is a MINIMUM over a rolling window, and a minimum must be able to RISE again when the row
+-- that set it ages out. Without a stamp the only honest way to let it rise is to rescan the window
+-- on every call; with one, `costs/ledger-calibration.ts` ratchets DOWN in O(1) per call and pays for
+-- the rescan at most once a day. Identical shape, identical reason, mirror direction.
+--
+-- STABLE-BRIDGE: ADDITIVE AND NULL-SAFE, so an upgrade-day box crosses it without a rewrite. Both
+-- columns are new, nullable, and default NULL; nothing backfills and nothing reads them until a
+-- qualifying call establishes a reading, which is the same state every box is in today. No index is
+-- added: unlike 167's partial index, the candidate rows here are already narrowed by
+-- `estimated_input_tokens IS NOT NULL` (a minority of rows) on top of the same
+-- `provider_id` + `created_at` predicate 167's index already serves, and the rescan runs at most
+-- once a day per provider. A second overlapping index would cost every INSERT to save a query that
+-- runs 24 times a day at worst.
+--
+-- NUMBERED 174, NOT 173: lane 1 landed `173_orphaned_agent_side_rows.sql` on the integration branch
+-- while this was being written. Two migrations under one number both apply (discovery is by
+-- filename) but the number stops being a reading order anyone can trust, so this took the next free
+-- one rather than the one that was free when it was drafted.
+--
+-- NOT READ BY THE ESTIMATOR YET, deliberately and visibly: `estimateTokens` is provider-agnostic
+-- and called from 71 sites, so spending this reading is its own change with its own blast radius
+-- (see the lane report's argument). What this migration and its module do is end the part that
+-- cannot be argued with — the number is measured, per provider, from the platform's own records,
+-- instead of being a constant with a note asking someone to check it.
+
+ALTER TABLE providers ADD COLUMN measured_chars_per_token REAL;
+ALTER TABLE providers ADD COLUMN measured_chars_per_token_at TEXT;
