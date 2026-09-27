@@ -1381,6 +1381,30 @@ describe('§12 one extra operand cannot hide a floor pattern', () => {
     ]) expect(shellAllows(line, PRIMARY), line).toBe(true);
   });
 
+  it('⚠ THE DECLARED RESIDUAL IS PINNED — owner ruling: LEAVE IT, SHIP DOCUMENTED', () => {
+    // ⚠ READ THIS BEFORE "FIXING" A FAILURE HERE. Every row below is ALLOWED, and that is the RECORDED
+    // DECISION rather than an oversight: the floor's three entries are literal strings, so they carry
+    // neither flag synonyms nor operand quoting, and closing that is a floor-vocabulary change scheduled
+    // for its own round. This clause exists so the documentation cannot drift from the behaviour — if one
+    // of these starts REFUSING, that is good news, and this clause and member 3 of the residual in
+    // `sudo-policy.ts` must be updated in the same commit. It is not an endorsement of the rows.
+    policyRow.current = 'free';
+    for (const line of [
+      'sudo rm -r -f /', 'sudo rm -fr /', 'sudo rm -rfv /', 'sudo /bin/rm -r -f /',
+      'sudo rm --recursive --force /', 'sudo rm -r --force /', 'sudo chmod -R 777 /etc',
+      `sudo rm -rf '/'`, `sudo rm -rf "/"`, `sudo rm -rf ''/''`,
+      `sudo perl -e "qx{rm -rf '/'}"`,
+    ]) expect(shellAllows(line, PRIMARY), `declared residual: ${line}`).toBe(true);
+    // …and the neighbour that DOES catch its quoted form, because the entry is prefix-matched
+    expect(shellAllows(`sudo chmod 777 '*'`, PRIMARY)).toBe(false);
+    // …while every agent other than the primary is still walled from all of them
+    underEach(() => {
+      for (const line of ['sudo rm -r -f /', `sudo rm -rf '/'`]) {
+        expect(shellAllows(line, WORKER), line).toBe(false);
+      }
+    });
+  });
+
   it('⚠ AND THE SCOPE LINE IS UNCHANGED: an UNPRIVILEGED junk-operand line is as it is on `main`', () => {
     // `rm -rf } /` without sudo is allowed on `main` and still is: `matchCommandDenyPattern` is shared
     // with every `exec_deny` rule in the tree, and widening IT was refused two rounds ago so that
