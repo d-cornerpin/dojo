@@ -463,7 +463,11 @@ describe('C7 the healer and this pass do not hold two copies of one predicate', 
   it('the predicate\'s distinctive fragments live in ONE file', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');
-    const SRC = decodeURIComponent(path.dirname(path.dirname(path.dirname(new URL(import.meta.url).pathname))));
+    // `fileURLToPath` rather than `decodeURIComponent(… .pathname)`: the hand-patch worked, but
+    // the family gets ONE idiom so the next reader does not have to know which files were
+    // patched and which were not.
+    const { fileURLToPath } = await import('node:url');
+    const SRC = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
     const walk = (dir: string, acc: string[] = []): string[] => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         const fp = path.join(dir, e.name);

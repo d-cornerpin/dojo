@@ -44,6 +44,7 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const mockDb = { current: null as Database.Database | null };
 vi.mock('../../db/connection.js', () => ({
@@ -284,8 +285,13 @@ describe('§6 the sweep clears the existing backlog — and is not a blanket del
   // is not that it deletes too little — it is that it deletes something unrecoverable. So the
   // migration's own SQL is driven here, against planted orphans AND against a row of a kind it
   // has never heard of, which must survive it.
+  // ⚠ `fileURLToPath`, NEVER `.pathname` — this line is what turned the v3.2.1 unit-suite gate
+  // red, and it was invisible to every worktree verification because they all ran under a
+  // space-free scratchpad. The repo's real path has spaces, `.pathname` percent-encodes them,
+  // and the migration file "did not exist". One idiom, pinned by
+  // `__tests__/this-files-own-path-has-one-idiom.test.ts`.
   const MIGRATION = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
+    path.dirname(fileURLToPath(import.meta.url)),
     '../../db/migrations/175_orphaned_embeddings.sql',
   );
 
