@@ -707,16 +707,29 @@ const SHELL_INTERPRETERS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'd
  * code had, which is this campaign's recurring failure in its documentation form). MEASURED at the end
  * of round 8, under `free`, for the primary only — all three are HELD under `gated`, refused under
  * `blocked`, and role-walled for every other agent under every policy:
- *   1. A BODY BUILT AT RUNTIME. `sudo sh -c "$(cat /tmp/x)"` — the floor is handed the substitution as
- *      written, and what executes is whatever that produces. Nothing textual can close this.
+ *   1. A PAYLOAD ASSEMBLED AT RUNTIME, in any of three ordinary flavours. The line spells a TEMPLATE;
+ *      the command only exists once something else fills it in:
+ *        · a shell substitution   — `sudo sh -c "$(cat /tmp/x)"`      (the text is `$(cat /tmp/x)`)
+ *        · a format string        — `system sprintf("rm -rf %s", "/")` (the text is `rm -rf %s`)
+ *        · an interpolation       — `my $s = "/"; qx{rm -rf $s}`       (the text is `rm -rf $s`)
+ *      Nothing textual closes these, because the bytes that will run are not in the line to read.
  *   2. A LANGUAGE API THAT NEEDS NO SHELL. `shutil.rmtree('/')`, `fs.rmSync('/', {recursive:true})` —
  *      the damage is done by the runtime itself and no shell command is ever spelled, so there is no
  *      text for a text floor to match.
- * Concatenation (`'rm' + ' -rf /'`), the argv form (`['rm','-rf','/']`) and a base64-decode piped into
- * a shell are NOT in this list: the first two are caught by the joined-literals pass and the third by
- * the stream rule, and they were each measured rather than assumed. The honest one-line statement of
- * the residual is therefore: **under `free`, a payload the line does not SPELL — assembled at runtime,
- * or carried out by a language API instead of a shell command — is outside the floor's reach.**
+ *
+ * ⚠ AND WHAT IS **NOT** IN THAT LIST, each measured rather than assumed, because a residual that names
+ * things the code already catches is the same defect as one that omits things it does not:
+ * CONCATENATION (`'rm' + ' -rf /'`, adjacent literals, `+` in Ruby) and the ARGV form
+ * (`['rm','-rf','/']`, `system("rm","-rf","/")`) die on the joined-literals pass; a VARIABLE HOLDING A
+ * SPELLED COMMAND (`$c = "rm -rf /"; system $c`) dies because the literal is right there; a BASE64
+ * DECODE piped into a shell and a HERE-STRING die on the stream and per-segment rules; NESTED
+ * DELIMITERS (`qx{echo {}; rm -rf /}`) die on the balanced scan; and an ENCODED SPACE
+ * (`qx{rm -rf\x20/}`) dies because the escapes are decoded before the floor reads the text.
+ *
+ * So the one honest statement, true of the code as it stands: **under `free`, a payload THE LINE DOES
+ * NOT SPELL — waiting on a substitution, a format or a variable, or carried out by a language API
+ * instead of a shell command — is outside the floor's reach.** Every shape in which the payload IS in
+ * the line, in any quoting or encoding this file knows of, is refused under every policy.
  */
 const CODE_INTERPRETERS: ReadonlyMap<string, readonly string[]> = new Map([
   ['python', ['-c']], ['python3', ['-c']], ['python2', ['-c']],
@@ -883,6 +896,10 @@ const unescape = (text: string): string => text.replace(/\\(.)/g, '$1');
 
 /** Do the quotes balance once escaping is undone? If not, what was extracted is not what will run. */
 function quotesBalance(text: string): boolean {
+  // ⚠ A QUOTE OPERATOR THAT NEVER CLOSES COUNTS HERE TOO (R5). The parity test below cannot see it:
+  // `qx{echo {; rm -rf /` has no stray `'` or `"` at all, and without this an unterminated nest would
+  // fall back to reading the body as if it ended at the first closer — which is the finding itself.
+  if (scanQuotedText(text).unclosed) return false;
   const bare = unescape(text);
   return (bare.split('"').length - 1) % 2 === 0 && (bare.split("'").length - 1) % 2 === 0;
 }
@@ -908,29 +925,112 @@ function quotesBalance(text: string): boolean {
  * `1` as a "literal", which the floor does not match and nobody notices. The cost of a false literal is
  * nothing; the cost of a missing one was root.
  */
-const LITERAL_RE = new RegExp([
-  "'(?<sq>[^']*)'",                       // '…'
-  '"(?<dq>[^"]*)"',                       // "…"
-  '`(?<bt>[^`]*)`',                       // `…` — the idiomatic shell call in perl/ruby/php
-  // q{} qq() qx[] qw<> and %q() %Q{} %x[] %w<> %i() — one alternation over the four bracket pairs
-  '(?:\\b(?:qq|qx|qw|q)|%[qQxXwWiI]?)\\s*(?:'
-    + '\\{(?<cu>[^}]*)\\}|\\((?<pa>[^)]*)\\)|\\[(?<br>[^\\]]*)\\]|<(?<an>[^>]*)>'
-    + ')',
-  // ⚠ AND ANY OTHER PAIRED DELIMITER, because Perl takes whatever character follows `q`: `qx#…#`,
-  // `q!…!`, `qq,…,`. The review scoped itself to the bracket forms and `qx#rm -rf /#` was still
-  // ALLOWED when I measured the fix — one spelling caught and its sibling uncaught is how every round
-  // of this package has failed, so the sibling class is closed in the same edit rather than listed.
-  '(?:\\b(?:qq|qx|qw|q)|%[qQxXwWiI]?)\\s*(?<d>[^\\w\\s{(\\[<])(?<gd>(?:(?!\\k<d>).)*)\\k<d>',
-].join('|'), 'g');
+/** The four delimiters that NEST, and their closers. */
+const DELIMITER_PAIRS: ReadonlyMap<string, string> = new Map([['{', '}'], ['(', ')'], ['[', ']'], ['<', '>']]);
+
+/**
+ * Spans that never nest: a second `'` ends the first one in every language here.
+ */
+const SIMPLE_SPAN_RE = /'([^']*)'|"([^"]*)"|`([^`]*)`/g;
+
+/**
+ * A quote operator opening on a PAIRED delimiter — `qx{`, `q(`, `%w[`, `%x<`, and Ruby's bare `%(`.
+ * The letter is optional here because `%(…)` is a real Ruby string literal and `system(%(rm -rf /))`
+ * is a real way to spell it.
+ */
+const Q_PAIRED_START_RE = /(?:\b(?:qq|qx|qw|q)|%[qQxXwWiI]?)\s*([{(\[<])/g;
+
+/**
+ * …and on ANY OTHER delimiter — `qx#…#`, `q!…!`, `%q,…,`. ⚠ HERE THE LETTER IS REQUIRED, and the
+ * quote characters are excluded, because a bare `%` followed by punctuation is a PRINTF FORMAT far more
+ * often than it is a literal: with the letter optional, `print('%x' % 255)` read as a quote operator
+ * opening on `'`, found no closer, and was REFUSED — a legitimate line, caught by my own no-loss row.
+ */
+const Q_FREE_START_RE = /(?:\b(?:qq|qx|qw|q)|%[qQxXwWiI])\s*([^\w\s'"`{(\[<])/g;
+
+interface ScannedText {
+  /** Every run of text the body quotes, in any of the forms above. */
+  readonly literals: string[];
+  /** A quote operator that never closes — so what was extracted is not what will run. */
+  readonly unclosed: boolean;
+}
+
+/**
+ * ⚠ A BALANCED SCAN, BECAUSE PERL AND RUBY DELIMITERS NEST AND A REGEX CANNOT COUNT (R5, and the
+ * orchestrator's ruling was to CLOSE this rather than document it).
+ *
+ * `[^}]*` stops at the FIRST closer, so every one of these ran as root under `free`:
+ *
+ *     qx{echo {}; rm -rf /}        the body came out as `echo {`
+ *     %x(echo (); rm -rf /)
+ *     qx[echo []; rm -rf /]        …and `qx<echo <>; rm -rf />`
+ *     qx{a{b{c}}; rm -rf /}        nesting two deep
+ *     system(q{echo {}; rm -rf /})
+ *
+ * Now the four paired delimiters are counted, so the body is the whole of what the interpreter will
+ * hand the shell. Non-paired delimiters (`qx#…#`) genuinely end at the next occurrence and need no
+ * counting — that is the language's own rule, not a simplification.
+ *
+ * ⚠ AN UNTERMINATED FORM FAILS CLOSED, and does not fall back to first-closer behaviour:
+ * `qx{echo {; rm -rf /` reports `unclosed`, which makes the body UNPARSEABLE and refuses the line under
+ * every policy — AND the remainder is still handed to the floor, so the refusal usually names the
+ * pattern rather than the parse. Guessing at a body whose end the parser never found is the exact
+ * mistake that produced this finding.
+ */
+/**
+ * ⚠ CHARACTER ESCAPES DECODED FIRST, because an encoded space is still a space and the bytes really are
+ * in the line (R5-1's hunt, not the review's list): `qx{rm -rf\x20/}` and
+ * `os.system('rm -rf\x20/')` both ran as root under `free` — `unescape` turned `\x20` into the letters
+ * `x20` and the floor saw `rm -rfx20/`. That is a payload the line DOES spell, so it is closed here
+ * rather than named in the residual; the residual is for payloads that are genuinely not in the line.
+ *
+ * Used for LITERAL EXTRACTION ONLY, deliberately: `quotesBalance`'s parity test keeps reading the
+ * undecoded text, because decoding `\x27` into a quote there would flip parity and refuse an ordinary
+ * `print "\x27"`. Each reader decodes as much as its own question needs and no more.
+ */
+const decodeCharEscapes = (s: string): string => s
+  .replace(/\\x([0-9a-fA-F]{2})/g, (_, h: string) => String.fromCharCode(parseInt(h, 16)))
+  .replace(/\\u\{([0-9a-fA-F]{1,6})\}/g, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
+  .replace(/\\u([0-9a-fA-F]{4})/g, (_, h: string) => String.fromCharCode(parseInt(h, 16)))
+  .replace(/\\0([0-7]{1,3})/g, (_, o: string) => String.fromCharCode(parseInt(o, 8)))
+  .replace(/\\t/g, '\t');
+
+function scanQuotedText(text: string): ScannedText {
+  const bare = unescape(decodeCharEscapes(text));
+  const literals: string[] = [];
+  let unclosed = false;
+  const add = (s: string): void => { if (s.trim().length > 0) literals.push(s.trim()); };
+
+  for (const m of bare.matchAll(SIMPLE_SPAN_RE)) add(m[1] ?? m[2] ?? m[3] ?? '');
+
+  for (const m of bare.matchAll(Q_PAIRED_START_RE)) {
+    const open = m[1];
+    const close = DELIMITER_PAIRS.get(open) as string;
+    const from = (m.index ?? 0) + m[0].length;
+    let depth = 1;
+    let at = from;
+    while (at < bare.length) {
+      if (bare[at] === open) depth += 1;
+      else if (bare[at] === close) { depth -= 1; if (depth === 0) break; }
+      at += 1;
+    }
+    if (depth > 0) { unclosed = true; add(bare.slice(from)); continue; }
+    add(bare.slice(from, at));
+  }
+
+  for (const m of bare.matchAll(Q_FREE_START_RE)) {
+    const open = m[1];
+    const from = (m.index ?? 0) + m[0].length;
+    const end = bare.indexOf(open, from);
+    if (end < 0) { unclosed = true; add(bare.slice(from)); continue; }
+    add(bare.slice(from, end));
+  }
+
+  return { literals, unclosed };
+}
 
 function quotedLiterals(text: string): string[] {
-  const out: string[] = [];
-  for (const m of unescape(text).matchAll(LITERAL_RE)) {
-    const g = m.groups ?? {};
-    const body = g.sq ?? g.dq ?? g.bt ?? g.cu ?? g.pa ?? g.br ?? g.an ?? g.gd ?? '';
-    if (body.trim().length > 0) out.push(body.trim());
-  }
-  return out;
+  return scanQuotedText(text).literals;
 }
 
 /** One more layer, for a nested wrapper. */
