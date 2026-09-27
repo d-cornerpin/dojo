@@ -178,6 +178,16 @@ describe('§1 the evasion corpus, through the real shell door', () => {
     expect(SUDO_UNPLACEABLE_REASON).toContain('is not run as root');
   });
 
+  it('an UNPLACEABLE `doas` needs the DETECTOR, not the walker', () => {
+    // MUTATION GAP: dropping `doas` from the sound detector left every clause green, because the
+    // precise walker names it too — so the mutant was only half applied. The shape that needs the
+    // DETECTOR is the one the walker cannot see: a privilege token inside a substitution.
+    underEach((p) => {
+      expect(shellAllows('$(doas whoami)', PRIMARY), `${p}`).toBe(false);
+      expect(shellAllows('`doas rm -rf /`', PRIMARY), `${p}`).toBe(false);
+    });
+  });
+
   it('`doas` is treated as the same privilege escalation', () => {
     // Not installed on stock macOS today. A floor that waits for it to be installed is wrong once.
     underEach(() => expect(shellAllows('doas rm -rf /', PRIMARY)).toBe(false));
