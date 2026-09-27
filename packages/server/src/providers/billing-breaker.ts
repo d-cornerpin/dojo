@@ -47,6 +47,7 @@
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { classifyProviderErrorText, type ProviderErrorFacts } from '../agent/provider-error.js';
+import { getDb } from '../db/connection.js';
 
 const logger = createLogger('billing-breaker');
 
@@ -258,7 +259,6 @@ export function noteSummaryWriterFailure(
   const reason = permanentFailureReason(errText);
   if (!reason || !modelId) return reason;
   try {
-    const { getDb } = require('../db/connection.js') as { getDb: () => { prepare: (q: string) => { get: (...a: unknown[]) => unknown } } };
     const row = getDb().prepare('SELECT provider_id FROM models WHERE id = ?').get(modelId) as { provider_id?: string } | undefined;
     if (row?.provider_id) recordPermanentFailure(row.provider_id, reason, errText, agentId);
   } catch { /* see the note above: never throw from inside somebody's catch */ }

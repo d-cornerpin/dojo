@@ -205,9 +205,21 @@ export function classifyProviderErrorText(text: string): ProviderErrorFacts {
 
   // Order is the precedence: the most specific remedy first. A quota message and a rate limit
   // both arrive as 429s but only one of them is fixed by waiting.
-  if (lower.includes('insufficient_quota')
+  //
+  // ⚠ v3.2.3: THE 402-SHAPED HOLE THIS PROSE PATH HAD, and it is the reason one user's box
+  // dialled a provider with no balance 3,604 times in 27 hours without anything classifying it.
+  // `statusToClass` maps 402 correctly — but only when a STATUS is in hand. A thrown error whose
+  // status survives as TEXT (`"API error 402: {...Insufficient Balance...}"`, her provider's own
+  // words) reached this function instead, and the probes below tested 429, 401, 403, 503 and 500
+  // while the quota branch demanded `insufficient_quota` or `quota`+exceed/exhaust. "Insufficient
+  // Balance" is neither, so 402 came out `unknown` — a bad minute, retried for a day and a night.
+  // The status token and the three ways providers spell "no money" are now first-class here.
+  if (hasStatusToken(lower, 402)
+    || lower.includes('insufficient_quota') || lower.includes('insufficient balance')
+    || lower.includes('insufficient_balance') || lower.includes('insufficient funds')
+    || lower.includes('insufficient credit')
     || (lower.includes('quota') && (lower.includes('exceed') || lower.includes('exhaust')))) {
-    return decided('quota');
+    return decided('quota', hasStatusToken(lower, 402) ? 402 : null);
   }
   if (hasStatusToken(lower, 429) || lower.includes('rate_limit') || lower.includes('rate limit')
     || lower.includes('too many requests')) {

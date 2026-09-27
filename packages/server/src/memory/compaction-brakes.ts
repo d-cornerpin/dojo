@@ -45,6 +45,8 @@
 
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
+import { getDb } from '../db/connection.js';
+import { providerBreaker } from '../providers/billing-breaker.js';
 
 const logger = createLogger('compaction-brakes');
 
@@ -205,10 +207,8 @@ export function isIncompressible(agentId: string): IncompressibleReason | null {
 export function summaryWriterUnavailable(agentId: string, modelId: string | undefined): boolean {
   if (!modelId) return false;
   try {
-    const { getDb } = require('../db/connection.js') as { getDb: () => { prepare: (q: string) => { get: (...a: unknown[]) => unknown } } };
     const row = getDb().prepare('SELECT provider_id FROM models WHERE id = ?').get(modelId) as { provider_id?: string } | undefined;
     if (!row?.provider_id) return false;
-    const { providerBreaker } = require('../providers/billing-breaker.js') as { providerBreaker: (p: string) => { reason: string } | null };
     const open = providerBreaker(row.provider_id);
     if (!open) return false;
     logger.warn('Summary writer unavailable: its provider is circuit-broken, no chunk will be built', {
