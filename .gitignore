@@ -66,3 +66,4 @@ packages/dashboard/public/ort/
 
 # Local audit reports (never commit)
 DOJO-AUDIT-*.md
+/.superpowers/
