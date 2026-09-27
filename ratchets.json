@@ -5821,6 +5821,34 @@
       "why": "974 -> 985 (+11, all comment). The review agreed the hold is correct and named a binding I had not considered: authorize CONTENT rather than a path - stdin from the broker's own buffer, or a retained fd - so that what was read IS what executes, with no Verdict field and no exec-seam re-hash. A hash CHECKS that property; this makes it structural. It is recorded with its own tension stated (the exec seam would have to accept a body, and a body on a stream is what F3 refuses), because the next author should inherit the option space rather than my first two options. Eleven lines is the price of not leaving a wrong 'only road' in the file."
     },
     {
+      "path": "packages/server/src/agent/brokers/sudo-policy.ts",
+      "from": 985,
+      "to": 1069,
+      "by": "FOURTH REVIEW R4-1/R4-2/R4-3 (2026-09-27) - a backtick IS shell reach, a named stream IS a stream, and the residual re-derived",
+      "why": "985 -> 1069 (+84, of which 62 are comment). R4-1: the round-3 sentence 'a non-shell body's shell reach is its QUOTED STRING LITERALS' was WIDER THAN THE REGEX BEHIND IT - it matched only single and double quotes, so a BACKTICK SPAN, the idiomatic shell call in perl/ruby/php and the first form their own docs reach for, ran as root under `free`, and so did qx{} q{} qq{} %x{} %q() %w[]. I reproduced 12 of 12 ALLOWED before editing. One regex now covers single, double and backtick spans plus the q/qq/qx/qw and %q/%Q/%x/%w/%i forms over the four bracket pairs AND any other paired delimiter - that last alternative is a sibling class the review did not list, and `qx#rm -rf /#` was still ALLOWED after its own list was implemented; a spelling caught with its sibling uncaught is how every round of this package has failed. R4-2: the stream/file line was drawn at ONE literal name, so `/dev/fd/0`, `/dev/fd/3`, `/dev/tty`, `/dev/stdout` and `<(...)` were treated as inspectable files while `/dev/stdin` was refused - the same body under a different name changed tier. The `/dev/std*`, `/dev/fd/N`, `/dev/tty*` family now joins `-`, and a bare trailing `<` is a stream because that is what the grammar leaves when it splits a process substitution apart; `< /tmp/x.sh`, `<<EOF` and `/dev/null` keep the FILE tier and the clause pins that distinction as the owner's ability to LOOK. R4-3 IS MOST OF THE COMMENT AND THE REASON THE RAISE IS WORTH TAKING: the residual is re-derived from the code AT THE MECHANISM, measured rather than reasoned, and it came out SMALLER than the sentence it replaces - concatenation, the argv form and a base64 pipe are all caught (by the joined-literals pass and the stream rule), and what remains is a body built at runtime and a language API that needs no shell. The round-1 admission ('a heredoc or a base64 pipe gets past it') was also corrected, because being wrong in the SAFE direction is the same defect as overclaiming. 13 mutants planted, 13 killed. From 1069 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/brokers/sudo-copy.ts",
+      "from": 141,
+      "to": 168,
+      "by": "FOURTH REVIEW - the held-call refusal the AGENT reads (reviewer: fix before cut)",
+      "why": "141 -> 168 (+27: one function and the paragraph arguing it). The generic destructive sentence named neither the policy, nor its value, nor the card now waiting, so a held caller could not do the one thing every other refusal in this tree lets it do - say what is impossible, then what is POSSIBLE. The role wall is the model; here the possible thing is to MENTION THE CARD IN THE REPLY, because the owner may not be looking at the dashboard, and the likely failure without it is an agent that finishes its turn while a card sits unmentioned. The policy value is a PARAMETER, not a literal: a sentence naming `gated` while some other value produced the hold is the class of false statement this campaign keeps deleting. This file is the copy leaf, so a refusal an agent reads is exactly what belongs in it. From 168 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/healer/approval-routing.ts",
+      "from": 505,
+      "to": 513,
+      "by": "FOURTH REVIEW - one optional override, same separation the owner-card override already made",
+      "why": "505 -> 513 (+8: an optional input field, its paragraph, and `??` at the one use). The mechanism is generic and the WORDS are not - the Healer copy is unchanged for every Healer hold, and a held PRIMARY sudo call supplies its own sentence, exactly as it already supplies its own owner card. REFUSED: branching on `input.kind` inside this module, which would put sudo's vocabulary in the Healer's file and make two modules own one sentence."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts",
+      "from": 260,
+      "to": 266,
+      "by": "FOURTH REVIEW - the call site passes the refusal it owns",
+      "why": "260 -> 266 (+6: one argument and the note saying why the policy is READ rather than written). Two mutants proved this seam needed its own clause: deleting this argument, and separately making the routing ignore it, both survived every unit clause of the string."
+    },
+    {
       "path": "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts",
       "from": 259,
       "to": 260,
@@ -5838,8 +5866,8 @@
   "maxNewFileLines": 400,
   "files": {
     "packages/server/src/agent/brokers/sudo-probe.ts": 83,
-    "packages/server/src/agent/brokers/sudo-copy.ts": 141,
-    "packages/server/src/agent/brokers/sudo-policy.ts": 985,
+    "packages/server/src/agent/brokers/sudo-copy.ts": 168,
+    "packages/server/src/agent/brokers/sudo-policy.ts": 1069,
     "packages/dashboard/src/components/AccessControls.tsx": 141,
     "packages/dashboard/src/components/AccessManifest.tsx": 239,
     "packages/dashboard/src/components/AttachmentChips.tsx": 465,
@@ -5942,7 +5970,7 @@
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 407,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 165,
-    "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 260,
+    "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 266,
     "packages/server/src/agent/v2/steps/execute/index.ts": 295,
     "packages/server/src/agent/v2/steps/execute/post-result.ts": 351,
     "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 404,
@@ -6021,7 +6049,7 @@
     "packages/server/src/google/tools-read.ts": 944,
     "packages/server/src/google/tools-slides.ts": 3022,
     "packages/server/src/google/tools-write.ts": 2020,
-    "packages/server/src/healer/approval-routing.ts": 505,
+    "packages/server/src/healer/approval-routing.ts": 513,
     "packages/server/src/healer/diagnostic.ts": 1067,
     "packages/server/src/healer/healer-agent.ts": 1186,
     "packages/server/src/healer/injury-recovery.ts": 1155,
