@@ -57,6 +57,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getSudoPolicyRaw, isPrimaryAgent } from '../../config/platform.js';
+import { execSimpleCommands } from '../exec-grammar.js';
 // `types.js` is a leaf (no broker imports), so the verdict helpers come from there rather than
 // from `proc.ts` — which imports THIS module, and would be a cycle.
 import { allow, deny, type Verdict } from './types.js';
@@ -114,12 +115,124 @@ export interface ParsedSudo {
   readonly quotedOptionValue: boolean;
 }
 
-/** Is this line's PROGRAM sudo? Basename-aware, so `/usr/bin/sudo` is the same program. */
-export function isSudoLine(trimmed: string): boolean {
-  const head = trimmed.split(/\s+/)[0] ?? '';
-  const base = head.includes('/') ? head.slice(head.lastIndexOf('/') + 1) : head;
-  return base === 'sudo';
+/**
+ * ⚠ THE SOUND FLOOR — a privilege token ANYWHERE in the raw line, before any parsing.
+ *
+ * THE v3.2.2 SECURITY REVIEW'S S1 AND S3 IN ONE FUNCTION. The old recognizer tested token 0 of the
+ * string the authorizer was handed, and the grammar only decomposed `for`/`while`/`if` — so `;`, `&&`,
+ * `||`, a pipe, a subshell and `$( )` all delivered the whole line and sudo in any non-head position
+ * was invisible. Measured through the real shell door, non-primary agent, policy `blocked`:
+ * `sudo rm -rf /` denied and `true; sudo rm -rf /` ALLOWED. Thirteen of fourteen spellings in the
+ * reviewer's table escaped WITH PRIVILEGE.
+ *
+ * This answers a deliberately CRUDE question — "does a privilege word appear here at all?" — and it is
+ * asked FIRST and of the RAW LINE, so nothing about quoting, nesting or separators can hide it. It is
+ * sound in the direction that matters: it cannot MISS a spelling the shell would execute. It can
+ * over-report (a line that merely mentions the word), which is why the precise layer below gets to
+ * prove otherwise before anything is refused.
+ *
+ * CASE-INSENSITIVE, because a stock macOS volume is case-insensitive and `SUDO rm -rf /` executes
+ * `/usr/bin/sudo`. A LEADING BACKSLASH and SURROUNDING QUOTES are stripped, because `\sudo` and
+ * `"sudo"` are the same program to the shell. `doas` is included: it is the same privilege escalation,
+ * it is not installed on stock macOS today, and a floor that waits for it to be installed is a floor
+ * that will be wrong once.
+ *
+ * NOT matched, and each is a real word a model writes: `sudoku`, `pseudo`, `sudo_policy`,
+ * `mysudo` — the boundary is a shell word boundary, not a substring.
+ */
+const PRIVILEGE_TOKEN_RE =
+  /(^|[\s;|&()<>{}`$'"\\/])\\?['"]?(sudo|doas)['"]?($|[\s;|&()<>=]|['"])/i;
+
+export function mentionsPrivilegeToken(raw: string): boolean {
+  return PRIVILEGE_TOKEN_RE.test(raw);
 }
+
+/**
+ * Commands that TAKE A COMMAND: if the privilege token follows one of these, it is in a program
+ * position and the line runs sudo. `env` may carry `VAR=value` assignments first.
+ *
+ * Deliberately a LIST and not a heuristic, and the reason is the review's own finding: the first cut
+ * of this feature guessed from head position and was wrong for every one of these.
+ */
+const EXEC_WRAPPERS: ReadonlySet<string> = new Set([
+  'env', 'command', 'nice', 'nohup', 'timeout', 'time', 'stdbuf', 'setsid', 'xargs', 'ionice',
+]);
+
+/** Strip a leading backslash and surrounding quotes — the shell does, so the check must. */
+function bareWord(word: string): string {
+  let w = word.startsWith('\\') ? word.slice(1) : word;
+  if ((w.startsWith('"') && w.endsWith('"')) || (w.startsWith("'") && w.endsWith("'"))) w = w.slice(1, -1);
+  return w.includes('/') ? w.slice(w.lastIndexOf('/') + 1) : w;
+}
+
+/**
+ * Is this ONE SIMPLE COMMAND a privileged one? Walks the wrappers to find the real program.
+ *
+ * Case-folded (S3), backslash- and quote-tolerant (S3), wrapper-aware (S3), and basename-aware as
+ * before. `env X=1 sudo whoami` and `command sudo whoami` both resolve to sudo.
+ */
+export function isSudoLine(trimmed: string): boolean {
+  const words = trimmed.trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < words.length) {
+    const w = bareWord(words[i]).toLowerCase();
+    if (w === 'sudo' || w === 'doas') return true;
+    if (EXEC_WRAPPERS.has(w)) { i += 1; while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i += 1; continue; }
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Is the privilege token present ONLY as quoted data that nothing will execute?
+ *
+ * THE ONE EXEMPTION to the fail-closed rule, and it is narrow on purpose. `echo 'sudo cp x /usr/bin'`
+ * is a sentence, not a command — and it is a sentence this very platform prints
+ * (`IMSG_INSTALL_HINT`), so refusing it would make the product unable to quote its own setup
+ * instructions. Two conjuncts, and both are required:
+ *
+ *   1. with every quoted span removed, the token is GONE — so it lives only inside quotes;
+ *   2. no segment's program is an INTERPRETER (`sh`/`bash`/`zsh`/`eval`/`source`), because those
+ *      execute their string argument and the quotes would be code rather than data.
+ *
+ * Anything else — a `$( )` substitution, a backtick, a construct reported opaquely — is NOT data and
+ * is refused. The token inside `$(…)` survives quote-stripping precisely because a substitution is not
+ * a quoted span, which is what makes conjunct 1 do real work rather than wave the class through.
+ */
+const INTERPRETERS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'eval', 'source', '.']);
+
+export function privilegeTokenIsQuotedData(raw: string, segments: readonly string[]): boolean {
+  // An interpreter anywhere means a quoted span may be CODE, so nothing here is data.
+  for (const seg of segments) {
+    if (INTERPRETERS.has(bareWord(seg.trim().split(/\s+/)[0] ?? '').toLowerCase())) return false;
+  }
+  // (a) only inside quotes ⇒ data.
+  const unquoted = raw.replace(/'[^']*'/g, ' ').replace(/"(?:\\.|[^"\\])*"/g, ' ');
+  if (!mentionsPrivilegeToken(unquoted)) return true;
+  // (b) OUTSIDE quotes, but in an ARGUMENT position of a program that does not run its arguments —
+  // `echo sudo`, `grep sudo /var/log/x`. THE TOKEN IS PLACED, just not as a command, and refusing it
+  // would be a false positive on ordinary work. Measured: the first cut refused `echo sudo`.
+  // Every segment that mentions it must satisfy this, and word 0 never does — which is what keeps
+  // `$(sudo whoami)` refused, since the tokenizer hands that back as one opaque word.
+  for (const seg of segments) {
+    if (!mentionsPrivilegeToken(seg)) continue;
+    const words = seg.trim().split(/\s+/).filter(Boolean);
+    const program = bareWord(words[0] ?? '').toLowerCase();
+    if (EXEC_WRAPPERS.has(program) || INTERPRETERS.has(program)) return false;
+    for (let i = 0; i < words.length; i++) {
+      if (!mentionsPrivilegeToken(words[i])) continue;
+      if (i === 0) return false;                       // a program position, not data
+    }
+  }
+  return true;
+}
+
+/** The refusal for a privilege token the grammar cannot place — fail closed by construction. */
+export const SUDO_UNPLACEABLE_REASON =
+  'Global deny: this line contains `sudo` (or `doas`) somewhere the permission broker cannot place — '
+  + 'inside a substitution, a nested quote or a construct it does not parse. A line whose structure '
+  + 'cannot be read is not run as root. Write the privileged command as its own plain line so the '
+  + 'floor, your grants and the box policy can all see it.';
 
 /**
  * Strip `sudo` and its options, returning the command sudo would actually run.
@@ -148,7 +261,15 @@ export function parseSudo(trimmed: string): ParsedSudo {
         ? { inner: '', interactiveShell: true, nonInteractive, quotedOptionValue }
         : { ...parseInner(rest), nonInteractive, quotedOptionValue };
     }
-    if (t.includes('=')) { i += 1; continue; }            // --user=root, already self-contained
+    if (t.includes('=')) {
+      // ⚠ S2: THIS BRANCH USED TO SHORT-CIRCUIT THE QUOTE CHECK BELOW, so `--prompt="pw: "` produced
+      // `inner = '" rm -rf /'` with `quotedOptionValue` false — the floor matches a PREFIX, the stray
+      // quote sat in front of it, and the PRIMARY was ALLOWED to run `sudo --prompt="pw: " rm -rf /`
+      // under `free`. The short form `-p "pw: "` was caught, which is exactly how it hid: the author
+      // fixed one spelling. BOTH FORMS SHARE ONE CHECK NOW.
+      if (/['"]/.test(t.slice(t.indexOf('=') + 1))) quotedOptionValue = true;
+      i += 1; continue;
+    }
     if (SUDO_OPTS_WITH_VALUE.has(t)) {
       // A value that opens a quote means the real value spans tokens we cannot count.
       if (/['"]/.test(tokens[i + 1] ?? '')) quotedOptionValue = true;
@@ -200,12 +321,18 @@ export const SUDO_NOT_PRIMARY_REASON =
  * match on the `cat` at token 1 or 3. Verified before the inner call was removed, and pinned by a
  * clause, so the reliance is a fact somebody checks rather than a habit.
  *
- * `gated` returns ALLOW. The consent hold is filed upstream of the broker by the destructive gate at
- * dispatch (`isDestructiveCall` classifies a sudo line as destructive under `gated`, and the existing
- * card + `approve_destructive_action` machinery does the rest). A deny here would refuse the
- * post-approval retry — spending the one-shot approval for nothing, the dead-end
- * `manifestPermitsDestructiveCall` exists to prevent — and would stop the PRIMARY, which that gate
- * deliberately does not hold, from ever running sudo.
+ * `gated` returns ALLOW. The consent hold is filed upstream of the broker, and ⚠ THIS SENTENCE WAS
+ * STALE FOR A ROUND — it said `isDestructiveCall` classifies a sudo line as destructive, which was the
+ * FIRST cut's design. The 2026-09-27 ruling made that arm dead code (no sub-agent can sudo; the
+ * primary is not held by that gate) and it was REMOVED — `destructive-gate.ts` says so at the site.
+ * THE HOLD IS FILED IN `agent/v2/steps/execute/dispatch-bookkeeping.ts`, for the PRIMARY, routed to the
+ * OWNER's card via `fileHealerApprovalProposal`. Found by the blast author reading the two comments
+ * against each other; recorded rather than quietly corrected, because a stale comment that names the
+ * wrong owner is how the next reader debugs the wrong file.
+ *
+ * A deny here would refuse the post-approval retry — spending the one-shot approval for nothing, the
+ * dead-end `manifestPermitsDestructiveCall` exists to prevent — and would stop the PRIMARY from ever
+ * running sudo at all.
  */
 export function authorizeSudoLine(
   trimmed: string,
@@ -275,7 +402,20 @@ export function isSudoHoldRequired(toolName: string, args: Record<string, unknow
   const raw = toolName === 'shell' ? args.script
     : Array.isArray(args.argv) ? (args.argv as unknown[]).join(' ')
       : args.command;
-  if (!(typeof raw === 'string' && raw.length > 0 && isSudoLine(raw.trim()))) return false;
+  if (!(typeof raw === 'string' && raw.length > 0)) return false;
+  // ⚠ SEGMENTED, AND THE REVIEW IS EXPLICIT ABOUT WHY: "Apply the same splitting to
+  // `isSudoHoldRequired`, or `gated` keeps executing unasked." Asking `isSudoLine` about the WHOLE
+  // script tests its head word, so `true; sudo whoami` produced NO HOLD — no card, no
+  // `destructive_approvals` row, root command executed. Measured that way at `27a3d091`.
+  // The SOUND FLOOR decides the hold: any privilege token the line mentions is enough, unless the
+  // precise walk places it as inert data. Erring toward a hold costs the owner one card; erring the
+  // other way runs an administrator command he never saw.
+  const segments = execSimpleCommands(raw.trim());
+  const privileged = segments.some((seg) => isSudoLine(seg));
+  if (!privileged) {
+    if (!mentionsPrivilegeToken(raw)) return false;
+    if (privilegeTokenIsQuotedData(raw, segments)) return false;
+  }
   // It IS a sudo line, so the policy decides — and an unreadable policy HOLDS rather than runs. A
   // read that fails must never be the reason an administrator command executed unasked.
   try {

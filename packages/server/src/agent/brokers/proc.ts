@@ -36,7 +36,11 @@ import path from 'node:path';
 import { foldPath } from '../fs-case.js';
 import { resolveHomePath as resolvePath } from '../path-resolve.js';
 import { GLOBAL_EXEC_DENY_SUBSTRINGS, isSensitivePath } from './deny.js';
-import { authorizeSudoLine, isSudoLine } from './sudo-policy.js';
+import {
+  SUDO_UNPLACEABLE_REASON, authorizeSudoLine, isSudoLine, mentionsPrivilegeToken,
+  privilegeTokenIsQuotedData,
+} from './sudo-policy.js';
+import { execSimpleCommands } from '../exec-grammar.js';
 import {
   evaluateRules, matchCommandPattern, matchCommandDenyPattern, type Grant,
 } from './grants.js';
@@ -348,6 +352,34 @@ export function authorizeProc(
         scan.reason,
         `[BLOCKED] exec refused: ${scan.reason}. The DOJO never echoes secret files into the conversation. If you need a value from secrets.yaml (API key, OAuth token, etc.), ask the user, those values live in process memory only, not in agent context.`,
       );
+    }
+  }
+
+  // ── ⚠ THE PRIVILEGE PASS (v3.2.2 security review S1/S3) — BEFORE the grant pass, over EVERY
+  //    SIMPLE COMMAND the line contains, not just the ones a construct exposed. ──
+  // Two layers, and the ORDER is the soundness argument:
+  //   1. the SOUND FLOOR: does a privilege token appear in the RAW line at all? Crude, case-folded,
+  //      quote- and backslash-tolerant, asked before any parse, so nothing can hide it.
+  //   2. the PRECISE WALK: every simple command from the shared grammar, wrappers unwrapped. A segment
+  //      that really is privileged gets the full sudo authorization (strip, inner re-run, role wall,
+  //      policy). If the sound floor fired and the walk placed NOTHING, the line is UNPLACEABLE and it
+  //      is REFUSED — a line whose structure cannot be read is not run as root.
+  // `execSimpleCommands` shares this tree's ONE grammar with `execInnerCommands`; only the contract
+  // differs, because this view feeds the FLOOR and the allowlist keeps the old one (see that module).
+  const segments = execSimpleCommands(resource.raw);
+  let privilegedSeen = false;
+  for (const seg of segments) {
+    if (!isSudoLine(seg)) continue;
+    privilegedSeen = true;
+    const v = authorizeSudoLine(seg, grant.agentId, (i) => authorizeOneCommand(grant, i));
+    if (!v.allowed) return v;
+  }
+  if (!privilegedSeen && mentionsPrivilegeToken(resource.raw)) {
+    // The token is in the line and no segment owns it: a substitution, a nested quote, a construct the
+    // grammar reports opaquely. HARMLESS DATA IS THE ONE EXEMPTION, and it is narrow: the token appears
+    // only inside quoted spans AND no segment runs an interpreter that would execute those spans.
+    if (!privilegeTokenIsQuotedData(resource.raw, segments)) {
+      return deny('bypass-hardening', 'sudo-unplaceable', SUDO_UNPLACEABLE_REASON);
     }
   }
 

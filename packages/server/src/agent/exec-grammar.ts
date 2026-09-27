@@ -155,6 +155,46 @@ function segmentCommand(seg: Tok[]): string | null {
 }
 
 /**
+ * EVERY SIMPLE COMMAND THE LINE CONTAINS — the v3.2.2 security review's S1 view.
+ *
+ * ── WHY THIS EXISTS BESIDE `execInnerCommands` RATHER THAN REPLACING IT ──────────────────────
+ * ONE GRAMMAR, TWO VIEWS, and the difference is a CONTRACT and not a second parser: the tokenizer and
+ * the segmenter below are shared, byte for byte. What differs is what the caller is promised.
+ *
+ *   `execInnerCommands`  construct-gated, returns `null` for a plain line. Its caller uses the list as
+ *                        THE GRANT QUESTION, so widening it would change which commands an agent may
+ *                        run — and that is a capability decision.
+ *   `execSimpleCommands` ALWAYS decomposes. Its caller uses the list for THE FLOOR and for SUDO
+ *                        RECOGNITION only, which can refuse a catastrophic or privileged command and
+ *                        can never take away a legitimate one.
+ *
+ * ⚠ THAT SPLIT IS MEASURED, NOT STYLISTIC. The first cut of the S1 fix simply deleted the construct
+ * gate, so every segment became the grant question too — and `exec-argv-corpus.test.ts` §D caught it
+ * immediately: an agent granted `['ls','cat','echo','git *','node']` could pipe into `grep`
+ * yesterday and could not today. `ls -la | grep notes` is the clause's own example, and its promise is
+ * "NO capability is lost". Closing a sudo hole is this task's remit; re-scoping every agent's pipes is
+ * the owner's decision under RULING P5-R5, so the floor got the new view and the allowlist kept the old.
+ *
+ * Returns a single-element list for a plain line, so the caller needs no null branch.
+ */
+export function execSimpleCommands(command: string): string[] {
+  const toks = tokenize(command);
+  const commands: string[] = [];
+  let seg: Tok[] = [];
+  const flush = (): void => {
+    const cmd = segmentCommand(seg);
+    if (cmd) commands.push(cmd);
+    seg = [];
+  };
+  for (const t of toks) {
+    if (t.op) flush();
+    else seg.push(t);
+  }
+  flush();
+  return commands.length > 0 ? commands : [command.trim()];
+}
+
+/**
  * The commands a shell control-flow line actually runs.
  *
  * Returns null when the line uses no control-flow construct — the caller then
