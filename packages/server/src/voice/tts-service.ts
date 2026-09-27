@@ -57,7 +57,7 @@ try {
 function migrateLegacyKokoroCache(): void {
   // Walk up from this file: src/voice/tts-service.ts → repo root.
   // ⚠ `fileURLToPath`, never `new URL(…).pathname`: a `file:` URL is percent-encoded, so an
-  // install path with a space in it comes back as `/Users/dave/My%20Apps/...` and the migration
+  // install path with a space in it comes back as `~/My%20Apps/...` (tilde = the home dir) and the migration
   // below silently finds nothing. Same family as `getCurrentVersion`'s T8 fix.
   const here = path.dirname(fileURLToPath(import.meta.url));
   const repoRoot = path.resolve(here, '../../../..');
