@@ -148,11 +148,121 @@ describe('LANE-3 — every way the ritual can be unproven is refused', () => {
     // --seed replay can), and this copy owes every field the kit checks.
     ['the draw cannot be proven unsteered', (m: ReturnType<typeof ritualMarker>) => { m.final.drawUnsteered = false; }, 'drawUnsteered'],
     ['a variant-pinned draw claims it was unsteered', (m: ReturnType<typeof ritualMarker>) => { m.final.pinnedDraws = ['memory-recall:variant']; }, 'contradicts itself'],
+    // Review C, L3-F4: ten was a COUNT. Both of these passed — on the real script bytes AND in the
+    // kit — so the TEN-RANDOM law's machine proof was satisfiable by ten copies of one scenario.
+    ['ten EMPTY family names', (m: ReturnType<typeof ritualMarker>) => { m.final.families = Array.from({ length: 10 }, () => ''); }, 'non-empty'],
+    ['ten IDENTICAL family names', (m: ReturnType<typeof ritualMarker>) => { m.final.families = Array.from({ length: 10 }, () => 'family-0'); }, 'distinct'],
+    ['nine real families and one blank', (m: ReturnType<typeof ritualMarker>) => { m.final.families[3] = '   '; }, 'non-empty'],
   ])('RED: %s', (_label, mutate, expected) => {
     const marker = ritualMarker();
     mutate(marker);
     const why = verdictFor(marker);
     expect(why, 'the gate would have shipped this marker').not.toBe('');
     expect(why).toContain(expected);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE TWO COPIES, AND THE ORDER THEY DEPEND ON (review C, L3-F5).
+//
+// `release.sh` re-expresses `validateReleaseRitualMarker` because bash cannot import ESM across the
+// sibling-repo boundary. That copy drifted within hours of being written (the kit gained
+// `final.drawUnsteered` and the copy did not have it), and the field-name inventory above could not
+// see it — an inventory only knows the names someone remembered to list. So the clauses below read
+// BOTH sides and diff them, and they pin the one thing the division of labour rests on: ORDER.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** The kit's ritual validator, when the sibling repo is here. `null` when it is not. */
+function kitValidatorSource(): string | null {
+  const candidates = [
+    process.env.DOJO_TEST_KIT
+      ? path.join(process.env.DOJO_TEST_KIT, 'behavioral/lib/release-ritual.mjs')
+      : null,
+    path.resolve(REPO_ROOT, '../dojo-test-kit/behavioral/lib/release-ritual.mjs'),
+  ].filter((p): p is string => p !== null);
+  for (const p of candidates) if (fs.existsSync(p)) return fs.readFileSync(p, 'utf-8');
+  return null;
+}
+
+/** Only the part of the kit module that VALIDATES, so the assembler's own field writes do not count. */
+function kitValidatorBody(src: string): string {
+  const i = src.indexOf('export function validateReleaseRitualMarker');
+  expect(i, 'the kit module no longer exports validateReleaseRitualMarker — the copy has no original')
+    .toBeGreaterThan(-1);
+  return src.slice(i);
+}
+
+/** The ritual-specific fields BOTH sides must check. The four `green`/`verdicts`/`knownFailing`/
+ *  `merged` questions are deliberately NOT here: release.sh's earlier K1 block owns them, which is
+ *  exactly the ordering dependency the last clause pins. */
+const RITUAL_FIELDS = [
+  'release-ritual', 'blast', 'scenario', 'attempts', 'allGreen', 'gitSha',
+  'final', 'seed', 'families', 'seedFresh', 'drawUnsteered', 'pinnedDraws',
+  'dojoHead', 'fixesAfterFinalDraw',
+];
+
+describe('the copy and the original check the same fields', () => {
+  it('release.sh names every ritual field (frozen list — cannot pass vacuously if the kit is absent)', () => {
+    const block = extractRitualCheck('/nonexistent.json');
+    for (const field of RITUAL_FIELDS) {
+      expect(block, `the ritual check no longer mentions ${field}`).toContain(field);
+    }
+  });
+
+  it('PARITY: every ritual field the kit validator checks is checked by the copy too', () => {
+    const kit = kitValidatorSource();
+    if (kit === null) {
+      // Not a silent skip: the frozen list above still ran, and this says out loud what was not asked.
+      expect(RITUAL_FIELDS.length, 'the sibling kit is absent, so parity could not be measured — the '
+        + 'frozen-list clause above is the only guard in this run').toBeGreaterThan(0);
+      return;
+    }
+    const body = kitValidatorBody(kit);
+    const copy = extractRitualCheck('/nonexistent.json');
+    const missing = RITUAL_FIELDS.filter((f) => body.includes(f) && !copy.includes(f));
+    expect(missing, `the kit validator checks ${missing.join(', ')} and deploy/release.sh's copy does `
+      + 'not — that is the drift this clause exists for; mirror the field in the same hour').toEqual([]);
+    // ...and the other direction, so the copy cannot invent a demand the kit does not make.
+    const extra = RITUAL_FIELDS.filter((f) => copy.includes(f) && !body.includes(f));
+    expect(extra, `deploy/release.sh demands ${extra.join(', ')} and the kit validator does not — the `
+      + 'release would refuse a marker the kit considers shippable').toEqual([]);
+  });
+
+  it('PARITY of the pinnedDraws shape: both sides filter to NON-EMPTY strings', () => {
+    // L3-F5a: the copy tested `.length > 0` while the kit filtered to non-empty strings, so
+    // `pinnedDraws: ['']` refused here and shipped there. Safe direction, but not equivalent.
+    const copy = extractRitualCheck('/nonexistent.json');
+    expect(copy, "the copy no longer filters pinnedDraws to non-empty strings").toMatch(/pinnedDraws[\s\S]{0,200}filter/);
+    const marker = ritualMarker();
+    (marker.final as { pinnedDraws: string[] }).pinnedDraws = [''];
+    expect(verdictFor(marker), 'an empty pinnedDraws entry is not a steered draw and must not refuse')
+      .toBe('');
+    const kit = kitValidatorSource();
+    if (kit !== null) expect(kitValidatorBody(kit)).toMatch(/pinnedDraws[\s\S]{0,200}filter/);
+  });
+
+  it('THE ORDERING CONTRACT: the K1 honesty block runs BEFORE the ritual block', () => {
+    // L3-F5b: the ritual block does not re-check `green`, so a dishonest green is refused only
+    // because BEHAV_DISHONEST already ran. Reorder or delete K1 and it ships past this gate.
+    const sh = fs.readFileSync(RELEASE_SH, 'utf-8');
+    const k1 = sh.indexOf('BEHAV_DISHONEST=$(node -e "');
+    const ritual = sh.indexOf('RITUAL_BAD=$(node -e "');
+    expect(k1, 'the BEHAV_DISHONEST (K1) block is gone — the ritual block does not re-check `green`, '
+      + 'so nothing in the release refuses a dishonest green any more').toBeGreaterThan(-1);
+    expect(ritual).toBeGreaterThan(-1);
+    expect(k1, 'K1 now runs AFTER the ritual block; the ritual block relies on it having run')
+      .toBeLessThan(ritual);
+    // And the dependency is written down where a reader of either block will meet it.
+    expect(sh, 'the ritual block does not disclose that it leans on K1').toMatch(/NOT SELF-SUFFICIENT/);
+  });
+
+  it('the ✓ line reports the field the gate CHECKED, not the unchecked `final.n`', () => {
+    // L3-F6: a marker with `n: 3` and ten families made the success line announce "3 families".
+    const sh = fs.readFileSync(RELEASE_SH, 'utf-8');
+    const echoLine = sh.split('\n').find((l) => l.includes('release ritual proven')) ?? '';
+    expect(echoLine).not.toBe('');
+    expect(echoLine, 'the ✓ line still reads final.n, a number nothing above validates')
+      .not.toMatch(/final\.n\b/);
+    expect(echoLine, 'the ✓ line should report families.length').toMatch(/families\|\|\[\]\)\.length|families\|\| \[\]\)\.length/);
   });
 });
