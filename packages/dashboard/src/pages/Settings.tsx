@@ -5,6 +5,10 @@ import type { Provider, Model, GenerationParamSpec, VoiceOption, EditProviderReq
 import { fullDiskAccessInstructions, fullDiskAccessWhy, FULL_DISK_ACCESS_VERIFY } from '@dojo/shared';
 import * as api from '../lib/api';
 import {
+  SUDO_FLOOR_NOTE, SUDO_POLICY_DEFAULT, SUDO_POLICY_HINTS, SUDO_POLICY_KEY, SUDO_POLICY_LABELS,
+  SUDO_POLICY_ORDER, readSudoPolicy, sudoPolicyWarning, type SudoPolicy,
+} from '../lib/sudo-policy';
+import {
   numberEditsFor, numInput,
   THROUGHPUT_MIN_TOK_PER_SEC, THROUGHPUT_MAX_TOK_PER_SEC,
   UNATTENDED_MIN_MINUTES, UNATTENDED_MAX_MINUTES, UNATTENDED_STANDARD_MINUTES, UNATTENDED_UNCAPPED,
@@ -132,7 +136,7 @@ export const Settings = () => {
       {activeTab === 'models' && <ModelsTab />}
       {activeTab === 'router' && <RouterTab />}
       {activeTab === 'profile' && <ProfileTab />}
-      {activeTab === 'security' && <SecurityTab />}
+      {activeTab === 'security' && <><SudoPolicyCard /><SecurityTab /></>}
       {activeTab === 'sensei' && <DreamingTab />}
       {activeTab === 'channels' && (
         <>
@@ -4724,6 +4728,70 @@ const RouterTab = () => {
 };
 
 // ── Security Tab ──
+
+/**
+ * The sudo policy (owner ruling 2026-09-26, ships v3.2.2).
+ *
+ * Every decision — the order, the labels, the hints, what an unknown stored value means, and the
+ * floor note that must show under ALL THREE values — lives in `lib/sudo-policy.ts`, so a test can ask
+ * about it without mounting this page. This component only renders and saves.
+ */
+const SudoPolicyCard = () => {
+  const [policy, setPolicy] = useState<SudoPolicy>(SUDO_POLICY_DEFAULT);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      const r = await api.getSetting(SUDO_POLICY_KEY);
+      setPolicy(readSudoPolicy(r.ok ? r.data.value : null));
+      setLoaded(true);
+    })();
+  }, []);
+
+  const choose = async (next: SudoPolicy) => {
+    setPolicy(next);
+    setSaving(true);
+    setSaved(false);
+    const r = await api.setSetting(SUDO_POLICY_KEY, next);
+    setSaving(false);
+    if (r.ok) setSaved(true);
+  };
+
+  const warning = sudoPolicyWarning(policy);
+  return (
+    <div className="tile space-y-3 max-w-4xl" data-testid="sudo-policy-card">
+      <div className="scard__title">Administrator commands (sudo)</div>
+      <p className="text-xs text-ui/40">
+        This Mac is the agent&rsquo;s machine. Choose how much it may do as administrator.
+      </p>
+      <div>
+        <label className="flabel" htmlFor="sudo-policy">sudo policy</label>
+        <select
+          id="sudo-policy"
+          aria-label="sudo policy"
+          value={policy}
+          disabled={!loaded || saving}
+          onChange={(e) => void choose(e.target.value as SudoPolicy)}
+          className="finput disabled:opacity-60"
+        >
+          {SUDO_POLICY_ORDER.map((p) => (
+            <option key={p} value={p}>{SUDO_POLICY_LABELS[p]}</option>
+          ))}
+        </select>
+        <p className="text-xs text-ui/25 mt-1">{SUDO_POLICY_HINTS[policy]}</p>
+      </div>
+      {warning && (
+        <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal' }}>
+          {warning}
+        </div>
+      )}
+      <p className="text-xs text-ui/25">{SUDO_FLOOR_NOTE}</p>
+      {saved && <p className="text-xs text-cp-green">Saved.</p>}
+    </div>
+  );
+};
 
 const SecurityTab = () => {
   const [currentPassword, setCurrentPassword] = useState('');
