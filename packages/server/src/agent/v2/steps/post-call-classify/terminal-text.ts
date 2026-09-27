@@ -34,6 +34,9 @@ import { isRoutedHumanCounterparty } from '../../counterparty.js';
 // through it.
 import { stillCompileOwed } from '../../compile-owed-gate.js';
 import { outputPersistenceClassifier, stripLeadingTimeStamp } from '../../classifiers/output.js';
+// The THIRD carve-out of the promotion family, whole — both predicates, the delivery, and the
+// argument for all of it. Its header is the statement of the defect this file's premise causes.
+import { answersALiveAsk, deliverAsAnswerToLiveAsk } from './answer-to-a-live-ask.js';
 // T19 (D1): the closed, declared inventory of scheduled work that owes a person a message.
 // Asked, never re-typed — a fifth copy of "is this a reminder" is what the declaration exists
 // to prevent.
@@ -51,8 +54,8 @@ export async function runTerminalText(
   sc: PostCallScratch,
 ): Promise<StepOutcome> {
   const {
-    agentId, counterparty, deliverEngineUserAck, hasUnansweredUser, messageId,
-    noteTerminalAnswer, result, startAckRepliedNow, turnCtx, turnNumber,
+    agentId, counterparty, deliverEngineUserAck, hasUnansweredUser, isHumanContinuation,
+    messageId, noteTerminalAnswer, result, startAckRepliedNow, turnCtx, turnNumber,
   } = ctx;
   const { interAgentTurn } = sc;
   const persistenceDecision = outputPersistenceClassifier({
@@ -133,6 +136,7 @@ export async function runTerminalText(
   // one. Folding them would make one of those readers wrong. Both say the same thing to the
   // demotion below and nothing else.
   let deliveredAsCompiledAnswer = false;
+  let deliveredAsAnswerToLiveAsk = false;
   if (persistedContent && result.toolCalls.length > 0) {
     // GOVERNING RULE (comms-audit G-SUP-2): on a turn a HUMAN is waiting on,
     // this text MIGHT be the genuine answer the weak model paired with a
@@ -213,7 +217,17 @@ export async function runTerminalText(
       !interAgentTurn && state.compileOwedAskIds.length > 0 && !startAckRepliedNow()
         ? stillCompileOwed(state.compileOwedAskIds)
         : [];
-    if ((hasUnansweredUser || userDeliverableRunTurn || compileOwedNow.length > 0) && !interAgentTurn) {
+    // THE THIRD CARVE-OUT'S DOOR — the never-silent invariant, and it opens for exactly ONE
+    // turn class: a human task the engine auto-continued, where the ask is no longer `open`,
+    // no ack is owed and no compile is owed, so every arm above is false and the turn ends
+    // with the person shown nothing but grey. `hasUnansweredUser` is deliberately NOT a
+    // predicate here: `answer-to-a-live-ask.ts` records why keying on it was refused (it would
+    // overturn the 2026-07-23 ruling and five reviewed controls).
+    const answersLiveAsk = answersALiveAsk({
+      interAgentTurn, isHumanContinuation,
+      surfacedReplyThisTurn: state.surfacedReplyThisTurn, startAckRepliedNow,
+    });
+    if ((hasUnansweredUser || userDeliverableRunTurn || compileOwedNow.length > 0 || answersLiveAsk) && !interAgentTurn) {
       turnCtx.deferredUserReplyWithTools = persistedContent;
       // ── T52's PROMOTION, AND IT IS DELIBERATELY NOT THE ACK LANE ──
       //
@@ -348,6 +362,18 @@ export async function runTerminalText(
           // 2026-08-12 re-rule delivering the model's own line during the wait it names.
           owedVia: turnCtx.startAckSteerArmedThisTurn ? 'steer-armed' : 'threshold-owed',
         }, agentId);
+      } else if (answersLiveAsk && turnCtx.deferredUserReplyWithTools) {
+        // LAST of the three, deliberately: the two arms above deliver different KINDS of thing
+        // (an ack that closes nothing, a compile that closes its ask) and neither changes here.
+        // This one runs only when neither did, so it is a strict addition.
+        const answer = turnCtx.deferredUserReplyWithTools.trim();
+        turnCtx.deferredUserReplyWithTools = null;
+        deliveredAsAnswerToLiveAsk = true;
+        state = (await deliverAsAnswerToLiveAsk(state, {
+          interAgentTurn, isHumanContinuation,
+          surfacedReplyThisTurn: state.surfacedReplyThisTurn, startAckRepliedNow,
+          agentId, turnNumber, answer, deliverEngineUserAck, noteTerminalAnswer,
+        })).state;
       }
     }
     // Demote, don't discard (owner request 2026-07-10). This narration
@@ -363,7 +389,7 @@ export async function runTerminalText(
     // T52: a promoted compile leaves nothing to demote for the same reason a promoted start
     // line does — the text went out WHOLE, so a note beside it would be the second copy this
     // task exists to remove.
-    if (!interAgentTurn && !deliveredAsStartLine && !deliveredAsCompiledAnswer) {
+    if (!interAgentTurn && !deliveredAsStartLine && !deliveredAsCompiledAnswer && !deliveredAsAnswerToLiveAsk) {
       try {
         const noteId = uuidv4();
         // RC-9: channel-aware demotion. On a ROUTED-channel human turn (iMessage /
