@@ -20,23 +20,33 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const SRCDIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /** The policy the broker will read. Set per clause; the accessor is mocked at the config seam so
  *  these clauses need no database. */
 const policyRow: { current: string | null } = { current: null };
 
+/** Which agent id counts as the primary. The role wall reads this. */
+const PRIMARY = 'primary-agent';
+
 vi.mock('../../../config/platform.js', async (orig) => ({
   ...(await orig<typeof import('../../../config/platform.js')>()),
   getSudoPolicyRaw: () => policyRow.current,
+  isPrimaryAgent: (id: string) => id === PRIMARY,
 }));
 
 import { grantForManifest } from '../grants.js';
 import { authorizeShellCommandText } from '../proc.js';
 import {
-  SUDO_BLOCKED_REASON, SUDO_POLICY_DEFAULT, getSudoPolicy, isSudoLine, parseSudo,
-  sudoPasswordPromptMessage, sudoersDropInLine, type SudoPolicy,
+  SUDO_BLOCKED_REASON, SUDO_NOT_PRIMARY_REASON, SUDO_POLICY_DEFAULT, getSudoPolicy, isSudoLine,
+  isSudoHoldRequired, parseSudo, sudoOwnerCardCopy, sudoPasswordPromptMessage, sudoersDropInLine,
+  type SudoPolicy,
 } from '../sudo-policy.js';
 import type { PermissionManifest } from '@dojo/shared';
+import { engineFileContaining } from '../../v2/__tests__/engine-sources.js';
 
 const base = {
   file_read: '*', file_write: '*', file_delete: 'none', exec_deny: [],
@@ -49,10 +59,12 @@ const wideOpen = ({ ...base, exec_allow: ['*'] } as unknown) as PermissionManife
 /** An agent allowed exactly nothing — the grants half of the matrix. */
 const denyAll = ({ ...base, exec_allow: [] } as unknown) as PermissionManifest;
 
-const verdict = (command: string, manifest: PermissionManifest = wideOpen) =>
-  authorizeShellCommandText(grantForManifest('a', manifest), command);
-const allowed = (command: string, manifest: PermissionManifest = wideOpen): boolean =>
-  verdict(command, manifest).allowed;
+/** ⚠ DEFAULTS TO THE PRIMARY, because after the 2026-09-27 ruling nobody else can sudo at all and a
+ *  policy matrix run as a sub-agent would measure the role wall on every row. §0 is the sub-agent half. */
+const verdict = (command: string, manifest: PermissionManifest = wideOpen, agentId = PRIMARY) =>
+  authorizeShellCommandText(grantForManifest(agentId, manifest), command);
+const allowed = (command: string, manifest: PermissionManifest = wideOpen, agentId = PRIMARY): boolean =>
+  verdict(command, manifest, agentId).allowed;
 
 const ALL_POLICIES: readonly SudoPolicy[] = ['blocked', 'gated', 'free'];
 const underEach = (fn: (p: SudoPolicy) => void): void => {
@@ -62,7 +74,58 @@ const underEach = (fn: (p: SudoPolicy) => void): void => {
 beforeEach(() => { policyRow.current = null; });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// §1 — THE POLICY MATRIX.
+// §0 — THE ROLE WALL. Owner ruling 2026-09-27: "ONLY the main agent gets Sudo access ever."
+//
+// It is not a policy outcome and no setting reaches it, which is why every clause here runs under ALL
+// THREE policies and why the refusal speaks in the FLOOR's voice. A sub-agent told "the policy refused
+// you" would go to the owner asking for a setting change that cannot help it.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§0 only the primary agent may sudo, ever', () => {
+  it('a SUB-AGENT is refused under blocked, gated AND free', () => {
+    for (const line of ['sudo ls', 'sudo cp a b', 'sudo apt-get install -y ffmpeg']) {
+      underEach((p) => {
+        const v = verdict(line, wideOpen, 'some-worker');
+        expect(v.allowed, `${p}: ${line}`).toBe(false);
+        expect(v.allowed === false && v.reason, `${p}: ${line}`).toBe(SUDO_NOT_PRIMARY_REASON);
+      });
+    }
+  });
+
+  it('even a WILDCARD sub-agent is refused — it is a role wall, not a grant', () => {
+    underEach(() => expect(allowed('sudo ls', wideOpen, 'some-worker')).toBe(false));
+  });
+
+  it('the refusal speaks in the FLOOR\'s voice and names the one route that exists', () => {
+    expect(SUDO_NOT_PRIMARY_REASON).toContain('Global deny');
+    expect(SUDO_NOT_PRIMARY_REASON).toContain('no permission setting changes that');
+    expect(SUDO_NOT_PRIMARY_REASON).toContain('role boundary');
+    expect(SUDO_NOT_PRIMARY_REASON).toContain('send_to_agent');
+    // and it does NOT claim the policy did it
+    expect(SUDO_NOT_PRIMARY_REASON).not.toMatch(/policy is|setting is|gated|blocked/);
+  });
+
+  it('THE FLOOR STILL SPEAKS FIRST for a sub-agent: `sudo rm -rf /` is a floor refusal', () => {
+    // Ordering, and it is deliberate: the most specific true thing about `sudo rm -rf /` is that
+    // `rm -rf /` is forbidden to everyone — not that this caller is the wrong role, which would leave
+    // the reader thinking some other agent could run it.
+    underEach(() => {
+      const v = verdict('sudo rm -rf /', wideOpen, 'some-worker');
+      expect(v.allowed).toBe(false);
+      expect(v.allowed === false && v.reason).toMatch(/Global deny: command "rm -rf \/"|rm -rf/);
+      expect(v.allowed === false && v.reason).not.toBe(SUDO_NOT_PRIMARY_REASON);
+    });
+  });
+
+  it('the PRIMARY is the one exception, and the policy governs it', () => {
+    policyRow.current = 'free';
+    expect(allowed('sudo ls', wideOpen, PRIMARY)).toBe(true);
+    expect(allowed('sudo ls', wideOpen, 'some-worker')).toBe(false);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §1 — THE POLICY MATRIX (the PRIMARY's, since it is the only agent the policy governs).
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§1 the policy decides an ordinary sudo line', () => {
@@ -325,44 +388,79 @@ describe('§5 the password-prompt message', () => {
 // is already covered by its own suites and must not be re-proved here.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('§6 the gate classifies a sudo line under `gated`, and only under `gated`', () => {
-  it('gated CLASSIFIES, so the existing hold fires; blocked and free do not', async () => {
-    const { isDestructiveCall } = await import('../../destructive-gate.js');
-    const call = (): Record<string, unknown> => ({ script: 'sudo cp bin/imsg /opt/homebrew/bin/' });
-
+describe('§6 `gated` holds the PRIMARY, and the hold goes to the OWNER', () => {
+  it('gated REQUIRES A HOLD for a primary sudo line; blocked and free do not', () => {
+    const call = { script: 'sudo cp bin/imsg /opt/homebrew/bin/' };
     policyRow.current = 'gated';
-    const kind = isDestructiveCall('shell', call());
-    expect(kind, 'gated must hand the existing machinery a destructive KIND').not.toBeNull();
-    expect(String(kind)).toContain('sudo');
-
-    // `blocked` is refused at the floor, where a refusal belongs — classifying it too would file an
-    // approval for a call the broker will refuse on retry, the unsatisfiable-approval dead-end.
+    expect(isSudoHoldRequired('shell', call), 'gated must hold, or the mode is empty').toBe(true);
+    // `blocked` is refused at the floor, where a refusal belongs — holding it too would file an
+    // approval for a call the broker refuses on retry, the unsatisfiable-approval dead-end.
     policyRow.current = 'blocked';
-    expect(isDestructiveCall('shell', call())).toBeNull();
-
-    // `free` is the owner saying no consent is wanted. Holding every sudo line on a box configured
-    // not to hold them is the defect this clause exists to prevent.
+    expect(isSudoHoldRequired('shell', call)).toBe(false);
+    // `free` is the owner saying he does not want to be asked.
     policyRow.current = 'free';
-    expect(isDestructiveCall('shell', call())).toBeNull();
+    expect(isSudoHoldRequired('shell', call)).toBe(false);
   });
 
-  it('it classifies at BOTH doors, and does not fire on a non-sudo line', async () => {
-    const { isDestructiveCall } = await import('../../destructive-gate.js');
+  it('it holds at BOTH doors and does not fire on an ordinary line', () => {
     policyRow.current = 'gated';
-    expect(isDestructiveCall('shell', { script: 'sudo ls' })).not.toBeNull();
-    expect(isDestructiveCall('exec', { argv: ['sudo', 'ls'] })).not.toBeNull();
-    // an ordinary line is untouched by this addition — `ls` was never destructive and still is not
-    expect(isDestructiveCall('shell', { script: 'ls -la' })).toBeNull();
-    expect(isDestructiveCall('exec', { argv: ['ls', '-la'] })).toBeNull();
+    expect(isSudoHoldRequired('shell', { script: 'sudo ls' })).toBe(true);
+    expect(isSudoHoldRequired('exec', { argv: ['sudo', 'ls'] })).toBe(true);
+    expect(isSudoHoldRequired('exec', { command: 'sudo ls' })).toBe(true);
+    expect(isSudoHoldRequired('shell', { script: 'ls -la' })).toBe(false);
+    expect(isSudoHoldRequired('exec', { argv: ['ls'] })).toBe(false);
+    expect(isSudoHoldRequired('shell', {})).toBe(false);
   });
 
-  it('a genuinely destructive line is STILL destructive on every policy', async () => {
-    // The pre-existing classification must not become policy-dependent: `rm -rf` was held for
-    // non-primary agents before this feature and is held after it, whatever sudo is set to.
+  it('THE HOLD IS FILED FOR THE PRIMARY, at the dispatch step, to the OWNER\'s card', () => {
+    // Structural, because the filing needs a turn. Three facts: the branch runs FOR the primary (the
+    // old gate skips it), it routes through the owner-approval proposal rather than `requestApproval`
+    // (which wakes the PRIMARY — asking a caller to approve its own call), and it carries sudo's own
+    // copy so the owner is not told his main agent is a self-healing helper.
+    const site = engineFileContaining('isSudoHoldRequired')!.text;
+    expect(site).toMatch(/isPrimaryAgent\(agentId\)\s*&&\s*isSudoHoldRequired/);
+    expect(site).toContain('fileHealerApprovalProposal');
+    expect(site).toContain('sudoOwnerCardCopy');
+    // and it consumes a granted approval on the retry, so one approval means one run
+    expect(site).toMatch(/consumeApproval\(agentId, sig/);
+  });
+
+  it('the owner card says what it is, promises nothing has run, and does not nudge', () => {
+    const c = sudoOwnerCardCopy('sudo cp bin/imsg /opt/homebrew/bin/');
+    expect(c.title).toContain('administrator command');
+    expect(c.description).toContain('Nothing has run yet');
+    expect(c.description).toContain('Declining changes nothing');
+    expect(c.proposedFix).toContain('sudo cp bin/imsg');
+    // it must NOT recommend approval — an admin command on his own Mac is his call
+    expect(c.description.toLowerCase()).not.toContain('my suggestion');
+    expect(c.description.toLowerCase()).not.toContain('we recommend');
+    // and it tells him the floor still holds whatever he clicks
+    expect(c.evidence.join(' ')).toContain('hard limits still apply');
+  });
+
+  it('THE JUNE DOCTRINE IS ANNOTATED where it is carved out, with the owner\'s sentence', () => {
+    const site = engineFileContaining('isSudoHoldRequired')!.text;
+    expect(site).toContain('ONLY the main agent gets Sudo access ever');
+    expect(site).toMatch(/full reign — EXCEPT FOR SUDO/);
+  });
+
+  it('a genuinely destructive NON-sudo line is classified exactly as before', async () => {
     const { isDestructiveCall } = await import('../../destructive-gate.js');
     underEach((p) => {
       expect(isDestructiveCall('shell', { script: 'rm -rf /tmp/x' }), `policy=${p}`).not.toBeNull();
-      expect(isDestructiveCall('shell', { script: 'sudo rm -rf /tmp/x' }), `policy=${p}`).not.toBeNull();
     });
+  });
+
+  it('and the gate no longer classifies sudo itself — that arm became dead code', async () => {
+    // The first cut put a `gated` arm in `isDestructiveCall`. The ruling made it unreachable (no
+    // sub-agent can sudo; the primary is held directly), and dead classification invites a debugging
+    // session about why it never fires.
+    const { isDestructiveCall } = await import('../../destructive-gate.js');
+    policyRow.current = 'gated';
+    expect(isDestructiveCall('shell', { script: 'sudo ls' })).toBeNull();
+    const gate = engineFileContaining('DESTRUCTIVE_EXEC_RE')?.text
+      ?? (await import('node:fs')).readFileSync(
+        (await import('node:path')).join(SRCDIR, 'agent', 'destructive-gate.ts'), 'utf8');
+    expect(gate).toContain('SUDO IS DELIBERATELY NOT CLASSIFIED HERE');
   });
 });
