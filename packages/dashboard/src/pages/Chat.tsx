@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import type { Message } from '@dojo/shared';
 import type { ChatChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, ChatWorkingNoteEvent, WsEvent } from '@dojo/shared';
-import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting, channelOfSendTool } from '@dojo/shared';
+import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting, channelOfSendTool, parseWorkingNote, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX } from '@dojo/shared';
 import type { MessageOrigin } from '@dojo/shared';
 import { summarizeToolTurn, deriveChipLabel, type ToolTurnSummary } from '../lib/tool-display';
 import { inboundBadge, outboundBadge } from '../lib/channel-display';
@@ -9,6 +9,8 @@ import { ToolBadgeGroup, type ToolChipData } from '../components/ToolBadge';
 import * as api from '../lib/api';
 import type { AttachmentInfo } from '../lib/api';
 import { formatDate } from '../lib/dates';
+// Whether a demoted note is dimmed or gone — three rules, driven from the server suite.
+import { showsWorkingNote } from '../lib/working-note-visibility';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { ToolCallBlock, ToolCallCard, ToolResultBlock } from '../components/ToolCallBlock';
 import { stripVoiceMarkers, stripVoiceMarkersForStream, parseMoodMarker } from '../lib/voice-markers';
@@ -168,29 +170,11 @@ const isOwnerAlertSystemNote = (content: string): boolean => {
 // returned unchanged.
 // ── Working notes (demoted mid-work narration) ──
 //
-// Assistant text that rides in the same model response as tool calls is
-// Lane-2 process narration, never a message to the user; the engine persists
-// it as a `[working-note]` system row instead of a conversation message
-// (loop.ts, owner request 2026-07-10). Because that text streamed live before
-// the classification landed, the old behavior deleted the bubble in front of
-// the user. It now demotes: the bubble converts in place (chat:workingnote
-// event live; this prefix check on reload) into a dimmed, collapsed note.
-const WORKING_NOTE_PREFIX = '[working-note] ';
-// RC-9: internal working notes are demoted narration from a ROUTED-channel human turn
-// (iMessage / SMS / Teams / email). Exactly one string was delivered to that channel
-// while the dashboard live-mirrors every iteration, so an internal note was NOT sent to
-// the channel and would read as a second, contradictory reply. Hidden by default; shown
-// only in wordy/verbose mode.
-const INTERNAL_WORKING_NOTE_PREFIX = '[working-note:internal] ';
-const workingNote = (content: string): { text: string; internal: boolean } | null => {
-  if (content.startsWith(INTERNAL_WORKING_NOTE_PREFIX)) {
-    return { text: content.slice(INTERNAL_WORKING_NOTE_PREFIX.length), internal: true };
-  }
-  if (content.startsWith(WORKING_NOTE_PREFIX)) {
-    return { text: content.slice(WORKING_NOTE_PREFIX.length), internal: false };
-  }
-  return null;
-};
+// The two markers and their reader now come FROM `@dojo/shared`, their census-named
+// owner; the client copy this file used to declare is deleted (SWEEP-E's errand for
+// this marker, done because the visibility lane would have been a third reader). Why
+// the demotion exists, and why the internal arm differs, are in
+// `lib/working-note-visibility.ts` beside the rules that act on them.
 
 const ownerAlertDisplayText = (content: string): string =>
   stripSourceEnvelope(content.trim())
@@ -1858,7 +1842,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             scroll-in (dojo3-agentSwitchIn) instead of a hard cut. */}
         {!loading && (
         <div key={AGENT_ID} className="dojo3-agent-enter space-y-2 sm:space-y-4">
-        {messages.map((msg) => {
+        {messages.map((msg, msgIndex) => {
           // Group-render: subsequent members of a tool-pill group are
           // skipped here; the group renders at the first member below.
           if (toolPillGrouping.skipIds.has(msg.id)) return null;
@@ -1891,7 +1875,13 @@ export const Chat = ({ panel = null }: ChatProps) => {
           // Keyed on the STORED kind and never on the text: the content is deliberately
           // byte-unchanged, so there is nothing in it to key on and nothing in it that could
           // drift. It renders in both modes, exactly as a plain working note does.
+          //
+          // R3 (visibility lane): a re-classified draft whose text is ALREADY on screen as the
+          // turn's answer is the one shape where showing it is pure noise, so that case is
+          // wordy-only. Everything else here is unchanged — the verdict comes from
+          // `working-note-visibility.ts` so both note routes ask one question.
           if (msg.role === 'assistant' && msg.displayKind === 'working-note') {
+            if (!showsWorkingNote(messages, msgIndex, wordyMode)) return null;
             const { text: noteText } = parseMessageContent(msg.content);
             return <WorkingNoteBubble key={msg.id} text={noteText || msg.content} />;
           }
@@ -1914,9 +1904,18 @@ export const Chat = ({ panel = null }: ChatProps) => {
             // was visible live in both). RC-9: an INTERNAL note (from a routed-channel
             // human turn, never delivered to that channel) is hidden outside wordy mode
             // so it can't read as a second, contradictory reply.
-            const note = workingNote(trimmedSys);
+            //
+            // ⚠ VISIBILITY LANE — RC-9 IS NARROWED, NOT REVERSED, AND THE REASON IS ITS OWN
+            // REASON. "A second, contradictory reply" is a COMPARISON: it needs a first reply to
+            // be second to. When the internal note is the ONLY thing the agent said since the
+            // person last spoke, there is nothing to contradict and hiding it makes the turn
+            // silent — the display twin of the engine's never-silent invariant. So: still hidden
+            // whenever a real answer is on screen beside it (F-22 intact), dimmed when it is all
+            // there is. The measured sting: the owner's own grey sighting was the PLAIN arm, and
+            // this one — which he did not see — vanished completely.
+            const note = parseWorkingNote(trimmedSys);
             if (note) {
-              if (note.internal && !wordyMode) return null;
+              if (!showsWorkingNote(messages, msgIndex, wordyMode)) return null;
               return <WorkingNoteBubble key={msg.id} text={note.text} />;
             }
             // Divider-style markers: any system message shaped "── label ──"

@@ -103,11 +103,17 @@ const MARKERS: Marker[] = [
     owner: OWNER,
     exports: ['WORKING_NOTE_PREFIX', 'INTERNAL_WORKING_NOTE_PREFIX', 'parseWorkingNote'],
     pattern: /['"`]\[working-note(:internal)?\] /,
-    allow: {
-      'dashboard/src/pages/Chat.tsx':
-        'WORKING_NOTE_PREFIX / INTERNAL_WORKING_NOTE_PREFIX are still declared client-side ' +
-        'for the reload-path render. SWEEP-E imports them from @dojo/shared instead.',
-    },
+    // ⚠ NO EXCEPTIONS LEFT, and the entry that was here is DELETED rather than kept as a
+    // comment: `dashboard/src/pages/Chat.tsx` declared its own copy of both markers and its own
+    // reader, allowed "pending SWEEP-E". The visibility lane needed a THIRD reader
+    // (`lib/working-note-visibility.ts`, which decides whether a demoted note is dimmed or
+    // hidden), and three copies of a marker that governs whether the owner sees his agent's
+    // words is one drift away from a row rendering as raw `[working-note] …` text at him. So
+    // `Chat.tsx` now imports all three from the owner and the exception is gone — SWEEP-E's
+    // errand for this marker is done. This census's "allowlist entries that no longer match
+    // anything" clause is what required the deletion; leaving a stale entry would have been a
+    // standing permission for the copy to come back.
+    allow: {},
   },
   {
     name: 'the owner-alert allowlist',
