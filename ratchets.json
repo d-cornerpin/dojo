@@ -5531,6 +5531,20 @@
       "to": 276,
       "by": "HEAD 2, the other-threads lane (2026-09-26) - a new tail lane, and the 240-line cap asked to be told",
       "why": "NEW ENTRY at 276, added because the growth detector ASKED FOR IT: a new file crossing 60% of the 400-line cap (240) is told to \"add it to ratchets.json at its current count — which pins it decrease-only from then on\". WHAT IS IN IT: the read, the render, the grant-aware route sentence and the reserve derivation for HEAD 2 — the owner's 2026-09-24 false denial, where an agent holding two silos for one person said it had no way to see the other while the inbound was live and the rows were in its own database. About half the file is the argument, and it is load-bearing in a way a reader cannot reconstruct: WHY the lane publishes no message content (a lane that quoted the other thread would re-introduce the friend-on-iMessage bleed the conversation filters exist to prevent), WHY the qualifier is per-row, and WHY the route sentence consults `toolCategoryGranted` (the live probe found it naming three tools that were not on the call, so the model routed around them through nine `exec` calls). Delete that and the next editor re-derives a leak. REFUSED: splitting read from render, which would put the reserve derivation in a third file and break the one-importer clause that proves this lane cannot reach the cached prefix. From 276 it may only shrink."
+    },
+    {
+      "path": "packages/shared/src/types.ts",
+      "from": 631,
+      "to": 634,
+      "by": "BACKLOG LANE-2 A-5b merge (2026-09-26), coordinator-applied",
+      "why": "AgentDetail.inFlight: 1 code line + 2 comment lines; the alternatives (a helper module still costs an import; any growth fails a decrease-only pin) measured and refused in lane2-report.md"
+    },
+    {
+      "path": "packages/server/src/gateway/routes/agents.ts",
+      "from": 977,
+      "to": 964,
+      "by": "BACKLOG LANE-2 A-5b merge (2026-09-26), coordinator-applied on merged reality",
+      "why": "lane 2 asked 977->980 (+3: import, comment, field) but lane 1's purge extraction shrank the file to 961 first; merged truth is 964 — a net LOWER than the old pin, recorded here so the arithmetic is auditable"
     }
   ],
   "maxNewFileLines": 400,
@@ -5699,7 +5713,7 @@
     "packages/server/src/credentials/secret-values.ts": 278,
     "packages/server/src/db/migration-backup.ts": 399,
     "packages/server/src/db/migration-checksums.ts": 307,
-    "packages/server/src/gateway/routes/agents.ts": 977,
+    "packages/server/src/gateway/routes/agents.ts": 964,
     "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2957,
     "packages/server/src/gateway/routes/memory.ts": 632,
@@ -5801,7 +5815,7 @@
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
-    "packages/shared/src/types.ts": 631,
+    "packages/shared/src/types.ts": 634,
     "packages/shared/src/visibility.ts": 989,
     "packages/shared/src/ws.ts": 1230,
     "watchdog/src/auto-rollback.ts": 333,
