@@ -6,7 +6,7 @@
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { applyTextPagination } from '../agent/tools/pagination.js';
-import { msGraphRead, calendarPrefix, drivePrefix } from './client.js';
+import { msGraphRead, calendarPrefix, drivePrefix, graphFetch } from './client.js';
 
 // ── Tool Definitions ──
 
@@ -1001,7 +1001,7 @@ export async function executeMicrosoftReadTool(
       if (mimeType.startsWith('text/') || mimeType.includes('json') || mimeType.includes('xml') || mimeType.includes('csv')) {
         try {
           const token = (await import('./auth.js')).getAccessToken();
-          const resp = await fetch(`https://graph.microsoft.com/v1.0/${prefix}items/${fileId}/content`, {
+          const resp = await graphFetch(agentId, `https://graph.microsoft.com/v1.0/${prefix}items/${fileId}/content`, {
             headers: { Authorization: `Bearer ${token}` },
             signal: AbortSignal.timeout(30000),
           });
@@ -1350,7 +1350,7 @@ export async function executeMicrosoftReadTool(
       const token = await (await import('./auth.js')).getValidAccessTokenForAccount(slot);
       if (!token) return 'Error: not authenticated with Microsoft.';
       try {
-        const resp = await fetch('https://graph.microsoft.com/v1.0/me/calendar/getSchedule', {
+        const resp = await graphFetch(agentId, 'https://graph.microsoft.com/v1.0/me/calendar/getSchedule', {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1583,7 +1583,7 @@ export async function executeMicrosoftReadTool(
       const token = await (await import('./auth.js')).getValidAccessTokenForAccount(slot);
       if (!token) return 'Error: not authenticated with Microsoft.';
       try {
-        const resp = await fetch(`https://graph.microsoft.com/v1.0/me/onenote/pages/${pageId}/content`, {
+        const resp = await graphFetch(agentId, `https://graph.microsoft.com/v1.0/me/onenote/pages/${pageId}/content`, {
           headers: { Authorization: `Bearer ${token}` },
           signal: AbortSignal.timeout(30_000),
         });

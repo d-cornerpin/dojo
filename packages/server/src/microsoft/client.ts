@@ -13,7 +13,8 @@ import { recordAtDoor, inOutboundScope, recordedId } from '../agent/v2/outbound.
 
 const logger = createLogger('ms-client');
 
-const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
+export { graphFetch } from './graph-fetch.js';   // the un-wrapped Graph door (L2-1)
+import { GRAPH_BASE } from './graph-fetch.js';
 const TIMEOUT_MS = 30_000;
 
 /**

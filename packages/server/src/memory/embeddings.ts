@@ -6,6 +6,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
+import { openAgentCall } from '../agent/abortable-call.js';
 
 const logger = createLogger('embeddings');
 
@@ -122,9 +123,35 @@ function embedResponseError(prefix: string, status: number, body: string): Error
 // instead of stalling first token.
 const DEFAULT_EMBED_TIMEOUT_MS = 30000;
 
-export async function generateEmbedding(
+export interface EmbedOpts {
+  keepAlive?: string | number;
+  timeoutMs?: number;
+  /**
+   * ── A-6 fix round (review L2-3): WHOSE STOP THIS EMBEDDING ANSWERS TO ──
+   * The census exempted this file as "not a turn's work". That is true of `queueEmbedding`
+   * and `refreshEmbedding`, and false of the path that matters: an agent AWAITS this call in
+   * `recall-lane.ts`, `vector-search.ts`, `vault_search` and four `a2a-transport` sites — the
+   * reviewer measured all seven. Optional because the corpus sweep genuinely has no agent to
+   * be stopped by, and passes nothing.
+   */
+  agentId?: string;
+}
+
+/** Embed `text`, under the stop of whichever agent is waiting on it (if one is). */
+export async function generateEmbedding(text: string, opts?: EmbedOpts): Promise<Float32Array> {
+  const slot = opts?.agentId === undefined ? null : openAgentCall(opts.agentId, 'turn');
+  try {
+    return await embedUnderSlot(text, opts, slot);
+  } finally {
+    // By identity, on every exit path — including the three-attempt halving retries below.
+    slot?.release();
+  }
+}
+
+async function embedUnderSlot(
   text: string,
-  opts?: { keepAlive?: string | number; timeoutMs?: number },
+  opts: EmbedOpts | undefined,
+  slot: { signal: AbortSignal } | null,
 ): Promise<Float32Array> {
   const config = getEmbeddingConfig();
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_EMBED_TIMEOUT_MS;
@@ -155,7 +182,7 @@ export async function generateEmbedding(
           // auto-router is in use (no cold ~300ms reloads per route).
           ...(opts?.keepAlive !== undefined ? { keep_alive: opts.keepAlive } : {}),
         }),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: slot ? AbortSignal.any([slot.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       });
       if (response.ok) {
         const data = await response.json() as { embedding: number[] };
@@ -183,7 +210,7 @@ export async function generateEmbedding(
         model: config.model,
         input: truncated,
       }),
-      signal: AbortSignal.timeout(30000),
+      signal: slot ? AbortSignal.any([slot.signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000),
     });
     if (response.ok) {
       const data = await response.json() as { data: Array<{ embedding: number[] }> };

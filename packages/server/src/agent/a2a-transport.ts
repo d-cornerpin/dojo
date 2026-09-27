@@ -172,7 +172,7 @@ async function checkSemanticDedup(payload: string, threadId: string, fromAgent: 
     if (recentMessages.length === 0) return false;
 
     // Generate embedding for the new payload
-    const newEmbedding = await generateEmbedding(payload);
+    const newEmbedding = await generateEmbedding(payload, { agentId: fromAgent });
 
     // Compare against each recent message
     for (const msg of recentMessages) {
@@ -180,7 +180,7 @@ async function checkSemanticDedup(payload: string, threadId: string, fromAgent: 
       const msgPayload = extractPayloadFromA2AMessage(msg.content);
       if (!msgPayload || msgPayload.length < 10) continue;
 
-      const existingEmbedding = await generateEmbedding(msgPayload);
+      const existingEmbedding = await generateEmbedding(msgPayload, { agentId: fromAgent });
       const similarity = cosineSimilarity(newEmbedding, existingEmbedding);
 
       if (similarity > DEDUP_SIMILARITY_THRESHOLD) {
@@ -242,11 +242,11 @@ async function findRecentDuplicateAssignThread(
     if (recent.length === 0) return null;
 
     const { generateEmbedding } = await import('../memory/embeddings.js');
-    const newEmbedding = await generateEmbedding(payload);
+    const newEmbedding = await generateEmbedding(payload, { agentId: senderId });
     for (const msg of recent) {
       const msgPayload = extractPayloadFromA2AMessage(msg.content);
       if (!msgPayload || msgPayload.length < 10) continue;
-      const existingEmbedding = await generateEmbedding(msgPayload);
+      const existingEmbedding = await generateEmbedding(msgPayload, { agentId: senderId });
       if (cosineSimilarity(newEmbedding, existingEmbedding) > DEDUP_SIMILARITY_THRESHOLD) {
         return msg.a2a_thread_id;
       }

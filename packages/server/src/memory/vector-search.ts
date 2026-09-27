@@ -61,7 +61,7 @@ export async function vectorSearch(
   logger.info('Vector search', { query: query.slice(0, 80), agentId, limit, sourceType });
 
   // Reuse the caller's embedding when provided; otherwise embed the query.
-  const queryEmbedding = options?.queryEmbedding ?? await generateEmbedding(query);
+  const queryEmbedding = options?.queryEmbedding ?? await generateEmbedding(query, { agentId });
 
   // Load embeddings from DB
   const db = getDb();

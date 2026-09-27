@@ -598,7 +598,7 @@ export async function semanticSearch(query: string, options?: {
     queryEmbedding = options.queryEmbedding;
   } else {
     try {
-      queryEmbedding = await generateEmbedding(query);
+      queryEmbedding = await generateEmbedding(query, { agentId: options?.agentId });
     } catch (err) {
       const m = err instanceof Error ? err.message : String(err);
       if (isEmbeddingBackendUnavailable(err)) warnEmbeddingBackendAbsentOnce({ error: m, site: 'vault.semanticSearch' });

@@ -803,7 +803,7 @@ export async function buildRecallLaneMessage(
   let queryEmbedding: Float32Array | null = null;
   try {
     const { generateEmbedding } = await import('./embeddings.js');
-    queryEmbedding = await generateEmbedding(queryText);
+    queryEmbedding = await generateEmbedding(queryText, { agentId });
   } catch (err) {
     if (Date.now() - lastEmbedDegradeWarnAt > 300_000) {
       lastEmbedDegradeWarnAt = Date.now();

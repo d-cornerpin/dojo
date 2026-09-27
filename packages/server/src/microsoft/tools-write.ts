@@ -4,7 +4,7 @@
 // ════════════════════════════════════════
 
 import type { ToolDefinition } from '../agent/tools/types.js';
-import { msGraphRead, msGraphWrite, calendarPrefix, drivePrefix } from './client.js';
+import { msGraphRead, msGraphWrite, calendarPrefix, drivePrefix, graphFetch } from './client.js';
 import { writeToolReceipt } from '../receipts/store.js';
 import { getPrimaryAgentName } from '../config/platform.js';
 import {
@@ -705,7 +705,7 @@ function loadUserAttachmentsForOutlook(
 async function getOrCreateOneDriveFolder(
   name: string,
   parentId: string | 'root',
-  token: string,
+  token: string, agentId?: string,
 ): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   // Use $filter to find an existing folder with this name. Children endpoint
   // returns up to 200 items per page; for our well-defined attachments tree
@@ -715,7 +715,7 @@ async function getOrCreateOneDriveFolder(
     : `me/drive/items/${encodeURIComponent(parentId)}/children`;
   const filter = `?$filter=${encodeURIComponent(`name eq '${name.replace(/'/g, "''")}'`)}&$select=id,name,folder`;
   try {
-    const lookup = await fetch(`https://graph.microsoft.com/v1.0/${parentEndpoint}${filter}`, {
+    const lookup = await graphFetch(agentId, `https://graph.microsoft.com/v1.0/${parentEndpoint}${filter}`, {
       headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(15_000),
     });
@@ -730,7 +730,7 @@ async function getOrCreateOneDriveFolder(
   }
 
   try {
-    const createResp = await fetch(`https://graph.microsoft.com/v1.0/${parentEndpoint}`, {
+    const createResp = await graphFetch(agentId, `https://graph.microsoft.com/v1.0/${parentEndpoint}`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -754,14 +754,14 @@ async function getOrCreateOneDriveFolder(
 
 async function uploadAttachmentToOneDrive(
   att: LocalAttachment,
-  slot: string,
+  slot: string, agentId?: string,
 ): Promise<{ ok: true; url: string; name: string } | { ok: false; error: string }> {
   const token = await (await import('./auth.js')).getValidAccessTokenForAccount(slot);
   if (!token) return { ok: false, error: 'not authenticated with Microsoft' };
 
-  const root = await getOrCreateOneDriveFolder(ATTACHMENTS_ROOT_FOLDER, 'root', token);
+  const root = await getOrCreateOneDriveFolder(ATTACHMENTS_ROOT_FOLDER, 'root', token, agentId);
   if (!root.ok) return { ok: false, error: `couldn't prepare OneDrive folder: ${root.error}` };
-  const monthFolder = await getOrCreateOneDriveFolder(currentMonthFolderName(), root.id, token);
+  const monthFolder = await getOrCreateOneDriveFolder(currentMonthFolderName(), root.id, token, agentId);
   if (!monthFolder.ok) return { ok: false, error: `couldn't prepare OneDrive month folder: ${monthFolder.error}` };
 
   // Upload. Files we route here are >3MB; some may be ≤4MB (the simple-PUT
@@ -772,7 +772,7 @@ async function uploadAttachmentToOneDrive(
 
   try {
     if (att.size <= 4 * 1024 * 1024) {
-      const resp = await fetch(`https://graph.microsoft.com/v1.0/${itemPath}:/content`, {
+      const resp = await graphFetch(agentId, `https://graph.microsoft.com/v1.0/${itemPath}:/content`, {
         method: 'PUT',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': att.mimeType },
         body: att.content,
@@ -784,7 +784,7 @@ async function uploadAttachmentToOneDrive(
       }
       uploadedItem = await resp.json() as DriveItem;
     } else {
-      const sessionResp = await fetch(`https://graph.microsoft.com/v1.0/${itemPath}:/createUploadSession`, {
+      const sessionResp = await graphFetch(agentId, `https://graph.microsoft.com/v1.0/${itemPath}:/createUploadSession`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'replace', name: att.name } }),
@@ -802,7 +802,7 @@ async function uploadAttachmentToOneDrive(
       while (offset < att.size) {
         const chunkSize = Math.min(CHUNK_SIZE, att.size - offset);
         const chunk = att.content.subarray(offset, offset + chunkSize);
-        const chunkResp = await fetch(session.uploadUrl, {
+        const chunkResp = await graphFetch(agentId, session.uploadUrl, {
           method: 'PUT',
           headers: {
             'Content-Length': String(chunkSize),
@@ -829,7 +829,7 @@ async function uploadAttachmentToOneDrive(
 
   // Create an anonymous view link.
   try {
-    const linkResp = await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(uploadedItem.id)}/createLink`, {
+    const linkResp = await graphFetch(agentId, `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(uploadedItem.id)}/createLink`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: 'view', scope: 'anonymous' }),
@@ -856,7 +856,7 @@ async function uploadAttachmentToOneDrive(
  */
 async function prepareOutlookAttachments(
   paths: readonly string[] | undefined,
-  slot: string,
+  slot: string, agentId?: string,
 ): Promise<{
   ok: true;
   inline: GraphFileAttachment[];
@@ -870,7 +870,7 @@ async function prepareOutlookAttachments(
   const { inline, overflow } = partitionForOutlook(loaded.attachments);
   const overflowLines: string[] = [];
   for (const att of overflow) {
-    const up = await uploadAttachmentToOneDrive(att, slot);
+    const up = await uploadAttachmentToOneDrive(att, slot, agentId);
     if (!up.ok) return { ok: false, error: `Error uploading attachment "${att.name}" to OneDrive: ${up.error}` };
     overflowLines.push(`  • ${up.name} (${formatSize(att.size)}), ${up.url}`);
   }
@@ -976,7 +976,7 @@ export async function executeMicrosoftWriteTool(
     case 'outlook_send': {
       const toRecipients = parseRecipients(args.to as string);
 
-      const prepared = await prepareOutlookAttachments(args.attachments as string[] | undefined, slot);
+      const prepared = await prepareOutlookAttachments(args.attachments as string[] | undefined, slot, agentId);
       if (!prepared.ok) return prepared.error;
 
       const bodyText = (args.body as string) + prepared.bodySuffix;
@@ -1026,7 +1026,7 @@ export async function executeMicrosoftWriteTool(
       const replyAll = args.reply_all === true;
       const endpoint = `me/messages/${messageId}/${replyAll ? 'replyAll' : 'reply'}`;
 
-      const prepared = await prepareOutlookAttachments(args.attachments as string[] | undefined, slot);
+      const prepared = await prepareOutlookAttachments(args.attachments as string[] | undefined, slot, agentId);
       if (!prepared.ok) return prepared.error;
 
       const bodyText = (args.body as string) + prepared.bodySuffix;
@@ -1078,7 +1078,7 @@ export async function executeMicrosoftWriteTool(
     // no second threading rule here to drift from the first.
     case 'outlook_draft': {
       const replyToId = args.reply_to_message_id as string | undefined;
-      const prepared = await prepareOutlookAttachments(args.attachments as string[] | undefined, slot);
+      const prepared = await prepareOutlookAttachments(args.attachments as string[] | undefined, slot, agentId);
       if (!prepared.ok) return prepared.error;
       const bodyText = (args.body as string) + prepared.bodySuffix;
 
@@ -1127,7 +1127,7 @@ export async function executeMicrosoftWriteTool(
       const messageId = encodeURIComponent(args.message_id as string);
       const toRecipients = parseRecipients(args.to as string);
 
-      const prepared = await prepareOutlookAttachments(args.attachments as string[] | undefined, slot);
+      const prepared = await prepareOutlookAttachments(args.attachments as string[] | undefined, slot, agentId);
       if (!prepared.ok) return prepared.error;
 
       const additionalText = ((args.body as string) ?? '') + prepared.bodySuffix;
@@ -1280,7 +1280,7 @@ export async function executeMicrosoftWriteTool(
         // Small files (≤4MB): simple PUT upload
         if (fileSize <= 4 * 1024 * 1024) {
           const content = fs.readFileSync(filePath);
-          const resp = await fetch(`https://graph.microsoft.com/v1.0/${itemPath}:/content`, {
+          const resp = await graphFetch(agentId, `https://graph.microsoft.com/v1.0/${itemPath}:/content`, {
             method: 'PUT',
             headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
             body: content,
@@ -1295,7 +1295,7 @@ export async function executeMicrosoftWriteTool(
         }
 
         // Large files: resumable upload session
-        const sessionResp = await fetch(`https://graph.microsoft.com/v1.0/${itemPath}:/createUploadSession`, {
+        const sessionResp = await graphFetch(agentId, `https://graph.microsoft.com/v1.0/${itemPath}:/createUploadSession`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'replace', name: fileName } }),
@@ -1320,7 +1320,7 @@ export async function executeMicrosoftWriteTool(
             const chunk = Buffer.alloc(chunkSize);
             fs.readSync(fd, chunk, 0, chunkSize, offset);
 
-            const chunkResp = await fetch(session.uploadUrl, {
+            const chunkResp = await graphFetch(agentId, session.uploadUrl, {
               method: 'PUT',
               headers: {
                 'Content-Length': String(chunkSize),
@@ -1620,7 +1620,7 @@ export async function executeMicrosoftWriteTool(
             .replace(/=+$/, '')
             .replace(/\+/g, '-')
             .replace(/\//g, '_')}`;
-          const resp = await fetch(
+          const resp = await graphFetch(agentId, 
             `https://graph.microsoft.com/v1.0/shares/${shareId}/driveItem/content`,
             {
               method: 'GET',
@@ -1637,7 +1637,7 @@ export async function executeMicrosoftWriteTool(
           // Non-SharePoint attachment, try a direct GET with the auth
           // header. Inline message cards usually live at a Graph URL
           // that accepts the token.
-          const resp = await fetch(att.contentUrl, {
+          const resp = await graphFetch(agentId, att.contentUrl, {
             method: 'GET',
             headers: { Authorization: `Bearer ${token}` },
           });
@@ -1814,7 +1814,7 @@ export async function executeMicrosoftWriteTool(
           if (fileSize <= 4 * 1024 * 1024) {
             // Small file: simple PUT
             const content = fs.readFileSync(filePath);
-            const resp = await fetch(`https://graph.microsoft.com/v1.0/${itemPath}:/content`, {
+            const resp = await graphFetch(agentId, `https://graph.microsoft.com/v1.0/${itemPath}:/content`, {
               method: 'PUT',
               headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
               body: content,
@@ -1828,7 +1828,7 @@ export async function executeMicrosoftWriteTool(
           }
 
           // Large file: resumable upload session
-          const sessionResp = await fetch(`https://graph.microsoft.com/v1.0/${itemPath}:/createUploadSession`, {
+          const sessionResp = await graphFetch(agentId, `https://graph.microsoft.com/v1.0/${itemPath}:/createUploadSession`, {
             method: 'POST',
             headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'replace', name: fileName } }),
@@ -1848,7 +1848,7 @@ export async function executeMicrosoftWriteTool(
               const chunkSize = Math.min(CHUNK_SIZE, fileSize - offset);
               const chunk = Buffer.alloc(chunkSize);
               fs.readSync(fd, chunk, 0, chunkSize, offset);
-              const chunkResp = await fetch(session.uploadUrl, {
+              const chunkResp = await graphFetch(agentId, session.uploadUrl, {
                 method: 'PUT',
                 headers: {
                   'Content-Length': String(chunkSize),
@@ -2108,7 +2108,7 @@ export async function executeMicrosoftWriteTool(
       const token = await (await import('./auth.js')).getValidAccessTokenForAccount(slot);
       if (!token) return 'Error: not authenticated with Microsoft.';
       try {
-        const resp = await fetch(`https://graph.microsoft.com/v1.0/me/onenote/sections/${sectionId}/pages`, {
+        const resp = await graphFetch(agentId, `https://graph.microsoft.com/v1.0/me/onenote/sections/${sectionId}/pages`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/xhtml+xml' },
           body: html,
@@ -2140,7 +2140,7 @@ export async function executeMicrosoftWriteTool(
       const token = await (await import('./auth.js')).getValidAccessTokenForAccount(slot);
       if (!token) return 'Error: not authenticated with Microsoft.';
       try {
-        const resp = await fetch(`https://graph.microsoft.com/v1.0/me/onenote/pages/${pageId}/content`, {
+        const resp = await graphFetch(agentId, `https://graph.microsoft.com/v1.0/me/onenote/pages/${pageId}/content`, {
           method: 'PATCH',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify(commands),
