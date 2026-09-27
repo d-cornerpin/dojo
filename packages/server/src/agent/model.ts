@@ -1364,7 +1364,7 @@ async function callOllamaModel(
       inputTokens,
       outputTokens,
       latencyMs,
-      requestType: routerTier ?? 'ollama',
+      requestType: routerTier ?? (tools ? 'ollama' : 'completion'),
     });
 
     recordProviderSuccess(modelInfo.providerId);
@@ -2373,7 +2373,7 @@ async function callOpenAIModel(
       agentId, modelId,
       providerId: modelInfo.providerId,
       inputTokens: uncachedInputTokens, outputTokens, latencyMs,
-      requestType: routerTier ?? 'agent_turn',
+      requestType: routerTier ?? (tools ? 'agent_turn' : 'completion'),
       cacheReadTokens,
       // Step 3: the post-trim estimate, i.e. the one describing the request that went out.
       estimatedInputTokens: finalInputEstimate,
@@ -2765,7 +2765,7 @@ async function callAnthropicSdkModel(
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
         latencyMs,
-        requestType: routerTier ?? 'agent-sdk',
+        requestType: routerTier ?? (tools ? 'agent-sdk' : 'completion'),
         cacheReadTokens: result.cacheReadTokens,
         cacheCreationTokens: result.cacheCreationTokens,
       });
