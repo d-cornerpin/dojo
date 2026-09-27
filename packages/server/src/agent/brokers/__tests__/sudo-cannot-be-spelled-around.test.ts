@@ -793,6 +793,11 @@ describe('§9 F1 — `su` has its own option table, and one command source', () 
     'su --preserve-environment root', 'su --shell=/bin/sh root', 'su --login=x root',
     'su -s /bin/bash -l root', 'su --shell /bin/sh root', 'su -G wheel root', 'su -w PATH root',
     'su -f root', 'su -P root', 'su', 'su root', 'sudo -i', 'sudo -s',
+    // ⚠ TRAILING ARGS WITHOUT `-c` ARE NOT A COMMAND: real `su` hands them to the login shell as its
+    // arguments, so `su root whoami` does not run `whoami` — it starts a root shell. A mutant that
+    // kept the shell rule only for an EMPTY remainder survived until these two rows existed, because
+    // every other spelling in this list happens to leave nothing behind.
+    'su root whoami', 'su root sh -c whoami', 'su -l root id',
   ];
 
   it('every spelling of an interactive root shell is refused, EVERY policy, BOTH roles', () => {
@@ -963,6 +968,30 @@ describe('§9 F3 — one rule for a body nobody can read', () => {
     ]) {
       expect(String(shell(line, PRIMARY).rule), line).toMatch(/^global-exec-deny/);
     }
+  });
+
+  it('⚠ A ROOT PROMPT ONE LEVEL DOWN is still a root prompt', () => {
+    // The finding has to travel up the walk, exactly as the unbalanced-quote one does: `sudo sh -c
+    // "python3"` opens a root Python REPL on the same stdin, and the outer body reads as ordinary.
+    for (const who of [PRIMARY, WORKER]) {
+      underEach((p) => {
+        for (const line of [
+          `sudo sh -c "python3"`, `sudo bash -c "sh -s"`, `sudo sh -c "cat /tmp/x | sh"`,
+          `su root -c "bash"`,
+        ]) expect(shellAllows(line, who), `${p}/${who}: ${line}`).toBe(false);
+      });
+    }
+  });
+
+  it('a body carried by an option that names a FILE is unseeable, not readable', () => {
+    // These have no verdict consequence TODAY — for a line already privileged by `sudo`, `unseeable`
+    // and `readable` both land on the policy — so they are measured at the level where they are true.
+    // The one door that consumes the kind directly is `osascript`, and its `-l JavaScript` is the
+    // reason this table exists at all: read as an operand, a language name becomes a FILE.
+    expect(interpreterBody('awk -f /tmp/x.awk')?.kind).toBe('unseeable');
+    expect(interpreterBody('php -f /tmp/x.php')?.kind).toBe('unseeable');
+    expect(interpreterBody('python3 -m http.server')?.kind).toBe('unseeable');
+    expect(interpreterBody(`osascript -l JavaScript -e 'x'`)?.kind).toBe('readable');
   });
 
   it('the classifier is a unit, and every kind is reachable', () => {
