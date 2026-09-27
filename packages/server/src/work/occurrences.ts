@@ -54,6 +54,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
+import { clearReferencesToWork } from './work-refs.js';
 import { createLogger } from '../logger.js';
 import type { WorkEventKind } from './event-kinds.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module; these two statements
@@ -207,7 +208,7 @@ export function releaseOccurrence(
     // about to be deleted so its sequence can be claimed again, and an event on a row that
     // no longer exists is a record nobody can find.
     appendWorkEvent(workId, OCCURRENCE_EVENT.released, 'scheduler', { reason, occurrenceId });
-    db.prepare('DELETE FROM work_events WHERE work_id = ?').run(occurrenceId);
+    clearReferencesToWork([occurrenceId]);   // all four, not just the events — see `work-refs.ts`
     db.prepare('DELETE FROM work WHERE id = ?').run(occurrenceId);
     // Same move as the claim's advance: the statement is `work/next-run.ts`'s, run inside
     // this unit so the delete and the restore stay one thing.
@@ -812,10 +813,9 @@ export function deleteOccurrencesOf(workIds: string[]): number {
   const ph = workIds.map(() => '?').join(',');
   let removed = 0;
   withUnit(() => {
-    db.prepare(
-      `DELETE FROM work_events WHERE work_id IN (
-         SELECT id FROM work WHERE kind = ? AND parent_id IN (${ph}))`,
-    ).run(OCCURRENCE_KIND, ...workIds);
+    const doomed = (db.prepare(`SELECT id FROM work WHERE kind = ? AND parent_id IN (${ph})`)
+      .all(OCCURRENCE_KIND, ...workIds) as Array<{ id: string }>).map(r => r.id);
+    clearReferencesToWork(doomed);           // all four, not just the events — see `work-refs.ts`
     removed = db.prepare(
       `DELETE FROM work WHERE kind = ? AND parent_id IN (${ph})`,
     ).run(OCCURRENCE_KIND, ...workIds).changes;

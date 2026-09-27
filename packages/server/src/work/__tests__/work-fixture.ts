@@ -73,6 +73,16 @@ export function createWorkTable(db: DatabaseType.Database): void {
       claim_state TEXT NOT NULL, verdict TEXT NOT NULL,
       by_agent TEXT NOT NULL, evidence_ref TEXT, note TEXT, created_at INTEGER NOT NULL
     );
+    -- The FOURTH reference into work(id) (release-blocker round). techniques.build_project_id is
+    -- a caller-supplied work id with no kind constraint, so every path that deletes a work row
+    -- must clear it -- which means a fixture WITHOUT this table makes those paths throw
+    -- "no such table: techniques" instead of exercising them. Only the columns those statements
+    -- touch, plus the NOT NULLs: this fixture is the spine's, not the technique store's.
+    -- (No backticks anywhere in here: the whole block is one JS template literal.)
+    CREATE TABLE IF NOT EXISTS techniques (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'draft',
+      directory_path TEXT NOT NULL, build_project_id TEXT, build_squad_id TEXT
+    );
     CREATE INDEX IF NOT EXISTS ix_work_a2a ON work(a2a_thread_id);
     -- PHASE-2 T8c2 item 4: "execute this occurrence once" is a CONSTRAINT, so a fixture
     -- without it would let the claim's own exactly-once test pass vacuously. Copied
