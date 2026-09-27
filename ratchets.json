@@ -4364,6 +4364,13 @@
       "why": "+29 net (+30/-1), 23 of 30 added lines comment. Three lines of filter; the rest is the measurement that makes it inert and the reason it is safe. A1 handed this here in writing (\"A4 owns prompt/capability truth\"). Measured at ac945a99: 105 of 111 agents were advertised six tools they hold no grant for, and every one is refused at a door that already reads `mayUseChannel`. The filter is derived from `channelForTool` over the build-checked SEND_TO_PEOPLE surface, so a send tool added tomorrow is covered the day it lands. From here this file may only shrink."
     },
     {
+      "path": "packages/server/src/agent/tools/surface.ts",
+      "from": 688,
+      "to": 736,
+      "by": "V3.2.2 RELEASE BLAST — the exec/shell descriptions name the sudo door for the primary",
+      "why": "+48 net, roughly half comment. The release blast measured the feature unreachable: told 'Any other command will be blocked', the primary never issued a sudo call in three attempts, so the policy broker (proc.ts:188, ahead of the allowlist) went unreached on every box — the built-but-no-front-door class. The door sentence renders for the box primary under gated/free on BOTH command tools whatever the allowlist shape, with the reviewer-demanded no-wider-grant caveat on finite lists; the sudo policy joins the surface-cache fingerprint via ONE read in getFilteredTools threaded to key and value (the reviewer demonstrated the two-read flip pinning stale text with nothing to heal it). Reviewed twice (NOT CONFIRMED then CONFIRMED, 24-combination scope sweep 0 mismatches), six clauses in the-primary-exec-description-names-the-sudo-door.test.ts, blast ALL GREEN 3/3 against it. From here this file may only shrink."
+    },
+    {
       "path": "packages/server/src/twilio/call-session.ts",
       "from": 884,
       "to": 913,
@@ -5964,7 +5971,7 @@
     "packages/server/src/agent/tools/gate-eval.ts": 370,
     "packages/server/src/agent/tools/gates.ts": 286,
     "packages/server/src/agent/tools/index.ts": 690,
-    "packages/server/src/agent/tools/surface.ts": 688,
+    "packages/server/src/agent/tools/surface.ts": 736,
     "packages/server/src/agent/tools/types.ts": 338,
     "packages/server/src/agent/tools/util.ts": 371,
     "packages/server/src/agent/turn-context.ts": 641,
