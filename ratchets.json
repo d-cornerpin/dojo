@@ -5552,6 +5552,34 @@
       "to": 433,
       "by": "BACKLOG LANE-6 collapsing carve-out merge (2026-09-26), coordinator-applied",
       "why": "+26 (+30/−4; 12 code, 14 comment/blank). The 12 code lines are ONE MORE MEMBER OF AN EXISTING FAMILY: a third `deliveredAs…` flag beside `deliveredAsStartLine` and `deliveredAsCompiledAnswer`, one clause on the demote condition, one clause on the promotion opener, and a four-line delegation to `answer-to-a-live-ask.ts`, which holds the predicate, the delivery and the whole argument (197 lines, unpinned). THE DECISION COULD NOT MOVE OUT OF THIS FILE: the three flags are read by the demote condition at this seam, and that condition IS the defect's site — the demotion keyed on co-occurrence with a tool call, which `shared/visibility.ts` states as a definition and which is false whenever the model answers and acts in one response. Measured cost of the definition: 7 of 204 human-triggered turns ended with the person shown nothing but a dimmed note. REFUSED: keying the carve-out on `hasUnansweredUser` (the investigation's Option A) — it turned five reviewed CONTROL clauses in three sibling suites red, each a statement of owner rulings 2026-07-10 / 2026-07-23 / 2026-08-12, and mutant M2 re-"
+    },
+    {
+      "path": "packages/shared/src/types.ts",
+      "from": 634,
+      "to": 649,
+      "by": "BACKLOG LANE-4 merge (2026-09-26), coordinator-applied",
+      "why": "lane 4 item 1: the shared tool-docs health wording rule's types — one rule read by boot log AND Vitals card so two surfaces cannot disagree (lane4-report.md item 1); lane failed to declare the raise, coordinator-applied at merge"
+    },
+    {
+      "path": "packages/dashboard/src/pages/Health.tsx",
+      "from": 651,
+      "to": 662,
+      "by": "BACKLOG LANE-4 merge (2026-09-26), coordinator-applied",
+      "why": "lane 4 item 1: the toolDocs vitals card, absent-until-measured like receipts (lane4-report.md item 1); coordinator-applied"
+    },
+    {
+      "path": "packages/server/src/index.ts",
+      "from": 1271,
+      "to": 1280,
+      "by": "BACKLOG LANE-4 merge (2026-09-26), coordinator-applied",
+      "why": "lane 4 item 1: boot's written-vs-expected manual comparison call — the fail-closed seam itself (lane4-report.md item 1); coordinator-applied"
+    },
+    {
+      "path": "packages/dashboard/src/components/Markdown.tsx",
+      "from": null,
+      "to": 433,
+      "by": "BACKLOG LANE-4 merge (2026-09-26), coordinator-applied",
+      "why": "lane 4 item 2: the credential-placeholder chip drawing — Markdown.tsx only draws, the decidable rule lives in lib/credential-placeholder.ts (lane4-report.md item 2); coordinator-applied"
     }
   ],
   "maxNewFileLines": 400,
@@ -5579,7 +5607,7 @@
     "packages/dashboard/src/pages/Agents.tsx": 678,
     "packages/dashboard/src/pages/Chat.tsx": 2049,
     "packages/dashboard/src/pages/Costs.tsx": 686,
-    "packages/dashboard/src/pages/Health.tsx": 651,
+    "packages/dashboard/src/pages/Health.tsx": 662,
     "packages/dashboard/src/pages/Memory.tsx": 499,
     "packages/dashboard/src/pages/Settings.tsx": 7119,
     "packages/dashboard/src/pages/Setup.tsx": 1995,
@@ -5738,7 +5766,7 @@
     "packages/server/src/healer/diagnostic.ts": 1067,
     "packages/server/src/healer/healer-agent.ts": 1186,
     "packages/server/src/healer/injury-recovery.ts": 1155,
-    "packages/server/src/index.ts": 1271,
+    "packages/server/src/index.ts": 1280,
     "packages/server/src/memory/assembler.ts": 2692,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
@@ -5822,7 +5850,7 @@
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
-    "packages/shared/src/types.ts": 634,
+    "packages/shared/src/types.ts": 649,
     "packages/shared/src/visibility.ts": 989,
     "packages/shared/src/ws.ts": 1230,
     "watchdog/src/auto-rollback.ts": 333,
@@ -5836,6 +5864,7 @@
     "packages/server/src/agent/access/read.ts": 264,
     "packages/server/src/memory/work-board-lane.ts": 266,
     "packages/server/src/memory/integration-status-lane.ts": 461,
-    "packages/server/src/tools/name-help.ts": 355
+    "packages/server/src/tools/name-help.ts": 355,
+    "packages/dashboard/src/components/Markdown.tsx": 433
   }
 }
