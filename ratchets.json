@@ -5524,6 +5524,13 @@
       "to": 251,
       "by": "HEAD 2, the other-threads lane (2026-09-26) - the registry finally publishes channels, and the 240-line cap asked to be told",
       "why": "NEW ENTRY at 251, added because the growth detector ASKED FOR IT rather than because a pin was breached: `capability-registry.ts` crossed 60% of the 400-line new-file cap (240 lines) and the gate's own instruction for that crossing is \"add it to ratchets.json at its current count — which pins it decrease-only from then on\". WHAT PUSHED IT OVER: `listChannelStatuses()` + the `ChannelStatus` shape (HEAD 2, the owner's 2026-09-24 false denial — an agent with a live iMessage thread said it had no way to see it, and the registry published google/microsoft/plaud and NO channels, so nothing in context said the channel was live either way). The growth half of the same gate is satisfied WITHOUT a baseline edit: the addition was trimmed to +50 on a 201-line file, inside the 25% allowance. REFUSED: making channels a fourth `IntegrationStatus` family, which would have been smaller here and wrong — that shape is TOKEN HEALTH (a per-family success ledger, a tool-NAME -> family map, an unresolved-failure count) and a channel has none of the three, so three fields would be permanently null and the integration lane's own \"every family has a ledger or a stated reason\" census would gain three exceptions. From 251 this file may only shrink, and the next channel family pays for itself."
+    },
+    {
+      "path": "packages/server/src/memory/other-threads-lane.ts",
+      "from": 0,
+      "to": 276,
+      "by": "HEAD 2, the other-threads lane (2026-09-26) - a new tail lane, and the 240-line cap asked to be told",
+      "why": "NEW ENTRY at 276, added because the growth detector ASKED FOR IT: a new file crossing 60% of the 400-line cap (240) is told to \"add it to ratchets.json at its current count — which pins it decrease-only from then on\". WHAT IS IN IT: the read, the render, the grant-aware route sentence and the reserve derivation for HEAD 2 — the owner's 2026-09-24 false denial, where an agent holding two silos for one person said it had no way to see the other while the inbound was live and the rows were in its own database. About half the file is the argument, and it is load-bearing in a way a reader cannot reconstruct: WHY the lane publishes no message content (a lane that quoted the other thread would re-introduce the friend-on-iMessage bleed the conversation filters exist to prevent), WHY the qualifier is per-row, and WHY the route sentence consults `toolCategoryGranted` (the live probe found it naming three tools that were not on the call, so the model routed around them through nine `exec` calls). Delete that and the next editor re-derives a leak. REFUSED: splitting read from render, which would put the reserve derivation in a third file and break the one-importer clause that proves this lane cannot reach the cached prefix. From 276 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -5719,6 +5726,7 @@
     "packages/server/src/memory/deliveries-lane.ts": 257,
     "packages/server/src/memory/lanes.ts": 1201,
     "packages/server/src/memory/message-store.ts": 1153,
+    "packages/server/src/memory/other-threads-lane.ts": 276,
     "packages/server/src/memory/recall-lane.ts": 901,
     "packages/server/src/memory/recall.ts": 510,
     "packages/server/src/memory/retrieval.ts": 591,
