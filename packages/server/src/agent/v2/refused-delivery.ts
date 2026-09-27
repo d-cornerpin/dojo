@@ -85,11 +85,14 @@ export interface RefusedDelivery { readonly refused: number; readonly quoted: st
  */
 export function decideRefusedDelivery(results: readonly TurnToolResult[]): RefusedDelivery | null {
   const calls = results.filter((r) => r.name === REPORT_ARTIFACT_TOOL);
-  const refused = calls.filter((r) => r.isError === true);
-  if (refused.length === 0 || calls.some((r) => r.isError !== true)) return null;
+  // ONE predicate, not two: at least one call, and EVERY one an explicit error. It was written as a
+  // filter for the refusals PLUS a `some` for the successes, which was EQUIVALENT and invited a
+  // mutant nothing could catch — dropping the `isError === true` filter changed no behaviour at all,
+  // because the success check already returned null. The redundancy is gone rather than tested.
+  if (calls.length === 0 || calls.some((r) => r.isError !== true)) return null;
   return {
-    refused: refused.length,
-    quoted: (refused[refused.length - 1].content ?? '').replace(/\s+/g, ' ').trim().slice(0, 240),
+    refused: calls.length,
+    quoted: (calls[calls.length - 1].content ?? '').replace(/\s+/g, ' ').trim().slice(0, 240),
   };
 }
 
