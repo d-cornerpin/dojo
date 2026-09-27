@@ -5777,11 +5777,26 @@
       "by": "\"one policy\" ruling - one line naming the second door on the card",
       "why": "7188 -> 7189 (+1). The card blurb names both doors in the one place an owner meets the setting."
     }
+ ,
+    {
+      "path": "packages/server/src/agent/brokers/sudo-policy.ts",
+      "from": 633,
+      "to": 840,
+      "by": "SELF-FOUND HOLE (2026-09-27) - `su`'s real grammar, and a privileged line read one interpreter deeper",
+      "why": "633 -> 840 (+207, of which 135 are prose). THIS RAISE PAYS FOR A HOLE I FOUND IN MY OWN FEATURE, measured through the real shell door at `free` + primary + `exec_allow: ['*']`: `su root -c \"rm -rf /\"` ALLOWED with rule `exec-grant`, `su root` ALLOWED as an unbounded interactive ROOT SHELL, `sudo sh -c \"rm -rf /\"` ALLOWED, `su root -c \"ls; rm -rf /\"` ALLOWED. The owner's non-negotiable - the three floor entries and the sensitive-read scan bite INSIDE a privileged line under EVERY policy - was false for a whole family of spellings. What lands: `su`'s real operand grammar (its first bare operand is a USERNAME, not a command, so the option loop never reached the `-c` that carries the command), `COMMAND_OPTS` (a command-carrying option's value must be READ, not skipped like the metadata options around it), the at-most-a-username fail-close for an ambiguous value, and `privilegedInnerCommands` + `interpreterBody`, which unwrap a privileged line ONE INTERPRETER DEEPER because a command inside `sh -c \"...\"` is one quoted word to the segmenter. That second one is a REGRESSION THIS BRANCH WOULD HAVE SHIPPED rather than pre-existing debt: while `sudo *` sat in the floor every sudo line was refused outright, so the floor's blindness to a quoted body could not reach root. ⚠ ANSWERING THE THIRD-RAISE RULE DIRECTLY, because this is this file's third: the seam on offer is GRAMMAR vs AUTHORIZER, and that is precisely the seam RC2 proved must not exist - `isSudoLine` walked wrappers while `parseSudo` did not, two readers of one fact, and `env X=1 sudo rm -rf /` ran under `free`. Today's defect is the same disease once more (the floor read the raw string; the shell ran the quoted body), so splitting the two apart would re-create the shape that caused both. The seam that IS safe is the COPY - the reason strings, the password prompt, the owner card - which is ~80 lines and would still need a raise, i.e. churn across a security module the final review is about to read, for no gate benefit. THAT IS THE NAMED NEXT MOVE if this file grows again: `sudo-copy.ts`, mirroring `dashboard/src/lib/sudo-policy.ts`, which is where the dashboard's copy already lives. AND ONE BRANCH LEFT RATHER THAN ARRIVED: the empty-command-value case is gone, because a mutant proved nothing could falsify it - `authorizeSudoLine` already owns \"nothing to run\". From 840 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/brokers/proc.ts",
+      "from": 421,
+      "to": 444,
+      "by": "SELF-FOUND HOLE (2026-09-27) - the floor and the sensitive-read scan, over the privileged inner commands",
+      "why": "421 -> 444 (+23: the privileged-inner loop, the one-voice sensitive-read helper, and the two notes that say what each measured). The floor is now asked about every command a PRIVILEGED line would really run, not only the segments the grammar can see - `sudo sh -c \"rm -rf /\"` reached the grant pass with `sh` as its program. The sensitive-read scan is asked there too: it runs once over `resource.raw` and splits on whitespace, so in `su root -c \"cat ~/.ssh/id_rsa\"` it saw `\"cat` and `~/.ssh/id_rsa\"` with the quotes attached, matching neither a reader program nor a sensitive path - ALLOWED under `free` while the same command bare is refused. Its refusal moved into `sensitiveReadDeny` because it is now asked in two places and the words an agent reads must not drift between them, which is a NET LINE SAVING at the first site. REFUSED: doing the unwrap here, which would put a second grammar in the grant evaluator - `proc.ts` asks the question and `sudo-policy.ts` answers it. REFUSED: flooring unprivileged `sh -c` bodies, which is a live behaviour change beyond this ruling's remit. From 444 this file may only shrink."
+    }
   ],
   "maxNewFileLines": 400,
   "files": {
     "packages/server/src/agent/brokers/sudo-probe.ts": 83,
-    "packages/server/src/agent/brokers/sudo-policy.ts": 633,
+    "packages/server/src/agent/brokers/sudo-policy.ts": 840,
     "packages/dashboard/src/components/AccessControls.tsx": 141,
     "packages/dashboard/src/components/AccessManifest.tsx": 239,
     "packages/dashboard/src/components/AttachmentChips.tsx": 465,
@@ -5816,7 +5831,7 @@
     "packages/server/src/agent/agent-status.ts": 233,
     "packages/server/src/agent/brokers/deny.ts": 385,
     "packages/server/src/agent/brokers/grants.ts": 344,
-    "packages/server/src/agent/brokers/proc.ts": 421,
+    "packages/server/src/agent/brokers/proc.ts": 444,
     "packages/server/src/agent/browser.ts": 412,
     "packages/server/src/agent/destructive-gate.ts": 595,
     "packages/server/src/agent/effects/capability.ts": 308,
