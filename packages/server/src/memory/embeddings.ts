@@ -123,36 +123,14 @@ function embedResponseError(prefix: string, status: number, body: string): Error
 // instead of stalling first token.
 const DEFAULT_EMBED_TIMEOUT_MS = 30000;
 
-export interface EmbedOpts {
-  keepAlive?: string | number;
-  timeoutMs?: number;
-  /**
-   * ── A-6 fix round (review L2-3): WHOSE STOP THIS EMBEDDING ANSWERS TO ──
-   * The census exempted this file as "not a turn's work". That is true of `queueEmbedding`
-   * and `refreshEmbedding`, and false of the path that matters: an agent AWAITS this call in
-   * `recall-lane.ts`, `vector-search.ts`, `vault_search` and four `a2a-transport` sites — the
-   * reviewer measured all seven. Optional because the corpus sweep genuinely has no agent to
-   * be stopped by, and passes nothing.
-   */
-  agentId?: string;
-}
-
-/** Embed `text`, under the stop of whichever agent is waiting on it (if one is). */
-export async function generateEmbedding(text: string, opts?: EmbedOpts): Promise<Float32Array> {
+export async function generateEmbedding(
+  text: string,
+  // A-6/L2-3: `agentId` is whose stop this answers to — an agent AWAITS this on seven paths
+  // (`recall-lane`, `vector-search`, `vault_search`, four a2a). The corpus sweep passes none.
+  opts?: { keepAlive?: string | number; timeoutMs?: number; agentId?: string },
+): Promise<Float32Array> {
   const slot = opts?.agentId === undefined ? null : openAgentCall(opts.agentId, 'turn');
   try {
-    return await embedUnderSlot(text, opts, slot);
-  } finally {
-    // By identity, on every exit path — including the three-attempt halving retries below.
-    slot?.release();
-  }
-}
-
-async function embedUnderSlot(
-  text: string,
-  opts: EmbedOpts | undefined,
-  slot: { signal: AbortSignal } | null,
-): Promise<Float32Array> {
   const config = getEmbeddingConfig();
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_EMBED_TIMEOUT_MS;
 
@@ -225,6 +203,7 @@ async function embedUnderSlot(
     throw embedResponseError('Embedding API failed', response.status, errorText);
   }
   throw new Error('Embedding API failed: input still exceeded the context length after 3 halving retries');
+  } finally { slot?.release(); }   // by identity, across the halving retries
 }
 
 // ── Store Embedding ──
