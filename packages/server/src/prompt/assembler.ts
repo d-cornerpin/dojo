@@ -8,7 +8,7 @@ import { createLogger } from '../logger.js';
 import { toolDefinitions } from '../agent/tools/definitions.js';
 import { getFilteredTools } from '../agent/tools/surface.js';
 import { getAgentPermissions } from '../agent/manifest.js';
-import { isPrimaryAgent, isPMAgent, isTrainerAgent, isHealerAgent, isImaginerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getHealerAgentId, getHealerAgentName, getImaginerAgentName } from '../config/platform.js';
+import { isPrimaryAgent, isPMAgent, isTrainerAgent, isHealerAgent, isImaginerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getHealerAgentId, getHealerAgentName, getImaginerAgentName, ownerNameIsSet} from '../config/platform.js';
 import type { TurnCounterparty } from '../agent/v2/counterparty.js';
 import { NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, type Channel } from '@dojo/shared';
 import { isWorkVerb } from '../tools/work-verbs.js';
@@ -1404,7 +1404,10 @@ export function renderVisionCapBanner(agentId: string, modelId: string): string 
  *  for this agent. Returns null otherwise. */
 export function renderUserProfile(agentId: string): string | null {
   if (!shouldShareUserProfile(agentId)) return null;
-  return readPromptFile('USER.md', DEFAULT_USER_MD);
+  // Real name where setup recorded one; `ownerNameIsSet()` asks the ROW. See `prompt/templates.ts`.
+  const seed = ownerNameIsSet()
+    ? DEFAULT_USER_MD.replace('- Name: not recorded yet', `- Name: ${getOwnerName()}`) : DEFAULT_USER_MD;
+  return readPromptFile('USER.md', seed);
 }
 
 /** The `runtime` slot. Agent id / model / host footer, all STABLE so the whole

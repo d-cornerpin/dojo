@@ -43,15 +43,36 @@ You are {{agent_name}}, an AI agent running on the DOJO Agent Platform. You are 
 API keys, OAuth tokens, PATs, passwords, secrets, and any other authentication material do NOT go in the vault. Use \`credential_add(service_name, credentials, description)\` — values are encrypted at rest, never decay, never appear in vault search or Dreamer summaries, and are retrieved on demand at API-call time via \`credential_get\`. The engine will refuse vault entries that look like credentials. When the user hands you any value labeled secret/key/token/password, route it to the credentials store immediately.
 `;
 
+/**
+ * THE UNSET PROFILE, AND IT SAYS SO (fresh-box audit, finding 2).
+ *
+ * This shipped a `{{owner_name}}` token that NOTHING SUBSTITUTED — `readPromptFile` writes the
+ * default verbatim — so a fresh box's model was handed the literal characters
+ * `- Name: {{owner_name}}`. Its sibling `templates/USER.md` shipped an invented first name and a
+ * job title instead — a fictional person presented as the real owner. Between them a new user's
+ * agent could believe its owner was that invention, or was named "{{owner_name}}", or was "User",
+ * depending on which slot it read.
+ *
+ * So the profile now DESCRIBES ITS OWN EMPTINESS and says what to do about it, which is the only
+ * honest content for a file nobody has filled in yet. The preference lines went with the name:
+ * "prefers concise responses" was invented too, and an invented preference is a standing
+ * instruction the owner never gave.
+ *
+ * `renderUserProfile()` fills the real name in when `ownerNameIsSet()` — one default, one source.
+ */
 export const DEFAULT_USER_MD = `# User Profile
 
 ## Identity
-- Name: {{owner_name}}
+- Name: not recorded yet
 
-## Preferences
-- Prefers concise, actionable responses
-- Values correctness over speed
-- Wants to be informed of significant decisions before execution
+## What this file is
+This profile has not been filled in. Nothing here is known about the person you work for — the
+lines above are placeholders, not facts, and you must not invent or assume any of them.
+
+Learn who they are from what they actually say and do, and when something here genuinely matters
+for the work in front of you, ask them plainly. Once they tell you, record it with
+\`vault_remember\` and edit this file (Settings, or \`~/.dojo/prompts/USER.md\`) so it stops being
+empty.
 `;
 
 export const DEFAULT_PM_SOUL_MD = `# {{pm_agent_name}} — Project Manager

@@ -48,8 +48,29 @@ export function getPlatformName(): string {
 
 // ── Owner ──
 
+/**
+ * THE ONE DEFAULT FOR THE OWNER'S NAME (fresh-box audit, finding 2).
+ *
+ * There used to be two: this `'User'`, and a `- Name: Alex` line in the shipped `templates/USER.md`
+ * — so a fresh box's agent could be told its owner was "Alex, a developer" in one prompt slot and
+ * "User" in another. The template no longer names anybody; this is the only fallback, and
+ * `ownerNameIsSet()` is how a caller tells the fallback from a real answer.
+ */
+export const OWNER_NAME_FALLBACK = 'User';
+
 export function getOwnerName(): string {
-  return get('owner_name', 'User');
+  return get('owner_name', OWNER_NAME_FALLBACK);
+}
+
+/**
+ * Has the owner actually told us their name? Asked of the ROW, not of the value — a user really
+ * called "User" is a person, not a missing setting, and comparing against the fallback string
+ * would erase them. `Setup.tsx` writes this row from the wizard's name field.
+ */
+export function ownerNameIsSet(): boolean {
+  if (!cacheLoaded) loadCache();
+  const v = cache['owner_name'];
+  return typeof v === 'string' && v.trim() !== '';
 }
 
 // ── Primary Agent ──
