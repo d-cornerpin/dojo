@@ -79,7 +79,11 @@ export function createLeafSummary(
   //
   // This SELECT form is what stops the constraint re-opening 103's incident. On 2026-07-06 a
   // chunk naming an id the constraint rejected took the WHOLE leaf summary down with it: the
-  // context never shrank and reactive compaction re-fired on every turn. The summarizer's
+  // context never shrank and reactive compaction re-fired on every turn. ⚠ RESOLVED v3.2.3: it
+  // recurred on a user's box (~4,000 uncompacted rows, ~86K of summaries, a 64K window, a 402ing
+  // summary writer) because every brake in `checkAndCompact` was `!force`-gated and the gate
+  // answers 96%+ WITH force. The terminal state, the forced pass's bounds and the backoff that
+  // now sets under force live in `memory/compaction-brakes.ts`. The summarizer's
   // model call still sits BETWEEN reading a chunk and writing it, so a reset_session or the
   // PM prune can delete a named row inside that window. Selecting the id out of `messages`
   // makes an unresolvable id a link not written, rather than a compaction that cannot

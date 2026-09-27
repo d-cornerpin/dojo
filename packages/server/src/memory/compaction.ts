@@ -1,6 +1,10 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { withLock } from '../db/with-lock.js';
+import { MIN_COMPACTABLE_ROWS, compactionIsBraked, noteLowYield, noteForcedOutcome,
+  latchIfSummariesExceedBudget, summaryWriterUnavailable } from './compaction-brakes.js';  // v3.2.3 L1
+import { cachedAssembledEstimate, cachedToolPayloadTokens } from './assembled-estimate-cache.js';
+export { forcedCompactionOptions } from './compaction-brakes.js';   // the emergency path's bounds, published where its callers already look
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
@@ -157,7 +161,7 @@ export async function estimateAssembledTokens(
   // the safe one where the real ceiling cannot yet be named, and NULL never narrows
   // anything, only a genuine ceiling does).
   const policy = contextWindowPolicy(contextWindow, {
-    toolPayloadTokens: await measureAgentToolPayloadTokens(agentId),
+    toolPayloadTokens: await cachedToolPayloadTokens(agentId, `${agentId}:${modelId ?? '-'}`, () => measureAgentToolPayloadTokens(agentId)),
     maxOutputTokens: modelId ? getModelOutputCap(modelId) : undefined,
     // T82 FIX WAVE, I1: the ceiling reads off `ceilingModelId`, NOT `modelId` — see this
     // parameter's own doc above for why the two may legitimately differ.
@@ -466,10 +470,6 @@ export function resolveSummaryWriterModel(agentId: string, preferredModelId?: st
 
 // ── Main Entry Point ──
 
-// Minimum-yield floor + backoff for reactive compaction (2026-07-23).
-const MIN_COMPACTABLE_ROWS = 6;
-const LOW_YIELD_BACKOFF_MS = 15 * 60_000;
-const lowYieldCompactionBackoffUntil = new Map<string, number>();
 
 export interface CheckAndCompactOptions {
   force?: boolean;
@@ -565,8 +565,9 @@ async function runCheckAndCompact(
   // reassignment), the SAME model the external `threshold` below keys on — otherwise the two
   // halves of one comparison silently disagree about whose declared speed they are honouring.
   // See `estimateAssembledTokens`'s own `ceilingModelId` doc for the full incident this closes.
-  const assembled = await estimateAssembledTokens(agentId, contextWindow, modelId, { ceilingModelId: turnModelId });
+  const assembled = await cachedAssembledEstimate(agentId, contextWindow, modelId, () => estimateAssembledTokens(agentId, contextWindow, modelId, { ceilingModelId: turnModelId }));
   const totalTokens = assembled.total;
+  if (latchIfSummariesExceedBudget(agentId, assembled.summaryTokens, Math.max(0, contextWindow - assembled.reserveTokens))) return NO_COMPACTION;
   const activeThreshold = getContextThreshold();
   const rawThreshold = activeThreshold * contextWindow;
   // T82a: the SAME provider-aware ceiling `memory/budget.ts`'s admission budget keys on
@@ -664,17 +665,12 @@ async function runCheckAndCompact(
     // tiny outside-tail region cannot reclaim meaningfully; skip it, and
     // after any low-yield run back off for a while. Emergency (force) always
     // bypasses, pressure at 96%+ must act regardless of yield.
-    if (!force && (lowYieldCompactionBackoffUntil.get(agentId) ?? 0) > Date.now()) {
-      logger.info('Compaction skipped: low-yield backoff active (last reactive run reclaimed almost nothing)', {
-        assembledTokens: totalTokens, threshold,
-      }, agentId);
-      return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
-    }
+    if (compactionIsBraked(agentId, force)) return NO_COMPACTION;
     if (!force && guardUncompactedCount > 0 && guardUncompactedCount < MIN_COMPACTABLE_ROWS) {
       logger.info('Compaction skipped: outside-tail region too small to reclaim meaningfully', {
         assembledTokens: totalTokens, threshold, uncompactedOutsideTail: guardUncompactedCount,
       }, agentId);
-      lowYieldCompactionBackoffUntil.set(agentId, Date.now() + LOW_YIELD_BACKOFF_MS);
+      noteLowYield(agentId);
       return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
     }
     if (!force && guardUncompactedCount === 0) {
@@ -767,11 +763,12 @@ async function runCheckAndCompact(
     // T82 FIX WAVE, I1: same `ceilingModelId` threading as the dry run above — `tokensBefore`
     // (captured from that dry run) and `tokensAfter` must be measured on the SAME ceiling basis
     // or the subtraction below compares two different budgets, not the same budget before/after.
-    const tokensAfter = (await estimateAssembledTokens(agentId, contextWindow, modelId, { ceilingModelId: turnModelId })).total;
+    const tokensAfter = (await cachedAssembledEstimate(agentId, contextWindow, modelId, () => estimateAssembledTokens(agentId, contextWindow, modelId, { ceilingModelId: turnModelId }))).total;
     const tokensReclaimed = tokensBefore - tokensAfter;
 
     const result = { leafCreated, condensedCreated, tokensReclaimed: Math.max(tokensReclaimed, 0) };
 
+    noteForcedOutcome(agentId, Boolean(force), result);   // v3.2.3 L1: the brake sets even on force
     broadcast({
       type: 'memory:compaction',
       agentId,
@@ -803,7 +800,7 @@ async function runCheckAndCompact(
     if (result.tokensReclaimed < 2000 && result.leafCreated <= 1) {
       // The run happened and bought almost nothing; the threshold will still
       // be crossed next turn. Back off instead of treadmilling.
-      lowYieldCompactionBackoffUntil.set(agentId, Date.now() + LOW_YIELD_BACKOFF_MS);
+      noteLowYield(agentId);
     }
     logger.info('Compaction complete', result, agentId);
     return result;
@@ -856,6 +853,7 @@ async function runCheckAndCompact(
 
     const result = { leafCreated, condensedCreated: 0, tokensReclaimed: 0 };
 
+    noteForcedOutcome(agentId, Boolean(force), result);   // v3.2.3 L1: the brake sets even on force
     broadcast({
       type: 'memory:compaction',
       agentId,
@@ -1115,6 +1113,7 @@ export async function runLeafCompaction(
 
   for (const chunk of chunks) {
     if (chunk.length === 0) continue;
+    if (summaryWriterUnavailable(agentId, modelId)) break;   // v3.2.3 L2c/L3: do not build what cannot be sent
 
     // Build content from chunk messages. scrubTechniqueContentForSummary
     // strips technique tool-result bodies so they don't leak into the

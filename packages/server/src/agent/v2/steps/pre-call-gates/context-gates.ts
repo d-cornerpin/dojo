@@ -19,7 +19,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../../../logger.js';
 import {
-  checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD,
+  checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD, forcedCompactionOptions,
 } from '../../../../memory/compaction.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { backgroundDrains, queueSelfWake } from '../../../shared-state.js';
@@ -85,7 +85,7 @@ export async function runContextGates(
     }, agentId);
     try {
       const effectiveModel = isAutoRouted ? configuredModelId : configuredModelId;
-      await checkAndCompact(agentId, effectiveModel, contextWindow, { force: true });
+      await checkAndCompact(agentId, effectiveModel, contextWindow, forcedCompactionOptions());
     } catch (compErr) {
       logger.warn('v2: emergency compaction failed', {
         agentId, error: compErr instanceof Error ? compErr.message : String(compErr),
@@ -117,7 +117,7 @@ export async function runContextGates(
     });
     // Force compaction then wakeup so we recover next turn
     try {
-      await checkAndCompact(agentId, configuredModelId, contextWindow, { force: true });
+      await checkAndCompact(agentId, configuredModelId, contextWindow, forcedCompactionOptions());
     } catch { /* best effort */ }
     stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
     queueSelfWake(agentId, 'context-gate-rebuild');

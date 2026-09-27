@@ -309,7 +309,7 @@ export interface ChatErrorEvent {
     | 'AUTH_INVALID' | 'ACCESS_DENIED' | 'QUOTA_EXHAUSTED' | 'DNS_FAILURE'
     // v2.3.19 (Phase 1 hardening, 2026-05-10) — preflight escapes that
     // bypass the recovery cascade entirely (thrown before its try/catch).
-    | 'NO_MODEL' | 'AGENT_NOT_FOUND'
+    | 'NO_MODEL' | 'AGENT_NOT_FOUND' | 'MEMORY_INCOMPRESSIBLE'   // v3.2.3: compaction latched, owner must act
     // PHASE-4 T4 (OR2). A turn-ending floor steered the agent twice and the agent
     // stayed silent. The engine used to speak in its place, in the first person, on
     // the owner's own lane; it does not any more. This is the platform saying, as the
