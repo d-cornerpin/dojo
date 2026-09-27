@@ -5741,12 +5741,26 @@
       "to": 7188,
       "by": "OWNER RULING 2026-09-27 - one line of card blurb",
       "why": "7187 -> 7188 (+1). The card's one-line blurb now says the Mac is the MAIN AGENT's and that every other agent is refused sudo whatever the owner picks. One line, in the only place a reader meets the setting. From 7188 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/brokers/sudo-policy.ts",
+      "from": 363,
+      "to": 503,
+      "by": "SECURITY REVIEW FIX ROUND (2026-09-27) - the sound detector, the wrapper walk, and why each exists",
+      "why": "363 -> 503 (+140). The review was a NO-GO and the reason was measured, not argued: thirteen of fourteen sudo spellings escaped WITH PRIVILEGE through the real shell door, under every policy, for any agent — `true; sudo rm -rf /` ALLOWED with the policy set to `blocked`. What lands here is the two-layer recognizer that closes it: `mentionsPrivilegeToken` (the SOUND floor — word-boundary, case-insensitive, backslash- and quote-tolerant, asked of the RAW line before any parse, so nothing about quoting or nesting can hide a spelling the shell would execute), the wrapper-walking `isSudoLine` (`env [assignments] sudo`, `command sudo`, `\\\\sudo`, `\"sudo\"`, case-folded), `privilegeTokenIsQuotedData` (the ONE exemption, two conjuncts, so the platform can still quote its own `IMSG_INSTALL_HINT`), the segmented hold predicate, and `SUDO_UNPLACEABLE_REASON`. EVERY PARAGRAPH IS A DEFECT SOMEBODY ALREADY SHIPPED: the head-position assumption (S1), the exact-case test (S3), the `=`-form short-circuit that blinded the floor for `--prompt=\"pw: \"` (S2), and the first cut of this very fix taking a capability away. Delete the prose and the next editor rebuilds one of them. REFUSED: splitting the detector from the walker - they are one decision with one soundness argument (crude first, precise second, fail closed between), and a reader who finds half of it re-derives the order wrong. From 503 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/brokers/proc.ts",
+      "from": 379,
+      "to": 421,
+      "by": "SECURITY REVIEW FIX ROUND (2026-09-27) - the privilege pass, per simple command",
+      "why": "379 -> 421 (+42: the privilege pass and the two notes that say why it is where it is). This is the loop the review's S1 lived in: `parts` authorized the whole line as ONE string for every separator the old grammar did not unpack. The pass runs BEFORE the grant pass, over every simple command, and carries TWO fixes the round measured rather than assumed - the per-segment FLOOR (`ls | rm -rf /` was ALLOWED for a scoped agent; the floor is meant to be unoverridable and was escapable by a pipe for every command in it, not just sudo) and the fail-closed refusal for a token the grammar cannot place. REFUSED: making every segment the GRANT question too, which is what the first cut did - `exec-argv-corpus.test.ts` §D caught that an agent granted ['ls','cat','echo','git *','node'] lost `ls | grep`, and taking a capability away is the owner's decision under RULING P5-R5. From 421 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
   "files": {
     "packages/server/src/agent/brokers/sudo-probe.ts": 83,
-    "packages/server/src/agent/brokers/sudo-policy.ts": 363,
+    "packages/server/src/agent/brokers/sudo-policy.ts": 503,
     "packages/dashboard/src/components/AccessControls.tsx": 141,
     "packages/dashboard/src/components/AccessManifest.tsx": 239,
     "packages/dashboard/src/components/AttachmentChips.tsx": 465,
@@ -5781,7 +5795,7 @@
     "packages/server/src/agent/agent-status.ts": 233,
     "packages/server/src/agent/brokers/deny.ts": 385,
     "packages/server/src/agent/brokers/grants.ts": 344,
-    "packages/server/src/agent/brokers/proc.ts": 379,
+    "packages/server/src/agent/brokers/proc.ts": 421,
     "packages/server/src/agent/browser.ts": 412,
     "packages/server/src/agent/destructive-gate.ts": 595,
     "packages/server/src/agent/effects/capability.ts": 308,
