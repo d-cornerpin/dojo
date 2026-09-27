@@ -447,14 +447,23 @@ async function main(): Promise<void> {
   } catch { /* ignore, migration module may not exist yet */ }
 
   // 3b. Generate tool documentation files for load_tool_docs
+  //
+  // INSTALLED-BOX AUDIT — THIS STEP USED TO FAIL OPEN IN BOTH DIRECTIONS.
+  // The success arm logged `count` at INFO without ever asking how many manuals were OWED, so
+  // `count: 0` on an unwritable `~/.dojo/tools` read as success; the catch arm logged one
+  // `warn` and left `/health` with nothing to report. The comparison and the level now belong
+  // to `tools/doc-freshness.ts`, which the generator calls on its way past — so neither arm
+  // here can forget it, and the answer survives boot for the Vitals card to read.
   try {
     const { generateToolDocs } = await import('./tools/index-generator.js');
-    const result = await generateToolDocs();
-    logger.info('Tool docs generated', { count: result.count });
+    await generateToolDocs();
   } catch (err) {
-    logger.warn('Tool docs generation failed', {
-      error: err instanceof Error ? err.message : String(err),
-    });
+    // A throw means nothing was written and the generator never reached its own recorder, so
+    // the failure is recorded HERE or it is invisible. `recordToolDocsFailure` logs it at
+    // ERROR through the same shared rule the shortfall path uses.
+    const { recordToolDocsFailure } = await import('./tools/doc-freshness.js');
+    const { getToolsDir } = await import('./tools/tool-doc-read.js');
+    recordToolDocsFailure(getToolsDir(), err);
   }
 
   // 4. Ensure primary agent exists (skips if OOBE hasn't completed yet)

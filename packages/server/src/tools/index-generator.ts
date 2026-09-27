@@ -17,6 +17,7 @@ import { createLogger } from '../logger.js';
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { registryToolDefinitions } from '../agent/tools/registry.js';
 import { TOOLS_DIR } from './tool-doc-read.js';
+import { recordToolDocsGeneration } from './doc-freshness.js';
 
 const logger = createLogger('tool-docs-generator');
 
@@ -70,7 +71,7 @@ export function formatToolDoc(tool: ToolDefinition): string {
  * Generate .md files for all tool definitions.
  * Called on platform startup.
  */
-export async function generateToolDocs(): Promise<{ count: number }> {
+export async function generateToolDocs(): Promise<{ count: number; expected: number; written: number; pruned: number }> {
   // Ensure directory exists
   fs.mkdirSync(TOOLS_DIR, { recursive: true });
 
@@ -84,8 +85,14 @@ export async function generateToolDocs(): Promise<{ count: number }> {
   const allTools: ToolDefinition[] = registryToolDefinitions();
 
   // Deduplicate by name (Google calendar_agenda vs Microsoft calendar_agenda_ms, etc.)
+  // `seen` IS the expected surface: one manual is owed per unique registered name, so its
+  // size is the number the written count has to be compared against. Before the
+  // installed-box audit this number was computed and then thrown away, which is why a box
+  // that wrote nothing could report `count: 0` as success.
   const seen = new Set<string>();
   let count = 0;
+  /** The first real write failure, carried out to the freshness record. */
+  let firstWriteError: string | null = null;
   for (const tool of allTools) {
     if (seen.has(tool.name)) continue;
     seen.add(tool.name);
@@ -109,9 +116,13 @@ export async function generateToolDocs(): Promise<{ count: number }> {
       fs.writeFileSync(filePath, doc, 'utf-8');
       count++;
     } catch (err) {
-      logger.warn(`Failed to write tool doc for ${tool.name}`, {
-        error: err instanceof Error ? err.message : String(err),
-      });
+      // Per-tool warn KEPT: it names which manual failed, which the aggregate
+      // cannot. What changes is that the failure is no longer the ONLY record —
+      // `firstWriteError` carries it out to the freshness recorder, so a box
+      // that failed every write can say so once, at ERROR, with a number.
+      const message = err instanceof Error ? err.message : String(err);
+      if (firstWriteError === null) firstWriteError = message;
+      logger.warn(`Failed to write tool doc for ${tool.name}`, { error: message });
     }
   }
 
@@ -138,6 +149,19 @@ export async function generateToolDocs(): Promise<{ count: number }> {
     }
   } catch { /* dir read failed — non-fatal, nothing to prune */ }
 
-  logger.info('Tool docs generated', { count, pruned, dir: TOOLS_DIR });
-  return { count };
+  // THE COMPARISON, and it is not made here: the recorder owns it, so it happens on every
+  // boot by construction rather than at a call site somebody can forget. It also owns the
+  // level — a shortfall is an ERROR, a complete set is the INFO line this function used to
+  // write unconditionally (including when it had written nothing at all).
+  recordToolDocsGeneration({
+    expected: seen.size,
+    written: count,
+    dir: TOOLS_DIR,
+    lastError: firstWriteError,
+    pruned,
+  });
+
+  // `count` is kept as the historical name for the written total; `written` is the same
+  // number under the name the freshness contract uses, so a caller reads whichever it means.
+  return { count, expected: seen.size, written: count, pruned };
 }

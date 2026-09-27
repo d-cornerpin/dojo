@@ -8,6 +8,7 @@ import { broadcast } from '../ws.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
 import { assertPublicHttpTarget } from '../../agent/net-guard.js';
 import { receiptStatus } from '../../agent/v2/receipt.js';
+import { toolDocsStatus } from '../../tools/doc-freshness.js';
 import type { HealthData, LogEntry } from '@dojo/shared';
 import { NEW_SESSION_DIVIDER } from '@dojo/shared';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
@@ -49,6 +50,16 @@ systemRouter.get('/health', (c) => {
     // to run unrecorded. Best-effort: a health read must never fail on its own diagnostics.
     ...(() => {
       try { return { receipts: receiptStatus() }; } catch { return {}; }
+    })(),
+    // INSTALLED-BOX AUDIT: whether this box's tool manuals are the ones it shipped with. Same
+    // best-effort shape and same reason as `receipts` above — a health read must never fail on
+    // its own diagnostics. Absent (not zeroed) until boot has measured, because "not asked yet"
+    // and "nothing missing" are different answers and only the second one is good news.
+    ...(() => {
+      try {
+        const d = toolDocsStatus();
+        return d ? { toolDocs: d } : {};
+      } catch { return {}; }
     })(),
   };
 

@@ -5,6 +5,7 @@
 import type { MessageOrigin } from './origin.js';
 import type { DisplayKind } from './visibility.js';
 import type { AccessGrants } from './access.js';
+import type { ToolDocsHealth } from './tool-docs-health.js';
 
 export interface Provider {
   id: string;
@@ -401,6 +402,20 @@ export interface HealthData {
     lastError: string | null;
     root: string;
   };
+  /**
+   * INSTALLED-BOX AUDIT — WHETHER THIS BOX'S TOOL MANUALS ARE ITS OWN.
+   *
+   * Boot writes one `~/.dojo/tools/<tool>.md` per registered tool. Every write failure was a
+   * per-tool `warn` and nothing compared the written total against the registry, so an
+   * unwritable docs directory served the PREVIOUS version's manuals for ever while boot logged
+   * `count: 0` at INFO. Unlike `receipts` above this one IS drawn — by the Vitals card, because
+   * it is a real degradation on a shipped box rather than a debug instrument, and because the
+   * failure is invisible otherwise (a stale manual reads exactly like a current one).
+   *
+   * Absent until boot has measured; `@dojo/shared`'s `toolDocsShortfall` is the one rule that
+   * decides whether this deserves a word, and both the boot log and the card read it.
+   */
+  toolDocs?: ToolDocsHealth;
 }
 
 export interface SetupStatus {

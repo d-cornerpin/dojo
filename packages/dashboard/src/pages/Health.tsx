@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { HealthData, LogEntry } from '@dojo/shared';
 import type { LogEntryEvent, WsEvent } from '@dojo/shared';
+import { toolDocsShortfall } from '@dojo/shared';
 import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { formatDate, formatTimeOnly, formatTimestamp } from '../lib/dates';
@@ -331,9 +332,13 @@ export const Health = () => {
   // provider is unhealthy, else nominal.
   const anyProviderDown = providerStatuses.some(p => !p.healthy);
   const dbDown = health?.db === 'error';
-  const overallDown = dbDown || anyProviderDown;
+  // INSTALLED-BOX AUDIT: a box that could not write its tool manuals is serving agents the
+  // PREVIOUS version's instructions, silently. `toolDocsShortfall` is the shared rule — the same
+  // one the boot log reads — so this card and that log cannot say different things about it.
+  const toolDocsWarning = toolDocsShortfall(health?.toolDocs);
+  const overallDown = dbDown || anyProviderDown || toolDocsWarning !== null;
   const overallLabel = overallDown
-    ? (dbDown ? 'Database error' : 'Provider issue')
+    ? (dbDown ? 'Database error' : anyProviderDown ? 'Provider issue' : 'Tool manuals incomplete')
     : 'All systems nominal';
 
   return (
@@ -374,6 +379,14 @@ export const Health = () => {
           <div className="stat__value">{health ? String(health.agents) : '--'}</div>
         </div>
       </div>
+
+      {/* Tool manuals — shown ONLY when something is missing. A complete set needs no row;
+          the rule itself is silent both when nothing is missing and before boot has measured. */}
+      {toolDocsWarning && (
+        <div className="note--warn" style={{ marginTop: 14 }}>
+          <strong>Tool manuals incomplete.</strong> {toolDocsWarning}
+        </div>
+      )}
 
       {/* Healer Vitals (preserved) */}
       <HealerVitals />
