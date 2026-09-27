@@ -5699,12 +5699,54 @@
       "to": 81,
       "by": "SUDO POLICY (v3.2.2) - the dropdown's rule, testable without mounting a page",
       "why": "NEW ENTRY at 81. The values, their order, the labels, the hints, the unknown-value rule, the password warning and the UNCONDITIONAL floor note. It exists so the copy is reachable by a clause: the note that `sudo rm -rf /` is refused under EVERY setting has to render under all three values, and if it lived in the `free` hint then switching to `gated` would hide it - which is exactly the surprise that becomes a 'permissions are broken' report. From 81 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/brokers/sudo-policy.ts",
+      "from": 275,
+      "to": 363,
+      "by": "OWNER RULING 2026-09-27 - the role wall and the primary's owner-routed hold",
+      "why": "275 -> 363 (+88). The 2026-09-27 ruling — \"ONLY the main agent gets Sudo access ever.\" — added a SECOND wall and a THIRD surface to this module, and both live here because both are the sudo decision: the ROLE WALL (a non-primary sudo line refused under every policy, unoverridable, in the floor's own voice), `isSudoHoldRequired` (the predicate the dispatch step asks, restructured so the STRING parse runs before any I/O after the integration suite proved a config throw there took the WHOLE TURN down - 39 failures from one undefined import), and `sudoOwnerCardCopy` (the owner-facing card text, engine-fixed, never model-authored). The prose is the ruling's reasoning: why the wall sits AFTER the inner re-run and BEFORE the policy (so a sub-agent's `sudo rm -rf /` is refused by the FLOOR, the most specific true thing, rather than by a role message implying another agent could run it), why `gated` must hold the primary or the mode is EMPTY, why the hold goes to the human and never to the primary itself, and why an unreadable policy HOLDS. REFUSED: splitting the wall into its own module - it is one authorization decision with one ordering argument, and a reader who finds half of it elsewhere re-derives the ordering wrong. From 363 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts",
+      "from": 225,
+      "to": 259,
+      "by": "OWNER RULING 2026-09-27 - the primary's sudo hold, routed to the owner",
+      "why": "225 -> 259 (+34: one branch and the annotation of the doctrine it carves out). `gated` must hold the PRIMARY now, because nothing else can sudo and the mode would otherwise be empty - and the primary is exactly the agent the June 2026-06-12 doctrine says has full reign, so the exception has to be stated AT that `if (!isPrimaryAgent(agentId))`, citing the owner's sentence, or the next reader trusts the doctrine and deletes the branch. The hold reuses `fileHealerApprovalProposal` (the existing \"answers to the owner\" route: same bound token, same canonical signature, same card, same approval -> `destructive_approvals` mint) rather than `requestApproval`, which wakes the PRIMARY and would ask a caller to approve its own call. REFUSED: a new owner-approval mechanism, which is what \"reuse, never invent\" forbids. From 259 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/destructive-gate.ts",
+      "from": 587,
+      "to": 595,
+      "by": "OWNER RULING 2026-09-27 - the dead gate arm, removed with its reason",
+      "why": "587 -> 595 (+8, and the CODE went DOWN). The first cut's `gated` classification arm is GONE: it only ever ran for non-primary agents, who can no longer sudo at all, while the primary is held directly at dispatch. What replaces it is the explanation, because dead classification is worse than none - a silent no-op invites the next reader to debug why it never fires, and a bare deletion invites the one after that to add it back. This is the file's own precedent: it keeps the `file_delete` branch as future-proofing WITH its reason rather than as a mystery. From 595 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/healer/approval-routing.ts",
+      "from": 497,
+      "to": 505,
+      "by": "OWNER RULING 2026-09-27 - an optional copy override, so the owner card can speak for sudo",
+      "why": "497 -> 505 (+8: one optional input field and three `??` defaults). The routing, the bound token, the signature, the card and the approval -> `destructive_approvals` mint are all GENERIC; only the WORDS were Healer-specific (\"your self-healing helper\"). A held PRIMARY sudo call uses the same mechanism with its own sentence, because telling the owner his main agent is a self-healing helper would be false. Absent override ⇒ the Healer copy byte-for-byte unchanged. REFUSED: a parallel owner-approval path for sudo, which would duplicate the token, the card and the mint - three places for one mechanism to drift. From 505 this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/lib/sudo-policy.ts",
+      "from": 81,
+      "to": 83,
+      "by": "OWNER RULING 2026-09-27 - the copy names the MAIN AGENT",
+      "why": "81 -> 83 (+2). Every hint now says whose commands the setting governs, and the floor note LEADS with the role boundary. A dropdown that said \"sudo commands run\" would be read as box-wide and the owner would expect a sub-agent to inherit it - which is the bigger surprise of the two the note carries, so it goes first. A clause proves every hint names the main agent and that the boundary precedes the floor list. From 83 this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/pages/Settings.tsx",
+      "from": 7187,
+      "to": 7188,
+      "by": "OWNER RULING 2026-09-27 - one line of card blurb",
+      "why": "7187 -> 7188 (+1). The card's one-line blurb now says the Mac is the MAIN AGENT's and that every other agent is refused sudo whatever the owner picks. One line, in the only place a reader meets the setting. From 7188 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
   "files": {
     "packages/server/src/agent/brokers/sudo-probe.ts": 83,
-    "packages/server/src/agent/brokers/sudo-policy.ts": 275,
+    "packages/server/src/agent/brokers/sudo-policy.ts": 363,
     "packages/dashboard/src/components/AccessControls.tsx": 141,
     "packages/dashboard/src/components/AccessManifest.tsx": 239,
     "packages/dashboard/src/components/AttachmentChips.tsx": 465,
@@ -5722,7 +5764,7 @@
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
     "packages/dashboard/src/lib/access-summary.ts": 113,
     "packages/dashboard/src/lib/api.ts": 2539,
-    "packages/dashboard/src/lib/sudo-policy.ts": 81,
+    "packages/dashboard/src/lib/sudo-policy.ts": 83,
     "packages/dashboard/src/lib/manifest-edits.ts": 205,
     "packages/dashboard/src/lib/voice/voice-client.ts": 873,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 452,
@@ -5731,7 +5773,7 @@
     "packages/dashboard/src/pages/Costs.tsx": 686,
     "packages/dashboard/src/pages/Health.tsx": 662,
     "packages/dashboard/src/pages/Memory.tsx": 499,
-    "packages/dashboard/src/pages/Settings.tsx": 7187,
+    "packages/dashboard/src/pages/Settings.tsx": 7188,
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
@@ -5741,7 +5783,7 @@
     "packages/server/src/agent/brokers/grants.ts": 344,
     "packages/server/src/agent/brokers/proc.ts": 379,
     "packages/server/src/agent/browser.ts": 412,
-    "packages/server/src/agent/destructive-gate.ts": 587,
+    "packages/server/src/agent/destructive-gate.ts": 595,
     "packages/server/src/agent/effects/capability.ts": 308,
     "packages/server/src/agent/effects/fs.ts": 258,
     "packages/server/src/agent/effects/scopes.ts": 349,
@@ -5807,7 +5849,7 @@
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 407,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 165,
-    "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 225,
+    "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 259,
     "packages/server/src/agent/v2/steps/execute/index.ts": 295,
     "packages/server/src/agent/v2/steps/execute/post-result.ts": 351,
     "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 404,
@@ -5886,7 +5928,7 @@
     "packages/server/src/google/tools-read.ts": 944,
     "packages/server/src/google/tools-slides.ts": 3022,
     "packages/server/src/google/tools-write.ts": 2020,
-    "packages/server/src/healer/approval-routing.ts": 497,
+    "packages/server/src/healer/approval-routing.ts": 505,
     "packages/server/src/healer/diagnostic.ts": 1067,
     "packages/server/src/healer/healer-agent.ts": 1186,
     "packages/server/src/healer/injury-recovery.ts": 1155,
