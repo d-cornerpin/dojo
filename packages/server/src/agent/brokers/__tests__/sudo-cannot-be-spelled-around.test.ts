@@ -27,6 +27,7 @@
 //   §4 no capability lost — the grant question is unchanged
 //   §5 the argv door, which shares the authority
 //   §7 `su`, and a body the broker cannot read
+//   §11 the FIFTH review: nested delimiters counted, and an encoded space is still a space
 //   §10 the FOURTH review: every form that spells a command as text, and a named stream
 //   §9 the third review's F1/F2/F3: su's own option table, every interpreter's body, and one rule
 //      for a body nobody can read
@@ -1128,5 +1129,114 @@ describe('§10 R4-4 — what the AGENT reads when its sudo call is held', () => 
     // a claim about code elsewhere; passing the value keeps it a report of what was read.
     expect(sudoHeldRefusal('sudo whoami', 'free')).toContain('`free`');
     expect(sudoHeldRefusal('sudo whoami', 'blocked')).toContain('`blocked`');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §11 — THE FIFTH REVIEW. The package was GO; this is the one escape left in it, and the ruling was
+// CLOSE IT, DON'T DOCUMENT IT.
+//
+// Perl and Ruby quote delimiters NEST; a regex cannot count. `[^}]*` stopped at the FIRST closer, so
+// under `free` the body of `qx{echo {}; rm -rf /}` came out as `echo {` and the rest ran as root. Ten
+// shapes measured as ALLOWED before the fix, including two-deep nesting and the `<>` pair.
+//
+// ⚠ AND ONE THE REVIEW DID NOT LIST, found while verifying the residual sentence was true: an ENCODED
+// SPACE. `qx{rm -rf\x20/}` and `os.system('rm -rf\x20/')` both ran, because the unescape step turned
+// `\x20` into the letters `x20`. Those bytes ARE in the line, so it is closed here rather than written
+// down — the residual is for payloads the line genuinely does not spell.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§11 R5 — delimiters that nest are counted', () => {
+  const NESTED: readonly string[] = [
+    "sudo perl -e 'qx{echo {}; rm -rf /}'",          // the review's three
+    "sudo ruby -e '%x(echo (); rm -rf /)'",
+    "sudo perl -e 'qx[echo []; rm -rf /]'",
+    "sudo perl -e 'qx<echo <>; rm -rf />'",          // the fourth pair, unlisted
+    "sudo perl -e 'qx{a{b{c}}; rm -rf /}'",          // nesting two deep
+    "sudo ruby -e '%x{x{y{z}}; rm -rf ~}'",
+    "sudo perl -e 'system(q{echo {}; rm -rf /})'",   // inside a call, inside another pair
+    "sudo ruby -e 'system(%q(echo (); rm -rf /))'",
+  ];
+  const UNTERMINATED: readonly string[] = [
+    "sudo perl -e 'qx{echo {; rm -rf /'", "sudo ruby -e '%x(echo (; rm -rf /'",
+    "sudo perl -e 'qx[echo [; rm -rf ~'",
+  ];
+
+  it('a nested body is read WHOLE, so the floor sees the command after the inner pair', () => {
+    for (const who of [PRIMARY, WORKER]) {
+      underEach((p) => {
+        for (const line of NESTED) expect(shellAllows(line, who), `${p}/${who}: ${line}`).toBe(false);
+      });
+    }
+  });
+
+  it('…and under `free` it is the FLOOR that names it', () => {
+    policyRow.current = 'free';
+    for (const line of NESTED) {
+      expect(String(shell(line, PRIMARY).rule), line).toMatch(/^global-exec-(deny|substring)/);
+    }
+  });
+
+  it('the scan NAMES the whole body, at every depth', () => {
+    expect(privilegedInnerCommands("sudo perl -e 'qx{echo {}; rm -rf /}'")).toContain('rm -rf /');
+    expect(privilegedInnerCommands("sudo perl -e 'qx{a{b{c}}; rm -rf /}'")).toContain('rm -rf /');
+    expect(privilegedInnerCommands("sudo ruby -e '%x(echo (); rm -rf /)'")).toContain('rm -rf /');
+    // the non-paired forms still end at the next occurrence — that is the language's rule, not a
+    // simplification, and counting them would be wrong
+    expect(privilegedInnerCommands("sudo perl -e 'qx#rm -rf /#'")).toContain('rm -rf /');
+  });
+
+  it('⚠ AN UNTERMINATED NEST FAILS CLOSED — it must not fall back to first-closer behaviour', () => {
+    for (const who of [PRIMARY, WORKER]) {
+      underEach((p) => {
+        for (const line of UNTERMINATED) expect(shellAllows(line, who), `${p}/${who}: ${line}`).toBe(false);
+      });
+    }
+    // and the body is classified as unreadable, not merely floored by luck
+    expect(interpreterBody("perl -e 'qx{echo {; ls'")?.kind).toBe('unparseable');
+    expect(interpreterBody("perl -e 'qx{echo {}; ls}'")?.kind).toBe('readable');
+  });
+
+  it('⚠ AN ENCODED SPACE IS STILL A SPACE — the bytes are in the line', () => {
+    policyRow.current = 'free';
+    for (const line of [
+      "sudo perl -e 'qx{rm -rf\\x20/}'", "sudo perl -e 'qx{rm\\x20-rf\\x20/}'",
+      `sudo python3 -c "os.system('rm -rf\\x20/')"`, `sudo ruby -e 'system("rm -rf\\u0020/")'`,
+      `sudo perl -e 'system("rm -rf\\040/")'`,
+    ]) {
+      expect(shellAllows(line, PRIMARY), line).toBe(false);
+    }
+    // …and decoding is for READING the payload only: parity still judges the text as written, so an
+    // ordinary escaped quote is not turned into an unbalanced one.
+    expect(shellAllows(`sudo perl -e 'print "\\x27"'`, PRIMARY)).toBe(true);
+    expect(shellAllows(`sudo perl -e 'print "\\x41"'`, PRIMARY)).toBe(true);
+  });
+
+  it('NO REGRESSION: everything the fifth review verified as refused stays refused', () => {
+    // Carried forward from its verification list, run here so a scan change cannot quietly undo them.
+    underEach((p) => {
+      for (const line of [
+        'sudo sh <<EOF\nrm -rf /\nEOF', 'sudo sh <<< "rm -rf /"',
+        'sudo bash -c "echo x | base64 -d | sh"',
+        `sudo python3 -c "os.system('rm' + ' -rf /')"`,
+        `sudo python3 -c "subprocess.run(['rm','-rf','/'])"`,
+        "sudo perl -e '`rm -rf /`'", 'sudo sh /dev/fd/0', 'sudo bash <(echo rm -rf /)',
+        'sudo sh', 'su --login root', 'sudo rm -rf /',
+      ]) expect(shellAllows(line, PRIMARY), `${p}: ${line}`).toBe(false);
+    });
+  });
+
+  it('NO CAPABILITY LOST: brace-heavy and percent-heavy ordinary code still runs', () => {
+    // ⚠ EVERY ROW HERE IS A FALSE REFUSAL I ACTUALLY CAUSED AND FIXED. With the `%` letter optional on
+    // the non-paired path, `print('%x' % 255)` read as a quote operator opening on `'`, found no
+    // closer, and was refused — a legitimate line, caught by this list rather than by a reviewer.
+    policyRow.current = 'free';
+    for (const line of [
+      `sudo python3 -c "print('%x' % 255)"`, `sudo ruby -e 'h = {a: {b: 1}}; puts h'`,
+      `sudo perl -e 'my %h = (a => 1); print $h{a}'`, "sudo ruby -e 'puts %w[a b].join'",
+      "sudo perl -e 'print qq{hello}'", `sudo awk 'BEGIN{print "hi"}'`,
+      `sudo perl -e 'printf "100%%\\n"'`, `sudo sh -c 'echo ok'`,
+      `sudo python3 -c "print({'a': {'b': 1}})"`,
+    ]) expect(shellAllows(line, PRIMARY), line).toBe(true);
   });
 });
