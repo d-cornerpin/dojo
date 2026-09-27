@@ -206,7 +206,9 @@ describe('§3 — the AppleScript cage: its own grant, and the SCRIPT is authori
       'do shell script "rm -rf /"',
       'do shell script "cat ~/.dojo/secrets.yaml"',
       'set x to read POSIX file "/Users/me/.dojo/secrets.yaml"',
-      'do shell script "sudo rm -rf /etc"',
+      // v3.2.2: `sudo *` is a policy now, so the canary names a command whose INNER form is still a
+      // floor entry — the payload must answer to the floor through the wrapper.
+      'do shell script "sudo rm -rf /"',
     ]) {
       expect(authorizeAppleScript(wildcard, script(body)).allowed, body).toBe(false);
     }

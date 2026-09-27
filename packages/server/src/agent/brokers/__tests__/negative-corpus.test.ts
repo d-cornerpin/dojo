@@ -396,7 +396,9 @@ describe('§6 — the proc broker: substitution, backticks and redirection appen
   });
 
   it('refuses the global-deny commands regardless of manifest', async () => {
-    for (const cmd of ['rm -rf /', 'rm -rf ~', 'sudo rm x', 'chmod 777 /etc']) {
+    // v3.2.2: `sudo rm x` is no longer a floor refusal (sudo is a per-box policy), so the sudo entry
+    // carries a floor command inside it — the property this clause is actually about.
+    for (const cmd of ['rm -rf /', 'rm -rf ~', 'sudo rm -rf /', 'chmod 777 /etc']) {
       const v = await authorize(wildcard(), { kind: 'shell', resource: mustResolveCommand(cmd) });
       expect(v.allowed, `expected refusal for: ${cmd}`).toBe(false);
     }

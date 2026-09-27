@@ -161,9 +161,15 @@ describe('EXEC-LOOP direction 2 — a construct wrapping a refused command is st
 });
 
 describe('EXEC-LOOP — the global denies still reach inside a construct', () => {
-  it('refuses sudo inside a loop even for an agent with exec_allow ["*"]', () => {
-    expect(exec('freeworker', 'sudo rm -rf /tmp/x').allowed).toBe(false);
-    const r = exec('freeworker', 'for i in 1; do sudo rm -rf /tmp/x; done');
+  it('refuses a FLOOR command under sudo inside a loop, even for an agent with exec_allow ["*"]', () => {
+    // ⚠ THE CANARY'S COMMAND CHANGED, NOT ITS POINT (v3.2.2 ruling). `sudo *` left the floor and is a
+    // per-box policy now, so `sudo rm -rf /tmp/x` is no longer refused for the prefix alone — under
+    // the default `gated` it is HELD by the destructive gate, upstream of this broker. What this
+    // clause exists to prove is that the floor reaches INSIDE a construct, so it now uses a command
+    // whose INNER form is still a floor entry. Sudo is a transparent wrapper: it comes off and the
+    // whole pipeline re-runs, which is exactly what keeps this true.
+    expect(exec('freeworker', 'sudo rm -rf /').allowed).toBe(false);
+    const r = exec('freeworker', 'for i in 1; do sudo rm -rf /; done');
     expect(r.allowed).toBe(false);
     expect(r.reason).toMatch(/Global deny/);
   });

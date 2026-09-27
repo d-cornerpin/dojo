@@ -218,7 +218,8 @@ describe('§B — THE CANARY CORPUS at the argv door, every canary REFUSED', () 
     const canaries = [
       ['rm', '-rf', '/'],
       ['rm', '-rf', '~'],
-      ['sudo', 'rm', '-rf', '/etc'],
+      // v3.2.2: `sudo *` left the floor; the canary keeps its point with a floor command inside.
+      ['sudo', 'rm', '-rf', '/'],
       ['chmod', '777', '/'],
     ];
     for (const argv of canaries) {
@@ -357,7 +358,7 @@ describe('§E — EXEC-LOOP PRESERVED: the owner\'s own construct still runs, at
       'cat $(echo ~/.dojo/secrets.yaml)',
       'cat `echo ~/.dojo/secrets.yaml`',
       'rm -rf /',
-      'sudo rm -rf /etc',
+      'sudo rm -rf /',            // v3.2.2: the wrapper comes off and the floor still bites
       `cat ${sshDir}/id_ed25519`,
     ]) {
       expect(authorizeShellScript(wildcard(), mustScript(script)).allowed, `expected refusal: ${script}`).toBe(false);
