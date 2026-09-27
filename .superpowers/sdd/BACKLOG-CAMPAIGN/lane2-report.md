@@ -205,3 +205,140 @@ shadowed to this worktree's copy, because the workspace symlink otherwise resolv
    in the census — and the census greps for `openAgentCall(`, so it counts as wired without checking
    that the lever works. The behavioural clause covers the probe (`isEmbeddable`), not the capture:
    proving the capture needs a real headless browser, which is a live-verification follow-up.
+
+---
+
+# APPENDIX — FIX ROUND (sweep review B: L2-1, L2-2, L2-3, L2-4 + the L6 folds)
+
+**STATUS: all four lane-2 findings closed at the root, both L6 folds done. RV1 — the mutant that
+rode 27/27 GREEN — now goes 3 F / 18 P. One size refusal left, argued not taken.**
+
+| | |
+|---|---|
+| branch | `t86-lane2fix`, off the merged tip `e83674d6` |
+| product | **`4dd729f4`** the 32 Graph calls the census called handled are handled now · **`c829bb6a`** the embedder's wiring shrinks to six lines |
+| test-side | **`7b38d7c8`** an exemption stops being immunity, and the scheduler premise gets its pin · **`01e57745`** two existing guards fired on this round's own work |
+| untouched | `ratchets.json` · `growth-baseline.json` · `gate-manifest.mjs` · `definitions.ts` · the dev server · `~/.dojo` · the kit |
+
+## A1 — L2-1 (HIGH): the three false exemptions are wired, not reworded
+
+The reviewer measured what *"RIDES THE DOOR ALREADY"* was worth: `tools-office.ts` called **neither
+wrapper anywhere** — 13 bare fetches, 9 straight to Graph, **11 with no `signal` at all** — reached
+from `cat/office.ts:105` with the agentId in hand and unused. `tools-write.ts`'s sentence described 4
+of 16 sites; `tools-read.ts`'s described none of 3.
+
+**`microsoft/graph-fetch.ts`** is the door those 32 calls now take: the agent's stop through
+`openAgentCall`, composed with whatever clock the caller brought, plus a finite clock for the eleven
+that had none — and deliberately **none** of the three things the wrapped door adds (activity row,
+outbound record, broadcast), which is the whole reason those calls were not simply rewritten to use
+`msGraphRead`. A stop is re-labelled as a stop once, at the door, because these callers render their
+own failure text and an `AbortError` reaching them comes out as a transport fault.
+
+**It cost ZERO lines in all three pinned files** (3508 / 1631 / 2212, unchanged), and that is
+mechanism rather than accounting: `agentId` is the door's FIRST parameter so 32 multi-line
+`fetch(url, {…})` sites became `graphFetch(agentId, url, {…})` as a prefix edit; `tools-office.ts`'s
+own `const GRAPH_BASE` was a **second copy** of the literal in `client.ts:16`, so the new module owns
+the constant and that deletion paid for the import; the other two gained a NAME on an import line
+they already had. `agentId` is threaded through the four byte helpers and the three-deep attachment
+chain, each on an existing line.
+
+## A2 — L2-2 (HIGH): the exemption mechanism is no longer immunity
+
+`FETCH_SITES` pins the number of `fetch(` sites in **every** fetch-bearing file — wired and exempt
+alike — and three clauses read it: an unpinned file that gained its first fetch fails, a changed
+count fails, and a pinned row for a file that no longer fetches fails. **An exemption is an argument
+about the calls that exist; it is not a licence for the next one.**
+
+| mutant | before this round | now |
+|---|---|---|
+| **RV1** — the reviewer's clockless, unregistered Graph fetch in `tools-office.ts` | **0 F — 27/27 GREEN** | **3 F / 18 P** — the bare-Graph clause, the registration clause, and the count pin |
+| **RV1b** — the same shape in a file that is STILL exempt (`voice/smart-turn.ts`) | would have been green | **1 F / 20 P** on the count pin — the finding's general form, not its one instance |
+
+RV1's final re-plant at the finished tree, reverted byte-exact, sha256
+`ff6953485d592d6faa146c4ff05bd429cdc36ce37c56eb3e1746c9815994bab5`.
+
+## A3 — L2-3 / L2-4
+
+**L2-3**: `generateEmbedding` takes an optional `agentId`, composes the stop with its own timeout on
+both dials, and releases by identity across the halving retries. The seven awaiting callers the
+reviewer named hand over the agent they hold (`recall-lane`, `vector-search`, `vault_search`, four
+`a2a-transport` sites — the a2a ones attribute the wait to the **sender**, whose turn is doing the
+send). The corpus sweep passes nothing and is unchanged, so the exemption's true half survives as
+behaviour instead of prose.
+
+⚠ **A mutant caught a hole in my own first clause.** Deleting the `finally` passed, because
+`abortInFlight` **deletes** each controller as it aborts it — after a stop the count is 0 whether the
+caller released or not. The leak now dies on a separate clean-call clause. The stake is A-5b: a
+registration that outlives its work renders as a Stop button for work that is over.
+
+**L2-4**: `twilio/client.ts`'s exemption now names both kinds (the `sendSms` delivery and the
+`testTwilioCredentials` operator-in-Settings), with a clause asserting both appear, so the next call
+added to that file cannot inherit the wrong argument.
+
+## A4 — the final tally
+
+**WIRED: 9 · EXEMPT: 22 · UNACCOUNTED: 0 · every one of the 32 files' fetch-site counts pinned.**
+
+| | |
+|---|---|
+| **wired (9)** | `agent/model.ts` · `agent/web-tools.ts` · `agent/site-snapshot.ts` · `google/client.ts` · `microsoft/client.ts` · **`microsoft/graph-fetch.ts`** · **`microsoft/tools-office.ts`** · **`microsoft/tools-read.ts`** · **`microsoft/tools-write.ts`** · **`memory/embeddings.ts`** (the last five new this round; `tools-office`/`tools-read` no longer contain a bare `fetch(` at all) |
+| **exempt (22)** | 13 NO AGENT EXISTS · 2 THE CALL IS THE DELIVERY (one of them now stating both of its kinds) · 4 THE AGENT IS NOT WAITING · 1 RIDES THE DOOR ALREADY (`google/tools-slides.ts`, the one the reviewer measured as TRUE) · 1 NOT A CALL · 1 already-held-elsewhere |
+
+## A5 — the L6 folds
+
+**L6-1**: lane 6's report now carries both M2 numbers and says which is the evidence — 19F at the
+inner plant, **26F / 212P** at the exported predicate (the reviewer's plant, which short-circuits the
+`interAgentTurn` and `surfacedReplyThisTurn` guards as well) — and states plainly that the
+**load-bearing proof of §2 is the Option-A run with its five named controls**, not `return true`. A
+mutant that widens a predicate to every turn cannot distinguish "the ruling was overturned" from
+"the shape broke".
+
+**L6-2**: a new three-clause pin,
+`preflight/__tests__/a-scheduler-cycle-has-no-continuation.test.ts`. The continuation record has
+exactly **one** writer in the engine corpus and it is the C3 human stash; that write is guarded by a
+human conversation being chosen; and the predicate still requires the record to exist and is still
+free of any name or display-kind. Mutants: a second writer on a background path → RED; the
+`!!continuation` conjunct dropped → RED; the `chosenConvKey` guard removed → RED.
+
+## A6 — two existing guards fired on this round, and both were right
+
+The closure manifest refused `microsoft/graph-fetch.ts` by name until the reading was written beside
+it (the reach is unchanged — the door enters through `client.ts`, which was already in the manifest,
+and the three files it serves were too), and it reported `tools-office.ts`/`tools-read.ts` **stale**,
+which is the fix seen from the other side. `tools-write.ts` stays with a line saying why not to
+re-delete it: its code has no `fetch(` either, but that walk does not strip comments (NIT-8) and the
+file says *"// re-fetch (never re-sends)"*.
+
+The guard-corpus census refused my L6-2 pin's own hand-rolled walk of the step packages — exactly
+the second copy that audit exists to prevent — so the writer census derives its corpus from
+`engine-sources.ts`, with a non-vacuity clause that the shared corpus really contains the step the
+writer lives in.
+
+## A7 — verification
+
+| | |
+|---|---|
+| census suite | **24/24** · the L6-2 pin **3/3** · closure + guard-corpus + census together **108/108** |
+| full server suite | **491 files, 7,375 clauses, exit 0** on a quiet box (a first run showed 3 load flakes — a temp-home `ENOENT`, an OpenAI-seam timing clause and a souls-installer file load; all three green in isolation and absent from the clean run) |
+| `npm run typecheck` | clean |
+| `npm run gates` | **14 of 15 blocking green.** One refusal, below |
+| mutants this round | **9**, all RED with a message naming the defect, all reverted with sha256 re-asserted |
+
+⚠ **THE ONE ASK, and it is the only thing between this branch and a green gate run:**
+
+```
+packages/server/src/memory/embeddings.ts   growth baseline 251 → 319   (+68, +27.1%)
+```
+
+Measured rather than assumed: the ceiling is 251 × 1.25 = **313.75**, and the file was at **313** at
+`e83674d6` — green with three quarters of a line to spare, confirmed by running the detector at that
+commit. Another lane's growth had spent the headroom; **L2-3's six lines are what cross it, so the
+crossing is mine.** The six are one import, two comment lines naming the seven awaiting paths, one
+slot, `try {`, and a one-line `finally`. Either a baseline re-record (251 → 319) or a `ratchets.json`
+pin at 319 closes it; a pin is the tighter instrument since it makes the file decrease-only from
+there. I did not take either.
+
+Refused alternative, on principle rather than on line count: moving the slot to a new
+`memory/embed-stop.ts` reaches net-zero in `embeddings.ts`, but it takes `openAgentCall` **out of the
+file that owns the dial**, so the census would need a "rides the door" exemption for it — the exact
+shape of sentence this round exists to delete.
