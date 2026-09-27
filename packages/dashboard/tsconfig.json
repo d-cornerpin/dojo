@@ -14,6 +14,11 @@
     "noEmit": true
   },
   "include": ["src"],
+  // Tests are EXCLUDED from the build program, exactly as `packages/server/tsconfig.json`
+  // excludes its own: `npm run build` here is `tsc && vite build`, i.e. the thing that
+  // ships, and a test file is not shipped. Vitest transpiles them per-file, so they are
+  // type-CHECKED by neither — the same standing trade the server suite makes.
+  "exclude": ["src/**/__tests__/**", "src/**/*.test.ts", "src/**/*.test.tsx"],
   "references": [
     { "path": "../shared" }
   ]
