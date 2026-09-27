@@ -74,7 +74,7 @@ same gap in the same words.
 
 | # | Rule, as its report stated it | Source | Where it is held | Mutant |
 |---|---|---|---|---|
-| 1 | "the brief's five fields actually reach the DOM unescaped-but-uninterpreted… **the one worth a DOM runner**" | T6 §7 | `the-brief-you-approve-is-the-bytes-you-see` — five fields byte-for-byte (runs of spaces, hard newlines), each ONE text node with no structure inside it, plus a card-wide refusal of `b/em/strong/code/script/li/a` | **M1** — render the brief through `<Markdown>`: 16 clauses RED |
+| 1 | "the brief's five fields actually reach the DOM unescaped-but-uninterpreted… **the one worth a DOM runner**" | T6 §7 | `the-brief-you-approve-is-the-bytes-you-see` — five fields byte-for-byte (runs of spaces, hard newlines), each ONE text node with no structure inside it, plus a card-wide refusal of `b/em/strong/code/script/li/a` | **M1** — render the brief through `<Markdown>`: **8 clauses RED** (⚠ CORRECTED 2026-09-26, final sweep C / B4 — reported as 16; the file holds 8 `it`s and M1 kills all 8, 8 F / 37 P. And the granularity was overstated too: M1 also times out the first `waitFor` at ~1,013 ms and the subscription and delivery-panel clauses cascade off it, so the file cannot distinguish *the bytes rule broke* from *the card stopped rendering*. The rule is genuinely held; the number and the resolution were not) |
 | 2 | "that `loadStatus()` is called on every frame (the refetch-on-event idiom, never a partial merge)… **this is the one worth a DOM runner if the house ever gets one**" | T5 §2b | `a-frame-refetches-the-whole-answer` — all four frames refetch, and the WHOLE new answer replaces the card (the frame's own `login` never reaches the screen) | **M5** — merge the frame instead of refetching: 2 RED |
 | 3 | "the four `subscribe()` wirings and their cleanup" | T5 §2b | same file — four subscriptions counted, four unsubscribed on unmount | (M4's sibling) |
 | 4 | "the two `subscribe()` wirings and their cleanup" | T6 §7 | `…bytes-you-see` — both frames refetch, both unsubscribe | **M4** — drop the cleanup: RED |
@@ -196,9 +196,18 @@ branch (see §5 on how the suite was verified without it).
 3. **`pages/Agents.tsx:353` reads `result.data.warnings.length` with no guard.** A
    door answering `ok` without that field costs the owner the Ollama warning and
    throws inside an async handler where nobody sees it.
-4. **Four product headers now state a false premise.** `Markdown.tsx` (lane 4's
-   comment), `lib/working-note-visibility.ts`, `ReportPreviewCard.tsx`,
-   `GitHubSettings.tsx` and `lib/github-card.ts` each say *"`packages/dashboard`
+4. **⚠ CORRECTED AND CLOSED 2026-09-26 (final sweep C / B5): SEVEN product headers stated a
+   false premise, not four, and they are now swept.** The list as written named four of the
+   five files it then listed and missed three. The real seven, measured by
+   `grep -rln "no test runner" packages/dashboard/src`:
+   `components/GitHubSettings.tsx`, `components/Markdown.tsx`,
+   `components/ReportPreviewCard.tsx`, `lib/credential-placeholder.ts`,
+   `lib/github-card.ts`, `lib/provider-edits.ts`, `lib/stop-affordance.ts`
+   (`lib/working-note-visibility.ts`, named here, does not carry the sentence).
+   All seven were swept comment-only on `t86-tidy`, keeping each original argument and
+   dropping only the false premise — a component test can assert what was RENDERED, not what
+   a door would accept, which is why a DECISION still belongs in a pure module. The original
+   text of this item follows, for the record: four headers, each saying *"`packages/dashboard`
    has no test runner"* as the reason a rule lives where it lives. The
    ARCHITECTURE is still right (decidable rules belong in `lib/`, driven from the
    server suite — that is cheaper than a DOM test and always will be), but the

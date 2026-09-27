@@ -38,9 +38,16 @@ ruling 10(d) forbids exactly that direction.
 
 > **`cut 4: expected 'held' to be 'reopened'`**
 
-Four turns seeded `iteration_cap`, and the ask is `held` → `blocked`. (The other seven RED clauses in
-the same first run: the rung spent on every cut, the record unable to emit `iteration_cap` at all, the
+Four turns seeded `iteration_cap`, and the ask is `held` → `blocked`. (The other RED clauses in the
+same first run: the rung spent on every cut, the record unable to emit `iteration_cap` at all, the
 flag not threaded, and the classifier absent.)
+
+⚠ **CORRECTED 2026-09-26 (final sweep B / F4): the RED-first run is 9 F / 7 P, not 8.** This report
+said "the other seven"; the reviewer re-ran the revert (keeping `exit-attribution.ts` so imports
+resolve) and measures **nine**. The ninth is §4's *"a promoted ack plus a cut, four times over"*
+(`round 4: expected 'held' to be 'reopened'`) — a SECOND stand-down clause, which is the one worth
+naming: the RED-first evidence covers the stand-down in two independent places, not one. The headline
+line quoted above reproduces verbatim.
 
 ### Measured on the owner's body — and the measurement is what makes it a RECORD bug
 
@@ -53,6 +60,22 @@ preempt, provider_error, stream_idle, abort, terminated, budget, delegation_exit
 compile_pending. ONE finalizeTurn call site exists in production; it emits five of seventeen.
 All 10 stand-downs to `blocked` read `no_reply_intended`.
 ```
+
+⚠ **CORRECTED 2026-09-26 (final sweep B / F5): the two fives above are DIFFERENT SETS, and merging
+them invites two wrong conclusions.** They are both true, and they are not the same five:
+
+| the five | what it is | members |
+|---|---|---|
+| *"it emits five of seventeen"* | the **emittable** set before this fix — what the one call site could write | brake, answered, park, handoff, no_reply_intended |
+| *"FIVE exit reasons have EVER been written"* | the **observed** set on the owner's body | answered, no_reply_intended, handoff, park, **unknown** |
+
+The difference is the point: **`brake` is emittable but has never been written**, and **`unknown` is
+written by something that is not this call site** — so a reader who merges the two lists concludes
+either that `brake` has rows or that `unknown` comes from this derivation, and neither is true.
+**After this fix the derivation emits six** (the five emittable plus `iteration_cap`). Also worth the
+line, from the same review (F2): the distribution has a sixth bucket the measurement does not name —
+**535 turns with a NULL `exit_reason`**, 4.7% of the body — which `turnWasEngineCut` correctly reads
+as "not a cut", keeping today's behaviour.
 
 **Whether any of those 10 was really a cut is UNKNOWABLE FROM THE RECORD.** That is the defect, not a
 mitigation — and it is why the fix is both halves or neither.
