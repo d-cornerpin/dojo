@@ -95,12 +95,37 @@ const SUDO_OPTS_WITH_VALUE: ReadonlySet<string> = new Set([
   '-u', '--user', '-g', '--group', '-h', '--host', '-p', '--prompt', '-C', '--close-from',
   '-D', '--chdir', '-R', '--chroot', '-T', '--command-timeout', '-U', '--other-user',
   '-r', '--role', '-t', '--type',
-  // `su`'s command option (OR-SUDO-2). It carries a COMMAND STRING, so it is value-taking, and the
-  // shared quote check then fail-closes `su -c "rm -rf /" root` — whose inner would otherwise come out
-  // as `"rm -rf /" root`, with the stray quote in front of the floor prefix. Exactly the shape the
-  // `--prompt="pw: "` bug had, caught here before it could ship a second time.
-  '-c', '--command',
 ]);
+
+/**
+ * ⚠ OPTIONS WHOSE VALUE **IS** THE COMMAND TO BE RUN AS ROOT — `su -c "…"`, `su --command="…"`.
+ *
+ * SEPARATE FROM `SUDO_OPTS_WITH_VALUE` BECAUSE THE VALUE MUST BE *READ*, NOT SKIPPED. Every other
+ * option's value is metadata the broker has no interest in (a prompt string, a user, a chdir), so
+ * skipping it is right and a quote it cannot balance means fail closed. Here the value is the whole
+ * question: it is the command the floor, the sensitive-read scan and the grant all have to see.
+ *
+ * ⚠ AND IT WAS A LIVE HOLE — MY OWN PROBE, not review's, measured through the real door:
+ *     su root -c "rm -rf /"          ALLOWED   free + gated, primary, rule `exec-grant`
+ *     su root -c "cat ~/.ssh/id_rsa" ALLOWED   the sensitive-read scan never bit either
+ *     su root                        ALLOWED   an unbounded interactive ROOT SHELL
+ * Two causes, one shape: `su`'s FIRST BARE OPERAND IS A USERNAME, not a command, so the option loop
+ * broke on `root` and handed `root -c "rm -rf /"` back as the inner — whose program is `root`, which a
+ * `*` grant allows and whose PREFIX no floor pattern matches. This is `sudo`'s operand grammar assumed
+ * for a program that does not share it, and the owner's non-negotiable (the other three floor entries
+ * bite INSIDE a privileged line under EVERY policy) was false for every `su` spelling that used it.
+ */
+const COMMAND_OPTS: ReadonlySet<string> = new Set(['-c', '--command']);
+
+/** A quote-aware token keeps its quotes and the VALUE inside them is the command. Not `bareWord`:
+ *  that also takes a basename, and `"rm -rf /"` must not come back as `"`. */
+function unquoteValue(word: string): string {
+  const w = word.startsWith('\\') ? word.slice(1) : word;
+  if ((w.startsWith('"') && w.endsWith('"')) || (w.startsWith("'") && w.endsWith("'"))) {
+    return w.slice(1, -1).trim();
+  }
+  return w;
+}
 
 /**
  * sudo options that request an INTERACTIVE ROOT SHELL rather than running a command. There is no
@@ -458,10 +483,36 @@ export function parseSudo(trimmed: string): ParsedSudo {
   let i = (at ?? 0) + 1;
   let nonInteractive = false;
   let quotedOptionValue = false;
+  // ⚠ `su`'s OPERAND GRAMMAR IS NOT `sudo`'s, and assuming it was is the hole documented on
+  // `COMMAND_OPTS`. `sudo [opts] <command…>` — the first bare operand STARTS the command.
+  // `su [opts] [user] [-c <command>]` — the first bare operand is a USERNAME and the command arrives
+  // through the option. So the loop steps over exactly one bare operand here and keeps reading
+  // options, or `su root -c "rm -rf /"` never reaches the `-c` that carries the command.
+  const isSu = bareWord(tokens[at ?? 0] ?? '').toLowerCase() === 'su';
+  let sawSuUser = false;
+  let commandFromOption: string | null = null;
   while (i < tokens.length) {
     const t = tokens[i];
     if (t === '--') { i += 1; break; }
-    if (!t.startsWith('-')) break;
+    if (!t.startsWith('-')) {
+      if (isSu && !sawSuUser) { sawSuUser = true; i += 1; continue; }   // a USERNAME, not a command
+      break;
+    }
+    if (COMMAND_OPTS.has(t)) {
+      // ⚠ STOP READING OPTIONS HERE. The command is decided, so every remaining token is either the
+      // username or something this parser cannot account for — and it must reach the check below as
+      // itself. Continuing the loop let `su root -c rm -rf /` consume `-rf` as an ordinary boolean
+      // flag, which is precisely how that ambiguity would have gone unnoticed.
+      commandFromOption = unquoteValue(tokens[i + 1] ?? '');
+      i += 2; break;
+    }
+    if (t.startsWith('--command=')) {
+      // The long form with `=`, which the generic `=` branch below would only fail closed on. Same
+      // spelling of the same option, so it gets the same reading — the lesson of the `--prompt="pw: "`
+      // bug was that one option must not have a caught spelling and an uncaught one.
+      commandFromOption = unquoteValue(t.slice('--command='.length));
+      i += 1; break;
+    }
     if (t === '-n' || t === '--non-interactive') { nonInteractive = true; i += 1; continue; }
     if (SUDO_SHELL_OPTS.has(t)) {
       // `sudo -i` / `sudo -s` MAY be followed by a command; with nothing after it, it is a shell.
@@ -486,9 +537,83 @@ export function parseSudo(trimmed: string): ParsedSudo {
     }
     i += 1;                                               // an ordinary boolean flag
   }
+  // ⚠ THE COMMAND OPTION WINS OVER THE TRAILING OPERANDS, because in `su -c "rm -rf /" root` the
+  // trailing `root` is the USERNAME: re-running it as a command would ask the broker about the wrong
+  // string entirely — `root` is not an executable and, under a `*` grant, not a refusal either.
+  if (commandFromOption !== null) {
+    // ⚠ WHAT MAY FOLLOW THE COMMAND VALUE IS **AT MOST A USERNAME**, and anything else fails closed.
+    // `su root -c rm -rf /` hands `-c` the single word `rm` and leaves `-rf /` over. Real `su` passes
+    // those to the shell as positional parameters, so `rm` would run with no arguments — but the floor
+    // must not rest on this parser's reading of another program's argument handling. One bare operand
+    // is the username (`su -c "…" root`, the documented order); a flag or a second operand means the
+    // line means something this parser cannot state, and an unreadable privileged line is refused.
+    const after = tokens.slice(i);
+    if (after.length > 1 || after.some((w) => w.startsWith('-'))) quotedOptionValue = true;
+    return commandFromOption.length === 0
+      ? { inner: '', interactiveShell: true, nonInteractive, quotedOptionValue }
+      : { ...parseInner(commandFromOption), nonInteractive, quotedOptionValue };
+  }
   const rest = tokens.slice(i).join(' ');
+  // Nothing left to run: `su`, `su root`, `sudo -i` — an unbounded INTERACTIVE ROOT SHELL, refused
+  // under every policy including `free`, because there is no inner command to reason about.
   if (rest.length === 0) return { inner: '', interactiveShell: true, nonInteractive, quotedOptionValue };
   return { ...parseInner(rest), nonInteractive, quotedOptionValue };
+}
+
+/**
+ * ⚠ EVERY COMMAND A PRIVILEGED LINE WOULD ACTUALLY RUN, so the floor can be asked about all of them.
+ *
+ * MY PROBE FOUND THIS TOO, AND IT IS A REGRESSION THIS BRANCH WOULD HAVE INTRODUCED — not a
+ * pre-existing gap. While `sudo *` sat in `GLOBAL_EXEC_DENY`, every sudo line was refused outright, so
+ * the floor's inability to read a QUOTED INTERPRETER BODY never mattered for root. Taking `sudo *` out
+ * and replacing it with a policy makes it matter, and under `free` these were all ALLOWED:
+ *     sudo sh -c "rm -rf /"          the floor's prefix sees `sh`, not `rm`
+ *     su root sh -c "rm -rf /"
+ *     sudo bash -lc "rm -rf /"       a combined short flag, the same thing spelled shorter
+ *     su root -c "ls; rm -rf /"      the `;` is inside the quotes, so no SEGMENT carries `rm`
+ * The owner's non-negotiable is that `rm -rf /` as root is refused under EVERY policy, `free` included,
+ * so a privileged line is read ONE INTERPRETER DEEPER and its statements are floored individually —
+ * the same argument that justifies flooring every segment of a pipeline: the floor is `rm -rf /`,
+ * `rm -rf ~`, `chmod 777 *` and the credentials file, and none of those is a capability anyone loses.
+ *
+ * ⚠ DELIBERATELY PRIVILEGED-ONLY. `sh -c "rm -rf /"` WITHOUT sudo stays allowed under a `*` grant,
+ * exactly as it is on `main` — unchanged behaviour, and it is the user's own uid rather than the
+ * machine. Widening the floor for unprivileged lines is a live behaviour change beyond this feature.
+ *
+ * Bounded at three unwraps so a `sh -c "sh -c …"` stack cannot spin.
+ */
+export function privilegedInnerCommands(trimmed: string): string[] {
+  // Only a PRIVILEGED line has privileged inner commands. `proc.ts` asks this after `isSudoLine`, so
+  // the guard changes no behaviour there — it keeps the exported unit honest on its own, because
+  // `parseSudo` on an ordinary line strips its first word and would name a command nobody is running.
+  if (!isSudoLine(trimmed)) return [];
+  const parsed = parseSudo(trimmed);
+  if (parsed.inner.length === 0) return [];
+  const out: string[] = [];
+  const visit = (command: string, depth: number): void => {
+    for (const seg of execSimpleCommands(command)) {
+      out.push(seg);
+      const body = depth < 3 ? interpreterBody(seg) : null;
+      if (body !== null && body.length > 0) visit(body, depth + 1);
+    }
+  };
+  visit(parsed.inner, 0);
+  return out;
+}
+
+/** The command string an interpreter was handed, or `null` if this is not an interpreter call. */
+function interpreterBody(seg: string): string | null {
+  const words = commandWords(seg);
+  if (!INTERPRETERS.has(bareWord(words[0] ?? '').toLowerCase())) return null;
+  for (let w = 1; w < words.length; w += 1) {
+    const word = words[w];
+    if (word.startsWith('--command=')) return unquoteValue(word.slice('--command='.length));
+    // ⚠ ANY SHORT-FLAG CLUSTER ENDING IN `c`, because `-lc` and `-ec` are the same option spelled
+    // shorter and a floor that only knows `-c` is a floor with a documented spelling and an
+    // undocumented one. That is precisely how the `--prompt="pw: "` bug hid.
+    if (word === '--command' || /^-[a-z]*c$/i.test(word)) return unquoteValue(words[w + 1] ?? '');
+  }
+  return null;
 }
 
 /** One more layer, for a nested wrapper. */

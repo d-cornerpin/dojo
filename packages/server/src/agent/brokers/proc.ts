@@ -38,7 +38,7 @@ import { resolveHomePath as resolvePath } from '../path-resolve.js';
 import { GLOBAL_EXEC_DENY_SUBSTRINGS, isSensitivePath } from './deny.js';
 import {
   SUDO_UNPLACEABLE_REASON, authorizeSudoLine, isSudoLine, mentionsPrivilegeToken,
-  privilegeTokenIsQuotedData,
+  privilegeTokenIsQuotedData, privilegedInnerCommands,
 } from './sudo-policy.js';
 import { execSimpleCommands } from '../exec-grammar.js';
 import {
@@ -115,6 +115,19 @@ function globalExecDenyOneSpelling(trimmed: string, basis: 'ladder-parity' | 'by
     }
   }
   return null;
+}
+
+/** ONE VOICE FOR THE SENSITIVE-READ REFUSAL, because it is now asked in two places — the whole line,
+ *  and each command a PRIVILEGED line would really run. The `basis` differs (`ladder-parity` is the
+ *  refusal this tree already produced; `bypass-hardening` is the one unwrapping a sudo line adds) and
+ *  the words the agent reads do not, which is what keeps the two from drifting apart. */
+function sensitiveReadDeny(reason: string, basis: 'ladder-parity' | 'bypass-hardening'): Verdict {
+  return deny(
+    basis,
+    'exec-sensitive-read',
+    reason,
+    `[BLOCKED] exec refused: ${reason}. The DOJO never echoes secret files into the conversation. If you need a value from secrets.yaml (API key, OAuth token, etc.), ask the user, those values live in process memory only, not in agent context.`,
+  );
 }
 
 /** The deny scan, exported for the AppleScript broker: a `do shell script`
@@ -345,14 +358,7 @@ export function authorizeProc(
 
   if (scanSensitiveReads) {
     const scan = commandReadsSensitiveFile(resource.raw);
-    if (scan.blocked) {
-      return deny(
-        'ladder-parity',
-        'exec-sensitive-read',
-        scan.reason,
-        `[BLOCKED] exec refused: ${scan.reason}. The DOJO never echoes secret files into the conversation. If you need a value from secrets.yaml (API key, OAuth token, etc.), ask the user, those values live in process memory only, not in agent context.`,
-      );
-    }
+    if (scan.blocked) return sensitiveReadDeny(scan.reason, 'ladder-parity');
   }
 
   // ── ⚠ THE PRIVILEGE PASS (v3.2.2 security review S1/S3) — BEFORE the grant pass, over EVERY
@@ -381,6 +387,23 @@ export function authorizeProc(
     if (floored) return floored;
     if (!isSudoLine(seg)) continue;
     privilegedSeen = true;
+    // ⚠ AND THE FLOOR AGAIN, ONE INTERPRETER DEEPER, for the commands a PRIVILEGED line would really
+    // run. The pass above floors what the grammar can see as segments; a command inside `sh -c "…"` is
+    // one quoted word to that grammar, so `sudo sh -c "rm -rf /"` reached the grant pass with `sh` as
+    // its program and was ALLOWED under `free`. Removing `sudo *` from the floor is what made this
+    // reachable, so closing it belongs to this feature. See `privilegedInnerCommands`.
+    for (const innerCommand of privilegedInnerCommands(seg)) {
+      const flooredInner = globalExecDeny(innerCommand);
+      if (flooredInner) return flooredInner;
+      // ⚠ AND THE SENSITIVE-READ SCAN, WHICH THE MODULE HEADER PROMISES BITES INSIDE A SUDO LINE AND
+      // DID NOT. It runs once over `resource.raw` and splits on whitespace, so in
+      // `su root -c "cat ~/.ssh/id_rsa"` it saw the tokens `"cat` and `~/.ssh/id_rsa"` — quotes
+      // attached, neither matching a reader program nor a sensitive path. Measured ALLOWED under
+      // `free` while the same command bare is refused `exec-sensitive-read`.
+      if (!scanSensitiveReads) continue;
+      const innerScan = commandReadsSensitiveFile(innerCommand);
+      if (innerScan.blocked) return sensitiveReadDeny(innerScan.reason, 'bypass-hardening');
+    }
     const v = authorizeSudoLine(seg, grant.agentId, (i) => authorizeOneCommand(grant, i));
     if (!v.allowed) return v;
   }
