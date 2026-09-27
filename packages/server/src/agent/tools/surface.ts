@@ -46,6 +46,7 @@ import { PRIMARY_ONLY_TOOLS } from './gates.js';
 import { agentCanSelfComplete } from './util.js';
 import { toolDefinitions } from './definitions.js';
 import { isPrimaryAgent, isPMAgent } from '../../config/platform.js';
+import { getSudoPolicy } from '../brokers/sudo-policy.js';
 import { getToolConfigGeneration } from '../tool-config-generation.js';
 import { pdfToolDefinitions } from '../pdf-tools.js';
 import { googleReadToolDefinitions } from '../../google/tools-read.js';
@@ -125,6 +126,10 @@ const FILTERED_TOOLS_CACHE_MAX = 512;
 function computeAgentToolFingerprint(agentId: string): string {
   const primary = isPrimaryAgent(agentId) ? '1' : '0';
   const pm = isPMAgent(agentId) ? '1' : '0';
+  // The primary's exec description states the box's sudo policy (below), so the policy is
+  // part of what the cached surface was computed FROM — omit it here and an owner flipping
+  // gated→blocked keeps handing the agent a description that promises holds it can't have.
+  const sudoPolicy = getSudoPolicy();
   const row = getDb()
     .prepare('SELECT permissions, spawn_depth, created_by, tools_policy, group_id, classification, task_id FROM agents WHERE id = ?')
     .get(agentId) as {
@@ -136,10 +141,11 @@ function computeAgentToolFingerprint(agentId: string): string {
       classification: string | null;
       task_id: string | null;
     } | undefined;
-  if (!row) return `none\x00${primary}\x00${pm}`;
+  if (!row) return `none\x00${primary}\x00${pm}\x00${sudoPolicy}`;
   return [
     primary,
     pm,
+    sudoPolicy,
     row.permissions ?? '',
     row.spawn_depth ?? '',
     row.created_by ?? '',
@@ -327,11 +333,22 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
     const blockedHint = canSelfComplete
       ? 'use send_to_agent to ask an agent with broader permissions, or call complete_task(status="blocked")'
       : 'use send_to_agent to ask an agent with broader permissions, or tell the user you are blocked';
+    // The blast for v3.2.2 caught the sentence below being a lie to the one agent the sudo
+    // feature exists for: told "Any other command will be blocked", the primary never ISSUES
+    // a sudo command at all, so the policy broker — which intercepts sudo before this
+    // allowlist is consulted — goes unreached on every box. The description must state the
+    // door that actually exists. Primary only; the sub-agent wall is taught by the wall
+    // itself, and a `blocked` policy means the flat sentence is simply true.
+    const sudoSentence = isPrimaryAgent(agentId) && getSudoPolicy() === 'gated'
+      ? ' Administrator commands are the exception: as this box\'s primary agent you may issue a `sudo` command even though it is not in the list — it will not run immediately; it is HELD and the owner is asked to approve it on their dashboard, and the tool result will say so. Do not treat that hold as a failure and do not retry it.'
+      : isPrimaryAgent(agentId) && getSudoPolicy() === 'free'
+        ? ' Administrator commands are the exception: as this box\'s primary agent you may issue a `sudo` command even though it is not in the list — the box\'s sudo policy runs it directly, subject to a safety floor that refuses catastrophic commands.'
+        : '';
     filtered = filtered.map(t => {
       if (t.name !== 'exec') return t;
       return {
         ...t,
-        description: `Execute a shell command. You can ONLY run these commands: ${allowedCmds}. Any other command will be blocked. If you need a command that's not in this list, ${blockedHint}. Has a 30-second timeout.`,
+        description: `Execute a shell command. You can ONLY run these commands: ${allowedCmds}. Any other command will be blocked.${sudoSentence} If you need a command that's not in this list, ${blockedHint}. Has a 30-second timeout.`,
       };
     });
   }
