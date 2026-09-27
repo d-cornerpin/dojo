@@ -10,6 +10,7 @@
 
 import { evaluateRules, type Grant } from './grants.js';
 import { commandReadsSensitiveFile, globalExecDenyPublic, authorizeShellCommandText } from './proc.js';
+import { authorizeAdminPrivilegeRequest, mentionsAdminPrivileges } from './sudo-policy.js';
 import type { ResolvedCommand } from './resolve.js';
 import { allow, deny, type Verdict } from './types.js';
 
@@ -41,6 +42,21 @@ export function authorizeAppleScript(grant: Grant, script: ResolvedCommand): Ver
   //    that merely NAMES the secret store is refused however it meant to read it.
   const globals = globalExecDenyPublic(script.raw);
   if (globals) return globals;
+
+  // ── ⚠ THE SECOND ADMIN DOOR — OWNER RULING 2026-09-27: "one policy" ──
+  // `do shell script "…" with administrator privileges` is macOS root through Apple's own prompt, with
+  // NO `sudo` token anywhere. The re-review found it open to any agent holding applescript, which made
+  // the role wall's stated purpose — "only the main agent gets administrator rights" — untrue by a
+  // different spelling. It answers to the SAME policy, the SAME role wall and the SAME card now.
+  //
+  // The construct is detected whitespace-liberally and case-insensitively (AppleScript is both, and the
+  // phrase is routinely split across lines inside a `tell` block), and the INVERTED DEFAULT does the
+  // rest: admin-shaped and not provably inert ⇒ refused or held. That is why there is no spelling list
+  // here to keep up to date.
+  if (mentionsAdminPrivileges(script.raw)) {
+    const verdict = authorizeAdminPrivilegeRequest(grant.agentId);
+    if (!verdict.allowed) return verdict;
+  }
 
   // 2. Any `do shell script "…"` payload is a shell command, so it answers to
   //    the SHELL grant exactly as if the agent had typed it there.

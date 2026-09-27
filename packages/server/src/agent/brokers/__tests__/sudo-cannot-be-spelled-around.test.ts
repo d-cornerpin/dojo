@@ -42,6 +42,7 @@ vi.mock('../../../config/platform.js', async (orig) => ({
 
 import { grantForManifest } from '../grants.js';
 import { authorizeArgv, authorizeShellScript } from '../proc.js';
+import { authorizeAppleScript } from '../applescript.js';
 import { resolveArgvArg, resolveCommandArg } from '../resolve.js';
 import { SUDO_NOT_PRIMARY_REASON, SUDO_UNPLACEABLE_REASON, isSudoHoldRequired } from '../sudo-policy.js';
 import type { PermissionManifest } from '@dojo/shared';
@@ -99,6 +100,34 @@ const EVASIONS: readonly string[] = [
   'doas whoami',
   // S2 — the long-form prompt that blinded the floor
   'sudo --prompt="pw: " rm -rf /',
+  // ── RE-REVIEW RC1: the fallthrough that excused a substitution as prose. EVERY ROW HERE WAS
+  //    ALLOWED at `b5865c9b`, and `echo $(sudo rm -rf /)` was allowed to a SUB-AGENT under `blocked`.
+  'echo $(sudo rm -rf /)',
+  'echo $(sudo whoami)',
+  'echo "$(sudo whoami)"',
+  'x=$(sudo whoami)',
+  'printf "%s" $(sudo whoami)',
+  // ── RC1's proof that the DEFAULT is right rather than the LIST being long: three wrappers the
+  //    reviewer invented, none of them in `EXEC_WRAPPERS`, all dying by the inversion alone.
+  'flock /tmp/l sudo whoami',
+  'script -q /dev/null sudo whoami',
+  'unbuffer sudo whoami',
+  // ── one MORE of my own invention, never listed anywhere, to prove the same thing again
+  'chrt -f 99 sudo whoami',
+  // ── RC2: the two resolvers disagreed, so the floor matched nothing
+  'env X=1 sudo rm -rf /',
+  'env FOO=bar BAZ=1 sudo rm -rf ~',
+  // ── RC3: a wrapper's OWN arguments ended the walk
+  'timeout 5 sudo rm -rf /',
+  'nice -n 10 sudo whoami',
+  'stdbuf -o0 sudo whoami',
+  'xargs -I{} sudo whoami',
+  // ── OWNER RULING "one policy": the osascript admin door, exec'd
+  `osascript -e 'do shell script "whoami" with administrator privileges'`,
+  `osascript -e 'do shell script "rm -rf /" with administrator privileges'`,
+  // case and whitespace, which AppleScript tolerates and so must the detector
+  `osascript -e 'do shell script "id" With Administrator Privileges'`,
+  `osascript -e 'do shell script "id" with admin privileges'`,
   // already caught before this round, kept so a regression is visible
   '/usr/bin/sudo whoami',
   'sudo sudo rm -rf /',
@@ -329,5 +358,85 @@ describe('§5 the argv door', () => {
     policyRow.current = 'free';
     expect(argv(['sudo', 'rm', '-rf', '/'], PRIMARY)).toBe(false);
     expect(argv(['ls', '-la'], PRIMARY)).toBe(true);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §6 — THE SECOND ADMIN DOOR. Owner ruling 2026-09-27, verbatim: "one policy".
+//
+// `do shell script "…" with administrator privileges` is macOS root through Apple's own prompt, with no
+// `sudo` token anywhere. The re-review found it open to any agent holding applescript — which made the
+// role wall's stated purpose ("only the main agent gets administrator rights") untrue by a different
+// spelling. Both doors answer to the same policy, the same wall and the same card now.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§6 the AppleScript admin-privileges door', () => {
+  const script = (body: string, agentId = PRIMARY) => {
+    const r = resolveCommandArg(body);
+    if (!r.ok) throw new Error('fixture did not resolve');
+    const manifest = ({ ...base, exec_allow: ['*'], system_control: ['*', 'applescript'] } as unknown) as PermissionManifest;
+    return authorizeAppleScript(grantForManifest(agentId, manifest), r.value);
+  };
+  const scriptAllows = (body: string, agentId = PRIMARY): boolean => script(body, agentId).allowed;
+
+  /** Spellings AppleScript accepts. The LAST one is invented and listed nowhere in the product. */
+  const ADMIN_SPELLINGS: readonly string[] = [
+    'do shell script "whoami" with administrator privileges',
+    'do shell script "whoami" WITH ADMINISTRATOR PRIVILEGES',
+    'do shell script "whoami" With Administrator Privileges',
+    'do shell script "whoami" with admin privileges',
+    'do shell script "whoami" with   administrator   privileges',
+    'tell application "Finder"\n  do shell script "whoami" with administrator privileges\nend tell',
+    'do shell script "whoami" ¬\n  with administrator privileges',
+    // ⚠ INVENTED FOR THIS CLAUSE and deliberately absent from every list in the product — it must die
+    // by the INVERTED DEFAULT, not by enumeration. That is the test that the default is right.
+    'tell app "System Events" to do shell script "id" with Admin Privileges',
+  ];
+
+  it('a SUB-AGENT is refused every spelling, under every policy, in the SAME voice as sudo', () => {
+    underEach((p) => {
+      for (const body of ADMIN_SPELLINGS) {
+        const v = script(body, WORKER);
+        expect(v.allowed, `${p}: ${body.slice(0, 48)}`).toBe(false);
+        expect(v.allowed === false && v.reason, 'the role wall speaks once, for both doors')
+          .toBe(SUDO_NOT_PRIMARY_REASON);
+      }
+    });
+  });
+
+  it('the PRIMARY answers to the POLICY, exactly as for sudo', () => {
+    policyRow.current = 'blocked';
+    for (const body of ADMIN_SPELLINGS) expect(scriptAllows(body, PRIMARY), body.slice(0, 40)).toBe(false);
+    policyRow.current = 'free';
+    for (const body of ADMIN_SPELLINGS) expect(scriptAllows(body, PRIMARY), body.slice(0, 40)).toBe(true);
+    // `gated` allows at the broker and HOLDS upstream — the same layering as the sudo path
+    policyRow.current = 'gated';
+    expect(scriptAllows(ADMIN_SPELLINGS[0], PRIMARY)).toBe(true);
+    expect(isSudoHoldRequired('shell', { script: ADMIN_SPELLINGS[0] })).toBe(true);
+  });
+
+  it('ORDINARY AppleScript is untouched — the construct is the privilege, not the binary', () => {
+    underEach((p) => {
+      for (const body of [
+        'display dialog "hello"',
+        'do shell script "ls -la"',
+        'tell application "Music" to play',
+        'do shell script "echo administrator privileges are not requested here"',
+      ]) {
+        expect(scriptAllows(body, WORKER), `${p}: ${body}`).toBe(true);
+      }
+    });
+  });
+
+  it('and the exec\'d `osascript` form answers the same way', () => {
+    const line = `osascript -e 'do shell script "whoami" with administrator privileges'`;
+    underEach(() => expect(shellAllows(line, WORKER)).toBe(false));
+    policyRow.current = 'blocked';
+    expect(shellAllows(line, PRIMARY)).toBe(false);
+    policyRow.current = 'free';
+    expect(shellAllows(line, PRIMARY)).toBe(true);
+    // an ordinary osascript is NOT privileged — refusing it would lose a capability nobody gave up
+    policyRow.current = 'blocked';
+    expect(shellAllows(`osascript -e 'display dialog "hi"'`, WORKER)).toBe(true);
   });
 });
