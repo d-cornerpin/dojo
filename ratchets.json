@@ -5594,6 +5594,27 @@
       "to": 319,
       "by": "BACKLOG LANE-2FIX merge (2026-09-26), coordinator-applied — the tighter of the two options the implementer offered",
       "why": "L2-3 wired the embedder's awaited agent path through openAgentCall (+6 lines after their own footprint cut 27->6); another lane had spent the growth headroom (file at 313 vs 313.75 ceiling at base). Pin at current size, decrease-only from here. The net-zero alternative (move the slot out) was REFUSED on principle: it would take openAgentCall out of the file that owns the dial, needing exactly the rides-the-door exemption this round exists to delete (lane2-report.md appendix)."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts",
+      "from": 417,
+      "to": 437,
+      "by": "ARM C HONESTY GATE (2026-09-26) - a FIFTH truth guard, and this file's purpose is to hold them",
+      "why": "417 -> 437 (+20: a 14-line table entry and a 5-line note). THIS FILE IS THE TRUTH GUARDS' HOME and a new guard is the file doing its job, not growing past it. THE FIND: an agent asserted \"submitted!\" in the same turn a tool result carrying `is_error: true` said the report was CANCELLED with no brief to submit, and nothing caught it — `ungrounded-claim` (priority 10) reads the DELIVERIES LEDGER and `dojo_report` writes no `deliveries` row, ever, so the closest existing guard is structurally blind to it. TRIM-FIRST IS BANKED AND MEASURED: the first cut of this change was +65 here; the decision, the vocabulary and the steer text moved to `agent/v2/refused-delivery.ts` (108 lines, new, pinned in this same commit), which is not an accounting dodge but the pattern the merged guard's OWN HEADER prescribes - guards 10 and 13 already delegate their decisions to `claimed-delivery.ts` and `recorded-commitment.ts`, and only 11 and 12 inline theirs. What is left here is what cannot leave: the entry's `floor`, its `gate` and its `decide`, because the merged guard reads them out of this one array and a table entry in a second file is not a table. REFUSED: inlining the decision to stay at 417, which would have put ~60 lines of argument back in the table and broken the delegation pattern; REFUSED: deleting an existing guard's note to make room. From 437 this file may only shrink, and the next guard pays the same way - decision in its own module, entry here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steer-queue.ts",
+      "from": 335,
+      "to": 341,
+      "by": "ARM C HONESTY GATE (2026-09-26) - one floor id and one precedence row",
+      "why": "335 -> 341 (+6: one union member, one `STEER_PRECEDENCE` row, four lines arguing its rank). This file IS the declared precedence table, and `steer-queue.test.ts` requires every floor to carry a `why` longer than ten characters - \"a priority with no argument is a number\" in its own words - so a new floor cannot be added here without prose. The four argue the rank honestly, including what is NOT taken: the floor sits at the FOOT of the truth band (14) only because the four above it predate it, and on consequence - \"their bug report reached the builders\" is a claim about the world - it argues for a place beside 10. Re-ranking a live precedence table is a bigger change than this find and is recorded rather than done. From 341 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/refused-delivery.ts",
+      "from": 0,
+      "to": 111,
+      "by": "ARM C HONESTY GATE (2026-09-26) - the fifth truth guard's decision, in its own module",
+      "why": "NEW ENTRY at 111, pinned on arrival rather than waiting for the 240-line cap to notice. It holds the decision, the delivery vocabulary and the steer text for the `false-delivery-claim` floor, the way `claimed-delivery.ts` and `recorded-commitment.ts` hold guards 10's and 13's. Most of it is the argument, and the argument is what a reader cannot reconstruct: WHY the ledger-reading guard could not see this (`dojo_report` writes no `deliveries` row), WHY only `submitted` and `delivered` stand alone while `sent`/`posted`/`filed`/`published` need their object (measured against the honest sentences an agent says on a failing report turn - \"I sent you the link in chat\" fires on a bare-word list), WHY a bare word is enough HERE when the kit-side detector needs a destination, and WHY the steer may never ask for silence (ruling 10(d)). Delete that and the next editor re-derives a false positive or a false denial. From 111 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -5685,9 +5706,10 @@
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 546,
     "packages/server/src/agent/v2/recorded-commitment.ts": 209,
+    "packages/server/src/agent/v2/refused-delivery.ts": 111,
     "packages/server/src/agent/v2/recovery.ts": 893,
     "packages/server/src/agent/v2/state.ts": 730,
-    "packages/server/src/agent/v2/steer-queue.ts": 335,
+    "packages/server/src/agent/v2/steer-queue.ts": 341,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
     "packages/server/src/agent/v2/steps/assemble/index.ts": 388,
     "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts": 224,
@@ -5730,7 +5752,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 276,
     "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 357,
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 286,
-    "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 417,
+    "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 437,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
     "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 433,
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
