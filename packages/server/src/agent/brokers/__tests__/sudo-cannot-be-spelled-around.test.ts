@@ -27,6 +27,8 @@
 //   §4 no capability lost — the grant question is unchanged
 //   §5 the argv door, which shares the authority
 //   §7 `su`, and a body the broker cannot read
+//   §12 the CONFIRMATION pass: an escape cannot forge a closer, and one extra operand cannot hide
+//       a floor pattern
 //   §11 the FIFTH review: nested delimiters counted, and an encoded space is still a space
 //   §10 the FOURTH review: every form that spells a command as text, and a named stream
 //   §9 the third review's F1/F2/F3: su's own option table, every interpreter's body, and one rule
@@ -764,9 +766,18 @@ describe('§8 the floor, inside a privileged line', () => {
     // an ordinary line has none, and the guard is what makes that true standing alone
     expect(privilegedInnerCommands('ls -la')).toEqual([]);
     expect(privilegedInnerCommands('sh -c "rm -rf /"')).toEqual([]);
-    // bounded: a nest deeper than the limit terminates instead of spinning
-    const nested = `sudo sh -c "sh -c 'sh -c \\"sh -c ls\\"'"`;
-    expect(privilegedInnerCommands(nested).length).toBeLessThan(12);
+    // ⚠ BOUNDED, AND THE ASSERTION IS THE BOUND ITSELF RATHER THAN A NUMBER I PICKED. The count grew
+    // when per-operand candidates arrived (each level now asks about its operands too), so a literal
+    // `< 12` was measuring the old multiplier and nothing else. What actually matters is that the walk
+    // STOPS: the depth cap is 3, so a nest deeper than that adds no further candidates and cannot spin.
+    const nest3 = `sudo sh -c "sh -c 'sh -c \\"ls\\"'"`;
+    const nest4 = `sudo sh -c "sh -c 'sh -c \\"sh -c ls\\"'"`;
+    const nest5 = `sudo sh -c "sh -c 'sh -c \\"sh -c \\\\"sh -c ls\\\\"\\"'"`;
+    expect(privilegedInnerCommands(nest3).length).toBeGreaterThan(0);
+    expect(privilegedInnerCommands(nest5).length).toBeLessThanOrEqual(
+      privilegedInnerCommands(nest4).length,
+    );
+    expect(privilegedInnerCommands(nest5).length).toBeLessThan(120);
   });
 });
 
@@ -1255,5 +1266,158 @@ describe('§11 R5 — delimiters that nest are counted', () => {
       `sudo perl -e 'printf "100%%\\n"'`, `sudo sh -c 'echo ok'`,
       `sudo python3 -c "print({'a': {'b': 1}})"`,
     ]) expect(shellAllows(line, PRIMARY), line).toBe(true);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §12 — THE CONFIRMATION PASS. One root cause, three escapes, one false refusal — and measuring the
+// root turned out to expose something much larger underneath it.
+//
+// WHAT THE REVIEWER FOUND: the balanced scan decoded escapes BEFORE counting delimiters, so a closer
+// written as an escape became a STRUCTURAL closer. `qx{rm -rf \} /}` had its body read as `rm -rf`.
+// The fix is my own round-9 principle applied where I failed to apply it — each reader decodes as much
+// as its own question needs — so the structure scan now reads a MASK where escapes cannot forge a
+// delimiter, and only the extracted slice is decoded.
+//
+// ⚠ AND THE FIX ALONE WOULD NOT HAVE REFUSED ANY OF THE THREE. With the body correctly read as
+// `rm -rf } /`, the floor still did not match it, because `GLOBAL_EXEC_DENY` matches a pattern exactly
+// or by prefix and ONE EXTRA OPERAND defeats that. Measured on this branch with no escape and no
+// interpreter anywhere: `sudo rm -rf } /`, `sudo rm -rf x /`, `sudo rm -rf --no-preserve-root /`,
+// `sudo rm -rf "" /`, `sudo /bin/rm -rf } /` — all ALLOWED, all of them deleting `/` exactly as
+// `sudo rm -rf /` does. The escaped closer was a way IN to that hole, not the hole.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§12 an escape cannot forge a closer', () => {
+  const FORGED: readonly string[] = [
+    "sudo perl -e 'qx{rm -rf \\} /}'",            // the reviewer's three
+    "sudo perl -e 'qx{rm -rf \\x7d /}'",
+    "sudo perl -e 'qx{rm -rf } /}'",
+    "sudo ruby -e '%x(rm -rf \\x29 /)'",          // …and the other three families
+    "sudo perl -e 'qx[rm -rf \\x5d /]'",
+    "sudo perl -e 'qx<rm -rf \\x3e />'",
+    "sudo perl -e 'qx{rm -rf \\) /}'",
+    "sudo perl -e 'qx{echo {}; rm -rf \\x7d /}'", // composition: an encoded closer inside a nest
+    "sudo ruby -e '%x{a{b}; rm -rf \\} ~}'",
+  ];
+
+  it('every forged-closer spelling is refused, EVERY policy, BOTH roles', () => {
+    for (const who of [PRIMARY, WORKER]) {
+      underEach((p) => {
+        for (const line of FORGED) expect(shellAllows(line, who), `${p}/${who}: ${line}`).toBe(false);
+      });
+    }
+  });
+
+  it('…and the FLOOR names it under `free`, which is the whole point of reading the body right', () => {
+    policyRow.current = 'free';
+    for (const line of FORGED) {
+      expect(String(shell(line, PRIMARY).rule), line).toMatch(/^global-exec-deny/);
+    }
+  });
+
+  it('the body is read WHOLE — the escape is not a delimiter', () => {
+    expect(privilegedInnerCommands("sudo perl -e 'qx{rm -rf \\} /}'")).toContain('rm -rf } /');
+    expect(privilegedInnerCommands("sudo perl -e 'qx{rm -rf \\x7d /}'")).toContain('rm -rf } /');
+    expect(privilegedInnerCommands("sudo perl -e 'qx[rm -rf \\x5d /]'")).toContain('rm -rf ] /');
+  });
+});
+
+describe('§12 one extra operand cannot hide a floor pattern', () => {
+  const JUNK: readonly string[] = [
+    'sudo rm -rf } /', 'sudo rm -rf x /', 'sudo rm -rf "" /', 'sudo /bin/rm -rf } /',
+    'sudo rm -rf --no-preserve-root /', 'sudo rm -rf --foo /', 'sudo sh -c "rm -rf } /"',
+    'sudo sh <<< "rm -rf } /"', 'sudo rm -rf /tmp/keep /',
+  ];
+
+  it('a privileged command is asked about each operand, so junk between does not help', () => {
+    for (const who of [PRIMARY, WORKER]) {
+      underEach((p) => {
+        for (const line of JUNK) expect(shellAllows(line, who), `${p}/${who}: ${line}`).toBe(false);
+      });
+    }
+    policyRow.current = 'free';
+    for (const line of JUNK) {
+      expect(String(shell(line, PRIMARY).rule), line).toMatch(/^global-exec-(deny|substring)/);
+    }
+  });
+
+  it('⚠ AND ONE FLAG AT A TIME, because `--no-preserve-root` has only ONE operand', () => {
+    // No amount of operand-splitting reaches it, and it is the canonical way to actually delete `/`.
+    policyRow.current = 'free';
+    expect(String(shell('sudo rm -rf --no-preserve-root /', PRIMARY).rule)).toBe('global-exec-deny:rm -rf /');
+    expect(privilegedInnerCommands('sudo rm -rf --no-preserve-root /')).toContain('rm -rf /');
+  });
+
+  it('NO CAPABILITY LOST: ordinary multi-operand privileged commands still run', () => {
+    // ⚠ THIS IS THE LIST THAT BOUNDS THE OPERAND PASS. It refuses a command carrying a floor-pattern
+    // operand and nothing else — `rm -rf /tmp/a /tmp/b` asks about each path and neither is a pattern.
+    policyRow.current = 'free';
+    for (const line of [
+      'sudo rm -rf /tmp/a /tmp/b', 'sudo cp -r /opt/a /opt/b', 'sudo mv /tmp/a /opt/b',
+      'sudo chown -R user /opt/app /var/log/app', 'sudo apt-get install -y ripgrep jq',
+      'sudo cp bin/imsg /opt/homebrew/bin/', 'sudo chmod 644 /etc/a /etc/b',
+    ]) expect(shellAllows(line, PRIMARY), line).toBe(true);
+  });
+
+  it('⚠ AND THE SCOPE LINE IS UNCHANGED: an UNPRIVILEGED junk-operand line is as it is on `main`', () => {
+    // `rm -rf } /` without sudo is allowed on `main` and still is: `matchCommandDenyPattern` is shared
+    // with every `exec_deny` rule in the tree, and widening IT was refused two rounds ago so that
+    // `echo "rm -rf /"` keeps working. The operand pass is scoped to PRIVILEGED inner commands, which
+    // is exactly the scope of the owner's non-negotiable. Pinned so a reader sees a decision.
+    underEach(() => {
+      expect(shellAllows('rm -rf } /', PRIMARY)).toBe(true);
+      expect(shellAllows('rm -rf x /', PRIMARY)).toBe(true);
+    });
+  });
+});
+
+describe('§12 the false refusal, and the two readings', () => {
+  it('a quote operator inside an OPEN STRING is not a quote operator', () => {
+    // `print "unmatched q{ here"` was REFUSED: the `q{` inside a plain string found no closer and the
+    // fail-closed rule fired. No coverage is lost by skipping it — the span's own text is already a
+    // floor candidate.
+    policyRow.current = 'free';
+    for (const line of [
+      `sudo perl -e 'print "unmatched q{ here"'`,
+      `sudo perl -e 'print "a q( b"'`,
+      `sudo ruby -e 'puts "%w[ unmatched"'`,
+    ]) expect(shellAllows(line, PRIMARY), line).toBe(true);
+  });
+
+  it('⚠ BOTH READINGS OF A BACKSLASH CONTRIBUTE, because it has two possible owners', () => {
+    // The SHELL's escaping is already spent (`awk "BEGIN{system(\"rm -rf /\")}"` — awk sees a plain
+    // quote); the LANGUAGE's is still live (`qx{rm -rf \} /}` — Perl sees a literal brace). From the
+    // text alone they are indistinguishable, so the scan reads both ways and unions the literals.
+    // Reading them ONE way broke each case in turn while the other passed — which is why this clause
+    // asserts both in one place.
+    expect(privilegedInnerCommands('sudo awk "BEGIN{system(\\"rm -rf /\\")}"')).toContain('rm -rf /');
+    expect(privilegedInnerCommands("sudo perl -e 'qx{rm -rf \\} /}'")).toContain('rm -rf } /');
+  });
+
+  it('a SHELL body is NOT escape-decoded, because a shell does not decode either', () => {
+    // `sudo sh <<< "rm -rf\x20/"` is ALLOWED and that is correct: bash passes `-rf\x20/` through as one
+    // word, so `rm` reports an invalid option and nothing is deleted. Decoding for a shell body would
+    // refuse a harmless line; decoding for a CODE body is required, because those languages DO decode.
+    policyRow.current = 'free';
+    expect(shellAllows('sudo sh <<< "rm -rf\\x20/"', PRIMARY)).toBe(true);
+    expect(shellAllows(`sudo python3 -c "os.system('rm -rf\\x20/')"`, PRIMARY)).toBe(false);
+  });
+
+  it('the compositions the confirmation pass asked to be verified, verified', () => {
+    policyRow.current = 'free';
+    for (const line of [
+      "sudo perl -e 'qx{echo {}; rm -rf \\x7d /}'",              // nest × encoded closer
+      "sudo perl -e 'qx{echo {}; rm -rf x /}'",                  // nest × junk operand
+      `sudo python3 -c "os.system('rm' + ' -rf\\x20/')"`,         // encoding × concatenation
+      `sudo ruby -e 'system(%w[rm -rf /].join(" "))'`,            // bracket form × joined literals
+      "sudo env perl -e 'qx{echo {}; rm -rf /}'",                // wrapper walk × nest
+      `su root -c "perl -e 'qx{echo {}; rm -rf /}'"`,             // su grammar × nest
+      "sudo sh <<EOF\nperl -e 'qx{echo {}; rm -rf /}'\nEOF",      // heredoc × nest
+      'sudo sh <<< "rm -rf } /"',                                // here-string × junk operand
+      `sudo bash <(echo "qx{rm -rf /}")`,                        // stream × nest
+      'sudo sh -c "cat x ~/.dojo/secrets.yaml"',                 // operand pass × the credentials rule
+      "sudo perl -e 'qx{echo {; rm -rf \\x20/'",                  // unterminated × encoded space
+      `sudo python3 -c "subprocess.run(['rm','-rf\\x20','/'])"`,  // argv form × encoding
+    ]) expect(shellAllows(line, PRIMARY), line).toBe(false);
   });
 });
