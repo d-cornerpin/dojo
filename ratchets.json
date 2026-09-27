@@ -5849,6 +5849,13 @@
       "why": "260 -> 266 (+6: one argument and the note saying why the policy is READ rather than written). Two mutants proved this seam needed its own clause: deleting this argument, and separately making the routing ignore it, both survived every unit clause of the string."
     },
     {
+      "path": "packages/server/src/agent/brokers/sudo-policy.ts",
+      "from": 1069,
+      "to": 1169,
+      "by": "FIFTH REVIEW R5 (2026-09-27) - nested delimiters COUNTED (orchestrator ruling), plus the encoded space",
+      "why": "1069 -> 1169 (+100: 71 comment, and the file is 397 code lines of 1169). THE RULING WAS CLOSE IT, NOT DOCUMENT IT, and prose was the wrong answer because Perl and Ruby quote delimiters NEST while a regex cannot count: the old `[^}]*` stopped at the FIRST closer, so a qx{} body containing an inner pair handed the floor only the fragment before it and the rest ran as root under `free`. Ten shapes measured ALLOWED before the fix - the review's three, the <> pair it did not list, two-deep nesting, the same forms inside a system(...) call, and two unterminated nests. What lands: a BALANCED SCAN over the four pairs; the non-paired forms (qx#...#) deliberately untouched, because ending at the next occurrence is the LANGUAGE'S rule there and counting them would be wrong; an UNTERMINATED form that FAILS CLOSED instead of falling back to first-closer behaviour; and the remainder still handed to the floor so the refusal names the pattern rather than the parse - a surviving mutant proved that last part was otherwise unverified, since dropping it changed every message and no verdict. PLUS ONE THE REVIEW DID NOT LIST, found while verifying R5-1's sentence was true: an ENCODED SPACE, where the unescape step turned a hex escape into ordinary letters and the floor saw a different string. Those bytes ARE in the line, so escapes are decoded before the floor reads the text rather than named in the residual - and the decode is deliberately kept OUT of the parity test, because decoding an escaped quote there would flip parity and refuse ordinary code. R5-1 IS THE REST OF THE COMMENT AND IT IS WHY THIS RAISE IS WORTH TAKING: the residual is re-verified against the widened code, member 1 now names its three flavours (a shell substitution, a FORMAT STRING, an INTERPOLATION) because a line spelling a format specifier is not 'a runtime-built body' to any reader and both were ALLOWED when I went looking, and the shapes that are NOT residual are listed with the reason each dies. A residual that names what the code already catches is the same defect as one that omits what it does not. 14 mutants planted, 13 killed and 1 a literal equivalent. TWO FALSE REFUSALS I CAUSED AND FIXED are now no-loss rows: with the percent-form letter optional, a printf format read as a quote operator opening on a quote character, found no closer, and refused a legitimate line. From 1169 it may only shrink; the next seam is still the parser."
+    },
+    {
       "path": "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts",
       "from": 259,
       "to": 260,
@@ -5867,7 +5874,7 @@
   "files": {
     "packages/server/src/agent/brokers/sudo-probe.ts": 83,
     "packages/server/src/agent/brokers/sudo-copy.ts": 168,
-    "packages/server/src/agent/brokers/sudo-policy.ts": 1069,
+    "packages/server/src/agent/brokers/sudo-policy.ts": 1169,
     "packages/dashboard/src/components/AccessControls.tsx": 141,
     "packages/dashboard/src/components/AccessManifest.tsx": 239,
     "packages/dashboard/src/components/AttachmentChips.tsx": 465,
