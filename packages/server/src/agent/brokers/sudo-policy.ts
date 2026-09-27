@@ -286,25 +286,48 @@ const INTERPRETERS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'dash', 
 const EXECUTING_CONTEXT_RE = /\$\(|\$\{|`/;
 
 export function privilegeTokenIsQuotedData(raw: string, segments: readonly string[]): boolean {
-  for (const seg of segments) {
-    if (INTERPRETERS.has(bareWord(seg.trim().split(/\s+/)[0] ?? '').toLowerCase())) return false;
+  // ⚠ WRITTEN AS ONE CONJUNCTION OVER THE OCCURRENCES, ON PURPOSE, and the mutation run is why.
+  // The first cut of the inversion was a series of early `return false`s ending in `return covered` —
+  // which LOOKED fail-closed and was not TESTABLE as such: flipping that last statement to `return
+  // true` changed nothing, because every corpus row was already refused by an earlier branch. A default
+  // nothing can flip is a default nobody has verified. The decision is now the LAST statement and the
+  // whole of it, so "flip the default back to allow" is a mutant that reds across the corpus.
+  if (segments.some((seg) => INTERPRETERS.has(bareWord(seg.trim().split(/\s+/)[0] ?? '').toLowerCase()))) {
+    return false;
   }
-  // The admin-privileges CONSTRUCT is never inert data: it is a request for root in words.
-  if (mentionsAdminPrivileges(raw)) return false;
-  let covered = false;
+  // ⚠ NO SHORT-CIRCUIT ON THE ADMIN PHRASE. The first cut refused any line mentioning it, which also
+  // refused `echo "with administrator privileges"` — prose, and the same class as `echo sudo` which is
+  // deliberately allowed. The occurrence machinery below is the right judge: `osascript -e '… with
+  // administrator privileges'` refuses because `osascript` is not a provably inert program, while an
+  // inert program quoting the phrase is data. The AppleScript door is separate and does not rely on this.
+  const occurrences: Array<{ word: string; index: number; program: string }> = [];
   for (const seg of segments) {
     const words = seg.trim().split(/\s+/).filter(Boolean);
     const program = bareWord(words[0] ?? '').toLowerCase();
-    for (let i = 0; i < words.length; i++) {
-      if (!mentionsPrivilegeToken(words[i])) continue;
-      covered = true;
-      if (i === 0) return false;                              // a program position
-      if (EXECUTING_CONTEXT_RE.test(words[i])) return false;  // a substitution runs it
-      if (!INERT_PROGRAMS.has(program)) return false;          // not PROVEN non-executing
+    words.forEach((word, index) => {
+      if (PRIVILEGE_TOKEN_RE.test(word)) occurrences.push({ word, index, program });
+    });
+    // ⚠ THE ADMIN PHRASE IS THREE WORDS, so a per-word scan can never see it — and the empty-conjunction
+    // guard then refused `echo "with administrator privileges"`, which is prose. Measured by the clause
+    // that asserts prose stays allowed. It is collected as ONE occurrence, positioned at the word the
+    // phrase starts on, judged by the same three conditions: an inert program quoting it is data, while
+    // `osascript -e '… with administrator privileges'` refuses because `osascript` is not inert.
+    if (mentionsAdminPrivileges(seg)) {
+      const at = words.findIndex((w) => /^\W*with$/i.test(w) || /^\W*with\b/i.test(w));
+      occurrences.push({ word: seg, index: at <= 0 ? 0 : at, program });
     }
   }
-  // Mentioned in the raw line and carried by no segment word ⇒ not proven ⇒ refuse.
-  return covered;
+  // Mentioned in the raw line and carried by NO segment word — a construct header the segmenter drops,
+  // a shape it reports opaquely — is not proven, and the empty conjunction must not read as proof.
+  if (occurrences.length === 0) return false;
+  return occurrences.every((o) => o.index > 0
+    && !EXECUTING_CONTEXT_RE.test(o.word)
+    && INERT_PROGRAMS.has(o.program));
+}
+
+/** Programs proven not to execute their arguments — the allowlist the inversion rests on. */
+export function isInertProgram(name: string): boolean {
+  return INERT_PROGRAMS.has(bareWord(name).toLowerCase());
 }
 
 /**

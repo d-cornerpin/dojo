@@ -114,6 +114,11 @@ const EVASIONS: readonly string[] = [
   'unbuffer sudo whoami',
   // ── one MORE of my own invention, never listed anywhere, to prove the same thing again
   'chrt -f 99 sudo whoami',
+  // ── the token in a CONSTRUCT HEADER, which the segmenter drops: no segment word carries it, so the
+  //    only thing refusing these is the inversion's empty-conjunction guard.
+  'for x in $(sudo whoami); do echo $x; done',
+  'case $(sudo whoami) in root) echo yes;; esac',
+  'while $(sudo true); do echo x; done',
   // ── RC2: the two resolvers disagreed, so the floor matched nothing
   'env X=1 sudo rm -rf /',
   'env FOO=bar BAZ=1 sudo rm -rf ~',
@@ -160,6 +165,13 @@ describe('§1 the evasion corpus, through the real shell door', () => {
       'sudo rm -rf /', 'true; sudo rm -rf /', 'true && sudo rm -rf /', '(sudo rm -rf /)',
       'ls | sudo rm -rf /', 'SUDO rm -rf /', 'env sudo rm -rf /', '\\sudo rm -rf /',
       'sudo --prompt="pw: " rm -rf /', 'sudo -u root rm -rf ~', 'echo a; sudo chmod 777 /etc',
+      // RC2 — the two resolvers disagreed here, and the floor matched nothing: ALLOWED under `free`
+      'env X=1 sudo rm -rf /', 'env FOO=bar BAZ=1 sudo rm -rf ~',
+      // RC3 — a wrapper's own argument ended the walk
+      'timeout 5 sudo rm -rf /', 'nice -n 10 sudo rm -rf /', 'stdbuf -o0 sudo rm -rf ~',
+      'xargs -I{} sudo rm -rf /',
+      // RC1 — the fallthrough excused these as prose
+      'echo $(sudo rm -rf /)', 'echo "$(sudo rm -rf /)"', 'flock /tmp/l sudo rm -rf /',
     ]) {
       expect(shellAllows(line, PRIMARY), line).toBe(false);
     }
@@ -241,6 +253,19 @@ describe('§2 the harmless spellings still run', () => {
       "echo 'run sudo apt-get install -y ffmpeg'",
       'echo sudo',
       'printf "%s\\n" "sudo cp x y"',
+    ]) {
+      expect(shellAllows(line, WORKER), line).toBe(true);
+    }
+  });
+
+  it('PROSE ABOUT admin privileges is prose — the construct is not a magic word', () => {
+    // The first cut short-circuited on the phrase anywhere in the line, which refused this. The
+    // occurrence machinery gets it right for the same reason `echo sudo` is allowed: an inert program,
+    // an argument position, no executing context. `osascript` is still caught, by the program check.
+    policyRow.current = 'blocked';
+    for (const line of [
+      'echo "with administrator privileges"',
+      'grep -r "with administrator privileges" docs/',
     ]) {
       expect(shellAllows(line, WORKER), line).toBe(true);
     }
