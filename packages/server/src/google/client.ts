@@ -5,6 +5,7 @@
 // ════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
+import { openAgentCall, STOPPED_BY_USER } from '../agent/abortable-call.js';
 import { getValidAccessTokenForAccount } from './auth.js';
 import { getGoogleAccount } from './accounts.js';
 import { logGoogleActivity } from './activity-log.js';
@@ -42,6 +43,12 @@ async function googleFetch(
   // position-1 rows, so callers that still pass a kind keep working; the
   // tool executors pass a specific resolved account id for multi-account.
   accountId: string = 'agent',
+  // ── A-6: WHOSE STOP THIS CALL ANSWERS TO ──
+  // Optional and LAST on purpose: every existing call site keeps compiling, and the public
+  // wrappers below — which are the only doors an agent's tool reaches this through — pass it.
+  // A call with no agentId is platform plumbing (a token refresh, a boot probe) and has no
+  // agent to be stopped by; it dials exactly as before rather than inventing an owner.
+  agentId?: string,
 ): Promise<GoogleApiResult> {
   const token = await getValidAccessTokenForAccount(accountId);
 
@@ -81,12 +88,21 @@ async function googleFetch(
     fetchBody = JSON.stringify(body);
   }
 
+  // The caller's own clock is COMPOSED with this agent's stop, never replaced: a slow upload
+  // still times out as an upload. `turn` scope — a tool executor is holding the turn open on it.
+  const slot = agentId === undefined
+    ? null
+    : openAgentCall(agentId, 'turn', AbortSignal.timeout(timeoutForBody(fetchBody)));
+  if (slot?.refused) {
+    slot.release();
+    return { ok: false, data: null, error: STOPPED_BY_USER, apiEndpoint: url };
+  }
   try {
     const resp = await fetch(url, {
       method,
       headers,
       body: fetchBody as RequestInit['body'],
-      signal: AbortSignal.timeout(timeoutForBody(fetchBody)),
+      signal: slot?.signal ?? AbortSignal.timeout(timeoutForBody(fetchBody)),
     });
 
     if (!resp.ok) {
@@ -118,9 +134,16 @@ async function googleFetch(
       : await resp.text();
     return { ok: true, data, apiEndpoint: url };
   } catch (err) {
+    // A stop is named as a stop before the transport gets to call it a failure. Read off this
+    // call's OWN controller, so the composed deadline can never answer yes.
+    if (slot?.cutByStop()) {
+      return { ok: false, data: null, error: STOPPED_BY_USER, apiEndpoint: url };
+    }
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Google API call failed', { method, url, error: msg });
     return { ok: false, data: null, error: msg, apiEndpoint: url };
+  } finally {
+    slot?.release();
   }
 }
 
@@ -134,7 +157,7 @@ export function googleRead(
   details: Record<string, unknown>,
   accountId: string = 'agent',
 ): Promise<GoogleApiResult> {
-  return googleFetch('GET', url, undefined, undefined, accountId).then(result => {
+  return googleFetch('GET', url, undefined, undefined, accountId, agentId).then(result => {
     logGoogleActivity({
       agentId, agentName, action, actionType: 'read',
       details: JSON.stringify({ ...details, account: accountId }),
@@ -157,7 +180,7 @@ export function googleWrite(
   contentType?: string,
   accountId: string = 'agent',
 ): Promise<GoogleApiResult> {
-  return googleFetch(method, url, body, contentType, accountId).then(result => {
+  return googleFetch(method, url, body, contentType, accountId, agentId).then(result => {
     logGoogleActivity({
       agentId, agentName, action, actionType: 'write',
       details: JSON.stringify({ ...details, account: accountId }),
@@ -204,6 +227,10 @@ export function googleSilentFetch(
   body?: unknown,
   contentType?: string,
   accountId: string = 'agent',
+  // A-6: a SILENT call is still an agent's call. It is hidden from the ACTIVITY FEED, which is a
+  // decision about noise, not about ownership — a lookup the agent is waiting on is work its stop
+  // must reach. Optional because some plumbing callers genuinely have no agent.
+  agentId?: string,
 ): Promise<GoogleApiResult> {
-  return googleFetch(method, url, body, contentType, accountId);
+  return googleFetch(method, url, body, contentType, accountId, agentId);
 }

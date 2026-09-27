@@ -124,7 +124,7 @@ export const canvasHandlers: ToolHandlerMap = {
     // Hybrid: many sites refuse iframe embedding (X-Frame-Options / CSP
     // frame-ancestors). Try a live iframe when allowed; otherwise render a
     // full-page screenshot server-side so SOMETHING always shows.
-    const embeddable = await isEmbeddable(targetUrl);
+    const embeddable = await isEmbeddable(targetUrl, agentId);
     if (embeddable) {
       broadcast({ type: 'dock:open', agentId, data: { kind: 'iframe', url: targetUrl, title } });
       setCurrentCanvas(agentId, { kind: 'iframe', url: targetUrl, title });
@@ -132,7 +132,7 @@ export const canvasHandlers: ToolHandlerMap = {
       return { content, isError };
     }
     try {
-      const png = await captureSiteScreenshot(targetUrl);
+      const png = await captureSiteScreenshot(targetUrl, agentId);
       const shotsDir = path.join(homeDir(), '.dojo', 'data', 'canvas-shots');
       effectFs.mkdirSync(shotsDir, { recursive: true });
       const pngPath = path.join(shotsDir, `${uuidv4()}.png`);

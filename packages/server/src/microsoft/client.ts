@@ -4,6 +4,7 @@
 // ════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
+import { openAgentCall, STOPPED_BY_USER } from '../agent/abortable-call.js';
 import { getValidAccessTokenForAccount } from './auth.js';
 import { getMicrosoftAccount } from './accounts.js';
 import { logMicrosoftActivity } from './activity-log.js';
@@ -59,6 +60,10 @@ async function graphFetch(
   // position-1 rows, so callers passing a kind keep working; tool executors
   // pass a specific resolved account id for multi-account.
   accountId: string = 'agent',
+  // A-6: whose stop this call answers to. Optional and last, so every existing call site keeps
+  // compiling; the two public wrappers below pass the agentId they already hold. A call without
+  // one is platform plumbing with no agent to be stopped by, and dials exactly as before.
+  agentId?: string,
 ): Promise<MsGraphResult> {
   const url = endpoint.startsWith('http') ? endpoint : `${GRAPH_BASE}/${endpoint}`;
   const token = await getValidAccessTokenForAccount(accountId);
@@ -94,12 +99,20 @@ async function graphFetch(
     Prefer: 'outlook.timezone="UTC"',
   };
 
+  // Composed, not replaced: the Graph deadline still fires as a deadline. `turn` scope.
+  const slot = agentId === undefined
+    ? null
+    : openAgentCall(agentId, 'turn', AbortSignal.timeout(TIMEOUT_MS));
+  if (slot?.refused) {
+    slot.release();
+    return { ok: false, data: null, error: STOPPED_BY_USER, apiEndpoint: url };
+  }
   try {
     const resp = await fetch(url, {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: slot?.signal ?? AbortSignal.timeout(TIMEOUT_MS),
     });
 
     if (!resp.ok) {
@@ -135,9 +148,15 @@ async function graphFetch(
       : await resp.text();
     return { ok: true, data, apiEndpoint: url };
   } catch (err) {
+    // The stop is named before the transport calls it a failure, off this call's own controller.
+    if (slot?.cutByStop()) {
+      return { ok: false, data: null, error: STOPPED_BY_USER, apiEndpoint: url };
+    }
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Microsoft Graph API call failed', { method, endpoint: url, error: msg });
     return { ok: false, data: null, error: msg, apiEndpoint: url };
+  } finally {
+    slot?.release();
   }
 }
 
@@ -151,7 +170,7 @@ export function msGraphRead(
   details: Record<string, unknown>,
   accountId: string = 'agent',
 ): Promise<MsGraphResult> {
-  return graphFetch('GET', endpoint, undefined, accountId).then(result => {
+  return graphFetch('GET', endpoint, undefined, accountId, agentId).then(result => {
     logMicrosoftActivity({
       agentId, agentName, action, actionType: 'read',
       details: JSON.stringify({ ...details, account: accountId }),
@@ -173,7 +192,7 @@ export function msGraphWrite(
   details: Record<string, unknown>,
   accountId: string = 'agent',
 ): Promise<MsGraphResult> {
-  return graphFetch(method, endpoint, body, accountId).then(result => {
+  return graphFetch(method, endpoint, body, accountId, agentId).then(result => {
     logMicrosoftActivity({
       agentId, agentName, action, actionType: 'write',
       details: JSON.stringify({ ...details, account: accountId }),

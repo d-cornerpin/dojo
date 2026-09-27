@@ -13,6 +13,7 @@
 
 import { chromium, type Browser } from 'playwright';
 import { createLogger } from '../logger.js';
+import { openAgentCall, STOPPED_BY_USER } from './abortable-call.js';
 import { assertPublicHttpTarget, NetGuardError } from './net-guard.js';
 
 const logger = createLogger('site-snapshot');
@@ -26,22 +27,32 @@ const BROWSER_UA =
  * (screenshot) only when a header clearly blocks embedding — anything
  * ambiguous or unreachable returns `true` so we still try the live iframe.
  */
-export async function isEmbeddable(url: string): Promise<boolean> {
+export async function isEmbeddable(url: string, agentId?: string): Promise<boolean> {
   // T11 (SSRF): a refusal must LEAVE this function. The catch below defaults to
   // "let the iframe try", which for a loopback/LAN URL would hand the target to
   // the dashboard instead of refusing it — so NetGuardError is re-thrown there.
   await assertPublicHttpTarget(url);
+  const slot = agentId === undefined
+    ? null
+    : openAgentCall(agentId, 'turn', AbortSignal.timeout(8000));
+  // A stop standing at the door: answer the canvas's question the safe way — "not embeddable"
+  // would send it on to the screenshot path, which is MORE work for an agent that was just
+  // stopped. `true` lets the iframe try and costs this box nothing.
+  if (slot?.refused) { slot.release(); return true; }
   try {
     // Follow redirects MANUALLY and re-check each hop: an open redirect on a
     // public host could otherwise walk this fetch onto a private address.
     let current = url;
     let res: Response | null = null;
     for (let hop = 0; hop < 4; hop++) {
+      // A-6: this agent's stop reaches the probe, composed with the 8 s hop clock. One slot for
+      // the whole hop loop — four hops are one question. A caller with no agentId (a dashboard
+      // preview, a test) dials as before rather than borrowing somebody's stop.
       const hopRes = await fetch(current, {
         method: 'GET',
         redirect: 'manual',
         headers: { 'User-Agent': BROWSER_UA, Accept: 'text/html,*/*' },
-        signal: AbortSignal.timeout(8000),
+        signal: slot?.signal ?? AbortSignal.timeout(8000),
       });
       const loc = hopRes.status >= 300 && hopRes.status < 400 ? hopRes.headers.get('location') : null;
       if (!loc) { res = hopRes; break; }
@@ -70,6 +81,8 @@ export async function isEmbeddable(url: string): Promise<boolean> {
       url, error: err instanceof Error ? err.message : String(err),
     });
     return true;
+  } finally {
+    slot?.release();
   }
 }
 
@@ -89,16 +102,26 @@ async function getBrowser(): Promise<Browser> {
  * Render `url` in headless Chromium and return a full-page PNG. Throws on
  * navigation failure (caller falls back to a plain iframe).
  */
-export async function captureSiteScreenshot(url: string): Promise<Buffer> {
+export async function captureSiteScreenshot(url: string, agentId?: string): Promise<Buffer> {
   // T11 (SSRF): checked before a browser is launched. Playwright follows
   // redirects and sub-resources itself, so this covers the requested URL only;
   // per-hop enforcement inside the browser is Phase 5's net broker.
   await assertPublicHttpTarget(url);
   const browser = await getBrowser();
+  // ── A-6, THE ONE CALLER IN THIS FAMILY THAT IS NOT A `fetch` ──
+  // Playwright's `goto` takes no AbortSignal, so the stop cannot be composed onto it. It is
+  // ENACTED instead: the slot's signal closes the CONTEXT the capture runs in, which rejects
+  // the in-flight navigation. Registering it is what makes the work visible to the stop at all
+  // — the alternative is a 30 s render nobody can reach, which is the A-6 defect itself.
+  const slot = agentId === undefined ? null : openAgentCall(agentId, 'turn');
   const context = await browser.newContext({
     viewport: { width: 1280, height: 900 },
     userAgent: BROWSER_UA,
   });
+  if (slot) {
+    slot.signal.addEventListener('abort', () => { void context.close().catch(() => {}); }, { once: true });
+    if (slot.refused) { slot.release(); await context.close().catch(() => {}); throw new Error(STOPPED_BY_USER); }
+  }
   const page = await context.newPage();
   try {
     try {
@@ -113,6 +136,7 @@ export async function captureSiteScreenshot(url: string): Promise<Buffer> {
     logger.info('Captured site screenshot', { url, bytes: png.length });
     return png;
   } finally {
+    slot?.release();
     await context.close().catch(() => { /* already gone */ });
   }
 }
