@@ -16,8 +16,8 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { fileHealerApprovalProposal, markHealerProposalAppliedBySignature, maybeAutoApproveHealerScratch } from '../../../../healer/approval-routing.js';
 import { CLOSING_WORK_OPS, SATISFYING_WORK_OPS, toolOpKey } from '../../../../tools/work-verbs.js';
 import { consumeApproval, isDestructiveCall, manifestPermitsDestructiveCall, requestApproval } from '../../../destructive-gate.js';
-import { isSudoHoldRequired } from '../../../brokers/sudo-policy.js';
-import { sudoOwnerCardCopy } from '../../../brokers/sudo-copy.js';
+import { getSudoPolicy, isSudoHoldRequired } from '../../../brokers/sudo-policy.js';
+import { sudoHeldRefusal, sudoOwnerCardCopy } from '../../../brokers/sudo-copy.js';
 import { execCallText } from '../../../brokers/exec-seam.js';
 import { isStructuringTool } from '../../classifiers/hoarding.js';
 import { canonicalToolSignature } from '../../classifiers/loop.js';
@@ -144,6 +144,12 @@ export async function recordDispatchAndHold(
         argsJson: JSON.stringify(tc.arguments ?? {}),
         heldDirectDestructiveCall: true,
         copy: sudoOwnerCardCopy(commandText),
+        // The AGENT reads this one. The generic destructive sentence named neither the policy nor the
+        // card, so a held caller could not do what every other refusal lets it do — say what is
+        // impossible, then what is possible. `getSudoPolicy()` rather than the literal `gated`: the
+        // hold only happens under `gated` today, and a sentence that states the value it READ cannot
+        // go stale if that ever changes.
+        agentRefusal: sudoHeldRefusal(commandText, getSudoPolicy()),
       });
       try {
         broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });

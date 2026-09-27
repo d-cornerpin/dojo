@@ -64,6 +64,33 @@ export const SUDO_INTERACTIVE_SHELL_REASON =
   + 'floor and your grants can both see it.';
 
 /**
+ * ⚠ WHAT THE AGENT READS WHEN ITS SUDO CALL IS HELD — and the fourth review would not ship without it.
+ *
+ * The generic destructive-hold sentence ("this could delete or overwrite something") told the agent
+ * NOTHING about sudo: not that a policy exists, not that its value is the reason, not that a card is
+ * now waiting for a human. So the one thing every other refusal in this tree does — say what is
+ * impossible, then say what is POSSIBLE — was missing, and the likely failures are an agent that
+ * retries, or one that finishes its turn without ever telling the owner a card is sitting there.
+ *
+ * THE ROLE WALL IS THE MODEL: it names the one route that exists. Here the route is the owner, so the
+ * possible thing is to MENTION IT IN THE REPLY — he may not be looking at the dashboard. The policy
+ * value is passed in rather than written in, because a sentence naming `gated` while some other value
+ * produced the hold would be exactly the class of false statement this campaign keeps deleting.
+ */
+export function sudoHeldRefusal(command: string, policy: SudoPolicy): string {
+  return `[Waiting for the owner] Nothing has run, and this is not a permission you are missing. `
+    + `This Mac's sudo policy is \`${policy}\`, which means an administrator command needs the owner's `
+    + `yes before it executes — so \`${command}\` is now on a card in his dashboard, and that card is the `
+    + `only thing between it and running. Every sudo line on this box is held the same way while the `
+    + `policy is \`${policy}\`, so a different spelling, a wrapper or a retry will not get around it: `
+    + `do NOT retry and do NOT look for another route. What you CAN do: finish the rest of your turn, `
+    + `and if this work is what the owner is waiting on, SAY IN YOUR REPLY that an administrator command `
+    + `is waiting for his approval — he may not be looking at the dashboard. If he approves, the engine `
+    + `brings this exact command back to you to run. If he declines, nothing happens and nothing is `
+    + `broken.`;
+}
+
+/**
  * THE OWNER'S CARD for a held primary sudo call (`gated`).
  *
  * Plain language, engine-fixed, never model-authored — the same discipline the Healer's card states.

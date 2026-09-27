@@ -212,6 +212,14 @@ export function resolveHealerProposal(input: {
     return { ok: true, status: 'approved', title };
   }
 
+  // ⚠ THE VERB IS `deny`; THE CARD THE HUMAN READ SAYS "decline" (v3.2.2 fourth review — PARKED, on
+  // purpose, with the mapping written down instead). Both words are right where they are: "decline" is
+  // accurate and softer on a card where declining genuinely costs nothing, and `deny` matches every
+  // other verdict in the authorization path. Renaming the verb would strand stored payloads for a
+  // cosmetic gain; renaming the copy would make the card harsher for none. THE ONE REAL COST is a
+  // reader trying to correlate `status = 'denied'` in the database or a log line with a user who says
+  // "I declined it" — so: DECLINE (owner card, dashboard) === deny (this route) === 'denied' (the
+  // `healer_proposals.status` value). One mapping, one place.
   if (input.action === 'deny') {
     db.prepare("UPDATE healer_proposals SET status = 'denied', user_note = ?, resolved_at = datetime('now') WHERE id = ?").run(note ?? null, id);
     // D-B step 4 seam: same status-stamped broadcast as the approve branch.

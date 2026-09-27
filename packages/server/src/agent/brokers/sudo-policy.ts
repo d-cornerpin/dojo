@@ -498,8 +498,12 @@ export function authorizeAdminPrivilegeRequest(agentId: string): Verdict {
  * ⚠ RECURSES ON A NESTED `sudo`, because `sudo sudo rm -rf /` is one command with two wrappers and
  * the floor has to see the bottom of the stack. Bounded by the token count, so it cannot spin.
  *
- * Crude by the same admission the sensitive-path scan makes: this is not a shell parser, and a
- * determined bypass through a heredoc or a base64 pipe gets past it. What it does guarantee is that
+ * Crude by the same admission the sensitive-path scan makes: this is not a shell parser. ⚠ BUT THE TWO
+ * EXAMPLES THIS COMMENT USED TO GIVE ARE BOTH WRONG NOW, AND LEAVING THEM WOULD BE THE SAME DEFECT AS
+ * OVERCLAIMING (R4-3, in reverse): a HEREDOC body becomes its own simple command and the per-segment
+ * floor reads it, and a BASE64 PIPE ends in a shell reading a stream, which the body classifier refuses
+ * under every policy. Both measured, not reasoned. What remains uncovered is named precisely on
+ * `CODE_INTERPRETERS` — a payload the line does not spell — and what this function guarantees is that
  * the ORDINARY spellings a model writes cannot slip a floor pattern past the broker.
  */
 export function parseSudo(trimmed: string): ParsedSudo {
@@ -691,11 +695,28 @@ const SHELL_INTERPRETERS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'd
  * `sudo awk "BEGIN{system(\"…\")}"`. Round 6b closed this class for `sh -c` and left its siblings
  * open; the ruling is about what runs as root, so they are in scope by the same sentence.
  *
- * ⚠ HOW A NON-SHELL BODY IS READ, without this file learning six languages: its SHELL REACH IS ITS
- * QUOTED STRING LITERALS. `os.system`, `system`, `execSync`, `exec`, backticks and `awk`'s `system()`
- * all take a SHELL COMMAND as a string, so every literal in the body is handed to the floor as a
- * command. It is crude in the direction that costs nothing — a literal that happens to read
- * `rm -rf /` is refused whether or not it reaches a shell, and that is the answer we want either way.
+ * ⚠ HOW A NON-SHELL BODY IS READ, without this file learning six languages: EVERY RUN OF TEXT THE BODY
+ * QUOTES — single, double, backtick, and the `q`/`qq`/`qx`/`%q`/`%x`/`%w` forms over any delimiter — is
+ * handed to the floor as a command, individually and joined. `os.system`, `system`, `execSync`, `exec`,
+ * a backtick span and `awk`'s `system()` all take a SHELL COMMAND AS TEXT, so the text is the reach.
+ * Crude in the direction that costs nothing: a quoted run that merely happens to read `rm -rf /` is
+ * refused whether or not it would reach a shell, and that is the answer we want either way.
+ *
+ * ⚠ AND HERE IS EXACTLY WHAT THAT DOES **NOT** COVER, stated at the mechanism rather than in a summary
+ * somewhere else (the fourth review's R4-3: the round-3 wording claimed a narrower residual than the
+ * code had, which is this campaign's recurring failure in its documentation form). MEASURED at the end
+ * of round 8, under `free`, for the primary only — all three are HELD under `gated`, refused under
+ * `blocked`, and role-walled for every other agent under every policy:
+ *   1. A BODY BUILT AT RUNTIME. `sudo sh -c "$(cat /tmp/x)"` — the floor is handed the substitution as
+ *      written, and what executes is whatever that produces. Nothing textual can close this.
+ *   2. A LANGUAGE API THAT NEEDS NO SHELL. `shutil.rmtree('/')`, `fs.rmSync('/', {recursive:true})` —
+ *      the damage is done by the runtime itself and no shell command is ever spelled, so there is no
+ *      text for a text floor to match.
+ * Concatenation (`'rm' + ' -rf /'`), the argv form (`['rm','-rf','/']`) and a base64-decode piped into
+ * a shell are NOT in this list: the first two are caught by the joined-literals pass and the third by
+ * the stream rule, and they were each measured rather than assumed. The honest one-line statement of
+ * the residual is therefore: **under `free`, a payload the line does not SPELL — assembled at runtime,
+ * or carried out by a language API instead of a shell command — is outside the floor's reach.**
  */
 const CODE_INTERPRETERS: ReadonlyMap<string, readonly string[]> = new Map([
   ['python', ['-c']], ['python3', ['-c']], ['python2', ['-c']],
@@ -767,6 +788,24 @@ export interface PrivilegedBody {
  * can read — that is why `sudo sh -s <<< "rm -rf /"` is refused by the FLOOR naming `rm -rf /` rather
  * than by the shell rule — but the KIND is decided by the part nobody can read.
  */
+/**
+ * ⚠ A NAMED STREAM IS STILL A STREAM (R4-2), and the fourth review drew the line exactly right: the
+ * tier must not change because the same body arrived under a different name. `/dev/stdin` was
+ * special-cased and its siblings were not, so under `free`:
+ *
+ *     sudo sh /dev/fd/0        ALLOWED   while `sudo sh -s` and `sudo sh /dev/stdin` were refused
+ *     sudo sh /dev/tty         ALLOWED
+ *     sudo sh /dev/stdout      ALLOWED
+ *     sudo bash <(echo …)      ALLOWED   a process substitution IS a /dev/fd name
+ *
+ * These are not paths an owner can open on a card — `/dev/fd/3` names whatever that descriptor happens
+ * to be at exec time, which is the TOCTOU shape this feature already refuses to rely on elsewhere.
+ */
+function isStreamName(word: string): boolean {
+  const bare = word.replace(/^['"]|['"]$/g, '');
+  return /^\/dev\/(std\w*|fd\/\d+|tty\w*)$/.test(bare);
+}
+
 export function interpreterBody(seg: string): PrivilegedBody | null {
   const words = commandWords(seg);
   const at = wrappedProgramIndex(words, isInterpreterName);
@@ -810,8 +849,16 @@ export function interpreterBody(seg: string): PrivilegedBody | null {
     if (eq > 0 && metadata.includes(word.slice(0, eq))) continue;
     // A HERE-STRING IS READABLE — it is right there in the line — so the floor gets its text.
     if (word === '<<<') { inline ??= { language, text: unquoteValue(words[w + 1] ?? '') }; w += 1; continue; }
-    if (word.startsWith('<')) { unreadable ??= 'file'; continue; }      // `< file`, or a heredoc header
-    if (word === '-' || word === '/dev/stdin' || (isShell && word === '-s')) { unreadable = 'stream'; continue; }
+    if (word.startsWith('<')) {
+      // ⚠ R4-2: A BARE `<` WITH NOTHING AFTER IT IS A PROCESS SUBSTITUTION, NOT A FILE. The grammar
+      // splits `bash <(echo rm -rf /)` into `bash <` and the substitution's own command, so the
+      // privileged segment ends on a lone `<` and the body it will read is a pipe nobody can name.
+      // `< /tmp/x.sh` and `<<EOF` keep the file tier: one names a path the owner can open, the other
+      // carries its body in the line, where the per-segment floor already reads it.
+      unreadable = words[w + 1] === undefined ? 'stream' : (unreadable ?? 'file');
+      continue;
+    }
+    if (word === '-' || isStreamName(word) || (isShell && word === '-s')) { unreadable = 'stream'; continue; }
     if (word.startsWith('-')) continue;                                 // an ordinary flag
     if (programText) { inline ??= { language, text: unquoteValue(word) }; continue; }
     unreadable ??= 'file';                                              // a FILE operand
@@ -840,11 +887,50 @@ function quotesBalance(text: string): boolean {
   return (bare.split('"').length - 1) % 2 === 0 && (bare.split("'").length - 1) % 2 === 0;
 }
 
-/** Every quoted string literal in a non-shell body — see `CODE_INTERPRETERS` for why these are it. */
+/**
+ * ⚠ EVERY FORM THAT SPELLS A COMMAND AS TEXT — and R4-1 is why it is not just `'…'` and `"…"`.
+ *
+ * The round-3 claim was *"a non-shell body's shell reach is its QUOTED STRING LITERALS"*, and the
+ * fourth review showed the claim was wider than the regex behind it: nine of eleven ordinary alternate
+ * quotings reached the shell without a single or double quote anywhere. Measured, primary under `free`:
+ *
+ *     perl -e '`rm -rf /`'          ruby -e '`rm -rf /`'         php -r '`rm -rf /`;'
+ *     perl -e 'qx{rm -rf /}'        perl -e 'qx(rm -rf /)'       ruby -e '%x{rm -rf /}'
+ *     perl -e 'system(q{…})'        perl -e 'system(qq{…})'      ruby -e 'system(%q(…))'
+ *     ruby -e 'system(%w[rm -rf /])'   perl -e 'exec q[…]'       ruby -e 'system(%x<…>)'
+ *
+ * A BACKTICK SPAN IS THE IDIOMATIC SHELL CALL in Perl, Ruby and PHP — it is not an exotic spelling, it
+ * is the first one their own documentation reaches for — so leaving it out made the sentence false for
+ * the most likely line a model would write. Now covered: backtick spans, and the `q`/`qq`/`qx`/`qw` and
+ * `%q`/`%Q`/`%x`/`%w`/`%i` bracket forms over `{}`, `()`, `[]` and `<>`.
+ *
+ * Crude in the same safe direction as before: a bare `q(1)` that happens to be a function call yields
+ * `1` as a "literal", which the floor does not match and nobody notices. The cost of a false literal is
+ * nothing; the cost of a missing one was root.
+ */
+const LITERAL_RE = new RegExp([
+  "'(?<sq>[^']*)'",                       // '…'
+  '"(?<dq>[^"]*)"',                       // "…"
+  '`(?<bt>[^`]*)`',                       // `…` — the idiomatic shell call in perl/ruby/php
+  // q{} qq() qx[] qw<> and %q() %Q{} %x[] %w<> %i() — one alternation over the four bracket pairs
+  '(?:\\b(?:qq|qx|qw|q)|%[qQxXwWiI]?)\\s*(?:'
+    + '\\{(?<cu>[^}]*)\\}|\\((?<pa>[^)]*)\\)|\\[(?<br>[^\\]]*)\\]|<(?<an>[^>]*)>'
+    + ')',
+  // ⚠ AND ANY OTHER PAIRED DELIMITER, because Perl takes whatever character follows `q`: `qx#…#`,
+  // `q!…!`, `qq,…,`. The review scoped itself to the bracket forms and `qx#rm -rf /#` was still
+  // ALLOWED when I measured the fix — one spelling caught and its sibling uncaught is how every round
+  // of this package has failed, so the sibling class is closed in the same edit rather than listed.
+  '(?:\\b(?:qq|qx|qw|q)|%[qQxXwWiI]?)\\s*(?<d>[^\\w\\s{(\\[<])(?<gd>(?:(?!\\k<d>).)*)\\k<d>',
+].join('|'), 'g');
+
 function quotedLiterals(text: string): string[] {
-  return [...unescape(text).matchAll(/'([^']*)'|"([^"]*)"/g)]
-    .map((m) => (m[1] ?? m[2] ?? '').trim())
-    .filter((s) => s.length > 0);
+  const out: string[] = [];
+  for (const m of unescape(text).matchAll(LITERAL_RE)) {
+    const g = m.groups ?? {};
+    const body = g.sq ?? g.dq ?? g.bt ?? g.cu ?? g.pa ?? g.br ?? g.an ?? g.gd ?? '';
+    if (body.trim().length > 0) out.push(body.trim());
+  }
+  return out;
 }
 
 /** One more layer, for a nested wrapper. */

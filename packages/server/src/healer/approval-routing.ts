@@ -263,6 +263,14 @@ export interface FileHealerApprovalInput {
    * false. Absent ⇒ the Healer copy below, unchanged.
    */
   copy?: { title: string; description: string; proposedFix: string; evidence: readonly string[] };
+  /**
+   * AGENT-FACING REFUSAL OVERRIDE (sudo policy, v3.2.2 — fourth review). The same separation the
+   * `copy` override above makes for the OWNER's card: the mechanism is generic, the WORDS are not.
+   * The generic sentence below says "this could delete or overwrite something", which tells a held
+   * sudo caller nothing about the policy that held it or the card now waiting. Absent ⇒ that generic
+   * text, unchanged, for every Healer hold.
+   */
+  agentRefusal?: string;
   /** Engine diagnostic severity when the call has provenance. Only CRITICAL +
    *  owner-away routes to the iMessage lane; everything else queues in Vitals. */
   engineSeverity?: EngineSeverity | null;
@@ -408,7 +416,7 @@ export async function fileHealerApprovalProposal(
   // agent as waiting to be re-woken (that is what left it sitting during the wall
   // run); tell it plainly to move on. If the owner approves later, the engine
   // brings the exact call back through the existing 30s kick + consume-once retry.
-  const refusal =
+  const refusal = input.agentRefusal ??
     `[Queued for the owner] This ${input.kind} could delete or overwrite something, so it is ` +
     `now waiting in the Healer section of the owner's dashboard for a yes or no. This is not an ` +
     `error and nothing is blocked. Do NOT retry it, do NOT wait on it, and do NOT try another ` +
