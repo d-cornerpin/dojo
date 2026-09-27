@@ -59,6 +59,7 @@ import { createLogger } from '../logger.js';
 import { conversationLabel } from './party-label.js';
 import { recordedInstant } from './message-stamp.js';
 import { listChannelStatuses } from '../services/capability-registry.js';
+import { toolCategoryGranted } from '../agent/access/read.js';
 
 const logger = createLogger('other-threads-lane');
 
@@ -88,6 +89,8 @@ export interface OtherThreadsRead {
   hidden: number;
   /** Channels the platform receives on right now, for the capability half. */
   channels: Array<{ displayName: string; inboundLive: boolean }>;
+  /** The route sentence, composed from the tools this agent can actually call. */
+  route: string;
 }
 
 /**
@@ -149,6 +152,7 @@ export function readOtherThreads(agentId: string, currentConversationId: string 
     rows: all.slice(0, OTHER_THREADS_MAX_ROWS),
     hidden: Math.max(0, all.length - OTHER_THREADS_MAX_ROWS),
     channels,
+    route: routeSentence(agentId),
   };
 }
 
@@ -163,13 +167,45 @@ export const OTHER_THREADS_TAIL = '═══ END OTHER THREADS ═══';
  * and NAME THE TOOL that reaches them. W84's lesson is that publishing live truth without naming
  * the action leaves the model with a fact it cannot use.
  */
-export const OTHER_THREADS_SUPERSEDES =
+export const OTHER_THREADS_HEADLINE =
   'The conversation above is ONE thread, filtered to it on purpose. These other threads are live on '
   + 'this platform right now, and their messages are in your own history even though they are not '
   + 'shown above — so "I have no way to see that" is FALSE and must never be said. No content is '
-  + 'listed here by design: to read any of these, call `history_search` or `history_get` (both search '
-  + 'ALL of your threads, not just this one) or `recall_recent_thread(scope:"all")`. Do that BEFORE '
-  + 'telling anyone you cannot see another conversation.';
+  + 'listed here by design';
+
+/**
+ * The route sentence, and it names ONLY tools this agent can actually call.
+ *
+ * ⚠ THIS IS A BUILD-TIME LIVE PROBE FINDING, not a design instinct. The first cut named
+ * `history_search`, `history_get` and `recall_recent_thread(scope:"all")` unconditionally. Driven on
+ * a scratch agent through the real dashboard door, the lane fired at 769 chars and WORKED — the agent
+ * answered correctly out of the other silo instead of denying it — but the receipt showed those three
+ * tools were NOT on the call at all (a dashboard-created agent's default grants do not include the
+ * Conversation Recall category), and the model reached the rows through nine `exec` calls instead.
+ *
+ * Naming a tool the agent cannot call is the SAME FAILURE THIS LANE EXISTS TO CURE, pointed the other
+ * way: a confident engine sentence that does not match platform truth. W84's whole lesson is that the
+ * model then has to decide which of two authorities to believe. So the sentence is composed from what
+ * `toolCategoryGranted` says is actually reachable, and when NOTHING in that family is granted it says
+ * so plainly rather than instructing toward a locked door — the thread still exists, and that fact is
+ * the part the owner's incident turned on.
+ */
+export function routeSentence(agentId: string): string {
+  let granted: string[] = [];
+  try {
+    granted = ['history_search', 'history_get', 'recall_recent_thread']
+      .filter((t) => toolCategoryGranted(agentId, t));
+  } catch { granted = []; }
+  if (granted.length === 0) {
+    return ': you have no conversation-recall tool granted, so you cannot read them from here — say '
+      + 'that the thread exists and offer to look it up, and never say you have no way to see it.';
+  }
+  const named = granted
+    .map((t) => (t === 'recall_recent_thread' ? '`recall_recent_thread(scope:"all")`' : `\`${t}\``))
+    .join(' or ');
+  return `: to read any of these, call ${named} — searching ALL of your threads, not just this one. `
+    + 'Do that BEFORE telling anyone you cannot see another conversation.';
+}
 
 const CHANNELS_LINE = (channels: OtherThreadsRead['channels']): string =>
   'Channels you receive on right now: '
@@ -199,7 +235,7 @@ export function renderOtherThreads(read: OtherThreadsRead): string | null {
       + `${OTHER_THREADS_WINDOW_DAYS} days, not listed (the ${read.rows.length} most recent are shown)`
     : '';
   const channels = read.channels.length > 0 ? `\n${CHANNELS_LINE(read.channels)}` : '';
-  return `${OTHER_THREADS_HEAD}\n${OTHER_THREADS_SUPERSEDES}\n${lines.join('\n')}${tail}${channels}\n${OTHER_THREADS_TAIL}`;
+  return `${OTHER_THREADS_HEAD}\n${OTHER_THREADS_HEADLINE}${read.route}\n${lines.join('\n')}${tail}${channels}\n${OTHER_THREADS_TAIL}`;
 }
 
 /** The injection, read + render, never throwing: a lane that cannot build must not cost the turn
@@ -232,6 +268,9 @@ export function otherThreadsWorstCaseChars(): number {
     })),
     hidden: OTHER_THREADS_READ_CAP - OTHER_THREADS_MAX_ROWS,
     channels: listChannelStatuses().map((c) => ({ displayName: c.displayName, inboundLive: false })),
+    route: ': to read any of these, call `history_search` or `history_get` or '
+      + '`recall_recent_thread(scope:"all")` — searching ALL of your threads, not just this one. '
+      + 'Do that BEFORE telling anyone you cannot see another conversation.',
   };
   return (renderOtherThreads(read) ?? '').length;
 }

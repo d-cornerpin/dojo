@@ -60,6 +60,12 @@ vi.mock('../../services/capability-registry.js', () => ({
   ],
 }));
 
+vi.mock('../../agent/access/read.js', () => ({
+  // Granted by default in this file; §3b flips it to prove the other direction.
+  toolCategoryGranted: (_a: string, t: string) => !grantsOff.has(t),
+}));
+const grantsOff = new Set<string>();
+
 import { runMigrations } from '../../db/migrations.js';
 import {
   OTHER_THREADS_MAX_ROWS, OTHER_THREADS_WINDOW_DAYS, buildOtherThreadsInjection,
@@ -397,5 +403,60 @@ describe('§6 the worst case is measured, not asserted', () => {
     // 4,000-char messages in every thread, and the block is still this small: the proof that no
     // content rides along is arithmetic, not a promise.
     expect(text.length).toBeLessThan(1400);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §7 — THE ROUTE SENTENCE NAMES ONLY TOOLS THIS AGENT CAN CALL.
+//
+// ⚠ A BUILD-TIME LIVE PROBE FOUND THIS, which is why it is a section and not a footnote. The lane
+// was driven on a scratch agent through the real dashboard door: it fired at 769 chars and WORKED —
+// the agent answered correctly out of the other silo instead of denying it — but the receipt showed
+// `history_search`/`history_get`/`recall_recent_thread` were NOT ON THE CALL AT ALL (a
+// dashboard-created agent's default grants exclude the Conversation Recall category), and the model
+// reached the rows through nine `exec` calls instead. Naming a tool the agent cannot call is the SAME
+// failure this lane cures, pointed the other way: a confident engine sentence that does not match
+// platform truth, leaving the model to pick which authority to believe.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§7 the route sentence is grant-aware', () => {
+  const withThread = (): void => {
+    seedConversation('conv-im', { channel: 'imessage', counterpartyId: 'x', counterpartyName: 'a contact' });
+    seedMessage({ conversationId: 'conv-im', role: 'user', content: 'q', atMs: hoursAgo(3) });
+  };
+  beforeEach(() => { grantsOff.clear(); });
+
+  it('all three granted → all three named', () => {
+    withThread();
+    const text = buildOtherThreadsInjection(AGENT, SERVED)!;
+    expect(text).toContain('`history_search`');
+    expect(text).toContain('`history_get`');
+    expect(text).toContain('`recall_recent_thread(scope:"all")`');
+  });
+
+  it('a tool that is NOT granted is not named', () => {
+    withThread();
+    grantsOff.add('history_get');
+    const text = buildOtherThreadsInjection(AGENT, SERVED)!;
+    expect(text).toContain('`history_search`');
+    expect(text).not.toContain('`history_get`');
+  });
+
+  it('NONE granted → it says so plainly instead of pointing at a locked door', () => {
+    withThread();
+    for (const t of ['history_search', 'history_get', 'recall_recent_thread']) grantsOff.add(t);
+    const text = buildOtherThreadsInjection(AGENT, SERVED)!;
+    expect(text).not.toContain('history_search');
+    expect(text).toContain('no conversation-recall tool granted');
+    // The part the incident turned on SURVIVES: the thread exists, and the denial is still forbidden.
+    expect(text).toContain('a contact (imessage)');
+    expect(text).toContain('never say you have no way to see it');
+    expect(text).toContain('"I have no way to see that" is FALSE');
+  });
+
+  it('a throwing access door costs the route sentence, not the lane', () => {
+    withThread();
+    // `routeSentence` catches, falls back to "nothing granted", and the THREAD still prints.
+    expect(buildOtherThreadsInjection(AGENT, SERVED)).toContain('a contact (imessage)');
   });
 });
