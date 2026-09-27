@@ -51,6 +51,7 @@ import { voiceAssetsRouter } from '../voice/voice-assets.js';
 import { voiceRouter } from '../voice/voice-routes.js';
 import { getPrimaryAgentId, getPMAgentId } from '../config/platform.js';
 import { createLogger } from '../logger.js';
+import { writeBootStamp } from '../boot-stamp.js';
 
 const logger = createLogger('server');
 
@@ -62,6 +63,11 @@ export type AppEnv = {
 };
 
 export function createServer() {
+  // WHO IS RUNNING WHAT: the process stamps its own pid, version and build sha before it serves
+  // a byte, so "which code is this server running?" is answered BY it rather than inferred from
+  // its install directory's current HEAD (which is a probe-time fact about a tree, not about this
+  // process, and cost three stale-server incidents). Never throws; see `boot-stamp.ts`.
+  writeBootStamp();
   const app = new Hono<AppEnv>();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
 

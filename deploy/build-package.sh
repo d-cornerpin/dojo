@@ -51,6 +51,21 @@ mkdir -p "$DEST/platform/packages/dashboard"
 mkdir -p "$DEST/platform/packages/shared"
 cp "$PROJECT_ROOT/package.json" "$DEST/platform/"
 cp "$PROJECT_ROOT/package-lock.json" "$DEST/platform/" 2>/dev/null || true
+
+# WHICH COMMIT PRODUCED THESE BYTES. Beside the platform manifest, so `boot-stamp.ts`'s walk
+# finds it from either `dist/` or `src/`. This is the ONLY way a user's box can answer "what code
+# is this?": it has no repository, so a git call there would be wrong and would usually fail.
+# Resolved HERE, at package time, where a checkout genuinely exists. `unknown` rather than a
+# failure if this is somehow built outside one — the reader treats a non-sha as absent.
+BUILD_SHA="$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+node -e "
+  const fs = require('fs');
+  fs.writeFileSync('$DEST/platform/build-info.json', JSON.stringify({
+    sha: '$BUILD_SHA',
+    version: require('$PROJECT_ROOT/package.json').version,
+    builtAt: new Date().toISOString(),
+  }, null, 2) + '\n');
+"
 cp -r "$PROJECT_ROOT/packages/server/dist" "$DEST/platform/packages/server/"
 cp "$PROJECT_ROOT/packages/server/package.json" "$DEST/platform/packages/server/"
 # Copy migrations to where the compiled code expects them (dist/db/migrations)
