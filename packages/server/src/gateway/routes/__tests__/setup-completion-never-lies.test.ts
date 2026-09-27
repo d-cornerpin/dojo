@@ -49,9 +49,14 @@ vi.mock('../../../config/loader.js', () => ({
 
 /** First-run state, driven per clause. */
 const firstRun = { past: false, marked: 0 };
+/** Swappable so an ordering clause can observe the world AT THE MOMENT the window shuts. */
+const markSpy: { impl: (() => void) | null } = { impl: null };
 vi.mock('../../../config/setup-state.js', () => ({
   isPastFirstRun: () => firstRun.past,
-  markFirstRunComplete: () => { firstRun.marked += 1; firstRun.past = true; },
+  markFirstRunComplete: () => {
+    if (markSpy.impl) { markSpy.impl(); return; }
+    firstRun.marked += 1; firstRun.past = true;
+  },
 }));
 
 vi.mock('../../../config/platform.js', () => ({
@@ -92,7 +97,7 @@ beforeEach(() => {
     CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL);
     CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);
   `);
-  logLines.length = 0; ensured.length = 0;
+  logLines.length = 0; ensured.length = 0; markSpy.impl = null;
   firstRun.past = false; firstRun.marked = 0;
 });
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
@@ -125,6 +130,57 @@ describe('without a primary agent, completion REFUSES', () => {
   it('says so at WARN rather than in silence', async () => {
     await complete();
     expect(logLines.some(l => l.level === 'warn' && /no primary agent/i.test(l.msg))).toBe(true);
+  });
+});
+
+describe('the ORDERING is independently pinned (review F4)', () => {
+  // The clauses above rest on ONE assertion half: `firstRun.marked === 0` inside the refusal
+  // clause. That is true of a gate ABOVE `markFirstRunComplete()` and ALSO true of a route that
+  // refused for some unrelated reason, so a mutant that moved the gate BELOW the mark could
+  // conceivably survive by refusing later. These two clauses make the ordering a fact in its own
+  // right, so that mutant dies twice.
+
+  it('⚠ the refusal happens BEFORE first-run is marked — asserted from the OTHER side', () => {
+    // Recorded at the moment the mark is attempted, not inferred afterwards: if the gate ran
+    // second, `agents` would already be empty AND the mark would have happened.
+    const marksAt: Array<number> = [];
+    firstRun.marked = 0;
+    const seen = { agentsWhenMarked: -1 };
+    // Re-wrap the mark so it records the world as it was when called.
+    const origMark = firstRun.marked;
+    void origMark;
+    markSpy.impl = () => {
+      seen.agentsWhenMarked = (mockDb.current!
+        .prepare('SELECT COUNT(*) AS n FROM agents').get() as { n: number }).n;
+      marksAt.push(1);
+      firstRun.past = true;
+    };
+
+    return complete().then(async (res) => {
+      expect(res.status).toBe(400);
+      // THE ORDERING, stated directly: the mark was never reached at all.
+      expect(marksAt).toEqual([]);
+      expect(seen.agentsWhenMarked).toBe(-1);
+      // …and the route is still refusable a second time, which a marked box would not be.
+      expect((await complete()).status).toBe(400);
+    });
+  });
+
+  it('⚠ with a primary, the mark IS reached and the primary already existed when it was', () => {
+    seedPrimary();
+    const seen = { agentsWhenMarked: -1 };
+    markSpy.impl = () => {
+      seen.agentsWhenMarked = (mockDb.current!
+        .prepare('SELECT COUNT(*) AS n FROM agents').get() as { n: number }).n;
+      firstRun.past = true;
+    };
+
+    return complete().then((res) => {
+      expect(res.status).toBe(200);
+      // The gate ran first, so by the time the window shut the primary was already there. A gate
+      // moved below the mark would record 1 here too — but would have recorded 0 above.
+      expect(seen.agentsWhenMarked).toBeGreaterThanOrEqual(1);
+    });
   });
 });
 
