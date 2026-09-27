@@ -31,9 +31,13 @@ export const DeliveredPanel = ({ delivery, onDone }: {
             WITHOUT THEM, silently, which is what it did live on 2026-09-26 and what its own
             reference says it does (T8 LIVE D-B); occasionally because it refuses the labelled
             request outright. The server measures which labels are actually on the issue after
-            filing it, and this sentence is the SERVER's, verbatim — it carries the measured
-            difference plus GitHub's own documented reason, and only someone with write access can
-            label the issue now. Rendered as a notice, not an error: nothing failed. */}
+            filing it, and this sentence is the SERVER's, verbatim. WHAT IT CARRIES DIFFERS BY
+            BRANCH, and the earlier wording here claimed the stronger one for both (re-review N3):
+            on the REFUSAL branch it carries GitHub's own explanation, because GitHub gave one;
+            on the SILENT-DROP branch (201, labels absent from the read-back) GitHub said nothing
+            at all, so the sentence is the MEASUREMENT alone — the labels asked for against the
+            labels the issue has. Either way only someone with write access can label it now.
+            Rendered as a notice, not an error: nothing failed. */}
         {delivery.labelsDropped && (
           <p className="text-xs text-ui/80 bg-cp-amber/10 border border-cp-amber/25 rounded-lg p-2 whitespace-pre-wrap">
             {delivery.labelsDropped}
