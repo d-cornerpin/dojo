@@ -252,6 +252,16 @@ describe('§4 parseSudo', () => {
     expect(parseSudo('sudo rm -rf /').quotedOptionValue).toBe(false);
   });
 
+  it('`--` ENDS sudo\'s options, so a command that itself starts with `-` is the command', () => {
+    // MUTATION GAP: turning `--`'s `break` into a `continue` is INVISIBLE on ordinary lines, because
+    // the very next token does not start with `-` and the loop breaks anyway. The case `--` exists for
+    // is a command whose own name or first word starts with a dash, and only that tells the two apart.
+    expect(parseSudo('sudo -- -weird-tool x').inner).toBe('-weird-tool x');
+    expect(parseSudo('sudo -- --help').inner).toBe('--help');
+    // and without `--` those leading dashes are read as sudo's own flags, which is correct
+    expect(parseSudo('sudo --help').interactiveShell).toBe(true);
+  });
+
   it('the interactive-shell shapes, and the `-n` flag it records', () => {
     for (const line of ['sudo', 'sudo -i', 'sudo -s', 'sudo --shell', 'sudo -u root']) {
       expect(parseSudo(line).interactiveShell, line).toBe(true);
@@ -302,5 +312,57 @@ describe('§5 the password-prompt message', () => {
       const src = fs.readFileSync(path.join(dir, '..', f), 'utf8');
       expect(src, f).not.toMatch(/writeFile|appendFile|createWriteStream/);
     }
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §6 — THE GATED FLOW GOES THROUGH THE REAL APPROVAL MACHINERY.
+//
+// `gated` is not a refusal and it is not a new consent mechanism: the sudo line is classified
+// DESTRUCTIVE, and from there the existing card, `approve_destructive_action`, the one-shot
+// signature-bound approval and the 60-minute expiry all apply unchanged. These clauses hold the
+// classification — the one seam this feature adds to that machinery — because the machinery behind it
+// is already covered by its own suites and must not be re-proved here.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§6 the gate classifies a sudo line under `gated`, and only under `gated`', () => {
+  it('gated CLASSIFIES, so the existing hold fires; blocked and free do not', async () => {
+    const { isDestructiveCall } = await import('../../destructive-gate.js');
+    const call = (): Record<string, unknown> => ({ script: 'sudo cp bin/imsg /opt/homebrew/bin/' });
+
+    policyRow.current = 'gated';
+    const kind = isDestructiveCall('shell', call());
+    expect(kind, 'gated must hand the existing machinery a destructive KIND').not.toBeNull();
+    expect(String(kind)).toContain('sudo');
+
+    // `blocked` is refused at the floor, where a refusal belongs — classifying it too would file an
+    // approval for a call the broker will refuse on retry, the unsatisfiable-approval dead-end.
+    policyRow.current = 'blocked';
+    expect(isDestructiveCall('shell', call())).toBeNull();
+
+    // `free` is the owner saying no consent is wanted. Holding every sudo line on a box configured
+    // not to hold them is the defect this clause exists to prevent.
+    policyRow.current = 'free';
+    expect(isDestructiveCall('shell', call())).toBeNull();
+  });
+
+  it('it classifies at BOTH doors, and does not fire on a non-sudo line', async () => {
+    const { isDestructiveCall } = await import('../../destructive-gate.js');
+    policyRow.current = 'gated';
+    expect(isDestructiveCall('shell', { script: 'sudo ls' })).not.toBeNull();
+    expect(isDestructiveCall('exec', { argv: ['sudo', 'ls'] })).not.toBeNull();
+    // an ordinary line is untouched by this addition — `ls` was never destructive and still is not
+    expect(isDestructiveCall('shell', { script: 'ls -la' })).toBeNull();
+    expect(isDestructiveCall('exec', { argv: ['ls', '-la'] })).toBeNull();
+  });
+
+  it('a genuinely destructive line is STILL destructive on every policy', async () => {
+    // The pre-existing classification must not become policy-dependent: `rm -rf` was held for
+    // non-primary agents before this feature and is held after it, whatever sudo is set to.
+    const { isDestructiveCall } = await import('../../destructive-gate.js');
+    underEach((p) => {
+      expect(isDestructiveCall('shell', { script: 'rm -rf /tmp/x' }), `policy=${p}`).not.toBeNull();
+      expect(isDestructiveCall('shell', { script: 'sudo rm -rf /tmp/x' }), `policy=${p}`).not.toBeNull();
+    });
   });
 });
