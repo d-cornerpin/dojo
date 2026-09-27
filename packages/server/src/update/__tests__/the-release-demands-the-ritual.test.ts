@@ -82,6 +82,8 @@ const ritualMarker = () => ({
     n: 10,
     allGreen: true,
     seedFresh: true,
+    drawUnsteered: true,
+    pinnedDraws: [],
   },
 });
 
@@ -103,7 +105,8 @@ describe('LANE-3 — release.sh carries the ritual check at all', () => {
     const block = extractRitualCheck('/nonexistent.json');
     for (const field of [
       'release-ritual', 'blast', 'scenario', 'attempts', 'allGreen', 'gitSha',
-      'final', 'seed', 'families', 'seedFresh', 'dojoHead', 'fixesAfterFinalDraw',
+      'final', 'seed', 'families', 'seedFresh', 'drawUnsteered', 'pinnedDraws', 'dojoHead',
+      'fixesAfterFinalDraw',
     ]) {
       expect(block, `the ritual check no longer mentions ${field}`).toContain(field);
     }
@@ -140,6 +143,11 @@ describe('LANE-3 — every way the ritual can be unproven is refused', () => {
     ['a fix landed between the blast and the draw', (m: ReturnType<typeof ritualMarker>) => { m.blast.gitSha = OTHER; }, 'landed between'],
     ['the ritual proved a different tree', (m: ReturnType<typeof ritualMarker>) => { m.dojoHead = OTHER; m.gitSha = OTHER; }, 'not the tree being shipped'],
     ['a fix landed after the final draw', (m: ReturnType<typeof ritualMarker>) => { m.fixesAfterFinalDraw = true; }, 'fixesAfterFinalDraw'],
+    // 2026-09-26, hours after the first replication: the kit's validator gained `final.drawUnsteered`
+    // (a variant-PINNED draw is a rehearsal, so it can no more mint a shippable marker than a
+    // --seed replay can), and this copy owes every field the kit checks.
+    ['the draw cannot be proven unsteered', (m: ReturnType<typeof ritualMarker>) => { m.final.drawUnsteered = false; }, 'drawUnsteered'],
+    ['a variant-pinned draw claims it was unsteered', (m: ReturnType<typeof ritualMarker>) => { m.final.pinnedDraws = ['memory-recall:variant']; }, 'contradicts itself'],
   ])('RED: %s', (_label, mutate, expected) => {
     const marker = ritualMarker();
     mutate(marker);
