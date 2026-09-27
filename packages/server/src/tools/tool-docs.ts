@@ -295,12 +295,13 @@ export function clearSessionLoadedTools(agentId: string): void {
 
 const rehydratedAgents = new Set<string>();
 
-// T79: the load sequence is one row per `load_tool_docs` CALL, not per tool, and it is read
-// once per agent per process. The cap is a runaway guard, not a window: truncating it in
-// either direction breaks the very prefix this function exists to reproduce, so it is set
-// far above anything a session does. MEASURED on the owner's 365 MB dev dojo — 257 load
-// calls in the whole message table across every agent and every session it has ever run;
-// the busiest single agent has 228 ALL TIME, and the most in any one live session is 4.
+// T79: the load sequence is one row per `load_tool_docs` CALL, not per tool, read once per
+// agent per process. The cap is a runaway guard, not a window: truncating it in either
+// direction breaks the very prefix this function exists to reproduce, so it sits far above
+// anything a session does. MEASURED on a 365 MB dev dojo — 257 load calls across every agent
+// and session it has ever run, busiest agent 228 ALL TIME, most in one live session 4.
+//
+// W3 (backlog 2026-09-26, loader audit): THE CAP KEPT THE WRONG END — `ASC … LIMIT 500` is the OLDEST 500 while the W2 ceiling evicts front-first and keeps the NEWEST. Argument, numbers and the RED clause: `tools/__tests__/the-session-tool-set-is-bounded.test.ts` §6.
 const LOAD_SEQUENCE_CALL_CAP = 500;
 
 /**
@@ -347,19 +348,19 @@ export function rehydrateSessionToolsFromHistory(agentId: string, recentLimit = 
       ordered.push(name);
     };
 
-    // ── 1. THE LOAD SEQUENCE, OLDEST FIRST ──
-    const loadRows = (boundary
+    // ── 1. THE LOAD SEQUENCE, OLDEST FIRST — SELECTED NEWEST-FIRST (W3). See the cap's note.
+    const loadRows = ((boundary
       ? db.prepare(
           `SELECT content FROM messages
             WHERE agent_id = ? AND role = 'assistant' AND content LIKE '%load_tool_docs%'
               AND created_at >= (unixepoch(?) * 1000)
-            ORDER BY created_at ASC, rowid ASC LIMIT ?`,
+            ORDER BY created_at DESC, rowid DESC LIMIT ?`,
         ).all(agentId, boundary, LOAD_SEQUENCE_CALL_CAP)
       : db.prepare(
           `SELECT content FROM messages
             WHERE agent_id = ? AND role = 'assistant' AND content LIKE '%load_tool_docs%'
-            ORDER BY created_at ASC, rowid ASC LIMIT ?`,
-        ).all(agentId, LOAD_SEQUENCE_CALL_CAP)) as Array<{ content: string }>;
+            ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+        ).all(agentId, LOAD_SEQUENCE_CALL_CAP)) as Array<{ content: string }>).reverse();
 
     for (const r of loadRows) {
       if (typeof r.content !== 'string') continue;

@@ -385,3 +385,76 @@ describe('§5 THE HANDLER IS THE SEAM — the cap is measured on what the model 
     expect((await ask('exec')).content).toContain('must be an array of tool names');
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §6 — W3: THE LOAD-SEQUENCE CAP KEPT THE WRONG END OF HISTORY.
+// (BACKLOG.md 2026-09-26, loader audit W3: "restart rehydration imports CALLED names not just
+// loaded ones (bounded by history, unbounded in principle)".)
+//
+// ── THE TWO BOUNDS POINTED OPPOSITE WAYS ────────────────────────────────────────────────
+// `rehydrateSessionToolsFromHistory` read the load rows `ORDER BY created_at ASC … LIMIT 500`
+// — the OLDEST 500 — and W2's ceiling then evicts FRONT-FIRST, i.e. it keeps the NEWEST names.
+// So on an agent past the cap the replay assembled the most ANCIENT loads and the ceiling threw
+// away whatever recent ones had made it in: the rebuilt array was furthest from the live one
+// exactly where the cap was supposed to protect it.
+//
+// ── WHY IT IS A LATENT DEFECT AND STILL WORTH THE FIX ───────────────────────────────────
+// Measured on a 365 MB dev dojo: 257 load calls across every agent and session it has ever
+// run, busiest single agent 228 ALL TIME. Nothing reaches 500, so no box has paid for this
+// yet — and the fix costs nothing at any size UNDER the cap, because selecting newest-first
+// and reversing yields the identical sequence when the whole history fits. §6.2 pins that
+// equivalence; §6.1 is the case the old code got wrong.
+//
+// ── WHY THE CAP IS NOT KEYED ON `SESSION_TOOL_SET_MAX` ──────────────────────────────────
+// It was the obvious "make them consistent" move and it is unsound: a load row can place ZERO
+// new names (an all-duplicate re-load), so no number of ROWS provably carries 64 DISTINCT
+// survivors. What is genuinely consistent with the ceiling is the DIRECTION, which is what the
+// fix changes; the SET's size stays bounded where it belongs, in `markToolsLoaded` (§2).
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§6 W3 — the replay keeps the NEWEST loads, the same end the ceiling keeps', () => {
+  /** One `load_tool_docs` row per call, oldest first, each asking for one name. */
+  function seedLoadCalls(count: number): string[] {
+    const asked: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const name = `tool_${String(i).padStart(4, '0')}`;
+      asked.push(name);
+      clock += 1000;
+      mockDb.current!.prepare(
+        'INSERT INTO messages (id, agent_id, role, content, created_at, turn_number) VALUES (?, ?, ?, ?, ?, ?)',
+      ).run(`L${clock}`, AGENT, 'assistant', JSON.stringify(
+        [{ type: 'tool_use', id: `l${i}`, name: 'load_tool_docs', input: { tools: [name] } }],
+      ), clock, 1);
+    }
+    return asked;
+  }
+
+  it('past the row cap, the survivors are the NEWEST loads — never the most ancient ones', () => {
+    // 520 load calls: 20 past the 500-row cap. The OLDEST 20 must be the ones the cap drops,
+    // and the ceiling then keeps the last 64 of what remains.
+    const asked = seedLoadCalls(520);
+    rehydrateSessionToolsFromHistory(AGENT);
+    const after = [...getSessionLoadedTools(AGENT)];
+    expect(after.length).toBe(SESSION_TOOL_SET_MAX);
+    // THE CLAUSE THAT WAS RED BEFORE THE FIX: the newest load is in the set.
+    expect(after).toContain(asked[asked.length - 1]);
+    // ...and the oldest is not. Before the fix this was exactly inverted.
+    expect(after).not.toContain(asked[0]);
+    // The survivors are a contiguous NEWEST tail of the replayed sequence, in replay order.
+    // Stated as the PROPERTY rather than the arithmetic: `load_tool_docs` itself rides in from
+    // the CALLED pass (every load row is a call to it) and occupies one of the 64 slots, so a
+    // hardcoded `slice(-64)` would be pinning that accident instead of the ordering rule.
+    const loadNames = after.filter((n) => n !== 'load_tool_docs');
+    expect(loadNames).toEqual(asked.slice(asked.length - loadNames.length));
+    expect(after[after.length - 1]).toBe('load_tool_docs');
+  });
+
+  it('under the row cap, the sequence is byte-identical to the old ASC read — the fix is free', () => {
+    // 30 calls, well under both bounds: newest-first-then-reverse and oldest-first are the
+    // same list, so no box under the cap sees any change at all.
+    const asked = seedLoadCalls(30);
+    rehydrateSessionToolsFromHistory(AGENT);
+    // `load_tool_docs` itself rides along from the CALLED pass, behind the replayed sequence.
+    expect([...getSessionLoadedTools(AGENT)]).toEqual([...asked, 'load_tool_docs']);
+  });
+});
