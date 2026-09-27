@@ -591,4 +591,18 @@ console.error('  an agent or a person reaches every user\'s disk, and this repos
 console.error('  Replace the name with the ROLE it played — the primary agent, the harness bot, a');
 console.error('  sub-agent, a contact — or with a placeholder. The doctrine never needs the name.');
 console.error('  Re-run with --verbose to see the tokens (locally only; do not paste that output).');
+
+// ── THE WORKSPACE STAYS OUT OF THE PUBLIC REPO (2026-09-27) ──────────────────
+// Worker reports under .superpowers/ quote dev-box agent names and live details
+// BY DESIGN; the repo is public. 25 tracked reports were untracked the day this
+// clause landed. A future `git add -f` re-tracks silently — this makes it loud.
+{
+  const tracked = execFileSync('git', ['ls-files', '.superpowers'], { encoding: 'utf8' }).trim();
+  if (tracked) {
+    console.error('✗ tracked files under .superpowers/ — the session workspace is public-repo-visible:');
+    for (const f of tracked.split('\n').slice(0, 5)) console.error('    ' + f);
+    process.exitCode = 1;
+  }
+}
+
 process.exit(1);
