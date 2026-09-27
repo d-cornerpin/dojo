@@ -49,11 +49,14 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// The step packages are reached through the SHARED derivation, never by a path typed here — the
+// guard-corpus census refuses a second hand-rolled walk of `agent/v2/steps`, and it caught this file
+// doing exactly that on its first draft.
+import { engineFileContaining } from '../../agent/v2/__tests__/engine-sources.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../../../../..');
 const MODEL_TS = path.join(REPO_ROOT, 'packages/server/src/agent/model.ts');
-const TURN_DIAL = path.join(REPO_ROOT, 'packages/server/src/agent/v2/steps/call-llm/model-call.ts');
 
 /** Every `requestType:` expression handed to a `recordCost` call in `agent/model.ts`. */
 function requestTypeExpressions(): string[] {
@@ -108,10 +111,14 @@ describe('a served agent turn is recorded as a turn — with or without tools', 
   });
 
   it('the turn dial is the ONE site that declares the purpose, and it declares this one', () => {
-    const src = fs.readFileSync(TURN_DIAL, 'utf-8');
-    expect(src, `${TURN_DIAL} no longer declares purpose: 'agent_turn' — the only served-turn dial `
-      + 'stopped saying what it is, so every row on every box becomes a completion')
-      .toMatch(/purpose:\s*'agent_turn'/);
+    // Located through the shared engine-source derivation, which also proves the declaration is
+    // UNIQUE among the step packages: `engineFileContaining` throws if two engine files carry it.
+    const dial = engineFileContaining("purpose: 'agent_turn'");
+    expect(dial, "no engine step declares purpose: 'agent_turn' — the only served-turn dial stopped "
+      + 'saying what it is, so every row on every box becomes a completion').toBeTruthy();
+    expect(dial?.rel, 'the declaration moved out of the model-call step; if the turn dial really '
+      + 'moved, say so here rather than letting the clause follow it silently')
+      .toContain('call-llm/model-call.ts');
   });
 });
 
