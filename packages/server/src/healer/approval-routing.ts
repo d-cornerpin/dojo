@@ -255,6 +255,14 @@ export interface FileHealerApprovalInput {
    *  engine severity + presence, so a live hold with no diagnostic severity
    *  queues quietly in Vitals. */
   heldDirectDestructiveCall: boolean;
+  /**
+   * OWNER-FACING COPY OVERRIDE (sudo policy, v3.2.2). The routing, the bound token, the signature,
+   * the card and the approval → `destructive_approvals` mint are all generic; only the WORDS are
+   * Healer-specific ("your self-healing helper"). A held PRIMARY sudo call uses the same mechanism
+   * with its own sentence, because telling the owner his main agent is a self-healing helper would be
+   * false. Absent ⇒ the Healer copy below, unchanged.
+   */
+  copy?: { title: string; description: string; proposedFix: string; evidence: readonly string[] };
   /** Engine diagnostic severity when the call has provenance. Only CRITICAL +
    *  owner-away routes to the iMessage lane; everything else queues in Vitals. */
   engineSeverity?: EngineSeverity | null;
@@ -316,16 +324,16 @@ export async function fileHealerApprovalProposal(
   // Engine-fixed, plain-language copy (never a model-authored headline). What it
   // is, why it paused, what declining does, and a recommendation. The raw command
   // rides in proposed_fix, which the Vitals card tucks behind a details expander.
-  const title = 'A cleanup change is waiting for your OK';
-  const description =
+  const title = input.copy?.title ?? 'A cleanup change is waiting for your OK';
+  const description = input.copy?.description ??
     'Your self-healing helper wants to delete or change something outside its ' +
     'normal temporary work area, so it paused and is checking with you first. ' +
     'Nothing has been changed yet. If you decline, nothing happens and everything ' +
     'stays exactly as it is. If you are not sure, it is safe to decline; you can ' +
     'always ask for it again later. My suggestion: approve it only if you recognize ' +
     'this as something you asked for.';
-  const proposedFix = `Run this action: ${input.callDescription}`;
-  const evidence = JSON.stringify([
+  const proposedFix = input.copy?.proposedFix ?? `Run this action: ${input.callDescription}`;
+  const evidence = JSON.stringify(input.copy?.evidence ?? [
     'It paused on its own because this kind of change can delete or overwrite files.',
     'Nothing will happen unless you approve it. Declining leaves everything as it is.',
   ]);

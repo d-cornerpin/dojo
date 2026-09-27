@@ -25,7 +25,6 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getPrimaryAgentName, isHealerAgent } from '../config/platform.js';
 import { isProtectedIdentityPath } from './permissions.js';
-import { getSudoPolicy, isSudoLine } from './brokers/sudo-policy.js';
 import { getAgentPermissions } from './manifest.js';
 import { grantForManifest } from './brokers/grants.js';
 import { authorizeExecShapedArgs, execCallText, execDoorFor } from './brokers/exec-seam.js';
@@ -88,9 +87,18 @@ export function isDestructiveCall(
     const text = execCallText(toolName, args);
     if (text === null) return 'destructive shell command';
     if (DESTRUCTIVE_EXEC_RE.test(text)) return 'destructive shell command';
-    // SUDO UNDER `gated` (v3.2.2): asked HERE because this machinery already asks. `blocked`/`free` are
-    // deliberately not classified — `sudo-policy.ts` argues both.
-    if (isSudoLine(text.trim()) && getSudoPolicy() === 'gated') return 'sudo (box policy: gated)';
+    // ⚠ SUDO IS DELIBERATELY NOT CLASSIFIED HERE, AND IT WAS FOR ONE DAY. The first cut of the sudo
+    // policy (v3.2.2) put a `gated` arm right here, reusing this gate the way the Healer's identity
+    // writes do. THE OWNER'S RULING OF 2026-09-27 — *"ONLY the main agent gets Sudo access ever."* —
+    // made that arm DEAD CODE, and dead classification is worse than none because it invites the next
+    // reader to debug why it never fires:
+    //   · a NON-PRIMARY agent cannot sudo at all now (the role wall in `brokers/sudo-policy.ts` refuses
+    //     it under every policy), so this branch — which only runs for non-primary agents — can never
+    //     see a sudo line that could proceed;
+    //   · the PRIMARY's `gated` hold is filed directly in `steps/execute/dispatch-bookkeeping.ts`,
+    //     routed to the OWNER's card rather than to the primary itself.
+    // Removed rather than left as a comment-free no-op. The clauses live in
+    // `brokers/__tests__/sudo-is-a-policy-not-a-wall.test.ts` §6.
   }
   // FU-4: the Healer now holds full primary-equivalent write ('*'), so a
   // file_write/file_patch/file_append to one of the owner's identity/config files

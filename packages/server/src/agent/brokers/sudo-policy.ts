@@ -38,13 +38,25 @@
 // would silently stop biting the moment anybody passed a flag. `parseSudo` below skips sudo's
 // options, including the ones that TAKE A VALUE, and its fixture table carries every shape.
 //
-// ── WHAT THIS IS NOT ─────────────────────────────────────────────────────────────────────────
-// NOT primary-only. The policy is BOX-WIDE, and sudo remains subject to each agent's exec grants
-// exactly as every other command is: a deny-all agent cannot exec anything, sudo included. The
-// policy widens what the FLOOR permits; it never widens a grant.
+// ── ⚠ OWNER RULING, 2026-09-27, AND IT NARROWS THE FEATURE: "ONLY the main agent gets Sudo access
+// ever." ──────────────────────────────────────────────────────────────────────────────────────
+// So there are now TWO independent walls, and the order matters:
+//
+//   THE ROLE WALL   a NON-PRIMARY agent's sudo line is refused under EVERY policy. Unoverridable,
+//                   not a grant row, and NOT a policy outcome — no setting reaches it, which is why
+//                   its refusal speaks in the floor's own voice rather than the policy's.
+//   THE POLICY      governs the PRIMARY ONLY. For everybody else it is not consulted at all.
+//
+// A CONSEQUENCE WORTH STATING, because it is what makes `gated` real: since only the primary can
+// sudo, `gated` MUST hold the primary or the mode is empty. It does, and the hold goes to the
+// HUMAN's approval card — never to the primary itself, which would be asking a caller to approve
+// its own call. The route is the one the Healer already uses for "answers to the owner".
+//
+// AND SUDO IS STILL SUBJECT TO THE PRIMARY'S OWN EXEC GRANTS. The policy widens what the FLOOR
+// permits; it never widens a grant. A primary whose manifest denies a command cannot sudo it.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { getSudoPolicyRaw } from '../../config/platform.js';
+import { getSudoPolicyRaw, isPrimaryAgent } from '../../config/platform.js';
 // `types.js` is a leaf (no broker imports), so the verdict helpers come from there rather than
 // from `proc.ts` — which imports THIS module, and would be a cycle.
 import { allow, deny, type Verdict } from './types.js';
@@ -162,6 +174,20 @@ function parseInner(rest: string): { inner: string; interactiveShell: boolean } 
 export const SUDO_BLOCKED_REASON = 'Global deny: command starting with "sudo" is prohibited';
 
 /**
+ * THE ROLE WALL (owner ruling 2026-09-27: *"ONLY the main agent gets Sudo access ever."*).
+ *
+ * It speaks in the FLOOR's voice — "Global deny" — and not in the policy's, because that is what it
+ * is: no value of `sudo_policy` reaches this refusal, so telling a sub-agent that the policy refused
+ * it would be false and would send it to the owner asking for a setting change that cannot help.
+ * It names the ONE route that exists instead, which is the same courtesy every other floor refusal in
+ * this tree extends: say what is impossible, then say what is possible.
+ */
+export const SUDO_NOT_PRIMARY_REASON =
+  'Global deny: sudo is reserved to the primary agent and no permission setting changes that. This '
+  + 'is a role boundary, not a grant you can be given. If the work genuinely needs administrator '
+  + 'rights, hand it to the primary agent (send_to_agent) and let it decide.';
+
+/**
  * THE DECISION, and the ORDER OF THESE THREE STEPS IS THE SECURITY PROPERTY.
  *
  * `reauthorize` is the broker's own per-command authority, handed in as a callback so this module
@@ -183,6 +209,7 @@ export const SUDO_BLOCKED_REASON = 'Global deny: command starting with "sudo" is
  */
 export function authorizeSudoLine(
   trimmed: string,
+  agentId: string,
   reauthorize: (inner: string) => Verdict,
 ): Verdict {
   const parsed = parseSudo(trimmed);
@@ -207,6 +234,13 @@ export function authorizeSudoLine(
   }
   const inner = reauthorize(parsed.inner);
   if (!inner.allowed) return inner;
+  // ⚠ THE ROLE WALL, AFTER the inner re-run and BEFORE the policy. After, so that a sub-agent's
+  // `sudo rm -rf /` is refused by the FLOOR — the most specific true thing about it — rather than by
+  // a role message that would leave the reader thinking a different agent could run it. Before the
+  // policy, because no setting may reach it: for a non-primary the policy is never consulted at all.
+  if (!isPrimaryAgent(agentId)) {
+    return deny('ladder-parity', 'sudo-not-primary', SUDO_NOT_PRIMARY_REASON);
+  }
   const policy = getSudoPolicy();
   if (policy === 'blocked') return deny('ladder-parity', 'sudo-policy:blocked', SUDO_BLOCKED_REASON);
   return allow(`sudo-policy:${policy}(${inner.rule})`);
@@ -223,6 +257,60 @@ export const SUDO_INTERACTIVE_SHELL_REASON =
   'Refused: `sudo` with no command asks for an interactive root shell, which has nothing the '
   + 'permission broker can check. Run the specific command you need through sudo instead, so the '
   + 'floor and your grants can both see it.';
+
+/**
+ * Does THIS call need the owner's approval before it runs? `gated` + a sudo line, and nothing else.
+ *
+ * Asked of the CALL rather than of the command text alone, so both exec doors are covered by one
+ * question. `blocked` never reaches here (the broker's floor refuses it) and `free` is the owner saying
+ * he does not want to be asked — holding on a box configured not to hold is the defect this narrowness
+ * prevents.
+ */
+export function isSudoHoldRequired(toolName: string, args: Record<string, unknown>): boolean {
+  // ⚠ THE STRING WORK COMES FIRST, AND THAT ORDERING IS THE ROBUSTNESS. This runs on EVERY tool call
+  // of every turn, and it used to read the policy first — so anything that made the config read throw
+  // took the whole turn down, not just sudo. Found by the integration suite: 39 failures from one
+  // undefined import. Parsing cannot throw, and it answers `false` for the overwhelming majority of
+  // calls before any I/O happens.
+  const raw = toolName === 'shell' ? args.script
+    : Array.isArray(args.argv) ? (args.argv as unknown[]).join(' ')
+      : args.command;
+  if (!(typeof raw === 'string' && raw.length > 0 && isSudoLine(raw.trim()))) return false;
+  // It IS a sudo line, so the policy decides — and an unreadable policy HOLDS rather than runs. A
+  // read that fails must never be the reason an administrator command executed unasked.
+  try {
+    return getSudoPolicy() === 'gated';
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * THE OWNER'S CARD for a held primary sudo call (`gated`).
+ *
+ * Plain language, engine-fixed, never model-authored — the same discipline the Healer's card states.
+ * It says WHAT was asked, that nothing has happened, what declining costs (nothing), and it does NOT
+ * recommend approval: an administrator command on the owner's own Mac is his call, and a card that
+ * nudges is a card that gets clicked through.
+ */
+export function sudoOwnerCardCopy(command: string): {
+  title: string; description: string; proposedFix: string; evidence: readonly string[];
+} {
+  return {
+    title: 'Your agent wants to run an administrator command',
+    description:
+      'Your main agent is asking to run something as administrator (sudo) on this Mac. Nothing has '
+      + 'run yet, and nothing will unless you approve it. Declining changes nothing at all. Approve it '
+      + 'only if you recognise this as something you asked for — and if you would rather not be asked '
+      + 'each time, Settings → Security → sudo policy has a setting for that in both directions.',
+    proposedFix: `Run this as administrator: ${command}`,
+    evidence: [
+      'Administrator commands can change or remove anything on this Mac, so the agent pauses first.',
+      'The platform\'s hard limits still apply: it cannot erase the disk or read your credentials '
+      + 'file, whatever you choose here.',
+    ],
+  };
+}
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // HONEST FAILURE — the password prompt, and the ONE command a human runs once.

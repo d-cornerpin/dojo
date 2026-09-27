@@ -16,6 +16,8 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { fileHealerApprovalProposal, markHealerProposalAppliedBySignature, maybeAutoApproveHealerScratch } from '../../../../healer/approval-routing.js';
 import { CLOSING_WORK_OPS, SATISFYING_WORK_OPS, toolOpKey } from '../../../../tools/work-verbs.js';
 import { consumeApproval, isDestructiveCall, manifestPermitsDestructiveCall, requestApproval } from '../../../destructive-gate.js';
+import { isSudoHoldRequired, sudoOwnerCardCopy } from '../../../brokers/sudo-policy.js';
+import { execCallText } from '../../../brokers/exec-seam.js';
 import { isStructuringTool } from '../../classifiers/hoarding.js';
 import { canonicalToolSignature } from '../../classifiers/loop.js';
 import { advance, type AgentTurnState } from '../../state.js';
@@ -118,9 +120,41 @@ export async function recordDispatchAndHold(
   if (isStructuringTool(tc.name, tc.arguments)) {
     state = advance(state, { structuringToolCalledThisTurn: true });
   }
+  // ── THE PRIMARY'S SUDO HOLD (sudo policy `gated`, owner ruling 2026-09-27) ──
+  // ⚠ THIS CARVES SUDO OUT OF THE JUNE DOCTRINE BELOW, and the owner's sentence is why:
+  // *"ONLY the main agent gets Sudo access ever."* Since no other agent can sudo at all (the role wall
+  // in `agent/brokers/sudo-policy.ts` refuses them under every policy), `gated` would be an EMPTY MODE
+  // if it did not hold the primary — there would be nobody left for it to gate.
+  //
+  // So the hold goes to the HUMAN, not to the primary: routing it to the primary would ask a caller to
+  // approve its own call. `fileHealerApprovalProposal` is the route that already means "answers to the
+  // owner" — same bound token, same canonical signature, same owner card, same approval →
+  // `destructive_approvals` mint that the retry consumes — with its own words, because telling the
+  // owner his main agent is a self-healing helper would be false.
+  if (isPrimaryAgent(agentId) && isSudoHoldRequired(tc.name, tc.arguments as Record<string, unknown>)) {
+    const sig = canonicalToolSignature(tc.name, tc.arguments);
+    if (!consumeApproval(agentId, sig, JSON.stringify(tc.arguments ?? {}))) {
+      const nameRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+      const commandText = execCallText(tc.name, tc.arguments as Record<string, unknown>) ?? tc.name;
+      const held = await fileHealerApprovalProposal({
+        agentId, agentName: nameRow?.name ?? agentId, toolName: tc.name, signature: sig,
+        kind: 'sudo (box policy: gated)',
+        callDescription: commandText,
+        argsJson: JSON.stringify(tc.arguments ?? {}),
+        heldDirectDestructiveCall: true,
+        copy: sudoOwnerCardCopy(commandText),
+      });
+      try {
+        broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
+        broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: held.refusal.slice(0, 500) });
+      } catch { /* best effort */ }
+      return { state, refusal: { toolCallId: tc.id, name: tc.name, content: held.refusal, isError: !held.queued } };
+    }
+  }
+
   // ── Destructive-action gate (remediation 4d, open question 6) ──
-  // The primary has full reign; every OTHER agent's destructive call
-  // is engine-held pending the primary's approval (one-shot,
+  // The primary has full reign — EXCEPT FOR SUDO since 2026-09-27, handled directly above; every OTHER
+  // agent's destructive call is engine-held pending the primary's approval (one-shot,
   // signature-bound, 60-min expiry). Prose cannot hold this line on
   // the weakest model; the gate is the mechanism.
   if (!isPrimaryAgent(agentId)) {

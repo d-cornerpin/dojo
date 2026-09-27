@@ -167,7 +167,7 @@ function authorizeOneCommand(grant: Grant, command: string, kind: 'proc' | 'shel
   if (globals) return globals;
 
   // SUDO: a transparent wrapper. Strip it, re-run THIS function over the inner command, policy last.
-  if (isSudoLine(trimmed)) return authorizeSudoLine(trimmed, (i) => authorizeOneCommand(grant, i, kind));
+  if (isSudoLine(trimmed)) return authorizeSudoLine(trimmed, grant.agentId, (i) => authorizeOneCommand(grant, i, kind));
 
   const baseCommand = trimmed.split(/\s+/)[0];
   const verdict = evaluateRules(grant, kind, (pattern, mode) =>
