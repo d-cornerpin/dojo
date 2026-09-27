@@ -5791,12 +5791,48 @@
       "to": 444,
       "by": "SELF-FOUND HOLE (2026-09-27) - the floor and the sensitive-read scan, over the privileged inner commands",
       "why": "421 -> 444 (+23: the privileged-inner loop, the one-voice sensitive-read helper, and the two notes that say what each measured). The floor is now asked about every command a PRIVILEGED line would really run, not only the segments the grammar can see - `sudo sh -c \"rm -rf /\"` reached the grant pass with `sh` as its program. The sensitive-read scan is asked there too: it runs once over `resource.raw` and splits on whitespace, so in `su root -c \"cat ~/.ssh/id_rsa\"` it saw `\"cat` and `~/.ssh/id_rsa\"` with the quotes attached, matching neither a reader program nor a sensitive path - ALLOWED under `free` while the same command bare is refused. Its refusal moved into `sensitiveReadDeny` because it is now asked in two places and the words an agent reads must not drift between them, which is a NET LINE SAVING at the first site. REFUSED: doing the unwrap here, which would put a second grammar in the grant evaluator - `proc.ts` asks the question and `sudo-policy.ts` answers it. REFUSED: flooring unprivileged `sh -c` bodies, which is a live behaviour change beyond this ruling's remit. From 444 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/brokers/sudo-policy.ts",
+      "from": 840,
+      "to": 974,
+      "by": "THIRD REVIEW F1/F2/F3 (2026-09-27) - su's own option table, every interpreter's body, one rule for a body nobody can read",
+      "why": "840 -> 974, and it is +275 of new work against -141 TAKEN OUT FIRST: `sudo-copy.ts` now holds the vocabulary and every word an agent reads, which is the split THIS FILE'S LAST RAISE NAMED as the next move if it grew again. It grew again, so the promise is kept rather than re-argued. WHAT THE +275 BUYS, all three measured as ALLOWED under `free` before it: F1 - `su --login root` and `su -s /bin/sh root` were an unbounded interactive ROOT SHELL while six siblings were refused, because `su -s` TAKES A VALUE and I had ported sudo's boolean table; `su` now has its own table and its ONE command source. F2 - only SHELL bodies were decomposed, so `sudo python3 -c` with an `os.system` body and its perl/ruby/node/php/awk siblings ran as root; a non-shell body's shell reach is its QUOTED STRING LITERALS, which is how six languages are covered without this file learning any of them. F3 - the unseeable doctrine shipped for `osascript` and not for `sh`, so `sudo sh /tmp/x.sh` ran while `osascript /tmp/x.scpt` held, and bare `sudo sh` was not classified at all; ONE classifier now answers for every privileged interpreter and the line it draws is whether the body HAS A NAME. PLUS FOUR MORE THE FIX'S OWN PROBE FOUND: `sh -cx`, `sudo env sh -c` (RC2's two-readers shape one layer down - the wrapper walk is now GENERALISED and asked twice rather than copied), the argv form whose floor pattern exists only in the literals' sequence, and an escaped literal whose trailing backslash matched no pattern. REFUSED: a denylist of evasion spellings, which is what the inverted default exists to avoid; REFUSED: teaching this file six languages, when the literals answer the only question the floor asks. 22 mutants planted, 22 killed - three of them only died after the clauses they demanded were written. From 974 it may only shrink, and the next seam if it grows is the PARSER (`parseSudo` plus the body classifier), which is a real boundary now that the copy is gone."
+    },
+    {
+      "path": "packages/server/src/agent/brokers/sudo-copy.ts",
+      "from": 0,
+      "to": 141,
+      "by": "THIRD REVIEW round - the promised split, a LEAF",
+      "why": "NEW ENTRY at 141, and every line of it MOVED out of `sudo-policy.ts` rather than written: the three policy values, the config key, the five refusals an agent reads, the owner's card, and the one line a human runs once. It is a leaf - nothing here asks whether a line is privileged, and that question keeps its single home. It also breaks a real cycle: `platform.ts` needed `SudoPolicy` and `sudo-policy.ts` imports `platform.ts`, so the type lived in the module that imports its own importer and only worked because types are erased. From 141 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/brokers/proc.ts",
+      "from": 444,
+      "to": 445,
+      "by": "THIRD REVIEW round - one import line",
+      "why": "444 -> 445 (+1). `SUDO_UNPLACEABLE_REASON` now comes from the copy leaf: one more import statement, no new logic."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts",
+      "from": 259,
+      "to": 260,
+      "by": "THIRD REVIEW round - one import line",
+      "why": "259 -> 260 (+1). `sudoOwnerCardCopy` now comes from the copy leaf; the split import is the whole change."
+    },
+    {
+      "path": "packages/dashboard/src/pages/Settings.tsx",
+      "from": 7189,
+      "to": 7194,
+      "by": "REBASE ARITHMETIC ONLY (2026-09-27) - this round changed no dashboard file",
+      "why": "7189 -> 7194 (+5), and none of it is mine: rebasing this branch onto `main` (60551e9d) put the freshbox bundle's five Full-Disk-Access lines underneath the sudo card. Both raises are argued in their own entries - freshbox item D and the sudo card - and this one exists only because the two land in one file and the pin has to name the sum. Verified by diffing the file's sudo hunks against their pre-rebase form. From 7194 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
   "files": {
     "packages/server/src/agent/brokers/sudo-probe.ts": 83,
-    "packages/server/src/agent/brokers/sudo-policy.ts": 840,
+    "packages/server/src/agent/brokers/sudo-copy.ts": 141,
+    "packages/server/src/agent/brokers/sudo-policy.ts": 974,
     "packages/dashboard/src/components/AccessControls.tsx": 141,
     "packages/dashboard/src/components/AccessManifest.tsx": 239,
     "packages/dashboard/src/components/AttachmentChips.tsx": 465,
@@ -5823,7 +5859,7 @@
     "packages/dashboard/src/pages/Costs.tsx": 686,
     "packages/dashboard/src/pages/Health.tsx": 662,
     "packages/dashboard/src/pages/Memory.tsx": 499,
-    "packages/dashboard/src/pages/Settings.tsx": 7189,
+    "packages/dashboard/src/pages/Settings.tsx": 7194,
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
@@ -5831,7 +5867,7 @@
     "packages/server/src/agent/agent-status.ts": 233,
     "packages/server/src/agent/brokers/deny.ts": 385,
     "packages/server/src/agent/brokers/grants.ts": 344,
-    "packages/server/src/agent/brokers/proc.ts": 444,
+    "packages/server/src/agent/brokers/proc.ts": 445,
     "packages/server/src/agent/browser.ts": 412,
     "packages/server/src/agent/destructive-gate.ts": 595,
     "packages/server/src/agent/effects/capability.ts": 308,
@@ -5899,7 +5935,7 @@
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 407,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 165,
-    "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 259,
+    "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 260,
     "packages/server/src/agent/v2/steps/execute/index.ts": 295,
     "packages/server/src/agent/v2/steps/execute/post-result.ts": 351,
     "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 404,
