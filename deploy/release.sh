@@ -627,6 +627,52 @@ else if (got !== want) { console.log('the battery ran on ' + got + ', the declar
 if [ -n "$MODEL_MISMATCH" ]; then
   fail "Behavioral gate: $MODEL_MISMATCH. A green on an undeclared model is not evidence about this build. NOT publishing."
 fi
+# ── The marker must be a RELEASE-RITUAL marker (owner ruling 2026-09-20) ──
+# THE HOLE, MEASURED: `grep -c ritual deploy/release.sh` was ZERO. The owner's ruling says every
+# cut runs TWO proofs — 3 green attempts of a blast-radius scenario, then 10 random generated
+# scenarios on a FRESH seed, all green, at the SAME platform commit — and the kit does assemble a
+# marker that records both (`behavioral/lib/release-ritual.mjs`). But the gate above only ever
+# asked "green, fresh, this HEAD, floor model", every one of which an ORDINARY green marker
+# satisfies. So a cut with no blast proof and no 10-family draw walked straight through the one
+# gate the ruling exists to stand behind, and nothing said the ritual had been skipped.
+#
+# The kit's own module header names this gate as the second, DELIBERATE copy of its
+# `validateReleaseRitualMarker` field checks: the release runs in bash and cannot import ESM
+# across the sibling-repo boundary, exactly as BEHAV_DISHONEST and MODEL_MISMATCH above cannot.
+# So the fields are re-expressed here, and a product-side clause
+# (`packages/server/src/update/__tests__/the-release-demands-the-ritual.test.ts`) drives THIS
+# script's block against fixture markers so the copy cannot silently rot into a weaker one.
+RITUAL_BAD=$(node -e "
+const m = require('$BEHAV_MARKER');
+const bad = [];
+if (m.mode !== 'release-ritual') bad.push('mode=' + JSON.stringify(m.mode) + ' (needs release-ritual)');
+const b = m.blast;
+if (!b || typeof b !== 'object') bad.push('no blast{} — the 3-attempt blast-radius proof is not recorded');
+else {
+  if (typeof b.scenario !== 'string' || !b.scenario) bad.push('blast.scenario missing');
+  if (b.attempts !== 3) bad.push('blast.attempts=' + JSON.stringify(b.attempts) + ' (needs exactly 3)');
+  if (b.allGreen !== true) bad.push('blast.allGreen!=true');
+  if (typeof b.gitSha !== 'string' || !b.gitSha) bad.push('blast.gitSha missing');
+}
+const f = m.final;
+if (!f || typeof f !== 'object') bad.push('no final{} — the 10-family generated draw is not recorded');
+else {
+  if (typeof f.seed !== 'string' || !f.seed) bad.push('final.seed missing (the draw is not replayable)');
+  if (!Array.isArray(f.families) || f.families.length !== 10) bad.push('final.families=' + (Array.isArray(f.families) ? f.families.length : 'none') + ' (needs exactly 10)');
+  if (f.allGreen !== true) bad.push('final.allGreen!=true');
+  if (f.seedFresh !== true) bad.push('final.seedFresh!=true (a --seed replay cannot mint a shippable marker)');
+}
+if (typeof m.dojoHead !== 'string' || !m.dojoHead) bad.push('dojoHead missing');
+if (b && b.gitSha && m.dojoHead && b.gitSha !== m.dojoHead) bad.push('blast ran at ' + String(b.gitSha).slice(0, 8) + ' but the final draw is at ' + String(m.dojoHead).slice(0, 8) + ' (a fix landed between the two proofs)');
+if (m.gitSha && m.dojoHead && m.gitSha !== m.dojoHead) bad.push('marker.gitSha != marker.dojoHead');
+if (m.dojoHead && m.dojoHead !== '$HEAD_SHA') bad.push('dojoHead ' + String(m.dojoHead).slice(0, 8) + ' is not the tree being shipped (' + '$HEAD_SHA'.slice(0, 8) + ')');
+if (m.fixesAfterFinalDraw !== false) bad.push('fixesAfterFinalDraw=' + JSON.stringify(m.fixesAfterFinalDraw) + ' (must be the literal false)');
+console.log(bad.join(', '));
+")
+if [ -n "$RITUAL_BAD" ]; then
+  fail "Behavioral gate: the marker is not a release-ritual marker ($RITUAL_BAD). The owner's 2026-09-20 ruling requires 3 green blast attempts AND a fresh 10-family generated draw, both at this commit: run \`node behavioral/runner.mjs --blast <scenario>\` then a plain generated run in dojo-test-kit. NOT publishing."
+fi
+echo "  ✓ release ritual proven: blast $(node -e "const m=require('$BEHAV_MARKER');console.log((m.blast&&m.blast.scenario||'?')+' x'+(m.blast&&m.blast.attempts||'?'))") + $(node -e "const m=require('$BEHAV_MARKER');console.log((m.final&&m.final.n||(m.final&&m.final.families||[]).length||'?')+' families on fresh seed '+String(m.final&&m.final.seed||'?').slice(0,8))")"
 echo "  ✓ battery ran on the declared floor model $(node -e "const d=require('$FLOOR_MODEL_FILE');console.log((d.observed&&d.observed.name||'?')+' ('+d.modelId.slice(0,8)+'…)')")"
 echo "  ✓ behavioral suite honest-green ${BEHAV_AGE_H}h ago at this exact HEAD (${HEAD_SHA:0:8})$(node -e "const m=require('$BEHAV_MARKER'); if(m.merged) console.log(' [merged over '+(m.mergedFrom&&m.mergedFrom.runId||'?')+']')")"
 {
