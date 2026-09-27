@@ -5615,6 +5615,13 @@
       "to": 111,
       "by": "ARM C HONESTY GATE (2026-09-26) - the fifth truth guard's decision, in its own module",
       "why": "NEW ENTRY at 111, pinned on arrival rather than waiting for the 240-line cap to notice. It holds the decision, the delivery vocabulary and the steer text for the `false-delivery-claim` floor, the way `claimed-delivery.ts` and `recorded-commitment.ts` hold guards 10's and 13's. Most of it is the argument, and the argument is what a reader cannot reconstruct: WHY the ledger-reading guard could not see this (`dojo_report` writes no `deliveries` row), WHY only `submitted` and `delivered` stand alone while `sent`/`posted`/`filed`/`published` need their object (measured against the honest sentences an agent says on a failing report turn - \"I sent you the link in chat\" fires on a bare-word list), WHY a bare word is enough HERE when the kit-side detector needs a destination, and WHY the steer may never ask for silence (ruling 10(d)). Delete that and the next editor re-derives a false positive or a false denial. From 111 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/db/migration-checksums.ts",
+      "from": 307,
+      "to": 317,
+      "by": "BACKLOG INFRA lane merge (2026-09-27), coordinator-applied — the lane DECLARED this raise in its report and the coordinator missed it at merge; slice C caught the red",
+      "why": "KNOWN_DIVERGENCES is a data table; an entry's minimum shape is 7 lines and the 168 adjudication is trimmed to it (a 14-line explanation cut to 3). The alternative — a rule in a file nobody opens — is the failure mode the table exists to prevent (infra-bundle-report.md item 2)."
     }
   ],
   "maxNewFileLines": 400,
@@ -5784,7 +5791,7 @@
     "packages/server/src/credentials/secret-fields.ts": 241,
     "packages/server/src/credentials/secret-values.ts": 278,
     "packages/server/src/db/migration-backup.ts": 399,
-    "packages/server/src/db/migration-checksums.ts": 307,
+    "packages/server/src/db/migration-checksums.ts": 317,
     "packages/server/src/gateway/routes/agents.ts": 964,
     "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2957,
