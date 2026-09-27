@@ -34,7 +34,10 @@ const PRIMARY = 'primary-agent';
 
 vi.mock('../../../config/platform.js', async (orig) => ({
   ...(await orig<typeof import('../../../config/platform.js')>()),
-  getSudoPolicyRaw: () => policyRow.current,
+  getSudoPolicyRaw: () => {
+    if (policyRow.current === '__throw__') throw new Error('config unavailable');
+    return policyRow.current;
+  },
   isPrimaryAgent: (id: string) => id === PRIMARY,
 }));
 
@@ -400,6 +403,15 @@ describe('§6 `gated` holds the PRIMARY, and the hold goes to the OWNER', () => 
     // `free` is the owner saying he does not want to be asked.
     policyRow.current = 'free';
     expect(isSudoHoldRequired('shell', call)).toBe(false);
+  });
+
+  it('AN UNREADABLE POLICY HOLDS RATHER THAN RUNS', () => {
+    // MUTATION GAP (MS16): the catch's direction was untested, because nothing in the file made the
+    // config read throw. A failed read must never be the reason an administrator command executed
+    // unasked — and the ordinary case is unaffected, because the string parse answers first.
+    policyRow.current = '__throw__';
+    expect(isSudoHoldRequired('shell', { script: 'sudo cp a b' }), 'sudo + unreadable ⇒ hold').toBe(true);
+    expect(isSudoHoldRequired('shell', { script: 'ls -la' }), 'a non-sudo line never reads the policy').toBe(false);
   });
 
   it('it holds at BOTH doors and does not fire on an ordinary line', () => {

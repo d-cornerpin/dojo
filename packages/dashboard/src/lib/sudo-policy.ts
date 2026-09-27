@@ -36,14 +36,14 @@ export const SUDO_POLICY_LABELS: Record<SudoPolicy, string> = {
 
 export const SUDO_POLICY_HINTS: Record<SudoPolicy, string> = {
   blocked:
-    'Any command starting with sudo is refused outright, the way it was before this setting existed. '
-    + 'Pick this if you would rather the agent never touch anything that needs root.',
+    'Your MAIN AGENT’s sudo commands are refused outright, the way they were before this setting '
+    + 'existed. Pick this if you would rather nothing here touch anything needing administrator rights.',
   gated:
-    'A sudo command is held and routed for approval through the same card destructive actions use — '
-    + 'one approval, one run. This is the shipped default.',
+    'Your MAIN AGENT’s sudo command is held and you get a card to approve or decline — one approval, '
+    + 'one run, and nothing runs while it waits. This is the shipped default.',
   free:
-    'Sudo commands run like any other command. The safety floor still applies (see below), and each '
-    + 'agent is still limited to the commands its own permissions allow.',
+    'Your MAIN AGENT’s sudo commands run like any other command. The safety floor still applies (see '
+    + 'below), and it is still limited to the commands its own permissions allow.',
 };
 
 /**
@@ -53,7 +53,9 @@ export const SUDO_POLICY_HINTS: Record<SudoPolicy, string> = {
  * three and it is the thing an owner is most likely to get wrong about `free`.
  */
 export const SUDO_FLOOR_NOTE =
-  'Under every setting, the platform’s hard floor still applies inside a sudo command: '
+  'This setting governs your MAIN AGENT ONLY. Every other agent on this Dojo is refused sudo outright '
+  + 'under all three settings — a role boundary that no setting changes. And under every setting the '
+  + 'platform’s hard floor still applies inside a sudo command: '
   + 'sudo rm -rf /, sudo rm -rf ~, sudo chmod 777 and anything touching the credentials file are '
   + 'refused. Sudo is unwrapped and the whole permission check re-runs on the command inside it, so '
   + 'this setting can never widen an agent past its own permissions.';

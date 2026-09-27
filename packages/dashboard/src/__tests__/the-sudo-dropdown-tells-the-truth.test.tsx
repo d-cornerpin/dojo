@@ -40,6 +40,22 @@ describe('§1 the values, the default, and what an unknown row means', () => {
     expect(SUDO_POLICY_KEY).toBe('sudo_policy');
   });
 
+  it('THE RULING IS IN THE COPY: every hint names the MAIN AGENT', () => {
+    // Owner ruling 2026-09-27: only the main agent ever gets sudo. A hint that said "sudo commands run"
+    // would be read as box-wide, and the owner would expect a sub-agent to inherit the setting.
+    for (const p of SUDO_POLICY_ORDER) {
+      expect(SUDO_POLICY_HINTS[p].toLowerCase(), p).toContain('main agent');
+    }
+  });
+
+  it('the floor note leads with the ROLE BOUNDARY, the bigger surprise', () => {
+    expect(SUDO_FLOOR_NOTE).toContain('MAIN AGENT ONLY');
+    expect(SUDO_FLOOR_NOTE).toContain('refused sudo outright');
+    expect(SUDO_FLOOR_NOTE).toContain('role boundary');
+    // and it is the FIRST sentence, not a footnote after the floor list
+    expect(SUDO_FLOOR_NOTE.indexOf('MAIN AGENT ONLY')).toBeLessThan(SUDO_FLOOR_NOTE.indexOf('rm -rf /'));
+  });
+
   it('every value has a label and a hint, and each hint says what it DOES', () => {
     for (const p of SUDO_POLICY_ORDER) {
       expect(SUDO_POLICY_LABELS[p]?.length ?? 0, p).toBeGreaterThan(10);

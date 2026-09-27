@@ -4764,7 +4764,8 @@ const SudoPolicyCard = () => {
     <div className="tile space-y-3 max-w-4xl" data-testid="sudo-policy-card">
       <div className="scard__title">Administrator commands (sudo)</div>
       <p className="text-xs text-ui/40">
-        This Mac is the agent&rsquo;s machine. Choose how much it may do as administrator.
+        This Mac is your main agent&rsquo;s machine. Choose how much it may do as administrator
+        &mdash; every other agent is refused sudo whatever you pick.
       </p>
       <div>
         <label className="flabel" htmlFor="sudo-policy">sudo policy</label>
