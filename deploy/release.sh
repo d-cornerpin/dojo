@@ -641,7 +641,9 @@ fi
 # across the sibling-repo boundary, exactly as BEHAV_DISHONEST and MODEL_MISMATCH above cannot.
 # So the fields are re-expressed here, and a product-side clause
 # (`packages/server/src/update/__tests__/the-release-demands-the-ritual.test.ts`) drives THIS
-# script's block against fixture markers so the copy cannot silently rot into a weaker one.
+# script's block against fixture markers so the copy cannot silently rot into a weaker one. When the
+# kit's validator gains a field, this copy owes the same one: `final.drawUnsteered` + `pinnedDraws`
+# arrived that way, hours after the first replication.
 RITUAL_BAD=$(node -e "
 const m = require('$BEHAV_MARKER');
 const bad = [];
@@ -661,7 +663,9 @@ else {
   if (!Array.isArray(f.families) || f.families.length !== 10) bad.push('final.families=' + (Array.isArray(f.families) ? f.families.length : 'none') + ' (needs exactly 10)');
   if (f.allGreen !== true) bad.push('final.allGreen!=true');
   if (f.seedFresh !== true) bad.push('final.seedFresh!=true (a --seed replay cannot mint a shippable marker)');
-}
+  if (f.drawUnsteered !== true) bad.push('final.drawUnsteered!=true (the draw cannot be proven unsteered; a variant-pinned rehearsal can never satisfy the TEN-RANDOM law)');
+  if (Array.isArray(f.pinnedDraws) && f.pinnedDraws.length > 0 && f.drawUnsteered === true) bad.push('final.drawUnsteered claims true while final.pinnedDraws records a steered draw - the marker contradicts itself');
+  }
 if (typeof m.dojoHead !== 'string' || !m.dojoHead) bad.push('dojoHead missing');
 if (b && b.gitSha && m.dojoHead && b.gitSha !== m.dojoHead) bad.push('blast ran at ' + String(b.gitSha).slice(0, 8) + ' but the final draw is at ' + String(m.dojoHead).slice(0, 8) + ' (a fix landed between the two proofs)');
 if (m.gitSha && m.dojoHead && m.gitSha !== m.dojoHead) bad.push('marker.gitSha != marker.dojoHead');
