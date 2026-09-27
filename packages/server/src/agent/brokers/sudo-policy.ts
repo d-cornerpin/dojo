@@ -651,12 +651,70 @@ export interface Unwrapped {
  * Takes a COMMAND TEXT, never a privileged line, and calls no parser above it: `parseSudo` reaches
  * this through `parseInner`, and a walk that called back into `parseSudo` would not terminate.
  */
+/**
+ * ⚠ THE SAME COMMAND WITH ONE OPERAND AT A TIME — and the confirmation pass is what proved this is the
+ * real gap rather than the escape trick that led to it.
+ *
+ * `GLOBAL_EXEC_DENY` matches a pattern exactly or by prefix, so ONE EXTRA OPERAND defeats it. Measured
+ * on this branch, primary under `free`, with no escapes and no interpreter anywhere:
+ *
+ *     sudo rm -rf } /        ALLOWED        sudo rm -rf x /        ALLOWED
+ *     sudo rm -rf --foo /    ALLOWED        sudo rm -rf "" /       ALLOWED
+ *     sudo /bin/rm -rf } /   ALLOWED        (and `rm -rf } /` unprivileged, as on `main`)
+ *
+ * Every one of those deletes `/` exactly as `sudo rm -rf /` does, which the owner's non-negotiable names
+ * as refused always. The reviewer's escaped-closer shapes are this same hole reached through a quote
+ * operator: the masking fix makes `qx{rm -rf \} /}` come out as `rm -rf } /`, and without what follows
+ * it would STILL have been allowed.
+ *
+ * SO A COMMAND IS ASKED ABOUT EACH OPERAND SEPARATELY, keeping its program and flags — scoped to
+ * PRIVILEGED inner commands and nothing else. `matchCommandDenyPattern` is shared with every exec_deny
+ * rule in the tree and widening IT was refused two rounds ago for the reason that still holds:
+ * `echo "rm -rf /"` must keep working. Nothing legitimate is lost here — `rm -rf /tmp/a /tmp/b` asks
+ * about `rm -rf /tmp/a` and `rm -rf /tmp/b`, and neither is a floor pattern.
+ */
+function operandCandidates(words: readonly string[]): string[] {
+  if (words.length === 0) return [];
+  const [program, ...rest] = words;
+  const flags = rest.filter((w) => w.startsWith('-'));
+  const operands = rest.filter((w) => !w.startsWith('-'));
+  const out: string[] = [];
+  for (const operand of operands) {
+    if (operands.length > 1) {
+      out.push([program, ...flags, operand].join(' '));
+      out.push([program, operand].join(' '));
+    }
+    // ⚠ AND ONE FLAG AT A TIME, which is not decoration: `rm -rf --no-preserve-root /` has a SINGLE
+    // operand, so no amount of operand-splitting reaches it — and it is the canonical way to actually
+    // delete `/`. Asking `rm -rf /` of it is the whole point.
+    for (const flag of flags) out.push([program, flag, operand].join(' '));
+  }
+  return out;
+}
+
+function perOperandCandidates(command: string): string[] {
+  // ⚠ BOTH WORD READINGS, because the quote-aware tokenizer DROPS SHELL OPERATORS: `rm -rf ) /`
+  // tokenizes to [rm, -rf, /] — one operand, no candidates — and `%x(rm -rf \x29 /)` stayed ALLOWED on
+  // exactly that. The plain split keeps `)` as a word, so the operand pass can step over it.
+  const quoteAware = operandCandidates(commandWords(command));
+  const whitespace = operandCandidates(command.trim().split(/\s+/).filter(Boolean));
+  return [...new Set([...quoteAware, ...whitespace])].filter((c) => c !== command.trim());
+}
+
 function unwrapBodies(command: string, depth = 0): Unwrapped {
   const commands: string[] = [];
   let unparseable = false;
   let interactive = false;
+  const push = (cmd: string): void => {
+    commands.push(cmd);
+    commands.push(...perOperandCandidates(cmd));
+  };
+  // ⚠ THE WHOLE TEXT AS WELL AS ITS SEGMENTS. A decoded body can contain a shell metacharacter the
+  // segmenter then splits on — `rm -rf ) /` becomes `rm -rf` and `/`, leaving the operand pass nothing
+  // to work with. Both readings are candidates; an extra candidate can only ever refuse a floor pattern.
+  if (depth > 0) push(command);
   for (const seg of execSimpleCommands(command)) {
-    commands.push(seg);
+    push(seg);
     const body = interpreterBody(seg);
     if (body === null) continue;
     if (body.kind === 'unparseable') unparseable = true;
@@ -894,6 +952,21 @@ export function interpreterBody(seg: string): PrivilegedBody | null {
  *  `sudo awk "BEGIN{system(\"rm -rf /\")}"` was ALLOWED until this existed. */
 const unescape = (text: string): string => text.replace(/\\(.)/g, '$1');
 
+/**
+ * ⚠ CHARACTER ESCAPES DECODED, because an encoded space is still a space and the bytes really are in the
+ * line (R5-1's hunt): `qx{rm -rf\x20/}` and `os.system('rm -rf\x20/')` both ran as root because the
+ * unescape step turned `\x20` into the letters `x20` and the floor compared `rm -rfx20/`.
+ *
+ * Applied to an EXTRACTED BODY only — never before the structure scan (which reads the mask) and never
+ * before the parity test (which reads the text as written). See `maskEscapes` for the three readers.
+ */
+const decodeCharEscapes = (s: string): string => s
+  .replace(/\\x([0-9a-fA-F]{2})/g, (_, h: string) => String.fromCharCode(parseInt(h, 16)))
+  .replace(/\\u\{([0-9a-fA-F]{1,6})\}/g, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
+  .replace(/\\u([0-9a-fA-F]{4})/g, (_, h: string) => String.fromCharCode(parseInt(h, 16)))
+  .replace(/\\0([0-7]{1,3})/g, (_, o: string) => String.fromCharCode(parseInt(o, 8)))
+  .replace(/\\t/g, '\t');
+
 /** Do the quotes balance once escaping is undone? If not, what was extracted is not what will run. */
 function quotesBalance(text: string): boolean {
   // ⚠ A QUOTE OPERATOR THAT NEVER CLOSES COUNTS HERE TOO (R5). The parity test below cannot see it:
@@ -956,74 +1029,120 @@ interface ScannedText {
 }
 
 /**
- * ⚠ A BALANCED SCAN, BECAUSE PERL AND RUBY DELIMITERS NEST AND A REGEX CANNOT COUNT (R5, and the
- * orchestrator's ruling was to CLOSE this rather than document it).
+ * ⚠ THE SOURCE TEXT WITH EVERY ESCAPE SEQUENCE BLANKED, SAME LENGTH, and the confirmation pass is why
+ * it exists. `scanQuotedText` used to decode escapes BEFORE counting delimiters, so a closer written as
+ * an escape became a STRUCTURAL closer before the scan ever looked:
  *
- * `[^}]*` stops at the FIRST closer, so every one of these ran as root under `free`:
+ *     qx{rm -rf \} /}        the `\}` closed the body, which came out as `rm -rf`
+ *     qx{rm -rf \x7d /}      `\x7d` decoded to `}` and did the same
+ *     %x(rm -rf \x29 /)      …and `\x5d`, `\x3e` for the other pairs
  *
- *     qx{echo {}; rm -rf /}        the body came out as `echo {`
- *     %x(echo (); rm -rf /)
- *     qx[echo []; rm -rf /]        …and `qx<echo <>; rm -rf />`
- *     qx{a{b{c}}; rm -rf /}        nesting two deep
- *     system(q{echo {}; rm -rf /})
+ * This is MY OWN ROUND-9 PRINCIPLE APPLIED WHERE I FAILED TO APPLY IT: *each reader decodes as much as
+ * its own question needs and no more.* Three readers, three amounts, each argued:
+ *   · THE STRUCTURE SCAN asks where the body ENDS in the source — so it reads the MASK, where an escaped
+ *     closer is not a closer. Indices line up because the mask is the same length.
+ *   · THE PAYLOAD READ asks what will RUN — so it decodes the extracted slice fully.
+ *   · THE PARITY TEST asks whether the word tokenizer can be trusted with this text — so it keeps
+ *     reading the text UNDECODED AND UNMASKED. An escaped quote genuinely does defeat that tokenizer
+ *     (round 9's `sh -c "sh -c \"rm -rf /\""` is refused because of it), so masking there would delete
+ *     a rule rather than fix one.
+ */
+function maskEscapes(text: string): string {
+  return text.replace(
+    /\\(x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]{1,6}\}|u[0-9a-fA-F]{4}|[0-7]{1,3}|[\s\S])/g,
+    (m) => 'X'.repeat(m.length),
+  );
+}
+
+/**
+ * ⚠ A BALANCED SCAN OVER THE MASK, taking bodies from the SOURCE (R5 for the counting, the confirmation
+ * pass for the masking). Perl and Ruby delimiters nest and a regex cannot count; an escape must not be
+ * able to forge a closer. Non-paired delimiters (`qx#…#`) end at the next occurrence because that is the
+ * language's own rule there.
  *
- * Now the four paired delimiters are counted, so the body is the whole of what the interpreter will
- * hand the shell. Non-paired delimiters (`qx#…#`) genuinely end at the next occurrence and need no
- * counting — that is the language's own rule, not a simplification.
+ * ⚠ AN UNTERMINATED FORM FAILS CLOSED — `unclosed` makes the body unparseable and refuses the line under
+ * every policy — AND the remainder still reaches the floor, so the refusal names the pattern rather than
+ * the parse. A mutant proved that second half was otherwise unverified.
  *
- * ⚠ AN UNTERMINATED FORM FAILS CLOSED, and does not fall back to first-closer behaviour:
- * `qx{echo {; rm -rf /` reports `unclosed`, which makes the body UNPARSEABLE and refuses the line under
- * every policy — AND the remainder is still handed to the floor, so the refusal usually names the
- * pattern rather than the parse. Guessing at a body whose end the parser never found is the exact
- * mistake that produced this finding.
+ * ⚠ A QUOTE OPERATOR INSIDE AN OPEN STRING IS NOT A QUOTE OPERATOR (the confirmation pass's one false
+ * refusal): `print "unmatched q{ here"` was REFUSED because the `q{` inside a plain string found no
+ * closer. The spans are collected first and a start inside one is skipped — no coverage is lost, because
+ * the span's own text is already handed to the floor.
  */
 /**
- * ⚠ CHARACTER ESCAPES DECODED FIRST, because an encoded space is still a space and the bytes really are
- * in the line (R5-1's hunt, not the review's list): `qx{rm -rf\x20/}` and
- * `os.system('rm -rf\x20/')` both ran as root under `free` — `unescape` turned `\x20` into the letters
- * `x20` and the floor saw `rm -rfx20/`. That is a payload the line DOES spell, so it is closed here
- * rather than named in the residual; the residual is for payloads that are genuinely not in the line.
+ * ⚠ TWO READINGS, UNIONED, BECAUSE A BACKSLASH IN A BODY HAS TWO POSSIBLE OWNERS — and my own §9 clause
+ * caught this the moment the masking landed.
  *
- * Used for LITERAL EXTRACTION ONLY, deliberately: `quotesBalance`'s parity test keeps reading the
- * undecoded text, because decoding `\x27` into a quote there would flip parity and refuse an ordinary
- * `print "\x27"`. Each reader decodes as much as its own question needs and no more.
+ * `sudo awk "BEGIN{system(\"rm -rf /\")}"` reaches this function as `BEGIN{system(\"rm -rf /\")}`. Those
+ * `\"` are the SHELL'S escaping, already spent: what awk sees is a plain `"`. But
+ * `qx{rm -rf \} /}`'s `\}` is the LANGUAGE'S escaping, still live: what Perl sees is a literal `}`.
+ * From the text alone the two are indistinguishable, and reading them the same way is what produced both
+ * bugs — decode-everything forged closers, mask-everything lost the awk literal.
+ *
+ * So the structural scan runs TWICE: once over the MASK (escapes cannot forge a delimiter) and once over
+ * the fully unescaped text (the shell layer gone). The literals are the UNION, because an extra candidate
+ * can only ever refuse a floor pattern. `unclosed` comes from the MASKED reading alone — that is the
+ * fail-closed structural question, and the unescaped reading would answer it with the forged closer.
  */
-const decodeCharEscapes = (s: string): string => s
-  .replace(/\\x([0-9a-fA-F]{2})/g, (_, h: string) => String.fromCharCode(parseInt(h, 16)))
-  .replace(/\\u\{([0-9a-fA-F]{1,6})\}/g, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
-  .replace(/\\u([0-9a-fA-F]{4})/g, (_, h: string) => String.fromCharCode(parseInt(h, 16)))
-  .replace(/\\0([0-7]{1,3})/g, (_, o: string) => String.fromCharCode(parseInt(o, 8)))
-  .replace(/\\t/g, '\t');
-
 function scanQuotedText(text: string): ScannedText {
-  const bare = unescape(decodeCharEscapes(text));
+  const masked = scanOneReading(text, maskEscapes(text));
+  const shellUnescaped = unescape(text);
+  const plain = scanOneReading(shellUnescaped, shellUnescaped);
+  return {
+    literals: [...new Set([...masked.literals, ...plain.literals])],
+    unclosed: masked.unclosed,
+  };
+}
+
+function scanOneReading(src: string, mask: string): ScannedText {
   const literals: string[] = [];
   let unclosed = false;
-  const add = (s: string): void => { if (s.trim().length > 0) literals.push(s.trim()); };
+  const add = (raw: string): void => {
+    const decoded = unescape(decodeCharEscapes(raw)).trim();
+    if (decoded.length > 0) literals.push(decoded);
+  };
 
-  for (const m of bare.matchAll(SIMPLE_SPAN_RE)) add(m[1] ?? m[2] ?? m[3] ?? '');
+  // 1. the spans that never nest, found on the mask so an escaped quote does not end one
+  const spans: Array<readonly [number, number]> = [];
+  for (const m of mask.matchAll(SIMPLE_SPAN_RE)) {
+    const from = (m.index ?? 0) + 1;
+    const to = (m.index ?? 0) + m[0].length - 1;
+    spans.push([from - 1, to]);
+    add(src.slice(from, to));
+  }
+  const insideSpan = (at: number): boolean => spans.some(([a, b]) => at > a && at < b);
 
-  for (const m of bare.matchAll(Q_PAIRED_START_RE)) {
+  // 2. quote operators on a PAIRED delimiter, counted
+  for (const m of mask.matchAll(Q_PAIRED_START_RE)) {
+    if (insideSpan(m.index ?? 0)) continue;
     const open = m[1];
     const close = DELIMITER_PAIRS.get(open) as string;
     const from = (m.index ?? 0) + m[0].length;
     let depth = 1;
     let at = from;
-    while (at < bare.length) {
-      if (bare[at] === open) depth += 1;
-      else if (bare[at] === close) { depth -= 1; if (depth === 0) break; }
+    while (at < mask.length) {
+      if (mask[at] === open) depth += 1;
+      else if (mask[at] === close) { depth -= 1; if (depth === 0) break; }
       at += 1;
     }
-    if (depth > 0) { unclosed = true; add(bare.slice(from)); continue; }
-    add(bare.slice(from, at));
+    if (depth > 0) { unclosed = true; add(src.slice(from)); continue; }
+    add(src.slice(from, at));
+    // ⚠ AND THE GREEDY READING TOO WHEN THE LANGUAGE COULD TAKE EITHER. `qx{rm -rf } /}` closes at the
+    // first `}` by the rule above, and the confirmation pass reads it as running `rm -rf } /`. Rather
+    // than litigate another language's parser, the floor is asked about BOTH readings: an extra
+    // candidate can only ever refuse a floor pattern, and guessing wrong here costs root.
+    const last = mask.lastIndexOf(close);
+    if (last > at) add(src.slice(from, last));
   }
 
-  for (const m of bare.matchAll(Q_FREE_START_RE)) {
+  // 3. …and on any other delimiter, which ends at its next occurrence
+  for (const m of mask.matchAll(Q_FREE_START_RE)) {
+    if (insideSpan(m.index ?? 0)) continue;
     const open = m[1];
     const from = (m.index ?? 0) + m[0].length;
-    const end = bare.indexOf(open, from);
-    if (end < 0) { unclosed = true; add(bare.slice(from)); continue; }
-    add(bare.slice(from, end));
+    const end = mask.indexOf(open, from);
+    if (end < 0) { unclosed = true; add(src.slice(from)); continue; }
+    add(src.slice(from, end));
   }
 
   return { literals, unclosed };
