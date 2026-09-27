@@ -6,9 +6,7 @@ import { spawnAgent, terminateAgent } from '../../agent/spawner.js';
 import { parseCreatedByKind } from '../../agent/created-by-kind.js';
 import { stopAgent } from '../../agent/runtime.js';
 import { getAgentMessages } from '../../agent/agent-bus.js';
-import {
-  insertMessageIfAbsent, deleteAllForAgent, deleteAgentBusRowsFor,
-} from '../../memory/message-store.js';
+import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../../prompt/agent-prompt-surface.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../ws.js';
@@ -18,7 +16,7 @@ import type { AccessGrants, AgentDetail, Model, Message, AgentMessage } from '@d
 import { cloneGrants, deriveOrigin, legacyOriginInputs, NEW_SESSION_DIVIDER} from '@dojo/shared';
 import { noteRouteFailure } from './route-failure.js';
 import { resolveChildScope } from '../../agent/scope.js';
-import { deleteAllWorkForAgent } from '../../work/purge-sweep.js';
+import { purgeAgentRows } from '../../agent/purge.js';
 import { getAgentPermissions } from '../../agent/permissions.js';
 import { renameAgent } from '../../prompt/agent-rename.js';
 // UX-ACCESS A2: the owner-side half of the grant door — same resolver, same
@@ -692,26 +690,12 @@ agentsRouter.post('/:id/purge', (c) => {
     return c.json({ ok: false, error: 'Agent must be terminated before it can be deleted' }, 400);
   }
 
-  // Delete all associated data
-  deleteAllForAgent(id);
-  // T4: the agent bus folded into `messages`, so its cascade is a scoped delete on the
-  // same table rather than a second one. Both directions, exactly as before — the rows
-  // this agent RECEIVED go with the line above; this catches the ones it SENT, which
-  // live on the recipient's row.
-  deleteAgentBusRowsFor(id);
-  db.prepare('DELETE FROM summary_messages WHERE summary_id IN (SELECT id FROM summaries WHERE agent_id = ?)').run(id);
-  db.prepare('DELETE FROM summary_parents WHERE summary_id IN (SELECT id FROM summaries WHERE agent_id = ?) OR parent_id IN (SELECT id FROM summaries WHERE agent_id = ?)').run(id, id);
-  db.prepare('DELETE FROM summaries WHERE agent_id = ?').run(id);
-  db.prepare('DELETE FROM context_items WHERE agent_id = ?').run(id);
-  db.prepare('DELETE FROM large_files WHERE agent_id = ?').run(id);
-  db.prepare('DELETE FROM audit_log WHERE agent_id = ?').run(id);
-  // BACKLOG WAVE-1A: the work spine was the one store this door walked past — `work.agent_id`
-  // has no FK and no cascade on purpose (135, PART 0 rider 1), so every purge left the agent's
-  // schedulable work behind, `on_deck` timers included. The FK order lives with the rows.
-  const workRows = deleteAllWorkForAgent(id);
-  db.prepare('DELETE FROM agents WHERE id = ?').run(id);
+  // Every table that references this agent, in ONE unit, with the FK order that makes the
+  // sequence safe. The list and its ordering live with the rows in `agent/purge.ts`; this door
+  // owns the gates above and nothing else.
+  const swept = purgeAgentRows(id);
 
-  logger.info('Agent permanently deleted', { agentId: id, workRows });
+  logger.info('Agent permanently deleted', { agentId: id, ...swept });
   return c.json({ ok: true, data: { agentId: id, deleted: true } });
 });
 
