@@ -6,6 +6,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { generateEmbedding } from './embeddings.js';
+import { embeddingSourceAliveSql } from './embedding-sources.js';
 
 const logger = createLogger('vector-search');
 
@@ -69,20 +70,34 @@ export async function vectorSearch(
   const params: unknown[] = [];
 
   if (agentId) {
-    conditions.push('agent_id = ?');
+    conditions.push('e.agent_id = ?');
     params.push(agentId);
   }
 
   if (sourceType !== 'all') {
-    conditions.push('source_type = ?');
+    conditions.push('e.source_type = ?');
     params.push(sourceType);
   }
+
+  // ── AN EMBEDDING MAY NOT SERVE ONCE ITS SOURCE IS GONE (BACKLOG-CAMPAIGN) ──────────────
+  // This read used to take `content_preview` with no liveness check at all, and previews are
+  // served straight to the caller — so a row whose message had been deleted still surfaced as a
+  // semantic hit carrying the first 200 characters of content the platform had already deleted.
+  // Measured on the owner's box at the time of the fix: 645 such rows, 630 of them messages.
+  //
+  // The cascades (triggers) are the CLEANUP; this is the SERVE-SIDE half, and it is deliberately
+  // not redundant. A trigger cannot fire for rows lost to a `DROP TABLE`, which is how the 630
+  // came to exist across four rebuilds of `messages` — so the cleanup alone can only ever
+  // promise "clean right now", while this promises "cannot serve, ever, however it got here".
+  // The predicate is built from `EMBEDDING_SOURCE_TABLES`, the one declared map, so a new source
+  // kind cannot be silently half-wired.
+  conditions.push(embeddingSourceAliveSql('e'));
 
   const where = conditions.join(' AND ');
 
   const rows = db.prepare(`
-    SELECT id, source_type, source_id, agent_id, content_preview, embedding, dimensions
-    FROM embeddings
+    SELECT e.id, e.source_type, e.source_id, e.agent_id, e.content_preview, e.embedding, e.dimensions
+    FROM embeddings e
     WHERE ${where}
   `).all(...params) as Array<{
     id: string;

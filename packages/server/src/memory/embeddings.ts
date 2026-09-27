@@ -208,7 +208,9 @@ export async function generateEmbedding(
 
 // ── Store Embedding ──
 
-export type EmbeddingSourceType = 'message' | 'summary' | 'briefing' | 'technique';
+// Source kinds, liveness rules and the guarded write are a LEAF (`embedding-sources.ts` says why).
+import { insertEmbeddingIfSourceAlive, type EmbeddingSourceType } from './embedding-sources.js';
+export { EMBEDDING_SOURCE_TABLES, embeddingSourceAliveSql, type EmbeddingSourceType } from './embedding-sources.js';
 
 export async function storeEmbedding(
   sourceType: EmbeddingSourceType,
@@ -229,18 +231,16 @@ export async function storeEmbedding(
 
     const embedding = await generateEmbedding(content);
 
-    db.prepare(`
-      INSERT INTO embeddings (id, source_type, source_id, agent_id, content_preview, embedding, dimensions, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    `).run(
-      uuidv4(),
-      sourceType,
-      sourceId,
-      agentId,
-      content.slice(0, 200),
-      Buffer.from(embedding.buffer),
-      embedding.length,
-    );
+    // GUARDED WRITE — the `await` above is the orphan class's whole mechanism; see the leaf.
+    const written = insertEmbeddingIfSourceAlive(db, {
+      id: uuidv4(), sourceType, sourceId, agentId, preview: content.slice(0, 200),
+      vector: Buffer.from(embedding.buffer), dimensions: embedding.length,
+    });
+    if (!written) {
+      logger.debug('Embedding discarded: its source was deleted while it was being computed',
+        { sourceType, sourceId }, agentId ?? undefined);
+      return;
+    }
 
     logger.debug('Embedding stored', { sourceType, sourceId, dimensions: embedding.length }, agentId ?? undefined);
   } catch (err) {

@@ -95,7 +95,15 @@ beforeEach(() => {
       agent_id TEXT, content_preview TEXT, embedding BLOB NOT NULL,
       dimensions INTEGER NOT NULL, created_at TEXT
     );
+    -- BACKLOG-CAMPAIGN (embeddings fix): storeEmbedding now writes through
+    -- INSERT ... SELECT ... WHERE EXISTS (... FROM messages ...), so an embedding can only land
+    -- for a source that actually exists -- that one statement is what closes the
+    -- write-after-delete race this file's subject (the warn latch) has nothing to do with. The
+    -- absence cases below never reach the INSERT at all (generateEmbedding throws first), so only
+    -- the one "the backend came back" call needs a real row, and it gets one.
+    CREATE TABLE messages (id TEXT PRIMARY KEY, agent_id TEXT, role TEXT, content TEXT);
   `);
+  db.prepare("INSERT INTO messages (id, agent_id, role, content) VALUES ('back', NULL, 'user', 'x')").run();
   h.db.current = db;
   h.calls.debug.length = 0;
   h.calls.info.length = 0;
