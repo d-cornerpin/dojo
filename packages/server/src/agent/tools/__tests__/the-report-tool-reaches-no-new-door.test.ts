@@ -400,7 +400,33 @@ const FETCH_BEARING_IN_CLOSURE: readonly string[] = [
   'gateway/routes/setup-deps.ts', 'gateway/routes/system.ts', 'gateway/routes/techniques.ts',
   'gateway/routes/update.ts', 'gateway/routes/upload.ts', 'google/auth.ts', 'google/client.ts',
   'google/tools-slides.ts', 'memory/embeddings.ts', 'microsoft/auth.ts', 'microsoft/client.ts',
-  'microsoft/tools-office.ts', 'microsoft/tools-read.ts', 'microsoft/tools-write.ts',
+  // ── APPENDED BY THE A-6 FIX ROUND (sweep review L2-1), AND THIS COMMENT IS THE READING THE
+  //    CLAUSE DEMANDS BEFORE A NAME MAY BE ADDED ──
+  // `microsoft/graph-fetch.ts` is one `fetch` and it is NOT a new way out. What it is: the
+  // stop-aware door the 32 previously-bare Graph calls in the three files on the line below now
+  // go through. Those three files were ALREADY in this manifest — and so was `microsoft/client.ts`,
+  // which is how the new module enters the closure at all (`client.ts` re-exports the door, one
+  // edge, from a module that was already here). So the closure's REACH is unchanged; a call that
+  // used to be made from `tools-office.ts` is now made one hop away, under a registration.
+  //
+  // THE ENDPOINT IS UNCHANGED TOO: the door dials whatever URL its caller passes, every one of
+  // them `graph.microsoft.com`, and it holds the same `GRAPH_BASE` constant those files already
+  // held a second copy of. It imports exactly one module — `agent/abortable-call.ts`, the stop
+  // registry's per-call door — and nothing that posts, sends, or names a host of its own.
+  //
+  // WHY IT IS REACHABLE FROM THE REPORT TOOL AT ALL, measured rather than assumed: the tool
+  // registry pulls in the whole toolbox, so `cat/report.ts`'s closure has included the Microsoft
+  // tool files since T4. That is the same over-approximation this manifest's header describes,
+  // and the guard that matters for it — the one-hop import pins on the handler and the gather —
+  // is unchanged by this round.
+  // AND TWO NAMES LEAVE, which is the same fix seen from the other side: `tools-office.ts` and
+  // `tools-read.ts` no longer contain a `fetch(` AT ALL — every one of their Graph calls goes
+  // through the door above — so this manifest's exactness clause correctly reports them stale.
+  // `tools-write.ts` STAYS, and the reason is worth a line so nobody re-deletes it: its code has
+  // no `fetch(` either, but this walk does not strip comments (the review's NIT-8) and the file
+  // says "// re-fetch (never re-sends)". An over-read that fails safe, left as-is rather than
+  // silently narrowed — narrowing a guard's reader is not this round's business.
+  'microsoft/graph-fetch.ts', 'microsoft/tools-write.ts',
   'receipts/store.ts', 'services/audio-generation.ts', 'services/capabilities.ts',
   'services/image-generation.ts', 'services/litellm-pricing-sync.ts',
   'services/num-ctx-calculator.ts', 'services/ollama.ts', 'services/transcription.ts',

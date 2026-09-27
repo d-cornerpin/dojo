@@ -31,34 +31,28 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { engineSources, SERVER_SRC } from '../../../__tests__/engine-sources.js';
 
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..');
-
-/** Comments stripped: prose about the map is not a write to it. */
+/**
+ * ⚠ THE CORPUS COMES FROM `engine-sources.ts`, NOT FROM A WALK OF MY OWN.
+ * `guard-corpus-census.test.ts` refuses a second hand-rolled walk of the step packages, and it
+ * is right to: six copies of that walk existed before the PHASE-6 guard audit and they are why
+ * the corpus could drift. The continuation record is written from inside a step package, so the
+ * shared derivation is exactly the right corpus for the writer census — and it fails loudly if
+ * the driver ever moves, which a private walk would not.
+ */
 const codeOf = (rel: string): string =>
-  fs.readFileSync(path.join(SRC, rel), 'utf-8')
+  fs.readFileSync(path.join(SERVER_SRC, rel), 'utf-8')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '');
 
-/** Every production `.ts` under the server's src, tests excluded. */
-function walkSources(dir = ''): string[] {
-  const out: string[] = [];
-  for (const e of fs.readdirSync(path.join(SRC, dir), { withFileTypes: true })) {
-    const rel = dir ? `${dir}/${e.name}` : e.name;
-    if (e.isDirectory()) {
-      if (e.name === '__tests__' || e.name === 'node_modules') continue;
-      out.push(...walkSources(rel));
-    } else if (e.name.endsWith('.ts') && !e.name.includes('.test.')) {
-      out.push(rel);
-    }
-  }
-  return out;
-}
-
 describe('the continuation record has one writer, and it is the human path', () => {
   it('exactly one module writes `continuationContext`, and it is the C3 human stash', () => {
-    const writers = walkSources().filter(rel => /continuationContext\.set\s*\(/.test(codeOf(rel)));
+    const corpus = engineSources().map(s2 => s2.rel);
+    // Non-vacuity: the shared corpus really does include the step package the writer lives in.
+    expect(corpus, 'the engine corpus lost the turn-closures step')
+      .toContain('agent/v2/steps/preflight/turn-closures.ts');
+    const writers = corpus.filter(rel => /continuationContext\.set\s*\(/.test(codeOf(rel)));
     expect(
       writers,
       'a second writer of the continuation record appeared. A continuation is what makes a turn '
