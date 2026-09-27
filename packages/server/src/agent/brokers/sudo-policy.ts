@@ -549,9 +549,11 @@ export function parseSudo(trimmed: string): ParsedSudo {
     // line means something this parser cannot state, and an unreadable privileged line is refused.
     const after = tokens.slice(i);
     if (after.length > 1 || after.some((w) => w.startsWith('-'))) quotedOptionValue = true;
-    return commandFromOption.length === 0
-      ? { inner: '', interactiveShell: true, nonInteractive, quotedOptionValue }
-      : { ...parseInner(commandFromOption), nonInteractive, quotedOptionValue };
+    // `su root -c ""` needs no branch of its own: an EMPTY inner is already "nothing to run", and
+    // `authorizeSudoLine` owns that question for every spelling at once. A mutant proved the branch
+    // I first wrote here could not be falsified — nothing changed when it went — so it is gone rather
+    // than kept as a second answer to a question already answered. The clause stays.
+    return { ...parseInner(commandFromOption), nonInteractive, quotedOptionValue };
   }
   const rest = tokens.slice(i).join(' ');
   // Nothing left to run: `su`, `su root`, `sudo -i` — an unbounded INTERACTIVE ROOT SHELL, refused

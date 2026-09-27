@@ -624,9 +624,18 @@ describe('§7 `su`, and a body the broker cannot read', () => {
     expect(privilegeTokenIsQuotedData('doas whoami', ['doas whoami'])).toBe(false);
     const admin = `osascript -e 'do shell script "id" with administrator privileges'`;
     expect(privilegeTokenIsQuotedData(admin, [admin])).toBe(false);
-    // …and the capability the word-0 exception exists for is still proven inert.
-    const benign = `osascript -e 'display dialog "hi"'`;
-    expect(privilegeTokenIsQuotedData(benign, [benign])).toBe(true);
+  });
+
+  it('…and the capability that exception exists for is still PROVEN inert', () => {
+    // Split from the clause above deliberately: they are the two directions of one predicate, and in a
+    // single clause a regression in either could hide behind the other's failure.
+    for (const benign of [
+      `osascript -e 'display dialog "hi"'`,
+      `osascript -l JavaScript -e 'Application("Finder").name()'`,
+    ]) {
+      expect(privilegeTokenIsQuotedData(benign, [benign]), benign).toBe(true);
+    }
+    expect(privilegeTokenIsQuotedData('echo sudo', ['echo sudo'])).toBe(true);
   });
 });
 
