@@ -349,6 +349,15 @@ export function isSudoLine(trimmed: string): boolean {
  * shared type, which is not a micro-round. SO THIS SHIPS THE HOLD, and the cheaper proof is left as a
  * named improvement rather than a quiet risk.
  *
+ * ⚠ AND THE HASH IS NOT THE ONLY ROAD — the third review's alternative, recorded so the next author
+ * does not inherit my option space as if it were the whole one: DON'T AUTHORIZE A PATH, AUTHORIZE
+ * CONTENT. If the broker reads the script and the EXECUTION CARRIES THOSE BYTES — fed on stdin from the
+ * broker's own buffer, or through a retained fd (`/dev/fd/N`) — then what was read IS what executes,
+ * with no new `Verdict` field, no exec-seam re-hash and no shared type. It is a different shape of
+ * change rather than obviously a smaller one (the exec seam would have to accept a body instead of a
+ * path, and `sudo sh -s` on a stream is precisely what this file refuses), but it binds read-to-executed
+ * without a comparison step, which is the part a hash only checks and this makes structural.
+ *
  * ⚠ AN INLINE `-e` BODY IS STILL SEEABLE AND STILL ALLOWED. `osascript -e 'display dialog "hi"'` runs
  * for any agent under every policy, because the phrase check can read it — refusing it would delete an
  * ordinary automation capability the owner never gave up.
