@@ -134,27 +134,43 @@ afterEach(() => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-describe('an unconfigured box says so plainly, and offers nothing that cannot work', () => {
-  it('GET /status reports no client id and no connection', async () => {
+// ── REWRITTEN FOR v3.2.2: A BOX WITH NO CONFIG ROW IS NOT AN UNCONFIGURED BOX ──────────────
+// These three clauses asserted the defect. The client id was set BY HAND on the development box
+// at T4 Step 8 and never shipped, so on a user's box the row was absent, `githubClientId()`
+// answered null, and this suite's own green was the proof that the card correctly reported a
+// feature nobody could reach. The owner found it from a screenshot of his own Settings page.
+//
+// The client id is now a shipped product constant (`GITHUB_OAUTH_CLIENT_ID_DEFAULT`, D3: a
+// device-flow public client, no secret, same class as the repo slug). The fixture here writes NO
+// config row — which is exactly a fresh user box — so what these clauses now pin is that such a
+// box offers Connect out of the box. Each one is the inverse of what it asserted before, and
+// that inversion IS the fix.
+describe('a box with no config row still offers Connect, on the shipped default', () => {
+  it('GET /status reports the client id as configured, and no connection yet', async () => {
     const body = await getStatus();
     expect(body.ok).toBe(true);
-    expect(body.data.clientIdConfigured).toBe(false);
-    expect(body.data.connected).toBe(false);
+    expect(
+      body.data.clientIdConfigured,
+      'a fresh user box has no config row and must still be connectable',
+    ).toBe(true);
+    expect(body.data.connected, 'configured is not connected').toBe(false);
   });
 
-  it('POST /connect answers 400 and a sentence a human can read', async () => {
+  it('POST /connect starts a real sign-in instead of refusing with a sentence', async () => {
+    // A stubbed GitHub, because the point is that the door OPENS on a box with no config row —
+    // the 400 it used to answer was the defect, and `afterEach` cancels the flow this starts.
+    stubDeviceCode();
     const res = await githubRouter.request('/connect', { method: 'POST' });
-    expect(res.status).toBe(400);
+    expect(res.status, 'the 400 here was the defect').toBe(200);
     const body = await res.json() as { ok: boolean; error?: string };
-    expect(body.ok).toBe(false);
-    // A SENTENCE, not a code: the card renders this verbatim (T4 hand-off note 3).
-    expect(body.error).toMatch(/not configured/i);
-    expect(body.error!.trim()).toMatch(/\.$/);
+    expect(body.ok).toBe(true);
   });
 
-  it('...and the card draws the state with no button', async () => {
+  it('...and the card draws a state that HAS a button', async () => {
     const s = (await getStatus()).data as unknown as GithubCardStatus;
-    expect(githubCardState(s)).toBe('unconfigured');
+    // `disconnected`, not `unconfigured`: the difference is whether the user has anything to
+    // press, which is the whole point of the card's third state.
+    expect(githubCardState(s)).toBe('disconnected');
   });
 });
 

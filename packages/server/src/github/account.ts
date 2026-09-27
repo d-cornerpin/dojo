@@ -29,21 +29,82 @@
 import { getDb } from '../db/connection.js';
 import { openSecretColumn, sealSecretColumn } from '../credentials/at-rest.js';
 
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE CLIENT ID SHIPS. (v3.2.2 — owner-raised from a screenshot of his own Settings page.)
+//
+// ── THE DEFECT, AND IT WAS A PACKAGING MISTAKE RATHER THAN A CODE ONE ──
+// T4 Step 8 set `config.github_client_id` BY HAND on the development box. Every door below
+// then worked perfectly there and nowhere else: on a user's box the row is absent,
+// `githubClientId()` answered null, and Settings → Integrations → GitHub rendered
+// "GitHub isn't set up on this box yet" with NO CONNECT PATH AT ALL. The feature was
+// unreachable on every shipped build, and the card was telling the truth about a box that had
+// simply never been given the one public value it needed.
+//
+// ── WHY BAKING IT IS THE DESIGN AND NOT A SHORTCUT (DOJO-REPORT spec D3) ──
+// This is a DEVICE-FLOW PUBLIC client. There is no client secret anywhere in this feature —
+// `device-flow.ts` posts `client_id` and a scope, and GitHub answers with a user code the human
+// types on github.com. A device-flow client id is *designed* to sit in every copy of a
+// distributed binary; it authorises nothing on its own and nothing is extractable from it.
+//
+// It is the same product-official class as the repository slug in `report/repo.ts`, and the two
+// siblings already do exactly this: `google/auth.ts` and `microsoft/auth.ts` both bake their
+// client ids as shipped constants, and Google's says why in the words this file now borrows —
+// *"public product values, identical on every install — users connect with one click and
+// configure nothing."* GitHub was the outlier, not the precedent.
+//
+// ── WHY THE OVERRIDE SURVIVES ──
+// A fork that points this build at its own GitHub OAuth App needs somewhere to say so, and a
+// row that already exists on a box must keep winning or this change would silently retarget the
+// development box mid-flight. So the config row is the OVERRIDE and the constant is the FLOOR.
+// That is also the only remaining way to reach the "unconfigured" card state: it takes a fork
+// that blanks the constant AND has no row. The state stays — an absence is a question, not a
+// verdict (#15) — and `githubCardState` still answers it, driven directly by the card tests.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
 /**
- * The OAuth App's PUBLIC client id, set once by the owner. It lives here rather than in
- * `device-flow.ts` for one stated reason and one measured one: it is a STORED fact about this
- * box, which is what this module holds; and `device-flow.ts` was over `check-growth.mjs`'s
- * 240-line line with it inside, and the plan's answer to that is SPLIT, never pin.
+ * THE PLATFORM'S OWN OAuth App — public, secretless, identical on every install.
  *
- * It is public by design — a device-flow client id is in every copy of this build already, and
- * there is no client secret to go with it. Null means "not set up yet", which every door
- * answers with a sentence and the card renders as a plain state rather than a broken button.
+ * Shipped rather than configured, for the reasons in the block above. Changing this value
+ * retargets every box that has no override, which is why it is a named constant with a census
+ * over it rather than a literal inside a request body.
+ */
+export const GITHUB_OAUTH_CLIENT_ID_DEFAULT = 'Ov23liY4CDJARDeVZtXQ';
+
+/**
+ * THE RESOLUTION ORDER, as a pure function so it can be driven without a database.
+ *
+ * `override` wins when it has content; the shipped default is the floor; null is returned only
+ * when BOTH are empty, which on a shipped build cannot happen. A whitespace-only override is
+ * treated as absent rather than as an instruction — a blank row is somebody having cleared a
+ * field, not a box declaring it has no OAuth app.
+ */
+export function resolveGithubClientId(
+  override: string | null | undefined,
+  fallback: string = GITHUB_OAUTH_CLIENT_ID_DEFAULT,
+): string | null {
+  const o = override?.trim();
+  if (o) return o;
+  const f = fallback.trim();
+  return f ? f : null;
+}
+
+/**
+ * The OAuth App's PUBLIC client id for THIS box: the stored override if there is one, otherwise
+ * the shipped default.
+ *
+ * It lives here rather than in `device-flow.ts` for one stated reason and one measured one: the
+ * override is a STORED fact about this box, which is what this module holds; and
+ * `device-flow.ts` was over `check-growth.mjs`'s 240-line line with it inside, and the plan's
+ * answer to that is SPLIT, never pin.
+ *
+ * The `string | null` return is UNCHANGED on purpose. Every door's not-configured sentence and
+ * the card's unconfigured state stay live code rather than becoming unreachable prose, because
+ * a fork may legitimately blank the constant.
  */
 export function githubClientId(): string | null {
   const row = getDb().prepare("SELECT value FROM config WHERE key = 'github_client_id'")
     .get() as { value: string } | undefined;
-  const v = row?.value?.trim();
-  return v ? v : null;
+  return resolveGithubClientId(row?.value);
 }
 
 /** What the dashboard and the poster may know about the connection. NO TOKEN FIELD, ever. */

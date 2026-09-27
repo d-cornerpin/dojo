@@ -52,6 +52,27 @@ const h = vi.hoisted(() => ({
   frames: [] as Array<Record<string, unknown>>,
 }));
 
+// ── v3.2.2: HOW THE "no client id" ARM IS STILL DRIVEN ───────────────────────────────────
+// The client id is now a SHIPPED CONSTANT (`GITHUB_OAUTH_CLIENT_ID_DEFAULT`, D3 — device-flow
+// public client, no secret), with the config row as an override. That is the fix for a feature
+// that was unreachable on every user's box; it also means deleting the config row NO LONGER
+// makes the resolved id absent, and `pollUntilAnswered`'s own NOT_CONFIGURED arm was reachable
+// only that way.
+//
+// The arm is NOT dead — a fork that blanks the constant reaches it — so it keeps its ending in
+// the table below rather than being quietly dropped, and the table's count stays true. It is
+// driven by this ONE-FUNCTION passthrough: every other export of `account.js` is the real
+// thing (the sealing, the ledger, the token read), and only `githubClientId` can be told to
+// answer as a blanked build would. No production code carries a test seam for it.
+const acct = vi.hoisted(() => ({ blankedBuild: false }));
+vi.mock('../account.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../account.js')>();
+  return {
+    ...actual,
+    githubClientId: (): string | null => (acct.blankedBuild ? null : actual.githubClientId()),
+  };
+});
+
 // Every logger in the import graph records into one array, so "the token never reaches a log
 // line" is measured over the WHOLE graph and not over the two modules I happened to think of.
 vi.mock('../../logger.js', () => {
@@ -95,6 +116,7 @@ import {
 import {
   saveGithubAccount, getGithubToken, getGithubAccount, disconnectGithub,
   noteGithubOk, noteGithubFailure, githubClientId,
+  GITHUB_OAUTH_CLIENT_ID_DEFAULT, resolveGithubClientId,
 } from '../account.js';
 import { githubStatus } from '../status.js';
 import { githubRouter } from '../../gateway/routes/github.js';
@@ -164,13 +186,22 @@ const throwOnUserCall = (): void => throwOn(GITHUB_USER_URL, 'socket hang up');
 /** The token endpoint is unreachable. */
 const throwOnTokenCall = (): void => throwOn(GITHUB_TOKEN_URL, 'connect ECONNREFUSED');
 
-/** The owner clears the client id DURING the device-code round trip, between the two reads. */
+/**
+ * The resolved client id goes absent DURING the device-code round trip, between the two reads —
+ * `startDeviceFlow` has one, `pollUntilAnswered` does not.
+ *
+ * Pre-v3.2.2 this was staged by deleting the config row, which was then the only source. With the
+ * id shipped as a constant, the row is an override and deleting it changes nothing — so the arm is
+ * staged as the case that can still reach it: a fork whose build blanked the constant. The row is
+ * cleared too, so BOTH sources are absent exactly as the arm requires.
+ */
 function clearClientIdOnDeviceCode(): void {
   const inner = globalThis.fetch;
   globalThis.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
     const res = await (inner as typeof fetch)(input as never, init);
     if (String(input) === GITHUB_DEVICE_CODE_URL) {
       db().prepare("DELETE FROM config WHERE key = 'github_client_id'").run();
+      acct.blankedBuild = true;
     }
     return res;
   }) as unknown as typeof fetch;
@@ -455,13 +486,63 @@ describe('the LOOP runs on the numbers GitHub declared, not on numbers of ours',
     ]);
   });
 
-  it('refuses to start at all when the box has no client id, and dials nothing', async () => {
+  // ── v3.2.2: THIS CLAUSE USED TO ASSERT THE DEFECT ────────────────────────────────────────
+  // It read "refuses to start at all when the box has no client id, and dials nothing", and it
+  // was green because the client id was set BY HAND on the development box at T4 Step 8 and
+  // never shipped. So on every user's box this refusal was the whole feature: no row, no client
+  // id, no Connect button. The id is now a shipped constant (D3 — device-flow public client, no
+  // secret), and a box with no row is a box that works.
+  it('starts WITHOUT any config row, on the shipped default, and dials GitHub', async () => {
+    expect(
+      githubClientId(),
+      'a fresh box resolves the product default rather than nothing',
+    ).toBe(GITHUB_OAUTH_CLIENT_ID_DEFAULT);
+    expect(githubStatus().clientIdConfigured).toBe(true);
+
     const started = await startDeviceFlow();
-    expect(started.ok).toBe(false);
-    expect(started.ok === false && started.error).toMatch(/not configured/i);
-    expect(calls).toHaveLength(0);
-    expect(githubClientId()).toBeNull();
-    expect(githubStatus().clientIdConfigured).toBe(false);
+    expect(started.ok, 'the refusal here was the defect the owner screenshotted').toBe(true);
+    expect(calls.length, 'and it really dialled').toBeGreaterThan(0);
+    // The id on the wire is the resolved one, not a second copy from somewhere else.
+    expect(new URLSearchParams(calls[0].body).get('client_id')).toBe(GITHUB_OAUTH_CLIENT_ID_DEFAULT);
+  });
+
+  it('a STORED row still wins over the shipped default, which is what a fork needs', async () => {
+    setClientId();                      // writes the fixture's own CLIENT_ID
+    expect(githubClientId()).toBe(CLIENT_ID);
+    expect(githubClientId()).not.toBe(GITHUB_OAUTH_CLIENT_ID_DEFAULT);
+
+    const started = await startDeviceFlow();
+    expect(started.ok).toBe(true);
+    expect(new URLSearchParams(calls[0].body).get('client_id'),
+      'the override reaches the wire').toBe(CLIENT_ID);
+  });
+
+  // The not-configured refusals in `startDeviceFlow` and `pollUntilAnswered` are NOT dead code:
+  // they are reachable by a fork that blanks the shipped constant, which is the only way the
+  // resolution can now answer null. That is pinned on the pure resolver, where it can be driven
+  // without pretending a database can produce it.
+  it('a BLANKED default with no row is still "not configured" — the refusal stays live', () => {
+    expect(resolveGithubClientId(null, '')).toBeNull();
+    expect(resolveGithubClientId('   ', '')).toBeNull();
+    expect(resolveGithubClientId(undefined, '  ')).toBeNull();
+  });
+
+  // A CLEARED FIELD IS ABSENCE, NOT AN INSTRUCTION. Somebody blanking the row in a settings
+  // table has not declared "this box has no OAuth app" — they have emptied a field — so the
+  // product default takes over rather than the integration switching itself off. Without this
+  // clause a mutant that reads a blank row as an explicit "none" rides green, and the owner's
+  // own box would go back to drawing the dead-end card the moment a field was cleared.
+  it('a BLANK override is absence, so the shipped default still wins', () => {
+    expect(resolveGithubClientId('')).toBe(GITHUB_OAUTH_CLIENT_ID_DEFAULT);
+    expect(resolveGithubClientId('   ')).toBe(GITHUB_OAUTH_CLIENT_ID_DEFAULT);
+    expect(resolveGithubClientId(null)).toBe(GITHUB_OAUTH_CLIENT_ID_DEFAULT);
+    expect(resolveGithubClientId(undefined)).toBe(GITHUB_OAUTH_CLIENT_ID_DEFAULT);
+  });
+
+  it('…and that holds through the real database row, not just the pure function', () => {
+    setClientId('   ');                       // a field somebody emptied
+    expect(githubClientId()).toBe(GITHUB_OAUTH_CLIENT_ID_DEFAULT);
+    expect(githubStatus().clientIdConfigured).toBe(true);
   });
 });
 
@@ -662,8 +743,8 @@ describe('the token reaches no log line, no broadcast frame, and no response bod
         stage: () => { deviceCodeAnswer = { ...deviceCodeAnswer, expires_in: 10 }; } },
       { name: 'the endpoint cannot be reached', terminal: 'github:connect_failed', grants: false,
         stage: () => { throwOnTokenCall(); } },
-      // The one narrow way `pollUntilAnswered`'s own NOT_CONFIGURED arm is reachable: the owner
-      // clears the client id DURING the device-code round trip, between the two reads.
+      // The one narrow way `pollUntilAnswered`'s own NOT_CONFIGURED arm is reachable since the
+      // id began shipping: a build that blanked the constant, with no override row either.
       { name: 'the client id vanishes mid-handshake', terminal: 'github:connect_failed', grants: false,
         stage: () => { clearClientIdOnDeviceCode(); } },
       // Frameless BY DESIGN: the human who pressed Cancel does not need to be told.
@@ -674,6 +755,7 @@ describe('the token reaches no log line, no broadcast frame, and no response bod
     for (const e of endings) {
       // Each ending gets a clean slate; `beforeEach` runs per `it`, not per iteration.
       db().prepare('DELETE FROM github_account').run();
+      acct.blankedBuild = false;
       h.frames = []; h.logLines = []; calls = [];
       tokenAnswers = [{ error: 'authorization_pending' }];
       userAnswer = { login: 'octocat' };
@@ -899,10 +981,13 @@ describe('the token reaches no log line, no broadcast frame, and no response bod
     ]);
   });
 
-  it('POST /connect on an unconfigured box answers a sentence, never a broken button', async () => {
+  // v3.2.2: inverted with the rest. A box with no config row resolves the shipped default, so
+  // the door opens; the refusal it used to assert was the shipped-build defect.
+  it('POST /connect with no config row opens the door on the shipped default', async () => {
     const res = await githubRouter.request('/connect', { method: 'POST' });
     const body = await res.json() as { ok: boolean; error?: string };
-    expect(body.ok).toBe(false);
-    expect(body.error).toMatch(/not configured/i);
+    expect(body.ok, 'the refusal here was the defect').toBe(true);
+    expect(new URLSearchParams(calls[0].body).get('client_id'))
+      .toBe(GITHUB_OAUTH_CLIENT_ID_DEFAULT);
   });
 });
