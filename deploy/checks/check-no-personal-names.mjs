@@ -181,7 +181,7 @@ const ROSTER_EXEMPT_FILES = new Map([
 /**
  * ── HALF 1b: THE MACHINE'S OWN IDENTITIES, DERIVED AT CHECK TIME (review M1) ─────────────
  *
- * The audit's §1.5 hit was `` as `dcliff9`, filing against a repository owned by `d-cornerpin` `` — a
+ * The audit's §1.5 hit was a personal GitHub handle in prose (`` as `<handle>`, filing against a repository owned by `d-cornerpin` ``) — a
  * personal GitHub handle in prose. The first cut of this gate said that shape was "left to the roster
  * half", and the review is right that it cannot be: a GitHub handle is not an agent name, so nothing
  * in the roster would ever match it.
@@ -421,21 +421,21 @@ function selfTest() {
   // becomes a false alarm.
   const wordOnly = [
     ['// the harness bot ran it', 'Behavior', false],
-    ['// BehaviorBot ran it', 'BehaviorBot', true],
+    ['// Zergblatt ran it', 'Zergblatt', true],
     ['    am_michael: { language: \'en-us\' },', 'Michael', false],
     ['// asked Michael about it', 'Michael', true],
-    ['const sticky = true;', 'Ticky', false],
+    ['const marbles = true;', 'Arble', false],
   ];
   // ── review M1's second shape: an agent name written LOWERCASE as DATA. The rule is deliberately
   // narrower than the case-sensitive one — quoted only — because that is what separates the audit's
   // `createdBy: 'kevin'` from a vendor voice id or an ordinary English word that happens to collide.
   const quotedLower = [
-    ["    { serviceName: 'sendgrid', createdBy: 'kevin', createdOn: '2026-06-21' },", 'Kevin', true],
-    ["const owner = \"kevin\";", 'Kevin', true],
-    ['const owner = `kevin`;', 'Kevin', true],
-    ["// prose about kevin outside any quotes", 'Kevin', false],
-    ["const kevinCount = 1;   // an identifier, not data", 'Kevin', false],
-    ["// a quote that spans no name: 'the primary agent'", 'Kevin', false],
+    ["    { serviceName: 'mailvendor', createdBy: 'zergo', createdOn: '2026-06-21' },", 'Zergo', true],
+    ["const owner = \"zergo\";", 'Zergo', true],
+    ['const owner = `zergo`;', 'Zergo', true],
+    ["// prose about zergo outside any quotes", 'Zergo', false],
+    ["const zergoCount = 1;   // an identifier, not data", 'Zergo', false],
+    ["// a quote that spans no name: 'the primary agent'", 'Zergo', false],
     ["  am_michael: { language: 'en-us' },", 'Michael', false],
     ["  { voice: 'am_michael' },", 'Michael', false],
   ];
