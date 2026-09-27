@@ -156,19 +156,37 @@ export function markToolsLoaded(agentId: string, toolNames: string[]): string[] 
 
 /**
  * Bring a set back to the ceiling, least-recently-CALLED first, and answer with
- * what left. `justLoaded` is pinned for the same reason the current turn is: a
- * name asked for in this very call must not be evicted by it.
+ * what left.
+ *
+ * ── TWO TIERS, AND THE SECOND ONE IS WHY REHYDRATION STAYS BOUNDED ──
+ * A name this very call asked for is normally pinned: evicting it would tell a
+ * model the tool it just asked for is gone, and it would ask again next turn.
+ * But a BULK REPLAY hands this function a whole session at once
+ * (`rehydrateSessionToolsFromHistory`), and there the pin cannot be honoured
+ * without disabling the ceiling completely — measured at 71 names surviving a 64
+ * ceiling before this tier existed. So the batch becomes evictable on exactly the
+ * condition that makes the pin impossible: WHEN THE BATCH ALONE EXCEEDS THE
+ * CEILING. A batch that fits is never the reason the bound broke, so nothing it
+ * asked for is evicted by it; a batch that does not fit has to give something up,
+ * and the coldest go first — which for a replay with no call record is the FRONT
+ * of the replayed sequence, the oldest loads, leaving the survivors in the order
+ * the record placed them.
  */
 function evictToCeiling(agentId: string, loaded: Set<string>, justLoaded: Set<string>): string[] {
   if (loaded.size <= SESSION_TOOL_SET_MAX) return [];
   const { rank, currentTurn } = calledRecency(agentId);
   const order = [...loaded];
-  const candidates = order
-    .filter((name) => !justLoaded.has(name) && !currentTurn.has(name))
-    // Least recently called first; a name never called ranks below every name that
-    // was. Load order (the set's own order) is the tie-break, so the result is
-    // deterministic for identical state.
-    .sort((a, b) => (rank.get(a) ?? -1) - (rank.get(b) ?? -1) || order.indexOf(a) - order.indexOf(b));
+  // Least recently called first; a name never called ranks below every name that
+  // was. Load order (the set's own order) is the tie-break, so the result is
+  // deterministic for identical state.
+  const coldestFirst = (a: string, b: string) =>
+    (rank.get(a) ?? -1) - (rank.get(b) ?? -1) || order.indexOf(a) - order.indexOf(b);
+  const evictable = order.filter((name) => !currentTurn.has(name));
+  const batchAloneBustsTheBound = justLoaded.size > SESSION_TOOL_SET_MAX;
+  const candidates = [
+    ...evictable.filter((name) => !justLoaded.has(name)).sort(coldestFirst),
+    ...(batchAloneBustsTheBound ? evictable.filter((name) => justLoaded.has(name)).sort(coldestFirst) : []),
+  ];
   const evicted: string[] = [];
   for (const name of candidates) {
     if (loaded.size <= SESSION_TOOL_SET_MAX) break;
