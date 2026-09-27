@@ -197,7 +197,23 @@ describe('P5-R6 — the staged set, derived from the brokers rather than declare
     }
     expect(found.length, 'the census found no bypass-hardening sites at all — the regex has rotted').toBeGreaterThan(0);
 
-    const EXPECTED_NON_GLOBAL: readonly string[] = [];
+    // ── NAMED, WITH ITS REASON AND WHOSE DECISION IT WAS (RULING P5-R5) ──
+    // `sudo-unplaceable` (v3.2.2 security-review fix round, 2026-09-27). A line containing a `sudo` or
+    // `doas` token that the grammar cannot PLACE — inside `$( )`, a backtick, a nested quote an
+    // interpreter would execute — is refused rather than run. It is a new refusal for a sub-agent and
+    // for everybody else, and it is the OWNER'S DECISION carried forward twice over: his 2026-09-26
+    // ruling made sudo a policy and his 2026-09-27 ruling made it primary-only, and the review measured
+    // that BOTH were bypassed by `true; sudo …` — thirteen of fourteen spellings escaped WITH
+    // PRIVILEGE, under every policy, for any agent. Fail-closed is the only reading of those rulings
+    // that holds: a line whose structure cannot be read must not run as root.
+    // ⚠ IT IS DELIBERATELY NOT A GLOBAL DENY ENTRY. The floor list is matched by PREFIX against a
+    // command; this refusal is about a line the parser could not decompose, which is a property of the
+    // STRUCTURE and not of any pattern. Putting it in the table would mean inventing a pattern that
+    // matches "unreadable", and the table's entries are commands.
+    // The harmless-data exemption keeps it narrow: a token only inside quotes, or in an argument
+    // position of a program that does not run its arguments, is allowed (`echo "sudo cp …"` — which is
+    // a sentence this platform itself prints).
+    const EXPECTED_NON_GLOBAL: readonly string[] = ['sudo-unplaceable'];
     const nonGlobal = [...new Set(found)]
       .filter((rule) => rule !== '<deny-table-id>' && !isGlobalDenyRule(rule));
     expect(
