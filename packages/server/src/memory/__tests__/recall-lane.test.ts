@@ -405,31 +405,68 @@ describe('§3 recall surfaces the conclusion, not just the question', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// §4 — ACROSS THE SESSION BOUNDARY. The half `engine.recently-answered` structurally cannot
-// reach: it is scoped to one conversation, and a reset opens a new one.
+// §4 — ACROSS THE SESSION BOUNDARY.
+//
+// ⚠ THIS SECTION'S PREMISE WAS FICTION UNTIL 2026-09-26, AND IT PASSED ANYWAY. It read: *"The half
+// `engine.recently-answered` structurally cannot reach: it is scoped to one conversation, and a
+// reset opens a new one."* A reset opens NO new conversation — it moves `agents.session_started_at`
+// and nothing else, and `conversations` identity has no session dimension, so the same id survives
+// every reset for ever (measured: 3,930 of 3,931 dividers on the owner's box had a prior stamped
+// ask in the SAME conversation). The old clause proved its point by passing the literal string
+// `'conv-session-2'` — a conversation id no reset has ever produced — and by seeding both rows with
+// `conversationId: null`, so it was green on a platform that does not exist. It is rewritten below
+// against the id a reset actually leaves in place.
+//
+// The OTHER half of the section was, and remains, correct: a conclusion from the previous session
+// is still recallable. That is the recall lane's charter, and it is what decided the shape of the
+// fix — the released pair keeps its quote and loses its imperative rather than disappearing.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§4 the conclusion crosses a session boundary', () => {
-  it('an answered pair from the PREVIOUS session is still recallable', () => {
+  /** The TEXT shape the column holds. `toISOString()` alone yields `…T…Z`, which `unixepoch()`
+   *  also parses, but the column is written space-separated and a test should hold the real shape. */
+  const boundaryText = (msAgo: number): string =>
+    new Date(Date.now() - msAgo).toISOString().replace('T', ' ').slice(0, 19);
+
+  it('an answered pair from the PREVIOUS session is still recallable, in the SAME conversation', () => {
     const db = mockDb.current!;
     const ask = seedMessage({
-      role: 'user', content: 'Which of these part codes is the odd one out?',
-      conversationId: null, minutesAgo: 120,
+      role: 'user', content: 'Which of these part codes is the odd one out?', minutesAgo: 120,
     });
     const ans = seedMessage({
-      role: 'assistant', content: 'BEETLE-9001 is the odd one out.',
-      conversationId: null, minutesAgo: 119,
+      role: 'assistant', content: 'BEETLE-9001 is the odd one out.', minutesAgo: 119,
     });
     stampAnswer(ask, ans);
-    // The reset: the session boundary moves past both rows, and a new conversation opens.
-    db.prepare('UPDATE agents SET session_started_at = ? WHERE id = ?')
-      .run(new Date(Date.now() - 60_000).toISOString(), AGENT);
+    // Before the boundary moves, the ledger names the ask — this is the state a reset acts on.
+    expect(recentlyAnsweredAsks(AGENT, CONV, 3)).toHaveLength(1);
 
-    // `engine.recently-answered` looks in THIS conversation, and finds nothing.
-    expect(recentlyAnsweredAsks(AGENT, 'conv-session-2', 3)).toHaveLength(0);
-    // The recall lane is not session-scoped and carries the conclusion forward.
+    // The reset: the boundary moves past both rows. THE CONVERSATION ID DOES NOT CHANGE.
+    db.prepare('UPDATE agents SET session_started_at = ? WHERE id = ?').run(boundaryText(60_000), AGENT);
+
+    // The ledger is session-bounded now, so it forgets — on the REAL id, not an invented one.
+    expect(recentlyAnsweredAsks(AGENT, CONV, 3)).toHaveLength(0);
+    // And the recall lane still carries the conclusion forward: this is the charter.
     const text = textOf(renderRecallLane(ctxWith({ msgHits: [{ sourceId: ask }] })));
     expect(text).toContain('BEETLE-9001');
+  });
+
+  it('the released pair keeps its QUOTE and loses its IMPERATIVE', () => {
+    const db = mockDb.current!;
+    const ask = seedMessage({ role: 'user', content: 'Which part code is odd?', minutesAgo: 120 });
+    const ans = seedMessage({ role: 'assistant', content: 'BEETLE-9001.', minutesAgo: 119 });
+    stampAnswer(ask, ans);
+
+    // In-session: the pair renders under the ALREADY ANSWERED imperative, unchanged.
+    const inSession = textOf(renderRecallLane(ctxWith({ msgHits: [{ sourceId: ask }] })));
+    expect(inSession).toContain('ALREADY ANSWERED');
+    expect(inSession).not.toContain('before this session');
+
+    db.prepare('UPDATE agents SET session_started_at = ? WHERE id = ?').run(boundaryText(60_000), AGENT);
+
+    const released = textOf(renderRecallLane(ctxWith({ msgHits: [{ sourceId: ask }] })));
+    expect(released).toContain('BEETLE-9001');                     // the conclusion survives
+    expect(released).toContain('if asked again, answer again');     // and says so out loud
+    expect(released).toContain('before this session');
   });
 
   it('the pair reader is one statement over the ledger, both directions', () => {
