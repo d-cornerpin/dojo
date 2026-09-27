@@ -5814,6 +5814,13 @@
       "why": "444 -> 445 (+1). `SUDO_UNPLACEABLE_REASON` now comes from the copy leaf: one more import statement, no new logic."
     },
     {
+      "path": "packages/server/src/agent/brokers/sudo-policy.ts",
+      "from": 974,
+      "to": 985,
+      "by": "THIRD REVIEW item 4 - the TOCTOU alternative recorded beside the hash",
+      "why": "974 -> 985 (+11, all comment). The review agreed the hold is correct and named a binding I had not considered: authorize CONTENT rather than a path - stdin from the broker's own buffer, or a retained fd - so that what was read IS what executes, with no Verdict field and no exec-seam re-hash. A hash CHECKS that property; this makes it structural. It is recorded with its own tension stated (the exec seam would have to accept a body, and a body on a stream is what F3 refuses), because the next author should inherit the option space rather than my first two options. Eleven lines is the price of not leaving a wrong 'only road' in the file."
+    },
+    {
       "path": "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts",
       "from": 259,
       "to": 260,
@@ -5832,7 +5839,7 @@
   "files": {
     "packages/server/src/agent/brokers/sudo-probe.ts": 83,
     "packages/server/src/agent/brokers/sudo-copy.ts": 141,
-    "packages/server/src/agent/brokers/sudo-policy.ts": 974,
+    "packages/server/src/agent/brokers/sudo-policy.ts": 985,
     "packages/dashboard/src/components/AccessControls.tsx": 141,
     "packages/dashboard/src/components/AccessManifest.tsx": 239,
     "packages/dashboard/src/components/AttachmentChips.tsx": 465,
