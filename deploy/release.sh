@@ -504,10 +504,12 @@ node "$SCRIPT_DIR/check-tool-conformance.mjs" \
 # release.sh at all?"); the answer is yes, since 2026-07-21, and it is
 # unconditional. The router-selector guard (T7) rides in here, so anything that
 # makes model selection slow or routes it through a network call stops a release.
-step "Unit-suite gate (packages/server vitest, full run)"
+step "Unit-suite gate (server + dashboard vitest, full run)"
 ( cd "$SCRIPT_DIR/../packages/server" && npx vitest run --reporter=dot ) \
   || fail "Unit-suite gate: server unit tests are red. Root-cause and fix (owner rule: testing exists to find problems); NOT publishing."
-echo "- unit suite: full packages/server vitest run, green (never skippable)" >> "$RELEASE_RECORD"
+( cd "$SCRIPT_DIR/../packages/dashboard" && npx vitest run --reporter=dot ) \
+  || fail "Unit-suite gate: DASHBOARD tests are red. Root-cause and fix; NOT publishing."
+echo "- unit suite: full server + dashboard vitest runs, green (never skippable)" >> "$RELEASE_RECORD"
 
 # ── Prompt-gate record (Phase 0 T13) ──
 # Four kit checks read the live server THROUGH THE DEV INSTRUMENTS —

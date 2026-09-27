@@ -292,8 +292,8 @@ export const GATES = [
     phase: 'n/a',
     script: null,
     args: [],
-    title: 'Unit-suite gate (packages/server vitest, full run)',
-    why: 'Owner ruling 2026-07-21: suites in no gate rot silently — 8 suites sat red for up to 8 weeks, one carrying a real production bug. Minutes long, so it is a release gate rather than a per-commit one, and it is never skippable.',
+    title: 'Unit-suite gate (server + dashboard vitest, full run)',
+    why: 'Owner ruling 2026-07-21: suites in no gate rot silently — 8 suites sat red for up to 8 weeks, one carrying a real production bug. Minutes long, so it is a release gate rather than a per-commit one, and it is never skippable. The DASHBOARD suite joined it the day that package got a runner (t86-dashrunner): it holds the byte-to-DOM consent gate, the refetch-on-event idiom and the working-note visibility rules — a red there is an owner looking at the wrong text or at nothing, which is exactly the class this gate exists for, and ~6s of the run.',
   },
   {
     id: 'prompt-gate-record',
