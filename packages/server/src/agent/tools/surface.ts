@@ -208,10 +208,8 @@ const agentDenySetCache = new Map<string, DenySetCacheEntry>();
 
 export function getAgentDenySet(agentId: string): Set<string> {
   const generation = getToolConfigGeneration();
-  // A FIXED sentinel in the policy slot, not a read: the deny set holds tool NAMES and the
-  // sudo policy can never change one, so a real read here buys nothing, costs a config read
-  // on EVERY dispatch, and (measured at the release gate) breaks every harness that mocks a
-  // thin DB under the executor. The slot stays so the two fingerprints keep one shape.
+  // A FIXED sentinel, not a policy read: deny sets hold tool NAMES the policy can never
+  // change; the gate measured a real read breaking 9 thin-DB executor clauses for nothing.
   const fingerprint = computeAgentToolFingerprint(agentId, 'deny-set');
   const cached = agentDenySetCache.get(agentId);
   if (cached && cached.generation === generation && cached.fingerprint === fingerprint) {
@@ -332,13 +330,11 @@ function computeFilteredTools(agentId: string, sudoPolicy: string): ToolDefiniti
   // specifying which commands are allowed.
   //
   // THE SUDO DOOR IS PART OF THE TRUTH (v3.2.2 blast, live): a model believes its
-  // tools, and every primary on an updated box also carries months of remembered
-  // pre-feature refusals ("sudo is prohibited"). Unless the description names the
-  // door, the primary never issues a sudo call at all and the policy broker —
-  // which intercepts sudo BEFORE the allowlist (proc.ts:188) — goes unreached.
-  // So the sentence renders for the BOX PRIMARY under gated/free on BOTH command
-  // tools, whatever the shape of its allowlist; a finite allowlist adds the
-  // review-demanded caveat that sudo raises privilege without widening the grant.
+  // tools — told "Any other command will be blocked", the primary never issues a
+  // sudo call at all and the policy broker, which intercepts sudo BEFORE the
+  // allowlist (proc.ts:188), goes unreached. So the sentence renders for the BOX
+  // PRIMARY under gated/free on BOTH command tools, whatever the allowlist shape;
+  // a finite allowlist adds the caveat that sudo does not widen the grant.
   const primaryHere = isPrimaryAgent(agentId);
   const sudoDoorSentence = (finiteList: boolean): string => {
     if (!primaryHere) return '';
