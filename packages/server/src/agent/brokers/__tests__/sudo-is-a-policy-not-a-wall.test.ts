@@ -43,11 +43,11 @@ vi.mock('../../../config/platform.js', async (orig) => ({
 
 import { grantForManifest } from '../grants.js';
 import { authorizeShellCommandText } from '../proc.js';
+import { getSudoPolicy, isSudoLine, isSudoHoldRequired, parseSudo } from '../sudo-policy.js';
 import {
-  SUDO_BLOCKED_REASON, SUDO_NOT_PRIMARY_REASON, SUDO_POLICY_DEFAULT, getSudoPolicy, isSudoLine,
-  isSudoHoldRequired, parseSudo, sudoOwnerCardCopy, sudoPasswordPromptMessage, sudoersDropInLine,
-  type SudoPolicy,
-} from '../sudo-policy.js';
+  SUDO_BLOCKED_REASON, SUDO_NOT_PRIMARY_REASON, SUDO_POLICY_DEFAULT, SUDO_UNPARSEABLE_REASON,
+  sudoOwnerCardCopy, sudoPasswordPromptMessage, sudoersDropInLine, type SudoPolicy,
+} from '../sudo-copy.js';
 import type { PermissionManifest } from '@dojo/shared';
 import { engineFileContaining } from '../../v2/__tests__/engine-sources.js';
 
@@ -222,7 +222,6 @@ describe('§2 the floor is not escapable by prefixing sudo', () => {
   });
 
   it('an UNPARSEABLE sudo line is refused under every policy, and says how to rewrite it', async () => {
-    const { SUDO_UNPARSEABLE_REASON } = await import('../sudo-policy.js');
     underEach((p) => {
       const v = verdict('sudo -p "pw: " ls');
       expect(v.allowed, `policy=${p}`).toBe(false);
