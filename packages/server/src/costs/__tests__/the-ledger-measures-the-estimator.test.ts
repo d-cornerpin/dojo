@@ -36,13 +36,30 @@ vi.mock('../../db/connection.js', async () => {
 });
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 
+/** Every line the module logged, so the "excluded AND said so" clause can read it. The platform
+ *  logger writes through its own sink, so the module boundary is where a test can see it. */
+const logged: Array<{ level: string; message: string; meta?: Record<string, unknown> }> = [];
+vi.mock('../../logger.js', () => ({
+  createLogger: () => ({
+    info: (message: string, meta?: Record<string, unknown>) => { logged.push({ level: 'info', message, meta }); },
+    warn: (message: string, meta?: Record<string, unknown>) => { logged.push({ level: 'warn', message, meta }); },
+    error: (message: string, meta?: Record<string, unknown>) => { logged.push({ level: 'error', message, meta }); },
+    debug: () => {},
+  }),
+}));
+
 import { runMigrations } from '../../db/migrations.js';
 import { CHARS_PER_TOKEN } from '../../memory/budget.js';
 import {
   charsPerTokenFrom,
+  rawCharsPerTokenFrom,
+  isLegalCharsPerToken,
   measuredCharsPerToken,
   recalibrateFromLedgerRow,
+  resetRangeExclusionLogForTests,
   ESTIMATOR_SAMPLE_MIN_ESTIMATED_TOKENS,
+  ESTIMATOR_CHARS_PER_TOKEN_MIN,
+  ESTIMATOR_CHARS_PER_TOKEN_MAX,
   type EstimatorSample,
 } from '../ledger-calibration.js';
 
@@ -110,6 +127,50 @@ describe('LANE-3 — a row that cannot measure the estimator is refused', () => 
   it('a row the provider billed nothing for is not a ratio', () => {
     expect(charsPerTokenFrom(sample(10_000, 0))).toBeNull();
     expect(charsPerTokenFrom({ estimatedInputTokens: null, divisorUsed: CHARS_PER_TOKEN, inputTokens: 10 })).toBeNull();
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// 2b — GUARD 4, THE LEGAL RANGE (review C, L3-F2). 167's reader-side discipline, mirrored.
+// ════════════════════════════════════════════════════════════════════════
+
+describe('a ratio no tokeniser could charge is not a measurement', () => {
+  // THE POISONED ROW, verbatim from the review: it passes guards 1-3 and yields 0.001, and the daily
+  // rescan cannot rescue it because the row is inside its own window and the rescan takes the min too.
+  // It is not a corrupt record — it is the shape of a VISION call, where the provider bills thousands
+  // of input tokens for pixels that are not characters of a prompt.
+  const poisoned: EstimatorSample = {
+    estimatedInputTokens: 2_000, divisorUsed: CHARS_PER_TOKEN, inputTokens: 0, cacheReadTokens: 8_000_000,
+  };
+
+  it('the poisoned row still computes 0.001 RAW — the guards above really do admit it', () => {
+    expect(rawCharsPerTokenFrom(poisoned)).toBeCloseTo(0.001, 6);
+  });
+
+  it('RED-CRITICAL: and the range EXCLUDES it, so it can never establish the reading', () => {
+    expect(charsPerTokenFrom(poisoned)).toBeNull();
+  });
+
+  it('the fold keeps the honest rows when a poisoned one is in the set', () => {
+    // Without the range this returns 0.001 and every future estimate inflates 4000x.
+    expect(measuredCharsPerToken([sample(10_000, 10_000), poisoned, sample(10_000, 10_000)]))
+      .toBeCloseTo(CHARS_PER_TOKEN, 10);
+  });
+
+  it('both review-measured extremes are refused, and the boundaries themselves are legal', () => {
+    expect(isLegalCharsPerToken(8_000)).toBe(false);
+    expect(isLegalCharsPerToken(8e-9)).toBe(false);
+    expect(isLegalCharsPerToken(ESTIMATOR_CHARS_PER_TOKEN_MIN)).toBe(true);
+    expect(isLegalCharsPerToken(ESTIMATOR_CHARS_PER_TOKEN_MAX)).toBe(true);
+    expect(isLegalCharsPerToken(ESTIMATOR_CHARS_PER_TOKEN_MIN - 0.001)).toBe(false);
+    expect(isLegalCharsPerToken(ESTIMATOR_CHARS_PER_TOKEN_MAX + 0.001)).toBe(false);
+    expect(isLegalCharsPerToken(Number.NaN)).toBe(false);
+    expect(isLegalCharsPerToken(Number.POSITIVE_INFINITY)).toBe(false);
+  });
+
+  it('the floor is the load-bearing bound: a text row just inside it still measures', () => {
+    // 4,000 estimated tokens at 4 chars/token = 16,000 chars billed as 16,000 tokens = exactly 1.0.
+    expect(charsPerTokenFrom(sample(4_000, 16_000))).toBeCloseTo(1, 10);
   });
 });
 
@@ -213,6 +274,30 @@ describe('LANE-3 — recordCost\'s one door folds the row into the reading', () 
     ).run();
     recalibrateFromLedgerRow('local', { inputTokens: 20_000, latencyMs: 1_000, estimatedInputTokens: 10_000, divisorUsed: CHARS_PER_TOKEN });
     expect(reading().divisor).toBeCloseTo(2, 10);
+  });
+
+  it('THE POISONED ROW ON THE LIVE PATH: the column is left alone, and the exclusion is LOGGED', () => {
+    resetRangeExclusionLogForTests();
+    logged.length = 0;
+    // First an honest reading, so there is something a poisoned row could have destroyed.
+    recalibrateFromLedgerRow('local', { inputTokens: 10_000, latencyMs: 1_000, estimatedInputTokens: 10_000, divisorUsed: CHARS_PER_TOKEN });
+    expect(reading().divisor).toBeCloseTo(CHARS_PER_TOKEN, 10);
+    const before = reading();
+
+    // Then the vision-shaped row: 2,000 estimated, 8,000,000 billed → 0.001.
+    recalibrateFromLedgerRow('local', { inputTokens: 0, latencyMs: 1_000, estimatedInputTokens: 2_000, divisorUsed: CHARS_PER_TOKEN, cacheReadTokens: 8_000_000 });
+    expect(reading(), 'the poisoned row moved the stored reading').toEqual(before);
+
+    const line = logged.find((l) => l.message.includes('outside the legal range'));
+    expect(line, 'the exclusion was silent — a silent exclusion and a silent poisoning look the same '
+      + `from outside. Logged instead: ${JSON.stringify(logged.map((l) => l.message))}`).toBeTruthy();
+    expect(line?.meta?.ratio).toBeCloseTo(0.001, 6);
+    expect(String(line?.meta?.likelyCause)).toContain('not characters of a prompt');
+
+    // ...and it says so ONCE per provider, so a vision-heavy box does not fill its log with it.
+    const firstCount = logged.filter((l) => l.message.includes('outside the legal range')).length;
+    recalibrateFromLedgerRow('local', { inputTokens: 0, latencyMs: 1_000, estimatedInputTokens: 2_000, divisorUsed: CHARS_PER_TOKEN, cacheReadTokens: 8_000_000 });
+    expect(logged.filter((l) => l.message.includes('outside the legal range')).length).toBe(firstCount);
   });
 
   it('an unknown provider is a no-op, never a throw — accounting owes the instrument nothing', () => {

@@ -17,7 +17,9 @@
 // for a request dominated by a 72 KB JSON tools array. A single global constant cannot be right
 // for both, which is exactly why the answer is to observe it per provider rather than to pick a
 // better constant — and why this module REFUSES to be a place where someone tunes one (there is no
-// tunable here; the only numbers are the qualification guards, each with its own argument).
+// tunable here; the only numbers are the qualification guards and the legal range, each with its own
+// argument — and review C caught that first sentence being true of the guards while the RANGE was
+// missing entirely, which is the one gap a minimum-fold cannot survive: see guard 4).
 //
 // ── THE ARITHMETIC ──
 // Migration 149 put both halves of the comparison in every row: `estimated_input_tokens` (what the
@@ -80,6 +82,14 @@ import { recalibrateFromSample, type PrefillSample } from './prefill-calibration
 
 const logger = createLogger('ledger-calibration');
 
+/** Providers already reported as producing an out-of-legal-range row this process. See guard 4. */
+const rangeExcluded = new Set<string>();
+
+/** Test seam: forget which providers have already been reported. */
+export function resetRangeExclusionLogForTests(): void {
+  rangeExcluded.clear();
+}
+
 /** Guard 3: the smallest estimate a row may carry and still establish a reading. See the header. */
 export const ESTIMATOR_SAMPLE_MIN_ESTIMATED_TOKENS = 2_000;
 
@@ -111,7 +121,7 @@ export interface EstimatorSample {
  * reading. Pure, and takes a plain row precisely so the arithmetic can be argued with in a test
  * rather than only observed against a live ledger.
  */
-export function charsPerTokenFrom(sample: EstimatorSample): number | null {
+export function rawCharsPerTokenFrom(sample: EstimatorSample): number | null {
   const { estimatedInputTokens, divisorUsed, inputTokens } = sample;
   if (sample.inputTokensEstimated === true) return null;                                  // guard 1
   if (typeof divisorUsed !== 'number' || divisorUsed !== CHARS_PER_TOKEN) return null;     // guard 2
@@ -121,6 +131,56 @@ export function charsPerTokenFrom(sample: EstimatorSample): number | null {
   if (!Number.isFinite(billed) || billed <= 0) return null;
   const chars = estimatedInputTokens * divisorUsed;
   return chars / billed;
+}
+
+/**
+ * GUARD 4 — THE LEGAL RANGE, the half of migration 167's discipline this module was missing
+ * (review C, L3-F2). The three guards above all bound the INPUT; none bounded the RESULT, and the
+ * fold is a MINIMUM, so one anomalous row pins the reading for a whole window.
+ *
+ * MEASURED, not hypothetical: `{estimatedInputTokens: 2_000, divisorUsed: 4, inputTokens: 0,
+ * cacheReadTokens: 8_000_000}` passes every guard above and yields **0.001** — and the daily rescan
+ * cannot rescue it, because the row sits inside its own window and the rescan takes the min too. Spend
+ * that and every estimate inflates 4000×. That row is not a corrupt record either: it is the SHAPE OF
+ * A VISION CALL, where the provider bills thousands of input tokens for pixels that are not characters
+ * of a prompt. The estimator estimates CHARACTERS, so such a call is not a measurement of a text
+ * tokeniser and must not establish one.
+ *
+ * FLOOR of 1: no tokeniser emits more than one token per character of real text, so below 1 the
+ * numerator is not the characters of this request (images, audio, a usage block counting something
+ * else). This is the load-bearing bound — it is the only direction that can make a future consumer
+ * LESS safe than no reading at all.
+ *
+ * CEILING of 12: ordinary prose measures near 4 and whitespace-heavy or highly repetitive text can run
+ * higher, so the ceiling sits well clear of real text; above it a row is far more likely a provider
+ * under-reporting usage (a partial usage block, a zeroed cache column) than a tokeniser. It protects
+ * no decision by itself — a high ratio is already inert under a minimum — and it is here so a row no
+ * tokeniser could produce cannot reach the log line, a future per-sample reader, or a future fold that
+ * is not a minimum.
+ *
+ * 167's own words for why this lives with the READER and not in a CHECK constraint: the reader "must
+ * survive a value this schema never approved … by treating it as unmeasured".
+ */
+export const ESTIMATOR_CHARS_PER_TOKEN_MIN = 1;
+export const ESTIMATOR_CHARS_PER_TOKEN_MAX = 12;
+
+/** Whether a computed ratio is inside the legal range — a number this box could really have been
+ *  charged at. Pure and exported so the boundary is argued in a test, not only here. */
+export function isLegalCharsPerToken(ratio: number): boolean {
+  return Number.isFinite(ratio)
+    && ratio >= ESTIMATOR_CHARS_PER_TOKEN_MIN
+    && ratio <= ESTIMATOR_CHARS_PER_TOKEN_MAX;
+}
+
+/**
+ * THE RATIO A ROW MAY ESTABLISH: the raw arithmetic, then the legal range. All four guards, one
+ * function, and the ONE the fold and the window rescan both call — so there is no path that skips
+ * the range, and no second copy of it in SQL.
+ */
+export function charsPerTokenFrom(sample: EstimatorSample): number | null {
+  const raw = rawCharsPerTokenFrom(sample);
+  if (raw === null) return null;
+  return isLegalCharsPerToken(raw) ? raw : null;
 }
 
 /**
@@ -171,7 +231,29 @@ function rescanWindow(providerId: string): number | null {
  *  other post-insert step in `recordCost`: a reading that cannot be taken leaves the column exactly
  *  as it was, which is the state every provider is in today. */
 function recalibrateEstimator(providerId: string, sample: EstimatorSample): void {
-  const fresh = charsPerTokenFrom(sample);
+  const raw = rawCharsPerTokenFrom(sample);
+  // AN OUT-OF-RANGE ROW IS SAID OUT LOUD, ONCE PER PROVIDER PER PROCESS. A silent exclusion and a
+  // silent poisoning look identical from outside, and the likeliest cause is structural rather than
+  // freakish — a vision-capable model billing pixels as input tokens will produce one of these on
+  // every image call. Once per provider keeps a vision-heavy box from filling its log with a fact it
+  // already reported, and the reading it protects is one number per provider anyway.
+  if (raw !== null && !isLegalCharsPerToken(raw)) {
+    if (!rangeExcluded.has(providerId)) {
+      rangeExcluded.add(providerId);
+      logger.info('Ledger row excluded from the chars-per-token reading: ratio outside the legal range', {
+        providerId,
+        ratio: Number(raw.toFixed(6)),
+        legalRange: [ESTIMATOR_CHARS_PER_TOKEN_MIN, ESTIMATOR_CHARS_PER_TOKEN_MAX],
+        estimatedInputTokens: sample.estimatedInputTokens ?? null,
+        billedInputTokens: sample.inputTokens + (sample.cacheReadTokens ?? 0) + (sample.cacheCreationTokens ?? 0),
+        likelyCause: raw < ESTIMATOR_CHARS_PER_TOKEN_MIN
+          ? 'billed input is not characters of a prompt (image/audio tokens), so it cannot measure a text tokeniser'
+          : 'the provider appears to under-report usage for this call',
+      });
+    }
+    return;
+  }
+  const fresh = raw === null ? null : (isLegalCharsPerToken(raw) ? raw : null);
   if (fresh === null) return;
 
   try {
