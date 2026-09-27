@@ -5517,6 +5517,13 @@
       "to": 307,
       "by": "PII RANGE REVIEW H1 (2026-09-26) — three adjudications the review ruled mandatory, plus the freeze gate that now requires them",
       "why": "277 -> 307 (+30; 21 lines of ledger ROW — three entries at seven lines each, the same shape as every entry above them — and 9 of warrant). THE PIN AND THE NEW FREEZE GATE WERE IN DIRECT COLLISION, and that is the whole argument. Review H1 found THREE already-applied migrations comment-edited by the names/PII scrub; `_migrations.checksum` records what was APPLIED, so every box that applied them logs MIGRATION DIVERGENCE at ERROR on every boot for ever, and the ONLY mechanism that silences it is a KNOWN_DIVERGENCES entry naming both hashes. In the same round I mechanised the freeze (`deploy/checks/check-migration-freeze.mjs`): any commit touching `db/migrations/**` now FAILS unless it adds a matching entry to this very file. A decrease-only pin on an append-only adjudication ledger therefore forbids the exact act another blocking gate demands — the next legitimate migration edit could satisfy neither gate, which is an instrument deadlock rather than a size problem. This file is DATA, not logic: its bulk is five-field rows and hashes, `migrationChecksum` is three lines, and `migration-checksums.test.ts` machine-checks every `fileChecksum` against the tree, so a row that stops being true fails a test rather than rotting. THE RAISE IS TO THE MEASURED MINIMUM, NOT TO COMFORT: the commit before this one (`a0c31153`) deleted 20 lines of my own warrant prose — a stripped-SQL hash table duplicated inside each row's own `reason`, and a paragraph restating `135`'s third sentence — taking 327 to 307, and REFUSED going further: no arrangement of three entries fits under 277 without deleting an existing adjudication, which would re-arm the boot ERROR that entry exists to silence. REFUSED also: parking the three rows in a second module to dodge the pin — `KNOWN_DIVERGENCES` is read by one consumer as one array, and splitting a ledger for accounting is the accounting this gate exists to prevent. From 307 this file may only shrink, and the next adjudication pays the same way: trim first, argue the residual here, or delete an entry no box can still be carrying."
+    },
+    {
+      "path": "packages/server/src/services/capability-registry.ts",
+      "from": 0,
+      "to": 251,
+      "by": "HEAD 2, the other-threads lane (2026-09-26) - the registry finally publishes channels, and the 240-line cap asked to be told",
+      "why": "NEW ENTRY at 251, added because the growth detector ASKED FOR IT rather than because a pin was breached: `capability-registry.ts` crossed 60% of the 400-line new-file cap (240 lines) and the gate's own instruction for that crossing is \"add it to ratchets.json at its current count — which pins it decrease-only from then on\". WHAT PUSHED IT OVER: `listChannelStatuses()` + the `ChannelStatus` shape (HEAD 2, the owner's 2026-09-24 false denial — an agent with a live iMessage thread said it had no way to see it, and the registry published google/microsoft/plaud and NO channels, so nothing in context said the channel was live either way). The growth half of the same gate is satisfied WITHOUT a baseline edit: the addition was trimmed to +50 on a 201-line file, inside the 25% allowance. REFUSED: making channels a fourth `IntegrationStatus` family, which would have been smaller here and wrong — that shape is TOKEN HEALTH (a per-family success ledger, a tool-NAME -> family map, an unresolved-failure count) and a channel has none of the three, so three fields would be permanently null and the integration lane's own \"every family has a ledger or a stated reason\" census would gain three exceptions. From 251 this file may only shrink, and the next channel family pays for itself."
     }
   ],
   "maxNewFileLines": 400,
@@ -5731,6 +5738,7 @@
     "packages/server/src/scheduler/engine.ts": 414,
     "packages/server/src/scheduler/runner.ts": 2016,
     "packages/server/src/services/capabilities.ts": 597,
+    "packages/server/src/services/capability-registry.ts": 251,
     "packages/server/src/services/format-time.ts": 275,
     "packages/server/src/services/gmail-watcher.ts": 592,
     "packages/server/src/services/generation-jobs.ts": 443,
