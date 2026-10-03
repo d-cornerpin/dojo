@@ -3,13 +3,13 @@
 //
 // ── THE INCIDENT THIS FILE IS THE MEMORY OF ──
 // A user's box became practically unusable after ~v3.1.28: **sending any prompt froze the whole
-// dojo for minutes, the dashboard went dead, and the stop button did nothing**. Her own agent's
+// dojo for minutes, the dashboard went dead, and the stop button did nothing**. The reporting user's own agent's
 // audit and the platform trace agreed on the shape, and it took three independent defects
 // standing in a line:
 //
 //   1. The reporting user's provider had no balance. It answered **HTTP 402 — 3,604 times over 27 hours** — and
 //      nothing ever stopped dialling it.
-//   2. Her agent's context (~4,000 uncompacted messages, ~86K tokens of summaries) sat over the
+//   2. That agent's context (~4,000 uncompacted messages, ~86K tokens of summaries) sat over the
 //      emergency threshold of a 64K-window model, so the pre-call gate forced a full reactive
 //      compaction. EVERY brake in that path was `!force`-gated, so there was no brake.
 //   3. Each forced pass built a summariser prompt for every chunk and sent it to the dead
@@ -25,7 +25,7 @@
 // pass runs**. The four cells are the ones the investigation named as decisive, and the two
 // control arms are what keep the fix from being "compaction never runs".
 //
-// ⚠ THE LAG NUMBERS ARE A FLOOR, NOT A BENCHMARK. A test box is not her box: fewer rows, no other
+// ⚠ THE LAG NUMBERS ARE A FLOOR, NOT A BENCHMARK. A test box is not the reported box: fewer rows, no other
 // agents, a warm page cache. The clause asserts the SHAPE (the loop terminates, the pass is
 // bounded, the brake holds) and records the measured lag beside it, because a number that moves
 // with the hardware cannot be an assertion — while "the pass stops" is the same fact everywhere.
@@ -597,7 +597,7 @@ describe('§3 the CPU: three estimates become one, and the loop stays responsive
     seedBox({ messages: 400, summaryTokens: 86_000 });
 
     // PRE-FIX: three uncached estimates + a summariser prompt BUILT for every chunk of a dead
-    // provider's backlog. This is the loop that pinned her core.
+    // provider's backlog. This is the loop that pinned the reported box's core.
     const before = await measureStarvation(unbrakedPass(40));
 
     // POST-FIX: the breaker is open, so no chunk is built at all; the estimate is computed once
