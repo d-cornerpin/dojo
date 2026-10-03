@@ -295,6 +295,16 @@ export async function generateSummary(params: {
       messages: [{ role: 'user', content: result.content }],
       systemPrompt: aggressivePrompt,
       tools: false,
+      // ⚠ THE SECOND ROUND DECLARES WHAT THE FIRST ONE DECLARES, and t88's review found it missing
+      // here. Without these two lines `utilityDial(undefined)` returns null and ALL THREE dials revert
+      // to pre-t88 behaviour on this call: thinking inherits the per-model toggle, `num_predict` falls
+      // through to the model's ordinary maximum instead of the summary's cap, and `num_ctx` takes the
+      // full RAM-recommended window. ⚠ AND THIS IS THE WORST PATH TO LOSE THEM ON: it fires precisely
+      // when the first summary came back TOO LARGE, which means the biggest bodies on the box — the
+      // incident's own shape. The target is the retry's own stated one, the number the prompt above
+      // promises the model ("the target is N tokens"), so the request enforces what it asked for.
+      purpose: 'memory_summarize',
+      utilityTargetTokens: Math.floor(targetTokens / 2),
       abortSignal,
     });
 

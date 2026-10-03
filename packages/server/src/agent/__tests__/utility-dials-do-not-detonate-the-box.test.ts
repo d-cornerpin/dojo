@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
   utilityDial, isUtilityPurpose, utilityOutputCap, utilityNumCtx, utilityNumCtxExceedsConfigured,
-  MIN_UTILITY_NUM_CTX,
+  MIN_UTILITY_NUM_CTX, imageTokenAllowance, MIN_IMAGE_TOKENS, MAX_IMAGE_TOKENS,
 } from '../utility-dial.js';
 import { ASK_TITLE_LATENCY_BUDGET_MS, ASK_TITLE_INPUT_CHARS, ASK_TITLE_MAX_CHARS } from '../../work/ask-title.js';
 
@@ -130,6 +130,55 @@ describe('⚠ THE WINDOW IS SIZED TO THE CALL — on Ollama num_ctx is an ALLOCA
     })).toBe(false);
   });
 
+  it('⚠ M2: WITH NO CONFIGURED WINDOW, A LARGE INPUT STILL WINS — the unpinned sibling path', () => {
+    // A mutant that made the window ignore its input entirely (`atLeastFloor = MIN_UTILITY_NUM_CTX`)
+    // SURVIVED 942 clauses. Every clause drove the CONFIGURED path, where `blocks` survives in the
+    // final `Math.max(Math.min(…), blocks)` and keeps the answer right under the mutation — and the one
+    // unconfigured clause used an input small enough that the floor was the correct answer anyway.
+    // This is the newest behaviour in the module ("we do not know" must not mean "take everything"),
+    // so it gets a large input on the path that has no ceiling to fall back on.
+    const sized = utilityNumCtx({ inputChars: 400_000, outputTokens: 512, configuredNumCtx: null });
+    expect(sized).toBeGreaterThan(400_000 / 4);
+    expect(sized).toBeGreaterThan(MIN_UTILITY_NUM_CTX * 10);
+    // …and it is still a block multiple, like every other answer this function gives.
+    expect(sized % 1_024).toBe(0);
+  });
+
+  it('⚠ M1: AN IMAGE IS PART OF THE INPUT, so a caption dial is not sized on its sentence alone', () => {
+    // Three declaring sites are `vision_caption` on screenshots. A caption PROMPT is one sentence, so
+    // sized on text alone the window lands on the floor while the picture costs thousands of tokens —
+    // and a large screenshot then overflows it and truncates the prompt, which this module's own doc
+    // says it refuses to do. The floor used to absorb a modest screenshot by luck, not by design.
+    const promptOnly = utilityNumCtx({
+      inputChars: 120, outputTokens: 256, configuredNumCtx: 28_672,
+    });
+    const withBigScreenshot = utilityNumCtx({
+      inputChars: 120, outputTokens: 256, configuredNumCtx: 28_672,
+      imageBase64Lengths: [2_000_000],            // ~1.5 MB of PNG, a retina screen grab
+    });
+    expect(promptOnly).toBe(MIN_UTILITY_NUM_CTX);
+    expect(withBigScreenshot).toBeGreaterThan(promptOnly);
+    expect(withBigScreenshot).toBeGreaterThan(MAX_IMAGE_TOKENS);
+    // Two images cost more than one, because they do.
+    expect(utilityNumCtx({
+      inputChars: 120, outputTokens: 256, configuredNumCtx: 28_672,
+      imageBase64Lengths: [500_000, 500_000],
+    })).toBeGreaterThan(utilityNumCtx({
+      inputChars: 120, outputTokens: 256, configuredNumCtx: 28_672,
+      imageBase64Lengths: [500_000],
+    }));
+  });
+
+  it('the image allowance is bounded in both directions', () => {
+    // A thumbnail still costs a real encoder pass, and a gigantic upload must not demand a window no
+    // box can hold — the cap is what keeps an absurd input from producing an absurd allocation.
+    expect(imageTokenAllowance([1_000])).toBe(MIN_IMAGE_TOKENS);
+    expect(imageTokenAllowance([50_000_000])).toBe(MAX_IMAGE_TOKENS);
+    expect(imageTokenAllowance([])).toBe(0);
+    expect(imageTokenAllowance([500_000])).toBeGreaterThan(MIN_IMAGE_TOKENS);
+    expect(imageTokenAllowance([500_000])).toBeLessThan(MAX_IMAGE_TOKENS);
+  });
+
   it('with no configured window at all, our own size is still used', () => {
     // Before t88 this was the dangerous case: no stored value meant no `num_ctx` at all, so Ollama
     // fell back to the Modelfile's own default — which on a modern small model is its full trained
@@ -147,6 +196,22 @@ describe('the dial is wired at its call site, not merely available', () => {
   // budget cannot be proven by a 30-second test in a suite that runs on every commit, so the call site
   // is read instead — the same shape the engine's own censuses use for a wiring fact.
   const askTitleSource = readFileSync(new URL('../../work/ask-title.ts', import.meta.url), 'utf-8');
+
+  it('⚠ H1: BOTH OF THE SUMMARISER\'S ROUNDS DECLARE — the retry is the worst one to lose', () => {
+    // The review found the aggressive retry declaring neither `purpose` nor `utilityTargetTokens`, so
+    // all three dials reverted to pre-t88 behaviour on the path that fires PRECISELY when the first
+    // summary came back too large — the biggest bodies on the box, the incident's own shape. Counting
+    // the declarations is what catches it: one `callModel` per `purpose`, both ways.
+    const src = readFileSync(new URL('../../memory/summarize.ts', import.meta.url), 'utf-8');
+    const calls = src.match(/callModel\(\{/g)?.length ?? 0;
+    const purposes = src.match(/purpose: 'memory_summarize'/g)?.length ?? 0;
+    const targets = src.match(/utilityTargetTokens:/g)?.length ?? 0;
+    expect(calls).toBe(2);
+    expect(purposes, 'every callModel in the summariser must declare its purpose').toBe(calls);
+    expect(targets, 'and each must carry the target its own prompt promised the model').toBe(calls);
+    // The retry's target is HALF the first pass's, which is the number its prompt states out loud.
+    expect(src).toContain('utilityTargetTokens: Math.floor(targetTokens / 2)');
+  });
 
   it('the title dial DECLARES its purpose', () => {
     expect(askTitleSource).toContain("purpose: 'ask_title'");

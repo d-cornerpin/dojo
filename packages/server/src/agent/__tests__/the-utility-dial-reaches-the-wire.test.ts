@@ -170,6 +170,34 @@ describe('a declared utility dial reaches the wire with all three dials turned d
   });
 });
 
+describe('⚠ M3: the Max-output knob gets a floor, because it was inert until now', () => {
+  it('an implausibly small stored value is NOT bound, and the call falls back to the default', async () => {
+    // The field has always been in Settings and was sent NOWHERE on this path, so whatever a box has
+    // stored was never exercised by use. A user who once typed a tiny number into a dead knob must not
+    // discover it by having their agent's turns truncated the day they update.
+    mockDb.current!.prepare("UPDATE models SET max_output_tokens = 100 WHERE id = 'm-small-local'").run();
+    clearClientCache();
+    await dial(undefined);
+    expect(bodies[0].options?.num_predict).toBeUndefined();
+  });
+
+  it('…and a sane stored value still binds, which is the whole point of the knob', async () => {
+    mockDb.current!.prepare("UPDATE models SET max_output_tokens = 2048 WHERE id = 'm-small-local'").run();
+    clearClientCache();
+    await dial(undefined);
+    expect(bodies[0].options?.num_predict).toBe(2048);
+  });
+
+  it('⚠ AND A UTILITY DIAL IS UNAFFECTED BY THE FLOOR — its cap comes from this engine', async () => {
+    // 64 is below the floor on purpose: the floor exists to distrust a FIELD NOBODY COULD SEE WORKING,
+    // not to second-guess a number this module chose for an 80-character artifact.
+    mockDb.current!.prepare("UPDATE models SET max_output_tokens = 100 WHERE id = 'm-small-local'").run();
+    clearClientCache();
+    await dial('ask_title');
+    expect(bodies[0].options?.num_predict).toBe(utilityDial('ask_title')!.maxOutputTokens);
+  });
+});
+
 describe('⚠ AN AGENT TURN ON THE SAME MODEL IS UNTOUCHED — the whole blast radius of this package', () => {
   it('keeps the thinking toggle, the recommended window, and the configured Max output', async () => {
     await dial(undefined);

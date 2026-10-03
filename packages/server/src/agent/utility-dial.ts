@@ -147,9 +147,40 @@ export const MIN_UTILITY_NUM_CTX = 2_048;
  */
 const NUM_CTX_MARGIN_TOKENS = 256;
 
+/**
+ * ⚠ WHAT AN IMAGE COSTS THE WINDOW (t88 review M1). A caption prompt is a sentence, so a vision dial's
+ * TEXT lands on the 2,048 floor while the picture beside it costs real context — and three of this
+ * module's declaring sites are `vision_caption` on screenshots. The floor absorbed a modest screenshot
+ * BY LUCK; a large one exceeded it and the prompt was silently truncated, which is the one outcome
+ * this module's own doc says it refuses.
+ *
+ * Ollama's native shape carries images as base64 strings beside the text, and the encoder's real cost
+ * is in PIXELS rather than bytes — but bytes track pixels closely enough to size a window, and the only
+ * direction that matters here is "do not under-count". A 1080p screenshot is commonly ~0.5-2 MB of
+ * base64 and costs an Ollama vision model roughly 600-5,800 tokens depending on tiling, so:
+ *   base64 length / 200, floored at 1,024 and capped at 8,192 per image.
+ * At 500 KB that is ~2,560 tokens; at 2 MB it saturates the cap. Deliberately generous — a window a
+ * little larger than needed costs some KV cache, while one a little too small costs the answer.
+ */
+export const MIN_IMAGE_TOKENS = 1_024;
+export const MAX_IMAGE_TOKENS = 8_192;
+const IMAGE_BASE64_CHARS_PER_TOKEN = 200;
+
+export function imageTokenAllowance(base64Lengths: readonly number[]): number {
+  return base64Lengths.reduce((sum, len) => {
+    const scaled = Math.ceil(Math.max(0, len) / IMAGE_BASE64_CHARS_PER_TOKEN);
+    return sum + Math.min(MAX_IMAGE_TOKENS, Math.max(MIN_IMAGE_TOKENS, scaled));
+  }, 0);
+}
+
 export interface UtilityNumCtxInput {
   /** Every character the model will be shown: the system prompt plus every message. */
   readonly inputChars: number;
+  /**
+   * The base64 length of each image the call carries. Empty for a text-only dial. Sized by
+   * `imageTokenAllowance`, because an image the window does not account for truncates the prompt.
+   */
+  readonly imageBase64Lengths?: readonly number[];
   /** The output cap this same call will send. */
   readonly outputTokens: number;
   /**
@@ -175,7 +206,8 @@ export interface UtilityNumCtxInput {
  *     worse of the two outcomes. The caller is told by a warn at the call site.
  */
 export function utilityNumCtx(input: UtilityNumCtxInput): number {
-  const inputTokens = estimateTokensFromChars(Math.max(0, input.inputChars));
+  const inputTokens = estimateTokensFromChars(Math.max(0, input.inputChars))
+    + imageTokenAllowance(input.imageBase64Lengths ?? []);
   const needed = inputTokens + Math.max(0, input.outputTokens) + NUM_CTX_MARGIN_TOKENS;
   const blocks = Math.ceil(needed / NUM_CTX_BLOCK) * NUM_CTX_BLOCK;
   const atLeastFloor = Math.max(MIN_UTILITY_NUM_CTX, blocks);

@@ -33,6 +33,16 @@ import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
 // this is a leaf edge — no cycle back through the runtime.
 import { registerAbortable, releaseAbortable } from './shared-state.js';
 import { utilityDial, utilityNumCtx, utilityOutputCap, utilityNumCtxExceedsConfigured } from './utility-dial.js';
+
+/**
+ * ⚠ THE SMALLEST STORED "Max output" THIS ENGINE WILL BIND on an ordinary Ollama call (review M3).
+ * The field was inert on this path until t88, so its stored values were never exercised by use — a box
+ * carrying a tiny number from a dead knob must not start truncating its agent's turns on update. Below
+ * this the value is ignored with a warn that names it; a utility dial's own cap is unaffected, because
+ * that number comes from this engine rather than from a field nobody could see working.
+ * 256 tokens is a short paragraph: the smallest output that could be somebody's real answer.
+ */
+export const MIN_BINDABLE_MAX_OUTPUT_TOKENS = 256;
 import type { ToolCall } from '@dojo/shared';
 
 const logger = createLogger('model');
@@ -1106,6 +1116,10 @@ async function callOllamaModel(
       // Every character the model is shown: the system prompt plus every message part.
       inputChars: (systemPrompt?.length ?? 0)
         + nativeMessages.reduce((n, m) => n + (typeof m.content === 'string' ? m.content.length : 0), 0),
+      // ⚠ THE IMAGES COUNT TOO (review M1). A caption prompt is one sentence, so a vision dial sized on
+      // text alone lands on the floor while the screenshot beside it costs thousands of tokens — and a
+      // large one then overflows the window and truncates the prompt silently.
+      imageBase64Lengths: nativeMessages.flatMap((m) => (m.images ?? []).map((img) => img.length)),
       outputTokens: dialOutputCap ?? dial.maxOutputTokens,
       configuredNumCtx: effectiveNumCtx,
     }
@@ -1145,7 +1159,32 @@ async function callOllamaModel(
   if (typeof dialOutputCap === 'number') {
     options.num_predict = dialOutputCap;
   } else if (typeof modelInfo.maxOutputTokens === 'number' && modelInfo.maxOutputTokens > 0) {
-    options.num_predict = modelInfo.maxOutputTokens;
+    // ⚠ A FLOOR ON A KNOB THAT WAS INERT UNTIL NOW (review M3). This is the package's one behaviour
+    // change for existing users: the field has always been in Settings and was sent nowhere on this
+    // path, so whatever a box has stored was never exercised by use. A user who once typed `100` into a
+    // dead field would get silently truncated agent turns the day they updated — `done_reason: length`
+    // and no error anywhere. So an implausibly small stored value is NOT bound: the call falls back to
+    // the model's own default, exactly as it behaved before this package, and the stored number is
+    // named in a warn so it can be corrected rather than guessed at.
+    // The floor is the smallest number that could be a real answer: 256 tokens is a short paragraph.
+    if (modelInfo.maxOutputTokens >= MIN_BINDABLE_MAX_OUTPUT_TOKENS) {
+      options.num_predict = modelInfo.maxOutputTokens;
+      if (modelInfo.maxOutputTokens > modelInfo.contextWindow && modelInfo.contextWindow > 0) {
+        // Incoherent stored data rather than a decision: report it, do not silently "fix" it, because
+        // the honest repair is a person correcting the row.
+        logger.warn('this model\'s Max output exceeds its own context window — the stored row is incoherent', {
+          model: ollamaModelName,
+          maxOutputTokens: modelInfo.maxOutputTokens,
+          contextWindow: modelInfo.contextWindow,
+        }, agentId);
+      }
+    } else {
+      logger.warn('ignoring an implausibly small stored Max output — this call uses the model default', {
+        model: ollamaModelName,
+        storedMaxOutputTokens: modelInfo.maxOutputTokens,
+        floor: MIN_BINDABLE_MAX_OUTPUT_TOKENS,
+      }, agentId);
+    }
   }
   if (Object.keys(options).length > 0) {
     requestBody.options = options;
