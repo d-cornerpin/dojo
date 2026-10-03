@@ -197,6 +197,24 @@ describe('⚠ 3. AN OVERRUN TERMINATES THE WORKER — the only way to stop synch
   });
 });
 
+describe('⚠ THE WIRE, AS FAR AS IT GOES — and it says plainly how far that is', () => {
+  it('the pool is WARMED at boot, so no user\'s first search pays the spawn', async () => {
+    const boot = fs.readFileSync(new URL('../../index.ts', import.meta.url), 'utf-8');
+    expect(boot).toContain("from './memory/reader-pool.js'");
+    expect(boot).toContain('warmReaderPool()');
+  });
+
+  it('⚠ AND THE RETRIEVAL PATHS DO NOT USE IT YET — pinned so the gap cannot be mistaken for done', () => {
+    // Honest state, asserted rather than described in a report nobody re-reads: the pool is built and
+    // MEASURED, and `memory/retrieval.ts` still runs its searches on the serving thread (bounded, as of
+    // deliverable 2). Wiring it means making `memoryGrep` async and awaiting it at three call sites.
+    // ⚠ WHEN THAT LANDS, THIS CLAUSE FAILS — which is the point: it is a tripwire on a known gap, and
+    // whoever closes it must come here, flip this to `toContain`, and delete this comment.
+    const retrieval = fs.readFileSync(new URL('../retrieval.ts', import.meta.url), 'utf-8');
+    expect(retrieval).not.toContain('readerQuery');
+  });
+});
+
 describe('⚠ 4. THE CROSS-CHECK: a worker-side search does NOT trip the stall sentinel', () => {
   it('the sentinel sees no stall across an off-thread read it would have flagged on-thread', async () => {
     // Two instruments, one claim. The sentinel is what would have named this query in the log as the

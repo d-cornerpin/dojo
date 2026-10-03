@@ -21,6 +21,7 @@ import { recordBootAttempt, markMigrationsRan, confirmHealthy, readMarker, synth
 import { probeFsCaseInsensitive, setFsCaseInsensitive } from './agent/path-guards.js';
 import { homeDir } from './home.js';
 import { startStallSentinel } from './observability/stall-sentinel.js';
+import { warmReaderPool } from './memory/reader-pool.js';
 
 const logger = createLogger('main');
 const PORT = parseInt(process.env.DOJO_PORT ?? '3001', 10);
@@ -1104,6 +1105,12 @@ async function main(): Promise<void> {
   // subtraction, `unref`'d — see `observability/stall-sentinel.ts` for why drift is the only signal a
   // pinned process can report about itself.
   startStallSentinel();
+
+  // ⚠ WARM THE READER POOL AT BOOT (t89-1). The spawn costs the calling thread a few milliseconds once
+  // per process; paying it here means no user's first search pays it, and a pool that fails to spawn
+  // says so now rather than inside somebody's query. Best-effort by construction: a box without worker
+  // threads keeps working, with searches on the serving thread exactly as before.
+  void warmReaderPool();
   cleanupOldUploads(); // Run once on startup
 
   // Auto-start tunnel if enabled (delay to ensure HTTP server is fully ready)
