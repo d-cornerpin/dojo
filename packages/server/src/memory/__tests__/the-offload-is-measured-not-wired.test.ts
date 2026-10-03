@@ -204,14 +204,15 @@ describe('⚠ THE WIRE, AS FAR AS IT GOES — and it says plainly how far that i
     expect(boot).toContain('warmReaderPool()');
   });
 
-  it('⚠ AND THE RETRIEVAL PATHS DO NOT USE IT YET — pinned so the gap cannot be mistaken for done', () => {
-    // Honest state, asserted rather than described in a report nobody re-reads: the pool is built and
-    // MEASURED, and `memory/retrieval.ts` still runs its searches on the serving thread (bounded, as of
-    // deliverable 2). Wiring it means making `memoryGrep` async and awaiting it at three call sites.
-    // ⚠ WHEN THAT LANDS, THIS CLAUSE FAILS — which is the point: it is a tripwire on a known gap, and
-    // whoever closes it must come here, flip this to `toContain`, and delete this comment.
+  it('the retrieval paths USE the pool — both the FTS query and the LIKE chunks', () => {
+    // The former tripwire, flipped the day the wire landed (its design): retrieval routes through
+    // readerQuery when the pool is up, and the sync run is the FALLBACK — asserted as a count so a
+    // future path added without the wire reds this clause rather than riding the old thread.
     const retrieval = fs.readFileSync(new URL('../retrieval.ts', import.meta.url), 'utf-8');
-    expect(retrieval).not.toContain('readerQuery');
+    const wired = (retrieval.match(/readerQuery[<(]/g) ?? []).length;
+    expect(wired).toBeGreaterThanOrEqual(3);                       // fts + like:cost + like:page
+    const guarded = (retrieval.match(/readerPoolAvailable\(\)/g) ?? []).length;
+    expect(guarded).toBeGreaterThanOrEqual(2);                     // each wired path keeps its fallback
   });
 });
 

@@ -118,7 +118,7 @@ export const recallHandlers: ToolHandlerMap = {
         return { content: recallBudgetNotice(used), isError: false };
       }
     }
-    const content = memoryGrep(agentId, {
+    const content = await memoryGrep(agentId, {
       pattern: grepPattern,
       mode: args.mode as 'full_text' | 'regex' | undefined,
       scope: args.scope as 'messages' | 'summaries' | 'both' | undefined,

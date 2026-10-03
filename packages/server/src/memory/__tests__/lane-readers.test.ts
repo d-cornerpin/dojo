@@ -110,9 +110,9 @@ describe('agent recall covers the a2a lane (the 20k-invisible class)', () => {
     expect(out).toContain('third planter');
   });
 
-  it('history_search finds a2a content through FTS — the second table never had an index', () => {
+  it('history_search finds a2a content through FTS — the second table never had an index', async () => {
     seedMixedHistory();
-    const hits = memoryGrep(AGENT, { pattern: 'burnwood', scope: 'messages' });
+    const hits = await memoryGrep(AGENT, { pattern: 'burnwood', scope: 'messages' });
     expect(hits).toContain('burnwood');
     expect(hits).not.toContain('No results found');
   });

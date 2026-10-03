@@ -244,7 +244,7 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     const contextParts: string[] = [];
     for (const hint of contextHints) {
       try {
-        const grepResult = memoryGrep(parentId, {
+        const grepResult = await memoryGrep(parentId, {
           pattern: hint,
           mode: 'full_text',
           scope: 'both',

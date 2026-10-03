@@ -2,8 +2,9 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { breadcrumbFor, clearQueryDispatched, markQueryDispatched } from '../observability/stall-sentinel.js';
 import {
-  boundedRecencyScanSync, ftsCandidateRowidFloor, logBoundedFallback,
+  boundedRecencyScan, boundedRecencyScanSync, ftsCandidateRowidFloor, logBoundedFallback,
 } from './search-bounds.js';
+import { readerPoolAvailable, readerQuery } from './reader-pool.js';
 import { callModel } from '../agent/model.js';
 import { estimateTokens } from './budget.js';
 import { getSummary, getDescendantMessages, getSummariesByAgent } from './dag.js';
@@ -42,7 +43,7 @@ function isPureToolCallMessage(content: string): boolean {
 
 // ── history_search: FTS5 search on messages and summaries ──
 
-export function memoryGrep(
+export async function memoryGrep(
   agentId: string,
   params: {
     pattern: string;
@@ -52,7 +53,7 @@ export function memoryGrep(
     before?: string;
     limit?: number;
   },
-): string {
+): Promise<string> {
   const db = getDb();
   const {
     pattern,
@@ -66,7 +67,7 @@ export function memoryGrep(
   const results: string[] = [];
 
   if (scope === 'messages' || scope === 'both') {
-    const messageResults = searchMessages(db, agentId, pattern, mode, since, before, limit);
+    const messageResults = await searchMessages(db, agentId, pattern, mode, since, before, limit);
     if (messageResults.length > 0) {
       results.push(`=== RAW MESSAGES (${messageResults.length} results, exact conversation records) ===`);
       results.push(...messageResults);
@@ -89,7 +90,7 @@ export function memoryGrep(
   return results.join('\n');
 }
 
-function searchMessages(
+async function searchMessages(
   db: ReturnType<typeof getDb>,
   agentId: string,
   pattern: string,
@@ -97,7 +98,7 @@ function searchMessages(
   since?: string,
   before?: string,
   limit?: number,
-): string[] {
+): Promise<string[]> {
   // ⚠ THE BREADCRUMB (t89 deliverable 4). A synchronous B-tree walk cannot be interrupted from
   // JavaScript, so when this query pins the loop NOTHING else in the process can name it — not the
   // health probe, not the stop button, not the log line that eventually prints 20 seconds late. The
@@ -105,13 +106,13 @@ function searchMessages(
   // reaches logs that get pasted into bug reports.
   const crumb = markQueryDispatched(breadcrumbFor('history_search', mode === 'full_text' ? 'fts' : 'like'));
   try {
-    return searchMessagesInner(db, agentId, pattern, mode, since, before, limit);
+    return await searchMessagesInner(db, agentId, pattern, mode, since, before, limit);
   } finally {
     clearQueryDispatched(crumb);
   }
 }
 
-function searchMessagesInner(
+async function searchMessagesInner(
   db: ReturnType<typeof getDb>,
   agentId: string,
   pattern: string,
@@ -119,7 +120,7 @@ function searchMessagesInner(
   since?: string,
   before?: string,
   limit?: number,
-): string[] {
+): Promise<string[]> {
   const results: string[] = [];
 
   if (mode === 'full_text') {
@@ -179,13 +180,13 @@ function searchMessagesInner(
       // 3× the requested limit so post-filter still hits limit when
       // possible.
       const fetchLimit = (limit ?? 20) * 3;
-      const rawRows = db.prepare(sql).all(pattern, ...params, fetchLimit) as Array<{
-        id: string;
-        role: string;
-        content: string;
-        created_at: string;
-        snippet: string;
-      }>;
+      // ⚠ THE WIRE (t89 deliverable 1). When the reader pool is up, this — the one query that
+      // measured 43 seconds of deafness on a real box — runs on the worker's own connection and
+      // the serving thread stays serviceable; the sync run is the fallback, not the path.
+      type FtsRow = { id: string; role: string; content: string; created_at: string; snippet: string };
+      const rawRows = readerPoolAvailable()
+        ? await readerQuery<FtsRow>('history_search:fts', sql, [pattern, ...params, fetchLimit])
+        : db.prepare(sql).all(pattern, ...params, fetchLimit) as FtsRow[];
       const rows = rawRows.filter((r) => !isPureToolCallMessage(r.content)).slice(0, limit ?? 20);
 
       // Phase 3.5 (2026-05-04), hard cap per-match snippet at 300 chars
@@ -214,24 +215,24 @@ function searchMessagesInner(
         pattern,
         error: err instanceof Error ? err.message : String(err),
       });
-      return searchMessagesLike(db, agentId, pattern, since, before, limit);
+      return await searchMessagesLike(db, agentId, pattern, since, before, limit);
     }
   } else {
     // Regex mode: use LIKE as SQLite doesn't have native REGEXP without extension
-    return searchMessagesLike(db, agentId, pattern, since, before, limit);
+    return await searchMessagesLike(db, agentId, pattern, since, before, limit);
   }
 
   return results;
 }
 
-function searchMessagesLike(
+async function searchMessagesLike(
   db: ReturnType<typeof getDb>,
   agentId: string,
   pattern: string,
   since?: string,
   before?: string,
   limit?: number,
-): string[] {
+): Promise<string[]> {
   const conditions = ['agent_id = ?', 'content LIKE ?'];
   const params: unknown[] = [agentId, `%${pattern}%`];
 
@@ -270,20 +271,36 @@ function searchMessagesLike(
     SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(content)), 0) AS bytes FROM messages
     WHERE agent_id = ? AND seq <= ? AND seq > ?
   `);
-  const scan = boundedRecencyScanSync<{ id: string; role: string; content: string; created_at: string }>({
+  type LikeRow = { id: string; role: string; content: string; created_at: string; rowid: number };
+  type CostRow = { n: number; bytes: number };
+  const scanOpts = {
     limit: fetchLimit,
     startRowidCeiling: maxSeq,
-    fetchChunk: (ceiling, chunkRows) => {
-      const floor = Math.max(0, ceiling - chunkRows);
-      // What the chunk COST is what the chunk EXAMINED, not what it matched — the whole point of the
-      // budget. One cheap indexed count per chunk buys an honest number.
-      const cost = countStmt.get(agentId, ceiling, floor) as { n: number; bytes: number };
-      const found = chunkStmt.all(...params, ceiling, floor, chunkRows) as Array<{
-        id: string; role: string; content: string; created_at: string; rowid: number;
-      }>;
-      return { rows: found, rowsExamined: cost.n, bytesRead: cost.bytes };
-    },
-  });
+  };
+  // ⚠ THE WIRE (t89 deliverable 1): pool up → each chunk is two worker-side reads (the honest count,
+  // then the page) and the serving thread breathes between chunks; pool down → the same arithmetic
+  // on-thread, bounded exactly as before. One scan loop owns the budget either way.
+  const scan = readerPoolAvailable()
+    ? await boundedRecencyScan<Omit<LikeRow, 'rowid'>>({
+      ...scanOpts,
+      fetchChunk: async (ceiling, chunkRows) => {
+        const floor = Math.max(0, ceiling - chunkRows);
+        const cost = (await readerQuery<CostRow>('history_search:like:cost', countStmt.source ?? '', [agentId, ceiling, floor]))[0] ?? { n: 0, bytes: 0 };
+        const found = await readerQuery<LikeRow>('history_search:like:page', chunkStmt.source ?? '', [...params, ceiling, floor, chunkRows]);
+        return { rows: found, rowsExamined: cost.n, bytesRead: cost.bytes };
+      },
+    })
+    : boundedRecencyScanSync<Omit<LikeRow, 'rowid'>>({
+      ...scanOpts,
+      fetchChunk: (ceiling, chunkRows) => {
+        const floor = Math.max(0, ceiling - chunkRows);
+        // What the chunk COST is what the chunk EXAMINED, not what it matched — the whole point of the
+        // budget. One cheap indexed count per chunk buys an honest number.
+        const cost = countStmt.get(agentId, ceiling, floor) as CostRow;
+        const found = chunkStmt.all(...params, ceiling, floor, chunkRows) as LikeRow[];
+        return { rows: found, rowsExamined: cost.n, bytesRead: cost.bytes };
+      },
+    });
   if (scan.report.truncated || scan.report.chunks > 1) {
     logBoundedFallback('history_search:like', 'leading-wildcard LIKE cannot use an index', scan.report, agentId);
   }
@@ -672,7 +689,7 @@ export async function memorySearch(
   }
 
   // Fallback to FTS-only search
-  return memoryGrep(agentId, {
+  return await memoryGrep(agentId, {
     pattern: query,
     mode: 'full_text',
     scope: 'both',

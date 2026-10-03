@@ -106,17 +106,17 @@ function seedMixedHistory(): { owner: string; peerIn: string; ownOut: string } {
 // this test was written. A search index whose self-heal cannot fire is a dead guard.
 
 describe('the search index runs on one keyspace', () => {
-  it('history_search reaches every lane, not just the owner conversation', () => {
+  it('history_search reaches every lane, not just the owner conversation', async () => {
     seedMixedHistory();
-    const a2aHits = memoryGrep(AGENT, { pattern: 'harbourmaster', scope: 'messages' });
+    const a2aHits = await memoryGrep(AGENT, { pattern: 'harbourmaster', scope: 'messages' });
     expect(a2aHits).toContain('harbourmaster');
     expect(a2aHits).not.toContain('No results found');
 
-    const ownerHits = memoryGrep(AGENT, { pattern: 'marmalade', scope: 'messages' });
+    const ownerHits = await memoryGrep(AGENT, { pattern: 'marmalade', scope: 'messages' });
     expect(ownerHits).toContain('marmalade');
   });
 
-  it('a row missing from the index is DETECTED and REPAIRED on the next boot', () => {
+  it('a row missing from the index is DETECTED and REPAIRED on the next boot', async () => {
     const seeded = seedMixedHistory();
     const target = one<{ rowid: number; content: string }>(
       'SELECT seq AS rowid, content FROM messages WHERE id = ?', seeded.peerIn,
@@ -129,14 +129,14 @@ describe('the search index runs on one keyspace', () => {
       .run(target.rowid, target.content);
     // NB: memoryGrep's not-found message quotes the pattern back, so `toContain('harbourmaster')`
     // is true for a MISS as well as a hit. The assertion has to be the found-marker.
-    expect(memoryGrep(AGENT, { pattern: 'harbourmaster', scope: 'messages' }))
+    expect(await memoryGrep(AGENT, { pattern: 'harbourmaster', scope: 'messages' }))
       .toContain('No results found');
 
     // The boot path. Every migration is already recorded, so this is exactly the
     // no-pending-work boot that the FTS repair region exists to serve.
     runMigrations();
 
-    const repaired = memoryGrep(AGENT, { pattern: 'harbourmaster', scope: 'messages' });
+    const repaired = await memoryGrep(AGENT, { pattern: 'harbourmaster', scope: 'messages' });
     expect(repaired).not.toContain('No results found');
     expect(repaired).toContain('RAW MESSAGES');
     expect(repaired).toContain(seeded.peerIn.slice(0, 8));

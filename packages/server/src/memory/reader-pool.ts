@@ -147,10 +147,20 @@ function failAllPending(err: Error): void {
 
 /** True when the offload is available. A caller that gets `false` runs its query itself, as before. */
 export function readerPoolAvailable(): boolean {
-  if (spawnFailed) return false;
+  if (spawnFailed || closed) return false;
+  // A worker reads the database by PATH on its own connection, so a path no second connection can
+  // reach — ':memory:' (every db-mocking test, and any future ephemeral mode) — has no pool, honestly:
+  // claiming availability there answers every query from a different, empty universe.
+  if (getDbPath() === ':memory:') return false;
   if (!worker) worker = spawn();
   return worker !== null;
 }
+
+/** A whole-pool terminate is a SHUTDOWN, not a hiccup: it latches closed until warmReaderPool —
+ *  otherwise the next search after shutdown would quietly respawn the thread the shutdown killed.
+ *  (The DEADLINE kill inside readerQuery deliberately does not latch: one overrun worker is
+ *  replaced on the next query; that self-healing is measured and wanted.) */
+let closed = false;
 
 /**
  * Run one read on the worker. Rejects on an aborted signal (the result is discarded), on the deadline
@@ -221,6 +231,7 @@ export function readerPendingCount(): number {
 }
 
 export async function terminateReaderPool(): Promise<void> {
+  closed = true;
   const w = worker;
   worker = null;
   failAllPending(new Error('reader pool terminated'));
@@ -234,6 +245,7 @@ export async function terminateReaderPool(): Promise<void> {
  * than inside somebody's search.
  */
 export async function warmReaderPool(): Promise<boolean> {
+  closed = false;
   if (!readerPoolAvailable()) return false;
   try {
     await readerQuery('warm', 'SELECT 1 AS ok', [], { deadlineMs: 5_000 });
@@ -246,6 +258,7 @@ export async function warmReaderPool(): Promise<boolean> {
 /** Test seam: forget a previous spawn failure so a clause can exercise the real path. */
 export function resetReaderPoolForTest(): void {
   spawnFailed = false;
+  closed = false;
   worker = null;
   pending = new Map();
 }

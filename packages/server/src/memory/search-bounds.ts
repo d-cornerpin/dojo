@@ -157,7 +157,10 @@ export function boundedRecencyScanSync<T>(opts: {
 export async function boundedRecencyScan<T>(opts: {
   readonly limit: number;
   readonly startRowidCeiling: number;
-  readonly fetchChunk: (rowidCeiling: number, chunkRows: number) => BoundedScanChunk<T>;
+  // Sync OR async: the worker-pool caller's chunk is an awaited round-trip (t89 wire); a sync
+  // caller's chunk is a direct statement run. One loop serves both — the await below costs a
+  // microtask on a sync return, not a turn.
+  readonly fetchChunk: (rowidCeiling: number, chunkRows: number) => BoundedScanChunk<T> | Promise<BoundedScanChunk<T>>;
   readonly chunkRows?: number;
   readonly maxRows?: number;
   readonly maxBytes?: number;
@@ -180,7 +183,7 @@ export async function boundedRecencyScan<T>(opts: {
     if (rowsScanned >= maxRows) { stoppedBecause = 'row_budget'; break; }
     if (bytesScanned >= maxBytes) { stoppedBecause = 'byte_budget'; break; }
 
-    const chunk = opts.fetchChunk(ceiling, chunkRows);
+    const chunk = await opts.fetchChunk(ceiling, chunkRows);
     chunks += 1;
     rowsScanned += chunk.rowsExamined;
     bytesScanned += chunk.bytesRead;
