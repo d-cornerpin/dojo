@@ -204,15 +204,76 @@ describe('⚠ THE WIRE, AS FAR AS IT GOES — and it says plainly how far that i
     expect(boot).toContain('warmReaderPool()');
   });
 
-  it('the retrieval paths USE the pool — both the FTS query and the LIKE chunks', () => {
+  it('the retrieval paths USE the pool — EVERY search path, counted in both directions', () => {
     // The former tripwire, flipped the day the wire landed (its design): retrieval routes through
-    // readerQuery when the pool is up, and the sync run is the FALLBACK — asserted as a count so a
-    // future path added without the wire reds this clause rather than riding the old thread.
+    // readerQuery when the pool is up, and the sync run is the FALLBACK.
+    //
+    // ⚠ COUNTED EXACTLY, NOT `toBeGreaterThanOrEqual` — the campaign rule this package is held to is
+    // that a wire clause must count in BOTH directions. A `>=` clause stays green when a FIFTH search
+    // path is added without the fork, which is precisely how a policy helper ends up fully covered
+    // while the line joining it to a caller is not. Adding a path reds this; deleting a wire reds it
+    // too; and the reader has to come here and say which it was.
     const retrieval = fs.readFileSync(new URL('../retrieval.ts', import.meta.url), 'utf-8');
-    const wired = (retrieval.match(/readerQuery[<(]/g) ?? []).length;
-    expect(wired).toBeGreaterThanOrEqual(3);                       // fts + like:cost + like:page
+
+    // Two SEARCHABLE SURFACES (messages, summaries) × two MODES (fts, bounded LIKE) = four paths.
+    const breadcrumbs = new Set((retrieval.match(/breadcrumbFor\('([a-z_]+)'/g) ?? []));
+    expect(breadcrumbs.size, 'one breadcrumb per searchable surface').toBe(2);
+
+    // One fork per path: each decides pool-or-sync for itself and keeps its own fallback.
     const guarded = (retrieval.match(/readerPoolAvailable\(\)/g) ?? []).length;
-    expect(guarded).toBeGreaterThanOrEqual(2);                     // each wired path keeps its fallback
+    expect(guarded, 'a fork per search path — add a path, wire it or red this').toBe(4);
+
+    // The LIKE paths cost two worker reads each (the honest cost, then the page); the FTS paths one.
+    const wired = (retrieval.match(/readerQuery[<(]/g) ?? []).length;
+    expect(wired, '2 fts + 2×(cost+page)').toBe(6);
+
+    // ⚠ AND EVERY WIRED READ IS LABELLED DISTINCTLY, because the pool attributes results by id and a
+    // duplicated label is the mis-attribution this file's concurrency clause exists to catch.
+    const labels = (retrieval.match(/readerQuery<[A-Za-z]+>\('([a-z_:]+)'/g) ?? [])
+      .map((m) => m.slice(m.indexOf("('") + 2, -1));
+    expect(labels.length, 'every wired read carries a label').toBe(wired);
+    expect(new Set(labels).size, 'and no two share one').toBe(wired);
+    for (const surface of ['history_search', 'summary_search']) {
+      expect(labels, `${surface} wires its FTS read`).toContain(`${surface}:fts`);
+      expect(labels, `${surface} wires its LIKE cost read`).toContain(`${surface}:like:cost`);
+      expect(labels, `${surface} wires its LIKE page read`).toContain(`${surface}:like:page`);
+    }
+  });
+
+  it('the summaries path is BOUNDED, not merely offloaded — the two are different fixes', () => {
+    // t89 item 2. Offloading an unbounded walk moves the freeze to a worker; the bound is what makes
+    // it finite. Both halves are asserted on the source because the arithmetic lives in
+    // `search-bounds.ts` and the caller owns only the SQL — so what is checkable here is that the
+    // caller ASKED for the bound on both of its modes.
+    const retrieval = fs.readFileSync(new URL('../retrieval.ts', import.meta.url), 'utf-8');
+    // ⚠ READ WITH THE COMMENTS STRIPPED, and that is not fastidiousness — my first cut of this clause
+    // asserted `toContain('ftsCandidateRowidFloor')` over the raw source and a mutant that DELETED
+    // THE CALL still passed, because the paragraph above the call names the function. A clause that
+    // matches its own comment tests the comment. Strip, then assert on the CALL.
+    const code = retrieval.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    const summaries = code.slice(code.indexOf('async function searchSummariesInner'));
+    expect(summaries, 'the FTS candidate set is floored to a recency window')
+      .toMatch(/candidateFloor\s*=\s*ftsCandidateRowidFloor\(/);
+    expect(summaries, 'and the floor is actually APPLIED to the query, not merely computed')
+      .toMatch(/s\.rowid\s*>\s*\?/);
+    expect(summaries, 'the LIKE walk runs in budgeted chunks').toMatch(/boundedRecencyScan(Sync)?</);
+    expect(summaries, 'and a truncated or multi-chunk walk says so out loud')
+      .toContain("logBoundedFallback('summary_search:like'");
+    // The scans are keyed on the ALIASED rowid, never a bare one — T10's reader guard, and the shape
+    // that reads `undefined` without throwing if it comes back.
+    expect(summaries).toContain('rowid AS rid');
+    // ⚠ PROJECTIONS ONLY. A bare `rowid` in a WHERE or ORDER BY is correct and necessary — the chunk
+    // ceiling and the cost count both need it. It is projecting one unaliased that reads `undefined`
+    // without throwing, so this reads the SELECT…FROM span and nothing else. (My first cut asserted
+    // over the whole function and caught the cost query's legitimate `WHERE rowid <= ?`.)
+    const projections = [...summaries.matchAll(/SELECT\s([\s\S]*?)\sFROM\s+summaries/g)].map((m) => m[1]);
+    expect(projections.length, 'both the page and the cost query are read').toBeGreaterThanOrEqual(2);
+    for (const proj of projections) {
+      // The dangerous shape is a BARE STANDALONE projection item — `SELECT id, rowid FROM …` — which
+      // SQLite may name something else and which then reads `undefined`. `MAX(rowid) AS r` and
+      // `rowid AS rid` are both aliased at the expression level and are the correct forms.
+      expect(/(^|,)\s*rowid\s*(,|$)/.test(proj), `bare rowid projected in: ${proj.trim()}`).toBe(false);
+    }
   });
 });
 

@@ -75,7 +75,7 @@ export async function memoryGrep(
   }
 
   if (scope === 'summaries' || scope === 'both') {
-    const summaryResults = searchSummaries(db, agentId, pattern, mode, limit);
+    const summaryResults = await searchSummaries(db, agentId, pattern, mode, limit);
     if (summaryResults.length > 0) {
       results.push(`=== COMPRESSED SUMMARIES (${summaryResults.length} results, condensed history, details may be lost) ===`);
       results.push(...summaryResults);
@@ -317,42 +317,70 @@ async function searchMessagesLike(
   });
 }
 
-function searchSummaries(
+async function searchSummaries(
   db: ReturnType<typeof getDb>,
   agentId: string,
   pattern: string,
   mode: string,
   limit?: number,
-): string[] {
+): Promise<string[]> {
   const crumb = markQueryDispatched(breadcrumbFor('summary_search', mode === 'full_text' ? 'fts' : 'like'));
   try {
-    return searchSummariesInner(db, agentId, pattern, mode, limit);
+    return await searchSummariesInner(db, agentId, pattern, mode, limit);
   } finally {
     clearQueryDispatched(crumb);
   }
 }
 
-function searchSummariesInner(
+async function searchSummariesInner(
   db: ReturnType<typeof getDb>,
   agentId: string,
   pattern: string,
   mode: string,
   limit?: number,
-): string[] {
+): Promise<string[]> {
   const results: string[] = [];
 
   if (mode === 'full_text') {
     try {
-      const rows = db.prepare(`
+      // ⚠ THE SAME BOUND THE MESSAGES PATH TAKES (t89 item 2), and summaries need it for a reason of
+      // their own: `ORDER BY rank` scores EVERY match before it knows which twenty win, and a
+      // summary row is a condensed BODY — the join pulls each matching one to rank it. A long-lived
+      // agent's summary table is smaller than its messages table but its rows are far larger, so the
+      // bytes read per ranked candidate are worse, not better. `ftsCandidateRowidFloor` makes
+      // recency the bound here exactly as it does there.
+      // ⚠ `rowid AS rid`, aliased on purpose: `summaries.id` is a TEXT primary key, so the insertion
+      // order lives in the implicit rowid, and PHASE-1 T10's reader guard refuses a BARE `rowid`
+      // projection — the shape where SQLite names the column something else, the read comes back
+      // `undefined`, and nothing throws. One name, chosen here.
+      const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM summaries WHERE agent_id = ?')
+        .get(agentId) as { r: number | null } | undefined)?.r ?? 0;
+      const candidateFloor = ftsCandidateRowidFloor(maxRid);
+      const floorClause = candidateFloor > 0 ? 'AND s.rowid > ?' : '';
+      const sql = `
         SELECT s.id, s.depth, s.kind, s.content, s.earliest_at, s.latest_at,
                snippet(summaries_fts, 0, '>>>', '<<<', '...', 64) as snippet
         FROM summaries_fts
         INNER JOIN summaries s ON summaries_fts.rowid = s.rowid
         WHERE summaries_fts MATCH ?
           AND s.agent_id = ?
+          ${floorClause}
         ORDER BY rank
         LIMIT ?
-      `).all(pattern, agentId, limit ?? 20) as Array<{
+      `;
+      const sqlParams: unknown[] = candidateFloor > 0
+        ? [pattern, agentId, candidateFloor, limit ?? 20]
+        : [pattern, agentId, limit ?? 20];
+      // ⚠ THE WIRE (t89 item 2): pool up → the ranked read runs on a worker's own connection and the
+      // serving thread stays serviceable; pool down → the same query on-thread. The fork is the
+      // messages path's, deliberately, so there is one shape to understand and one to review.
+      type SumFtsRow = {
+        id: string; depth: number; kind: string; content: string;
+        earliest_at: string; latest_at: string; snippet: string;
+      };
+      const rows = (readerPoolAvailable()
+        ? await readerQuery<SumFtsRow>('summary_search:fts', sql, sqlParams)
+        : db.prepare(sql).all(...sqlParams)) as Array<{
         id: string;
         depth: number;
         kind: string;
@@ -370,34 +398,86 @@ function searchSummariesInner(
         pattern,
         error: err instanceof Error ? err.message : String(err),
       });
-      return searchSummariesLike(db, agentId, pattern, limit);
+      return await searchSummariesLike(db, agentId, pattern, limit);
     }
   } else {
-    return searchSummariesLike(db, agentId, pattern, limit);
+    return await searchSummariesLike(db, agentId, pattern, limit);
   }
 
   return results;
 }
 
-function searchSummariesLike(
+async function searchSummariesLike(
   db: ReturnType<typeof getDb>,
   agentId: string,
   pattern: string,
   limit?: number,
-): string[] {
-  const rows = db.prepare(`
-    SELECT id, depth, kind, content, earliest_at, latest_at FROM summaries
-    WHERE agent_id = ? AND content LIKE ?
-    ORDER BY earliest_at DESC
+): Promise<string[]> {
+  // ⚠ THE SAME UNBOUNDED SHAPE THE MESSAGES PATH HAD (t89 item 2). A leading-wildcard LIKE cannot use
+  // an index, so this walked the agent's summaries testing each one until the LIMIT filled — and a
+  // term that appears nowhere cost EVERY summary row, each one a condensed body read off disk, in one
+  // synchronous call. The LIMIT bounded the answer and said nothing about the work, which is the exact
+  // sentence the messages path earned.
+  //
+  // ⚠ AND THE WALK ORDER CHANGES, stated because it is a real behaviour change and not a refactor:
+  // this ordered by `earliest_at DESC` (the period a summary COVERS) and now walks `rowid DESC` (the
+  // order summaries were WRITTEN). The bounded scan needs a monotonic key to chunk on and `earliest_at`
+  // is not one — two summaries can share it, and it is not the insertion order the chunk ceiling walks.
+  // For a search result the two are near-identical and the new one is arguably truer: the most recently
+  // BUILT summary is the one whose wording a person just read. A clause pins the recency direction.
+  //
+  // ⚠ `rowid AS rid`, aliased: `summaries.id` is a TEXT primary key so insertion order lives in the
+  // implicit rowid, and T10's reader guard refuses a bare `rowid` projection — the shape that reads
+  // `undefined` without throwing.
+  const likeParams: unknown[] = [agentId, `%${pattern}%`];
+  const fetchLimit = (limit ?? 20) * 3;
+  const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM summaries WHERE agent_id = ?')
+    .get(agentId) as { r: number | null } | undefined)?.r ?? 0;
+  const chunkSql = `
+    SELECT id, depth, kind, content, earliest_at, latest_at, rowid AS rid FROM summaries
+    WHERE agent_id = ? AND content LIKE ? AND rowid <= ? AND rowid > ?
+    ORDER BY rowid DESC
     LIMIT ?
-  `).all(agentId, `%${pattern}%`, limit ?? 20) as Array<{
-    id: string;
-    depth: number;
-    kind: string;
-    content: string;
-    earliest_at: string;
-    latest_at: string;
-  }>;
+  `;
+  const costSql = `
+    SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(content)), 0) AS bytes FROM summaries
+    WHERE agent_id = ? AND rowid <= ? AND rowid > ?
+  `;
+  const chunkStmt = db.prepare(chunkSql);
+  const costStmt = db.prepare(costSql);
+  type SumLikeRow = {
+    id: string; depth: number; kind: string; content: string;
+    earliest_at: string; latest_at: string; rid: number;
+  };
+  type CostRow = { n: number; bytes: number };
+  const scanOpts = { limit: fetchLimit, startRowidCeiling: maxRid };
+  // ⚠ THE WIRE (t89 item 2), the messages path's fork verbatim: pool up → each chunk is two
+  // worker-side reads (the honest cost, then the page) and the serving thread breathes between
+  // chunks; pool down → the same arithmetic on-thread, bounded identically. One scan loop owns the
+  // budget either way, which is what makes the fallback a fallback rather than a second policy.
+  const scan = readerPoolAvailable()
+    ? await boundedRecencyScan<Omit<SumLikeRow, 'rid'>>({
+      ...scanOpts,
+      fetchChunk: async (ceiling, chunkRows) => {
+        const floor = Math.max(0, ceiling - chunkRows);
+        const cost = (await readerQuery<CostRow>('summary_search:like:cost', costSql, [agentId, ceiling, floor]))[0] ?? { n: 0, bytes: 0 };
+        const found = await readerQuery<SumLikeRow>('summary_search:like:page', chunkSql, [...likeParams, ceiling, floor, chunkRows]);
+        return { rows: found, rowsExamined: cost.n, bytesRead: cost.bytes };
+      },
+    })
+    : boundedRecencyScanSync<Omit<SumLikeRow, 'rid'>>({
+      ...scanOpts,
+      fetchChunk: (ceiling, chunkRows) => {
+        const floor = Math.max(0, ceiling - chunkRows);
+        const cost = costStmt.get(agentId, ceiling, floor) as CostRow;
+        const found = chunkStmt.all(...likeParams, ceiling, floor, chunkRows) as SumLikeRow[];
+        return { rows: found, rowsExamined: cost.n, bytesRead: cost.bytes };
+      },
+    });
+  if (scan.report.truncated || scan.report.chunks > 1) {
+    logBoundedFallback('summary_search:like', 'leading-wildcard LIKE cannot use an index', scan.report, agentId);
+  }
+  const rows = scan.rows.slice(0, limit ?? 20);
 
   return rows.map(row => {
     const preview = row.content.length > 200 ? row.content.slice(0, 200) + '...' : row.content;
