@@ -93,9 +93,24 @@ export const isTerminal = (s: WorkState): boolean => TERMINAL_STATES.includes(s)
 // they still have exactly the one `open` reopen edge, so the reopen-requires-authority gate
 // below keeps its whole subject. Asserted with negative controls in
 // `__tests__/transition.test.ts`.
+//
+// ⚠ AND THE SAME OMISSION IN THE OTHER DIRECTION, FOUND ON A USER'S BOX (t89, capture-4). `on_deck` was
+// the ONLY non-terminal state with no `done` edge: `open`, `claimed`, `paused` and `blocked` all have
+// one. So a QUEUED task could never be completed — and the PM's own override-approval path is exactly
+// the caller that needs to complete one. Measured consequence on that box: three validations stuck
+// PERMANENTLY in pending, each re-driving the PM review every minute forever, every attempt refused with
+// `on_deck -> done is not a legal move`, and the caller reporting "task was deleted before override
+// approval could land" because a refused transition and a vanished row look the same to it.
+//
+// COMPLETING A QUEUED TASK IS A REAL REQUIREMENT, not a loophole: the capture's own case is the PM
+// verifying from the audit trail that work genuinely happened and the agent simply forgot to close the
+// tracker (the PM's prompt names that case explicitly), and a scheduled task whose work was done out of
+// band is the same shape. The authority gate is untouched — `done` still requires a delivery receipt or
+// an authoritative actor — so this adds an edge, not a bypass. The rule above now reads in both
+// directions: a non-terminal state may return to the queue, AND the queue may reach any outcome.
 const LEGAL: Record<WorkState, readonly WorkState[]> = {
   open:      ['claimed', 'on_deck', 'paused', 'blocked', 'done', 'failed', 'abandoned'],
-  on_deck:   ['open', 'claimed', 'paused', 'blocked', 'failed', 'abandoned'],
+  on_deck:   ['open', 'claimed', 'paused', 'blocked', 'done', 'failed', 'abandoned'],
   claimed:   ['open', 'on_deck', 'paused', 'blocked', 'done', 'failed', 'abandoned'],
   paused:    ['open', 'claimed', 'on_deck', 'blocked', 'done', 'failed', 'abandoned'],
   blocked:   ['open', 'claimed', 'on_deck', 'paused', 'done', 'failed', 'abandoned'],
