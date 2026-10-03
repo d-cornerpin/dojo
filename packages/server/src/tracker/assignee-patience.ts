@@ -82,6 +82,8 @@ export const PATIENCE_ENTRY = {
   revoked: 'patience_revoked',
   /** The terminal rung's ASK: assignee silent, owner must choose wait / reassign / cancel. */
   decisionRequested: 'assignee_silent_decision_requested',
+  /** And what the owner said. Filed even for `wait`, so silence and consent stay distinguishable. */
+  decisionAnswered: 'assignee_silent_decision_answered',
   /** Every reassignment, whoever made it, with the prior assignee's last known state. */
   reassigned: 'reassignment',
 } as const;
@@ -277,6 +279,29 @@ export function requestAssigneeDecision(ask: DecisionAsk): boolean {
     patienceFloorSeconds: ask.floor.floorSeconds, patienceBasis: ask.floor.basis,
   });
   return true;
+}
+
+/**
+ * THE ANSWER, RECORDED BESIDE THE ASK (t90 D1).
+ *
+ * `requestAssigneeDecision` files the question; this files what the owner said, so the pair reads
+ * as one exchange in the task's own trail. A `wait` writes ONLY this — which is the point: the
+ * option to change nothing has to leave a trace, or "the owner was asked and chose to wait" is
+ * indistinguishable from "nobody ever answered" the next time the ladder climbs.
+ */
+export function recordAssigneeDecision(p: {
+  taskId: string; decision: 'wait' | 'reassign' | 'cancel'; actor: string; reason: string;
+  priorAssignee: string | null;
+}): void {
+  appendWorkEvent(p.taskId, AUDIT_KIND, p.actor, {
+    entry_kind: PATIENCE_ENTRY.decisionAnswered,
+    reason: p.reason,
+    action_taken: `owner chose ${p.decision}`,
+    note: `assignee at the time of the ask: ${p.priorAssignee ?? 'none'}`,
+  });
+  logger.info('owner answered the assignee decision', {
+    taskId: p.taskId, decision: p.decision, priorAssignee: p.priorAssignee,
+  });
 }
 
 /**
