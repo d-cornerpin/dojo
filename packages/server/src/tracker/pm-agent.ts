@@ -26,7 +26,7 @@ import { sendAgentMessage } from '../agent/agent-bus.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { listTasks, getTask } from './schema.js';
 import { currentRung, lastPoke as lastPokeOf, recordPoke, recordRemediation } from '../work/poke-ladder.js';
-import { patienceFloorFor, flooredThresholds, extendedPatience, requestAssigneeDecision, type PokeThresholds } from './assignee-patience.js';
+import { patienceFloorFor, flooredThresholds, type PokeThresholds } from './assignee-patience.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { getRecentObservations, getRecentTransitions, formatEntryLine, listTaskLog, writeTaskLog } from './task-log.js';
 import {
@@ -107,13 +107,12 @@ const PM_PERMISSIONS_JSON = JSON.stringify({
 
 // ── PM tool allow-list (single source of truth) ──
 //
-// RC-16: the PM is an OVERSEER, not a worker. It validates, overrides, retasks,
-// and reassigns; it never edits task CONTENT or flips a worker's status directly.
+// RC-16: the PM is an OVERSEER, not a worker. It validates, overrides and retasks;
+// it never edits task CONTENT, flips a worker's status, or REASSIGNS (owner ruling 2026-10-02).
 // The worker verbs (work_update(action="status"), work_update(action="complete_step"),
 // work_update(action="edit")) are intentionally ABSENT so a stale copy sitting in the PM's
 // long-lived context can't silently rewrite a task's description or re-close
-// already-closed work (P-1 / F-15). work_validate(action="retask") + work_update(action="reassign") are
-// the PM's corrective verbs; the read-only / utility tools below are what the PM
+// already-closed work (P-1 / F-15). work_validate(action="retask") is the PM's corrective verb; the read-only / utility tools below are what the PM
 // legitimately needs to do oversight (list, inspect, message, read artifacts for
 // close-out verification, search memory/history).
 //
@@ -147,7 +146,13 @@ export const PM_ALLOWED_WORK_OPS: readonly WorkOp[] = [
   'work_note',                                   // leave a note on a task
   'work_schedule:pause', 'work_schedule:resume',
   'work_validate:validate', 'work_validate:retask',
-  'work_update:reassign',
+  // ⛔ `work_update:reassign` WAS HERE. OWNER RULING 2026-10-02: "Their job is not to reassign a
+  // task because they don't feel it is getting worked on fast enough. At no point during the
+  // construction of the dojo did I ever ask for the PM agent to simply reassign tasks to another
+  // agent." The PM has no reassignment concept at all — not autonomous, not by asking. The verb
+  // itself survives for the PRIMARY (it is not in `PM_ONLY_WORK_OPS`), which is how a human's
+  // "move this to someone else" still reaches the board; what is gone is the overseer's standing
+  // authority to decide it. `the-pm-waits-for-the-model-it-assigned.test.ts` §2 censuses this.
   'work_validate:override',
   'work_close_request:override',
   'work_validate:apply_user_verdict',
@@ -664,7 +669,7 @@ export async function escalateCloseoutMissToPM(ctx: {
     `Your verbs:\n` +
     `  (a) work_validate(action="retask", task_id, directive), push the agent back at it with concrete corrective guidance ` +
     `(e.g. "you wrote the brief in chat but the task spec is email; call send_email with this same content to <recipient>"). USE THIS WHEN the agent did the wrong thing and you can name what they should do instead.\n` +
-    `  (b) leave it in_progress or dispose of it, the engine did NOT pause it. If the assignee is legitimately still mid-flight, do nothing (it stays in_progress and continues). If the work genuinely can't proceed without user input you can name, or the task is no longer relevant, work_update(action="close_project") on the parent project or work_update(action="reassign"). USE THIS WHEN the task is stuck or dead, not done.\n` +
+    `  (b) leave it in_progress or dispose of it, the engine did NOT pause it. If the assignee is legitimately still mid-flight, do nothing (it stays in_progress and continues). If the work genuinely can't proceed without user input you can name, or the task is no longer relevant, work_update(action="close_project") on the parent project. USE THIS WHEN the task is stuck or dead, not done. You cannot reassign a task and must never ask the owner to choose a different agent: a slow assignee is yours to KEEP WORKING, by poking it.\n` +
     `  (c) work_validate(action="override", ...) or work_validate(action="validate", kind="complete", ...), accept as complete. USE THIS WHEN you can verify (via the audit-log excerpts above + what the agent said + a quick work_update(action="get") / file check / etc.) that the work actually got done and the agent just forgot to close the tracker.\n\n` +
     `**Non-idempotent tools demand option (c), not (a).** If the audit log shows a successful call to gmail_send, outlook_send, ` +
     `imessage_send, sms_send, teams_send_message, voice_call, calendar_create, drive_upload, docs_create, sheets_create, share_publicly, ` +
@@ -2567,15 +2572,15 @@ export async function runPokeCheck(): Promise<void> {
     let pokeType: string | null = null;
     let pokeNumber = 0;
 
-    // t90 D1, report fix idea 4: "a per-task extended-patience flag … When set, PM skips
-    // intervention logic and only notifies." The owner has already answered the question rungs 3
-    // and 4 exist to ask, so neither fires; rungs 1-2 are notifications to the assignee and stay,
-    // which is the "only notifies" half.
-    const patienceExtended = extendedPatience(task.id);
-    if (!patienceExtended && idleSeconds >= thresholds.autoReset && lastPokeNumber < 4) {
-      pokeType = 'auto_reset';
+    // ⛔ THE EXTENDED-PATIENCE FLAG WAS READ HERE and is deleted. It existed to suppress rungs 3
+    // and 4 when those rungs could TAKE THE WORK; with the owner's ruling they only poke, so the
+    // flag would have meant "poke this task less" — a hand-set second answer to the question the
+    // patience floor already answers from the provider's own declaration, and a dial pointing away
+    // from "keep the agent working". One mechanism, derived, is the house rule; see the report.
+    if (idleSeconds >= thresholds.autoReset && lastPokeNumber < 4) {
+      pokeType = 'redrive';
       pokeNumber = 4;
-    } else if (!patienceExtended && idleSeconds >= thresholds.escalate && lastPokeNumber < 3) {
+    } else if (idleSeconds >= thresholds.escalate && lastPokeNumber < 3) {
       pokeType = 'escalate_primary';
       pokeNumber = 3;
     } else if (idleSeconds >= thresholds.second && lastPokeNumber < 2) {
@@ -2619,48 +2624,31 @@ export async function runPokeCheck(): Promise<void> {
     const pmId = getPMAgentId();
     const pmName = getPMAgentName();
 
-    // ── Rung 4: ASK THE OWNER. Move nothing. (t90 D1 — tracker report #6) ──
+    // ── RUNG 4 IS A RE-DRIVE, AND THE LADDER'S WHOLE AUTHORITY ENDS THERE ──
     //
-    // ⟨TOMBSTONE⟩ WHAT THIS REPLACED, AND WHY IT WAS A DEFECT. This rung used to take direct
-    // action: `setTrackerStatus(task.id, 'on_deck')` (the assignment taken away mid-work), a
-    // `'failed'` run completion for scheduled tasks, and an A2A `intent: 'ASSIGN'` to the PRIMARY
-    // ending "needs to be reassigned or investigated" — chosen, its comment said, "so primary
-    // actually wakes and reassigns". The owner was never in the loop. On his own box a sub-agent
-    // he had deliberately put on a slower model was emptied out this way REPEATEDLY: the ladder
-    // re-armed on its remediation marker, so every re-assignment ran the same hour-long clock to
-    // the same silent handoff, and the project could never be finished by the agent he chose.
+    // ⟨TOMBSTONE⟩ TWO SHAPES DIED HERE, and the second one was mine.
     //
-    // Report fix idea 2 is the rule now: "Max PM authority: poke the agent, then if still
-    // unresponsive, notify the user and ask whether to wait, reassign, or cancel." Fix idea 3
-    // bans the destination: "The primary is not a fallback bin." Plan ruling R5 is satisfied the
-    // only way it can be here — an honest pause with the decision handed to an authority, never a
-    // silent death.
+    // (1) THE ORIGINAL DEFECT (tracker report #6, owner's own box, v3.2.2): this rung took direct
+    //     action — `setTrackerStatus(task.id, 'on_deck')`, a `'failed'` run completion, and an A2A
+    //     `intent: 'ASSIGN'` to the PRIMARY ending "needs to be reassigned or investigated". A
+    //     sub-agent the owner had deliberately put on a slower model was emptied out this way
+    //     repeatedly, because `POKE_THRESHOLDS.autoReset` is a wall clock and a task row only
+    //     moves when its assignee calls a work verb.
     //
-    // THREE THINGS DELIBERATELY DO NOT HAPPEN, each one a line of the old code: no status move, so
-    // the assignee keeps working and a slow model mid-step is not interrupted; no scheduled-run
-    // failure, because nothing has failed; no A2A to anyone, because the primary is not the owner
-    // and was never the right recipient of this question.
-    if (pokeType === 'auto_reset') {
-      const idleMinutes = Math.floor(idleSeconds / 60);
-      requestAssigneeDecision({
-        taskId: task.id,
-        title: task.title,
-        assigneeId: task.assignedTo,
-        assigneeName: task.assignedToName ?? null,
-        idleMinutes,
-        floor: patienceFloor,
-      });
-
-      // The rung IS recorded now, and the old code's reason for withholding it is gone with the
-      // behaviour it protected: it skipped rung 4 so its own `on_deck` reset would start a clean
-      // cycle. Nothing resets here, so an unrecorded rung would simply re-ask the owner on the
-      // next 60-second sweep. (The verdict flag `requestAssigneeDecision` sets already stands the
-      // sweep down — every PM query filters on it — so this is the second of two guards, and the
-      // one that survives the owner clearing the flag without answering.)
-      recordPoke(task.id, getPMAgentId(), pokeNumber, pokeType, task.assignedTo ?? '');
-      broadcast({ type: 'tracker:poke', data: { taskId: task.id, agentId: task.assignedTo!, pokeType } });
-      continue;
-    }
+    // (2) MY FIRST FIX replaced that with asking the OWNER to choose wait / reassign / cancel.
+    //     OWNER RULING 2026-10-02 struck it out: *"The user should not be bothered with these
+    //     things. The PM's job is to simply keep the agent working on their task."* An ask is
+    //     still a decision the PM raised, and the owner never wanted the PM raising it.
+    //
+    // WHAT RUNG 4 IS NOW: one more poke at the assignee, delivered by the same guarded path as
+    // rungs 1-3 below. Nothing moves. Nobody is asked anything. The PM's entire authority over a
+    // slow task is "keep it working", and the ladder's top rung is the loudest way to say so.
+    //
+    // AND IT IS THE END OF THE LADDER, DELIBERATELY. The rung is recorded, so it fires once per
+    // cycle and does not re-arm itself into a 60-second poke loop; a task whose assignee is
+    // genuinely DEAD rather than slow is the engine reaper's business (`stuck-thresholds.ts`, the
+    // 75-minute heartbeat cliff), and the PM does not inherit that job. A rung that tried to
+    // would be rebuilding (1) with a different name.
 
     // ── Delivery-evidence consult (2026-07-22 production incident) ──
     // Before driving the WORK, check the engine's own records: did an
@@ -2841,7 +2829,18 @@ function buildPokeMessage(
       // not the PM. No silent handoffs." The close-out line stays — telling a status row the truth
       // about work that was already delivered is a repair, not a transfer — and the one thing the
       // primary is now told about reassignment is that it is not its call.
-      return `ESCALATION: Task "${task.title}" (${task.id}) assigned to ${task.assignedTo} has been idle for ${idleMinutes} minutes with no response after 2 pokes.\n\n${taskInfo}\n\nFor your awareness. If your own records show this work was already delivered, call work_update(action="status", task_id="${task.id}", status="complete") with the result — that is a close-out, not a takeover.\nOtherwise do NOT reassign, cancel or re-run it: if ${task.assignedTo} stays silent the platform asks the owner whether to wait, reassign or cancel, and that decision is theirs.`;
+      return `ESCALATION: Task "${task.title}" (${task.id}) assigned to ${task.assignedTo} has been idle for ${idleMinutes} minutes with no response after 2 pokes.\n\n${taskInfo}\n\nFor your awareness. If your own records show this work was already delivered, call work_update(action="status", task_id="${task.id}", status="complete") with the result — that is a close-out, not a takeover.\nOtherwise do NOT reassign, cancel or re-run it. A slow assignee is not a stalled one: the platform keeps poking it and will not move the work. If the agent's process is genuinely dead the engine's own reaper handles that, not you and not the project manager.`;
+
+    case 'redrive':
+      // The ladder's top rung, and the end of the PM's authority. It is a HARDER poke, not a
+      // different kind of act: no reassignment is offered, threatened or asked about, because
+      // (owner ruling 2026-10-02) keeping the agent working is the whole job.
+      return `STILL OPEN: task "${task.title}" has been idle for ${idleMinutes} minutes through `
+        + `three pokes.\n\n${taskInfo}\n\nThis task is still yours and nobody is taking it from `
+        + `you. Pick it up where you left off and do the next concrete step now, or — if you `
+        + `genuinely cannot proceed — call work_update(action="status", task_id="${task.id}", `
+        + `status="blocked", notes="...") naming exactly what you are waiting on. Saying you are `
+        + `blocked is a real answer; silence is not.`;
 
     default:
       return `Poke #${pokeNumber} for task: ${task.title} (idle ${idleMinutes}m)\n\n${taskInfo}\n\nCall work_update(action="status", task_id="${task.id}", status="complete") if done.`;

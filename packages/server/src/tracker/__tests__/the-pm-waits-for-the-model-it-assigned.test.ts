@@ -1,20 +1,23 @@
-// t90 D1 — THE PM MAY WAIT AND IT MAY ASK; IT MAY NOT TAKE THE WORK AWAY.
+// t90 D1 — THE PM KEEPS THE AGENT WORKING. IT HAS NO OTHER AUTHORITY OVER A SLOW TASK.
 //
-// Tracker report #6, from the owner's own box on v3.2.2: a sub-agent he had deliberately put on
-// a slower model was making progress, the PM read the pace as a stall, and rung 4 of the poke
-// ladder emptied the task out from under it and handed the work to the PRIMARY by A2A — with no
-// owner in the loop, repeatedly, so the project could never be finished by the agent he chose.
+// Tracker report #6, from the owner's own box on v3.2.2: a sub-agent he had deliberately put on a
+// slower model was making progress, the PM read the pace as a stall, and rung 4 of the poke ladder
+// emptied the task out from under it and handed the work to the PRIMARY by A2A — repeatedly, so the
+// project could never be finished by the agent he chose.
 //
-// Every section carries a POLICY clause and a WIRE clause, per the standing campaign rule. The
-// policy clauses pin the arithmetic and the records; the wire clauses drive the real sweep
-// (`runPokeCheck`) or read the real call site, because this defect WAS a wiring fact — the old
-// rung's three writes were all reachable from one `if`, and a module that merely exports the
-// right functions would reproduce the report exactly.
+// ── ⛔ THE SHAPE THIS FILE PINS IS THE OWNER'S, NOT THE REPORT'S ──
+// The report's fix ideas asked for "notify the user and ask whether to wait, reassign, or cancel",
+// and the first cut of this suite pinned exactly that. OWNER RULING 2026-10-02 struck it out:
+// *"The user should not be bothered with these things. The PM's job is to simply keep the agent
+// working on their task. Their job is not to reassign a task because they don't feel it is getting
+// worked on fast enough."* The fix ideas were the reporting agent's voice. So the clauses that
+// pinned an owner ask are gone with the ask, and §2's centrepiece is now a CENSUS of absence.
 //
-// §1 the patience floor, and R6 proved as arithmetic rather than promised
-// §2 the terminal rung: the owner is asked, and nothing moves
-// §3 the per-task extended-patience flag
-// §4 every reassignment leaves a record
+// §1 the patience floor, and R6 proved as arithmetic rather than promised  (kept verbatim)
+// §2 ⚠ THE NEGATIVE CENSUS: no path from the PM to a task's assignee, counted
+// §3 the human reassignment audit — the one reassignment left, and its two doors
+//
+// Every section carries a POLICY clause and a WIRE clause, per the standing campaign rule.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -215,15 +218,91 @@ describe('§1 the patience floor is derived, and it only ever lengthens', () => 
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
-// §2 — THE TERMINAL RUNG: ASK, DO NOT TAKE
+// §2 — THE PM POKES. THE CENSUS IS THAT IT DOES NOTHING ELSE.
 // ════════════════════════════════════════════════════════════════════════════════
 
-describe('§2 rung 4 asks the owner and moves nothing', () => {
+/**
+ * THE POKE LADDER'S OWN SOURCE — scoped, and the scope is argued.
+ *
+ * `runPokeCheck` hosts TWO mechanisms: an A2A auto-task sweeper that closes stale engine-created
+ * `on_deck` rows (unrelated, pre-existing, and it legitimately names that state), and the poke
+ * ladder. A census over the whole function would be reading the wrong mechanism's writes, so this
+ * slices from where the ladder reads its thresholds to the end of the sweep — which is exactly the
+ * region both deleted shapes lived in.
+ *
+ * Comment lines are stripped: the tombstones inside quote the deleted writes verbatim, which is how
+ * a tombstone works and must not make a census red.
+ */
+function pokeLadderSource(): string {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'pm-agent.ts'), 'utf8');
+  const from = src.indexOf('const patienceFloor = patienceFloorFor(');
+  expect(from, 'the ladder must still be findable by its threshold read').toBeGreaterThan(0);
+  const rest = src.slice(from);
+  const to = rest.search(/\n(?:export )?(?:async )?function |\nexport const /);
+  const body = to > 0 ? rest.slice(0, to) : rest;
+  return body.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
+}
+
+describe('§2 no path from the PM to a task\'s assignee', () => {
   /**
-   * ⚠ THE REPORT, AS A CLAUSE. Everything this asserts was FALSE on v3.2.2: the task went to
-   * `on_deck`, and an A2A `ASSIGN` went to the primary telling it to re-home the work.
+   * ⚠ THE CLAUSE THAT MATTERS MOST, AND IT COUNTS.
+   *
+   * Both shapes that died here were reachable from ONE `if` inside the poke sweep, and a
+   * behavioural clause can only ever prove that today's code does not take them. This census
+   * proves the writes are not in the function at all — so a future "helpful" rung cannot rebuild
+   * one without turning this red.
+   *
+   * It counts its own patterns on purpose: `BANNED` is asserted to be the length it was written
+   * with, so deleting a row to make the census pass fails the census.
    */
-  it('WIRE: the real sweep asks the owner — no status move, no assignee change, no A2A', async () => {
+  const BANNED: ReadonlyArray<[string, string]> = [
+    ["'on_deck'", 'moving a task back to the deck is taking it away from its assignee'],
+    ['onTaskRunComplete', 'failing a scheduled run is not a poke'],
+    ["intent: 'ASSIGN'", 'ASSIGN is the ownership-transfer intent; the PM may never mint one'],
+    // WRITE shapes, not bare names: the ladder legitimately READS `task.assignedTo` seven times
+    // (to pick a recipient, to guard on the assignee's status, to broadcast who was poked), and a
+    // census that banned the read would have to be weakened the first time it misfired. The
+    // property-assignment form is what a write looks like in every one of these call shapes.
+    ['assignedTo:', 'the ladder may not write an assignee'],
+    ['agent_id:', 'nor the column under it'],
+    ['assignee_agent', 'nor the nullable column beside that one'],
+    ['updateTask(', 'nor reach the helper the dashboard uses to move one'],
+    ['work_update:reassign', 'nor reach for the verb'],
+    ['requestUserVerdict', 'and it may not raise an owner decision either (owner ruling 2026-10-02)'],
+    ['requestAssigneeDecision', 'including the one this package built and the owner struck out'],
+  ];
+
+  it('⚠ CENSUS: the poke ladder contains none of the ten writes that could move work', () => {
+    expect(BANNED.length, 'the census must still check ten patterns — deleting a row is not a pass')
+      .toBe(10);
+    const body = pokeLadderSource();
+    for (const [pattern, why] of BANNED) {
+      expect(body, `${why} — found \`${pattern}\` in runPokeCheck`).not.toContain(pattern);
+    }
+  });
+
+  it('CENSUS: pm-agent.ts mints no ASSIGN intent anywhere in the file', () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'pm-agent.ts'), 'utf8')
+      .split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
+    // Not just the sweep: the whole module. The old rung-3 escalation sent ASSIGN from a
+    // different code path than rung 4, so a file-wide count is the only honest version.
+    expect(src.match(/intent:\s*'ASSIGN'/g) ?? [], 'the PM transfers ownership of nothing').toEqual([]);
+    expect(src, 'and the ternary that used to choose it is gone')
+      .not.toContain("'escalate_primary' ? 'ASSIGN'");
+  });
+
+  it('⚠ the PM no longer holds the reassign verb at all', async () => {
+    const { PM_ALLOWED_WORK_OPS, PM_ONLY_WORK_OPS } = await import('../pm-agent.js');
+    expect([...PM_ALLOWED_WORK_OPS], 'owner ruling 2026-10-02: no reassignment concept')
+      .not.toContain('work_update:reassign');
+    // And it is NOT PM-only, so removing it from the PM's list leaves it callable by the primary
+    // acting for a person — the recorded failure mode is a verb that is PM-only AND unallowed,
+    // which closes it to everyone (see `PRIMARY_ONLY_WORK_OPS`' own comment).
+    expect(PM_ONLY_WORK_OPS.has('work_update:reassign'),
+      'the human path must stay open; only the overseer loses it').toBe(false);
+  });
+
+  it('WIRE: the real sweep pokes the assignee and moves nothing', async () => {
     seedAssignee({ agentId: SLOW_AGENT, status: 'idle' });
     seedAssignee({ agentId: PRIMARY, status: 'idle' });
     seedStaleTask('t-report6', 4_000);   // past normal.autoReset (3600) on an undeclared row
@@ -234,141 +313,79 @@ describe('§2 rung 4 asks the owner and moves nothing', () => {
 
     const after = taskRow('t-report6');
     expect(after.state, 'the assignment must NOT be taken away').toBe(before.state);
-    expect(after.agent_id, 'and must NOT move to anyone, least of all the primary')
-      .toBe(SLOW_AGENT);
+    expect(after.agent_id, 'and must NOT move to anyone, least of all the primary').toBe(SLOW_AGENT);
     expect(handoffDeliveries(), 'no ASSIGN handoff may be sent to anyone').toEqual([]);
     expect(deliveriesTo(PRIMARY), 'the primary is not a fallback bin').toEqual([]);
 
-    // What DID happen: the owner was asked, and the ask names the three options and the state.
-    const asks = auditRows('t-report6', PATIENCE_ENTRY.decisionRequested);
-    expect(asks.length, 'the owner must be asked exactly once').toBe(1);
-    const payload = asks[0].payload;
-    expect(payload).toContain('WAIT');
-    expect(payload).toContain('REASSIGN');
-    expect(payload).toContain('CANCEL');
-    expect(payload, 'the ask must say that nothing was changed').toContain('Nothing has been changed');
-    expect(payload, 'and carry the prior assignee\'s last known state').toContain('last seen');
-    expect(eventCount('t-report6', 'user_verdict_requested'),
-      'the verdict flag is what stands the ladder down while the owner decides').toBe(1);
-    expect(eventCount('t-report6', 'poke'), 'and the rung is spent, so it cannot re-ask')
+    // What DID happen: the top rung poked the ASSIGNEE, and said the task is still theirs.
+    expect(eventCount('t-report6', 'poke'), 'the PM\'s one authority is to keep it working')
       .toBeGreaterThan(0);
+    const poked = deliveriesTo(SLOW_AGENT) as Array<{ payload?: string }>;
+    expect(poked.length, 'and the poke goes to the agent doing the work').toBeGreaterThan(0);
+    expect(poked.map((d) => d.payload ?? '').join('\n'))
+      .toContain('still yours and nobody is taking it from you');
+    expect(eventCount('t-report6', 'user_verdict_requested'),
+      'and the owner is not asked anything — that was struck out').toBe(0);
   });
 
-  it('WIRE: a second sweep does not ask again', async () => {
+  it('WIRE: rung 3 notifies the primary without handing it anything', () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'pm-agent.ts'), 'utf8');
+    const text = src.slice(src.indexOf("case 'escalate_primary':"));
+    const body = text.slice(0, text.indexOf("\n\n    case 'redrive':"))
+      .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    expect(body, 'the escalation must not instruct a reassignment').not.toContain('Reassign or unblock');
+    expect(body, 'nor a cancel').not.toContain("cancel/fail it if it's no longer needed");
+    expect(body, 'nor promise the owner a decision that is no longer raised')
+      .not.toContain('asks the owner');
+    expect(body, 'it says the work is not moving').toContain('will not move the work');
+    expect(body, 'and names the reaper as the owner of a genuinely dead process')
+      .toContain('reaper');
+    expect(body, 'the close-out repair stays — that is not a transfer')
+      .toContain('that is a close-out, not a takeover');
+  });
+
+  it('the ladder tops out: rung 4 is recorded, so it does not re-ask every minute', async () => {
     seedAssignee({ agentId: SLOW_AGENT, status: 'idle' });
     seedStaleTask('t-once', 4_000);
 
     await runPokeCheck();
     await flushMicrotasks();
+    const afterFirst = eventCount('t-once', 'poke');
     await runPokeCheck();
     await flushMicrotasks();
 
-    expect(auditRows('t-once', PATIENCE_ENTRY.decisionRequested).length,
-      'a 60-second sweep must not re-ask the owner every minute').toBe(1);
+    expect(eventCount('t-once', 'poke'), 'a 60-second sweep must not re-poke the top rung forever')
+      .toBe(afterFirst);
+    // Dead PROCESSES are the engine reaper's job, not the ladder's (owner ruling, point 4).
+    expect(taskRow('t-once').agent_id, 'and the task stays with its assignee either way')
+      .toBe(SLOW_AGENT);
   });
 
-  /**
-   * ⚠ THE FIX, MEASURED ON THE REPORT'S OWN SCENARIO. Same task, same idle time, same priority
-   * — the only difference is that the assignee's provider declares how long one of its calls may
-   * take. On v3.2.2 this agent lost its task; here it is not even asked about.
-   */
-  it('WIRE: the slow sub-agent of report #6 reaches NO rung at this idle time', async () => {
+  it('WIRE: the slow sub-agent of report #6 is not even poked at this idle time', async () => {
     seedAssignee({ agentId: SLOW_AGENT, status: 'idle', firstChunkMs: 600_000, idleMs: 600_000 });
-    seedStaleTask('t-slow', 4_000);   // over the stock 3600, under the floored 4800
+    seedStaleTask('t-slow', 1_000);   // over the stock first rung (300), under the floored one (1200)
 
     await runPokeCheck();
     await flushMicrotasks();
 
-    expect(auditRows('t-slow', PATIENCE_ENTRY.decisionRequested).length,
-      'a slow box must not be asked about on a fast box\'s clock').toBe(0);
+    expect(eventCount('t-slow', 'poke'),
+      'poking a slow box mid-inference is the half of the fix the ruling explicitly keeps').toBe(0);
     expect(taskRow('t-slow').agent_id).toBe(SLOW_AGENT);
-    expect(handoffDeliveries(), 'and nothing is handed to anybody').toEqual([]);
 
-    // And the control: the same declared row DOES reach the ask once its own floor is passed.
+    // And the control: the same declared row IS poked once its own floor is passed.
     mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?')
-      .run(Date.now() - 5_000 * 1000, 't-slow');
+      .run(Date.now() - 1_500 * 1000, 't-slow');
     await runPokeCheck();
     await flushMicrotasks();
-    expect(auditRows('t-slow', PATIENCE_ENTRY.decisionRequested).length,
-      'patience is a floor, not an exemption').toBe(1);
-  });
-
-  it('rung 3 notifies the primary without handing it the decision', () => {
-    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'pm-agent.ts'), 'utf8');
-    const text = src.slice(src.indexOf("case 'escalate_primary':"));
-    // COMMENT LINES STRIPPED: the tombstone above this case quotes the banned sentence verbatim,
-    // which is how a tombstone works and must not make the clause red. What is asserted is the
-    // text the primary actually RECEIVES.
-    const body = text.slice(0, text.indexOf('\n\n    default:'))
-      .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-    expect(body, 'the escalation must not instruct a reassignment').not.toContain('Reassign or unblock');
-    expect(body, 'nor a cancel').not.toContain("cancel/fail it if it's no longer needed");
-    expect(body, 'it says the decision is the owner\'s').toContain('asks the owner');
-    expect(body, 'and the close-out repair stays — that is not a transfer').toContain('that is a close-out, not a takeover');
-    // No rung may carry the ownership-transfer intent any more.
-    expect(src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n'),
-      'ASSIGN is the handoff intent and no rung may send it')
-      .not.toContain("'escalate_primary' ? 'ASSIGN'");
-  });
-
-  it('WIRE: the rung\'s old three writes are gone from the source', () => {
-    // The defect was three statements inside one `if`. A behavioural clause can show the owner
-    // is asked; only this can show the old actions are not ALSO still happening on some path.
-    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'pm-agent.ts'), 'utf8');
-    const rung = src.slice(src.indexOf("if (pokeType === 'auto_reset')"));
-    const body = rung.slice(0, rung.indexOf('\n    }\n'));
-    expect(body, 'the rung must not move the task').not.toContain("'on_deck'");
-    expect(body, 'the rung must not fail a scheduled run').not.toContain('onTaskRunComplete');
-    expect(body, 'the rung must not message anybody').not.toContain('deliverA2AMessage');
-    expect(body, 'it asks the owner').toContain('requestAssigneeDecision');
+    expect(eventCount('t-slow', 'poke'), 'patience is a floor, not an exemption').toBeGreaterThan(0);
   });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
-// §3 — THE PER-TASK EXTENDED-PATIENCE FLAG
+// §3 — THE ONE REASSIGNMENT LEFT IS A PERSON'S, AND IT IS RECORDED
 // ════════════════════════════════════════════════════════════════════════════════
 
-describe('§3 extended patience: the owner says "slow on purpose"', () => {
-  it('the newest decision wins, and it survives as history rather than a column', () => {
-    seedStaleTask('t-flag', 10);
-    expect(extendedPatience('t-flag'), 'nobody has said anything yet').toBe(false);
-    grantExtendedPatience('t-flag', 'user', 'assigned to the slow local model on purpose');
-    expect(extendedPatience('t-flag')).toBe(true);
-    revokeExtendedPatience('t-flag', 'user', 'moved back to a cloud model');
-    expect(extendedPatience('t-flag'), 'a revoke after a grant must win').toBe(false);
-    grantExtendedPatience('t-flag', 'user', 'and back again');
-    expect(extendedPatience('t-flag'), 'and a grant after a revoke must win').toBe(true);
-    // Both decisions are still on the record — the point of deriving rather than storing.
-    expect(auditRows('t-flag', PATIENCE_ENTRY.extended).length).toBe(2);
-    expect(auditRows('t-flag', PATIENCE_ENTRY.revoked).length).toBe(1);
-  });
-
-  it('WIRE: a flagged task is never escalated or asked about, however idle', async () => {
-    seedAssignee({ agentId: SLOW_AGENT, status: 'idle' });
-    seedStaleTask('t-patient', 40_000);   // eleven hours: far past every rung
-    grantExtendedPatience('t-patient', 'user', 'slow agent, extended patience');
-
-    await runPokeCheck();
-    await flushMicrotasks();
-
-    expect(auditRows('t-patient', PATIENCE_ENTRY.decisionRequested).length,
-      'the owner already answered this question by setting the flag').toBe(0);
-    expect(handoffDeliveries(), 'and the work is handed to nobody').toEqual([]);
-    expect(deliveriesTo(PRIMARY),
-      'rung 3 escalates to the primary and the flag must hold that back too').toEqual([]);
-    expect(taskRow('t-patient').agent_id).toBe(SLOW_AGENT);
-
-    // "PM skips intervention logic and ONLY NOTIFIES" — the notify half still runs, so the
-    // flag is not a mute button. Rung 1/2 pokes are messages to the assignee itself.
-    expect(eventCount('t-patient', 'poke'), 'the assignee is still nudged').toBeGreaterThan(0);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════
-// §4 — EVERY REASSIGNMENT LEAVES A RECORD
-// ════════════════════════════════════════════════════════════════════════════════
-
-describe('§4 a reassignment is recorded, whoever makes it', () => {
+describe('§3 a human reassignment is recorded at both of its doors', () => {
   it('the record names who, why, where from, where to, and the prior assignee\'s last state', () => {
     seedAssignee({ agentId: SLOW_AGENT, status: 'working' });
     seedStaleTask('t-moved', 10);
@@ -392,7 +409,21 @@ describe('§4 a reassignment is recorded, whoever makes it', () => {
       'the record and the re-arm must not be able to come apart').toBe(1);
   });
 
-  it('WIRE: the reassign verb calls it, with the FROM assignee read before the write', () => {
+  it('WIRE: the dashboard\'s task update records it, reading the prior assignee first', () => {
+    const src = readFileSync(join(
+      dirname(fileURLToPath(import.meta.url)), '..', '..', 'gateway', 'routes', 'tracker.ts',
+    ), 'utf8');
+    expect(src, 'the dashboard door must record a reassignment').toContain('recordReassignment({');
+    expect(src, 'and must read the prior assignee from the pre-write snapshot')
+      .toContain("fromAgentId: prior?.assignedTo ?? null");
+    expect(src.indexOf('const prior = getTask(id);'))
+      .toBeLessThan(src.indexOf('recordReassignment({'));
+    // ⛔ And the doors this package built and the owner struck out are GONE from the route file.
+    expect(src, 'the assignee-decision door was deleted').not.toContain('assignee-decision');
+    expect(src, 'and so was the extended-patience door').not.toContain('extended-patience');
+  });
+
+  it('WIRE: the primary\'s reassign verb calls it, with the FROM assignee read before the write', () => {
     const src = readFileSync(join(
       dirname(fileURLToPath(import.meta.url)), '..', '..', 'agent', 'tools', 'cat', 'tracker.ts',
     ), 'utf8');

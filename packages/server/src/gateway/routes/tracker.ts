@@ -36,10 +36,7 @@ import {
 import { statusToState, tsToMs } from '../../work/tracker-view.js';
 import { deleteOccurrencesOf } from '../../work/occurrences.js';
 import { recordOwnerCloseReceipt, deliveryIdOf } from '../../agent/v2/deliveries.js';
-import {
-  recordReassignment, recordAssigneeDecision, grantExtendedPatience, revokeExtendedPatience,
-  extendedPatience,
-} from '../../tracker/assignee-patience.js';
+import { recordReassignment } from '../../tracker/assignee-patience.js';
 import { createLogger } from '../../logger.js';
 import type { TaskLogEntryKind } from '../../tracker/task-log.js';
 import { getPrimaryAgentId, getPMAgentId, getDashboardHiddenAgentIds } from '../../config/platform.js';
@@ -295,86 +292,6 @@ trackerRouter.post('/tasks/:id/user-validate', async (c) => {
     broadcast({ type: 'tracker:task_updated', data: updated });
   }
   return c.json({ ok: true, data: { validated: true } });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════
-// THE OWNER'S ANSWER (t90 D1 — tracker report #6)
-//
-// The PM's terminal rung no longer moves work; it asks. These are the two doors that make that
-// ask answerable, and without them the mechanism would be a feature the user cannot reach.
-// `tracker/assignee-patience.ts` owns the records; these handlers own the authority — `by:
-// 'owner', actorId: 'user'`, the same signature the override-resolve door above files.
-// ════════════════════════════════════════════════════════════════════════════════
-
-// POST /tasks/:id/assignee-decision — the owner answers WAIT / REASSIGN / CANCEL.
-trackerRouter.post('/tasks/:id/assignee-decision', async (c) => {
-  const resolved = resolveTaskId(c.req.param('id'));
-  if (!resolved.ok) return c.json({ ok: false, error: formatResolveError('task', c.req.param('id'), resolved) }, 404);
-  const task = getTask(resolved.id);
-  if (!task) return c.json({ ok: false, error: 'Task not found' }, 404);
-
-  const body = await c.req.json().catch(() => ({})) as
-    { decision?: string; assigned_to?: string; reason?: string };
-  const decision = body.decision;
-  if (decision !== 'wait' && decision !== 'reassign' && decision !== 'cancel') {
-    return c.json({ ok: false, error: 'decision must be one of: wait, reassign, cancel' }, 400);
-  }
-  const reason = body.reason?.trim() || `owner chose ${decision}`;
-  const priorAssignee = task.assignedTo ?? null;
-
-  if (decision === 'reassign') {
-    // The one branch that moves work, and it only ever moves it where the OWNER named. There is
-    // no default destination on purpose: "the primary is not a fallback bin" is the report's own
-    // sentence, and a convenience fallback here would rebuild the defect in the fix.
-    const to = body.assigned_to?.trim();
-    if (!to) return c.json({ ok: false, error: 'reassign requires assigned_to — there is no default destination' }, 400);
-    const exists = getDb().prepare("SELECT id FROM agents WHERE id = ? AND status != 'terminated'").get(to) as { id: string } | undefined;
-    if (!exists) return c.json({ ok: false, error: `agent "${to}" does not exist or is terminated` }, 400);
-    updateTask(resolved.id, { assignedTo: to });
-    recordReassignment({
-      taskId: resolved.id, actor: 'user', fromAgentId: priorAssignee, toAgentId: to, reason,
-    });
-  } else if (decision === 'cancel') {
-    const { setTaskStatus } = await import('../../tracker/schema.js');
-    const moved = setTaskStatus(resolved.id, 'cancelled', {
-      by: 'owner', actorId: 'user', claim: 'authoritative', reason,
-    });
-    if (!moved) return c.json({ ok: false, error: 'the work gate refused the cancel' }, 409);
-  }
-  // WAIT writes nothing but the record and the clear: the task stays exactly where it is with
-  // the assignee it has, which is the whole point of the option existing.
-
-  recordAssigneeDecision({ taskId: resolved.id, decision, actor: 'user', reason, priorAssignee });
-  clearUserVerdict(resolved.id, 'user', `owner answered: ${decision}`);
-  const { writeTaskLog } = await import('../../tracker/task-log.js');
-  writeTaskLog({
-    taskId: resolved.id, fromEntity: 'user', entryKind: 'user_verdict_applied',
-    actionTaken: `assignee decision: ${decision}`, reason,
-  });
-  const updated = getTask(resolved.id);
-  if (updated) {
-    const { broadcast } = await import('../../gateway/ws.js');
-    broadcast({ type: 'tracker:task_updated', data: updated });
-  }
-  return c.json({ ok: true, data: { decision, taskId: resolved.id } });
-});
-
-// POST /tasks/:id/extended-patience — "slow agent, use extended patience" (report fix idea 4).
-trackerRouter.post('/tasks/:id/extended-patience', async (c) => {
-  const resolved = resolveTaskId(c.req.param('id'));
-  if (!resolved.ok) return c.json({ ok: false, error: formatResolveError('task', c.req.param('id'), resolved) }, 404);
-  if (!getTask(resolved.id)) return c.json({ ok: false, error: 'Task not found' }, 404);
-  const body = await c.req.json().catch(() => ({})) as { granted?: boolean; reason?: string };
-  if (typeof body.granted !== 'boolean') return c.json({ ok: false, error: 'granted must be true or false' }, 400);
-  const reason = body.reason?.trim() || (body.granted ? 'owner granted extended patience' : 'owner revoked extended patience');
-  if (body.granted) grantExtendedPatience(resolved.id, 'user', reason);
-  else revokeExtendedPatience(resolved.id, 'user', reason);
-  const updated = getTask(resolved.id);
-  if (updated) {
-    const { broadcast } = await import('../../gateway/ws.js');
-    broadcast({ type: 'tracker:task_updated', data: updated });
-  }
-  return c.json({ ok: true, data: { taskId: resolved.id, extendedPatience: extendedPatience(resolved.id) } });
 });
 
 // GET /tasks/:id/log — structured audit log entries for a task (Phase B.0)
@@ -769,6 +686,16 @@ trackerRouter.put('/tasks/:id', async (c) => {
       const fromStatus = prior?.status ?? null;
       const { status: statusUpdate, ...columnUpdates } = updates;
       if (Object.keys(columnUpdates).length > 0) updateTask(id, columnUpdates);
+      // t90 D1: a PERSON moving a task is the only reassignment this platform still has — the PM
+      // lost the verb entirely (owner ruling 2026-10-02) — so this is where it gets recorded: who,
+      // why, and what the previous assignee was last seen doing, the half nobody can reconstruct
+      // afterwards. `prior` above is the pre-write read; no second query.
+      if (updates.assignedTo !== undefined && updates.assignedTo !== (prior?.assignedTo ?? null)) {
+        recordReassignment({
+          taskId: id, actor: 'user', fromAgentId: prior?.assignedTo ?? null,
+          toAgentId: updates.assignedTo, reason: 'reassigned by a person through the dashboard',
+        });
+      }
       if (statusUpdate) {
         // The owner dragging a card IS the authority (Q5), so the transition carries
         // `claim: 'authoritative'` and files its own adjudication — the three

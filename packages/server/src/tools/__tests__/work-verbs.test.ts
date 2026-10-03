@@ -296,14 +296,24 @@ const CANARIES: Canary[] = [
     fires: [
       'tracker_list_active', 'tracker_get_status', 'tracker_add_notes',
       'tracker_pause_schedule', 'tracker_resume_schedule',
-      'tracker_validate', 'tracker_retask', 'tracker_reassign_task',
+      'tracker_validate', 'tracker_retask',
       'tracker_override', 'tracker_request_override', 'tracker_apply_user_verdict',
       'tracker_edit_project', 'tracker_edit_task', 'tracker_close_project',
     ],
     // THE ONE THE COLLAPSE ENDANGERS MOST: after the collapse the PM's allowed
     // close and its forbidden status flip are the SAME VERB. A name-keyed gate
     // could not refuse these and would have handed the PM a worker's keyboard.
-    silent: ['tracker_update_status', 'tracker_complete_step', 'tracker_create_task', 'tracker_create_project', 'reminder_create', 'tracker_request_user_verdict', 'tracker_apply_user_validation', 'tracker_resolve_missed_runs'],
+    //
+    // ⛔ ARGUED MOVE (t90, OWNER RULING 2026-10-02): `tracker_reassign_task` left `fires` for
+    // `silent`. The owner's words: "Their job is not to reassign a task because they don't feel it
+    // is getting worked on fast enough. At no point during the construction of the dojo did I ever
+    // ask for the PM agent to simply reassign tasks to another agent." Same shape as T12's move
+    // below — the behaviour did not go dark, it changed WALL. The op is NOT in `PM_ONLY_WORK_OPS`,
+    // so it stays callable by the PRIMARY acting for a person (B11 pins that), and the human
+    // dashboard door still reassigns; what is gone is the overseer's standing authority to decide
+    // it. `tracker/__tests__/the-pm-waits-for-the-model-it-assigned.test.ts` §2 censuses the
+    // absence at the ladder, which is where the authority was actually being spent.
+    silent: ['tracker_update_status', 'tracker_complete_step', 'tracker_create_task', 'tracker_create_project', 'reminder_create', 'tracker_request_user_verdict', 'tracker_apply_user_validation', 'tracker_resolve_missed_runs', 'tracker_reassign_task'],
   },
   {
     behaviour: 'B11 PM-ONLY operations (a worker calling one is refused at the executor)',
