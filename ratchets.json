@@ -5965,10 +5965,18 @@
       "to": 241,
       "by": "t88 - the request_type domain gains the seven utility purposes (NEW ENTRY, pinned at its current size)",
       "why": "NEW ENTRY at 241. The growth detector asked for this file to be pinned or split rather than drifting toward the 400-line cap unargued. It is a DECLARATION FILE - one measured list per telemetry path - so splitting it would scatter the domain it exists to centralise; pinning it decrease-only is the right half of that choice. t88's +7 members are the seven utility purposes now reachable in `cost_records.request_type`: until t88 every engine utility dial left `purpose` unset and landed as `completion`, so the column could say 'turn' or 'not turn' and nothing else. From 241 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/num-ctx-calculator.ts",
+      "from": 0,
+      "to": 563,
+      "by": "t88 capture-3 - the RAM recommendation audit (NEW ENTRY, pinned at its current size)",
+      "why": "NEW ENTRY at 563 (205 code, 358 comment). The new-file cap asked for this to be seen and argued, so: the file was 410 lines before this round and is the ONE place that decides how much memory a local model may be promised - the decision that recommended 28,672 tokens to a 4b model on a 16 GB desktop box and left it holding 5.4 GB with ~60 MB of free pages. The +153 is three named reserves (desktop, engine, other resident models) with the incident's measurements as their justification, a fail-closed path replacing two silent NULLs (a NULL recommendation means Ollama picks its own default, which on a small model is its full trained context - the tightest boxes got the most dangerous answer), and the arithmetic of the OLD policy kept alongside so a rollout can log both numbers on one line. REFUSED: splitting the reserves into their own module - the formula and its budget are one decision and a reader who finds half of it re-derives the other half wrong, which is exactly how the original shipped. From 563 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
   "files": {
+    "packages/server/src/services/num-ctx-calculator.ts": 563,
     "packages/server/src/report/telemetry-whitelist.ts": 241,
     "packages/server/src/agent/brokers/sudo-probe.ts": 83,
     "packages/server/src/agent/brokers/sudo-copy.ts": 168,
