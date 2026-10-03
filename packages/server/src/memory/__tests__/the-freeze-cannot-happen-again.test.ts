@@ -33,6 +33,9 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../db/connection.js', async () => {
@@ -406,6 +409,56 @@ describe('§2 the forced path has brakes and a terminal state', () => {
     expect(compactionIsBraked(AGENT, true), 'an agent given no room stays latched').toBe(true);
   });
 
+  /**
+   * ⚠ THE PRE-WORK CHECK, AND THE PROOF THAT SOMETHING CALLS IT. (review M3)
+   *
+   * The review found `latchIfSummariesExceedBudget` written, documented as *"checked by the entry
+   * point"*, and never called — so an agent in a terminal state still paid a full forced pass to
+   * discover it. Two clauses, because a function like this needs both halves proved: the arithmetic
+   * here, and the WIRING below. A behavioural clause alone is what let a zero-caller function look
+   * finished.
+   */
+  it('the pre-work latch needs BOTH facts: big summaries AND nothing left to compact', async () => {
+    const { latchIfSummariesExceedBudget, isIncompressible, __resetBrakesForTests } = await import('../compaction-brakes.js');
+    seedBox({ messages: 40, summaryTokens: 4_000 });
+
+    // Summaries over budget, but 400 rows outside the tail still have give — a pass may try, and
+    // `the-clock-does-not-overrule-the-token-math` depends on exactly this answer.
+    expect(latchIfSummariesExceedBudget(AGENT, 86_000, 53_000, 400), 'raw rows can still shrink').toBeNull();
+    expect(isIncompressible(AGENT), 'and nothing was latched behind our back').toBeNull();
+
+    // Under budget, nothing to compact: not terminal either, just quiet.
+    expect(latchIfSummariesExceedBudget(AGENT, 20_000, 53_000, 0)).toBeNull();
+
+    // BOTH facts: large summaries and no compactable region. Every future turn is the same
+    // question with the same answer, so the owner is told once and the asking stops.
+    const latch = latchIfSummariesExceedBudget(AGENT, 86_000, 53_000, 2);
+    expect(latch?.reason, 'this is the terminal state, named').toBe('summaries_exceed_budget');
+    expect(frames.filter(f => f.code === 'MEMORY_INCOMPRESSIBLE').length, 'and carded once').toBe(1);
+  });
+
+  it('⚠ AND THE ENTRY POINT CALLS IT — before any model call, with the gap count', () => {
+    // Driving the real `checkAndCompact` here would need the summariser, the assembler and a
+    // provider mocked three deep; what the review actually caught was an absent CALL, and that is
+    // a property of the source. So this reads the entry point and pins the wiring itself — the
+    // clause that would have failed on the package as submitted.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const src = readFileSync(join(here, '..', 'compaction.ts'), 'utf8');
+    const call = src.match(/^\s*if \(latchIfSummariesExceedBudget\(.*$/m)?.[0];
+    expect(call, '`compaction.ts` must CALL the pre-work latch, not merely document it').toBeTruthy();
+    expect(call, 'it must be asked about the real summary total').toContain('assembled.summaryTokens');
+    expect(call, 'and the real assembly budget').toContain('contextWindow - assembled.reserveTokens');
+    expect(call, 'and the compactable-row count — the second fact it needs').toContain('guardUncompactedCount');
+    expect(call, 'and a latch must STOP the pass').toContain('return NO_COMPACTION');
+    // BEFORE the work: ahead of the continuity brief, the chunk loop and every provider dial.
+    const latchAt = src.indexOf('latchIfSummariesExceedBudget(agentId');
+    const briefAt = src.indexOf('Pre-compaction continuity brief');
+    expect(latchAt).toBeGreaterThan(0);
+    expect(briefAt).toBeGreaterThan(0);
+    expect(latchAt, 'a pre-work check that runs after the work is not a pre-work check')
+      .toBeLessThan(briefAt);
+  });
+
   it('a purge that SHRINKS the history releases it too — the old rule only looked up', async () => {
     const { compactionIsBraked, noteForcedOutcome, __resetBrakesForTests } = await import('../compaction-brakes.js');
     seedBox({ messages: 40, summaryTokens: 4_000 });
@@ -479,6 +532,65 @@ describe('§3 the CPU: three estimates become one, and the loop stays responsive
     expect(built, 'a changed tool surface is a changed number').toBe(2);
   });
 
+  /**
+   * ⚠ AND THE KEY CAN SEE THE SURFACE IT IS KEYED ON. (review M4)
+   *
+   * The caller used to pass `agentId:modelId`, which moves for NONE of the three things the cache's
+   * own doc names. Each row below moves one of them through its real mechanism and demands a
+   * recompute; the first row demands that an UNCHANGED surface still only pays once, without which
+   * "it recomputes" would pass on a key that is simply always different.
+   */
+  it('the surface key moves with the generation, the session docs and the agent row', async () => {
+    seedBox({ messages: 10, summaryTokens: 1_000 });
+    const { toolSurfaceKey } = await import('../assembled-estimate-cache.js');
+    const { bumpToolConfigGeneration } = await import('../../agent/tool-config-generation.js');
+    const { markToolsLoaded, resetSessionToolSetsForTests } = await import('../../tools/tool-session-set.js');
+    resetSessionToolSetsForTests();
+    const db = mockDb.current!;
+
+    const first = toolSurfaceKey(AGENT, MODEL_64K);
+    expect(toolSurfaceKey(AGENT, MODEL_64K), 'nothing moved, so the key must not').toBe(first);
+
+    // 1. THE GLOBAL SURFACE — an integration connected or removed bumps this counter, which is the
+    //    same one `getFilteredTools` keys its own memo on.
+    bumpToolConfigGeneration();
+    const afterBump = toolSurfaceKey(AGENT, MODEL_64K);
+    expect(afterBump, 'a widened or narrowed global tool surface is a different payload').not.toBe(first);
+
+    // 2. `load_tool_docs` IN A SESSION — the doc's second named mover, driven through the module
+    //    that owns the session set rather than simulated.
+    markToolsLoaded(AGENT, ['vault_search']);
+    const afterLoad = toolSurfaceKey(AGENT, MODEL_64K);
+    expect(afterLoad, 'loaded tool docs are real tokens in the payload').not.toBe(afterBump);
+
+    // 3. THE PER-AGENT SURFACE — grants materialise onto the agent row, which stamps updated_at.
+    db.prepare("UPDATE agents SET permissions = ?, updated_at = '2026-10-02T00:00:01Z' WHERE id = ?")
+      .run('{"tools":{"allow":["vault_search"]}}', AGENT);
+    expect(toolSurfaceKey(AGENT, MODEL_64K), 'a changed grant is a changed tool set').not.toBe(afterLoad);
+
+    // And the measurement actually rides that key — not a key the call site invents.
+    let built = 0;
+    const measure = async (): Promise<number> => { built += 1; return 9_000; };
+    const k1 = toolSurfaceKey(AGENT, MODEL_64K);
+    await cachedToolPayloadTokens(AGENT, k1, measure);
+    await cachedToolPayloadTokens(AGENT, k1, measure);
+    expect(built, 'an unchanged surface is measured once').toBe(1);
+    markToolsLoaded(AGENT, ['vault_get']);
+    await cachedToolPayloadTokens(AGENT, toolSurfaceKey(AGENT, MODEL_64K), measure);
+    expect(built, 'and a changed surface is measured again').toBe(2);
+    resetSessionToolSetsForTests();
+  });
+
+  it('the entry point keys the tool payload on that surface, not on the model id', () => {
+    // The review's finding was a CALL SITE passing the wrong ingredients, so the call site is what
+    // this pins — the same reason the M3 wiring clause reads source.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const src = readFileSync(join(here, '..', 'compaction.ts'), 'utf8');
+    const call = src.match(/^\s*toolPayloadTokens: .*$/m)?.[0];
+    expect(call, 'the tool payload must be keyed by `toolSurfaceKey`').toContain('toolSurfaceKey(agentId, modelId)');
+    expect(call, 'and never again by an invented agent:model string').not.toMatch(/\$\{agentId\}:\$\{modelId/);
+  });
+
   it('⚠ THE HEADLINE: event-loop starvation, pre-fix shape vs post-fix shape, one body', async () => {
     // 400 messages and 86K of summaries — a tenth of the reported backlog, which is the honest scale for a
     // unit box. The RATIO is the finding; the absolute numbers are recorded, not asserted.
@@ -535,10 +647,10 @@ describe('§4 the controls: the same body that freezes on 64K is quiet on 131K',
     const overhead = 12_000;
     const cloud = compactionGate(114_000, 65_536, overhead);
     const local = compactionGate(114_000, 131_072, overhead);
-    expect(cloud.decision, 'her cloud row is over the block line — forced compaction every prompt').toBe('block');
+    expect(cloud.decision, 'the reported cloud row is over the block line — forced compaction every prompt').toBe('block');
     expect(local.decision, 'the same history on a 131K window is not an emergency').not.toBe('block');
     expect(local.decision).not.toBe('compact');
-    // Which is the whole cloud/local asymmetry her agent reported, in one assertion.
+    // Which is the whole cloud/local asymmetry the report describes, in one assertion.
     expect(cloud.ratio).toBeGreaterThan(local.ratio);
   });
 
