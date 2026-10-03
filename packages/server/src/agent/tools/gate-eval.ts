@@ -29,6 +29,7 @@ import {
   mayUseChannel, holdsCredentialGrant,
   toolCategoryGranted, toolCategoryLabels,
 } from '../access/read.js';
+import { heldGroupsClause } from './held-groups.js';   // t90 D3
 import type { ToolGate } from './gates.js';
 
 /** What a gate answered, plus enough to audit and render it. */
@@ -271,7 +272,8 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
           `category-not-granted:${labels[0]}`,
           `${name} is in the ${named} tool group, which is not in this agent's grants`,
           `Permission denied: ${name} is in the ${named} tool group, which is not in this agent's grants.`
-            + ' The request was not performed. Ask the primary agent to grant that group if this needs to happen.',
+            + ' The request was not performed. Ask the primary agent to grant that group if this needs to happen.'
+            + heldGroupsClause(agentId),   // t90 D3: what this agent DOES hold, so the next call can be the right one
         ),
         resource: labels[0],
         errorCode: 'PERMISSION_DENIED',
