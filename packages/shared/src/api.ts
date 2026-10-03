@@ -217,3 +217,19 @@ export interface CreateAgentRequest {
 // ── System ──
 export type HealthResponse = HealthData;
 export type LogsResponse = LogEntry[];
+
+// ── The System tier's provider rule (t88) ───────────────────────────────────────────────────
+//
+// ⚠ ONE LIST, TWO READERS, AND THE OWNER-REPORTED BUG IS WHAT HAPPENS WITHOUT IT. The System
+// model runs the engine's own utility dials and the watchdog's alerts, so it is LOCAL-ONLY —
+// the watchdog has to work when the network is down. The server has always enforced that and
+// returned 400 for anything else; the Settings dropdown offered EVERY enabled model anyway.
+// Picking a cloud model was therefore a choice the UI invited and the server refused, which is
+// one half of "it says saved but it reverts".
+//
+// Both sides now read this constant, so the dropdown cannot offer what the route will reject.
+export const SYSTEM_TIER_PROVIDER_TYPES: readonly string[] = ['ollama'];
+
+/** The one sentence both the route and the UI use when a model is not eligible. */
+export const SYSTEM_TIER_PROVIDER_REFUSAL =
+  'The System tier accepts local (Ollama) models only.';

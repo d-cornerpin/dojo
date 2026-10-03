@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { SYSTEM_TIER_PROVIDER_TYPES } from '@dojo/shared';
 import * as api from '../lib/api';
 import { RouterUsage } from './RouterUsage';
 
@@ -394,22 +395,51 @@ export const SystemModelConfig = () => {
 
   const flash = () => { setSaved(true); setTimeout(() => setSaved(false), 2000); };
 
+  // ⚠ THE OWNER-REPORTED BUG (t88 deliverable 3): "it says saved but it reverts."
+  //
+  // THREE DEFECTS IN ONE HANDLER, and the first two are why the third looked like a mystery:
+  //   1. THE DROPDOWN OFFERED MODELS THE SERVER REFUSES. The System tier is local-only — the
+  //      watchdog must work with no network — and the route has always returned 400 for anything
+  //      else. The list was every enabled model, cloud included. Fixed by `eligibleModels` below,
+  //      filtered on the SAME shared constant the route enforces.
+  //   2. THE RESPONSE WAS DISCARDED. `await api.updateTierModels(...)` returns `{ ok, error }` and
+  //      this handler threw it away, then flashed "Saved!" unconditionally — so a 400 read as a
+  //      success. A save that cannot fail in the UI is a save the UI cannot be trusted about.
+  //   3. NOTHING RE-READ THE SERVER. With no reload, the dropdown kept showing the value the user
+  //      picked, and the old value reappeared on the NEXT visit — which is exactly the "it reverts
+  //      later" symptom. The authoritative state is now read back after every successful write.
+  const [error, setError] = useState<string | null>(null);
+
   const handleSave = async () => {
     setSaving(true);
-    await api.updateTierModels('system', selectedId ? [{ modelId: selectedId, priority: 0 }] : []);
+    setError(null);
+    const res = await api.updateTierModels('system', selectedId ? [{ modelId: selectedId, priority: 0 }] : []);
     setSaving(false);
+    if (!res.ok) {
+      setError(res.error ?? 'The system model could not be saved.');
+      return;                       // and NO "Saved!" — the save did not happen
+    }
+    await load();                   // show what the server actually has, not what we hoped
     flash();
   };
 
   const handleClear = async () => {
     setSaving(true);
-    await api.updateTierModels('system', []);
-    setSelectedId('');
+    setError(null);
+    const res = await api.updateTierModels('system', []);
     setSaving(false);
+    if (!res.ok) {
+      setError(res.error ?? 'The system model could not be cleared.');
+      return;
+    }
+    await load();
     flash();
   };
 
   if (loading) return null;
+
+  // Only what the route will accept — see `handleSave` for why offering more was half the bug.
+  const eligibleModels = models.filter((m) => SYSTEM_TIER_PROVIDER_TYPES.includes(m.provider_type));
 
   return (
     <div className="tile space-y-4">
@@ -425,6 +455,8 @@ export const SystemModelConfig = () => {
         <div className="alert-banner alert-warning">No system model selected. Pick one below.</div>
       )}
 
+      {error && <div className="alert-banner alert-error">{error}</div>}
+
       <div>
         <label className="flabel">System model</label>
         <select
@@ -433,7 +465,7 @@ export const SystemModelConfig = () => {
           className="finput field--select"
         >
           <option value="">(none)</option>
-          {models.map((m) => (
+          {eligibleModels.map((m) => (
             <option key={m.id} value={m.id}>{m.name}</option>
           ))}
         </select>

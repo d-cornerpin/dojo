@@ -6,6 +6,7 @@
 // Every clause below is one of the three dials that produced that, plus the latency budget that
 // bounds what a best-effort dial may cost. The fixture numbers ARE the box's numbers.
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   utilityDial, isUtilityPurpose, utilityOutputCap, utilityNumCtx, utilityNumCtxExceedsConfigured,
   MIN_UTILITY_NUM_CTX,
@@ -88,6 +89,23 @@ describe('⚠ THE WINDOW IS SIZED TO THE CALL — on Ollama num_ctx is an ALLOCA
     expect(sized).toBeGreaterThan(TITLE_INPUT_CHARS / 4);
   });
 
+  it('⚠ THE WINDOW GROWS WITH THE INPUT — a fixed floor is not "input-aware"', () => {
+    // A mutant that ignored the input entirely and always returned the floor passed every other
+    // clause in this file: a title's input is small enough that the floor already covers it. The
+    // property that actually matters is MONOTONIC — more input, more window.
+    // ⚠ ONLY ABOVE THE FLOOR, and my first version of this clause got that wrong: 500 and 4,000
+    // characters BOTH land on the 2,048 floor, which is the floor doing its job, not a defect. The
+    // strict comparison therefore starts where the floor stops binding.
+    const windows = [12_000, 40_000, 120_000, 400_000].map((inputChars) => utilityNumCtx({
+      inputChars, outputTokens: 256, configuredNumCtx: 1_048_576,
+    }));
+    for (let i = 1; i < windows.length; i += 1) {
+      expect(windows[i], `window ${i}`).toBeGreaterThan(windows[i - 1]);
+    }
+    expect(windows[0]).toBeGreaterThan(MIN_UTILITY_NUM_CTX);
+    expect(windows[1]).toBeGreaterThan(40_000 / 4);
+  });
+
   it('never below the floor, however little the input', () => {
     const sized = utilityNumCtx({ inputChars: 12, outputTokens: 16, configuredNumCtx: 28_672 });
     expect(sized).toBe(MIN_UTILITY_NUM_CTX);
@@ -119,6 +137,26 @@ describe('⚠ THE WINDOW IS SIZED TO THE CALL — on Ollama num_ctx is an ALLOCA
     const sized = utilityNumCtx({ inputChars: TITLE_INPUT_CHARS, outputTokens: 64, configuredNumCtx: null });
     expect(sized).toBeGreaterThanOrEqual(MIN_UTILITY_NUM_CTX);
     expect(sized).toBeLessThan(8_192);
+  });
+});
+
+describe('the dial is wired at its call site, not merely available', () => {
+  // ⚠ TWO MUTANTS LIVED THROUGH THIS FILE AND THE WIRE FILE BOTH: deleting `purpose: 'ask_title'`
+  // from the title call, and deleting its `abortSignal`. Nothing failed, because the policy and the
+  // transport were each covered and the ONE line joining them to this caller was not. A 30-second
+  // budget cannot be proven by a 30-second test in a suite that runs on every commit, so the call site
+  // is read instead — the same shape the engine's own censuses use for a wiring fact.
+  const askTitleSource = readFileSync(new URL('../../work/ask-title.ts', import.meta.url), 'utf-8');
+
+  it('the title dial DECLARES its purpose', () => {
+    expect(askTitleSource).toContain("purpose: 'ask_title'");
+  });
+
+  it('…and passes the budget as an abort signal, which is what the transports honour', () => {
+    expect(askTitleSource).toContain('abortSignal: AbortSignal.timeout(ASK_TITLE_LATENCY_BUDGET_MS)');
+    // `bestEffort` is what makes the abort a warn rather than an agent-level error; the three belong
+    // together, so a reader who removes one sees this clause name the other two.
+    expect(askTitleSource).toContain('bestEffort: true');
   });
 });
 

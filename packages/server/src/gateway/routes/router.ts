@@ -4,6 +4,7 @@
 
 import { Hono } from 'hono';
 import { getDb } from '../../db/connection.js';
+import { SYSTEM_TIER_PROVIDER_TYPES, SYSTEM_TIER_PROVIDER_REFUSAL } from '@dojo/shared';
 import { createLogger } from '../../logger.js';
 import { scoreQuery, clearDimensionCache } from '../../router/scorer.js';
 import type { RouterConfig, TierConfig } from '../../router/types.js';
@@ -121,8 +122,10 @@ routerRouter.put('/tiers/:tierId/models', async (c) => {
         SELECT p.type as providerType FROM models m
         JOIN providers p ON p.id = m.provider_id WHERE m.id = ?
       `).get(modelId) as { providerType: string } | undefined;
-      if (row?.providerType !== 'ollama') {
-        return c.json({ ok: false, error: 'The System tier accepts local (Ollama) models only.' }, 400);
+      // t88: the SAME list the Settings dropdown filters on, so the UI cannot offer a model this
+      // route will refuse. The refusal sentence is shared for the same reason.
+      if (!row || !SYSTEM_TIER_PROVIDER_TYPES.includes(row.providerType)) {
+        return c.json({ ok: false, error: SYSTEM_TIER_PROVIDER_REFUSAL }, 400);
       }
     }
   }
