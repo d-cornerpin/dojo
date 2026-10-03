@@ -6287,13 +6287,34 @@
       "to": 251,
       "by": "t89-1 - the reader offload (NEW ENTRY, pinned at its current size)",
       "why": "NEW ENTRY at 251 (128 code, 123 comment). The offload that takes a 43-second synchronous read off the thread serving HTTP, MEASURED rather than wired: on-thread 0% of the loop serviced, off-thread 87%, with the stall sentinel reporting 0ms drift across the same read. Most of the comment is three arguments a later reader needs: why the worker's body is an INLINE SOURCE STRING (a worker file must resolve as .ts under tsx, .js under dist, and under vitest's loader, in a fresh context that does not inherit the parent's loader - every workaround is machinery that breaks in one environment and not another), why TERMINATE is the only honest answer to an overrun (nothing in JavaScript interrupts work inside sqlite3_step), and why every worker event handler is scoped to its own instance (terminate resolves BEFORE the exit event, so a blanket handler rejected the innocent query that followed the kill - caught by a clause). From 251 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/retrieval.ts",
+      "from": 681,
+      "to": 698,
+      "by": "t89 THE WIRE — the searches ride the reader pool, sync as the fallback",
+      "why": "+17 (9 comment, 8 code). The tripwire's own instruction executed: memoryGrep/searchMessages/Inner/Like async; the FTS query and each LIKE chunk route through readerQuery when the pool is up; the sync run is the FALLBACK, counted by the flipped clause. The growth is the guarded fork (pool path beside sync path) — collapsing to pool-only was REFUSED because a box whose worker cannot spawn must keep searching, and moving the fork out of this file would put the wire in a module that owns neither the SQL nor the bounds. From 698 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/reader-pool.ts",
+      "from": 251,
+      "to": 264,
+      "by": "t89 THE WIRE — two pool truths the concurrency clauses forced",
+      "why": "+13 (9 comment, 4 code). (1) ':memory:' has NO pool, honestly: the worker reads by PATH on its own connection, so a memory db would answer every query from a different, empty universe — every db-mocking test and any future ephemeral mode now gets the sync path by design, which closed three test reds that were real product lies. (2) terminateReaderPool LATCHES closed until warmReaderPool: a whole-pool terminate is a shutdown, and the next search must not quietly respawn the thread the shutdown killed; the deadline kill inside readerQuery deliberately still self-heals. From 264 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/search-bounds.ts",
+      "from": 249,
+      "to": 252,
+      "by": "t89 THE WIRE — the async scan accepts an awaited chunk",
+      "why": "+3 (comment): fetchChunk widens to sync-or-Promise so the worker round-trip and the direct statement run share ONE loop and ONE budget; the await costs a microtask on a sync return. From 252 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
   "files": {
     "packages/server/src/report/bounds.ts": 311,
-    "packages/server/src/memory/reader-pool.ts": 251,
-    "packages/server/src/memory/search-bounds.ts": 249,
+    "packages/server/src/memory/reader-pool.ts": 264,
+    "packages/server/src/memory/search-bounds.ts": 252,
     "packages/server/src/services/num-ctx-calculator.ts": 563,
     "packages/server/src/report/telemetry-whitelist.ts": 241,
     "packages/server/src/agent/brokers/sudo-probe.ts": 83,
@@ -6496,7 +6517,7 @@
     "packages/server/src/memory/other-threads-lane.ts": 276,
     "packages/server/src/memory/recall-lane.ts": 901,
     "packages/server/src/memory/recall.ts": 510,
-    "packages/server/src/memory/retrieval.ts": 681,
+    "packages/server/src/memory/retrieval.ts": 698,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 458,
