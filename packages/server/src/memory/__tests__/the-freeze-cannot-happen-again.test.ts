@@ -7,7 +7,7 @@
 // audit and the platform trace agreed on the shape, and it took three independent defects
 // standing in a line:
 //
-//   1. Her provider had no balance. It answered **HTTP 402 — 3,604 times over 27 hours** — and
+//   1. The reporting user's provider had no balance. It answered **HTTP 402 — 3,604 times over 27 hours** — and
 //      nothing ever stopped dialling it.
 //   2. Her agent's context (~4,000 uncompacted messages, ~86K tokens of summaries) sat over the
 //      emergency threshold of a 64K-window model, so the pre-call gate forced a full reactive
@@ -74,11 +74,11 @@ import {
 const AGENT = 'kevin-v323';
 const DEAD_PROVIDER = 'prov-no-balance';
 const LIVE_PROVIDER = 'prov-paid';
-/** Her box's shape: a 64K cloud window, and the local 131K row as the control. */
+/** The reported box's shape: a 64K cloud window, and the local 131K row as the control. */
 const MODEL_64K = 'm-cloud-64k';
 const MODEL_131K = 'm-local-131k';
 
-/** The provider's actual words, as her log recorded them. */
+/** The provider's actual words, as the reported log recorded them. */
 const HTTP_402 = 'API error 402: {"error":{"message":"Insufficient Balance","type":"insufficient_balance"}}';
 
 // ── the seeded body ──────────────────────────────────────────────────────────────────────
@@ -98,7 +98,7 @@ function seedBox(opts: { messages: number; summaryTokens: number }): void {
   db.prepare("INSERT OR IGNORE INTO agents (id, name, model_id, status, session_started_at) VALUES (?, 'Kevin', ?, 'idle', '1970-01-01')")
     .run(AGENT, MODEL_64K);
 
-  // The backlog. Chunky rows so the body has real bytes in it, as hers did.
+  // The backlog. Chunky rows so the body has real bytes in it, as the reported one had.
   const insertMsg = db.prepare(
     `INSERT INTO messages (id, agent_id, role, lane, content, display_kind, display_tier,
                            turn_number, provenance, authorized, token_count, created_at)
@@ -193,7 +193,58 @@ afterEach(() => {
 // ── §1 — LAYER 3: the 402 is a wall, and the platform stops walking into it ──────────────
 
 describe('§1 a 402 is permanent, and two of them end the dialling', () => {
-  it('classifies her provider\'s actual words as permanent, and a 503 as transient', () => {
+  /**
+   * ⚠ THE SAFETY INVERSION THE REVIEW MEASURED (H2), AS FIXTURES.
+   *
+   * `hasStatusToken` is `(?<![\w.])<status>(?![\w.])`, so a HYPHEN or a SPACE is a boundary. Before
+   * the narrowing, all five of these — innocent strings that merely contain a separator-delimited
+   * 401/402/403 — came back PERMANENT through the real `permanentFailureReason`, which now means
+   * taking a working provider off the board. The module's own header forbids exactly that: *"a
+   * breaker that opens on an unrecognised string would take a working provider off the board on a
+   * bad parse"*. The quoted-upstream-status row is the realistic one — provider SDKs routinely put
+   * another hop's status in the message.
+   *
+   * These are CONTROLS, not decoration: each one is a provider that keeps working.
+   */
+  const INNOCENT_SHAPES = [
+    'model gpt-402-turbo is unavailable',
+    'completed 402 of 500 tokens',
+    'GET /v1/403/models returned 500',
+    'upstream 401 logged for request 9; this call failed with 503',
+    'retry 403 of 500 attempts',
+  ] as const;
+
+  it.each(INNOCENT_SHAPES)('⚠ H2 CONTROL: %s must NOT pause a provider', (text) => {
+    expect(
+      permanentFailureReason(text),
+      'a status number sitting inside a model name, a ratio or a quoted upstream hop is not evidence '
+      + 'that this provider is out of money. Latching on it takes a WORKING provider off the board, '
+      + 'which is the one failure this module\'s header forbids.',
+    ).toBeNull();
+  });
+
+  /**
+   * ⚠ ONE FIXTURE MUST NOT DO THREE JOBS (M1). The review deleted `hasStatusToken(lower, 402)` from
+   * the quota branch and the whole suite stayed GREEN, because the single fixture
+   * `API error 402: {"message":"Insufficient Balance"}` satisfies the 402 token, `insufficient
+   * balance` AND `insufficient_balance` at once — so the headline fix was unfalsifiable from its own
+   * corpus. One row per matcher arm, each prose-free or number-free, makes every arm load-bearing.
+   */
+  const TRUE_POSITIVES: ReadonlyArray<[string, string]> = [
+    ['402 Payment Required', 'the bare status line, no prose at all — the matcher the review killed'],
+    ['HTTP 402: payment required for this account', 'a status in a status position, different prose'],
+    ['Your account has insufficient balance to complete this request', 'prose only, no number'],
+    ['error: insufficient_quota for this organization', 'the OpenAI spelling, no number'],
+    ['Billing: insufficient funds on the payment method', 'the third spelling, no number'],
+    ['account has insufficient credit remaining', 'the fourth spelling, no number'],
+    ['You exceeded your current quota, please check your plan', 'quota + exceed, no number'],
+  ];
+
+  it.each(TRUE_POSITIVES)('a real out-of-balance refusal is permanent: %s', (text) => {
+    expect(permanentFailureReason(text), 'a genuine billing refusal must open the breaker').toBe('no_balance');
+  });
+
+  it('classifies the reporting user\'s actual words as permanent, and a 503 as transient', () => {
     expect(permanentFailureReason(HTTP_402)).toBe('no_balance');
     expect(permanentFailureReason('API error 401: invalid api key')).toBe('credential_rejected');
     expect(permanentFailureReason('API error 403: model not enabled for this account')).toBe('access_refused');
@@ -291,7 +342,7 @@ describe('§2 the forced path has brakes and a terminal state', () => {
     // math`'s "THE TOKEN PATH IS UNTOUCHED" clause is a counterexample: raw rows outside the fresh
     // tail can still be summarised when the summaries are large, so a forced pass is entitled to
     // try once. Terminality is decided on EVIDENCE; the summaries fact only names the reason.
-    // Her shape — 86K of summaries against what a 64K-window model admits — after a pass that won
+    // The reported shape — 86K of summaries against what a 64K-window model admits — after a pass that won
     // nothing:
     expect(noteForcedOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 }, 86_000, 50_000))
       .toBeTruthy();
@@ -372,7 +423,7 @@ describe('§3 the CPU: three estimates become one, and the loop stays responsive
   });
 
   it('⚠ THE HEADLINE: event-loop starvation, pre-fix shape vs post-fix shape, one body', async () => {
-    // 400 messages and 86K of summaries — a tenth of her backlog, which is the honest scale for a
+    // 400 messages and 86K of summaries — a tenth of the reported backlog, which is the honest scale for a
     // unit box. The RATIO is the finding; the absolute numbers are recorded, not asserted.
     seedBox({ messages: 400, summaryTokens: 86_000 });
 
