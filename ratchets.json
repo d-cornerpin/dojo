@@ -6273,11 +6273,26 @@
       "to": 249,
       "by": "t89-2 - the bounds module (NEW ENTRY, pinned at its current size)",
       "why": "NEW ENTRY at 249 (89 code, 160 comment). The growth detector asked for this file to be pinned or split rather than drifting toward the 400-line cap unargued. It is ONE decision - how much work a text search may do - and the comment carries the measurement that makes each number defensible (the profiler samples, the 729 MB table, why a LIMIT is not a bound, why recency is the right axis, why bytes and not just rows). Splitting the arithmetic from its argument is how the original unbounded queries came to look reasonable. REFUSED: a generic query builder here, which is the job-queue framework the brief says not to build - this module owns the budget and the caller owns its SQL. From 249 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/index.ts",
+      "from": 1287,
+      "to": 1294,
+      "by": "t89-1 - the reader pool is warmed at boot",
+      "why": "1287 -> 1294 (+7: an import, a call, and five lines saying why it happens at boot). The worker spawn costs the calling thread a few milliseconds once per process; paying it here means no user's first search pays it, and a box that cannot spawn worker threads reports that immediately instead of inside somebody's query. Best-effort: a box without worker threads keeps working with searches on the serving thread."
+    },
+    {
+      "path": "packages/server/src/memory/reader-pool.ts",
+      "from": 0,
+      "to": 251,
+      "by": "t89-1 - the reader offload (NEW ENTRY, pinned at its current size)",
+      "why": "NEW ENTRY at 251 (128 code, 123 comment). The offload that takes a 43-second synchronous read off the thread serving HTTP, MEASURED rather than wired: on-thread 0% of the loop serviced, off-thread 87%, with the stall sentinel reporting 0ms drift across the same read. Most of the comment is three arguments a later reader needs: why the worker's body is an INLINE SOURCE STRING (a worker file must resolve as .ts under tsx, .js under dist, and under vitest's loader, in a fresh context that does not inherit the parent's loader - every workaround is machinery that breaks in one environment and not another), why TERMINATE is the only honest answer to an overrun (nothing in JavaScript interrupts work inside sqlite3_step), and why every worker event handler is scoped to its own instance (terminate resolves BEFORE the exit event, so a blanket handler rejected the innocent query that followed the kill - caught by a clause). From 251 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
   "files": {
     "packages/server/src/report/bounds.ts": 311,
+    "packages/server/src/memory/reader-pool.ts": 251,
     "packages/server/src/memory/search-bounds.ts": 249,
     "packages/server/src/services/num-ctx-calculator.ts": 563,
     "packages/server/src/report/telemetry-whitelist.ts": 241,
@@ -6469,7 +6484,7 @@
     "packages/server/src/healer/diagnostic.ts": 1067,
     "packages/server/src/healer/healer-agent.ts": 1186,
     "packages/server/src/healer/injury-recovery.ts": 1155,
-    "packages/server/src/index.ts": 1287,
+    "packages/server/src/index.ts": 1294,
     "packages/server/src/memory/assembler.ts": 2745,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
