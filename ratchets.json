@@ -5783,8 +5783,7 @@
       "to": 7189,
       "by": "\"one policy\" ruling - one line naming the second door on the card",
       "why": "7188 -> 7189 (+1). The card blurb names both doors in the one place an owner meets the setting."
-    }
- ,
+    },
     {
       "path": "packages/server/src/agent/brokers/sudo-policy.ts",
       "from": 633,
@@ -5889,6 +5888,34 @@
       "to": 7194,
       "by": "REBASE ARITHMETIC ONLY (2026-09-27) - this round changed no dashboard file",
       "why": "7189 -> 7194 (+5), and none of it is mine: rebasing this branch onto `main` (60551e9d) put the freshbox bundle's five Full-Disk-Access lines underneath the sudo card. Both raises are argued in their own entries - freshbox item D and the sudo card - and this one exists only because the two land in one file and the pin has to name the sum. Verified by diffing the file's sudo hunks against their pre-rebase form. From 7194 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/provider-error.ts",
+      "from": 345,
+      "to": 390,
+      "by": "v3.2.3 INCIDENT FIX ROUND (review H1 + H2) — the 402 the classifier could not see, and the anchor that keeps it from seeing 402s that are not there",
+      "why": "+45 NET (+47/-2; 30 comment, 17 code) and the review is right that the first cut claimed this raise without committing it. THE CODE IS TWO THINGS. (1) The 402 arm, +12: a real box logged 3,604 identical `API error 402: {\"message\":\"Insufficient Balance\"}` over 27 hours and this function answered `unknown` every time, because the text path probed 429/401/403/503/500 and not 402, and its quota branch wanted the single spelling `insufficient_quota`. `statusToClass` has always mapped 402 correctly — an error carrying its status as TEXT simply never reached it. (2) `statusIsAnchored`, +12 code: the same number, but only in a position where a status can be announced (leading, optionally behind a quote/bracket/HTTP version, or introduced by `error`/`status`/`code`). THE 30 COMMENT LINES ARE THE REVIEW'S OWN MEASUREMENT AND THEY ARE WHY THE RAISE IS WORTH TAKING. `hasStatusToken` is `(?<![\\w.])<status>(?![\\w.])`, so a HYPHEN and a SPACE are boundaries, and the review measured 5 of 5 innocent strings — `gpt-402-turbo`, `completed 402 of 500 tokens`, `/v1/403/models`, a quoted upstream 401, `retry 403 of 500 attempts` — coming back PERMANENT once v3.2.3 gave a permanent class the power to latch a provider off the board. A reader who deletes that paragraph widens the matcher back, because the loose version LOOKS more generous right up until you ask what now consumes it. THE ALTERNATIVES WERE MEASURED. (a) PUT THE ANCHOR IN `providers/billing-breaker.ts`, which needed a fresh pin anyway and would have cost nothing here: REFUSED — the breaker already imports `classifyProviderErrorText` from this module, so the anchor would have to import back, and the 402 arm in THIS file needs it too (a false `quota` becomes a Tier-D QUOTA_EXHAUSTED lock via `classifyPlatformError`, which is this package's own new consequence). One implementation of 'where may a status live', in the module that owns 'what does this error text mean'. (b) NARROW `hasStatusToken` ITSELF and raise nothing: REFUSED — 429/401/403/500/502/503/504/400/404/413/422 all ride that matcher on `main` and their consequence is a retry classification, not a latch; tightening all eleven to fix one is a blast radius this fix round has no clauses for, and the review explicitly left the inherited looseness where it was. From 390 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/vault/archive.ts",
+      "from": 304,
+      "to": 310,
+      "by": "v3.2.3 INCIDENT FIX ROUND (review M2) — the incompressible card's first instruction, made true",
+      "why": "+6 NET (+6/-0; 3 comment, 3 code: one import, one call, one blank). THE CODE IS ONE CALL. An agent latched INCOMPRESSIBLE is carded with 'Archive this conversation or reset the agent's session to give it room', and the review found `clearIncompressible` had ZERO callers — the instruction did nothing. This function is the chokepoint all six archive/new-session/reset doors funnel through (the session tool, the dashboard's new-session, the reset-session route, the shutdown sweep, the spawner's two), so one line here is the whole promise, and it sits ahead of the Dreamer-ignore and service-agent skips because an ignored agent still gets its room back. THE 3 COMMENT LINES name the card and the six doors, which is what stops the next reader deleting a call that looks unrelated to archiving. ALTERNATIVES MEASURED: (a) CALL IT AT THE FIVE `session_started_at` WRITERS instead: REFUSED, five edits across five pinned files to say one thing, and the sixth writer would silently reopen the finding. (b) TAKE NOTHING HERE AND LET THE FACTS COMPARISON IN `compaction-brakes.ts` DO IT ALL: genuinely considered, and it IS the mechanism that cannot rot (`session_started_at`, `model_id` and the high-water mark are all compared there, which covers the nine model-switch sites and the five reset sites without a census). Kept this line anyway because it is the one door that KNOWS it just gave the agent room, so the card's first instruction takes effect on the spot rather than on the next brake check. From 310 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/compaction-brakes.ts",
+      "from": 0,
+      "to": 351,
+      "by": "v3.2.3 INCIDENT FIX ROUND (review H1) — the compaction brakes, pinned at birth rather than left invisible",
+      "why": "NEW ENTRY at 351 (171 comment, 180 code), under the 400-line cap but over the growth detector's 240-line trigger, so it is argued here rather than waved through. WHAT IT HOLDS IS ONE MECHANISM: when may a compaction pass run, and when is this agent's memory terminal. Every export is a question about that one state — `compactionIsBraked` (the predicate the entry point asks), `noteLowYield` and `noteForcedOutcome` (what a pass achieved), `latchIfSummariesExceedBudget` (the terminal state visible before the work), `clearIncompressible`/`isIncompressible`/`incompressibleCardText` (the latch's lifecycle and its card), `forcedCompactionOptions` and `summaryWriterUnavailable` (the bounds a forced pass runs under). They share the two module-level maps; splitting them would mean exporting the maps, which is how shared mutable state becomes everyone's. WHY IT EXISTS AT ALL: `memory/compaction.ts` is pinned at 1613 and holds the entry point, so the state and the arithmetic moved OUT to a new file and the pinned file took one-line hooks — the pattern this campaign uses to avoid growing god files, and `compaction.ts` is 1612 after the work. THE 171 COMMENT LINES ARE THE INCIDENT AND THREE CORRECTIONS CLAUSES FORCED: the brakes were all `!force`-gated while the gate forced every prompt (the defect); terminality is latched on EVIDENCE, never predicted, because `the-clock-does-not-overrule-the-token-math` proved a prediction wrong; a latch is about a HISTORY, not an agent, so it releases when the facts move; and `latchIfSummariesExceedBudget` needs TWO facts because large summaries alone are survivable. A reader who deletes those paragraphs re-derives the freeze — each one is a red clause someone already paid for. ALTERNATIVES: (a) SPLIT THE LATCH FROM THE YIELD BRAKE: refused, both are read by the single predicate `compactionIsBraked` and both are written by the single `noteForcedOutcome`; the seam would run straight through one decision. (b) LEAVE IT UNLISTED at 351: refused — that is the invisibility the growth detector exists to end, and the review predicted this entry. From 351 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/providers/billing-breaker.ts",
+      "from": 0,
+      "to": 308,
+      "by": "v3.2.3 INCIDENT FIX ROUND (review H1) — the permanent-vs-transient breaker, pinned at birth",
+      "why": "NEW ENTRY at 308 (140 comment, 168 code), under the 400-line cap and over the 240-line trigger. ONE MECHANISM: is this provider failure PERMANENT, and what follows if it is. `permanentFailureReason` answers the question; `recordPermanentFailure`/`noteProviderFailure`/`noteProviderSuccess` keep the count; `providerBreaker`/`openBreakers_readonly`/`mayDialProvider`/`clearProviderBreaker` are the one open/closed state the router, the summary writer and the owner's retry all read; `cardText` and `pauseInsteadOfRetrying` are what the owner is told. The platform already classified provider errors well — what no module answered was PERMANENCE, and retrying a permanent failure is a busy-wait against a wall that cost a real box 3,604 round trips over 27 hours. THE 140 COMMENT LINES carry that incident, the deliberate refusals (NOT time-based decay — a wall does not stop being a wall after five minutes; NEVER gating the last door — a single-provider box is told, not stopped) and the review's H2 measurement: the five innocent status-shaped strings that opened a breaker on a WORKING provider, and the three kinds of evidence a latch now requires. A reader who deletes the H2 paragraph restores a one-line class switch and re-inverts the safety direction. ALTERNATIVES: (a) PUT IT IN `gateway/routes/services.ts` (377, unlisted) beside `recordProviderError`, where the counting already lived: refused — a route file would then own state the ROUTER and the summariser read, and `router/selector.ts` importing a gateway route to ask whether it may dial is a dependency pointing the wrong way. (b) FOLD IT INTO `agent/provider-error.ts` (390): refused — that module answers 'what does this text mean' and is consumed by a dozen callers that must not inherit breaker state. From 308 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -5943,7 +5970,7 @@
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
-    "packages/server/src/agent/provider-error.ts": 345,
+    "packages/server/src/agent/provider-error.ts": 390,
     "packages/server/src/agent/runtime.ts": 1739,
     "packages/server/src/agent/shared-state.ts": 415,
     "packages/server/src/config/schema.ts": 300,
@@ -6140,7 +6167,7 @@
     "packages/server/src/twilio/sms-inbound.ts": 406,
     "packages/server/src/update-state.ts": 417,
     "packages/server/src/update/disk-preflight.ts": 246,
-    "packages/server/src/vault/archive.ts": 304,
+    "packages/server/src/vault/archive.ts": 310,
     "packages/server/src/vault/maintenance.ts": 2170,
     "packages/server/src/vault/retrieval.ts": 425,
     "packages/server/src/vault/store.ts": 1205,
@@ -6181,6 +6208,8 @@
     "packages/server/src/memory/integration-status-lane.ts": 461,
     "packages/server/src/tools/name-help.ts": 355,
     "packages/dashboard/src/components/Markdown.tsx": 433,
-    "packages/server/src/memory/embeddings.ts": 319
+    "packages/server/src/memory/embeddings.ts": 319,
+    "packages/server/src/memory/compaction-brakes.ts": 351,
+    "packages/server/src/providers/billing-breaker.ts": 308
   }
 }
