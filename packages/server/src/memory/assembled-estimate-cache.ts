@@ -44,6 +44,8 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
+import { getToolConfigGeneration } from '../agent/tool-config-generation.js';
+import { getSessionLoadedTools } from '../tools/tool-session-set.js';
 
 const logger = createLogger('assembled-estimate-cache');
 
@@ -114,13 +116,42 @@ export async function cachedAssembledEstimate(
 }
 
 /**
+ * THE SURFACE THIS CACHE IS ABOUT, named by the facts that move it. (v3.2.3 review, M4)
+ *
+ * The first cut keyed on `agentId:modelId` while its own doc said the tool surface moves with
+ * grants, with `load_tool_docs` in a session, and with the always-loaded head — none of which the
+ * model id can see. The review was exact: a wrong key here makes an agent's budget reflect a tool
+ * set it does not carry. So the key names each mover, cheapest first:
+ *
+ *   · `getToolConfigGeneration()` — bumped by every write that widens or narrows the GLOBAL
+ *     surface (an integration connected, a service enabled, an account removed). The same counter
+ *     `getFilteredTools` keys its own memo on, which is the review's point.
+ *   · `agents.updated_at` — every per-agent surface fact (`permissions`, `tools_policy`,
+ *     `group_id`, `classification`, `task_id`, the always-loaded declaration) lives on that row,
+ *     and materialising grants writes it with `updated_at = datetime('now')`. Reading the stamp
+ *     rather than re-listing the columns is deliberate: `computeAgentToolFingerprint` owns that
+ *     list, and a second copy here would be the drift the review is complaining about. It
+ *     over-invalidates — any agent write costs one stringify — which is the safe direction.
+ *   · the session's loaded doc set — what `load_tool_docs` actually changes, read from the one
+ *     module that owns it.
+ *
+ * Model id stays in the key because the output cap and the ceiling travel with it.
+ */
+export function toolSurfaceKey(agentId: string, modelId: string | null | undefined): string {
+  let stamp = '';
+  try {
+    stamp = (getDb().prepare('SELECT updated_at FROM agents WHERE id = ?')
+      .get(agentId) as { updated_at?: string } | undefined)?.updated_at ?? '';
+  } catch { stamp = ''; }
+  const loaded = [...getSessionLoadedTools(agentId)].sort().join(',');
+  return `${agentId}|${modelId ?? '-'}|${getToolConfigGeneration()}|${stamp}|${loaded}`;
+}
+
+/**
  * The ~100 KB `JSON.stringify` of the tool array, cached per agent + SURFACE.
  *
- * The surface key is the caller's: tools change with grants, with
- * `load_tool_docs` in a session, and with the always-loaded head, and the caller
- * already knows which of those it is asking about. A wrong key here would make an
- * agent's budget reflect a tool set it does not carry, so the key is required
- * rather than defaulted.
+ * The key is required rather than defaulted, and `toolSurfaceKey` above is the one that answers
+ * it: a caller that invents its own would be the finding this replaced.
  */
 export async function cachedToolPayloadTokens(
   agentId: string, surfaceKey: string, compute: () => Promise<number>,
@@ -130,13 +161,6 @@ export async function cachedToolPayloadTokens(
   const tokens = await compute();
   toolPayloads.set(agentId, { key: surfaceKey, tokens });
   return tokens;
-}
-
-/** Drop everything known about one agent. Called where the facts change wholesale
- *  (a session reset, a purge) rather than trusted to the key. */
-export function invalidateAssembledEstimate(agentId: string): void {
-  estimates.delete(agentId);
-  toolPayloads.delete(agentId);
 }
 
 /** Observability for the reproduction: the headline is that a pass goes 3 → 1. */

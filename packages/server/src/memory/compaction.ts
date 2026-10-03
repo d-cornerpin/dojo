@@ -1,9 +1,9 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { withLock } from '../db/with-lock.js';
-import { MIN_COMPACTABLE_ROWS, compactionIsBraked, noteLowYield, noteForcedOutcome,
+import { MIN_COMPACTABLE_ROWS, compactionIsBraked, noteLowYield, noteForcedOutcome, latchIfSummariesExceedBudget,
   summaryWriterUnavailable } from './compaction-brakes.js';  // v3.2.3 L1
-import { cachedAssembledEstimate, cachedToolPayloadTokens } from './assembled-estimate-cache.js';
+import { cachedAssembledEstimate, cachedToolPayloadTokens, toolSurfaceKey } from './assembled-estimate-cache.js';
 export { forcedCompactionOptions } from './compaction-brakes.js';   // the emergency path's bounds, published where its callers already look
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -161,7 +161,7 @@ export async function estimateAssembledTokens(
   // the safe one where the real ceiling cannot yet be named, and NULL never narrows
   // anything, only a genuine ceiling does).
   const policy = contextWindowPolicy(contextWindow, {
-    toolPayloadTokens: await cachedToolPayloadTokens(agentId, `${agentId}:${modelId ?? '-'}`, () => measureAgentToolPayloadTokens(agentId)),
+    toolPayloadTokens: await cachedToolPayloadTokens(agentId, toolSurfaceKey(agentId, modelId), () => measureAgentToolPayloadTokens(agentId)),
     maxOutputTokens: modelId ? getModelOutputCap(modelId) : undefined,
     // T82 FIX WAVE, I1: the ceiling reads off `ceilingModelId`, NOT `modelId` — see this
     // parameter's own doc above for why the two may legitimately differ.
@@ -665,6 +665,7 @@ async function runCheckAndCompact(
     // after any low-yield run back off for a while. Emergency (force) always
     // bypasses, pressure at 96%+ must act regardless of yield.
     if (compactionIsBraked(agentId, force)) return NO_COMPACTION;
+    if (latchIfSummariesExceedBudget(agentId, assembled.summaryTokens, Math.max(0, contextWindow - assembled.reserveTokens), guardUncompactedCount)) return NO_COMPACTION;   // v3.2.3 M3: terminal BEFORE any model call — two facts, see the brake's doc
     if (!force && guardUncompactedCount > 0 && guardUncompactedCount < MIN_COMPACTABLE_ROWS) {
       logger.info('Compaction skipped: outside-tail region too small to reclaim meaningfully', {
         assembledTokens: totalTokens, threshold, uncompactedOutsideTail: guardUncompactedCount,

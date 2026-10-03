@@ -195,16 +195,32 @@ export function noteForcedOutcome(
 }
 
 /**
- * THE SECOND TERMINAL CONDITION, and the one that can be seen BEFORE doing the work:
- * the summaries alone already exceed what the assembler will admit. Nothing is left
- * outside the fresh tail that summarising could shrink — every future pass is the
- * incident's loop by construction. Checked by the entry point before it spends a
- * single model call.
+ * THE SECOND TERMINAL CONDITION — the one visible BEFORE spending a model call, and the reason it
+ * takes a row count. (Wired at the entry point by review M3.)
+ *
+ * TWO facts have to be true together, and an existing clause is why it is two and not one.
+ *
+ *   1. The summaries alone already exceed what the assembler will admit.
+ *   2. There is nothing left outside the fresh tail worth compacting — fewer than
+ *      `MIN_COMPACTABLE_ROWS`, the floor that decides a region is worth a pass at all.
+ *
+ * Fact 1 alone is NOT terminal, and claiming it was is the mistake this signature now prevents.
+ * `the-clock-does-not-overrule-the-token-math`'s "THE TOKEN PATH IS UNTOUCHED" clause drives large
+ * summaries WITH raw rows outside the tail and expects a summary to be written — correctly: those
+ * raw rows can still shrink, and the assembler caps admitted summaries at the budget anyway
+ * (`summaryTokens = Math.min(rawSummaryTokens, summaryBudget)`), so big summaries are survivable
+ * while the raw side still has give. A pass is entitled to try, and `noteForcedOutcome` latches it
+ * on evidence if it wins nothing.
+ *
+ * With BOTH facts true there is no give left anywhere: large summaries, nothing to compact, and
+ * every future turn re-asking the same question. That agent pays ZERO passes instead of one every
+ * six prompts, which is exactly what review residual 3 asked for.
  */
 export function latchIfSummariesExceedBudget(
-  agentId: string, summaryTokens: number, assemblyBudgetTokens: number,
+  agentId: string, summaryTokens: number, assemblyBudgetTokens: number, compactableRows: number,
 ): Latch | null {
   if (assemblyBudgetTokens <= 0 || summaryTokens <= assemblyBudgetTokens) return null;
+  if (compactableRows >= MIN_COMPACTABLE_ROWS) return null;
   return latchIncompressible(agentId, 'summaries_exceed_budget', summaryTokens, assemblyBudgetTokens);
 }
 
