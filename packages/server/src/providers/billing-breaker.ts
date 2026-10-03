@@ -46,7 +46,9 @@
 
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { classifyProviderErrorText, type ProviderErrorFacts } from '../agent/provider-error.js';
+import {
+  classifyProviderErrorText, statusIsAnchored, type ProviderErrorFacts,
+} from '../agent/provider-error.js';
 import { getDb } from '../db/connection.js';
 
 const logger = createLogger('billing-breaker');
@@ -87,11 +89,8 @@ const openBreakers = new Map<string, OpenBreaker>();
  * direction is deliberately TRANSIENT: a breaker that opens on an unrecognised
  * string would take a working provider off the board on a bad parse.
  */
-export function permanentFailureReason(
-  errText: string, facts?: ProviderErrorFacts,
-): PermanentReason | null {
-  const f = facts ?? classifyProviderErrorText(errText ?? '');
-  switch (f.class) {
+function reasonForClass(c: ProviderErrorFacts['class']): PermanentReason | null {
+  switch (c) {
     // 402 / "insufficient balance" / "credit". The wall this incident hit.
     case 'quota': return 'no_balance';
     // 401 and prose-named revoked keys. A retry cannot mint a credential.
@@ -100,6 +99,43 @@ export function permanentFailureReason(
     case 'access_denied': return 'access_refused';
     default: return null;
   }
+}
+
+export function permanentFailureReason(
+  errText: string, facts?: ProviderErrorFacts,
+): PermanentReason | null {
+  const text = errText ?? '';
+  const f = facts ?? classifyProviderErrorText(text);
+  const reason = reasonForClass(f.class);
+  if (!reason) return null;
+
+  // ⚠ THE CLASS IS NOT ENOUGH. (v3.2.3 review, H2 — this gate is the whole finding.)
+  //
+  // The classes above are reached through a substring match on the status number, and a hyphen or
+  // a space is a word boundary. The review measured five innocent strings — a model name, a
+  // progress ratio, a URL path, a quoted upstream status, a retry counter — every one of which
+  // arrived here as PERMANENT and would have taken a provider that was working perfectly well off
+  // the board. That is the exact failure this module's header forbids.
+  //
+  // A latch therefore needs evidence stronger than *the digits are somewhere in the sentence*. Any
+  // ONE of three qualifies, and they are in order of how much they are worth:
+  const permanent = (
+    // 1. THE SDK SAID SO. `basis: 'status' | 'body'` means `classifyProviderError` read the number
+    //    out of a real field on a real error object, not out of prose. Nothing beats that.
+    ((f.basis === 'status' || f.basis === 'body') && f.status !== null)
+    // 2. THE NUMBER IS WHERE A STATUS GOES — leading, or introduced by `error`/`status`/`code`.
+    || (f.status !== null && statusIsAnchored(text, f.status))
+    // 3. THE WORDS SAY IT WITHOUT THE NUMBER. Strip every digit and ask the one classifier again:
+    //    if it still lands on the same permanent class, the prose carried the verdict by itself
+    //    (`insufficient balance`, `invalid_api_key`, `forbidden`) and the number was never load-
+    //    bearing. Re-asking rather than keeping a second phrase list here is deliberate: there is
+    //    one implementation of what these words mean, and it cannot drift from itself.
+    || reasonForClass(classifyProviderErrorText(text.replace(/\d/g, '#')).class) === reason
+  );
+
+  // Uncertain ⇒ TRANSIENT. The recovery cascade retries and the owner is never lied to about a
+  // provider being dead. A missed latch costs retries on one call; a false latch costs the box.
+  return permanent ? reason : null;
 }
 
 /** The card text per reason. Plain words, an action, and no jargon. */

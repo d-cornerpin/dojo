@@ -107,6 +107,39 @@ function hasStatusToken(text: string, status: number): boolean {
   return new RegExp(`(?<![\\w.])${status}(?![\\w.])`).test(text);
 }
 
+/**
+ * The same number, but only where a STATUS can actually live. (v3.2.3 review, H2)
+ *
+ * `hasStatusToken` above refuses `204015` and `1.401` — but a HYPHEN and a SPACE are both
+ * boundaries, so it says yes to `gpt-402-turbo`, to `completed 402 of 500 tokens`, and to another
+ * hop's status quoted inside a message (`upstream 401 logged … failed with 503`). That was
+ * tolerable while a mis-parse only cost a retry classification. It stopped being tolerable when
+ * v3.2.3 gave a permanent class the power to latch a provider off the board: the review measured
+ * **5 of 5** innocent status-shaped strings pausing a WORKING provider.
+ *
+ * So permanence asks a stricter question — not *does this number appear?* but *does it appear
+ * where a status is announced?* Two positions qualify, and nothing else does:
+ *
+ *   1. LEADING — the message opens with it, optionally behind a quote, a bracket or an HTTP
+ *      version: `402 Payment Required`, `HTTP/1.1 402 …`, `"402: no balance"`.
+ *   2. INTRODUCED — a word whose only job is to name a status sits immediately before it, with
+ *      at most a few punctuation characters between: `API error 402:`, `status code 402`,
+ *      `{"status": 402}`, `http 402`.
+ *
+ * Everything else is a number that happens to be in the sentence. The caller treats that as no
+ * evidence at all, which is this module's documented default direction.
+ */
+export function statusIsAnchored(text: string, status: number): boolean {
+  const s = String(status);
+  const sep = '[\\s:=>"\'\\-]{0,4}';
+  return new RegExp(
+    `^[\\s"'\\[({]*(?:http/\\d(?:\\.\\d)?\\s+)?${s}(?![\\w.])`
+    + `|(?:^|[^\\w.])(?:https?|status|statuscode|status_code|httpstatus|http_status|code|err|error|errored)`
+    + `${sep}${s}(?![\\w.])`,
+    'i',
+  ).test(text ?? '');
+}
+
 function statusToClass(status: number, providerType: string | null): ProviderErrorClass {
   const t = (providerType ?? '').toLowerCase();
   if (status === 401) return 'auth';
@@ -209,12 +242,17 @@ export function classifyProviderErrorText(text: string): ProviderErrorFacts {
   // `insufficient_quota` — so `API error 402: {"message":"Insufficient Balance"}` (a real box's
   // words) came out `unknown` and was retried for 27 hours, 3,604 times. `statusToClass` gets 402
   // right; a thrown error carrying its status as TEXT never reaches it. Hence the token + spellings.
-  if (hasStatusToken(lower, 402)
+  // ⚠ ANCHORED, not merely present (review H2): `completed 402 of 500 tokens` must not become a
+  // quota verdict, because `quota` is what `classifyPlatformError` turns into a Tier-D
+  // QUOTA_EXHAUSTED lock. A 402 that is not announced as a status falls through to the arms below
+  // and is read on its other evidence, which is how a transient stays transient.
+  const anchored402 = statusIsAnchored(lower, 402);
+  if (anchored402
     || lower.includes('insufficient_quota') || lower.includes('insufficient balance')
     || lower.includes('insufficient_balance') || lower.includes('insufficient funds')
     || lower.includes('insufficient credit')
     || (lower.includes('quota') && (lower.includes('exceed') || lower.includes('exhaust')))) {
-    return decided('quota', hasStatusToken(lower, 402) ? 402 : null);
+    return decided('quota', anchored402 ? 402 : null);
   }
   if (hasStatusToken(lower, 429) || lower.includes('rate_limit') || lower.includes('rate limit')
     || lower.includes('too many requests')) {
