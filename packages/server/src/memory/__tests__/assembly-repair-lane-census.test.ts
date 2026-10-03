@@ -67,7 +67,12 @@ import { engineFileContaining } from '../../agent/v2/__tests__/engine-sources.js
 // graph in `beforeAll`, which inherits the same seconds against `hookTimeout`; and
 // pinning the timeout on this one clause, which re-arms silently the moment an edit
 // makes a different clause run first.
-vi.setConfig({ testTimeout: 15_000 });
+// 30s, not 15: two release-gate runs (v3.3 train reviews, 2026-10-02) measured this
+// file at 15,005ms on a box under load — a 5ms overshoot failing a real gate run is
+// a phantom red, and a review that must explain a phantom costs more than the 15
+// extra seconds this budget concedes. The global budget is 30s; a private HALF
+// budget was rigor the measurement refused.
+vi.setConfig({ testTimeout: 30_000 });
 
 const user = (c: string): ValidatedMessage => ({ role: 'user', content: c });
 const asst = (c: string): ValidatedMessage => ({ role: 'assistant', content: c });
