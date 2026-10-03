@@ -5916,10 +5916,60 @@
       "to": 308,
       "by": "v3.2.3 INCIDENT FIX ROUND (review H1) — the permanent-vs-transient breaker, pinned at birth",
       "why": "NEW ENTRY at 308 (140 comment, 168 code), under the 400-line cap and over the 240-line trigger. ONE MECHANISM: is this provider failure PERMANENT, and what follows if it is. `permanentFailureReason` answers the question; `recordPermanentFailure`/`noteProviderFailure`/`noteProviderSuccess` keep the count; `providerBreaker`/`openBreakers_readonly`/`mayDialProvider`/`clearProviderBreaker` are the one open/closed state the router, the summary writer and the owner's retry all read; `cardText` and `pauseInsteadOfRetrying` are what the owner is told. The platform already classified provider errors well — what no module answered was PERMANENCE, and retrying a permanent failure is a busy-wait against a wall that cost a real box 3,604 round trips over 27 hours. THE 140 COMMENT LINES carry that incident, the deliberate refusals (NOT time-based decay — a wall does not stop being a wall after five minutes; NEVER gating the last door — a single-provider box is told, not stopped) and the review's H2 measurement: the five innocent status-shaped strings that opened a breaker on a WORKING provider, and the three kinds of evidence a latch now requires. A reader who deletes the H2 paragraph restores a one-line class switch and re-inverts the safety direction. ALTERNATIVES: (a) PUT IT IN `gateway/routes/services.ts` (377, unlisted) beside `recordProviderError`, where the counting already lived: refused — a route file would then own state the ROUTER and the summariser read, and `router/selector.ts` importing a gateway route to ask whether it may dial is a dependency pointing the wrong way. (b) FOLD IT INTO `agent/provider-error.ts` (390): refused — that module answers 'what does this text mean' and is consumed by a dozen callers that must not inherit breaker state. From 308 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 3652,
+      "to": 3702,
+      "by": "t88 UTILITY DIALS - the three options a utility dial sends, and the Max-output knob that sent nothing",
+      "why": "3652 -> 3702 (+50: ~20 code, ~30 comment). ⚠ ONE TICKET-TITLE CALL ON A USER'S BOX COST 275 SECONDS AND 5.4 GB OF RAM: 4,156 output tokens of 'thinking' for 60 characters of title, at the RAM-recommended 28,672-token window - which on Ollama is not a limit but an ALLOCATION, so the runtime wired ~2.5 GB of KV cache to summarise 2,000 characters and the whole machine stopped responding. What lands here is the three dials that produced it: `think` forced false for a declared utility purpose, `options.num_predict` sent at the artifact's own cap, and `options.num_ctx` sized to input+output rather than to the model. ⚠ AND THE OTHER HALF OF A DEAD KNOB: `num_predict` appeared NOWHERE in this engine before this commit, so the 'Max output' field in Settings honoured nothing on the Ollama native path; an ordinary call now sends the model's configured maximum, which is the first time that field does anything. `maxOutputTokens` was already on every row `getModelInfo` returns and simply missing from one inline parameter type. REFUSED: keying any of it on `tools === false`, which this file's own `purpose` comment already warns about - `runtime.ts`'s capability gate turns a REAL turn toolless, so the heuristic would have capped a person's conversation at 64 tokens. The decision table lives in `agent/utility-dial.ts`; this file only reads it. From 3702 it may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/components/RouterConfig.tsx",
+      "from": 545,
+      "to": 577,
+      "by": "t88 - the system-model save stops lying",
+      "why": "545 -> 577 (+32: ~12 code, ~20 comment). The owner-reported bug: 'changing the system model says saved but reverts.' THREE DEFECTS IN ONE HANDLER and the first two hid the third - the dropdown offered every enabled model while the route accepts local ones only, the handler DISCARDED the response and flashed 'Saved!' at a 400, and nothing re-read the server, so the old value reappeared on the next page load. The comment carries that chain because the next reader of this file is whoever changes a save handler. Now: the list filters on the same shared constant the route enforces, the response is checked and the server's own sentence shown, and the authoritative state is re-read after a successful write - which `Settings.tsx`'s own tier handler already did. From 577 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/ask-title.ts",
+      "from": 420,
+      "to": 444,
+      "by": "t88 deliverable 2 - the latency budget on the dial that took 275 seconds",
+      "why": "420 -> 444 (+24: 2 code, 22 comment). `ASK_TITLE_LATENCY_BUDGET_MS = 30_000`, enforced with the abort signal the transports already honour so it COMPOSES with the stop button instead of adding a second mechanism, plus the purpose declaration that gives this dial its caps. The prose is the argument for the number: nobody is waiting on this answer - the ticket is already open and already titled with its own id - so past the budget the fallback is worth strictly more than the answer, and 30s sits far below the measured 275 and well above the 5-20s a right-sized local dial now takes. From 444 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/browser.ts",
+      "from": 412,
+      "to": 416,
+      "by": "t88 - two vision captions declare themselves",
+      "why": "412 -> 416 (+4: two purpose declarations and a line of reason each). An engine caption is an engine artifact; the cap and the window follow from the declaration."
+    },
+    {
+      "path": "packages/server/src/agent/v2/classifiers/multistep.ts",
+      "from": 502,
+      "to": 505,
+      "by": "t88 - the classifier declares itself",
+      "why": "502 -> 505 (+3). One small JSON object is the whole artifact, so it gets a 48-token cap and thinking off; this caller's own timeout is unchanged."
+    },
+    {
+      "path": "packages/server/src/voice/voice-ws.ts",
+      "from": 2299,
+      "to": 2302,
+      "by": "t88 - the spoken opener declares itself",
+      "why": "2299 -> 2302 (+3). The opener is SPOKEN and must land before the real reply, so long output is actively harmful: 96 tokens, thinking off."
+    },
+    {
+      "path": "packages/server/src/report/telemetry-whitelist.ts",
+      "from": 0,
+      "to": 241,
+      "by": "t88 - the request_type domain gains the seven utility purposes (NEW ENTRY, pinned at its current size)",
+      "why": "NEW ENTRY at 241. The growth detector asked for this file to be pinned or split rather than drifting toward the 400-line cap unargued. It is a DECLARATION FILE - one measured list per telemetry path - so splitting it would scatter the domain it exists to centralise; pinning it decrease-only is the right half of that choice. t88's +7 members are the seven utility purposes now reachable in `cost_records.request_type`: until t88 every engine utility dial left `purpose` unset and landed as `completion`, so the column could say 'turn' or 'not turn' and nothing else. From 241 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
   "files": {
+    "packages/server/src/report/telemetry-whitelist.ts": 241,
     "packages/server/src/agent/brokers/sudo-probe.ts": 83,
     "packages/server/src/agent/brokers/sudo-copy.ts": 168,
     "packages/server/src/agent/brokers/sudo-policy.ts": 1320,
@@ -5933,7 +5983,7 @@
     "packages/dashboard/src/components/ImportWizard.tsx": 712,
     "packages/dashboard/src/components/PermissionsEditor.tsx": 448,
     "packages/dashboard/src/components/PlaudSettings.tsx": 254,
-    "packages/dashboard/src/components/RouterConfig.tsx": 545,
+    "packages/dashboard/src/components/RouterConfig.tsx": 577,
     "packages/dashboard/src/components/SetupDeps.tsx": 673,
     "packages/dashboard/src/components/TechniqueSessionProvider.tsx": 533,
     "packages/dashboard/src/components/TwilioSettings.tsx": 563,
@@ -5958,7 +6008,7 @@
     "packages/server/src/agent/brokers/deny.ts": 385,
     "packages/server/src/agent/brokers/grants.ts": 344,
     "packages/server/src/agent/brokers/proc.ts": 445,
-    "packages/server/src/agent/browser.ts": 412,
+    "packages/server/src/agent/browser.ts": 416,
     "packages/server/src/agent/destructive-gate.ts": 595,
     "packages/server/src/agent/effects/capability.ts": 308,
     "packages/server/src/agent/effects/fs.ts": 258,
@@ -5966,7 +6016,7 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 217,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 3652,
+    "packages/server/src/agent/model.ts": 3702,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
@@ -6005,7 +6055,7 @@
     "packages/server/src/agent/turn-state.ts": 239,
     "packages/server/src/agent/v2/ack-copy.ts": 303,
     "packages/server/src/agent/v2/answered-edge.ts": 818,
-    "packages/server/src/agent/v2/classifiers/multistep.ts": 502,
+    "packages/server/src/agent/v2/classifiers/multistep.ts": 505,
     "packages/server/src/agent/v2/counterparty.ts": 997,
     "packages/server/src/agent/v2/loop.ts": 724,
     "packages/server/src/agent/v2/outbound.ts": 462,
@@ -6175,10 +6225,10 @@
     "packages/server/src/voice/hume-engine.ts": 605,
     "packages/server/src/voice/model-manager.ts": 585,
     "packages/server/src/voice/stt-service.ts": 538,
-    "packages/server/src/voice/voice-ws.ts": 2299,
+    "packages/server/src/voice/voice-ws.ts": 2302,
     "packages/server/src/work/ask-remediation.ts": 314,
     "packages/server/src/work/ask-settlement.ts": 1307,
-    "packages/server/src/work/ask-title.ts": 420,
+    "packages/server/src/work/ask-title.ts": 444,
     "packages/server/src/work/deliverable-declaration.ts": 320,
     "packages/server/src/work/join-drive.ts": 498,
     "packages/server/src/work/obligation-memory.ts": 643,
