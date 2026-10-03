@@ -444,9 +444,19 @@ describe('§7 — RULING P5-R1: the PM overseer wall, held by a test at last', (
     expect(pmMayCall('work_update', { action: 'status', status: 'in_progress' })).toBe(false);
   });
 
+  it('⛔ REFUSES a REASSIGNMENT — owner ruling 2026-10-02', () => {
+    // This assertion was `.toBe(true)` in the ALLOWS clause below until t90. The owner's words:
+    // "Their job is not to reassign a task because they don't feel it is getting worked on fast
+    // enough. At no point during the construction of the dojo did I ever ask for the PM agent to
+    // simply reassign tasks to another agent." The op left `PM_ALLOWED_WORK_OPS`, so the same
+    // single-source wall this section tests now refuses it — and it is NOT in `PM_ONLY_WORK_OPS`,
+    // so the primary acting for a person keeps it (`tools/__tests__/work-verbs.test.ts` B10/B11).
+    expect(pmMayCall('work_update', { action: 'reassign' }),
+      'the overseer may not decide who does the work').toBe(false);
+  });
+
   it('ALLOWS the overseer verbs — the wall contains the PM, it does not disarm it', () => {
     expect(pmMayCall('work_validate', { action: 'validate' })).toBe(true);
-    expect(pmMayCall('work_update', { action: 'reassign' })).toBe(true);
     expect(pmMayCall('work_update', { action: 'get' })).toBe(true);
     expect(pmMayCall('send_to_agent', { to: 'x', message: 'y' })).toBe(true);
     expect(pmMayCall('file_read', { path: '/tmp/x' })).toBe(true);
