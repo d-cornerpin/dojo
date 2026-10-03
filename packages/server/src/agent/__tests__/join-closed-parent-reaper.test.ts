@@ -180,8 +180,20 @@ describe('#19: the reaper reaches a join whose parent has already closed', () =>
     expect(workRow(parent).remaining_children).toBe(0);
     const msgs = ownerFacing();
     expect(msgs).toHaveLength(1);
-    expect(msgs[0].content).toMatch(/could not get an answer/i);
+    // ⚠ RE-AIMED, NOT RELAXED (t90 D2, live-test report #3). This asserted
+    // `/could not get an answer/i` — the old notice's words for every failure shape at once. The
+    // report's own case was a DELIVERED delegation nobody answered, described to the owner as
+    // having "come back empty, failed or abandoned", i.e. as a reply that was not one. The
+    // property the clause was reaching for is unchanged and is now stated directly: the owner is
+    // told no answer arrived, and is told WHO and HOW LONG so a retry is judgeable.
+    expect(msgs[0].content, 'the owner must be told no answer arrived').toMatch(/answered|no answer/i);
+    expect(msgs[0].content, 'the piece here was abandoned, so nothing came back — do not claim a reply')
+      .not.toMatch(/came back empty, failed or abandoned/i);
+    expect(msgs[0].content, 'and the delivery is not disowned: it was sent, nothing errored')
+      .toMatch(/delivered/i);
     expect(msgs[0].content).toContain('Ana');
+    expect(msgs[0].content, 'how long it waited — the report could not judge a retry without it')
+      .toMatch(/waited \d+ (seconds|minutes?|minute|hours)/);
     // OR2, and this is the half the old clause could not express: the owner is told, and the
     // PLATFORM is what tells them. Not an assistant bubble, not the first person, and it
     // carries the owner-alert prefix that puts it on the dashboard's allowlist.
