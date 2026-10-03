@@ -80,9 +80,80 @@ export interface NumCtxComputationFailure {
   reason: string;
 }
 
+/**
+ * ⚠ THE RAM-RECOMMENDATION AUDIT (t88 capture-3). THIS FORMULA RECOMMENDED A 28,672-TOKEN WINDOW FOR
+ * A 4B UTILITY MODEL ON A 16 GB DESKTOP MACHINE, and the result was measured: the runtime loaded at
+ * 5.4 GB resident, system wired memory went 1.3 GB → 6.4 GB, free pages collapsed to ~60 MB, and the
+ * whole machine — WindowServer, screen sharing, a browser — stopped responding for the keep-alive
+ * window with no agent doing anything.
+ *
+ * WHAT IT GOT WRONG, and it is one sentence: IT BUDGETED AGAINST INSTALLED RAM AND THIS MODEL'S
+ * WEIGHTS, as though the box had nothing else to do. On that 16 GB box the old arithmetic was
+ * `16 - 4 (headroom) - 2.5 (weights) = 9.5 GiB available for KV cache`, which for a small model's
+ * ~90 KiB/token comes out larger than the model's own maximum — so the recommendation became "give it
+ * everything the architecture allows". Meanwhile the real box was running a desktop session, a
+ * browser, the engine itself, and an embedding model that Ollama keeps resident.
+ *
+ * ⚠ AND THE 12.5% WAS NEVER THE POLICY ON A SMALL BOX. 12.5% of 16 GiB is 2 GiB, below the 4 GiB
+ * floor, so the floor WAS the answer for every box up to 32 GiB — and 4 GiB is simply not what macOS
+ * plus a browser needs. The percentage only did anything on machines that were never at risk.
+ *
+ * SO THE BUDGET IS NOW AGAINST THE BOX'S OBLIGATIONS, each one named and each one a reserve this
+ * process can state a reason for. A recommendation is a promise that the box can still work while the
+ * model is loaded; it has to be made against everything else that has to keep working.
+ */
+export interface ObligationsInput {
+  readonly totalRamBytes: number;
+  /** The weights of the model being sized. */
+  readonly weightsBytes: number;
+  /**
+   * The weights of OTHER local models this box keeps resident — the embedder above all, which is
+   * loaded for the life of the process on any box using memory search. Ollama's `keep_alive` means
+   * "resident", so two models each sized as if alone will both be resident and the sum is what the
+   * machine actually holds.
+   */
+  readonly otherResidentWeightsBytes: number;
+}
+
+/**
+ * The desktop session's reserve. ⚠ A FLOOR OF 6 GiB, not 4, and the number comes from the incident
+ * rather than from taste: when the 4b model held 5.4 GB on a 16 GB box, free pages were ~60 MB — so
+ * everything else on that machine wanted roughly 10 GB and had been promised 4. macOS with a browser
+ * and a screen-sharing session is a multi-gigabyte obligation, and a recommendation that pretends
+ * otherwise is how a "recommended" value takes a machine down.
+ *
+ * 30% of installed RAM above the floor, because a bigger box runs bigger other things, capped at
+ * 12 GiB so a 128 GB workstation is not told to hold back 38.
+ */
+export function pickDesktopReserve(totalRamBytes: number): number {
+  const proportional = Math.floor(totalRamBytes * 0.30);
+  return Math.max(6 * GIB, Math.min(12 * GIB, proportional));
+}
+
+/** The engine's own process: node, the SQLite page cache, the embedder's client, the browser driver. */
+export const ENGINE_RESERVE_BYTES = Math.floor(1.5 * GIB);
+
+/**
+ * How many bytes this model's KV cache may have, after everything the box owes elsewhere.
+ * Negative means "this model cannot be loaded here with any window worth having" — the caller turns
+ * that into the floor rather than into silence (see `computeRecommendedNumCtx`).
+ *
+ * Named for what it answers rather than for the field it feeds: the result object's own
+ * `availableForKvBytes` reports the number, and two identifiers with one name is how a shorthand
+ * property silently picked up a function instead of a value while I wrote this.
+ */
+export function kvBudgetBytes(input: ObligationsInput): number {
+  return input.totalRamBytes
+    - pickDesktopReserve(input.totalRamBytes)
+    - ENGINE_RESERVE_BYTES
+    - Math.max(0, input.otherResidentWeightsBytes)
+    - Math.max(0, input.weightsBytes);
+}
+
 function pickHeadroom(totalRamBytes: number): number {
-  // 12.5% of total, clamped to [4 GiB, 8 GiB]. On a 16 GB Mac Mini this
-  // leaves ~12 GB for weights+KV; on a 128 GB workstation it leaves ~120 GB.
+  // Kept as the OLD arithmetic for the one thing it is still good for: reporting what the previous
+  // policy would have said, so a box's log can show both numbers during the v3.3 rollout. Nothing
+  // downstream decides on it any more — `availableForKvBytes` is the policy.
   const adaptive = Math.floor(totalRamBytes * 0.125);
   return Math.max(4 * GIB, Math.min(8 * GIB, adaptive));
 }
@@ -134,24 +205,62 @@ async function fetchModelArchInfo(
   }
 }
 
-async function fetchModelWeightsBytes(
+async function fetchInstalledModels(
   baseUrl: string,
-  apiModelId: string,
-): Promise<number | null> {
+): Promise<Array<{ name: string; size: number }> | null> {
   const url = baseUrl.replace(/\/+$/, '');
   try {
     const response = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(10000) });
     if (!response.ok) return null;
     const data = (await response.json()) as OllamaTagsResponse;
-    const entry = (data.models ?? []).find((m) => m.name === apiModelId);
-    if (!entry || typeof entry.size !== 'number') return null;
-    return entry.size;
+    return (data.models ?? []).filter((m) => typeof m.size === 'number');
   } catch (err) {
     logger.debug('num-ctx: /api/tags failed', {
-      apiModelId,
+      baseUrl,
       error: err instanceof Error ? err.message : String(err),
     });
     return null;
+  }
+}
+
+/**
+ * The weights of the OTHER enabled local models on this box, which Ollama keeps resident once used.
+ * Read from what the platform has registered rather than from what is loaded this second: a
+ * recommendation is a steady-state promise, and the embedder in particular is resident whenever
+ * memory search is on.
+ *
+ * Best-effort by construction — a box whose model table cannot be read gets a zero here and still
+ * gets the desktop and engine reserves, which are the two that matter most on a small machine.
+ */
+export function otherResidentWeights(
+  thisApiModelId: string,
+  installed: ReadonlyArray<{ name: string; size: number }>,
+  enabledApiModelIds: ReadonlyArray<string>,
+): number {
+  // ⚠ THE SIZES COME FROM THE RUNTIME'S OWN `/api/tags`, NOT FROM A COLUMN. My first version read
+  // `models.weights_bytes` — a column that does not exist — inside a try/catch, so this reserve would
+  // have been a silent zero forever: an unfalsifiable term that looks like diligence and does nothing.
+  // The tags response is already fetched for this model's own weights, so the other models' sizes are
+  // in hand at no extra cost.
+  const enabled = new Set(enabledApiModelIds.filter((id) => id !== thisApiModelId));
+  return installed
+    .filter((m) => enabled.has(m.name))
+    .reduce((sum, m) => sum + (typeof m.size === 'number' ? m.size : 0), 0);
+}
+
+/** The enabled local models this box has REGISTERED, which is what Ollama will keep resident. */
+function enabledOllamaApiModelIds(): string[] {
+  try {
+    const rows = getDb().prepare(`
+      SELECT m.api_model_id AS apiModelId
+      FROM models m JOIN providers p ON p.id = m.provider_id
+      WHERE p.type = 'ollama' AND m.is_enabled = 1
+    `).all() as Array<{ apiModelId: string }>;
+    return rows.map((r) => r.apiModelId);
+  } catch {
+    // Best-effort: a box whose model table cannot be read still gets the desktop and engine reserves,
+    // which are the two that matter most on a small machine.
+    return [];
   }
 }
 
@@ -204,29 +313,85 @@ export async function computeRecommendedNumCtx(
     return { reason: 'computed kv_bytes_per_token is non-positive or NaN' };
   }
 
-  const weightsBytes = await fetchModelWeightsBytes(baseUrl, apiModelId);
-  if (weightsBytes === null) {
-    return { reason: 'could not read model weights size from /api/tags' };
+  const installed = await fetchInstalledModels(baseUrl);
+  if (installed === null) {
+    return { reason: 'could not read installed models from /api/tags' };
   }
+  const thisEntry = installed.find((m) => m.name === apiModelId);
+  if (!thisEntry) {
+    return { reason: `model ${apiModelId} is not installed on the Ollama host` };
+  }
+  const weightsBytes = thisEntry.size;
 
   const headroomBytes = pickHeadroom(totalRamBytes);
-  const availableForKvBytes = totalRamBytes - headroomBytes - weightsBytes;
+  // ⚠ THE OBLIGATIONS BUDGET, not installed RAM minus this model. See `kvBudgetBytes`.
+  const otherResidentWeightsBytes = otherResidentWeights(
+    apiModelId, installed, enabledOllamaApiModelIds(),
+  );
+  const availableBytes = kvBudgetBytes({
+    totalRamBytes, weightsBytes, otherResidentWeightsBytes,
+  });
+  logger.info('num-ctx: budgeting against the box\'s obligations', {
+    apiModelId,
+    totalRamGiB: +(totalRamBytes / GIB).toFixed(1),
+    desktopReserveGiB: +(pickDesktopReserve(totalRamBytes) / GIB).toFixed(1),
+    engineReserveGiB: +(ENGINE_RESERVE_BYTES / GIB).toFixed(1),
+    otherResidentWeightsGiB: +(otherResidentWeightsBytes / GIB).toFixed(1),
+    weightsGiB: +(weightsBytes / GIB).toFixed(1),
+    availableForKvGiB: +(availableBytes / GIB).toFixed(1),
+    // What the previous policy would have said, so a rollout can see both numbers on one line.
+    previousPolicyAvailableGiB: +((totalRamBytes - headroomBytes - weightsBytes) / GIB).toFixed(1),
+  });
 
-  if (availableForKvBytes <= 0) {
+  if (availableBytes <= 0) {
+    // ⚠ FAIL CLOSED, AND THIS IS A CHANGE OF DIRECTION. Returning a failure here used to leave
+    // `num_ctx_recommended` NULL, and a NULL means the runtime sends no `num_ctx` at all — so Ollama
+    // falls back to the Modelfile's own default, which on a modern small model is its full trained
+    // context. "This box is too tight to size a window" must not resolve to "take everything": the
+    // tightest box is exactly where that is most dangerous. The floor is the answer instead.
+    logger.warn('num-ctx: the box has no room for a KV cache after its obligations — recommending the floor', {
+      apiModelId,
+      totalRamGiB: +(totalRamBytes / GIB).toFixed(1),
+      weightsGiB: +(weightsBytes / GIB).toFixed(1),
+    });
     return {
-      reason: `model weights (${(weightsBytes / GIB).toFixed(1)} GiB) + headroom (${(headroomBytes / GIB).toFixed(1)} GiB) exceed total RAM (${(totalRamBytes / GIB).toFixed(1)} GiB)`,
+      recommended: MIN_RECOMMENDED_NUM_CTX,
+      archField,
+      modelContext: typeof modelContextRaw === 'number' ? modelContextRaw : 0,
+      kvBytesPerToken,
+      weightsBytes,
+      totalRamBytes,
+      headroomBytes,
+      availableForKvBytes: 0,
+      rawNumCtx: 0,
+      clampedByModelContext: false,
     };
   }
 
-  const rawNumCtx = Math.floor(availableForKvBytes / kvBytesPerToken);
+  const rawNumCtx = Math.floor(availableBytes / kvBytesPerToken);
   // Model's advertised max context, if present. Clamp so we never
   // recommend more than the model actually supports.
   const modelMaxContext = typeof modelContextRaw === 'number' ? modelContextRaw : MAX_RECOMMENDED_NUM_CTX;
   const capped = Math.min(rawNumCtx, modelMaxContext, MAX_RECOMMENDED_NUM_CTX);
 
   if (capped < MIN_RECOMMENDED_NUM_CTX) {
+    // Same fail-closed direction as above: a window too small to be useful is still a BOUND, and a
+    // bound is what protects the machine. Recommending the floor says "this is tight" in a way the
+    // runtime can act on; recommending nothing says "unlimited".
+    logger.warn('num-ctx: computed window is below the floor — recommending the floor rather than nothing', {
+      apiModelId, computed: capped, floor: MIN_RECOMMENDED_NUM_CTX,
+    });
     return {
-      reason: `computed num_ctx ${capped} is below minimum ${MIN_RECOMMENDED_NUM_CTX} — machine too small for this model`,
+      recommended: MIN_RECOMMENDED_NUM_CTX,
+      archField,
+      modelContext: typeof modelContextRaw === 'number' ? modelContextRaw : 0,
+      kvBytesPerToken,
+      weightsBytes,
+      totalRamBytes,
+      headroomBytes,
+      availableForKvBytes: availableBytes,
+      rawNumCtx,
+      clampedByModelContext: false,
     };
   }
 
@@ -241,7 +406,7 @@ export async function computeRecommendedNumCtx(
     weightsBytes,
     totalRamBytes,
     headroomBytes,
-    availableForKvBytes,
+    availableForKvBytes: availableBytes,
     rawNumCtx,
     clampedByModelContext: rawNumCtx > modelMaxContext,
   };
