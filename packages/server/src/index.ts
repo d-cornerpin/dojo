@@ -20,6 +20,7 @@ import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, isPMEnabled, setP
 import { recordBootAttempt, markMigrationsRan, confirmHealthy, readMarker, synthesizeMigrationBootEpisode } from './update-state.js';
 import { probeFsCaseInsensitive, setFsCaseInsensitive } from './agent/path-guards.js';
 import { homeDir } from './home.js';
+import { startStallSentinel } from './observability/stall-sentinel.js';
 
 const logger = createLogger('main');
 const PORT = parseInt(process.env.DOJO_PORT ?? '3001', 10);
@@ -1097,6 +1098,12 @@ async function main(): Promise<void> {
   // Clean up old uploads every 24 hours
   const { cleanupOldUploads } = await import('./gateway/routes/upload.js');
   setInterval(cleanupOldUploads, 24 * 60 * 60 * 1000);
+
+  // ⚠ THE STALL SENTINEL (t89 deliverable 4), started here with the platform's other timers because it
+  // has to be running BEFORE the first freeze, not after somebody goes looking. One interval, one
+  // subtraction, `unref`'d — see `observability/stall-sentinel.ts` for why drift is the only signal a
+  // pinned process can report about itself.
+  startStallSentinel();
   cleanupOldUploads(); // Run once on startup
 
   // Auto-start tunnel if enabled (delay to ensure HTTP server is fully ready)

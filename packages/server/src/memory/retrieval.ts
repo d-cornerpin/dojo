@@ -1,5 +1,6 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
+import { breadcrumbFor, clearQueryDispatched, markQueryDispatched } from '../observability/stall-sentinel.js';
 import { callModel } from '../agent/model.js';
 import { estimateTokens } from './budget.js';
 import { getSummary, getDescendantMessages, getSummariesByAgent } from './dag.js';
@@ -86,6 +87,28 @@ export function memoryGrep(
 }
 
 function searchMessages(
+  db: ReturnType<typeof getDb>,
+  agentId: string,
+  pattern: string,
+  mode: string,
+  since?: string,
+  before?: string,
+  limit?: number,
+): string[] {
+  // ⚠ THE BREADCRUMB (t89 deliverable 4). A synchronous B-tree walk cannot be interrupted from
+  // JavaScript, so when this query pins the loop NOTHING else in the process can name it — not the
+  // health probe, not the stop button, not the log line that eventually prints 20 seconds late. The
+  // sentinel reads this mark and the freeze becomes one line. A SHAPE, never the pattern: this string
+  // reaches logs that get pasted into bug reports.
+  const crumb = markQueryDispatched(breadcrumbFor('history_search', mode === 'full_text' ? 'fts' : 'like'));
+  try {
+    return searchMessagesInner(db, agentId, pattern, mode, since, before, limit);
+  } finally {
+    clearQueryDispatched(crumb);
+  }
+}
+
+function searchMessagesInner(
   db: ReturnType<typeof getDb>,
   agentId: string,
   pattern: string,
@@ -226,6 +249,21 @@ function searchMessagesLike(
 }
 
 function searchSummaries(
+  db: ReturnType<typeof getDb>,
+  agentId: string,
+  pattern: string,
+  mode: string,
+  limit?: number,
+): string[] {
+  const crumb = markQueryDispatched(breadcrumbFor('summary_search', mode === 'full_text' ? 'fts' : 'like'));
+  try {
+    return searchSummariesInner(db, agentId, pattern, mode, limit);
+  } finally {
+    clearQueryDispatched(crumb);
+  }
+}
+
+function searchSummariesInner(
   db: ReturnType<typeof getDb>,
   agentId: string,
   pattern: string,
