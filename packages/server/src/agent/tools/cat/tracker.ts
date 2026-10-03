@@ -41,7 +41,7 @@ import { terminalDeliveryForTurn } from '../../v2/answered-edge.js';
 import { taskScope } from '../../../work/tracker-view.js';
 import { patchWork } from '../../../work/tracker-store.js';
 import { openCommitment, resolveCommitment, dismissCommitment, findObligationByTypedId } from '../../../work/store.js';
-import { recordRemediation } from '../../../work/poke-ladder.js';
+import { recordReassignment } from '../../../tracker/assignee-patience.js';
 import { resolveTaskId, formatResolveError } from '../../../tracker/schema.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../../work-verb-schema.js';
 import * as trackerMod from '../../../tracker/tools.js';
@@ -940,7 +940,7 @@ export const trackerHandlers: ToolHandlerMap = {
     const reassignTaskId = reassignResolved.id;
 
     const reassignDb = getDb();
-    const reassignTask = reassignDb.prepare(`SELECT w.id AS id, w.title AS title FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(reassignTaskId) as { id: string; title: string } | undefined;
+    const reassignTask = reassignDb.prepare(`SELECT w.id AS id, w.title AS title, w.agent_id AS from_agent FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(reassignTaskId) as { id: string; title: string; from_agent: string | null } | undefined;
     if (!reassignTask) { content = `Error: Task ${reassignTaskId} was deleted before reassignment could be applied.`; isError = true; return { content, isError }; }
     let newAgent = args.assigned_to as string | undefined;
     const newGroup = args.assigned_to_group as string | undefined;
@@ -989,7 +989,7 @@ export const trackerHandlers: ToolHandlerMap = {
     // a remediation event (never mid-cycle) keeps the cross-restart poke
     // dedup intact. Skip on the error path so a rejected reassign doesn't
     // re-arm a live escalation cycle.
-    if (!isError) recordRemediation(reassignTaskId, agentId, 'reassigned to a new owner');
+    if (!isError) recordReassignment({ taskId: reassignTaskId, actor: agentId, fromAgentId: reassignTask.from_agent, toAgentId: newAgent ?? null, toGroupId: newGroup ?? null, reason: 'reassigned to a new owner' });   // t90 D1: who, why, and the prior assignee's last state — and the re-arm rides along
     return { content, isError };
   },
 

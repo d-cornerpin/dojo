@@ -26,6 +26,7 @@ import { sendAgentMessage } from '../agent/agent-bus.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { listTasks, getTask } from './schema.js';
 import { currentRung, lastPoke as lastPokeOf, recordPoke, recordRemediation } from '../work/poke-ladder.js';
+import { patienceFloorFor, flooredThresholds, extendedPatience, requestAssigneeDecision, type PokeThresholds } from './assignee-patience.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { getRecentObservations, getRecentTransitions, formatEntryLine, listTaskLog, writeTaskLog } from './task-log.js';
 import {
@@ -46,7 +47,7 @@ const logger = createLogger('pm-agent');
 
 // ── Poke Thresholds (in seconds) ──
 
-const POKE_THRESHOLDS: Record<string, { first: number; second: number; escalate: number; autoReset: number }> = {
+export const POKE_THRESHOLDS: Record<string, PokeThresholds> = {   // t90: exported so the floor's R6 control can assert this exact table
   high:   { first: 180,  second: 600,   escalate: 1200, autoReset: 2400 },
   normal: { first: 300,  second: 900,   escalate: 1800, autoReset: 3600 },
   low:    { first: 600,  second: 1200,  escalate: 2400, autoReset: 4800 },
@@ -2505,7 +2506,12 @@ export async function runPokeCheck(): Promise<void> {
     // Skip tasks in a waiting schedule state
     if (task.scheduleStatus === 'waiting') continue;
 
-    const thresholds = POKE_THRESHOLDS[task.priority] ?? POKE_THRESHOLDS.normal;
+    // t90 D1 (report #6): FLOORED by the platform's own per-call allowance for this assignee's
+    // provider — a poke may never come sooner than one legitimately-long call. Undeclared rows
+    // resolve to today's table exactly; see `tracker/assignee-patience.ts` for the arithmetic.
+    const patienceFloor = patienceFloorFor(task.assignedTo);
+    const thresholds = flooredThresholds(
+      POKE_THRESHOLDS[task.priority] ?? POKE_THRESHOLDS.normal, patienceFloor.floorSeconds);
 
     // ── Idle detection (v2.3.6) ──
     // Use the OLDER of two signals so a busy-but-stalled task can still
@@ -2561,10 +2567,15 @@ export async function runPokeCheck(): Promise<void> {
     let pokeType: string | null = null;
     let pokeNumber = 0;
 
-    if (idleSeconds >= thresholds.autoReset && lastPokeNumber < 4) {
+    // t90 D1, report fix idea 4: "a per-task extended-patience flag … When set, PM skips
+    // intervention logic and only notifies." The owner has already answered the question rungs 3
+    // and 4 exist to ask, so neither fires; rungs 1-2 are notifications to the assignee and stay,
+    // which is the "only notifies" half.
+    const patienceExtended = extendedPatience(task.id);
+    if (!patienceExtended && idleSeconds >= thresholds.autoReset && lastPokeNumber < 4) {
       pokeType = 'auto_reset';
       pokeNumber = 4;
-    } else if (idleSeconds >= thresholds.escalate && lastPokeNumber < 3) {
+    } else if (!patienceExtended && idleSeconds >= thresholds.escalate && lastPokeNumber < 3) {
       pokeType = 'escalate_primary';
       pokeNumber = 3;
     } else if (idleSeconds >= thresholds.second && lastPokeNumber < 2) {
@@ -2608,61 +2619,45 @@ export async function runPokeCheck(): Promise<void> {
     const pmId = getPMAgentId();
     const pmName = getPMAgentName();
 
-    // ── Auto-reset: escalation failed, take direct action ──
+    // ── Rung 4: ASK THE OWNER. Move nothing. (t90 D1 — tracker report #6) ──
+    //
+    // ⟨TOMBSTONE⟩ WHAT THIS REPLACED, AND WHY IT WAS A DEFECT. This rung used to take direct
+    // action: `setTrackerStatus(task.id, 'on_deck')` (the assignment taken away mid-work), a
+    // `'failed'` run completion for scheduled tasks, and an A2A `intent: 'ASSIGN'` to the PRIMARY
+    // ending "needs to be reassigned or investigated" — chosen, its comment said, "so primary
+    // actually wakes and reassigns". The owner was never in the loop. On his own box a sub-agent
+    // he had deliberately put on a slower model was emptied out this way REPEATEDLY: the ladder
+    // re-armed on its remediation marker, so every re-assignment ran the same hour-long clock to
+    // the same silent handoff, and the project could never be finished by the agent he chose.
+    //
+    // Report fix idea 2 is the rule now: "Max PM authority: poke the agent, then if still
+    // unresponsive, notify the user and ask whether to wait, reassign, or cancel." Fix idea 3
+    // bans the destination: "The primary is not a fallback bin." Plan ruling R5 is satisfied the
+    // only way it can be here — an honest pause with the decision handed to an authority, never a
+    // silent death.
+    //
+    // THREE THINGS DELIBERATELY DO NOT HAPPEN, each one a line of the old code: no status move, so
+    // the assignee keeps working and a slow model mid-step is not interrupted; no scheduled-run
+    // failure, because nothing has failed; no A2A to anyone, because the primary is not the owner
+    // and was never the right recipient of this question.
     if (pokeType === 'auto_reset') {
       const idleMinutes = Math.floor(idleSeconds / 60);
-
-      // Move task back to on_deck so it can be retried
-      noteUnsettled(setTrackerStatus(task.id, 'on_deck', {
-        by: 'pm', actorId: getPMAgentId(), claim: 'authoritative',
-        reason: `auto-reset: the escalation ladder ran out and the agent stayed idle ${idleMinutes} minutes`,
-      }), 'pm: auto-reset after the ladder ran out', { taskId: task.id });
-
-      // If this is a scheduled task, also reset schedule_status so the scheduler retries
-      if (task.scheduleStatus === 'running') {
-        // Fail the current run and let onTaskRunComplete reset to waiting
-        import('../scheduler/runner.js').then(({ onTaskRunComplete }) => {
-          onTaskRunComplete(task.id, 'failed', `Auto-failed: agent idle for ${idleMinutes} minutes after full escalation chain`).catch(() => {});
-        });
-      }
-
-      // Notify primary agent via A2A transport
-      const resetMsg = `AUTO-RESET: Task "${task.title}" (${task.id}) was moved back to on_deck after ${idleMinutes} minutes idle. The assigned agent (${task.assignedToName ?? task.assignedTo}) did not respond after 3 pokes and escalation. The task needs to be reassigned or investigated.`;
-
-      // Auto-reset only fires after the full escalation chain has already
-      // failed (2 pokes + 1 escalation), by definition something needs the
-      // primary's attention NOW. Use ASSIGN so primary actually wakes and
-      // reassigns/investigates, not FYI which would let the task sit
-      // unassigned until the primary is woken by something else.
-      import('../agent/a2a-transport.js').then(({ deliverA2AMessage: deliverReset }) => {
-        deliverReset({
-          intent: 'ASSIGN',
-          threadId: '',
-          requiresResponse: true,
-          payload: resetMsg,
-          toAgent: primaryId,
-          fromAgent: pmId,
-        }).catch(err => {
-          logger.error('PM auto-reset: A2A delivery failed', { error: err instanceof Error ? err.message : String(err) });
-        });
+      requestAssigneeDecision({
+        taskId: task.id,
+        title: task.title,
+        assigneeId: task.assignedTo,
+        assigneeName: task.assignedToName ?? null,
+        idleMinutes,
+        floor: patienceFloor,
       });
 
-      // Auto-reset is the terminal remediation: the full escalation chain
-      // failed and the task is going back to on_deck for a fresh attempt.
-      // Re-arm the ladder so the on_deck move starts a clean escalation
-      // cycle -- if the task is re-pulled and stalls again it re-arms from
-      // nudge(1) instead of being stuck above rung 4 forever. This marker is
-      // written at a remediation event, never mid-cycle, so the cross-restart
-      // poke dedup stays intact. We deliberately do NOT record rung 4 here:
-      // persisting it would leave the rung at 4 and defeat the reset. The
-      // auto-reset is still recorded via logger.warn + the tracker:poke
-      // broadcast below.
-      //
-      // T8c item 1: a MARKER, not a DELETE — the pokes of the cycle that just
-      // failed stay on the record, so "this has stalled twice" is answerable.
-      recordRemediation(task.id, getPMAgentId(), `auto-reset after ${idleMinutes} minutes idle`);
-      logger.warn('PM auto-reset: task moved to on_deck', { taskId: task.id, title: task.title, idleMinutes, assignedTo: task.assignedTo });
-
+      // The rung IS recorded now, and the old code's reason for withholding it is gone with the
+      // behaviour it protected: it skipped rung 4 so its own `on_deck` reset would start a clean
+      // cycle. Nothing resets here, so an unrecorded rung would simply re-ask the owner on the
+      // next 60-second sweep. (The verdict flag `requestAssigneeDecision` sets already stands the
+      // sweep down — every PM query filters on it — so this is the second of two guards, and the
+      // one that survives the owner clearing the flag without answering.)
+      recordPoke(task.id, getPMAgentId(), pokeNumber, pokeType, task.assignedTo ?? '');
       broadcast({ type: 'tracker:poke', data: { taskId: task.id, agentId: task.assignedTo!, pokeType } });
       continue;
     }
@@ -2760,7 +2755,11 @@ export async function runPokeCheck(): Promise<void> {
     import('../agent/a2a-transport.js').then(({ deliverA2AMessage, makeThreadId }) => {
       const pokeThreadId = makeThreadId(`poke-${task.id}-${pokeType}`);
       deliverA2AMessage({
-        intent: pokeType === 'escalate_primary' ? 'ASSIGN' : 'QUESTION',
+        // t90 D1: QUESTION for every rung, the escalation included. `ASSIGN` is the intent that
+      // transfers OWNERSHIP, and sending it to the primary about another agent's task is report
+      // #6's silent handoff one hop softer and reachable sooner. The escalation still wakes the
+      // primary (`requiresResponse` below is unchanged); it no longer says the work changed hands.
+      intent: 'QUESTION',
         threadId: pokeThreadId,
         requiresResponse: true, // All pokes expect a response, even escalations to primary
         payload: pokeMessage,
@@ -2836,7 +2835,13 @@ function buildPokeMessage(
       return `URGENT: Task "${task.title}" has been idle for ${idleMinutes} minutes. This is poke #${pokeNumber}.\n\n${taskInfo}\n\nYou MUST do one of:\n1. Call work_update(action="status", task_id="${task.id}", status="complete", notes="...") if the work is done\n2. Call work_update(action="status", task_id="${task.id}", status="blocked", notes="...") if you're stuck\n3. Continue working on the task`;
 
     case 'escalate_primary':
-      return `ESCALATION: Task "${task.title}" (${task.id}) assigned to ${task.assignedTo} has been idle for ${idleMinutes} minutes with no response after 2 pokes.\n\n${taskInfo}\n\nPlease intervene:\n- Call work_update(action="status", task_id="${task.id}", status="complete") if the work was already done\n- Reassign or unblock the task\n- Or cancel/fail it if it's no longer needed`;
+      // t90 D1 (report #6): this rung NOTIFIES. It used to say "Reassign or unblock the task — or
+      // cancel/fail it if it's no longer needed", which handed the primary exactly the
+      // wait/reassign/cancel decision the owner filed a report to keep: "The user makes the call,
+      // not the PM. No silent handoffs." The close-out line stays — telling a status row the truth
+      // about work that was already delivered is a repair, not a transfer — and the one thing the
+      // primary is now told about reassignment is that it is not its call.
+      return `ESCALATION: Task "${task.title}" (${task.id}) assigned to ${task.assignedTo} has been idle for ${idleMinutes} minutes with no response after 2 pokes.\n\n${taskInfo}\n\nFor your awareness. If your own records show this work was already delivered, call work_update(action="status", task_id="${task.id}", status="complete") with the result — that is a close-out, not a takeover.\nOtherwise do NOT reassign, cancel or re-run it: if ${task.assignedTo} stays silent the platform asks the owner whether to wait, reassign or cancel, and that decision is theirs.`;
 
     default:
       return `Poke #${pokeNumber} for task: ${task.title} (idle ${idleMinutes}m)\n\n${taskInfo}\n\nCall work_update(action="status", task_id="${task.id}", status="complete") if done.`;
