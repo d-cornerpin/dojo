@@ -6245,11 +6245,40 @@
       "to": 1650,
       "by": "t100 - the seam: the compaction gate measures the tail the assembler actually sends",
       "why": "1616 -> 1650 (+34: 5 code, 29 comment; blanks unchanged). Confirmed BOTH ways, because the re-review of t94 caught two pin entries whose code/comment split was wrong: by diff classification the hunk adds 6 code and removes 1 (net +5) and adds 29 comment; by whole-file count the file goes 814 -> 819 code, 662 -> 691 comment, 140 -> 140 blank. The two agree. THE CODE IS FIVE LINES AND IT CLOSES THE SEAM TWO MERGED LANES LEFT. t94 made the assembler's fresh tail horizon-bounded (every row since the compaction boundary); `estimateAssembledTokens` kept reading it with the OLD ROW CAP, so the compaction gate measured a tail the assembler no longer sends - 68 rows admitted, 40 seen, blind to 28 - and both readers of that number (this module's token trigger, and `context-gates.ts`'s warn/compact/block rungs) read low. The read is now `freshTailHorizon(agentId, policy)` plus the seq filter: the assembler's own decision READ here, never re-derived, which is the same rule that made this function an allocator dry run at PHASE-3 T2. One import line goes with it. WHY 29 COMMENT LINES AND WHAT THEY ARE, in the order a reader needs them. (1) THE SEAM ITSELF with its number, and what it cost: a wrong reading here is a behaviour, not a statistic, and the bound that stopped it being a freeze (the ROW-GAP trigger is not token-based) is named so the next reader does not re-discover the blindness as a mystery. (2) THAT THE HORIZON IS READ AND NOT RE-DERIVED - the one sentence that stops a later worker 'simplifying' this back into a second model of the budget. (3) THE LARGEST BLOCK, AND THE ONLY ONE A READER CANNOT GET FROM THE CODE: WHY THERE IS NO SLACK ON THE ASK. The assembler's equivalent line pads by one row cap and looks canonical, so copying it here is the obvious move and it is wrong - the padding exists solely because the assembler's read carries a `turnCutoff` that reaches further back and the seq filter trims it off again, and THIS function has no `turnCutoff` at all. Unconditional padding would measure up to 2xcap rows in the FLOOR case where nothing is filtered: t94 review I1's defect, which its own fix round removed from the assembler, and which the handed-up diff in `t94-report.md` reintroduced on this side. That paragraph is the difference between a reader deleting a conditional they read as caution and a reader leaving it alone. ALTERNATIVES MEASURED, NOT WAVED AWAY. (a) PUT THE READ IN A HELPER IN `memory/tail-horizon.ts` and import it (+2 here, +~12 there): refused on the fence AND on the better reason - the assembler's copy of these four lines is not identical (it threads `turnCutoff` and the conditional ask), so a shared helper would have to take both shapes as parameters and the one thing it must not do is let the gate inherit the assembler's slack. (b) DROP THE NO-SLACK PARAGRAPH (-12): refused, and it is the paragraph a review already had to write once for the assembler side; the defect's second appearance was in the diff handed to this lane. (c) SHAVE THE SEAM PARAGRAPH to a pointer at the clause file (-10): refused - the number (68 vs 40) is what makes the read look deliberate at the call site, and a pointer to a test is not what a reader editing this function has open. PINNED BOTH WAYS AS CLAUSES, so none of it rests on prose: `__tests__/the-tail-trims-only-at-a-boundary.test.ts` \u00a79 (two clauses - the row-cap read back reds the common case, the horizon-plus-slack read reds the FLOOR case) and the new `__tests__/the-gate-measures-the-tail-it-gates.test.ts` (the token trigger fires on a heavy 68-row tail whose newest 40 rows sit under it, and a compaction actually runs). Three mutants, each reverted byte-identically by sha. From 1650 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/retrieval.ts",
+      "from": 591,
+      "to": 681,
+      "by": "t89-2/4 - hard bounds on message search, and the stall breadcrumb",
+      "why": "591 -> 681 (+90: ~45 code, ~45 comment). THE MEASURED DEFECT: 4,693 of 7,487 main-thread profiler samples inside ONE `Statement::JS_all` on a 729 MB database, with the server DEAF to a health probe for 43 seconds. ⚠ BOTH SEARCH PATHS ALREADY HAD A `LIMIT` AND BOTH WERE UNBOUNDED ANYWAY, which is the whole argument for these lines: a leading-wildcard LIKE cannot use an index, so it TESTS EVERY ROW newest-first until the limit fills - and for a term that appears nowhere that is the agent's entire history, every row's content read off disk; and `ORDER BY rank` must SCORE EVERY MATCH before it knows which twenty win, pulling each one's content through the join to do it. So the bounds are on the CANDIDATE SET (FTS ranks the newest 50,000 only, via a `seq` floor that is free because `seq` IS the primary key) and on ROWS READ (the LIKE fallback walks 20,000-row recency chunks with a 200,000-row and 64 MB ceiling, each chunk's cost measured by one indexed count so the logged number is honest). Plus the sentinel breadcrumb at each search entry, which is what turns the next freeze into one line. REFUSED: raising the per-query LIMIT instead, which bounds the answer and not the work - the thing that was already true and already insufficient. From 681 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 2076,
+      "to": 2091,
+      "by": "t89-5 - the queue can reach an outcome (one table row, fourteen lines of why)",
+      "why": "2076 -> 2091 (+15: ONE edge added to the LEGAL table, fourteen lines arguing it). `on_deck` was the only non-terminal state with no `done` edge, so a QUEUED task could never be completed and the PM's override-approval path - the caller that needs to complete one - was refused forever with `on_deck -> done is not a legal move`. On a user's box: three validations stuck in pending, re-driving the PM review every minute for hours. This is the SAME asymmetry this table's own comment already documents in the other direction (PHASE-2 T8c2: eleven callers moved work back to the queue and every one was refused, 'an omission, not a decision'), so the comment now reads both ways. The authority gate is untouched and a clause pins that: `done` still requires a delivery receipt from every actor, so an agent using the new edge without one is refused by `done-requires-delivery` rather than by `illegal-transition`. From 2091 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/index.ts",
+      "from": 1280,
+      "to": 1287,
+      "by": "t89-4 - the stall sentinel starts at boot",
+      "why": "1280 -> 1287 (+7: an import, a call, and five lines saying why it starts HERE). The sentinel has to be running before the first freeze rather than after somebody goes looking - the whole point is that the box that produced this package could not say what was pinning it, because the timer line that eventually printed landed 20 seconds into the window."
+    },
+    {
+      "path": "packages/server/src/memory/search-bounds.ts",
+      "from": 0,
+      "to": 249,
+      "by": "t89-2 - the bounds module (NEW ENTRY, pinned at its current size)",
+      "why": "NEW ENTRY at 249 (89 code, 160 comment). The growth detector asked for this file to be pinned or split rather than drifting toward the 400-line cap unargued. It is ONE decision - how much work a text search may do - and the comment carries the measurement that makes each number defensible (the profiler samples, the 729 MB table, why a LIMIT is not a bound, why recency is the right axis, why bytes and not just rows). Splitting the arithmetic from its argument is how the original unbounded queries came to look reasonable. REFUSED: a generic query builder here, which is the job-queue framework the brief says not to build - this module owns the budget and the caller owns its SQL. From 249 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
   "files": {
     "packages/server/src/report/bounds.ts": 311,
+    "packages/server/src/memory/search-bounds.ts": 249,
     "packages/server/src/services/num-ctx-calculator.ts": 563,
     "packages/server/src/report/telemetry-whitelist.ts": 241,
     "packages/server/src/agent/brokers/sudo-probe.ts": 83,
@@ -6440,7 +6469,7 @@
     "packages/server/src/healer/diagnostic.ts": 1067,
     "packages/server/src/healer/healer-agent.ts": 1186,
     "packages/server/src/healer/injury-recovery.ts": 1155,
-    "packages/server/src/index.ts": 1280,
+    "packages/server/src/index.ts": 1287,
     "packages/server/src/memory/assembler.ts": 2745,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
@@ -6452,7 +6481,7 @@
     "packages/server/src/memory/other-threads-lane.ts": 276,
     "packages/server/src/memory/recall-lane.ts": 901,
     "packages/server/src/memory/recall.ts": 510,
-    "packages/server/src/memory/retrieval.ts": 591,
+    "packages/server/src/memory/retrieval.ts": 681,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 458,
@@ -6516,7 +6545,7 @@
     "packages/server/src/work/obligation-memory.ts": 643,
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
-    "packages/server/src/work/store.ts": 2076,
+    "packages/server/src/work/store.ts": 2091,
     "packages/server/src/work/tracker-store.ts": 621,
     "packages/server/src/work/tracker-view.ts": 622,
     "packages/server/src/work/validation-drive.ts": 615,
