@@ -6196,6 +6196,20 @@
       "to": 332,
       "by": "t90 D1 continuation — the ANSWER half, which the owner-decision doors needed",
       "why": "+25 NET (+25/-0; 8 comment, 17 code) and the honest framing is that I pinned this file at 307 three commits ago and am raising it now, in the same package, which a reviewer should see rather than have to find. The 307 was taken AT BIRTH, before coordinator ruling 2 said to build the doors; the doors then needed the half this file was missing. THE CODE IS ONE FUNCTION. `recordAssigneeDecision` files what the owner SAID beside the ask that asked it — `requestAssigneeDecision` was already here and had no counterpart, so the trail carried questions and no answers. It is filed even for `wait`, which is the one line of the 17 worth arguing: an option whose whole job is to change nothing still has to leave a trace, or 'the owner was asked and chose to wait' is indistinguishable from 'nobody ever answered' the next time the ladder climbs — and the ladder DOES climb again, because `wait` clears the verdict flag that was standing it down. THE 8 COMMENT LINES are that argument. WHY HERE AND NOT IN THE ROUTE: the ask and the answer are one exchange and share the `entry_kind` vocabulary (`PATIENCE_ENTRY`), which is declared in this file precisely so a writer and a reader cannot disagree by typo; putting the answer in `gateway/routes/tracker.ts` would have split one record pair across two modules and spent the route file's raise on it instead. From 332 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/tracker.ts",
+      "from": 1043,
+      "to": 970,
+      "by": "t90 REWORK under OWNER RULING 2026-10-02 — the assignee-decision doors are DELETED, so the raise that paid for them reverses",
+      "why": "-73 (1043 -> 970), a LOWERING recorded here rather than quietly tightened, because the entry two above it argued the +84 that is now mostly gone and a reader following this file's history must find the reversal in the same ledger. The owner ruled that the PM may not raise a reassignment decision at all — \"The user should not be bothered with these things\" — so `POST /tasks/:id/assignee-decision` and `POST /tasks/:id/extended-patience` are deleted outright, with their tests and their capability-ledger rows. What remains of the +84 is +11: the human-reassignment audit at `PUT /tasks/:id`, which the ruling explicitly keeps (\"the reassignment-record writer ONLY as an audit of HUMAN-initiated reassignment\") and which rides the handler's existing pre-write `getTask` snapshot rather than adding a query. From 970 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/assignee-patience.ts",
+      "from": 332,
+      "to": 208,
+      "by": "t90 REWORK under OWNER RULING 2026-10-02 — the owner-ask half of the module is deleted",
+      "why": "-124 (332 -> 208), a LOWERING, same reasoning as the entry above: this file carries two argued raises (0->307 at birth, 307->332 for the answer record) and the reversal belongs beside them. Deleted: `requestAssigneeDecision`, `recordAssigneeDecision`, the extended-patience grant/revoke/read trio, and four of the five `PATIENCE_ENTRY` kinds. The extended-patience flag went for an argued reason rather than by association: it existed to suppress rungs 3 and 4 while those rungs could TAKE THE WORK, and with only poking left it would have meant \"poke this task less\" -- a hand-set second answer to the question the patience floor already answers from the provider's own declaration, pointing away from the ruling's \"keep the agent working\". What survives is what the ruling names: the patience floor (poking a slow model mid-inference is still wrong) and `recordReassignment` as the audit of a HUMAN's reassignment. The header now carries the history -- what was built, what the owner ruled, what stands -- because a reader who finds only the current shape would re-derive the ask. From 208 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6378,7 +6392,7 @@
     "packages/server/src/gateway/routes/config.ts": 2957,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/setup-deps.ts": 514,
-    "packages/server/src/gateway/routes/tracker.ts": 1043,
+    "packages/server/src/gateway/routes/tracker.ts": 970,
     "packages/server/src/gateway/routes/twilio.ts": 501,
     "packages/server/src/gateway/routes/update.ts": 1249,
     "packages/server/src/gateway/routes/upload.ts": 608,
@@ -6496,6 +6510,6 @@
     "packages/server/src/providers/billing-breaker.ts": 316,
     "packages/server/src/memory/condense-until-fits.ts": 427,
     "packages/server/src/memory/tail-horizon.ts": 369,
-    "packages/server/src/tracker/assignee-patience.ts": 332
+    "packages/server/src/tracker/assignee-patience.ts": 208
   }
 }
