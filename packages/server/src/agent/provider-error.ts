@@ -120,22 +120,32 @@ function hasStatusToken(text: string, status: number): boolean {
  * So permanence asks a stricter question — not *does this number appear?* but *does it appear
  * where a status is announced?* Two positions qualify, and nothing else does:
  *
- *   1. LEADING — the message opens with it, optionally behind a quote, a bracket or an HTTP
- *      version: `402 Payment Required`, `HTTP/1.1 402 …`, `"402: no balance"`.
+ *   1. LEADING — the message OPENS with it, optionally behind an HTTP version:
+ *      `402 Payment Required`, `HTTP/1.1 402 …`.
  *   2. INTRODUCED — a word whose only job is to name a status sits immediately before it, with
  *      at most a few punctuation characters between: `API error 402:`, `status code 402`,
  *      `{"status": 402}`, `http 402`.
  *
  * Everything else is a number that happens to be in the sentence. The caller treats that as no
  * evidence at all, which is this module's documented default direction.
+ *
+ * ⚠ NARROWED TWICE MORE (t87b, after the H2 re-review anchored 8 of 10 fresh shapes): LEADING now
+ * tolerates only whitespace, not any bracket or quote (`[402] cache …` is a log prefix); and `code`
+ * is no longer BARE (`exit code 402` is a process exit code), only `error code` / `status code` —
+ * which `status code 402` used to reach THROUGH the bare `code`, so dropping it alone would have
+ * cost a true positive. `err`/`error` stay bare on purpose: the incident's string is `API error
+ * 402: …`. Every shape, both directions and that residual are the `STILL_ANCHORED` and
+ * `INNOCENT_SHAPES` tables in `memory/__tests__/the-freeze-cannot-happen-again.test.ts`.
  */
 export function statusIsAnchored(text: string, status: number): boolean {
   const s = String(status);
   const sep = '[\\s:=>"\'\\-]{0,4}';
+  // `(?:error|status)[\s_-]{1,2}code` is the compound form; bare `code` is deliberately absent.
+  const introducer = '(?:https?|status|statuscode|status_code|httpstatus|http_status'
+    + '|(?:error|status)[\\s_-]{1,2}code|err|error|errored)';
   return new RegExp(
-    `^[\\s"'\\[({]*(?:http/\\d(?:\\.\\d)?\\s+)?${s}(?![\\w.])`
-    + `|(?:^|[^\\w.])(?:https?|status|statuscode|status_code|httpstatus|http_status|code|err|error|errored)`
-    + `${sep}${s}(?![\\w.])`,
+    `^\\s*(?:http/\\d(?:\\.\\d)?\\s+)?${s}(?![\\w.])`
+    + `|(?:^|[^\\w.])${introducer}${sep}${s}(?![\\w.])`,
     'i',
   ).test(text ?? '');
 }

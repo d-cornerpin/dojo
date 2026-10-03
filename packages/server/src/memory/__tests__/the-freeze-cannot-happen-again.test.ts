@@ -73,6 +73,8 @@ import {
   providerBreaker, clearProviderBreaker, pauseInsteadOfRetrying, noteProviderSuccess,
   PERMANENT_FAILURES_TO_BREAK, __resetBreakersForTests,
 } from '../../providers/billing-breaker.js';
+// t87b reads the position rule directly — see the STILL_ANCHORED table for why.
+import { statusIsAnchored } from '../../agent/provider-error.js';
 
 const AGENT = 'agent-v323-box';
 const DEAD_PROVIDER = 'prov-no-balance';
@@ -215,6 +217,16 @@ describe('§1 a 402 is permanent, and two of them end the dialling', () => {
     'GET /v1/403/models returned 500',
     'upstream 401 logged for request 9; this call failed with 503',
     'retry 403 of 500 attempts',
+    // ── t87b: five more the H2 RE-review found still anchoring, closed by two narrowings ──
+    // `exit code` is the realistic one and the reason this round happened: it is a PROCESS exit
+    // code, and the incident box was running a local runtime that reports them.
+    'exit code 402 from the local runtime',
+    'code 402 of 500 processed',
+    // Anything that merely BEGINS with a number used to announce itself as a status, because the
+    // leading arm accepted any bracket or quote as a prefix. These are log prefixes and counts.
+    '"402 items were skipped"',
+    '[402] cache entries evicted',
+    '(402) rows updated',
   ] as const;
 
   it.each(INNOCENT_SHAPES)('⚠ H2 CONTROL: %s must NOT pause a provider', (text) => {
@@ -224,6 +236,38 @@ describe('§1 a 402 is permanent, and two of them end the dialling', () => {
       + 'that this provider is out of money. Latching on it takes a WORKING provider off the board, '
       + 'which is the one failure this module\'s header forbids.',
     ).toBeNull();
+  });
+
+  /**
+   * ⚠ WHAT THE TWO NARROWINGS MUST NOT COST, AND WHAT THEY DELIBERATELY DO NOT CLOSE (t87b).
+   *
+   * These read `statusIsAnchored` directly rather than through `permanentFailureReason`, because the
+   * question is about the POSITION rule itself and the prose arms would answer some of these for
+   * other reasons.
+   */
+  const STILL_ANCHORED: ReadonlyArray<[string, string]> = [
+    ['status code 402', 'the compound introducer — it used to match through the bare `code` that '
+      + 'narrowing 1 removed, so removing `code` without adding `status code` back would have taken '
+      + 'a TRUE positive with it. This row is that pair.'],
+    ['error code 402 returned by the gateway', 'the other compound spelling'],
+    ['402 Payment Required', 'the leading arm still works on a bare status line'],
+    ['HTTP/1.1 402 is what came back', 'narrowing 2 dropped brackets and quotes, NOT the HTTP '
+      + 'version prefix — a message that opens with a real status line still announces one'],
+    ['  402 Payment Required', 'leading whitespace is the same message untrimmed, and still counts'],
+    // ⚠ KNOWN AND DELIBERATE. `err`/`error` stay bare introducers because the incident's own string
+    // is `API error 402: {"message":"Insufficient Balance"}` — `error` + separator + number IS the
+    // shape that matters. No rule this function can express separates it from the same words in a
+    // sentence; doing so wants the number's RIGHT-hand side, which is a third narrowing and its own
+    // round. These two rows exist so the gap is a recorded decision rather than an oversight: if a
+    // later round closes it, they go red and whoever closes it updates the doc above with them.
+    ['err 402 entries queued', 'RESIDUAL, not a pass: `err` is load-bearing for real SDK text'],
+    ['the error 402 times in a row', 'RESIDUAL, not a pass: `error` is load-bearing for the '
+      + 'incident string itself'],
+  ];
+
+  it.each(STILL_ANCHORED)('⚠ t87b: `%s` still reads as a status position', (text) => {
+    expect(statusIsAnchored(text, 402), 'narrowing the anchor must not cost a real status position, '
+      + 'and the two residual rows are recorded decisions — see the comment above this table').toBe(true);
   });
 
   /**
