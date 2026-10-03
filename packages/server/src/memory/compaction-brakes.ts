@@ -81,8 +81,10 @@ interface Latch {
   since: string;
   assembledTokens: number;
   budgetTokens: number;
-  /** The message high-water mark when this latched. A history that GREW is a different history. */
+  /** The three facts this latch was ABOUT. Any of them moving makes it a different question. */
   seqAtLatch: number;
+  sessionAtLatch: string | null;
+  modelAtLatch: string | null;
 }
 
 const lowYieldBackoffUntil = new Map<string, number>();
@@ -117,15 +119,28 @@ export function compactionIsBraked(agentId: string, force: boolean): boolean {
     // On the incident box this costs ONE bounded pass every six prompts instead of an unbounded
     // pass on every prompt, and it re-latches immediately, which is the honest trade: the
     // platform re-checks reality rather than trusting a stale fact for ever.
-    const now = messageHighWater(agentId);
-    if (now - latch.seqAtLatch < MIN_COMPACTABLE_ROWS) {
+    //
+    // ⚠ AND THE CARD NAMES THREE MORE WAYS OUT, SO ALL THREE RELEASE IT. (review M2: the card
+    // told the owner to archive, reset the session or switch to a bigger model, and none of those
+    // cleared anything — a user-facing instruction that does not do what it says.) `model_id` is
+    // written at NINE sites and `session_started_at` at five, so a release that depends on every
+    // one of those doors remembering to call a clear function is a release that rots. Comparing
+    // the FACTS cannot rot: whichever door moved them, and whoever adds the tenth, the latch sees
+    // a different question and lets go. A high-water mark that went DOWN counts too — that is a
+    // purge or a trim, which is the most room an agent can possibly gain.
+    const now = latchFacts(agentId);
+    const gained = now.session !== latch.sessionAtLatch ? 'session_reset'
+      : now.model !== latch.modelAtLatch ? 'model_changed'
+        : now.hi < latch.seqAtLatch ? 'history_shrank'
+          : now.hi - latch.seqAtLatch >= MIN_COMPACTABLE_ROWS ? 'history_grew' : null;
+    if (!gained) {
       logger.info('Compaction skipped: this agent\'s memory is latched INCOMPRESSIBLE', {
-        reason: latch.reason, since: latch.since, force, rowsSinceLatch: now - latch.seqAtLatch,
+        reason: latch.reason, since: latch.since, force, rowsSinceLatch: now.hi - latch.seqAtLatch,
       }, agentId);
       return true;
     }
-    logger.info('Compaction latch released: the history has grown since it latched', {
-      rowsSinceLatch: now - latch.seqAtLatch,
+    logger.info('Compaction latch released: this agent has room again', {
+      gained, rowsSinceLatch: now.hi - latch.seqAtLatch,
     }, agentId);
     incompressible.delete(agentId);
   }
@@ -193,14 +208,27 @@ export function latchIfSummariesExceedBudget(
   return latchIncompressible(agentId, 'summaries_exceed_budget', summaryTokens, assemblyBudgetTokens);
 }
 
-/** `MAX(seq)` for this agent — `seq` IS the messages rowid alias (T10). 0 when unreadable. */
-function messageHighWater(agentId: string): number {
+/**
+ * THE FACTS A LATCH IS ABOUT, in one read. (v3.2.3 review, M2)
+ *
+ * `seq` IS the messages rowid alias (T10). `session_started_at` is the boundary the assembler
+ * reads from, so moving it is what a session reset actually DOES. `model_id` carries the context
+ * window, so switching models changes the budget the latch was measured against.
+ *
+ * Read together because the card promises all three, and read ONLY when a latch exists — an
+ * unlatched agent (every agent, nearly always) pays nothing for this.
+ */
+interface LatchFacts { hi: number; session: string | null; model: string | null }
+
+function latchFacts(agentId: string): LatchFacts {
   try {
-    const row = getDb().prepare('SELECT MAX(seq) AS hi FROM messages WHERE agent_id = ?')
-      .get(agentId) as { hi: number | null } | undefined;
-    return row?.hi ?? 0;
+    const row = getDb().prepare(
+      'SELECT (SELECT MAX(seq) FROM messages WHERE agent_id = a.id) AS hi,'
+      + ' a.session_started_at AS session, a.model_id AS model FROM agents a WHERE a.id = ?',
+    ).get(agentId) as { hi: number | null; session: string | null; model: string | null } | undefined;
+    return { hi: row?.hi ?? 0, session: row?.session ?? null, model: row?.model ?? null };
   } catch {
-    return 0;
+    return { hi: 0, session: null, model: null };
   }
 }
 
@@ -208,9 +236,10 @@ function latchIncompressible(
   agentId: string, reason: IncompressibleReason, assembledTokens: number, budgetTokens: number,
 ): Latch | null {
   if (incompressible.has(agentId)) return null;   // one latch, one card
+  const facts = latchFacts(agentId);
   const latch: Latch = {
     reason, since: new Date().toISOString(), assembledTokens, budgetTokens,
-    seqAtLatch: messageHighWater(agentId),
+    seqAtLatch: facts.hi, sessionAtLatch: facts.session, modelAtLatch: facts.model,
   };
   incompressible.set(agentId, latch);
   logger.error('Compaction latched INCOMPRESSIBLE: no further pass can reclaim anything', {
@@ -229,8 +258,13 @@ function latchIncompressible(
   return latch;
 }
 
-/** Anything that gives the agent room again clears the latch: a session reset, an
- *  archive, a model change. Called by the paths that change those facts. */
+/**
+ * THE EXPLICIT CLEAR, for a door that knows it gave the agent room before the facts settle.
+ * Called by `archiveAgentConversation` — the one function all six archive/new-session/reset doors
+ * funnel through — so the card's first instruction takes effect on the spot rather than on the
+ * next brake check. Session resets and model switches are ALSO covered by the facts comparison in
+ * `compactionIsBraked`, deliberately: this call is the fast path, that is the one that cannot rot.
+ */
 export function clearIncompressible(agentId: string): boolean {
   lowYieldBackoffUntil.delete(agentId);
   const had = incompressible.delete(agentId);

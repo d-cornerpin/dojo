@@ -9,6 +9,7 @@ import { rowToMessage, type MessageRow } from '../memory/store.js'; import { est
 import { archiveConversation } from './store.js';
 import { isSystemServiceAgent, getSystemServiceAgentIds } from '../config/platform.js';
 import { summaryPartyTag } from '../memory/party-label.js';
+import { clearIncompressible } from '../memory/compaction-brakes.js';
 import type { Message } from '@dojo/shared';
 
 const logger = createLogger('vault-archive');
@@ -137,6 +138,11 @@ export function getArchiveHighWaterMark(agentId: string): number | null {
  */
 export function archiveAgentConversation(agentId: string, force = false): string | null {
   const db = getDb();
+
+  // v3.2.3 (review M2): the INCOMPRESSIBLE card's first instruction, made true. All six
+  // archive/new-session/reset doors funnel through here, and each of them is about to give this
+  // agent room; ahead of the skips below, because an ignored agent gets its room back too.
+  clearIncompressible(agentId);
 
   // Skip entirely if this agent (or its group) is on the Dreamer ignore list.
   // The user explicitly opted out of having this agent's conversations
