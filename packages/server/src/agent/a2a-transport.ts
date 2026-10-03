@@ -41,6 +41,7 @@ import {
   claimFailedJoinForLateAnswer, threadHopCount, bumpThreadHopCount,
   type JoinState, type JoinPiece,
 } from '../work/store.js';
+import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';   // t90 D2
 // SWEEP-A TB2: the join's close is the settlement authority's, not this module's — the same
 // rule the delivery arm and the finalize adjudicator use, invoked from the relay.
 import { settleAskOnJoin, priorEngineJoinRelay, joinDeliveryDetail } from '../work/ask-settlement.js';
@@ -1616,18 +1617,19 @@ async function deliverJoinResultToOwnerInner(
  *  What was never provisional, and is untouched: the exactly-once property is machine-enforced
  *  by the `work` transition that precedes the send, not by this text. */
 function failClosedNotice(join: JoinState, askedNameHint?: string | null): string {
+  // t90 D2 (report #3): the wording moved to `join-failure-notice.ts`, which reads the PIECES' OWN
+  // STATES rather than offering all three failures at once (the row claimed "came back empty,
+  // failed or abandoned" where nothing came back), and names the recipient, subject and wait.
   const ask = askRowForJoin(join);
-  const snippet = ask ? questionSnippet(ask.content) : '';
   const pieces = joinPieces(join.id);
-  const outstanding = pieces.filter((p) => !isTerminal(p.state));
-  const body = join.total > 1
-    ? `your agent split this across several agents and could not get all the pieces back in time, so there is no complete answer for you.`
-    : (() => {
-      const name = resolveAgentDisplayName(outstanding[0]?.assigneeAgent ?? pieces[0]?.assigneeAgent)
-        ?? askedNameHint ?? 'another agent';
-      return `your agent asked ${name} about this and could not get an answer.`;
-    })();
-  return body + (snippet ? ` (Your question was: "${snippet}")` : '');
+  const names = [...new Set(pieces.map((p) => resolveAgentDisplayName(p.assigneeAgent))
+    .filter((n): n is string => Boolean(n)))];
+  return joinFailureNotice({
+    parentWorkId: join.id,
+    pieces,
+    names: names.length > 0 ? names : (askedNameHint ? [askedNameHint] : []),
+    questionSnippet: ask ? questionSnippet(ask.content) : '',
+  });
 }
 
 /**
@@ -1934,13 +1936,11 @@ function applyDeclaredHandOff(
  */
 async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): Promise<void> {
   if (join.outcome === 'fail-closed') {
-    const claimed = failJoinClosed(join.id, {
-      reason: 'every delegated piece came back empty, failed or abandoned',
-      expectedState: join.parentState,
-    });
+    const failReason = joinFailureReason(joinPieces(join.id));
+    const claimed = failJoinClosed(join.id, { reason: failReason, expectedState: join.parentState });
     if (claimed.kind !== 'applied') return;
     await deliverJoinResultToOwner(join, failClosedNotice(join, senderNameHint), { tool: 'a2a-join-failed', voice: 'platform' });
-    tellAgentTheJoinFailed(join, 'every delegated piece came back empty, failed or abandoned.');
+    tellAgentTheJoinFailed(join, `${failReason}.`);
     return;
   }
   if (join.total === 1) {
