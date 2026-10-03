@@ -142,6 +142,8 @@ class BrowserSession {
       const result = await callModel({
         agentId,
         modelId: visionModel.modelId,
+        // t88: a caption of what is on screen, for the agent to read — an engine artifact.
+        purpose: 'vision_caption',
         messages: [{
           role: 'user' as const,
           content: [
@@ -366,6 +368,8 @@ export async function executeWebBrowse(
               const result = await callModel({
                 agentId,
                 modelId: lightModel.modelId,
+                // t88: a caption of what is on screen, for the agent to read — an engine artifact.
+                purpose: 'vision_caption',
                 systemPrompt:
                   'You are a focused web page extractor. Return ONLY the information described by the goal, ' +
                   'in a compact, structured form. No preamble, no recap of the goal. If the page does not ' +

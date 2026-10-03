@@ -32,6 +32,7 @@ import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
 // T83: the abort registry's two doors. `shared-state.ts` imports nothing but the logger, so
 // this is a leaf edge — no cycle back through the runtime.
 import { registerAbortable, releaseAbortable } from './shared-state.js';
+import { utilityDial, utilityNumCtx, utilityOutputCap, utilityNumCtxExceedsConfigured } from './utility-dial.js';
 import type { ToolCall } from '@dojo/shared';
 
 const logger = createLogger('model');
@@ -443,6 +444,10 @@ export interface ModelCallParams {
    */
   onReasoningChunk?: (chunk: string) => void;
   routerTier?: string; purpose?: string; // routerTier: the auto-router's tier. purpose: WHAT THIS CALL IS, for the cost ledger's `request_type` — the served-turn path declares 'agent_turn' (`v2/steps/call-llm/model-call.ts`); every engine utility dial leaves it unset and records 'completion'. Never inferred from `tools`: `runtime.ts`'s tools gate turns a REAL turn toolless on a model without the capability.
+  /** A utility caller that knows its artifact's size (the summariser knows its `targetTokens`) may ask
+   *  for LESS than that purpose's ceiling; nobody may ask for more. Ignored unless `purpose` names a
+   *  utility dial — see `utility-dial.ts`. */
+  utilityTargetTokens?: number | null;
   // External abort signal, when fired, the underlying SDK call aborts
   // and callModel throws. Used by the runtime's stop button to actually
   // cancel in-flight calls (vs. v1's pre-fix behavior where stop only
@@ -1031,7 +1036,9 @@ async function buildNativeOllamaMessages(
 
 async function callOllamaModel(
   params: ModelCallParams,
-  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null; measuredPrefillTokensPerSec: number | null },
+  // `maxOutputTokens` was already on every row `getModelInfo` returns and simply absent from this
+  // one parameter's inline type, which is why the "Max output" setting could not be sent from here.
+  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null; measuredPrefillTokensPerSec: number | null },
 ): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier, purpose } = params;
   const baseUrl = (modelInfo.providerBaseUrl ?? 'http://localhost:11434').replace(/\/+$/, '');
@@ -1088,6 +1095,23 @@ async function callOllamaModel(
     numCtxSource,
   }, agentId);
 
+  // ── THE UTILITY DIAL (t88) ───────────────────────────────────────────────────────────────
+  // `null` for every agent turn, every fallback retry and every purpose this engine has not
+  // declared — see `utility-dial.ts` for why this keys off the caller's declaration and never off
+  // `tools === false`. When it IS a utility dial, three things change and nothing else does.
+  const dial = utilityDial(params.purpose);
+  const dialOutputCap = dial ? utilityOutputCap(dial, params.utilityTargetTokens) : null;
+  const dialNumCtxInput = dial
+    ? {
+      // Every character the model is shown: the system prompt plus every message part.
+      inputChars: (systemPrompt?.length ?? 0)
+        + nativeMessages.reduce((n, m) => n + (typeof m.content === 'string' ? m.content.length : 0), 0),
+      outputTokens: dialOutputCap ?? dial.maxOutputTokens,
+      configuredNumCtx: effectiveNumCtx,
+    }
+    : null;
+  const dialNumCtx = dialNumCtxInput ? utilityNumCtx(dialNumCtxInput) : null;
+
   const requestBody: Record<string, unknown> = {
     model: ollamaModelName,
     messages: nativeMessages,
@@ -1097,15 +1121,45 @@ async function callOllamaModel(
     // families (gpt-oss, DeepSeek-R1) are trained to always think and will
     // ignore the flag, the call still works; we just capture the thinking
     // separately and don't surface it to the UI.
-    think: modelInfo.thinkingEnabled,
+    // ⚠ A UTILITY DIAL NEVER THINKS, whatever that toggle says. The toggle is the user's choice for
+    // their AGENT's turns; inheriting it here is what spent 4,156 output tokens of reasoning on a
+    // 60-character ticket title. The engine's own artifacts are not the place for deliberation.
+    think: dial ? false : modelInfo.thinkingEnabled,
   };
   if (nativeTools && nativeTools.length > 0) {
     requestBody.tools = nativeTools;
   }
+  // ── options: the window, and the output cap that did not exist ──────────────────────────────
   // Set options.num_ctx when we have either an override or an auto-computed
   // recommendation. If neither is set, let Ollama use the Modelfile default.
-  if (typeof effectiveNumCtx === 'number') {
-    requestBody.options = { num_ctx: effectiveNumCtx };
+  const options: Record<string, number> = {};
+  if (typeof dialNumCtx === 'number') {
+    options.num_ctx = dialNumCtx;
+  } else if (typeof effectiveNumCtx === 'number') {
+    options.num_ctx = effectiveNumCtx;
+  }
+  // ⚠ `num_predict` APPEARED NOWHERE IN THIS ENGINE BEFORE t88. Settings showed a "Max output" field
+  // and the Ollama native path honoured it nowhere — a knob that lied. It is sent for a utility dial
+  // (the artifact's own cap) and for an ordinary call (the model's configured maximum), so the field
+  // now means what it says on every Ollama call.
+  if (typeof dialOutputCap === 'number') {
+    options.num_predict = dialOutputCap;
+  } else if (typeof modelInfo.maxOutputTokens === 'number' && modelInfo.maxOutputTokens > 0) {
+    options.num_predict = modelInfo.maxOutputTokens;
+  }
+  if (Object.keys(options).length > 0) {
+    requestBody.options = options;
+  }
+  if (dial) {
+    logger.info('utility dial: thinking off, output capped, window sized to the call', {
+      purpose: dial.purpose,
+      outputCap: dialOutputCap,
+      numCtx: dialNumCtx,
+      configuredNumCtx: effectiveNumCtx,
+      // The one case where the call's input did not fit the box's configured window: we ask for what
+      // the input needs rather than let the prompt be silently truncated into a confident wrong answer.
+      windowRaisedForInput: dialNumCtxInput ? utilityNumCtxExceedsConfigured(dialNumCtxInput) : false,
+    }, agentId);
   }
 
   // T81b review round, finding 2: `patience` and the gate now sit HERE — before the lock is

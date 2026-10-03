@@ -315,6 +315,9 @@ export async function multistepLLMClassify(
       systemPrompt: '',
       messages: [{ role: 'user', content: prompt }],
       tools: false,
+      // t88: an engine artifact — one small JSON object. Thinking off, 48-token cap, window sized to
+      // the prompt. The timeout below is this caller's own and stays as it is.
+      purpose: 'multistep_classify',
       abortSignal: AbortSignal.timeout(timeoutMs),
       // W3-1 (behavioral run bmr59ix4lsg): this call is fully handled, any
       // failure falls back to the heuristic classifier in the catch below.

@@ -87,6 +87,8 @@ async function describeImage(
     const result = await callModel({
       agentId,
       modelId: visionModel.modelId,
+      // t88: a caption of what is on screen, for the agent to read — an engine artifact.
+      purpose: 'vision_caption',
       messages: [{
         role: 'user' as const,
         content: [

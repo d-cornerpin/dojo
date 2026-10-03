@@ -249,6 +249,14 @@ export async function generateSummary(params: {
       messages: [{ role: 'user', content }],
       systemPrompt,
       tools: false,
+      // t88: a compaction summary. ⚠ THE CAP COMES FROM `targetTokens`, not from the table: the
+      // prompt already tells the model "target approximately N tokens", so the request may as well
+      // enforce the number it asked for. `utilityOutputCap` adds 50% slack so a summary lands on a
+      // sentence rather than being clipped mid-word, and the table's ceiling still bounds it.
+      // Thinking off matters here too — a thinking model spent its whole budget deliberating and
+      // then produced nothing usable, which this file logs as SUMMARY_REFUSED.
+      purpose: 'memory_summarize',
+      utilityTargetTokens: targetTokens,
       abortSignal,
     });
 

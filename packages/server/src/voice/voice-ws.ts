@@ -1303,6 +1303,9 @@ async function fireFastOpener(session: VoiceSession, transcript: string): Promis
       systemPrompt: OPENER_SYSTEM_PROMPT,
       messages: [{ role: 'user', content: transcript }],
       tools: false,
+      // t88: the spoken filler while the real reply is written. Short by nature, and long output is
+      // actively harmful here — it has to land BEFORE the real answer.
+      purpose: 'voice_opener',
       abortSignal: AbortSignal.timeout(OPENER_TIMEOUT_MS),
       // W3-1: documented "fully best-effort, never throws" opener; a failure
       // means silence, which the real reply covers. WARN, not ERROR.

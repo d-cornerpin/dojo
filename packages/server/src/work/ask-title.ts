@@ -107,6 +107,20 @@ export const ASK_TITLE_MAX_CHARS = 80;
 export const ASK_TITLE_INPUT_CHARS = 2000;
 
 /**
+ * ⚠ THE TOTAL LATENCY BUDGET FOR THE TITLE DIAL (t88 deliverable 2).
+ *
+ * Nobody is waiting on this answer: the ticket is already open, already visible, and already carries
+ * its own identifier as a title. A measured call on a user's box took 275 SECONDS — on a box where
+ * every inbound message fires one of these — so the question is not "how long until it answers" but
+ * "how long is this worth". Thirty seconds is comfortably above the 5-20s a right-sized local dial
+ * now takes and far below the point where a person notices their machine is busy.
+ *
+ * It is enforced with the abort signal the transports already honour, so it composes with the agent's
+ * stop button rather than adding a second mechanism.
+ */
+export const ASK_TITLE_LATENCY_BUDGET_MS = 30_000;
+
+/**
  * UX-REPAIR T6 — `, for a work tracker` IS GONE FROM THE FIRST LINE, and its
  * absence is the fix.
  *
@@ -307,6 +321,16 @@ export async function resolveAskTitle(
       systemPrompt: '',
       messages: [{ role: 'user', content: buildTitlePrompt(content, priorContext) }],
       tools: false,
+      // ⚠ t88: THE DIAL DECLARES WHAT IT IS. `utility-dial.ts` keys thinking-off, the 64-token
+      // output cap and the input-sized context window off this one word — and off nothing else,
+      // because `tools: false` is also true of a real turn on a model without the tools capability.
+      purpose: 'ask_title',
+      // ⚠ t88 deliverable 2: A TOTAL LATENCY BUDGET. One measured call on a user's box took 275
+      // SECONDS; this file's own contract is that the caller "fully handles failure with the id
+      // title", so past the budget the fallback is worth strictly more than the answer. The abort
+      // lands in the catch below as a warn, never as an agent-level error (that is what
+      // `bestEffort` buys), and the ticket keeps the identifier it was filed with.
+      abortSignal: AbortSignal.timeout(ASK_TITLE_LATENCY_BUDGET_MS),
       // The caller fully handles failure with the id title, so a handled
       // failure must not read as an agent-level error in the log.
       bestEffort: true,

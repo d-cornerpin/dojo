@@ -100,6 +100,8 @@ Do NOT include preamble like "Here is your briefing" — start directly with the
       messages: [{ role: 'user', content: userMessage }],
       systemPrompt,
       tools: false,
+      // t88: the continuity brief — a few paragraphs handed to the next turn, not a conversation.
+      purpose: 'continuity_brief',
     });
 
     // PHASE-2 T7 (4b): aged obligations are never silently dropped. Anything still owed past

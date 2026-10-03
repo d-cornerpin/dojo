@@ -338,6 +338,8 @@ export async function webFetch(
         const result = await callModel({
           agentId,
           modelId: fetchModelId,
+          // t88: a fetched page distilled for the agent to read — an engine artifact, not a turn.
+          purpose: 'page_summary',
           systemPrompt:
             'You are a focused web content extractor. Given a page and an extraction prompt, ' +
             'return ONLY the information requested. Be terse, direct, no preamble, no recap of ' +
