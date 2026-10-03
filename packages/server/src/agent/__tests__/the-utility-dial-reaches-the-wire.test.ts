@@ -115,6 +115,15 @@ beforeEach(() => {
     VALUES ('m-small-local', 'local-ollama', 'Small Local', 'small-local', '["text"]', 32768,
             ?, 1, ?, 1, datetime('now'), datetime('now'))
   `).run(MAX_OUTPUT_TOKENS, RECOMMENDED_NUM_CTX);
+  // A vision-sized sibling: the engine charges an IMAGE a large fixed cost against the assembly budget
+  // (measured: ~16,400 tokens), so a 32K-context model refuses ANY image outright — see the clause.
+  db.prepare(`
+    INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window,
+                        max_output_tokens, thinking_enabled, num_ctx_recommended, is_enabled,
+                        created_at, updated_at)
+    VALUES ('m-vision-local', 'local-ollama', 'Vision Local', 'vision-local', '["text","vision"]',
+            131072, ?, 1, ?, 1, datetime('now'), datetime('now'))
+  `).run(MAX_OUTPUT_TOKENS, RECOMMENDED_NUM_CTX);
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
     VALUES ('a-fixture', 'Fixture Agent', 'm-small-local', 'idle', '{}', datetime('now'), datetime('now'))
@@ -167,6 +176,46 @@ describe('a declared utility dial reaches the wire with all three dials turned d
     const sent = bodies[0].options?.num_predict ?? 0;
     expect(sent).toBeGreaterThanOrEqual(300);
     expect(sent).toBeLessThan(utilityDial('memory_summarize')!.maxOutputTokens);
+  });
+});
+
+describe('⚠ M1 ON THE WIRE: a screenshot widens the window it rides in', () => {
+  it('a vision caption with a big image asks for more window than its sentence would', async () => {
+    // ⚠ THE WIRING, and a mutant is why this clause exists: deleting `imageBase64Lengths` from the
+    // transport left every policy clause passing while the window went back to being sized on the
+    // caption's one sentence — i.e. the floor, with a multi-thousand-token picture beside it.
+    // The content shape is the one `canvas-view.ts` and `system-control.ts` send.
+    // ⚠ THE SIZE IS ITSELF A FINDING. At 2 MB (and at 500 KB on this fixture's model) the call is
+    // refused OUTRIGHT by the pre-existing assembly budget — "assembly is STILL over budget … failing
+    // loud rather than sending an assembly known to be wrong" — so a truly enormous image already
+    // fails LOUDLY rather than truncating. That BOUNDS M1: the silent-truncation risk lives in the
+    // band between the 2,048 floor and that budget, and this image sits inside it.
+    const bigImage = 'A'.repeat(350_000);           // ~260 KB decoded: an ordinary screen grab
+    await callModel({
+      agentId: 'a-fixture', modelId: 'm-vision-local', systemPrompt: '',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: bigImage } },
+          { type: 'text', text: 'Describe what is on this screen.' },
+        ] as never,
+      }],
+      tools: false, purpose: 'vision_caption',
+    });
+    const sent = bodies[0].options?.num_ctx ?? 0;
+    // Text alone would have landed on the 2,048 floor; the image is what makes this bigger.
+    expect(sent).toBeGreaterThan(2_048);
+    // …and still bounded by the box's configured window, which is the memory budget speaking.
+    expect(sent).toBeLessThanOrEqual(RECOMMENDED_NUM_CTX);
+  });
+
+  it('a TEXT caption on the same purpose stays small — the image is what costs, not the purpose', async () => {
+    await callModel({
+      agentId: 'a-fixture', modelId: 'm-small-local', systemPrompt: '',
+      messages: [{ role: 'user', content: 'Describe what is on this screen.' }],
+      tools: false, purpose: 'vision_caption',
+    });
+    expect(bodies[0].options?.num_ctx).toBeLessThanOrEqual(4_096);
   });
 });
 
