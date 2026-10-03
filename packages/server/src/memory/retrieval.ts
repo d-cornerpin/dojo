@@ -144,11 +144,16 @@ function searchMessagesInner(
     // is append-only, so this IS a time window, it costs one indexed MAX() to compute, and an older
     // match is the one a person is least likely to mean. On a box smaller than the window the floor is
     // 0 and nothing changes at all.
-    const maxRowid = (db.prepare('SELECT MAX(rowid) AS r FROM messages WHERE agent_id = ?')
+    // ⚠ `seq`, NOT `rowid`. On `messages` the insertion key is `seq INTEGER PRIMARY KEY AUTOINCREMENT`
+    // — the table's rowid ALIAS — and PHASE-1 T10's reader guard refuses a bare `rowid` projection
+    // because SQLite names such a column `seq`, so `row.rowid` reads `undefined` and NOTHING THROWS.
+    // Same value, one name. (It also means the floor is served by the primary key, which is why this
+    // bound costs one indexed MAX.)
+    const maxSeq = (db.prepare('SELECT MAX(seq) AS r FROM messages WHERE agent_id = ?')
       .get(agentId) as { r: number | null } | undefined)?.r ?? 0;
-    const candidateFloor = ftsCandidateRowidFloor(maxRowid);
+    const candidateFloor = ftsCandidateRowidFloor(maxSeq);
     if (candidateFloor > 0) {
-      conditions.push('m.rowid > ?');
+      conditions.push('m.seq > ?');
       params.push(candidateFloor);
     }
 
@@ -249,29 +254,32 @@ function searchMessagesLike(
   // chunking also means the walk can STOP partway, which is the difference between a bounded search
   // and a 43-second freeze.
   const fetchLimit = (limit ?? 20) * 3;
-  const maxRowid = (db.prepare('SELECT MAX(rowid) AS r FROM messages WHERE agent_id = ?')
+  // ⚠ `seq` IS THE ROWID ALIAS HERE (PHASE-1 T10, migration 133), and the reader guard refuses a bare
+  // `rowid` for a reason worth keeping: SQLite would name the column `seq`, `row.rowid` would read
+  // `undefined`, and nothing would throw — the silent shape that broke 45 tests once already.
+  const maxSeq = (db.prepare('SELECT MAX(seq) AS r FROM messages WHERE agent_id = ?')
     .get(agentId) as { r: number | null } | undefined)?.r ?? 0;
   const chunkStmt = db.prepare(`
-    SELECT id, role, content, datetime(created_at/1000,'unixepoch') AS created_at, rowid AS rid
+    SELECT id, role, content, datetime(created_at/1000,'unixepoch') AS created_at, seq AS rowid
     FROM messages
-    WHERE ${conditions.join(' AND ')} AND rowid <= ? AND rowid > ?
-    ORDER BY rowid DESC
+    WHERE ${conditions.join(' AND ')} AND seq <= ? AND seq > ?
+    ORDER BY seq DESC
     LIMIT ?
   `);
   const countStmt = db.prepare(`
     SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(content)), 0) AS bytes FROM messages
-    WHERE agent_id = ? AND rowid <= ? AND rowid > ?
+    WHERE agent_id = ? AND seq <= ? AND seq > ?
   `);
   const scan = boundedRecencyScanSync<{ id: string; role: string; content: string; created_at: string }>({
     limit: fetchLimit,
-    startRowidCeiling: maxRowid,
+    startRowidCeiling: maxSeq,
     fetchChunk: (ceiling, chunkRows) => {
       const floor = Math.max(0, ceiling - chunkRows);
       // What the chunk COST is what the chunk EXAMINED, not what it matched — the whole point of the
       // budget. One cheap indexed count per chunk buys an honest number.
       const cost = countStmt.get(agentId, ceiling, floor) as { n: number; bytes: number };
       const found = chunkStmt.all(...params, ceiling, floor, chunkRows) as Array<{
-        id: string; role: string; content: string; created_at: string; rid: number;
+        id: string; role: string; content: string; created_at: string; rowid: number;
       }>;
       return { rows: found, rowsExamined: cost.n, bytesRead: cost.bytes };
     },
