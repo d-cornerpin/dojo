@@ -5972,6 +5972,13 @@
       "to": 563,
       "by": "t88 capture-3 - the RAM recommendation audit (NEW ENTRY, pinned at its current size)",
       "why": "NEW ENTRY at 563 (205 code, 358 comment). The new-file cap asked for this to be seen and argued, so: the file was 410 lines before this round and is the ONE place that decides how much memory a local model may be promised - the decision that recommended 28,672 tokens to a 4b model on a 16 GB desktop box and left it holding 5.4 GB with ~60 MB of free pages. The +153 is three named reserves (desktop, engine, other resident models) with the incident's measurements as their justification, a fail-closed path replacing two silent NULLs (a NULL recommendation means Ollama picks its own default, which on a small model is its full trained context - the tightest boxes got the most dangerous answer), and the arithmetic of the OLD policy kept alongside so a rollout can log both numbers on one line. REFUSED: splitting the reserves into their own module - the formula and its budget are one decision and a reader who finds half of it re-derives the other half wrong, which is exactly how the original shipped. From 563 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 3702,
+      "to": 3741,
+      "by": "t88 review round - the Max-output floor, the incoherent-row warn, and the image accounting",
+      "why": "3702 -> 3741 (+39: ~14 code, ~25 comment). THE REVIEW'S M3 AND M1. M3: the Max-output field was INERT on the Ollama native path until t88, which makes binding it the package's one behaviour change for existing users - and the only guard was `> 0`. A box carrying a tiny number from a knob nobody could see working would start truncating its agent's turns on update, with `done_reason: length` and no error. Below MIN_BINDABLE_MAX_OUTPUT_TOKENS (256, a short paragraph) the stored value is NOT bound and the number is named in a warn, so the call behaves exactly as it did before this package and a person can correct the row. A utility dial's own cap is exempt, argued at the site: the floor exists to distrust a FIELD, not to second-guess a number this engine chose for an 80-character artifact. The incoherent row the review found (max_output above context_window) is REPORTED rather than silently repaired. M1: a vision dial's window now accounts the images it carries - three declaring sites are screenshot captions, and sized on text alone they landed on the 2,048 floor with a multi-thousand-token picture beside them. From 3741 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6024,7 +6031,7 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 217,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 3702,
+    "packages/server/src/agent/model.ts": 3741,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
