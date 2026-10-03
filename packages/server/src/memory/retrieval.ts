@@ -1,6 +1,9 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { breadcrumbFor, clearQueryDispatched, markQueryDispatched } from '../observability/stall-sentinel.js';
+import {
+  boundedRecencyScanSync, ftsCandidateRowidFloor, logBoundedFallback,
+} from './search-bounds.js';
 import { callModel } from '../agent/model.js';
 import { estimateTokens } from './budget.js';
 import { getSummary, getDescendantMessages, getSummariesByAgent } from './dag.js';
@@ -134,6 +137,21 @@ function searchMessagesInner(
       params.push(before);
     }
 
+    // ⚠ RANK OVER A BOUNDED CANDIDATE SET (t89 deliverable 2). `ORDER BY rank` must SCORE EVERY MATCH
+    // before it knows which twenty win, and the join pulls each matching row's content to do it — so a
+    // common term over a 729 MB table was ten thousand row reads to return twenty, inside ONE
+    // synchronous call on the serving thread. The rowid floor makes recency the bound: `messages.rowid`
+    // is append-only, so this IS a time window, it costs one indexed MAX() to compute, and an older
+    // match is the one a person is least likely to mean. On a box smaller than the window the floor is
+    // 0 and nothing changes at all.
+    const maxRowid = (db.prepare('SELECT MAX(rowid) AS r FROM messages WHERE agent_id = ?')
+      .get(agentId) as { r: number | null } | undefined)?.r ?? 0;
+    const candidateFloor = ftsCandidateRowidFloor(maxRowid);
+    if (candidateFloor > 0) {
+      conditions.push('m.rowid > ?');
+      params.push(candidateFloor);
+    }
+
     // FTS5 match using the content column
     const sql = `
       SELECT m.id, m.role, m.content, datetime(m.created_at/1000,'unixepoch') AS created_at,
@@ -221,21 +239,47 @@ function searchMessagesLike(
     params.push(before);
   }
 
-  // v2.7.8, over-fetch then filter pure tool-call self-echoes (see
-  // isPureToolCallMessage rationale above).
+  // ⚠ THE BOUND THAT WOULD HAVE ENDED THE INCIDENT (t89 deliverable 2). This query already had a
+  // LIMIT and was still unbounded: SQLite cannot index a leading-wildcard LIKE, so it walks rows
+  // newest-first and TESTS EACH ONE until the limit fills. A common word costs sixty rows; a rare word
+  // — or one that appears nowhere — costs the agent's ENTIRE history, every row's content read off
+  // disk, in one synchronous call. The LIMIT bounded the ANSWER and said nothing about the WORK.
+  //
+  // Now it walks in recency chunks with a hard row and byte budget, and reports what it touched. The
+  // chunking also means the walk can STOP partway, which is the difference between a bounded search
+  // and a 43-second freeze.
   const fetchLimit = (limit ?? 20) * 3;
-  const rawRows = db.prepare(`
-    SELECT id, role, content, datetime(created_at/1000,'unixepoch') AS created_at FROM messages
-    WHERE ${conditions.join(' AND ')}
-    ORDER BY created_at DESC
+  const maxRowid = (db.prepare('SELECT MAX(rowid) AS r FROM messages WHERE agent_id = ?')
+    .get(agentId) as { r: number | null } | undefined)?.r ?? 0;
+  const chunkStmt = db.prepare(`
+    SELECT id, role, content, datetime(created_at/1000,'unixepoch') AS created_at, rowid AS rid
+    FROM messages
+    WHERE ${conditions.join(' AND ')} AND rowid <= ? AND rowid > ?
+    ORDER BY rowid DESC
     LIMIT ?
-  `).all(...params, fetchLimit) as Array<{
-    id: string;
-    role: string;
-    content: string;
-    created_at: string;
-  }>;
-  const rows = rawRows.filter((r) => !isPureToolCallMessage(r.content)).slice(0, limit ?? 20);
+  `);
+  const countStmt = db.prepare(`
+    SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(content)), 0) AS bytes FROM messages
+    WHERE agent_id = ? AND rowid <= ? AND rowid > ?
+  `);
+  const scan = boundedRecencyScanSync<{ id: string; role: string; content: string; created_at: string }>({
+    limit: fetchLimit,
+    startRowidCeiling: maxRowid,
+    fetchChunk: (ceiling, chunkRows) => {
+      const floor = Math.max(0, ceiling - chunkRows);
+      // What the chunk COST is what the chunk EXAMINED, not what it matched — the whole point of the
+      // budget. One cheap indexed count per chunk buys an honest number.
+      const cost = countStmt.get(agentId, ceiling, floor) as { n: number; bytes: number };
+      const found = chunkStmt.all(...params, ceiling, floor, chunkRows) as Array<{
+        id: string; role: string; content: string; created_at: string; rid: number;
+      }>;
+      return { rows: found, rowsExamined: cost.n, bytesRead: cost.bytes };
+    },
+  });
+  if (scan.report.truncated || scan.report.chunks > 1) {
+    logBoundedFallback('history_search:like', 'leading-wildcard LIKE cannot use an index', scan.report, agentId);
+  }
+  const rows = scan.rows.filter((r) => !isPureToolCallMessage(r.content)).slice(0, limit ?? 20);
 
   return rows.map(row => {
     const isTruncated = row.content.length > 200;
