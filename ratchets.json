@@ -6296,6 +6296,13 @@
       "why": "+17 (9 comment, 8 code). The tripwire's own instruction executed: memoryGrep/searchMessages/Inner/Like async; the FTS query and each LIKE chunk route through readerQuery when the pool is up; the sync run is the FALLBACK, counted by the flipped clause. The growth is the guarded fork (pool path beside sync path) — collapsing to pool-only was REFUSED because a box whose worker cannot spawn must keep searching, and moving the fork out of this file would put the wire in a module that owns neither the SQL nor the bounds. From 698 this file may only shrink."
     },
     {
+      "path": "packages/server/src/memory/retrieval.ts",
+      "from": 698,
+      "to": 778,
+      "by": "t89 continuation item 2 — the summaries search adopts the bounds module and the reader pool",
+      "why": "698 -> 778 (+80; ~45 comment, ~35 code). THE CODE IS THE SAME TWO FIXES THE MESSAGES PATH TOOK, applied to the surface that still had neither. (1) The FTS arm: `ORDER BY rank` scores EVERY match before it knows which twenty win, and the join pulls each matching row to rank it — on summaries that is FEWER rows than messages but FAR more bytes per candidate, because a summary row is a condensed body. A rowid recency floor via `ftsCandidateRowidFloor` bounds the candidate set for one indexed MAX(). (2) The LIKE arm had a LIMIT and no bound: SQLite cannot index a leading-wildcard LIKE, so a term appearing nowhere walked every summary row, each content read off disk, in one synchronous call — the LIMIT bounded the ANSWER and said nothing about the WORK, which is the sentence the messages path earned. It now walks budgeted chunks through `boundedRecencyScan`/`Sync` and reports what it touched. Both arms fork on `readerPoolAvailable()`: pool up the read is a worker's, pool down it is the same arithmetic on-thread. THE COMMENT LINES ARE THREE FACTS A READER WOULD OTHERWISE RE-DERIVE OR GET WRONG. (a) The ORDER BY CHANGED — `earliest_at DESC` (the period covered) to `rowid DESC` (the order written) — because a bounded scan needs a monotonic chunk key and `earliest_at` is not one; that is a behaviour change and it is stated where it happens rather than discovered by a reader diffing output. (b) `rowid AS rid`, aliased, because `summaries.id` is a TEXT primary key so insertion order lives in the implicit rowid, and T10's reader guard refuses a BARE rowid projection — the shape SQLite renames, which then reads `undefined` without throwing. (c) WHY THE FORK IS COPIED RATHER THAN FACTORED: the two surfaces differ in their key (`seq` alias vs implicit rowid), their cost query and their projection, so a shared helper would take four parameters and hide the one thing a reviewer needs to see, which is that each path keeps its own fallback. ALTERNATIVES REFUSED. (i) Offload WITHOUT bounding: refused — that moves the freeze to a worker and calls it fixed; the bound is what makes the walk finite and the two are different fixes (a clause says so by name). (ii) Leave the FTS arm alone because summaries are 'small': refused on the arithmetic above — small row COUNT is not small bytes, and the incident this package exists for was bytes read on the serving thread. (iii) Factor the whole search into one generic bounded-search helper and shrink this file: refused as out of scope for a continuation item and because `search-bounds.ts` ALREADY owns the arithmetic — what is left here is the SQL, which is the part that must stay legible per surface. From 778 this file may only shrink; the next surface to adopt the bound (the vault path, item 2's other half) should expect to argue its own raise or land under one."
+    },
+    {
       "path": "packages/server/src/memory/reader-pool.ts",
       "from": 251,
       "to": 264,
@@ -6517,7 +6524,7 @@
     "packages/server/src/memory/other-threads-lane.ts": 276,
     "packages/server/src/memory/recall-lane.ts": 901,
     "packages/server/src/memory/recall.ts": 510,
-    "packages/server/src/memory/retrieval.ts": 698,
+    "packages/server/src/memory/retrieval.ts": 778,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 458,
