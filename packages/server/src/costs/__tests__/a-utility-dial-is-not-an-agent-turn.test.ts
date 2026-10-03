@@ -155,22 +155,48 @@ describe('an engine utility dial is never recorded as a turn', () => {
 });
 
 describe('the premise: exactly one dial declares a purpose', () => {
-  it('all FOURTEEN engine utility dials stay undeclared', () => {
-    // L3-F3: the first version of this clause named twelve. `system-control.ts` and `web-tools.ts`
-    // were the two it missed, and the count is asserted so a fifteenth dial cannot appear unpinned.
-    const callers = [
-      'agent/browser.ts', 'agent/canvas-view.ts', 'agent/runtime.ts', 'agent/system-control.ts',
+  // ⚠ THIS CLAUSE ASKED FOR THE ARGUMENT AND t88 IS THE ARGUMENT. Its previous form asserted that all
+  // FOURTEEN engine utility dials stay undeclared, with the note: "if it became a served turn that is a
+  // real change, and this clause is where it is argued rather than discovered". None of them became a
+  // served turn. What happened is the opposite and it is why `purpose` existed: a utility dial now
+  // DECLARES what artifact it is producing, so `agent/utility-dial.ts` can turn thinking off, cap the
+  // output to the artifact's size and size the context window to the call — the three dials that made
+  // one ticket-title call cost 275 seconds and 5.4 GB on a user's box.
+  //
+  // The ledger consequence is deliberate and declared: `requestType: routerTier ?? purpose ??
+  // 'completion'` means these rows now say `ask_title` where they used to say `completion`, so the
+  // seven purposes are members of the column's domain in `report/telemetry-whitelist.ts`. That is
+  // strictly more information in the column this file exists to protect.
+  it('every engine utility dial is either DECLARED with a purpose or still a plain completion', () => {
+    // L3-F3's count discipline is kept: fourteen dials, now split, and a fifteenth cannot appear
+    // unpinned in either list.
+    const declared = [
+      'agent/browser.ts', 'agent/canvas-view.ts', 'agent/system-control.ts',
       'agent/v2/classifiers/multistep.ts', 'agent/web-tools.ts', 'memory/briefing.ts',
-      'memory/retrieval.ts', 'memory/summarize.ts', 'router/probe.ts', 'techniques/share-export.ts',
-      'vault/extraction.ts', 'voice/voice-ws.ts', 'work/ask-title.ts',
+      'memory/summarize.ts', 'voice/voice-ws.ts', 'work/ask-title.ts',
     ];
-    expect(callers.length).toBe(14);
-    for (const rel of callers) {
+    // Still undeclared, each for a reason: the router PROBE measures a model rather than asking it for
+    // an artifact; retrieval dials the AGENT'S OWN model, not the system one; the share-export and
+    // vault extraction are occasional, user-initiated and not on any hot path.
+    const undeclared = [
+      'agent/runtime.ts', 'memory/retrieval.ts', 'router/probe.ts',
+      'techniques/share-export.ts', 'vault/extraction.ts',
+    ];
+    expect(declared.length + undeclared.length).toBe(14);
+    for (const rel of [...declared, ...undeclared]) {
       const src = fs.readFileSync(path.join(REPO_ROOT, 'packages/server/src', rel), 'utf-8');
       expect(src, `${rel} is expected to be an engine utility dial but no longer passes tools: false`)
         .toMatch(/tools:\s*false/);
-      expect(src, `${rel} now declares a purpose — if it became a served turn that is a real change, `
-        + 'and this clause is where it is argued rather than discovered')
+    }
+    for (const rel of declared) {
+      const src = fs.readFileSync(path.join(REPO_ROOT, 'packages/server/src', rel), 'utf-8');
+      expect(src, `${rel} must declare its purpose so the utility dial applies`).toMatch(/purpose:\s*'/);
+    }
+    for (const rel of undeclared) {
+      const src = fs.readFileSync(path.join(REPO_ROOT, 'packages/server/src', rel), 'utf-8');
+      expect(src, `${rel} now declares a purpose — that is a real change, and THIS clause is where it `
+        + 'is argued rather than discovered: add it to `declared` above, give it a dial in '
+        + '`agent/utility-dial.ts`, and add the purpose to the telemetry whitelist')
         .not.toMatch(/purpose:\s*'/);
     }
   });
@@ -178,8 +204,11 @@ describe('the premise: exactly one dial declares a purpose', () => {
   it("'completion' and 'agent_turn' are both declared members of the column's domain", () => {
     const wl = fs.readFileSync(path.join(REPO_ROOT, 'packages/server/src/report/telemetry-whitelist.ts'), 'utf-8');
     const block = /call\.request_type[\s\S]*?\]\s*\}/.exec(wl)?.[0] ?? '';
-    // The two words in use, plus the two transport words history still carries.
-    for (const member of [TURN, UTILITY, 'ollama', 'agent-sdk']) {
+    // The two words in use, the two transport words history still carries, and t88's seven purposes —
+    // a value this column can now hold must be declared here or a report meets a novel string.
+    for (const member of [TURN, UTILITY, 'ollama', 'agent-sdk',
+      'ask_title', 'multistep_classify', 'memory_summarize', 'continuity_brief',
+      'vision_caption', 'page_summary', 'voice_opener']) {
       expect(block, `the request_type domain no longer declares ${member}`).toContain(member);
     }
   });

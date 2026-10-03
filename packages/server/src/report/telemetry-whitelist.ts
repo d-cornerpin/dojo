@@ -152,9 +152,20 @@ export const TELEMETRY_WHITELIST: readonly TelemetryField[] = [
   // trained the reader to ignore the sentinel. This is the MEASURED set; `recordCost`
   // takes an open `requestType?: string` and the column has NO CHECK.
   { path: 'call.request_type',        kind: 'enum',      source: 'cost_records.request_type (no CHECK; this list is its only domain)',
+    // ⚠ t88 ADDED THE SEVEN UTILITY PURPOSES, and they are a WIDENING of this column's meaning that
+    // belongs in the whitelist rather than in a surprise. Until t88 every engine utility dial left
+    // `purpose` unset and landed here as `completion`, so this column could say "a turn" or "not a
+    // turn" and nothing more — which is the complaint `costs/__tests__/a-utility-dial-is-not-an-agent-
+    // turn.test.ts` opens with. A utility dial now declares WHAT it is so that `utility-dial.ts` can
+    // cap its output and size its window, and the same declaration reaches the ledger for free: a box
+    // can now be asked "what did the engine spend on titling tickets" and answer it.
+    // `completion` stays a member: four dials still declare nothing (the router probe, retrieval, the
+    // technique share-export, vault extraction), and history is full of it.
     members: ['light', 'standard', 'heavy', 'budget_fallback', 'ollama', 'agent_turn',
       'agent-sdk', 'completion', 'image_generation', 'transcription', 'music_generation',
-      'audio_generation', 'video_generation'] },
+      'audio_generation', 'video_generation',
+      'ask_title', 'multistep_classify', 'memory_summarize', 'continuity_brief',
+      'vision_caption', 'page_summary', 'voice_opener'] },
   { path: 'call.input_tokens',        kind: 'count',     source: 'cost_records.input_tokens' },
   { path: 'call.output_tokens',       kind: 'count',     source: 'cost_records.output_tokens' },
   { path: 'call.cache_read_tokens',   kind: 'count',     source: 'cost_records.cache_read_tokens' },
