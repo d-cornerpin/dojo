@@ -49,9 +49,19 @@ function auditPayloads(taskId: string, entryKind: string): string[] {
       ORDER BY id`,
   ).all(taskId, entryKind) as Array<{ payload: string }>).map((r) => r.payload);
 }
-function row(taskId: string): { state: string; agent_id: string | null } {
-  return mockDb.current!.prepare('SELECT state, agent_id FROM work WHERE id = ?')
-    .get(taskId) as { state: string; agent_id: string | null };
+/**
+ * EVERY COLUMN THAT CARRIES AN ASSIGNMENT, not just the one the PM reads.
+ *
+ * A mutant that made `wait` call `updateTask({ assignedTo: null })` survived a clause that read
+ * `agent_id` alone — because the spine splits the fact in two (`tracker/schema.ts`: "`agent_id`
+ * is the OWNER of the row; `assignee_agent` is the nullable column that carries whether anyone
+ * is assigned at all"), and a null write lands on the second one only. "Wait changes nothing"
+ * has to mean nothing on either axis, so this is the snapshot and §1 compares the whole thing.
+ */
+function row(taskId: string): Record<string, unknown> {
+  return mockDb.current!.prepare(
+    'SELECT state, agent_id, assignee_agent, assigned_to_group FROM work WHERE id = ?',
+  ).get(taskId) as Record<string, unknown>;
 }
 function verdictEvents(taskId: string, kind: string): number {
   return (mockDb.current!.prepare(
@@ -82,9 +92,9 @@ describe('§1 wait', () => {
     const res = await post('/tasks/task-ask/assignee-decision', { decision: 'wait', reason: 'it is slow on purpose' });
 
     expect(res.status).toBe(200);
-    const after = row('task-ask');
-    expect(after.state, 'wait must not move the task').toBe(before.state);
-    expect(after.agent_id, 'and must not move the assignee').toBe(SLOW);
+    expect(row('task-ask'), 'wait must change NOTHING about the assignment, on any column')
+      .toEqual(before);
+    expect(row('task-ask').agent_id, 'and the assignee the PM reads is untouched').toBe(SLOW);
 
     // ⚠ The record is the point. Without it, "the owner was asked and chose to wait" is
     // indistinguishable from "nobody ever answered" the next time the ladder climbs.
@@ -108,6 +118,7 @@ describe('§2 reassign', () => {
     expect(res.status, 'a reassign with nowhere to go must not pick somewhere').toBe(400);
     expect((await res.json() as { error: string }).error).toContain('no default destination');
     expect(row('task-ask').agent_id, 'and nothing moved').toBe(SLOW);
+    expect(row('task-ask').assignee_agent, 'on either column').toBe(SLOW);
     expect(auditPayloads('task-ask', PATIENCE_ENTRY.reassigned).length).toBe(0);
   });
 
