@@ -6210,6 +6210,13 @@
       "to": 208,
       "by": "t90 REWORK under OWNER RULING 2026-10-02 — the owner-ask half of the module is deleted",
       "why": "-124 (332 -> 208), a LOWERING, same reasoning as the entry above: this file carries two argued raises (0->307 at birth, 307->332 for the answer record) and the reversal belongs beside them. Deleted: `requestAssigneeDecision`, `recordAssigneeDecision`, the extended-patience grant/revoke/read trio, and four of the five `PATIENCE_ENTRY` kinds. The extended-patience flag went for an argued reason rather than by association: it existed to suppress rungs 3 and 4 while those rungs could TAKE THE WORK, and with only poking left it would have meant \"poke this task less\" -- a hand-set second answer to the question the patience floor already answers from the provider's own declaration, pointing away from the ruling's \"keep the agent working\". What survives is what the ruling names: the patience floor (poking a slow model mid-inference is still wrong) and `recordReassignment` as the audit of a HUMAN's reassignment. The header now carries the history -- what was built, what the owner ruled, what stands -- because a reader who finds only the current shape would re-derive the ask. From 208 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/assignment-capability.ts",
+      "from": 0,
+      "to": 139,
+      "by": "t90 D3 second half — the spawn-time capability check, birth-pinned on instruction",
+      "why": "NEW ENTRY at 139 (79 comment, 60 code — measured with grep). ⚠ THE GROWTH DETECTOR DID NOT ASK FOR THIS ONE: 139 is well under its 240-line trigger, and in t87 the same reasoning left `memory/assembled-estimate-cache.ts` unlisted at 177 with the review's agreement. It is pinned because the dispatching instruction said \"a new small module the spawner calls, birth-pinned\", and because the pin IS the smallness: a decrease-only ceiling at birth is the cheapest way to keep a capability check from accreting the intent-guessing this file's header refuses. WHAT IT HOLDS: one question — does this assignment name a tool its assignee cannot call. `namedTools` matches the closed tool vocabulary on word boundaries, `assignmentCapabilityMismatch` asks the EXECUTOR's own predicate (`toolCategoryGranted`, the one the surface strip shares) which of those names is ungranted, and `mismatchWarning` renders the sentence the spawner reads. THE 79 COMMENT LINES ARE THE LINE THIS FILE STAYS ON, and they are the reason the entry is worth reading rather than the reason to trim: live-test report #4's own fix idea opens \"if the task description implies filesystem or shell work\", and inferring intent from prose is a class this codebase bans by name (the round-11 NOT-DOING list; `work/join-drive.ts`: \"the engine may count structure and may not classify reply prose\"). A reader who deletes that argument re-adds a prose classifier, which is both wrong in two directions and against a standing rule. The header also records WHY it warns instead of refusing — instructions mention tool names in passing, so a refusal would break legitimate spawns — which is the decision most likely to be 'helpfully' hardened later. ALTERNATIVES: (a) put it in `agent/spawner.ts`: refused, that file is AT 1459 and is a god file this campaign is dismantling. (b) fold it into `agent/tools/held-groups.ts` (78, t90's first half): refused — that module answers \"what does this agent hold\" for a REFUSAL already in flight, and is read by `gate-eval.ts` at the executor; this one runs before any call exists and reads the tool vocabulary, so merging them would make the refusal path import the tool registry. The two share the sentence, which is why `heldGroupsClause` is imported rather than restated. From 139 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6510,6 +6517,7 @@
     "packages/server/src/providers/billing-breaker.ts": 316,
     "packages/server/src/memory/condense-until-fits.ts": 427,
     "packages/server/src/memory/tail-horizon.ts": 369,
-    "packages/server/src/tracker/assignee-patience.ts": 208
+    "packages/server/src/tracker/assignee-patience.ts": 208,
+    "packages/server/src/agent/tools/assignment-capability.ts": 139
   }
 }
