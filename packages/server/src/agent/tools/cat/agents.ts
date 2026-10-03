@@ -34,7 +34,7 @@ import { broadcast } from '../../../gateway/ws.js';
 import { writeAgentStatus } from '../../agent-status.js';
 import { isPrimaryAgent } from '../../../config/platform.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../../../prompt/agent-prompt-surface.js';
-import { renameAgent } from '../../../prompt/agent-rename.js';
+import { renameAgent } from '../../../prompt/agent-rename.js';import { mismatchWarning } from '../assignment-capability.js';   // t90 D3, second statement on this line: the file is AT its 1538 pin
 import { writeToolReceipt } from '../../../receipts/store.js';
 import { taskScope, projectScope, STATE_TO_STATUS_SQL } from '../../../work/tracker-view.js';
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../../../work/tracker-store.js';
@@ -401,7 +401,7 @@ export const agentsHandlers: ToolHandlerMap = {
             });
             const freshTask = getTask(resolvedTask.id);
             if (freshTask) broadcast({ type: 'tracker:task_updated', data: freshTask });
-            reassignNote = `\nTask ${resolvedTask.id.slice(0, 8)} reassigned to ${result.name}.`;
+            reassignNote = `\nTask ${resolvedTask.id.slice(0, 8)} reassigned to ${result.name}.${mismatchWarning({ agentId: result.agentId, agentName: result.name, texts: [freshTask?.title, freshTask?.description] })}`;   // t90 D3: the delegated TASK's own words, read off the row rather than an undeclared arg (the effects-conformance walk is right to refuse one)
           }
         } catch (reassignErr) {
           logger.warn('spawn_agent: task reassignment failed (non-fatal, agent still spawned)', {
@@ -420,7 +420,7 @@ export const agentsHandlers: ToolHandlerMap = {
         const delta = grantsDelta(MOST_RESTRICTIVE_GRANTS, spawnedGrants);
         if (delta) auditLog(agentId, 'spawn_agent', result.agentId, 'success', `grants: ${delta}`);
       }
-      content = `Agent spawned successfully.\nAgent ID: ${result.agentId}\nName: ${result.name}\nStatus: ${result.status}\nPersistent: ${result.persist ? 'yes' : 'no'}\nSquad: ${squad.squadName}${squad.note}${reassignNote}${accessLine(result.agentId)}`;
+      content = `Agent spawned successfully.\nAgent ID: ${result.agentId}\nName: ${result.name}\nStatus: ${result.status}\nPersistent: ${result.persist ? 'yes' : 'no'}\nSquad: ${squad.squadName}${squad.note}${reassignNote}${accessLine(result.agentId)}${mismatchWarning({ agentId: result.agentId, agentName: result.name, texts: [args.system_prompt as string] })}`;   // t90 D3: tools the INSTRUCTIONS name that the assignee cannot call, surfaced to the SPAWNER before the run
     } catch (err) {
       // A refused GRANT is not a database error and must not be translated as
       // one: the reason names the field the caller has to fix, and ruling 4
