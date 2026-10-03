@@ -71,7 +71,7 @@ import {
   PERMANENT_FAILURES_TO_BREAK, __resetBreakersForTests,
 } from '../../providers/billing-breaker.js';
 
-const AGENT = 'kevin-v323';
+const AGENT = 'agent-v323-box';
 const DEAD_PROVIDER = 'prov-no-balance';
 const LIVE_PROVIDER = 'prov-paid';
 /** The reported box's shape: a 64K cloud window, and the local 131K row as the control. */
@@ -95,7 +95,7 @@ function seedBox(opts: { messages: number; summaryTokens: number }): void {
     `INSERT OR IGNORE INTO models (id, provider_id, name, api_model_id, capabilities, is_enabled, context_window, pricing_unit, cost_per_unit)
      VALUES (?, ?, 'Local 131K', 'local/131k', '["text"]', 1, 131072, 'token', 0)`,
   ).run(MODEL_131K, LIVE_PROVIDER);
-  db.prepare("INSERT OR IGNORE INTO agents (id, name, model_id, status, session_started_at) VALUES (?, 'Kevin', ?, 'idle', '1970-01-01')")
+  db.prepare("INSERT OR IGNORE INTO agents (id, name, model_id, status, session_started_at) VALUES (?, 'Box Under Test', ?, 'idle', '1970-01-01')")
     .run(AGENT, MODEL_64K);
 
   // The backlog. Chunky rows so the body has real bytes in it, as the reported one had.
@@ -361,6 +361,63 @@ describe('§2 the forced path has brakes and a terminal state', () => {
     expect(noteForcedOutcome(AGENT, true, { leafCreated: 2, condensedCreated: 0, tokensReclaimed: 30_000 }, 86_000, 50_000))
       .toBeNull();
     expect(isIncompressible(AGENT), 'a forced pass that summarised something is not terminal').toBeNull();
+  });
+
+  /**
+   * ⚠ THE CARD MUST NOT LIE. (review M2)
+   *
+   * The owner is told three things clear this: archive the conversation, reset the session, switch
+   * to a bigger model. The review found `clearIncompressible` had ZERO callers, so none of them
+   * did — a model switch to a 131K window left the agent waiting six prompts. Each row below is
+   * one of the card's own promises, driven through the real door, not through the clear function.
+   */
+  it('the card\'s three promises all release the latch, each through its real door', async () => {
+    const { compactionIsBraked, noteForcedOutcome, __resetBrakesForTests } = await import('../compaction-brakes.js');
+    const { archiveAgentConversation } = await import('../../vault/archive.js');
+    seedBox({ messages: 40, summaryTokens: 4_000 });
+    const db = mockDb.current!;
+    const latchIt = (): void => {
+      __resetBrakesForTests();
+      noteForcedOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
+      expect(compactionIsBraked(AGENT, true), 'precondition: the agent is latched').toBe(true);
+    };
+
+    // PROMISE 1 — "archive this conversation". The chokepoint all six doors call.
+    latchIt();
+    archiveAgentConversation(AGENT, true);
+    expect(compactionIsBraked(AGENT, true), 'archiving must give the agent room back').toBe(false);
+
+    // PROMISE 2 — "reset the agent's session". The boundary the assembler reads from, moved by
+    // raw SQL exactly as all five reset doors do it — no brake function is called here at all.
+    latchIt();
+    db.prepare('UPDATE agents SET session_started_at = ? WHERE id = ?').run('2026-01-01T00:00:00Z', AGENT);
+    expect(compactionIsBraked(AGENT, true), 'a session reset must give the agent room back').toBe(false);
+
+    // PROMISE 3 — "switching it to a model with a larger context window also clears this". Nine
+    // sites write this column; the latch notices the column, not the sites.
+    latchIt();
+    db.prepare('UPDATE agents SET model_id = ? WHERE id = ?').run(MODEL_131K, AGENT);
+    expect(compactionIsBraked(AGENT, true), 'a bigger window must give the agent room back').toBe(false);
+    db.prepare('UPDATE agents SET model_id = ? WHERE id = ?').run(MODEL_64K, AGENT);
+
+    // AND THE CONTROL: none of those happened, so the latch still binds. Without this row the
+    // three above would pass just as well on a latch that never holds at all.
+    latchIt();
+    expect(compactionIsBraked(AGENT, true), 'an agent given no room stays latched').toBe(true);
+  });
+
+  it('a purge that SHRINKS the history releases it too — the old rule only looked up', async () => {
+    const { compactionIsBraked, noteForcedOutcome, __resetBrakesForTests } = await import('../compaction-brakes.js');
+    seedBox({ messages: 40, summaryTokens: 4_000 });
+    const db = mockDb.current!;
+    __resetBrakesForTests();
+    noteForcedOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
+    expect(compactionIsBraked(AGENT, true)).toBe(true);
+    // The most room an agent can gain. `MAX(seq) - seqAtLatch` goes NEGATIVE, which the
+    // six-rows-gained rule read as "nothing changed" and held the latch on an empty history.
+    db.prepare('DELETE FROM messages WHERE agent_id = ? AND seq > (SELECT MIN(seq) FROM messages WHERE agent_id = ?)')
+      .run(AGENT, AGENT);
+    expect(compactionIsBraked(AGENT, true), 'a purged history cannot be incompressible').toBe(false);
   });
 
   it('a pass that WON resets everything — the fix must not become "compaction never runs"', () => {
