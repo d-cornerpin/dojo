@@ -6,7 +6,7 @@
 import { getDb } from '../db/connection.js';
 import { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 import { createLogger } from '../logger.js';
-import { createEntry, semanticSearch, findNearDuplicateEntry, markObsolete, getEntry, updateEntry, listEntriesBounded, formatCitationSuffix, resolveRecallScope, OWNER_VAULT_AGENT_ID } from './store.js';
+import { createEntry, semanticSearch, findNearDuplicateEntry, markObsolete, getEntry, updateEntry, listEntriesBounded, lastSemanticSearchWindow, formatCitationSuffix, resolveRecallScope, OWNER_VAULT_AGENT_ID } from './store.js';
 import { searchUnfiledArchives, UNFILED_ARCHIVE_LABEL, type UnfiledArchiveSnippet } from './retrieval.js';
 import { obligationShape } from '../work/obligation-memory.js';
 
@@ -469,14 +469,26 @@ export async function executeVaultSearch(
     // correct under D-A: household sharing is BUILT and LIVE, but it is a separate
     // AXIS (which author ids are in scope), not namespaces; squad namespaces stay opt-in.
     const results = await semanticSearch(query, { limit, type, agentId, personalOnly: true });
+    // ⚠ THE WINDOW GETS TOLD TO THE AGENT (t98 fix round 1, I2), the way the message side already
+    // does it (`memory/retrieval.ts`'s "searched the newest N messages only"). A recency cap on a
+    // VAULT can cost an old permanent fact, and an agent handed a short answer has no other way to
+    // know the search did not look all the way back — which is the difference between "I have no
+    // record of that" and "I did not read that far".
+    const window = lastSemanticSearchWindow();
+    const windowNotice = window.truncated
+      ? `\n\n[searched the newest ${window.cap.toLocaleString('en-US')} vault entries only —`
+        + ` nothing older than entry #${window.oldestRidConsidered} was scored. Retry with`
+        + ` mode: "exact" for a literal string, or narrow the query.]`
+      : '';
     // FN-1: semantic mode uses token-overlap matching against unfiled archives.
     const bridge = searchUnfiledArchives(agentId, query, { mode: 'token' });
 
     if (results.length === 0) {
       if (bridge.length > 0) {
-        return `No distilled vault entries matched yet, but the just-archived previous session does:\n\n${formatUnfiledBridgeForSearch(bridge)}`;
+        return `No distilled vault entries matched yet, but the just-archived previous session does:\n\n${formatUnfiledBridgeForSearch(bridge)}${windowNotice}`;
       }
-      return 'No matching memories found in the vault. If you are looking for a specific literal string (e.g. an exact name or typo), retry with mode: "exact".';
+      return 'No matching memories found in the vault. If you are looking for a specific literal string (e.g. an exact name or typo), retry with mode: "exact".'
+        + windowNotice;
     }
 
     // Phase 3.5, per-entry snippet cap at 200 chars. Full content is
@@ -504,7 +516,7 @@ export async function executeVaultSearch(
     // FN-1: append the unfiled-archive bridge after the distilled entries.
     const bridgeSection = bridge.length > 0 ? `\n\n${formatUnfiledBridgeForSearch(bridge)}` : '';
 
-    return `Found ${results.length} vault memor${results.length === 1 ? 'y' : 'ies'}:\n\n${lines.join('\n\n')}${expandHint}${bridgeSection}`;
+    return `Found ${results.length} vault memor${results.length === 1 ? 'y' : 'ies'}:\n\n${lines.join('\n\n')}${expandHint}${bridgeSection}${windowNotice}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('vault_search failed', { error: msg }, agentId);

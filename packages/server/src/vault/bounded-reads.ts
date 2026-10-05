@@ -42,6 +42,7 @@
 // is never truncated, and the warn is what tells us if that judgement was wrong.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
+import { setImmediate as setImmediateUnfaked } from 'node:timers';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { readerPoolAvailable, readerQuery } from '../memory/reader-pool.js';
@@ -55,7 +56,11 @@ const logger = createLogger('vault-bounded-reads');
 /**
  * How many of the newest vault entries one semantic search may SCORE.
  *
- * ⚠ SIZED BY MEASUREMENT, not by taste. On a generated fixture of 100,000 entries with real-shaped
+ * ⚠ SIZED BY MEASUREMENT, not by taste — and the measurement is a COMMITTED, RE-RUNNABLE SCRIPT
+ * (fix round 1, I5): `scripts/t98-measure-chunked-vault-scan.mjs` for this number and
+ * `scripts/t98-measure-vault-candidate-cost.mjs` for the per-row costs it rests on. Both carry their
+ * own output, including a re-run on a loaded box where every absolute figure moved and every ratio
+ * held. On a generated fixture of 100,000 entries with real-shaped
  * 768-float blobs (397 MB on disk, 293 MB of embedding), the shipped chunked-and-pooled scan costs
  * **0.0062–0.0068 ms per entry** end to end, of which **0.00175 ms per entry** is the cosine scoring
  * that cannot leave the main thread. At this cap that is ~0.63 s of wall time and ~0.22 s of
@@ -76,8 +81,10 @@ export const VAULT_CANDIDATE_ROWS = 100_000;
  * Chunking is what converts one unbounded synchronous call into several bounded ones, and here it
  * does a second job the message side did not need: the cosine scoring happens in JavaScript on the
  * main thread, so it is the chunk that decides how long the loop goes unserviced. Measured at this
- * size, the worst single scoring burst is **8.7–8.8 ms** — one frame, not a freeze. At the cap this
- * is 20 chunks, each one round trip to the reader pool plus one turn of the loop.
+ * size, the worst single scoring burst is **8.7–8.8 ms** on an idle box — one frame, not a freeze —
+ * and **26–29 ms** with nine other suites running, which is bounded and still nothing like a freeze.
+ * At the cap this is 20 chunks, each one round trip to the reader pool plus one turn of the loop.
+ * (`scripts/t98-measure-chunked-vault-scan.mjs` produces both figures and records both.)
  */
 export const VAULT_CANDIDATE_CHUNK_ROWS = 5_000;
 
@@ -170,6 +177,33 @@ export function vaultCandidateFloor(maxRowid: number, candidateRows = VAULT_CAND
 }
 
 /**
+ * ⚠ ONE TURN OF THE EVENT LOOP, FROM `node:timers` RATHER THAN THE GLOBAL — and that import is the
+ * whole point of this function existing (fix round 1, I4).
+ *
+ * The chunk loop needs a real yield when the pool is DOWN, because then `vaultRead` resolves on a
+ * microtask and the chunks run back-to-back: measured at **207 ms with 0 ticks serviced** over
+ * 60,000 rows, against 43 % serviced with a yield. With the pool UP the awaited worker round trip is
+ * the yield and this costs one extra macrotask per chunk.
+ *
+ * ⚠ AND IT MUST NOT BE THE GLOBAL `setImmediate`, because a caller that owns the clock would then
+ * deadlock: `vi.useFakeTimers()` intercepts the global, and an earlier cut of this file hung three
+ * clauses in `memory/__tests__/the-prefix-holds-still.test.ts` for thirty seconds each on exactly
+ * that. The commit that deleted the breathe claimed `node:timers`' copy was faked too; THAT CLAIM
+ * WAS WRONG, and it was wrong because the probe behind it raced the answer against a guard timer it
+ * then advanced. Re-probed with one arm per `it` and no guard at all:
+ *
+ *     global setImmediate        → TIMED OUT (faked)
+ *     node:timers setImmediate   → resolved
+ *     MessageChannel             → resolved
+ *
+ * so the unfaked binding is a real escape and the deadlock and the stall are both avoidable. The
+ * probe is the kind of thing that must be run rather than reasoned about, which is why its three
+ * lines of output are recorded here.
+ */
+const vaultBreathe = (): Promise<void> =>
+  new Promise<void>((resolve) => { setImmediateUnfaked(resolve); });
+
+/**
  * ⚠ THE ONE DOOR EVERY VAULT READ GOES THROUGH, so the pool-or-thread decision has ONE spelling.
  *
  * Pool up → the read runs on the worker's own read-only connection and the serving thread stays
@@ -222,6 +256,64 @@ export function resetVaultReadWarnsForTest(): void {
 }
 
 /**
+ * The table's GLOBAL rowid span — where the walk starts and the key below which it has nothing.
+ *
+ * ⚠ GLOBAL, NOT SCOPED, and that is the cheaper AND the more honest choice. `vault_entries` has no
+ * index covering an arbitrary listing scope (type, tags, namespace, an agent IN-list), so a scoped
+ * `MIN`/`MAX` is a reverse table walk — the cost I5 measured at 50 ms on a 40,000-row table. Against
+ * the integer primary key both ends are O(log n) and need no index, and the scope stays in the chunk
+ * SQL so the ROWS are unchanged. The price, stated: a narrowly-scoped listing walks every chunk
+ * between the TABLE's ends rather than its own — bounded by construction, two indexed reads each.
+ * ⚠ AND NEVER AS ONE `SELECT MIN(rowid), MAX(rowid)` — see `scanVaultCandidates` for the
+ * measurement: the combined form loses SQLite's min/max optimisation and prints the SAME plan, so
+ * no `EXPLAIN` clause can catch it.
+ */
+function vaultRowidSpan(db: ReturnType<typeof getDb>): { maxRid: number; minRid: number } {
+  const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM vault_entries').get() as
+    { r: number | null } | undefined)?.r ?? 0;
+  // Exclusive: the walk stops at `ceiling <= floorRowid`, so the floor sits one BELOW the oldest row.
+  const minRid = Math.max(0, ((db.prepare('SELECT MIN(rowid) AS r FROM vault_entries')
+    .get() as { r: number | null } | undefined)?.r ?? 1) - 1);
+  return { maxRid, minRid };
+}
+
+/**
+ * The same span, keyed to the SCOPE the caller is actually searching — one covering-index seek per
+ * agent id, each end separately.
+ *
+ * ⚠ WHY THIS EXISTS AND THE GLOBAL ONE IS NOT ENOUGH (fix round 1, I2). All three semantic scans are
+ * agent-keyed, and a window taken from the TABLE's ends can sit entirely above the caller's newest
+ * row: the review measured a 100,150-rowid table where the agent owned rowids 1–50, and at the
+ * default cap `semanticSearch` returned ZERO hits while `findSemanticDuplicate` stopped seeing that
+ * agent's own older duplicates. `idx_vault_agent` covers `MAX/MIN(rowid) WHERE agent_id = ?`, so the
+ * honest window costs what the dishonest one did — 1.98 µs/call against 1.60 µs global on 60,000
+ * rows, measured.
+ *
+ * ⚠ N SEEKS, ONE PER ID, AND NOT ONE `agent_id IN (…)`. A combined `IN` loses SQLite's min/max
+ * optimisation exactly as a combined `MIN(x), MAX(x)` does — this file already carries that
+ * measurement — so the scope's span is the max of N maxima and the min of N minima. A household
+ * scope is a handful of ids; at ~2 µs each the whole thing is noise beside a single chunk read.
+ */
+function vaultScopedRowidSpan(
+  db: ReturnType<typeof getDb>,
+  agentIds: readonly string[],
+): { maxRid: number; minRid: number } {
+  const maxStmt = db.prepare('SELECT MAX(rowid) AS r FROM vault_entries WHERE agent_id = ?');
+  const minStmt = db.prepare('SELECT MIN(rowid) AS r FROM vault_entries WHERE agent_id = ?');
+  let maxRid = 0;
+  let oldest: number | null = null;
+  for (const id of agentIds) {
+    const hi = (maxStmt.get(id) as { r: number | null } | undefined)?.r;
+    if (typeof hi === 'number' && hi > maxRid) maxRid = hi;
+    const lo = (minStmt.get(id) as { r: number | null } | undefined)?.r;
+    if (typeof lo === 'number' && (oldest === null || lo < oldest)) oldest = lo;
+  }
+  // Exclusive, like the global form: the floor sits one BELOW the scope's oldest row. A scope that
+  // owns nothing yields `{ 0, 0 }`, and the walk then does no work at all, which is correct.
+  return { maxRid, minRid: Math.max(0, (oldest ?? 1) - 1) };
+}
+
+/**
  * Score the newest `VAULT_CANDIDATE_ROWS` entries matching `conditions`, in budgeted chunks, off the
  * serving thread when the pool is up.
  *
@@ -240,21 +332,29 @@ export async function scanVaultCandidates(opts: {
   readonly signal?: AbortSignal;
   readonly candidateRows?: number;
   readonly chunkRows?: number;
+  /**
+   * The agent ids the caller's `conditions` scope to, so the recency window can be THIS SCOPE's
+   * span rather than the table's. Omit only for a genuinely unscoped scan.
+   */
+  readonly scopeAgentIds?: readonly string[];
 }): Promise<VaultCandidateScan> {
   const db = getDb();
   const cap = opts.candidateRows ?? VAULT_CANDIDATE_ROWS;
-  // ⚠ TWO SINGLE-AGGREGATE STATEMENTS, NEVER A COMBINED `MIN(x), MAX(x)`, and the reason is measured
-  // rather than stylistic (t89 fix round 1, I5): SQLite's min/max optimisation reads ONE aggregate
-  // off the end of a b-tree and does not apply to two in one statement — the combined form walks
-  // every index entry the WHERE matches, 23.457 ms against 0.015 ms on a 240,000-row fixture, AND
-  // ALL THREE PRINT THE IDENTICAL PLAN, so an `EXPLAIN QUERY PLAN` clause cannot tell them apart.
-  // Both ends are the table's GLOBAL span against the integer primary key, so each is O(log n) and
-  // needs no index; the caller's scope stays in the chunk SQL, which leaves the ROWS unchanged.
-  const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM vault_entries').get() as
-    { r: number | null } | undefined)?.r ?? 0;
-  const minRid = Math.max(0, ((db.prepare('SELECT MIN(rowid) AS r FROM vault_entries')
-    .get() as { r: number | null } | undefined)?.r ?? 1) - 1);
-  const windowFloor = Math.max(vaultCandidateFloor(maxRid, cap), minRid);
+  // ⚠ THE SPAN IS THE CALLER'S SCOPE'S, NOT THE TABLE'S (fix round 1, I2). All three semantic scans
+  // are agent-keyed, and `idx_vault_agent` covers `MAX/MIN(rowid) WHERE agent_id = ?` — the review
+  // measured 1.98 µs/call scoped against 1.60 µs global on 60,000 rows, i.e. the same cost. Taking
+  // the global span instead cost real answers: on a 100,150-rowid table where the agent owned
+  // rowids 1–50, the DEFAULT cap put the whole window above the agent's newest row and
+  // `semanticSearch` returned ZERO hits — and the SAME window governs `findSemanticDuplicate`, so
+  // that agent also stopped detecting its own older duplicates. A scope-keyed span removes both.
+  // (The LIKE listing keeps the global span: its scope is `type`/`tags`/`namespace`/an agent
+  // IN-list with no index to cover it — see `vaultRowidSpan`.)
+  const span = opts.scopeAgentIds && opts.scopeAgentIds.length > 0
+    ? vaultScopedRowidSpan(db, opts.scopeAgentIds)
+    : vaultRowidSpan(db);
+  const { maxRid, minRid } = span;
+  const capFloor = vaultCandidateFloor(maxRid, cap);
+  const windowFloor = Math.max(capFloor, minRid);
 
   // ⚠ `rowid AS rid`, ALIASED. `vault_entries.id` is a TEXT primary key so insertion order lives in
   // the implicit rowid, and an unaliased `rowid` projection is the shape that can come back under
@@ -267,7 +367,12 @@ export async function scanVaultCandidates(opts: {
   `;
   const pageStmt = db.prepare(pageSql);
 
-  let oldestRidConsidered = maxRid;
+  // ⚠ INITIALISED TO THE FLOOR, NOT THE CEILING (fix round 1, I2). It was `maxRid`, and it only
+  // moves on a SCORED row — so in the one case this number exists for (the window holds none of the
+  // caller's rows) it never moved and the warn named the NEWEST row in the table as "the oldest
+  // entry it considered". The floor is the honest answer to "how far back did this search look".
+  let oldestRidConsidered = windowFloor + 1;
+  let lowestFloorRead = maxRid;
   const scan = await boundedRecencyScan<ScoredVaultCandidate>({
     limit: cap,
     startRowidCeiling: maxRid,
@@ -283,13 +388,7 @@ export async function scanVaultCandidates(opts: {
     // WIDTH (see the constant).
     maxRows: cap,
     maxBytes: VAULT_CANDIDATE_MAX_BYTES,
-    // ⚠ NO `breathe`, AND IT IS NOT AN OVERSIGHT: the loop's turn comes from the AWAITED POOL ROUND
-    // TRIP, real I/O, and `retrieval.ts` passes none for the same reason. A first cut passed
-    // `setImmediate` for the pool-down case and HUNG three clauses in `the-prefix-holds-still` for
-    // 30 s each — that file assembles under `vi.useFakeTimers()`, which intercepts `setImmediate` AND
-    // `node:timers`' copy (measured). A read that can only finish if the caller's clock is real must
-    // not be awaited inside one. COST: pool down, the chunks run back-to-back and the thread is
-    // pinned for the scan — a BOUNDED scan, which is `retrieval.ts`'s own trade.
+    breathe: vaultBreathe,
     fetchChunk: async (ceiling, chunkRows) => {
       // ⚠ CLAMPED TO THE WINDOW, which matters only for the LAST chunk and matters there completely:
       // the loop stops when `ceiling <= floorRowid`, so the final chunk is reached with a ceiling
@@ -297,6 +396,8 @@ export async function scanVaultCandidates(opts: {
       // and score entries the cap excluded. (No empty-chunk guard here any more — the floor owns
       // that question now, and one mechanism is the point of C1.)
       const chunkFloor = Math.max(windowFloor, ceiling - chunkRows);
+      // How far down the walk actually got, which is the other half of the truncation question.
+      if (chunkFloor < lowestFloorRead) lowestFloorRead = chunkFloor;
       const page = await vaultRead<VaultCandidateRow>(
         `${opts.label}:candidates`, pageSql, [...opts.params, ceiling, chunkFloor],
         () => pageStmt.all(...opts.params, ceiling, chunkFloor) as VaultCandidateRow[],
@@ -321,17 +422,44 @@ export async function scanVaultCandidates(opts: {
     },
   });
 
-  // ⚠ TWO DIFFERENT TRUNCATIONS, BOTH LOUD. A budget stopping the walk is one; the window not being
-  // the whole table is the other, and it is the one that can cost an old permanent fact — so it is
-  // reported even though the scan "worked".
-  const truncated = scan.report.stoppedBecause !== 'exhausted' || windowFloor > 0;
+  // ⚠ TWO DIFFERENT TRUNCATIONS, BOTH LOUD — AND ONE OF THEM USED TO BE A LIE (fix round 1, I1).
+  // A budget stopping the walk is one. The CAP holding the window above the caller's oldest row is
+  // the other, and it is the one that can cost an old permanent fact, so it is reported even though
+  // the scan "worked".
+  //
+  // ⚠ THE PREDICATE ASKS ONE QUESTION, AND IT IS THE ONLY ONE THAT MATTERS: is there anything IN
+  // THIS SCOPE older than what the walk looked at? Two ways for the answer to be yes —
+  //
+  //   · `capFloor > minRid` — the cap's floor sits above the caller's own oldest row, so the window
+  //     itself excluded rows the caller owns; or
+  //   · `lowestFloorRead > windowFloor` — the walk stopped (a budget, or the row limit filling)
+  //     before it reached the bottom of its own window.
+  //
+  // ⚠ WHAT IT USED TO BE, AND WHY THAT WAS A LIE TWICE OVER. It read
+  // `stoppedBecause !== 'exhausted' || windowFloor > 0`:
+  //   (I1) `windowFloor` is `max(capFloor, minRid)`, so on ANY vault whose earliest rows were ever
+  //        pruned — which `vault/maintenance.ts`'s low-confidence purge and both dashboard delete
+  //        routes produce, and which this file's own purged-vault argument calls every lived-in
+  //        vault — it was `MIN(rowid) − 1 > 0` with the cap nowhere near biting. The review's probe:
+  //        300 live rows at rowids 501–800, ALL 300 scored, and the line still read "an older fact
+  //        than that was NOT scored". One per `vault_search`, THREE per `vault_remember`, for the
+  //        life of the box — this file's own "how a log stops being read", and it made a real
+  //        truncation indistinguishable from the noise.
+  //   (M3) a dense vault of exactly `cap` live rows stops `'satisfied'` rather than `'exhausted'`,
+  //        and that was read as a truncation too — even though the walk had consumed its whole
+  //        window and there was nothing below it.
+  // Both disappear once the question is asked directly instead of inferred from the stop reason.
+  const truncated = capFloor > minRid || lowestFloorRead > windowFloor;
   if (truncated) {
+    // ⚠ AND THE STRUCTURED FLAG SAYS SO TOO (M4). `report.truncated` is the BUDGET's flag, so a
+    // window truncation used to log `truncated: false` with the fact buried in the prose — and a log
+    // filter on `truncated: true` would miss precisely the case R10 cares about.
     logBoundedFallback(
       `${opts.label}:candidates`,
-      `the vault candidate window held this search to the newest ${cap} entr(ies) of ${maxRid}; `
-      + `the oldest entry it considered was #${oldestRidConsidered}, so an older fact than that was `
-      + 'NOT scored',
-      scan.report,
+      `the vault candidate window held this search to the newest ${cap} entr(ies) above rowid `
+      + `#${windowFloor} of ${maxRid}; the oldest entry it considered was #${oldestRidConsidered}, `
+      + 'so an older fact than that was NOT scored',
+      { ...scan.report, truncated: true },
       opts.agentId,
     );
   }
@@ -408,27 +536,6 @@ function vaultLikeSql(q: VaultLikeScanQuery): { page: string; cost: string } {
 
 interface CostRow { n: number; bytes: number }
 
-/**
- * The table's GLOBAL rowid span — where the walk starts and the key below which it has nothing.
- *
- * ⚠ GLOBAL, NOT SCOPED, and that is the cheaper AND the more honest choice. `vault_entries` has no
- * index covering an arbitrary listing scope (type, tags, namespace, an agent IN-list), so a scoped
- * `MIN`/`MAX` is a reverse table walk — the cost I5 measured at 50 ms on a 40,000-row table. Against
- * the integer primary key both ends are O(log n) and need no index, and the scope stays in the chunk
- * SQL so the ROWS are unchanged. The price, stated: a narrowly-scoped listing walks every chunk
- * between the TABLE's ends rather than its own — bounded by construction, two indexed reads each.
- * ⚠ AND NEVER AS ONE `SELECT MIN(rowid), MAX(rowid)` — see `scanVaultCandidates` for the
- * measurement: the combined form loses SQLite's min/max optimisation and prints the SAME plan, so
- * no `EXPLAIN` clause can catch it.
- */
-function vaultRowidSpan(db: ReturnType<typeof getDb>): { maxRid: number; minRid: number } {
-  const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM vault_entries').get() as
-    { r: number | null } | undefined)?.r ?? 0;
-  // Exclusive: the walk stops at `ceiling <= floorRowid`, so the floor sits one BELOW the oldest row.
-  const minRid = Math.max(0, ((db.prepare('SELECT MIN(rowid) AS r FROM vault_entries')
-    .get() as { r: number | null } | undefined)?.r ?? 1) - 1);
-  return { maxRid, minRid };
-}
 
 function reportVaultLikeScan(report: BoundedScanReport): void {
   if (report.truncated || report.chunks > 1) {
@@ -480,7 +587,7 @@ export async function vaultLikeScan<T>(q: VaultLikeScanQuery, signal?: AbortSign
     limit: q.limit,
     startRowidCeiling: maxRid,
     floorRowid: minRid,
-    // No `breathe` — see the candidate scan above for the deadlock that argument is paid for.
+    breathe: vaultBreathe,
     fetchChunk: async (ceiling, chunkRows) => {
       const floor = Math.max(minRid, ceiling - chunkRows);
       const c = (await vaultRead<CostRow>(

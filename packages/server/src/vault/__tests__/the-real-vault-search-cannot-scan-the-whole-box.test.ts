@@ -200,6 +200,221 @@ beforeEach(() => {
   resetReaderPoolForTest();
 });
 
+/**
+ * A small fixture at CHOSEN rowids, for the two fix-round-1 shapes the grown fixture cannot express:
+ * a vault whose oldest row is not rowid 1, and a table whose newest rowids belong to someone else.
+ */
+function fixtureAt(
+  name: string,
+  rows: ReadonlyArray<{ rid: number; agent: string }>,
+): { path: string; close: () => void } {
+  const p = path.join(dbDir, `${name}.db`);
+  for (const suffix of ['', '-wal', '-shm']) fs.rmSync(`${p}${suffix}`, { force: true });
+  const d = new Database(p);
+  d.pragma('journal_mode = WAL');
+  d.exec(`CREATE TABLE vault_entries (
+    id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'fact',
+    content TEXT NOT NULL, is_obsolete INTEGER DEFAULT 0, embedding BLOB, namespace TEXT,
+    created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+  )`);
+  d.exec('CREATE INDEX idx_vault_agent ON vault_entries(agent_id)');
+  d.exec('CREATE INDEX idx_vault_obsolete ON vault_entries(is_obsolete)');
+  const ins = d.prepare(
+    `INSERT INTO vault_entries (rowid, id, agent_id, content, embedding) VALUES (?, ?, ?, ?, ?)`);
+  d.transaction(() => {
+    for (const r of rows) {
+      ins.run(r.rid, `e-${r.rid}`, r.agent, `a fictional fact at ${r.rid}`, blobFor(r.rid));
+    }
+  })();
+  d.close();
+  const ro = new Database(p, { readonly: true });
+  writeDb = ro;
+  writePath = p;
+  resetReaderPoolForTest();
+  return {
+    path: p,
+    close: () => {
+      writeDb = null;
+      writePath = null;
+      ro.close();
+      for (const suffix of ['', '-wal', '-shm']) fs.rmSync(`${p}${suffix}`, { force: true });
+    },
+  };
+}
+
+describe('⚠ FIX ROUND 1, I1 — A PRUNED VAULT IS NOT A TRUNCATED SEARCH', () => {
+  it('a vault whose oldest row was purged says NOTHING, because the cap never bit', async () => {
+    // ⚠ THE DEFECT THIS CLAUSE EXISTS FOR, in the review's own numbers. `windowFloor` is
+    // `max(capFloor, minRid)`, and the predicate read `windowFloor > 0` — so on ANY vault whose
+    // earliest rows were ever pruned (which `vault/maintenance.ts`'s low-confidence purge and both
+    // dashboard delete routes produce, and which this file's own purged-vault clause calls every
+    // lived-in vault) the line fired with the cap nowhere near biting. 300 live rows at rowids
+    // 501-800, ALL 300 scored, and it still said "an older fact than that was NOT scored".
+    //
+    // One warn per `vault_search` and THREE per `vault_remember`, for the life of the box — which is
+    // this file's own "how a log stops being read", and it made a real truncation indistinguishable
+    // from the noise. The predicate asks `capFloor > minRid` now: did the CAP cut anything the
+    // caller actually owns?
+    const live = Array.from({ length: 300 }, (_, i) => ({ rid: 501 + i, agent: AGENTS[0] }));
+    const fx = fixtureAt('i1-purged', live);
+    try {
+      await warmReaderPool();
+      warns.length = 0;
+      const scan = await scanVaultCandidates({
+        label: 'vault_semantic', queryEmbedding: queryVector(),
+        conditions: ['is_obsolete = 0', 'embedding IS NOT NULL', 'agent_id = ?'], params: [AGENTS[0]],
+        agentId: AGENTS[0], scopeAgentIds: [AGENTS[0]],
+      });
+      expect(scan.scored, 'the fixture did not produce the 300 rows the clause reasons about')
+        .toHaveLength(300);
+      expect(scan.windowFloor, 'the window should sit at the purge boundary').toBe(500);
+      expect(scan.truncated, 'a pruned vault is not a truncated search').toBe(false);
+      expect(warns.filter((w) => String(w.meta.subsystem ?? '').startsWith('vault_')),
+        'a pruned vault warned about a truncation that did not happen').toEqual([]);
+    } finally {
+      await terminateReaderPool();
+      fx.close();
+    }
+  }, 180_000);
+
+  it('a vault of exactly `cap` live rows is not truncated either (M3)', async () => {
+    // The edge the review folded in: a dense vault of exactly the cap stops `'satisfied'` (the row
+    // limit filled) rather than `'exhausted'`, which the old predicate also called a truncation.
+    const cap = 40;
+    const live = Array.from({ length: cap }, (_, i) => ({ rid: i + 1, agent: AGENTS[0] }));
+    const fx = fixtureAt('i1-exact-cap', live);
+    try {
+      await warmReaderPool();
+      warns.length = 0;
+      const scan = await scanVaultCandidates({
+        label: 'vault_semantic', queryEmbedding: queryVector(),
+        conditions: ['is_obsolete = 0', 'embedding IS NOT NULL', 'agent_id = ?'], params: [AGENTS[0]],
+        agentId: AGENTS[0], scopeAgentIds: [AGENTS[0]], candidateRows: cap, chunkRows: 10,
+      });
+      expect(scan.scored).toHaveLength(cap);
+      expect(scan.report.stoppedBecause, 'the row limit should be what filled').toBe('satisfied');
+      expect(scan.truncated, 'a vault of exactly the cap lost nothing to the cap').toBe(false);
+      expect(warns.filter((w) => String(w.meta.subsystem ?? '').startsWith('vault_'))).toEqual([]);
+    } finally {
+      await terminateReaderPool();
+      fx.close();
+    }
+  }, 180_000);
+
+  it('a REAL truncation still warns, and the structured flag says so too (M4)', async () => {
+    // Both directions. And `meta.truncated` is asserted because a window truncation used to log
+    // `truncated: false` with the fact buried in the prose — a log filter on `truncated: true` would
+    // have missed exactly the case R10 cares about.
+    const live = Array.from({ length: 200 }, (_, i) => ({ rid: 1001 + i, agent: AGENTS[0] }));
+    const fx = fixtureAt('i1-real-truncation', live);
+    try {
+      await warmReaderPool();
+      warns.length = 0;
+      const scan = await scanVaultCandidates({
+        label: 'vault_semantic', queryEmbedding: queryVector(),
+        conditions: ['is_obsolete = 0', 'embedding IS NOT NULL', 'agent_id = ?'], params: [AGENTS[0]],
+        agentId: AGENTS[0], scopeAgentIds: [AGENTS[0]], candidateRows: 50, chunkRows: 25,
+      });
+      expect(scan.truncated, 'a cap that cut 150 of the agent\'s own rows must report').toBe(true);
+      const warn = warns.find((w) => String(w.meta.subsystem ?? '').startsWith('vault_semantic'));
+      expect(warn, 'a real truncation said nothing').toBeTruthy();
+      expect(warn!.meta.truncated, 'the STRUCTURED flag must say truncated, not only the prose')
+        .toBe(true);
+      // ⚠ AND THE LINE NAMES THE FLOOR (I2). It used to name only `oldestRidConsidered`, which is
+      // the wrong number in the one case the line exists for.
+      expect(String(warn!.meta.reason)).toContain(`above rowid #${scan.windowFloor}`);
+    } finally {
+      await terminateReaderPool();
+      fx.close();
+    }
+  }, 180_000);
+});
+
+describe('⚠ FIX ROUND 1, I2 — THE WINDOW IS THE SCOPE\'S SPAN, NOT THE TABLE\'S', () => {
+  it('an agent whose rows are the OLDEST in a wide table is still found', async () => {
+    // ⚠ THE REVIEW'S PROBE 3, AS A CLAUSE. The table spans 100,150 rowids; this agent owns rowids
+    // 1-50 and another agent owns the newest 100,000. With the GLOBAL span the default cap put the
+    // whole window above this agent's newest row and `semanticSearch` returned ZERO hits — and the
+    // SAME window governs `findSemanticDuplicate`, so the agent also stopped detecting duplicates of
+    // its own older facts. A scope-keyed span costs ~2 µs per id and removes both.
+    const mine = Array.from({ length: 50 }, (_, i) => ({ rid: i + 1, agent: AGENTS[0] }));
+    const theirs = [{ rid: 100_150, agent: AGENTS[1] }, { rid: 100_100, agent: AGENTS[1] }];
+    const fx = fixtureAt('i2-oldest-owner', [...mine, ...theirs]);
+    try {
+      await warmReaderPool();
+      warns.length = 0;
+      const scan = await scanVaultCandidates({
+        label: 'vault_semantic', queryEmbedding: queryVector(),
+        conditions: ['is_obsolete = 0', 'embedding IS NOT NULL', 'agent_id = ?'], params: [AGENTS[0]],
+        agentId: AGENTS[0], scopeAgentIds: [AGENTS[0]],
+      });
+      // THE HEADLINE: fifty rows exist and fifty are scored. Pre-fix this was zero.
+      expect(scan.scored, 'the scope-keyed window did not reach the agent\'s own rows')
+        .toHaveLength(50);
+      expect(scan.maxRid, 'the ceiling is the SCOPE\'s newest row, not the table\'s').toBe(50);
+      expect(scan.truncated, 'nothing of this agent\'s was cut').toBe(false);
+      expect(warns.filter((w) => String(w.meta.subsystem ?? '').startsWith('vault_'))).toEqual([]);
+    } finally {
+      await terminateReaderPool();
+      fx.close();
+    }
+  }, 180_000);
+
+  it('a scope that owns nothing does no work and says nothing', async () => {
+    const fx = fixtureAt('i2-empty-scope', [{ rid: 90_000, agent: AGENTS[1] }]);
+    try {
+      await warmReaderPool();
+      warns.length = 0;
+      const scan = await scanVaultCandidates({
+        label: 'vault_dedup', queryEmbedding: queryVector(),
+        conditions: ['is_obsolete = 0', 'embedding IS NOT NULL', 'agent_id = ?'], params: [AGENTS[2]],
+        agentId: AGENTS[2], scopeAgentIds: [AGENTS[2]],
+      });
+      expect(scan.scored).toEqual([]);
+      expect(scan.report.chunks, 'a scope with no rows should not walk the table').toBe(0);
+      expect(scan.truncated).toBe(false);
+      expect(warns.filter((w) => String(w.meta.subsystem ?? '').startsWith('vault_'))).toEqual([]);
+    } finally {
+      await terminateReaderPool();
+      fx.close();
+    }
+  }, 180_000);
+
+  it('the scope\'s span is N single-aggregate COVERING-INDEX seeks, never one combined IN', () => {
+    const reads = fs.readFileSync(new URL('../bounded-reads.ts', import.meta.url), 'utf-8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    expect(reads, 'the scoped span lost its per-id MAX seek')
+      .toContain("SELECT MAX(rowid) AS r FROM vault_entries WHERE agent_id = ?");
+    expect(reads, 'the scoped span lost its per-id MIN seek')
+      .toContain("SELECT MIN(rowid) AS r FROM vault_entries WHERE agent_id = ?");
+    // A combined `agent_id IN (…)` loses SQLite's min/max optimisation exactly as a combined
+    // `MIN(x), MAX(x)` does, which this file already measured at 23.457 ms against 0.015 ms.
+    expect(reads, 'the span was combined into one IN — the form that loses the optimisation')
+      .not.toMatch(/(?:MIN|MAX)\(rowid\)[^;`]*agent_id IN/);
+  });
+
+  it('EXPLAIN confirms the scoped seek rides the covering index', () => {
+    const fx = fixtureAt('i2-plan', [{ rid: 7, agent: AGENTS[0] }]);
+    try {
+      const d = new Database(fx.path, { readonly: true });
+      const plan = (sql: string): string =>
+        (d.prepare(`EXPLAIN QUERY PLAN ${sql}`).all('x') as Array<{ detail: string }>)
+          .map((r) => r.detail).join(' | ');
+      const hi = plan('SELECT MAX(rowid) AS r FROM vault_entries WHERE agent_id = ?');
+      const lo = plan('SELECT MIN(rowid) AS r FROM vault_entries WHERE agent_id = ?');
+      // eslint-disable-next-line no-console
+      console.log(`I2 PLAN  MAX: ${hi}\n         MIN: ${lo}`);
+      for (const p of [hi, lo]) {
+        expect(p, 'the scoped span is not using idx_vault_agent').toContain('idx_vault_agent');
+        expect(p, 'the scoped span fell back to a table scan').not.toMatch(/SCAN vault_entries/);
+      }
+      d.close();
+    } finally {
+      fx.close();
+    }
+  }, 60_000);
+});
+
 describe('the bounds are bounds, and every number is argued where it is set', () => {
   it('the candidate window is a no-op on every vault that exists, and a floor past that', () => {
     // A vault smaller than the cap gets floor 0 — which is every real distilled vault, and the
@@ -378,6 +593,59 @@ describe('⚠ THE WORK LEAVES THIS THREAD — counted, not timed', () => {
     const walked = onThreadReads.filter((s) => /content LIKE|COUNT\(\*\) AS n, COALESCE/.test(s));
     expect(walked, 'the exact search walked the table on the serving connection').toEqual([]);
   }, 180_000);
+});
+
+describe('⚠ FIX ROUND 1, I4 — THE POOL-DOWN FALLBACK BREATHES, AND IT DOES NOT DEADLOCK', () => {
+  it('a bounded scan with the pool DOWN still leaves the loop serviceable', async () => {
+    // ⚠ WHAT DELETING THE BREATHE COST, in the review's measurement: pool up 68 % serviced; pool
+    // DOWN **207 ms, 0 ticks, 0 % serviced** at 60,000 rows, because `vaultRead` then resolves on a
+    // microtask and the chunks run back-to-back. The earlier cut measured 43 % serviced WITH a
+    // breathe. The yield is real work, and the pool-down mode is exactly the box that can least
+    // afford a pinned thread.
+    //
+    // The pool is taken down the way production takes it down — `terminateReaderPool()` latches it —
+    // so this measures the shipped fallback and not a stub.
+    await terminateReaderPool();
+    expect(readerPoolAvailable(), 'the pool must be DOWN for this clause to mean anything').toBe(false);
+    const q = queryVector();
+    const measured = await measureStarvation(async () => {
+      await scanVaultCandidates({
+        label: 'vault_semantic', queryEmbedding: q,
+        conditions: ['is_obsolete = 0', 'embedding IS NOT NULL'], params: [],
+        chunkRows: 2_500,
+      });
+    });
+    // eslint-disable-next-line no-console
+    console.log(`POOL-DOWN  starved ${measured.starvedMs}ms of ${measured.elapsedMs}ms `
+      + `(${measured.ticks} ticks, ${(measured.serviced * 100).toFixed(0)}% serviced) over ${ROWS} rows`);
+    // ⚠ A FRACTION, NOT A CEILING — nine suites share this box. Pre-fix this was 0 %; the floor is
+    // set well below the 43 % the breathe measured so that a loaded machine cannot red it.
+    expect(measured.ticks, 'the pool-down scan serviced no ticks at all — the breathe is gone again')
+      .toBeGreaterThan(0);
+    expect(measured.serviced, 'the pool-down scan pinned the loop').toBeGreaterThan(0.15);
+    resetReaderPoolForTest();
+  }, 180_000);
+
+  it('the breathe comes from `node:timers`, which a caller holding the clock does not fake', () => {
+    // ⚠ THE PROBE THAT SETTLED IT, run with one arm per `it` and NO guard timer, because the two
+    // earlier attempts both raced the answer against a faked guard they then advanced — and lied in
+    // opposite directions:
+    //       global setImmediate      → TIMED OUT (faked)
+    //       node:timers setImmediate → resolved
+    //       MessageChannel           → resolved
+    // So the unfaked binding avoids both the stall and the deadlock. The source clause pins WHICH
+    // binding, because the global one is the obvious edit and it is the one that hangs
+    // `the-prefix-holds-still.test.ts` for thirty seconds a clause.
+    const reads = fs.readFileSync(new URL('../bounded-reads.ts', import.meta.url), 'utf-8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    expect(reads, 'the breathe must come from the unfaked node:timers binding')
+      .toMatch(/import \{ setImmediate as setImmediateUnfaked \} from 'node:timers'/);
+    expect(reads, 'the breathe must USE that binding, not the global')
+      .toMatch(/setImmediateUnfaked\(resolve\)/);
+    // Both walks take it: a yield on one door and not the other is the shape that gets missed.
+    expect((reads.match(/breathe: vaultBreathe/g) ?? []).length,
+      'both bounded walks must breathe — the candidate scan and the pooled LIKE walk').toBe(2);
+  });
 });
 
 describe('⚠ THE ANSWERS ARE THE PRE-FIX ANSWERS — a bound that moves results is a bug', () => {

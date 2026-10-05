@@ -12,7 +12,7 @@ import { estimateTokens } from '../memory/budget.js';
 import { getHouseholdAgentIds, isPMAgent, isHealerAgent } from '../config/platform.js';
 import {
   scanVaultCandidates, fetchVaultRowsByIds, vaultLikeScan, vaultLikeScanSync,
-  byBestSimilarity, type VaultLikeScanQuery,
+  byBestSimilarity, VAULT_CANDIDATE_ROWS, type VaultLikeScanQuery,
 } from './bounded-reads.js';
 
 const logger = createLogger('vault-store');
@@ -601,6 +601,25 @@ export async function listEntriesBounded(
 
 // ── Semantic Search ──
 
+/**
+ * ⚠ THE LAST SEMANTIC SEARCH'S WINDOW, FOR THE TOOL LAYER TO TELL THE AGENT ABOUT (fix round 1, I2).
+ *
+ * `semanticSearch` returns an array, and widening it to an object would reach every caller. The
+ * message side solved the same problem by appending a line to the rendered result
+ * (`memory/retrieval.ts`'s "searched the newest N messages only"), and the tool layer is where that
+ * line belongs — so the fact rides here, set on every semantic search and read immediately by
+ * `vault/tools.ts`. ⚠ NOT a cache and not state: it is overwritten by the next search, it is only
+ * ever read by the call that just ran, and it holds NO user content — a boolean and two integers.
+ */
+let lastSemanticWindow: { truncated: boolean; oldestRidConsidered: number; cap: number } = {
+  truncated: false, oldestRidConsidered: 0, cap: 0,
+};
+
+/** What the last `semanticSearch` on this process looked at. See `lastSemanticWindow`. */
+export function lastSemanticSearchWindow(): { truncated: boolean; oldestRidConsidered: number; cap: number } {
+  return lastSemanticWindow;
+}
+
 export async function semanticSearch(query: string, options?: {
   limit?: number;
   type?: string;
@@ -646,6 +665,8 @@ export async function semanticSearch(query: string, options?: {
         { search: query, limit, agentId: options?.agentId, includeOwnerScope: true },
         options?.signal,
       );
+      // This arm ran no candidate window, so it must not leave the PREVIOUS search's one standing.
+      lastSemanticWindow = { truncated: false, oldestRidConsidered: 0, cap: 0 };
       return entries.map(e => ({ ...e, similarity: 0.5 }));
     }
   }
@@ -678,7 +699,17 @@ export async function semanticSearch(query: string, options?: {
     label: 'vault_semantic',
     queryEmbedding, conditions, params,
     agentId: options?.agentId, signal: options?.signal,
+    // ⚠ THE WINDOW IS THIS SCOPE'S, NOT THE TABLE'S (fix round 1, I2). Without it, a table whose
+    // newest rowids belong to other agents put the whole recency window above this caller's newest
+    // row and the search returned nothing at all — measured by the review at a 100,150-rowid span.
+    scopeAgentIds: options?.agentId ? resolveRecallScope(options.agentId) : undefined,
   });
+
+  lastSemanticWindow = {
+    truncated: scan.truncated,
+    oldestRidConsidered: scan.oldestRidConsidered,
+    cap: VAULT_CANDIDATE_ROWS,
+  };
 
   // ⚠ SAME ANSWER AS THE UNBOUNDED SORT, TIE-BREAK INCLUDED — see `byBestSimilarity`. The pre-fix
   // code sorted a stable array built in rowid order, so an equal-similarity tie went to the older
@@ -754,6 +785,10 @@ async function findSemanticDuplicate(
     conditions: ['is_obsolete = 0', 'embedding IS NOT NULL', 'agent_id = ?'],
     params: [agentId],
     agentId,
+    // ⚠ AND THIS ONE MATTERS MOST (fix round 1, I2): a global window that sat above this author's
+    // newest row made the duplicate check see NOTHING, so the agent silently accumulated duplicates
+    // of its own older facts. One id, one covering-index seek per end.
+    scopeAgentIds: [agentId],
   });
 
   // ⚠ THE OUTCOME IS THE PRE-FIX ONE, ORDER-INDEPENDENTLY. The unbounded read had no `ORDER BY`, so
@@ -803,6 +838,7 @@ export async function findNearDuplicateEntry(
     conditions: ['is_obsolete = 0', 'embedding IS NOT NULL', 'agent_id = ?'],
     params: [agentId],
     agentId,
+    scopeAgentIds: [agentId],
   });
 
   // ⚠ BOTH RULES ARE THE PRE-FIX RULES, and both are order-independent as written. An upper-band hit

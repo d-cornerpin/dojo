@@ -32,6 +32,11 @@ import { fileURLToPath } from 'node:url';
 const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-t98-tooldoor-'));
 const dbPath = path.join(dbDir, 'fixture.db');
 let db: Database.Database | null = null;
+/** ⚠ AND THE PATH MOVES WITH THE CONNECTION. The reader pool opens its own connection BY PATH, so a
+ *  clause that swaps `getDb()` to a second fixture without swapping `getDbPath()` has the pool
+ *  answering every query from the first one — which is how the window-notice clause below first
+ *  reded with "No matching memories found" against a fixture that plainly contained the match. */
+let pathOverride: string | null = null;
 
 /** Every read the SERVING connection actually ran, by SQL — the same instrument the store clauses
  *  use, and for the same reason: a count means the same thing on an idle box and a loaded one. */
@@ -63,7 +68,7 @@ vi.mock('../../logger.js', () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
 vi.mock('../../db/connection.js', () => ({
-  getDbPath: () => dbPath,
+  getDbPath: () => pathOverride ?? dbPath,
   getDb: () => {
     if (!db) throw new Error('fixture not open');
     return recordingDb(db);
@@ -209,6 +214,70 @@ describe('⚠ THE DOOR\'S READS LEAVE THE SERVING THREAD — the change itself, 
   });
 });
 
+describe('⚠ FIX ROUND 1, I2 — A TRUNCATED WINDOW IS TOLD TO THE AGENT, NOT ONLY TO THE LOG', () => {
+  it('semantic mode appends the window notice when the cap actually cut something', async () => {
+    // ⚠ WHY THE LOG IS NOT ENOUGH. A recency cap on a VAULT can cost an old permanent fact, and an
+    // agent handed a short answer has no other way to know the search did not look all the way
+    // back — the difference between "I have no record of that" and "I did not read that far".
+    // t89's message surface already tells the agent ("searched the newest N messages only"); this is
+    // the same line on the vault surface.
+    //
+    // The fixture makes the DEFAULT cap bite without 100,000 rows: two entries, one at rowid 1 and
+    // one at rowid 200,000, so `capFloor` is 100,000 and the older one is genuinely below the window.
+    const p = path.join(dbDir, 'window-notice.db');
+    for (const suffix of ['', '-wal', '-shm']) fs.rmSync(`${p}${suffix}`, { force: true });
+    const d = new Database(p);
+    d.pragma('journal_mode = WAL');
+    d.exec(`CREATE TABLE vault_entries (
+      id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'fact',
+      content TEXT NOT NULL, is_obsolete INTEGER DEFAULT 0, embedding BLOB, namespace TEXT,
+      created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+    )`);
+    d.exec('CREATE INDEX idx_vault_agent ON vault_entries(agent_id)');
+    d.exec(`CREATE TABLE vault_conversations (
+      id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, agent_name TEXT, messages TEXT NOT NULL,
+      message_count INTEGER NOT NULL, token_count INTEGER NOT NULL, earliest_at TEXT NOT NULL,
+      latest_at TEXT NOT NULL, is_processed INTEGER DEFAULT 0, processed_at TEXT,
+      attempts INTEGER DEFAULT 0, poisoned INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`);
+    const emb = Buffer.from(new Float32Array([1, 0, 0, 0, 0, 0, 0, 0]).buffer);
+    const ins = d.prepare(
+      `INSERT INTO vault_entries (rowid, id, agent_id, content, embedding) VALUES (?, ?, ?, ?, ?)`);
+    ins.run(1, 'ancient', AGENT, `the ${NEEDLE}, filed long ago`, emb);
+    ins.run(200_000, 'recent', AGENT, `the ${NEEDLE}, filed recently`, emb);
+    d.close();
+    const prev = db;
+    db = new Database(p, { readonly: true });
+    pathOverride = p;
+    resetReaderPoolForTest();
+    try {
+      const out = await executeVaultSearch(AGENT, { query: NEEDLE, mode: 'semantic', limit: 5 });
+      // The newest entry is inside the window; the one at rowid 1 is below it.
+      expect(out).toContain('recent');
+      expect(out, 'the window notice is missing — the agent cannot tell a miss from a short look')
+        .toContain('searched the newest 100,000 vault entries only');
+      expect(out).toMatch(/nothing older than entry #\d+ was scored/);
+      expect(out, 'the notice must point at the way to search further back').toContain('mode: "exact"');
+    } finally {
+      await terminateReaderPool();
+      db?.close();
+      db = prev;
+      pathOverride = null;
+      resetReaderPoolForTest();
+      for (const suffix of ['', '-wal', '-shm']) fs.rmSync(`${p}${suffix}`, { force: true });
+    }
+  }, 180_000);
+
+  it('and says NOTHING on an ordinary vault — the noise half of the same claim', async () => {
+    // The grown fixture starts at rowid 1 and is far smaller than the cap, so nothing was cut and
+    // nothing should be said. This is the direction I1 was about.
+    const out = await executeVaultSearch(AGENT, { query: NEEDLE, mode: 'semantic', limit: 5 });
+    expect(out).not.toContain('searched the newest');
+    expect(out).not.toContain('was scored');
+  }, 60_000);
+});
+
 describe('⚠ EVERY PRODUCTION CALLER OF AN ASYNC VAULT READ AWAITS IT — a census, both ways', () => {
   // ⚠ WHY A CENSUS RATHER THAN A SPOT CHECK. These four reads return Promises, and TypeScript will
   // not stop a caller from assigning one to a variable and reading `.length` off it — the value is
@@ -283,9 +352,14 @@ describe('⚠ EVERY PRODUCTION CALLER OF AN ASYNC VAULT READ AWAITS IT — a cen
     // memory and reded, because that route calls `listEntries` and `getEntry` and never the semantic
     // path. The DECLARATION site is skipped by shape above, so `vault/store.ts` appearing here is a
     // real call inside the store — `createEntry`'s dedup and the embed-outage fallback.
+    // ⚠ THREE CALLERS, AND THE THIRD IS WHY THIS CLAUSE EARNED ITS KEEP (fix round 1, I3). The
+    // review found a FOURTH synchronous caller the lane had not counted —
+    // `memory/recall-lane.ts`'s auto-recall embed-outage arm, which runs every turn for the
+    // duration of an outage — and when it was converted, THIS CLAUSE WENT RED on the set it had
+    // written down. That is a wire clause counting in the direction that matters.
     expect(new Set(callers['listEntriesBounded'] ?? []),
       'listEntriesBounded gained or lost a caller — name it, and say that it awaits')
-      .toEqual(new Set(['vault/store.ts', 'vault/tools.ts']));
+      .toEqual(new Set(['memory/recall-lane.ts', 'vault/store.ts', 'vault/tools.ts']));
     expect([...(callers['findSemanticDuplicate'] ?? [])].sort(),
       'the dedup check is private to the store; a second caller is a design change')
       .toEqual(['vault/store.ts']);
