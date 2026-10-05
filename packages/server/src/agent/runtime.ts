@@ -405,7 +405,8 @@ import {
 } from './shared-state.js';
 import { currentTurnNumber, markTurnsTerminated } from './v2/turn-record.js';
 
-import { turnBoundary, forceA2ATurn, a2aTurnRetries, MAX_A2A_TURN_RETRIES, lastTurnWasA2A, MAX_DRAIN_STUCK } from './turn-state.js';
+import { turnBoundary, forceA2ATurn, a2aTurnRetries, lastTurnWasA2A, MAX_DRAIN_STUCK } from './turn-state.js';
+import { a2aRetryBudgetFor } from './a2a-patience.js';
 import { turnContext } from './turn-context.js';
 import { bumpDrainLadder, clearDrainLadder } from './drain-state.js';
 import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, quarantineWaitingConversation } from './v2/counterparty.js';
@@ -795,7 +796,7 @@ class AgentRuntime {
       // OWN dedicated turn rather than letting it bleed into the next user
       // reply. This is what makes "strip A2A from user turns" safe: a deferred
       // A2A is reintroduced as an isolated A2A turn, never ignored. Bounded by
-      // MAX_A2A_TURN_RETRIES so a model that never produces a clean reply can't
+      // `a2aRetryBudgetFor` so a model that never produces a clean reply can't
       // spin, after the cap we record a synthetic reply (stops the enforcer)
       // and log it, accepting that the sender gets no answer over an infinite
       // loop or a polluted user turn.
@@ -812,7 +813,13 @@ class AgentRuntime {
               // A dedicated A2A turn ran and STILL didn't clear the reply, 
               // a genuinely failed attempt. Count it against the cap.
               const tries = (a2aTurnRetries.get(agentId) ?? 0) + 1;
-              if (tries <= MAX_A2A_TURN_RETRIES) {
+              // t103 B (OWNER RULING 2026-10-05 #1): the cap is this RECIPIENT's, floored by
+              // one legitimate call on its own provider — `agent/a2a-patience.ts` carries the
+              // arithmetic and the reuse argument. An undeclared provider resolves to
+              // MAX_A2A_TURN_RETRIES exactly, so this line is today's behaviour for every row
+              // that does not declare a patience.
+              const budget = a2aRetryBudgetFor(agentId);
+              if (tries <= budget.turns) {
                 a2aTurnRetries.set(agentId, tries);
                 forceA2ATurn.add(agentId);
                 queueSelfWake(agentId, 'a2a-retrigger-retry');
@@ -822,6 +829,10 @@ class AgentRuntime {
               } else {
                 logger.warn('A2A reply gave up after max dedicated turns, recording synthetic reply', {
                   agentId, intent: owed.intent, thread: owed.threadShort, from: owed.fromName,
+                  // The budget that was actually spent, and what set it — a log line that said
+                  // "max" while the max was a constant could not tell a slow box from a dead one.
+                  turnsAllowed: budget.turns, patienceFloorSeconds: budget.floorSeconds,
+                  patienceBasis: budget.basis,
                 }, agentId);
                 recordA2AReply({ assignMessageId: owed.messageId, agentId, threadId: owed.threadShort, replyIntent: 'ABANDONED' });
                 // D13: the synthetic ABANDONED silences the missed-reply enforcer on THIS
