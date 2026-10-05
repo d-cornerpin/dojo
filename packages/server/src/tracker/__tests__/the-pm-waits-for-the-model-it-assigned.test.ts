@@ -33,6 +33,27 @@ vi.mock('../../db/connection.js', () => ({
   },
 }));
 
+/** ⚠ FIX ROUND 2 (N1). The PM's own log is the only place a DROPPED poke can be seen, so the
+ *  logger is captured rather than silenced. `createLogger` is replaced for every component in the
+ *  graph (the rest of the module is spread through), which is the house pattern from
+ *  `memory/__tests__/an-absent-embedder-is-one-warn-not-a-hundred-errors.test.ts`. */
+const log = vi.hoisted(() => {
+  const calls = { debug: [] as unknown[][], info: [] as unknown[][], warn: [] as unknown[][], error: [] as unknown[][] };
+  return {
+    calls,
+    logger: {
+      debug: (...a: unknown[]) => { calls.debug.push(a); },
+      info: (...a: unknown[]) => { calls.info.push(a); },
+      warn: (...a: unknown[]) => { calls.warn.push(a); },
+      error: (...a: unknown[]) => { calls.error.push(a); },
+    },
+  };
+});
+vi.mock('../../logger.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../logger.js')>()),
+  createLogger: () => log.logger,
+}));
+
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
 vi.mock('../../agent/agent-bus.js', () => ({ sendAgentMessage: () => { /* no-op */ } }));
 vi.mock('../../agent/agent-notice.js', () => ({ postAgentNotice: () => { /* no-op */ } }));
@@ -46,7 +67,17 @@ vi.mock('../../agent/runtime.js', () => ({
 
 /** ⚠ THE CONTROL THAT MATTERS MOST. The old rung's handoff went out through this door; every
  *  clause in §2 and §3 asserts it was never opened. */
-const deliverA2ASpy = vi.fn(async () => ({ delivered: true }));
+/** FIX ROUND 2 (N1): the spy answers in the transport's OWN result shape
+ *  (`A2ADeliveryResult` = `{ delivered, reason?, threadId }`), because the defect N1 names is a
+ *  `{delivered:false}` RETURN that the old always-true stub could not express. `deliverA2ADrops`
+ *  makes the next call drop with the reason the hop cap uses. */
+const deliverA2ADrops = { next: null as string | null };
+const deliverA2ASpy = vi.fn(async (envelope?: unknown) => {
+  const threadId = (envelope as { threadId?: string } | undefined)?.threadId ?? 'thread-unknown';
+  const drop = deliverA2ADrops.next;
+  deliverA2ADrops.next = null;
+  return drop ? { delivered: false, reason: drop, threadId } : { delivered: true, threadId };
+});
 vi.mock('../../agent/a2a-transport.js', () => ({
   deliverA2AMessage: (...args: unknown[]) => deliverA2ASpy(...args),
   makeThreadId: (seed: string) => `thread-${seed}`,
@@ -140,6 +171,14 @@ function handoffDeliveries(): unknown[] {
     .map((c) => c[0] as { intent?: string } | undefined)
     .filter((a) => a?.intent === 'ASSIGN');
 }
+/** FIX ROUND 2 (N1): the thread each poke was sent ON. The mocked `makeThreadId` echoes its seed,
+ *  so a shared thread and a per-interval thread are distinguishable here by construction. */
+function threadIdsTo(agentId: string): string[] {
+  return deliverA2ASpy.mock.calls
+    .map((c) => c[0] as { toAgent?: string; threadId?: string } | undefined)
+    .filter((a) => a?.toAgent === agentId)
+    .map((a) => a?.threadId ?? '');
+}
 function deliveriesTo(agentId: string): unknown[] {
   return deliverA2ASpy.mock.calls
     .map((c) => c[0] as { toAgent?: string } | undefined)
@@ -156,6 +195,8 @@ beforeEach(() => {
   createModelTables(db);
   mockDb.current = db;
   deliverA2ASpy.mockClear();
+  deliverA2ADrops.next = null;
+  for (const k of Object.keys(log.calls) as Array<keyof typeof log.calls>) log.calls[k].length = 0;
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -404,6 +445,11 @@ describe('§2 no path from the PM to a task\'s assignee', () => {
       expect(eventCount('t-periodic', 'poke'), 'half an interval is not an interval').toBe(1);
 
       // ── AFTER: the rest of the interval passes and the PM re-drives ──
+      // ⚠ FIX ROUND 2 (N1): this second re-drive is DROPPED by the transport with the hop cap's
+      // own reason. That is what the ninth periodic poke on a shared thread would have done for
+      // real — `deliverA2AMessage` RETURNS `{delivered:false,'HOP_LIMIT_EXCEEDED'}` — and the old
+      // always-`{delivered:true}` stub could not express it, which is why the defect shipped.
+      deliverA2ADrops.next = 'HOP_LIMIT_EXCEEDED';
       agePoke(1_801);
       await runPokeCheck();
       await flushMicrotasks();
@@ -411,6 +457,26 @@ describe('§2 no path from the PM to a task\'s assignee', () => {
         .toBe(2);
       expect(currentRung('t-periodic'), 'still the top rung — the ladder does not grow a rung 5')
         .toBe(4);
+
+      // ⚠ N1a — A FRESH THREAD PER RE-DRIVE. One deterministic seed for every re-drive meant one
+      // thread, one hop counter and a silent ceiling of eight delivered pokes; nothing resets
+      // `a2a_threads.hop_count`. Distinct ids are the property, so the clause compares them.
+      const threads = threadIdsTo(SLOW_AGENT);
+      expect(threads.length, 'two re-drives, two envelopes').toBe(2);
+      expect(threads[0], 'a periodic re-drive may not reuse the previous one\'s thread')
+        .not.toBe(threads[1]);
+      expect(new Set(threads).size, 'and that is what "distinct" means, counted').toBe(2);
+
+      // ⚠ N1b — A DROP IS SAID OUT LOUD, AND THE RECORD STILL STANDS. Both halves matter: the
+      // warn is the only place a dropped poke is visible (the log and the dashboard otherwise
+      // claim a poke that was never sent, which is C1's defect in the poke ledger), and the poke
+      // event above is still 2 — un-recording a failed send would clear the interval and re-arm
+      // the rung on the next 60-second sweep, which is the loop R9 forbids.
+      const drops = log.calls.warn.filter((a) => String(a[0]).includes('DROPPED this poke'));
+      expect(drops.length, 'the dropped poke must be said, once').toBe(1);
+      expect(JSON.stringify(drops[0][1]), 'and it must name the transport\'s own reason')
+        .toContain('HOP_LIMIT_EXCEEDED');
+      expect(JSON.stringify(drops[0][1]), 'and which task and rung it was').toContain('t-periodic');
 
       // ⛔ AND IT IS STILL ONLY A POKE. R9 granted no new authority, and these are the writes
       // OR-PM-1 forbids: the task did not move, the primary was told nothing, no ASSIGN exists.

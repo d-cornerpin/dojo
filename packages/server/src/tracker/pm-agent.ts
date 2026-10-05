@@ -2747,10 +2747,18 @@ export async function runPokeCheck(): Promise<void> {
     }
 
     // Deliver poke via A2A transport. Pokes use QUESTION intent (we want
-    // a response) with a thread seeded by task ID + poke stage so each
-    // escalation level gets its own thread and hop counter.
+    // a response) with a thread seeded by task ID + poke stage (+ the interval
+    // for a periodic re-drive) so each gets its own thread and hop counter.
     import('../agent/a2a-transport.js').then(({ deliverA2AMessage, makeThreadId }) => {
-      const pokeThreadId = makeThreadId(`poke-${task.id}-${pokeType}`);
+      // t90 FIX ROUND 2 (N1): A PERIODIC RE-DRIVE OPENS ITS OWN THREAD. `makeThreadId` is a
+      // deterministic hash whose own comment says it groups "all pokes for a task" into ONE
+      // thread; every delivery increments that thread's hop count, nothing ever resets it, and at
+      // `THREAD_HOP_CAP` (8) `deliverA2AMessage` RETURNS `{delivered:false,'HOP_LIMIT_EXCEEDED'}`.
+      // One hop per cycle made the cap unreachable; eight intervals of one stall do not. The
+      // discriminator is the PREVIOUS poke's recorded instant — the same value `redriveDueAgain`
+      // measured the interval against — so it moves exactly once per re-drive, never inside a tick.
+      const redriveThread = pokeType === 'redrive' ? `-r${lastPoke?.sentAtMs ?? 0}` : '';
+      const pokeThreadId = makeThreadId(`poke-${task.id}-${pokeType}${redriveThread}`);
       deliverA2AMessage({
         // t90 D1: QUESTION for every rung, the escalation included. `ASSIGN` is the intent that
       // transfers OWNERSHIP, and sending it to the primary about another agent's task is report
@@ -2762,6 +2770,12 @@ export async function runPokeCheck(): Promise<void> {
         payload: pokeMessage,
         toAgent: recipient,
         fromAgent: pmId,
+      }).then(res => {
+        // N1: A DROP IS A RETURN, NOT A THROW, so the `.catch` below never saw one and the poke
+        // record claimed a send that never happened. The record still stands either way —
+        // un-recording it would clear the interval and re-arm the rung on the next 60-second
+        // sweep, which is exactly the loop R9 forbids — so the drop is SAID instead.
+        if (!res.delivered) logger.warn('PM poke: the A2A transport DROPPED this poke; the poke record stands', { taskId: task.id, recipient, pokeType, pokeNumber, threadId: res.threadId, reason: res.reason ?? 'unknown' });
       }).catch(err => {
         logger.error('PM poke: A2A delivery failed', {
           recipient,
