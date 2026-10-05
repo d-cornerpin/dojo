@@ -10,9 +10,16 @@
 // admits. Before this work, nothing in the tree could make that number go down:
 // `runCondensation` was capped at depth 1 and skipped any level holding fewer than four
 // waiting summaries, so two or three oversized summaries never shrank at any pressure, under
-// any force — and `summarize.ts`'s depth ≥2 "deep condensation" prompt was dead code the
-// engine could never reach. The platform's only honest answer was a card telling the owner to
-// archive their conversation or reset their agent. That card is gone.
+// any force — and because the cap put a HARD CEILING on the DAG at depth 2, a depth-2 summary
+// could never be condensed again by construction. The platform's only honest answer was a card
+// telling the owner to archive their conversation or reset their agent. That card is gone.
+//
+// ⚠ NOT "depth 2 was unreachable", which is what the dispatch brief and BACKLOG line 120 say.
+// A re-read of the deleted loop at main `eef45913` shows it wrote parents at `depth + 1` for
+// `depth` 0 AND 1, so a depth-1 level with ≥4 waiting summaries did reach the depth-2 prompt.
+// The §1 clause below therefore proves something narrower and truer than the brief claimed:
+// depth 2 is now reached from a level the OLD FLOOR WOULD HAVE REFUSED, and depth 3 — which
+// `newDepth` could never produce — is now reachable at all.
 //
 // ── WHAT IS REAL HERE, AND WHY IT HAS TO BE ──
 // The DB (in-memory, fully migrated), `checkAndCompact` and its whole trigger, the real
@@ -313,6 +320,71 @@ describe('§1 condensation recurses until the assembler will admit every summary
     expect(shrinkTarget(40_000, 6_000), 'the condensed ceiling binds on a huge summary').toBe(6_000);
     expect(shrinkTarget(11_000, 6_000), 'and the halving binds below it').toBe(5_500);
     expect(shrinkTarget(600, 6_000), 'never below the floor').toBe(CONDENSE_MIN_TARGET_TOKENS);
+  });
+
+  /**
+   * ⚠ THE INCIDENT'S OWN BODY, and the number the report owes: HOW MANY PASSES.
+   *
+   * 43 already-written leaf summaries of ~2,000 tokens each — the reported box's ~86K of
+   * already-summarised history — against what a 64K-window model admits. Every level is model
+   * calls and one turn may not spend an unbounded number of them, so the climb deliberately
+   * spans more than one pass: a run that made real progress and then hit its call ceiling
+   * returns with NO refusal and NO brake, and the next pressure continues where it stopped.
+   * That is what "compaction never ends" means operationally, and this clause is the proof —
+   * it drives passes until the assembler admits everything, and asserts the count is small.
+   *
+   * THE MUTANT: make a bounded-but-progressing run arm the brake (drop the
+   * `reclaimed >= FORCED_YIELD_FLOOR_TOKENS` early return at the end of `condenseUntilFits`)
+   * and pass 2 dials nothing, so the "fits" row goes RED and the climb never finishes.
+   */
+  it('⚠ THE INCIDENT BODY: 86K of summaries reaches "fits" in a handful of bounded passes', async () => {
+    seedSummaries(43, 0, 2_000);
+    const startedAt = held();
+    const budget = await admitted();
+    expect(startedAt, 'non-vacuity: the reported shape, and it really is over').toBeGreaterThan(budget);
+
+    let passes = 0;
+    const perPass: string[] = [];
+    const afterFirst: { refusing: string | null; braked: boolean; reclaimed: number } =
+      { refusing: null, braked: false, reclaimed: 0 };
+    while (held() > await admitted() && passes < 6) {
+      const callsBefore = calls.length;
+      const before = held();
+      await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
+      passes += 1;
+      perPass.push(`pass ${passes}: ${calls.length - callsBefore} calls, ${before} → ${held()} tokens`);
+      // ⚠ CAPTURED MID-CLIMB, and a mutant is why. The end state alone cannot see the property
+      // this clause is really about: the FIRST pass reclaims 38K and then runs out of its call
+      // ceiling, and that must be recorded as progress, not as a refusal. Asserting only after
+      // the climb finished let a mutant that reports a defect on pass 1 stay GREEN, because
+      // pass 2 succeeded and cleared the note behind it.
+      if (passes === 1) {
+        afterFirst.refusing = compactionFailureReason(AGENT);
+        afterFirst.braked = compactionIsBraked(AGENT, true);
+        afterFirst.reclaimed = before - held();
+      }
+      // A pass that stalled entirely would spin this loop; the brake proves it did not stall.
+      if (compactionIsBraked(AGENT, true)) break;
+    }
+
+    expect(afterFirst.reclaimed, 'pass 1 must really have reclaimed a lot and still not be done')
+      .toBeGreaterThan(10_000);
+    expect(afterFirst.refusing, 'a bounded run that reclaimed 10K+ has NOTHING to report as refusing')
+      .toBeNull();
+    expect(afterFirst.braked, 'and must not brake itself out of finishing the job next turn').toBe(false);
+
+    // eslint-disable-next-line no-console
+    console.log(`INCIDENT FIXTURE  43 summaries × 2,000 = ${startedAt} tokens vs ${budget} admitted · `
+      + `${passes} pass(es), ${calls.length} model calls total, deepest depth `
+      + `${Math.max(...depthsWritten())}\n  ${perPass.join('\n  ')}`);
+
+    expect(held(), 'the reported shape must end up fully admitted').toBeLessThanOrEqual(await admitted());
+    expect(passes, 'and in a handful of passes, not a long tail of them').toBeLessThanOrEqual(3);
+    expect(compactionFailureReason(AGENT), 'with nothing reported as refusing').toBeNull();
+    expect(compactionIsBraked(AGENT, true), 'and no brake left on an agent that succeeded').toBe(false);
+    // ⚠ AND DEPTH 3 — which the deleted loop's `newDepth` could never produce, so this is the
+    // capability that genuinely did not exist before, not the one the brief named.
+    expect(Math.max(...depthsWritten()), 'the DAG ceiling at depth 2 is gone').toBeGreaterThanOrEqual(3);
   });
 
   it('a lone summary already AT the floor is a defect report, not a card and not a loop', async () => {

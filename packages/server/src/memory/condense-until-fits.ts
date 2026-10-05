@@ -11,15 +11,22 @@
 // repairable-defect report naming the stage that refused.
 //
 // ── WHAT WAS ACTUALLY BROKEN, in two numbers ──
-// `runCondensation` was called with `DEFAULTS.incrementalMaxDepth` = 1 and skipped any
-// level holding fewer than `condensedMinFanout` = 4 waiting summaries. Consequences:
-//   · depth 2 was UNREACHABLE, so `summarize.ts`'s depth ≥2 "deep condensation" prompt
-//     was dead code the engine could never send, and
-//   · two or three oversized summaries at a level NEVER shrank — not at 96% of the
-//     window, not under `force`, not ever.
-// On the incident box ~86K of a 114K context was already summaries. Nothing in the tree
-// could make that number go down, which is why the only honest thing the platform could
-// say was "archive or reset". That card is gone; this file is what replaces it.
+// `runCondensation` was called with `DEFAULTS.incrementalMaxDepth` = 1 and skipped any level
+// holding fewer than `condensedMinFanout` = 4 waiting summaries.
+//
+// ⚠ STATED PRECISELY, BECAUSE THE SHORT VERSION OF IT IS WRONG. The dispatch brief and BACKLOG
+// line 120 both say "depth 2 is unreachable". Re-read at main `eef45913`: the loop was
+// `for (depth = 0; depth <= maxDepth; depth++)` writing parents at `depth + 1`, so with maxDepth
+// 1 it wrote depths 1 AND 2 — a depth-1 level holding ≥4 waiting summaries DID reach the depth-2
+// prompt. What was true is worse: `newDepth` could never EXCEED 2, so the DAG had a hard ceiling
+// and a depth-2 summary could never be condensed again by construction — two oversized depth-2
+// summaries were a permanent dead end at any pressure. `deep condensation (depth ${depth})`
+// could therefore only ever print 2, and everything that prompt says about depth 3 and beyond
+// was unreachable prose. And two or three oversized summaries at ANY level never shrank at all,
+// which is the incident's own shape.
+// On the incident box ~86K of a 114K context was already summaries. Nothing in the tree could
+// make that number go down, which is why the only honest thing the platform could say was
+// "archive or reset". That card is gone; this file is what replaces it.
 //
 // ── WHAT "FITS" MEANS, AND WHY IT IS NOT THE GATE'S PERCENTAGE ──
 // Measured, 2026-10-05: the compaction gate's own total CANNOT be moved by condensation,
@@ -44,15 +51,15 @@
 // assembly, and not the 340KB of summary TEXT the estimate reads.
 //
 // ── THE RULE ──
-// While the assembler would trim this agent's summaries, condense the SHALLOWEST level
-// that still has top-level summaries, and climb:
-//   · fanout ≥ minFanout → batches of minFanout, exactly as before (unchanged behaviour
-//     for the only case that already worked);
+// While the assembler would trim this agent's summaries, condense the SHALLOWEST level that
+// still has top-level summaries, and climb:
+//   · fanout ≥ minFanout → batches of minFanout, exactly as before (unchanged behaviour for
+//     the only case that already worked);
 //   · fanout 2 … minFanout-1 → ONE parent (the case the old floor refused);
-//   · fanout 1 → re-summarise that one summary to a STRICTLY SMALLER target, and keep the
-//     old row unless the new one really is smaller.
+//   · fanout 1 → re-summarise that one summary to a STRICTLY SMALLER target, keeping the old
+//     row unless the new one really is smaller.
 // A trailing batch of ONE is left alone: it joins the parents this level just made and is
-// condensed with them on the next level, which costs one model call instead of two.
+// condensed with them next level, which costs one model call instead of two.
 //
 // ── THE BOUND, AND WHY THE LOOP IS FINITE PER RUN ──
 // Three independent bounds, any one of which ends the run:
@@ -67,12 +74,11 @@
 // stopped. That is what "compaction never ends" means operationally.
 //
 // ── ONE ESTIMATE PER LEVEL, AND WHY THAT IS NOT A REGRESSION OF t87 LAYER 2 ──
-// t87 removed THREE estimates computed over IDENTICAL rows in one pass. This file asks for
-// one per level, and a level only happens after a summary row has been written — so the
-// facts the estimate is keyed on have genuinely moved and the answer is genuinely
-// different. And because that read is synchronous SQLite, the loop yields to the event loop
-// between levels: the dashboard and the stop button must survive a deep condensation, which
-// is the whole of the v3.2.3 incident.
+// t87 removed THREE estimates computed over IDENTICAL rows in one pass. This file asks for one
+// per level, and a level only happens after a summary row has been written — so the facts the
+// estimate is keyed on have genuinely moved and the answer is genuinely different. And because
+// that read is synchronous SQLite, the loop yields to the event loop between levels: the
+// dashboard and the stop button must survive a deep condensation (the v3.2.3 incident).
 // ════════════════════════════════════════════════════════════════════════════
 
 import { createLogger } from '../logger.js';

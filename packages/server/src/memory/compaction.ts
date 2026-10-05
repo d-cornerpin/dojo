@@ -293,8 +293,10 @@ const DEFAULTS = {
   condensedTargetTokens: 6000,
   // OR-COMPACT-1: the fanout is still the batch SIZE for a level with enough waiting
   // summaries, but it is no longer a FLOOR below which a level refuses to condense —
-  // `condense-until-fits.ts` condenses 2, 3 or even 1. `incrementalMaxDepth: 1` is gone
-  // with it: it is what made `summarize.ts`'s depth ≥2 prompt unreachable dead code.
+  // `condense-until-fits.ts` condenses 2, 3 or even 1. `incrementalMaxDepth: 1` is gone with
+  // it: it capped `newDepth` at 2, which made a depth-2 summary the ceiling of the DAG and so
+  // impossible to condense again. (NOT "depth 2 was unreachable" — see the condenser's header
+  // for the re-read that corrected that claim.)
   condensedMinFanout: 4,
 };
 
