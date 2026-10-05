@@ -140,29 +140,90 @@ export const FIELD_TOO_LARGE = '<omitted: too large for this section, ';
  * row over the `logs` budget — the very section the round-1 red was about.
  *
  * So a row that cannot fit on its own is SHRUNK rather than dropped: each top-level field too
- * big to carry is replaced by a marker naming its size, newest-first, until the row fits. The
- * row's small fields — a log line's timestamp, level, component and message — are exactly the
- * ones worth keeping, and they are what survives. A row whose own KEYS overflow the budget
- * cannot be shrunk this way, so the last resort is a stand-in that says what was there; the
- * section is never empty and the budget always holds.
+ * big to carry is replaced by a marker naming its size, until the row fits. A row whose own KEYS
+ * overflow the budget cannot be shrunk this way, so the last resort is a stand-in that says what
+ * was there; the section is never empty and the budget always holds.
+ *
+ * ── WHICH FIELD IS SACRIFICED, AND WHY IT IS NOT SIMPLY THE FATTEST (round-2 review L3) ──
+ * The first cut sorted biggest-first, which is right for "sacrifice the fewest fields" and wrong
+ * for "keep the row readable": when the fattest field IS the `message`, the message is what went
+ * and `meta` rode through whole, so the reader kept the metadata and lost the account of what
+ * happened. Measured with an 8,002-character message beside a two-key `meta`. It is reachable —
+ * five production sites interpolate an UNTRUNCATED `error.message` into the log message, e.g.
+ * `agent/v2/recovery.ts`'s `v2 agent loop failed: ${message}`, where every other consumer in
+ * that file slices to 200–500 characters and the log line does not.
+ *
+ * So the IDENTITY FIELDS ARE RANKED LAST: within each rank the fattest still goes first (fewest
+ * fields sacrificed), but nothing in `IDENTITY_FIELDS` is touched while a non-identity field is
+ * still carrying weight. That makes the documented promise — a log line's timestamp, level,
+ * component and message are what survives — TRUE rather than true-while-`meta`-happens-to-be-fat.
+ *
+ * ── AND THE CALLER IS TOLD WHICH OF THE THREE OUTCOMES IT GOT (round-2 review L2) ──
+ * Two of the three throw the row away, so "its largest fields were replaced with a marker" is
+ * false for both. `how` is returned so `boundBundleSections` can word the note from what actually
+ * happened instead of from the common case.
  */
-function shrinkToFit(item: unknown, budget: number): unknown {
+
+/**
+ * The fields that say WHICH row this is. Sacrificed only after everything else, because a row
+ * stripped of these is a size with no story — the L2 stand-in, one field at a time.
+ */
+const IDENTITY_FIELDS = new Set(['timestamp', 'level', 'component', 'message']);
+
+/** How much of a sacrificed identity string is put back in front of its marker when the budget
+ *  has room. 200 characters is the review's own suggestion and enough to carry the opening of a
+ *  provider error, which is the shape that motivated it. */
+const MESSAGE_HEAD_CHARS = 200;
+
+/** Which of `shrinkToFit`'s three outcomes was taken — the note is worded from this. */
+type ShrinkKind = 'fields' | 'scalar' | 'keys';
+
+function shrinkToFit(item: unknown, budget: number): { item: unknown; how: ShrinkKind } {
   const bytes = JSON.stringify(item)?.length ?? 0;
   if (item === null || typeof item !== 'object' || Array.isArray(item)) {
-    return { oversized: true, bytes, note: `a single ${typeof item} value of ${bytes} chars, too large to include` };
+    return {
+      how: 'scalar',
+      item: { oversized: true, bytes, note: `a single ${typeof item} value of ${bytes} chars, too large to include` },
+    };
   }
   const out: Record<string, unknown> = { ...(item as Record<string, unknown>) };
-  // Biggest field first, so the fewest fields are sacrificed.
+  // Identity fields last; inside each rank, biggest first so the fewest fields are sacrificed.
   const byCost = Object.entries(out)
-    .map(([k, v]) => ({ k, cost: JSON.stringify(v)?.length ?? 0 }))
-    .sort((a, b) => b.cost - a.cost || a.k.localeCompare(b.k));
+    .map(([k, v]) => ({ k, cost: JSON.stringify(v)?.length ?? 0, identity: IDENTITY_FIELDS.has(k) }))
+    .sort((a, b) =>
+      Number(a.identity) - Number(b.identity) || b.cost - a.cost || a.k.localeCompare(b.k));
+  const sacrificed: { k: string; was: unknown }[] = [];
   for (const { k, cost } of byCost) {
     if (renderedCost(out) <= budget) break;
+    sacrificed.push({ k, was: out[k] });
     out[k] = `${FIELD_TOO_LARGE}${cost} chars>`;
   }
+
+  // ── THE ACCOUNT COMES BACK IF THERE IS ROOM FOR IT (round-2 review L3, second half) ──
+  // Ranking identity last is not enough on its own: a message far larger than the whole section
+  // must still go, and a bare size marker leaves the reader a row that says WHICH line it was
+  // and nothing about what it said. So once the row FITS, any leftover headroom is spent putting
+  // the HEAD of a sacrificed identity string back in front of its marker. Done as a second pass,
+  // never inside the loop above, because the loop is what guarantees the budget holds — growing a
+  // value while still trying to fit could push the row to the `keys` stand-in and lose the
+  // identity altogether, which is the very outcome this is here to avoid.
+  if (renderedCost(out) <= budget) {
+    for (const { k, was } of sacrificed) {
+      if (!IDENTITY_FIELDS.has(k) || typeof was !== 'string') continue;
+      const headroom = budget - renderedCost(out);
+      const room = Math.min(MESSAGE_HEAD_CHARS, headroom - 8);
+      if (room <= 0) break;
+      out[k] = `${was.slice(0, room)}… ${out[k] as string}`;
+      if (renderedCost(out) > budget) { out[k] = `${FIELD_TOO_LARGE}${JSON.stringify(was).length} chars>`; break; }
+    }
+  }
+
   return renderedCost(out) <= budget
-    ? out
-    : { oversized: true, bytes, note: `one entry of ${bytes} chars whose field names alone exceed this section's budget` };
+    ? { item: out, how: 'fields' }
+    : {
+      how: 'keys',
+      item: { oversized: true, bytes, note: `one entry of ${bytes} chars whose field names alone exceed this section's budget` },
+    };
 }
 
 /**
@@ -194,27 +255,39 @@ export function boundBundleSections(
     const order = SECTION_ORDER[name] ?? 'first';
     const kept: unknown[] = [];
     let used = 0;
-    let shrunk = false;
+    let shrunk: ShrinkKind | null = null;
     for (const item of items) {
       const cost = renderedCost(item);
       if (used + cost > budget) {
         // A budget that is merely FULL stops the prefix. A first row too big to fit at all is
         // the F1 case: shrink it in place, so the section is never emptied by one fat row.
         if (kept.length > 0) break;
-        kept.push(shrinkToFit(item, budget));
-        shrunk = true;
+        const shrinkResult = shrinkToFit(item, budget);
+        kept.push(shrinkResult.item);
+        shrunk = shrinkResult.how;
         break;
       }
       kept.push(item);
       used += cost;
     }
     sections[name] = kept;
-    if (kept.length < items.length || shrunk) {
+    if (kept.length < items.length || shrunk !== null) {
       const head = `${name}: showing the ${kept.length} ${order} of ${items.length} collected in this window`;
-      notes.push(shrunk
-        ? `${head} — and that one entry was itself over this section's size budget, so its largest `
-          + 'fields were replaced with a marker naming their size. Everything behind it is not included here.'
-        : `${head} — the rest are not included here, to stay inside this section's size budget.`);
+      if (shrunk === null) {
+        notes.push(`${head} — the rest are not included here, to stay inside this section's size budget.`);
+      } else {
+        // ROUND-2 REVIEW L2: the sentence is worded from the outcome that actually happened.
+        // Two of the three discard the row, so claiming its fields were replaced would be false.
+        const what = shrunk === 'fields'
+          ? 'so its largest fields were replaced with a marker naming their size'
+          : shrunk === 'scalar'
+            ? 'and is a single value larger than this whole section, so only its size is recorded'
+            : 'and its field names alone exceed this section\'s budget, so only its size is recorded';
+        // ROUND-2 REVIEW L5: only say something is behind it when something IS behind it. On a
+        // quiet box a section of exactly one oversized row was told the opposite.
+        const behind = items.length > kept.length ? ' Everything behind it is not included here.' : '';
+        notes.push(`${head} — and that one entry was itself over this section's size budget, ${what}.${behind}`);
+      }
     }
   }
   return { sections, notes };

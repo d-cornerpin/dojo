@@ -88,6 +88,7 @@ import { getReport } from '../store.js';
 import { FAILURE_LANES } from '../signature.js';
 import {
   ATTACHMENT_ECHO_CHARS, BUNDLE_SECTION_CHARS, FIELD_TOO_LARGE, REPORT_RESULT_TARGET_TOKENS,
+  boundBundleSections,
 } from '../bounds.js';
 import { COLLECTOR_CAPS } from '../window.js';
 import type { ToolCall } from '@dojo/shared';
@@ -559,5 +560,95 @@ describe('the draft phase obeys the same two laws — order AND size', () => {
       expect(Object.keys(ATTACHMENT_ECHO_CHARS), `attachment array \`${name}\` carries no echo budget`)
         .toContain(name);
     }
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// FIX ROUND 2, REVIEW L2 / L3 / L5 — THE SHRINK'S OWN HONESTY.
+//
+// Round 1's F1 fix stopped one fat row emptying a section. The round-2 review then measured
+// three ways the SENTENCE about that shrink is still untrue, each one a small version of the
+// lie the whole file exists to prevent:
+//
+//   L2  `shrinkToFit` has THREE outcomes and `boundBundleSections` emitted ONE note for all of
+//       them. Two of the three throw the row away and return a stand-in, so the row's identity
+//       (`timestamp`, `level`, `message`) is gone — while the note still said "its largest
+//       fields were replaced with a marker naming their size". Unreachable through today's
+//       collectors (every one returns an object), which is why it is held here at the pure
+//       function rather than through the gather path.
+//   L3  the shrink sorts fields biggest-first, so when the fattest field IS the `message` the
+//       message is what goes and `meta` rides through whole — the reader keeps the metadata and
+//       loses the account of what happened, which is the opposite of the documented promise
+//       that "a log line's timestamp, level, component and message … are what survives". Five
+//       production sites interpolate an untruncated `error.message` into a log MESSAGE.
+//   L5  "Everything behind it is not included here" was appended to every shrink note, even on
+//       a section of exactly ONE row, where nothing is behind it. Reachable on a quiet box.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('the shrink note describes the shrink that actually happened', () => {
+  /** A section of exactly one row, bounded hard enough that the row cannot fit whole. */
+  const boundOne = (row: unknown, budget: number): { kept: unknown; note: string } => {
+    const out = boundBundleSections({ logs: [row] }, { logs: budget });
+    expect(out.notes, 'nothing was said about a row that could not fit').toHaveLength(1);
+    return { kept: (out.sections.logs as unknown[])[0], note: out.notes[0] };
+  };
+
+  it('20 — a row thrown away for a stand-in does NOT claim its fields were replaced', () => {
+    // (a) a non-object row: `shrinkToFit`'s first branch. The row is GONE, not shrunk.
+    const scalar = boundOne('S'.repeat(9_000), 1_000);
+    // The size is the one fact a stand-in still owes the reader (9,002 rendered, with quotes).
+    expect(JSON.stringify(scalar.kept), 'the stand-in did not record the size').toMatch(/900\d/);
+    expect(scalar.note, 'the note claims fields were replaced on a row that has no fields')
+      .not.toMatch(/fields were replaced with a marker/);
+    expect(scalar.note, 'the note does not say the row itself could not be carried')
+      .toMatch(/too large to include|only its size/i);
+
+    // (b) a row whose KEY NAMES alone overflow: `shrinkToFit`'s last resort, same lie.
+    const wide: Record<string, string> = {};
+    for (let i = 0; i < 300; i++) wide[`field_name_number_${i}_padded_out_to_sixty_characters`] = 'v';
+    const keys = boundOne(wide, 1_000);
+    expect(keys.note, 'the note claims fields were replaced on a row that was discarded whole')
+      .not.toMatch(/fields were replaced with a marker/);
+    expect(keys.note, 'the note does not say the field names were the problem')
+      .toMatch(/field names|only its size/i);
+  });
+
+  it('21 — `meta` is sacrificed before the message, and the account survives in the head', () => {
+    // The shape that broke the documented promise: an 8,000-character message beside a small
+    // two-key `meta`. Biggest-field-first replaced the MESSAGE and let `meta` ride through whole,
+    // so the reader kept the metadata and lost what happened. Two properties fix it — identity
+    // ranked last, and the head of a sacrificed identity string put back when there is room.
+    const row = {
+      timestamp: new Date().toISOString(), level: 'error', component: 'agent',
+      message: `v2 agent loop failed: ${'E'.repeat(8_000)}`,
+      meta: { turn: 7, exitReason: 'brake', detail: 'y'.repeat(600) },
+    };
+    const { kept } = boundOne(row, 2_000);
+    const got = kept as Record<string, unknown>;
+
+    expect(got.timestamp, 'the row lost its timestamp').toBeTruthy();
+    expect(got.level, 'the row lost its level').toBe('error');
+    // IDENTITY RANKED LAST: `meta` is the non-identity field, so it goes first.
+    expect(JSON.stringify(got.meta), '`meta` rode through whole while an identity field was cut')
+      .toContain(FIELD_TOO_LARGE);
+    // THE ACCOUNT SURVIVES: a message too big for the whole section still has to go, but its
+    // opening comes back in front of the marker rather than leaving a bare size.
+    expect(String(got.message), 'the account of what happened is gone entirely')
+      .toContain('v2 agent loop failed');
+    expect(String(got.message), 'the marker naming what was cut is missing').toContain(FIELD_TOO_LARGE);
+    // And the budget still binds — the fix is the ORDER and the head, not the absence of a cut.
+    expect(JSON.stringify(kept, null, 2).length).toBeLessThanOrEqual(2_000);
+  });
+
+  it('22 — a one-row section is not told that something is behind it', () => {
+    const FAT = { timestamp: new Date().toISOString(), level: 'info', component: 'model',
+      message: 'prompt cache usage', meta: { blob: 'Z'.repeat(9_000) } };
+    const one = boundOne(FAT, 1_000);
+    expect(one.note, 'a section of one row claims there is more behind it')
+      .not.toMatch(/Everything behind it is not included here/);
+    // NEGATIVE CONTROL — with rows genuinely behind it, the sentence must still be there.
+    const many = boundBundleSections({ logs: [FAT, FAT, FAT] }, { logs: 1_000 });
+    expect(many.notes[0], 'the sentence went missing when it was TRUE')
+      .toMatch(/Everything behind it is not included here/);
   });
 });
