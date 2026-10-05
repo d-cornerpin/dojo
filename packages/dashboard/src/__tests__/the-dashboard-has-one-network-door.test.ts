@@ -178,6 +178,30 @@ function reExportsFrom(rel: string, src: string, from: string): Set<string> {
   return names;
 }
 
+/**
+ * The literal first argument of every call to `name` in this file, as source text.
+ *
+ * A template literal answers its HEAD (`\`${apiBase}/import/status\`` → nothing
+ * useful; `\`/techniques/${id}\`` → `/techniques/`), which is exactly the part a
+ * prefix rule needs. A fully dynamic path answers `null` and is skipped — a static
+ * clause cannot judge it, and pretending otherwise would be the comment testing
+ * itself.
+ */
+function literalFirstArgs(rel: string, src: string, name: string): string[] {
+  const out: string[] = [];
+  walk(parse(rel, src), (node) => {
+    if (!ts.isCallExpression(node) || node.arguments.length === 0) return;
+    const callee = node.expression;
+    const hit = (ts.isIdentifier(callee) && callee.text === name)
+      || (ts.isPropertyAccessExpression(callee) && callee.name.text === name);
+    if (!hit) return;
+    const arg = node.arguments[0];
+    if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) out.push(arg.text);
+    else if (ts.isTemplateExpression(arg)) out.push(arg.head.text);
+  });
+  return out;
+}
+
 const WRAPPERS = ['request', 'requestRaw', 'requestForm', 'fetchUrl'] as const;
 
 const FILES = sourceFiles();
@@ -257,6 +281,61 @@ describe('the dashboard calls fetch in exactly one place', () => {
       const applied = callers.filter(([rel, src]) => callsFunction(rel, src, wrapper));
       expect(applied.length, `nothing calls ${wrapper}`).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('the door owns the /api prefix, and no caller may repeat it', () => {
+  // ⚠ THIS CLAUSE EXISTS BECAUSE THE BUG SHIPPED AND LIVED.
+  // `pages/Settings.tsx` asked the door for `/api/setup/permissions/check`. The
+  // door prepends `/api` (`BASE_URL`), so the real request was
+  // `/api/api/setup/permissions/check` — a 404 on every load, forever. Nothing
+  // failed loudly: `request` returns its failure as a VALUE and that call site
+  // reads `if (r.ok && r.data?.serverExecPath)`, so the answer simply never came
+  // and `serverExecPath` stayed undefined. The visible cost was a LIE: the Full
+  // Disk Access hint on that page rendered its "the server reports its exact path
+  // once it is running" wording PERMANENTLY, which made the fresh-box audit's
+  // item-D fix inert on one of its two surfaces. Five characters, invisible for
+  // as long as nobody rendered the page in a test.
+  //
+  // `fetchUrl` is DELIBERATELY EXEMPT: its argument is a whole URL the SERVER
+  // handed us (a canvas `inlineUrl`, an office `renderUrl`), which legitimately
+  // begins with `/api/` and must not have anything prepended. The distinction
+  // between the two kinds of argument is the entire reason there are two doors.
+  const PATH_DOORS = ['request', 'requestRaw', 'requestForm'] as const;
+
+  it('⚠ no caller passes a path that already starts with /api/', () => {
+    const offenders: string[] = [];
+    let checked = 0;
+    for (const [rel, src] of RAW) {
+      if (rel === DOOR) continue; // the door is where BASE_URL is defined
+      for (const door of PATH_DOORS) {
+        for (const literal of literalFirstArgs(rel, src, door)) {
+          checked += 1;
+          if (literal.startsWith('/api/') || literal === '/api') {
+            offenders.push(`${rel}: ${door}('${literal}…')`);
+          }
+        }
+      }
+    }
+    // Non-vacuity: if the walk found no door calls at all, the clause proves nothing.
+    expect(checked, 'no door calls with a literal path were found — did the doors get renamed?')
+      .toBeGreaterThan(50);
+    expect(
+      offenders.sort(),
+      'these pass a path the door will prefix AGAIN, so the request 404s forever and the failure '
+      + 'is silent (the door answers `{ ok: false }` and most callers just skip). Drop the leading '
+      + '`/api`. If the argument really is a whole URL the server handed you, use `fetchUrl`.',
+    ).toEqual([]);
+  });
+
+  it('the door is still the thing that adds the prefix', () => {
+    // The other direction: this rule is only correct while the door prepends.
+    // If `BASE_URL` ever stops being applied, every caller above is now wrong and
+    // the clause above would be enforcing the opposite of the truth.
+    const door = RAW.get(DOOR)!;
+    expect(door).toMatch(/const BASE_URL = '\/api';/);
+    expect(door, 'the door no longer prefixes paths with BASE_URL')
+      .toMatch(/throughTheDoor\(`\$\{BASE_URL\}\$\{path\}`/);
   });
 });
 

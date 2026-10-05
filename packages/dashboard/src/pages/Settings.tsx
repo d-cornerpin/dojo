@@ -262,7 +262,13 @@ const IMBridgeSettings = () => {
   useEffect(() => {
     const load = async () => {
       // `permissions/check` reports which executable does the reading; only the server knows it.
-      void api.request<Record<string, string>>('/api/setup/permissions/check')
+      // ⚠ NO LEADING `/api` — the door prepends it. This read spent its whole life
+      // asking for `/api/api/setup/permissions/check`, so it 404'd every time and
+      // `serverExecPath` never arrived, which made the Full Disk Access hint below
+      // render its "path unknown" wording PERMANENTLY on this page. The audit's
+      // item-D fix was inert on one of its two surfaces because of five characters.
+      // `the-dashboard-has-one-network-door.test.ts` now refuses the prefix.
+      void api.request<Record<string, string>>('/setup/permissions/check')
         .then(r => { if (r.ok && r.data?.serverExecPath) setServerExecPath(r.data.serverExecPath); });
       const [enabledResult, sendersResult, defaultResult] = await Promise.all([
         api.getSetting('imessage_enabled'),
