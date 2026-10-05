@@ -229,7 +229,18 @@ describe('PHASE-6 CUT 4: the finalize step\'s contract', () => {
     // The step-side half: every `requestExit` in every step package. Each one is a way
     // out of the loop that the driver honours with one of the `break`s above, and each
     // one still lands in this step.
-    const stepExitSites = [...engineText().matchAll(/requestExit\(state,/g)].length;
+    //
+    // ⚠ t93 WIDENED THE MATCHER AND NOT THE NUMBER, which is the distinction that matters.
+    // It was `/requestExit\(state,/` — the literal identifier — and five exits now hand over
+    // `latchEngineCut(state, '…')` instead, because the stop / preempt / budget arms carry the
+    // reason the turn ended into the record. Those five are the SAME five ways out of the loop;
+    // the argument moved, not the exit. A matcher keyed on one spelling of a step's state
+    // expression stopped counting them and the census went DOWN by five while nothing was
+    // removed — a false red, and in the other direction the shape a silent drop would take. It
+    // now anchors on `return requestExit(`, which is what an exit site IS and is indifferent to
+    // what is handed over; `step-outcome.ts`'s own declaration of the function is excluded by
+    // the `return`, re-derived at this HEAD: 25, unchanged.
+    const stepExitSites = [...engineText().matchAll(/return requestExit\(/g)].length;
     // ⚠ RE-DERIVED, NOT LOWERED (SWEEP-A TB8 JOB 1): 23 -> 24. The +1 is the grind rung's
     // give-up arm in `post-call-classify/empty-response.ts`, and the `breaks.length` half
     // below is UNCHANGED at 6 — the arithmetic that proves an exit was ADDED rather than a
@@ -270,9 +281,15 @@ describe('PHASE-6 CUT 4: the finalize step\'s contract', () => {
     expect(returns.length).toBe(1);
     const honoursAbandon = src.split('\n').slice(returns[0] - 2, returns[0]).join('\n');
     expect(honoursAbandon).toMatch(/directive === 'abandon'/);
-    // `abandonTurn(state,` matches the CALLS and not the shared contract's own
-    // declaration (`abandonTurn(state: AgentTurnState`) nor any prose about it.
-    const abandonSites = [...engineText().matchAll(/abandonTurn\(state,/g)].length;
+    // ⚠ t93 WIDENED THIS MATCHER TOO, and the same way and for the same reason as the
+    // `requestExit` half above: both abandons now hand over `latchEngineCut(state, '…')`,
+    // because a turn an owner stopped or a peer preempted has to say so in its record. The
+    // ways past this step are the SAME two; what they hand over changed. It anchors on the
+    // step's own return channel (`{ abandoned: abandonTurn(…) }`), which excludes the shared
+    // contract's declaration (`abandonTurn(state: AgentTurnState`) AND the prose in this same
+    // file's header, which writes `abandonTurn(...)` — a matcher a comment can satisfy is
+    // testing the comment. A tranche that changed that channel fails here loudly.
+    const abandonSites = [...engineText().matchAll(/abandoned: abandonTurn\(/g)].length;
     expect(abandonSites).toBe(2);
   });
 

@@ -201,7 +201,13 @@ describe('turn record (P4)', () => {
     expect(loop).toMatch(/finalizeTurn\(\s*agentId, turnNumber, exitReason, answerRow !== undefined/);
     const rec = read('agent/v2/recovery.ts');
     // The recovery site closes THIS turn, by number — not "every open turn for the agent".
-    expect(rec).toMatch(/markTurnDied\(agentId, state\.turnNumber\)/);
+    // t93: the trailing `[,)]` rather than a closing paren. The REQUIREMENT is the turn
+    // NUMBER being passed (the old signature closed every open turn for the agent and would
+    // close the wrong one on a concurrent turn); the arity is not the requirement, and it grew
+    // a third argument when the injury path started recording the cause the engine observed
+    // instead of `unknown`. Pinning the arity made this clause fail on a change that left its
+    // subject exactly as true as before.
+    expect(rec).toMatch(/markTurnDied\(agentId, state\.turnNumber[,)]/);
   });
 
   it('claimed asks carry forward links (served_by_turn at every claim site, answers stamped at teardown)', () => {
