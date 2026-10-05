@@ -98,11 +98,10 @@ export const VAULT_CANDIDATE_MAX_BYTES = 320 * 1024 * 1024;
 /**
  * How many ids one body fetch may name in a single `IN (…)`.
  *
- * The winners' bodies are fetched by id, and the id list comes from the CALLER'S LIMIT — which on the
- * `vault_search` tool path is a model-supplied argument. An unchunked `IN (…)` would therefore let a
- * `limit` of fifty thousand build a fifty-thousand-parameter statement and trip SQLite's own
- * variable ceiling. Chunking keeps the semantics exact (every winner is still fetched) and the
- * statement bounded.
+ * The id list comes from the CALLER'S LIMIT, which on the `vault_search` tool path is a
+ * model-supplied argument — so an unchunked `IN (…)` lets a `limit` of fifty thousand build a
+ * fifty-thousand-parameter statement and trip SQLite's variable ceiling. Chunking keeps the
+ * semantics exact (every winner is still fetched) and the statement bounded.
  */
 export const VAULT_BODY_CHUNK_IDS = 500;
 
@@ -164,10 +163,9 @@ export function byBestSimilarity(a: ScoredVaultCandidate, b: ScoredVaultCandidat
 
 /** The candidate window's rowid floor. 0 on any vault smaller than the cap — i.e. all of them. */
 export function vaultCandidateFloor(maxRowid: number, candidateRows = VAULT_CANDIDATE_ROWS): number {
-  // ⚠ REUSED, NOT REBUILT. `ftsCandidateRowidFloor` already takes the window size as its second
-  // argument and already returns 0 for a table smaller than the window, which is exactly this
-  // function. Its name says "fts" because the message side needed it first; the arithmetic is
-  // "newest N rowids" and belongs to neither.
+  // ⚠ REUSED, NOT REBUILT: `ftsCandidateRowidFloor` already takes the window size and already
+  // returns 0 for a table smaller than it. Its name says "fts" because the message side needed it
+  // first; the arithmetic is "newest N rowids" and belongs to neither.
   return ftsCandidateRowidFloor(maxRowid, candidateRows);
 }
 
@@ -280,13 +278,18 @@ export async function scanVaultCandidates(opts: {
     // walk is TOLD where it may stop, and for this scan that key is the candidate window's floor.
     floorRowid: windowFloor,
     chunkRows: opts.chunkRows ?? VAULT_CANDIDATE_CHUNK_ROWS,
-    // Agreeing belts rather than three policies: the floor holds the walk to `cap / chunkRows`
-    // chunks, so the row ceiling cannot bite before it does unless a future caller drops
-    // `embedding IS NOT NULL` from its conditions, and the byte ceiling guards embedding WIDTH.
+    // Agreeing belts, not three policies: the floor holds the walk to `cap / chunkRows` chunks, so
+    // the row ceiling cannot bite first unless a caller drops `embedding IS NOT NULL`; bytes guard
+    // WIDTH (see the constant).
     maxRows: cap,
     maxBytes: VAULT_CANDIDATE_MAX_BYTES,
-    // One turn of the loop per chunk. This is what turns "0 % of ticks serviced" into "62 %".
-    breathe: () => new Promise<void>((resolve) => { setImmediate(resolve); }),
+    // ⚠ NO `breathe`, AND IT IS NOT AN OVERSIGHT: the loop's turn comes from the AWAITED POOL ROUND
+    // TRIP, real I/O, and `retrieval.ts` passes none for the same reason. A first cut passed
+    // `setImmediate` for the pool-down case and HUNG three clauses in `the-prefix-holds-still` for
+    // 30 s each — that file assembles under `vi.useFakeTimers()`, which intercepts `setImmediate` AND
+    // `node:timers`' copy (measured). A read that can only finish if the caller's clock is real must
+    // not be awaited inside one. COST: pool down, the chunks run back-to-back and the thread is
+    // pinned for the scan — a BOUNDED scan, which is `retrieval.ts`'s own trade.
     fetchChunk: async (ceiling, chunkRows) => {
       // ⚠ CLAMPED TO THE WINDOW, which matters only for the LAST chunk and matters there completely:
       // the loop stops when `ceiling <= floorRowid`, so the final chunk is reached with a ceiling
@@ -311,10 +314,9 @@ export async function scanVaultCandidates(opts: {
         rows.push({ id: row.id, rid: row.rid, similarity: cosineSimilarity(opts.queryEmbedding, emb) });
       }
       // ⚠ `rowsExamined` IS THE SCORED COUNT, AND THERE IS NO SECOND "COST" READ HERE ON PURPOSE. The
-      // LIKE walk below needs one, because its page carries a LIMIT and so the rows it returns say
-      // nothing about the rows SQLite tested. This page has NO LIMIT: every row in the window that
-      // matches is returned, so the page IS the cost. (SQLite still steps past rows the conditions
-      // reject; the rowid window is what bounds THAT, which is the number the warn reports.)
+      // LIKE walk below needs one because its page carries a LIMIT; this page has none, so every
+      // matching row in the window is returned and the page IS the cost. (SQLite still steps past
+      // rows the conditions reject; the rowid window bounds THAT.)
       return { rows, rowsExamined: page.length, bytesRead };
     },
   });
@@ -410,16 +412,14 @@ interface CostRow { n: number; bytes: number }
  * The table's GLOBAL rowid span — where the walk starts and the key below which it has nothing.
  *
  * ⚠ GLOBAL, NOT SCOPED, and that is the cheaper AND the more honest choice. `vault_entries` has no
- * index that covers an arbitrary listing scope (type, tags, namespace, an agent IN-list), so a
- * scoped `MIN`/`MAX` would be a reverse table walk — the exact cost I5 measured at 50 ms on a
- * 40,000-row table. Against the integer primary key both ends are O(log n) and need no index at all,
- * and the scope stays in the chunk SQL so the ROWS the walk returns are unchanged. The price is
- * stated: a narrowly-scoped listing walks every chunk between the TABLE's ends rather than its own,
- * which is bounded by construction and is two indexed reads per empty chunk.
- *
+ * index covering an arbitrary listing scope (type, tags, namespace, an agent IN-list), so a scoped
+ * `MIN`/`MAX` is a reverse table walk — the cost I5 measured at 50 ms on a 40,000-row table. Against
+ * the integer primary key both ends are O(log n) and need no index, and the scope stays in the chunk
+ * SQL so the ROWS are unchanged. The price, stated: a narrowly-scoped listing walks every chunk
+ * between the TABLE's ends rather than its own — bounded by construction, two indexed reads each.
  * ⚠ AND NEVER AS ONE `SELECT MIN(rowid), MAX(rowid)` — see `scanVaultCandidates` for the
- * measurement. The combined form silently loses SQLite's min/max optimisation and prints the same
- * plan, so no `EXPLAIN` clause can catch it.
+ * measurement: the combined form loses SQLite's min/max optimisation and prints the SAME plan, so
+ * no `EXPLAIN` clause can catch it.
  */
 function vaultRowidSpan(db: ReturnType<typeof getDb>): { maxRid: number; minRid: number } {
   const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM vault_entries').get() as
@@ -480,7 +480,7 @@ export async function vaultLikeScan<T>(q: VaultLikeScanQuery, signal?: AbortSign
     limit: q.limit,
     startRowidCeiling: maxRid,
     floorRowid: minRid,
-    breathe: () => new Promise<void>((resolve) => { setImmediate(resolve); }),
+    // No `breathe` — see the candidate scan above for the deadlock that argument is paid for.
     fetchChunk: async (ceiling, chunkRows) => {
       const floor = Math.max(minRid, ceiling - chunkRows);
       const c = (await vaultRead<CostRow>(
