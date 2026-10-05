@@ -12,6 +12,7 @@ import { getContextWindow, getModelOutputCap, getProviderCeilingTokens } from '.
 import { repairToolPairing, type PairedMessage } from '../agent/tool-pairing.js';
 import { measureAgentToolPayloadTokens } from '../tools/tool-docs.js';
 import { getRecentMessages } from './store.js';
+import { freshTailHorizon, groupsToDropForBudget, tailTrimBlockGroups } from './tail-horizon.js';
 import {
   estimateTokens, contextWindowPolicy, assertSystemPromptFits, SUMMARY_SHARE, storedRowCost,
 } from './budget.js';
@@ -922,7 +923,13 @@ function textRender(content: string | null): LaneRender | null {
  * independent of it (the briefing is emitted FIRST and drops FIRST — see `lanes.ts`).
  * Every entry carries a `truncate`, so a lane under pressure is shortened, not deleted.
  */
-function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unknown>> {
+function buildContentLanes(
+  contentBudget: number,
+  // t94: the TOKEN trim's block size, derived from this window's own row cap. Threaded in
+  // rather than read from a constant so one ladder rung's tail cannot be cut on another's
+  // quantum (`memory/tail-horizon.ts`, `tailTrimBlockGroups`).
+  freshTailCount: number,
+): Array<Lane<LaneRenderCtx, unknown>> {
   // W81: the `lim` shorthand went with its last caller. Every lane that used it —
   // attempt-ledger, active-tasks, events — is below the conversation now and reads
   // `laneLimit` directly from the module that renders it.
@@ -1184,7 +1191,7 @@ function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unk
       maxTokens: Infinity,
       truncate: (render, maxTokens) => {
         const p = render.payload as TailPayload;
-        const kept = budgetFreshTail(p.rows, maxTokens);
+        const kept = budgetFreshTail(p.rows, maxTokens, tailTrimBlockGroups(freshTailCount));
         const dropped = Math.max(0, p.rows.length - kept.length);
         return tailRender({ rows: kept, agentId: p.agentId, dropped: p.dropped + dropped });
       },
@@ -1263,7 +1270,9 @@ async function assembleMessageContext(
   // declaration like every other (§T0-B C `:681`).
   if (isPMAgent(agentId)) {
     const freshTail = getRecentMessages(agentId, laneLimit('lane.pm-tail', 'rows', 'tail'));
-    const budgeted = budgetFreshTail(freshTail, maxTokens - systemTokens);
+    const budgeted = budgetFreshTail(
+      freshTail, maxTokens - systemTokens, tailTrimBlockGroups(policy.freshTailCount),
+    );
     const pm = tailRender({ rows: budgeted, agentId, dropped: 0 });
     tagMessageLanes(pm.messages, 'lane.pm-tail');
     // ── F22 + T4's day-0 defect (ii): THE PM PATH RETURNS THE SAME SHAPE. ──
@@ -1374,7 +1383,25 @@ async function assembleMessageContext(
       // Exclude user messages that arrived after the current turn started so they get a
       // clean run via the wakeup mechanism instead of being buried mid-context.
       const turnCutoff = turnBoundary.get(agentId);
-      const freshTailRaw = getRecentMessages(agentId, policy.freshTailCount, turnCutoff);
+      // ── t94: THE TAIL'S FRONT IS THE COMPACTION BOUNDARY, NOT A SCROLLING ROW WINDOW ──
+      //
+      // This line read `getRecentMessages(agentId, policy.freshTailCount, turnCutoff)` — the
+      // newest N rows — and N is a ROW CAP (`getFreshTailCount`: 24/40/64/80 by window). So
+      // the live conversation front-trimmed TWO ROWS EVERY TURN once it reached the cap, at
+      // any utilisation, for ever, and a positional prefix cache re-prefilled everything
+      // behind the new row 0. The owner's capture is 55K tokens ≈ 270s per turn; this lane's
+      // instrument measured 8,856 of 8,908 bytes re-billed on 15 consecutive fictional turns
+      // with the token budget nowhere near binding. `memory/tail-horizon.ts` carries the
+      // whole derivation, the ceiling and its hysteresis.
+      const horizon = freshTailHorizon(agentId, policy);
+      // The ASK is bounded by the horizon's ceiling; the row-cap slack covers the rows
+      // `turnCutoff` excludes, and the seq filter below is what makes the front exact.
+      const freshTailRows = getRecentMessages(
+        agentId, horizon.requestRows + policy.freshTailCount, turnCutoff,
+      );
+      const freshTailRaw = horizon.keepFromSeq > 0
+        ? freshTailRows.filter((m) => (m.rowid ?? 0) >= horizon.keepFromSeq)
+        : freshTailRows;
       // Counterparty scoping (attribution redesign): the live conversation is scoped to the
       // ONE counterparty this turn addresses, so the model can never see two senders mixed.
       const scopedTail = turnContext?.counterparty?.kind === 'agent'
@@ -1444,7 +1471,7 @@ async function assembleMessageContext(
   const contentBudget = Math.max(0, maxTokens - systemTokens - offTheTop);
 
   // ── Render every lane, then let the two-pass fit decide ──
-  const lanes = buildContentLanes(contentBudget);
+  const lanes = buildContentLanes(contentBudget, policy.freshTailCount);
   const candidates: LaneCandidate[] = [];
   for (const lane of lanes) {
     let render: LaneRender | null = null;
@@ -2353,7 +2380,9 @@ function pruneOldImageBlocksInPlace(
   }
 }
 
-function budgetFreshTail(messages: Message[], availableTokens: number): Message[] {
+function budgetFreshTail(
+  messages: Message[], availableTokens: number, blockGroups: number,
+): Message[] {
   // Group messages into atomic units: tool_use + tool_result pairs must stay together.
   // A "group" is either a standalone message or an [assistant(tool_use), tool(tool_result)] pair.
   interface Group {
@@ -2387,33 +2416,37 @@ function budgetFreshTail(messages: Message[], availableTokens: number): Message[
     }
   }
 
-  // Work backwards, include groups that fit the budget.
-  // ALWAYS include at least the most recent group so the agent can see
-  // what it's supposed to respond to, even if it exceeds the budget.
-  let usedTokens = 0;
-  const includedGroups: Group[] = [];
+  // ── t94: DROP WHOLE BLOCKS OFF THE FRONT, OR NOTHING AT ALL ───────────────────────────
+  //
+  // What stood here walked BACKWARDS from the newest group and kept whatever fit — i.e. it
+  // dropped the MINIMUM number of groups, which is the most expensive possible cadence on a
+  // positional prefix cache: a group or two leaves the front every turn and the provider
+  // re-prefills the entire remainder each time. On local hardware dropping 2 costs exactly
+  // what dropping 200 costs, so the cheap answer is to drop rarely and drop a lot.
+  //
+  // `groupsToDropForBudget` returns 0 whenever everything fits — the common case, and
+  // byte-identical to the old answer there — and otherwise a MULTIPLE OF THE BLOCK counted
+  // from the front of this array. The front of this array is the compaction boundary (the
+  // horizon above), which is what makes an index into it a stable address rather than a
+  // scrolling one. `memory/tail-horizon.ts` carries the derivation of the block.
+  const dropped = groupsToDropForBudget(groups.map((g) => g.tokens), availableTokens, blockGroups);
+  const includedGroups = groups.slice(Math.min(dropped, Math.max(0, groups.length - 1)));
 
-  for (let g = groups.length - 1; g >= 0; g--) {
-    if (usedTokens + groups[g].tokens > availableTokens && includedGroups.length > 0) {
-      break;
-    }
-    includedGroups.push(groups[g]);
-    usedTokens += groups[g].tokens;
-  }
-
-  // Safety: if nothing was included (all groups exceed budget), include the last one anyway.
-  // An over-budget context is better than no context at all.
-  if (includedGroups.length === 0 && groups.length > 0) {
-    includedGroups.push(groups[groups.length - 1]);
+  // Safety, unchanged in effect: an over-budget context is better than no context at all, so
+  // the newest group rides even when it alone exceeds the budget. Reached only when a whole
+  // block could not be freed, which is a window too small to hold one block of conversation.
+  const keptTokens = includedGroups.reduce((t, g) => t + g.tokens, 0);
+  if (groups.length > 0 && keptTokens > availableTokens) {
     logger.warn('budgetFreshTail: all groups exceed budget, forcing last group inclusion', {
       groupCount: groups.length,
       lastGroupTokens: groups[groups.length - 1].tokens,
       availableTokens,
+      groupsDropped: dropped,
     });
   }
 
-  // Flatten and return in chronological order
-  return includedGroups.reverse().flatMap(g => g.messages);
+  // Already chronological: the slice preserved the input's order.
+  return includedGroups.flatMap(g => g.messages);
 }
 
 /**
