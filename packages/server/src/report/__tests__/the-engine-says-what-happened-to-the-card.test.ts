@@ -425,13 +425,26 @@ describe('§5 it does not tick, and it does not touch the prefix', () => {
   afterEach(() => { vi.useRealTimers(); });
 
   it('byte-identical 90 minutes later — the clock is not a source', () => {
+    // ⚠ EVERY STAMP HERE IS RELATIVE TO THE REAL CLOCK, AND THAT IS NOT A STYLE CHOICE.
+    // The SETTLED half of the read is `updated_at >= datetime('now', ?)` — SQLite's own clock,
+    // which `vi.setSystemTime` CANNOT move. The first cut of this clause pinned the fake clock and
+    // the seeded rows to an absolute 2026-09-26, so the `cancelled` row sat inside the horizon
+    // only while the real calendar was still near that date; once it passed, the row fell out of
+    // SQL's horizon, nothing rendered as WITHDRAWN and the clause failed with no code change.
+    // A clause that rots on a date is worse than no clause: it reds for every later reader and
+    // teaches them to distrust the suite. The SUBJECT is unchanged — moving the JS clock must not
+    // alter a byte — and it does not need an absolute date to be driven.
+    const t0 = new Date();
+    seedReport({ id: 'still-1', status: 'cancelled', updatedAt: daysAgo(0) });
+    seedReport({ id: 'still-2', status: 'awaiting_approval', updatedAt: daysAgo(0) });
+
     vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-09-26T12:00:00Z'));
-    seedReport({ id: 'still-1', status: 'cancelled', updatedAt: '2026-09-26 11:20:00' });
-    seedReport({ id: 'still-2', status: 'awaiting_approval', updatedAt: '2026-09-26 11:40:00' });
+    vi.setSystemTime(t0);
     const before = block();
-    expect(before).toContain('WITHDRAWN');
-    vi.setSystemTime(new Date('2026-09-26T13:30:00Z'));
+    expect(before, 'the SETTLED row is outside SQL\'s horizon — the fixture, not the product')
+      .toContain('WITHDRAWN');
+
+    vi.setSystemTime(new Date(t0.getTime() + 90 * 60_000));
     expect(block(), 'a relative time term would have re-billed this block at every bucket boundary')
       .toBe(before);
   });
