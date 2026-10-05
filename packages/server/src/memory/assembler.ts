@@ -1350,6 +1350,13 @@ async function assembleMessageContext(
 
   // ── The lane render context ──
   let tailCache: { freshTail: Message[]; awarenessEvents: Message[] } | null = null;
+  // t94: rows the HORIZON's ceiling skipped, carried out to FA-M1's `freshTailDropped`.
+  // The pre-t94 row window dropped two rows off the front every turn and counted NOTHING —
+  // `freshTailDropped` only ever saw the token trimmer's evictions, so the dominant trim was
+  // invisible to the receipt and to the dashboard toast alike. A ceiling trim is the rare
+  // large one, and "large and rare" is only safe if it is also LOUD in the channel a person
+  // reads: the same one, with the same words, now carrying the real number.
+  let horizonSkippedRows = 0;
   let summaryCache: Summary[] | null = null;
   const laneCtx: LaneRenderCtx = {
     agentId,
@@ -1394,6 +1401,7 @@ async function assembleMessageContext(
       // with the token budget nowhere near binding. `memory/tail-horizon.ts` carries the
       // whole derivation, the ceiling and its hysteresis.
       const horizon = freshTailHorizon(agentId, policy);
+      horizonSkippedRows = horizon.skippedRows;
       // The ASK is bounded by the horizon's ceiling; the row-cap slack covers the rows
       // `turnCutoff` excludes, and the seq filter below is what makes the front exact.
       const freshTailRows = getRecentMessages(
@@ -1532,7 +1540,7 @@ async function assembleMessageContext(
   const tailPayload = (candidates.find((c) => c.lane.id === 'lane.fresh-tail')?.render?.payload ?? null) as TailPayload | null;
   // FA-M1: >0 means the model lost recent turns from its live view. The dropped rows are
   // persisted and later summarized, so it is live-view loss, not data loss.
-  const freshTailDropped = tailPayload?.dropped ?? 0;
+  const freshTailDropped = (tailPayload?.dropped ?? 0) + horizonSkippedRows;
 
   // ── Integrity pass (R6): post-combine repairs, one named stage ──
   let merged = applyIntegrityPass(messages, agentId);

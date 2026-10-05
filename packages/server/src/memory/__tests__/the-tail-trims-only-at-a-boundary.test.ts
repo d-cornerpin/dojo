@@ -633,3 +633,31 @@ describe('t94 §7 — the seam: a compaction backlog drains across consecutive t
     expect(deltas.filter((d) => d.appendOnly).length).toBe(deltas.length - bad.length);
   }, 300_000);
 });
+
+// ── §8 THE CEILING TRIM IS LOUD IN THE CHANNEL A PERSON READS ───────────────────────────
+//
+// `freshTailDropped` is FA-M1's number: `agent/v2/steps/assemble/index.ts` logs a warn and
+// broadcasts ONE `CONTEXT_HIGH` toast per turn naming it ("set aside its N oldest recent
+// messages"). Pre-t94 the row window dropped two rows off the front every turn and that
+// number stayed ZERO — the dominant trim was invisible to the receipt and to the toast alike,
+// while the token trimmer's rarer evictions were the only thing either ever saw. "Large and
+// rare" is only safe if it is also loud, so the horizon's own skip is carried out there now.
+
+describe('t94 §8 — the horizon\'s ceiling trim reaches FA-M1', () => {
+  it('a ceiling trim lands in freshTailDropped, and the number is a whole block', async () => {
+    // 200 turns with no compaction possible: the hard stops bind and the count must be big.
+    summariser.up = false;
+    const snaps = await driveRun({ turns: 200 });
+    const notes = snaps.map((s) => s.note).filter((n) => n && n.startsWith('freshTailDropped='));
+    expect(notes.length).toBeGreaterThan(0);
+    const counts = [...new Set(notes.map((n) => Number(n!.split('=')[1])))];
+    // Never a nibble: every reported drop is at least one token block (20 groups here).
+    for (const c of counts) expect(c).toBeGreaterThanOrEqual(tailTrimBlockGroups(40));
+  }, 300_000);
+
+  it('an unpressured agent still reports zero, so the toast does not cry wolf', async () => {
+    for (let t = 1; t <= 8; t++) appendTurn();
+    const ctx = await assembleContext(AGENT, MODEL);
+    expect(ctx.freshTailDropped ?? 0).toBe(0);
+  });
+});
