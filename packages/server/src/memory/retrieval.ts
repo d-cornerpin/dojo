@@ -1,8 +1,11 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { breadcrumbFor, clearQueryDispatched, markQueryDispatched } from '../observability/stall-sentinel.js';
+import {
+  breadcrumbFor, clearQueryDispatched, markQueryDispatched, offThreadBreadcrumb,
+} from '../observability/stall-sentinel.js';
 import {
   boundedRecencyScan, boundedRecencyScanSync, ftsCandidateRowidFloor, logBoundedFallback,
+  FTS_CANDIDATE_ROWS,
 } from './search-bounds.js';
 import { readerPoolAvailable, readerQuery } from './reader-pool.js';
 import { callModel } from '../agent/model.js';
@@ -11,6 +14,20 @@ import { getSummary, getDescendantMessages, getSummariesByAgent } from './dag.js
 import { getLargeFile } from './large-files.js';
 
 const logger = createLogger('memory-retrieval');
+
+/**
+ * The breadcrumb for a search, carrying WHERE it will run (t89 I4).
+ *
+ * ⚠ ONE HELPER RATHER THAN FOUR COPIES OF THE TERNARY, and it is the only place in this file that may
+ * decide the suffix: a mark that says the serving thread for work that ran on the reader worker turns
+ * the stall sentinel from a diagnosis into a confident wrong answer. The decision is read ONCE here
+ * rather than per-query, because `readerPoolAvailable()` cannot change inside one call and a mark that
+ * disagreed with the read beneath it would be the same defect in a smaller box.
+ */
+function crumbFor(subsystem: string, mode: string): string {
+  const label = breadcrumbFor(subsystem, mode);
+  return readerPoolAvailable() ? offThreadBreadcrumb(label) : label;
+}
 
 // v2.7.8, self-echo filter for history_search.
 //
@@ -104,7 +121,10 @@ async function searchMessages(
   // health probe, not the stop button, not the log line that eventually prints 20 seconds late. The
   // sentinel reads this mark and the freeze becomes one line. A SHAPE, never the pattern: this string
   // reaches logs that get pasted into bug reports.
-  const crumb = markQueryDispatched(breadcrumbFor('history_search', mode === 'full_text' ? 'fts' : 'like'));
+  // ⚠ WHERE THE WORK WILL RUN IS PART OF THE MARK (I4). The pool decision is made per read inside, but
+  // `readerPoolAvailable()` is the same answer for the whole call, and a mark that claims the serving
+  // thread for work that ran on a worker makes the sentinel confidently wrong — see `diagnose`.
+  const crumb = markQueryDispatched(crumbFor('history_search', mode === 'full_text' ? 'fts' : 'like'));
   try {
     return await searchMessagesInner(db, agentId, pattern, mode, since, before, limit);
   } finally {
@@ -188,6 +208,33 @@ async function searchMessagesInner(
         ? await readerQuery<FtsRow>('history_search:fts', sql, [pattern, ...params, fetchLimit])
         : db.prepare(sql).all(pattern, ...params, fetchLimit) as FtsRow[];
       const rows = rawRows.filter((r) => !isPureToolCallMessage(r.content)).slice(0, limit ?? 20);
+
+      // ⚠ A BOUNDED MISS IS NOT A MISS (t89 I6). The floor above silently drops every match older
+      // than the newest `FTS_CANDIDATE_ROWS` messages. On a box past that window — the only box the
+      // bound exists for — a search for old history, or a `since` that lies below the floor, returned
+      // a partial or EMPTY answer that looked complete, with no warn and nothing in the result. That
+      // is the same defect the LIKE fallback was fixed for ("a warn nobody sees"), reintroduced on
+      // the other arm by the fix itself.
+      //
+      // ⚠ TWO AUDIENCES, DELIBERATELY. The operator gets counts and no pattern (this line is pasted
+      // into bug reports). The AGENT gets one sentence naming the door out, because an agent that
+      // cannot tell "nothing matched" from "nothing recent matched" re-asks the same search with new
+      // wording — the self-echo loop this file already carries a filter for.
+      if (candidateFloor > 0 && rows.length < (limit ?? 20)) {
+        logger.warn('history_search:fts answered from a bounded candidate window — the result may be incomplete', {
+          subsystem: 'history_search:fts',
+          candidateFloor,
+          candidateRows: FTS_CANDIDATE_ROWS,
+          newestSeq: maxSeq,
+          matched: rows.length,
+          limit: limit ?? 20,
+          sinceGiven: Boolean(since),
+          beforeGiven: Boolean(before),
+        }, agentId);
+        results.push(`[searched the newest ${FTS_CANDIDATE_ROWS.toLocaleString('en-US')} messages only`
+          + ` — older history was not scanned. Pass before="<ISO date>" to search further back,`
+          + ` or use history_expand for a deep recall.]`);
+      }
 
       // Phase 3.5 (2026-05-04), hard cap per-match snippet at 300 chars
       // (Part XVIII §A). FTS5's snippet() defaults to ~64 tokens which can
@@ -345,7 +392,7 @@ async function searchSummaries(
   mode: string,
   limit?: number,
 ): Promise<string[]> {
-  const crumb = markQueryDispatched(breadcrumbFor('summary_search', mode === 'full_text' ? 'fts' : 'like'));
+  const crumb = markQueryDispatched(crumbFor('summary_search', mode === 'full_text' ? 'fts' : 'like'));
   try {
     return await searchSummariesInner(db, agentId, pattern, mode, limit);
   } finally {
@@ -667,7 +714,7 @@ async function expandSummariesFts(
   agentId: string,
   query: string,
 ): Promise<ExpandSummaryRow[]> {
-  const crumb = markQueryDispatched(breadcrumbFor('history_expand', 'fts'));
+  const crumb = markQueryDispatched(crumbFor('history_expand', 'fts'));
   try {
     // ⚠ `rowid AS rid` is NOT projected here and does not need to be — the floor is a WHERE term
     // only. `MAX(rowid) AS r` is aliased at the expression level, which is the form PHASE-1 T10's
@@ -707,7 +754,7 @@ async function expandSummariesLike(
   agentId: string,
   query: string,
 ): Promise<ExpandSummaryRow[]> {
-  const crumb = markQueryDispatched(breadcrumbFor('history_expand', 'like'));
+  const crumb = markQueryDispatched(crumbFor('history_expand', 'like'));
   try {
     const likeParams: unknown[] = [agentId, `%${query}%`];
     // The GLOBAL span, for the reasons stated in full at `searchSummariesInner` (C1 + I5).

@@ -83,6 +83,29 @@ export function breadcrumbFor(subsystem: string, mode: string): string {
   return `${subsystem}:${mode}`;
 }
 
+/**
+ * ⚠ THE SUFFIX THAT SAYS "THIS RAN SOMEWHERE ELSE" (I4) — and it is the difference between a diagnosis
+ * and a confident wrong answer.
+ *
+ * Before the reader offload, a live breadcrumb during a stall meant the thread was inside that query.
+ * After it, the same breadcrumb can be live while the query runs on a WORKER and the main thread is
+ * blocked by something else entirely — paging, a WAL checkpoint, an uninstrumented synchronous path.
+ * Blaming the query then sends the next reader to the one thing that provably was NOT on the thread,
+ * in exactly the scenario this instrument was built for. So the mark records WHERE, and `diagnose`
+ * treats off-thread work as context rather than cause.
+ */
+export const OFF_THREAD_SUFFIX = '@reader';
+
+/** `history_search:fts@reader` — same shape, plus where it ran. Still no pattern, ever. */
+export function offThreadBreadcrumb(label: string): string {
+  return `${label}${OFF_THREAD_SUFFIX}`;
+}
+
+/** Did this mark's work run off the serving thread? Then it cannot be what blocked the serving thread. */
+export function isOffThread(label: string): boolean {
+  return label.endsWith(OFF_THREAD_SUFFIX);
+}
+
 /** Mark work as dispatched. Returns the token to clear, so nesting cannot clear somebody else's mark. */
 export function markQueryDispatched(label: string): QueryBreadcrumb {
   const crumb: QueryBreadcrumb = { label, startedAtMs: Date.now() };
@@ -125,6 +148,22 @@ export function diagnose(stalledMs: number, breadcrumb: QueryBreadcrumb | null, 
     };
   }
   const ageMs = Math.max(0, nowMs - breadcrumb.startedAtMs);
+  // ⚠ OFF-THREAD WORK IS CONTEXT, NOT CAUSE (I4). A query running on the reader worker cannot be what
+  // blocked the serving thread — that is the whole point of having moved it — so the line says so and
+  // then points where the first branch above points, because this IS that case with extra information.
+  // Getting this wrong is worse than saying nothing: the reader goes and optimises a query that was
+  // never on the thread while the real blocker (paging, a checkpoint, an uninstrumented sync path)
+  // keeps happening.
+  if (isOffThread(breadcrumb.label)) {
+    return {
+      stalledMs,
+      breadcrumb,
+      breadcrumbAgeMs: ageMs,
+      diagnosis: `the event loop stalled ${stalledMs}ms with ${breadcrumb.label} in flight on the `
+        + `reader worker (dispatched ${ageMs}ms ago, so it CANNOT be the blocker) — suspect paging, `
+        + 'a WAL checkpoint, or synchronous work on an uninstrumented path',
+    };
+  }
   if (ageMs >= stalledMs) {
     return {
       stalledMs,

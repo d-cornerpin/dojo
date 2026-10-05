@@ -216,17 +216,27 @@ describe('⚠ THE WIRE, AS FAR AS IT GOES — and it says plainly how far that i
     // path is added without the fork, which is precisely how a policy helper ends up fully covered
     // while the line joining it to a caller is not. Adding a path reds this; deleting a wire reds it
     // too; and the reader has to come here and say which it was.
-    const retrieval = fs.readFileSync(new URL('../retrieval.ts', import.meta.url), 'utf-8');
+    // ⚠ COMMENTS STRIPPED BEFORE COUNTING (G4), and a round-1 finding forced it: `readerPoolAvailable()`
+    // is now NAMED in two comments explaining the I4 breadcrumb, so a raw count read 9 where the code
+    // has 7. A counting clause that counts prose is a clause that can be satisfied by writing about
+    // the wire instead of wiring it.
+    const retrieval = fs.readFileSync(new URL('../retrieval.ts', import.meta.url), 'utf-8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
     // THREE SEARCHABLE SURFACES (messages, summaries, history_expand) × two MODES (fts, bounded
-    // LIKE) = six paths. The third arrived with t89 item 1 and these three numbers moved WITH it,
-    // by hand, in the same commit — which is the whole value of counting exactly.
-    const breadcrumbs = new Set((retrieval.match(/breadcrumbFor\('([a-z_]+)'/g) ?? []));
+    // LIKE) = six paths. The third arrived with t89 item 1 and these numbers moved WITH it, by hand,
+    // in the same commit — which is the whole value of counting exactly.
+    // ⚠ `crumbFor`, not `breadcrumbFor`: the mark now carries WHERE the work runs (I4), so the one
+    // call to `breadcrumbFor` lives inside that helper and the per-surface sites name this one.
+    const breadcrumbs = new Set((retrieval.match(/crumbFor\('([a-z_]+)'/g) ?? []));
     expect(breadcrumbs.size, 'one breadcrumb per searchable surface').toBe(3);
 
-    // One fork per path: each decides pool-or-sync for itself and keeps its own fallback.
+    // One fork per path (6), plus ONE in `crumbFor` that decides the breadcrumb's suffix — which is
+    // counted deliberately rather than excused, because a seventh fork appearing anywhere else is
+    // exactly what this clause is for.
     const guarded = (retrieval.match(/readerPoolAvailable\(\)/g) ?? []).length;
-    expect(guarded, 'a fork per search path — add a path, wire it or red this').toBe(6);
+    expect(guarded, 'a fork per search path, plus the breadcrumb\'s — add a path, wire it or red this')
+      .toBe(7);
 
     // The LIKE paths cost two worker reads each (the honest cost, then the page); the FTS paths one.
     const wired = (retrieval.match(/readerQuery[<(]/g) ?? []).length;
@@ -441,4 +451,71 @@ describe('⚠ I7 — A DEADLINE KILL TAKES ITS OWN WORKER\'S QUERIES, AND ONLY T
     expect(after[0].n, 'the query that followed the kill was failed by the dead worker\'s exit')
       .toBe(ROWS);
   }, 60_000);
+});
+
+describe('⚠ I4 — A STALL DURING AN OFF-THREAD SEARCH IS NOT THAT SEARCH\'S FAULT', () => {
+  it('an @reader crumb is reported as CONTEXT, and the line never says "blocker"', async () => {
+    // ⚠ THE DEFECT: before the wire, a live breadcrumb during a stall meant the thread was inside
+    // that query. After it, the same crumb can be live while the query runs on a WORKER and the main
+    // thread is blocked by something else — paging, a WAL checkpoint, an uninstrumented sync path.
+    // The old line said "that query is the blocker" and sent the reader to the one thing that
+    // provably was NOT on the thread, in the exact scenario this instrument was built for. That is
+    // the "confident wrong answer" the module's own header warns against.
+    const { diagnose, markQueryDispatched, clearQueryDispatched, currentBreadcrumb, offThreadBreadcrumb,
+      isOffThread, resetSentinelForTest: reset } = await import('../../observability/stall-sentinel.js');
+    reset();
+    const label = offThreadBreadcrumb('history_search:fts');
+    expect(isOffThread(label)).toBe(true);
+    const crumb = markQueryDispatched(label);
+    try {
+      // Running the WHOLE stall — the shape that used to earn "that query is the blocker".
+      const report = diagnose(43_210, currentBreadcrumb(), crumb.startedAtMs + 44_000);
+      // eslint-disable-next-line no-console
+      console.log(`I4  ${report.diagnosis}`);
+      // ⚠ THE AFFIRMATIVE VERDICT MUST BE ABSENT AND THE NEGATION PRESENT — asserted as two separate
+      // things, because my first cut said `not.toContain('blocker')` and red on the line's own
+      // "CANNOT be the blocker". A clause that forbids a WORD instead of a CLAIM forbids the fix
+      // from explaining itself.
+      expect(report.diagnosis, 'an off-thread query was named as the cause')
+        .not.toMatch(/that query is the blocker/);
+      expect(report.diagnosis, 'the line must say OUT LOUD that it cannot be the cause')
+        .toMatch(/CANNOT be the blocker/);
+      expect(report.diagnosis, 'the line must say the work was off-thread').toContain('reader worker');
+      expect(report.diagnosis, 'and must point where the cause actually could be')
+        .toContain('uninstrumented');
+      // The crumb is still REPORTED — it is context, not noise. Dropping it would lose the one fact
+      // that tells the next reader a search was in flight at all.
+      expect(report.breadcrumb?.label).toBe(label);
+    } finally {
+      clearQueryDispatched(crumb);
+    }
+  });
+
+  it('an ON-thread crumb still earns the verdict — the other direction, or I4 is a silencer', async () => {
+    const { diagnose, markQueryDispatched, clearQueryDispatched, currentBreadcrumb,
+      resetSentinelForTest: reset } = await import('../../observability/stall-sentinel.js');
+    reset();
+    const crumb = markQueryDispatched('history_search:like');
+    try {
+      const report = diagnose(43_210, currentBreadcrumb(), crumb.startedAtMs + 44_000);
+      expect(report.diagnosis, 'an on-thread query that spanned the stall IS the blocker')
+        .toContain('that query is the blocker');
+      expect(report.diagnosis).not.toContain('reader worker');
+    } finally {
+      clearQueryDispatched(crumb);
+    }
+  });
+
+  it('the retrieval marks carry the suffix when the pool has the work, and not when it does not', () => {
+    const src = fs.readFileSync(new URL('../retrieval.ts', import.meta.url), 'utf-8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    // The decision is read ONCE, in one helper, and APPLIED to the mark — a mark that disagreed with
+    // the read beneath it would be the same defect in a smaller box.
+    expect(src).toMatch(/function crumbFor\(subsystem: string, mode: string\): string \{/);
+    expect(src, 'the suffix is not applied to the mark')
+      .toMatch(/readerPoolAvailable\(\) \? offThreadBreadcrumb\(label\) : label/);
+    // And every surface goes through it — no site may mark a raw label and bypass the decision.
+    expect(src, 'a search path marks a breadcrumb without saying where the work runs')
+      .not.toMatch(/markQueryDispatched\(breadcrumbFor\(/);
+  });
 });

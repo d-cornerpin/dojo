@@ -527,3 +527,49 @@ describe('⚠ I5 — THE COST OF THE POST-FIX QUERIES, MEASURED, ON PRODUCTION I
       .toBeLessThan(perAgent / 10);
   });
 });
+
+describe('⚠ I6 — A BOUNDED FTS MISS IS NOT A MISS, AND BOTH AUDIENCES ARE TOLD', () => {
+  // The FTS floor silently drops every match older than the newest FTS_CANDIDATE_ROWS messages. On a
+  // box past that window — the only box the bound exists for — a search for old history returned a
+  // partial or EMPTY answer that looked complete: no warn, nothing in the result. That is the same
+  // defect the LIKE fallback was fixed for ("a warn nobody sees"), reintroduced on the other arm by
+  // the fix itself.
+  const code = (): string => retrievalSource()
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  it('the floor being APPLIED and the floor being ANNOUNCED are different lines, and both exist', () => {
+    const fts = code().slice(code().indexOf('async function searchMessagesInner'),
+      code().indexOf('async function searchMessagesLike'));
+    // The guard is on BOTH conditions: a floor that did not bite, or a result that filled its limit,
+    // says nothing. Announcing a bound nobody reached is the noise that makes real lines ignorable.
+    expect(fts, 'the bounded miss is not detected').toMatch(
+      /if \(candidateFloor > 0 && rows\.length < \(limit \?\? 20\)\)/);
+    expect(fts, 'the operator is not told').toContain(
+      "logger.warn('history_search:fts answered from a bounded candidate window");
+    expect(fts, 'the AGENT is not told — it cannot tell "nothing matched" from "nothing recent matched"')
+      .toMatch(/results\.push\(`\[searched the newest/);
+    expect(fts, 'the agent line must name the door out, or it is just an apology')
+      .toMatch(/before="<ISO date>"/);
+  });
+
+  it('⚠ NO PATTERN IN THE WARN — counts, the floor, and whether filters were given', () => {
+    const fts = code().slice(code().indexOf('async function searchMessagesInner'),
+      code().indexOf('async function searchMessagesLike'));
+    const warnStart = fts.indexOf("logger.warn('history_search:fts answered from a bounded");
+    const warnBody = fts.slice(warnStart, fts.indexOf('}, agentId);', warnStart));
+    // ⚠ The whole-file rule this package carries: this line is pasted into bug reports. `since` and
+    // `before` are reported as BOOLEANS — whether a filter was given, never its value.
+    expect(warnBody, 'the warn carries the user\'s query text').not.toMatch(/\bpattern\b/);
+    expect(warnBody).toMatch(/sinceGiven: Boolean\(since\)/);
+    expect(warnBody).toMatch(/beforeGiven: Boolean\(before\)/);
+    expect(warnBody).toMatch(/candidateFloor,/);
+    expect(warnBody).toMatch(/matched: rows\.length,/);
+  });
+
+  it('the agent-facing line is derived from the constant, so the two cannot disagree', () => {
+    // A hard-coded "50,000" in the sentence is a number that goes stale the day the bound moves.
+    const fts = code();
+    expect(fts).toMatch(/FTS_CANDIDATE_ROWS\.toLocaleString\('en-US'\)/);
+    expect(FTS_CANDIDATE_ROWS).toBe(50_000);
+  });
+});
