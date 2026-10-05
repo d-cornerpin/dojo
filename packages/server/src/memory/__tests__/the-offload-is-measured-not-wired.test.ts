@@ -215,17 +215,19 @@ describe('⚠ THE WIRE, AS FAR AS IT GOES — and it says plainly how far that i
     // too; and the reader has to come here and say which it was.
     const retrieval = fs.readFileSync(new URL('../retrieval.ts', import.meta.url), 'utf-8');
 
-    // Two SEARCHABLE SURFACES (messages, summaries) × two MODES (fts, bounded LIKE) = four paths.
+    // THREE SEARCHABLE SURFACES (messages, summaries, history_expand) × two MODES (fts, bounded
+    // LIKE) = six paths. The third arrived with t89 item 1 and these three numbers moved WITH it,
+    // by hand, in the same commit — which is the whole value of counting exactly.
     const breadcrumbs = new Set((retrieval.match(/breadcrumbFor\('([a-z_]+)'/g) ?? []));
-    expect(breadcrumbs.size, 'one breadcrumb per searchable surface').toBe(2);
+    expect(breadcrumbs.size, 'one breadcrumb per searchable surface').toBe(3);
 
     // One fork per path: each decides pool-or-sync for itself and keeps its own fallback.
     const guarded = (retrieval.match(/readerPoolAvailable\(\)/g) ?? []).length;
-    expect(guarded, 'a fork per search path — add a path, wire it or red this').toBe(4);
+    expect(guarded, 'a fork per search path — add a path, wire it or red this').toBe(6);
 
     // The LIKE paths cost two worker reads each (the honest cost, then the page); the FTS paths one.
     const wired = (retrieval.match(/readerQuery[<(]/g) ?? []).length;
-    expect(wired, '2 fts + 2×(cost+page)').toBe(6);
+    expect(wired, '3 fts + 3×(cost+page)').toBe(9);
 
     // ⚠ AND EVERY WIRED READ IS LABELLED DISTINCTLY, because the pool attributes results by id and a
     // duplicated label is the mis-attribution this file's concurrency clause exists to catch.
@@ -233,7 +235,7 @@ describe('⚠ THE WIRE, AS FAR AS IT GOES — and it says plainly how far that i
       .map((m) => m.slice(m.indexOf("('") + 2, -1));
     expect(labels.length, 'every wired read carries a label').toBe(wired);
     expect(new Set(labels).size, 'and no two share one').toBe(wired);
-    for (const surface of ['history_search', 'summary_search']) {
+    for (const surface of ['history_search', 'summary_search', 'history_expand']) {
       expect(labels, `${surface} wires its FTS read`).toContain(`${surface}:fts`);
       expect(labels, `${surface} wires its LIKE cost read`).toContain(`${surface}:like:cost`);
       expect(labels, `${surface} wires its LIKE page read`).toContain(`${surface}:like:page`);
@@ -274,6 +276,50 @@ describe('⚠ THE WIRE, AS FAR AS IT GOES — and it says plainly how far that i
       // `rowid AS rid` are both aliased at the expression level and are the correct forms.
       expect(/(^|,)\s*rowid\s*(,|$)/.test(proj), `bare rowid projected in: ${proj.trim()}`).toBe(false);
     }
+  });
+
+  it('history_expand is BOUNDED too — the last unbounded text search on this surface', () => {
+    // ⚠ t89 item 1, AND A CORRECTION TO ITS OWN BRIEF, recorded here because the next reader will
+    // otherwise go looking in the wrong file. The brief called this pair "the vault search" and
+    // located it at `retrieval.ts:447` / `:471+`. Those line numbers are `history_expand`'s summary
+    // lookup, in THIS file. The real `vault_search` is `vault/store.ts`'s `semanticSearch` /
+    // `listEntries({ search })` — a different unbounded shape, in a file this change does not own,
+    // handed up rather than guessed at.
+    //
+    // READ WITH COMMENTS STRIPPED, and the lesson is the summaries half's own: its first bound
+    // clause asserted `toContain('ftsCandidateRowidFloor')` over the RAW source and the mutant that
+    // DELETED THE CALL still passed, because the paragraph above the call names the function. So:
+    // strip, assert the CALL SHAPE, and separately assert the bound is APPLIED rather than computed.
+    const retrieval = fs.readFileSync(new URL('../retrieval.ts', import.meta.url), 'utf-8');
+    const code = retrieval.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    const fts = code.slice(code.indexOf('async function expandSummariesFts'),
+      code.indexOf('async function expandSummariesLike'));
+    const like = code.slice(code.indexOf('async function expandSummariesLike'),
+      code.indexOf('export async function memoryExpand'));
+    expect(fts.length, 'the FTS helper was not found by name').toBeGreaterThan(0);
+    expect(like.length, 'the LIKE helper was not found by name').toBeGreaterThan(0);
+
+    expect(fts, 'the FTS candidate set is floored to a recency window')
+      .toMatch(/candidateFloor\s*=\s*ftsCandidateRowidFloor\(/);
+    expect(fts, 'and the floor is actually APPLIED to the query, not merely computed')
+      .toMatch(/s\.rowid\s*>\s*\?/);
+    expect(like, 'the LIKE walk runs in budgeted chunks').toMatch(/boundedRecencyScan(Sync)?</);
+    expect(like, 'and a truncated or multi-chunk walk says so out loud')
+      .toContain("logBoundedFallback('history_expand:like'");
+    // The bounded walk chunks on the ALIASED rowid — T10's reader guard. Projections only: a bare
+    // `rowid` in a WHERE or ORDER BY is correct and necessary here (the ceiling and the cost count
+    // both need it); it is projecting one unaliased that reads `undefined` without throwing.
+    expect(like).toContain('rowid AS rid');
+    const projections = [...like.matchAll(/SELECT\s([\s\S]*?)\sFROM\s+summaries/g)].map((m) => m[1]);
+    expect(projections.length, 'both the page and the cost query are read').toBeGreaterThanOrEqual(2);
+    for (const proj of projections) {
+      expect(/(^|,)\s*rowid\s*(,|$)/.test(proj), `bare rowid projected in: ${proj.trim()}`).toBe(false);
+    }
+    // ⚠ AND THE PRE-FIX SHAPE IS GONE, not merely joined by a bounded sibling. A fix that adds a
+    // bounded path beside the unbounded one has changed nothing — this is the half of the wire rule
+    // that counts in the other direction.
+    expect(code, 'the unbounded earliest_at walk still exists somewhere in this file')
+      .not.toMatch(/ORDER BY earliest_at DESC/);
   });
 });
 

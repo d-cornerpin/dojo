@@ -582,6 +582,137 @@ export function memoryDescribe(agentId: string, params: { id: string }): string 
 
 // ── history_expand: deep recall with DAG walking and LLM ──
 
+// ════════════════════════════════════════════════════════════════════════════════════════
+// ⚠ THE THIRD SEARCHABLE SURFACE, AND THE ONE THE BRIEF POINTED AT BY LINE NUMBER (t89 item 1).
+//
+// The brief named this pair "the vault search" at `retrieval.ts:447` and `:471+`. Those line
+// numbers are THIS code — `history_expand`'s summary lookup — not the vault's. The real
+// `vault_search` lives in `vault/store.ts` (`semanticSearch`, `listEntries({ search })`) and is
+// handed up separately, because it is a different unbounded shape in a file this change does not
+// own. What was true either way is that these two arms are the LAST unbounded text search on the
+// retrieval surface, and they are the same two shapes the messages and summaries paths earned
+// their fix for:
+//
+//   · THE FTS ARM had `ORDER BY rank LIMIT 5`, which must SCORE EVERY MATCH before it can know
+//     which five win, with the `INNER JOIN summaries` pulling each candidate's condensed body off
+//     disk to do it. Five rows out, every match read.
+//   · THE LIKE ARM had `content LIKE '%…%' … LIMIT 5`, and a leading-wildcard LIKE cannot use an
+//     index, so a term that appears nowhere cost every summary row the agent owns.
+//
+// AND IT IS WORSE HERE THAN ON EITHER OF THE OTHER TWO SURFACES, which is the reason it is not
+// "small enough to skip": `history_expand` is the deep-recall door, so every row it finds is then
+// walked for its DESCENDANT MESSAGES and fed to a model. The read is the cheap half of what this
+// function does, and it was the unbounded half.
+//
+// ⚠ ONE BEHAVIOUR CHANGE, THE SAME ONE THE SUMMARIES HALF STATED AND FOR THE SAME REASON: the
+// LIKE arm ordered by `earliest_at DESC` (the period a summary COVERS) and now walks `rowid DESC`
+// (the order summaries were WRITTEN). A bounded scan needs a monotonic chunk key and `earliest_at`
+// is not one — two summaries can share it, and it is not the insertion order a chunk ceiling walks.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** How many summaries `history_expand` may carry into its synthesis. The pre-existing `LIMIT 5`,
+ *  named rather than repeated twice, because both arms must agree on it. */
+const EXPAND_SUMMARY_LIMIT = 5;
+
+type ExpandSummaryRow = {
+  id: string; content: string; depth: number; earliest_at: string; latest_at: string;
+};
+
+async function expandSummariesFts(
+  db: ReturnType<typeof getDb>,
+  agentId: string,
+  query: string,
+): Promise<ExpandSummaryRow[]> {
+  const crumb = markQueryDispatched(breadcrumbFor('history_expand', 'fts'));
+  try {
+    // ⚠ `rowid AS rid` is NOT projected here and does not need to be — the floor is a WHERE term
+    // only. `MAX(rowid) AS r` is aliased at the expression level, which is the form PHASE-1 T10's
+    // reader guard accepts; a BARE projected `rowid` is the shape SQLite may name something else,
+    // which then reads `undefined` without throwing.
+    const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM summaries WHERE agent_id = ?')
+      .get(agentId) as { r: number | null } | undefined)?.r ?? 0;
+    const candidateFloor = ftsCandidateRowidFloor(maxRid);
+    const floorClause = candidateFloor > 0 ? 'AND s.rowid > ?' : '';
+    const sql = `
+        SELECT s.id, s.content, s.depth, s.earliest_at, s.latest_at
+        FROM summaries_fts
+        INNER JOIN summaries s ON summaries_fts.rowid = s.rowid
+        WHERE summaries_fts MATCH ?
+          AND s.agent_id = ?
+          ${floorClause}
+        ORDER BY rank
+        LIMIT ?
+      `;
+    const sqlParams: unknown[] = candidateFloor > 0
+      ? [query, agentId, candidateFloor, EXPAND_SUMMARY_LIMIT]
+      : [query, agentId, EXPAND_SUMMARY_LIMIT];
+    // THE WIRE: pool up → the ranked read runs on a worker's own read-only connection and the
+    // serving thread stays serviceable; pool down → the same bounded query on-thread. The fork is
+    // the messages and summaries paths' fork verbatim, so there is one shape to review.
+    return (readerPoolAvailable()
+      ? await readerQuery<ExpandSummaryRow>('history_expand:fts', sql, sqlParams)
+      : db.prepare(sql).all(...sqlParams)) as ExpandSummaryRow[];
+  } finally {
+    clearQueryDispatched(crumb);
+  }
+}
+
+async function expandSummariesLike(
+  db: ReturnType<typeof getDb>,
+  agentId: string,
+  query: string,
+): Promise<ExpandSummaryRow[]> {
+  const crumb = markQueryDispatched(breadcrumbFor('history_expand', 'like'));
+  try {
+    const likeParams: unknown[] = [agentId, `%${query}%`];
+    const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM summaries WHERE agent_id = ?')
+      .get(agentId) as { r: number | null } | undefined)?.r ?? 0;
+    const chunkSql = `
+      SELECT id, content, depth, earliest_at, latest_at, rowid AS rid FROM summaries
+      WHERE agent_id = ? AND content LIKE ? AND rowid <= ? AND rowid > ?
+      ORDER BY rowid DESC
+      LIMIT ?
+    `;
+    const costSql = `
+      SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(content)), 0) AS bytes FROM summaries
+      WHERE agent_id = ? AND rowid <= ? AND rowid > ?
+    `;
+    type ExpandLikeRow = ExpandSummaryRow & { rid: number };
+    type CostRow = { n: number; bytes: number };
+    const scanOpts = { limit: EXPAND_SUMMARY_LIMIT, startRowidCeiling: maxRid };
+    // THE WIRE, again the same fork: pool up → each chunk is two worker-side reads (the honest
+    // cost, then the page); pool down → the same arithmetic on-thread, bounded identically. One
+    // scan loop owns the budget either way, which is what keeps the fallback a fallback rather
+    // than a second policy.
+    const scan = readerPoolAvailable()
+      ? await boundedRecencyScan<ExpandSummaryRow>({
+        ...scanOpts,
+        fetchChunk: async (ceiling, chunkRows) => {
+          const floor = Math.max(0, ceiling - chunkRows);
+          const cost = (await readerQuery<CostRow>('history_expand:like:cost', costSql, [agentId, ceiling, floor]))[0] ?? { n: 0, bytes: 0 };
+          const found = await readerQuery<ExpandLikeRow>('history_expand:like:page', chunkSql, [...likeParams, ceiling, floor, chunkRows]);
+          return { rows: found, rowsExamined: cost.n, bytesRead: cost.bytes };
+        },
+      })
+      : boundedRecencyScanSync<ExpandSummaryRow>({
+        ...scanOpts,
+        fetchChunk: (ceiling, chunkRows) => {
+          const floor = Math.max(0, ceiling - chunkRows);
+          const cost = db.prepare(costSql).get(agentId, ceiling, floor) as CostRow;
+          const found = db.prepare(chunkSql).all(...likeParams, ceiling, floor, chunkRows) as ExpandLikeRow[];
+          return { rows: found, rowsExamined: cost.n, bytesRead: cost.bytes };
+        },
+      });
+    if (scan.report.truncated || scan.report.chunks > 1) {
+      logBoundedFallback('history_expand:like', 'leading-wildcard LIKE cannot use an index', scan.report, agentId);
+    }
+    return scan.rows.slice(0, EXPAND_SUMMARY_LIMIT);
+  } finally {
+    clearQueryDispatched(crumb);
+  }
+}
+
+
 export async function memoryExpand(
   agentId: string,
   params: {
@@ -621,23 +752,9 @@ export async function memoryExpand(
   if (query) {
     const db = getDb();
 
-    // Search summaries via FTS
+    // Search summaries via FTS — BOUNDED and OFF-THREAD when the pool is up (t89 item 1).
     try {
-      const rows = db.prepare(`
-        SELECT s.id, s.content, s.depth, s.earliest_at, s.latest_at
-        FROM summaries_fts
-        INNER JOIN summaries s ON summaries_fts.rowid = s.rowid
-        WHERE summaries_fts MATCH ?
-          AND s.agent_id = ?
-        ORDER BY rank
-        LIMIT 5
-      `).all(query, agentId) as Array<{
-        id: string;
-        content: string;
-        depth: number;
-        earliest_at: string;
-        latest_at: string;
-      }>;
+      const rows = await expandSummariesFts(db, agentId, query);
 
       for (const row of rows) {
         materialParts.push(`--- Summary ${row.id} (depth=${row.depth}, ${row.earliest_at} - ${row.latest_at}) ---`);
@@ -655,19 +772,8 @@ export async function memoryExpand(
         }
       }
     } catch {
-      // FTS failed, try LIKE fallback
-      const rows = db.prepare(`
-        SELECT id, content, depth, earliest_at, latest_at FROM summaries
-        WHERE agent_id = ? AND content LIKE ?
-        ORDER BY earliest_at DESC
-        LIMIT 5
-      `).all(agentId, `%${query}%`) as Array<{
-        id: string;
-        content: string;
-        depth: number;
-        earliest_at: string;
-        latest_at: string;
-      }>;
+      // FTS failed, try the LIKE fallback — now a budgeted recency walk that says so out loud.
+      const rows = await expandSummariesLike(db, agentId, query);
 
       for (const row of rows) {
         materialParts.push(`--- Summary ${row.id} (depth=${row.depth}) ---`);
