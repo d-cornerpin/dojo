@@ -21,8 +21,8 @@ import { recordBootAttempt, markMigrationsRan, confirmHealthy, readMarker, synth
 import { probeFsCaseInsensitive, setFsCaseInsensitive } from './agent/path-guards.js';
 import { homeDir } from './home.js';
 import { startStallSentinel } from './observability/stall-sentinel.js';
-import { warmReaderPool } from './memory/reader-pool.js';
-import { scheduleFtsHealthCheck } from './memory/fts-health.js';
+import { terminateReaderPool, warmReaderPool } from './memory/reader-pool.js';
+import { scheduleFtsHealthCheck, stopFtsRepair } from './memory/fts-health.js';
 
 const logger = createLogger('main');
 const PORT = parseInt(process.env.DOJO_PORT ?? '3001', 10);
@@ -1279,6 +1279,14 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     logger.info('Shutting down...');
     clearInterval(timeoutInterval);
+    // ⚠ THE TWO WORKER THREADS GO FIRST (t89 I1). `process.exit()` JOINS a worker, and nothing in
+    // JavaScript preempts a native sqlite call — measured: an `unref`'d worker inside a 4.65s
+    // statement held the exit to 5.6s. An FTS repair is minutes, so a SIGTERM during the
+    // once-per-box rebuild hung until launchd SIGKILLed the process and the transaction rolled
+    // back. `stopFtsRepair` asks the repair to stop at its next chunk boundary (a few thousand
+    // rows); `terminateReaderPool` ends the read side. Both are no-ops when nothing is running.
+    if (stopFtsRepair()) logger.info('asked the background FTS repair to stop; it will be redone on the next boot');
+    void terminateReaderPool();
     // Stop tunnel gracefully
     import('./services/tunnel.js').then(m => m.stopTunnel()).catch(() => {});
     server.close(async () => {

@@ -49,6 +49,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { Worker } from 'node:worker_threads';
+import { createRequire } from 'node:module';
 import { createLogger } from '../logger.js';
 import { getDb, getDbPath } from '../db/connection.js';
 import { readerPoolAvailable, readerQuery } from './reader-pool.js';
@@ -100,8 +101,46 @@ export const FTS_RECREATE_SQL = [
   'INSERT INTO messages_fts(rowid, content) SELECT seq AS rowid, content FROM messages;',
 ].join('\n');
 
-/** fts5's own repair command, for an index that exists but does not answer for its rows. */
+/** The same three statements, separately, because the repair now DRIVES them (I1/I8) rather than
+ *  handing the lot to `db.exec`: the populate runs in interruptible chunks and the whole sequence
+ *  runs inside one transaction. `FTS_RECREATE_SQL` above stays as the one-owner declaration the
+ *  migration clause compares against — these are the same strings, split at the semicolons. */
+export const FTS_DROP_SQL = 'DROP TABLE IF EXISTS messages_fts;';
+export const FTS_CREATE_SQL =
+  "CREATE VIRTUAL TABLE messages_fts USING fts5(content, content='messages', content_rowid='rowid');";
+/** One chunk of the populate, by insertion-key range. `seq AS rowid` for T10's reader guard. */
+export const FTS_POPULATE_CHUNK_SQL =
+  'INSERT INTO messages_fts(rowid, content) SELECT seq AS rowid, content FROM messages'
+  + ' WHERE seq > ? AND seq <= ?;';
+
+/** fts5's own emptying command — the first half of a chunked `rebuild` (I1). */
+export const FTS_DELETE_ALL_SQL = `INSERT INTO messages_fts(messages_fts) VALUES('delete-all');`;
+
+/** fts5's own repair command. Kept as the declaration of what a rebuild MEANS; the worker reaches the
+ *  same end state through `delete-all` plus the chunked populate, because the single command is one
+ *  uninterruptible native call and a SIGTERM during it hangs the process (I1). */
 export const FTS_REBUILD_SQL = `INSERT INTO messages_fts(messages_fts) VALUES('rebuild');`;
+
+/**
+ * How many rows one populate chunk indexes.
+ *
+ * ⚠ THIS NUMBER IS A SHUTDOWN BUDGET, not a throughput knob. The process can only exit between
+ * chunks — nothing in JavaScript preempts a native sqlite call — so the chunk size IS the worst-case
+ * delay a SIGTERM can meet. 5,000 wide rows is a fraction of a second; the whole 123,000-row repair
+ * the brief's box needed is ~25 chunks. Measured consequence of getting this wrong: a single-statement
+ * rebuild on a 729 MB table is minutes, and launchd SIGKILLs at its `ExitTimeOut` (20 s by default).
+ */
+export const FTS_POPULATE_CHUNK_ROWS = 5_000;
+
+/**
+ * How long a stopped repair gets to reach its next chunk boundary and roll back cleanly.
+ *
+ * It is a CHUNK's worth of time plus slack, not a guess: the worker only checks the stop flag between
+ * statements, so this must outlast one chunk or the backstop kill makes the boundary check pointless.
+ * Two seconds is far above a 5,000-row insert and far below launchd's 20-second `ExitTimeOut`, which
+ * is the deadline the whole of I1 is measured against.
+ */
+export const FTS_STOP_GRACE_MS = 2_000;
 
 export type FtsState =
   /** The index exists, covers exactly the table's rows, and answers a MATCH. Nothing to do. */
@@ -226,28 +265,125 @@ export interface FtsRepairResult {
   readonly ms: number;
   readonly indexedRows: number | null;
   readonly tableRows: number | null;
+  /** How many populate chunks ran — the number that makes "interruptible" checkable (I1). */
+  readonly chunks?: number;
   readonly error?: string;
 }
 
-/** The repair's whole program, on its own thread with its own WRITABLE connection. */
+/**
+ * The repair's whole program, on its own thread with its own WRITABLE connection.
+ *
+ * ⚠ CHUNKED AND INTERRUPTIBLE (I1), because `process.exit()` JOINS this thread. Measured: an
+ * `unref()`'d eval worker inside a 4.65 s sqlite statement, with `process.exit(0)` requested at
+ * +404 ms, exited at 5,630 ms wall — `unref` lets the loop drain, it does not make exit skip the
+ * join, and neither `terminate()` nor anything else in JavaScript preempts `sqlite3_step`. A
+ * single-statement rebuild on a 729 MB table is MINUTES, so a SIGTERM during the once-per-box repair
+ * hung until launchd's `ExitTimeOut` SIGKILLed it, the transaction rolled back, and the next boot
+ * redid the whole thing. So the populate is a loop of bounded statements and a stop is checked
+ * between them; the worst-case exit delay is now one chunk.
+ *
+ * ⚠ AND IT IS ONE TRANSACTION (I8). `DROP; CREATE; INSERT` in autocommit left `messages_fts`
+ * PRESENT AND EMPTY for the whole populate — minutes on a large table — during which `MATCH`
+ * succeeded with zero rows, nothing threw, the LIKE fallback was therefore NOT taken, and every
+ * `history_search` returned "No results" while looking perfectly healthy. Readers must see the old
+ * index or the new one, never an empty one. SQLite permits `CREATE VIRTUAL TABLE` inside a
+ * transaction; the rule that forbids a rebuild inside one belongs to the migration RUNNER, not to
+ * SQLite, and this does not run in a migration.
+ */
 const REPAIR_WORKER_SOURCE = `
-  const { parentPort, workerData } = require('node:worker_threads');
-  const Database = require('better-sqlite3');
+  const { parentPort, workerData, receiveMessageOnPort } = require('node:worker_threads');
+  const Database = require(workerData.betterSqlitePath);
   const started = Date.now();
+  // ⚠ THE STOP IS POLLED, NOT DELIVERED BY A LISTENER, AND THAT IS NOT A STYLE CHOICE.
+  // The populate loop below is SYNCHRONOUS — it has to be, it is a run of prepared statements inside
+  // one transaction — so this thread's event loop never gets a turn while it runs and a
+  // \`parentPort.on('message')\` handler CANNOT FIRE. My first cut used one, and the flag the
+  // boundary check reads could never change: the only thing that ever ended a cancelled repair was
+  // the backstop \`terminate()\`, i.e. the interruptibility this fix exists to add was dead behind
+  // its own safety net, and the clause recorded "the repair worker exited without answering".
+  // \`receiveMessageOnPort\` drains the port WITHOUT yielding, which is exactly the shape a tight
+  // synchronous loop needs. The port must stay paused for it, so no listener is attached.
+  const stopRequested = () => {
+    for (;;) {
+      const m = receiveMessageOnPort(parentPort);
+      if (!m) return false;
+      if (m.message && m.message.stop) return true;
+    }
+  };
   try {
     const db = new Database(workerData.dbPath, { fileMustExist: true });
     // Generous, because this thread WAITS for the write lock rather than failing the repair: the
     // platform is serving throughout and its writers come and go.
     db.pragma('busy_timeout = 60000');
-    db.exec(workerData.sql);
-    const indexed = db.prepare('SELECT COUNT(*) AS n FROM messages_fts_docsize').get().n;
-    const rows = db.prepare('SELECT COUNT(*) AS n FROM messages').get().n;
-    db.close();
-    parentPort.postMessage({ ok: indexed === rows, ms: Date.now() - started, indexedRows: indexed, tableRows: rows });
+    const maxSeq = db.prepare('SELECT MAX(seq) AS r FROM messages').get().r || 0;
+    let committed = false;
+    // BEGIN IMMEDIATE takes the write lock up front rather than discovering a conflict halfway.
+    db.exec('BEGIN IMMEDIATE;');
+    try {
+      if (workerData.plan === 'recreate') {
+        db.exec(workerData.dropSql);
+        db.exec(workerData.createSql);
+      } else {
+        db.exec(workerData.deleteAllSql);
+      }
+      const populate = db.prepare(workerData.populateSql);
+      let from = 0;
+      let chunks = 0;
+      while (from < maxSeq) {
+        if (stopRequested()) throw new Error('the repair was asked to stop at a chunk boundary');
+        const to = Math.min(maxSeq, from + workerData.chunkRows);
+        populate.run(from, to);
+        chunks += 1;
+        from = to;
+      }
+      db.exec('COMMIT;');
+      committed = true;
+      const indexed = db.prepare('SELECT COUNT(*) AS n FROM messages_fts_docsize').get().n;
+      const rows = db.prepare('SELECT COUNT(*) AS n FROM messages').get().n;
+      db.close();
+      parentPort.postMessage({ ok: indexed === rows, ms: Date.now() - started, indexedRows: indexed, tableRows: rows, chunks });
+    } finally {
+      if (!committed) { try { db.exec('ROLLBACK;'); } catch (e) { /* the transaction is already gone */ }
+        try { db.close(); } catch (e) { /* already closed */ } }
+    }
   } catch (err) {
     parentPort.postMessage({ ok: false, ms: Date.now() - started, indexedRows: null, tableRows: null, error: String(err && err.message || err) });
   }
 `;
+
+/** The repair in flight, if any — so a shutdown can ask it to stop at its next chunk boundary. */
+let liveRepair: Worker | null = null;
+
+/**
+ * ⚠ ASK A RUNNING REPAIR TO STOP, AND CALL THIS FROM `shutdown` (I1).
+ *
+ * `process.exit()` joins worker threads, so a repair inside a native statement holds the exit for the
+ * length of that statement — measured at 5.2 s for a 4.65 s statement, and a single-statement rebuild
+ * on a 729 MB table is minutes. Nothing in JavaScript can preempt `sqlite3_step`, so the only honest
+ * answer is a boundary the worker checks, which is why the populate is chunked. The message is a
+ * REQUEST and the worker answers it between chunks; `terminate()` is the backstop for a thread that
+ * is somehow already past caring.
+ *
+ * ⚠ THE REQUEST IS NOT FOLLOWED BY AN IMMEDIATE `terminate()`, AND THAT IS THE WHOLE POINT. My first
+ * cut posted the stop and killed the thread on the next line; the kill won the race every time, the
+ * chunk-boundary check never ran, and the clause recorded "the repair worker exited without
+ * answering" — i.e. the mechanism this fix exists to add was dead on arrival behind its own backstop.
+ * The worker gets `FTS_STOP_GRACE_MS` to reach its next boundary and unwind its transaction cleanly;
+ * `terminate()` is the backstop for a thread that is somehow past caring, on an `unref`'d timer so it
+ * is never itself a reason the process stays up.
+ *
+ * Returns true when there was something to stop — which is the only interesting case to log.
+ */
+export function stopFtsRepair(): boolean {
+  const w = liveRepair;
+  if (!w) return false;
+  liveRepair = null;
+  try { w.postMessage({ stop: true }); } catch { /* the thread is already gone */ }
+  const backstop = setTimeout(() => { void w.terminate(); }, FTS_STOP_GRACE_MS);
+  backstop.unref?.();
+  w.once('exit', () => clearTimeout(backstop));
+  return true;
+}
 
 /**
  * Run one repair on a short-lived worker. Resolves with what the index looked like afterwards, so the
@@ -255,15 +391,30 @@ const REPAIR_WORKER_SOURCE = `
  */
 export function runFtsRepair(
   plan: Exclude<FtsRepairPlan, 'none'>,
-  opts: { dbPath?: string; deadlineMs?: number } = {},
+  opts: { dbPath?: string; deadlineMs?: number; chunkRows?: number } = {},
 ): Promise<FtsRepairResult> {
   const dbPath = opts.dbPath ?? getDbPath();
   const deadlineMs = opts.deadlineMs ?? FTS_REPAIR_DEADLINE_MS;
-  const sql = plan === 'recreate' ? FTS_RECREATE_SQL : FTS_REBUILD_SQL;
   return new Promise<FtsRepairResult>((resolve) => {
     let worker: Worker;
     try {
-      worker = new Worker(REPAIR_WORKER_SOURCE, { eval: true, workerData: { dbPath, sql } });
+      worker = new Worker(REPAIR_WORKER_SOURCE, {
+        eval: true,
+        workerData: {
+          dbPath,
+          plan,
+          // ⚠ THE NATIVE MODULE'S PATH, RESOLVED HERE (I3's lesson, applied to this worker too): an
+          // eval worker's bare `require` resolves from `process.cwd()`, which is not a property of
+          // this code. The parent knows where the module is.
+          betterSqlitePath: createRequire(import.meta.url).resolve('better-sqlite3'),
+          dropSql: FTS_DROP_SQL,
+          createSql: FTS_CREATE_SQL,
+          deleteAllSql: FTS_DELETE_ALL_SQL,
+          populateSql: FTS_POPULATE_CHUNK_SQL,
+          chunkRows: opts.chunkRows ?? FTS_POPULATE_CHUNK_ROWS,
+        },
+      });
+      liveRepair = worker;
     } catch (err) {
       resolve({ ok: false, ms: 0, indexedRows: null, tableRows: null, error: err instanceof Error ? err.message : String(err) });
       return;
@@ -274,6 +425,7 @@ export function runFtsRepair(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (liveRepair === worker) liveRepair = null;
       void worker.terminate();
       resolve(r);
     };
@@ -323,7 +475,19 @@ export async function checkFtsHealthAndRepair(
 
   // TRANSITION IN. Named with what searches do in the meantime, because that is the question a reader
   // of this line actually has.
-  logger.warn(`the message search index is ${health.state} — rebuilding it in the background; until it finishes, message search takes the bounded LIKE fallback`, {
+  //
+  // ⚠ AND THE ANSWER IS NOT THE SAME FOR EVERY STATE (I8). This line used to say "takes the bounded
+  // LIKE fallback" unconditionally, which is true only when the index cannot answer at all:
+  //   · `missing`  — no table, `MATCH` throws, the fallback IS taken.
+  //   · `corrupt`  — `MATCH` throws, the fallback IS taken.
+  //   · `unpopulated` / `stale` — the index ANSWERS, just not for every row, and nothing throws, so
+  //     `retrieval.ts` never reaches its catch. Search is partial, not fallen back. Saying otherwise
+  //     sends a reader of the log looking for warns that will never appear.
+  // The honest sentence per state, rather than one sentence that is wrong for half of them.
+  const meanwhile = (health.state === 'missing' || health.state === 'corrupt')
+    ? 'until it finishes, message search takes the bounded LIKE fallback'
+    : 'the index still answers until it finishes, but not for every message — results may be incomplete';
+  logger.warn(`the message search index is ${health.state} — rebuilding it in the background; ${meanwhile}`, {
     state: health.state, plan, detail: health.detail,
     indexedRows: health.indexedRows, tableRows: health.tableRows,
   });
@@ -333,7 +497,7 @@ export async function checkFtsHealthAndRepair(
   // TRANSITION OUT, with the measurement.
   if (result.ok) {
     logger.info('the message search index was rebuilt in the background; message search is back on the index', {
-      state: health.state, plan, ms: result.ms,
+      state: health.state, plan, ms: result.ms, chunks: result.chunks,
       indexedRows: result.indexedRows, tableRows: result.tableRows,
     });
   } else {

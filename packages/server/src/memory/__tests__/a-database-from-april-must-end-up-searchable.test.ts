@@ -42,7 +42,8 @@ vi.mock('../reader-pool.js', () => ({
 import {
   probeFtsHealth, ftsRepairPlan, runFtsRepair, checkFtsHealthAndRepair, scheduleFtsHealthCheck,
   resetFtsHealthForTest, FTS_RECREATE_SQL, FTS_REBUILD_SQL, FTS_HEALTH_DELAY_MS,
-  FTS_REPAIR_DEADLINE_MS, type FtsProbeRun, type FtsState,
+  FTS_REPAIR_DEADLINE_MS, FTS_POPULATE_CHUNK_ROWS, FTS_STOP_GRACE_MS, stopFtsRepair,
+  type FtsProbeRun, type FtsState,
 } from '../fts-health.js';
 
 const ROWS = 400;
@@ -222,8 +223,15 @@ describe('⚠ BOTH TRANSITIONS ARE LOGGED, and a healthy index says nothing', ()
     expect(logSpy.warn, 'the transition IN was not logged').toHaveBeenCalledTimes(1);
     const inLine = String(logSpy.warn.mock.calls[0][0]);
     expect(inLine).toContain('unpopulated');
-    expect(inLine, 'the line must say what search does in the meantime').toContain('bounded LIKE fallback');
     expect(inLine).toContain('background');
+    // ⚠ I8: THIS CLAUSE USED TO PIN THE WRONG SENTENCE. It asserted "bounded LIKE fallback" for every
+    // repairable state, and for `unpopulated`/`stale` that is false: the index ANSWERS, partially,
+    // nothing throws, and `retrieval.ts` therefore never reaches the catch that would fall back. A
+    // reader of that line would go looking for fallback warns that never appear. The line is now
+    // state-accurate and the clause moved with it — see the `missing` clause below for the other half.
+    expect(inLine, 'an index that still answers must not be described as fallen back')
+      .not.toContain('bounded LIKE fallback');
+    expect(inLine, 'a partial index must say the results may be incomplete').toContain('may be incomplete');
 
     expect(logSpy.info, 'the transition OUT was not logged').toHaveBeenCalledTimes(1);
     expect(String(logSpy.info.mock.calls[0][0])).toContain('back on the index');
@@ -362,5 +370,123 @@ describe('⚠ THE INDEX DECLARATION HAS ONE OWNER — the migration, enforced ra
     expect(FTS_REBUILD_SQL).toContain("messages_fts(messages_fts) VALUES('rebuild')");
     // A rebuild must never drop anything — only `recreate` may, and only on a MISSING table.
     expect(FTS_REBUILD_SQL).not.toContain('DROP');
+  });
+});
+
+describe('⚠ I8 — THE LINE IS STATE-ACCURATE, AND THE REPAIR IS NEVER VISIBLE HALF-DONE', () => {
+  it('a MISSING index DOES say the fallback is taken — the other half of the same claim', async () => {
+    const p = makeDb('log-missing', { index: 'none' });
+    await checkFtsHealthAndRepair({
+      run: runnerFor(p),
+      repair: async () => ({ ok: true, ms: 5, indexedRows: ROWS, tableRows: ROWS }),
+    });
+    const line = String(logSpy.warn.mock.calls[0][0]);
+    // With no table, `MATCH` throws, `retrieval.ts` reaches its catch, and the fallback really is
+    // what serves the search. Both directions of I8 are asserted, so neither sentence can drift.
+    expect(line).toContain('missing');
+    expect(line, 'a missing index must say the bounded fallback is what answers')
+      .toContain('bounded LIKE fallback');
+  });
+
+  it('⚠ A RECREATE IS ONE TRANSACTION — a concurrent reader never sees an empty index', async () => {
+    // ⚠ THE DEFECT: `DROP; CREATE; INSERT` in autocommit COMMITS EACH STATEMENT, so from the CREATE
+    // to the INSERT — minutes on a large table — `messages_fts` existed and was EMPTY. `MATCH`
+    // succeeded with zero rows, nothing threw, so the LIKE fallback was not taken and every
+    // `history_search` returned "No results" while looking perfectly healthy. Readers must see the
+    // old index or the new one.
+    const src = fs.readFileSync(new URL('../fts-health.ts', import.meta.url), 'utf-8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    expect(src, 'the repair no longer takes the write lock up front').toContain("BEGIN IMMEDIATE;");
+    expect(src, 'and it must commit').toContain("COMMIT;");
+    expect(src, 'a repair that cannot finish must leave the previous index in place')
+      .toContain("ROLLBACK;");
+    // And the end state is still right — the transaction is not just ceremony.
+    const p = makeDb('txn-recreate', { index: 'none' });
+    const result = await runFtsRepair('recreate', { dbPath: p, deadlineMs: 60_000 });
+    expect(result.ok, result.error ?? 'repair failed').toBe(true);
+    expect((await probeFtsHealth(runnerFor(p))).state).toBe('healthy');
+  }, 60_000);
+});
+
+describe('⚠ I1 — THE REPAIR IS INTERRUPTIBLE, BECAUSE process.exit() JOINS IT', () => {
+  it('the populate runs in BOUNDED CHUNKS, so the worst-case exit delay is one chunk', async () => {
+    // ⚠ WHY: `process.exit()` joins a worker thread and nothing in JavaScript preempts
+    // `sqlite3_step`. Measured on an `unref`'d eval worker inside a 4.65 s statement with exit
+    // requested at +404 ms: the process left at 5,630 ms. A single-statement rebuild on a 729 MB
+    // table is MINUTES, so a SIGTERM during the once-per-box repair hung until launchd's
+    // `ExitTimeOut` SIGKILLed it and the transaction rolled back. The chunk size is a SHUTDOWN
+    // BUDGET, which is why it is asserted as a count and not inferred.
+    const p = makeDb('chunked', { index: 'none' });
+    const result = await runFtsRepair('recreate', { dbPath: p, deadlineMs: 60_000, chunkRows: 100 });
+    expect(result.ok, result.error ?? 'repair failed').toBe(true);
+    // eslint-disable-next-line no-console
+    console.log(`I1  ${ROWS} rows populated in ${result.chunks} chunk(s) of 100 · ${result.ms}ms`);
+    expect(result.chunks, 'the populate is still one statement').toBe(ROWS / 100);
+    expect((await probeFtsHealth(runnerFor(p))).state).toBe('healthy');
+  }, 60_000);
+
+  it('the default chunk is small enough to be a shutdown budget and large enough to not be silly', () => {
+    expect(FTS_POPULATE_CHUNK_ROWS).toBeGreaterThan(500);
+    expect(FTS_POPULATE_CHUNK_ROWS).toBeLessThan(50_000);
+    // The grace must outlast a chunk (or the backstop kill makes the boundary check pointless) and
+    // must stay well inside launchd's 20-second ExitTimeOut, which is I1's actual deadline.
+    expect(FTS_STOP_GRACE_MS).toBeGreaterThan(0);
+    expect(FTS_STOP_GRACE_MS).toBeLessThan(20_000);
+  });
+
+  it('⚠ A CANCELLED REPAIR LEAVES THE PREVIOUS INDEX IN PLACE — it never half-writes', async () => {
+    // A `rebuild` on a HEALTHY-but-stale index, stopped mid-populate. The transaction means the
+    // outcome is binary: either the rebuild committed, or the index is exactly what it was.
+    const p = makeDb('cancelled', { index: 'extra' });
+    const before = await probeFtsHealth(runnerFor(p));
+    expect(before.state).toBe('stale');
+    const beforeCount = before.indexedRows;
+
+    // One row per chunk, so there are many boundaries, and the stop is posted SYNCHRONOUSLY on the
+    // line after the launch. ⚠ DETERMINISTIC ON PURPOSE: my first version polled with `waitFor` and
+    // the 400-row repair finished in 16 ms before the first poll ran, so the clause passed by
+    // measuring a COMPLETED repair (`ok=true`). A stop that must win a race is a clause that reports
+    // whatever the machine felt like. `liveRepair` is assigned inside `runFtsRepair`'s executor,
+    // which runs synchronously, so the message is queued before the worker reads its first boundary.
+    const inFlight = runFtsRepair('rebuild', { dbPath: p, deadlineMs: 60_000, chunkRows: 1 });
+    expect(stopFtsRepair(), 'there was no repair in flight to stop').toBe(true);
+    const result = await inFlight;
+    // eslint-disable-next-line no-console
+    console.log(`I1  a cancelled repair reported ok=${result.ok} error=${String(result.error).slice(0, 48)}`);
+    expect(result.ok, 'a cancelled repair must not report success').toBe(false);
+    // ⚠ IT STOPPED AT A CHUNK BOUNDARY, not by being killed — which is the mechanism I1 adds, and the
+    // thing my first cut got wrong: posting the stop and calling `terminate()` on the next line let
+    // the kill win every race, so the boundary check never ran and this read "exited without
+    // answering". The backstop kill is still there; it is just no longer the normal path.
+    expect(String(result.error), 'the repair was killed rather than asked to stop — the chunk '
+      + 'boundary check never ran').toContain('asked to stop at a chunk boundary');
+
+    // ⚠ THE CLAIM: the index is NOT half-written. It is either what it was, or fully rebuilt.
+    const after = await probeFtsHealth(runnerFor(p));
+    expect(['stale', 'healthy'], `a cancelled repair left the index ${after.state}`)
+      .toContain(after.state);
+    if (after.state === 'stale') {
+      expect(after.indexedRows, 'the rolled-back repair still changed the index').toBe(beforeCount);
+    }
+  }, 60_000);
+
+  it('stopFtsRepair reports honestly when there is nothing to stop', () => {
+    expect(stopFtsRepair()).toBe(false);
+  });
+
+  it('⚠ THE SHUTDOWN WIRE — both worker threads are stopped before the process exits', () => {
+    const boot = fs.readFileSync(new URL('../../index.ts', import.meta.url), 'utf-8');
+    const code = boot.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    const shutdownAt = code.indexOf('const shutdown = (): void => {');
+    const exitAt = code.indexOf('process.exit(0)');
+    expect(shutdownAt).toBeGreaterThan(0);
+    const body = code.slice(shutdownAt, exitAt);
+    // ⚠ BOTH, and BEFORE the exit. The reader pool's exposure is bounded by its 15 s deadline; the
+    // repair's was not bounded at all, which is why it is the one with a stop message.
+    expect(body, 'the FTS repair is not stopped on shutdown — a SIGTERM will hang on it')
+      .toMatch(/stopFtsRepair\(\)/);
+    expect(body, 'the reader pool is not terminated on shutdown')
+      .toMatch(/terminateReaderPool\(\)/);
+    expect(code).toContain("from './memory/reader-pool.js'");
   });
 });
