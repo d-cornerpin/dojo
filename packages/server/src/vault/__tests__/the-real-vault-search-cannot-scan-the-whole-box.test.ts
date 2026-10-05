@@ -548,6 +548,64 @@ describe('⚠ THE EXACT SEARCH — where a `LIMIT` bounded the answer and not th
     expect(warn!.meta.rowsScanned as number).toBeGreaterThan(0);
   }, 180_000);
 
+  it('⚠ A PURGED VAULT DOES NOT WALK DOWN TO ROWID 1 — the floor has to be TOLD', async () => {
+    // ⚠ A CLAUSE DEFECT OF MY OWN, AND IT IS THE ONE t89's C1 ROUND RECORDED ABOUT ITSELF. The grown
+    // fixture above starts at rowid 1, so `floorRowid` and the old `ceiling <= 0` stop in the same
+    // place and a mutant that DELETES the floor passes every clause. A real vault does not start at
+    // rowid 1: entries are deleted (`deleteEntry`, the Dreamer's pruning), and SQLite does not reuse
+    // the keys — so `MIN(rowid)` on a lived-in vault is a large number and everything below it is a
+    // stretch of keys holding nothing at all.
+    //
+    // This fixture is that vault: a hundred entries at rowids 900,001-900,100 and nothing beneath
+    // them. Told its floor, the walk asks for ONE chunk. Not told, it steps 20,000 keys at a time
+    // from 900,100 to zero — forty-six chunks of two indexed reads each, every one of them certain
+    // in advance to find nothing.
+    const p = path.join(dbDir, 'purged.db');
+    for (const suffix of ['', '-wal', '-shm']) fs.rmSync(`${p}${suffix}`, { force: true });
+    const db = new Database(p);
+    db.pragma('journal_mode = WAL');
+    db.exec(`CREATE TABLE vault_entries (
+      id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'fact',
+      content TEXT NOT NULL, is_obsolete INTEGER DEFAULT 0, embedding BLOB, namespace TEXT,
+      created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+    )`);
+    const ins = db.prepare(
+      `INSERT INTO vault_entries (rowid, id, agent_id, content) VALUES (?, ?, 'agent-purged', ?)`);
+    db.transaction(() => {
+      for (let i = 1; i <= 100; i += 1) ins.run(900_000 + i, `p-${i}`, `a fictional surviving fact ${i}`);
+    })();
+    writeDb = db;
+    writePath = p;
+    try {
+      // ⚠ THE SYNCHRONOUS DOOR, DELIBERATELY, because the instrument is a COUNT of reads on THIS
+      // connection and a pooled read is invisible to it by design. Both doors take their floor from
+      // the same `vaultRowidSpan`, so the property is one property; and the sync door is the one the
+      // three call sites outside this lane's fence still use, which makes it the more valuable half
+      // to pin. One chunk = one cost read.
+      onThreadReads = [];
+      const rows = vaultLikeScanSync<{ id: string }>({
+        scope: ['is_obsolete = 0'], scopeParams: [],
+        match: ['content LIKE ?'], matchParams: ['%nothing-here-matches-this%'],
+        limit: 5,
+      });
+      expect(rows).toHaveLength(0);
+      const costReads = onThreadReads.filter((q) => q.includes('COUNT(*) AS n, COALESCE'));
+      expect(costReads.length, 'the walk stepped past the oldest row that exists').toBe(1);
+      // And the span is read as TWO single-aggregate statements, never one combined `MIN(x), MAX(x)`
+      // — the form that silently loses SQLite's min/max optimisation and prints the identical plan,
+      // so no EXPLAIN clause could catch it (t89 measured 23.457 ms against 0.015 ms).
+      expect(onThreadReads.filter((q) => q.includes('MAX(rowid)'))).toHaveLength(1);
+      expect(onThreadReads.filter((q) => q.includes('MIN(rowid)'))).toHaveLength(1);
+      expect(onThreadReads.filter((q) => /MIN\(rowid\)[\s\S]*MAX\(rowid\)|MAX\(rowid\)[\s\S]*MIN\(rowid\)/.test(q)),
+        'the span was read as one combined aggregate — the form that loses the optimisation').toEqual([]);
+    } finally {
+      writeDb = null;
+      writePath = null;
+      db.close();
+      for (const suffix of ['', '-wal', '-shm']) fs.rmSync(`${p}${suffix}`, { force: true });
+    }
+  }, 180_000);
+
   it('the synchronous door is bounded too — the three call sites outside this fence still get it', () => {
     const rows = vaultLikeScanSync<{ id: string }>({
       scope: ['is_obsolete = 0'], scopeParams: [],
@@ -614,7 +672,13 @@ describe('⚠ THE CAP IS LOUD WHEN IT BITES, and it names the old fact it may ha
     // numbers below are that arithmetic, and the mutant that drops `windowFloor` from the chunk's
     // floor walks on past them to the bottom of the table.
     await warmReaderPool();
-    const cap = 10_000;
+    // ⚠ THE CAP IS DELIBERATELY NOT A WHOLE NUMBER OF CHUNKS, and that is the second half of this
+    // clause's own history. Once the walk is TOLD its floor (t89's C1 — `floorRowid`), the loop stops
+    // at `ceiling <= floor` and never asks for a chunk below the window; so with a cap that divides
+    // evenly the per-chunk clamp becomes unreachable and a mutant deleting it is invisible again. At
+    // 9,000 over chunks of 2,000 the window edge falls MID-CHUNK, which is the only case the clamp
+    // exists for and therefore the only case that can prove it.
+    const cap = 9_000;
     const chunk = 2_000;
     const scan = await scanVaultCandidates({
       label: 'vault_semantic', queryEmbedding: queryVector(),
@@ -622,12 +686,14 @@ describe('⚠ THE CAP IS LOUD WHEN IT BITES, and it names the old fact it may ha
       candidateRows: cap, chunkRows: chunk, agentId: AGENTS[0],
     });
     expect(scan.windowFloor).toBe(ROWS - cap);
-    // Five productive chunks plus the one that LOOKS at the window edge and finds nothing in scope —
-    // that empty chunk is how the walk learns it is done, and counting it is counting the mechanism.
-    expect(scan.report.chunks, 'the walk went past the window edge').toBe(cap / chunk + 1);
+    // Five chunks: four full, and a fifth clamped to the window edge. The walk then stops on the
+    // FLOOR rather than on an empty chunk, which is what C1 bought.
+    expect(scan.report.chunks, 'the walk went past the window edge').toBe(Math.ceil(cap / chunk));
     expect(scan.scored.length, 'the walk scored more than the window could hold')
       .toBe(cap / AGENTS.length);
     expect(scan.report.stoppedBecause, 'the window edge must END the walk, not a budget').toBe('exhausted');
+    // ⚠ THE ASSERTION THE CLAMP OWNS: nothing older than the window was scored. Delete the clamp and
+    // the fifth chunk reads a thousand rowids BELOW the floor, and this is where it shows.
     expect(scan.oldestRidConsidered, 'the walk looked older than the window allowed')
       .toBeGreaterThan(ROWS - cap);
     expect(scan.truncated).toBe(true);

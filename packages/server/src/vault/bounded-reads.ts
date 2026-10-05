@@ -245,12 +245,18 @@ export async function scanVaultCandidates(opts: {
 }): Promise<VaultCandidateScan> {
   const db = getDb();
   const cap = opts.candidateRows ?? VAULT_CANDIDATE_ROWS;
-  // One indexed seek against the integer primary key: the window costs O(log n) to compute, which is
-  // why a recency window is affordable at all. Left on this thread deliberately — a round trip to
-  // the pool would cost more than the read.
+  // ⚠ TWO SINGLE-AGGREGATE STATEMENTS, NEVER A COMBINED `MIN(x), MAX(x)`, and the reason is measured
+  // rather than stylistic (t89 fix round 1, I5): SQLite's min/max optimisation reads ONE aggregate
+  // off the end of a b-tree and does not apply to two in one statement — the combined form walks
+  // every index entry the WHERE matches, 23.457 ms against 0.015 ms on a 240,000-row fixture, AND
+  // ALL THREE PRINT THE IDENTICAL PLAN, so an `EXPLAIN QUERY PLAN` clause cannot tell them apart.
+  // Both ends are the table's GLOBAL span against the integer primary key, so each is O(log n) and
+  // needs no index; the caller's scope stays in the chunk SQL, which leaves the ROWS unchanged.
   const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM vault_entries').get() as
     { r: number | null } | undefined)?.r ?? 0;
-  const windowFloor = vaultCandidateFloor(maxRid, cap);
+  const minRid = Math.max(0, ((db.prepare('SELECT MIN(rowid) AS r FROM vault_entries')
+    .get() as { r: number | null } | undefined)?.r ?? 1) - 1);
+  const windowFloor = Math.max(vaultCandidateFloor(maxRid, cap), minRid);
 
   // ⚠ `rowid AS rid`, ALIASED. `vault_entries.id` is a TEXT primary key so insertion order lives in
   // the implicit rowid, and an unaliased `rowid` projection is the shape that can come back under
@@ -267,19 +273,27 @@ export async function scanVaultCandidates(opts: {
   const scan = await boundedRecencyScan<ScoredVaultCandidate>({
     limit: cap,
     startRowidCeiling: maxRid,
+    // ⚠ THE CAP'S APPLICATION, AND IT IS A FIRST-CLASS ARGUMENT RATHER THAN AN EMERGENT PROPERTY.
+    // `boundedRecencyScan` used to stop on a chunk that examined zero rows, and that inference was
+    // C1 — a stretch of keys owned entirely by other agents examines none of THIS scope's rows and
+    // says nothing whatever about whether older rows of its own exist. The break is deleted, so the
+    // walk is TOLD where it may stop, and for this scan that key is the candidate window's floor.
+    floorRowid: windowFloor,
     chunkRows: opts.chunkRows ?? VAULT_CANDIDATE_CHUNK_ROWS,
-    // The floor already holds the walk to `cap / chunkRows` chunks, so these two are agreeing belts
-    // rather than three policies: the row ceiling cannot bite before the floor does unless a future
-    // caller drops `embedding IS NOT NULL` from its conditions, and the byte ceiling guards width.
+    // Agreeing belts rather than three policies: the floor holds the walk to `cap / chunkRows`
+    // chunks, so the row ceiling cannot bite before it does unless a future caller drops
+    // `embedding IS NOT NULL` from its conditions, and the byte ceiling guards embedding WIDTH.
     maxRows: cap,
     maxBytes: VAULT_CANDIDATE_MAX_BYTES,
     // One turn of the loop per chunk. This is what turns "0 % of ticks serviced" into "62 %".
     breathe: () => new Promise<void>((resolve) => { setImmediate(resolve); }),
     fetchChunk: async (ceiling, chunkRows) => {
+      // ⚠ CLAMPED TO THE WINDOW, which matters only for the LAST chunk and matters there completely:
+      // the loop stops when `ceiling <= floorRowid`, so the final chunk is reached with a ceiling
+      // still above the floor, and without this clamp its lower bound would reach BELOW the window
+      // and score entries the cap excluded. (No empty-chunk guard here any more — the floor owns
+      // that question now, and one mechanism is the point of C1.)
       const chunkFloor = Math.max(windowFloor, ceiling - chunkRows);
-      // At the window's edge there is nothing older in scope: an empty examined count ends the walk
-      // rather than letting it step past the floor.
-      if (ceiling <= chunkFloor) return { rows: [], rowsExamined: 0, bytesRead: 0 };
       const page = await vaultRead<VaultCandidateRow>(
         `${opts.label}:candidates`, pageSql, [...opts.params, ceiling, chunkFloor],
         () => pageStmt.all(...opts.params, ceiling, chunkFloor) as VaultCandidateRow[],
@@ -392,6 +406,30 @@ function vaultLikeSql(q: VaultLikeScanQuery): { page: string; cost: string } {
 
 interface CostRow { n: number; bytes: number }
 
+/**
+ * The table's GLOBAL rowid span — where the walk starts and the key below which it has nothing.
+ *
+ * ⚠ GLOBAL, NOT SCOPED, and that is the cheaper AND the more honest choice. `vault_entries` has no
+ * index that covers an arbitrary listing scope (type, tags, namespace, an agent IN-list), so a
+ * scoped `MIN`/`MAX` would be a reverse table walk — the exact cost I5 measured at 50 ms on a
+ * 40,000-row table. Against the integer primary key both ends are O(log n) and need no index at all,
+ * and the scope stays in the chunk SQL so the ROWS the walk returns are unchanged. The price is
+ * stated: a narrowly-scoped listing walks every chunk between the TABLE's ends rather than its own,
+ * which is bounded by construction and is two indexed reads per empty chunk.
+ *
+ * ⚠ AND NEVER AS ONE `SELECT MIN(rowid), MAX(rowid)` — see `scanVaultCandidates` for the
+ * measurement. The combined form silently loses SQLite's min/max optimisation and prints the same
+ * plan, so no `EXPLAIN` clause can catch it.
+ */
+function vaultRowidSpan(db: ReturnType<typeof getDb>): { maxRid: number; minRid: number } {
+  const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM vault_entries').get() as
+    { r: number | null } | undefined)?.r ?? 0;
+  // Exclusive: the walk stops at `ceiling <= floorRowid`, so the floor sits one BELOW the oldest row.
+  const minRid = Math.max(0, ((db.prepare('SELECT MIN(rowid) AS r FROM vault_entries')
+    .get() as { r: number | null } | undefined)?.r ?? 1) - 1);
+  return { maxRid, minRid };
+}
+
 function reportVaultLikeScan(report: BoundedScanReport): void {
   if (report.truncated || report.chunks > 1) {
     logBoundedFallback('vault_exact:like', 'a leading-wildcard LIKE cannot use an index', report);
@@ -414,13 +452,13 @@ export function vaultLikeScanSync<T>(q: VaultLikeScanQuery): T[] {
   const pageStmt = db.prepare(page);
   const costStmt = db.prepare(cost);
   const pageParams = [...q.scopeParams, ...q.matchParams];
-  const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM vault_entries').get() as
-    { r: number | null } | undefined)?.r ?? 0;
+  const { maxRid, minRid } = vaultRowidSpan(db);
   const scan = boundedRecencyScanSync<T>({
     limit: q.limit,
     startRowidCeiling: maxRid,
+    floorRowid: minRid,
     fetchChunk: (ceiling, chunkRows) => {
-      const floor = Math.max(0, ceiling - chunkRows);
+      const floor = Math.max(minRid, ceiling - chunkRows);
       const c = costStmt.get(...q.scopeParams, ceiling, floor) as CostRow;
       const rows = pageStmt.all(...pageParams, ceiling, floor, q.limit) as T[];
       return { rows, rowsExamined: c.n, bytesRead: c.bytes };
@@ -437,14 +475,14 @@ export async function vaultLikeScan<T>(q: VaultLikeScanQuery, signal?: AbortSign
   const pageStmt = db.prepare(page);
   const costStmt = db.prepare(cost);
   const pageParams = [...q.scopeParams, ...q.matchParams];
-  const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM vault_entries').get() as
-    { r: number | null } | undefined)?.r ?? 0;
+  const { maxRid, minRid } = vaultRowidSpan(db);
   const scan = await boundedRecencyScan<T>({
     limit: q.limit,
     startRowidCeiling: maxRid,
+    floorRowid: minRid,
     breathe: () => new Promise<void>((resolve) => { setImmediate(resolve); }),
     fetchChunk: async (ceiling, chunkRows) => {
-      const floor = Math.max(0, ceiling - chunkRows);
+      const floor = Math.max(minRid, ceiling - chunkRows);
       const c = (await vaultRead<CostRow>(
         'vault_exact:like:cost', cost, [...q.scopeParams, ceiling, floor],
         () => [costStmt.get(...q.scopeParams, ceiling, floor) as CostRow], signal,
