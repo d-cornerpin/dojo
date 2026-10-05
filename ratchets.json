@@ -6147,6 +6147,13 @@
       "to": 2725,
       "by": "t94 - the fresh tail's front becomes the compaction boundary, and the token trim drops whole blocks",
       "why": "2692 -> 2725 (+33 net: +59 / -26, and 32 of the 59 added lines are comment). THE LANE'S WHOLE PRODUCT CHANGE IS TWO EXPRESSIONS IN THIS FILE, and the policy itself is a NEW module (`memory/tail-horizon.ts`, 333 lines, under the 400 cap, pinned by nothing because it does not need to be) precisely so this ceiling did not have to move further. (1) The tail READ at the old `:1377` was `getRecentMessages(agentId, policy.freshTailCount, turnCutoff)` - the newest N rows, a ROW cap, i.e. a SCROLLING WINDOW that front-trimmed two rows every turn at any utilisation, for ever, re-prefilling the whole conversation behind the new row 0 on a positional cache (the owner's capture: ~55K tokens = ~270s per turn; this lane's instrument: 8,856 of 8,908 bytes re-billed on 15 consecutive turns with the token budget nowhere near binding). It is now a horizon read plus a seq filter: four code lines, and the ten comment lines are the measurement and the pointer to the module, because a worker who reads only `freshTailHorizon(agentId, policy)` without that history is one step from putting the row cap back. (2) `budgetFreshTail`'s backwards fill-what-fits loop is REPLACED (not added beside) by a block-quantised front drop - the deletion side of the +59/-26. Its own comment states why the minimum drop is the most expensive possible cadence on local hardware, which is the counter-intuitive half of the whole fix. ALSO IN THE +33: `buildContentLanes` takes the window's row cap so the token block is derived per ladder rung rather than read from a constant, and `budgetFreshTail` takes that block - threading over a module-level constant, deliberately, so one rung's tail cannot be cut on another rung's quantum. REFUSED: putting the policy inline here (it would be +250 and this file is already the largest in the subsystem). REFUSED: trimming the comments to the four code lines - this file's history IS its defect record and `the-prefix-holds-still`/`the-tail-holds-still` both point into it. No prompt bytes move for an unpressured agent: both new decisions are provably the identity below the row cap and inside the token grant, claused in `__tests__/the-tail-trims-only-at-a-boundary` S4. From 2725 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/tail-horizon.ts",
+      "from": 0,
+      "to": 333,
+      "by": "t94 - the fresh tail's horizon (NEW ENTRY, pinned at its current size)",
+      "why": "NEW ENTRY at 333 (122 code, 190 comment, 21 blank). The growth detector asked for this file to be pinned or split rather than drifting toward the 400-line cap unargued, so: 122 lines of code decide TWO numbers and one anchor - where the live conversation starts (the newest row a summary already covers), and how many whole groups a token trim drops off the front. SPLITTING WAS CONSIDERED AND REFUSED: the two halves are not independent. The ceiling steps HALF the ceiling and the token trim never drops more than HALF the groups it is given, and those two halves are THE SAME HALF - together they are what makes the composite front monotone, which was proven by the mutant that broke it (step = one row cap; measured: the tail grew BACK at the front, three discontinuities per twenty turns instead of one). Two files would put that proof in neither of them. The 190 comment lines are the owner's full capture, the measurement that overturned the brief's own lead (the trimmer was the ROW cap and not the token budget: 8,856 of 8,908 bytes re-billed per turn with the budget nowhere near binding), the derivation of each constant against the thing it protects (compaction's 30-row gap threshold for the ceiling; the half-bound for the block), and the monotonicity argument above - i.e. everything a later worker would otherwise re-tune on taste, in the one file whose whole job is to be re-read before it is changed. This file exists SO THAT `memory/assembler.ts` grew by 33 lines and not 250; it is the cheaper half of that trade. From 333 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6445,6 +6452,7 @@
     "packages/server/src/memory/embeddings.ts": 319,
     "packages/server/src/memory/compaction-brakes.ts": 351,
     "packages/server/src/providers/billing-breaker.ts": 316,
-    "packages/server/src/memory/condense-until-fits.ts": 427
+    "packages/server/src/memory/condense-until-fits.ts": 427,
+    "packages/server/src/memory/tail-horizon.ts": 333
   }
 }
