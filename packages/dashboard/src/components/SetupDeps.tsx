@@ -1,6 +1,7 @@
 import { fullDiskAccessInstructions, FULL_DISK_ACCESS_VERIFY } from '@dojo/shared';
 import { useState, useEffect, useCallback } from 'react';
 import { request } from '../lib/api';
+import { automationInstructions, AUTOMATION_VERIFY } from '../lib/automation-permission';
 
 // ════════════════════════════════════════
 // Dependencies & Local Models — OOBE Step
@@ -593,7 +594,7 @@ export const SetupPermissions = () => {
       apiKey: 'automation',
       label: 'Automation (AppleScript)',
       description: 'Allows iMessage sending and system automation',
-      hint: 'This permission is granted automatically the first time DOJO tries to send an iMessage. If you see a macOS popup asking to allow automation, click "OK". You can also find it in System Settings → Privacy & Security → Automation → node.',
+      hint: `${automationInstructions(permissions.serverExecPath)} ${AUTOMATION_VERIFY}`,
     },
   ];
 
