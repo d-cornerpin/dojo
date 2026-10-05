@@ -10,6 +10,10 @@ import { createLogger } from '../logger.js';
 import { generateEmbedding, isEmbeddingBackendUnavailable, warnEmbeddingBackendAbsentOnce } from '../memory/embeddings.js';
 import { estimateTokens } from '../memory/budget.js';
 import { getHouseholdAgentIds, isPMAgent, isHealerAgent } from '../config/platform.js';
+import {
+  scanVaultCandidates, fetchVaultRowsByIds, vaultLikeScan, vaultLikeScanSync,
+  byBestSimilarity, type VaultLikeScanQuery,
+} from './bounded-reads.js';
 
 const logger = createLogger('vault-store');
 
@@ -308,18 +312,11 @@ export function formatCitationSuffix(citation: string | null | undefined): strin
 }
 
 // ── Cosine Similarity ──
-
-function cosineSimilarity(a: Float32Array, b: Float32Array): number {
-  if (a.length !== b.length) return 0;
-  let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dot / denom;
-}
+//
+// It lives in `vault/bounded-reads.ts` now, beside the candidate scan that is its only caller: all
+// three of this file's scoring loops moved there, so a copy here would be a second spelling of one
+// formula. `memory/vector-search.ts` still carries its own over a different table — out of this
+// change's fence, and named in the report.
 
 // ── Vault Entry CRUD ──
 
@@ -481,7 +478,7 @@ export function deleteEntry(id: string): void {
   db.prepare('DELETE FROM vault_entries WHERE id = ?').run(id);
 }
 
-export function listEntries(options?: {
+export interface ListEntriesOptions {
   type?: string;
   agentId?: string;
   tag?: string;
@@ -505,10 +502,14 @@ export function listEntries(options?: {
    * Owner-facing dashboard listing keeps strict equality (omit / false).
    */
   includeOwnerScope?: boolean;
-}): VaultEntry[] {
-  const db = getDb();
+}
+
+/** The listing's WHERE, split into SCOPE and MATCH — `VaultLikeScanQuery` argues why. */
+function buildListQuery(options?: ListEntriesOptions): VaultLikeScanQuery & { search: boolean } {
   const conditions: string[] = [];
   const params: unknown[] = [];
+  const match: string[] = [];
+  const matchParams: unknown[] = [];
 
   if (!options?.includeObsolete) {
     conditions.push('is_obsolete = 0');
@@ -543,8 +544,8 @@ export function listEntries(options?: {
     conditions.push('is_permanent = 1');
   }
   if (options?.search) {
-    conditions.push('content LIKE ?');
-    params.push(`%${options.search}%`);
+    match.push('content LIKE ?');
+    matchParams.push(`%${options.search}%`);
   }
   // Namespace scoping (Phase 7): default to personal vault, opt into squad
   // namespaces explicitly. Calling listEntries without `namespace` keeps the
@@ -560,13 +561,43 @@ export function listEntries(options?: {
     conditions.push('namespace IS NULL');
   }
 
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const limit = options?.limit ?? 100;
-  params.push(limit);
+  return {
+    scope: conditions, scopeParams: params, match, matchParams,
+    limit: options?.limit ?? 100, search: match.length > 0,
+  };
+}
 
-  const rows = db.prepare(`SELECT * FROM vault_entries ${where} ORDER BY created_at DESC LIMIT ?`).all(...params) as VaultEntryRow[];
+/** The unfiltered listing: bounded by its own LIMIT, because no LIKE stands between it and its rows. */
+function listUnmatched(q: VaultLikeScanQuery): VaultEntryRow[] {
+  const db = getDb();
+  const where = q.scope.length > 0 ? `WHERE ${q.scope.join(' AND ')}` : '';
+  return db.prepare(`SELECT * FROM vault_entries ${where} ORDER BY created_at DESC LIMIT ?`)
+    .all(...q.scopeParams, q.limit) as VaultEntryRow[];
+}
+
+export function listEntries(options?: ListEntriesOptions): VaultEntry[] {
+  const q = buildListQuery(options);
+  // ⚠ THE SEARCH ARM IS THE BOUNDED ONE, AND THE OTHER ARM IS NOT A MISS. Without a `search` there
+  // is no leading-wildcard LIKE, so the `LIMIT` is a real bound on the work as well as the answer
+  // — `ORDER BY created_at DESC` still costs a scan, which is named in the report as the next read
+  // in this family and is NOT what the capture recorded.
+  const rows = q.search ? vaultLikeScanSync<VaultEntryRow>(q) : listUnmatched(q);
   return rows.map(rowToEntry);
 }
+
+/**
+ * `listEntries`, through the reader pool. `vaultLikeScanSync` argues why both doors exist; the
+ * caller wired to THIS one is `semanticSearch`'s embed-outage fallback, below.
+ */
+export async function listEntriesBounded(
+  options?: ListEntriesOptions,
+  signal?: AbortSignal,
+): Promise<VaultEntry[]> {
+  const q = buildListQuery(options);
+  const rows = q.search ? await vaultLikeScan<VaultEntryRow>(q, signal) : listUnmatched(q);
+  return rows.map(rowToEntry);
+}
+
 
 // ── Semantic Search ──
 
@@ -589,6 +620,10 @@ export async function semanticSearch(query: string, options?: {
   // the primary agent's project codename and delivered it as its own work).
   // Omit only for owner-level callers (dashboard API), never for agent recall.
   agentId?: string;
+  // t98: a stop is REAL on this path for the first time. The candidate scan runs on the reader
+  // pool, so an abort DISCARDS the in-flight read instead of waiting for a synchronous scan that
+  // could not even receive the signal. Optional, so no caller had to change.
+  signal?: AbortSignal;
 }): Promise<Array<VaultEntry & { similarity: number }>> {
   const limit = options?.limit ?? 10;
   const minSim = options?.minSimilarity ?? 0.3;
@@ -603,13 +638,18 @@ export async function semanticSearch(query: string, options?: {
       const m = err instanceof Error ? err.message : String(err);
       if (isEmbeddingBackendUnavailable(err)) warnEmbeddingBackendAbsentOnce({ error: m, site: 'vault.semanticSearch' });
       else logger.warn('Failed to generate query embedding, falling back to text search', { error: m });
-      // Fallback to text search (same agent + owner scoping as the semantic path)
-      const entries = listEntries({ search: query, limit, agentId: options?.agentId, includeOwnerScope: true });
+      // Fallback to text search (same agent + owner scoping as the semantic path).
+      // ⚠ THROUGH THE POOLED DOOR. This arm runs on EVERY vault_search while the embedding backend
+      // is down, so it is not a rare path — it is the exact-search SQL, on the serving thread, for
+      // the duration of an outage. `listEntriesBounded` is the same query, bounded and off-thread.
+      const entries = await listEntriesBounded(
+        { search: query, limit, agentId: options?.agentId, includeOwnerScope: true },
+        options?.signal,
+      );
       return entries.map(e => ({ ...e, similarity: 0.5 }));
     }
   }
 
-  const db = getDb();
   const conditions = ['is_obsolete = 0', 'embedding IS NOT NULL'];
   const params: unknown[] = [];
 
@@ -624,32 +664,45 @@ export async function semanticSearch(query: string, options?: {
     // D-A: household recall scope. Members recall every member + the Dreamer +
     // the owner; non-members resolve to [self, OWNER], byte-identical rows to the
     // prior two-id OR (see resolveRecallScope). The embed-fail fallback above
-    // routes through listEntries(includeOwnerScope), which applies the same scope.
+    // routes through listEntriesBounded(includeOwnerScope), which applies the same scope.
     const scope = resolveRecallScope(options.agentId);
     conditions.push(`agent_id IN (${scope.map(() => '?').join(', ')})`);
     params.push(...scope);
   }
 
-  const where = conditions.join(' AND ');
-  const rows = db.prepare(`SELECT * FROM vault_entries WHERE ${where}`).all(...params) as VaultEntryRow[];
+  // ⚠ THE SITE THE CAPTURE RECORDED: `SELECT * FROM vault_entries WHERE …`, NO LIMIT AT ALL, every
+  // matching row's 3 KB embedding scored in JavaScript in one synchronous call on the serving
+  // thread. `bounded-reads.ts`'s header carries the measurement; the bodies are fetched below, for
+  // the handful of entries that actually won.
+  const scan = await scanVaultCandidates({
+    label: 'vault_semantic',
+    queryEmbedding, conditions, params,
+    agentId: options?.agentId, signal: options?.signal,
+  });
 
+  // ⚠ SAME ANSWER AS THE UNBOUNDED SORT, TIE-BREAK INCLUDED — see `byBestSimilarity`. The pre-fix
+  // code sorted a stable array built in rowid order, so an equal-similarity tie went to the older
+  // entry; spelling that out keeps the result independent of the walk's direction.
+  const winners = scan.scored
+    .filter((c) => c.similarity >= minSim)
+    .sort(byBestSimilarity)
+    .slice(0, limit);
+  if (winners.length === 0) return [];
+
+  const rows = await fetchVaultRowsByIds<VaultEntryRow>({
+    label: 'vault_semantic', ids: winners.map((w) => w.id), signal: options?.signal,
+  });
+  const byId = new Map(rows.map((r) => [r.id, r]));
   const scored: Array<VaultEntry & { similarity: number }> = [];
-
-  for (const row of rows) {
-    if (!row.embedding) continue;
-    const emb = new Float32Array(
-      row.embedding.buffer,
-      row.embedding.byteOffset,
-      row.embedding.length / 4,
-    );
-    const sim = cosineSimilarity(queryEmbedding, emb);
-    if (sim >= minSim) {
-      scored.push({ ...rowToEntry(row), similarity: sim });
-    }
+  for (const w of winners) {
+    const row = byId.get(w.id);
+    // An entry deleted between the candidate pass and the body fetch is simply not a result. The
+    // unbounded read could not see this window because it held the bodies already; dropping the row
+    // is the only honest answer, and it is the same answer the caller would have got a tick earlier.
+    if (!row) continue;
+    scored.push({ ...rowToEntry(row), similarity: w.similarity });
   }
-
-  scored.sort((a, b) => b.similarity - a.similarity);
-  return scored.slice(0, limit);
+  return scored;
 }
 
 // D17: some vault entries carry a NULL embedding (a pre-C12 Ollama 500-and-drop
@@ -686,31 +739,36 @@ async function findSemanticDuplicate(
   threshold: number,
   agentId: string,
 ): Promise<VaultEntry | null> {
-  const db = getDb();
-  const rows = db.prepare(
-    'SELECT * FROM vault_entries WHERE is_obsolete = 0 AND embedding IS NOT NULL AND agent_id = ?'
-  ).all(agentId) as VaultEntryRow[];
-
   const newEmb = new Float32Array(
     embeddingBuf.buffer,
     embeddingBuf.byteOffset,
     embeddingBuf.length / 4,
   );
 
-  for (const row of rows) {
-    if (!row.embedding) continue;
-    const existing = new Float32Array(
-      row.embedding.buffer,
-      row.embedding.byteOffset,
-      row.embedding.length / 4,
-    );
-    const sim = cosineSimilarity(newEmb, existing);
-    if (sim >= threshold) {
-      return rowToEntry(row);
-    }
-  }
+  // ⚠ THE WRITE PATH HAD THE SAME UNBOUNDED SHAPE, and it is arguably worse than the search's: every
+  // `vault_remember` paid a full scan of the author's vault, with every row's embedding, before it
+  // was allowed to save anything.
+  const scan = await scanVaultCandidates({
+    label: 'vault_dedup',
+    queryEmbedding: newEmb,
+    conditions: ['is_obsolete = 0', 'embedding IS NOT NULL', 'agent_id = ?'],
+    params: [agentId],
+    agentId,
+  });
 
-  return null;
+  // ⚠ THE OUTCOME IS THE PRE-FIX ONE, ORDER-INDEPENDENTLY. The unbounded read had no `ORDER BY`, so
+  // SQLite walked the author's index rowid-ascending and this function returned the OLDEST entry
+  // above the threshold. The bounded walk arrives newest-first, so "the first one over the line"
+  // would now mean the newest; taking the smallest rowid among the hits reproduces the old answer
+  // whichever way the rows came in. This matters: the entry returned here is the one the caller
+  // SUPERSEDES.
+  const hit = scan.scored
+    .filter((c) => c.similarity >= threshold)
+    .sort((a, b) => a.rid - b.rid)[0];
+  if (!hit) return null;
+
+  const rows = await fetchVaultRowsByIds<VaultEntryRow>({ label: 'vault_dedup', ids: [hit.id] });
+  return rows[0] ? rowToEntry(rows[0]) : null;
 }
 
 // RC-7: pre-save near-duplicate band check for the vault_remember TOOL path.
@@ -738,27 +796,25 @@ export async function findNearDuplicateEntry(
     return null; // embed outage: fail open, do not block the save
   }
 
-  const db = getDb();
-  const rows = db.prepare(
-    'SELECT * FROM vault_entries WHERE is_obsolete = 0 AND embedding IS NOT NULL AND agent_id = ?'
-  ).all(agentId) as VaultEntryRow[];
+  // The third copy of the same unbounded scan, and the second one a single `vault_remember` paid.
+  const scan = await scanVaultCandidates({
+    label: 'vault_nearband',
+    queryEmbedding: newEmb,
+    conditions: ['is_obsolete = 0', 'embedding IS NOT NULL', 'agent_id = ?'],
+    params: [agentId],
+    agentId,
+  });
 
-  let best: (VaultEntry & { similarity: number }) | null = null;
-  for (const row of rows) {
-    if (!row.embedding) continue;
-    const existing = new Float32Array(
-      row.embedding.buffer,
-      row.embedding.byteOffset,
-      row.embedding.length / 4,
-    );
-    const sim = cosineSimilarity(newEmb, existing);
-    if (sim >= high) return null; // supersede-class dup, defer to createEntry
-    if (sim >= low && (!best || sim > best.similarity)) {
-      best = { ...rowToEntry(row), similarity: sim };
-    }
-  }
+  // ⚠ BOTH RULES ARE THE PRE-FIX RULES, and both are order-independent as written. An upper-band hit
+  // ANYWHERE returned null before (the loop returned on sight, and position could not change that),
+  // and the band's best was tracked with a STRICT `>`, so an equal-similarity tie went to the entry
+  // seen first — the oldest, which is what `byBestSimilarity`'s tie-break names.
+  if (scan.scored.some((c) => c.similarity >= high)) return null; // supersede-class dup, defer to createEntry
+  const best = scan.scored.filter((c) => c.similarity >= low).sort(byBestSimilarity)[0];
+  if (!best) return null;
 
-  return best;
+  const rows = await fetchVaultRowsByIds<VaultEntryRow>({ label: 'vault_nearband', ids: [best.id] });
+  return rows[0] ? { ...rowToEntry(rows[0]), similarity: best.similarity } : null;
 }
 
 // ── Retrieval Tracking ──

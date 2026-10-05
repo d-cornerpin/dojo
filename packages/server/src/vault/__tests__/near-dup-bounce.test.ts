@@ -18,6 +18,10 @@ vi.mock('../../db/connection.js', () => ({
     if (!mockDb.current) throw new Error('test DB not initialized');
     return mockDb.current;
   },
+  // t98: the vault's reads route through the reader pool, which asks the connection module WHERE
+  // the database is. These clauses run against ':memory:', which no second connection can reach,
+  // so the pool declines itself and every read runs on this connection — the honest answer.
+  getDbPath: () => ':memory:',
 }));
 
 // Content-keyed embeddings so we can drive a controlled cosine similarity.
