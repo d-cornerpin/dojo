@@ -29,6 +29,11 @@ import path from 'node:path';
 const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-t98-vault-'));
 const dbPath = path.join(dbDir, 'fixture.db');
 let readDb: Database.Database | null = null;
+/** Set by the write-path clause only: `createEntry` needs somewhere it can actually insert. */
+let writeDb: Database.Database | null = null;
+/** …and the pool reads by PATH on its own connection, so both must move together or it reads the
+ *  wrong database and answers every query from the other fixture. */
+let writePath: string | null = null;
 
 /**
  * ⚠ EVERY READ THE SERVING CONNECTION ACTUALLY RAN, recorded by SQL.
@@ -74,11 +79,24 @@ vi.mock('../../logger.js', () => ({
   }),
 }));
 vi.mock('../../db/connection.js', () => ({
-  getDbPath: () => dbPath,
+  getDbPath: () => writePath ?? dbPath,
   getDb: () => {
-    if (!readDb) throw new Error('fixture not open');
-    return recordingDb(readDb);
+    const db = writeDb ?? readDb;
+    if (!db) throw new Error('fixture not open');
+    return recordingDb(db);
   },
+}));
+// Content-keyed embeddings, so a clause can drive an exact cosine similarity. Nothing else in this
+// file embeds anything; the grown fixture's vectors are generated directly.
+vi.mock('../../memory/embeddings.js', () => ({
+  generateEmbedding: async (text: string) => {
+    const v = new Float32Array(8);
+    if (text.includes('SAME-FACT')) { v[0] = 1; } else { v[4] = 1; }
+    return v;
+  },
+  queueEmbedding: () => { /* not exercised */ },
+  isEmbeddingBackendUnavailable: () => false,
+  warnEmbeddingBackendAbsentOnce: () => { /* not exercised */ },
 }));
 
 import {
@@ -86,6 +104,7 @@ import {
   cosineSimilarity, resetVaultReadWarnsForTest, vaultLikeScan, vaultLikeScanSync,
   VAULT_CANDIDATE_ROWS, VAULT_CANDIDATE_CHUNK_ROWS, VAULT_CANDIDATE_MAX_BYTES, VAULT_BODY_CHUNK_IDS,
 } from '../bounded-reads.js';
+import { createEntry } from '../store.js';
 import { FTS_CANDIDATE_ROWS } from '../../memory/search-bounds.js';
 import {
   readerPoolAvailable, readerPendingCount, resetReaderPoolForTest, terminateReaderPool, warmReaderPool,
@@ -388,6 +407,60 @@ describe('⚠ THE ANSWERS ARE THE PRE-FIX ANSWERS — a bound that moves results
     expect(new Set(rows.map((r) => r.id))).toEqual(new Set(expected.map((e) => e.id)));
     expect(rows.every((r) => r.content.length > 0), 'a winner came back without its body').toBe(true);
   }, 180_000);
+
+  it('⚠ BEHAVIOURALLY: a supersede destroys the OLDEST duplicate, not the newest', async () => {
+    // ⚠ A CLAUSE DEFECT OF MY OWN, AND THE MUTANT THAT FOUND IT. My first version of this check
+    // re-implemented the selection sort inside the test and asserted on that — so it was testing the
+    // test, and flipping `a.rid - b.rid` to `b.rid - a.rid` in `store.ts` left it green. The rule is
+    // only worth asserting where it BITES: `findSemanticDuplicate` hands `createEntry` the entry it
+    // then marks obsolete, so "which hit" is a destructive decision and not a ranking preference.
+    const p = path.join(dbDir, 'write.db');
+    fs.rmSync(p, { force: true });
+    const db = new Database(p);
+    db.pragma('journal_mode = WAL');
+    db.exec(`CREATE TABLE vault_entries (
+      id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, agent_name TEXT,
+      type TEXT NOT NULL DEFAULT 'fact', content TEXT NOT NULL, context TEXT,
+      confidence REAL DEFAULT 1.0, is_permanent INTEGER DEFAULT 0, tags TEXT DEFAULT '[]',
+      is_pinned INTEGER DEFAULT 0, is_obsolete INTEGER DEFAULT 0, superseded_by TEXT,
+      retrieval_count INTEGER DEFAULT 0, last_retrieved_at TEXT, source_conversation_id TEXT,
+      source TEXT DEFAULT 'extraction', embedding BLOB, namespace TEXT, citation TEXT,
+      created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+    )`);
+    writeDb = db;
+    writePath = p;
+    resetReaderPoolForTest();
+    try {
+      // Two entries, same fictional fact, IDENTICAL embeddings — so both score 1.0 against the new
+      // content and the only thing separating them is which was written first.
+      const sameEmb = Buffer.from(new Float32Array([1, 0, 0, 0, 0, 0, 0, 0]).buffer);
+      const ins = db.prepare(
+        `INSERT INTO vault_entries (id, agent_id, type, content, embedding, created_at, updated_at)
+         VALUES (?, 'agent-write', 'fact', ?, ?, '2026-01-01 00:00:00', '2026-01-01 00:00:00')`);
+      ins.run('older-entry', 'SAME-FACT the made-up tunnel provider is alpha', sameEmb);
+      ins.run('newer-entry', 'SAME-FACT the made-up tunnel provider is bravo', sameEmb);
+
+      // A correction of the same fact: >= 0.92 similar, different substance, so `createEntry`
+      // supersedes rather than skipping.
+      const created = await createEntry({
+        agentId: 'agent-write', type: 'fact',
+        content: 'SAME-FACT the made-up tunnel provider is charlie',
+      });
+
+      const row = (id: string): { is_obsolete: number; superseded_by: string | null } =>
+        db.prepare('SELECT is_obsolete, superseded_by FROM vault_entries WHERE id = ?')
+          .get(id) as { is_obsolete: number; superseded_by: string | null };
+      expect(row('older-entry').is_obsolete, 'the OLDEST duplicate must be the one superseded').toBe(1);
+      expect(row('older-entry').superseded_by).toBe(created.id);
+      expect(row('newer-entry').is_obsolete, 'a newer duplicate was destroyed instead').toBe(0);
+    } finally {
+      await terminateReaderPool();
+      writeDb = null;
+      writePath = null;
+      db.close();
+      for (const suffix of ['', '-wal', '-shm']) fs.rmSync(`${p}${suffix}`, { force: true });
+    }
+  }, 60_000);
 
   it('a tie breaks to the OLDER entry, which is the order the pre-fix reads depended on', () => {
     // ⚠ THE RULE THAT WOULD HAVE FLIPPED SILENTLY. The unbounded reads had no `ORDER BY`, so SQLite
