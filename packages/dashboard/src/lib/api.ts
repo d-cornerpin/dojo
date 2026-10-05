@@ -185,9 +185,9 @@ export const request = async <T>(
 ): Promise<ApiResponse<T>> => {
   const method = options.method?.toUpperCase() ?? 'GET';
   const raw = await throughTheDoor(`${BASE_URL}${path}`, {
+    credentials: 'same-origin', // Send cookies with requests; a caller may override
     ...options,
     headers: doorHeaders(method, options.headers as Record<string, string>, true),
-    credentials: 'same-origin', // Send cookies with requests
   });
   if (!raw.ok) return { ok: false, error: raw.error };
   if (isUnauthorized(raw.response, path)) return { ok: false, error: 'Unauthorized' };
@@ -205,9 +205,9 @@ export const requestRaw = async (
 ): Promise<RawResult> => {
   const method = options.method?.toUpperCase() ?? 'GET';
   const raw = await throughTheDoor(`${BASE_URL}${path}`, {
+    credentials: 'same-origin',
     ...options,
     headers: doorHeaders(method, options.headers as Record<string, string>, false),
-    credentials: 'same-origin',
   });
   if (!raw.ok) return raw;
   if (isUnauthorized(raw.response, path)) return { ok: false, error: 'Unauthorized' };
@@ -595,28 +595,18 @@ async function uploadFileChunked(
   agentId: string,
   file: File,
 ): Promise<{ ok: true; data: AttachmentInfo } | { ok: false; error: string }> {
-  const token = getToken();
-  const csrfToken = getCsrfToken();
-  const baseHeaders: Record<string, string> = {
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
-  };
-
   // 1. Start a session — server allocates uploadId + a .part file.
-  let startResp: Response;
-  try {
-    startResp = await fetch(`${BASE_URL}/upload/start/${agentId}`, {
-      method: 'POST',
-      headers: { ...baseHeaders, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        filename: file.name,
-        mimeType: file.type || 'application/octet-stream',
-        size: file.size,
-      }),
-    });
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : 'Failed to start chunked upload' };
-  }
+  const start = await requestRaw(`/upload/start/${agentId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      filename: file.name,
+      mimeType: file.type || 'application/octet-stream',
+      size: file.size,
+    }),
+  });
+  if (!start.ok) return { ok: false, error: start.error || 'Failed to start chunked upload' };
+  const startResp = start.response;
   const startJson = await startResp.json().catch(() => null) as { ok?: boolean; data?: { uploadId?: string }; error?: string } | null;
   if (!startResp.ok || !startJson?.ok || !startJson.data?.uploadId) {
     return { ok: false, error: startJson?.error ?? 'Failed to start chunked upload' };
@@ -633,31 +623,22 @@ async function uploadFileChunked(
     const slice = file.slice(offset, end);
     const form = new FormData();
     form.append('chunk', slice, file.name);
-    try {
-      const chunkResp = await fetch(`${BASE_URL}/upload/chunk/${agentId}/${uploadId}/${i}`, {
-        method: 'POST',
-        headers: baseHeaders,
-        body: form,
-      });
-      const chunkJson = await chunkResp.json().catch(() => null) as { ok?: boolean; error?: string } | null;
-      if (!chunkResp.ok || !chunkJson?.ok) {
-        return { ok: false, error: chunkJson?.error ?? `Chunk ${i + 1}/${totalChunks} failed` };
-      }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : `Chunk ${i + 1}/${totalChunks} failed` };
+    const sent = await requestRaw(`/upload/chunk/${agentId}/${uploadId}/${i}`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!sent.ok) return { ok: false, error: sent.error || `Chunk ${i + 1}/${totalChunks} failed` };
+    const chunkResp = sent.response;
+    const chunkJson = await chunkResp.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+    if (!chunkResp.ok || !chunkJson?.ok) {
+      return { ok: false, error: chunkJson?.error ?? `Chunk ${i + 1}/${totalChunks} failed` };
     }
   }
 
   // 3. Finalize. Server validates assembled size, renames .part → final.
-  let finishResp: Response;
-  try {
-    finishResp = await fetch(`${BASE_URL}/upload/finish/${agentId}/${uploadId}`, {
-      method: 'POST',
-      headers: baseHeaders,
-    });
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : 'Failed to finalize upload' };
-  }
+  const finish = await requestRaw(`/upload/finish/${agentId}/${uploadId}`, { method: 'POST' });
+  if (!finish.ok) return { ok: false, error: finish.error || 'Failed to finalize upload' };
+  const finishResp = finish.response;
   const finishJson = await finishResp.json().catch(() => null) as { ok?: boolean; data?: AttachmentInfo; error?: string } | null;
   if (!finishResp.ok || !finishJson?.ok || !finishJson.data) {
     return { ok: false, error: finishJson?.error ?? 'Failed to finalize upload' };
@@ -682,31 +663,15 @@ export const uploadFiles = async (agentId: string, files: File[]): Promise<ApiRe
   }
 
   if (smallFiles.length > 0) {
-    const token = getToken();
     const formData = new FormData();
     for (const file of smallFiles) {
       formData.append('files', file);
     }
-
-    try {
-      const csrfToken = getCsrfToken();
-      const response = await fetch(`${BASE_URL}/upload/${agentId}`, {
-        method: 'POST',
-        headers: {
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-          ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
-        },
-        body: formData,
-      });
-
-      const data = await response.json();
-      if (!response.ok || !data.ok) {
-        return { ok: false as const, error: data.error ?? 'Upload failed' };
-      }
-      results.push(...(data.data as AttachmentInfo[]));
-    } catch (err) {
-      return { ok: false as const, error: err instanceof Error ? err.message : 'Upload failed' };
+    const data = await requestForm<AttachmentInfo[]>(`/upload/${agentId}`, formData);
+    if (!data.ok) {
+      return { ok: false as const, error: data.error || 'Upload failed' };
     }
+    results.push(...data.data);
   }
 
   return { ok: true as const, data: results };
@@ -1209,25 +1174,13 @@ export const deleteVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine',
 export const importCustomVoice = async (
   args: { id: string; name: string; language: 'en-us' | 'en-gb'; gender: 'Male' | 'Female'; file: File },
 ): Promise<ApiResponse<CustomVoiceMeta>> => {
-  const token = getToken();
-  const headers: Record<string, string> = {};
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-  const csrf = getCsrfToken();
-  if (csrf) headers['X-CSRF-Token'] = csrf;
   const form = new FormData();
   form.append('id', args.id);
   form.append('name', args.name);
   form.append('language', args.language);
   form.append('gender', args.gender);
   form.append('file', args.file, args.file.name);
-  const res = await fetch(`${BASE_URL}/voice/custom-voices`, {
-    method: 'POST',
-    credentials: 'include',
-    headers,
-    body: form,
-  });
-  const body = await res.json().catch(() => ({ ok: false, error: `parse failed: ${res.status}` }));
-  return body as ApiResponse<CustomVoiceMeta>;
+  return requestForm<CustomVoiceMeta>('/voice/custom-voices', form, { credentials: 'include' });
 };
 
 export const deleteCustomVoice = async (id: string): Promise<ApiResponse<{ id: string; deleted: boolean }>> => {
@@ -1236,17 +1189,14 @@ export const deleteCustomVoice = async (id: string): Promise<ApiResponse<{ id: s
 
 /** Fetch a synthesized preview clip as a Blob (audio/wav) for inline <audio> playback. */
 export const fetchVoicePreview = async (voice: string, speed = 1, text?: string): Promise<Blob> => {
-  const token = getToken();
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-  const csrf = getCsrfToken();
-  if (csrf) headers['X-CSRF-Token'] = csrf;
-  const res = await fetch(`${BASE_URL}/voice/preview`, {
+  const sent = await requestRaw('/voice/preview', {
     method: 'POST',
     credentials: 'include',
-    headers,
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ voice, speed, text }),
   });
+  if (!sent.ok) throw new Error(`preview failed: ${sent.error}`);
+  const res = sent.response;
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(`preview failed: ${res.status} ${body}`);
@@ -1293,15 +1243,10 @@ export const fetchCloudVoicePreview = async (args: {
   speed?: number;
   text?: string;
 }): Promise<Blob> => {
-  const token = getToken();
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-  const csrf = getCsrfToken();
-  if (csrf) headers['X-CSRF-Token'] = csrf;
-  const res = await fetch(`${BASE_URL}/voice/preview`, {
+  const sent = await requestRaw('/voice/preview', {
     method: 'POST',
     credentials: 'include',
-    headers,
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       engine: 'cloud',
       voice: args.voice,
@@ -1311,6 +1256,8 @@ export const fetchCloudVoicePreview = async (args: {
       text: args.text,
     }),
   });
+  if (!sent.ok) throw new Error(`cloud preview failed: ${sent.error}`);
+  const res = sent.response;
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(`cloud preview failed: ${res.status} ${body}`);
