@@ -6154,6 +6154,13 @@
       "to": 333,
       "by": "t94 - the fresh tail's horizon (NEW ENTRY, pinned at its current size)",
       "why": "NEW ENTRY at 333 (122 code, 190 comment, 21 blank). The growth detector asked for this file to be pinned or split rather than drifting toward the 400-line cap unargued, so: 122 lines of code decide TWO numbers and one anchor - where the live conversation starts (the newest row a summary already covers), and how many whole groups a token trim drops off the front. SPLITTING WAS CONSIDERED AND REFUSED: the two halves are not independent. The ceiling steps HALF the ceiling and the token trim never drops more than HALF the groups it is given, and those two halves are THE SAME HALF - together they are what makes the composite front monotone, which was proven by the mutant that broke it (step = one row cap; measured: the tail grew BACK at the front, three discontinuities per twenty turns instead of one). Two files would put that proof in neither of them. The 190 comment lines are the owner's full capture, the measurement that overturned the brief's own lead (the trimmer was the ROW cap and not the token budget: 8,856 of 8,908 bytes re-billed per turn with the budget nowhere near binding), the derivation of each constant against the thing it protects (compaction's 30-row gap threshold for the ceiling; the half-bound for the block), and the monotonicity argument above - i.e. everything a later worker would otherwise re-tune on taste, in the one file whose whole job is to be re-read before it is changed. This file exists SO THAT `memory/assembler.ts` grew by 33 lines and not 250; it is the cheaper half of that trade. From 333 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2725,
+      "to": 2733,
+      "by": "t94 - the horizon's ceiling trim reaches FA-M1's `freshTailDropped`",
+      "why": "2725 -> 2733 (+8: 2 code, 6 comment). THE NUMBER A PERSON READS WAS ZERO FOR THE DOMINANT TRIM. `freshTailDropped` feeds `agent/v2/steps/assemble/index.ts`, which logs a warn and broadcasts ONE CONTEXT_HIGH toast per turn naming it (\"set aside its N oldest recent messages\"). Pre-t94 the row window dropped two rows off the front EVERY TURN and `freshTailDropped` stayed 0, because it only ever counted `budgetFreshTail`'s token evictions - so the trim that cost the owner ~270s a turn was invisible to the receipt and to the dashboard alike, and the only number either surface ever showed came from the rarer trimmer. The 2 code lines are a declaration and an assignment carrying the horizon's `skippedRows` out to that count; the 6 comment lines are the sentence above, written at the declaration because the field's own doc two hundred lines up says \"how many fresh-tail messages budgetFreshTail dropped\" and a reader who trusts that will not know why a second term is being added. This is the LOUD half of the lane's own 'large, rare and loud' and the brief's trap note asked for it by name. No wording change to the toast and none needed: it says 40 once every twenty turns where it said nothing at all. From 2733 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6350,7 +6357,7 @@
     "packages/server/src/healer/healer-agent.ts": 1186,
     "packages/server/src/healer/injury-recovery.ts": 1155,
     "packages/server/src/index.ts": 1280,
-    "packages/server/src/memory/assembler.ts": 2725,
+    "packages/server/src/memory/assembler.ts": 2733,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
     "packages/server/src/memory/budget.ts": 573,
