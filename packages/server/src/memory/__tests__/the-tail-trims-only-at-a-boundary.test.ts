@@ -522,3 +522,114 @@ describe('t94 §5 — the trim quanta', () => {
     expect(groupsToDropForBudget([50_000], 1_000, block)).toBe(0);
   });
 });
+
+// ── §6 D2 — WHICH NUMBER THE TRIMMER ENFORCES, WITH ITS UNIT ────────────────────────────
+//
+// The owner's capture asked it: the model advertises 131K, the runs sit at ~80K, and the
+// budget may be inherited from a smaller cloud model. The answer is that the number which
+// trimmed him WAS NOT A TOKEN BUDGET AT ALL.
+//
+//   the TOKEN budget     `contextWindowPolicy(cw, measured).assemblyBudgetTokens`
+//                        = floor(0.96 × cw) − (measured tool payload + min(4096, max output))
+//                        cw is `models.context_window` (`agent/model.ts` `getContextWindow`
+//                        → `getModelInfo`: `row.context_window ?? 200000`). For a declared
+//                        131,072 window with the primary's measured 17,502-token tools array:
+//                        125,829 − 21,598 = 104,231 TOKENS at the canonical 4 chars/token.
+//                        His prompts sat at ~80K. THIS NEVER BOUND.
+//   the ROW budget       `getFreshTailCount(131072)` = 64 ROWS. A hardcoded ladder, not a
+//                        function of the window's tokens. 64 rows of a tool-using turn at the
+//                        ~860 tokens/row his capture implies is ~55K tokens — which is the
+//                        re-prefill figure in his own diagnostic, to the order.
+//
+// So the inherited-from-a-smaller-model suspicion was right about the SHAPE and one noun off
+// about the number: the ladder rung is the inherited constant, and it is a row count.
+
+describe('t94 §6 — the budget, named, with its unit', () => {
+  it('the token budget on a declared 131K window is ~104K tokens and never bound at 80K', () => {
+    const policy = contextWindowPolicy(131_072, { toolPayloadTokens: 17_502, maxOutputTokens: 4096 });
+    expect(policy.assemblyBudgetTokens).toBe(Math.floor(0.96 * 131_072) - (17_502 + 4_096));
+    expect(policy.assemblyBudgetTokens).toBe(104_231);
+    expect(policy.assemblyBudgetTokens).toBeGreaterThan(80_000);
+  });
+
+  it('the ROW budget on the same window is 64 rows, and it is a ladder rung', () => {
+    expect(getFreshTailCount(131_072)).toBe(64);
+    // Not derived from the window's tokens: double the window and the rung moves by 16 rows.
+    expect([getFreshTailCount(8_000), getFreshTailCount(32_000),
+            getFreshTailCount(128_000), getFreshTailCount(200_000)]).toEqual([24, 40, 64, 80]);
+  });
+
+  it('a NULL context_window still inherits 200,000 — a cloud number on a local box', () => {
+    // `getModelInfo` is `row.context_window ?? 200000`, and `agent/model.ts` is another lane's
+    // file. Recorded here as the reading, not changed: a local row with no declared window is
+    // budgeted as if it were a 200K cloud model, which over-fills rather than over-trims.
+    const policy = contextWindowPolicy(200_000, { toolPayloadTokens: 17_502, maxOutputTokens: 4096 });
+    expect(policy.freshTailCount).toBe(80);
+    expect(policy.assemblyBudgetTokens).toBe(170_402);
+  });
+});
+
+// ── §7 D3 — THE SEAM WITH COMPACTION, DRIVEN RATHER THAN ASSERTED ───────────────────────
+//
+// The policy's one legitimate discontinuity is "a compaction ran". So the cadence of the
+// prefix is now the cadence of COMPACTION, and that moves the question one module over —
+// into `memory/compaction.ts`, which this lane may read and not edit.
+//
+// On the healthy path the two cadences match by construction: the routine gate fires when
+// more than `UNCOMPACTED_GAP_THRESHOLD = 30` rows sit outside the row cap, drains ONE chunk,
+// and the gap falls back under the threshold — so a compaction, and therefore a boundary
+// advance, happens roughly once per fifteen turns at two rows a turn. §1 measures exactly
+// that: one discontinuity in 47 turns.
+//
+// A BACKLOG IS THE OTHER CASE AND IT IS THE SEAM. An agent arriving with hundreds of
+// uncompacted rows (an import, or a summary writer that was down for a while — §2's own
+// ending state) has a gap that stays over the threshold for many turns, so the gate drains a
+// chunk on EVERY turn until it is clear, and every one of those turns advances the boundary.
+// This clause drives it and records the number rather than claiming one.
+describe('t94 §7 — the seam: a compaction backlog drains across consecutive turns', () => {
+  it('a 300-row backlog costs ONE discontinuity, not one per turn', async () => {
+    // The backlog arrives while the writer is down — exactly the state §2 ends in. Two turns
+    // are driven first so there is a snapshot to compare the drain against.
+    summariser.up = false;
+    for (let t = 1; t <= 148; t++) appendTurn();
+    const before = await driveRun({ turns: 2 });
+    __resetBrakesForTests();
+
+    // The writer comes back. Every turn now runs the production routine gate.
+    summariser.up = true;
+    const after = await driveRun({ turns: 25 });
+    const deltas = runDeltas([...before.slice(-1), ...after]);
+    const bad = discontinuities(deltas);
+    const compactions = deltas.filter((d) => d.note === 'compaction ran').length;
+
+    // eslint-disable-next-line no-console
+    console.log(renderTable(
+      't94 D3 — the backlog drain: a 300-row gap, writer back up, 25 turns after',
+      deltas, abridge(deltas),
+    ));
+
+    // THE MEASUREMENT. The drain happened, it rewrote the prefix, and it did so ONCE —
+    // `getLeafChunkTokens`'s chunk swallowed the whole gap in a single pass, so "the prefix
+    // moves when compaction moves" costs one turn here and not twenty-five.
+    expect(compactions).toBeGreaterThan(0);
+    // THE DRAIN COSTS AT MOST A COUPLE OF TURNS, not one per turn. The bound is a RANGE and
+    // not an equality on purpose: a compaction pass is not deterministic across wall-clock
+    // seconds here (the chunker, the archive high-water and the low-yield backoff all read
+    // real time), and two runs of this probe measured 1 and 2 discontinuities for the same
+    // 300-row backlog. What is stable, and what the clause is for, is that the rest of the
+    // run only appends.
+    expect(bad.length).toBeLessThanOrEqual(2);
+    expect(deltas.length - bad.length).toBeGreaterThanOrEqual(20);
+
+    // AND THE PART THAT MAKES THE SEAM A NON-ISSUE, which this probe found rather than
+    // assumed. After the drain the gap RE-ACCUMULATES past the threshold (measured: 49 rows
+    // by turn 25) and compaction does NOT run again — `compaction-brakes.ts`'s 15-minute
+    // low-yield backoff is holding it off, correctly, because there is little left to win.
+    // Pre-t94 those twenty-four turns each front-trimmed two rows while compaction was
+    // backed off: the trimmer and the compactor disagreed about whether the conversation was
+    // under pressure, and the trimmer won every turn. Now the tail simply GROWS through the
+    // backoff, append-only, until compaction is ready — which is the whole point of the lane.
+    expect(getUncompactedGapCount(AGENT, windowNow.value)).toBeGreaterThan(UNCOMPACTED_GAP_THRESHOLD);
+    expect(deltas.filter((d) => d.appendOnly).length).toBe(deltas.length - bad.length);
+  }, 300_000);
+});
