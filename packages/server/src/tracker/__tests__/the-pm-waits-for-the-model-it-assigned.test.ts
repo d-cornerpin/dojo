@@ -57,6 +57,7 @@ import {
   patienceFloorFor, flooredThresholds, recordReassignment, PATIENCE_ENTRY,
 } from '../assignee-patience.js';
 import { STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS } from '../../agent/stream-patience.js';
+import { currentRung } from '../../work/poke-ladder.js';
 import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 
 const SLOW_AGENT = 'slow-sub-agent';
@@ -359,6 +360,69 @@ describe('§2 no path from the PM to a task\'s assignee', () => {
     expect(taskRow('t-once').agent_id, 'and the task stays with its assignee either way')
       .toBe(SLOW_AGENT);
   });
+
+  /**
+   * ⚠ FIX ROUND 1, RULING R9 — THE OTHER HALF OF THE CLAUSE ABOVE, AND THE HALF THAT WAS MISSING.
+   *
+   * The clause above proves the top rung does not fire on the NEXT SWEEP. Read alone it was also
+   * satisfied by `lastPokeNumber < 4`, which made rung 4 the ladder's last word for the whole
+   * cycle: an assignee that was slow but ALIVE and stalled AFTER its fourth poke was never poked
+   * again, and the reaper only reaches DEAD processes. So "keep the agent working" — the entire
+   * authority OR-PM-1 grants the PM — had a ceiling of four pokes.
+   *
+   * This drives exactly that stall and asserts BOTH directions, because a clause that only
+   * asserted the later poke would be satisfied by a 60-second poke loop, which is the defect in
+   * the opposite direction and the reason the rung is recorded at all:
+   *   NOT BEFORE — half an interval after the recorded rung-4 poke, nothing new.
+   *   AFTER      — a full `autoReset` interval later, one more re-drive, at the ASSIGNEE.
+   *
+   * The clock is moved by aging the RECORDED poke event rather than by waiting, which is the
+   * same instrument `work_events.created_at` gives every other ladder clause: the interval is
+   * read off the record, so the record is the honest thing to move.
+   */
+  it('⚠ R9: a stall AFTER the fourth poke is re-driven once the interval passes, and not before',
+    async () => {
+      seedAssignee({ agentId: SLOW_AGENT, status: 'idle' });
+      seedStaleTask('t-periodic', 4_000); // past normal.autoReset (3600) on an undeclared row
+      const stateBefore = taskRow('t-periodic').state;
+
+      await runPokeCheck();
+      await flushMicrotasks();
+      expect(eventCount('t-periodic', 'poke'), 'the top rung fires once to begin with').toBe(1);
+      expect(currentRung('t-periodic'), 'and it is rung 4 that fired').toBe(4);
+
+      // ── NOT BEFORE: half an interval of continued silence buys no second re-drive ──
+      const agePoke = (seconds: number): void => {
+        mockDb.current!.prepare(
+          `UPDATE work_events SET created_at = created_at - ?
+            WHERE work_id = ? AND kind = 'poke'`,
+        ).run(seconds * 1000, 't-periodic');
+      };
+      agePoke(1_800); // half of normal.autoReset
+      await runPokeCheck();
+      await flushMicrotasks();
+      expect(eventCount('t-periodic', 'poke'), 'half an interval is not an interval').toBe(1);
+
+      // ── AFTER: the rest of the interval passes and the PM re-drives ──
+      agePoke(1_801);
+      await runPokeCheck();
+      await flushMicrotasks();
+      expect(eventCount('t-periodic', 'poke'), 'the PM keeps the agent working, with no ceiling')
+        .toBe(2);
+      expect(currentRung('t-periodic'), 'still the top rung — the ladder does not grow a rung 5')
+        .toBe(4);
+
+      // ⛔ AND IT IS STILL ONLY A POKE. R9 granted no new authority, and these are the writes
+      // OR-PM-1 forbids: the task did not move, the primary was told nothing, no ASSIGN exists.
+      const poked = deliveriesTo(SLOW_AGENT) as Array<{ payload?: string }>;
+      expect(poked.length, 'both re-drives went to the agent doing the work').toBe(2);
+      expect(poked.map((d) => d.payload ?? '').join('\n'))
+        .toContain('still yours and nobody is taking it from you');
+      expect(handoffDeliveries(), 'a periodic rung may not become a periodic handoff').toEqual([]);
+      expect(deliveriesTo(PRIMARY), 'nor a periodic escalation').toEqual([]);
+      expect(taskRow('t-periodic').agent_id, 'and the assignment never moves').toBe(SLOW_AGENT);
+      expect(taskRow('t-periodic').state, 'nor does the state').toBe(stateBefore);
+    });
 
   it('WIRE: the slow sub-agent of report #6 is not even poked at this idle time', async () => {
     seedAssignee({ agentId: SLOW_AGENT, status: 'idle', firstChunkMs: 600_000, idleMs: 600_000 });

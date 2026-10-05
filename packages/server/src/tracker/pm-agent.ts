@@ -2577,7 +2577,12 @@ export async function runPokeCheck(): Promise<void> {
     // flag would have meant "poke this task less" — a hand-set second answer to the question the
     // patience floor already answers from the provider's own declaration, and a dial pointing away
     // from "keep the agent working". One mechanism, derived, is the house rule; see the report.
-    if (idleSeconds >= thresholds.autoReset && lastPokeNumber < 4) {
+    //
+    // ⚠ THE TOP RUNG IS PERIODIC (fix round 1, ruling R9 — argued at the rung-4 tombstone below).
+    // Rungs are monotonic inside a cycle, so once rung 4 has fired `lastPoke` IS that rung-4
+    // poke: one `autoReset` interval off its RECORDED instant is the re-drive's own clock.
+    const redriveDueAgain = !!lastPoke && now - lastPoke.sentAtMs >= thresholds.autoReset * 1000;
+    if (idleSeconds >= thresholds.autoReset && (lastPokeNumber < 4 || redriveDueAgain)) {
       pokeType = 'redrive';
       pokeNumber = 4;
     } else if (idleSeconds >= thresholds.escalate && lastPokeNumber < 3) {
@@ -2626,7 +2631,7 @@ export async function runPokeCheck(): Promise<void> {
 
     // ── RUNG 4 IS A RE-DRIVE, AND THE LADDER'S WHOLE AUTHORITY ENDS THERE ──
     //
-    // ⟨TOMBSTONE⟩ TWO SHAPES DIED HERE, and the second one was mine.
+    // ⟨TOMBSTONE⟩ THREE SHAPES DIED HERE, and the last two were mine.
     //
     // (1) THE ORIGINAL DEFECT (tracker report #6, owner's own box, v3.2.2): this rung took direct
     //     action — `setTrackerStatus(task.id, 'on_deck')`, a `'failed'` run completion, and an A2A
@@ -2644,11 +2649,15 @@ export async function runPokeCheck(): Promise<void> {
     // rungs 1-3 below. Nothing moves. Nobody is asked anything. The PM's entire authority over a
     // slow task is "keep it working", and the ladder's top rung is the loudest way to say so.
     //
-    // AND IT IS THE END OF THE LADDER, DELIBERATELY. The rung is recorded, so it fires once per
-    // cycle and does not re-arm itself into a 60-second poke loop; a task whose assignee is
-    // genuinely DEAD rather than slow is the engine reaper's business (`stuck-thresholds.ts`, the
-    // 75-minute heartbeat cliff), and the PM does not inherit that job. A rung that tried to
-    // would be rebuilding (1) with a different name.
+    // AND IT IS PERIODIC. (3) A THIRD SHAPE DIED HERE, AND IT WAS ALSO MINE: `lastPokeNumber < 4`
+    // made this rung terminal, so an assignee that was slow but ALIVE and stalled AFTER its
+    // fourth poke was never poked again — the reaper only reaches DEAD processes, so "keep the
+    // agent working" had a ceiling of four pokes per cycle. RULING R9: re-drive once per
+    // `autoReset` interval, measured off the RECORDED rung-4 poke, which is what makes it once
+    // per interval and not every 60-second sweep. No new authority: OR-PM-1 grants poke/re-drive
+    // and a re-drive is what this is, and the patience floor gates every one of them. A genuinely
+    // DEAD assignee stays the reaper's (`stuck-thresholds.ts`, the 75-minute heartbeat cliff);
+    // a rung that tried to inherit that would be rebuilding (1) with a different name.
 
     // ── Delivery-evidence consult (2026-07-22 production incident) ──
     // Before driving the WORK, check the engine's own records: did an
