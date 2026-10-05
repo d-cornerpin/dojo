@@ -6315,6 +6315,13 @@
       "to": 252,
       "by": "t89 THE WIRE — the async scan accepts an awaited chunk",
       "why": "+3 (comment): fetchChunk widens to sync-or-Promise so the worker round-trip and the direct statement run share ONE loop and ONE budget; the await costs a microtask on a sync return. From 252 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/retrieval.ts",
+      "from": 778,
+      "to": 884,
+      "by": "t89 CONTINUATION 2 item 1 — history_expand's search takes the bound and the pool",
+      "why": "+106 (41 code, 58 comment, 7 blank) for the THIRD and LAST unbounded text search on this surface: `history_expand`'s summary lookup, which the brief located at `:447`/`:471+` and MISNAMED \"the vault search\". The correction is part of the raise's argument because it is what decides where the lines belong: `vault/retrieval.ts` has no FTS or LIKE pair at all (its one search path is capped at 3 archives / 400 messages / 3 snippets / 300 chars by construction), and the REAL `vault_search` is `vault/store.ts`'s `semanticSearch` — `SELECT * FROM vault_entries` with NO LIMIT, every matching embedding BLOB read before scoring in JS — which is outside this lane's fence and handed up with a proposed diff. WHAT THE 41 CODE LINES ARE: two helpers (`expandSummariesFts`, `expandSummariesLike`) carrying the recency floor, the budgeted chunk walk, the two SQL strings per arm, the pool fork, and the loud fallback — minus the two inline `db.prepare(...).all(...)` blocks they replace, which is why the net is not +130. The comment weight is the two things a reader cannot re-derive from the code: the brief's mislabel (or they will go looking in `vault/`) and the stated ORDER BY change (`earliest_at DESC` -> `rowid DESC`, because a bounded scan needs a monotonic chunk key and `earliest_at` is not one). ALTERNATIVES MEASURED AND REFUSED. (a) LEAVE IT — \"expand only wants five rows\" (+0): REFUSED, and this is the arm where that defence is weakest. `ORDER BY rank LIMIT 5` scores every match before it knows which five win, and this is the DEEP-RECALL door, so each row found is then walked for descendant messages and fed to a model; the unbounded read was the cheap half's expensive half. (b) FOLD THE THREE SURFACES INTO ONE GENERIC SEARCH HELPER (-60 here, +90 in a new module): REFUSED for the third time in this package and on the same evidence — the three surfaces query three different tables with three different projections and three different output formats, so the \"generic\" helper is a query builder, which is the job-queue framework the brief's YAGNI line forbids; `search-bounds.ts` already owns the only part that IS common, the arithmetic. (c) PUT THE HELPERS IN `search-bounds.ts` (+0 here): REFUSED — that module owns the BUDGET and must not learn any table's SQL; it has no `summaries` knowledge today and acquiring some would make it the second place a reader has to look to answer \"what does expand read\". From 884 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6524,7 +6531,7 @@
     "packages/server/src/memory/other-threads-lane.ts": 276,
     "packages/server/src/memory/recall-lane.ts": 901,
     "packages/server/src/memory/recall.ts": 510,
-    "packages/server/src/memory/retrieval.ts": 778,
+    "packages/server/src/memory/retrieval.ts": 884,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 458,
