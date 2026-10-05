@@ -28,6 +28,7 @@ import { patchAssignments } from '../db/patch.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { currentTurnNumber } from '../agent/v2/turn-record.js';
+import { clearReferencesToWork } from './work-refs.js';
 import { noSuchWorkDetail, noteUnsettled, type WorkPatchOutcome } from './outcome.js';
 import {
   transition, rejectClaim, appendWorkEvent,
@@ -323,18 +324,43 @@ export function bumpWorkAttempts(id: string): number {
     .run(now(), id).changes;
 }
 
-/** Delete a tracker row and its children. The dashboard's delete routes and the memory
- *  route's cleanup both did this against the legacy tables; children are detached rather
- *  than orphaned so `parent_id`'s FK stays satisfiable. */
+/**
+ * Delete a tracker row and its children. The dashboard's delete routes and the memory
+ * route's cleanup both did this against the legacy tables; descendants BELOW the children are
+ * detached rather than followed, so `parent_id`'s FK stays satisfiable and the blast radius
+ * stays one level deep.
+ *
+ * ── WHY IT ROUTES THROUGH `work-refs.ts` (W2-B item C) ──
+ * This swept two of the FOUR things that reference `work(id)` — `work_events` and
+ * `adjudications` — and left `techniques.build_project_id` and the self-reference
+ * `work.parent_id` alone. All four are `NO ACTION`, so the consequence was not a stranded row
+ * but a RAISE: measured with `foreign_keys = ON`, deleting a project with a grandchild
+ * occurrence, or one whose own row or whose child had built a technique, threw
+ * `FOREIGN KEY constraint failed` and the whole delete failed in front of the user. The
+ * grandchild half was patched at ONE of five callers (`gateway/routes/tracker.ts`'s project
+ * route calls `deleteOccurrencesOf` first and its comment logs the deleter as the real
+ * defect); the technique half was patched at none, and a technique is built BY a project, so
+ * that reference is the normal case for the table.
+ *
+ * `clearReferencesToWork` is the tree's one list of the four, and `work-refs.ts`'s header
+ * already records that three call sites had three different ideas of it. This was the third.
+ *
+ * ── WHY IT IS CALLED TWICE, AND IN THIS ORDER ──
+ * The helper NULLS `work.parent_id` on everything pointing INTO the set it is given. Handing
+ * it the children and the row together would null the children's own `parent_id` and the
+ * `WHERE parent_id = ?` delete below would then match nothing. So: the children's family,
+ * then the children; then the row's family, then the row. The first call is what releases the
+ * GRANDCHILDREN, which is the shape that raised.
+ */
 export function deleteTrackerRow(id: string): number {
   const db = getDb();
   let changes = 0;
   withUnit(() => {
-    db.prepare('DELETE FROM work_events WHERE work_id IN (SELECT id FROM work WHERE parent_id = ?)').run(id);
-    db.prepare('DELETE FROM adjudications WHERE work_id IN (SELECT id FROM work WHERE parent_id = ?)').run(id);
+    const children = (db.prepare('SELECT id FROM work WHERE parent_id = ?').all(id) as
+      Array<{ id: string }>).map(r => r.id);
+    clearReferencesToWork(children);         // all four for the children — see `work-refs.ts`
     db.prepare('DELETE FROM work WHERE parent_id = ?').run(id);
-    db.prepare('DELETE FROM work_events WHERE work_id = ?').run(id);
-    db.prepare('DELETE FROM adjudications WHERE work_id = ?').run(id);
+    clearReferencesToWork([id]);             // all four for the row itself
     changes = db.prepare('DELETE FROM work WHERE id = ?').run(id).changes;
   });
   return changes;
