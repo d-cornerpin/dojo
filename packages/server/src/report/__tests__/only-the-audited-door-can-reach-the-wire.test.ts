@@ -533,10 +533,12 @@ describe('E2 — no new way out has appeared anywhere behind the report tool', (
 });
 
 describe('E3 — the shell is a way out too', () => {
+  const shellFound = (): string[] => CLOSURE.modules.filter(m => shellEgressIn(read(m))).sort();
+
   it('the shell-egress modules in the closure are exactly the recorded manifest', () => {
-    const found = CLOSURE.modules.filter(m => shellEgressIn(read(m)));
+    const found = shellFound();
     expect(
-      found.sort(),
+      found,
       'The set of modules reachable from the report handler that import `child_process` AND '
       + 'name a net binary has changed. `exec(\'curl …\')` is a way out that no network-module '
       + 'vocabulary can see, so it is its own clause. If the new name is in the feature\'s own '
@@ -545,11 +547,22 @@ describe('E3 — the shell is a way out too', () => {
     ).toEqual([...SHELL_EGRESS_IN_CLOSURE].sort());
   });
 
-  it('...and none of them is the feature\'s own code', () => {
-    for (const m of SHELL_EGRESS_IN_CLOSURE) {
-      expect(inFeature(m), `${m} is in the feature's own code and shells out to the network`)
-        .toBe(false);
-    }
+  // ⚠ THIS CLAUSE ASKS THE FOUND SET, NOT THE CONSTANT, AND THE DIFFERENCE IS THE WHOLE
+  // POINT. Written against `SHELL_EGRESS_IN_CLOSURE` it would be a statement about a list
+  // somebody maintains by remembering — a feature module that shelled out to `curl` would
+  // fail only the exact-set clause above and this one would report green about it, which is
+  // the same defect as a census that reads one spelling out of six.
+  it('...and nothing in the feature\'s own code shells out to the network', () => {
+    const inside = shellFound().filter(inFeature);
+    expect(
+      inside,
+      `the DOJO-REPORT feature's own code imports child_process and names a net binary: `
+      + `${inside.join(', ')}. A user's bundle must leave by the audited door or not at all, `
+      + 'and `exec(\'curl …\')` is a way out that no network-module vocabulary can see.',
+    ).toEqual([]);
+    // Non-vacuity: the declared manifest must agree with it, so a name cannot be parked on
+    // the constant to quieten the clause above while sitting inside the feature.
+    expect(SHELL_EGRESS_IN_CLOSURE.filter(inFeature)).toEqual([]);
   });
 });
 
