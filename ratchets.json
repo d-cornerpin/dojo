@@ -6469,6 +6469,34 @@
       "to": 647,
       "by": "t102 item C - the tracker's delete took two of the four work references, and RAISED on the other two",
       "why": "621 -> 647 (+26: net +1 code, +25 comment). THE CODE DID NOT GROW; THE REASON DID. `deleteTrackerRow` hand-rolled a sweep of `work_events` and `adjudications` and left `techniques.build_project_id` and the self-reference `work.parent_id` alone. All four references are NO ACTION, so with `foreign_keys = ON` the consequence was not a stranded row but a RAISE: measured at this branch's base, deleting a project with a grandchild occurrence, or one whose own row or whose child had built a technique, threw `FOREIGN KEY constraint failed` and failed the whole delete in front of the user. Six hand-written statements became four lines routed through `work-refs.ts`'s `clearReferencesToWork`, the tree's one list of the four - net +1 line of code. The 25 comment lines are the three measured failure shapes, the fact that the grandchild half was patched at ONE of five callers while the technique half was patched at none, and WHY the helper is called twice rather than once (it NULLs `parent_id` on everything pointing INTO the set it is given, so a single call would null the very link the `WHERE parent_id = ?` delete selects on). That last paragraph is the one a future reader cannot re-derive from the code, and the one whose absence produced this defect. No comment was stripped anywhere to pay for it."
+    },
+    {
+      "path": "packages/server/src/prompt/assembler.ts",
+      "from": 1910,
+      "to": 2000,
+      "by": "t103 A — `{{agent_name}}` is filled at assembly time (OWNER RULING 2026-10-05 #3)",
+      "why": "1910 -> 2000 (+90: 22 code, 63 comment, 5 blank; nothing removed). THE DEFECT, measured at 09514572: six placeholders ship in the prompt vocabulary and `substitutePlatformNames` filled five. `agent_name` — the one in `DEFAULT_SOUL_MD` and `templates/SOUL.md`, i.e. the PRIMARY agent's own identity — was filled by nothing, and was absent from `UNSUBSTITUTED` too, so the W24 re-seed path could not notice it either; on any box whose `SOUL.md` was seeded by the engine rather than written by the OOBE identity form, the model's first line read `# {{agent_name}} — System Identity`. THE 22 CODE LINES ARE THE WHOLE FIX: a per-agent token constant, the closed `SOUL_PLACEHOLDERS` vocabulary, `agentDisplayName` (row first, platform getter for the primary, `'Agent'` last — the same last resort the sub-agent branch below already uses), `substituteAgentName` with its by-identity guard, and a four-line `getSoulContent` wrapper over a resolver that is deliberately NOT exported, so no caller can bypass the fill. THE 63 ARE THE THREE THINGS A READER CANNOT RECONSTRUCT: (i) why this token was unfilled while its five siblings were not — the per-agent/platform split is exactly why it fell out of `substitutePlatformNames`, and without that written down the next reader adds it there and breaks that substituter's one-box-wide-answer property; (ii) why the fill is at RENDER time and not a file rewrite — the ruling's own \"no user-file edits\", plus a rename interaction that is subtle and load-bearing, since `prompt/agent-rename.ts` deliberately SKIPS `{{…}}`-carrying souls and a creation-time fix would have left a renamed primary naming nobody for ever; (iii) the G2 cache argument, which a reviewer must be able to check without re-deriving it — the fill is a pure function of (stored bytes, agent name), both static across a session, so the prefix stays byte-identical turn to turn and moves ONCE per affected agent. All three are clauses as well as comments (`prompt/__tests__/an-agent-reads-its-own-name.test.ts`, 17 of them). REFUSED: a new module for a four-line wrapper whose whole subject is this file's soul resolution — the leaf would have had to import `getDb`, `isPrimaryAgent` and `getPrimaryAgentName` to answer one question this module already answers. From 2000 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 3741,
+      "to": 3829,
+      "by": "t103 C — the RAM recommendation becomes the default context cap (OWNER RULING 2026-10-05 #2)",
+      "why": "3741 -> 3829 (+88 net: 22 code added, 9 code REMOVED, 72 comment, 3 blank). THE DEFECT, measured at 09514572: t88 sized a KV window to the box's real obligations and `callOllamaModel` sent it as `options.num_ctx`, so OLLAMA was told the truth about the machine — but every decision about how much prompt to BUILD reads `getContextWindow(modelId)`, which returned `models.context_window`, the ADVERTISED maximum. On a tight box the assembler packed a full advertised window into a KV cache sized for a fraction of it, with the recommendation sitting beside a number it did not affect. THE CODE IS A NET +13: two small exported functions (`resolveNumCtx`, `effectiveContextWindow`) and one changed return, MINUS the two hand-rolled precedence ternaries at the Ollama call site, which are now gone — that deduplication is half the item, because two copies of \"which knob wins\" is how the number the provider is sent and the number the engine budgets for come to disagree. THE 72 ARE TWO ARGUMENTS, ONE OF WHICH COST A MEASURED RED TO LEARN: (i) the rule and its one-way `min`, with the no-migration verification stated (not one stored row changes meaning — only which column the budget reads) and the note that the API still reports the advertised window, so the Settings card is not quietly restating the cap; (ii) THE PLACEMENT. Capping `getModelInfo().contextWindow` instead REDS `the-utility-dial-reaches-the-wire`, because t88 widens `num_ctx` PER CALL for a dial with a large input and the provider boundary then refuses the very assembly the dial had widened for. That is written at `getContextWindow` because it is the exact edit a future reader will try, and decision #2's own wording — \"stay advisory now the per-call window protects the box\" — names the mechanism it would break. 17 clauses in `agent/__tests__/the-ram-recommendation-is-the-default-cap.test.ts`, one of them that boundary. REFUSED: a new module — these two functions read nothing but their arguments and belong beside `getModelInfo`, whose row they interpret; a leaf would have split one answer across two files for the sake of a line count. From 3829 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/config.ts",
+      "from": 2957,
+      "to": 2977,
+      "by": "t103 C — the num_ctx override door says what the recommendation was",
+      "why": "2957 -> 2977 (+20 net: 11 code added, 2 code removed, 9 comment, 2 blank). The ruling is \"DEFAULT CAP, user-overridable\", and the second half needs a surface: an override ABOVE the recommendation is a person choosing to spend memory `services/num-ctx-calculator.ts` says is not there. The 11 lines read the stored recommendation, compute the comparison, build ONE sentence naming the recommendation and the excess, and return it beside the row. The route still writes exactly the override it was asked for, and a clause asserts that no arm of it refuses on the comparison — a block there would be the platform overruling an owner on his own hardware. The 9 comment lines are why it is a notice and not a refusal, which is the thing a future reader is most likely to 'tighten' into a 400. From 2977 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1767,
+      "to": 1778,
+      "by": "t103 B — the A2A give-up cap is the recipient's, not a constant (OWNER RULING 2026-10-05 #1)",
+      "why": "1767 -> 1778 (+11 net: 6 code added, 2 code removed, 8 comment added, 1 comment line rewritten). THE SMALLEST POSSIBLE TOUCH, and that was the design constraint: t90 merged into this file and three live lanes carry it, so the arithmetic lives in a new leaf (`agent/a2a-patience.ts`, 81 lines, unpinned, under the 400 new-file cap) and this file changes only (i) the import, (ii) the resolved budget replacing `MAX_A2A_TURN_RETRIES` in one comparison, and (iii) three fields on the give-up log line, which previously said 'max dedicated turns' while the max was a constant and so could not tell a slow box from a dead one. The 8 comment lines state that an undeclared provider resolves to today's constant EXACTLY, because a reader of this retry arm needs to know the change is a FLOOR before they can judge the loop's bound. From 1778 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6524,12 +6552,12 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 217,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 3741,
+    "packages/server/src/agent/model.ts": 3829,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 400,
-    "packages/server/src/agent/runtime.ts": 1767,
+    "packages/server/src/agent/runtime.ts": 1778,
     "packages/server/src/agent/shared-state.ts": 415,
     "packages/server/src/config/schema.ts": 300,
     "packages/server/src/credentials/store.ts": 412,
@@ -6650,7 +6678,7 @@
     "packages/server/src/db/migration-checksums.ts": 317,
     "packages/server/src/gateway/routes/agents.ts": 964,
     "packages/server/src/gateway/routes/chat.ts": 492,
-    "packages/server/src/gateway/routes/config.ts": 2957,
+    "packages/server/src/gateway/routes/config.ts": 2977,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/setup-deps.ts": 514,
     "packages/server/src/gateway/routes/tracker.ts": 970,
@@ -6688,7 +6716,7 @@
     "packages/server/src/microsoft/tools-write.ts": 2212,
     "packages/server/src/migration/checks.ts": 537,
     "packages/server/src/migration/import.ts": 408,
-    "packages/server/src/prompt/assembler.ts": 1910,
+    "packages/server/src/prompt/assembler.ts": 2000,
     "packages/server/src/prompt/registry/entries.ts": 638,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
