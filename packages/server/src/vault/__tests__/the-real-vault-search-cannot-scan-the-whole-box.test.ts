@@ -518,6 +518,41 @@ describe('⚠ THE CAP IS LOUD WHEN IT BITES, and it names the old fact it may ha
     expect(JSON.stringify(warn)).not.toMatch(/distilled fictional fact|LIKE '|%/);
   }, 180_000);
 
+  it('⚠ THE WINDOW IS THE COST BOUND, and a SPARSE scope is what proves it', async () => {
+    // ⚠ WHY THIS CLAUSE EXISTS, written down because its absence let a mutant live. My first cut
+    // proved the cap on a DENSE scope — every row in the window matched — and in that case the scan's
+    // row limit stops the walk at the same place the window would, so deleting the window's clamp
+    // changed nothing a clause could see. The two bounds are NOT the same bound:
+    //
+    //   · the row limit counts entries SCORED, and so bounds the answer-shaped half;
+    //   · the rowid window counts rowids WALKED, and so bounds the COST — which is the whole point,
+    //     because the pathological vault is the one where most rows are obsolete or belong to another
+    //     agent and the limit therefore never fills.
+    //
+    // One agent owns a quarter of this fixture, so a 2,000-rowid chunk yields ~500 scored and a cap
+    // of 10,000 SCORED entries would need forty thousand rowids. The window allows five chunks. The
+    // numbers below are that arithmetic, and the mutant that drops `windowFloor` from the chunk's
+    // floor walks on past them to the bottom of the table.
+    await warmReaderPool();
+    const cap = 10_000;
+    const chunk = 2_000;
+    const scan = await scanVaultCandidates({
+      label: 'vault_semantic', queryEmbedding: queryVector(),
+      conditions: ['is_obsolete = 0', 'embedding IS NOT NULL', 'agent_id = ?'], params: [AGENTS[0]],
+      candidateRows: cap, chunkRows: chunk, agentId: AGENTS[0],
+    });
+    expect(scan.windowFloor).toBe(ROWS - cap);
+    // Five productive chunks plus the one that LOOKS at the window edge and finds nothing in scope —
+    // that empty chunk is how the walk learns it is done, and counting it is counting the mechanism.
+    expect(scan.report.chunks, 'the walk went past the window edge').toBe(cap / chunk + 1);
+    expect(scan.scored.length, 'the walk scored more than the window could hold')
+      .toBe(cap / AGENTS.length);
+    expect(scan.report.stoppedBecause, 'the window edge must END the walk, not a budget').toBe('exhausted');
+    expect(scan.oldestRidConsidered, 'the walk looked older than the window allowed')
+      .toBeGreaterThan(ROWS - cap);
+    expect(scan.truncated).toBe(true);
+  }, 180_000);
+
   it('the pool-fallback warn is said ONCE per distinct failure, not once per read', async () => {
     // A reader worker whose connection could not be opened answers every query with the same error
     // for the life of the process, so a per-read warn turns one standing condition into a line per
