@@ -54,8 +54,7 @@ vi.mock('../../agent/a2a-transport.js', () => ({
 
 import { runPokeCheck, POKE_THRESHOLDS } from '../pm-agent.js';
 import {
-  patienceFloorFor, flooredThresholds, extendedPatience, grantExtendedPatience,
-  revokeExtendedPatience, recordReassignment, PATIENCE_ENTRY,
+  patienceFloorFor, flooredThresholds, recordReassignment, PATIENCE_ENTRY,
 } from '../assignee-patience.js';
 import { STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS } from '../../agent/stream-patience.js';
 import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixture.js';
