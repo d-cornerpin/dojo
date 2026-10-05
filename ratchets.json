@@ -6434,6 +6434,34 @@
       "to": 646,
       "by": "t98 hand-up 1 — `vault_search(mode:'exact')` reaches the reader pool (2026-10-05)",
       "why": "+5 NET (+6/-1), and ONE of the six is code: `listEntries(` becomes `await listEntriesBounded(` at the exact-mode tool door, with the import moved and one stale pointer in a neighbouring comment corrected. THE FIVE ARE THE REASON, AND THEY ARE THE REASON THE RAISE IS WORTH TAKING RATHER THAN THE REASON TO TRIM, because the next reader's most natural edit is to undo this fix. ⚠ THE SYNC DOOR WAS NOT BROKEN: `listEntries` is synchronous, always returned a real `VaultEntry[]` here, and the rendered tool result always carried rows — a clause that drives the handler end to end passes against the UNMODIFIED code, which is how that was established rather than assumed. So a reader who sees `await` on a listing that used to be a plain call, finds nothing wrong with the plain call, and 'simplifies' it back has made a change no test of CORRECTNESS can catch: the rows are identical. What changes is WHERE the work runs — a leading-wildcard LIKE cannot use an index, so pre-fix the walk AND its cost count both ran on the thread that serves HTTP, measured at 2 reads on the serving connection per exact search against 0 after. That thread, pinned inside one synchronous read while a review ran `vault_search` twice, IS the capture that opened this package, and those five lines are the only place a reader meets that fact at the call site. The counted clause (`the-vault-search-tool-door-reaches-the-pool.test.ts`) does catch the revert, and the comment is what tells the person who reds it why the clause is right. ALTERNATIVES MEASURED. (a) TRIM TO FIT: partly taken and it is in the diff — the first cut was +8 and three lines of it duplicated `vault/bounded-reads.ts`'s header, which is real de-duplication; going further means deleting either 'the sync door was not broken' or 'the cost ran here too', and each of those is a sentence a reader needs to not revert the fix. REFUSED. (b) PUT THE PARAGRAPH IN `bounded-reads.ts` AND LEAVE A POINTER: REFUSED on the reader's path — the edit that undoes this is made HERE, in a 646-line tool file, by someone who has no reason to open a module two directories away. (c) LEAVE THE SYNC DOOR AND REPORT IT AS A RESIDUAL (what the lane originally did, when `vault/tools.ts` was outside its fence): overtaken — the orchestrator extended the fence precisely so this could land. THE DIRECTION IS UNCHANGED: from 646 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/vault/bounded-reads.ts",
+      "from": 499,
+      "to": 606,
+      "by": "t98 FIX ROUND 1 — I1 (the warn stops crying wolf) + I2 (the scope's span) + I4 (the breathe returns)",
+      "why": "+107 NET (+160/-53), three Important findings on three lines of the same arithmetic, and about 70 of the 107 are the reasons. ⚠ THE LARGEST SINGLE PIECE IS `vaultScopedRowidSpan` (~48 lines, ~20 of them code): all three semantic scans are agent-keyed and `idx_vault_agent` COVERS `MAX/MIN(rowid) WHERE agent_id = ?`, so taking the TABLE's span instead was not a saving — it was measured at 1.98 µs/call scoped against 1.60 µs global, the same cost — and it cost real answers: on a 100,150-rowid table where the agent owned rowids 1-50, the default cap put the entire window ABOVE that agent's newest row, `semanticSearch` returned ZERO hits, and because the same window governs `findSemanticDuplicate` the agent also stopped detecting duplicates of its own older facts and accumulated them silently on the write path. The N-seeks-not-one-IN paragraph is load-bearing in the same way the file's existing combined-MIN/MAX paragraph is: a combined `agent_id IN (…)` loses SQLite's min/max optimisation and prints an indistinguishable plan, so the next reader's natural tidy-up is invisible to every EXPLAIN clause. ⚠ THE SECOND PIECE IS `vaultBreathe` (~27 lines, 2 of them code), and the comment is the entire value: the previous commit DELETED the breathe citing a measurement that did not exist — the probe behind it raced the answer against a guard timer it then advanced — and the real probe (one arm per `it`, no guard) says global `setImmediate` is faked while `node:timers`' is not. Without those lines the next reader swaps the global back in and hangs three clauses in `the-prefix-holds-still.test.ts` for thirty seconds each, or deletes the breathe again and restores a 0 %-serviced pool-down stall. ⚠ THE THIRD IS THE TRUNCATION PREDICATE (~22 lines, 1 of code): it read `windowFloor > 0` and therefore fired a FALSE 'an older fact was NOT scored' on every semantic read of every vault whose earliest rows were ever pruned — one per `vault_search`, three per `vault_remember`, forever, which is this file's own 'how a log stops being read' and which made a real truncation indistinguishable from noise. The paragraph records both false positives (I1's pruned vault and M3's exactly-cap vault) because the predicate LOOKS arbitrary without them and 'simplify to stoppedBecause !== exhausted' is the obvious edit. THE DELETIONS ARE REAL: 53 lines went, including the old global-span-only comment and the false breathe justification. ALTERNATIVES MEASURED. (a) PUT THE SCOPED SPAN IN `store.ts`: refused — all three callers are in store.ts but the SPAN is the window's arithmetic and the window lives here; moving it splits one policy across two files and store.ts is also asking for a raise. (b) TAKE ONLY THE REVIEWER'S ONE-LINER FOR I1 (`capFloor > minRid`) and skip the second disjunct: refused on evidence — M3's edge proved the old first disjunct was a SECOND false positive, and dropping it outright would have lost the budget case; `lowestFloorRead` covers both and costs one tracked integer. (c) TRIM THE THREE ARGUMENTS TO POINTERS: refused — each one exists because a previous cut of THIS FILE got it wrong, twice with a measurement I had not actually taken. THE DIRECTION IS UNCHANGED: from 606 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/vault/store.ts",
+      "from": 1261,
+      "to": 1297,
+      "by": "t98 FIX ROUND 1 — I2's scope wiring and the window the tool layer tells the agent about",
+      "why": "+36 NET (+37/-1). THE CODE IS ABOUT 20 LINES: `scopeAgentIds` passed at the three semantic sites (`resolveRecallScope(agentId)` for the search, `[agentId]` for the dedup and the band check), plus `lastSemanticWindow` and its one-line reader. THE REST IS TWO ARGUMENTS. The first is why each site passes what it passes — the search's scope is the HOUSEHOLD scope, the two write-path checks are self-scoped, and getting that wrong silently widens or narrows a recency window rather than failing. The second is why the window rides a module-level value at all: `semanticSearch` returns an ARRAY, so surfacing truncation in the return type would reach every caller, and the message side already solved the same problem by appending a line to the rendered result — so the fact is set on every semantic search and read IMMEDIATELY by the one caller that renders. The comment states what it is NOT (not a cache, not state, overwritten by the next search, no user content — a boolean and two integers) because a module-level mutable in a store file is exactly the shape a reviewer should challenge, and the embed-outage arm CLEARS it so a fallback cannot leave the previous search's window standing. ALTERNATIVES. (a) WIDEN THE RETURN TYPE to `{ rows, truncated }`: refused — four production callers and every clause that destructures the array, for one caller's benefit. (b) RE-READ THE WINDOW FROM `bounded-reads.ts`: refused, that is the same module-level value one file further away with no caller-ownership. (c) PASS A CALLBACK: refused as machinery. THE DIRECTION IS UNCHANGED: from 1297 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/vault/tools.ts",
+      "from": 646,
+      "to": 658,
+      "by": "t98 FIX ROUND 1 — I2's agent-facing window notice",
+      "why": "+12 NET (+16/-4). THE CODE IS 7 LINES: read the last search's window, build a one-line notice when it truncated, append it on all three semantic return paths (hit, bridge-only, and miss — the MISS matters most, because that is where an agent is most likely to conclude the fact does not exist). The 5 remaining lines are why the log is not enough: a recency cap on a VAULT can cost an old permanent fact, and an agent handed a short answer has no other way to tell 'I have no record of that' from 'I did not read that far'. t89's message surface already ships the same line (`memory/retrieval.ts`: 'searched the newest N messages only'), so this is parity rather than invention, and saying so is what stops the next reader deleting it as chatter. ALTERNATIVES. (a) LOG IT ONLY: that was the shipped state and it is what the review called out — the operator learns, the agent does not. (b) ALWAYS APPEND A WINDOW LINE: refused, and the clause pins the other direction — on an ordinary vault the notice must be ABSENT, which is the I1 lesson applied to the agent-facing surface instead of the log. THE DIRECTION IS UNCHANGED: from 658 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/recall-lane.ts",
+      "from": 901,
+      "to": 907,
+      "by": "t98 FIX ROUND 1 — I3, the fourth synchronous vault caller",
+      "why": "+6 NET (+8/-2), of which TWO are code: `listEntries` becomes `await listEntriesBounded` in the auto-recall embed-outage arm, and the destructured import changes with it. The six lines of reason are the finding the review had to make for me: this arm runs EVERY TURN for the duration of an embedding outage, reading a leading-wildcard LIKE on the thread that serves HTTP — which is verbatim the 'it is not a rare path' argument this lane used to justify pooling `semanticSearch`'s own fallback, applied to a path the lane never looked at. A reader who meets `await` on a recall fallback and no explanation has every reason to think the sync call was fine; the lane itself thought so. ALTERNATIVES. (a) NO COMMENT, +2: refused — the whole defect was that nobody had asked this question about this line, and the census clause that now guards it reds on a SET, which tells a future author THAT the caller must await but not why it matters here. (b) Leave it synchronous and report it: refused, the review marked it required and the file is in fence. THE DIRECTION IS UNCHANGED: from 907 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6641,7 +6669,7 @@
     "packages/server/src/memory/lanes.ts": 1201,
     "packages/server/src/memory/message-store.ts": 1153,
     "packages/server/src/memory/other-threads-lane.ts": 276,
-    "packages/server/src/memory/recall-lane.ts": 901,
+    "packages/server/src/memory/recall-lane.ts": 907,
     "packages/server/src/memory/recall.ts": 510,
     "packages/server/src/memory/retrieval.ts": 1142,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
@@ -6693,8 +6721,8 @@
     "packages/server/src/vault/archive.ts": 310,
     "packages/server/src/vault/maintenance.ts": 2170,
     "packages/server/src/vault/retrieval.ts": 425,
-    "packages/server/src/vault/store.ts": 1261,
-    "packages/server/src/vault/tools.ts": 646,
+    "packages/server/src/vault/store.ts": 1297,
+    "packages/server/src/vault/tools.ts": 658,
     "packages/server/src/voice/hume-engine.ts": 605,
     "packages/server/src/voice/model-manager.ts": 585,
     "packages/server/src/voice/stt-service.ts": 538,
@@ -6740,6 +6768,6 @@
     "packages/server/src/agent/tools/assignment-capability.ts": 139,
     "packages/server/src/memory/fts-health.ts": 536,
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
-    "packages/server/src/vault/bounded-reads.ts": 499
+    "packages/server/src/vault/bounded-reads.ts": 606
   }
 }
