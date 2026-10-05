@@ -366,16 +366,6 @@ describe('t94 §2 — the lifecycle probes', () => {
 
     expect(summariser.calls).toBeGreaterThan(0);                  // compaction WAS attempted
     expect(bad.length).toBeGreaterThan(0);                        // and a hard stop did bind
-    expect(CEILING_ROWS).toBe(320);
-    expect(CEILING_STEP_ROWS).toBe(160);
-
-    // LARGE: every trim takes at least a whole token block off the front — never a nibble.
-    // `droppedFromFront` counts the leading messages that genuinely vanished, content-aligned.
-    for (const d of bad) expect(d.droppedFromFront).toBeGreaterThanOrEqual(TOKEN_BLOCK_GROUPS);
-
-    // RARE: fewer than one turn in twenty rewrites the prefix. PRE-t94 this run front-trimmed
-    // on every turn past row 40, i.e. 180 of these 199.
-    expect(bad.length).toBeLessThanOrEqual(Math.floor(deltas.length / 20));
 
     // AND THE FRONT NEVER MOVES BACKWARDS. Two trimmers cut this tail — the row ceiling and
     // the token trim — and a composite front that can retreat is a prefix rewrite that buys
@@ -385,6 +375,14 @@ describe('t94 §2 — the lifecycle probes', () => {
     // version of this policy (the ceiling's step was one row cap; measured: turn 161 shifted
     // +20 and the run carried three discontinuities per twenty turns).
     for (const d of deltas) expect({ turn: d.turn, shift: d.shift }).toEqual({ turn: d.turn, shift: Math.min(0, d.shift) });
+
+    // LARGE: every trim takes at least a whole token block off the front — never a nibble.
+    // `droppedFromFront` counts the leading messages that genuinely vanished, content-aligned.
+    for (const d of bad) expect(d.droppedFromFront).toBeGreaterThanOrEqual(TOKEN_BLOCK_GROUPS);
+
+    // RARE: fewer than one turn in twenty rewrites the prefix. PRE-t94 this run front-trimmed
+    // on every turn past row 40, i.e. 180 of these 199.
+    expect(bad.length).toBeLessThanOrEqual(Math.floor(deltas.length / 20));
   }, 300_000);
 
   it('a session reset restarts the tail — a legitimate discontinuity, and exactly one', async () => {
@@ -483,7 +481,9 @@ describe('t94 §5 — the trim quanta', () => {
   });
 
   it('the ceiling step is half the ceiling — the monotonicity half', () => {
+    expect({ ceiling: CEILING_ROWS, step: CEILING_STEP_ROWS }).toEqual({ ceiling: 320, step: 160 });
     expect(tailCeilingStepRows(40)).toBe((40 * TAIL_HORIZON_CEILING_MULTIPLE) / 2);
+    expect(tailCeilingStepRows(64)).toBe(256);
   });
 
   it('a drop is a MULTIPLE of the block, never the minimum that fits', () => {
