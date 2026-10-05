@@ -51,6 +51,44 @@
 // uses it as its worked example: a test imports it, so deleting it breaks the
 // build. Making that category blocking would be pressure to delete live code.
 //
+// ════ THE WALK SEES FILES THAT ARE NOT COMMITTED YET (backlog 2026-09-27) ════
+// It did not, and the cost was a FALSE FAILURE on somebody else's files. The
+// enumeration was `git ls-files` alone, so a NEW production module was invisible
+// until it was staged — and invisibility here does not under-report, it CORRUPTS:
+//
+//   · a tracked file importing the new module resolves to nothing, so failure
+//     mode 4 fires and the gate announces "2 unresolved relative imports" about
+//     a tree with no defect in it (measured: the embeddings lane, 2026-09-27);
+//   · worse quietly, the walk cannot pass THROUGH the new module, so every
+//     tracked file whose only importer is the new one reads as unreached and can
+//     be reported under failure mode 1.
+//
+// So `git ls-files --others --exclude-standard` joins the enumeration, and the
+// two populations are kept apart on purpose:
+//
+//   RESOLUTION TARGET and WALK-THROUGH NODE — tracked AND untracked. This is the
+//   half that closes the hole: the specifier resolves, the walk continues past
+//   it, and nothing downstream is slandered.
+//
+//   JUDGED AS PRODUCTION (failure mode 1, which demands an allowlist line) —
+//   TRACKED ONLY. An untracked scratch module nothing imports must not be able
+//   to refuse a build; it becomes the walk's business on the commit that adds
+//   it, which is the first moment it is anybody's business. Test ROOTS are
+//   likewise tracked-only: "reached only through a test" means deleting it
+//   breaks the build, and an uncommitted test breaks nobody's build.
+//
+// ── THE OTHER FIVE `git ls-files` READERS: DECIDED, NOT OVERLOOKED ──
+// `check-bytes.mjs`, `check-ratchets.mjs`, `check-growth.mjs`,
+// `check-capability-ledger.mjs` and `check-iso-writes.mjs` enumerate the same
+// way and KEEP tracked-only, for a reason that is a property of this gate rather
+// than of them: each of those measures or ledgers the file it is looking at, so
+// an invisible file is a MISSED finding — and the finding arrives intact at the
+// commit that tracks it, because `git ls-files` covers staged files. This walk is
+// the only one whose verdict about OTHER, tracked files is wrong while a file is
+// missing. Widening the others would also make `npm run gates` red on a working
+// tree holding an ordinary untracked scratch file, which is a different rule and
+// would need the owner, not a gate edit.
+//
 // Usage: node deploy/checks/check-wiring.mjs [--verbose]
 // ════════════════════════════════════════
 import fs from 'node:fs';
@@ -134,16 +172,36 @@ const IN_SCOPE = /^(?:packages\/[^/]+\/src\/|watchdog\/src\/).*\.(?:ts|tsx)$/;
 const IS_TEST = (rel) => /(?:^|\/)__tests__\//.test(rel) || /\.(?:test|spec)\.tsx?$/.test(rel);
 const IS_DECL = (rel) => rel.endsWith('.d.ts');
 
-function tracked() {
-  return execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, maxBuffer: 256 * 1024 * 1024 })
+function gitPaths(args) {
+  return execFileSync('git', args, { cwd: ROOT, maxBuffer: 256 * 1024 * 1024 })
     .toString('utf8')
     .split('\0')
     .filter(Boolean);
 }
 
-const allFiles = tracked();
-const sourceFiles = allFiles.filter((r) => IN_SCOPE.test(r) && !IS_DECL(r));
+const tracked = () => gitPaths(['ls-files', '-z']);
+
+/**
+ * Files in the working tree that git does not track and does not ignore — i.e.
+ * exactly the files a developer is about to commit. `--exclude-standard` is what
+ * keeps `node_modules`, `dist` and every other ignored path out: without it this
+ * would return tens of thousands of paths and the walk would be meaningless.
+ */
+const untracked = () => gitPaths(['ls-files', '--others', '--exclude-standard', '-z']);
+
+const trackedFiles = tracked();
+const untrackedFiles = untracked();
+const allFiles = [...trackedFiles, ...untrackedFiles];
+
+const inSource = (r) => IN_SCOPE.test(r) && !IS_DECL(r);
+// Everything the walk may resolve to and pass through.
+const sourceFiles = allFiles.filter(inSource);
+// The narrower population the walk JUDGES. See the header: an uncommitted file
+// is a resolution target, never a build-refusing finding.
+const trackedSourceFiles = trackedFiles.filter(inSource);
+const untrackedSourceFiles = untrackedFiles.filter(inSource);
 const fileSet = new Set(sourceFiles);
+const trackedSet = new Set(trackedSourceFiles);
 
 // Workspace package name → its source root, so `@dojo/shared` resolves.
 const workspaceRoots = new Map();
@@ -196,8 +254,14 @@ function specifiers(src) {
   return out;
 }
 
-/** Resolve one specifier to a tracked source path, or null when it is not ours. */
-function resolve(spec, fromRel) {
+/**
+ * Resolve one specifier against a given file set, or null when it is not ours.
+ *
+ * The SET is a parameter rather than a closure read so the controls at the
+ * bottom can drive this exact function over a synthetic tree — the enumeration
+ * fix above is only worth having if the resolver can be shown to honour it.
+ */
+function resolveIn(set, spec, fromRel) {
   let base;
   if (spec.startsWith('.')) {
     base = path.posix.normalize(path.posix.join(path.posix.dirname(fromRel), spec));
@@ -218,10 +282,12 @@ function resolve(spec, fromRel) {
     `${stripped}.ts`, `${stripped}.tsx`,
     `${stripped}/index.ts`, `${stripped}/index.tsx`,
   ]) {
-    if (fileSet.has(cand)) return cand;
+    if (set.has(cand)) return cand;
   }
   return null;
 }
+
+const resolve = (spec, fromRel) => resolveIn(fileSet, spec, fromRel);
 
 /** Breadth-first walk from a set of roots. */
 function reachFrom(roots) {
@@ -249,12 +315,14 @@ function reachFrom(roots) {
 const missingEntries = ENTRIES.filter((e) => !fileSet.has(e));
 const { seen: reached, unresolved } = reachFrom(ENTRIES);
 
-const production = sourceFiles.filter((r) => !IS_TEST(r));
+const production = trackedSourceFiles.filter((r) => !IS_TEST(r));
 const unreached = production.filter((r) => !reached.has(r));
 
 // Which of the unreached are reached once tests are allowed to be roots? Those
 // are a DIFFERENT category — deleting one breaks the build (#15's worked case).
-const testFiles = sourceFiles.filter(IS_TEST);
+// TRACKED tests only: that whole category is "a committed test imports it", and
+// an uncommitted test cannot break anybody's build but its author's.
+const testFiles = trackedSourceFiles.filter(IS_TEST);
 const { seen: reachedWithTests } = reachFrom([...ENTRIES, ...testFiles]);
 const testOnly = unreached.filter((r) => reachedWithTests.has(r));
 const reachedByNothing = unreached.filter((r) => !reachedWithTests.has(r));
@@ -278,6 +346,15 @@ if (missingEntries.length) {
 }
 console.log(`  ${ENTRIES.length - missingEntries.length} entry point(s) walked: ${ENTRIES.filter((e) => fileSet.has(e)).join(', ')}`);
 console.log(`  ${production.length} production source file(s); ${reached.size} reached by the walk`);
+// Printed on every run, including zero, so the enumeration the walk used is a
+// stated fact rather than something a reader has to assume.
+console.log(
+  `  ${untrackedSourceFiles.length} untracked, non-ignored source file(s) joined the walk as resolution `
+  + 'targets and walk-through nodes (never judged as production — see this file\'s header)',
+);
+if (untrackedSourceFiles.length && VERBOSE) {
+  for (const r of untrackedSourceFiles) console.log(`     ${r}`);
+}
 console.log(`  ${testOnly.length} reached ONLY through a test file`);
 console.log(`  ${reachedByNothing.length} reached by no entry point and no test`);
 console.log('');
@@ -365,6 +442,71 @@ console.log('');
 
 let failed = false;
 const refuse = (msg) => { failed = true; console.error(`✗ wiring walk: ${msg}`); };
+
+// ════════════════════════════════════════
+// CONTROLS — the enumeration rule, driven on a SYNTHETIC tree, every run.
+// ════════════════════════════════════════
+// Same reasoning as `check-gate-manifest.mjs` §7 and `check-must-consume.mjs`'s
+// selftest: the rule that an untracked file is a resolution target but not a
+// judged production file is the whole fix, and a rule nothing exercises is a
+// sentence. These run against hand-built sets, never the real tree, so they are
+// deterministic and cost nothing — and they bite in BOTH directions, because a
+// "see untracked files" change that simply resolved everything would also pass a
+// one-sided check while deleting failure mode 4.
+{
+  const IMPORTER = 'packages/server/src/importer.ts';
+  const NEW_UNTRACKED = 'packages/server/src/brand-new-untracked.ts';
+  const trackedOnly = new Set([IMPORTER]);
+  const withUntracked = new Set([IMPORTER, NEW_UNTRACKED]);
+
+  const controls = [
+    {
+      id: 'the-old-blindness-is-reproduced',
+      why: 'with a tracked-only set the import of a new module resolves to NOTHING — this is the defect, '
+         + 'asserted so the fix below is measured against it rather than against an assumption',
+      ok: resolveIn(trackedOnly, './brand-new-untracked.js', IMPORTER) === null,
+    },
+    {
+      id: 'an-untracked-target-resolves',
+      why: 'the fix: once the untracked file is in the set, the specifier resolves to it, so failure '
+         + 'mode 4 cannot fire about a tree with no defect in it',
+      ok: resolveIn(withUntracked, './brand-new-untracked.js', IMPORTER) === NEW_UNTRACKED,
+    },
+    {
+      id: 'a-genuinely-missing-target-is-still-unresolved',
+      why: 'the other direction: widening the enumeration must not make the hole detector blind. A '
+         + 'specifier naming a file in NEITHER population still returns null and still refuses',
+      ok: resolveIn(withUntracked, './does-not-exist-anywhere.js', IMPORTER) === null,
+    },
+    {
+      id: 'an-untracked-file-is-not-judged-as-production',
+      why: 'an uncommitted scratch module nothing imports must not be able to refuse a build. Asserted '
+         + 'on the REAL populations rather than on the fixture: every judged production path came off '
+         + 'the TRACKED list, and the untracked population shares no member with it. (With zero '
+         + 'untracked source files the two statements are trivially true — which is honest: there is '
+         + 'nothing to tell apart until a file is sitting there)',
+      ok: production.every((r) => trackedSet.has(r))
+        && untrackedSourceFiles.every((r) => !production.includes(r)),
+    },
+    {
+      id: 'the-production-population-is-not-empty',
+      why: 'a tracked-only filter that returned nothing would satisfy the control above by vacuity and '
+         + 'turn failure mode 1 off entirely',
+      ok: production.length > 100,
+    },
+    {
+      id: 'untracked-files-are-in-the-resolvable-set',
+      why: 'the real run, not a fixture: every untracked source file the enumeration found is reachable '
+         + 'by the resolver, or the two populations have come apart',
+      ok: untrackedSourceFiles.every((r) => fileSet.has(r)),
+    },
+  ];
+  const bad = controls.filter((c) => !c.ok);
+  if (bad.length) {
+    refuse(`${bad.length} of ${controls.length} enumeration control(s) FAILED — this walk's verdict is unreliable:`);
+    for (const c of bad) console.error(`    control "${c.id}": ${c.why}`);
+  }
+}
 
 if (missingEntries.length) {
   refuse(`${missingEntries.length} declared entry point(s) missing (${missingEntries.join(', ')}) — the walk ran blind, so every list above is meaningless.`);
