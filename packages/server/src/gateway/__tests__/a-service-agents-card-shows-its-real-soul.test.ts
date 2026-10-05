@@ -104,8 +104,8 @@ import { NO_REPLY_CLOSED_MARKER } from '@dojo/shared';
 const HOME = path.join(TEST_HOME_ROOT, HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
 
-const PRIMARY = 'kevin';
-const PM = 'kelly';
+const PRIMARY = 'zargo';
+const PM = 'quilba';
 const TRAINER = 'trainer';
 const SUB = 'sub-agent-1';
 
@@ -138,17 +138,17 @@ beforeEach(async () => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   setConfig('primary_agent_id', PRIMARY);
-  setConfig('primary_agent_name', 'Kevin');
+  setConfig('primary_agent_name', 'Zargo');
   setConfig('pm_agent_id', PM);
-  setConfig('pm_agent_name', 'Kelly');
+  setConfig('pm_agent_name', 'Quilba');
   setConfig('trainer_agent_id', TRAINER);
   setConfig('trainer_agent_name', 'Trainer');
-  setConfig('owner_name', 'David');
+  setConfig('owner_name', 'Marcus');
   // platform.ts caches config; re-read it against this database.
   const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();
-  seedAgent(PRIMARY, 'Kevin');
-  seedAgent(PM, 'Kelly');
+  seedAgent(PRIMARY, 'Zargo');
+  seedAgent(PM, 'Quilba');
   seedAgent(TRAINER, 'Trainer');
   seedAgent(SUB, 'Scout', 'You are Scout. Find things and report back.');
 });
@@ -163,7 +163,7 @@ describe('the PM card reads the soul the runtime reads', () => {
   it('THE OWNERS BOX: the oldest surviving system row is an engine marker — and it is NOT what the card shows', () => {
     // The worn-in shape: the seeded soul row was pruned away; a marker is the oldest survivor.
     insertMessage({ id: 'm1', agentId: PM, role: 'system', content: NO_REPLY_CLOSED_MARKER });
-    insertMessage({ id: 'm2', agentId: PM, role: 'system', content: '# Identity\n\nYou are Kelly…' });
+    insertMessage({ id: 'm2', agentId: PM, role: 'system', content: '# Identity\n\nYou are Quilba…' });
 
     const shown = readAgentPromptSurface(PM);
 
@@ -176,10 +176,10 @@ describe('the PM card reads the soul the runtime reads', () => {
   it('an edit through the card reaches the runtime (today it writes a row the model never sees)', () => {
     insertMessage({ id: 'm1', agentId: PM, role: 'system', content: NO_REPLY_CLOSED_MARKER });
 
-    writeAgentPromptSurface(PM, '# Identity\n\nYou are Kelly and you validate closes.');
+    writeAgentPromptSurface(PM, '# Identity\n\nYou are Quilba and you validate closes.');
 
-    expect(getSoulContent(PM)).toBe('# Identity\n\nYou are Kelly and you validate closes.');
-    expect(readAgentPromptSurface(PM)).toBe('# Identity\n\nYou are Kelly and you validate closes.');
+    expect(getSoulContent(PM)).toBe('# Identity\n\nYou are Quilba and you validate closes.');
+    expect(readAgentPromptSurface(PM)).toBe('# Identity\n\nYou are Quilba and you validate closes.');
   });
 
   it('the trainer rides the same surface', () => {
@@ -192,10 +192,10 @@ describe('the PM card reads the soul the runtime reads', () => {
 
 describe('controls — nothing else moves', () => {
   it('the primary still reads and writes SOUL.md', () => {
-    fs.writeFileSync(path.join(PROMPTS, 'SOUL.md'), '# Kevin\n\nBe useful.', 'utf-8');
-    expect(readAgentPromptSurface(PRIMARY)).toBe('# Kevin\n\nBe useful.');
-    writeAgentPromptSurface(PRIMARY, '# Kevin\n\nBe brief.');
-    expect(fs.readFileSync(path.join(PROMPTS, 'SOUL.md'), 'utf-8')).toBe('# Kevin\n\nBe brief.');
+    fs.writeFileSync(path.join(PROMPTS, 'SOUL.md'), '# Zargo\n\nBe useful.', 'utf-8');
+    expect(readAgentPromptSurface(PRIMARY)).toBe('# Zargo\n\nBe useful.');
+    writeAgentPromptSurface(PRIMARY, '# Zargo\n\nBe brief.');
+    expect(fs.readFileSync(path.join(PROMPTS, 'SOUL.md'), 'utf-8')).toBe('# Zargo\n\nBe brief.');
   });
 
   it('an ordinary sub-agent shows its stored charter, and an edit round-trips to the runtime', () => {

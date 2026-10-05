@@ -105,9 +105,9 @@ const REPO_ROOT = path.resolve(HERE, '../../../../..');
 const HOME = path.join(TEST_HOME_ROOT, HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
 
-const PRIMARY = 'kevin';
-const PM = 'kelly';
-const TRAINER = 'ticky';
+const PRIMARY = 'zargo';
+const PM = 'quilba';
+const TRAINER = 'tyndo';
 const HEALER = 'healer';
 const IMAGINER = 'imaginer';
 const SUB = 'maxbot';
@@ -150,33 +150,33 @@ beforeEach(async () => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   setConfig('primary_agent_id', PRIMARY);
-  setConfig('primary_agent_name', 'Kevin');
+  setConfig('primary_agent_name', 'Zargo');
   setConfig('pm_agent_id', PM);
-  setConfig('pm_agent_name', 'Kelly');
+  setConfig('pm_agent_name', 'Quilba');
   setConfig('trainer_agent_id', TRAINER);
-  setConfig('trainer_agent_name', 'Ticky');
+  setConfig('trainer_agent_name', 'Tyndo');
   // T59 (W42): two more file-backed souls to re-fill.
   setConfig('healer_agent_id', HEALER);
   setConfig('healer_agent_name', 'Healer');
   setConfig('imaginer_agent_id', IMAGINER);
   setConfig('imaginer_agent_name', 'Iris');
-  setConfig('owner_name', 'David');
+  setConfig('owner_name', 'Marcus');
   const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();
-  seedAgent(PRIMARY, 'Kevin');
-  seedAgent(PM, 'Kelly');
-  seedAgent(TRAINER, 'Ticky');
+  seedAgent(PRIMARY, 'Zargo');
+  seedAgent(PM, 'Quilba');
+  seedAgent(TRAINER, 'Tyndo');
   seedAgent(HEALER, 'Healer');
   seedAgent(IMAGINER, 'Iris');
   seedAgent(SUB, 'Max');
 
   // The stored souls as a worn-in box carries them: SUBSTITUTED, no placeholders left.
   fs.writeFileSync(soulPath('SOUL.md'),
-    '# Kevin\n\nYou are Kevin, the Dojo Master. Kelly runs the tracker; ask Kelly before you plan.\n');
+    '# Zargo\n\nYou are Zargo, the Dojo Master. Quilba runs the tracker; ask Quilba before you plan.\n');
   fs.writeFileSync(soulPath('PM-SOUL.md'),
-    '# Kelly — Project Manager\n\nYou are Kelly, the project manager. Escalate to Kevin.\nKelly does not have iMessage.\n');
+    '# Quilba — Project Manager\n\nYou are Quilba, the project manager. Escalate to Zargo.\nQuilba does not have iMessage.\n');
   fs.writeFileSync(soulPath('TRAINER-SOUL.md'),
-    '# Ticky — Trainer\n\nYou are Ticky, the technique trainer. Report to Kevin.\n');
+    '# Tyndo — Trainer\n\nYou are Tyndo, the technique trainer. Report to Zargo.\n');
   fs.writeFileSync(soulPath('MAXBOT-SOUL.md'),
     '# Max\n\nYou are Max. Max reviews the Maximum-effort queue with Maxwell, and never peaks at climax.\n');
   // T59 (W42): the two souls this task made file-backed, in the shape their templates carry.
@@ -184,9 +184,9 @@ beforeEach(async () => {
   // placeholder, so the rename re-fill is the ONLY thing that can make a renamed Healer's own
   // doctrine call it by its name.
   fs.writeFileSync(soulPath('HEALER-SOUL.md'),
-    '# Identity\n\nYou are the Healer, the dojo\'s self-healing agent. Escalate to Kevin.\n');
+    '# Identity\n\nYou are the Healer, the dojo\'s self-healing agent. Escalate to Zargo.\n');
   fs.writeFileSync(soulPath('IMAGINER-SOUL.md'),
-    '# Identity\n\nYou are Iris, the image specialist. Ask Kevin to run image_create.\n');
+    '# Identity\n\nYou are Iris, the image specialist. Ask Zargo to run image_create.\n');
 });
 
 afterEach(() => {
@@ -213,7 +213,7 @@ describe('a rename reaches the soul, through every door', () => {
     const soul = readSoul('PM-SOUL.md');
     expect(soul).toContain('You are Karen, the project manager');
     expect(soul).toContain('Karen does not have iMessage');
-    expect(soul).not.toContain('Kelly');
+    expect(soul).not.toContain('Quilba');
   });
 
   it('the CONFIG door (Trainer): the other measured casualty follows too', async () => {
@@ -226,7 +226,7 @@ describe('a rename reaches the soul, through every door', () => {
 
     expect(agentName(TRAINER)).toBe('Tock');
     expect(readSoul('TRAINER-SOUL.md')).toContain('You are Tock, the technique trainer');
-    expect(readSoul('TRAINER-SOUL.md')).not.toContain('Ticky');
+    expect(readSoul('TRAINER-SOUL.md')).not.toContain('Tyndo');
   });
 
   it('the SETTINGS door: PUT /api/agents/:id renames and the soul follows', async () => {
@@ -246,13 +246,13 @@ describe('a rename reaches the soul, through every door', () => {
   it('the TOOL door: update_agent renames and the soul follows', async () => {
     const { agentsHandlers } = await import('../../agent/tools/cat/agents.js');
     const out = await agentsHandlers['update_agent']!({
-      agentId: PRIMARY, args: { agent_id: SUB, name: 'Rex' },
+      agentId: PRIMARY, args: { agent_id: SUB, name: 'Zarnak' },
     } as never);
 
     expect(out.isError).toBeFalsy();
-    expect(out.content).toContain('name: "Max" → "Rex"');    // the door's own words, unchanged
-    expect(agentName(SUB)).toBe('Rex');
-    expect(readSoul('MAXBOT-SOUL.md')).toContain('You are Rex');
+    expect(out.content).toContain('name: "Max" → "Zarnak"');    // the door's own words, unchanged
+    expect(agentName(SUB)).toBe('Zarnak');
+    expect(readSoul('MAXBOT-SOUL.md')).toContain('You are Zarnak');
   });
 });
 
@@ -260,10 +260,10 @@ describe('a rename reaches the soul, through every door', () => {
 
 describe('the re-fill is exact', () => {
   it('MANDATORY CONTROL — a common word: "Max" never rewrites Maximum, Maxwell or climax', () => {
-    const out = renameAgent(SUB, 'Rex');
+    const out = renameAgent(SUB, 'Zarnak');
 
     const soul = readSoul('MAXBOT-SOUL.md');
-    expect(soul).toBe('# Rex\n\nYou are Rex. Rex reviews the Maximum-effort queue with Maxwell, and never peaks at climax.\n');
+    expect(soul).toBe('# Zarnak\n\nYou are Zarnak. Zarnak reviews the Maximum-effort queue with Maxwell, and never peaks at climax.\n');
     expect(soul).toContain('Maximum-effort');
     expect(soul).toContain('Maxwell');
     expect(soul).toContain('climax');
@@ -274,7 +274,7 @@ describe('the re-fill is exact', () => {
     const before = fs.readFileSync(soulPath('TRAINER-SOUL.md'));
     const beforeStat = fs.statSync(soulPath('TRAINER-SOUL.md')).mtimeMs;
 
-    renameAgent(SUB, 'Rex');   // "Max" appears nowhere in the trainer's soul
+    renameAgent(SUB, 'Zarnak');   // "Max" appears nowhere in the trainer's soul
 
     expect(fs.readFileSync(soulPath('TRAINER-SOUL.md'))).toEqual(before);
     expect(fs.statSync(soulPath('TRAINER-SOUL.md')).mtimeMs).toBe(beforeStat);
@@ -286,14 +286,14 @@ describe('the re-fill is exact', () => {
 
     // The primary's own SOUL.md names the PM twice. The owner authored it; the ruling says it follows.
     expect(readSoul('SOUL.md')).toBe(
-      '# Kevin\n\nYou are Kevin, the Dojo Master. Karen runs the tracker; ask Karen before you plan.\n');
+      '# Zargo\n\nYou are Zargo, the Dojo Master. Karen runs the tracker; ask Karen before you plan.\n');
     expect(out.souls.find((s) => s.file === 'SOUL.md')?.replacements).toBe(2);
     expect(out.souls.find((s) => s.file === 'PM-SOUL.md')?.replacements).toBe(3);
   });
 
   it('CONTROL: a `{{…}}`-carrying soul is LEFT to the existing re-seed rule, not rename-patched', () => {
     // The W24/W25 shape: an engine-seeded stub that never passed a substituting writer.
-    fs.writeFileSync(soulPath('PM-SOUL.md'), '# {{pm_agent_name}}\n\nYou are {{pm_agent_name}}, and Kelly is stale.\n');
+    fs.writeFileSync(soulPath('PM-SOUL.md'), '# {{pm_agent_name}}\n\nYou are {{pm_agent_name}}, and Quilba is stale.\n');
 
     const out = renameAgent(PM, 'Karen');
 
@@ -309,7 +309,7 @@ describe('the re-fill is exact', () => {
 
   it('a no-op rename writes nothing at all', () => {
     const before = fs.readFileSync(soulPath('PM-SOUL.md'));
-    expect(renameAgent(PM, 'Kelly').renamed).toBe(false);
+    expect(renameAgent(PM, 'Quilba').renamed).toBe(false);
     expect(renameAgent(PM, '   ').renamed).toBe(false);
     expect(fs.readFileSync(soulPath('PM-SOUL.md'))).toEqual(before);
   });
@@ -325,11 +325,11 @@ describe('the re-fill is exact', () => {
 
     expect(row.agent_id).toBe(PM);
     expect(row.action_type).toBe('file_write');
-    expect(row.target).toBe('Kelly → Karen');
+    expect(row.target).toBe('Quilba → Karen');
     expect(row.result).toBe('success');
     const detail = JSON.parse(row.detail) as { kind: string; oldName: string; newName: string; replacements: number; souls: Array<{ file: string; replacements: number }> };
     expect(detail.kind).toBe('agent_rename');
-    expect(detail.oldName).toBe('Kelly');
+    expect(detail.oldName).toBe('Quilba');
     expect(detail.newName).toBe('Karen');
     expect(detail.replacements).toBe(5);                                   // 3 in PM-SOUL.md + 2 in SOUL.md
     expect(detail.souls.map((s) => s.file).sort()).toEqual(['PM-SOUL.md', 'SOUL.md']);
@@ -337,11 +337,11 @@ describe('the re-fill is exact', () => {
 
   it('CONTROL: a rename that touched no soul writes no audit row — the log line is the record', () => {
     seedAgent('nobody', 'Nemo');
-    const out = renameAgent('nobody', 'Nova');
+    const out = renameAgent('nobody', 'Zubel');
 
     expect(out.renamed).toBe(true);
     expect(out.souls).toEqual([]);
-    expect(agentName('nobody')).toBe('Nova');
+    expect(agentName('nobody')).toBe('Zubel');
     expect(mockDb.current!.prepare("SELECT COUNT(*) c FROM audit_log WHERE detail LIKE '%agent_rename%'")
       .get() as { c: number }).toEqual({ c: 0 });
   });

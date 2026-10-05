@@ -93,7 +93,7 @@ import {
 import { COLLECTOR_CAPS } from '../window.js';
 import type { ToolCall } from '@dojo/shared';
 
-const AGENT = 'kevin-handoff';
+const AGENT = 'zargo-handoff';
 
 /** The engine's own numbers, read from the definition rather than copied into this file. */
 const CAP_TOKENS = toolDefinitions.find(d => d.name === 'dojo_report')!.maxResultTokens!;
@@ -135,7 +135,7 @@ function base(): void {
   const db = getDb();
   db.prepare("INSERT OR IGNORE INTO providers (id, name, type, auth_type) VALUES ('p-h', 'P', 'anthropic', 'none')").run();
   db.prepare("INSERT OR IGNORE INTO models (id, provider_id, name, api_model_id) VALUES ('m-h', 'p-h', 'M', 'm')").run();
-  db.prepare("INSERT OR IGNORE INTO agents (id, name, model_id, status) VALUES (?, 'Kevin', 'm-h', 'idle')").run(AGENT);
+  db.prepare("INSERT OR IGNORE INTO agents (id, name, model_id, status) VALUES (?, 'Zargo', 'm-h', 'idle')").run(AGENT);
 }
 
 /** A log entry of a realistic weight (the dev box's `prompt cache usage` line is ~300 bytes). */
@@ -152,7 +152,7 @@ function logEntry(i: number, extra?: Record<string, unknown>): typeof logRows[nu
 function seedOversize(logCount = 200): void {
   base();
   const db = getDb();
-  const longPath = `/Users/dave/Documents/${'deep-folder/'.repeat(12)}quarterly.pdf`;
+  const longPath = `/Users/someone/Documents/${'deep-folder/'.repeat(12)}quarterly.pdf`;
   const longDetail = `denied by a gate: ${'reason text '.repeat(25)}`;
   for (let i = 1; i <= 30; i++) {
     db.prepare(

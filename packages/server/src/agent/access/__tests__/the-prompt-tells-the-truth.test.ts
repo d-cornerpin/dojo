@@ -65,7 +65,7 @@ vi.mock('../../../config/platform.js', async () => {
     isImaginerAgent: () => false,
     getPrimaryAgentId: () => 'primary',
     getPrimaryAgentName: () => 'Primary',
-    getOwnerName: () => 'David',
+    getOwnerName: () => 'Marcus',
   };
 });
 
@@ -185,7 +185,7 @@ describe('the soul capability register', () => {
     // list. Nothing in the register matches, so nothing is edited — which is why
     // his primary's cached prefix cannot move whatever he is granted.
     agent('narrow', { permissions: { can_spawn_agents: false, exec_allow: [] } });
-    const owner = '# Identity\n\nYou are Kevin.\n\n# Rules\n\n- Never modify your own system prompt files.\n';
+    const owner = '# Identity\n\nYou are Zargo.\n\n# Rules\n\n- Never modify your own system prompt files.\n';
     expect(applySoulCapabilityTruth(owner, 'narrow')).toBe(owner);
   });
 
@@ -279,7 +279,7 @@ describe('the strip removes advertisement and never capability', () => {
   it('the two ladder-gated names are DRIVEN to a refusal, not merely asserted about', async () => {
     agent('nogrant', { grants: (g) => { g.channels.master = false; } });
     for (const tool of ['imessage_send', 'imessage_list_contacts']) {
-      const args = { to: 'David', message: 'hi' };
+      const args = { to: 'Marcus', message: 'hi' };
       const channelGate = gatesForCall(tool, args).find((g) => g.kind === 'channel');
       expect(channelGate, `${tool} carries a channel gate`).toBeDefined();
       const outcome = await evaluateGate(channelGate!, {
@@ -300,7 +300,7 @@ describe('the tool guidance stops claiming the capability', () => {
     agent('nogrant', { grants: (g) => { g.channels.master = false; } });
     const guidance = generateToolsGuidance_v2('nogrant');
     expect(guidance).not.toContain('## iMessage');
-    expect(guidance).not.toContain('texts David via iMessage');
+    expect(guidance).not.toContain('texts Marcus via iMessage');
   });
 
   it('and it is BACK the moment the channel is granted', () => {

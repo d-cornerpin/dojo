@@ -55,7 +55,7 @@ const { openTurnContext, endTurnContext } = await import('../../../../turn-conte
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DRIVER = path.resolve(HERE, '..', '..', '..', 'loop.ts');
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 
 function ctxFor(overrides: Record<string, unknown> = {}): Parameters<typeof runFinalize>[1] {
   const turnCtx = openTurnContext(AGENT);
@@ -110,7 +110,7 @@ beforeEach(() => {
       result TEXT, opened_at INTEGER, closed_at INTEGER, repeat_interval TEXT,
       source_message_id TEXT, root_kind TEXT);
   `);
-  db.prepare("INSERT INTO agents VALUES ('kevin', 'working', 0)").run();
+  db.prepare("INSERT INTO agents VALUES ('zargo', 'working', 0)").run();
   mockDb.current = db;
 });
 
