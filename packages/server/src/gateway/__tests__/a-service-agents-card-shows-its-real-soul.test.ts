@@ -32,15 +32,39 @@ import path from 'node:path';
 import fs from 'node:fs';
 import Database from 'better-sqlite3';
 
-// ⚠ PER-PROCESS, AND THAT IS THE FIX FOR A MEASURED FLAKE (backlog 2026-09-26, lanes 3-4:
-// "a FIXED os.tmpdir() path (needs per-run suffix) ... the temp-dir ENOENT under concurrent
-// lanes — same family"). The path was a CONSTANT under the shared system temp dir, and
-// `beforeEach` opens with `rmSync(HOME, {recursive:true})`. Two vitest workers running this
-// file — or its sibling in the same family — therefore deleted each other's fixture mid-run,
-// and the loser failed with ENOENT on a file it had just written. `process.pid` is visible
-// both here and inside the HOISTED mock factory below (which cannot see this module's
-// bindings), so one process can never reach another's directory.
-const HOME_DIR_NAME = `dojo-t40-soul-surface-${process.pid}`;
+// ⚠ PER RUN, PER WORKER — AND THAT IS THE FIX FOR A MEASURED FLAKE (backlog 2026-09-26,
+// lanes 3-4: "a FIXED os.tmpdir() path (needs per-run suffix) ... the temp-dir ENOENT under
+// concurrent lanes — same family").
+//
+// The original path was a CONSTANT under the shared system temp dir, and `beforeEach` opens
+// with `rmSync(HOME, {recursive:true})`. Two vitest workers running this file — or its
+// sibling in the same family — therefore deleted each other's fixture mid-run, and the loser
+// failed with ENOENT on a file it had just written. A `process.pid` suffix closed the
+// worker-vs-worker half of that, and it is NOT the whole ask: the backlog line says per-RUN,
+// and a pid is neither per-run nor collision-proof across concurrent lanes — a pid is reused
+// as soon as the kernel wraps, and a run killed mid-flight leaves its tree behind under the
+// SHARED temp dir for whichever later process inherits that number.
+//
+// This suite already owns a per-run, per-worker, self-cleaning home: `vitest.config.ts`
+// computes ONE run root (`dojo-test-homes/run-<pid>-<base36 ms>`, so it is unique even when
+// pids repeat), injects it into every worker as `DOJO_TEST_HOME_ROOT`, and
+// `vitest.global-setup.ts` removes the whole tree when the run ends. Keeping a second,
+// bespoke temp-dir mechanism beside it is the actual defect; this fixture now hangs off that
+// root, so:
+//
+//   · two concurrent lanes cannot collide — different runs, different roots;
+//   · two workers in one run cannot collide — the worker id and pid are both in the name;
+//   · a killed run strands nothing a later run can inherit — teardown owns the root;
+//   · `rmSync(HOME)` below can only ever delete this test's own subtree.
+//
+// The expression is written TWICE (here and in the HOISTED mock factory, which cannot see
+// this module's bindings) and the `beforeEach` clause asserts the two agree — see there.
+// `os.tmpdir()` stays as the fallback for a run under some other config, with the pid suffix
+// kept so that case is no worse than before.
+const TEST_HOME_ROOT = process.env.DOJO_TEST_HOME_ROOT && process.env.DOJO_TEST_HOME_ROOT !== ''
+  ? process.env.DOJO_TEST_HOME_ROOT
+  : realOs.tmpdir();
+const HOME_DIR_NAME = `t40-soul-surface-w${process.env.VITEST_POOL_ID ?? 'x'}-${process.pid}`;
 
 // The platform resolves `~/.dojo` in exactly one place — `src/home.ts` — so that is
 // what a test redirects. Computed inside the factory, which runs before this module's
@@ -48,7 +72,10 @@ const HOME_DIR_NAME = `dojo-t40-soul-surface-${process.pid}`;
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
-  const dir = p.join(o.tmpdir(), `dojo-t40-soul-surface-${process.pid}`);
+  const root = process.env.DOJO_TEST_HOME_ROOT && process.env.DOJO_TEST_HOME_ROOT !== ''
+    ? process.env.DOJO_TEST_HOME_ROOT
+    : o.tmpdir();
+  const dir = p.join(root, `t40-soul-surface-w${process.env.VITEST_POOL_ID ?? 'x'}-${process.pid}`);
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
@@ -74,7 +101,7 @@ import { getSoulContent } from '../../prompt/assembler.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../../prompt/agent-prompt-surface.js';
 import { NO_REPLY_CLOSED_MARKER } from '@dojo/shared';
 
-const HOME = path.join(realOs.tmpdir(), HOME_DIR_NAME);
+const HOME = path.join(TEST_HOME_ROOT, HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
 
 const PRIMARY = 'kevin';
