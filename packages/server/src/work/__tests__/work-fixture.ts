@@ -73,6 +73,13 @@ export function createWorkTable(db: DatabaseType.Database): void {
       claim_state TEXT NOT NULL, verdict TEXT NOT NULL,
       by_agent TEXT NOT NULL, evidence_ref TEXT, note TEXT, created_at INTEGER NOT NULL
     );
+    -- MIGRATION 178'S INDEXES, so a fixture's QUERY PLANS are the box's query plans. Behaviour-neutral
+    -- by construction (an index changes no result, only the path to it), and without them a reader here
+    -- measures a plan production never runs. That gap is exactly how work_events went unindexed through
+    -- three rebuilds: every box anyone looked at was too small to feel it. (No backticks in this comment
+    -- on purpose -- it lives inside a template literal, and one of them ends the string.)
+    CREATE INDEX IF NOT EXISTS idx_work_events_work_id ON work_events(work_id, kind, created_at);
+    CREATE INDEX IF NOT EXISTS idx_adjudications_work_id ON adjudications(work_id);
     -- The FOURTH reference into work(id) (release-blocker round). techniques.build_project_id is
     -- a caller-supplied work id with no kind constraint, so every path that deletes a work row
     -- must clear it -- which means a fixture WITHOUT this table makes those paths throw
