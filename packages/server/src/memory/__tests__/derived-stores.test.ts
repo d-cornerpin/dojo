@@ -45,6 +45,7 @@ vi.mock('../embeddings.js', () => ({
 
 import { insertMessage } from '../message-store.js';
 import { runMigrations } from '../../db/migrations.js';
+import { checkFtsHealthAndRepair, FTS_RECREATE_SQL, FTS_REBUILD_SQL } from '../fts-health.js';
 import { createLeafSummary, createCondensedSummary, getSummarySourceMessages } from '../dag.js';
 import { memoryGrep } from '../retrieval.js';
 import { vectorSearch } from '../vector-search.js';
@@ -96,7 +97,7 @@ function seedMixedHistory(): { owner: string; peerIn: string; ownOut: string } {
 // ── 1. The search index covers every lane, and its repair path actually repairs ──
 //
 // Migration 127 rebuilt `messages_fts` over the unified table, so a2a rows are indexed for
-// the first time. What was NOT true is the boot-time repair: `messages_fts` is an fts5
+// the first time. What was NOT true is the repair: `messages_fts` is an fts5
 // EXTERNAL-CONTENT table, and on an external-content table a bare `SELECT ... FROM
 // messages_fts` reads through to the content table. So the old probe
 // (`COUNT(*) FROM messages_fts` vs `COUNT(*) FROM messages`, then
@@ -104,6 +105,43 @@ function seedMixedHistory(): { owner: string; peerIn: string; ownOut: string } {
 // against itself: it reports parity while the index is genuinely missing rows, and its
 // repair INSERT selects nothing. Measured on a VACUUM INTO copy of the live box before
 // this test was written. A search index whose self-heal cannot fire is a dead guard.
+//
+// ⚠ THE OWNER OF THAT REPAIR MOVED, AND THESE TWO CLAUSES MOVED WITH IT (t98 D3). The repair
+// used to run inside `runMigrations()`, hundreds of lines ahead of the port bind, where
+// fts5's `'rebuild'` on a 729 MB database is minutes of synchronous C++ on the thread about
+// to serve HTTP — so that region is DELETED and `memory/fts-health.ts` owns every repair
+// case, on another thread, 45 s after the box is already serving. The PROPERTY these clauses
+// guard is unchanged and is still the point: a row missing from the index is detected and
+// repaired, and an already-consistent index is left alone. Only the door changed, and these
+// clauses now knock on the new one. (`fts-health.ts`'s own repair opens a second WRITABLE
+// connection by path, which an in-memory database has no way to offer, so the worker is
+// injected here — the module still decides WHAT to repair, which is what is under test.)
+
+/**
+ * `checkFtsHealthAndRepair` with its two seams pointed at this file's single in-memory connection.
+ * The MODULE still probes and still decides the plan; only the worker that would open a second
+ * writable connection by path — impossible for `:memory:` — is stood in for.
+ */
+async function repairViaHealthCheck(): Promise<Awaited<ReturnType<typeof checkFtsHealthAndRepair>>> {
+  const count = (sql: string): number => (db().prepare(sql).get() as { n: number }).n;
+  return checkFtsHealthAndRepair({
+    run: async (sql, params = []) => db().prepare(sql).all(...params) as unknown[],
+    repair: async (plan) => {
+      const started = Date.now();
+      try {
+        db().exec(plan === 'recreate' ? FTS_RECREATE_SQL : FTS_REBUILD_SQL);
+      } catch (err) {
+        return {
+          ok: false, ms: Date.now() - started, indexedRows: null, tableRows: null,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+      const indexedRows = count('SELECT COUNT(*) AS n FROM messages_fts_docsize');
+      const tableRows = count('SELECT COUNT(*) AS n FROM messages');
+      return { ok: indexedRows === tableRows, ms: Date.now() - started, indexedRows, tableRows };
+    },
+  });
+}
 
 describe('the search index runs on one keyspace', () => {
   it('history_search reaches every lane, not just the owner conversation', async () => {
@@ -116,7 +154,7 @@ describe('the search index runs on one keyspace', () => {
     expect(ownerHits).toContain('marmalade');
   });
 
-  it('a row missing from the index is DETECTED and REPAIRED on the next boot', async () => {
+  it('a row missing from the index is DETECTED and REPAIRED by the background health check', async () => {
     const seeded = seedMixedHistory();
     const target = one<{ rowid: number; content: string }>(
       'SELECT seq AS rowid, content FROM messages WHERE id = ?', seeded.peerIn,
@@ -132,9 +170,19 @@ describe('the search index runs on one keyspace', () => {
     expect(await memoryGrep(AGENT, { pattern: 'harbourmaster', scope: 'messages' }))
       .toContain('No results found');
 
-    // The boot path. Every migration is already recorded, so this is exactly the
-    // no-pending-work boot that the FTS repair region exists to serve.
+    // ⚠ AND THE BOOT PATH NO LONGER DOES THIS, WHICH IS THE OTHER HALF OF THE CLAIM. Every
+    // migration is already recorded, so this is exactly the no-pending-work boot the old
+    // repair region served — and the index must come back from it STILL broken.
     runMigrations();
+    expect(await memoryGrep(AGENT, { pattern: 'harbourmaster', scope: 'messages' }),
+      'the migration runner repaired the index at boot — the boot-blocking region is back')
+      .toContain('No results found');
+
+    // The background health check is where that work lives now.
+    const out = await repairViaHealthCheck();
+    expect(out.health.state, 'the drift was not detected').toBe('unpopulated');
+    expect(out.plan).toBe('rebuild');
+    expect(out.result?.ok, `the background repair failed: ${out.result?.error}`).toBe(true);
 
     const repaired = await memoryGrep(AGENT, { pattern: 'harbourmaster', scope: 'messages' });
     expect(repaired).not.toContain('No results found');
@@ -142,12 +190,17 @@ describe('the search index runs on one keyspace', () => {
     expect(repaired).toContain(seeded.peerIn.slice(0, 8));
   });
 
-  it('the repair leaves an already-consistent index untouched', () => {
+  it('the repair leaves an already-consistent index untouched', async () => {
     seedMixedHistory();
     const before = one<{ c: number }>(
       "SELECT COUNT(*) c FROM messages_fts WHERE messages_fts MATCH 'harbourmaster'",
     ).c;
     runMigrations();
+    const out = await repairViaHealthCheck();
+    // A healthy index earns no repair at all, which is stronger than "the count did not move".
+    expect(out.health.state).toBe('healthy');
+    expect(out.plan).toBe('none');
+    expect(out.result).toBeNull();
     const after = one<{ c: number }>(
       "SELECT COUNT(*) c FROM messages_fts WHERE messages_fts MATCH 'harbourmaster'",
     ).c;
