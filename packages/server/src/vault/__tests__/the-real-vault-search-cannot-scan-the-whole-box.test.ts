@@ -30,6 +30,41 @@ const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-t98-vault-'));
 const dbPath = path.join(dbDir, 'fixture.db');
 let readDb: Database.Database | null = null;
 
+/**
+ * ⚠ EVERY READ THE SERVING CONNECTION ACTUALLY RAN, recorded by SQL.
+ *
+ * The starvation numbers answer "is the loop alive"; this answers the different question "did the
+ * work leave this thread", and it answers it as a COUNT rather than a stopwatch — so it means the
+ * same thing on an idle box and on one with nine other suites running. It exists because the first
+ * cut of the starvation clause survived a mutant that deleted the pool fork entirely: chunking with a
+ * breath between chunks already recovers most of the serviceability (43 % measured), and the pool
+ * recovers the rest (63 %). Two real halves, and only one of them is visible to a timing threshold.
+ */
+let onThreadReads: string[] = [];
+
+/** `getDb()`, wrapped so every `.all()` / `.get()` on this thread's connection is recorded. */
+function recordingDb(real: Database.Database): Database.Database {
+  const wrapStatement = (sql: string, stmt: unknown): unknown => new Proxy(stmt as object, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop) as unknown;
+      if (prop === 'all' || prop === 'get') {
+        return (...args: unknown[]) => {
+          onThreadReads.push(sql.replace(/\s+/g, ' ').trim());
+          return (value as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      }
+      return typeof value === 'function' ? (value as () => unknown).bind(target) : value;
+    },
+  });
+  return new Proxy(real, {
+    get(target, prop) {
+      if (prop === 'prepare') return (sql: string) => wrapStatement(sql, real.prepare(sql));
+      const value = Reflect.get(target, prop) as unknown;
+      return typeof value === 'function' ? (value as () => unknown).bind(target) : value;
+    },
+  }) as Database.Database;
+}
+
 /** Captured warns, so the LOUD-truncation clause reads the same logger the module under test uses. */
 const warns: Array<{ msg: string; meta: Record<string, unknown> }> = [];
 vi.mock('../../logger.js', () => ({
@@ -42,7 +77,7 @@ vi.mock('../../db/connection.js', () => ({
   getDbPath: () => dbPath,
   getDb: () => {
     if (!readDb) throw new Error('fixture not open');
-    return readDb;
+    return recordingDb(readDb);
   },
 }));
 
@@ -141,6 +176,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   warns.length = 0;
+  onThreadReads = [];
   resetVaultReadWarnsForTest();
   resetReaderPoolForTest();
 });
@@ -270,6 +306,52 @@ describe('⚠ THE REPRODUCTION — the same search, on a grown fixture, before a
     console.log(`VAULT PLAN  pre-fix unbounded scan: ${prePlan.map((p) => p.detail).join(' | ')}`);
     expect(prePlan.map((p) => p.detail).join(' | ')).not.toMatch(/rowid>\?/);
   });
+});
+
+describe('⚠ THE WORK LEAVES THIS THREAD — counted, not timed', () => {
+  it('a pooled candidate scan runs NO page read on the serving connection', async () => {
+    await warmReaderPool();
+    onThreadReads = [];
+    const scan = await scanVaultCandidates({
+      label: 'vault_semantic', queryEmbedding: queryVector(),
+      conditions: ['is_obsolete = 0', 'embedding IS NOT NULL'], params: [],
+    });
+    expect(scan.scored).toHaveLength(ROWS);
+
+    // ⚠ ZERO, NOT "FEWER". Ten chunks of page reads either happened on this connection or they did
+    // not, and a count cannot be argued with the way a millisecond can. Delete the pool fork and this
+    // reads ten.
+    const pageReads = onThreadReads.filter((s) => s.includes('embedding, rowid AS rid'));
+    expect(pageReads, 'the candidate page ran on the serving connection — the pool was bypassed')
+      .toEqual([]);
+    // What DOES stay on this thread is one O(log n) seek against the integer primary key, which is
+    // cheaper than the round trip that would replace it, and it is stated at the site.
+    expect(onThreadReads.filter((s) => s.includes('MAX(rowid)')),
+      'the window cost more than one indexed seek on the serving thread').toHaveLength(1);
+  }, 180_000);
+
+  it('a pooled winners fetch runs no body read on the serving connection either', async () => {
+    await warmReaderPool();
+    onThreadReads = [];
+    const rows = await fetchVaultRowsByIds<{ id: string }>({
+      label: 'vault_semantic', ids: ['v-1', 'v-2', 'v-3'],
+    });
+    expect(rows).toHaveLength(3);
+    expect(onThreadReads.filter((s) => s.startsWith('SELECT * FROM vault_entries WHERE id IN')),
+      'the winners\' bodies were read on the serving connection').toEqual([]);
+  }, 60_000);
+
+  it('the pooled LIKE walk runs neither its cost read nor its page on this connection', async () => {
+    await warmReaderPool();
+    onThreadReads = [];
+    await vaultLikeScan<{ id: string }>({
+      scope: ['is_obsolete = 0'], scopeParams: [],
+      match: ['content LIKE ?'], matchParams: ['%entry 4242%'],
+      limit: 2,
+    });
+    const walked = onThreadReads.filter((s) => /content LIKE|COUNT\(\*\) AS n, COALESCE/.test(s));
+    expect(walked, 'the exact search walked the table on the serving connection').toEqual([]);
+  }, 180_000);
 });
 
 describe('⚠ THE ANSWERS ARE THE PRE-FIX ANSWERS — a bound that moves results is a bug', () => {
