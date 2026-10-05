@@ -4,6 +4,7 @@ import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-
 import { turnContext } from '../agent/turn-context.js';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { clearReReviewBound, reReviewHeldBack } from './pm-rereview-bound.js';
 // SWEEP CORE-2 item 2: the PM's one status write goes through the ONE writer.
 import { writeAgentStatus } from '../agent/agent-status.js';
 import {
@@ -2199,6 +2200,10 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
     // {A} -> {} -> {A} (the same issue-set recurring after being fully resolved)
     // compared equal to the stale hash and was skipped until a restart.
     lastSituationReportHash = '';
+    // t89: and the re-review backoff with it. A resolved set that recurs must arrive on a FRESH
+    // schedule, not carrying the gap it earned while it was wedged — the same harm AUDIT-FIX's own
+    // hash clear above prevents, by a second route.
+    clearReReviewBound();
     // TB8 JOB 2: was `logger.debug`, which `logger.ts:21` pins out of existence in
     // production (`setLogLevel` is never called). A skip nobody can read is the silent
     // skip the owner ruled against; this one is benign but it must still be READABLE.
@@ -2230,6 +2235,20 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
     // `bmsgs7qejup` — it now says how much validation work it is skipping over.
     logger.info('PM review: actionable issue-set unchanged since last review, skipping (no re-notify)', {
       pendingValidation: pendingValidationCount, issues: issues.length,
+    });
+    return;
+  }
+  // ⚠ THE RE-REVIEW BOUND (t89). Something RELEASED the hash — a review that ruled on nothing, or a
+  // thrown one — and until now that release had no ceiling: three permanently-pending validations
+  // bought a full PM review every 60 seconds for hours. The schedule, the placement argument and the
+  // reason the clock cannot come from the durable attempt ledger are in `pm-rereview-bound.ts`.
+  const backoff = reReviewHeldBack({
+    key: reportHash, nowMs: Date.now(), baseGapMs: POKE_INTERVAL_MS, doorbell: carriedDoorbell,
+  });
+  if (backoff.heldBack) {
+    logger.info('PM review: the unchanged issue-set is inside its re-review backoff, skipping (it is still queued, not dropped)', {
+      pendingValidation: pendingValidationCount, issues: issues.length,
+      reDrives: backoff.drives, waitedMs: backoff.waitedMs, gapMs: backoff.gapMs,
     });
     return;
   }
