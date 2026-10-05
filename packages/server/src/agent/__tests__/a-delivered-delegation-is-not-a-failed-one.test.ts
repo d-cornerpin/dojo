@@ -85,6 +85,12 @@ describe('§1 the pieces\' own states say which failure happened', () => {
     const silent = joinFailureReason([piece('abandoned'), piece('abandoned')]);
     expect(silent).toContain('2 never answered');
     expect(silent, 'nothing came back, so nothing may be called a reply').not.toMatch(/empty|FAIL/);
+    // FIX ROUND 1 (C1): this clause never sees the owner's SENTENCE — it reads the recorded
+    // reason, the other consumer of the same derivation — so the same lie-rejector is stated
+    // here too. The row and the notice are minted from one tally on purpose; a reader who
+    // tightens one of the two and leaves the other is how the pair comes apart again.
+    expect(silent, '⛔ the audit row may not say they answered either (C1)')
+      .not.toMatch(/\bthey answered\b|\band answered\b/);
 
     const mixed = joinFailureReason([piece('abandoned'), piece('failed', 'no'), piece('done', '')]);
     expect(mixed).toContain('1 never answered');
@@ -115,7 +121,17 @@ describe('§2 the owner-facing notice', () => {
     expect(text, 'who it went to').toContain('Ana');
     expect(text, 'how long it waited').toMatch(/waited 45 seconds/);
     expect(text, 'what was asked').toContain('can you pull the figures');
-    expect(text, 'that no answer came').toMatch(/answered/);
+    // ⚠ RE-AIMED IN FIX ROUND 1 (review finding C1), AND THIS IS THE CLAUSE THAT LET THE LIE
+    // THROUGH. It matched `/answered/`, which the SINGULAR sentence *"…to Ana, and they
+    // answered."* satisfied perfectly — the negation had been written into the plural word only,
+    // so the one-delegate case (this report's own) asserted the exact opposite of the truth and
+    // the clause nodded along. "Judge tests by user expectation": a notice a person would read as
+    // "my agent got an answer" is a FAILURE here, however many substrings match. So the clause
+    // now demands the negation AND rejects the lie by name — both halves, because either one
+    // alone is satisfiable by a sentence that is wrong in the other direction.
+    expect(text, 'that no answer came').toMatch(/never answered|did not answer/);
+    expect(text, '⛔ and silence is never rendered as a reply (C1)')
+      .not.toMatch(/\bthey answered\b|\band answered\b/);
     // ⚠ The two claims the report called contradictory, now impossible together.
     expect(text, 'the send succeeded and the notice must not disown it').toMatch(/delivered/);
     expect(text, 'and it must not describe silence as a reply')
@@ -133,7 +149,13 @@ describe('§2 the owner-facing notice', () => {
     expect(text).toContain('Ana');
     expect(text).toContain('Bo');
     expect(text, 'ten minutes reads as minutes, not 600 seconds').toMatch(/waited 10 minutes/);
-    expect(text).toMatch(/none of them/);
+    // FIX ROUND 1 (C1): the PLURAL arity gets the same two halves as the singular one. This arity
+    // was the one that happened to be correct, which is exactly why it is pinned — the defect was
+    // a negation shared between two arities, and a clause that only watches the arity that broke
+    // lets the next edit lose the other one.
+    expect(text).toMatch(/none of them answered/);
+    expect(text, '⛔ nor may several silent peers be rendered as having replied (C1)')
+      .not.toMatch(/\bthey answered\b|\band answered\b/);
   });
 
   it('a genuine refusal is reported as a refusal, not as silence', () => {

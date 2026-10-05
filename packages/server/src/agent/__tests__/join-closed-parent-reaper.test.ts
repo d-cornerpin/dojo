@@ -186,7 +186,16 @@ describe('#19: the reaper reaches a join whose parent has already closed', () =>
     // having "come back empty, failed or abandoned", i.e. as a reply that was not one. The
     // property the clause was reaching for is unchanged and is now stated directly: the owner is
     // told no answer arrived, and is told WHO and HOW LONG so a retry is judgeable.
-    expect(msgs[0].content, 'the owner must be told no answer arrived').toMatch(/answered|no answer/i);
+    //
+    // ⚠ RE-AIMED AGAIN IN FIX ROUND 1 (review finding C1). The re-aim above was right in
+    // DIRECTION and still a coin flip: `/answered|no answer/i` was satisfied by the inverted
+    // sentence this very path mints — ONE abandoned piece, so the SINGULAR arity, which read
+    // *"and they answered."* The alternation had to go, and the lie it tolerated is now rejected
+    // explicitly beside it.
+    expect(msgs[0].content, 'the owner must be told no answer arrived')
+      .toMatch(/never answered|did not answer/i);
+    expect(msgs[0].content, '⛔ and never that the silence was a reply (C1)')
+      .not.toMatch(/\bthey answered\b|\band answered\b/i);
     expect(msgs[0].content, 'the piece here was abandoned, so nothing came back — do not claim a reply')
       .not.toMatch(/came back empty, failed or abandoned/i);
     expect(msgs[0].content, 'and the delivery is not disowned: it was sent, nothing errored')

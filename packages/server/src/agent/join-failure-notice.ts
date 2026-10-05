@@ -134,10 +134,20 @@ export function joinFailureNotice(p: NoticeInput): string {
 
   // The lead sentence is the one that has to be TRUE. Silence dominates when it is present: it is
   // the case the report hit, and the one the old wording described worst.
+  //
+  // ⛔ THE NEGATION IS SPELLED OUT IN EVERY ARITY, AND THAT IS NOT A STYLE CHOICE. The first cut
+  // of this sentence interpolated `${plural ? 'none of them' : 'they'} answered`, which put the
+  // negation inside the PLURAL WORD ONLY — so ONE silent delegate, which is live-test report #3's
+  // exact case, was told to the owner as *"…to <name>, and they answered."* That is the opposite
+  // of the truth, in the single case this module was built to stop lying about. It shipped past
+  // three clauses that matched `/answered/` and were satisfied by the lie; the fresh reviewer
+  // caught it. A future edit here keeps its own "never": do not re-factor the negation into a
+  // shared suffix, because a shared suffix is what made one arity able to lose it.
   const lead = t.silent > 0 && t.refused === 0 && t.empty === 0
     ? `your agent delegated ${plural ? 'parts of this' : 'this'} to ${who}`
-      + `${waited ? ` and waited ${waited}` : ''}, and ${plural ? 'none of them' : 'they'} `
-      + `answered. The ${plural ? 'messages were' : 'message was'} delivered — nothing errored — `
+      + `${waited ? ` and waited ${waited}` : ''}, and `
+      + `${plural ? 'none of them answered' : 'they never answered'}. `
+      + `The ${plural ? 'messages were' : 'message was'} delivered — nothing errored — `
       + `so the platform stopped waiting rather than leaving you in silence.`
     : t.silent > 0
       ? `your agent delegated ${plural ? 'parts of this' : 'this'} to ${who}`
