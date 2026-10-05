@@ -6357,13 +6357,48 @@
       "to": 372,
       "by": "t89 deliverable 3 — the T10 reader-guard correction, in the same file's first week",
       "why": "+10, of which ONE is code: the repair's populate statement becomes `SELECT seq AS rowid, content FROM messages` instead of a bare `rowid`. The other 9 are the reason, and it is a reason a future reader will otherwise undo, because the bare form is what the MIGRATION writes and copying the migration looks like the careful thing to do. T10's reader guard (`memory/__tests__/lane-readers.test.ts`) refuses a bare `rowid` projection over `messages` anywhere in TypeScript: `seq` is the table's rowid alias since migration 133, so SQLite names that result column `seq`, a JavaScript `row.rowid` read returns `undefined`, and nothing throws — the shape that broke 45 tests silently. ⚠ AND THE GUARD IS RIGHT HERE EVEN THOUGH THIS PROJECTION IS NEVER READ FROM JAVASCRIPT: the INSERT binds positionally, so the column name cannot matter to the repair, and a rule with an exception for 'this one only lives inside SQL' is a rule the next author reasons their way around. The previous builder of this same package hit the identical guard with the identical lesson (`6da41817`). ALTERNATIVES REFUSED. (a) Keep the bare form and widen the guard to skip INSERT…SELECT (+0 here, and a gate file touched): REFUSED outright — weakening a guard to admit a shape it correctly refuses is the trade this project exists to not make, and the guard's own comment records it being over-narrow once already. (b) Keep the bare form and allowlist this file: REFUSED for the same reason, and an allowlist entry costs more lines than the fix. (c) Drop the 9 comment lines and keep the one-line fix (+1): REFUSED — the bare form is in the migration two directories away and reads as the authoritative spelling; without the note, 'make it match the migration' is a change a careful reader would make and a clause would then have to catch twice. From 372 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/fts-health.ts",
+      "from": 372,
+      "to": 536,
+      "by": "t89 FIX ROUND 1 — I1 (interruptible, atomic repair) + I8 (state-accurate line)",
+      "why": "+164 (about 60 code, 104 comment). THE CODE: a chunked populate loop with a synchronous stop poll, `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK` around the three statements, `stopFtsRepair()` with its grace timer and live-worker handle, the split `FTS_DROP_SQL`/`FTS_CREATE_SQL`/`FTS_DELETE_ALL_SQL`/`FTS_POPULATE_CHUNK_SQL` constants, two new tunables, and the per-state `meanwhile` sentence. THE COMMENT WEIGHT IS THREE MEASUREMENTS AND TWO OF MY OWN DEFECTS, and every one of them is a thing a future reader would otherwise undo. (1) WHY CHUNKED: `process.exit()` JOINS a worker and nothing in JavaScript preempts `sqlite3_step` — measured at 5,630 ms for a 4.65 s statement with exit requested at +404 ms, and a 729 MB rebuild is minutes, so a SIGTERM hung until launchd SIGKILLed and the transaction rolled back. The chunk size is a SHUTDOWN BUDGET, which is the sentence that stops someone raising it to 500,000 for throughput. (2) WHY `receiveMessageOnPort` AND NOT A LISTENER: the populate loop is synchronous, so the worker's event loop never turns and `parentPort.on('message')` CANNOT FIRE — my first cut used one and the stop flag could never change, i.e. the interruptibility was dead behind its own backstop. A reader who 'tidies' the poll into a listener restores that. (3) WHY THE GRACE: my first `stopFtsRepair` posted the stop and terminated on the next line; the kill won every race. (4) WHY ONE TRANSACTION: autocommit left the index PRESENT AND EMPTY for the whole populate, during which MATCH succeeded with zero rows, nothing threw, the fallback was NOT taken, and every search returned 'No results' looking healthy — plus the note that SQLite permits CREATE VIRTUAL TABLE in a transaction and the rule forbidding a rebuild in one belongs to the migration RUNNER. (5) WHY THE LOG LINE FORKS ON STATE: 'takes the bounded LIKE fallback' is true for `missing`/`corrupt` and FALSE for `unpopulated`/`stale`, where the index still answers. ALTERNATIVES REFUSED: (a) keep the single-statement rebuild and accept the SIGKILL (+0) — refused, the next boot redoes it on the boot path; (b) drop the transaction and rely on the repair being fast (-10) — refused, it is minutes by construction on the box that needs it; (c) move the chunk loop into a second module (-60 here) — refused, it is six lines of loop around this file's own SQL and splitting it would put the stop protocol in one file and the statements it guards in another. From 536 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/retrieval.ts",
+      "from": 884,
+      "to": 980,
+      "by": "t89 FIX ROUND 1 — C1 (the honest floor) + I5 (the cheap span) + I4 (where the work ran) + I6 (a bounded miss is loud)",
+      "why": "+96 (about 30 code, 66 comment) across four findings that all land on the same four search sites. THE CODE: a per-agent `MIN(seq)` floor and the global summaries MIN/MAX, each as TWO single-aggregate statements; `floorRowid` passed at four scan sites; one `crumbFor` helper so a breadcrumb says where its work ran; and the I6 bounded-miss warn plus its one agent-facing line. THE COMMENT WEIGHT IS THE REPRODUCTIONS, and they are the reason the lines are defensible. C1: a 300,000-row two-agent fixture where 50 matching rows came back as 0 with `stoppedBecause:'exhausted'`, `truncated:false` and 60,000 rows of budget left — a bound that bounded the ANSWER and reported it complete — because chunks are GLOBAL key ranges and `rowsExamined` counts only this agent's rows. I5: `summaries` has NO INDEX AT ALL (grep-verified), so the per-agent MAX was a reverse table walk at 1.5-55 ms on the serving thread. AND THE MEASUREMENT THAT CAUGHT MY OWN FIRST CUT: `SELECT MIN(x), MAX(x)` in one statement loses SQLite's min/max optimisation (23.457 ms vs 0.015/0.007 ms) and EXPLAIN QUERY PLAN PRINTS THE IDENTICAL STRING, so a plan clause would have passed it — that paragraph is why the span is two statements and must not be 'tidied' back. I4: after the wire, a live breadcrumb during a stall can be work that was never on the thread. I6: the FTS floor silently dropped older matches with no warn and nothing in the result — the same 'warn nobody sees' the LIKE arm was fixed for, reintroduced on the other arm by the fix. ALTERNATIVES REFUSED: (a) infer the floor instead of reading it (+0) — that IS the C1 defect; (b) index `summaries(agent_id)` and keep the per-agent MAX (+0 here, a migration) — out of fence, and the global bound is the correct axis for the cost anyway since `summaries_fts MATCH` ranks every agent's rows before the agent filter; (c) factor the three near-identical fork+walk blocks into one helper (-90, review M4) — a real question and deliberately NOT taken in a fix round: it would rewrite all three search paths in the same commit that fixes a Critical in them. It is the right next change and belongs in its own commit with its own blast radius. From 980 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/reader-pool.ts",
+      "from": 264,
+      "to": 336,
+      "by": "t89 FIX ROUND 1 — I3 (the fallback engages) + I7 (a kill takes only its own work)",
+      "why": "+72 (about 30 code, 42 comment). THE CODE: `failPool` and `failPendingFor`, the `sawFirstReply` latch seam, `betterSqliteModulePath()`, a `worker` field on `Pending`, and the two handler branches that use them. WHAT IT BUYS: the warn 'searches stay on the serving thread' is now TRUE — before, every asynchronous failure (database not openable read-only, native module unresolvable, thread cannot start) left `readerPoolAvailable()` answering true, so every read rejected, both arms rejected, and `history_search` ERRORED while the sync path sat unused. THE COMMENT WEIGHT IS TWO DISTINCTIONS a reader will otherwise collapse. (1) WHY `sawFirstReply` RATHER THAN LATCHING EVERY ERROR: an error before the first reply is a broken worker and a respawn re-runs the same failure once per search; an error after one is the measured self-healing case the first round built deliberately. Collapsing them either way loses a real behaviour. (2) WHY `Pending.worker` RATHER THAN WIDENING THE EXIT HANDLER: the `worker === w` guard that caused I7 is itself the fix for a REAL bug — `terminate()` resolves before `exit`, so a blanket fail-on-exit rejects the REPLACEMENT's innocent caller — and both directions now have a clause. A reader who 'simplifies' this to one blanket handler restores that bug; the comment says so at the field. ALTERNATIVES REFUSED: (a) latch on every error (-8) — kills the measured self-healing; (b) widen the exit handler (-10) — restores the innocent-caller bug; (c) keep the bare `require('better-sqlite3')` because production's cwd makes it work (-6) — refused: that is luck, not design, and I hit the exact resolution failure building this round's reproduction. From 336 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/search-bounds.ts",
+      "from": 252,
+      "to": 296,
+      "by": "t89 FIX ROUND 1 — C1, the floor the walk is TOLD instead of inferring",
+      "why": "+44, of which 6 are code: a `floorRowid` option on both scanners, the loop condition reading it, and the DELETION of the zero-rows break (which is why the net is not +50). The other 38 are the C1 reproduction and the cost of the fix, and both are load-bearing. THE REPRODUCTION, verbatim in the header: 50 rows matched, the walk returned 0, the report said `exhausted`/`truncated:false` with 60,000 rows of budget left — so `logBoundedFallback` announced a COMPLETE answer where the pre-fix unbounded walk found all fifty. Without that paragraph the deleted break reads as a sensible termination guard and the next reader restores it; WITH it, the two questions it confused ('did this chunk examine any of my rows' versus 'is there anything older of mine') are named. THE COST IS ALSO STATED rather than discovered: a sparse agent now walks every chunk between its newest and oldest key, bounded by its key SPAN over `LIKE_CHUNK_ROWS` (~50 chunks on a million-row database), each empty chunk two indexed reads, with the row and byte budgets still capping the real work. ALTERNATIVES REFUSED: (a) keep the break and have the caller pass a 'chunks with no rows seen so far' tolerance (+10) — a tolerance is a second guess about the same unknowable thing; (b) make `rowsExamined` count ALL rows in the range rather than the agent's (+2) — refused, it would silently change what the row BUDGET means and make the logged cost a lie in the other direction. From 296 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/index.ts",
+      "from": 1302,
+      "to": 1310,
+      "by": "t89 FIX ROUND 1 — I1's shutdown wire",
+      "why": "+8: two import edits, two calls and a six-line reason. `shutdown` never stopped either worker thread, and `process.exit()` JOINS them — measured 5,630 ms for a 4.65 s statement, and an FTS repair is minutes, so a SIGTERM during the once-per-box rebuild hung until launchd's 20-second `ExitTimeOut` SIGKILLed the process and the transaction rolled back. `stopFtsRepair()` asks the repair to stop at its next chunk boundary and `terminateReaderPool()` ends the read side; both are no-ops when nothing is running. The comment carries the measurement and the asymmetry — the reader pool's exposure was already bounded by its 15 s deadline, the repair's was not bounded at all — because a reader who sees two similar calls will otherwise assume one is redundant. ALTERNATIVES REFUSED: (a) rely on `unref()` (+0, and it is what the code already did) — `unref` lets the loop drain, it does not make exit skip the join; (b) `terminate()` the repair instead of asking it to stop (-2) — refused, that kills it mid-transaction for no gain over the clean boundary, and it is already the backstop inside `stopFtsRepair`. From 1310 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
   "files": {
     "packages/server/src/report/bounds.ts": 311,
-    "packages/server/src/memory/reader-pool.ts": 264,
-    "packages/server/src/memory/search-bounds.ts": 252,
+    "packages/server/src/memory/reader-pool.ts": 336,
+    "packages/server/src/memory/search-bounds.ts": 296,
     "packages/server/src/services/num-ctx-calculator.ts": 563,
     "packages/server/src/report/telemetry-whitelist.ts": 241,
     "packages/server/src/agent/brokers/sudo-probe.ts": 83,
@@ -6554,7 +6589,7 @@
     "packages/server/src/healer/diagnostic.ts": 1067,
     "packages/server/src/healer/healer-agent.ts": 1186,
     "packages/server/src/healer/injury-recovery.ts": 1155,
-    "packages/server/src/index.ts": 1302,
+    "packages/server/src/index.ts": 1310,
     "packages/server/src/memory/assembler.ts": 2745,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
@@ -6566,7 +6601,7 @@
     "packages/server/src/memory/other-threads-lane.ts": 276,
     "packages/server/src/memory/recall-lane.ts": 901,
     "packages/server/src/memory/recall.ts": 510,
-    "packages/server/src/memory/retrieval.ts": 884,
+    "packages/server/src/memory/retrieval.ts": 980,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 458,
@@ -6661,7 +6696,7 @@
     "packages/server/src/memory/tail-horizon.ts": 369,
     "packages/server/src/tracker/assignee-patience.ts": 208,
     "packages/server/src/agent/tools/assignment-capability.ts": 139,
-    "packages/server/src/memory/fts-health.ts": 372,
+    "packages/server/src/memory/fts-health.ts": 536,
     "packages/server/src/tracker/pm-rereview-bound.ts": 147
   }
 }
