@@ -18,7 +18,7 @@
 // §3 the warning's words, and ⚠ §4 the WIRE at both spawn texts
 // ════════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -32,13 +32,45 @@ vi.mock('../../../db/connection.js', () => ({
   },
   closeDb: vi.fn(),
 }));
+/**
+ * ⚠ FIX ROUND 3 — THE LOGGER IS STUBBED, AND IT IS A HANDLE FIX, NOT TIDINESS.
+ *
+ * This file drives `runMigrations()` against the real migration set, which logs heavily, and the
+ * real logger is a BUFFERED ASYNC WRITER: `writeEntry` queues `fs.appendFile` and arms a 500 ms
+ * flush timer (`logger.ts:61-89`). MEASURED with `process.getActiveResourcesInfo()` in an
+ * `afterAll`: this file finished holding **81 in-flight `FSReqCallback`** handles — 81 filesystem
+ * writes still in the worker's event loop after the last clause passed. The merge gate's full-suite
+ * run then exited 1 on `[vitest-worker]: Timeout calling "onTaskUpdate"`: a worker saturated with
+ * queued filesystem work does not service its RPC to the main process in time. Main's control runs
+ * were clean because this file is NEW in t90 — the package was adding the handles.
+ *
+ * Stubbing `createLogger` takes the count to ZERO (81 → 0, re-measured), which is the root cause
+ * removed rather than a timeout raised. Nothing here asserts on a log line, so nothing is lost; a
+ * clause that ever does should capture the logger the way
+ * `tracker/__tests__/the-pm-waits-for-the-model-it-assigned.test.ts` does, not un-stub it.
+ */
+vi.mock('../../../logger.js', () => ({
+  createLogger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
+  setLogLevel: () => { /* no-op */ },
+  setLogBroadcast: () => { /* no-op */ },
+  readLogEntries: () => [],
+}));
+/**
+ * ⚠ FIX ROUND 3: the home this mock hands out is the WORKER'S OWN throwaway home, not one fixed
+ * path shared by every worker and every run. It used to be `<os tmpdir>/dojo-t90-assignment-capability` —
+ * one directory, which is the problem `vitest.setup.ts` had already solved: `DOJO_HOME` gives
+ * each worker a private home precisely so concurrent workers cannot write the same tree
+ * (`src/home.ts`'s header records the run that destroyed the owner's log history doing exactly
+ * that). The mock survives only because it must never resolve the REAL home either, so it reads
+ * the sandbox the setup file set and fails loudly if that is missing.
+ */
 vi.mock('../../../home.js', async () => {
   const p = await import('node:path');
-  const o = await import('node:os');
-  const dir = p.join(o.tmpdir(), 'dojo-t90-assignment-capability');
+  const home = process.env.DOJO_HOME;
+  if (!home) throw new Error('DOJO_HOME is unset: vitest.setup.ts gives each worker its own home');
   return {
-    homeDir: (): string => dir,
-    dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
+    homeDir: (): string => home,
+    dojoDir: (...segs: string[]): string => p.join(home, '.dojo', ...segs),
     isTestRun: (): boolean => true,
   };
 });
@@ -65,6 +97,14 @@ function agent(id: string, mutate?: (g: AccessGrants) => void): void {
   db().prepare('UPDATE agents SET permissions = ? WHERE id = ?').run(JSON.stringify({ grants: g }), id);
   forgetAccessGrants();
 }
+
+/** FIX ROUND 3: `beforeEach` replaces this with a fresh `Database(':memory:')`, and nothing used
+ *  to close the one it replaced — 11 clauses here, so 10 abandoned sqlite handles left for
+ *  the GC to notice. Closed where it is opened, so the count cannot grow with the clause list. */
+afterEach(() => {
+  mockDb.current?.close();
+  mockDb.current = null;
+});
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
