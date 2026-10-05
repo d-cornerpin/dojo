@@ -198,7 +198,7 @@ const NOT_AN_ACCOUNT = new Set([
  *
  * This is a FILE list, never a NAME list — the difference matters, because a name list in a public
  * repo is the leak this gate exists to prevent. The four entries are the vendor voice catalogues: a
- * TTS voice id like `nova` or `am_michael` is a product identifier from Kokoro/OpenAI, and the day
+ * TTS voice id such as `am_michael` is a product identifier from Kokoro/OpenAI, and the day
  * somebody on the box names an agent after one, the roster half would otherwise flag the vendor's
  * own vocabulary. The audit settled this class in its §2.
  */
@@ -207,35 +207,28 @@ const ROSTER_EXEMPT_FILES = new Map([
   ['packages/server/src/services/voice-catalog.ts', 'vendor TTS voice catalogue'],
   ['packages/server/src/services/audio-generation.ts', 'vendor TTS/music voice ids'],
   ['packages/server/src/services/capabilities.ts', 'names a vendor voice in a capability example'],
-  // ── THIS FILE, and it is the one exemption the widening genuinely needs (lane t101, D5) ──
-  // Widening the corpus to `deploy/checks/**` points the gate at its own source, and the roster
-  // half then fires on this file for two reasons that are both the opposite of a leak:
-  //   (1) the fixture tables below hold SYNTHETIC agent names (`Zergo`, `Zergblatt`) chosen to be
-  //       names nobody would use — and "nobody would use it" is exactly the property that breaks
-  //       the day somebody does, on one box, by coincidence;
-  //   (2) the vendor-voice-id argument CANNOT BE WRITTEN WITHOUT THE COLLISION IT IS ABOUT. The
-  //       whole point of the case-sensitivity note is that the Kokoro voice id `nova` is product
-  //       vocabulary while an agent called `Nova` is a name; stating it requires writing both, and
-  //       a box with an agent of that name turns the explanation into a finding.
-  // The exemption is ROSTER-HALF ONLY. The pattern half still reads every line of this file except
-  // the fixture block (see CORPUS_FENCE), so a home path, an address, a handle or a live agent id
-  // planted in this file's prose or code is still caught here — proven by its own planted fault.
-  ['deploy/checks/check-no-personal-names.mjs',
-    'its own synthetic name fixtures + the vendor-voice-id collision argument (pattern half still runs)'],
 ]);
 
 /**
  * THE ONE CORPUS EXEMPTION (lane t101, D5), and it is as narrow as it can be made.
  *
- * `FIXTURES` below is a names-gate TEST CORPUS: every positive row is a deliberate instance of a
+ * The fenced block is a names-gate TEST CORPUS: every positive row is a deliberate instance of a
  * shape this gate must catch, so pointing the gate at it reports the test suite as the defect. The
- * fence is therefore a REGION, not a file — two sentinel comments, and the pattern half skips only
- * the lines between them. Everything else in this file — the doctrine header, the patterns, the
- * matching code, the report — is scanned exactly like any other file in `deploy/checks/**`.
+ * fence is therefore a REGION, not a file — two sentinel comments, and EVERY HALF (roster, owner,
+ * derived identity, live agent id, and the pattern set) skips only the lines between them.
+ * Everything else in this file — the doctrine header, the patterns, the matching code, the report —
+ * is scanned exactly like any other file in `deploy/checks/**`.
  *
- * A file-level exemption was the obvious alternative and is REFUSED: this is the longest file in
- * `deploy/checks` and the one most likely to be edited by a worker pasting a measurement, and an
- * exemption that covers the whole thing would make the gate blind precisely where it is loudest.
+ * ⚠ THE FIRST CUT OF THIS LANE GOT THIS WRONG IN THE MOST EMBARRASSING AVAILABLE WAY, and the note
+ * stays because the shape will tempt the next person. It fenced only the PATTERN half here and
+ * exempted THE WHOLE FILE from the roster half, on the argument that the vendor-voice-id note cannot
+ * be written without naming the collision it is about. The argument was true and the remedy was
+ * wrong: a whole-file exemption hid THREE LIVE ROSTER NAMES in this file's own doctrine — two
+ * pre-existing, and ONE THIS LANE ITSELF WROTE while explaining a different blind spot. A gate that
+ * cannot see its own source is a gate with a permanent hole in exactly the file most likely to
+ * receive a pasted measurement. The fix has two halves: the fixture tables MOVED INTO the fence
+ * (they are data, so that is where they belong), and the doctrine stopped using real instances —
+ * where a note needs to show one, it points at a fenced fixture row instead of writing it inline.
  */
 // ⚠ THE SENTINEL STRINGS ARE BUILT FROM PIECES ON PURPOSE, and the first cut's bug is the reason:
 // written out whole, each literal here IS an occurrence of the sentinel it searches for, so the
@@ -595,6 +588,46 @@ const FIXTURES = [
   // one. This row is why the census clause strips comments and the other patterns do not.
   ["// the audit's own shape, recorded as removed: read `row?.name === 'Zergo'` until 2026-09-26", null],
 ];
+
+/**
+ * THE ROSTER HALF'S OWN TABLES, and they live HERE — inside the fence — rather than inside
+ * `selfTest()` where they were written (lane t101 fix round). The review that caught this is the
+ * argument: they are FIXTURE DATA holding deliberate name instances, and while they sat in the body
+ * of a function the only way to stop the gate reporting them was to exempt THE WHOLE FILE from the
+ * roster half. That exemption then hid three live roster names in this file's own doctrine —
+ * including one this lane itself introduced. Fixture data belongs in the fenced block; code and
+ * doctrine belong outside it and must be scannable. Nothing else gets to be unscannable.
+ */
+/** A roster name matches as a WHOLE WORD only, or every vendor identifier containing one is a false alarm. */
+const FIX_WORD_ONLY = [
+  ['// the harness bot ran it', 'Behavior', false],
+  ['// Zergblatt ran it', 'Zergblatt', true],
+  ['    am_michael: { language: \'en-us\' },', 'Michael', false],
+  ['// asked Michael about it', 'Michael', true],
+  ['const marbles = true;', 'Arble', false],
+];
+/** Review M1's second shape: an agent name written LOWERCASE as DATA — quoted only, which is what
+ *  separates `createdBy: '<a name>'` from a vendor voice id or a colliding English word. */
+const FIX_QUOTED_LOWER = [
+  ["    { serviceName: 'mailvendor', createdBy: 'zergo', createdOn: '2026-06-21' },", 'Zergo', true],
+  ["const owner = \"zergo\";", 'Zergo', true],
+  ['const owner = `zergo`;', 'Zergo', true],
+  ["// prose about zergo outside any quotes", 'Zergo', false],
+  ["const zergoCount = 1;   // an identifier, not data", 'Zergo', false],
+  ["// a quote that spans no name: 'the primary agent'", 'Zergo', false],
+  ["  am_michael: { language: 'en-us' },", 'Michael', false],
+  ["  { voice: 'am_michael' },", 'Michael', false],
+];
+/** Lane t101: a name written straight after a literal `\n` escape, counted BOTH ways — found through
+ *  the escape, and never conjured where the needle is genuinely part of a longer word. */
+const FIX_THROUGH_ESCAPE = [
+  ["'You are A, the PM. Escalate to B.\\nZergblatt does not have iMessage.'", 'Zergblatt', true],
+  ["'# Zergo\\n\\nYou are Zergo.'", 'Zergo', true],
+  ["'line one\\tZergo owns it'", 'Zergo', true],
+  ["'nothing here but prose\\nand more prose'", 'Zergo', false],
+  ['const zergoCount = 1;', 'Zergo', false],
+  ['// marbles are not an agent', 'Arble', false],
+];
 // END NAMES-GATE TEST CORPUS
 
 /**
@@ -720,50 +753,16 @@ function selfTest() {
     if (!ok) bad++;
     console.log(`  ${ok ? '✓' : '✗'} ${String(got ?? 'ignored').padEnd(24)} want ${String(want ?? 'ignored').padEnd(24)} ${text.slice(0, 62)}`);
   }
-  // A roster name must be matched as a WHOLE WORD only, or every vendor identifier that contains one
-  // becomes a false alarm.
-  const wordOnly = [
-    ['// the harness bot ran it', 'Behavior', false],
-    ['// Zergblatt ran it', 'Zergblatt', true],
-    ['    am_michael: { language: \'en-us\' },', 'Michael', false],
-    ['// asked Michael about it', 'Michael', true],
-    ['const marbles = true;', 'Arble', false],
-  ];
-  // ── review M1's second shape: an agent name written LOWERCASE as DATA. The rule is deliberately
-  // narrower than the case-sensitive one — quoted only — because that is what separates the audit's
-  // `createdBy: 'kevin'` from a vendor voice id or an ordinary English word that happens to collide.
-  const quotedLower = [
-    ["    { serviceName: 'mailvendor', createdBy: 'zergo', createdOn: '2026-06-21' },", 'Zergo', true],
-    ["const owner = \"zergo\";", 'Zergo', true],
-    ['const owner = `zergo`;', 'Zergo', true],
-    ["// prose about zergo outside any quotes", 'Zergo', false],
-    ["const zergoCount = 1;   // an identifier, not data", 'Zergo', false],
-    ["// a quote that spans no name: 'the primary agent'", 'Zergo', false],
-    ["  am_michael: { language: 'en-us' },", 'Michael', false],
-    ["  { voice: 'am_michael' },", 'Michael', false],
-  ];
   console.log('── an agent name written lowercase as DATA (quoted only) ──');
-  for (const [line, name, want] of quotedLower) {
+  for (const [line, name, want] of FIX_QUOTED_LOWER) {
     const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const got = new RegExp(`['\"\`][^'\"\`\n]*\\b${esc}\\b[^'\"\`\n]*['\"\`]`, 'i').test(line);
     const ok = got === want;
     if (!ok) bad++;
     console.log(`  ${ok ? '✓' : '✗'} ${String(got).padEnd(5)} want ${String(want).padEnd(5)} "${name}" in ${line.trim().slice(0, 52)}`);
   }
-  // ── lane t101: a name written straight after a literal `\n` escape. BOTH DIRECTIONS: the name
-  // must be FOUND through the escape, and the normalisation must not invent a name where the needle
-  // genuinely is part of a longer word.
-  const throughEscape = [
-    ["'You are A, the PM. Escalate to B.\\nZergblatt does not have iMessage.'", 'Zergblatt', true],
-    ["'# Zergo\\n\\nYou are Zergo.'", 'Zergo', true],
-    ["'line one\\tZergo owns it'", 'Zergo', true],
-    ["'nothing here but prose\\nand more prose'", 'Zergo', false],
-    // the needle really is inside a longer word, and a space must not be conjured mid-word:
-    ['const zergoCount = 1;', 'Zergo', false],
-    ['// marbles are not an agent', 'Arble', false],
-  ];
   console.log('── a name after a literal \\n escape is still a name (whole-word would miss it) ──');
-  for (const [line, name, want] of throughEscape) {
+  for (const [line, name, want] of FIX_THROUGH_ESCAPE) {
     const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const got = new RegExp(`\\b${esc}\\b`, 'i').test(unescapeForMatching(line));
     const ok = got === want;
@@ -771,7 +770,7 @@ function selfTest() {
     console.log(`  ${ok ? '✓' : '✗'} ${String(got).padEnd(5)} want ${String(want).padEnd(5)} "${name}" in ${line.trim().slice(0, 52)}`);
   }
   console.log('── roster matching is whole-word, so vendor identifiers are not names ──');
-  for (const [line, name, want] of wordOnly) {
+  for (const [line, name, want] of FIX_WORD_ONLY) {
     const got = new RegExp(`\\b${name}\\b`).test(line);
     const ok = got === want;
     if (!ok) bad++;
@@ -800,8 +799,11 @@ if (process.argv.includes('--self-test')) process.exit(0);
 const rosterNeedles = roster.names
   .filter((n) => n.length >= 3 && /^[A-Za-z][A-Za-z0-9 _-]*$/.test(n))
   .filter((n) => !roles.has(n.toLowerCase()))
-  // CASE-SENSITIVE: an agent called `Nova` is a name; the vendor voice id `nova` is an identifier,
-  // and the two must not be the same finding. Whole-word, so `am_michael` and `sticky` are not names.
+  // CASE-SENSITIVE: an agent NAMED AFTER a vendor voice id is a name, while the lowercase voice id
+  // itself is an identifier, and the two must not be the same finding. The concrete pair lives in
+  // FIX_QUOTED_LOWER inside the fence; writing it here would put a live name in the doctrine, which
+  // is the exact defect this file's own review caught. Whole-word, so `am_michael` and `sticky` are
+  // not names.
   .map((n) => {
     const esc = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return {
@@ -853,21 +855,24 @@ for (const rel of files) {
       })()
     : null;
   lines.forEach((rawLine, i) => {
+    // The fenced corpus is skipped by EVERY half, and it is the ONLY thing skipped in this file.
+    if (fenced && i >= fenced.from && i <= fenced.to) return;
     // ⚠ A LITERAL `\n` IN A STRING HIDES THE NAME AFTER IT, and this gate had the blind spot it was
     // built to close (lane t101, found by a test that counts renames rather than by the gate).
     // Souls, prompts and assertion fixtures are written as one-line strings with escaped newlines:
-    //     'You are <a name>, the project manager. Escalate to <a name>.\nKelly does not have iMessage.'
-    // Every needle here is WHOLE-WORD, and in the FILE those four characters are `.`, `\`, `n`, `K` —
-    // so `n` and `K` are both word characters and `\b` finds NO boundary before the name. The name
+    //     'You are <a name>, the project manager. Escalate to <a name>.\nZergblatt has no iMessage.'
+    // Every needle here is WHOLE-WORD, and in the FILE those four characters are `.`, `\`, `n`, `Z` —
+    // so `n` and `Z` are both word characters and `\b` finds NO boundary before the name. The name
     // rides green, and so does a scrub that uses the same whole-word rule. Normalising the escape to
     // a space before matching is the whole fix; it cannot invent a hit (a space never completes an
     // address, a path or a handle) and the line number is untouched because this is per line.
     const line = unescapeForMatching(rawLine);
     if (!rosterExempt) for (const { name, re, lower } of rosterNeedles) {
       if (re.test(line)) findings.push({ rel, line: i + 1, kind: 'agent-name', detail: name, text: rawLine.trim() });
-      // ⚠ THE LOWERCASE PASS, and review M1 is why it exists: the roster match is case-SENSITIVE so a
-      // vendor voice id (`nova`) is not an agent called `Nova` — and that let the audit's own worst
-      // finding ride green, because `createdBy: 'kevin'` is the roster name in a LIVE STRING LITERAL.
+      // ⚠ THE LOWERCASE PASS, and review M1 is why it exists: the roster match is case-SENSITIVE, so a
+      // lowercase vendor voice id is not the agent named after it — and that let the audit's own worst
+      // finding ride green, because `createdBy: '<a roster name, lowercased>'` is the roster name in a
+      // LIVE STRING LITERAL. FIX_QUOTED_LOWER carries the instances; this note does not.
       // Case-insensitivity is therefore restricted to QUOTED strings: an agent id written as data is
       // the shape that shipped, while a bare lowercase identifier stays exempt.
       else if (lower.test(line)) findings.push({ rel, line: i + 1, kind: 'agent-name-in-string', detail: name, text: rawLine.trim() });
@@ -884,7 +889,6 @@ for (const rel of files) {
       if (re.test(line)) findings.push({ rel, line: i + 1, kind: 'owner-name', detail: name, text: rawLine.trim() });
       else if (lower.test(line)) findings.push({ rel, line: i + 1, kind: 'owner-name-in-string', detail: name, text: rawLine.trim() });
     }
-    if (fenced && i >= fenced.from && i <= fenced.to) return;   // the corpus, not the defect
     for (const h of runPatterns(line, codeLines[i] ?? '')) {
       findings.push({ rel, line: i + 1, kind: h.id, detail: h.captured ?? h.match, text: rawLine.trim() });
     }
