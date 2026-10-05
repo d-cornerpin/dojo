@@ -112,18 +112,33 @@ export function tailCeilingStepRows(freshTailCount: number): number {
 }
 
 /**
- * THE QUANTUM of a TOKEN trim, in whole tool-use groups — HALF A TAIL PER CUT.
+ * THE QUANTUM of a TOKEN trim, in whole tool-use groups. GRANULARITY, NOT CADENCE.
  *
  * The row horizon above is the dominant trimmer and the one the owner captured, but a tail can
  * still outgrow its TOKEN grant before the row ceiling binds — one enormous tool_result is
  * enough. `budgetFreshTail` drops whole groups off the front to fit, and it must drop them in
- * blocks for the same reason the row ceiling does.
+ * blocks. **WHY IT MUST** is the load-bearing sentence of this module, and review I2 is right
+ * that the first version of this comment did not say it:
  *
- * Derived from the window's own row cap rather than picked, so one number scales across the
- * ladder: half a cap is 12 groups at 8K, 20 at 32K, 32 at 128K, 40 at 200K. "Half a tail" is
- * the cadence as well as the size — a cut frees half a tail of headroom and the conversation
- * refills it in half a tail of turns, which is the owner's "~once per 40 turns" order of
- * magnitude at the windows real local agents run on.
+ *     THE TOKEN TRIM IS STATELESS.
+ *
+ * `budgetFreshTail` is handed the whole span since the boundary on EVERY turn and recomputes
+ * the drop from scratch; nothing anywhere remembers last turn's cut. So cross-turn stability
+ * cannot come from memory — it can only come from the drop being a function that does not move
+ * when its input grows by a row. Block quantisation IS that function: the front sits at a
+ * multiple of the block and moves only when the needed drop crosses the next multiple. A later
+ * worker who does not know this will read the quantisation as arithmetic noise, "simplify" it
+ * to the minimum that fits, and bring the per-turn scroll back. That is the mutant §5 kills.
+ *
+ * SIZE, then. The block is GRANULARITY — the coarsest step the front may take — and it is
+ * bounded ABOVE by the half-the-tail rule in `groupsToDropForBudget`: a block larger than half
+ * the smallest tail that must be cuttable could never be dropped legally, and the search would
+ * fall through to the loud minimum-fit path on exactly the healthy body it was meant to serve.
+ * The smallest such tail is about one row cap, so the block is half a row cap — 12 groups at
+ * 8K, 20 at 32K, 32 at 128K, 40 at 200K, one number across the ladder.
+ *
+ * IT IS NOT THE CADENCE. How far apart two cuts land is decided by how much the CUT frees,
+ * which is `maxDrop`, not `block`. Review I2 named that conflation and it was mine.
  *
  * In GROUPS and not in rows because a group is the only unit `budgetFreshTail` may cut at: a
  * tool_use and its tool_result are one atom, and Anthropic-style providers reject a split pair.
@@ -287,9 +302,12 @@ export function freshTailHorizon(agentId: string, policy: ContextWindowPolicy): 
  * is the compaction boundary, which is what makes an index into it a stable address.
  *
  * Returns 0 whenever everything fits, which is the common case and is byte-identical to the
- * pre-t94 answer. Over budget, it returns a MULTIPLE OF THE BLOCK: the smallest that fits,
- * capped at the largest multiple that still leaves a group standing. Dropping the minimum
- * possible instead — what this replaced — is what made the front move every single turn.
+ * pre-t94 answer. Over budget it returns `maxDrop` — the LARGEST legal multiple of the block,
+ * which is the half-the-tail bound rounded down to a block boundary. Dropping the minimum that
+ * fits instead, which is what this replaced, is what made the front move every single turn;
+ * dropping the smallest fitting multiple plus one block of margin, which is what this
+ * function's own first cut did, only halved that (measured: ~10 turns between cuts on the
+ * pressured fixture, against the ~40 the owner asked for).
  *
  * The last-group safety is preserved and unchanged in effect: when even the largest legal
  * multiple does not fit, the caller falls through to "keep the last group anyway and warn",
@@ -318,16 +336,24 @@ export function groupsToDropForBudget(
   // function of the group count, but a coarsely quantised one (it only changes when the count
   // crosses a multiple of 2 × block), so it does not reintroduce a scrolling front.
   const maxDrop = Math.floor(Math.floor(n / 2) / block) * block;
+  // CUT THE WHOLE BOUND — not the smallest multiple that fits, and not that plus one block of
+  // margin (review I2: "a safe doubling inside your own proof"). The cadence is set by how much
+  // a cut FREES. `maxDrop` frees half the tail, and `maxDrop` itself only changes when the
+  // group count crosses a multiple of 2 × block, so the front then moves once per 2 × block
+  // appended groups — the fixture's ~10 turns become ~20, a 64-row cap's ~16 become ~32. The
+  // monotonicity argument needs only `drop <= n / 2`, which is exactly what this bound is, so
+  // it is untouched and §2's clause stays green.
+  //
+  // The cost, stated: visible history oscillates between 50% and 100% of the grant instead of
+  // ~85-100%. That is the owner's own ranking — *"byte-stability beats shortness… dropping 2
+  // messages costs the same as dropping 200"* — and the rows are persisted and later
+  // summarised, so it is live-view loss, not data loss.
+  //
+  // The loop is still what PROVES a legal cut exists: it walks up from one block, and the
+  // bound is taken only once some multiple has been shown to fit. A tail that needs less than
+  // the bound still gets the bound; a tail that cannot be fixed by any multiple falls through.
   for (let drop = block; drop <= maxDrop; drop += block) {
-    if (suffix[drop] <= availableTokens) {
-      // ONE BLOCK OF MARGIN, when the half-bound allows it. Dropping the smallest multiple
-      // that fits leaves the tail sitting exactly at its grant, so the very next turn is over
-      // again — the minimum-drop cadence wearing a block-sized coat. Taking one extra block
-      // puts the next cut a whole block away, which is the half of "large and rare" that size
-      // alone does not buy. Capped by the half-bound, so a tail that cannot afford the margin
-      // does not pay it.
-      return Math.min(drop + block, maxDrop);
-    }
+    if (suffix[drop] <= availableTokens) return maxDrop;
   }
 
   // NO LEGAL BLOCK MULTIPLE FITS — the tail holds fewer groups than one block and still

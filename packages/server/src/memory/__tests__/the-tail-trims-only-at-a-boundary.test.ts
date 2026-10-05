@@ -380,6 +380,15 @@ describe('t94 §2 — the lifecycle probes', () => {
     // `droppedFromFront` counts the leading messages that genuinely vanished, content-aligned.
     for (const d of bad) expect(d.droppedFromFront).toBeGreaterThanOrEqual(TOKEN_BLOCK_GROUPS);
 
+    // AND THE CADENCE, PINNED IN BOTH DIRECTIONS (review I2). The FIRST cut takes the whole
+    // half-the-tail bound — 140 groups of a 288-group span, seven blocks — where the margin
+    // rule this replaced took 40, and that size IS the cadence: the next front move is 15
+    // turns later and is a 20-row `maxDrop` step, after which the row ceiling caps the loaded
+    // span and the drop stabilises for the remaining 40 turns. A smaller cut rule reds this.
+    expect(bad[0].droppedFromFront).toBe(7 * TOKEN_BLOCK_GROUPS);
+    expect(bad.length).toBe(2);
+    expect(bad[1].turn - bad[0].turn).toBeGreaterThanOrEqual(15);
+
     // RARE: fewer than one turn in twenty rewrites the prefix. PRE-t94 this run front-trimmed
     // on every turn past row 40, i.e. 180 of these 199.
     expect(bad.length).toBeLessThanOrEqual(Math.floor(deltas.length / 20));
@@ -400,18 +409,35 @@ describe('t94 §2 — the lifecycle probes', () => {
     }
   }, 120_000);
 
-  it('a model switch mid-run moves the budget — one discontinuity, then stable again', async () => {
+  it('a model switch mid-run is append-only: the boundary is not a function of the window', async () => {
     const before = await driveRun({ turns: 24 });
-    // A smaller box: `getFreshTailCount(16000) = 24` rows where 32K gave 40. 8K is below
-    // this fixture's own system prompt (2,682 tokens against a 2,584 budget) and
-    // `assertSystemPromptFits` throws there — correctly, and not what this probe is about.
-    windowNow.value = 16_000;
-    db().prepare('UPDATE models SET context_window = 16000 WHERE id = ?').run(MODEL);
+    // A smaller box, 32K -> 24K: `getFreshTailCount` drops 40 -> 24 and the assembly budget
+    // drops with it.
+    windowNow.value = 24_000;
+    db().prepare('UPDATE models SET context_window = 24000 WHERE id = ?').run(MODEL);
     const after = await driveRun({ turns: 10 });
-    for (const d of runDeltas(after).slice(1)) {
-      if (d.note === 'compaction ran' || d.note.startsWith('freshTailDropped')) continue;
-      expect(d.appendOnly).toBe(true);
-    }
+
+    // REVIEW M1 asked for a COUNT here, and the count turned out better than the claim the
+    // first clause made. I expected the switch turn to be the discontinuity; it is not one at
+    // all. THE SWITCH ITSELF COSTS NOTHING, and the reason is the policy: the tail's front is
+    // the COMPACTION BOUNDARY, which is not a function of the window, so changing the window
+    // changes what compaction will summarise NEXT and what the token trim may cut — neither
+    // of which moves where the tail starts. Measured: the switch turn is append-only, and the
+    // run's single discontinuity lands three turns later and is a compaction (the smaller
+    // cap pushed the uncompacted gap past its threshold, which is correct).
+    //
+    // 16K was tried first and is NOT a probe of this: there the post-budget reserves plus a
+    // 2,682-token system prompt leave the live conversation under ~600 tokens, the fit-wins
+    // fallthrough keeps one group, the integrity pass refuses a trailing assistant row, and
+    // the array collapses to `lane.empty-context-fallback` every turn with
+    // `freshTailDropped` climbing 49, 51, 53. That is PRE-EXISTING — the pre-t94 backwards
+    // loop also kept exactly one group on a grant smaller than one group — and it is loud by
+    // design. It is recorded in the report as a measured residual, not fixed here.
+    const across = runDeltas([before[before.length - 1], ...after]);
+    const bad = discontinuities(across);
+    expect(across[0].appendOnly).toBe(true);              // the switch turn itself
+    expect(bad.length).toBe(1);
+    expect(bad[0].note).toBe('compaction ran');
     expect(before.length + after.length).toBe(34);
   }, 120_000);
 });
@@ -486,13 +512,31 @@ describe('t94 §5 — the trim quanta', () => {
     expect(tailCeilingStepRows(64)).toBe(256);
   });
 
-  it('a drop is a MULTIPLE of the block, never the minimum that fits', () => {
-    // 100 groups of 100 tokens = 10,000 against a 9,000 budget. The minimum drop is 10
-    // groups; the policy drops a block, plus a block of margin.
+  it('a drop is the WHOLE half-the-tail bound, never the minimum that fits', () => {
+    // 100 groups of 100 tokens = 10,000 against a 9,000 budget. The minimum drop is 10 groups;
+    // the first cut of this policy dropped one block plus a block of margin (40); it now cuts
+    // `maxDrop` = floor(floor(100/2)/20)·20 = 40 here, and the point of the clause is the
+    // RULE, not the coincidence — review I2's doubling shows at group counts where the bound
+    // is larger than block+margin, so both are asserted.
     const groups = Array.from({ length: 100 }, () => 100);
     const drop = groupsToDropForBudget(groups, 9_000, block);
     expect(drop % block).toBe(0);
-    expect(drop).toBe(2 * block);
+    expect(drop).toBe(Math.floor(Math.floor(100 / 2) / block) * block);
+
+    // AND THE CASE THAT DISTINGUISHES THE TWO RULES — the clause the cadence rests on.
+    // 288 groups the size of the pressured fixture, the oldest 40 expensive and the rest
+    // cheap, against a budget that one block does not reach but two do. The smallest fitting
+    // multiple is 40 and the old margin rule returned 60; the bound is 140 and that is what
+    // is taken, which is the ~2× cadence review I2 asked for.
+    const big = [...Array.from({ length: 40 }, () => 1_000), ...Array.from({ length: 248 }, () => 10)];
+    expect(big.length).toBe(288);
+    const bigDrop = groupsToDropForBudget(big, 3_000, block);
+    expect(bigDrop).toBe(Math.floor(Math.floor(288 / 2) / block) * block);
+    expect(bigDrop).toBe(140);
+    expect(bigDrop).toBeGreaterThan(2 * block);          // strictly more than the margin rule
+    // Still legal: it fits, and it is at most half the tail.
+    expect(big.slice(bigDrop).reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(3_000);
+    expect(bigDrop).toBeLessThanOrEqual(Math.floor(big.length / 2));
   });
 
   it('it never cuts more than half the live conversation in one pass, so the margin is capped', () => {
@@ -693,6 +737,26 @@ describe('t94 §8 — the horizon\'s ceiling trim reaches FA-M1', () => {
 //     before, and `refuseIfDoomed` is still the last guard.
 // The one-line fix belongs in `memory/compaction.ts`, which this lane may read and not edit.
 // The report carries the proposed diff.
+//
+// THE RISK, RE-DERIVED (review I3 — the first version of this paragraph had it backwards).
+// It is NOT that a bigger measured tail could latch an agent INCOMPRESSIBLE. At this lane's
+// base, `compaction-brakes.ts latchIfSummariesExceedBudget` returns null whenever
+// `summaryTokens <= assemblyBudgetTokens`, and `summaryTokens` is the CAPPED figure
+// (`min(raw, summaryBudget)`, `summaryBudget <= 0.7 x assemblyBudget`) — so a bigger tail
+// shrinks the cap and makes that latch LESS likely, not more. Verified by reading both
+// functions, not inferred.
+//
+// And on the compaction lane's own HEAD (`a8e254c7`, which is past the commit the review
+// cited) that latch is GONE — `latchIfSummariesExceedBudget` survives there only as a
+// historical mention in a comment at `:680`, with nothing calling it, because OR-COMPACT-1
+// abolished the terminal state. The estimate now feeds `condenseArgs` -> `condenseUntilFits`,
+// so a bigger measured tail means a SMALLER summary target and MORE condensation, which is
+// the correct direction. The real thing for that lane to sanity-check is whether the
+// condenser's "fits" can become unreachable when the true tail sits near the row ceiling —
+// a question about its loop bound, not about this read.
+//
+// That HEAD also still carries the row-cap read at its own `:174`, so this clause stays
+// GREEN through the compaction lane's merge and reds only when the seam commit lands.
 //
 // THIS CLAUSE IS THE TRIPWIRE, AND IT COUNTS BOTH WAYS (G4). It pins the divergence that
 // exists today, with its number. When the gate is taught the horizon, this clause goes RED
