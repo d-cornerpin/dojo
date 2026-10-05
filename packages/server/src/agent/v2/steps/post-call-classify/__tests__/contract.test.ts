@@ -83,7 +83,7 @@ const startAckRepliedNowSpy = vi.fn(() => false);
 
 function turnCtxFor(over: Record<string, unknown> = {}): PostCallClassifyContext['turnCtx'] {
   return {
-    agentId: 'kevin',
+    agentId: 'zargo',
     kind: 'user',
     convKey: 'ck-1',
     conversationId: 'conv-1',
@@ -108,11 +108,11 @@ const modelResult = (
 
 function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext {
   return {
-    agentId: 'kevin',
+    agentId: 'zargo',
     turnCtx: turnCtxFor(),
     turnNumber: 7,
     db: fakeDb,
-    agent: { id: 'kevin', name: 'Kevin' } as unknown as PostCallClassifyContext['agent'],
+    agent: { id: 'zargo', name: 'Zargo' } as unknown as PostCallClassifyContext['agent'],
     counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' } as unknown as PostCallClassifyContext['counterparty'],
     counterpartyIsAgentSender: false,
     chosenConvKey: 'ck-1',
@@ -151,7 +151,7 @@ function freshState(over: Partial<AgentTurnState> = {}): AgentTurnState {
   // positionally: `state.modelId` is one of this step's four outputs, so a state built
   // sloppily would make that output read `undefined` and the clause prove nothing.
   const base = initState({
-    agentId: 'kevin', contextWindow: 128_000, isAutoRouted: false,
+    agentId: 'zargo', contextWindow: 128_000, isAutoRouted: false,
     configuredModelId: 'test-model', turnNumber: 7, triggeredByIMessage: false,
     triggeredByA2AReplyIntent: null, lastUserMessageContent: 'what is the answer?',
     lastUserMessageId: 'msg-user-1',

@@ -134,12 +134,12 @@ const seedProvider = (prefillTokensPerSec: number | null): void => {
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('kevin', 'Kevin', 'm-ollama', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('zargo', 'Zargo', 'm-ollama', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
 const call = (message: string): Promise<ModelCallResult> => callModel({
-  agentId: 'kevin',
+  agentId: 'zargo',
   modelId: 'm-ollama',
   messages: [{ role: 'user', content: message }],
   systemPrompt: 'You are a local model.',

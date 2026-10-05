@@ -150,7 +150,7 @@ function row(role: string, content: string, turn: number): string {
 function seedBriefing(): void {
   mockDb.current!.prepare(
     `INSERT INTO briefings (id, agent_id, content, token_count, generated_at)
-     VALUES ('brief-1', ?, 'Overnight: three deliveries landed and the Kevin thread is open.', 14, '2026-08-30 06:00:00')`,
+     VALUES ('brief-1', ?, 'Overnight: three deliveries landed and the Zargo thread is open.', 14, '2026-08-30 06:00:00')`,
   ).run(AGENT);
 }
 
@@ -197,7 +197,7 @@ function seedSummaries(): void {
   );
   ins.run('sum-zebra', AGENT, 'The ZEBRA enclosure permit was filed on the 14th.', 12,
     '2026-08-01 09:00:00', '2026-08-01 10:00:00', '2026-08-01 10:00:00');
-  ins.run('sum-newest-1', AGENT, 'Kevin asked about the invoice and was answered.', 11,
+  ins.run('sum-newest-1', AGENT, 'Zargo asked about the invoice and was answered.', 11,
     '2026-08-28 09:00:00', '2026-08-28 10:00:00', '2026-08-28 10:00:00');
   ins.run('sum-newest-2', AGENT, 'The porch light job was opened and assigned.', 11,
     '2026-08-29 09:00:00', '2026-08-29 10:00:00', '2026-08-29 10:00:00');
@@ -366,7 +366,7 @@ describe('T67b §4 — a new question never rewrites history above it', () => {
     seedTurn(1);
     seedSummaries();
     seedVault();
-    row('user', 'tell me about the invoice for Kevin, the one we discussed', 1);
+    row('user', 'tell me about the invoice for Zargo, the one we discussed', 1);
 
     const first = clone((await assembleContext(AGENT, MODEL)).messages);
 
@@ -431,14 +431,14 @@ describe('T67b §7 — the directive pin is volatile by construction and rides t
 
     row('assistant', 'on it', 1);
     seedTurn(2);
-    const ask2 = `And separately ${'y'.repeat(220)} chase the invoice with Kevin`;
+    const ask2 = `And separately ${'y'.repeat(220)} chase the invoice with Zargo`;
     row('user', ask2, 2);
     const a2 = await assembleContext(AGENT, MODEL);
 
     expectAppendOnly(first, clone(a2.messages));
     // The pin itself DID move — it is the newest ask — which is exactly why it may not sit
     // in the prefix. Volatility is not the defect; volatility AHEAD OF THE TAIL is.
-    expect(a2.directiveLane).toContain('chase the invoice with Kevin');
+    expect(a2.directiveLane).toContain('chase the invoice with Zargo');
   });
 });
 
@@ -452,7 +452,7 @@ describe('T67b §6 — the tail diverges as LATE as it can', () => {
       `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent,
                          wakes, closes_thread, title, opened_at, updated_at, closed_at)
        VALUES ('cmt:bbbbbbbb', 'commitment', ?, 'agent', 'tracker', 'cmt:bbbbbbbb', 'open',
-               'tracker', 0, 0, 'Send Kevin the invoice', ?, ?, NULL)`,
+               'tracker', 0, 0, 'Send Zargo the invoice', ?, ?, NULL)`,
     ).run(AGENT, DAY_ONE - 7_200_000, DAY_ONE - 7_200_000);
 
     const policy = contextWindowPolicy(CONTEXT_WINDOW, { toolPayloadTokens: 1000, maxOutputTokens: 4096 });

@@ -8,7 +8,7 @@
 //
 //   PM poke loop ticks                                     89
 //   validation reviews that reached the report stage       43
-//   PM (`kelly`) model calls                               85
+//   PM (`quilba`) model calls                               85
 //   PM verdicts actually written (claim_upheld/rejected)   4 + 1
 //
 // The PM shows up. `audit` was simply the wrong instrument: `tracker/task-log.ts:119`

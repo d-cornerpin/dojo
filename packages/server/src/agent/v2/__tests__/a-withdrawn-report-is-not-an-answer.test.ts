@@ -35,7 +35,7 @@
 // Rounds 1-2 bound `tool_use.input.report_id` — the id an agent PASSES BACK. Round 3's pre-flight
 // check caught what that misses, on a clean agent, through the real doors: a turn that calls NO
 // TOOL and merely restates *"it's already filed — sitting on your dashboard (report 067df9fa)"*
-// binds nothing, so its stamp was immune FOR EVER. Worse, the three of BehaviorBot's six stamps
+// binds nothing, so its stamp was immune FOR EVER. Worse, the three of HarnessBot's six stamps
 // that survived round 2's fix are the three whose attempts reached only `gather` — and `gather`
 // takes no report_id, it ISSUES one.
 //
@@ -221,7 +221,7 @@ interface Episode { askId: string; answerId: string }
  * collateral that phrasing admits; "the answering episode" would overstate it).
  *
  * `shape` is the measured difference between the two real arms, and both are seeded here:
- *   'same-turn'  — the kit-driven agent (BehaviorBot, six asks): the calls and the answer share
+ *   'same-turn'  — the kit-driven agent (HarnessBot, six asks): the calls and the answer share
  *                  one turn, and the call row lands AFTER the answer row;
  *   'cross-turn' — Arm B on the dev box: the calls are recorded on turn N (seq 83301/83303/
  *                  83305) and the ask's stamp points at turn N+1's reply (seq 83314), because
@@ -263,12 +263,12 @@ function seedAnsweredReportAsk(p: {
 /**
  * ROUND 3's SHAPES — the generations the `input.report_id` binding could not reach.
  *
- *  'gather-only'  — BehaviorBot 83209/83220: the turn calls `dojo_report phase=gather`, which
+ *  'gather-only'  — HarnessBot 83209/83220: the turn calls `dojo_report phase=gather`, which
  *                   takes no report_id and ISSUES one; the only trace is the platform's own
  *                   tool_result row, "Report <uuid> opened.". The reply then lies about it.
  *  'restates-id'  — the round-3 scratch reproduction (83389/83391): NO tool call at all, the
  *                   reply names the report ("report 067df9fa" — the short form the model uses).
- *  'restates-mute'— BehaviorBot 83265: no tool call, no id, one turn after the work that died.
+ *  'restates-mute'— HarnessBot 83265: no tool call, no id, one turn after the work that died.
  */
 function seedRound3Ask(p: {
   key: string; reportId: string; shape: 'gather-only' | 'restates-id' | 'restates-mute';
@@ -420,7 +420,7 @@ describe('§1 the ARM B shape: cancel the card, and the stamp stops being eviden
   });
 
   it('ROUND 3 · GENERATION 1.5 — a `gather`-only turn binds through the RESULT that issued the id', () => {
-    // BehaviorBot 83209 and 83220, and the reason rounds 1-2 could not reach them: `gather` takes
+    // HarnessBot 83209 and 83220, and the reason rounds 1-2 could not reach them: `gather` takes
     // no report_id, it ISSUES one, so the agent's own call row names nothing. The platform's
     // tool_result row does — "Report <uuid> opened." — and that row is recorded like any other.
     const rid = seedReport('8a1b2c3d-0000-4000-8000-000000000001', 'cancelled');
@@ -447,7 +447,7 @@ describe('§1 the ARM B shape: cancel the card, and the stamp stops being eviden
   });
 
   it('ROUND 3 · GENERATION 2, MUTE — no call and no id, one turn after the work that died', () => {
-    // BehaviorBot 83265: the hardest shape, and the reason the window reaches ONE turn back.
+    // HarnessBot 83265: the hardest shape, and the reason the window reaches ONE turn back.
     const rid = seedReport('9c8b7a65-2222-4000-8000-000000000003', 'cancelled');
     const e = seedRound3Ask({ key: 'mute', reportId: rid, shape: 'restates-mute', turn: 50 });
     const ans = db().prepare('SELECT content FROM messages WHERE id = ?').get(e.answerId) as { content: string };

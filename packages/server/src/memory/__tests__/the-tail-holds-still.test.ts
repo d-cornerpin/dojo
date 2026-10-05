@@ -10,7 +10,7 @@
 // region over.
 //
 // ── STEP-0, THE DEFINITIVE MEASUREMENT THIS FILE IS DERIVED FROM ────────────────────────
-// Dev box, `2557747`, BehaviorBot, floor model, full context receipts, four consecutive turns
+// Dev box, `2557747`, HarnessBot, floor model, full context receipts, four consecutive turns
 // with no mail/calendar/board event between them. The tail — `messages[volatileFrom..]` —
 // diffed byte-for-byte across all three consecutive pairs:
 //
@@ -349,7 +349,7 @@ describe('T69b §2 — the same rows in a different RANK render the same bytes',
 
 describe('T69b §3 — the board snapshot is its own block, ahead of everything per-ask', () => {
   beforeEach(() => {
-    seedWork('cmt:t69bx', 'commitment', 'Send Kevin the invoice', DAY_ONE - 2 * HOUR);
+    seedWork('cmt:t69bx', 'commitment', 'Send Zargo the invoice', DAY_ONE - 2 * HOUR);
   });
 
   it('renders as TWO messages, snapshot FIRST', () => {

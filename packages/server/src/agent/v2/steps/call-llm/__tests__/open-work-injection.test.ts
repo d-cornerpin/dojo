@@ -60,22 +60,22 @@ type Msg = { role: 'user' | 'assistant'; content: string };
 
 function inputsFor(messages: Msg[]): PreCallInjectionInputs {
   return {
-    agentId: 'kevin',
+    agentId: 'zargo',
     turnNumber: 2,
     modelId: 'test-model',
     messages: messages as unknown as PreCallInjectionInputs['messages'],
-    systemPrompt: 'you are kevin',
+    systemPrompt: 'you are zargo',
     ctx: {} as PreCallInjectionInputs['ctx'],
     mctx: {} as PreCallInjectionInputs['mctx'],
     volatileFrom: 1,
     counterparty: { kind: 'user', id: 'owner', name: 'Owner', senderId: 'owner' } as unknown as PreCallInjectionInputs['counterparty'],
     steerAwaitingConfirm: null,
-    turnCtx: { agentId: 'kevin', conversationId: 'conv-1', root: { conversationId: 'conv-1' } } as unknown as PreCallInjectionInputs['turnCtx'],
+    turnCtx: { agentId: 'zargo', conversationId: 'conv-1', root: { conversationId: 'conv-1' } } as unknown as PreCallInjectionInputs['turnCtx'],
     db: null as unknown as PreCallInjectionInputs['db'],
   };
 }
 
-const freshState = (): AgentTurnState => advance(initState('kevin', 'test-model'), { loopCount: 1 });
+const freshState = (): AgentTurnState => advance(initState('zargo', 'test-model'), { loopCount: 1 });
 
 /** The injected texts, in array order. */
 const texts = (messages: Msg[]): string[] => messages.map((m) => String(m.content));

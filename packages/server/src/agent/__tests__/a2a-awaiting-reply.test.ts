@@ -159,7 +159,7 @@ beforeEach(() => {
       updated_at INTEGER
     );
   `);
-  db.prepare(`INSERT INTO agents (id, name, status) VALUES (?, ?, 'active')`).run(SENDER, 'Kevin');
+  db.prepare(`INSERT INTO agents (id, name, status) VALUES (?, ?, 'active')`).run(SENDER, 'Zargo');
   db.prepare(`INSERT INTO agents (id, name, status) VALUES (?, ?, 'active')`).run(RECEIVER, 'Maddy');
   mockDb.current = db;
 });

@@ -22,7 +22,7 @@
 // volatile lane on a floor model" — `obligations.ts` header): the backlog was eating the block.
 //
 // THE THREE FIXTURES BELOW ARE THE RUN, NOT AN ANALOGY. Every id, title length and timestamp
-// is transcribed from `~/.dojo/data/dojo.db` for agent `57b52025…` (BehaviorBot), reconstructed
+// is transcribed from `~/.dojo/data/dojo.db` for agent `57b52025…` (HarnessBot), reconstructed
 // at each attempt's turn-2 instant (`opened_at <= T`, `closed_at IS NULL OR closed_at > T`):
 //
 //   attempt 1  turn 2 at 1785953406000 — the promise is the 3rd current-conversation row  PASS
@@ -112,7 +112,7 @@ beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   mockDb.current.prepare(
-    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'BehaviorBot', 'idle', '1970-01-01')`,
+    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'HarnessBot', 'idle', '1970-01-01')`,
   ).run(AGENT);
   seedConversation(CUR);
   seedConversation('conv-other');

@@ -138,13 +138,13 @@ const seed = (): void => {
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('kevin', 'Kevin', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
   setProviderCredential('local', 'sk-first-key', 'api_key');
 };
 
 const call = (): Promise<ModelCallResult> => callModel({
-  agentId: 'kevin',
+  agentId: 'zargo',
   modelId: 'm-local',
   messages: [{ role: 'user', content: 'Are you there?' }],
   systemPrompt: 'You are a local model.',

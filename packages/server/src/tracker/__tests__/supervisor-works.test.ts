@@ -278,7 +278,7 @@ describe('SPIN-RECOVERY — the PM inherits the platform’s own recovery', () =
     // Driven, on the PM's own recorded spin shape. The brake stops the SPIN; it does not
     // touch the tracker row, so nothing here can make an item un-approvable.
     const state: RepeatCallState = new Map();
-    const sig = identicalCallSignature('work_update', { action: 'get', task_id: 'Nudge Kevin' });
+    const sig = identicalCallSignature('work_update', { action: 'get', task_id: 'Nudge Zargo' });
     for (let i = 0; i < IDENTICAL_CALL_REFUSE_AT; i++) {
       recordIdenticalCallResult(state, sig, true, 'not found');
     }

@@ -95,7 +95,7 @@ beforeEach(() => {
 
 describe('an expired Plaud login tells the user, exactly once per episode', () => {
   it('THE RED: the first tool call that hits the expiry flips the stored state and toasts', async () => {
-    const out = await runPlaudCommand(['files'], { agentId: 'kevin' });
+    const out = await runPlaudCommand(['files'], { agentId: 'zargo' });
     expect(out.needsReauth).toBe(true);
 
     // The stored truth moved: the card and the tool gate both read this.
@@ -105,7 +105,7 @@ describe('an expired Plaud login tells the user, exactly once per episode', () =
     // ONE toast, on the existing path, at the severity that stays put.
     expect(toasts()).toHaveLength(1);
     const t = toasts()[0];
-    expect(t.agentId).toBe('kevin');
+    expect(t.agentId).toBe('zargo');
     expect(t.severity).toBe('error');
     expect(t.code).toBe('AUTH_INVALID');
     expect(String(t.error)).toMatch(/Plaud/i);
@@ -115,32 +115,32 @@ describe('an expired Plaud login tells the user, exactly once per episode', () =
   });
 
   it('THE RED, second half: every later failing call in the SAME episode stays quiet', async () => {
-    await runPlaudCommand(['files'], { agentId: 'kevin' });
+    await runPlaudCommand(['files'], { agentId: 'zargo' });
     broadcasts.length = 0;
-    await runPlaudCommand(['recent'], { agentId: 'kevin' });
-    await runPlaudCommand(['transcript', 'abc'], { agentId: 'kevin' });
-    await runPlaudCommand(['me'], { agentId: 'kevin' });
+    await runPlaudCommand(['recent'], { agentId: 'zargo' });
+    await runPlaudCommand(['transcript', 'abc'], { agentId: 'zargo' });
+    await runPlaudCommand(['me'], { agentId: 'zargo' });
     expect(toasts()).toHaveLength(0);
     expect(disconnects()).toHaveLength(0);
   });
 
   it('a NEW episode after a reconnect toasts again', async () => {
-    await runPlaudCommand(['files'], { agentId: 'kevin' });
+    await runPlaudCommand(['files'], { agentId: 'zargo' });
     expect(toasts()).toHaveLength(1);
     connected();                       // the user reconnected
     broadcasts.length = 0;
-    await runPlaudCommand(['files'], { agentId: 'kevin' });
+    await runPlaudCommand(['files'], { agentId: 'zargo' });
     expect(toasts()).toHaveLength(1);
   });
 
   it('the stored email and connected-at SURVIVE the expiry, so the card can name the account', async () => {
-    await runPlaudCommand(['files'], { agentId: 'kevin' });
+    await runPlaudCommand(['files'], { agentId: 'zargo' });
     expect(config.get('plaud_email')).toBe('david@example.com');
     expect(config.get('plaud_connected_at')).toBe('2026-05-25T23:02:02.310Z');
   });
 
   it('`getPlaudStatus` reports reauthRequired — distinguishable from never-connected', async () => {
-    await runPlaudCommand(['files'], { agentId: 'kevin' });
+    await runPlaudCommand(['files'], { agentId: 'zargo' });
     expect(getPlaudStatus()).toMatchObject({ connected: false, reauthRequired: true, email: 'david@example.com' });
 
     config.clear();                    // never connected at all
@@ -151,7 +151,7 @@ describe('an expired Plaud login tells the user, exactly once per episode', () =
 describe('the controls — what must NOT speak', () => {
   it('a NON-reauth failure says nothing and leaves the state alone', async () => {
     cliBehaviour = { code: 1, stdout: '', stderr: 'network unreachable' };
-    const out = await runPlaudCommand(['files'], { agentId: 'kevin' });
+    const out = await runPlaudCommand(['files'], { agentId: 'zargo' });
     expect(out.needsReauth).toBe(false);
     expect(config.get('plaud_connected')).toBe('true');
     expect(toasts()).toHaveLength(0);
@@ -159,7 +159,7 @@ describe('the controls — what must NOT speak', () => {
 
   it('an intentional `logout` reporting "not logged in" is not an expiry', async () => {
     cliBehaviour = { code: 2, stdout: '', stderr: 'not logged in' };
-    await runPlaudCommand(['logout'], { agentId: 'kevin' });
+    await runPlaudCommand(['logout'], { agentId: 'zargo' });
     expect(toasts()).toHaveLength(0);
     expect(disconnects()).toHaveLength(0);
   });
@@ -176,7 +176,7 @@ describe('the controls — what must NOT speak', () => {
 
   it('a SUCCESSFUL command says nothing', async () => {
     cliBehaviour = { code: 0, stdout: 'ok', stderr: '' };
-    await runPlaudCommand(['files'], { agentId: 'kevin' });
+    await runPlaudCommand(['files'], { agentId: 'zargo' });
     expect(toasts()).toHaveLength(0);
     expect(config.get('plaud_connected')).toBe('true');
   });

@@ -57,7 +57,7 @@ import {
   VALIDATION_ATTEMPT_UNAVAILABLE,
 } from '../validation-drive.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const T = 1_700_000_000_000;
 /** Older than `VALIDATION_ESCALATION_MIN`, expressed as the sweep sees it: a cutoff. */
 const NOW = T + 60 * 60_000;
@@ -216,7 +216,7 @@ describe('THE ORDERING LAW — the owner is not told about work nobody tried to 
     seedWork('v1');
     recordAttempt('v1', VALIDATION_ATTEMPT_MISS);
     const r = transition('v1', {
-      to: 'done', by: 'pm', actorId: 'kelly', claim: 'authoritative',
+      to: 'done', by: 'pm', actorId: 'quilba', claim: 'authoritative',
       reason: 'upheld', resultDeliveryId: 'd-1',
     });
     expect(r.kind).toBe('applied');

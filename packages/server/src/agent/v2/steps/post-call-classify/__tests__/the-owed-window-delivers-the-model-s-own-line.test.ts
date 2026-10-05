@@ -56,7 +56,7 @@ import { runSteerCheckpoint } from '../../assemble/steer-checkpoint.js';
 import { START_ACK_ORIGIN_INTENT } from '../../../../../memory/message-store.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const MID_WORK_LINE = "The exact probes can't run: sleep is blocked by my sandbox permissions.";
 
 interface Bag { [k: string]: unknown }
@@ -82,7 +82,7 @@ const deliverAckSpy = vi.fn(async () => undefined);
 function ctxFor(turnCtx: Bag, over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext {
   return {
     agentId: AGENT, turnCtx: turnCtx as never, turnNumber: 4805, db: fakeDb,
-    agent: { id: AGENT, name: 'Kevin' } as never,
+    agent: { id: AGENT, name: 'Zargo' } as never,
     // The incident's own counterparty: the owner, on iMessage.
     counterparty: { kind: 'user', relation: 'owner', channel: 'imessage', senderId: '+1555', senderIsAgent: false } as never,
     counterpartyIsAgentSender: false,

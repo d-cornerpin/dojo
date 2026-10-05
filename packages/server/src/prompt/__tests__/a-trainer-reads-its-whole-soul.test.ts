@@ -64,8 +64,8 @@ import { readAgentPromptSurface, writeAgentPromptSurface } from '../agent-prompt
 
 const HOME = path.join(realOs.tmpdir(), HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
-const TRAINER = 'ticky';
-const PRIMARY = 'kevin';
+const TRAINER = 'tyndo';
+const PRIMARY = 'zargo';
 
 const SHIPPED = fs.readFileSync(
   path.resolve(__dirname, '../../../../../templates/TRAINER-SOUL.md'),
@@ -87,15 +87,15 @@ beforeEach(async () => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   setConfig('primary_agent_id', PRIMARY);
-  setConfig('primary_agent_name', 'Kevin');
+  setConfig('primary_agent_name', 'Zargo');
   setConfig('trainer_agent_id', TRAINER);
-  setConfig('trainer_agent_name', 'Ticky');
+  setConfig('trainer_agent_name', 'Tyndo');
   setConfig('owner_name', 'David');
   const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();
   mockDb.current
     .prepare("INSERT INTO agents (id, name, status) VALUES (?, ?, 'idle')")
-    .run(TRAINER, 'Ticky');
+    .run(TRAINER, 'Tyndo');
 });
 
 afterEach(() => {
@@ -122,7 +122,7 @@ describe('the Trainer runs on its whole soul', () => {
     const soul = getSoulContent(TRAINER);
 
     expect(soul).not.toContain('{{');
-    expect(soul).toContain('You are Ticky,');
+    expect(soul).toContain('You are Tyndo,');
   });
 
   it('T40 HOLDS: the settings card shows exactly what the runtime reads', () => {
@@ -130,7 +130,7 @@ describe('the Trainer runs on its whole soul', () => {
   });
 
   it('an owner edit through the card still reaches the model, and is never re-seeded away', () => {
-    const owned = '# Identity\n\nYou are Ticky and you write techniques. That is all.';
+    const owned = '# Identity\n\nYou are Tyndo and you write techniques. That is all.';
     writeAgentPromptSurface(TRAINER, owned);
 
     expect(getSoulContent(TRAINER)).toBe(owned);
@@ -168,7 +168,7 @@ describe('the Trainer runs on its whole soul', () => {
     const soul = trainerSoulDefaultFrom(() => null, (msg) => logs.push(msg));
 
     expect(soul).not.toContain('{{');
-    expect(soul).toContain('Ticky');
+    expect(soul).toContain('Tyndo');
     expect(logs.join(' ')).toMatch(/TRAINER-SOUL\.md/);
   });
 });

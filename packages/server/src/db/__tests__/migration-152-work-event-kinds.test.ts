@@ -119,7 +119,7 @@ function seedWork(): void {
   db.prepare(
     `INSERT INTO work (id, kind, agent_id, requester, requester_id, root_kind, root_id,
                        state, intent, wakes, closes_thread, title, opened_at, updated_at, provenance)
-     VALUES (?, 'ask', 'kevin', 'owner', 'owner', 'ask', ?, 'open', 'ask', 0, 0, 'q',
+     VALUES (?, 'ask', 'zargo', 'owner', 'owner', 'ask', ?, 'open', 'ask', 0, 0, 'q',
              1700000000000, 1700000000000, 'live')`,
   ).run(WORK_ID, WORK_ID);
 }

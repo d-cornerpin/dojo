@@ -173,7 +173,7 @@ function runInject(text: string) {
   const mctx = {} as Record<string, unknown>;
   const messages: unknown[] = [];
   return injectDelegationHintAndAttachments(makeState(), {
-    agentId: 'behaviorbot',
+    agentId: 'harnessbot',
     turnNumber: 7,
     counterparty: { kind: 'user' } as never,
     lastUserMessageContent: text,
@@ -198,7 +198,7 @@ describe('F9 hint injection on S4\'s shape', () => {
     expect(insertEngineEventSpy).toHaveBeenCalledTimes(1);
     const row = insertEngineEventSpy.mock.calls[0][0] as { originIntent: string; agentId: string; turnNumber: number; content: string };
     expect(row.originIntent).toBe('delegation_hint');
-    expect(row.agentId).toBe('behaviorbot');
+    expect(row.agentId).toBe('harnessbot');
     expect(row.turnNumber).toBe(7);
     expect(row.content.startsWith('[Engine hint] ')).toBe(true);
   });

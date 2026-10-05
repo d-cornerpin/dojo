@@ -52,9 +52,9 @@ describe('detectDeliveryDenial (denial direction)', () => {
   });
 
   it('fires on a negated past delivery and captures the named recipient', () => {
-    const r = detectDeliveryDenial({ responseText: "Haven't sent it to Nova yet." });
+    const r = detectDeliveryDenial({ responseText: "Haven't sent it to Zubel yet." });
     expect(r.denied).toBe(true);
-    expect(r.recipient).toBe('Nova');
+    expect(r.recipient).toBe('Zubel');
   });
 
   it('fires on "still need to send it" with no named recipient', () => {

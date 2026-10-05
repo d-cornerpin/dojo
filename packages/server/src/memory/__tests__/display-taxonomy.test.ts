@@ -101,7 +101,7 @@ const WRITER_LITERALS: Case[] = [
     content: `${OWNER_ALERT_HEADS_UP_PREFIX} a scheduled reminder, "water the plants", failed on its final attempt.`,
     kind: 'owner-alert', tier: 'user-visible' },
   { site: 'agent/destructive-gate.ts approval expiry', role: 'system',
-    content: `${OWNER_ALERT_HEADS_UP_PREFIX} "Kevin" asked me to approve a sensitive action.`,
+    content: `${OWNER_ALERT_HEADS_UP_PREFIX} "Zargo" asked me to approve a sensitive action.`,
     kind: 'owner-alert', tier: 'user-visible' },
   // ⚠ THE PREFIX HAS NO WRITER SINCE PHASE-4 T4, AND THE NOTE BESIDE IT WAS WRONG (#14).
   // What stood here said this notice arrived as an EVENTS-lane `role='user'` row and therefore
@@ -141,7 +141,7 @@ const WRITER_LITERALS: Case[] = [
 
   // Peer traffic.
   { site: 'a2a-transport.ts inbound', role: 'user', lane: 'a2a',
-    content: '[A2A:QUESTION thread:t1 from:kevin] do you have the file?',
+    content: '[A2A:QUESTION thread:t1 from:zargo] do you have the file?',
     kind: 'a2a', tier: 'agent-only' },
   { site: 'loop.ts a2a own output', role: 'assistant', lane: 'a2a',
     content: 'Yes, sending it now.', kind: 'a2a', tier: 'agent-only' },
@@ -302,7 +302,7 @@ describe('working-note and owner-alert matchers', () => {
   // owner directly would be the shape OR2 exists to prevent.
   it('the converted validation nudge is STILL not an owner alert — the agent speaks, not the notice', () => {
     expect(isOwnerAlertSystemNote(
-      'BehaviorBot marked "Synthesize the research" (77cba094) in_progress over 5 minutes ago '
+      'HarnessBot marked "Synthesize the research" (77cba094) in_progress over 5 minutes ago '
       + 'and the PM still cannot confirm it.',
     )).toBe(false);
     // …and the platform's OWN voice, when the agent has been asked twice and said nothing, is

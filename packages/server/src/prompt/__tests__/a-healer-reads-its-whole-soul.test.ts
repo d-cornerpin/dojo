@@ -67,7 +67,7 @@ import { WORKING_NOTE_PREFIX } from '@dojo/shared';
 const HOME = path.join(realOs.tmpdir(), HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
 const HEALER = 'healer';
-const PRIMARY = 'kevin';
+const PRIMARY = 'zargo';
 
 const SHIPPED = fs.readFileSync(
   path.resolve(__dirname, '../../../../../templates/HEALER-SOUL.md'),
@@ -94,7 +94,7 @@ beforeEach(async () => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   setConfig('primary_agent_id', PRIMARY);
-  setConfig('primary_agent_name', 'Kevin');
+  setConfig('primary_agent_name', 'Zargo');
   setConfig('healer_agent_id', HEALER);
   setConfig('healer_agent_name', 'Healer');
   setConfig('owner_name', 'David');

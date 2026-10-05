@@ -40,7 +40,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { transition, type WorkKind } from '../store.js';
 import { validatedExpr } from '../tracker-view.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const T = 1_700_000_000_000;
 
 function seedWork(id: string, over: Record<string, unknown> = {}): void {

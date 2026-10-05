@@ -205,7 +205,7 @@ const seedOpenAI = (firstChunkMs: number | null, idleMs: number | null): void =>
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('kevin', 'Kevin', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
@@ -225,12 +225,12 @@ const seedAnthropic = (firstChunkMs: number | null, idleMs: number | null): void
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('kevin', 'Kevin', 'm-anth', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('zargo', 'Zargo', 'm-anth', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
 const call = (modelId: string, abortSignal?: AbortSignal): Promise<ModelCallResult> => callModel({
-  agentId: 'kevin',
+  agentId: 'zargo',
   modelId,
   messages: [{ role: 'user', content: 'Is it done?' }],
   systemPrompt: 'You are a local model.',
@@ -315,7 +315,7 @@ describe('T65b — the OpenAI seam', () => {
 // ════════════════════════════════════════════════════════════════════════════════════
 describe('T65b — the one-retry grant becomes reachable for a mid-stream stall', () => {
   const inputs = (): ModelCallInputs => ({
-    agentId: 'kevin',
+    agentId: 'zargo',
     turnCtx: { phoneStreamBuffer: '', phoneStreamFlushedAny: false } as unknown as ModelCallInputs['turnCtx'],
     turnNumber: 1,
     messageId: 'msg-1',

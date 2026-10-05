@@ -12,7 +12,7 @@
 //   06:42:22  → "Credential \"sendgrid\" updated."
 //
 // (messages seq 79091 / 79098 / 79103 / 79104; `agent_credentials.sendgrid`
-// created 2026-06-21 03:03:03 by kevin, updated_at now 2026-09-21 06:42:22.)
+// created 2026-06-21 03:03:03 by zargo, updated_at now 2026-09-21 06:42:22.)
 //
 // So the overwrite door is `credential_update`, it takes no confirmation, it
 // keeps no prior version, it writes no audit row, and `credential_add`'s own
@@ -49,8 +49,8 @@ vi.mock('../../config/loader.js', () => ({
   getProviderCredential: () => null,
 }));
 
-const OWNER_AGENT = 'kevin';
-const BATTERY_AGENT = 'behaviorbot';
+const OWNER_AGENT = 'zargo';
+const BATTERY_AGENT = 'harnessbot';
 
 // ── WHY THIS HOOK EXISTS (backlog wave 1b item 3, 2026-09-26) ──────────────────────────────
 // This file flaked on ONE clause — "both write tools declare the overwrite flag in their
@@ -89,7 +89,7 @@ beforeEach(() => {
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT, status TEXT, config TEXT, updated_at TEXT);
-    INSERT INTO agents (id, name) VALUES ('${OWNER_AGENT}', 'Kevin'), ('${BATTERY_AGENT}', 'BehaviorBot');
+    INSERT INTO agents (id, name) VALUES ('${OWNER_AGENT}', 'Zargo'), ('${BATTERY_AGENT}', 'HarnessBot');
     CREATE TABLE agent_credentials (
       id TEXT PRIMARY KEY,
       service_name TEXT NOT NULL UNIQUE,

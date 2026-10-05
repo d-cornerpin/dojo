@@ -46,7 +46,7 @@ import {
 import { insertMessage } from '../../memory/message-store.js';
 import { assembledContextAsks } from '../../agent/v2/counterparty.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const CONV = 'conv-1';
 
 const workFor = (messageId: string): Record<string, unknown> =>
@@ -98,7 +98,7 @@ beforeEach(() => {
   runMigrations();
   db.pragma('foreign_keys = ON');
   db.prepare(
-    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Kevin', 'idle', '1970-01-01')`,
+    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
   ).run(AGENT);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)
@@ -541,7 +541,7 @@ describe('the crash window: a `done` ask with an unresolved join whose turn neve
 // ARM 6 — THE RECEIPT MUST BE THE TURN'S ANSWER (SWEEP CORE-1, CT0)
 //
 // WHAT WAS MEASURED, so "RED" is a number rather than a claim. Three investigate-shaped
-// asks were driven through the real door (`POST /api/chat/kevin/messages`) at the SHIPPED
+// asks were driven through the real door (`POST /api/chat/zargo/messages`) at the SHIPPED
 // build `587693e` on 2026-08-09, and all three were marked `done` on the model's OPENING
 // START-ACK — seconds after the question arrived and tens of seconds before the answer
 // existed:

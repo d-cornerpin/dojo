@@ -148,7 +148,7 @@ describe('owner ruling 3 — the snapshot reproduces today’s effective access'
     seed([
       { id: 'primary', classification: 'sensei' },
       { id: 'pm', classification: 'sensei' },
-      { id: 'ticky', classification: 'sensei', toolsPolicy: JSON.stringify({ allow: [], deny: ['gmail_send'] }) },
+      { id: 'tyndo', classification: 'sensei', toolsPolicy: JSON.stringify({ allow: [], deny: ['gmail_send'] }) },
       { id: 'worker', classification: 'apprentice' },
     ]);
   });
@@ -165,7 +165,7 @@ describe('owner ruling 3 — the snapshot reproduces today’s effective access'
   });
 
   it('a sensei that is not the primary keeps its set — and carries NO master', () => {
-    const g = deriveLegacyGrants('ticky');
+    const g = deriveLegacyGrants('tyndo');
     expect(g.channels.master).toBeNull();
     expect(mayReachChannel(g, 'imessage')).toBe(false);
     // Its curated policy moved into the object verbatim, both directions.
@@ -184,7 +184,7 @@ describe('owner ruling 3 — the snapshot reproduces today’s effective access'
     const g = deriveLegacyGrants('worker');
     expect(g.channels.master).toBe(false);
     expect(hasChannelMaster('worker')).toBe(true);
-    expect(hasChannelMaster('ticky')).toBe(false);
+    expect(hasChannelMaster('tyndo')).toBe(false);
   });
 
   it('Plaud and the credential vault are snapshot as they are today: everyone', () => {

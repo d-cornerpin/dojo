@@ -72,7 +72,7 @@ describe('PHASE-6 T-PROMISE: the recorded-commitment narrowing', () => {
 describe('PHASE-6 T-PROMISE: the decision — the LEDGER fires it, never the text', () => {
   it('FIRES on the measured miss shape: the claim stands and nothing landed on the board', () => {
     const d = decideUncommittedPromise({
-      agentId: 'kevin', responseText: MISS_REPLIES[0], toolResultsThisTurn: [], openedWorkThisTurn: noWork,
+      agentId: 'zargo', responseText: MISS_REPLIES[0], toolResultsThisTurn: [], openedWorkThisTurn: noWork,
     });
     expect(d.fires).toBe(true);
     if (!d.fires) throw new Error('unreachable');
@@ -84,7 +84,7 @@ describe('PHASE-6 T-PROMISE: the decision — the LEDGER fires it, never the tex
     // The one clause that proves the trigger is the ledger. Identical prose to the fire
     // above; the only difference is that the spine answers.
     const d = decideUncommittedPromise({
-      agentId: 'kevin', responseText: HIT_REPLY, toolResultsThisTurn: [], openedWorkThisTurn: hasWork,
+      agentId: 'zargo', responseText: HIT_REPLY, toolResultsThisTurn: [], openedWorkThisTurn: hasWork,
     });
     expect(d.fires).toBe(false);
     if (d.fires) throw new Error('unreachable');
@@ -99,7 +99,7 @@ describe('PHASE-6 T-PROMISE: the decision — the LEDGER fires it, never the tex
       [{ name: 'get_current_time', isError: false }, { name: 'work_open', isError: false }],
     ]) {
       const d = decideUncommittedPromise({
-        agentId: 'kevin', responseText: MISS_REPLIES[0], toolResultsThisTurn: kindless, openedWorkThisTurn: noWork,
+        agentId: 'zargo', responseText: MISS_REPLIES[0], toolResultsThisTurn: kindless, openedWorkThisTurn: noWork,
       });
       expect(d.fires).toBe(false);
       if (d.fires) throw new Error('unreachable');
@@ -109,7 +109,7 @@ describe('PHASE-6 T-PROMISE: the decision — the LEDGER fires it, never the tex
 
   it('a FAILED `work_open` is not a stand-down — a refused call put nothing on the ledger', () => {
     const d = decideUncommittedPromise({
-      agentId: 'kevin', responseText: MISS_REPLIES[1],
+      agentId: 'zargo', responseText: MISS_REPLIES[1],
       toolResultsThisTurn: [{ name: 'work_open', isError: true }], openedWorkThisTurn: noWork,
     });
     expect(d.fires).toBe(true);
@@ -117,7 +117,7 @@ describe('PHASE-6 T-PROMISE: the decision — the LEDGER fires it, never the tex
 
   it('the VAULT road is NAMED, not separately triggered — the recorded 2026-07-30 miss class', () => {
     const d = decideUncommittedPromise({
-      agentId: 'kevin', responseText: MISS_REPLIES[2],
+      agentId: 'zargo', responseText: MISS_REPLIES[2],
       toolResultsThisTurn: [{ name: 'vault_remember', isError: false }], openedWorkThisTurn: noWork,
     });
     expect(d.fires).toBe(true);
@@ -128,7 +128,7 @@ describe('PHASE-6 T-PROMISE: the decision — the LEDGER fires it, never the tex
 
   it('no claim, no fire — whatever the ledger says', () => {
     const d = decideUncommittedPromise({
-      agentId: 'kevin', responseText: 'Here is the roof quote you asked for.',
+      agentId: 'zargo', responseText: 'Here is the roof quote you asked for.',
       toolResultsThisTurn: [], openedWorkThisTurn: noWork,
     });
     expect(d.fires).toBe(false);
@@ -138,7 +138,7 @@ describe('PHASE-6 T-PROMISE: the decision — the LEDGER fires it, never the tex
 
   it('the steer names the CALL and the honest way out, and composes no user-facing line', () => {
     const d = decideUncommittedPromise({
-      agentId: 'kevin', responseText: MISS_REPLIES[3], toolResultsThisTurn: [], openedWorkThisTurn: noWork,
+      agentId: 'zargo', responseText: MISS_REPLIES[3], toolResultsThisTurn: [], openedWorkThisTurn: noWork,
     });
     if (!d.fires) throw new Error('unreachable');
     const steer = uncommittedPromiseSteer(d);

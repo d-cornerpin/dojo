@@ -151,8 +151,8 @@ describe('E18 drift 4 — thread ids are not hex', () => {
   });
 
   it('still parses a hex id, and the envelope regex agrees with the thread regex', () => {
-    expect(parseA2AThreadShort('[A2A:REPLY thread:9006a872 from:kelly] x')).toBe('9006a872');
-    const m = A2A_ENVELOPE_RE.exec('[A2A:REPLY thread:bp0atnn9 from:kelly] x');
+    expect(parseA2AThreadShort('[A2A:REPLY thread:9006a872 from:quilba] x')).toBe('9006a872');
+    const m = A2A_ENVELOPE_RE.exec('[A2A:REPLY thread:bp0atnn9 from:quilba] x');
     expect(m?.[2]).toBe('bp0atnn9');
     expect(A2A_THREAD_RE.exec('thread:bp0atnn9]')?.[1]).toBe('bp0atnn9');
   });

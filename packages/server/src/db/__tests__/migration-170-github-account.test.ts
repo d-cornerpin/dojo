@@ -89,7 +89,7 @@ const fillLivedIn = (): void => {
   `).run();
   d.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('kevin', 'Kevin', 'm-local', 'idle', '{"tone":"dry"}', '2026-07-02 09:00:00', '2026-09-01 09:00:00')
+    VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{"tone":"dry"}', '2026-07-02 09:00:00', '2026-09-01 09:00:00')
   `).run();
 
   // The one table whose neighbourhood this migration is joining: a box that has already
@@ -104,7 +104,7 @@ const fillLivedIn = (): void => {
   // Reports already filed under 169 — the migration that lands immediately before this one.
   const rep = d.prepare(`
     INSERT INTO dojo_reports (id, agent_id, status, lane, signature, brief_json)
-    VALUES (?, 'kevin', ?, 'tool-error', ?, '{"title":"kept"}')
+    VALUES (?, 'zargo', ?, 'tool-error', ?, '{"title":"kept"}')
   `);
   rep.run('r-1', 'posted', 'ds1-aaaaaaaaaaaa');
   rep.run('r-2', 'awaiting_approval', 'ds1-bbbbbbbbbbbb');
@@ -112,7 +112,7 @@ const fillLivedIn = (): void => {
   const cost = d.prepare(`
     INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens, output_tokens,
                               cost_usd, latency_ms, created_at)
-    VALUES (?, 'kevin', 'm-local', 'local', ?, ?, 0.0, ?, datetime('now', ?))
+    VALUES (?, 'zargo', 'm-local', 'local', ?, ?, 0.0, ?, datetime('now', ?))
   `);
   for (let i = 0; i < 30; i++) cost.run(`cost-${i}`, 3_000 + i * 700, 200 + i, 40_000 + i * 1_000, `-${i} days`);
 };

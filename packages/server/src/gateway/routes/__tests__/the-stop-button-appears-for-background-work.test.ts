@@ -57,12 +57,12 @@ import { openAgentCall } from '../../../agent/abortable-call.js';
 import { stopAffordance, type StopSubject } from '../../../../../dashboard/src/lib/stop-affordance.js';
 import type { AgentDetail } from '@dojo/shared';
 
-const AGENT = 'kevin-a5b';
+const AGENT = 'zargo-a5b';
 
 function seed(): void {
   const db = mockDb.current!;
   db.prepare(
-    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Kevin', 'idle', '1970-01-01')`,
+    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
   ).run(AGENT);
 }
 

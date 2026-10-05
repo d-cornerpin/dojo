@@ -48,7 +48,7 @@ import {
 } from '../compile-owed-gate.js';
 
 const AGENT = 'primary';
-const OTHER = 'kelly';
+const OTHER = 'quilba';
 const PEER = 'kayla';
 const CONV = 'conv-1';
 
@@ -98,7 +98,7 @@ beforeEach(() => {
   runMigrations();
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at) VALUES
-       (?, 'Primary', 'idle', '1970-01-01'), (?, 'Kelly', 'idle', '1970-01-01'), (?, 'Kayla', 'idle', '1970-01-01')`,
+       (?, 'Primary', 'idle', '1970-01-01'), (?, 'Quilba', 'idle', '1970-01-01'), (?, 'Kayla', 'idle', '1970-01-01')`,
   ).run(AGENT, OTHER, PEER);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`,

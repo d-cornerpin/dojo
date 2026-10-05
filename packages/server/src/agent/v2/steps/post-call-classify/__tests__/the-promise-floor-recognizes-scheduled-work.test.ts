@@ -58,7 +58,7 @@ import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runPromiseFloor } from '../promise-floor.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
 
-const AGENT = 'behaviorbot';
+const AGENT = 'harnessbot';
 const TURN = 4632;
 
 /** The S1 reply, verbatim from the round-5 catalog. */
@@ -131,7 +131,7 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   db.pragma('foreign_keys = ON');
-  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'BehaviorBot', 'idle', '1970-01-01')`).run(AGENT);
+  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'HarnessBot', 'idle', '1970-01-01')`).run(AGENT);
 });
 
 describe('T22: a promise backed by a future-scheduled row is not an empty promise', () => {

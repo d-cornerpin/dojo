@@ -91,7 +91,7 @@ import { runPersistAssistant } from '../persist-assistant.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
 import type { StepOutcome } from '../../step-outcome.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const CONV = 'conv-1';
 const TURN = 5649;
 
@@ -159,7 +159,7 @@ const persistAndBroadcastSystemRow = vi.fn();
 function ctxFor(turnCtx: Bag, over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext {
   return {
     agentId: AGENT, turnCtx: turnCtx as never, turnNumber: TURN, db: mockDb.current,
-    agent: { id: AGENT, name: 'Kevin' } as never,
+    agent: { id: AGENT, name: 'Zargo' } as never,
     counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard', senderId: null, senderIsAgent: false } as never,
     counterpartyIsAgentSender: false,
     chosenConvKey: 'dashboard:owner',
@@ -266,7 +266,7 @@ beforeEach(() => {
   runMigrations();
   db.pragma('foreign_keys = ON');
   db.prepare(
-    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Kevin', 'idle', '1970-01-01')`,
+    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
   ).run(AGENT);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`,

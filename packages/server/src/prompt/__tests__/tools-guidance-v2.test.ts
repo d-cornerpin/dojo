@@ -170,7 +170,7 @@ describe('Phase 5 v2 tools-guidance content', () => {
 // T85 — THE "Always-loaded tools" LINE ADVERTISES WHAT THE CALL CARRIES.
 //
 // ── THE GAP, MEASURED ON THE RELEASE GOLDEN (both auditors, independently) ──
-// `checks/golden/cache-prefix.kevin.txt` is the real assembled prefix for the primary agent. Line
+// `checks/golden/cache-prefix.zargo.txt` is the real assembled prefix for the primary agent. Line
 // 118 named THIRTY always-loaded tools, `complete_task` among them; the `===TOOLS===` array on the
 // same request carried TWENTY-NINE. `getFilteredTools` strips `complete_task` from any agent that
 // must not self-terminate (`agent/tools/surface.ts:301-309`) — the primary included, because it has

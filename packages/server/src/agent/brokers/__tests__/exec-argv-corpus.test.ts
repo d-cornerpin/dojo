@@ -63,7 +63,7 @@ fs.writeFileSync(path.join(projects, 'notes.txt'), 'an ordinary file an agent ma
 
 // ── The three manifests the corpus authorizes against ──
 // WILDCARD is the primary/Healer shape (`exec_allow:['*']`). SCOPED is the
-// shape a real worker carries (BehaviorBot's, trimmed). LOCKED has an EMPTY
+// shape a real worker carries (HarnessBot's, trimmed). LOCKED has an EMPTY
 // `exec_allow`, which is what deny-by-default has to be measured against.
 const wildcardManifest = JSON.stringify({
   file_read: '*', file_write: '*', file_delete: 'none',

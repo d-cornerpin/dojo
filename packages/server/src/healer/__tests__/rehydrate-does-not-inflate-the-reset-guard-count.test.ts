@@ -40,7 +40,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { onAgentInjured, rehydrateInjuredAgents, countDeclaredPatienceHonestFails } from '../injury-recovery.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../../agent/stream-patience.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const HEALER = 'healer';
 
 // The literal `model.ts` throw-site phrase (copied, not imported — every fixture in this tree
@@ -52,7 +52,7 @@ const PATIENCE_LAST_ERROR =
 
 function seed(db: Database.Database, opts: { status: 'error' | 'paused'; recoveryAttempts?: number }): void {
   db.prepare(
-    "INSERT INTO agents (id, name, status, last_error, recovery_attempts) VALUES (?, 'Kevin', ?, ?, ?), (?, 'Healer', 'idle', NULL, 0)",
+    "INSERT INTO agents (id, name, status, last_error, recovery_attempts) VALUES (?, 'Zargo', ?, ?, ?), (?, 'Healer', 'idle', NULL, 0)",
   ).run(AGENT, opts.status, PATIENCE_LAST_ERROR, opts.recoveryAttempts ?? 0, HEALER);
   db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('healer_agent_id', ?)").run(HEALER);
 }

@@ -1,8 +1,8 @@
 // UX-REPAIR ROUND 11 · T43 leg (c) — A PUNT CANNOT SILENTLY SATISFY THE JOIN
 //
 // ── THE RECORDED INCIDENT (round-11 S5-A) ──
-// BehaviorBot delegated research to kelly, the PM, who holds no web tools. Kelly punted the
-// work to kevin and replied to BehaviorBot with a hand-off note. `landPiece` settled her piece
+// HarnessBot delegated research to quilba, the PM, who holds no web tools. Quilba punted the
+// work to zargo and replied to HarnessBot with a hand-off note. `landPiece` settled her piece
 // `done` on that note — "the delegated piece came back" — the countdown reached zero with ONE
 // research stream in hand, and the compile steer told the model the pieces were back. ~6m20s
 // were then spent recovering by hand.
@@ -47,14 +47,14 @@ import {
 } from '../store.js';
 
 /** The delegator — the join is theirs, and it stays theirs. */
-const OWNER_AGENT = 'behaviorbot';
+const OWNER_AGENT = 'harnessbot';
 /** The assignee who is handing the work on. */
-const PUNTER = 'kelly';
+const PUNTER = 'quilba';
 /** The agent the work actually goes to. */
-const DOER = 'kevin';
+const DOER = 'zargo';
 
-const T_ASSIGN = 'thread-aaaaaaaa-1111';   // BehaviorBot -> kelly
-const T_HANDOFF = 'thread-bbbbbbbb-2222';  // kelly -> kevin
+const T_ASSIGN = 'thread-aaaaaaaa-1111';   // HarnessBot -> quilba
+const T_HANDOFF = 'thread-bbbbbbbb-2222';  // quilba -> zargo
 const T_OTHER = 'thread-cccccccc-3333';
 
 const row = (id: string): Record<string, unknown> =>
@@ -109,8 +109,8 @@ beforeEach(() => {
   db.pragma('foreign_keys = ON');
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at)
-     VALUES (?, 'BehaviorBot', 'idle', '1970-01-01'), (?, 'Kelly', 'idle', '1970-01-01'),
-            (?, 'Kevin', 'idle', '1970-01-01')`,
+     VALUES (?, 'HarnessBot', 'idle', '1970-01-01'), (?, 'Quilba', 'idle', '1970-01-01'),
+            (?, 'Zargo', 'idle', '1970-01-01')`,
   ).run(OWNER_AGENT, PUNTER, DOER);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)
@@ -174,7 +174,7 @@ describe('the join edge follows the work', () => {
     repointJoinPieceToHandOff({
       childId, handOffSender: PUNTER, newThreadId: T_HANDOFF, newAssignee: DOER,
     });
-    // This is exactly the lookup `landReplyOnJoin` makes when kevin's answer arrives to kelly.
+    // This is exactly the lookup `landReplyOnJoin` makes when zargo's answer arrives to quilba.
     expect(findJoinChildByThread(PUNTER, T_HANDOFF)?.id).toBe(childId);
     // The old edge is gone: a late note from the punter on the original thread no longer
     // finds a piece to settle.
@@ -188,7 +188,7 @@ describe('the join edge follows the work', () => {
     });
     const settled = landPiece(findJoinChildByThread(PUNTER, T_HANDOFF)!.id, {
       deliveryId: seedDelivery('d-real', { agent_id: PUNTER }),
-      content: 'Kevin: option A wins on price, option B on support.',
+      content: 'Zargo: option A wins on price, option B on support.',
       messageId: null, actorId: DOER,
     });
     expect(settled.result.kind).toBe('applied');

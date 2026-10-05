@@ -67,7 +67,7 @@ vi.mock('../../../../../contacts/resolve-recipient.js', () => ({
 // ── UX-ACCESS A4's CHANNEL DOOR, declared rather than borrowed (W83, v3.1.23 cut) ──
 // `turn-closures.ts` now asks `engineMayRouteTo` before any of its four push arms
 // fire. That predicate reads the agent's stored grants out of the DATABASE, and
-// this file's `AGENT` is the literal string `'kevin'` — the owner's own primary.
+// this file's `AGENT` is the literal string `'zargo'` — the owner's own primary.
 // Until T74b gave the suite its own home, the door silently opened a real
 // `~/.dojo/data/dojo.db`, found the owner's live grants there and answered `true`,
 // so these three clauses passed on a fact about ONE DEVELOPER'S BOX. On a fresh
@@ -91,7 +91,7 @@ import { engineAckReachesTheirChannel, isRoutedHumanCounterparty, type TurnCount
 import type { PreflightContext, PreflightScratch } from '../index.js';
 import type { TurnContext } from '../../../../turn-context.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const CHAT_ID = '19:meeting_abcdef0123456789@thread.v2';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = (rel: string): string => fs.readFileSync(path.resolve(HERE, rel), 'utf8');
@@ -160,7 +160,7 @@ describe('the predicate: the door opens where the ack can now actually be pushed
     }
     // and it still refuses everyone the wider rule refuses
     expect(engineAckReachesTheirChannel(person({ channel: 'teams', relation: 'unknown' }))).toBe(false);
-    expect(engineAckReachesTheirChannel({ kind: 'agent', name: 'Ticky' } as TurnCounterparty)).toBe(false);
+    expect(engineAckReachesTheirChannel({ kind: 'agent', name: 'Tyndo' } as TurnCounterparty)).toBe(false);
   });
 });
 

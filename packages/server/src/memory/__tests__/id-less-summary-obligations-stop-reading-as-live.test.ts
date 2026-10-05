@@ -6,7 +6,7 @@
 // while these ten lines sat in five stored summaries for agent 57b52025-…, every one of
 // them present tense, none of them citing an id:
 //   "- Two quotes are still parked, waiting on Bob's address."
-//   "DEFERRED: Fence and roof quotes — pending Bob's address before BehaviorBot can send them."
+//   "DEFERRED: Fence and roof quotes — pending Bob's address before HarnessBot can send them."
 //   … (the full ten are in task-W11-report.md, verbatim)
 // and every commitment row they describe was `abandoned`, the newest closed 2026-08-06.
 // T20 fixed the id-CITED line and measured the id-less ones honestly — 17 of them — and
@@ -43,8 +43,8 @@ import {
   SUMMARY_OBLIGATION_MARK, SUMMARY_NO_MATCH_MARK,
 } from '../summary-obligations.js';
 
-const AGENT = 'behaviorbot';
-const OTHER = 'kevin';
+const AGENT = 'harnessbot';
+const OTHER = 'zargo';
 
 const db = (): Database.Database => mockDb.current!;
 
@@ -81,31 +81,31 @@ const BOB_FENCE = "Email the fence estimate to Bob (promise-bmshmu5ygd5) once he
 
 /** The ten stored lines, verbatim from the live body on 2026-08-11. */
 const STORED_BOB_LINES = [
-  "- OPEN (per BehaviorBot's status): two quotes waiting on Bob's address — for **fence** and "
-    + '**roof** — which BehaviorBot will send the moment Bob provides the address. [Owner of this '
+  "- OPEN (per HarnessBot's status): two quotes waiting on Bob's address — for **fence** and "
+    + '**roof** — which HarnessBot will send the moment Bob provides the address. [Owner of this '
     + "pending item: David's quote requests; dependent on Bob's address.]",
-  "DEFERRED: Fence and roof quotes — pending Bob's address before BehaviorBot can send them.",
-  '- First ask: BehaviorBot called work_update (status set to on_deck), then told David: '
+  "DEFERRED: Fence and roof quotes — pending Bob's address before HarnessBot can send them.",
+  '- First ask: HarnessBot called work_update (status set to on_deck), then told David: '
     + '"Everything from last night is done (cheat sheet, desk picks, parking reminder), with one '
     + "honest hiccup: the 6:45 AM 'routine' reminder fired this morning but the message delivery "
     + 'glitched on my end and never reached your screen. The schedule is intact — it\'s set to fire '
     + "again tomorrow at 6:45 AM, and I'll make sure it lands. The two quotes are still parked "
     + "waiting on Bob's address.\"",
-  '- Second ask: BehaviorBot replied "Nothing new since my last message a minute ago — routine '
+  '- Second ask: HarnessBot replied "Nothing new since my last message a minute ago — routine '
     + "reminder fires again tomorrow 6:45 AM, quotes still waiting on Bob's address.\"",
   "- Two quotes are still parked, waiting on Bob's address.",
   "DEFERRED: The two quotes — parked, pending Bob's address (waiting on Bob).",
-  '- Two outstanding quotes — fence and roof — are parked, waiting on Bob\'s address; BehaviorBot '
+  '- Two outstanding quotes — fence and roof — are parked, waiting on Bob\'s address; HarnessBot '
     + 'will send them the moment Bob provides the address.',
-  "PENDING: Two quotes (fence, roof) — waiting on Bob's address before BehaviorBot sends them.",
-  '- BehaviorBot replied: nothing outstanding on its side — tracker is clean; the only item is '
-    + 'Ticky\'s paused technique-distillation batch, "which isn\'t mine." BehaviorBot added: "The '
+  "PENDING: Two quotes (fence, roof) — waiting on Bob's address before HarnessBot sends them.",
+  '- HarnessBot replied: nothing outstanding on its side — tracker is clean; the only item is '
+    + 'Tyndo\'s paused technique-distillation batch, "which isn\'t mine." HarnessBot added: "The '
     + 'fence and roof quotes are still parked on Bob\'s address, but that\'s on his side, not yours '
     + 'or mine."',
   'DEFERRED / STILL PENDING: Mariners score check — task 92fba53b-1f94-49bf-a51c-77a967355af6 '
-    + 'created scheduled Mon Aug 10, 2026 14:06, but the turn closed without BehaviorBot messaging '
-    + 'David the score. BehaviorBot stated fence and roof quotes remain parked on Bob\'s address — '
-    + "on Bob's side, not BehaviorBot's.",
+    + 'created scheduled Mon Aug 10, 2026 14:06, but the turn closed without HarnessBot messaging '
+    + 'David the score. HarnessBot stated fence and roof quotes remain parked on Bob\'s address — '
+    + "on Bob's side, not HarnessBot's.",
 ];
 
 beforeEach(() => {
@@ -114,7 +114,7 @@ beforeEach(() => {
   mockDb.current = fresh;
   runMigrations();
   fresh.pragma('foreign_keys = ON');
-  for (const [id, name] of [[AGENT, 'BehaviorBot'], [OTHER, 'Kevin']]) {
+  for (const [id, name] of [[AGENT, 'HarnessBot'], [OTHER, 'Zargo']]) {
     fresh.prepare(
       `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, ?, 'idle', '1970-01-01')`,
     ).run(id, name);
@@ -216,11 +216,11 @@ describe('resemblance is not a join', () => {
   it('when both sides name a run id and the ids DISAGREE, it is not a match', () => {
     seedCommitment('abandoned',
       'Tell David about the fail-open probe project (failproj-bmsgoeiyu25-a1) ending with a fallen '
-      + 'step, and hold today\'s pending BehaviorBot validation checks until his yes/no ruling.');
+      + 'step, and hold today\'s pending HarnessBot validation checks until his yes/no ruling.');
     const same = '- PENDING: Tell David about the fail-open probe project (failproj-bmsgoeiyu25-a1) '
-      + 'ending with a fallen step, and hold today\'s pending BehaviorBot validation checks.';
+      + 'ending with a fallen step, and hold today\'s pending HarnessBot validation checks.';
     const other = '- PENDING: Tell David about the fail-open probe project (failproj-bmsfkglb1e0-a1) '
-      + 'ending with a fallen step, and hold today\'s pending BehaviorBot validation checks.';
+      + 'ending with a fallen step, and hold today\'s pending HarnessBot validation checks.';
     expect(annotateSummaryObligations(same, AGENT)).toContain(SUMMARY_OBLIGATION_MARK);
     expect(annotateSummaryObligations(other, AGENT)).toBe(other);
   });

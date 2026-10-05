@@ -12,10 +12,10 @@
 // channels post-migration"*. MEASURED on the owner's live `deliveries` ledger at
 // `ac945a99`:
 //
-//     57b52025-… (BehaviorBot, ronin)  auto-route imessage 152
+//     57b52025-… (HarnessBot, ronin)  auto-route imessage 152
 //     57b52025-…                       auto-route email      7
 //     57b52025-…                       engine-ack imessage    3
-//     kevin      (the primary)         auto-route  —          0
+//     zargo      (the primary)         auto-route  —          0
 //
 // Every engine-routed human delivery this box has ever made was sent by an agent
 // holding NO channel grant, and the primary has made none. So this is a REAL
@@ -317,31 +317,31 @@ describe('the narrowing, stated honestly', () => {
   });
 
   it('the AUTO-ROUTE door is NOT empty-diff, and the fix is a grant the owner can tick', () => {
-    // BehaviorBot's shape, reproduced: a ronin agent that auto-routed on iMessage
+    // HarnessBot's shape, reproduced: a ronin agent that auto-routed on iMessage
     // for weeks while holding `master:false`. Under A4 it is refused — and one
     // tick of the panel's iMessage control restores it, which is the whole point
     // of the section existing.
-    agent('behaviorbot', (g) => { g.channels.master = false; g.channels.imessage = 'none'; });
-    expect(engineMayRouteTo('behaviorbot', 'imessage')).toBe(false);
+    agent('harnessbot', (g) => { g.channels.master = false; g.channels.imessage = 'none'; });
+    expect(engineMayRouteTo('harnessbot', 'imessage')).toBe(false);
 
     db().prepare('UPDATE agents SET permissions = ? WHERE id = ?').run(
       JSON.stringify({
         grants: (() => {
-          const g = deriveLegacyGrants('behaviorbot');
+          const g = deriveLegacyGrants('harnessbot');
           g.channels.master = true;
           g.channels.imessage = 'owner';
           return g;
         })(),
       }),
-      'behaviorbot',
+      'harnessbot',
     );
     forgetAccessGrants();
-    expect(engineMayRouteTo('behaviorbot', 'imessage')).toBe(true);
+    expect(engineMayRouteTo('harnessbot', 'imessage')).toBe(true);
   });
 
   it('a withheld route never deletes the reply — the dashboard destination is always open', () => {
-    agent('behaviorbot', (g) => { g.channels.master = false; });
-    expect(engineMayRouteTo('behaviorbot', 'imessage')).toBe(false);
-    expect(engineMayRouteTo('behaviorbot', 'dashboard')).toBe(true);
+    agent('harnessbot', (g) => { g.channels.master = false; });
+    expect(engineMayRouteTo('harnessbot', 'imessage')).toBe(false);
+    expect(engineMayRouteTo('harnessbot', 'dashboard')).toBe(true);
   });
 });

@@ -12,7 +12,7 @@
 //     branch ended at `while (messages[0].role !== 'user') messages.shift()` and returned:
 //     ROLE normalised, leading `tool_result` NOT. A first message that is a user message
 //     whose blocks are all tool_result satisfies that loop exactly, and Anthropic rejects
-//     it — 3 of the detect window's 17 day-0 divergences, all on `kelly`
+//     it — 3 of the detect window's 17 day-0 divergences, all on `quilba`
 //     (`first-message-leads-with-tool-result`).
 // ════════════════════════════════════════════════════════════════════════════════════════
 

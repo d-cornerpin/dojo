@@ -45,7 +45,7 @@ import { finalizeTurnRecord } from '../finalize-record.js';
 import { initState, type AgentTurnState } from '../../../state.js';
 import type { TeardownContext } from '../index.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const CONV = 'conv-1';
 const ASK = 'ask-t41';
 const TURN = 4805;
@@ -94,7 +94,7 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   db.pragma('foreign_keys = ON');
-  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Kevin', 'idle', '1970-01-01')`).run(AGENT);
+  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`).run(AGENT);
   db.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'imessage', '+1555')`).run(CONV, AGENT);
   db.prepare(
     `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent,

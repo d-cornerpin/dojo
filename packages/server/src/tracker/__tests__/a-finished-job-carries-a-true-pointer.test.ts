@@ -44,7 +44,7 @@ import { openAsk, claimAsk, stampClaimingTurn, askIdForMessage } from '../../wor
 import { resolveTaskAnswerPointer } from '../delivery-evidence.js';
 import { pmMayCall, PM_ALLOWED_TOOLS } from '../pm-agent.js';
 
-const AGENT = 'behaviorbot';
+const AGENT = 'harnessbot';
 const CONV = 'conv-owner';
 const OWNER_MSG = 'msg-owner-1';
 
@@ -86,7 +86,7 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   db.pragma('foreign_keys = ON');
-  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'BehaviorBot', 'idle', '1970-01-01')`).run(AGENT);
+  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'HarnessBot', 'idle', '1970-01-01')`).run(AGENT);
   db.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`).run(CONV, AGENT);
 });
 

@@ -89,7 +89,7 @@ const overBudget = (tailId: string): ValidatedMessage[] => [
 ];
 
 const repair = (messages: ValidatedMessage[], budgetTokens = 500) =>
-  repairAssembly(messages, { budgetTokens, laneIds: collectMessageLaneIds(messages), agentId: 'kevin' });
+  repairAssembly(messages, { budgetTokens, laneIds: collectMessageLaneIds(messages), agentId: 'zargo' });
 
 describe('the priority repair recognises post-budget lanes instead of refusing', () => {
   it('C10.1 an over-budget assembly carrying a loop-tail entry id REPAIRS (it used to refuse)', () => {

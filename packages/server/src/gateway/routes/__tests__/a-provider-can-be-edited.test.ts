@@ -366,14 +366,14 @@ describe('T66b — a rename is display-only: the id is the key everywhere', () =
     `).run();
     db.prepare(`
       INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-      VALUES ('kevin', 'Kevin', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
+      VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
     `).run();
 
     await patch('/providers/local-ds4', { name: 'Completely Different Name' });
 
     expect(db.prepare('SELECT provider_id FROM models WHERE id = ?').get('m-local'))
       .toEqual({ provider_id: 'local-ds4' });
-    expect(db.prepare('SELECT model_id FROM agents WHERE id = ?').get('kevin'))
+    expect(db.prepare('SELECT model_id FROM agents WHERE id = ?').get('zargo'))
       .toEqual({ model_id: 'm-local' });
     expect(getProviderCredential('local-ds4')).toBe('sk-original-key');
     expect(await data(await get('/providers/local-ds4')))

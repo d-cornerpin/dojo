@@ -56,7 +56,7 @@ vi.mock('../../../../../memory/assembler.js', () => ({
 import { callWithRetryAndFallback, type ModelCallInputs } from '../model-call.js';
 import { runMigrations } from '../../../../../db/migrations.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const CLOUD_MODEL = 'cloud-a';
 const SLOW_MODEL = 'slow-b';
 const CONTEXT_WINDOW = 200_000;
@@ -65,7 +65,7 @@ const SIXTY_K_TOKEN_BLOB = 'x'.repeat(240_000); // ~60,000 tokens via the /4 est
 const THIRTY_K_TOKEN_BLOB = 'x'.repeat(120_000); // ~30,000 tokens
 
 function seedTwoModelTier(db: Database.Database, opts: { slowDeclaresBoth: boolean }): void {
-  db.prepare(`INSERT INTO agents (id, name, status, created_at) VALUES (?, ?, 'idle', datetime('now'))`).run(AGENT, 'Kevin');
+  db.prepare(`INSERT INTO agents (id, name, status, created_at) VALUES (?, ?, 'idle', datetime('now'))`).run(AGENT, 'Zargo');
 
   db.prepare(`INSERT INTO providers (id, name, type, auth_type) VALUES ('cloud', 'Cloud', 'openai', 'api_key')`).run();
   db.prepare(`
@@ -90,7 +90,7 @@ function seedTwoModelTier(db: Database.Database, opts: { slowDeclaresBoth: boole
 /** A second all-cloud tier, for the CONTROL that proves nothing changes when no
  *  candidate ever declares a ceiling. */
 function seedAllCloudTier(db: Database.Database): void {
-  db.prepare(`INSERT INTO agents (id, name, status, created_at) VALUES (?, ?, 'idle', datetime('now'))`).run(AGENT, 'Kevin');
+  db.prepare(`INSERT INTO agents (id, name, status, created_at) VALUES (?, ?, 'idle', datetime('now'))`).run(AGENT, 'Zargo');
   db.prepare(`INSERT INTO providers (id, name, type, auth_type) VALUES ('cloud', 'Cloud', 'openai', 'api_key')`).run();
   const insertModel = db.prepare(`
     INSERT INTO models (id, provider_id, name, api_model_id, is_enabled, capabilities, context_window, input_cost_per_m, output_cost_per_m)
@@ -110,7 +110,7 @@ function ctxFor(overrides: Partial<ModelCallInputs> = {}): ModelCallInputs {
     turnNumber: 1,
     messageId: 'msg-1',
     messages: [{ role: 'user', content: SIXTY_K_TOKEN_BLOB }] as unknown as ModelCallInputs['messages'],
-    systemPrompt: 'you are kevin',
+    systemPrompt: 'you are zargo',
     useTools: true,
     isAutoRouted: true,
     isA2ATurn: false,
@@ -152,7 +152,7 @@ describe('T82a fix 2 — the fallback only picks a model the assembly fits', () 
     seedTwoModelTier(mockDb.current!, { slowDeclaresBoth: true });
     callModelSpy.mockRejectedValueOnce(new Error('cloud-a exploded')).mockResolvedValue(OK_RESULT);
     assembleContextSpy.mockResolvedValue({
-      systemPrompt: 'you are kevin (re-assembled for slow-b)',
+      systemPrompt: 'you are zargo (re-assembled for slow-b)',
       messages: [{ role: 'user', content: 'trimmed to fit slow-b' }],
       systemVolatile: '', reserveTokens: 0,
     });

@@ -9,7 +9,7 @@
 // is told the person has their answer.
 //
 // MEASURED THROUGH THE REAL DOOR before a line of the fix was written — dojo `ba49131`, dev
-// server, floor model, BehaviorBot `57b52025`, one multistep request that read two files, wrote
+// server, floor model, HarnessBot `57b52025`, one multistep request that read two files, wrote
 // a summary and then answered:
 //
 //   turn 4526  ask:9eaab2ba
@@ -59,7 +59,7 @@ import {
 } from '../ask-settlement.js';
 import { insertMessage } from '../../memory/message-store.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const CONV = 'conv-1';
 
 /** The stamp the engine puts on the promoted start line. One spelling, read from the product. */
@@ -151,7 +151,7 @@ beforeEach(() => {
   runMigrations();
   db.pragma('foreign_keys = ON');
   db.prepare(
-    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Kevin', 'idle', '1970-01-01')`,
+    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
   ).run(AGENT);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('conv-1', ?, 'dashboard', 'owner')`,

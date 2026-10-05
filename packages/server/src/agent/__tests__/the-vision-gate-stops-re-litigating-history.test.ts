@@ -2,7 +2,7 @@
 // UX-REPAIR ROUND 6 T27 — THE VISION GATE STOPS RE-LITIGATING HISTORY.
 //
 // THE INCIDENT, on the dev body 2026-08-10, and it is in every one of the six round-6
-// catalogs: ONE stale image row (residue of W9's T23 fixture) sat in BehaviorBot's history.
+// catalogs: ONE stale image row (residue of W9's T23 fixture) sat in HarnessBot's history.
 // The gate walks the assembled history on EVERY model call and remembered nothing, so on every
 // call it re-sent that image to the fallback vision model, re-failed —
 //
@@ -65,7 +65,7 @@ import { lookupVisionCaption, imageFingerprint, UNCAPTIONED_IMAGE_STUB } from '.
 
 type Msg = { role: 'user' | 'assistant'; content: string | unknown[] };
 
-const AGENT = 'behaviorbot';
+const AGENT = 'harnessbot';
 const MODEL = 'text-only-model';
 
 const imageBlock = (data = 'STALE-FIXTURE-BYTES'): Record<string, unknown> => ({

@@ -54,8 +54,8 @@ import { trackerListActive, trackerActivity, ACTIVITY_POINTER } from '../tools.j
 import { workOperation } from '../../tools/work-verbs.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
 
-const AGENT = 'behaviorbot';
-const OTHER = 'ticky';
+const AGENT = 'harnessbot';
+const OTHER = 'tyndo';
 
 /** Local midnight for the box zone, in epoch ms — the door's own default window start. */
 function localMidnightMs(): number {

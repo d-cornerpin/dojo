@@ -49,7 +49,7 @@ import { askIdForMessage, claimAsk, stampClaimingTurn } from '../store.js';
 import { settleAsk, settleAsksAtTurnFinalize, recordOwedInterruptSubjects } from '../ask-settlement.js';
 import { insertMessage } from '../../memory/message-store.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const CONV = 'conv-1';
 const TURN = 40;      // the working turn (the ledger's 4655)
 const FOLLOW = 41;    // the follow-up turn (the ledger's 4656)
@@ -107,7 +107,7 @@ beforeEach(() => {
   mockDb.current = d;
   runMigrations();
   d.pragma('foreign_keys = ON');
-  d.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Kevin', 'idle', '1970-01-01')`).run(AGENT);
+  d.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`).run(AGENT);
   d.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('conv-1', ?, 'dashboard', 'owner')`).run(AGENT);
 });
 

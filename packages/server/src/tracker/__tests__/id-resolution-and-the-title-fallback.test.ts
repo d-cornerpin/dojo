@@ -53,7 +53,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
 import { runMigrations } from '../../db/migrations.js';
 import { resolveTaskId, formatResolveError } from '../schema.js';
 
-const MINE = 'kevin';
+const MINE = 'zargo';
 const THEIRS = 'sensei';
 const T = 1_700_000_000_000;
 

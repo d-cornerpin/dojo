@@ -194,12 +194,12 @@ const seedProvider = (firstChunkMs: number | null, idleMs: number | null): void 
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('kevin', 'Kevin', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
 const call = (): Promise<ModelCallResult> => callModel({
-  agentId: 'kevin',
+  agentId: 'zargo',
   modelId: 'm-local',
   messages: [{ role: 'user', content: 'Is it done?' }],
   systemPrompt: 'You are a local model.',

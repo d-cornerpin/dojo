@@ -90,7 +90,7 @@ const fillLivedIn = (): void => {
   `).run();
   d.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('kevin', 'Kevin', 'm-local', 'idle', '{"tone":"dry"}', '2026-07-02 09:00:00', '2026-09-01 09:00:00')
+    VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{"tone":"dry"}', '2026-07-02 09:00:00', '2026-09-01 09:00:00')
   `).run();
 
   // The work spine, written the way the engine writes it: epoch-ms times, no defaults taken,
@@ -100,7 +100,7 @@ const fillLivedIn = (): void => {
   const work = d.prepare(`
     INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes,
                       closes_thread, title, opened_at, updated_at, closed_at)
-    VALUES (?, ?, 'kevin', 'owner', 'conversation', 'c-1', ?, 'ANSWER', 1, 1, ?, ?, ?, ?)
+    VALUES (?, ?, 'zargo', 'owner', 'conversation', 'c-1', ?, 'ANSWER', 1, 1, ?, ?, ?, ?)
   `);
   const DAY_MS = 86_400_000;
   for (let i = 0; i < 12; i++) {
@@ -113,7 +113,7 @@ const fillLivedIn = (): void => {
   const cost = d.prepare(`
     INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens, output_tokens,
                               cost_usd, latency_ms, created_at)
-    VALUES (?, 'kevin', 'm-local', 'local', ?, ?, 0.0, ?, datetime('now', ?))
+    VALUES (?, 'zargo', 'm-local', 'local', ?, ?, 0.0, ?, datetime('now', ?))
   `);
   for (let i = 0; i < 30; i++) cost.run(`cost-${i}`, 3_000 + i * 700, 200 + i, 40_000 + i * 1_000, `-${i} days`);
 };
@@ -155,7 +155,7 @@ describe('BODY A — a fresh install', () => {
 
   it('a row takes the defaults the store relies on — drafting, and two stamps', () => {
     db().prepare(`INSERT INTO ${NEW_TABLE} (id, agent_id, lane, signature) VALUES (?, ?, ?, ?)`)
-      .run('r-1', 'kevin', 'tool-error', 'ds1-aaaaaaaaaaaa');
+      .run('r-1', 'zargo', 'tool-error', 'ds1-aaaaaaaaaaaa');
     const row = db().prepare(
       `SELECT status, created_at AS c, updated_at AS u, approved_at AS a, posted_at AS p,
               brief_json AS b, telemetry_json AS t, bundle_path AS bp, export_path AS ep,
@@ -175,7 +175,7 @@ describe('BODY A — a fresh install', () => {
     // rather than trust a constraint to have held.
     expect(() => db().prepare(
       `INSERT INTO ${NEW_TABLE} (id, agent_id, lane, signature, status) VALUES (?, ?, ?, ?, ?)`,
-    ).run('r-2', 'kevin', 'tool-error', 'ds1-bbbbbbbbbbbb', 'sideways')).not.toThrow();
+    ).run('r-2', 'zargo', 'tool-error', 'ds1-bbbbbbbbbbbb', 'sideways')).not.toThrow();
   });
 
   it('recorded itself in `_migrations`, so a second boot does not re-run it', () => {
@@ -285,7 +285,7 @@ describe('NEGATIVE CONTROL — a body that already carries the table', () => {
     // (a box whose `_migrations` marker was lost with a restored backup).
     db().prepare(`
       INSERT INTO ${NEW_TABLE} (id, agent_id, status, lane, signature, brief_json, issue_number)
-      VALUES ('r-old', 'kevin', 'posted', 'tool-error', 'ds1-cccccccccccc', '{"title":"kept"}', 42)
+      VALUES ('r-old', 'zargo', 'posted', 'tool-error', 'ds1-cccccccccccc', '{"title":"kept"}', 42)
     `).run();
     db().prepare('DELETE FROM _migrations WHERE name = ?').run(MIGRATION_169);
 

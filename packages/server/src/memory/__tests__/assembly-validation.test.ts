@@ -145,9 +145,9 @@ describe('validateAssembly — same validator for every agent type (C9, no PM by
     // assembler's budgeting. The validator cannot be told who it is validating for, so
     // there is no signature through which a bypass could be added later.
     const pmShaped = [user('a'), asst('b')]; // ends on assistant: a violation for anybody
-    const v = validateAssembly(pmShaped, { budgetTokens: 10_000, agentId: 'kelly' });
+    const v = validateAssembly(pmShaped, { budgetTokens: 10_000, agentId: 'quilba' });
     expect(v.violations.map((x) => x.code)).toContain('last-message-is-assistant');
-    const other = validateAssembly(pmShaped, { budgetTokens: 10_000, agentId: 'kevin' });
+    const other = validateAssembly(pmShaped, { budgetTokens: 10_000, agentId: 'zargo' });
     expect(other.violations).toEqual(v.violations);
   });
 });
@@ -371,10 +371,10 @@ describe('C11 — unrepairable fails loud', () => {
   it('the error names the agent when it was given one — a loud failure must be locatable', () => {
     const { messages, laneIds } = unrepairable();
     try {
-      repairAssembly(messages, { budgetTokens: 10, laneIds, agentId: 'kevin' });
+      repairAssembly(messages, { budgetTokens: 10, laneIds, agentId: 'zargo' });
       throw new Error('expected a throw');
     } catch (e) {
-      expect((e as Error).message).toContain('kevin');
+      expect((e as Error).message).toContain('zargo');
     }
   });
 

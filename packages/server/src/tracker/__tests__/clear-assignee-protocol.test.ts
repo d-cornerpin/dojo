@@ -65,25 +65,25 @@ beforeEach(() => {
 
 describe("M7 / P706 — the tracker's clear-assignee protocol", () => {
   it('THE DEFECT: an explicit null must clear the assignee, not crash on NOT NULL', () => {
-    seedTask('t1', 'kevin', 'kevin');
+    seedTask('t1', 'zargo', 'zargo');
     expect(() => updateTask('t1', { assignedTo: null })).not.toThrow();
     const r = row('t1');
     expect(r.assignee_agent).toBeNull();
-    expect(r.agent_id).toBe('kevin'); // the holder survives; NOT NULL is not violated
+    expect(r.agent_id).toBe('zargo'); // the holder survives; NOT NULL is not violated
   });
 
   it('CONTROL: a real assignee is still written to agent_id', () => {
-    seedTask('t1', 'kevin', 'kevin');
+    seedTask('t1', 'zargo', 'zargo');
     updateTask('t1', { assignedTo: 'dana' });
     expect(row('t1').agent_id).toBe('dana');
   });
 
   it('an omitted assignee leaves both columns alone', () => {
-    seedTask('t1', 'kevin', 'kevin');
+    seedTask('t1', 'zargo', 'zargo');
     updateTask('t1', { priority: 'high' });
     const r = row('t1');
-    expect(r.agent_id).toBe('kevin');
-    expect(r.assignee_agent).toBe('kevin');
+    expect(r.agent_id).toBe('zargo');
+    expect(r.assignee_agent).toBe('zargo');
     expect(r.priority).toBe('high');
   });
 });

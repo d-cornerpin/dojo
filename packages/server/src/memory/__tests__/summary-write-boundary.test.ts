@@ -62,7 +62,7 @@ beforeEach(() => { callModel.mockReset(); });
 describe('generateSummary — the {ok:false, reason} contract (19 §1e)', () => {
   it('NO MODEL: refuses, and does NOT hand back the raw input as a summary', async () => {
     const r = await generateSummary({
-      content: RAW, depth: 0, targetTokens: 50, agentId: 'kevin',
+      content: RAW, depth: 0, targetTokens: 50, agentId: 'zargo',
     });
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error('unreachable');
@@ -74,7 +74,7 @@ describe('generateSummary — the {ok:false, reason} contract (19 §1e)', () => 
   it('MODEL THREW: refuses, and does NOT hand back the raw input as a summary', async () => {
     callModel.mockRejectedValue(new Error('provider 503'));
     const r = await generateSummary({
-      content: RAW, depth: 0, targetTokens: 50, agentId: 'kevin', modelId: 'deepseek/x',
+      content: RAW, depth: 0, targetTokens: 50, agentId: 'zargo', modelId: 'deepseek/x',
     });
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error('unreachable');
@@ -85,7 +85,7 @@ describe('generateSummary — the {ok:false, reason} contract (19 §1e)', () => 
   it('LEVEL 1: a normal summary is ok:true and is the model\'s text', async () => {
     callModel.mockResolvedValue({ content: 'a tidy summary' });
     const r = await generateSummary({
-      content: RAW, depth: 0, targetTokens: 500, agentId: 'kevin', modelId: 'deepseek/x',
+      content: RAW, depth: 0, targetTokens: 500, agentId: 'zargo', modelId: 'deepseek/x',
     });
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error(r.reason);
@@ -97,7 +97,7 @@ describe('generateSummary — the {ok:false, reason} contract (19 §1e)', () => 
     // Both calls return something far over target, so level 3 fires.
     callModel.mockResolvedValue({ content: 'model prose '.repeat(2_000) });
     const r = await generateSummary({
-      content: RAW, depth: 0, targetTokens: 20, agentId: 'kevin', modelId: 'deepseek/x',
+      content: RAW, depth: 0, targetTokens: 20, agentId: 'zargo', modelId: 'deepseek/x',
     });
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error(r.reason);

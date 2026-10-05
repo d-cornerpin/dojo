@@ -64,7 +64,7 @@ const PROVIDER_HEALTH_TSX = '../../../../dashboard/src/components/ProviderHealth
 const SERVICES_TS = '../routes/services.ts';
 const BRIDGE_TS = '../../services/imessage-bridge.ts';
 
-const ALERT_TEXT = 'kevin has been working for 47 minutes with no tool call';
+const ALERT_TEXT = 'zargo has been working for 47 minutes with no tool call';
 
 function writeState(state: unknown): void {
   fs.mkdirSync(path.dirname(STATE), { recursive: true });

@@ -84,7 +84,7 @@ const persistRoutingMarkerSpy = vi.fn();
 
 function turnCtxFor(over: Record<string, unknown> = {}): ExecuteContext['turnCtx'] {
   return {
-    agentId: 'kevin',
+    agentId: 'zargo',
     convKey: 'ck-1',
     conversationId: 'conv-1',
     servedWork: undefined,
@@ -102,11 +102,11 @@ const modelResult = (toolCalls: ToolCall[]): ExecuteContext['result'] => ({
 
 function ctxFor(over: Partial<ExecuteContext> = {}): ExecuteContext {
   return {
-    agentId: 'kevin',
+    agentId: 'zargo',
     turnCtx: turnCtxFor(),
     turnNumber: 7,
     db: fakeDb,
-    agent: { id: 'kevin', name: 'Kevin' } as unknown as ExecuteContext['agent'],
+    agent: { id: 'zargo', name: 'Zargo' } as unknown as ExecuteContext['agent'],
     counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' } as unknown as ExecuteContext['counterparty'],
     counterpartyIsAgentSender: false,
     chosenConvKey: 'ck-1',
@@ -138,7 +138,7 @@ function ctxFor(over: Partial<ExecuteContext> = {}): ExecuteContext {
 }
 
 function freshState(over: Partial<AgentTurnState> = {}): AgentTurnState {
-  return advance(initState('kevin', 'test-model'), { phase: EXECUTE_PHASE, loopCount: 2, ...over });
+  return advance(initState('zargo', 'test-model'), { phase: EXECUTE_PHASE, loopCount: 2, ...over });
 }
 
 const call = (name: string, args: Record<string, unknown> = {}, id = `tc-${name}-${Math.random()}`): ToolCall =>
@@ -335,7 +335,7 @@ describe('PHASE-6 CUT 7: the `execute` step\'s contract', () => {
     // rather than as nothing, so the model's next context is not missing tool results
     // for tool calls it made.
     const { stoppedAgents } = await import('../../../../shared-state.js');
-    stoppedAgents.add('kevin');
+    stoppedAgents.add('zargo');
     try {
       const out = await runExecute(freshState(), ctxFor({
         result: modelResult([call('file_write', { path: 'a', content: 'b' }), call('file_write', { path: 'c', content: 'd' })]),
@@ -351,7 +351,7 @@ describe('PHASE-6 CUT 7: the `execute` step\'s contract', () => {
       // owner's own behaviour in `steps/teardown/__tests__/contract.test.ts`.
       expect(out.state.toolResults.some((r) => String(r.content).includes('Cancelled by user'))).toBe(true);
     } finally {
-      stoppedAgents.delete('kevin');
+      stoppedAgents.delete('zargo');
     }
   });
 });

@@ -42,7 +42,7 @@ import {
   decideClaimedDelivery, claimedDeliverySteer, obligationOwedTo,
 } from '../claimed-delivery.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const TURN = 4210;
 
 /** The owner's own text, near enough: a transcript quote naming somebody nobody owes. */

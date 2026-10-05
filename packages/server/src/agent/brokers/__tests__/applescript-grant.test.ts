@@ -83,7 +83,7 @@ describe('T3 INBOUND (b) — `system_control:\'*\'` stops meaning AppleScript', 
     // The positive test the posture requires beside the flip. If this fails the
     // owner's own agent just lost AppleScript.
     expect(PRIMARY_AGENT_PERMISSIONS.system_control).toContain('applescript');
-    expect(mayRunAppleScript(PRIMARY_AGENT_PERMISSIONS, 'kevin')).toBe(true);
+    expect(mayRunAppleScript(PRIMARY_AGENT_PERMISSIONS, 'zargo')).toBe(true);
   });
 
   it('THE HEALER GAINS NOTHING — it never held `\'*\'`, so the flip is silent for it', () => {

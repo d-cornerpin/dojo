@@ -67,8 +67,8 @@ const REPO = path.resolve(__dirname, '..', '..', '..', '..', '..');
 const SRC = path.join(REPO, 'packages/server/src');
 const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
 
-const PRIMARY = 'kevin';
-const OTHER = 'behaviorbot';
+const PRIMARY = 'zargo';
+const OTHER = 'harnessbot';
 
 beforeEach(() => {
   const db = new Database(':memory:');
@@ -76,7 +76,7 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   db.pragma('foreign_keys = ON');
-  for (const [k, v] of [['primary_agent_id', PRIMARY], ['primary_agent_name', 'Kevin']]) {
+  for (const [k, v] of [['primary_agent_id', PRIMARY], ['primary_agent_name', 'Zargo']]) {
     db.prepare(
       `INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,

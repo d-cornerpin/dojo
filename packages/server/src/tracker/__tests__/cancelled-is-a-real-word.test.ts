@@ -26,7 +26,7 @@
 // real and §4 is its test: a cancelled row is VISIBLE, in the terminal column, labelled with
 // its own word. The board is fixed first; only then does the word become storable.
 //
-// SCOPE NOTE, honest: existing `failed` rows are NOT migrated. The four July Kevin rows the
+// SCOPE NOTE, honest: existing `failed` rows are NOT migrated. The four July Zargo rows the
 // round-3 investigation examined were genuine failures and stay `fallen`/Failed.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
@@ -298,7 +298,7 @@ describe('§3 terminality is not a list of two words any more', () => {
 //
 // It is REVIEWED here rather than widened, and the reason is this clause. A terminal row does
 // not belong in a listing whose trailer says "No active tasks", and the round-3 evidence is
-// what settles it in BOTH directions: the four July Kevin rows the review flagged as "open
+// what settles it in BOTH directions: the four July Zargo rows the review flagged as "open
 // work the agent missed" are `state='failed'` with `closed_at` set — surfacing them as active
 // would have made the agent report closed July failures as live work, which is strictly worse
 // than the silence. So `cancelled` joins `fallen` OUTSIDE this list, deliberately, and this

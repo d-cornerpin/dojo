@@ -222,8 +222,8 @@ describe('the placeholder path is only taken over spans the ledger calls plumbin
       content: '[SOURCE: SCHEDULER — automated scheduled task trigger, not a message from the user] run #1',
     });
     const a2a = insertMessage({
-      agentId: AGENT, role: 'user', lane: 'a2a', sourceAgentId: 'kevin',
-      content: '[A2A: from kevin] the deck is done',
+      agentId: AGENT, role: 'user', lane: 'a2a', sourceAgentId: 'zargo',
+      content: '[A2A: from zargo] the deck is done',
     });
     padFreshTail();
 

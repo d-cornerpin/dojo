@@ -73,8 +73,8 @@ import { WORK_OPS } from '../../tools/work-verbs.js';
 
 const HOME = path.join(realOs.tmpdir(), HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
-const PM = 'kelly';
-const PRIMARY = 'kevin';
+const PM = 'quilba';
+const PRIMARY = 'zargo';
 
 /** The shipped template, read from the repo the way the runtime resolves it. */
 const SHIPPED = fs.readFileSync(
@@ -97,15 +97,15 @@ beforeEach(async () => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   setConfig('primary_agent_id', PRIMARY);
-  setConfig('primary_agent_name', 'Kevin');
+  setConfig('primary_agent_name', 'Zargo');
   setConfig('pm_agent_id', PM);
-  setConfig('pm_agent_name', 'Kelly');
+  setConfig('pm_agent_name', 'Quilba');
   setConfig('owner_name', 'David');
   const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();
   mockDb.current
     .prepare("INSERT INTO agents (id, name, status) VALUES (?, ?, 'idle')")
-    .run(PM, 'Kelly');
+    .run(PM, 'Quilba');
 });
 
 afterEach(() => {
@@ -132,8 +132,8 @@ describe('the PM runs on its whole soul', () => {
     const soul = getSoulContent(PM);
 
     expect(soul).not.toContain('{{');
-    expect(soul).toContain('You are Kelly,');
-    expect(soul).toContain('Kevin');
+    expect(soul).toContain('You are Quilba,');
+    expect(soul).toContain('Zargo');
     expect(soul).toContain('David');
   });
 
@@ -142,11 +142,11 @@ describe('the PM runs on its whole soul', () => {
   });
 
   it('an owner edit through the card still reaches the model, and is never re-seeded away', () => {
-    writeAgentPromptSurface(PM, '# Identity\n\nYou are Kelly and you validate closes. That is all.');
+    writeAgentPromptSurface(PM, '# Identity\n\nYou are Quilba and you validate closes. That is all.');
 
-    expect(getSoulContent(PM)).toBe('# Identity\n\nYou are Kelly and you validate closes. That is all.');
+    expect(getSoulContent(PM)).toBe('# Identity\n\nYou are Quilba and you validate closes. That is all.');
     // Read twice: a re-seed that fired on any read would clobber the owner's words.
-    expect(getSoulContent(PM)).toBe('# Identity\n\nYou are Kelly and you validate closes. That is all.');
+    expect(getSoulContent(PM)).toBe('# Identity\n\nYou are Quilba and you validate closes. That is all.');
     expect(readAgentPromptSurface(PM)).toBe(getSoulContent(PM));
   });
 
@@ -172,7 +172,7 @@ describe('the PM runs on its whole soul', () => {
     const soul = pmSoulDefaultFrom(() => null, (msg) => logs.push(msg));
 
     expect(soul).not.toContain('{{');
-    expect(soul).toContain('Kelly');
+    expect(soul).toContain('Quilba');
     expect(logs.join(' ')).toMatch(/PM-SOUL\.md/);
   });
 

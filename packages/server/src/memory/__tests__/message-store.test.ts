@@ -420,7 +420,7 @@ describe('T8 — content is stored display-ready', () => {
 
     // routes/agents.ts and agent/tools.ts both write an agent's instructions through this
     // module as a role='system' row. Those instructions legitimately DOCUMENT the marker.
-    const prompt = 'You are Kevin.\n\nLead a reply with `((mood: NAME))` to animate the orb.';
+    const prompt = 'You are Zargo.\n\nLead a reply with `((mood: NAME))` to animate the orb.';
     const s = insertMessage({ agentId: AGENT, role: 'system', content: prompt });
     expect(rowOf(s.id).content).toBe(prompt);
   });

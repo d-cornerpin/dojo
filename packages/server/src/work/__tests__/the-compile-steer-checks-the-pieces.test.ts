@@ -1,13 +1,13 @@
 // UX-REPAIR ROUND 11 — T43b. THE COMPILE STEER INSTRUCTS VERIFICATION.
 //
 // ── THE INCIDENT (round-11 S5-A, second half) ────────────────────────────────────────────
-// BehaviorBot fanned out two research streams. kelly — the PM, no web tools (T43a) — could
-// not do hers, so she sent a HAND-OFF note ("kevin is picking this up"), delivery `55ea3858`,
+// HarnessBot fanned out two research streams. quilba — the PM, no web tools (T43a) — could
+// not do hers, so she sent a HAND-OFF note ("zargo is picking this up"), delivery `55ea3858`,
 // `send_to_agent`/`a2a`. That note is a non-empty, non-FAIL terminal reply, so `landPiece`
 // settled her piece `done`; `join_complete {"landed":2,"outcome":"compile"}` followed at
 // 01:19:49 with ONE research stream actually in hand, and this steer then told the model the
 // pieces were back. Measured cost: ~6m20s from "pieces back" to answer, recovered only when
-// the model improvised — it asked kevin directly and a `join_redrive` caught the result.
+// the model improvised — it asked zargo directly and a `join_redrive` caught the result.
 //
 // ── WHAT THIS CHANGES, AND WHAT IT DELIBERATELY DOES NOT ─────────────────────────────────
 // It makes that improvised rescue the INSTRUCTED path. The MODEL judges whether a piece is
@@ -36,8 +36,8 @@ import { compileSteerText, JOIN_REDRIVE_BOUND } from '../join-drive.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 const PIECES = [
-  'Piece 1 (from Kelly, thread 55ea3858): "I don\'t have web access for this one — kevin is picking it up."',
-  'Piece 2 (from Kevin, thread 34430191): "Native shrubs for a Denver north-facing bed: ..."',
+  'Piece 1 (from Quilba, thread 55ea3858): "I don\'t have web access for this one — zargo is picking it up."',
+  'Piece 2 (from Zargo, thread 34430191): "Native shrubs for a Denver north-facing bed: ..."',
 ];
 
 const steer = (attempt: number | null = null): string =>

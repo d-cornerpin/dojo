@@ -44,7 +44,7 @@ vi.mock('../../../db/connection.js', async () => {
 import { runMigrations } from '../../../db/migrations.js';
 import { splitDanglers, survivingDanglers, closeOutGateDecision, resolveServedWork } from '../stale-work-ids.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const T = 1_700_000_000_000;
 
 function seedWork(id: string, over: Record<string, unknown> = {}): void {

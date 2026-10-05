@@ -229,14 +229,14 @@ describe('T83 live chain — ENGINE TURN: getPendingEngineEvent → runAssemble 
       id: 't83lc-assistant', role: 'assistant', lane: 'a2a',
       content: JSON.stringify([
         { type: 'tool_use', id: 'call_send', name: 'send_to_agent',
-          input: { agent: 'BehaviorBot', intent: 'DELIVERABLE', thread_id: 'thread-abc', payload: 'the answer' } },
+          input: { agent: 'HarnessBot', intent: 'DELIVERABLE', thread_id: 'thread-abc', payload: 'the answer' } },
       ]),
     });
     insertRow({
       id: 't83lc-tool-result', role: 'tool', lane: 'a2a',
       content: JSON.stringify([
         { type: 'tool_result', tool_use_id: 'call_send', is_error: false,
-          content: '[A2A:DELIVERABLE] Message delivered to "BehaviorBot" on thread thread-abc.' },
+          content: '[A2A:DELIVERABLE] Message delivered to "HarnessBot" on thread thread-abc.' },
       ]),
     });
     insertRow({

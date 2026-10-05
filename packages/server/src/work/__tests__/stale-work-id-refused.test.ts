@@ -48,7 +48,7 @@ import { patchWork } from '../tracker-store.js';
 import { transition } from '../store.js';
 import { noteUnsettled } from '../outcome.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const T = 1_700_000_000_000;
 
 function seedWork(id: string, over: Record<string, unknown> = {}): void {

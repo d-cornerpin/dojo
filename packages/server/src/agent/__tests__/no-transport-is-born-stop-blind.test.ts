@@ -43,7 +43,7 @@ import { fileURLToPath } from 'node:url';
 
 const SRC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
-const AGENT = 'kevin-a6';
+const AGENT = 'zargo-a6';
 
 // ── the two transports' surroundings, stubbed so the TRANSPORT is what runs ──────────────
 vi.mock('../../google/auth.js', () => ({ getValidAccessTokenForAccount: async () => 'ya29.fake-token' }));
@@ -213,7 +213,7 @@ describe('§3 a stop cuts the Google transport', () => {
     const { googleRead } = await import('../../google/client.js');
     const { STOPPED_BY_USER } = await import('../abortable-call.js');
 
-    const inFlight = googleRead('https://www.googleapis.com/drive/v3/files', AGENT, 'Kevin', 'drive_list', {});
+    const inFlight = googleRead('https://www.googleapis.com/drive/v3/files', AGENT, 'Zargo', 'drive_list', {});
     await untilDialled();
     const cut = await stopNow();
 
@@ -241,7 +241,7 @@ describe('§4 a stop cuts the Microsoft transport', () => {
     const { msGraphRead } = await import('../../microsoft/client.js');
     const { STOPPED_BY_USER } = await import('../abortable-call.js');
 
-    const inFlight = msGraphRead('me/messages', AGENT, 'Kevin', 'outlook_list', {});
+    const inFlight = msGraphRead('me/messages', AGENT, 'Zargo', 'outlook_list', {});
     await untilDialled();
     const cut = await stopNow();
 
@@ -303,8 +303,8 @@ describe('§6 composing the stop onto a deadline leaves the deadline working', (
     const { msGraphRead } = await import('../../microsoft/client.js');
     const { countAbortable } = await import('../shared-state.js');
 
-    await googleRead('https://www.googleapis.com/drive/v3/files', AGENT, 'Kevin', 'drive_list', {});
-    await msGraphRead('me/messages', AGENT, 'Kevin', 'outlook_list', {});
+    await googleRead('https://www.googleapis.com/drive/v3/files', AGENT, 'Zargo', 'drive_list', {});
+    await msGraphRead('me/messages', AGENT, 'Zargo', 'outlook_list', {});
     // A leaked slot is worse than a missing one once A-5b makes this count something a USER
     // reads: it would show a Stop button for work that finished minutes ago.
     expect(countAbortable(AGENT, 'all'), 'a transport leaked its registration').toBe(0);

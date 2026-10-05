@@ -74,14 +74,14 @@ function assertEveryNameAppearsLiterally(tools: ToolDefinition[], index: string)
 //
 // ALL_ACCESS_MIRRORED models a full-access agent: every canonical name in
 // several categories PLUS the `user_` twin of every Gmail/Calendar tool
-// (the shape of the golden agent `kevin`, who holds google/microsoft
+// (the shape of the golden agent `zargo`, who holds google/microsoft
 // {agent:"full", user:"full"}). Because every canonical is held, the
 // substitution loop's ELSE branch never fires for this map — the fixed
 // text below was captured by running the PRE-T80b renderer against this
 // exact fixture, before categories.ts was touched. If this test ever fails,
 // the substitution leaked into the held-canonical path; fix the code, do
 // NOT update this string, exactly as the release golden
-// (dojo-test-kit/checks/golden/cache-prefix.kevin.txt) must never be
+// (dojo-test-kit/checks/golden/cache-prefix.zargo.txt) must never be
 // re-blessed for this task.
 // ════════════════════════════════════════════════════════════════════════
 

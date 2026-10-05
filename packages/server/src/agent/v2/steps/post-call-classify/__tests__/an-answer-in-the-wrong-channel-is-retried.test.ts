@@ -69,7 +69,7 @@ const turnCtx = (over: Record<string, unknown> = {}): PostCallClassifyContext['t
 
 /** A turn that ran tools, owes the person who asked, and came back empty. */
 const ctxFor = (over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext => ({
-  agentId: 'kevin',
+  agentId: 'zargo',
   configuredModelId: 'test-model',
   result: modelResult({ reasoningContent: 'The answer is: two flights, 8:05 and 11:40.' }),
   reArmIfStrandedNoAnswer: reArmSpy,
@@ -85,7 +85,7 @@ const ctxFor = (over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
 /** The state after a turn that executed tools. */
 function afterToolsState(over: Partial<AgentTurnState> = {}): AgentTurnState {
   const base = initState({
-    agentId: 'kevin', contextWindow: 128_000, isAutoRouted: false,
+    agentId: 'zargo', contextWindow: 128_000, isAutoRouted: false,
     configuredModelId: 'test-model', turnNumber: 7, triggeredByIMessage: false,
     triggeredByA2AReplyIntent: null, lastUserMessageContent: 'when are the flights?',
     lastUserMessageId: 'msg-user-1',

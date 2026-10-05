@@ -76,7 +76,7 @@ import { runCompletionAck } from '../../finalize/completion-ack.js';
 import type { AgentTurnState } from '../../../state.js';
 import type { FinalizeContext } from '../../finalize/index.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const CONV = 'conv-1';
 const START_ACK_INTENT = 'engine_start_ack';
 const ACK_TEXT = 'On it — reading both files now.';
@@ -96,7 +96,7 @@ beforeEach(() => {
   runMigrations();
   db.pragma('foreign_keys = ON');
   db.prepare(
-    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Kevin', 'idle', '1970-01-01')`,
+    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
   ).run(AGENT);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`,

@@ -38,7 +38,7 @@ import { START_ACK_STEER_TEXT } from '../start-ack-door.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ENGINE = path.resolve(HERE, '../../..');
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 
 const stripComments = (s: string): string => s
   .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))

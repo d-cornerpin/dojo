@@ -39,7 +39,7 @@ import {
   resolveWindow, COLLECTOR_CAPS, REPORT_WINDOW_MAX_MINUTES, REPORT_WINDOW_MAX_TURNS,
 } from '../window.js';
 
-const AGENT = 'kevin-report-window';
+const AGENT = 'zargo-report-window';
 /** The injected clock. The standing window is 120 minutes, so it opens at 10:00:00Z. */
 const NOW = new Date('2026-09-24T12:00:00.000Z');
 
@@ -109,7 +109,7 @@ function base(): void {
   const db = getDb();
   db.prepare("INSERT OR IGNORE INTO providers (id, name, type, auth_type) VALUES ('p-r', 'P', 'anthropic', 'none')").run();
   db.prepare("INSERT OR IGNORE INTO models (id, provider_id, name, api_model_id) VALUES ('m-r', 'p-r', 'M', 'm')").run();
-  db.prepare("INSERT OR IGNORE INTO agents (id, name, model_id, status) VALUES (?, 'Kevin', 'm-r', 'idle')").run(AGENT);
+  db.prepare("INSERT OR IGNORE INTO agents (id, name, model_id, status) VALUES (?, 'Zargo', 'm-r', 'idle')").run(AGENT);
 }
 
 function turn(n: number, at: string): void {

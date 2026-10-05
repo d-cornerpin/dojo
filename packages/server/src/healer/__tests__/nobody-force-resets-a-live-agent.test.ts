@@ -44,12 +44,12 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 
 import { runMigrations } from '../../db/migrations.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const HEALER = 'healer';
 
 function seed(db: Database.Database): void {
   db.prepare(
-    "INSERT INTO agents (id, name, status) VALUES (?, 'Kevin', 'idle'), (?, 'Healer', 'idle')",
+    "INSERT INTO agents (id, name, status) VALUES (?, 'Zargo', 'idle'), (?, 'Healer', 'idle')",
   ).run(AGENT, HEALER);
   db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('healer_agent_id', ?)").run(HEALER);
   // healer-agent.ts's self-watchdog no-ops before setup completes.
@@ -91,7 +91,7 @@ describe('T81d census row 17 — healer/auto-fix.ts\'s fixStuckAgent', () => {
 
     const item = {
       severity: 'critical' as const, code: 'STUCK_AGENT', title: 't', detail: 'd',
-      agentId: AGENT, agentName: 'Kevin',
+      agentId: AGENT, agentName: 'Zargo',
     };
     const res = runAutoFixes('diag-live', [item]);
 
@@ -106,7 +106,7 @@ describe('T81d census row 17 — healer/auto-fix.ts\'s fixStuckAgent', () => {
 
     const item = {
       severity: 'critical' as const, code: 'STUCK_AGENT', title: 't', detail: 'd',
-      agentId: AGENT, agentName: 'Kevin',
+      agentId: AGENT, agentName: 'Zargo',
     };
     const res = runAutoFixes('diag-dead', [item]);
 
@@ -123,7 +123,7 @@ describe('T81d census row 17 — healer/auto-fix.ts\'s fixStuckAgent', () => {
 
     const item = {
       severity: 'critical' as const, code: 'STUCK_AGENT', title: 't', detail: 'd',
-      agentId: AGENT, agentName: 'Kevin',
+      agentId: AGENT, agentName: 'Zargo',
     };
     runAutoFixes('diag-fresh', [item]);
     expect(statusOf(AGENT), 'the fixer always applies when called with a STUCK_AGENT item — this documents that fact, not a new gate').toBe('idle');

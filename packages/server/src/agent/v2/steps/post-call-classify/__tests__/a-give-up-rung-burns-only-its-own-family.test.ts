@@ -73,7 +73,7 @@ const modelResult = (
 } as unknown as PostCallClassifyContext['result']);
 
 const ctxFor = (over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext => ({
-  agentId: 'kevin',
+  agentId: 'zargo',
   turnNumber: 11,
   configuredModelId: 'test-model',
   result: modelResult(),
@@ -104,7 +104,7 @@ const GUARD_STEER =
  */
 function stateWithPendingGuard(over: Partial<AgentTurnState> = {}): AgentTurnState {
   const base = initState({
-    agentId: 'kevin', contextWindow: 128_000, isAutoRouted: false,
+    agentId: 'zargo', contextWindow: 128_000, isAutoRouted: false,
     configuredModelId: 'test-model', turnNumber: 11, triggeredByIMessage: false,
     triggeredByA2AReplyIntent: null, lastUserMessageContent: 'did you text Michael?',
   } as Parameters<typeof initState>[0]);

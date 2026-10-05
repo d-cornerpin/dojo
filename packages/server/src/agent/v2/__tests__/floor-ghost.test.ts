@@ -36,7 +36,7 @@ vi.mock('../../../db/connection.js', async () => {
 import { runMigrations } from '../../../db/migrations.js';
 import { recordFloorGhost, MAX_FLOOR_STEER_ATTEMPTS } from '../floor-ghost.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const TURN = 77;
 const WORK = 'task-ghosted-1';
 
@@ -74,7 +74,7 @@ beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   mockDb.current.prepare(
-    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Kevin', 'idle', '1970-01-01')`,
+    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
   ).run(AGENT);
   frames = [];
 });

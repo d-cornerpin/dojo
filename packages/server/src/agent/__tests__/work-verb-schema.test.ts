@@ -80,7 +80,7 @@ const N1_BASELINE_CHARS = { work_open: 5628, work_update: 6310 };
 // declared — a second spelling of `local_timezone` would have cost more bytes for no new
 // capability, so its declaration is retired and its read kept (the ruling lives in
 // `agent/tools/__tests__/effects-conformance.test.ts`).
-// This is the change the golden re-bless of `checks/golden/cache-prefix.kevin.txt`
+// This is the change the golden re-bless of `checks/golden/cache-prefix.zargo.txt`
 // records, and the numbers here are the same ones the prefix differ counts.
 const T0CW_BASELINE_CHARS = { work_open: 6327, work_update: 7058 };
 
@@ -126,7 +126,7 @@ const T18_BASELINE_CHARS = { work_open: 6327, work_update: 7606 };
 //   work_open   6,327 → 6,327  (+0 — untouched; this edit is `work_update` only)
 //   work_update 7,606 → 7,918  (+312)
 // The same 312 measured a second, independent way: `dojo-test-kit/checks/golden/
-// cache-prefix.kevin.txt`'s tools half moved 72,304 → 72,616 across the re-bless, and the
+// cache-prefix.zargo.txt`'s tools half moved 72,304 → 72,616 across the re-bless, and the
 // previous golden with ONLY this property inserted equals the new one byte-for-byte.
 // WHAT THE 312 BUY: T60 built the activity door with its window as a renderer argument and
 // recorded that widening it to the wire was "one declared property on the next affordable

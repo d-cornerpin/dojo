@@ -107,7 +107,7 @@ function engineOrigin(intent: string | null): MessageOrigin {
 function agentOrigin(threadId: string): MessageOrigin {
   return {
     kind: 'agent', relation: 'agent', channel: 'a2a',
-    senderName: 'Ticky', senderId: 'ticky', threadId, intent: 'ASSIGN', authorized: true,
+    senderName: 'Tyndo', senderId: 'tyndo', threadId, intent: 'ASSIGN', authorized: true,
   };
 }
 
@@ -173,9 +173,9 @@ describe('T10 conformance: fanout_join is the ONLY engine intent an A2A tail kee
 // ════════════════════════════════════════════════════════════════════════════════════════
 // §T68b — THE ASSEMBLED CONTEXT. Everything above proves a filter; this proves the DELIVERY.
 //
-// The seed is the round-16 S5 shape as the store recorded it on 2026-08-31 (BehaviorBot,
+// The seed is the round-16 S5 shape as the store recorded it on 2026-08-31 (HarnessBot,
 // seqs 70594 / 70613 / 70633 / 70643): an owner ask that names two sub-jobs, Healer's
-// deliverable and Ticky's deliverable as A2A inbounds on their OWN conversations, and one
+// deliverable and Tyndo's deliverable as A2A inbounds on their OWN conversations, and one
 // `lane='events'` / `origin_intent='fanout_join'` row whose body quotes both pieces verbatim.
 // The turn is assembled with NO counterparty — the exact shape of turns 5121/5122, whose
 // `turns.kind` is NULL and whose `conv_key` is NULL, so the human scoper runs unscoped.
@@ -244,7 +244,7 @@ function compileOrderContent(): string {
     total: 2,
     pieces: [
       `Piece 1 (from Healer, thread 4483996a): "${PIECE_1}"`,
-      `Piece 2 (from Ticky, thread 12bde069): "${PIECE_2}"`,
+      `Piece 2 (from Tyndo, thread 12bde069): "${PIECE_2}"`,
     ],
     attempt: 1,
     bound: JOIN_REDRIVE_BOUND,
@@ -274,8 +274,8 @@ function seedTheS5Shape(): void {
     content: `[A2A:ANSWER thread:4483996a from:Healer] ${PIECE_1}`,
   });
   insertRow({
-    role: 'user', lane: 'a2a', conversationId: 'conv-ticky', sourceAgentId: 'ticky',
-    content: `[A2A:DELIVERABLE thread:12bde069 from:Ticky] ${PIECE_2}`,
+    role: 'user', lane: 'a2a', conversationId: 'conv-tyndo', sourceAgentId: 'tyndo',
+    content: `[A2A:DELIVERABLE thread:12bde069 from:Tyndo] ${PIECE_2}`,
   });
 }
 
@@ -396,8 +396,8 @@ describe('T68b §3 — the ACTIVE USER DIRECTIVE pins the ASK, never a helper\'s
     const second = (await assembleContext(AGENT, MODEL)).directiveLane ?? '';
 
     insertRow({
-      role: 'user', lane: 'a2a', conversationId: 'conv-ticky-2', sourceAgentId: 'ticky',
-      content: `[A2A:ANSWER thread:18068b11 from:Ticky] ${PIECE_2}`,
+      role: 'user', lane: 'a2a', conversationId: 'conv-tyndo-2', sourceAgentId: 'tyndo',
+      content: `[A2A:ANSWER thread:18068b11 from:Tyndo] ${PIECE_2}`,
     });
     const third = (await assembleContext(AGENT, MODEL)).directiveLane ?? '';
 

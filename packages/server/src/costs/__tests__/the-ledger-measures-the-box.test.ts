@@ -236,7 +236,7 @@ const seedCostRow = (id: string, inputTokens: number, latencyMs: number | null, 
   mockDb.current!.prepare(`
     INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens, output_tokens,
                               cost_usd, latency_ms, created_at)
-    VALUES (?, 'kevin', 'm-local', 'local', ?, 10, 0, ?, datetime('now', ?))
+    VALUES (?, 'zargo', 'm-local', 'local', ?, 10, 0, ?, datetime('now', ?))
   `).run(id, inputTokens, latencyMs, `-${ageDays} days`);
 };
 

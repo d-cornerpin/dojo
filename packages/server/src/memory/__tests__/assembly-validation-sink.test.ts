@@ -85,7 +85,7 @@ const oversized = (): ValidatedMessage[] => [user('x'.repeat(400_000)), asst('y'
 
 async function boundary(messages: ValidatedMessage[], contextWindow = 8_000) {
   return validateAtProviderBoundary({
-    agentId: 'kevin',
+    agentId: 'zargo',
     modelId: 'deepseek/deepseek-chat',
     messages,
     systemPrompt: 'you are a test',
@@ -124,7 +124,7 @@ describe('the durable divergence sink', () => {
     expect(lines).toHaveLength(1);
     const rec = JSON.parse(lines[0]);
     expect(rec.codes).toContain('budget-exceeded');
-    expect(rec.agentId).toBe('kevin');
+    expect(rec.agentId).toBe('zargo');
     expect(rec.overBy).toBeGreaterThan(0);
   });
 
@@ -202,7 +202,7 @@ describe('the durable divergence sink', () => {
     const before = assemblyValidationSinkFailures();
     appendDivergenceRecord({
       at: new Date().toISOString(), pid: process.pid, mode: 'detect',
-      agentId: 'kevin', modelId: 'm', codes: ['budget-exceeded'], violations: ['x'],
+      agentId: 'zargo', modelId: 'm', codes: ['budget-exceeded'], violations: ['x'],
       tokenTotal: 2, budgetTokens: 1, overBy: 1, messageCount: 1, checked: 1, diverged: 1,
     });
     expect(assemblyValidationSinkFailures()).toBe(before + 1);

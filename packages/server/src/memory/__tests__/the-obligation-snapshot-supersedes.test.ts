@@ -25,7 +25,7 @@
 //
 // WHY THE GATE IS THE SPINE AND NOT THE RETRIEVAL, measured rather than assumed: T17 already
 // DROPS a closed obligation hit (`recall-lane.ts`, `verdict.kind === 'closed'` → `continue`).
-// On the body this class was measured on — BehaviorBot, 136 commitment rows, every one
+// On the body this class was measured on — HarnessBot, 136 commitment rows, every one
 // terminal — a retrieval-gated snapshot would therefore never fire on the exact case it
 // exists for. The gate is "does this agent's spine hold a commitment row at all", which is
 // deterministic, is one indexed lookup, and makes the empty-set statement reachable.

@@ -77,7 +77,7 @@ const put = (id: string): void => { mockDb.current!.prepare('INSERT INTO t (id) 
 const rows = (): number =>
   (mockDb.current!.prepare('SELECT count(*) AS n FROM t').get() as { n: number }).n;
 const evt = (): Parameters<typeof broadcast>[0] =>
-  ({ type: 'agent:status', data: { agentId: 'kevin', status: 'idle' } }) as Parameters<typeof broadcast>[0];
+  ({ type: 'agent:status', data: { agentId: 'zargo', status: 'idle' } }) as Parameters<typeof broadcast>[0];
 
 describe('broadcast inside a unit: the emission waits for the commit', () => {
   it('POSITIVE: nothing is emitted while the unit is open; it lands after it commits', () => {

@@ -132,7 +132,7 @@ describe('BODY C — THE ADVERSARIAL BODY (the one that decides the guard)', () 
     ['null-permissions', null],
     ['empty-string', ''],
     ['empty-object', '{}'],
-    ['not-json-at-all', 'permissions: none, ask kevin'],
+    ['not-json-at-all', 'permissions: none, ask zargo'],
     ['truncated-json', '{"file_read":"*","system_control":["*"'],
     ['legacy-no-system-control', '{"file_read":"*","file_write":"none","exec_allow":[]}'],
     ['system-control-object', '{"system_control":{"applescript":true}}'],
@@ -184,7 +184,7 @@ describe('BODY D — the COUNTERFACTUAL, which is what makes the guard a measure
     expect(naive).not.toBe(MIGRATION_155);
 
     const db = body([
-      ['not-json-at-all', 'permissions: none, ask kevin'],
+      ['not-json-at-all', 'permissions: none, ask zargo'],
       ['real-star-holder', manifest(['*'])],
     ]);
     expect(() => apply(db, naive)).toThrow(/malformed|JSON/i);
@@ -192,7 +192,7 @@ describe('BODY D — the COUNTERFACTUAL, which is what makes the guard a measure
 
   it('and with the guard, that identical body applies clean', () => {
     const db = body([
-      ['not-json-at-all', 'permissions: none, ask kevin'],
+      ['not-json-at-all', 'permissions: none, ask zargo'],
       ['real-star-holder', manifest(['*'])],
     ]);
     expect(() => apply(db)).not.toThrow();

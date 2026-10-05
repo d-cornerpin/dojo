@@ -47,7 +47,7 @@ import {
 } from '../store.js';
 import { buildOpenWorkInjection, buildAgedWorkBriefSection } from '../obligations.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const rowFor = (id: string): Record<string, unknown> | undefined =>

@@ -43,7 +43,7 @@ import {
   joinDriveCount, recordJoinDrive, nextJoinDriveRung, joinRedriveIsBlind, compileSteerText,
 } from '../join-drive.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const ASK = 'ask:rung-test';
 
 const auditEntries = (workId: string): Array<{ entry_kind: string; turn_number: number | null }> =>
@@ -59,7 +59,7 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   db.pragma('foreign_keys = ON');
-  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Kevin', 'idle', '1970-01-01')`).run(AGENT);
+  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`).run(AGENT);
   db.prepare(
     `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent,
                        wakes, closes_thread, opened_at, updated_at, title)
@@ -146,8 +146,8 @@ describe('T10: a rung is spent only on a pass the model could act on', () => {
 });
 
 describe('T10: the compile steer tells the model which attempt this is, and asks for the owner FIRST', () => {
-  const pieces = ['Piece 1 (from Ticky, thread 1a952a39): "Squarespace is $276/yr"',
-                  'Piece 2 (from Kevin, thread 34430191): "WordPress needs hosting"'];
+  const pieces = ['Piece 1 (from Tyndo, thread 1a952a39): "Squarespace is $276/yr"',
+                  'Piece 2 (from Zargo, thread 34430191): "WordPress needs hosting"'];
 
   it('a redrive states its attempt and its bound, exactly as the sibling ladder does', () => {
     const text = compileSteerText({ total: 2, pieces, attempt: 2, bound: JOIN_REDRIVE_BOUND });

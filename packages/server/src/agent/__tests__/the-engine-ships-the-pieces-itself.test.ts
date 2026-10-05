@@ -62,8 +62,8 @@ import {
   JOIN_REDRIVE_BOUND, STUCK_NOTICE_RETRY_BOUND, engineRelayPreface,
 } from '../../work/join-drive.js';
 
-const AGENT = 'kevin';
-const PEER_A = 'kelly';
+const AGENT = 'zargo';
+const PEER_A = 'quilba';
 const PEER_B = 'kayla';
 const CONV = 'conv-1';
 const DELEGATING_TURN = 4900;
@@ -176,7 +176,7 @@ beforeEach(() => {
   runMigrations();
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at) VALUES
-       (?, 'Kevin', 'idle', '1970-01-01'), (?, 'Kelly', 'idle', '1970-01-01'), (?, 'Kayla', 'idle', '1970-01-01')`,
+       (?, 'Zargo', 'idle', '1970-01-01'), (?, 'Quilba', 'idle', '1970-01-01'), (?, 'Kayla', 'idle', '1970-01-01')`,
   ).run(AGENT, PEER_A, PEER_B);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`,
@@ -319,7 +319,7 @@ describe('T48 CONTROL: the ONE-PIECE relay is byte-identical', () => {
     const openedAt = Date.now() - 20 * 60_000;
     db.prepare(
       `INSERT INTO messages (id, agent_id, role, content, lane, channel, conversation_id, created_at, seq)
-       VALUES ('m-solo', ?, 'user', 'ask kelly for the codeword', 'owner', 'dashboard', ?, ?, NULL)`,
+       VALUES ('m-solo', ?, 'user', 'ask quilba for the codeword', 'owner', 'dashboard', ?, ?, NULL)`,
     ).run(AGENT, CONV, openedAt);
     const askId = openAsk({
       agentId: AGENT, messageId: 'm-solo', conversationId: CONV, requesterId: 'owner',

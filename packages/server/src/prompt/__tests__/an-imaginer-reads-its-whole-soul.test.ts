@@ -62,7 +62,7 @@ import { readAgentPromptSurface, writeAgentPromptSurface } from '../agent-prompt
 const HOME = path.join(realOs.tmpdir(), HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
 const IMAGINER = 'imaginer';
-const PRIMARY = 'kevin';
+const PRIMARY = 'zargo';
 
 const SHIPPED = fs.readFileSync(
   path.resolve(__dirname, '../../../../../templates/IMAGINER-SOUL.md'),
@@ -85,7 +85,7 @@ beforeEach(async () => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   setConfig('primary_agent_id', PRIMARY);
-  setConfig('primary_agent_name', 'Kevin');
+  setConfig('primary_agent_name', 'Zargo');
   setConfig('imaginer_agent_id', IMAGINER);
   setConfig('imaginer_agent_name', 'Iris');
   setConfig('owner_name', 'David');
@@ -121,12 +121,12 @@ describe('the Imaginer runs on its whole soul', () => {
     expect(soul).not.toContain('{{');
     expect(soul).toContain('You are Iris, the dojo\'s image generation specialist');
     // The other two names the template uses come from the same door.
-    expect(soul).toContain('Kevin');
+    expect(soul).toContain('Zargo');
     expect(soul).toContain('David');
     expect(soul).toBe(
       SHIPPED
         .replace(/\{\{imaginer_agent_name\}\}/g, 'Iris')
-        .replace(/\{\{primary_agent_name\}\}/g, 'Kevin')
+        .replace(/\{\{primary_agent_name\}\}/g, 'Zargo')
         .replace(/\{\{owner_name\}\}/g, 'David'),
     );
   });

@@ -26,7 +26,7 @@ import { getReport, listOpenReports } from '../store.js';
 import { readBundle } from '../bundle.js';
 import type { ToolCall } from '@dojo/shared';
 
-const AGENT = 'kevin-report-words';
+const AGENT = 'zargo-report-words';
 
 /** The five markers, one per brief field. Nothing else in the tree contains them. */
 const MARK = {
@@ -49,7 +49,7 @@ beforeEach(() => {
   db.prepare('DELETE FROM dojo_reports').run();
   db.prepare("INSERT OR IGNORE INTO providers (id, name, type, auth_type) VALUES ('p-w', 'P', 'anthropic', 'none')").run();
   db.prepare("INSERT OR IGNORE INTO models (id, provider_id, name, api_model_id) VALUES ('m-w', 'p-w', 'M', 'm')").run();
-  db.prepare("INSERT OR IGNORE INTO agents (id, name, model_id, status) VALUES (?, 'Kevin', 'm-w', 'idle')").run(AGENT);
+  db.prepare("INSERT OR IGNORE INTO agents (id, name, model_id, status) VALUES (?, 'Zargo', 'm-w', 'idle')").run(AGENT);
 });
 
 /** Drive gather → draft and hand back the report id. */

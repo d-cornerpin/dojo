@@ -7,7 +7,7 @@
 // pin, because getting it wrong in either direction is a real defect:
 //
 //   • Classed as a SEND, the draft tools would be swallowed by `SEND_TO_PEOPLE` and would
-//     then need the email channel — so the owner's MrMeSeeks shape (a full write grant on
+//     then need the email channel — so the owner's Zorbik shape (a full write grant on
 //     his own Google account, "Can talk to people" OFF) could not draft at all, which is
 //     the exact thing he asked for.
 //   • Classed as NOTHING, they would slip past the integration tier and an agent with a
@@ -22,7 +22,7 @@
 // because a list is not a permission.
 //
 // ── THE ACCEPTANCE CASE, DRIVEN BELOW ──
-// `mrmeseeks`: `integrations.google.user = 'full'`, `channels.master = false`.
+// `zorbik`: `integrations.google.user = 'full'`, `channels.master = false`.
 //   user_gmail_draft  → ALLOWED, and on the advertised surface.
 //   user_gmail_send   → REFUSED, and stripped from the advertised surface.
 // Both halves matter. An agent that can draft but is still offered the send tool is the
@@ -76,7 +76,7 @@ const defsNamed = (names: readonly string[]) =>
 const DRAFT_TOOLS = ['gmail_draft', 'outlook_draft'] as const;
 const ALL_DRAFT_NAMES = ['gmail_draft', 'user_gmail_draft', 'outlook_draft', 'user_outlook_draft'];
 
-/** The owner's MrMeSeeks shape: his own Google account, wide open, no human channels. */
+/** The owner's Zorbik shape: his own Google account, wide open, no human channels. */
 function mrMeSeeksGrants(): AccessGrants {
   const g = cloneGrants(MOST_RESTRICTIVE_GRANTS);
   g.tools.categories = '*';
@@ -116,33 +116,33 @@ describe('T77b — the draft door asks the account, and never the channel', () =
     expect(declared.has('user_gmail_draft')).toBe(true);
     expect(declared.has('user_outlook_draft')).toBe(true);
 
-    seedAgent('mrmeseeks', mrMeSeeksGrants());
+    seedAgent('zorbik', mrMeSeeksGrants());
 
-    expect(mayWriteWorkspace('mrmeseeks', 'user_gmail_draft', 'google')).toBe(true);
-    expect(mayWriteWorkspace('mrmeseeks', 'user_outlook_draft', 'microsoft')).toBe(true);
+    expect(mayWriteWorkspace('zorbik', 'user_gmail_draft', 'google')).toBe(true);
+    expect(mayWriteWorkspace('zorbik', 'user_outlook_draft', 'microsoft')).toBe(true);
   });
 
   it('⚠ AND IT SURVIVES THE ADVERTISED SURFACE — the two filters that could strip it', () => {
     // `surface.ts` ends with exactly two grant-driven filters: the category grant
     // (`toolCategoryGranted`, :635) and the channel grant (`channelForTool`, :660).
     // Both are called here on the real readers, on the same agent.
-    seedAgent('mrmeseeks', mrMeSeeksGrants());
+    seedAgent('zorbik', mrMeSeeksGrants());
 
     for (const name of ['user_gmail_draft', 'user_outlook_draft']) {
-      expect(toolCategoryGranted('mrmeseeks', name)).toBe(true);
+      expect(toolCategoryGranted('zorbik', name)).toBe(true);
       expect(channelForTool(name)).toBeNull();
     }
     // and the control: the send twin survives the category filter and is cut by the channel one
-    expect(toolCategoryGranted('mrmeseeks', 'user_gmail_send')).toBe(true);
-    expect(mayUseChannel('mrmeseeks', channelForTool('user_gmail_send')!)).toBe(false);
+    expect(toolCategoryGranted('zorbik', 'user_gmail_send')).toBe(true);
+    expect(mayUseChannel('zorbik', channelForTool('user_gmail_send')!)).toBe(false);
   });
 
   it('⚠ THE CONTROL THAT MAKES IT MEAN SOMETHING — the SAME agent is refused on send', () => {
-    seedAgent('mrmeseeks', mrMeSeeksGrants());
+    seedAgent('zorbik', mrMeSeeksGrants());
 
-    expect(mayWriteWorkspace('mrmeseeks', 'user_gmail_send', 'google')).toBe(false);
-    expect(mayWriteWorkspace('mrmeseeks', 'gmail_send', 'google')).toBe(false);
-    expect(mayWriteWorkspace('mrmeseeks', 'user_outlook_send', 'microsoft')).toBe(false);
+    expect(mayWriteWorkspace('zorbik', 'user_gmail_send', 'google')).toBe(false);
+    expect(mayWriteWorkspace('zorbik', 'gmail_send', 'google')).toBe(false);
+    expect(mayWriteWorkspace('zorbik', 'user_outlook_send', 'microsoft')).toBe(false);
   });
 
   it('a READ grant does not buy a draft — the write tier is still the first conjunct', () => {

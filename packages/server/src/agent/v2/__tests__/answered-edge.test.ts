@@ -73,7 +73,7 @@ import { seedTrackerTask } from '../../../work/__tests__/work-fixture.js';
 // packages). See its header for why a guard must stop naming `agent/v2/loop.ts` by hand.
 import { engineSources } from './engine-sources.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const CONV = 'conv-1';
 
 const db = (): Database.Database => mockDb.current!;
@@ -81,7 +81,7 @@ const db = (): Database.Database => mockDb.current!;
 function seedAgent(): void {
   db().prepare(
     `INSERT INTO agents (id, name, status, session_started_at)
-     VALUES (?, 'Kevin', 'idle', '1970-01-01')`,
+     VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
   ).run(AGENT);
   db().prepare(
     `INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, created_at)

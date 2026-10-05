@@ -34,7 +34,7 @@ import { noteEngineCheckpoint, pendingCirclingVerdictParkLine } from '../engine-
 import { pendingCirclingVerdict } from '../../tracker/effort-governor.js';
 import { taskScope } from '../tracker-view.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const OTHER_AGENT = 'dreamer';
 const T = 1_700_000_000_000;
 const CLOSE_OUT_IDLE_MINUTES = 10;

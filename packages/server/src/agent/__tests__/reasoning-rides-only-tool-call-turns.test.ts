@@ -34,7 +34,7 @@ const build = (
   msgs: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[]; reasoningContent?: string }>,
   contract: ModelContract,
 ): Promise<Array<Record<string, unknown>>> =>
-  buildOpenAIMessages('SYS', msgs, 'kevin', contract, '') as unknown as Promise<Array<Record<string, unknown>>>;
+  buildOpenAIMessages('SYS', msgs, 'zargo', contract, '') as unknown as Promise<Array<Record<string, unknown>>>;
 
 describe('HL8 (C) — the drop-on-plain replay rule', () => {
   it('RED 1 — a plain STRING-content assistant message carries no reasoning_content key at all', async () => {

@@ -33,7 +33,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../../../db/connection.js', () => ({
-  getDb: () => ({ prepare: () => ({ get: () => ({ name: 'kevin' }), run: () => undefined }) }),
+  getDb: () => ({ prepare: () => ({ get: () => ({ name: 'zargo' }), run: () => undefined }) }),
 }));
 vi.mock('../../../../config/platform.js', () => ({ isPrimaryAgent: () => true, isPMAgent: () => false, getOwnerName: () => 'David' }));
 vi.mock('../../util.js', () => ({ auditLog: () => undefined }));

@@ -80,8 +80,8 @@ const TAIL_MESSAGE = { role: 'user' as const, content: '[System: a loop-appended
 
 function ctxFor(overrides: Partial<CallLLMContext> = {}): CallLLMContext {
   return {
-    agentId: 'kevin',
-    turnCtx: { agentId: 'kevin', conversationId: 'conv-1' } as CallLLMContext['turnCtx'],
+    agentId: 'zargo',
+    turnCtx: { agentId: 'zargo', conversationId: 'conv-1' } as CallLLMContext['turnCtx'],
     turnNumber: 7,
     db: null as unknown as CallLLMContext['db'],
     counterparty: { kind: 'user', id: 'owner', displayName: 'Owner' } as unknown as CallLLMContext['counterparty'],
@@ -90,7 +90,7 @@ function ctxFor(overrides: Partial<CallLLMContext> = {}): CallLLMContext {
     configuredModelId: 'test-model',
     lastUserMessageContent: 'hello',
     messages: [{ role: 'user', content: 'hello' }] as unknown as CallLLMContext['messages'],
-    systemPrompt: 'you are kevin',
+    systemPrompt: 'you are zargo',
     assembled: {
       systemEntryIds: [], messageEntryIds: [], allocation: null, freshTailDropped: 0,
       systemVolatile: '', reserveTokens: 0,
@@ -105,7 +105,7 @@ function ctxFor(overrides: Partial<CallLLMContext> = {}): CallLLMContext {
 }
 
 function freshState(): AgentTurnState {
-  return advance(initState('kevin', 'test-model'), { phase: CALL_LLM_PHASE, loopCount: 1 });
+  return advance(initState('zargo', 'test-model'), { phase: CALL_LLM_PHASE, loopCount: 1 });
 }
 
 const OK_RESULT = {
@@ -128,7 +128,7 @@ describe('T82a fix wave — the router\'s pick re-checks the budget it was assem
     routerPick.modelId = 'slow-box-model';
     providerCeiling.value = 102_600; // resolveDoomCeiling(600_000, 180) — the fixture's own pin
     assembleContextSpy.mockResolvedValue({
-      systemPrompt: 'you are kevin (re-assembled, trimmed)',
+      systemPrompt: 'you are zargo (re-assembled, trimmed)',
       messages: [{ role: 'user', content: 'trimmed to fit' }],
       systemVolatile: '', reserveTokens: 0,
     });
@@ -136,18 +136,18 @@ describe('T82a fix wave — the router\'s pick re-checks the budget it was assem
     await runCallLLM(freshState(), ctxFor({
       isAutoRouted: true,
       messages: [{ role: 'user', content: SIXTY_K_TOKEN_BLOB }, TAIL_MESSAGE] as unknown as CallLLMContext['messages'],
-      systemPrompt: 'you are kevin',
+      systemPrompt: 'you are zargo',
       volatileFrom: 1, // TAIL_MESSAGE is the loop-appended tail; the blob is the whole prefix
     }));
 
     // The ONE assembler was asked, once, for the REAL model — not a second trimmer.
     expect(assembleContextSpy).toHaveBeenCalledTimes(1);
-    expect(assembleContextSpy).toHaveBeenCalledWith('kevin', 'slow-box-model', { latestUserSource: null });
+    expect(assembleContextSpy).toHaveBeenCalledWith('zargo', 'slow-box-model', { latestUserSource: null });
 
     // The dial carries the re-assembled, trimmed array — the giant blob never reaches it.
     expect(callModelSpy).toHaveBeenCalledTimes(1);
     const dialed = callModelSpy.mock.calls[0][0] as { messages: Array<{ content: unknown }>; systemPrompt: string };
-    expect(dialed.systemPrompt).toBe('you are kevin (re-assembled, trimmed)');
+    expect(dialed.systemPrompt).toBe('you are zargo (re-assembled, trimmed)');
     const dialedContents = dialed.messages.map((m) => m.content);
     expect(dialedContents).not.toContain(SIXTY_K_TOKEN_BLOB);
     expect(dialedContents).toContain('trimmed to fit');

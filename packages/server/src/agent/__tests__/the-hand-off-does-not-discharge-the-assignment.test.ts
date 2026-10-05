@@ -9,8 +9,8 @@
 //      W30 measured when it tried the undeclared form);
 //   2. the DECISION MOMENT — the ASSIGN footer, the one text the assignee reads while
 //      deciding what to do with the work, says the affordance exists;
-//   3. the REPLY that does NOT settle — kelly's hand-off note leaves her piece outstanding
-//      and moves the edge onto kevin's thread, while a plain ANSWER on the same shape settles
+//   3. the REPLY that does NOT settle — quilba's hand-off note leaves her piece outstanding
+//      and moves the edge onto zargo's thread, while a plain ANSWER on the same shape settles
 //      it exactly as it does today (the 341-case flow, byte-identical).
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -86,9 +86,9 @@ import {
 // it is still initializing. The declaration clauses live beside the declaration, in
 // `agent/tools/__tests__/the-hand-off-argument-is-declared.test.ts`.
 
-const OWNER_AGENT = 'behaviorbot';
-const PUNTER = 'kelly';
-const DOER = 'kevin';
+const OWNER_AGENT = 'harnessbot';
+const PUNTER = 'quilba';
+const DOER = 'zargo';
 const T_ASSIGN = 'thread-aaaaaaaa-1111';
 const T_HANDOFF = 'thread-bbbbbbbb-2222';
 
@@ -101,14 +101,14 @@ async function deliver(over: Record<string, unknown>) {
     intent: 'ANSWER' as never,
     threadId: T_ASSIGN,
     requiresResponse: false,
-    payload: 'I have passed this to Kevin, he has the web tools for it.',
+    payload: 'I have passed this to Zargo, he has the web tools for it.',
     toAgent: OWNER_AGENT,
     fromAgent: PUNTER,
     ...over,
   } as never);
 }
 
-/** The state the incident opens in: BehaviorBot's ask, delegated to kelly on T_ASSIGN. */
+/** The state the incident opens in: HarnessBot's ask, delegated to quilba on T_ASSIGN. */
 function seedJoin(opts: { hopCount?: number } = {}): { parent: string; childId: string } {
   mockDb.current!.prepare(
     `INSERT INTO messages (id, agent_id, role, content, lane, channel, conversation_id, created_at, seq)
@@ -127,12 +127,12 @@ function seedJoin(opts: { hopCount?: number } = {}): { parent: string; childId: 
   return { parent, childId: findJoinChildByThread(OWNER_AGENT, T_ASSIGN)!.id };
 }
 
-/** Kelly's own ASSIGN to kevin — the send whose thread id the hand-off argument names. It is
+/** Quilba's own ASSIGN to zargo — the send whose thread id the hand-off argument names. It is
  *  seeded directly because this fixture stubs the message writer. */
 function seedHandOffSend(over: Record<string, unknown> = {}): void {
   const r = {
     id: `m-${Math.random().toString(36).slice(2)}`, agent_id: DOER, role: 'user',
-    content: '[A2A:ASSIGN thread:bbbbbbbb from:Kelly] please research the two options',
+    content: '[A2A:ASSIGN thread:bbbbbbbb from:Quilba] please research the two options',
     lane: 'a2a', source_agent_id: PUNTER, a2a_thread_id: T_HANDOFF, a2a_intent: 'ASSIGN',
     created_at: Date.now(), ...over,
   };
@@ -153,8 +153,8 @@ beforeEach(() => {
   db.pragma('foreign_keys = ON');
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at)
-     VALUES (?, 'BehaviorBot', 'idle', '1970-01-01'), (?, 'Kelly', 'idle', '1970-01-01'),
-            (?, 'Kevin', 'idle', '1970-01-01')`,
+     VALUES (?, 'HarnessBot', 'idle', '1970-01-01'), (?, 'Quilba', 'idle', '1970-01-01'),
+            (?, 'Zargo', 'idle', '1970-01-01')`,
   ).run(OWNER_AGENT, PUNTER, DOER);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)
@@ -222,7 +222,7 @@ describe('a declared hand-off does not discharge the assignment', () => {
     seedHandOffSend();
     const r = await deliver({ handsOffThread: T_HANDOFF });
     expect(r.handOff?.message).toBeTruthy();
-    expect(r.handOff!.message).toContain('Kevin');
+    expect(r.handOff!.message).toContain('Zargo');
   });
 
   it('CONTROL — the SAME reply without the argument settles the piece, exactly as today', async () => {
@@ -267,7 +267,7 @@ describe('a declared hand-off does not discharge the assignment', () => {
 
   it('A THREAD THE SENDER NEVER SENT ON is refused — the edge cannot be aimed anywhere', async () => {
     const { childId } = seedJoin();
-    // No `seedHandOffSend()`: kelly never opened T_HANDOFF.
+    // No `seedHandOffSend()`: quilba never opened T_HANDOFF.
     const r = await deliver({ handsOffThread: T_HANDOFF });
     expect(r.handOff?.applied).toBe(false);
     expect(workRow(childId).root_id).toBe(T_ASSIGN);

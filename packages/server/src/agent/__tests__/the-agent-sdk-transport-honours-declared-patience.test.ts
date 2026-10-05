@@ -170,7 +170,7 @@ const seedAgentSdk = (
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('kevin', 'Kevin', 'm-sdk', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('zargo', 'Zargo', 'm-sdk', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
@@ -309,7 +309,7 @@ async function waitUntil(cond: () => boolean, timeoutMs = 5_000): Promise<void> 
 }
 
 const callAgentSdk = (message: string): Promise<ModelCallResult> => callModel({
-  agentId: 'kevin',
+  agentId: 'zargo',
   modelId: 'm-sdk',
   messages: [{ role: 'user', content: message }],
   systemPrompt: 'You are Claude.',
@@ -344,7 +344,7 @@ describe('T81d §A — the mechanism: a declared timeoutMs genuinely cuts a stal
   it('RED: a declared timeoutMs aborts a stalled query() instead of hanging forever', async () => {
     agentSdk.mode = 'stall';
     const err = await callAnthropicViaSdk({
-      agentId: 'kevin', apiModelId: 'sonnet', systemPrompt: 'you are claude',
+      agentId: 'zargo', apiModelId: 'sonnet', systemPrompt: 'you are claude',
       messages: [{ role: 'user', content: 'hi' }], timeoutMs: 50,
     }).catch((e: unknown) => e);
 
@@ -359,7 +359,7 @@ describe('T81d §A — the mechanism: a declared timeoutMs genuinely cuts a stal
   it('CONTROL: timeoutMs null/undefined builds no AbortController — byte-preserved for a NULL row', async () => {
     agentSdk.mode = 'answer';
     const result = await callAnthropicViaSdk({
-      agentId: 'kevin', apiModelId: 'sonnet', systemPrompt: 'you are claude',
+      agentId: 'zargo', apiModelId: 'sonnet', systemPrompt: 'you are claude',
       messages: [{ role: 'user', content: 'hi' }], timeoutMs: null,
     });
     expect(result.content).toBe('It is done.');
@@ -370,7 +370,7 @@ describe('T81d §A — the mechanism: a declared timeoutMs genuinely cuts a stal
   it('a genuine answer still streams through unaffected when a timeoutMs IS declared', async () => {
     agentSdk.mode = 'answer';
     const result = await callAnthropicViaSdk({
-      agentId: 'kevin', apiModelId: 'sonnet', systemPrompt: 'you are claude',
+      agentId: 'zargo', apiModelId: 'sonnet', systemPrompt: 'you are claude',
       messages: [{ role: 'user', content: 'hi' }], timeoutMs: 60_000,
     });
     expect(result.content).toBe('It is done.');
@@ -545,7 +545,7 @@ const seedAgentSdkMeasured = (
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('kevin', 'Kevin', 'm-sdk', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('zargo', 'Zargo', 'm-sdk', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
@@ -659,7 +659,7 @@ describe('T81d §D — FIX ROUND: the trip carries DECLARED_PATIENCE_EXCEEDED_CO
     const external = new AbortController();
 
     const promise = callModel({
-      agentId: 'kevin', modelId: 'm-sdk',
+      agentId: 'zargo', modelId: 'm-sdk',
       messages: [{ role: 'user', content: SHORT_MESSAGE }],
       systemPrompt: 'You are Claude.',
       tools: false,

@@ -1,7 +1,7 @@
 // UX-REPAIR ROUND 11 — T42. THE COMPLETION REPORT TELLS THE TRUTH.
 //
 // ── THE INCIDENT, AS THE LEDGER RECORDED IT (round-11 S5-C) ──────────────────────────────
-// BehaviorBot's compile task `34519aca` closed `done` at 01:28:33. Its own receipt —
+// HarnessBot's compile task `34519aca` closed `done` at 01:28:33. Its own receipt —
 // `work.result_delivery_id` = `1f03db51`, `channel='dashboard'`, `recipient_id='owner'`,
 // `outcome='delivered'` — had reached the owner at 01:25:51, and the compiled answer
 // `836ede5c` at 01:26:09. `scheduleCompletionReport` fired anyway, because its selector asks
@@ -56,7 +56,7 @@ import { runMigrations } from '../../../../../db/migrations.js';
 import { scheduleCompletionReport } from '../close-the-loop.js';
 import type { FinalizeContext } from '../index.js';
 
-const AGENT = 'behaviorbot';
+const AGENT = 'harnessbot';
 const CONV = 'conv-owner';
 const TITLE = 'Synthesize combined buy + plant recommendation once both research streams land';
 
@@ -126,7 +126,7 @@ beforeEach(() => {
   runMigrations();
   db.pragma('foreign_keys = ON');
   db.prepare(
-    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'BehaviorBot', 'idle', '1970-01-01')`,
+    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'HarnessBot', 'idle', '1970-01-01')`,
   ).run(AGENT);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`,
@@ -179,7 +179,7 @@ describe('POSITIVE CONTROL — the ack-and-ghost fix is not narrowed', () => {
   it('a receipt on the PEER lane is not owner evidence: the event still fires, byte-identical', async () => {
     const t = Date.now() - 5 * 60_000;
     delivery('d-a2a', {
-      channel: 'a2a', tool: 'send_to_agent', recipientId: 'kelly',
+      channel: 'a2a', tool: 'send_to_agent', recipientId: 'quilba',
     });
     doneTask('task-a2a', 'd-a2a', Date.now(), t);
 

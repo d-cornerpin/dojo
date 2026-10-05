@@ -59,7 +59,7 @@ import { pendingCloseRequestExpr, closeRequestFiledExpr, dueScope, taskScope } f
 import { forceResetStuckRecurringTask } from '../../scheduler/runner.js';
 import { appendWorkEvent } from '../../work/store.js';
 
-const AGENT = 'behaviorbot';
+const AGENT = 'harnessbot';
 const PM = 'pm-agent';
 const CONV = 'conv-owner';
 
@@ -109,7 +109,7 @@ function fileCloseRequest(taskId: string): void {
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations();
-  db().prepare("INSERT INTO agents (id, name, status) VALUES (?, 'BehaviorBot', 'idle')").run(AGENT);
+  db().prepare("INSERT INTO agents (id, name, status) VALUES (?, 'HarnessBot', 'idle')").run(AGENT);
   db().prepare("INSERT INTO agents (id, name, status) VALUES (?, 'PM', 'idle')").run(PM);
   db().prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`,

@@ -125,7 +125,7 @@ const noteTerminalAnswerSpy = vi.fn();
 function ctxFor(turnCtx: Bag, over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext {
   return {
     agentId: AGENT, turnCtx: turnCtx as never, turnNumber: 4902, db: fakeDb,
-    agent: { id: AGENT, name: 'BehaviorBot' } as never,
+    agent: { id: AGENT, name: 'HarnessBot' } as never,
     counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard', senderId: null, senderIsAgent: false } as never,
     counterpartyIsAgentSender: false,
     chosenConvKey: 'owner',

@@ -68,7 +68,7 @@ import {
   noteHandedCredentialValues, forgetHandedCredentialValues,
 } from '../../credentials/secret-values.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 
 /** A string nobody has ever typed, so a hit anywhere is this test's and only this test's. */
 const SECRET = 'sk-live-t9selftest-4b91ce27ad';
@@ -131,7 +131,7 @@ beforeEach(() => {
   db.pragma('foreign_keys = ON');
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at)
-     VALUES (?, 'Kevin', 'idle', '1970-01-01')`,
+     VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
   ).run(AGENT);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)

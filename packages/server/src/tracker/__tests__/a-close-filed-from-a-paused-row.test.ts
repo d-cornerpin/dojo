@@ -54,7 +54,7 @@ import {
 import { trackerValidateComplete, trackerValidatePause } from '../tools.js';
 import { writeTaskLog } from '../task-log.js';
 
-const AGENT = 'behaviorbot';
+const AGENT = 'harnessbot';
 const PM = 'pm-agent';
 const CONV = 'conv-owner';
 
@@ -139,7 +139,7 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   db.pragma('foreign_keys = ON');
-  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'BehaviorBot', 'idle', '1970-01-01')`).run(AGENT);
+  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'HarnessBot', 'idle', '1970-01-01')`).run(AGENT);
   db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'PM', 'idle', '1970-01-01')`).run(PM);
   db.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`).run(CONV, AGENT);
 });

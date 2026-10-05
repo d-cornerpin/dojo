@@ -56,7 +56,7 @@ const T = 1_700_000_000_000;
 
 function seedWork(id: string, over: Record<string, unknown> = {}): void {
   const row: Record<string, unknown> = {
-    id, kind: 'task', parent_id: null, agent_id: 'kevin', assignee_agent: null,
+    id, kind: 'task', parent_id: null, agent_id: 'zargo', assignee_agent: null,
     requester: 'owner', requester_id: 'owner', conversation_id: null,
     root_kind: 'tracker', root_id: id, state: 'open', intent: 'tracker',
     wakes: 0, closes_thread: 0, title: 'the original title', goal: 'the original goal',

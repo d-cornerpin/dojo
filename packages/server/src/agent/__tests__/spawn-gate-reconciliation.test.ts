@@ -62,7 +62,7 @@ vi.mock('../../config/platform.js', () => ({
   isImaginerAgent: () => false,
   isDreamerAgent: () => false,
   getPrimaryAgentId: () => 'primary',
-  getPrimaryAgentName: () => 'Kevin',
+  getPrimaryAgentName: () => 'Zargo',
   getHealerAgentId: () => 'healer',
   getDreamerAgentId: () => 'dreamer',
   getImaginerAgentId: () => 'imaginer',
@@ -121,7 +121,7 @@ function seed(parentPermissions: string): void {
   `);
   db.prepare(
     `INSERT INTO agents (id, name, model_id, spawn_depth, status, created_by, permissions)
-     VALUES ('parent', 'Parent', 'deepseek', 1, 'idle', 'kevin', ?)`,
+     VALUES ('parent', 'Parent', 'deepseek', 1, 'idle', 'zargo', ?)`,
   ).run(parentPermissions);
   mockDb.current = db;
 }

@@ -43,7 +43,7 @@ import {
   NON_TANGIBLE_DELIVERY_SUMMARIES,
 } from '../task-stamps.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const TURN = 4601;
 
 const db = (): Database.Database => mockDb.current!;

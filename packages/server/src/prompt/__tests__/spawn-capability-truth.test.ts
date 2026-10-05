@@ -169,7 +169,7 @@ describe('sys.identity — the SOUL capability claim is manifest-conditional', (
   });
 
   it('leaves a soul that never made the claim untouched, either way', () => {
-    const owner = '# Identity\n\nYou are Kevin.\n\n# Rules\n\n- Be direct.\n';
+    const owner = '# Identity\n\nYou are Zargo.\n\n# Rules\n\n- Be direct.\n';
     manifest.canSpawn = false;
     expect(applySpawnCapabilityTruth(owner, 'bot')).toBe(owner);
     manifest.canSpawn = true;

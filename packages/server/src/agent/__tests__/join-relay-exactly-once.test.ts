@@ -68,7 +68,7 @@ import {
 import { joinDeliveryDetail } from '../../work/ask-settlement.js';
 import { JOIN_REDRIVE_BOUND, STUCK_NOTICE_RETRY_BOUND } from '../../work/join-drive.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const PEER = 'dupworker';
 const CONV = 'conv-1';
 const DELEGATING_TURN = 4039;
@@ -190,7 +190,7 @@ beforeEach(() => {
   runMigrations();
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at) VALUES
-       (?, 'Kevin', 'idle', '1970-01-01'), (?, 'DupWorker', 'idle', '1970-01-01')`,
+       (?, 'Zargo', 'idle', '1970-01-01'), (?, 'DupWorker', 'idle', '1970-01-01')`,
   ).run(AGENT, PEER);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)

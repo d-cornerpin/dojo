@@ -4540,7 +4540,7 @@ describe('BUG-2, inherited: the compile gate never arms on a turn a human is wai
     ).run(openedAt);
     db.prepare(
       `INSERT INTO agents (id, name, model_id, status, config, classification)
-       VALUES ('kelly', 'Kelly', 'test-model', 'idle', '{}', 'worker')`,
+       VALUES ('quilba', 'Quilba', 'test-model', 'idle', '{}', 'worker')`,
     ).run();
     const askId = openAsk({
       agentId: 'primary', messageId: 'msg-join', conversationId: 'conv-join',
@@ -4552,8 +4552,8 @@ describe('BUG-2, inherited: the compile gate never arms on a turn a human is wai
       parentWorkId: askId, agentId: 'primary', replyConversationId: 'conv-join',
       ttlAt: Date.now() + 60 * 60_000,
       threads: [
-        { threadId: 'join-thread-a', assigneeAgent: 'kelly', intent: 'ASSIGN' as const, hopCount: 0 },
-        { threadId: 'join-thread-b', assigneeAgent: 'kelly', intent: 'ASSIGN' as const, hopCount: 0 },
+        { threadId: 'join-thread-a', assigneeAgent: 'quilba', intent: 'ASSIGN' as const, hopCount: 0 },
+        { threadId: 'join-thread-b', assigneeAgent: 'quilba', intent: 'ASSIGN' as const, hopCount: 0 },
       ],
     });
     for (const [i, childId] of kids.entries()) {
@@ -4562,7 +4562,7 @@ describe('BUG-2, inherited: the compile gate never arms on a turn a human is wai
          VALUES (?, 'primary', NULL, 'send_to_agent', 'a2a', 'delivered', datetime('now'))`,
       ).run(`join-piece-${i}`);
       landPiece(childId, {
-        deliveryId: `join-piece-${i}`, content: `stream ${i} result`, messageId: null, actorId: 'kelly',
+        deliveryId: `join-piece-${i}`, content: `stream ${i} result`, messageId: null, actorId: 'quilba',
       });
     }
     recordJoinDrive(askId, JOIN_DRIVE_ENTRY.redrive, {
@@ -4587,8 +4587,8 @@ describe('BUG-2, inherited: the compile gate never arms on a turn a human is wai
     const order = `[Engine] ${compileSteerText({
       total: 2,
       pieces: [
-        'Piece 1 (from Kelly, thread join-thr): "stream 0 result"',
-        'Piece 2 (from Kelly, thread join-thr): "stream 1 result"',
+        'Piece 1 (from Quilba, thread join-thr): "stream 0 result"',
+        'Piece 2 (from Quilba, thread join-thr): "stream 1 result"',
       ],
       attempt: 1,
       bound: JOIN_REDRIVE_BOUND,
@@ -4671,10 +4671,10 @@ describe('BUG-2, inherited: the compile gate never arms on a turn a human is wai
   it('THE ALLOWED SET, HALF ONE: send_to_agent passes — the steer\'s own hand-off exception', async () => {
     expect(claimAsk(askIdForMessage('msg-user-1'), 'primary').kind).toBe('applied');
     seedOwedCompile();
-    const call: ToolCall = { id: 'tc-a2a', name: 'send_to_agent', arguments: { to_agent: 'kelly', message: 'do you have the result?' } };
+    const call: ToolCall = { id: 'tc-a2a', name: 'send_to_agent', arguments: { to_agent: 'quilba', message: 'do you have the result?' } };
     callModelSpy
       .mockResolvedValueOnce({ content: '', toolCalls: [call], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' })
-      .mockResolvedValue({ content: 'asked kelly', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' });
+      .mockResolvedValue({ content: 'asked quilba', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' });
     executeToolSpy.mockResolvedValue({ toolCallId: 'tc-a2a', name: 'send_to_agent', content: 'sent', isError: false });
 
     await runV2Turn('primary');

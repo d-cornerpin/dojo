@@ -57,8 +57,8 @@ import {
 import { trackerListActive, trackerGetStatus } from '../tools.js';
 import { writeTaskLog } from '../task-log.js';
 
-const AGENT = 'behaviorbot';
-const PM = 'kelly';
+const AGENT = 'harnessbot';
+const PM = 'quilba';
 
 /** Verbatim from event 24599 — the PM's recorded rejection reason. */
 const REJECT_REASON =
@@ -71,7 +71,7 @@ const REJECT_REASON =
 const PAUSE_NOTE =
   'Waiting on David to name the notes folder for the reorganization (asked in dashboard '
   + '2026-08-15: options are create ~/Documents/Project-Notes, keep loose .md files in home, '
-  + 'or his own path). BehaviorBot should hold until his answer is relayed.';
+  + 'or his own path). HarnessBot should hold until his answer is relayed.';
 
 /** Verbatim from event 24280 — the agent's own blocked note, one status change earlier. */
 const BLOCKED_NOTE =
@@ -181,8 +181,8 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   db.pragma('foreign_keys = ON');
-  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'BehaviorBot', 'idle', '1970-01-01')`).run(AGENT);
-  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Kelly', 'idle', '1970-01-01')`).run(PM);
+  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'HarnessBot', 'idle', '1970-01-01')`).run(AGENT);
+  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Quilba', 'idle', '1970-01-01')`).run(PM);
   projectId = openTrackerProject({
     title: 'Notes reorg', createdBy: AGENT,
     origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null },
@@ -229,7 +229,7 @@ describe('T49 (a): a stopped row states its own recorded reason on the board', (
     const id = seedBareRow('paused', 'Nothing was ever written down here');
     const body = section(trackerListActive(AGENT, {}), 'Paused Tasks (1):');
     expect(body).toEqual([
-      `  [${id.slice(0, 8)}] Nothing was ever written down here [BehaviorBot] (normal)`,
+      `  [${id.slice(0, 8)}] Nothing was ever written down here [HarnessBot] (normal)`,
     ]);
   });
 
@@ -244,7 +244,7 @@ describe('T49 (a): a stopped row states its own recorded reason on the board', (
       note: 'a note that must not reach the on-deck row',
     });
     const body = section(trackerListActive(AGENT, {}), 'On Deck Tasks (1):');
-    expect(body).toEqual([`  [${t.slice(0, 8)}] Something on deck [BehaviorBot] (normal)`]);
+    expect(body).toEqual([`  [${t.slice(0, 8)}] Something on deck [HarnessBot] (normal)`]);
   });
 });
 
@@ -311,7 +311,7 @@ describe('T49 (b): the detail read states the last PM ruling when it is a reject
     writeTaskLog({
       taskId: t, fromEntity: 'user', entryKind: 'reject',
       fromStatus: 'complete', toStatus: 'in_progress',
-      actionTaken: 'apply_user_validation via behaviorbot (validated=false)',
+      actionTaken: 'apply_user_validation via harnessbot (validated=false)',
       reason: 'that is not the venue I asked for',
     });
     expect(trackerGetStatus(AGENT, { taskId: t }),

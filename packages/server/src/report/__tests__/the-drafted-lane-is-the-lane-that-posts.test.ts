@@ -47,7 +47,7 @@ import { DOJO_REPORT_REPO_DEFAULT } from '../repo.js';
 import { FAILURE_LANES, type FailureLane } from '../signature.js';
 import type { ToolCall } from '@dojo/shared';
 
-const AGENT = 'kevin-drafted-lane';
+const AGENT = 'zargo-drafted-lane';
 /** An invented literal. No real token appears in this file. */
 const TOKEN = 'gho_fixture-token-value-never-real';
 
@@ -128,7 +128,7 @@ beforeEach(() => {
   db.prepare('DELETE FROM dojo_reports').run();
   db.prepare("INSERT OR IGNORE INTO providers (id, name, type, auth_type) VALUES ('p-dl', 'P', 'anthropic', 'none')").run();
   db.prepare("INSERT OR IGNORE INTO models (id, provider_id, name, api_model_id) VALUES ('m-dl', 'p-dl', 'M', 'm')").run();
-  db.prepare("INSERT OR IGNORE INTO agents (id, name, model_id, status) VALUES (?, 'Kevin', 'm-dl', 'idle')").run(AGENT);
+  db.prepare("INSERT OR IGNORE INTO agents (id, name, model_id, status) VALUES (?, 'Zargo', 'm-dl', 'idle')").run(AGENT);
   calls = [];
   installFetch();
 });

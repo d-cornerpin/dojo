@@ -32,7 +32,7 @@ import {
   DRAIN_LADDER_UNREADABLE,
 } from '../drain-state.js';
 
-const A = 'kevin';
+const A = 'zargo';
 const B = 'ana';
 
 beforeEach(() => {
@@ -43,7 +43,7 @@ beforeEach(() => {
   db.pragma('foreign_keys = ON');
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at)
-     VALUES (?, 'Kevin', 'idle', '1970-01-01'), (?, 'Ana', 'idle', '1970-01-01')`,
+     VALUES (?, 'Zargo', 'idle', '1970-01-01'), (?, 'Ana', 'idle', '1970-01-01')`,
   ).run(A, B);
 });
 
@@ -98,7 +98,7 @@ describe('THE POINT: the ladder survives the process', () => {
     runMigrations();
     mockDb.current.pragma('foreign_keys = ON');
     mockDb.current.prepare(
-      `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Kevin', 'idle', '1970-01-01')`,
+      `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
     ).run(A);
 
     expect(bumpDrainLadder(A, 'unserved_wake', 'w:1')).toBe(0);

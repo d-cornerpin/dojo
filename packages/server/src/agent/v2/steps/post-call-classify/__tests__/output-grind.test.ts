@@ -72,7 +72,7 @@ const modelResult = (
 } as unknown as PostCallClassifyContext['result']);
 
 const ctxFor = (over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext => ({
-  agentId: 'kevin',
+  agentId: 'zargo',
   result: modelResult(),
   reArmIfStrandedNoAnswer: reArmSpy,
   ...over,
@@ -80,7 +80,7 @@ const ctxFor = (over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
 
 function freshState(over: Partial<AgentTurnState> = {}): AgentTurnState {
   const base = initState({
-    agentId: 'kevin', contextWindow: 128_000, isAutoRouted: false,
+    agentId: 'zargo', contextWindow: 128_000, isAutoRouted: false,
     configuredModelId: 'test-model', turnNumber: 7, triggeredByIMessage: false,
     triggeredByA2AReplyIntent: null, lastUserMessageContent: 'do the thing',
     lastUserMessageId: 'msg-user-1',
@@ -274,7 +274,7 @@ describe('TB8 JOB 1 — the grind rung: detect, steer once, then the existing su
 
 describe('SWEEP CORE-2 item 1 — the PM inherits the grind rung, driven', () => {
   const pmCtx = (over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext =>
-    ctxFor({ agentId: 'kelly', ...over });
+    ctxFor({ agentId: 'quilba', ...over });
 
   it("a PM validation turn that burns its whole output budget with no tool call is STEERED", () => {
     const out = runEmptyResponse(freshState(), pmCtx({
@@ -301,6 +301,6 @@ describe('SWEEP CORE-2 item 1 — the PM inherits the grind rung, driven', () =>
 
   it('the rung is keyed on the CALL, never on who made it — no agent is named anywhere in it', () => {
     const src = readFileSync(path.resolve(__dirname, '../empty-response.ts'), 'utf8');
-    expect(src).not.toMatch(/isPMAgent|getPMAgentId|pm_agent_id|'kelly'/);
+    expect(src).not.toMatch(/isPMAgent|getPMAgentId|pm_agent_id|'quilba'/);
   });
 });

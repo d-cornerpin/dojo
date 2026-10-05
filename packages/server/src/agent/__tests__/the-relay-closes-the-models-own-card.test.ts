@@ -64,15 +64,15 @@ import {
 import { openTrackerTask, setTrackerStatus } from '../../work/tracker-store.js';
 import { JOIN_REDRIVE_BOUND } from '../../work/join-drive.js';
 
-const AGENT = 'kevin';
-const OTHER_AGENT = 'kelly';
-const PEER_A = 'kelly';
+const AGENT = 'zargo';
+const OTHER_AGENT = 'quilba';
+const PEER_A = 'quilba';
 const PEER_B = 'kayla';
 const CONV = 'conv-1';
 const CLAIM_TURN = 4984;
 
 const PIECE_A = 'Healer: burrata with heirloom tomatoes, brown butter linguine, affogato.';
-const PIECE_B = 'Ticky: Westward, 2501 N Northlake Way — book Sat by Thursday.';
+const PIECE_B = 'Tyndo: Westward, 2501 N Northlake Way — book Sat by Thursday.';
 
 const workRow = (id: string): Record<string, unknown> =>
   mockDb.current!.prepare('SELECT * FROM work WHERE id = ?').get(id) as Record<string, unknown>;
@@ -181,7 +181,7 @@ beforeEach(() => {
   runMigrations();
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at) VALUES
-       (?, 'Kevin', 'idle', '1970-01-01'), (?, 'Kelly', 'idle', '1970-01-01'), (?, 'Kayla', 'idle', '1970-01-01')`,
+       (?, 'Zargo', 'idle', '1970-01-01'), (?, 'Quilba', 'idle', '1970-01-01'), (?, 'Kayla', 'idle', '1970-01-01')`,
   ).run(AGENT, PEER_A, PEER_B);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`,

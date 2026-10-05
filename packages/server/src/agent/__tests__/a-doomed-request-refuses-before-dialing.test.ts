@@ -170,7 +170,7 @@ const seedOpenAICompatible = (prefillTokensPerSec: number | null): void => {
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('kevin', 'Kevin', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
@@ -192,7 +192,7 @@ const seedOpenAICompatibleUndeclaredFirstChunk = (prefillTokensPerSec: number | 
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('kevin', 'Kevin', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
@@ -209,13 +209,13 @@ const seedAnthropicDirect = (prefillTokensPerSec: number | null): void => {
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('kevin', 'Kevin', 'm-anthropic', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('zargo', 'Zargo', 'm-anthropic', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
   setProviderCredential('anthropic', 'sk-ant-fake-test-key', 'api_key');
 };
 
 const callOpenAICompatible = (message: string): Promise<ModelCallResult> => callModel({
-  agentId: 'kevin',
+  agentId: 'zargo',
   modelId: 'm-local',
   messages: [{ role: 'user', content: message }],
   systemPrompt: 'You are a local model.',
@@ -223,7 +223,7 @@ const callOpenAICompatible = (message: string): Promise<ModelCallResult> => call
 });
 
 const callAnthropicDirect = (message: string): Promise<ModelCallResult> => callModel({
-  agentId: 'kevin',
+  agentId: 'zargo',
   modelId: 'm-anthropic',
   messages: [{ role: 'user', content: message }],
   systemPrompt: 'You are Claude.',
@@ -392,7 +392,7 @@ const seedOpenAICompatibleMeasuredOnly = (
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('kevin', 'Kevin', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
@@ -552,7 +552,7 @@ const seedAnthropicDirectMeasuredOnly = (measuredTokensPerSec: number | null): v
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('kevin', 'Kevin', 'm-anthropic', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('zargo', 'Zargo', 'm-anthropic', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
   setProviderCredential('anthropic', 'sk-ant-fake-test-key', 'api_key');
 };

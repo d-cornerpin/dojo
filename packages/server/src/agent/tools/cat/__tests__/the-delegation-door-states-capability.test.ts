@@ -1,9 +1,9 @@
 // UX-REPAIR ROUND 11 — T43a. THE DELEGATION DOOR STATES CAPABILITY.
 //
 // ── THE INCIDENT (round-11 S5-A) ─────────────────────────────────────────────────────────
-// BehaviorBot called `list_agents` before delegating, got name/status/classification/group/
+// HarnessBot called `list_agents` before delegating, got name/status/classification/group/
 // activity and NOTHING about what any of them can do, and handed a WEB RESEARCH assignment to
-// kelly — the PM, who has no web tools. She could only punt it to kevin, and the punt then
+// quilba — the PM, who has no web tools. She could only punt it to zargo, and the punt then
 // satisfied her piece of the join (that half is T43b/c). The door the agent actually read
 // before choosing an assignee did not carry the one fact the choice needed.
 //
@@ -13,8 +13,8 @@
 // list each agent is told about, after the permissions manifest, `tools_policy` allow/deny,
 // account connectivity and the FA-TS2 primary-only strip. Measured on the dev body through
 // that function, 2026-08-15, seven live agents:
-//     Kevin 407 tools · Healer 242 · Ticky 241 · BehaviorBot 240 · Dreamer 168 ·
-//     Imaginer 156 · KELLY 47 — and Kelly holds no tool from the declared `Web`,
+//     Zargo 407 tools · Healer 242 · Tyndo 241 · HarnessBot 240 · Dreamer 168 ·
+//     Imaginer 156 · QUILBA 47 — and Quilba holds no tool from the declared `Web`,
 //     `Communication`, `Gmail`, `Google Calendar` or `Google Drive / Docs / Sheets`
 //     categories. The incident's premise is a property of the grants, and it is readable.
 // VERDICT: PASS. Nothing here is hard-coded per agent; the tests below prove that by moving
@@ -62,13 +62,13 @@ import { forgetAccessGrants } from '../../../access/read.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const AGENTS_SRC = fs.readFileSync(path.resolve(HERE, '../agents.ts'), 'utf8');
 
-const PM = 'kelly';
-const WORKER = 'kevin';
+const PM = 'quilba';
+const WORKER = 'zargo';
 
 async function listAgents(verbose: boolean): Promise<string> {
   const h = agentsHandlers['list_agents'];
   const r = await h({
-    agentId: 'behaviorbot', args: { verbose },
+    agentId: 'harnessbot', args: { verbose },
   } as unknown as Parameters<typeof h>[0]);
   return r.content;
 }
@@ -92,8 +92,8 @@ beforeEach(() => {
     CREATE TABLE messages (id TEXT PRIMARY KEY, agent_id TEXT, created_at INTEGER);
   `);
   const now = new Date().toISOString();
-  db.prepare(`INSERT INTO agents (id, name, status, classification, created_at) VALUES (?, 'Kelly', 'idle', 'sensei', ?)`).run(PM, now);
-  db.prepare(`INSERT INTO agents (id, name, status, classification, created_at) VALUES (?, 'Kevin', 'idle', 'sensei', ?)`).run(WORKER, now);
+  db.prepare(`INSERT INTO agents (id, name, status, classification, created_at) VALUES (?, 'Quilba', 'idle', 'sensei', ?)`).run(PM, now);
+  db.prepare(`INSERT INTO agents (id, name, status, classification, created_at) VALUES (?, 'Zargo', 'idle', 'sensei', ?)`).run(WORKER, now);
   // The incident's real grant shape: the PM has the coordination verbs and nothing else.
   grants.set(PM, ['send_to_agent', 'work_open', 'work_update', 'list_agents']);
   grants.set(WORKER, [
@@ -103,7 +103,7 @@ beforeEach(() => {
   // UX-ACCESS A2. The `messaging people` row is the one capability whose wall is
   // a CHANNEL GRANT rather than the advertised surface, so the fixture has to
   // state it — which is the point, not an inconvenience: before A2 this file
-  // could say Kevin "can: messaging people" using nothing but a tool name, and
+  // could say Zargo "can: messaging people" using nothing but a tool name, and
   // the door that actually runs `imessage_send` would have refused him.
   forgetAccessGrants();
   setChannels(WORKER, true);
@@ -136,16 +136,16 @@ describe('list_agents carries capability, in both modes', () => {
   for (const verbose of [false, true]) {
     it(`${verbose ? 'verbose' : 'compact'}: the PM's line says she cannot do web research`, async () => {
       const out = await listAgents(verbose);
-      const kelly = lineFor(out, 'Kelly');
-      expect(kelly, 'the fact the delegation choice needed').toMatch(/web research/);
-      expect(kelly, 'and it is stated as an ABSENCE, not left to inference').toMatch(/no:[^\n]*web research/);
+      const quilba = lineFor(out, 'Quilba');
+      expect(quilba, 'the fact the delegation choice needed').toMatch(/web research/);
+      expect(quilba, 'and it is stated as an ABSENCE, not left to inference').toMatch(/no:[^\n]*web research/);
     });
 
     it(`${verbose ? 'verbose' : 'compact'}: the capable worker's line says he CAN`, async () => {
       const out = await listAgents(verbose);
-      const kevin = lineFor(out, 'Kevin');
-      expect(kevin).toMatch(/can:[^\n]*web research/);
-      expect(kevin, 'nothing on the delegable list is missing for him').not.toMatch(/no:/);
+      const zargo = lineFor(out, 'Zargo');
+      expect(zargo).toMatch(/can:[^\n]*web research/);
+      expect(zargo, 'nothing on the delegable list is missing for him').not.toMatch(/no:/);
     });
   }
 });
@@ -157,23 +157,23 @@ describe('list_agents carries capability, in both modes', () => {
 describe('the line is derived from the real grant source', () => {
   it('granting the PM web tools flips her line, with no code change', async () => {
     grants.set(PM, ['send_to_agent', 'work_open', 'web_search']);
-    const kelly = lineFor(await listAgents(false), 'Kelly');
-    expect(kelly).toMatch(/can:[^\n]*web research/);
-    expect(kelly, 'she still has no email/calendar/files/messaging').toMatch(/no:/);
+    const quilba = lineFor(await listAgents(false), 'Quilba');
+    expect(quilba).toMatch(/can:[^\n]*web research/);
+    expect(quilba, 'she still has no email/calendar/files/messaging').toMatch(/no:/);
   });
 
   it('revoking the worker\'s web tools flips HIS line, with no code change', async () => {
     grants.set(WORKER, ['send_to_agent', 'gmail_send']);
-    const kevin = lineFor(await listAgents(false), 'Kevin');
-    expect(kevin).toMatch(/no:[^\n]*web research/);
-    expect(kevin).toMatch(/can:[^\n]*email/);
+    const zargo = lineFor(await listAgents(false), 'Zargo');
+    expect(zargo).toMatch(/no:[^\n]*web research/);
+    expect(zargo).toMatch(/can:[^\n]*email/);
   });
 
   it('an agent with none of the delegable capabilities says so once, not five times', async () => {
     grants.set(PM, []);
-    const kelly = lineFor(await listAgents(false), 'Kelly');
-    expect(kelly).toMatch(/no: web research, email, calendar, files, messaging people/);
-    expect(kelly).not.toMatch(/can:/);
+    const quilba = lineFor(await listAgents(false), 'Quilba');
+    expect(quilba).toMatch(/no: web research, email, calendar, files, messaging people/);
+    expect(quilba).not.toMatch(/can:/);
   });
 
   it('the door reads getFilteredTools — a grant list nobody seeded reads as no capability', async () => {
@@ -199,20 +199,20 @@ describe('the line is derived from the real grant source', () => {
 describe('a capability the door gates on a CHANNEL needs the channel grant', () => {
   it('⚠ ADVERTISED `imessage_send` + NO CHANNEL GRANT READS AS CANNOT', async () => {
     setChannels(WORKER, false);
-    const kevin = lineFor(await listAgents(false), 'Kevin');
-    expect(kevin, 'the surface still advertises it').toContain('Kevin');
-    expect(kevin).toMatch(/no:[^\n]*messaging people/);
-    expect(kevin, 'and the surface-derived capabilities are unaffected').toMatch(/can:[^\n]*web research/);
+    const zargo = lineFor(await listAgents(false), 'Zargo');
+    expect(zargo, 'the surface still advertises it').toContain('Zargo');
+    expect(zargo).toMatch(/no:[^\n]*messaging people/);
+    expect(zargo, 'and the surface-derived capabilities are unaffected').toMatch(/can:[^\n]*web research/);
   });
 
   it('the grant flips it back, with no change to the advertised list', async () => {
     setChannels(WORKER, true);
-    expect(lineFor(await listAgents(false), 'Kevin')).toMatch(/can:[^\n]*messaging people/);
+    expect(lineFor(await listAgents(false), 'Zargo')).toMatch(/can:[^\n]*messaging people/);
   });
 
   it('THE CONTROL: the grant alone is not enough — the tool must be advertised too', async () => {
     setChannels(PM, true);
-    expect(lineFor(await listAgents(false), 'Kelly')).toMatch(/no:[^\n]*messaging people/);
+    expect(lineFor(await listAgents(false), 'Quilba')).toMatch(/no:[^\n]*messaging people/);
   });
 });
 
@@ -257,8 +257,8 @@ describe('every category the capability table points at still exists', () => {
       grants.set(PM, [rep[capLabel]]);
       // A2: `messaging people` also needs the channel grant its wall reads.
       if (capLabel === 'messaging people') setChannels(PM, true);
-      const kelly = lineFor(await listAgents(false), 'Kelly');
-      expect(kelly, `${capLabel} via ${rep[capLabel]}`).toMatch(
+      const quilba = lineFor(await listAgents(false), 'Quilba');
+      expect(quilba, `${capLabel} via ${rep[capLabel]}`).toMatch(
         new RegExp(`can: ${capLabel.replace(/ /g, ' ')}(;|$)`),
       );
     }
@@ -271,27 +271,27 @@ describe('every category the capability table points at still exists', () => {
 
 describe('the rest of the door is untouched', () => {
   it('compact still leads with name, id, status, classification', async () => {
-    const kelly = lineFor(await listAgents(false), 'Kelly');
-    expect(kelly.startsWith(`- Kelly (${PM}), ready, sensei`)).toBe(true);
+    const quilba = lineFor(await listAgents(false), 'Quilba');
+    expect(quilba.startsWith(`- Quilba (${PM}), ready, sensei`)).toBe(true);
   });
 
   it('verbose still leads with name, ID:, status, classification', async () => {
-    const kelly = lineFor(await listAgents(true), 'Kelly');
-    expect(kelly.startsWith(`- Kelly (ID: ${PM}), ready, sensei`)).toBe(true);
+    const quilba = lineFor(await listAgents(true), 'Quilba');
+    expect(quilba.startsWith(`- Quilba (ID: ${PM}), ready, sensei`)).toBe(true);
   });
 
   it('the injured/paused warning still fires, unchanged', async () => {
     mockDb.current!.prepare(`UPDATE agents SET status='error', last_error='boom' WHERE id=?`).run(WORKER);
     const out = await listAgents(false);
     expect(out).toContain('agent(s) injured/paused');
-    expect(lineFor(out, 'Kevin')).toContain('INJURED');
+    expect(lineFor(out, 'Zargo')).toContain('INJURED');
   });
 
   it('a group name still renders, and the capability clause does not displace it', async () => {
     mockDb.current!.prepare(`INSERT INTO agent_groups (id, name) VALUES ('g1', 'Research squad')`).run();
     mockDb.current!.prepare(`UPDATE agents SET group_id='g1' WHERE id=?`).run(WORKER);
-    const kevin = lineFor(await listAgents(false), 'Kevin');
-    expect(kevin).toContain('group: Research squad');
-    expect(kevin).toMatch(/can:/);
+    const zargo = lineFor(await listAgents(false), 'Zargo');
+    expect(zargo).toContain('group: Research squad');
+    expect(zargo).toMatch(/can:/);
   });
 });

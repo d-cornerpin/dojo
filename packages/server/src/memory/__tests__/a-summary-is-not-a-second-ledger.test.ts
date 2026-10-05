@@ -50,7 +50,7 @@ import {
   annotateSummaryObligations, sweepStoredSummaryObligations, SUMMARY_OBLIGATION_MARK,
 } from '../summary-obligations.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const DEAD = 'cmt:1a2b3c4d5e6f';
 const LIVE = 'cmt:9f8e7d6c5b4a';
 
@@ -83,7 +83,7 @@ beforeEach(() => {
   runMigrations();
   fresh.pragma('foreign_keys = ON');
   fresh.prepare(
-    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Kevin', 'idle', '1970-01-01')`,
+    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
   ).run(AGENT);
 });
 

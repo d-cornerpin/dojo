@@ -49,7 +49,7 @@ import { MAX_FLOOR_STEER_ATTEMPTS, OUT_OF_BAND_GHOST_SUBJECTS } from '../../agen
 import { gatesForCall } from '../../agent/tools/gates.js';
 import { PM_ONLY_WORK_OPS } from '../../tracker/pm-agent.js';
 
-const AGENT = 'behaviorbot';
+const AGENT = 'harnessbot';
 const OWNER_MSG = 'msg-owner-1';
 const STALE_BEFORE = 1_786_000_000_000;
 const OPENED = STALE_BEFORE - 600_000;
@@ -95,7 +95,7 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   db.pragma('foreign_keys = ON');
-  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'BehaviorBot', 'idle', '1970-01-01')`).run(AGENT);
+  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'HarnessBot', 'idle', '1970-01-01')`).run(AGENT);
 });
 
 describe('T12 (1): the escalation reads whether the work was DELIVERED before bothering the owner', () => {
@@ -161,7 +161,7 @@ describe('T12 (3): the nudge speaks per OR2 and survives the 400-char events gis
   const nudge = (): string => ownerVerdictNudgeText({
     taskId: '77cba094-e823-4c22-88d4-bea9645b3191',
     title: 'Synthesize the Squarespace and WordPress research into one rundown',
-    status: 'in_progress', agentName: 'BehaviorBot', ownerName: 'David', boundMin: 5,
+    status: 'in_progress', agentName: 'HarnessBot', ownerName: 'David', boundMin: 5,
   });
 
   it('it fits the events lane gist WHOLE — the cap is not touched, the copy is', () => {
@@ -191,7 +191,7 @@ describe('T12 (3): the nudge speaks per OR2 and survives the 400-char events gis
 
   it('it still names the fact the failsafe exists for', () => {
     const t = nudge();
-    expect(t).toContain('BehaviorBot');
+    expect(t).toContain('HarnessBot');
     expect(t).toContain('5');
   });
 });

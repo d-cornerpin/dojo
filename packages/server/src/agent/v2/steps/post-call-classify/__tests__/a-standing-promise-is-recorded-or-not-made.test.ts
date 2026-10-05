@@ -70,7 +70,7 @@ import { enqueueSteer, nextSteer } from '../../../steer-queue.js';
 import { runPromiseFloor } from '../promise-floor.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
 
-const AGENT = 'behaviorbot';
+const AGENT = 'harnessbot';
 const TURN = 4712; // the S5 turn
 
 /** The S5 reply, verbatim from the round-8 catalog (§9.1, row aa027e6c, seq 61093). */
@@ -140,7 +140,7 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   db.pragma('foreign_keys = ON');
-  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'BehaviorBot', 'idle', '1970-01-01')`).run(AGENT);
+  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'HarnessBot', 'idle', '1970-01-01')`).run(AGENT);
 });
 
 describe('T33: a standing promise with nothing behind it is steered once', () => {
@@ -251,7 +251,7 @@ describe('T33 controls: the recognizer stays conservative', () => {
   });
 
   it('an honest disclosure of what it cannot do is an accepted outcome, not a steer', () => {
-    quiet("From now on I'll post reminders here, but I can't text your phone — only the primary agent can send SMS, so you would need to ask Kevin.");
+    quiet("From now on I'll post reminders here, but I can't text your phone — only the primary agent can send SMS, so you would need to ask Zargo.");
   });
 
   it('a plain answer with no standing scope is untouched', () => {

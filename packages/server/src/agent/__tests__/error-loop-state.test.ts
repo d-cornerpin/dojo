@@ -39,7 +39,7 @@ import {
   ERROR_LOOP_THRESHOLD, ERROR_LOOP_WINDOW_MS,
 } from '../error-loop-state.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const OTHER = 'other';
 const T0 = 1_700_000_000_000;
 
@@ -49,7 +49,7 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   db.pragma('foreign_keys = ON');
-  db.prepare("INSERT INTO agents (id, name, status) VALUES (?, 'Kevin', 'idle'), (?, 'Other', 'idle')")
+  db.prepare("INSERT INTO agents (id, name, status) VALUES (?, 'Zargo', 'idle'), (?, 'Other', 'idle')")
     .run(AGENT, OTHER);
 });
 

@@ -77,7 +77,7 @@ import { finalizeTurnRecord } from '../finalize-record.js';
 import { initState, advance, type AgentTurnState } from '../../../state.js';
 import type { TeardownContext } from '../index.js';
 
-const AGENT = 'behaviorbot';
+const AGENT = 'harnessbot';
 const CONV = 'conv-s1';
 const ASK = 'ask:s1-mount-si';
 const TURN = 4931;
@@ -174,7 +174,7 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   db.pragma('foreign_keys = ON');
-  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'BehaviorBot', 'idle', '1970-01-01')`).run(AGENT);
+  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'HarnessBot', 'idle', '1970-01-01')`).run(AGENT);
   db.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`).run(CONV, AGENT);
   db.prepare(
     `INSERT INTO turns (agent_id, turn_number, kind, subject_kind, subject_id, root_kind, root_id,
@@ -312,7 +312,7 @@ describe('CONTROLS — the marker fires on the shape and on nothing else', () =>
   it('an agent counterparty writes no marker', async () => {
     seedAsk();
     await finalizeTurnRecord(s1State(), ctxFor(turnCtxFor(), {
-      counterparty: { kind: 'agent', name: 'Ticky', senderIsAgent: true } as never,
+      counterparty: { kind: 'agent', name: 'Tyndo', senderIsAgent: true } as never,
     }));
     expect(markers()).toHaveLength(0);
   });

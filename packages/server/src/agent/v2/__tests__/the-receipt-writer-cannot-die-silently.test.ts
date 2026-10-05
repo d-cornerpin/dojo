@@ -127,14 +127,14 @@ describe('T67 — an ENABLED writer that writes nothing is a warning, not a debu
     vi.spyOn(fs.promises, 'mkdir').mockRejectedValue(new Error('EACCES: permission denied'));
 
     mod.writeContextReceipt({
-      agentId: 'behaviorbot', modelId: 'm', turnNumber: 1, loopCount: 1,
+      agentId: 'harnessbot', modelId: 'm', turnNumber: 1, loopCount: 1,
       systemPrompt: 'you are a bot', messages: [{ role: 'user', content: 'hi' }], useTools: false,
     });
     await new Promise((r) => setTimeout(r, 10));
 
     expect(lossLines()).toHaveLength(1);
     expect(lossLines()[0].level, 'debug is a level nobody reads — that is the whole defect').toBe('warn');
-    expect(lossLines()[0].data).toMatchObject({ agentId: 'behaviorbot', mode: 'meta' });
+    expect(lossLines()[0].data).toMatchObject({ agentId: 'harnessbot', mode: 'meta' });
     expect(String(lossLines()[0].data.error)).toMatch(/EACCES/);
     expect(mod.receiptStatus().lastError).toMatch(/EACCES/);
   });
@@ -144,7 +144,7 @@ describe('T67 — an ENABLED writer that writes nothing is a warning, not a debu
     configValue.current = 'full';
     vi.spyOn(fs.promises, 'mkdir').mockRejectedValue(new Error('disk gone'));
     expect(() => mod.writeContextReceipt({
-      agentId: 'behaviorbot', modelId: 'm', turnNumber: 1, loopCount: 1,
+      agentId: 'harnessbot', modelId: 'm', turnNumber: 1, loopCount: 1,
       systemPrompt: 's', messages: [{ role: 'user', content: 'hi' }], useTools: false,
     })).not.toThrow();
   });
@@ -154,7 +154,7 @@ describe('T67 — an ENABLED writer that writes nothing is a warning, not a debu
     configValue.current = 'off';
     const mkdir = vi.spyOn(fs.promises, 'mkdir');
     mod.writeContextReceipt({
-      agentId: 'behaviorbot', modelId: 'm', turnNumber: 1, loopCount: 1,
+      agentId: 'harnessbot', modelId: 'm', turnNumber: 1, loopCount: 1,
       systemPrompt: 's', messages: [{ role: 'user', content: 'hi' }], useTools: false,
     });
     await new Promise((r) => setTimeout(r, 10));

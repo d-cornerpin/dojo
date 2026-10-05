@@ -67,7 +67,7 @@ const REPO = path.resolve(__dirname, '..', '..', '..', '..', '..');
 const SRC = path.join(REPO, 'packages/server/src');
 const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const CONV = 'conv-1';
 
 /** The shape the iMessage bridge hands the writer, verbatim in the fields that matter:

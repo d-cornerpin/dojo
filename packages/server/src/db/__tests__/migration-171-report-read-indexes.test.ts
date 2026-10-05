@@ -118,8 +118,8 @@ const fillLivedIn = (): void => {
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
     VALUES (?, ?, 'm-local', 'idle', '{}', '2026-07-02 09:00:00', '2026-09-01 09:00:00')
   `);
-  agent.run('kevin', 'Kevin');
-  agent.run('kelly', 'Kelly');
+  agent.run('zargo', 'Zargo');
+  agent.run('quilba', 'Quilba');
 
   // An audit history with BOTH agents interleaved in time — the shape that makes a
   // single-column index insufficient, and the shape a real box has.
@@ -129,7 +129,7 @@ const fillLivedIn = (): void => {
   `);
   for (let i = 0; i < 400; i++) {
     const day = String(1 + (i % 28)).padStart(2, '0');
-    audit.run(`a-${i}`, i % 2 === 0 ? 'kevin' : 'kelly', `/tmp/f-${i}`, `2026-08-${day} 10:00:00`);
+    audit.run(`a-${i}`, i % 2 === 0 ? 'zargo' : 'quilba', `/tmp/f-${i}`, `2026-08-${day} 10:00:00`);
   }
 
   // Reports filed under 169, across the standing and non-standing statuses.
@@ -137,9 +137,9 @@ const fillLivedIn = (): void => {
     INSERT INTO dojo_reports (id, agent_id, status, lane, signature, brief_json)
     VALUES (?, ?, ?, 'tool-error', ?, '{"title":"kept"}')
   `);
-  rep.run('r-1', 'kevin', 'posted', 'ds1-aaaaaaaaaaaa');
-  rep.run('r-2', 'kevin', 'awaiting_approval', 'ds1-bbbbbbbbbbbb');
-  rep.run('r-3', 'kelly', 'cancelled', 'ds1-cccccccccccc');
+  rep.run('r-1', 'zargo', 'posted', 'ds1-aaaaaaaaaaaa');
+  rep.run('r-2', 'zargo', 'awaiting_approval', 'ds1-bbbbbbbbbbbb');
+  rep.run('r-3', 'quilba', 'cancelled', 'ds1-cccccccccccc');
 };
 
 const counts = (): Record<string, number> => {
@@ -219,15 +219,15 @@ describe('BODY B — a lived-in body keeps every row', () => {
     fillLivedIn();
     rewindTo170();
 
-    const auditBefore = db().prepare(READ_AUDIT).all('kelly', '2026-08-01 00:00:00', 500);
+    const auditBefore = db().prepare(READ_AUDIT).all('quilba', '2026-08-01 00:00:00', 500);
     const gateBefore = db().prepare(WITHDRAWN_GATE)
-      .get('kelly', 'drafting', 'awaiting_approval', 'approved', 'posted');
+      .get('quilba', 'drafting', 'awaiting_approval', 'approved', 'posted');
 
     await runMigrations();
 
-    expect(db().prepare(READ_AUDIT).all('kelly', '2026-08-01 00:00:00', 500)).toEqual(auditBefore);
+    expect(db().prepare(READ_AUDIT).all('quilba', '2026-08-01 00:00:00', 500)).toEqual(auditBefore);
     expect(db().prepare(WITHDRAWN_GATE)
-      .get('kelly', 'drafting', 'awaiting_approval', 'approved', 'posted')).toEqual(gateBefore);
+      .get('quilba', 'drafting', 'awaiting_approval', 'approved', 'posted')).toEqual(gateBefore);
     // …and that gate really does have something to find, or the clause proves nothing.
     expect(gateBefore).toBeDefined();
   });
@@ -279,7 +279,7 @@ describe('BODY D — each index is CHOSEN by the reader it was written for', () 
     fillLivedIn();
     rewindTo170();
 
-    const before = plan(READ_AUDIT, 'kelly', '2026-08-01 00:00:00', 500);
+    const before = plan(READ_AUDIT, 'quilba', '2026-08-01 00:00:00', 500);
     // The defect, in the planner's own words: only the agent half is seeked, and the whole
     // ORDER BY becomes a temp B-tree over every row that agent ever wrote.
     expect(before).toMatch(/idx_audit_log_agent_id/);
@@ -287,7 +287,7 @@ describe('BODY D — each index is CHOSEN by the reader it was written for', () 
 
     await runMigrations();
 
-    const after = plan(READ_AUDIT, 'kelly', '2026-08-01 00:00:00', 500);
+    const after = plan(READ_AUDIT, 'quilba', '2026-08-01 00:00:00', 500);
     expect(after).toMatch(new RegExp(AUDIT_INDEX));
     expect(after).toMatch(/created_at>/);              // the range is SEEKED, not filtered
     expect(after).not.toMatch(/USE TEMP B-TREE FOR ORDER BY\b/);  // only the `id` tiebreak is left
@@ -298,7 +298,7 @@ describe('BODY D — each index is CHOSEN by the reader it was written for', () 
     fillLivedIn();
     rewindTo170();
 
-    const args = ['kelly', 'drafting', 'awaiting_approval', 'approved', 'posted'] as const;
+    const args = ['quilba', 'drafting', 'awaiting_approval', 'approved', 'posted'] as const;
     expect(plan(WITHDRAWN_GATE, ...args)).toMatch(/SCAN dojo_reports/);
 
     await runMigrations();

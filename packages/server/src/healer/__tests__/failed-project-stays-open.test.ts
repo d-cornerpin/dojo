@@ -8,7 +8,7 @@
 // auto-fixes only run when `config.healerMode === 'active'`
 // (healer/healer-agent.ts), and the battery runner PAUSES the Healer to
 // `observe` for the whole run (dojo-test-kit/behavioral/lib/healer.mjs) so it
-// cannot terminate the BehaviorBot mid-scenario. A scenario clause that drove
+// cannot terminate the HarnessBot mid-scenario. A scenario clause that drove
 // `POST /api/healer/run` inside a battery run would therefore assert nothing —
 // a clause that cannot fail is not a guard. The predicate under test is pure
 // SQL, so it is tested here, deterministically, against a real database.
