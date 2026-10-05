@@ -389,6 +389,22 @@ describe('§2 the sites that end a turn carry their reason, and the recorder rea
     expect(stripComments(read('agent/v2/turn-record.ts'))).toMatch(/exit_reason = 'terminated'/);
   });
 
+  it('the recovery arm classifies the throw and latches what it found, before the cascade runs', () => {
+    const code = engine();
+    // The order is load-bearing: `recordInjury` closes the row itself, so a latch applied after
+    // the cascade would be written to a state the row had stopped listening to.
+    expect(code, 'the thrown turn stopped being classified')
+      .toMatch(/classifyThrownCut\(err, agentId\)[\s\S]{0,200}latchEngineCut\(state, thrownCut\)/);
+    expect(code, 'the cascade is handed the un-latched state, so the injury path cannot see the cause')
+      .toMatch(/recoverFromError\(turnState, err/);
+  });
+
+  it('the executor carries the brake ledger\'s refusal count onto the state the recorder reads', () => {
+    const code = engine();
+    expect(code, 'the identical-call rung stopped being read off the brake\'s own ledger')
+      .toMatch(/identicalCallRefusedThisTurn:[\s\S]{0,160}anyIdenticalCallRefused\(identicalCallState\)/);
+  });
+
   it('the recorder READS the carrier, and the injury path reads it too', () => {
     const chain = engine();
     expect(chain, 'the derivation stopped consulting the engine cut')
