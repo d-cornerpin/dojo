@@ -217,6 +217,15 @@ export function notePassOutcome(
   const created = result.leafCreated + result.condensedCreated;
   const wonNothing = created === 0 && result.tokensReclaimed < FORCED_YIELD_FLOOR_TOKENS;
   const stage = facts?.stage ?? null;
+  // ⚠ A PASS THAT WROTE PARENTS AND RECLAIMED NOTHING STILL GAINED NOTHING, and a clause
+  // caught it: a summariser that compresses nothing writes one parent per level, so `created`
+  // is not zero while the tokens go UP. Arming the force-binding brake on `wonNothing` alone
+  // let that agent re-run the whole climb on every prompt — the v3.2.3 thrash with a new
+  // engine behind it. `created === 0` keeps the routine drain safe (it legitimately writes
+  // summaries that reclaim nothing from the gate's total); a NAMED refusal is what makes a
+  // pass with rows to show still count as a pass that got nowhere.
+  const gainedNothing = result.tokensReclaimed < FORCED_YIELD_FLOOR_TOKENS
+    && (created === 0 || stage !== null);
   const overBudget = facts?.assembledTokens != null && facts.budgetTokens != null
     && facts.assembledTokens > facts.budgetTokens;
 
@@ -227,7 +236,7 @@ export function notePassOutcome(
     return null;
   }
 
-  armBackoff(agentId, force && wonNothing, stage === 'summary_writer_unavailable' ? facts?.modelId ?? null : null);
+  armBackoff(agentId, force && gainedNothing, stage === 'summary_writer_unavailable' ? facts?.modelId ?? null : null);
   // A merely low-yield pass that is no longer over budget has nothing to report: the brake
   // is the whole answer, exactly as it was before this ruling.
   if (!stage && !overBudget) return null;

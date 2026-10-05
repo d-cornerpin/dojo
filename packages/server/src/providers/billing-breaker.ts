@@ -285,14 +285,22 @@ export function pauseInsteadOfRetrying(providerId: string): string | null {
  * permanent (so the caller can log which kind it was), `null` when it was transient
  * and the existing retry behaviour is correct.
  *
+ * ⚠ AND IT TAKES THE SDK'S OWN FACTS, or it is decorative (t87b review I1, measured on main
+ * 2026-10-05). `agent/model.ts` WRAPS every failure before the summary writer sees it, and
+ * `OpenAI call failed: 402 Payment Required` classifies `unknown`/`basis:'none'` — `failed:` is
+ * not one of `statusIsAnchored`'s introducers and the number is no longer leading — so arms 2
+ * and 3 below both decline and the breaker never opened on the incident's own door. Every throw
+ * site already attaches `provider: facts` with `basis:'status'`, which arm 1 takes without
+ * reading prose at all. OPTIONAL: absent is exactly today's behaviour, so no caller changes.
+ *
  * Deliberately swallows its own lookup errors: a breaker that throws inside a catch
  * block would turn a provider outage into a crash, which is a worse failure than the
  * one it exists to bound.
  */
 export function noteSummaryWriterFailure(
-  modelId: string | undefined, errText: string, agentId?: string,
+  modelId: string | undefined, errText: string, agentId?: string, facts?: ProviderErrorFacts,
 ): PermanentReason | null {
-  const reason = permanentFailureReason(errText);
+  const reason = permanentFailureReason(errText, facts);
   if (!reason || !modelId) return reason;
   try {
     const row = getDb().prepare('SELECT provider_id FROM models WHERE id = ?').get(modelId) as { provider_id?: string } | undefined;

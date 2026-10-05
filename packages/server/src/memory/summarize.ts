@@ -3,6 +3,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { estimateTokens } from './budget.js';
 import { noteSummaryWriterFailure } from '../providers/billing-breaker.js';
+import type { ProviderErrorFacts } from '../agent/provider-error.js';
 
 const logger = createLogger('memory-summarize');
 
@@ -352,7 +353,15 @@ export async function generateSummary(params: {
     // transient, and a permanent one opens the provider's breaker — which the chunk
     // loop reads at the top of its next iteration and stops. Transient failures are
     // untouched: they still return `ok:false` and get retried by the next drain.
-    const permanent = noteSummaryWriterFailure(modelId, message, agentId);
+    // ⚠ THE SDK'S OWN FACTS, NOT THE WRAPPED PROSE (t87b review I1). `model.ts` wraps every
+    // failure as `OpenAI call failed: <sdkMessage>`, which is not a shape `statusIsAnchored`
+    // recognises, so a real `402 Payment Required` reaching here as prose classifies `unknown`
+    // and the breaker never opens — on the incident's own door. The throw already carries
+    // `provider: ProviderErrorFacts` with `basis: 'status'`; read structurally rather than by
+    // importing `AgentError`, because any thrower attaching the same field is equally credible
+    // and this file must never depend on which one it was.
+    const facts = (err as { provider?: ProviderErrorFacts | null } | null)?.provider ?? undefined;
+    const permanent = noteSummaryWriterFailure(modelId, message, agentId, facts);
     logger.error('SUMMARY_REFUSED summarization model call failed', {
       error: message, depth, targetTokens, permanent: permanent ?? 'transient',
     }, agentId);
