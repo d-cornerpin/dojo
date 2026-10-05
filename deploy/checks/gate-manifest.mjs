@@ -188,6 +188,17 @@ export const GATES = [
   },
 
   {
+    id: 'ritual-parity',
+    tier: 'blocking',
+    phase: 'pre-build',
+    script: 'deploy/checks/check-ritual-parity.mjs',
+    args: [],
+    title: 'Ritual-marker parity (release.sh and the kit\'s validator refuse the same markers)',
+    fail: 'Ritual-marker parity: release.sh and the kit\'s validateReleaseRitualMarker disagree about which release-ritual markers are shippable, so one of them would let a cut through the other refuses. NOT publishing.',
+    why: 'The owner\'s 2026-09-20 release-ritual ruling is enforced by TWO validators, and the duplication is argued: the kit refuses at WRITE time, release.sh refuses at CUT time and runs in bash, which cannot import ESM across the sibling-repo boundary any more than its existing BEHAV_DISHONEST/MODEL_MISMATCH checks can. What was missing is the binding, and the copies DRIFTED WITHIN THE HOUR of the second being written: `final.drawUnsteered` + `final.pinnedDraws` landed in the kit and not in release.sh, so for that window a steered rehearsal draw was refused at write time and accepted at the cut, with nothing failing. This gate EXTRACTS both release-side node programs (RITUAL_BAD for the ritual shape, BEHAV_DISHONEST for the honesty clauses release.sh deliberately keeps in K1), RUNS them, runs the kit\'s validator over the same fixtures, and refuses when the two verdicts differ — 1 valid marker that both must ACCEPT plus one single-clause mutant per clause that both must REFUSE, so a clause deleted from either side becomes a named disagreement. Not a text compare: one copy is bash-embedded ES5, the other an ESM function, and a text compare would red on every rewording while missing a real gap. It also asserts the instrument is intact (both blocks found, free of shell metacharacters, and each verdict actually READ by an `if … fail`) and that release.sh\'s one release-only clause — `dojoHead` vs the HEAD being shipped, which the kit argues out explicitly — is neutralised rather than counted as drift. The kit is a sibling repo: with no kit this SKIPS LOUDLY and exits 0, exactly like the shipped-souls gate offline, which cannot hide a drift from a real cut because a release with no kit fails its own behavioral-suite gate.',
+  },
+
+  {
     id: 'must-consume',
     tier: 'blocking',
     phase: 'pre-build',

@@ -644,14 +644,24 @@ fi
 # So the fields are re-expressed here, and a product-side clause
 # (`packages/server/src/update/__tests__/the-release-demands-the-ritual.test.ts`) drives THIS
 # script's block against fixture markers so the copy cannot silently rot into a weaker one. When the
+# kit's validator gains a field, this copy owes the same one: `final.drawUnsteered` + `pinnedDraws`
+# arrived that way, HOURS after the first replication, and for that window a steered rehearsal draw
+# was refused at write time and accepted here, with nothing failing.
+#
+# THAT HOLE IS NOW MACHINE-BOUND (2026-10-05): `deploy/checks/check-ritual-parity.mjs`, a blocking
+# gate in `npm run gates`, EXTRACTS both this block and BEHAV_DISHONEST above, runs them, imports the
+# kit's validator, and refuses when the two disagree about which markers are shippable — one valid
+# marker both must accept, one single-clause mutant per clause both must refuse. Deleting, weakening
+# or renaming a clause on EITHER side now reds that gate by name. The product-side clause above is
+# kept: it drives this block's refusals directly, which is a different question from parity.
+#
 # ⚠ NOT SELF-SUFFICIENT, AND THAT IS A DEPENDENCY ON ORDER (review C, L3-F5b). This block does NOT
 # re-check `green`, `verdicts[].flaked`, the known-failing list or merge provenance — the
 # BEHAV_DISHONEST (K1) block ABOVE owns those, and the kit's `validateReleaseRitualMarker` owns them
 # too on its side. So a dishonest green is refused here only because K1 already ran. MOVE OR REMOVE K1
 # AND THIS GATE STOPS CATCHING IT. The division of labour is deliberate (one copy of each question),
-# but it is an ordering contract, so: K1 stays above this block.
-# kit's validator gains a field, this copy owes the same one: `final.drawUnsteered` + `pinnedDraws`
-# arrived that way, hours after the first replication.
+# but it is an ordering contract, so: K1 stays above this block. The parity gate reads the UNION of the
+# two blocks for exactly this reason, and reds if either one goes missing or stops being read.
 RITUAL_BAD=$(node -e "
 const m = require('$BEHAV_MARKER');
 const bad = [];
