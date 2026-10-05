@@ -5986,6 +5986,13 @@
       "to": 3741,
       "by": "t88 review round - the Max-output floor, the incoherent-row warn, and the image accounting",
       "why": "3702 -> 3741 (+39: ~14 code, ~25 comment). THE REVIEW'S M3 AND M1. M3: the Max-output field was INERT on the Ollama native path until t88, which makes binding it the package's one behaviour change for existing users - and the only guard was `> 0`. A box carrying a tiny number from a knob nobody could see working would start truncating its agent's turns on update, with `done_reason: length` and no error. Below MIN_BINDABLE_MAX_OUTPUT_TOKENS (256, a short paragraph) the stored value is NOT bound and the number is named in a warn, so the call behaves exactly as it did before this package and a person can correct the row. A utility dial's own cap is exempt, argued at the site: the floor exists to distrust a FIELD, not to second-guess a number this engine chose for an 80-character artifact. The incoherent row the review found (max_output above context_window) is REPORTED rather than silently repaired. M1: a vision dial's window now accounts the images it carries - three declaring sites are screenshot captions, and sized on text alone they landed on the 2,048 floor with a multi-thousand-token picture beside them. From 3741 it may only shrink."
+    },
+    {
+        "path": "packages/server/src/prompt/assembler.ts",
+        "from": 1904,
+        "to": 1910,
+        "by": "t92 (UX-ACCESS A4 / BACKLOG 111) - the sudo door joins the soul capability register",
+        "why": "1904 -> 1910 (+6: ONE import line, four lines of comment, and ONE line of code - the register entry, which is an IDENTIFIER rather than a literal). THE +/- ACCOUNTING IS NET NEGATIVE ACROSS THE PINNED FILES: `agent/tools/surface.ts` falls 736 -> 731 (-5) in the same change, because the fourteen-line `sudoDoorSentence` closure it used to hold - the role check, the policy branch and the two sentences - became a three-line call. So +6 here against -5 there, and the thing both files used to be able to disagree about now exists once. WHY THE SIX LINES CANNOT LIVE IN THE NEW MODULE: they ARE the register. `SOUL_CAPABILITY_CLAIMS` is the declaration `applySoulCapabilityTruth` walks, and a claim the register does not list is a claim the soul never answers for - that is the whole mechanism A4 built, and the header above it says in so many words that a second bespoke function per line is how five claims become five places to forget one. The claim OBJECT (line, door, and the three-conjunct argument for why the door has three) is 116 lines and all of it landed in `agent/brokers/sudo-claim.ts`, a new leaf under the 400-line new-file cap and under the growth gate's 240-line visibility line. WHAT WAS REFUSED: (a) inlining the claim literal here instead of importing it, measured at +11 - it would put the sudo door's wording in `prompt/assembler.ts` and leave `agent/tools/surface.ts` reading a different copy, which is the exact defect this task exists to delete; (b) putting the register itself in the new module, which would make the prompt assembler import its own declaration list from a broker and give the sudo claim authority over the spawn and exec claims it has nothing to do with; (c) trimming the four comment lines to one, which was taken as far as it goes - they name the fold-in, the single source, and the fact that NEITHER surface spells the sentence, and a reader who cannot see that from the register will add a second copy at the first surface that needs one. MEASURED: the primary's assembled prompt is byte-identical across this change on any box whose `~/.dojo/prompts/SOUL.md` already exists, because `readPromptFile` seeds only an ABSENT file. From 1910 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6202,7 +6209,7 @@
     "packages/server/src/microsoft/tools-write.ts": 2212,
     "packages/server/src/migration/checks.ts": 537,
     "packages/server/src/migration/import.ts": 408,
-    "packages/server/src/prompt/assembler.ts": 1904,
+    "packages/server/src/prompt/assembler.ts": 1910,
     "packages/server/src/prompt/registry/entries.ts": 638,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
