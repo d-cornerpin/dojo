@@ -4,8 +4,8 @@ import {
   breadcrumbFor, clearQueryDispatched, markQueryDispatched, offThreadBreadcrumb,
 } from '../observability/stall-sentinel.js';
 import {
-  boundedRecencyScan, boundedRecencyScanSync, ftsCandidateRowidFloor, logBoundedFallback,
-  FTS_CANDIDATE_ROWS,
+  boundedRecencyScan, boundedRecencyScanSync, ftsAgentCandidateFloor, ftsCandidateRowidFloor,
+  logBoundedFallback, FTS_CANDIDATE_ROWS,
 } from './search-bounds.js';
 import { readerPoolAvailable, readerQuery } from './reader-pool.js';
 import { callModel } from '../agent/model.js';
@@ -56,6 +56,116 @@ function isPureToolCallMessage(content: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * ⚠ THE SUMMARIES FTS CANDIDATE WINDOW — and why it needs BOTH maxima (round-2 finding A).
+ *
+ * Round 1 replaced the per-agent `MAX(rowid)` with the table's global one, and the cost argument for
+ * that is sound: `summaries_fts MATCH` ranks EVERY agent's matching rows before `s.agent_id = ?`
+ * filters, so a floor seated on one agent's newest row bounds nothing. What it broke is worse than
+ * what it fixed. The floor is `globalMax − FTS_CANDIDATE_ROWS` for everyone, so an agent whose own
+ * newest summary is older than that is excluded by `AND s.rowid > ?` ENTIRELY — zero rows, and zero
+ * rows is not an error, so nothing threw, nothing fell back, and nothing was logged.
+ *
+ * Reproduced on the production schema (migration 002's `summaries` + `idx_summaries_agent_depth` +
+ * `summaries_fts`), 60,000 summaries, one agent owning the OLDEST 50 — a PM-shaped agent, which is
+ * the shape this package exists for:
+ *
+ *     table rows 60000 · global MAX(rowid) 60000 -> round-1 floor 10000
+ *     agent MAX(rowid) 50                        -> pre-round-1 floor 0
+ *     rows that actually match for that agent: 50
+ *     PRE-ROUND-1 (floor 0):      returned 20 rows   (the caller's limit)
+ *     ROUND 1     (floor 10000):  returned  0 rows   ← C1's own disease, on another surface
+ *     ROUND 2     (re-seated 0):  returned 20 rows
+ *
+ * THE RULE: keep the global floor while the agent HAS rows inside it, and re-seat the window on the
+ * agent's own newest row when it does not. ⚠ THE TRADE IS REAL AND IS NOT HIDDEN — a re-seated window
+ * bounds the global candidate set much more weakly, because one rowid floor cannot both include an old
+ * agent and exclude a newer agent's bulk. Correctness wins that argument (an agent silently unable to
+ * find its own summaries is not a performance characteristic) and the caller says so out loud.
+ *
+ * ⚠ BOTH READS ARE CHEAP, AND ROUND 1 SAID OTHERWISE ON A FALSE PREMISE (round-2 finding B). I wrote
+ * that `summaries` has "NO INDEX AT ALL (grep-verified)". It does: `idx_summaries_agent_depth
+ * (agent_id, depth, created_at)`, migration 002, split across two lines — which is exactly how my
+ * one-line grep missed it, and "grep-verified" was the worst part of the sentence because it asserted
+ * a method. No later migration drops or rebuilds the table (115 only ADDs columns, which does not
+ * drop indexes). Measured on 40,000 rows, agent absent from the newest rows:
+ *
+ *     per-agent MAX, index PRESENT (production):  0.0008 ms  SEARCH … USING COVERING INDEX idx_summaries_agent_depth
+ *     per-agent MAX, index ABSENT  (my fixture):  19.236 ms  SEARCH summaries
+ *     global MAX:                                 0.0007 ms
+ *
+ * The 50-55 ms "reverse table scan" in round 1 was measured on an index-less fixture. The per-agent
+ * read is an indexed probe on every real box, which is what makes this guard affordable.
+ */
+interface SummariesFtsWindow {
+  readonly candidateFloor: number;
+  readonly agentMax: number;
+  readonly globalMax: number;
+  /** The global window sat entirely above this agent's history and had to be re-seated on it. */
+  readonly reseated: boolean;
+}
+
+function summariesFtsWindow(db: ReturnType<typeof getDb>, agentId: string): SummariesFtsWindow {
+  // ⚠ THIS FUNCTION OWNS THE TWO READS; `ftsAgentCandidateFloor` OWNS THE RULE, in `search-bounds.ts`
+  // beside the rest of the bound arithmetic. The split is not tidiness: a behaviour clause has to be
+  // able to exercise the REAL rule rather than a copy of it, and my first cut of this fix kept the
+  // rule here — so the clause restated it, and mutating the product left the clause green. That is
+  // the TB5 drift class, and the fix for it is that there is one spelling to mutate.
+  const globalMax = (db.prepare('SELECT MAX(rowid) AS r FROM summaries')
+    .get() as { r: number | null } | undefined)?.r ?? 0;
+  // Indexed by `idx_summaries_agent_depth (agent_id, …)` — see this block's header for the
+  // measurement, and for the false premise round 1 recorded in its place.
+  const agentMax = (db.prepare('SELECT MAX(rowid) AS r FROM summaries WHERE agent_id = ?')
+    .get(agentId) as { r: number | null } | undefined)?.r ?? 0;
+  const { floor, reseated } = ftsAgentCandidateFloor(globalMax, agentMax);
+  return { candidateFloor: floor, agentMax, globalMax, reseated };
+}
+
+/**
+ * ⚠ A BOUNDED FTS MISS SAYS SO — ON EVERY ARM (t89 I6, extended by round-2 finding A).
+ *
+ * I6 gave the messages arm this treatment and the summaries arms did not have it, which is how
+ * finding A could be silent. ONE helper rather than three copies: the whole defect being fixed here is
+ * a policy that existed on one arm and not the others, and two copies of it is how that happens again.
+ *
+ * TWO AUDIENCES, DELIBERATELY. The operator gets counts, the floor, the window and whether filters
+ * were given — as BOOLEANS, never values, because this line is pasted into bug reports. The AGENT gets
+ * one sentence naming the door out, because an agent that cannot tell "nothing matched" from "nothing
+ * RECENT matched" re-asks with new wording, which is the self-echo loop `isPureToolCallMessage` exists
+ * to break. Returns that sentence, or null when the bound did not bite.
+ *
+ * The guard needs BOTH that a floor applied and that the limit went unfilled: announcing a bound
+ * nobody reached is the noise that makes real lines ignorable.
+ */
+function noteBoundedFtsMiss(p: {
+  readonly subsystem: string;
+  readonly unit: 'messages' | 'summaries';
+  readonly agentId: string;
+  readonly candidateFloor: number;
+  readonly matched: number;
+  readonly limit: number;
+  readonly newestRowid: number;
+  readonly reseated?: boolean;
+  readonly sinceGiven?: boolean;
+  readonly beforeGiven?: boolean;
+}): string | null {
+  if (p.candidateFloor <= 0 || p.matched >= p.limit) return null;
+  logger.warn(`${p.subsystem} answered from a bounded candidate window — the result may be incomplete`, {
+    subsystem: p.subsystem,
+    candidateFloor: p.candidateFloor,
+    candidateRows: FTS_CANDIDATE_ROWS,
+    newestRowid: p.newestRowid,
+    matched: p.matched,
+    limit: p.limit,
+    reseated: p.reseated ?? false,
+    sinceGiven: p.sinceGiven ?? false,
+    beforeGiven: p.beforeGiven ?? false,
+  }, p.agentId);
+  return `[searched the newest ${FTS_CANDIDATE_ROWS.toLocaleString('en-US')} ${p.unit} only`
+    + ` — older history was not scanned. Pass before="<ISO date>" to search further back,`
+    + ` or use history_expand for a deep recall.]`;
 }
 
 // ── history_search: FTS5 search on messages and summaries ──
@@ -209,32 +319,15 @@ async function searchMessagesInner(
         : db.prepare(sql).all(pattern, ...params, fetchLimit) as FtsRow[];
       const rows = rawRows.filter((r) => !isPureToolCallMessage(r.content)).slice(0, limit ?? 20);
 
-      // ⚠ A BOUNDED MISS IS NOT A MISS (t89 I6). The floor above silently drops every match older
-      // than the newest `FTS_CANDIDATE_ROWS` messages. On a box past that window — the only box the
-      // bound exists for — a search for old history, or a `since` that lies below the floor, returned
-      // a partial or EMPTY answer that looked complete, with no warn and nothing in the result. That
-      // is the same defect the LIKE fallback was fixed for ("a warn nobody sees"), reintroduced on
-      // the other arm by the fix itself.
-      //
-      // ⚠ TWO AUDIENCES, DELIBERATELY. The operator gets counts and no pattern (this line is pasted
-      // into bug reports). The AGENT gets one sentence naming the door out, because an agent that
-      // cannot tell "nothing matched" from "nothing recent matched" re-asks the same search with new
-      // wording — the self-echo loop this file already carries a filter for.
-      if (candidateFloor > 0 && rows.length < (limit ?? 20)) {
-        logger.warn('history_search:fts answered from a bounded candidate window — the result may be incomplete', {
-          subsystem: 'history_search:fts',
-          candidateFloor,
-          candidateRows: FTS_CANDIDATE_ROWS,
-          newestSeq: maxSeq,
-          matched: rows.length,
-          limit: limit ?? 20,
-          sinceGiven: Boolean(since),
-          beforeGiven: Boolean(before),
-        }, agentId);
-        results.push(`[searched the newest ${FTS_CANDIDATE_ROWS.toLocaleString('en-US')} messages only`
-          + ` — older history was not scanned. Pass before="<ISO date>" to search further back,`
-          + ` or use history_expand for a deep recall.]`);
-      }
+      // ⚠ A BOUNDED MISS IS NOT A MISS (t89 I6), through the ONE helper all three FTS arms use. Round
+      // 2's finding A was precisely that this treatment lived on the messages arm and nowhere else,
+      // so a summaries bound could truncate in silence — two copies of a policy is how that recurs.
+      const note = noteBoundedFtsMiss({
+        subsystem: 'history_search:fts', unit: 'messages', agentId,
+        candidateFloor, matched: rows.length, limit: limit ?? 20, newestRowid: maxSeq,
+        sinceGiven: Boolean(since), beforeGiven: Boolean(before),
+      });
+      if (note) results.push(note);
 
       // Phase 3.5 (2026-05-04), hard cap per-match snippet at 300 chars
       // (Part XVIII §A). FTS5's snippet() defaults to ~64 tokens which can
@@ -258,8 +351,13 @@ async function searchMessagesInner(
       }
     } catch (err) {
       // FTS5 MATCH can fail with invalid syntax
+      // ⚠ NO PATTERN (round-2, M2). This warn logged the user's search text three lines above a
+      // bounded-miss warn that pointedly omits it. G1 forbids identifiable info in any shipped
+      // surface and a search pattern is the user's own words; `patternChars` is the only part of it
+      // that was ever diagnostic — an FTS5 syntax failure correlates with length and punctuation,
+      // never with content.
       logger.warn('FTS5 search failed, falling back to LIKE', {
-        pattern,
+        patternChars: pattern.length,
         error: err instanceof Error ? err.message : String(err),
       });
       return await searchMessagesLike(db, agentId, pattern, since, before, limit);
@@ -421,25 +519,13 @@ async function searchSummariesInner(
       // order lives in the implicit rowid, and PHASE-1 T10's reader guard refuses a BARE `rowid`
       // projection — the shape where SQLite names the column something else, the read comes back
       // `undefined`, and nothing throws. One name, chosen here.
-      // ⚠ THE SUMMARIES BOUNDS ARE GLOBAL, AND THAT IS TWO FIXES IN ONE LINE (C1 + I5).
-      // I5: `summaries` has NO INDEX ON agent_id (grep of db/ — none), so
-      // `MAX(rowid) WHERE agent_id = ?` is a REVERSE TABLE SCAN that stops at the first matching row —
-      // measured at 50-55 ms warm, on the serving thread, for an agent whose newest summary is old or
-      // who has none (the PM is exactly that agent). The global MIN/MAX are two O(log n) primary-key
-      // probes.
-      // C1: the global MIN is also the honest `floorRowid`, so the walk stops on a key rather than on
-      // an empty chunk. The agent filter stays in the chunk SQL, so the ROWS are unchanged — the
-      // global bounds are loop bounds, not a result filter.
-      // ⚠ ONE STATED CONSEQUENCE for the FTS arm: the candidate floor is now the newest
-      // `FTS_CANDIDATE_ROWS` rowids of the TABLE rather than of this agent. That is the correct axis
-      // for the cost being bounded — `summaries_fts MATCH` ranks EVERY agent's matching rows before
-      // `s.agent_id = ?` filters — and it is a tighter window on a box holding more than 50,000
-      // summaries across all agents, where a per-agent window would let one agent's search rank the
-      // whole table. Below 50,000 rows the floor is 0 and nothing changes at all, which is every box
-      // measured so far.
-      const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM summaries')
-        .get() as { r: number | null } | undefined)?.r ?? 0;
-      const candidateFloor = ftsCandidateRowidFloor(maxRid);
+      // THE CANDIDATE WINDOW, and both of round 2's findings are answered in `summariesFtsWindow`:
+      // the global floor is kept where it bounds anything and RE-SEATED on the agent when it would
+      // exclude every row the agent owns, and the per-agent read it needs is an indexed probe rather
+      // than the reverse table scan round 1 claimed on a false premise. Read that function's header
+      // before changing this line; the reproduction and the measurements are there.
+      const window = summariesFtsWindow(db, agentId);
+      const candidateFloor = window.candidateFloor;
       const floorClause = candidateFloor > 0 ? 'AND s.rowid > ?' : '';
       const sql = `
         SELECT s.id, s.depth, s.kind, s.content, s.earliest_at, s.latest_at,
@@ -477,9 +563,17 @@ async function searchSummariesInner(
       for (const row of rows) {
         results.push(`[${row.id}] (depth=${row.depth}, ${row.kind}) ${row.earliest_at} - ${row.latest_at}\n  ${row.snippet}`);
       }
+      // The treatment the messages arm already had, and whose absence here WAS round-2 finding A.
+      const note = noteBoundedFtsMiss({
+        subsystem: 'summary_search:fts', unit: 'summaries', agentId,
+        candidateFloor, matched: rows.length, limit: limit ?? 20,
+        newestRowid: window.globalMax, reseated: window.reseated,
+      });
+      if (note) results.push(note);
     } catch (err) {
+      // No pattern — see the messages arm above (round-2, M2).
       logger.warn('FTS5 summary search failed, falling back to LIKE', {
-        pattern,
+        patternChars: pattern.length,
         error: err instanceof Error ? err.message : String(err),
       });
       return await searchSummariesLike(db, agentId, pattern, limit);
@@ -720,10 +814,11 @@ async function expandSummariesFts(
     // only. `MAX(rowid) AS r` is aliased at the expression level, which is the form PHASE-1 T10's
     // reader guard accepts; a BARE projected `rowid` is the shape SQLite may name something else,
     // which then reads `undefined` without throwing.
-    // The GLOBAL max, for the reasons stated in full at `searchSummariesInner` (C1 + I5).
-    const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM summaries')
-      .get() as { r: number | null } | undefined)?.r ?? 0;
-    const candidateFloor = ftsCandidateRowidFloor(maxRid);
+    // The same window as `searchSummariesInner`, through the same helper — round 2's finding A was
+    // present identically on this arm, so deep recall went quiet on exactly the agents whose history
+    // is old enough to need it.
+    const window = summariesFtsWindow(db, agentId);
+    const candidateFloor = window.candidateFloor;
     const floorClause = candidateFloor > 0 ? 'AND s.rowid > ?' : '';
     const sql = `
         SELECT s.id, s.content, s.depth, s.earliest_at, s.latest_at
@@ -741,9 +836,20 @@ async function expandSummariesFts(
     // THE WIRE: pool up → the ranked read runs on a worker's own read-only connection and the
     // serving thread stays serviceable; pool down → the same bounded query on-thread. The fork is
     // the messages and summaries paths' fork verbatim, so there is one shape to review.
-    return (readerPoolAvailable()
+    const rows = (readerPoolAvailable()
       ? await readerQuery<ExpandSummaryRow>('history_expand:fts', sql, sqlParams)
       : db.prepare(sql).all(...sqlParams)) as ExpandSummaryRow[];
+    // ⚠ THE OPERATOR WARN ONLY, ON THIS ARM, AND THE ASYMMETRY IS DELIBERATE: this helper returns
+    // ROWS, and its caller feeds them to a synthesis model as raw material rather than to the agent
+    // as a tool result. An "older history was not scanned" sentence spliced into that material would
+    // be read as CONTENT to summarise. The operator surface is the one that can carry it; the agent
+    // reaches this door through `history_expand`, whose own answer is the model's prose.
+    void noteBoundedFtsMiss({
+      subsystem: 'history_expand:fts', unit: 'summaries', agentId,
+      candidateFloor, matched: rows.length, limit: EXPAND_SUMMARY_LIMIT,
+      newestRowid: window.globalMax, reseated: window.reseated,
+    });
+    return rows;
   } finally {
     clearQueryDispatched(crumb);
   }

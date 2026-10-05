@@ -294,3 +294,34 @@ export function logBoundedFallback(
 export function ftsCandidateRowidFloor(maxRowid: number, candidateRows = FTS_CANDIDATE_ROWS): number {
   return Math.max(0, maxRowid - candidateRows);
 }
+
+/**
+ * ⚠ THE FLOOR FOR AN FTS CANDIDATE WINDOW WHEN THE TABLE IS SHARED BY MANY AGENTS (round-2 finding A).
+ *
+ * A global recency floor is the right COST bound on a shared FTS index — `summaries_fts MATCH` ranks
+ * every agent's matching rows before an `agent_id` filter applies, so a floor seated on one agent's
+ * newest row bounds nothing. But a global window can sit entirely ABOVE everything one agent owns, and
+ * then the floor does not bound the answer, it DELETES it: zero rows, and zero rows is not an error.
+ * Measured on a 60,000-summary fixture with an agent owning the oldest 50: the global floor (10,000)
+ * returned 0 of 50 matches, silently.
+ *
+ * THE RULE: keep the global floor while the agent has anything inside it; re-seat the window on the
+ * agent's own newest row when it does not. ⚠ A RE-SEATED WINDOW BOUNDS THE GLOBAL SET MUCH MORE
+ * WEAKLY — one rowid floor cannot both include an old agent and exclude a newer agent's bulk — so the
+ * caller is told (`reseated`) and says so out loud. Correctness wins that argument: an agent silently
+ * unable to find its own history is not a performance characteristic.
+ *
+ * ⚠ IT LIVES HERE, NOT AT THE QUERY, so the clause that proves it can read the REAL rule instead of a
+ * copy. A behaviour clause that restates the policy it is testing passes every mutant of the policy —
+ * the TB5 drift class this tree has spent whole tasks removing, and my own round-2 first cut did
+ * exactly that: mutating the product left the clause green because the clause owned a second spelling.
+ */
+export function ftsAgentCandidateFloor(
+  globalMaxRowid: number,
+  agentMaxRowid: number,
+  candidateRows = FTS_CANDIDATE_ROWS,
+): { readonly floor: number; readonly reseated: boolean } {
+  const globalFloor = ftsCandidateRowidFloor(globalMaxRowid, candidateRows);
+  if (agentMaxRowid > globalFloor) return { floor: globalFloor, reseated: false };
+  return { floor: ftsCandidateRowidFloor(agentMaxRowid, candidateRows), reseated: true };
+}

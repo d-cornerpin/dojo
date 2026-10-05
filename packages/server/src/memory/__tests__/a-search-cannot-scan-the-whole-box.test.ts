@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  boundedRecencyScanSync, ftsCandidateRowidFloor, logBoundedFallback,
+  boundedRecencyScanSync, ftsAgentCandidateFloor, ftsCandidateRowidFloor, logBoundedFallback,
   FTS_CANDIDATE_ROWS, LIKE_CHUNK_ROWS, LIKE_MAX_ROWS_SCANNED, LIKE_MAX_BYTES_SCANNED,
   type BoundedScanChunk, type BoundedScanReport,
 } from '../search-bounds.js';
@@ -436,11 +436,26 @@ describe('⚠ I5 — THE COST OF THE POST-FIX QUERIES, MEASURED, ON PRODUCTION I
   const plan = (sql: string, params: readonly unknown[]): string =>
     (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as Array<{ detail: string }>)
       .map((r) => r.detail).join(' | ');
-  const timeOf = (sql: string, params: readonly unknown[], runs = 20): number => {
+  /**
+   * ⚠ THE BEST OF SEVERAL BATCHES, NOT THE MEAN — because seven lanes share this machine and the
+   * mean of a contended batch measures the scheduler, not the query.
+   *
+   * This clause red once in the full memory suite at 0.472 ms against 0.351 ms (a 1.3x ratio) and
+   * passed alone at 3.0 ms against 0.013 ms (234x) on the same code, twice. Re-running it alone was
+   * the right call and it was not a fix: a clause whose verdict depends on what else is running is a
+   * coin flip, and this project's standing rule is to fix those rather than re-run them. The MINIMUM
+   * batch is the least-contended sample, which is the honest estimate of what the query costs; load
+   * can only make a batch slower, never faster, so the minimum cannot flatter a slow query.
+   */
+  const timeOf = (sql: string, params: readonly unknown[], runs = 20, batches = 5): number => {
     const st = db.prepare(sql);
-    const t0 = process.hrtime.bigint();
-    for (let i = 0; i < runs; i += 1) st.get(...params);
-    return Number(process.hrtime.bigint() - t0) / runs / 1e6;
+    let best = Infinity;
+    for (let b = 0; b < batches; b += 1) {
+      const t0 = process.hrtime.bigint();
+      for (let i = 0; i < runs; i += 1) st.get(...params);
+      best = Math.min(best, Number(process.hrtime.bigint() - t0) / runs / 1e6);
+    }
+    return best;
   };
 
   it('the chunk and its cost count are bounded by the key range, on production indexes', () => {
@@ -494,37 +509,96 @@ describe('⚠ I5 — THE COST OF THE POST-FIX QUERIES, MEASURED, ON PRODUCTION I
     // …and the expensive one must be absent, which is the half a presence clause would miss.
     expect(code, 'a combined MIN/MAX loses SQLite\'s min/max optimisation — see the measurement above')
       .not.toMatch(/SELECT MIN\([a-z_]+\) AS lo, MAX\(/);
-    // I5's other half: `summaries` has NO index on agent_id anywhere in db/migrations, so a per-agent
-    // MAX over it is a reverse table walk (10.1 ms measured for an agent with no recent summary).
-    expect(code, 'a per-agent MIN/MAX over summaries is a reverse table walk (I5)')
-      .not.toMatch(/FROM summaries WHERE agent_id = \?/);
+    // ⚠ THIS ASSERTION USED TO FORBID A PER-AGENT MAX OVER `summaries`, ON B's FALSE PREMISE, and
+    // round 2 REVERSES it: `idx_summaries_agent_depth` exists, the read is an indexed probe, and
+    // finding A needs it — the global floor alone excluded any agent whose summaries all sit below
+    // the window. So the per-agent read is now REQUIRED, and the clause says which one.
+    expect(code, 'the per-agent MAX is gone — finding A\'s re-seated window cannot be computed')
+      .toMatch(/SELECT MAX\(rowid\) AS r FROM summaries WHERE agent_id = \?/);
+    // What stays forbidden is the expensive SHAPE, on either table, which is I5's real content.
+    expect(code, 'a combined MIN/MAX loses SQLite\'s min/max optimisation — see the measurement above')
+      .not.toMatch(/MIN\([a-z_]+\) AS lo/);
   });
 
-  it('the summaries per-agent MAX really was the expensive shape — the rule is not vacuous', () => {
-    // Measured on a summaries-shaped table with production's index set, which is NO indexes at all:
-    // the agent that owns only the newest rows costs ~0 and the agent with none costs the table.
-    const sdb = new Database(':memory:');
-    sdb.exec(`CREATE TABLE summaries (id TEXT PRIMARY KEY, agent_id TEXT, depth INT, kind TEXT,
-      content TEXT, earliest_at TEXT, latest_at TEXT)`);
-    const ins = sdb.prepare('INSERT INTO summaries VALUES (?,?,?,?,?,?,?)');
-    const body = 'x'.repeat(512);
-    sdb.transaction(() => {
-      for (let i = 1; i <= 20_000; i += 1) ins.run(`s-${i}`, 'agent-other', 1, 'k', body, 't', 't');
-    })();
-    const ms = (sql: string, params: readonly unknown[]): number => {
-      const st = sdb.prepare(sql);
-      const t0 = process.hrtime.bigint();
-      for (let i = 0; i < 10; i += 1) st.get(...params);
-      return Number(process.hrtime.bigint() - t0) / 10 / 1e6;
+  it('⚠ B — BOTH summaries aggregates are INDEXED PROBES, and round 1 said otherwise on a false premise', () => {
+    // ⚠ ROUND 1's CLAIM WAS FALSE AND THIS CLAUSE WAS ITS EVIDENCE, which is the part worth recording.
+    // I wrote that `summaries` has "NO INDEX AT ALL (grep-verified)" and built THIS FIXTURE WITH NO
+    // INDEXES to prove it, printing "(no index on agent_id exists in db/migrations)". Production has
+    // `idx_summaries_agent_depth (agent_id, depth, created_at)` — `migrations/002_memory_engine.sql:31-32`,
+    // SPLIT ACROSS TWO LINES, which is exactly how a one-line grep misses it. "grep-verified" was the
+    // worst word in the sentence, because it asserted a method instead of a result. No later migration
+    // drops or rebuilds the table (115 only ADDs columns, which does not drop indexes).
+    //
+    // So the fixture now carries migration 002's index set (the grown-box rule), and the assertion is
+    // re-aimed at what is TRUE: both aggregates are indexed probes of the same order, which is what
+    // makes finding A's per-agent guard affordable. Measured here, 20,000 rows, agent absent from the
+    // newest rows:
+    //     index PRESENT (production):  per-agent ~0.001 ms   USING COVERING INDEX idx_summaries_agent_depth
+    //     index ABSENT  (my fixture):  per-agent ~19 ms      SEARCH summaries
+    const build = (withIndex: boolean): Database.Database => {
+      const sdb = new Database(':memory:');
+      sdb.exec(`CREATE TABLE summaries (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, depth INTEGER,
+        kind TEXT, content TEXT, token_count INTEGER, earliest_at TEXT, latest_at TEXT,
+        descendant_count INTEGER, created_at TEXT)`);
+      if (withIndex) sdb.exec('CREATE INDEX idx_summaries_agent_depth ON summaries(agent_id, depth, created_at)');
+      const ins = sdb.prepare('INSERT INTO summaries VALUES (?,?,?,?,?,?,?,?,?,?)');
+      const body = 'x'.repeat(512);
+      sdb.transaction(() => {
+        for (let i = 1; i <= 20_000; i += 1) ins.run(`s-${i}`, 'agent-other', 1, 'k', body, 0, 't', 't', 0, 't');
+      })();
+      return sdb;
     };
-    const perAgent = ms('SELECT MAX(rowid) AS r FROM summaries WHERE agent_id = ?', ['agent-absent']);
-    const global = ms('SELECT MAX(rowid) AS r FROM summaries', []);
-    sdb.close();
+    // Best-of-batches, for the reason given at `timeOf` above: on a shared machine the mean measures
+    // the scheduler and the minimum measures the query.
+    const ms = (sdb: Database.Database, sql: string, params: readonly unknown[]): number => {
+      const st = sdb.prepare(sql);
+      let best = Infinity;
+      for (let b = 0; b < 5; b += 1) {
+        const t0 = process.hrtime.bigint();
+        for (let i = 0; i < 20; i += 1) st.get(...params);
+        best = Math.min(best, Number(process.hrtime.bigint() - t0) / 20 / 1e6);
+      }
+      return best;
+    };
+    const PER_AGENT = 'SELECT MAX(rowid) AS r FROM summaries WHERE agent_id = ?';
+    const GLOBAL = 'SELECT MAX(rowid) AS r FROM summaries';
+
+    const prod = build(true);
+    const plan = (prod.prepare(`EXPLAIN QUERY PLAN ${PER_AGENT}`).all('agent-absent') as Array<{ detail: string }>)
+      .map((r) => r.detail).join(' | ');
+    const perAgentIdx = ms(prod, PER_AGENT, ['agent-absent']);
+    const globalIdx = ms(prod, GLOBAL, []);
+    prod.close();
+
+    const bare = build(false);
+    const perAgentBare = ms(bare, PER_AGENT, ['agent-absent']);
+    bare.close();
+
     // eslint-disable-next-line no-console
-    console.log(`I5 MEASURED  summaries per-agent MAX ${perAgent.toFixed(3)}ms · global MAX `
-      + `${global.toFixed(3)}ms (no index on agent_id exists in db/migrations)`);
-    expect(global, 'the global MAX is no cheaper — re-measure before reverting I5')
-      .toBeLessThan(perAgent / 10);
+    console.log(`B MEASURED  per-agent MAX with idx_summaries_agent_depth ${perAgentIdx.toFixed(4)}ms `
+      + `· global ${globalIdx.toFixed(4)}ms · per-agent on an INDEX-LESS fixture `
+      + `${perAgentBare.toFixed(4)}ms\nB PLAN      ${plan}`);
+
+    // ⚠ WHAT IS TRUE: the index exists and the per-agent read uses it.
+    expect(plan, 'the per-agent MAX no longer uses an index — finding A\'s guard is not affordable')
+      .toMatch(/USING COVERING INDEX idx_summaries_agent_depth/);
+    // Same order of magnitude as the global read, so A's guard costs one indexed probe.
+    expect(perAgentIdx, 'the per-agent MAX is not an indexed probe').toBeLessThan(Math.max(0.5, globalIdx * 50));
+    // ⚠ AND THE OTHER DIRECTION, so this clause cannot silently become vacuous: the index is what
+    // makes the difference. Without it the same read IS the reverse walk round 1 measured — which is
+    // why an index-less fixture kept telling me a true-sounding falsehood.
+    expect(perAgentBare, 'an index-less summaries table no longer walks — re-check migration 002')
+      .toBeGreaterThan(perAgentIdx * 10);
+  });
+
+  it('⚠ B — the index is really in the migrations, read from the file rather than remembered', () => {
+    // The claim that failed was "grep-verified", so the correction is verified by READING THE FILE,
+    // whitespace-normalised so a line break cannot hide it a second time.
+    const mig = readFileSync(
+      new URL('../../db/migrations/002_memory_engine.sql', import.meta.url), 'utf-8');
+    const squashed = mig.replace(/\s+/g, ' ').toLowerCase();
+    expect(squashed, 'idx_summaries_agent_depth is gone from migration 002 — re-price finding A\'s guard')
+      .toContain('create index if not exists idx_summaries_agent_depth on summaries(agent_id, depth, created_at)');
   });
 });
 
@@ -538,32 +612,62 @@ describe('⚠ I6 — A BOUNDED FTS MISS IS NOT A MISS, AND BOTH AUDIENCES ARE TO
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
   it('the floor being APPLIED and the floor being ANNOUNCED are different lines, and both exist', () => {
-    const fts = code().slice(code().indexOf('async function searchMessagesInner'),
-      code().indexOf('async function searchMessagesLike'));
+    // ⚠ ROUND 2 MOVED THIS INTO ONE HELPER, deliberately, and the clause follows it: finding A was
+    // exactly that this treatment lived on the messages arm and nowhere else, so a summaries bound
+    // could truncate in silence. Two copies of a policy is how that recurs.
+    const src = code();
+    const helper = src.slice(src.indexOf('function noteBoundedFtsMiss'),
+      src.indexOf('// ── history_search: FTS5 search'));
+    expect(helper.length, 'the shared bounded-miss helper was not found by name').toBeGreaterThan(0);
     // The guard is on BOTH conditions: a floor that did not bite, or a result that filled its limit,
     // says nothing. Announcing a bound nobody reached is the noise that makes real lines ignorable.
-    expect(fts, 'the bounded miss is not detected').toMatch(
-      /if \(candidateFloor > 0 && rows\.length < \(limit \?\? 20\)\)/);
-    expect(fts, 'the operator is not told').toContain(
-      "logger.warn('history_search:fts answered from a bounded candidate window");
-    expect(fts, 'the AGENT is not told — it cannot tell "nothing matched" from "nothing recent matched"')
-      .toMatch(/results\.push\(`\[searched the newest/);
-    expect(fts, 'the agent line must name the door out, or it is just an apology')
+    expect(helper, 'the bounded miss is not detected')
+      .toMatch(/if \(p\.candidateFloor <= 0 \|\| p\.matched >= p\.limit\) return null;/);
+    expect(helper, 'the operator is not told')
+      .toMatch(/logger\.warn\(`\$\{p\.subsystem\} answered from a bounded candidate window/);
+    expect(helper, 'the AGENT is not told — it cannot tell "nothing matched" from "nothing recent matched"')
+      .toMatch(/return `\[searched the newest/);
+    expect(helper, 'the agent line must name the door out, or it is just an apology')
       .toMatch(/before="<ISO date>"/);
   });
 
+  it('⚠ EVERY FTS ARM IS WIRED TO IT — counted, in both directions', () => {
+    const src = code();
+    // Three FTS arms: messages, summaries, history_expand. A fourth added without the note reds
+    // this; deleting a wire reds it too.
+    const calls = (src.match(/noteBoundedFtsMiss\(\{/g) ?? []).length;
+    expect(calls, 'one bounded-miss note per FTS arm — add an arm, wire it or red this').toBe(3);
+    const subsystems = [...src.matchAll(/subsystem: '([a-z_]+:fts)'/g)].map((m) => m[1]);
+    expect(new Set(subsystems)).toEqual(
+      new Set(['history_search:fts', 'summary_search:fts', 'history_expand:fts']));
+    // ⚠ AND THE TWO THAT CAN SHOW THE AGENT A LINE DO SHOW IT. `history_expand` deliberately does
+    // not — it returns ROWS that a synthesis model reads as material, where an "older history was
+    // not scanned" sentence would be summarised as content. The asymmetry is asserted so it stays a
+    // decision rather than becoming an omission.
+    expect((src.match(/if \(note\) results\.push\(note\);/g) ?? []).length,
+      'a search that can tell the agent must tell the agent').toBe(2);
+    expect(src, 'the expand arm must still tell the OPERATOR').toMatch(/void noteBoundedFtsMiss\(\{/);
+  });
+
   it('⚠ NO PATTERN IN THE WARN — counts, the floor, and whether filters were given', () => {
-    const fts = code().slice(code().indexOf('async function searchMessagesInner'),
-      code().indexOf('async function searchMessagesLike'));
-    const warnStart = fts.indexOf("logger.warn('history_search:fts answered from a bounded");
-    const warnBody = fts.slice(warnStart, fts.indexOf('}, agentId);', warnStart));
+    const src = code();
+    const helper = src.slice(src.indexOf('function noteBoundedFtsMiss'),
+      src.indexOf('// ── history_search: FTS5 search'));
+    const warnBody = helper.slice(helper.indexOf('logger.warn('), helper.indexOf('}, p.agentId);'));
     // ⚠ The whole-file rule this package carries: this line is pasted into bug reports. `since` and
     // `before` are reported as BOOLEANS — whether a filter was given, never its value.
     expect(warnBody, 'the warn carries the user\'s query text').not.toMatch(/\bpattern\b/);
-    expect(warnBody).toMatch(/sinceGiven: Boolean\(since\)/);
-    expect(warnBody).toMatch(/beforeGiven: Boolean\(before\)/);
-    expect(warnBody).toMatch(/candidateFloor,/);
-    expect(warnBody).toMatch(/matched: rows\.length,/);
+    expect(warnBody).toMatch(/sinceGiven: p\.sinceGiven \?\? false/);
+    expect(warnBody).toMatch(/beforeGiven: p\.beforeGiven \?\? false/);
+    expect(warnBody).toMatch(/candidateFloor: p\.candidateFloor/);
+    expect(warnBody).toMatch(/matched: p\.matched/);
+    // ⚠ M2 (round 2, G1-adjacent): the two PRE-EXISTING fallback warns three lines from here logged
+    // the user's search text. They report its LENGTH now — the only diagnostic part of an FTS5
+    // syntax failure — and no log call in this file carries the pattern.
+    expect(src, 'a log call still carries the user\'s search pattern')
+      .not.toMatch(/logger\.(warn|info|error)\([^)]*\{\s*pattern,/);
+    expect((src.match(/patternChars: pattern\.length/g) ?? []).length,
+      'both FTS fallback warns must report the length instead').toBe(2);
   });
 
   it('the agent-facing line is derived from the constant, so the two cannot disagree', () => {
@@ -571,5 +675,161 @@ describe('⚠ I6 — A BOUNDED FTS MISS IS NOT A MISS, AND BOTH AUDIENCES ARE TO
     const fts = code();
     expect(fts).toMatch(/FTS_CANDIDATE_ROWS\.toLocaleString\('en-US'\)/);
     expect(FTS_CANDIDATE_ROWS).toBe(50_000);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// ⚠ ROUND-2 FINDING A — THE CANDIDATE WINDOW MUST NOT SIT ABOVE THE AGENT'S WHOLE HISTORY.
+//
+// Round 1 made the summaries FTS floor GLOBAL (`globalMax − FTS_CANDIDATE_ROWS`) for a sound cost
+// reason: `summaries_fts MATCH` ranks every agent's matching rows before `s.agent_id = ?` filters, so
+// a floor seated on one agent's newest row bounds nothing. What it broke is worse than what it fixed.
+// An agent whose own newest summary is older than that floor is excluded by `AND s.rowid > ?`
+// ENTIRELY — and zero rows is not an error, so nothing threw, nothing fell back, nothing was logged.
+// C1's own disease, reintroduced on another surface by the fix for a different one.
+//
+// The fixture is the PM shape this package exists for: a long-lived box, one agent with few summaries
+// and all of them old. ⚠ IT RUNS THE PRODUCTION SQL THROUGH THE PRODUCTION SCHEMA — migration 002's
+// `summaries`, its `idx_summaries_agent_depth`, and the external-content `summaries_fts` — because a
+// window bug is only visible against a real rowid distribution.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+const WINDOW_ROWS = 60_000;
+const WINDOW_AGENT_OWNS = 50;
+
+function buildSummariesWindowFixture(): Database.Database {
+  const db = new Database(':memory:');
+  db.exec(`CREATE TABLE summaries (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL,
+    depth INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL, content TEXT NOT NULL,
+    token_count INTEGER NOT NULL DEFAULT 0, earliest_at TEXT NOT NULL, latest_at TEXT NOT NULL,
+    descendant_count INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')))`);
+  db.exec('CREATE INDEX idx_summaries_agent_depth ON summaries(agent_id, depth, created_at)');
+  db.exec(`CREATE VIRTUAL TABLE summaries_fts USING fts5(content, content='summaries', content_rowid='rowid')`);
+  const ins = db.prepare(`INSERT INTO summaries (rowid, id, agent_id, depth, kind, content,
+    earliest_at, latest_at) VALUES (?,?,?,0,'k',?,'t','t')`);
+  const body = 'generated fixture summary body, fictional, ';
+  db.transaction(() => {
+    for (let r = 1; r <= WINDOW_ROWS; r += 1) {
+      // The agent owns the OLDEST rows, which is what puts it below a global window.
+      const agent = r <= WINDOW_AGENT_OWNS ? 'agent-pm' : 'agent-other';
+      ins.run(r, `s-${r}`, agent,
+        body + (agent === 'agent-pm' ? 'UNIQUEFIXTURETOKEN ' : 'filler ') + r);
+    }
+  })();
+  db.exec('INSERT INTO summaries_fts(rowid, content) SELECT rowid, content FROM summaries');
+  return db;
+}
+
+describe('⚠ A — AN AGENT WHOSE SUMMARIES ARE ALL OLD STILL FINDS THEM', () => {
+  let db: Database.Database;
+  beforeEach(() => { db = buildSummariesWindowFixture(); });
+  afterEach(() => { db.close(); });
+
+  /**
+   * ⚠ THE REAL RULE, CALLED — not a copy of it.
+   *
+   * My first cut of this clause restated the policy here, and the mutant that reverted the product to
+   * the global-only floor left every behaviour clause GREEN: the clause owned a second spelling, so
+   * it was testing itself. That is the TB5 drift class this tree keeps removing, and the remedy is
+   * that `ftsAgentCandidateFloor` has ONE owner in `search-bounds.ts` and this reads it. The two
+   * database reads stay here because they are the part the product does at the query.
+   */
+  const windowFor = (agentId: string): { floor: number; reseated: boolean; agentMax: number } => {
+    const globalMax = (db.prepare('SELECT MAX(rowid) AS r FROM summaries').get() as { r: number }).r;
+    const agentMax = (db.prepare('SELECT MAX(rowid) AS r FROM summaries WHERE agent_id = ?')
+      .get(agentId) as { r: number | null }).r ?? 0;
+    const { floor, reseated } = ftsAgentCandidateFloor(globalMax, agentMax);
+    return { floor, reseated, agentMax };
+  };
+
+  /** Either production FTS arm's query, verbatim in shape. */
+  const runArm = (floor: number, limit: number, projection: string): number => {
+    const clause = floor > 0 ? 'AND s.rowid > ?' : '';
+    const sql = `SELECT ${projection} FROM summaries_fts
+       INNER JOIN summaries s ON summaries_fts.rowid = s.rowid
+       WHERE summaries_fts MATCH ? AND s.agent_id = ? ${clause} ORDER BY rank LIMIT ?`;
+    const params = floor > 0
+      ? ['UNIQUEFIXTURETOKEN', 'agent-pm', floor, limit]
+      : ['UNIQUEFIXTURETOKEN', 'agent-pm', limit];
+    return db.prepare(sql).all(...params).length;
+  };
+
+  it('the fixture really does put the agent below a global window, or it proves nothing', () => {
+    const globalMax = (db.prepare('SELECT MAX(rowid) AS r FROM summaries').get() as { r: number }).r;
+    const w = windowFor('agent-pm');
+    expect(globalMax).toBe(WINDOW_ROWS);
+    expect(ftsCandidateRowidFloor(globalMax), 'the global floor must be above the agent\'s newest row')
+      .toBeGreaterThan(w.agentMax);
+    expect(w.agentMax).toBe(WINDOW_AGENT_OWNS);
+    const actuallyMatch = (db.prepare(
+      `SELECT COUNT(*) AS n FROM summaries_fts JOIN summaries s ON summaries_fts.rowid = s.rowid
+        WHERE summaries_fts MATCH ? AND s.agent_id = ?`).get('UNIQUEFIXTURETOKEN', 'agent-pm') as { n: number }).n;
+    expect(actuallyMatch).toBe(WINDOW_AGENT_OWNS);
+  });
+
+  it('⚠ summary_search RETURNS THE AGENT\'S ROWS — the global floor alone returned zero', () => {
+    const w = windowFor('agent-pm');
+    const globalOnly = ftsCandidateRowidFloor(
+      (db.prepare('SELECT MAX(rowid) AS r FROM summaries').get() as { r: number }).r);
+    const withGlobalFloor = runArm(globalOnly, 20, 's.id');
+    const withWindow = runArm(w.floor, 20, 's.id');
+    // eslint-disable-next-line no-console
+    console.log(`A  summary_search: global floor ${globalOnly} -> ${withGlobalFloor} rows · `
+      + `re-seated floor ${w.floor} -> ${withWindow} rows (of ${WINDOW_AGENT_OWNS} matching, limit 20)`);
+    expect(withGlobalFloor, 'the round-1 global-only floor no longer excludes the agent — re-measure')
+      .toBe(0);
+    expect(withWindow, 'the agent still cannot find its own summaries').toBe(20);
+    expect(w.reseated, 'the window should have been re-seated on the agent').toBe(true);
+  });
+
+  it('⚠ history_expand\'s arm too — deep recall is where an OLD history matters most', () => {
+    const w = windowFor('agent-pm');
+    const globalOnly = ftsCandidateRowidFloor(
+      (db.prepare('SELECT MAX(rowid) AS r FROM summaries').get() as { r: number }).r);
+    // `EXPAND_SUMMARY_LIMIT` is 5 on that arm; the projection differs and the window does not.
+    expect(runArm(globalOnly, 5, 's.id, s.content'), 'the expand arm is not affected — re-measure').toBe(0);
+    expect(runArm(w.floor, 5, 's.id, s.content'), 'deep recall still goes quiet on an old history').toBe(5);
+  });
+
+  it('an agent WITH recent summaries keeps the global floor — the bound is not simply switched off', () => {
+    // ⚠ THE OTHER DIRECTION, and it is the half that keeps this a fix rather than a revert: the cost
+    // argument for the global axis is sound, so the floor must still BE the global one whenever the
+    // agent has anything inside it.
+    const w = windowFor('agent-other');
+    const globalFloor = ftsCandidateRowidFloor(
+      (db.prepare('SELECT MAX(rowid) AS r FROM summaries').get() as { r: number }).r);
+    expect(w.reseated, 'an agent with recent rows had its window re-seated — the bound is gone').toBe(false);
+    expect(w.floor).toBe(globalFloor);
+    expect(w.floor).toBeGreaterThan(0);
+  });
+
+  it('the product computes this window in ONE place, and both FTS arms use it', () => {
+    const src = retrievalSource().replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    expect(src, 'the window helper is gone').toMatch(
+      /function summariesFtsWindow\(db: ReturnType<typeof getDb>, agentId: string\): SummariesFtsWindow/);
+    // ⚠ THE RULE ITSELF IS NOT ASSERTED ON THE SOURCE ANY MORE — it is EXERCISED, by the behaviour
+    // clauses above, which now call `ftsAgentCandidateFloor` rather than restating it. What is left
+    // for a source clause is the WIRE: that the query takes its floor from that rule and computes
+    // none of its own.
+    expect(src, 'the window no longer consults the shared rule')
+      .toMatch(/ftsAgentCandidateFloor\(globalMax, agentMax\)/);
+    expect(src, 'the agent\'s own newest rowid is no longer read — the rule cannot re-seat')
+      .toMatch(/SELECT MAX\(rowid\) AS r FROM summaries WHERE agent_id = \?/);
+    // Both arms, counted: a third summaries FTS arm added without the helper reds this.
+    expect((src.match(/summariesFtsWindow\(db, agentId\)/g) ?? []).length,
+      'both summaries FTS arms must take the same window').toBe(2);
+    // ⚠ AND THEY MUST USE WHAT IT RETURNED. Counted EXACTLY, because the narrow version of this
+    // assertion (a `not.toMatch` on one spelling) let a mutant through: the arm still called the
+    // helper and then re-derived a global floor from `window.globalMax`, which is the defect wearing
+    // the fix's clothes.
+    expect((src.match(/const candidateFloor = window\.candidateFloor;/g) ?? []).length,
+      'a summaries arm calls the window helper and then ignores its answer').toBe(2);
+    // `ftsCandidateRowidFloor` may be called in THIS file exactly once — the messages arm, where the
+    // table is keyed per agent and the global/agent distinction does not arise. Every other floor in
+    // this file comes from the shared rule. A second direct call is either a new surface that needs
+    // the rule or an arm re-deriving one, and the reader has to come here and say which.
+    expect((src.match(/ftsCandidateRowidFloor\(/g) ?? []).length,
+      'only the messages arm may seat its own floor — summaries go through ftsAgentCandidateFloor')
+      .toBe(1);
   });
 });

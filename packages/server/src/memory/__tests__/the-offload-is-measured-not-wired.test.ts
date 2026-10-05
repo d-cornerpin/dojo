@@ -267,8 +267,14 @@ describe('⚠ THE WIRE, AS FAR AS IT GOES — and it says plainly how far that i
     // matches its own comment tests the comment. Strip, then assert on the CALL.
     const code = retrieval.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
     const summaries = code.slice(code.indexOf('async function searchSummariesInner'));
-    expect(summaries, 'the FTS candidate set is floored to a recency window')
-      .toMatch(/candidateFloor\s*=\s*ftsCandidateRowidFloor\(/);
+    // ⚠ ROUND 2 MOVED THE FLOOR'S DERIVATION, so this half moved with it. It is no longer
+    // `ftsCandidateRowidFloor(maxRid)` at the query: the summaries arms take `summariesFtsWindow`,
+    // which keeps the global floor while the agent HAS rows inside it and RE-SEATS it on the agent
+    // when it does not — because the global-only floor excluded every agent whose summaries all sit
+    // below the window (finding A: 50 matching rows returned as 0). The assertion's two halves are
+    // unchanged in spirit: a floor is derived HERE, and it is APPLIED to the query.
+    expect(summaries, 'the FTS candidate set is no longer floored to a recency window')
+      .toMatch(/candidateFloor\s*=\s*window\.candidateFloor/);
     expect(summaries, 'and the floor is actually APPLIED to the query, not merely computed')
       .toMatch(/s\.rowid\s*>\s*\?/);
     expect(summaries, 'the LIKE walk runs in budgeted chunks').toMatch(/boundedRecencyScan(Sync)?</);
@@ -312,8 +318,14 @@ describe('⚠ THE WIRE, AS FAR AS IT GOES — and it says plainly how far that i
     expect(fts.length, 'the FTS helper was not found by name').toBeGreaterThan(0);
     expect(like.length, 'the LIKE helper was not found by name').toBeGreaterThan(0);
 
-    expect(fts, 'the FTS candidate set is floored to a recency window')
-      .toMatch(/candidateFloor\s*=\s*ftsCandidateRowidFloor\(/);
+    // ⚠ ROUND 2 MOVED THE FLOOR'S DERIVATION, so this half moved with it. It is no longer
+    // `ftsCandidateRowidFloor(maxRid)` at the query: the summaries arms take `summariesFtsWindow`,
+    // which keeps the global floor while the agent HAS rows inside it and RE-SEATS it on the agent
+    // when it does not — because the global-only floor excluded every agent whose summaries all sit
+    // below the window (finding A: 50 matching rows returned as 0). The assertion's two halves are
+    // unchanged in spirit: a floor is derived HERE, and it is APPLIED to the query.
+    expect(fts, 'the FTS candidate set is no longer floored to a recency window')
+      .toMatch(/candidateFloor\s*=\s*window\.candidateFloor/);
     expect(fts, 'and the floor is actually APPLIED to the query, not merely computed')
       .toMatch(/s\.rowid\s*>\s*\?/);
     expect(like, 'the LIKE walk runs in budgeted chunks').toMatch(/boundedRecencyScan(Sync)?</);
