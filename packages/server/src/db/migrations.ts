@@ -304,44 +304,27 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
     } catch { /* visibility only; a probe failure must never fail the boot */ }
   }
 
-  // ── The search index covers every message, or it is repaired here (PHASE-1 T7) ──
+  // ── The search index's health is `memory/fts-health.ts`'s question now (t89 D3 / t98 D3) ──
   //
-  // `messages_fts` is an fts5 EXTERNAL-CONTENT index (`content='messages'`, migration 127),
-  // and on an external-content table a plain SELECT reads THROUGH to the content table. The
-  // probe this replaced asked `COUNT(*) FROM messages_fts` vs `COUNT(*) FROM messages` and
-  // then repaired with `INSERT … WHERE rowid NOT IN (SELECT rowid FROM messages_fts)` — i.e.
-  // it compared `messages` against itself and its repair selected nothing.
+  // A region here used to compare `messages_fts_docsize` against `messages` and repair a mismatch
+  // with fts5's `'rebuild'`. It asked the RIGHT question — it replaced an earlier probe that
+  // compared `messages` against itself and whose repair structurally could not fire — and that
+  // argument, with the measurement behind it, is carried in `fts-health.ts`'s header rather than
+  // lost with the code.
   //
-  // Measured on a VACUUM INTO copy of the live box, with ONE row genuinely removed from the
-  // index: both counts read 3,629, the NOT-IN subquery returned 0 rows, the `if` never fired,
-  // and the message stayed unsearchable. A self-heal that structurally cannot fire is a dead
-  // guard wearing a live one's clothes, and what it silently costs is recall: rows the agent
-  // holds but can no longer find.
+  // What it could not be, HERE, was non-blocking. `runMigrations()` is called hundreds of lines
+  // ahead of the port bind, and `'rebuild'` on a 729 MB database is minutes of synchronous C++ on
+  // the thread that is about to serve HTTP — so the box whose index is broken was exactly the box
+  // that spent its whole boot window rebuilding before it answered anything. It also could not see
+  // a MISSING table (`COUNT(*) FROM messages_fts_docsize` throws, the catch logs, nothing is
+  // repaired) or a CORRUPT one (agreeing counts say the row COUNT is right and say nothing about
+  // whether `MATCH` works).
   //
-  // `messages_fts_docsize` is fts5's own per-row shadow table, so its count is the number of
-  // rows ACTUALLY in the index — the question the old probe meant to ask. The repair is
-  // fts5's `rebuild` command, which is FORBIDDEN inside a migration transaction (the applyOne
-  // wrapper above, and the reason migration 127 had to drop/recreate/repopulate by hand).
-  // This region runs after that loop, in autocommit, which is exactly why it lives here and
-  // not in a migration file.
-  //
-  // Best-effort by design: a search index that cannot be repaired is degraded recall, never a
-  // reason to refuse the boot.
-  try {
-    const indexed = (db.prepare('SELECT COUNT(*) as count FROM messages_fts_docsize').get() as { count: number }).count;
-    const msgCount = (db.prepare('SELECT COUNT(*) as count FROM messages').get() as { count: number }).count;
-    if (indexed !== msgCount) {
-      logger.info('FTS index does not cover every message; rebuilding', {
-        indexed, messages: msgCount, missing: msgCount - indexed,
-      });
-      const started = Date.now();
-      db.exec(`INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`);
-      logger.info('FTS index rebuilt', { rows: msgCount, ms: Date.now() - started });
-    }
-  } catch (err) {
-    logger.error('FTS index check/rebuild failed; message search may be incomplete', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  // `scheduleFtsHealthCheck()` in `index.ts` answers all three, on another thread, 45 s after the
+  // box is already serving. ⚠ DO NOT RE-ADD A REBUILD HERE: a clause
+  // (`memory/__tests__/a-database-from-april-must-end-up-searchable.test.ts`) reads this file with
+  // its comments stripped and reds on an fts5 `'rebuild'` call anywhere in it, because both
+  // mechanisms shipping at once is how the background one quietly never repaired anything — the
+  // synchronous one got there first, and the boot stayed blocked.
 }
 

@@ -19,6 +19,7 @@ const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-t89-ftshealth-'));
 
 let probeCalls = 0;
 let currentPath = ':memory:';
+let bootDb: Database.Database | null = null;
 // ⚠ `vi.hoisted`, because `vi.mock` factories run before module-level `const`s are initialised and a
 // plain declaration below them throws "cannot access before initialization" at collect time.
 const logSpy = vi.hoisted(() => ({
@@ -29,7 +30,15 @@ const logSpy = vi.hoisted(() => ({
 }));
 vi.mock('../../db/connection.js', () => ({
   getDbPath: () => currentPath,
-  getDb: () => { probeCalls += 1; throw new Error('these clauses inject their own runner'); },
+  // ⚠ STILL COUNTS, AND STILL REFUSES BY DEFAULT. `probeCalls` is what the never-boot-blocking clause
+  // reads, so every call is counted whether or not a database is handed back; and with no fixture set
+  // it throws, so a clause that reaches for the serving connection by accident says so loudly. The
+  // t98 boot clauses set `bootDb` deliberately, because `runMigrations()` takes no argument.
+  getDb: () => {
+    probeCalls += 1;
+    if (bootDb) return bootDb;
+    throw new Error('these clauses inject their own runner');
+  },
 }));
 vi.mock('../../logger.js', () => ({
   createLogger: () => logSpy,
@@ -39,6 +48,10 @@ vi.mock('../reader-pool.js', () => ({
   readerQuery: () => Promise.reject(new Error('not used by these clauses')),
 }));
 
+// ⚠ IMPORTED FOR THE t98 D3 CLAUSES AND NOT USED ANYWHERE ELSE: the proof that boot no longer
+// repairs the index is "run the whole real migration chain over a broken index and watch it stay
+// broken", which needs the real runner.
+import { runMigrations } from '../../db/migrations.js';
 import {
   probeFtsHealth, ftsRepairPlan, runFtsRepair, checkFtsHealthAndRepair, scheduleFtsHealthCheck,
   resetFtsHealthForTest, FTS_RECREATE_SQL, FTS_REBUILD_SQL, FTS_HEALTH_DELAY_MS,
@@ -489,4 +502,121 @@ describe('⚠ I1 — THE REPAIR IS INTERRUPTIBLE, BECAUSE process.exit() JOINS I
       .toMatch(/terminateReaderPool\(\)/);
     expect(code).toContain("from './memory/reader-pool.js'");
   });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// t98 D3 — THE BOOT-BLOCKING REBUILD IS DELETED, AND THIS MODULE OWNS EVERY REPAIR CASE.
+//
+// ⚠ WHY A DELETION NEEDS CLAUSES. While both mechanisms shipped, `db/migrations.ts` repaired the
+// COUNT-MISMATCH case synchronously inside `runMigrations()` — hundreds of lines before the port
+// bind — so this module's background check found the common case ALREADY HEALTHY and did nothing.
+// The background job was real and the boot was still blocked. "Never boot-blocking" was therefore
+// true of one module and false of the tree, and the only way to make it true of the tree is for the
+// synchronous repair to be gone and to STAY gone.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('⚠ t98 D3 — NOTHING REPAIRS THE INDEX AT BOOT ANY MORE', () => {
+  it('db/migrations.ts contains no fts5 rebuild — asserted with the comments STRIPPED', () => {
+    // ⚠ COMMENTS STRIPPED, and that is not fastidiousness. The region's replacement is a POINTER that
+    // explains what used to be here and why it left, and it names `'rebuild'` four times doing so —
+    // so a clause over the raw source would be green with the code still present, or red with only
+    // the prose present. Either way it would be testing the comment.
+    const raw = fs.readFileSync(new URL('../../db/migrations.ts', import.meta.url), 'utf-8');
+    const code = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    expect(code, 'a boot-blocking fts5 rebuild is back in the migration runner')
+      .not.toMatch(/messages_fts\s*\(\s*messages_fts\s*\)\s*VALUES/i);
+    expect(code, "the migration runner is reading the index's shadow table again")
+      .not.toContain('messages_fts_docsize');
+    // The pointer itself IS required to stay: a bare deletion loses the argument for why the question
+    // moved, and the next reader re-adds the synchronous repair because it looks like a gap.
+    expect(raw, 'the deletion left no pointer to where the question went')
+      .toContain('memory/fts-health.ts');
+  });
+
+  it('this module says it owns EVERY repair case, and the both-mechanisms caveat is retired', () => {
+    const src = fs.readFileSync(new URL('../fts-health.ts', import.meta.url), 'utf-8');
+    // The four repairable states are named together, because the old wording claimed only two.
+    expect(src).toMatch(/OWNS EVERY REPAIR CASE/);
+    for (const state of ['missing', 'unpopulated', 'stale', 'corrupt']) {
+      expect(ftsRepairPlan(state as FtsState), `${state} must still earn a repair`).not.toBe('none');
+    }
+    // ⚠ THE RETIRED SENTENCE, asserted as ABSENT. It was true while both mechanisms shipped and is a
+    // lie now, and a stale caveat in a module header is worse than none: a reader who believes it
+    // thinks the count-mismatch case is somebody else's.
+    expect(src, 'the "owns only the MISSING and CORRUPT cases" caveat is still here, and it is false now')
+      .not.toMatch(/owns outright, today, is[\s\S]{0,60}MISSING and CORRUPT/);
+    expect(src, 'the header still says the deletion is a proposal')
+      .not.toMatch(/THAT DELETION IS NOT IN THIS LANE'S FENCE/);
+  });
+
+  it('a half-indexed database boots WITHOUT being repaired, and the background job then fixes it', async () => {
+    // ⚠ THE END-TO-END PROOF, and the instrument is the index itself rather than a stopwatch. A
+    // timing assertion on a loaded box is a coin flip; "the index is still broken after the whole
+    // migration chain ran" is the same fact on every machine, and it is exactly the claim: boot did
+    // not spend its window rebuilding.
+    const p = path.join(dbDir, 't98-boot-halfindexed.db');
+    fs.rmSync(p, { force: true });
+    fs.rmSync(`${p}-wal`, { force: true });
+    fs.rmSync(`${p}-shm`, { force: true });
+    currentPath = p;
+    const db = new Database(p);
+    db.pragma('journal_mode = WAL');
+    bootDb = db;
+    try {
+      // The real schema, from the real migration chain.
+      runMigrations();
+      // `messages.agent_id` is a real foreign key, so the fixture needs an owner.
+      db.prepare(
+        "INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Box Under Test', 'idle', '1970-01-01')",
+      ).run('agent-fixture');
+      const ins = db.prepare(
+        `INSERT INTO messages (id, agent_id, role, lane, content, display_kind, display_tier,
+                               turn_number, provenance, authorized, token_count, created_at)
+         VALUES (?, ?, 'assistant', 'owner', ?, 'agent-text', 'agent-only', 1, 'live', 1, 10, ?)`);
+      db.transaction(() => {
+        for (let i = 0; i < ROWS; i += 1) {
+          ins.run(`t98-m-${i}`, 'agent-fixture', `generated fixture line ${i}`, 1_700_000_000_000 + i);
+        }
+      })();
+      const indexed = (): number =>
+        (db.prepare('SELECT COUNT(*) AS n FROM messages_fts_docsize').get() as { n: number }).n;
+      const total = (): number =>
+        (db.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n;
+      expect(indexed()).toBe(total());
+
+      // Break it the way a half-finished reindex breaks it: delete the newest half of the index.
+      db.exec(`DELETE FROM messages_fts WHERE rowid > ${ROWS / 2}`);
+      const broken = indexed();
+      expect(broken, 'the fixture did not actually break the index').toBeLessThan(total());
+
+      // ⚠ BOOT AGAIN. Pre-fix this call ran fts5's `'rebuild'` in autocommit and the index came back
+      // whole — on the thread about to serve HTTP, which on a 729 MB database is minutes.
+      runMigrations();
+      expect(indexed(), 'the migration runner repaired the index at boot again — the region is back')
+        .toBe(broken);
+
+      // …and the background job, which is where that work lives now, repairs it.
+      const health = await probeFtsHealth(async (sql, params = []) => db.prepare(sql).all(...params));
+      expect(health.state).toBe('unpopulated');
+      const out = await checkFtsHealthAndRepair({
+        run: async (sql, params = []) => db.prepare(sql).all(...params),
+        repair: (plan) => runFtsRepair(plan, { dbPath: p, deadlineMs: 60_000 }),
+      });
+      expect(out.plan).toBe('rebuild');
+      expect(out.result?.ok, `the background repair failed: ${out.result?.error}`).toBe(true);
+      expect(indexed()).toBe(total());
+      // And the index actually answers for a row it could not find a moment ago.
+      const hit = db.prepare(
+        `SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH ?`,
+      ).get(`line`) as { n: number };
+      expect(hit.n).toBeGreaterThan(0);
+    } finally {
+      bootDb = null;
+      db.close();
+      currentPath = ':memory:';
+      fs.rmSync(p, { force: true });
+      fs.rmSync(`${p}-wal`, { force: true });
+      fs.rmSync(`${p}-shm`, { force: true });
+    }
+  }, 180_000);
 });

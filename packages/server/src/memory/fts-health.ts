@@ -3,42 +3,42 @@
 //
 // ⚠ THE DEFECT, in the brief's own words: "A DB born before the `messages_fts` migration (or with a
 // broken FTS table) silently LIKE-scans FOREVER — the fallback is a warn nobody sees." Deliverable 2
-// made that fallback BOUNDED and LOUD, so the degradation is now visible and finite. This file is the
-// other half: notice the broken index and fix it, rather than complaining about it on every search for
-// the rest of the database's life.
+// made that fallback BOUNDED and LOUD, so the degradation is visible and finite. This file is the
+// other half: notice the broken index and fix it, rather than complaining on every search for the
+// rest of the database's life.
 //
-// ── WHAT WAS ALREADY THERE, AND WHY IT IS NOT ENOUGH (read this before deleting anything) ──
-// `db/migrations.ts` carries a post-migration region (PHASE-1 T7) that compares
-// `messages_fts_docsize` against `messages` and repairs a mismatch with fts5's `'rebuild'`. That check
-// is RIGHT about the question it asks — it replaced an earlier probe that compared `messages` against
-// itself and whose repair structurally could not fire — and three things about it are the reason this
-// module exists:
-//
-//   1. IT IS BOOT-BLOCKING. It runs at `index.ts:390`, hundreds of lines before the port bind, and
-//      `'rebuild'` on a 729 MB database is minutes of synchronous C++ on the thread that will serve
-//      HTTP. The brief's requirement is explicit — "rebuild it as a BACKGROUND job (never
-//      boot-blocking)" — and a box whose index is broken is exactly the box that cannot afford to
-//      spend its whole boot window rebuilding before it answers anything.
-//   2. IT CANNOT SEE A MISSING TABLE. With no `messages_fts`, `COUNT(*) FROM messages_fts_docsize`
+// ── WHAT WAS THERE BEFORE, AND WHY IT HAD TO GO (read this before adding anything back) ──
+// `db/migrations.ts` used to carry a post-migration region (PHASE-1 T7) that compared
+// `messages_fts_docsize` against `messages` and repaired a mismatch with fts5's `'rebuild'`. It asked
+// the RIGHT question — it replaced an earlier probe that compared `messages` against itself and whose
+// repair structurally could not fire: measured on a `VACUUM INTO` copy of a lived-in box with ONE row
+// genuinely removed from the index, both counts read 3,629, the NOT-IN subquery returned 0 rows, the
+// `if` never fired, and the message stayed unsearchable. Three things about the region that replaced
+// it are why THIS module exists, and why that region is now DELETED (t98 D3):
+//   1. IT WAS BOOT-BLOCKING. It ran inside `runMigrations()`, hundreds of lines before the port bind,
+//      and `'rebuild'` on a 729 MB database is minutes of synchronous C++ on the thread that will
+//      serve HTTP. The brief is explicit — "rebuild it as a BACKGROUND job (never boot-blocking)" —
+//      and a box whose index is broken is exactly the box that cannot afford to spend its whole boot
+//      window rebuilding before it answers anything.
+//   2. IT COULD NOT SEE A MISSING TABLE. With no `messages_fts`, `COUNT(*) FROM messages_fts_docsize`
 //      THROWS, the catch logs, and nothing is repaired — the precise case the brief names.
-//   3. IT CANNOT SEE A CORRUPT ONE. Counts agreeing says the row COUNT is right; it says nothing
-//      about whether `MATCH` works. A corrupt index with the right number of rows reads healthy and
+//   3. IT COULD NOT SEE A CORRUPT ONE. Agreeing counts say the row COUNT is right and say nothing
+//      about whether `MATCH` works: a corrupt index with the right number of rows reads healthy and
 //      searches by LIKE for ever.
-//
-// So this module owns the question, and the boot-blocking region in `db/migrations.ts` should be
-// deleted in favour of it. ⚠ THAT DELETION IS NOT IN THIS LANE'S FENCE and is handed up as a proposed
-// diff rather than taken. UNTIL IT LANDS BOTH MECHANISMS SHIP, and the honest consequence is stated
-// here rather than discovered later: migrations repairs the COUNT-MISMATCH case synchronously first,
-// so this module finds it already healthy and does nothing. What this module owns outright, today, is
-// the MISSING and CORRUPT cases — which the migrations region cannot reach at all.
+// ⚠ THIS MODULE NOW OWNS EVERY REPAIR CASE — `missing`, `unpopulated`, `stale` and `corrupt` — AND IS
+// THE ONLY THING THAT REPAIRS THE INDEX ANYWHERE. While both mechanisms shipped (t89 → t98) migrations
+// repaired the COUNT-MISMATCH case synchronously first, so this module found the common case already
+// healthy and did nothing: the background job was real and the boot was still blocked. The deletion is
+// what makes "never boot-blocking" true of the TREE rather than of one module, and a clause reads
+// `db/migrations.ts` with its comments stripped and reds if an fts5 `'rebuild'` ever reappears there.
 //
 // ── WHERE THE WORK RUNS ──
-// Detection is three cheap reads and they go through the READER POOL when it is up, for the same
-// reason every other read in this package does. The REPAIR is a WRITE, so it cannot use the
-// read-only pool: it gets its own short-lived worker with a writable connection, by the same inline-
-// source argument `reader-pool.ts` makes at length (a worker FILE has to resolve as `.ts` under
-// `tsx watch`, `.js` under `node dist/`, and under vitest's loader — three answers, in a fresh
-// context that does not inherit the parent's loader).
+// Detection is three cheap reads through the READER POOL when it is up, for the same reason every
+// other read in this package does. The REPAIR is a WRITE, so it cannot use the read-only pool: it
+// gets its own short-lived worker with a writable connection, by the same inline-source argument
+// `reader-pool.ts` makes at length (a worker FILE resolves as `.ts` under `tsx watch`, `.js` under
+// `node dist/`, and differently again under vitest's loader — in a fresh context that does not
+// inherit the parent's).
 //
 // ⚠ AND THE COST OF THE REPAIR, STATED RATHER THAN HIDDEN: an fts5 rebuild is one large write
 // transaction, so while it runs the platform's own writers wait on the write lock (`busy_timeout`,
