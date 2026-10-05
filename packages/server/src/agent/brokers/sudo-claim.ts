@@ -17,7 +17,7 @@
 // `sudo-policy.ts`, which this module READS and never re-implements — the same discipline
 // `sudo-copy.ts` keeps for the refusals an agent reads.
 //
-// ── WHY THE DOOR HAS THREE CONJUNCTS, each LIFTED from the authorizer, none invented ──
+// ── WHY THE DOOR HAS THREE CONJUNCTS — two that BITE, one that is STRUCTURAL ──
 //  1. THE ROLE WALL. `authorizeSudoLine` refuses a non-primary BEFORE it reads the policy
 //     (owner ruling 2026-09-27; `SUDO_NOT_PRIMARY_REASON` says so in the floor's voice): no
 //     value of any setting reaches it. A soul asserting the line on a non-primary agent would
@@ -26,12 +26,22 @@
 //  2. THE POLICY. `blocked` is a refusal; `gated` and `free` both ALLOW at this layer (the
 //     hold is filed upstream at dispatch, `isSudoHoldRequired`), which is why ONE line is true
 //     under both and why the line names the hold instead of promising immediate execution.
-//  3. A COMMAND GRANT. sudo rides `exec` or `shell`; an agent holding neither has no door to
-//     knock on. `shell` is NOT stripped from the advertised surface by an empty `exec_allow`
-//     — it answers to `shell_allow` (`brokers/grants.ts:129`) — so before this fold-in a
-//     primary with no command grant at all was still told, on its `shell` description, that
-//     it could run administrator commands. This conjunct is what makes that false reading go
-//     away on both surfaces at once rather than on one of them.
+//  3. A COMMAND GRANT — and ⚠ IT CANNOT BITE IN PRODUCTION TODAY, which is worth more than a
+//     silent conjunct. sudo rides `exec` or `shell`, so an agent holding neither has no door to
+//     knock on; but `getAgentPermissions` returns the CONSTANT `PRIMARY_AGENT_PERMISSIONS`
+//     (`exec_allow: ['*']`, `shell_allow: ['*']` — `agent/manifest.ts:22-30`) for any id where
+//     `isPrimaryAgent` is true, before it reads any row (`manifest.ts:161-165`). Conjunct 1
+//     already required `isPrimaryAgent`, so conjunct 3 is NEVER false when it is reached, and
+//     this door is behaviourally `isPrimaryAgent && policy !== 'blocked'` — exactly the v3.2.2
+//     semantics the tool descriptions already had. It is kept for two reasons that are not
+//     behaviour: it is the DOOR THE BRIEF SPECIFIED (policy AND exec grant), so the next reader
+//     comparing code to requirement finds them agreeing; and it is what makes the manifest the
+//     claim's authority rather than the role alone, so the day a manifest path narrows the
+//     primary — a stored grant that outranks the constant, a future per-box profile — the soul
+//     stops claiming the capability WITHOUT anyone having to remember this file. Review finding
+//     1, 2026-10-05: an earlier draft of this paragraph claimed the conjunct fixed a live false
+//     reading on the `shell` description. It did not; no primary has ever reached that state.
+//     The claim is deleted rather than softened.
 //
 // ── CACHE SAFETY (the tenet), stated because the soul line rides the CACHED prefix ──
 // Every conjunct is per-agent or per-box state that changes rarely, and all three ALREADY move

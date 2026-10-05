@@ -140,6 +140,10 @@ describe('backwards-lifecycle probes — both surfaces, one state, one moment', 
     expect(bothSurfaces('fixture-primary')).toEqual({ soul: false, exec: false, shell: false });
   });
 
+  // ⚠ SAME REACH NOTE as the register suite's (review finding 1, 2026-10-05): a grantless
+  // primary is reachable here only because this file mocks `agent/manifest.js`. Production's
+  // `getAgentPermissions` hands every primary the constant `PRIMARY_AGENT_PERMISSIONS`, so the
+  // next two clauses hold the predicate's third conjunct rather than describing a live box.
   it('no command grant at all: BOTH say no regardless of policy', () => {
     box.execAllow = [];
     box.shellAllow = [];

@@ -171,6 +171,13 @@ describe('the door the claim rides — the three conjuncts, through the register
     }
   });
 
+  // ⚠ THE REACH OF THE NEXT TWO CLAUSES, so nobody reads them as production states (review
+  // finding 1, 2026-10-05). They drive the PREDICATE, and they can only reach a grantless
+  // primary because this file mocks `agent/manifest.js`. In production
+  // `getAgentPermissions` returns the constant `PRIMARY_AGENT_PERMISSIONS` for any primary
+  // before reading a row, so conjunct 3 is never false when conjunct 1 has passed. These hold
+  // the conjunct against the day a manifest path narrows the primary; they are not a claim
+  // that it is narrow today.
   it('A COMMAND GRANT: no exec and no shell strips it whatever the policy says', () => {
     box.execAllow = [];
     box.shellAllow = [];
