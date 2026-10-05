@@ -652,3 +652,55 @@ describe('the shrink note describes the shrink that actually happened', () => {
       .toMatch(/Everything behind it is not included here/);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// ROUND-1 REVIEW F5, THE COROLLARY — THE ONE GAP THE BUNDLE COULD NOT SEE.
+//
+// Six collectors are SQL with an agent filter and a window in the statement. The seventh is
+// not: `readLogEntries({ limit })` has neither, so `agentLogSlice` reads the newest `limit`
+// lines GLOBALLY and filters afterwards. On a box busy with other agents those 200 lines can be
+// mostly somebody else's, and this agent's in-window lines are simply never seen.
+//
+// What made it a defect rather than a row cap is the SILENCE: the drop note fires on
+// `kept < collected`, and here `collected` is already the post-filter count, so the numbers
+// agree with each other and no note is emitted at all. The reader cannot tell "this agent was
+// quiet" from "the log read was swamped before this agent's lines were reached" — and the first
+// reading is the one a model will take. The fix is not a bigger limit (that moves the number,
+// not the property); it is for the slice to say when it hit its global ceiling.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('the log slice says when the global read was full before this agent was reached', () => {
+  it('23 — a saturated global read is NAMED, not left as an empty section', () => {
+    base();
+    // The global read fills with another agent's lines, exactly as a busy box does.
+    for (let i = 1; i <= COLLECTOR_CAPS.toolCalls; i++) {
+      logRows.push({ ...logEntry(i), agentId: 'another-agent-entirely' });
+    }
+    // This agent's own in-window lines sit BEHIND the ceiling and are never read.
+    for (let i = 1; i <= 20; i++) logRows.push(logEntry(i));
+
+    const bundle = gatherEvidence(AGENT, {}).bundle as Record<string, unknown>;
+    expect((bundle.logs as unknown[]).length, 'the fixture did not actually starve the section').toBe(0);
+
+    const notes = bundle.bounds as string[];
+    const note = notes.find(n => n.startsWith('logs:'));
+    expect(note, `an empty logs section said NOTHING about why; notes were ${JSON.stringify(notes)}`)
+      .toBeTruthy();
+    expect(note!, 'the note does not say the global log read was the limit that bit')
+      .toMatch(/engine log|global|read its|before this agent/i);
+    // The number that bit is named, so the reader can tell this from a quiet box.
+    expect(note!, 'the note does not name the ceiling it hit')
+      .toContain(String(COLLECTOR_CAPS.toolCalls));
+  });
+
+  it('24 — NEGATIVE CONTROL: an unsaturated read says nothing about saturation', () => {
+    base();
+    // Well under the ceiling, and all of it this agent's: nothing was missed, so nothing is said.
+    for (let i = 1; i <= 5; i++) logRows.push(logEntry(i));
+
+    const bundle = gatherEvidence(AGENT, {}).bundle as Record<string, unknown>;
+    expect((bundle.logs as unknown[]).length, 'the fixture lost its own rows').toBe(5);
+    const note = (bundle.bounds as string[]).find(n => n.startsWith('logs:'));
+    expect(note, `a complete read claimed something was missing: ${note}`).toBeFalsy();
+  });
+});

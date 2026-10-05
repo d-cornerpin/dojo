@@ -30,7 +30,9 @@
  *
  *     sections   6,000 + 5,600 + 5,000 + 4,000 + 3,500 + 1,000 + 1,000  =  26,100 chars
  *     `window` object + the outer braces and key names                  ≈     400 chars
- *     the `bounds` notes, worst case (one per section, ~140 chars each)  ≈   1,200 chars
+ *     the `bounds` notes — one per dropping section, plus `gather.ts`'s
+ *     saturated-log-read note; measured at 1,128 chars on a maximal body,
+ *     longest single note 260                                            ≈   1,200 chars
  *     the head — id, the not-yet-filed truth, the draft instruction      ≈   1,800 chars
  *     ------------------------------------------------------------------------------
  *     worst case                                    ≈ 29,500 chars ≈ 7,375 tokens

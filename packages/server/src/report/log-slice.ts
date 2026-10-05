@@ -60,13 +60,42 @@ export function withoutOwnPayload(e: LogRow): LogRow {
   return { ...e, meta };
 }
 
+/** The slice, plus the one thing the rows cannot say for themselves. */
+export interface LogSlice {
+  rows: LogRow[];
+  /**
+   * TRUE when the GLOBAL read came back full, so there may be older in-window lines for this
+   * agent that were never looked at. Carried out of here because no caller can infer it: the
+   * post-filter count and the kept count agree with each other, which is exactly why this gap
+   * was silent.
+   */
+  globalReadSaturated: boolean;
+}
+
 /**
  * THIS AGENT'S LOG LINES INSIDE THE WINDOW, NEWEST FIRST, WITH NO REPORT PAYLOAD IN THEM.
  * Filtering the reader's OUTPUT is not a new collector, which is why this is a `.filter` and
  * not SQL. Newest-first is the reader's own order, and it is the order the bound keeps.
+ *
+ * ── WHY SATURATION IS REPORTED, AND WHY A BIGGER LIMIT IS NOT THE FIX (round-1 review F5) ──
+ * `readLogEntries` has no agent filter and no window, so `limit` bounds the GLOBAL read and the
+ * narrowing happens after it. On a box busy with other agents those lines can be mostly somebody
+ * else's and this agent's in-window lines are never reached. The six SQL collectors cannot do
+ * this: their `LIMIT` is applied to rows that already passed the agent filter, so a short section
+ * there really does mean a short history.
+ *
+ * What made it a defect rather than a row cap was the SILENCE. The drop note fires on
+ * `kept < collected`, and `collected` is already the post-filter count, so the two numbers agree
+ * and NOTHING was said — leaving a reader unable to tell "this agent was quiet" from "the read
+ * was full before this agent was reached". Raising the limit moves the number and keeps the
+ * property; saying so removes it.
  */
-export function agentLogSlice(agentId: string, sinceIso: string, limit: number): LogRow[] {
-  return readLogEntries({ limit })
-    .filter(e => e.agentId === agentId && e.timestamp >= sinceIso)
-    .map(withoutOwnPayload);
+export function agentLogSlice(agentId: string, sinceIso: string, limit: number): LogSlice {
+  const read = readLogEntries({ limit });
+  return {
+    globalReadSaturated: read.length >= limit,
+    rows: read
+      .filter(e => e.agentId === agentId && e.timestamp >= sinceIso)
+      .map(withoutOwnPayload),
+  };
 }

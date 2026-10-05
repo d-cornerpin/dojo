@@ -177,10 +177,11 @@ export function gatherEvidence(agentId: string, req: WindowRequest, now: Date = 
 
   // The seventh collector, next door: this agent's log lines in the window, newest first, with
   // no earlier report's payload read back in (`log-slice.ts` argues why that rule exists).
-  const logs = agentLogSlice(agentId, window.sinceIso, COLLECTOR_CAPS.toolCalls);
+  const logSlice = agentLogSlice(agentId, window.sinceIso, COLLECTOR_CAPS.toolCalls);
+  const logs = logSlice.rows;
 
   // ── THE BUNDLE IS BOUNDED IN CHARACTERS, SECTION BY SECTION, AND SAYS WHAT IT DROPPED ──
-  // Why, and the arithmetic, are with the budgets in `window.ts`. Here: `bounds` goes FIRST in
+  // Why, and the arithmetic, are with the budgets in `bounds.ts`. Here: `bounds` goes FIRST in
   // the document, so the agent reads what is missing before what is there. ⚠ SIDE EFFECT,
   // STATED: `writeBundle` writes this same object, so the local copy under `~/.dojo/reports` is
   // the bounded one — what the brief was written from is what is on disk. `sources` is untouched,
@@ -193,6 +194,22 @@ export function gatherEvidence(agentId: string, req: WindowRequest, now: Date = 
     toolCalls: [...toolCalls].reverse()
       .map(t => ({ name: t.name, result: t.result, argShape: t.argShape })),
   });
+
+  // ── THE SEVENTH COLLECTOR'S OWN LIMIT, SAID OUT LOUD (round-1 review F5 corollary) ──
+  // The six SQL sections get their note from `boundBundleSections`, which compares what it kept
+  // against what the collector returned. That comparison cannot see this one: the log read is
+  // GLOBAL and is narrowed afterwards, so when it comes back full there may be in-window lines
+  // for this agent that nothing ever looked at — and the kept and collected counts still agree.
+  // The note is added here rather than in `bounds.ts` because it is a fact about the READ, not
+  // about the budget, and `bounds.ts` reads nothing by design.
+  if (logSlice.globalReadSaturated) {
+    bounded.notes.push(
+      `logs: the engine log was read to its ${COLLECTOR_CAPS.toolCalls}-line global limit before `
+      + 'this agent\'s lines were selected from it, so older entries inside this window may exist '
+      + 'that this bundle never saw. A short or empty `logs` section here is not evidence that the '
+      + 'agent was quiet.',
+    );
+  }
 
   return {
     window,
