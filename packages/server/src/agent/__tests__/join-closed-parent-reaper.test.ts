@@ -50,6 +50,24 @@ vi.mock('../../db/connection.js', async () => {
 });
 
 const broadcast = vi.fn();
+/**
+ * ⚠ FIX ROUND 3 — the same handle fix the two NEW D3 suites needed, applied here because this file
+ * is in t90's package and is the third-largest source of in-flight filesystem work in the run.
+ * MEASURED with `process.getActiveResourcesInfo()` in a temporary `afterAll`: it finished holding
+ * **52 `FSReqCallback`** handles — the real logger's buffered `fs.appendFile` queue, armed by the
+ * migrations and the sweep this file drives (`logger.ts:61-89`). Unlike the D3 files this one
+ * PREDATES t90 (it is on main at `e4ea05cb` and t90 never touched its logger, home or db wiring),
+ * so the 52 are not this package's doing; they are removed anyway because the merge gate's
+ * failure mode is a worker that cannot service its RPC while filesystem work is queued ahead of
+ * it, and 52 fewer is 52 fewer. Nothing here asserts on a log line (grep: no `logger`, no
+ * `readLogEntries`, no `console`), so the stub costs no coverage.
+ */
+vi.mock('../../logger.js', () => ({
+  createLogger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
+  setLogLevel: () => { /* no-op */ },
+  setLogBroadcast: () => { /* no-op */ },
+  readLogEntries: () => [],
+}));
 vi.mock('../../gateway/ws.js', () => ({ broadcast }));
 vi.mock('../../memory/embeddings.js', () => ({
   generateEmbedding: vi.fn(async () => new Float32Array(8)),
