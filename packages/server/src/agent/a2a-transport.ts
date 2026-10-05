@@ -2156,7 +2156,7 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<Compi
           // ── UX-REPAIR ROUND 14 T66 — THE WALK REACHES THE MODEL'S OWN CARD ──
           // The disarm above discharges the ASK and the compile duty. Measured on
           // `ask:64b85330`: it left task `708985b4` "Combine anniversary dinner plan and deliver
-          // to David" — the card the model opened on turn 4985, which is `join_redrive 1/3` for
+          // to Marcus" — the card the model opened on turn 4985, which is `join_redrive 1/3` for
           // this very ask — sitting `blocked` and PM-upheld over work the engine had finished.
           // The tie, the honest bound and every collision are argued at the function.
           const released = releaseScaffoldCardsAfterRelay({ workId: join.id, agentId, deliveryId });
