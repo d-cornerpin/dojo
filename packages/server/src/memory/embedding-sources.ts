@@ -94,6 +94,18 @@ export function embeddingSourceAliveSql(alias = 'e'): string {
   return `(${arms.join(' OR ')})`;
 }
 
+/**
+ * What a caller SAYS when an undeclared kind reaches the write — declared here, beside the guard
+ * that detects it, so the sentence and the condition cannot drift apart.
+ *
+ * It lives in the leaf for a second reason, and it is the one BACKLOG line 30 asks about:
+ * `memory/embeddings.ts` sits at its size ratchet EXACTLY, and the honest answer to "raise the
+ * ceiling or extend the leaf" is to extend the leaf. That module is the vector pipeline; source
+ * kinds, their liveness rules and now their refusal wording are this file's subject.
+ */
+export const UNDECLARED_EMBEDDING_KIND_WARNING =
+  'Embedding discarded: its source kind declares no liveness table';
+
 /** The liveness table for a kind, or `null` for one this file does not declare. The `null` is
  *  reachable only from UNTYPED callers and from legacy stored rows (the retired `briefing` kind
  *  is the one that has ever existed); every typed caller gets a string. */

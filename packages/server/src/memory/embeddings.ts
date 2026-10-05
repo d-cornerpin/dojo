@@ -209,7 +209,7 @@ export async function generateEmbedding(
 // ── Store Embedding ──
 
 // Source kinds, liveness rules and the guarded write are a LEAF (`embedding-sources.ts` says why).
-import { insertEmbeddingIfSourceAlive, type EmbeddingSourceType } from './embedding-sources.js';
+import { insertEmbeddingIfSourceAlive, UNDECLARED_EMBEDDING_KIND_WARNING, type EmbeddingSourceType } from './embedding-sources.js';
 export { EMBEDDING_SOURCE_TABLES, embeddingSourceAliveSql, type EmbeddingSourceType } from './embedding-sources.js';
 
 export async function storeEmbedding(
@@ -235,15 +235,7 @@ export async function storeEmbedding(
     const written = insertEmbeddingIfSourceAlive(db, {
       id: uuidv4(), sourceType, sourceId, agentId, preview: content.slice(0, 200),
       vector: Buffer.from(embedding.buffer), dimensions: embedding.length,
-    }, (kind) => {
-      // A kind the declared map does not know — reachable only from an untyped caller or a
-      // legacy row (the retired `briefing` kind is the only one that has ever existed). WARN,
-      // because it means something is trying to embed a thing with no liveness rule, and a
-      // silent discard is how this module's whole defect class stayed invisible for months.
-      logger.warn('Embedding discarded: its source kind declares no liveness table', {
-        sourceType: kind, sourceId,
-      }, agentId ?? undefined);
-    });
+    }, (kind) => logger.warn(UNDECLARED_EMBEDDING_KIND_WARNING, { sourceType: kind, sourceId }, agentId ?? undefined));
     if (!written) {
       logger.debug('Embedding discarded: its source was deleted while it was being computed',
         { sourceType, sourceId }, agentId ?? undefined);

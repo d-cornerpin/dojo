@@ -28,7 +28,8 @@ import Database from 'better-sqlite3';
 
 import {
   EMBEDDING_SOURCE_TABLES, embeddingSourceAliveSql, embeddingSourceTableFor,
-  insertEmbeddingIfSourceAlive, type EmbeddingSourceType,
+  insertEmbeddingIfSourceAlive, UNDECLARED_EMBEDDING_KIND_WARNING,
+  type EmbeddingSourceType,
 } from '../embedding-sources.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -230,6 +231,17 @@ describe('§4 an unknown kind at the write is reported, not thrown', () => {
     );
     expect(written).toBe(true);
     expect(sql).toContain('FROM messages src');
+  });
+
+  it('the warning the caller says lives beside the guard that detects it', () => {
+    // One sentence, one home. `memory/embeddings.ts` passes this constant rather than its own
+    // copy of the wording, which is also how that module stayed at its size ratchet exactly
+    // (BACKLOG line 30's "raise the ceiling or extend the leaf" — the leaf won).
+    const embSrc = stripComments(fs.readFileSync(path.join(SRC, 'memory/embeddings.ts'), 'utf-8'));
+    expect(UNDECLARED_EMBEDDING_KIND_WARNING).toContain('declares no liveness table');
+    expect(embSrc).toMatch(/logger\.warn\(UNDECLARED_EMBEDDING_KIND_WARNING, \{ sourceType: kind, sourceId \}/);
+    expect(embSrc, 'the wording was copied instead of imported')
+      .not.toContain(UNDECLARED_EMBEDDING_KIND_WARNING);
   });
 
   it('the report callback is OPTIONAL — a caller without one still does not throw', () => {
