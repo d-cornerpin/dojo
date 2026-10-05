@@ -45,8 +45,16 @@ import url from 'node:url';
 
 const SRC = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
 
-/** The door itself — the ONE file allowed to call `fetch`. */
-const DOOR = path.join('lib', 'api.ts');
+/**
+  * The door itself — the ONE file allowed to call `fetch`.
+  *
+  * It is `lib/door.ts` and not `lib/api.ts`: the transport POLICY was pulled out
+  * of that 2,400-line endpoint CATALOGUE into its own leaf file, which is the
+  * direction `api.ts`'s size ratchet exists to push. `api.ts` re-exports all four
+  * wrappers, so callers still import from `lib/api` and `vi.mock('../lib/api')`
+  * is still the one seam that mocks the network.
+  */
+const DOOR = path.join('lib', 'door.ts');
 
 /**
  * The tripwire's own clause asserts that calling `fetch` THROWS. It has to name
@@ -149,10 +157,21 @@ describe('the dashboard calls fetch in exactly one place', () => {
     // A scan that matched nothing would satisfy every clause below for the worst
     // possible reason.
     expect(FILES.length, 'the source walk found almost nothing — is SRC right?').toBeGreaterThan(100);
-    expect(CODE.has(DOOR), 'lib/api.ts was not scanned').toBe(true);
+    expect(CODE.has(DOOR), 'lib/door.ts was not scanned').toBe(true);
+    // The catalogue re-exports the door, which is what keeps `lib/api` the single
+    // mockable seam for every caller. If that stops being true, the wrappers are
+    // still one call site but the SEAM has fragmented.
+    //
+    // ⚠ READ RAW, not through `CODE`: the stripper blanks string CONTENTS, so a
+    // module specifier is `from ""` by the time the census sees it. That is right
+    // for finding CALLS and useless for finding an import, so this one assertion
+    // goes to the bytes. (Measured: the clause failed on the stripped form first.)
+    const catalogue = fs.readFileSync(path.join(SRC, 'lib', 'api.ts'), 'utf8');
+    expect(catalogue, 'lib/api.ts must re-export the door so `lib/api` stays the seam')
+      .toMatch(/export\s*\{[^}]*\brequest\b[^}]*\}\s*from\s*'\.\/door'/);
   });
 
-  it('⚠ no file outside lib/api.ts calls the global fetch', () => {
+  it('⚠ no file outside lib/door.ts calls the global fetch', () => {
     const offenders: string[] = [];
     for (const [rel, code] of CODE) {
       if (rel === DOOR || rel === ASSERTS_THE_TRIPWIRE) continue;
@@ -173,7 +192,7 @@ describe('the dashboard calls fetch in exactly one place', () => {
     // One, not "at least one": the point of the door is that there is a single
     // place where auth headers, the CSRF token, the 401 bounce and the
     // never-throw contract are applied. A second call site is a second policy.
-    expect(sites.length, 'lib/api.ts should call fetch once — in `throughTheDoor`').toBe(1);
+    expect(sites.length, 'lib/door.ts should call fetch once — in `throughTheDoor`').toBe(1);
     expect(code).toMatch(/const\s+throughTheDoor\s*=/);
   });
 
@@ -181,7 +200,7 @@ describe('the dashboard calls fetch in exactly one place', () => {
     const door = CODE.get(DOOR)!;
     const callers = [...CODE].filter(([rel]) => rel !== DOOR);
     for (const wrapper of ['request', 'requestRaw', 'requestForm', 'fetchUrl']) {
-      expect(door, `lib/api.ts does not export ${wrapper}`)
+      expect(door, `lib/door.ts does not export ${wrapper}`)
         .toMatch(new RegExp(`export\\s+const\\s+${wrapper}\\s*=`));
       // APPLICATION, not presence: a wrapper nobody calls is a wrapper whose
       // behaviour nothing exercises, and the `api.` form counts as well as the
