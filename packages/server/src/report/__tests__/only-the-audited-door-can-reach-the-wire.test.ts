@@ -28,14 +28,14 @@
 //   greps `\bfetch\s*\(`, to which `node:https` is invisible (the same blindness §L93.5
 //   recorded as the two-hop prong-C limit).
 //
-// So the guard was a pin on the two files somebody thought to pin, in front of a 570-module
+// So the guard was a pin on the two files somebody thought to pin, in front of a 582-module
 // graph, against a vocabulary of one word. What was missing is not another name on a list:
 //
 //   · the walk has to be TRANSITIVE, so the depth of the wiring stops mattering, and
 //   · the vocabulary has to be CLOSED over ways out, so the spelling stops mattering.
 //
 // ── WHAT THIS FILE ASSERTS ──
-// One walk, four claims, each a different question:
+// One walk, six claims, each a different question:
 //
 //   E1  INSIDE THE FEATURE'S OWN DIRECTORIES, EGRESS IS EXACTLY THE AUDITED DOORS. Every
 //       module reachable from the handler at ANY depth whose path lies in `report/**`,
@@ -47,6 +47,11 @@
 //       issues endpoint, a `method: 'POST'` inside that same call, and the host constant it
 //       is built from. A clause satisfiable by the prose above the call would be testing the
 //       comment (G4), so the slice is cut from the call itself.
+//   E1c AND THE FEATURE'S PACKAGE SET IS CLOSED, because A PACKAGE IS A LEAF OF THE WALK. An
+//       installed SDK does its own egress with no word of the vocabulary appearing in the
+//       module that imports it, so inside the feature the set of non-relative specifiers is
+//       pinned exactly — five inert names today. Same inverted rule as everything else here:
+//       not "which packages send?" (unbounded) but "which packages are allowed?" (five).
 //   E2  NO NEW WAY OUT ANYWHERE BEHIND THE TOOL. The egress-bearing modules in the WHOLE
 //       closure are pinned as an exact manifest under the closed vocabulary. This is prong
 //       C's `fetch(` manifest widened to every spelling, and it is what catches a plant
@@ -54,10 +59,10 @@
 //   E3  THE SHELL IS A WAY OUT TOO. `exec('curl …')` is invisible to every network-module
 //       vocabulary there is, so a `child_process` importer that also names a net binary is
 //       its own small manifest.
-//   E4  AND THE WALK'S OWN SCOPE IS DECLARED. Every production module under `report/` is
-//       reachable from the handler today; one that is not is UNMEASURED by E1/E2 and has to
-//       say so on `REPORT_MODULES_NOT_REACHABLE`, so the day it is wired up the census that
-//       starts covering it is read by somebody.
+//   E4  AND THE WALK'S OWN SCOPE IS DECLARED. Every production module in the feature's three
+//       directories is reachable from the handler today; one that is not is UNMEASURED by
+//       E1/E1c/E2 and has to say so on `FEATURE_MODULES_NOT_REACHABLE`, so the day it is
+//       wired up the census that starts covering it is read by somebody.
 //
 // ── WHAT THIS FILE HONESTLY CANNOT SEE ──
 // Written by asking "how would I get past this NOW?", not by editing an older sentence. Each
@@ -70,27 +75,55 @@
 //      import this file never sees. `node:worker_threads` and `node:vm` are NOT in the
 //      vocabulary: measured zero occurrences in the closure, and adding them would pin a
 //      manifest of legitimate workers rather than prove anything about egress.
-//   3. `process.binding('http_parser')` AND FRIENDS — IN THE VOCABULARY, closed at zero
-//      cost: zero occurrences in this closure, so the entry is free and the class is shut.
-//   4. AN ALREADY-DECLARED DOOR GAINING A NEW CALL SITE. E2 is a set of MODULES; a second
+//   3. AN ALREADY-DECLARED DOOR GAINING A NEW CALL SITE. E2 is a set of MODULES; a second
 //      `fetch` inside `services/ollama.ts` is invisible to it. E1 is what makes this
 //      tolerable: inside the feature's own code the set is two files, so the only module
 //      that can quietly grow a call is one already audited for carrying content.
+//   4. AN AGENT PERSUADING A DOOR THAT IS ON THE LIST FOR ANOTHER REASON — `agent/web-tools.ts`
+//      POSTing a bundle. An egress census measures DOORS, not DATA FLOW; taint tracking is a
+//      different instrument.
 //   5. A SHELL EGRESS THROUGH A BINARY NOT ON THE LIST — `python3 -c`, `osascript`, a
-//      vendored helper. E3's list is six names (`curl`, `wget`, `nc`, `netcat`, `ssh`,
+//      vendored helper. E3's list is seven names (`curl`, `wget`, `nc`, `netcat`, `ssh`,
 //      `scp`, `rsync`); a `child_process` importer that reaches the network some other way
 //      is not caught. The honest bound is "the shapes this tree actually writes".
 //   6. THE DASHBOARD. `packages/dashboard` is a different package and not in this graph. The
 //      card's own posting path is censused from the other side in
 //      `gateway/routes/__tests__/only-the-card-can-post-a-report.test.ts`.
-//   7. A TRAILING COMMENT. `stripComments` drops only lines that START with a marker, so
-//      `const x = 1; // import https from 'node:https'` counts as an edge. That is an
-//      OVER-read: it can only add a module to a manifest, never remove one, so it fails
-//      safe — and a RED that has to be argued is the direction this file wants to be wrong in.
+//   7. A TRAILING COMMENT — `const x = 1; // import https from 'node:https'` — counts as an
+//      edge, because the stripper deliberately does not try to find a `//` inside a line
+//      (a URL holds two slashes and a string can hold anything). That is an OVER-read: it
+//      can only ADD a module to a manifest, never remove one, so it fails safe.
+//      ⚠ THE SAME SENTENCE USED TO BE WRITTEN ABOUT COMMENTS IN GENERAL AND IT WAS FALSE.
+//      The reader was a line-start classifier that dropped the WHOLE line, so
+//      `/* keep */ import https from 'node:https';` and a two-line namespace import whose
+//      second line begins with `*` were DISCARDED AS COMMENTS — code deleted before the
+//      specifier reader saw it, and review's plants g1/g2 rode all three censuses green at
+//      157/157 with a live `https.request({ method: 'POST' })` inside a blessed module. The
+//      stripper now removes comment TEXT only (see `stripComments`), which is why this row is
+//      about a trailing `//` and nothing else. A block comment that OPENS mid-line is
+//      likewise not detected, and is the same safe over-read.
 //   8. RUNTIME REACHABILITY. The walk over-approximates deliberately (an erased `import type`
 //      is counted), so a module here may not be reachable when the process runs. Same
 //      direction as the sibling census's prong C, and for the same reason: a type-only edge
 //      becomes a real one in a one-word deletion.
+//   9. AN INSTALLED PACKAGE'S OWN EGRESS, OUTSIDE THE FEATURE. A package is a leaf of the
+//      walk, so `import OpenAI from 'openai'` with a custom `baseURL` sends without any
+//      vocabulary word appearing. INSIDE the feature this is CLOSED by E1c, which pins the
+//      exact set of non-relative specifiers the feature's own modules may import; elsewhere
+//      in the 582-module closure it is open, and pinning every package the engine imports
+//      would be a different (and much noisier) guard.
+//  10. AN ALIASED OR STRING-INDEXED GLOBAL `fetch` — `const { fetch: send } = globalThis`, or
+//      `globalThis['fetch'](…)`. Row 1 covers string-built MODULE specifiers; these need no
+//      specifier at all. Closing it means a manifest of `globalThis` uses, which is a
+//      different instrument from an import census.
+//  11. A CROSS-MODULE SHELL PAIR OUTSIDE THE FEATURE — `child_process` imported in one module
+//      and the `curl …` string exported from another. E3 asks the pair per FILE. Inside the
+//      feature E1c closes it (`node:child_process` would be a new package specifier there);
+//      outside, it is open.
+//
+// AND ONE THING THAT IS **NOT** ON THIS LIST, BECAUSE IT IS COVERED: `process.binding('http_parser')`
+// and friends are IN the vocabulary at zero cost (zero occurrences in the closure), with a
+// CAUGHT fixture row of their own.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -227,22 +260,117 @@ const SHELL_EGRESS_IN_CLOSURE: readonly string[] = [
   'services/watchdog-refresh.ts',       // rsync — refreshes the watchdog's copy
 ];
 
-/** E4's REGISTER. A production module under `report/` that the handler cannot reach is
- *  UNMEASURED by E1 and E2, so it is declared rather than absent. Empty today: all 18
- *  modules under `report/` are reachable from the handler. */
-const REPORT_MODULES_NOT_REACHABLE: readonly string[] = [];
+/**
+ * E1c's PIN — the exact set of NON-RELATIVE specifiers the feature's own modules import.
+ *
+ * ── WHY A PACKAGE PIN EXISTS AT ALL (review I1/I2) ──
+ * A package is a LEAF of this walk: the census reads `packages/server/src`, so an installed
+ * dependency's own egress is invisible to the vocabulary. `packages/server/package.json`
+ * carries `openai`, `@anthropic-ai/sdk` and `hume`, and review measured the consequence —
+ * `import OpenAI from 'openai'` inside `report/bundle.ts` with
+ * `baseURL: 'https://collector.invalid/v1'` rode every clause in this file GREEN. No word of
+ * the §2 vocabulary appears in that module; the sending is the SDK's.
+ *
+ * Enumerating egress-capable packages is the losing game this whole file was written against,
+ * so the rule is inverted exactly as prong A's was: INSIDE THE FEATURE'S OWN CODE, THE SET OF
+ * PACKAGES IS CLOSED. Five names today, every one of them inert. An addition is a new external
+ * dependency in the code path that handles a user's diagnostic bundle, and it is argued like
+ * an `AUDITED_DOORS` addition — the one-line edit IS the review.
+ *
+ * It closes I2 as a side effect: a cross-module shell pair (`child_process` imported in one
+ * feature module, the `curl …` string exported from another) defeats E3's per-file pair, but
+ * `node:child_process` cannot appear in the feature at all without failing here.
+ *
+ * ⚠ OUTSIDE the feature this stays open — cannot-see rows 9 and 11. Pinning every package the
+ * 582-module engine closure imports would be a different and much noisier guard.
+ */
+const FEATURE_PACKAGES: readonly string[] = [
+  '@dojo/shared',   // first-party, and the walk RESOLVES it (I5) rather than leaving it a leaf
+  'node:crypto',    // the signature digest
+  'node:fs',        // the bundle writer
+  'node:path',      // path joins
+  'uuid',           // report ids
+];
+
+/**
+ * E4's REGISTER. A production module in the feature's own directories that the handler cannot
+ * reach is UNMEASURED by E1 and E2, so it is declared rather than absent.
+ *
+ * ⚠ IT COVERS ALL THREE `FEATURE_DIRS`, RECURSIVELY, AND IT DID NOT (review I4). The first cut
+ * read `report/` only, non-recursively, so an unreachable `github/sidecar.ts` holding `fetch(`
+ * was green AND undeclared — the delivery door's own directory had no "must declare itself"
+ * property at all. Empty today: all 44 production files under the three directories are
+ * reachable from the handler, so the widening costs zero churn and buys the register.
+ */
+const FEATURE_MODULES_NOT_REACHABLE: readonly string[] = [];
 
 // ── the walk ────────────────────────────────────────────────────────────────────────────
-// The specifier reader is the sibling census's, deliberately unchanged: it is the one piece
-// of this machinery that has been through four rounds of review (a bare side-effect import,
-// a backtick specifier, a backreferenced delimiter, and a newline exclusion that stopped it
+// The SPECIFIER regex is the sibling census's, deliberately unchanged: it is the one piece of
+// this machinery that has been through four rounds of review (a bare side-effect import, a
+// backtick specifier, a backreferenced delimiter, and a newline exclusion that stopped it
 // reading the prose between two templates as a module name). A second, subtly different
 // reader in the same feature is how two guards end up pinned against different vocabularies,
 // which is exactly the defect N3 records.
 const SPEC = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s*)(['"`])([^'"`\n]+)\1/g;
-const isComment = (line: string): boolean => /^\s*(\/\/|\*|\/\*)/.test(line);
-const stripComments = (code: string): string =>
-  code.split('\n').filter(l => !isComment(l)).join('\n');
+
+// ⚠ THE COMMENT STRIPPER IS **NOT** COPIED FROM THE SIBLING, AND REVIEW IS WHY (C1).
+//
+// The sibling's reader — and the first cut of this file — classified a LINE:
+//
+//   const isComment = (line) => /^\s*(\/\/|\*|\/\*)/.test(line);   // DROPS THE WHOLE LINE
+//
+// A line-start classifier that discards the whole line DELETES CODE, and two perfectly legal
+// shapes are code it deletes:
+//
+//   (g1)  `/* keep */ import https from 'node:https';`    one token in front of a real import
+//   (g2)  `import`  ⏎  `* as https from 'node:https';`    a namespace import, split over two
+//                                                         lines, second line begins with `*`
+//
+// Both were planted inside `report/window.ts` — a blessed one-hop import of the handler — with
+// a live `https.request({ method: 'POST' })`, and both rode ALL THREE censuses GREEN at
+// 157/157. In a census whose entire promise is that the SPELLING stops mattering, a reader
+// that throws away code because of the first two characters on a line is the defect, not a
+// detail. (The header's "comments fail safe" row was true only of a TRAILING comment; it is
+// rewritten as row 7.)
+//
+// SO THIS STRIPPER REMOVES COMMENT **TEXT**, NEVER A LINE OF CODE, and it tracks state:
+//
+//   · a line whose first non-space characters are `//`  → the line's content goes;
+//   · a `/*` at the start of a line opens a SPAN: the span's lines go, and when the `*/`
+//     arrives, WHATEVER FOLLOWS IT ON THAT LINE IS KEPT — which is exactly what g1 needs;
+//   · nothing else is treated as a comment, so a `*`-leading continuation line is only
+//     dropped when a span is actually open, and g2's second line survives.
+//
+// WHY "AT THE START OF A LINE" AND NOT ANYWHERE: a `/*` sequence appears inside ordinary
+// strings in this tree (`'**/*.ts'` is a glob), and a stripper that opened a span on one
+// would swallow the real code after it — an UNDER-read, the dangerous direction. Bounding the
+// open to a line start means every remaining mistake is an OVER-read: a mid-line `/*` or a
+// trailing `//` leaves comment text in the source, which can only ADD a module to a manifest.
+// Both directions are pinned by fixtures below before anything rests on this.
+function stripComments(code: string): string {
+  const out: string[] = [];
+  let inSpan = false;
+  for (const line of code.split('\n')) {
+    if (inSpan) {
+      const close = line.indexOf('*/');
+      if (close === -1) { out.push(''); continue; }
+      inSpan = false;
+      out.push(line.slice(close + 2));          // KEEP the code after the close
+      continue;
+    }
+    const lead = line.trimStart();
+    if (lead.startsWith('//')) { out.push(''); continue; }
+    if (lead.startsWith('/*')) {
+      const open = line.indexOf('/*');
+      const close = line.indexOf('*/', open + 2);
+      if (close === -1) { inSpan = true; out.push(''); continue; }
+      out.push(line.slice(close + 2));          // a one-line block comment in front of code
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join('\n');
+}
 
 /** Every module specifier in a piece of code, in any spelling that creates an EDGE. */
 function specifiersIn(code: string): string[] {
@@ -270,8 +398,23 @@ function shellEgressIn(code: string): boolean {
   return specifiersIn(clean).some(s => CHILD_PROCESS_SPECIFIER.test(s)) && NET_BINARY.test(clean);
 }
 
+/**
+ * `@dojo/shared` IS FIRST-PARTY CODE WEARING A PACKAGE NAME, SO THE WALK FOLLOWS IT (review I5).
+ *
+ * It resolves through the workspace to `packages/shared/src/index.ts`, a barrel this walk can
+ * already read. Left as a leaf — which it was — a `fetch(` added anywhere under
+ * `packages/shared/src` rode this census green, and that is not a hypothetical surface: the
+ * shared package is edited in this very wave, and five of the feature's own modules import it.
+ * Resolving it adds 12 modules to the closure (570 → 582) and ZERO entries to any manifest,
+ * because nothing under `packages/shared/src` holds egress today — so the cost is nil and the
+ * class is closed rather than written down. There is exactly one spelling of the specifier in
+ * the tree (no subpath imports), which is what makes a one-line resolution sound.
+ */
+const SHARED_ENTRY = path.resolve(SRC, '..', '..', 'shared', 'src', 'index.ts');
+
 function resolveSpec(fromFile: string, spec: string): string | null {
-  if (!spec.startsWith('.')) return null;   // a package, not a module of ours
+  if (spec === '@dojo/shared') return fs.existsSync(SHARED_ENTRY) ? SHARED_ENTRY : null;
+  if (!spec.startsWith('.')) return null;   // a third-party package: a leaf (cannot-see row 9)
   const base = path.resolve(path.dirname(fromFile), spec);
   for (const candidate of [
     base.replace(/\.js$/, '.ts'), base.replace(/\.js$/, '.tsx'),
@@ -315,7 +458,7 @@ const egressBearing = (mods: readonly string[]): string[] =>
 // two regexes seeing what is actually written in this repo, and the feature's own history is
 // three rounds of a census reading one spelling out of six and reporting green. So the
 // vocabulary is pinned as fixtures, here, where a missing form is a FAILING CLAUSE rather
-// than a silent hole in a 570-module walk.
+// than a silent hole in a 582-module walk.
 
 describe('the specifier reader sees every import spelling that creates an edge', () => {
   const FORMS: readonly [string, string][] = [
@@ -339,6 +482,47 @@ describe('the specifier reader sees every import spelling that creates an edge',
   }
   it('ignores a specifier that only appears in prose', () => {
     expect(specifiersIn(`// an old \`await import('node:https')\` hack\nconst x = 1;`)).toEqual([]);
+  });
+
+  // ── THE COMMENT STRIPPER'S OWN VOCABULARY (review C1) ────────────────────────────────
+  // These four rows are the Critical. The old line-start classifier DELETED CODE, and these
+  // are the two shapes it deleted plus the two it must still get right in the other
+  // direction. They are specifier-reader rows and not egress rows on purpose: the defect was
+  // upstream of the vocabulary, so it is pinned where the text is read.
+  it('KEEPS an import that sits behind a one-line block comment (g1)', () => {
+    // `/* keep */ import https from 'node:https';` — one token in front of real code. The old
+    // reader dropped the whole line and the import vanished before the vocabulary saw it.
+    const code = `/* keep */ import https from 'node:https';`;
+    expect(specifiersIn(code), 'a one-token comment prefix deleted a real import')
+      .toEqual(['node:https']);
+  });
+
+  it('KEEPS a namespace import whose second line begins with a star (g2)', () => {
+    // Legal, and the old reader saw line 2 as a JSDoc continuation.
+    const code = `import\n  * as https from 'node:https';`;
+    expect(specifiersIn(code), 'a line-wrapped namespace import was read as a comment')
+      .toEqual(['node:https']);
+  });
+
+  it('still ignores a whole JSDoc block whose PROSE names an egress import', () => {
+    // The direction the stripper must not lose: this is the reason a stripper exists at all.
+    const code = `/**\n * Historically this called \`import https from 'node:https'\`.\n */\nconst x = 1;`;
+    expect(specifiersIn(code), 'the stripper stopped stripping block comments').toEqual([]);
+  });
+
+  it('a glob string does not open a comment span and swallow the code after it', () => {
+    // `'**/*.ts'` holds a `/*`. A stripper that opened a span anywhere would eat the next
+    // import — an UNDER-read, the one direction that must never happen.
+    const code = `export const G = '**/*.ts';\nimport https from 'node:https';`;
+    expect(specifiersIn(code), 'a glob in a string swallowed a real import')
+      .toEqual(['node:https']);
+  });
+
+  it('a trailing comment is still an over-read, and that is the safe direction', () => {
+    // Row 7 of the header, as a clause: the stripper does not hunt for `//` inside a line, so
+    // this counts as an edge. It can only ADD a name to a manifest.
+    expect(specifiersIn(`const x = 1; // import https from 'node:https';`))
+      .toEqual(['node:https']);
   });
 });
 
@@ -473,6 +657,46 @@ describe('E1 — inside the feature\'s own code, only the audited door reaches t
   });
 });
 
+describe('E1c — the feature imports a closed set of packages, because a package is a leaf', () => {
+  it('the non-relative specifiers in the feature are exactly the declared set', () => {
+    const feature = CLOSURE.modules.filter(inFeature);
+    const found = [...new Set(
+      feature.flatMap(m => specifiersIn(read(m)))
+        // A module specifier never contains `${` (review Minor 2): the reader picks up one
+        // template-string artefact in `agent/tools/cat/agents.ts`, where prose inside a
+        // backtick reads `"${agentRef}"`. It is not an edge — a non-relative specifier is a
+        // leaf and a relative one would have failed the walk loudly — and pinning it would
+        // make this list a record of someone's sentence. A STRING-BUILT specifier remains
+        // cannot-see row 1 either way, so nothing is traded here.
+        .filter(s => !s.startsWith('.') && !s.includes('${')),
+    )].sort();
+    expect(
+      found,
+      'The DOJO-REPORT feature\'s own code imports a package that is not on FEATURE_PACKAGES:\n'
+      + `  ${found.filter(s => !FEATURE_PACKAGES.includes(s)).join(', ')}\n`
+      + 'A PACKAGE IS A LEAF OF THIS WALK, so an installed SDK does its own egress with no '
+      + 'word of the vocabulary appearing anywhere in the module — review planted '
+      + '`import OpenAI from \'openai\'` with a custom `baseURL` inside report/bundle.ts and '
+      + 'every other clause in this file stayed green. Inside the code path that handles a '
+      + 'user\'s diagnostic bundle the package set is therefore CLOSED, and an addition is '
+      + 'argued the way an AUDITED_DOORS addition is: say what it sends, to whom, and under '
+      + 'whose consent. (It also closes the cross-module shell pair: `node:child_process` '
+      + 'cannot appear here without failing this clause.)\n'
+      + 'If a name is MISSING instead, a dependency was dropped — update the list.',
+    ).toEqual([...FEATURE_PACKAGES].sort());
+  });
+
+  it('...and the clause is reading a real set, not an empty one', () => {
+    expect(FEATURE_PACKAGES.length).toBeGreaterThan(3);
+    // The egress vocabulary and the package pin must agree about the obvious case: every
+    // declared package is inert, so none of them is an egress specifier.
+    for (const pkg of FEATURE_PACKAGES) {
+      expect(egressMarkersIn(`import x from '${pkg}';`), `${pkg} is itself an egress package `
+        + 'and is on the feature\'s allowed list').toEqual([]);
+    }
+  });
+});
+
 describe('E1b — the audited door still posts, and it posts to the audited place', () => {
   it('holds the issues POST in shape and in application', () => {
     const src = stripComments(read('github/issues.ts'));
@@ -566,24 +790,51 @@ describe('E3 — the shell is a way out too', () => {
   });
 });
 
+/**
+ * Every production `.ts`/`.tsx` file under one of the feature's directories, RECURSIVELY, with
+ * test files and their directories left out — a test is not a path the product can take.
+ */
+function featureFilesOnDisk(dir: string, out: string[] = []): string[] {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (e.isDirectory()) {
+      if (e.name !== '__tests__') featureFilesOnDisk(path.join(dir, e.name), out);
+      continue;
+    }
+    if (/\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) {
+      out.push(path.relative(SRC, path.join(dir, e.name)));
+    }
+  }
+  return out;
+}
+
 describe('E4 — the walk\'s scope is declared, so an unwired module is not a silent gap', () => {
-  it('every production module under report/ is reachable from the handler', () => {
-    const onDisk = fs.readdirSync(path.join(SRC, 'report'))
-      .filter(f => /\.tsx?$/.test(f))
-      .map(f => `report/${f}`)
-      .sort();
-    expect(onDisk.length, 'report/ looks empty — this clause is reading the wrong directory')
-      .toBeGreaterThan(10);
+  it('every production module in the feature\'s three directories is reachable', () => {
+    // ⚠ THREE DIRECTORIES, RECURSIVELY (review I4). Reading `report/` alone left the delivery
+    // door's own directory with no register at all: an unreachable `github/sidecar.ts` holding
+    // `fetch(` was green AND undeclared, which is the one combination this clause exists to
+    // make impossible.
+    const onDisk = [
+      ...featureFilesOnDisk(path.join(SRC, 'report')),
+      ...featureFilesOnDisk(path.join(SRC, 'agent', 'tools', 'cat')),
+      ...featureFilesOnDisk(path.join(SRC, 'github')),
+    ].sort();
+    expect(onDisk.length, 'the feature directories look empty — this clause is reading the '
+      + 'wrong paths').toBeGreaterThan(30);
+    for (const f of onDisk) {
+      expect(inFeature(f), `${f} is on disk in a feature directory but FEATURE_DIRS does not `
+        + 'match it — the two halves of this clause disagree').toBe(true);
+    }
     const unreachable = onDisk.filter(m => !CLOSURE.modules.includes(m));
     expect(
       unreachable,
-      `module(s) under report/ that the handler cannot reach: ${unreachable.join(', ')}. `
-      + 'They are UNMEASURED by E1 and E2 — an unreachable module can hold any egress it likes '
-      + 'and this file will not see it, which is correct (it is not wired up) and dangerous '
-      + '(the day it is wired up, nobody re-reads it). Two honest fixes: (1) wire it up, and '
-      + 'this clause goes green while E1/E2 start covering it; (2) if it is deliberately not '
-      + 'reachable, name it on REPORT_MODULES_NOT_REACHABLE with the reason, and that one-line '
-      + 'edit IS the review.',
-    ).toEqual([...REPORT_MODULES_NOT_REACHABLE].sort());
+      `production module(s) in the feature that the handler cannot reach: `
+      + `${unreachable.join(', ')}. `
+      + 'They are UNMEASURED by E1, E1c and E2 — an unreachable module can hold any egress it '
+      + 'likes and this file will not see it, which is correct (it is not wired up) and '
+      + 'dangerous (the day it is wired up, nobody re-reads it). Two honest fixes: (1) wire it '
+      + 'up, and this clause goes green while E1/E1c/E2 start covering it; (2) if it is '
+      + 'deliberately not reachable, name it on FEATURE_MODULES_NOT_REACHABLE with the reason, '
+      + 'and that one-line edit IS the review.',
+    ).toEqual([...FEATURE_MODULES_NOT_REACHABLE].sort());
   });
 });
