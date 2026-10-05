@@ -106,3 +106,23 @@ export function isSignatureTerminal(state: RepeatCallState, sig: string): boolea
   const entry = state.get(sig);
   return !!entry && entry.refusals >= IDENTICAL_CALL_TERMINAL_AT;
 }
+
+/**
+ * Has the engine REFUSED at least one repeated call this turn? — t93.
+ *
+ * The brake's lower rung as a FACT about the turn, for the turn record. `refusals` is bumped
+ * by `checkIdenticalCallRefusal` every time an exact signature past `IDENTICAL_CALL_REFUSE_AT`
+ * is handed the notice instead of being executed, so a non-zero count means the engine, not
+ * the model, decided those calls would not run. Without it a turn that spent itself on refused
+ * calls and never reached the TERMINAL rung was recorded `no_reply_intended` — a claim about
+ * the model's intent — and `work/ask-settlement.ts`'s ladder charged a rung for it.
+ *
+ * Read from this ledger rather than latched at the refusal site: the refusals happen inside
+ * parallel `runOne` callbacks, where concurrent `state` reassignments clobber each other (the
+ * hazard `steps/execute/index.ts` records for `sentToAgentThisTurn`), and this map is the
+ * durable turn-scoped count those callbacks all write to.
+ */
+export function anyIdenticalCallRefused(state: RepeatCallState): boolean {
+  for (const entry of state.values()) if (entry.refusals > 0) return true;
+  return false;
+}

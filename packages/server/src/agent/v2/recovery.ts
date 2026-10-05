@@ -750,7 +750,15 @@ async function recordInjury(
   logger.error(`v2 agent loop failed: ${message}`, { agentId, code, cause }, agentId);
   // P4 turn record: a turn that died on an exception gets an honest terminal
   // state instead of an open-ended row.
-  try { markTurnDied(agentId, state.turnNumber); } catch { /* best effort */ }
+  //
+  // t93: AND IT NAMES THE CAUSE WHEN THE ENGINE OBSERVED ONE. This statement closes the row
+  // (`AND ended_at IS NULL`) ~40 statements before the `finally` arm's `finalizeTurn`, so on
+  // the injury path THIS word is the one that lands — and it was `unknown` even for a stream
+  // watchdog cut or a non-retryable provider failure the engine had already classified.
+  // `state.engineCutExit` is what `steps/teardown/index.ts` OBSERVED from the throw, never a
+  // guess: `classifyThrownCut` answers null for anything it cannot place, so a bug in this
+  // engine still records `unknown` exactly as `markTurnDied`'s own docstring requires.
+  try { markTurnDied(agentId, state.turnNumber, state.engineCutExit ?? 'unknown'); } catch { /* best effort */ }
 
   // T81c FIX ROUND 1 (NO-DOOMED-DIALS) — THE ONE PLACE THIS MARKER IS EVER SET. Reaching
   // `recordInjury` with `DECLARED_PATIENCE_EXCEEDED_CODE` means every earlier cascade step —

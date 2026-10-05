@@ -27,6 +27,7 @@ import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { turnContinuationCounts, queueSelfWake, isStopFenced } from '../../../shared-state.js';
 import { type AgentTurnState } from '../../state.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
+import { latchEngineCut } from '../../engine-exit.js';
 import { noteEngineCheckpoint, pendingCirclingVerdictParkLine } from '../../../../work/engine-checkpoint-note.js';
 import { resolveUnattendedBudget, continuationCapFor } from '../../../unattended-budget.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
@@ -176,7 +177,13 @@ export async function runTurnTimeBudget(
           agentId, error: pmErr instanceof Error ? pmErr.message : String(pmErr),
         }, agentId);
       }
-      return requestExit(state, 'turn-continuation-cap' satisfies PreCallGatesExitReason);
+      // t93: `budget` — THE WORD FOR THIS, finally written. The trip ENDS the turn (a cap is a
+      // cap; nothing queues a self-wake for it) and the record said `no_reply_intended`, the
+      // model's intent, about a turn the engine stopped because the provider's own unattended
+      // budget ran out. `work/exit-attribution.ts` already classified `budget` as engine-imposed,
+      // so the only thing missing was this latch — and with it the owner's ask is handed back
+      // rather than charged a rung for a silence nobody chose.
+      return requestExit(latchEngineCut(state, 'budget'), 'turn-continuation-cap' satisfies PreCallGatesExitReason);
     }
 
     turnContinuationCounts.set(agentId, continuationCount);
@@ -278,7 +285,11 @@ export async function runTurnTimeBudget(
         agentId, turnNumber, continuationCount,
       }, agentId);
       turnContinuationCounts.delete(agentId);
-      return requestExit(state, 'stopped-by-user' satisfies PreCallGatesExitReason);
+      // t93: the OWNER's word, not the budget's — this arm exists because the stop landed INSIDE
+      // the compaction check, so `stop` is both the most recent cause and the only one a person
+      // took. `latchEngineCut` is first-writer-wins, so a stop that was already recorded upstream
+      // stays recorded and this is a no-op.
+      return requestExit(latchEngineCut(state, 'stop'), 'stopped-by-user' satisfies PreCallGatesExitReason);
     }
 
     // T79 FIX WAVE, FINDING 2: read BEFORE the park message is built, so an undelivered
@@ -329,7 +340,14 @@ export async function runTurnTimeBudget(
     // Queue wakeup so handleMessage's finally fires the loop again
     stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
     queueSelfWake(agentId, 'turn-budget-continuation');
-    return requestExit(state, 'turn-time-budget' satisfies PreCallGatesExitReason);
+    // t93: `budget` HERE TOO, and the reason is the `iteration_cap` reason exactly. This arm is an
+    // ENGINE CUT with a continuation queued behind it — the turn is stopped mid-work at the
+    // 15-minute checkpoint and told to resume on a fresh one — and it recorded
+    // `no_reply_intended` on every one of those, so a long task spent the owner's re-serve ladder
+    // one checkpoint at a time. The cap arm above and this one are the same cause at two
+    // severities and now carry the same word; `turns.answered` still says, separately, whether
+    // anything was delivered.
+    return requestExit(latchEngineCut(state, 'budget'), 'turn-time-budget' satisfies PreCallGatesExitReason);
   }
   return proceed(state);
 }

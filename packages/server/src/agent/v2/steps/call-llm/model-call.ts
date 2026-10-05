@@ -24,6 +24,7 @@ type ModelMessage = ModelCallParams['messages'][number];
 import { callModel, STREAM_IDLE_TIMEOUT_ERROR } from '../../../model.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { abandonTurn, type StepOutcome } from '../step-outcome.js';
+import { latchEngineCut } from '../../engine-exit.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { isStopFenced, preemptedAgents } from '../../../shared-state.js';
 import { hydrateCredentialsInMessages } from '../../../../credentials/secret-values.js';
@@ -108,8 +109,13 @@ export async function callWithRetryAndFallback(
   //  have to run, and `activeRuns` still holds the agent through `handleMessage`'s whole awaited
   //  tail. Writing idle at this instant is the same untruth `stopAgent` stopped telling, just
   //  seconds wide instead of minutes, and the same busy-guards believe it.
+  //  t93: AND THE TURN RECORD NOW SAYS `stop`. An abandon still runs the `finally`, so the
+  //  recorder DOES see this turn — it simply had no fact to see, and derived
+  //  `no_reply_intended` from the absence of a reply. That is the BACKLOG's headline shape:
+  //  the owner's press written down as the model choosing silence, and a rung spent on it.
+  //  `state` is the live `let` above, so the latch rides whatever the retry loop has advanced.
   const abandonForStop = (reason: 'stopped-before-call' | 'stopped-mid-call'): { abandoned: StepOutcome } => {
-    return { abandoned: abandonTurn(state, reason) };
+    return { abandoned: abandonTurn(latchEngineCut(state, 'stop'), reason) };
   };
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -288,7 +294,9 @@ export async function callWithRetryAndFallback(
         preemptedAgents.delete(agentId);
         logger.info('v2 run preempted, queued wakeup will fire', {}, agentId);
         // T83 FIX ROUND (review IMPORTANT A-3): idle is teardown's to write, not this arm's.
-        return { abandoned: abandonTurn(state, 'preempted-mid-call') };
+        // t93: `preempt` — a PEER or a barge-in took the turn, which is neither a failure nor a
+        // silence. Latched here rather than left to the recorder for the same reason as the stop.
+        return { abandoned: abandonTurn(latchEngineCut(state, 'preempt'), 'preempted-mid-call') };
       }
 
       // Fixed-model path: the ONLY error that earns the second attempt is

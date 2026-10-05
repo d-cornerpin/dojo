@@ -60,6 +60,7 @@ import type { WsEvent } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
 import { isStopFenced, preemptedAgents } from '../../../shared-state.js';
 import { type AgentTurnState, type TurnPhase } from '../../state.js';
+import { latchEngineCut } from '../../engine-exit.js';
 import type { TurnCounterparty } from '../../counterparty.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import { runThrashGate } from './thrash-gate.js';
@@ -155,16 +156,20 @@ export async function runPreCallGates(
   // write told the same lie `stopAgent` stopped telling — the turn has not finalized, the run's
   // `finally` has not run, `activeRuns` still holds the agent, and every busy-guard in the
   // platform reads that row. Teardown writes idle when the run is genuinely down.
+  // t93: AND THE RECORD SAYS SO. Both arms below used to leave the turn record deriving its
+  // own exit reason from what teardown could see, which is nothing about either event — so an
+  // owner pressing stop was written down as `no_reply_intended`, the model's intent, and the
+  // ask ladder spent a rung on it. `latchEngineCut` carries the fact to the recorder.
   if (isStopFenced(agentId)) {
     logger.info('v2 agent stopped by user', {}, agentId);
-    return requestExit(state, 'stopped-by-user' satisfies PreCallGatesExitReason);
+    return requestExit(latchEngineCut(state, 'stop'), 'stopped-by-user' satisfies PreCallGatesExitReason);
   }
   if (preemptedAgents.has(agentId)) {
     preemptedAgents.delete(agentId);
     logger.info('v2 run preempted, queued wakeup will fire', {}, agentId);
     // T83 FIX ROUND (review IMPORTANT A-3): the idle write that stood here is gone — `teardown`
     // is the ONE owner now. See `teardown/index.ts`'s `settleStatus`.
-    return requestExit(state, 'preempted' satisfies PreCallGatesExitReason);
+    return requestExit(latchEngineCut(state, 'preempt'), 'preempted' satisfies PreCallGatesExitReason);
   }
 
   const thrash = runThrashGate(state, ctx);

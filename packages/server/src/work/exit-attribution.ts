@@ -51,13 +51,25 @@ import { getDb } from '../db/connection.js';
  *   · `handoff` / `delegation_exit` / `compile_pending` — the model chose to hand the work to a
  *     peer. A decision, and the hold arm owns the join case.
  *
- * ⚠ EIGHT OF THESE WORDS HAVE NO WRITER IN PRODUCTION: `stop`, `preempt`, `provider_error`,
- * `stream_idle`, `abort`, `terminated`, `budget`, `identical_call` — 0 rows each across 10,934
- * turns. They are classified anyway, so the day one is wired the correct treatment is already
- * decided rather than discovered. A reader tempted to tidy away an unreachable branch should read
- * this paragraph first: the unreachability is the gap, not the classification. Handed up in the C2
- * report rather than fixed here, because wiring a new exit reason is its own change with its own
- * telemetry-enum and DB-CHECK consequences.
+ * ⚠ ALL ELEVEN ARE NOW WRITTEN, AND THAT IS NEW (t93, BACKLOG line 17). For most of this set's
+ * life EIGHT of these words had no writer anywhere — `stop`, `preempt`, `provider_error`,
+ * `stream_idle`, `abort`, `terminated`, `budget`, `identical_call`, 0 rows each across 10,934
+ * turns — and they were classified ANYWAY, so that the day one was wired the correct treatment
+ * was already decided rather than discovered. That day arrived: the engine sites that end a turn
+ * for each cause now carry their reason to the recorder (`agent/v2/engine-exit.ts` for the seven
+ * cuts, `steps/teardown/finalize-record.ts`'s derivation for `identical_call`), the reaper closes
+ * a dead process's abandoned rows as `terminated`, and the whole set reaches this predicate from
+ * production rather than from a fixture. The census that keeps it true both ways —
+ * an enum member losing its writer, and a writer appearing for a word nobody classified — is
+ * `agent/v2/__tests__/eight-exit-reasons-get-their-writers.test.ts`.
+ *
+ * STILL UNWRITTEN, named rather than left to be re-measured: `delegation_exit` and
+ * `compile_pending`. Both are MODEL dispositions (see the absences above), both are declared in
+ * the enum, the DB CHECK and the telemetry whitelist with zero production references, and neither
+ * is in this set — so wiring them is a change to what the ladder CHARGES, not just to what the
+ * record says, and it needs its own judgment. t93 refused to slip it in: the obvious site for
+ * `delegation_exit` is a turn that today records `park`, which IS engine-imposed, so the move
+ * would start spending rungs on delegating turns.
  */
 export const ENGINE_IMPOSED_EXITS: ReadonlySet<string> = new Set([
   'iteration_cap', 'park', 'brake', 'stop', 'preempt', 'provider_error',

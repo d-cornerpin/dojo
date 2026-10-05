@@ -33,7 +33,8 @@ import { advance, type AgentTurnState } from '../../state.js';
 import { isStopFenced } from '../../../shared-state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { TurnCounterparty } from '../../counterparty.js';
-import type { RepeatCallState } from '../../identical-call-brake.js';
+import { anyIdenticalCallRefused, type RepeatCallState } from '../../identical-call-brake.js';
+import { latchEngineCut } from '../../engine-exit.js';
 import { createLogger } from '../../../../logger.js';
 import { runOneToolCall } from './run-one.js';
 import { persistXmlFallbackCollapse } from './xml-fallback.js';
@@ -136,7 +137,7 @@ export type ExecuteOutcome =
   | { readonly directive: 'exit'; readonly state: AgentTurnState; readonly reason: string };
 
 export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Promise<ExecuteOutcome> {
-  const { agentId, result, counterparty } = ctx;
+  const { agentId, result, counterparty, identicalCallState } = ctx;
 
   const batches = partitionTools(result.toolCalls);
   const turnToolResults: Array<{
@@ -236,10 +237,25 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
   calledFireAndForgetGen = sc.calledFireAndForgetGen;
 
   // Update state with new signatures + results
+  //
+  // t93 ALSO RIDES THIS ONE `advance`, and both additions are facts the recorder needs that
+  // nothing else in the turn can see:
+  //   * `engineCutExit: 'stop'` when the executor broke mid-batch. The remaining calls were
+  //     filled in as `Cancelled by user (agent stopped)` four statements up, so the turn KNOWS
+  //     the owner pressed the button — and then recorded `no_reply_intended`, the model's
+  //     intent, and the ask ladder spent a rung. First-writer-wins, so an earlier stop arm
+  //     (the pre-call gate, the model call) keeps its latch and this is a no-op.
+  //   * `identicalCallRefusedThisTurn` from the brake's OWN ledger, read HERE because the
+  //     refusals are bumped inside the parallel `runOne` callbacks whose `state` writes
+  //     clobber each other (the hazard this file records for `sentToAgentThisTurn` below).
+  //     Monotone across iterations: the map is turn-scoped and a refusal is never un-counted.
   state = advance(state, {
     recentToolSignatures: recentSigs,
     toolResults: state.toolResults.concat(turnToolResults),
+    identicalCallRefusedThisTurn:
+      state.identicalCallRefusedThisTurn || anyIdenticalCallRefused(identicalCallState),
   });
+  if (stoppedMidBatch) state = latchEngineCut(state, 'stop');
 
   persistXmlFallbackCollapse(ctx, turnToolResults);
 

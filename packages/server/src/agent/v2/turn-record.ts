@@ -38,6 +38,19 @@ export type TurnExitReason =
   | 'iteration_cap' | 'brake' | 'identical_call' | 'stop' | 'preempt' | 'provider_error'
   | 'stream_idle' | 'abort' | 'terminated' | 'budget' | 'compile_pending' | 'unknown';
 
+/**
+ * The subset a TURN SITE may latch as "the engine or the owner ended this turn" — t93's
+ * carrier (`agent/v2/engine-exit.ts`) is typed on it, so a site cannot latch a word that is
+ * the model's own disposition (`answered`, `handoff`) or the quarantine value (`unknown`).
+ *
+ * `brake` and `identical_call` are absent BECAUSE THEY ARE NOT LATCHED: both are derived in
+ * the recorder from the tool phase's own state (the brake flag, and the brake ledger's
+ * refusal count), one statement from the facts they name, so a carrier for them would be a
+ * second copy of something already true at the read point.
+ */
+export type EngineCutReason = Extract<TurnExitReason,
+  'stop' | 'preempt' | 'abort' | 'terminated' | 'budget' | 'provider_error' | 'stream_idle'>;
+
 export interface TurnStartParams {
   agentId: string;
   kind: 'user' | 'a2a' | 'engine' | null;
@@ -236,15 +249,71 @@ export function bumpEffectfulCalls(agentId: string, turnNumber: number, by = 1):
  * signature closed EVERY open turn for the agent — which on a crash during a second, concurrent
  * turn would close the wrong one — and the caller had the number all along.
  *
- * The reason is `'unknown'`, not `'provider_error'`: the injury path does not know whether the
- * cause was the provider, the model or a bug, and 'unknown' is the enum's quarantine value.
- * Naming a cause we did not observe is the failure this project keeps finding.
+ * The reason DEFAULTS to `'unknown'`, not `'provider_error'`: the injury path does not know
+ * whether the cause was the provider, the model or a bug, and 'unknown' is the enum's
+ * quarantine value. Naming a cause we did not observe is the failure this project keeps
+ * finding, and that refusal is unchanged.
+ *
+ * ── t93: WHY IT NOW TAKES THE REASON, AND WHY THAT IS NOT A WEAKENING ────────────────────
+ * This runs on the `catch` arm, ~40 statements AHEAD of the `finally` arm's `finalizeTurn`,
+ * and every statement here carries `AND ended_at IS NULL` — so on the injury path THIS write
+ * wins and the recorder's own derivation is a no-op. A turn killed by the stream watchdog or
+ * by a 402 therefore recorded `unknown` even once the engine knew better. The caller passes
+ * what `engine-exit.ts` OBSERVED (`state.engineCutExit`), never a guess: the classifier
+ * returns null for an error it cannot place, the default stands, and `unknown` keeps meaning
+ * exactly what its paragraph above says.
  */
-export function markTurnDied(agentId: string, turnNumber: number): void {
+export function markTurnDied(
+  agentId: string, turnNumber: number, reason: TurnExitReason = 'unknown',
+): void {
   try {
     getDb().prepare(`
-      UPDATE turns SET ended_at = datetime('now'), exit_reason = 'unknown', answered = 0
+      UPDATE turns SET ended_at = datetime('now'), exit_reason = ?, answered = 0
        WHERE agent_id = ? AND turn_number = ? AND ended_at IS NULL
-    `).run(agentId, turnNumber);
+    `).run(reason, agentId, turnNumber);
   } catch { /* best effort: an injury record must not raise a second injury */ }
+}
+
+/**
+ * THE REAPER'S WRITE — t93. Close every still-open turn of a run the engine has just declared
+ * dead, as `terminated`.
+ *
+ * ── THE ZERO THIS FILLS, AND IT IS A POPULATION, NOT A THEORY ───────────────────────────
+ * `turns` rows are opened at pickup and closed in the turn's `finally`. A process killed
+ * mid-turn runs no `finally`, so the row stays open for ever: `work/occurrences.ts` measured
+ * 22 unended rows on one agent and 279 across seven on a lived-in box, "every one of them a
+ * turn some crash or restart never closed", and had to narrow a live-turn guard to the
+ * occurrence because the per-agent question is permanently true. `terminated` is the word the
+ * enum reserves for exactly that and nothing wrote it once in 10,934 turns.
+ *
+ * ── WHY THE REAPER AND NOT BOOT ──────────────────────────────────────────────────────────
+ * The reaper is the component that already DECIDES a run is dead, on evidence this module has
+ * no access to: a `working` row stale past the 75-minute cliff AND no live entry in this
+ * process's `activeRuns`. Closing the rows anywhere else would mean re-deriving that verdict
+ * beside it, which is the duplicate-mechanism disease. It is scoped to ONE agent for the same
+ * reason `markTurnDied` is scoped to one turn: a sweep over the table would close turns
+ * belonging to runs nobody has judged.
+ *
+ * RESIDUAL, STATED: if such a run is not dead but catatonic and later finalizes, its own
+ * `finalizeTurn` finds `ended_at` already set and writes nothing — the same precedence the
+ * injury path has always had. The reaper's verdict is the one that fires at 75 minutes of
+ * missing heartbeats, so that is the direction worth being wrong in: a row that says
+ * `terminated` is readable, and an open row is invisible for ever.
+ *
+ * @returns how many rows were closed — the reaper logs it, so a sweep that closed nothing and
+ *          a sweep that closed nine are distinguishable in the record.
+ */
+export function markTurnsTerminated(agentId: string): number {
+  try {
+    const r = getDb().prepare(`
+      UPDATE turns SET ended_at = datetime('now'), exit_reason = 'terminated', answered = 0
+       WHERE agent_id = ? AND ended_at IS NULL
+    `).run(agentId);
+    return r.changes;
+  } catch (err) {
+    logger.warn('reaped run: its open turn rows could not be closed and stay unended', {
+      agentId, error: err instanceof Error ? err.message : String(err),
+    });
+    return 0;
+  }
 }

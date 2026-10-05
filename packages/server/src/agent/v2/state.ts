@@ -11,6 +11,9 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { ToolCall } from '@dojo/shared';
 import { emptySteerQueue, type SteerQueue } from './steer-queue.js';
+// Type-only, so this module stays the leaf its header says it is: the import is erased and
+// `turn-record.ts`'s database handle never becomes an edge of the state object.
+import type { TurnExitReason } from './turn-record.js';
 
 // ── Types ──
 
@@ -514,6 +517,40 @@ export interface AgentTurnState {
   taskClosedWithTextThisTurn: boolean;
 
   /**
+   * t93 — WHY THE ENGINE OR THE OWNER ENDED THIS TURN, latched by the site that ended it.
+   *
+   * Null on a turn nobody cut, which is the ordinary one. Written through
+   * `engine-exit.ts`'s `latchEngineCut` (first writer wins — its header argues the two
+   * real collisions) and read ONCE, by the recorder in `steps/teardown/finalize-record.ts`.
+   * Same home and same justification as `recallLaneReachedModelThisTurn` above: one writer
+   * per site, one reader at the boundary, no closure and no timer in between.
+   *
+   * It is on the TURN STATE and not the turn's bag deliberately. Every site that latches it
+   * already hands its state back through the exit-request channel (`steps/step-outcome.ts`),
+   * so the value rides the same return value the driver already honours and cannot be lost
+   * by a step that forgot to publish — which is the failure mode a bag field would allow.
+   */
+  engineCutExit: TurnExitReason | null;
+
+  /**
+   * t93 — DID THE ENGINE REFUSE A REPEATED TOOL CALL THIS TURN.
+   *
+   * The identical-call brake's LOWER rung, and the honest answer to "this turn ended with no
+   * reply: was that the model choosing silence, or the engine refusing its calls?" The brake
+   * refuses an exact signature that has already failed `IDENTICAL_CALL_REFUSE_AT` times;
+   * after `IDENTICAL_CALL_TERMINAL_AT` such refusals the whole tool phase ends, and THAT rung
+   * is already recorded as `brake`. Between the two, a turn could spend itself on calls the
+   * engine would not run and still be recorded as `no_reply_intended` — which the re-serve
+   * ladder charges a rung for.
+   *
+   * Derived from the brake's OWN ledger in `steps/execute/index.ts` (one read, after the
+   * batch), not latched at the refusal site: the per-call refusals happen inside parallel
+   * `runOne` callbacks whose `state` reassignments clobber each other — the hazard that file
+   * already records for `sentToAgentThisTurn` — so the count is read where it is stable.
+   */
+  identicalCallRefusedThisTurn: boolean;
+
+  /**
    * v2.7.6, reworked by D6: set when a successful technique_read /
    * use_technique call lands. The hard tool-refusal gate is REMOVED (it
    * globally locked tools and could deadlock with the close-out gate);
@@ -632,6 +669,8 @@ export function initState(params: InitStateParams): AgentTurnState {
     awaitingPostCompactRecall: false,
     nudgedForPostCompactRecall: false,
     taskClosedWithTextThisTurn: false,
+    engineCutExit: null,
+    identicalCallRefusedThisTurn: false,
     pendingTechniqueAck: params.pendingTechniqueAck,
 
     currentMessageId: null,

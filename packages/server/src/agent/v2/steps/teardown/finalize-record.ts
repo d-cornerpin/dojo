@@ -88,11 +88,27 @@ export async function finalizeTurnRecord(
     // got to finish, and the ask ladder spends a rung on that word. AFTER `answered` so a
     // capped-but-answered turn stays representable; before `park`/`handoff` — the cap is WHY it
     // ended. Meaning: `work/exit-attribution.ts`.
+    // ⚠ t93 — THE ENGINE'S OWN CUT, AND WHY IT SITS WHERE IT SITS. Eight of the seventeen words
+    // had no writer at all (0 rows in 10,934 turns) because this derivation could only see what
+    // teardown could see, and an owner pressing STOP is not visible from here. `engineCutExit` is
+    // the fact, carried by the site that ended the turn (`agent/v2/engine-exit.ts`).
+    //   · BELOW `brake`, which keeps its precedence: that order is d54cd1f's measured class and
+    //     `tracker/__tests__/coerced-reply-not-a-delivery.test.ts` pins it. Costless here — both
+    //     words are in `ENGINE_IMPOSED_EXITS`, so the settlement treats the pair identically.
+    //   · ABOVE `answerRow`, for the same reason `brake` is: the cut is WHY the turn ended, and
+    //     whether a reply was delivered is the SEPARATE `answered` column — the exact pair the
+    //     PHASE-2 split exists to represent instead of flattening to one word.
+    //   · `identical_call` is LAST, above the fallback and below the cap/park/handoff arms,
+    //     because it is not the ending event: it says the engine had been refusing this turn's
+    //     repeated calls, which is the honest alternative to claiming the model chose silence.
+    //     The TERMINAL rung of that same brake is the `brake` arm at the top.
     const exitReason: TurnExitReason = toolPhaseEndedBySpinBrake ? 'brake'
+      : state.engineCutExit ? state.engineCutExit
       : answerRow ? 'answered'
       : toolLoopCapReached ? 'iteration_cap'
       : parkedRow ? 'park'
       : handoffRow ? 'handoff'
+      : state.identicalCallRefusedThisTurn ? 'identical_call'
       : 'no_reply_intended';
     const outcome = exitReason;
     if (answerRow && !terminalDeliveryId) {

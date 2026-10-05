@@ -403,7 +403,7 @@ import {
   // unscoped `agents.last_error` read (see the marker's own doc for the reproduced defect).
   declaredPatienceHonestFailTurn,
 } from './shared-state.js';
-import { currentTurnNumber } from './v2/turn-record.js';
+import { currentTurnNumber, markTurnsTerminated } from './v2/turn-record.js';
 
 import { turnBoundary, forceA2ATurn, a2aTurnRetries, MAX_A2A_TURN_RETRIES, lastTurnWasA2A, MAX_DRAIN_STUCK } from './turn-state.js';
 import { turnContext } from './turn-context.js';
@@ -1586,7 +1586,20 @@ function recoverStuckAgents(): void {
       activeRuns.delete(agent.id);
       pendingWakeups.delete(agent.id);
       broadcast({ type: 'agent:status', agentId: agent.id, status: 'idle' });
-      logger.warn('Recovered stuck agent from permanent working state', { agentId: agent.id, agentName: agent.name });
+      // t93 — AND THE TURN THE DEAD PROCESS ABANDONED IS CLOSED, AS `terminated`.
+      //
+      // The `agents` row was repaired here from the first version of this reaper; the `turns`
+      // row never was. A process killed mid-turn runs no `finally`, so its row keeps
+      // `ended_at IS NULL` for ever — `work/occurrences.ts` measured 22 of them on one agent
+      // and 279 across seven, and had to narrow a live-turn guard to the occurrence because
+      // the per-agent question is permanently true on a lived-in box. `terminated` is the
+      // enum's word for exactly this and had never been written once. The verdict is THIS
+      // block's (stale past the cliff AND not live in `activeRuns`); the write is
+      // `turn-record.ts`'s, which keeps `UPDATE turns` in the one module that owns the table.
+      const closedTurns = markTurnsTerminated(agent.id);
+      logger.warn('Recovered stuck agent from permanent working state', {
+        agentId: agent.id, agentName: agent.name, turnsClosedAsTerminated: closedTurns,
+      });
     }
 
     // ── T83 FIX ROUND (review IMPORTANT A-4) — THE STOPPED-THEN-WEDGED RUN ──

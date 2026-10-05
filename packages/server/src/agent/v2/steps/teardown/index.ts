@@ -73,6 +73,7 @@ import { abortInFlight } from '../../../shared-state.js';
 import { setAgentStatus } from '../../../agent-status.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { advance, type AgentTurnState, type ChannelInboundContext, type TurnPhase } from '../../state.js';
+import { classifyThrownCut, latchEngineCut } from '../../engine-exit.js';
 import type { TurnCounterparty } from '../../counterparty.js';
 import type { InboundChannel } from '../../inbound-channel.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
@@ -138,6 +139,22 @@ export async function runTurnRecovery(
     agentId, counterparty, isA2ATurn, isEngineTurn,
     turnInjectedTechniqueId, reArmIfStrandedNoAnswer, stopStatusHeartbeat,
   } = ctx;
+
+  // ── t93 — WHAT ENDED THIS TURN, ASKED OF THE THROW, AND ASKED FIRST ──
+  //
+  // Four of the eight unwritten exit reasons live on THIS arm — `stream_idle`, `abort`,
+  // `provider_error`, and the `stop` whose abort surfaced as an ordinary failure — and until
+  // now a thrown turn recorded one of two words, neither of them what happened: `unknown`
+  // when the cascade reached `recordInjury`, and `no_reply_intended` when a cascade tier
+  // handled it and the `finally` derived the reason from the absence of a reply. The second is
+  // the worse one: the ask ladder charges a rung for a silence the model never chose.
+  //
+  // IT RUNS BEFORE `recoverFromError`, and that order is load-bearing: `recordInjury` closes
+  // the row itself (`markTurnDied`, `AND ended_at IS NULL`), so a latch applied afterwards
+  // would be written to a state the row had already stopped listening to. The classifier
+  // returns null for a throw it cannot place and the quarantine value stands.
+  const thrownCut = classifyThrownCut(err, agentId);
+  const turnState = thrownCut ? latchEngineCut(state, thrownCut) : state;
 
   // Best-effort cleanup before recovery so heartbeats / abort controllers
   // don't keep firing while the recovery cascade does its DB writes.
@@ -209,7 +226,7 @@ export async function runTurnRecovery(
     // carries, and handed to `recoverFromError` as a plain boolean so it stays decoupled from
     // `TurnCounterparty`'s shape.
     const isUserFacingTurn = counterparty.kind === 'user' && !isA2ATurn && !isEngineTurn;
-    await recoverFromError(state, err, { isUserFacingTurn });
+    await recoverFromError(turnState, err, { isUserFacingTurn });
   } catch (recovErr) {
     logger.error('v2 recovery cascade itself threw, swallowing to avoid double-handle', {
       agentId,
@@ -218,7 +235,7 @@ export async function runTurnRecovery(
     }, agentId);
   }
 
-  return proceed(advance(state, { phase: TEARDOWN_PHASE }));
+  return proceed(advance(turnState, { phase: TEARDOWN_PHASE }));
 }
 
 /**
