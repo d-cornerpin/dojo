@@ -93,7 +93,7 @@ vi.mock('../../agent/model.js', () => ({
 import { assembleContext } from '../assembler.js';
 import { insertMessage } from '../message-store.js';
 import {
-  checkAndCompact, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD,
+  checkAndCompact, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD, estimateAssembledTokens,
 } from '../compaction.js';
 // The 15-minute low-yield backoff is MODULE state keyed by agent id, so without this reset
 // one probe's compaction run brakes the next probe's and the second one silently measures a
@@ -660,4 +660,54 @@ describe('t94 §8 — the horizon\'s ceiling trim reaches FA-M1', () => {
     const ctx = await assembleContext(AGENT, MODEL);
     expect(ctx.freshTailDropped ?? 0).toBe(0);
   });
+});
+
+// ── §9 THE HANDED-UP SEAM (D3), MEASURED AND PINNED ─────────────────────────────────────
+//
+// t91 established, and this was re-verified at this lane's HEAD, that the compaction gate's
+// TOKEN trigger can only ever be crossed by the FRESH TAIL: `compaction.ts:206` caps the
+// summary half at the budget (`summaryTokens = Math.min(rawSummaryTokens, summaryBudget)`,
+// `summaryBudget = floor((assemblyBudget − brief − freshTail) × 0.7)`), so summaries alone
+// can never push `total` over a 0.96 threshold. Growing the tail to a boundary is therefore
+// SELF-TERMINATING through that trigger as well as through the row-gap one — which is the
+// half of this seam that works.
+//
+// THE HALF THAT DOES NOT, AND IT IS THIS LANE'S TO HAND UP. The gate measures the tail with
+// its OWN read, `compaction.ts:173`:
+//
+//     const freshTail = getRecentMessages(agentId, policy.freshTailCount);
+//
+// — the ROW CAP. Before t94 that was the same set the assembler admitted, so the gate's model
+// and the real assembly agreed by construction. The assembler now admits every row since the
+// compaction boundary, which is MORE, so the gate UNDER-REPORTS the assembly it is gating.
+// Consequences, in order of how much they matter:
+//   * The token trigger and `context-gates.ts`'s warn/compact/block rungs read low, so
+//     preemptive compaction fires later than the real pressure warrants. Bounded, because the
+//     ROW-GAP trigger (`UNCOMPACTED_GAP_THRESHOLD = 30` past the cap) is not token-based and
+//     still fires on schedule — which is what keeps the healthy path honest.
+//   * It is not a correctness hole: the assembler's own `assemblyBudgetTokens` and the block
+//     trim still bound what is SENT, so no over-window prompt is built that was not built
+//     before, and `refuseIfDoomed` is still the last guard.
+// The one-line fix belongs in `memory/compaction.ts`, which this lane may read and not edit.
+// The report carries the proposed diff.
+//
+// THIS CLAUSE IS THE TRIPWIRE, AND IT COUNTS BOTH WAYS (G4). It pins the divergence that
+// exists today, with its number. When the gate is taught the horizon, this clause goes RED
+// and whoever lands that fix must change it to assert AGREEMENT — which is the point: a seam
+// recorded only in a report rots, and a seam recorded in a clause cannot.
+describe('t94 §9 — the gate still measures the tail by the row cap (handed up)', () => {
+  it('the gate sees the row cap while the assembler admits the whole span', async () => {
+    const policy = contextWindowPolicy(WINDOW, { toolPayloadTokens: 1000, maxOutputTokens: 4096 });
+    for (let t = 1; t <= 34; t++) appendTurn();             // 68 rows, nothing compacted yet
+
+    const horizon = freshTailHorizon(AGENT, policy);
+    const est = await estimateAssembledTokens(AGENT, WINDOW, MODEL);
+
+    // What the assembler will admit, and what the gate thinks it will admit.
+    expect(horizon.rowsSinceBoundary).toBe(68);
+    expect(est.freshTailCount).toBe(policy.freshTailCount);  // 40 — the row cap, not 68
+    expect(est.freshTailCount).toBeLessThan(horizon.rowsSinceBoundary);
+    // The gate is blind to 28 of the 68 rows it is gating. That is the seam, in rows.
+    expect(horizon.rowsSinceBoundary - est.freshTailCount).toBe(28);
+  }, 120_000);
 });
