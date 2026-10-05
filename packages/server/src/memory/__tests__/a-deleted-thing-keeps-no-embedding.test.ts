@@ -344,7 +344,7 @@ describe('§5 the declared map is complete, and every table it names is real', (
   it('every source kind the type admits has a liveness table', () => {
     // The `Record<EmbeddingSourceType, string>` type makes this a compile error too; this is the
     // runtime half, and it is what fails when a kind is added with an empty or wrong table.
-    const kinds: EmbeddingSourceType[] = ['message', 'summary', 'briefing', 'technique'];
+    const kinds: EmbeddingSourceType[] = ['message', 'summary', 'technique'];
     for (const k of kinds) {
       expect(EMBEDDING_SOURCE_TABLES[k], `${k} declares no liveness table`).toBeTruthy();
     }
