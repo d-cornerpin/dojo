@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import type { ApiResponse } from '@dojo/shared';
 import { TechniqueCard } from '../components/TechniqueCard';
 import { useWebSocket } from '../hooks/useWebSocket';
+import { request, requestForm } from '../lib/api';
 
 interface Technique {
   id: string;
@@ -22,7 +24,18 @@ interface Technique {
 
 const STATE_FILTERS = ['All', 'Published', 'Drafts', 'Disabled'] as const;
 
-async function fetchTechniques(state?: string, tag?: string, search?: string): Promise<Technique[]> {
+/**
+ * ⚠ THIS USED TO ANSWER `Technique[]` AND SWALLOW THE FAILURE (BACKLOG line 31).
+ * `data.ok ? data.data : []` made "the server is down" and "you have no
+ * techniques yet" the same empty grid, and the bare `fetch` it was built on
+ * escaped as an UNHANDLED REJECTION when there was no server at all. The
+ * envelope is returned whole so `load` can draw the difference.
+ */
+const fetchTechniques = (
+  state?: string,
+  tag?: string,
+  search?: string,
+): Promise<ApiResponse<Technique[]>> => {
   const params = new URLSearchParams();
   if (state && state !== 'All') {
     const stateMap: Record<string, string> = { Published: 'published', Drafts: 'draft', Disabled: 'disabled' };
@@ -30,50 +43,23 @@ async function fetchTechniques(state?: string, tag?: string, search?: string): P
   }
   if (tag) params.set('tag', tag);
   if (search) params.set('search', search);
-
-  const token = localStorage.getItem('dojo_token');
-  const res = await fetch(`/api/techniques?${params}`, {
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-  });
-  const data = await res.json();
-  return data.ok ? data.data : [];
-}
+  return request<Technique[]>(`/techniques?${params}`);
+};
 
 async function uploadTechniquePackage(file: File): Promise<{ techniqueId: string; needsSetup: boolean; name: string }> {
-  const token = localStorage.getItem('dojo_token');
-  const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
-  const csrf = csrfMatch ? csrfMatch[1] : null;
-
   const form = new FormData();
   form.append('file', file, file.name);
-
-  const res = await fetch('/api/techniques/import', {
-    method: 'POST',
-    headers: {
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-    },
-    body: form,
-  });
-  const data = await res.json().catch(() => ({ ok: false, error: 'Server returned a non-JSON response.' }));
-  if (!data.ok) throw new Error(data.error || `Import failed (${res.status})`);
+  // `requestForm` leaves Content-Type to the browser so the multipart boundary
+  // matches the body, and carries the auth + CSRF headers this call needs.
+  const data = await requestForm<{ techniqueId: string; needsSetup: boolean; name: string }>(
+    '/techniques/import', form,
+  );
+  if (!data.ok) throw new Error(data.error || 'Import failed');
   return data.data;
 }
 
-async function toggleTechnique(id: string, enabled: boolean): Promise<void> {
-  const token = localStorage.getItem('dojo_token');
-  const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
-  const csrf = csrfMatch ? csrfMatch[1] : null;
-  await fetch(`/api/techniques/${id}`, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-    },
-    body: JSON.stringify({ enabled }),
-  });
-}
+const toggleTechnique = (id: string, enabled: boolean): Promise<ApiResponse<unknown>> =>
+  request(`/techniques/${id}`, { method: 'PUT', body: JSON.stringify({ enabled }) });
 
 export const Techniques = () => {
   const navigate = useNavigate();
@@ -86,22 +72,32 @@ export const Techniques = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const allTags = [...new Set(techniques.flatMap(t => t.tags))].sort();
 
   const load = async () => {
-    const data = await fetchTechniques(
+    const result = await fetchTechniques(
       stateFilter !== 'All' ? stateFilter : undefined,
       tagFilter || undefined,
       search || undefined,
     );
+    setLoading(false);
+    if (!result.ok) {
+      // SAY SO. An empty grid is what "you have none yet" looks like, so a
+      // failed load that only cleared the list told the owner the opposite of
+      // the truth. The previous list is left on screen rather than blanked —
+      // stale rows beat no rows while the server is coming back.
+      setLoadError(result.error);
+      return;
+    }
+    setLoadError(null);
     // v2.7.9 — newest-first by createdAt. Server sorts by usage_count
     // for agent-tool consumers (most-used surfaces first), but the
     // dashboard grid is for the human and they want the freshest
     // techniques at the top.
-    const sorted = [...data].sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+    const sorted = [...result.data].sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
     setTechniques(sorted);
-    setLoading(false);
   };
 
   useEffect(() => { load(); }, [stateFilter, tagFilter]);
@@ -187,6 +183,13 @@ export const Techniques = () => {
       {importError && (
         <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }}>
           Import failed: {importError}
+        </div>
+      )}
+
+      {loadError && (
+        <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }}>
+          Could not load techniques: {loadError}{' '}
+          <button type="button" className="btn btn--ghost" onClick={() => { void load(); }}>Retry</button>
         </div>
       )}
 

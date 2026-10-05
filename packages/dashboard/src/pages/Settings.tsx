@@ -990,50 +990,46 @@ const MigrationSettings = () => {
 
 // ── Remote Access (Cloudflare Tunnel) ──
 
+type TunnelStatus = {
+  enabled: boolean;
+  mode: 'quick' | 'named';
+  status: string;
+  url: string | null;
+  error: string | null;
+  startedAt: number | null;
+  cloudflaredInstalled: boolean;
+};
+
 const RemoteAccessSettings = () => {
-  const [status, setStatus] = useState<{
-    enabled: boolean;
-    mode: 'quick' | 'named';
-    status: string;
-    url: string | null;
-    error: string | null;
-    startedAt: number | null;
-    cloudflaredInstalled: boolean;
-  } | null>(null);
+  const [status, setStatus] = useState<TunnelStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [mode, setMode] = useState<'quick' | 'named'>('quick');
   const [token, setToken] = useState('');
   const [namedUrl, setNamedUrl] = useState('');
   const [acting, setActing] = useState(false);
   const [installing, setInstalling] = useState(false);
 
-  const getHeaders = () => {
-    const t = localStorage.getItem('dojo_token');
-    const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
-    const csrf = csrfMatch ? csrfMatch[1] : null;
-    return {
-      'Content-Type': 'application/json',
-      ...(t ? { Authorization: `Bearer ${t}` } : {}),
-      ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-    };
-  };
-
   const load = async () => {
-    const t = localStorage.getItem('dojo_token');
-    const res = await fetch('/api/system/tunnel', {
-      headers: { ...(t ? { Authorization: `Bearer ${t}` } : {}) },
-    });
-    const data = await res.json();
-    if (data.ok) {
-      setStatus(data.data);
-      setMode(data.data.mode);
-      // Pre-fill the named URL field from the saved value (when in named mode)
-      // so the user can see what's stored without re-typing it.
-      if (data.data.mode === 'named' && data.data.url && !namedUrl) {
-        setNamedUrl(data.data.url);
-      }
-    }
+    const result = await api.request<TunnelStatus>('/system/tunnel');
     setLoading(false);
+    if (!result.ok) {
+      // ⚠ THE DEFECT THIS REPLACES (BACKLOG line 31): the bare `fetch` here had
+      // no `.catch` and `load` is called from an effect, so with no server the
+      // rejection ESCAPED — and `status` stayed null, which this card draws as
+      // "cloudflared is not installed". It told the owner a lie about his box
+      // and offered him an install button for software he already has.
+      setLoadError(result.error);
+      return;
+    }
+    setLoadError(null);
+    setStatus(result.data);
+    setMode(result.data.mode);
+    // Pre-fill the named URL field from the saved value (when in named mode)
+    // so the user can see what's stored without re-typing it.
+    if (result.data.mode === 'named' && result.data.url && !namedUrl) {
+      setNamedUrl(result.data.url);
+    }
   };
 
   useEffect(() => { load(); }, []);
@@ -1047,9 +1043,8 @@ const RemoteAccessSettings = () => {
 
   const handleSaveNamedUrl = async () => {
     setActing(true);
-    await fetch('/api/system/tunnel/named-url', {
+    await api.request('/system/tunnel/named-url', {
       method: 'POST',
-      headers: getHeaders(),
       body: JSON.stringify({ url: namedUrl.trim() || null }),
     });
     await load();
@@ -1059,9 +1054,8 @@ const RemoteAccessSettings = () => {
   const handleEnable = async () => {
     setActing(true);
     if (mode === 'named' && token.trim()) {
-      await fetch('/api/system/tunnel/token', {
+      await api.request('/system/tunnel/token', {
         method: 'POST',
-        headers: getHeaders(),
         body: JSON.stringify({
           token: token.trim(),
           // Send the URL alongside the token so it's persisted in the same call
@@ -1069,9 +1063,8 @@ const RemoteAccessSettings = () => {
         }),
       });
     }
-    await fetch('/api/system/tunnel/enable', {
+    await api.request('/system/tunnel/enable', {
       method: 'POST',
-      headers: getHeaders(),
       body: JSON.stringify({ mode }),
     });
     await load();
@@ -1080,20 +1073,14 @@ const RemoteAccessSettings = () => {
 
   const handleDisable = async () => {
     setActing(true);
-    await fetch('/api/system/tunnel/disable', {
-      method: 'POST',
-      headers: getHeaders(),
-    });
+    await api.request('/system/tunnel/disable', { method: 'POST' });
     await load();
     setActing(false);
   };
 
   const handleInstall = async () => {
     setInstalling(true);
-    await fetch('/api/system/tunnel/install-cloudflared', {
-      method: 'POST',
-      headers: getHeaders(),
-    });
+    await api.request('/system/tunnel/install-cloudflared', { method: 'POST' });
     await load();
     setInstalling(false);
   };
@@ -1125,8 +1112,15 @@ const RemoteAccessSettings = () => {
         </div>
       )}
 
-      {/* cloudflared not installed */}
-      {!status?.cloudflaredInstalled && (
+      {loadError && (
+        <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal' }}>
+          Could not read the tunnel status: {loadError}{' '}
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => { void load(); }}>Retry</button>
+        </div>
+      )}
+
+      {/* cloudflared not installed — only claimed when the status actually ARRIVED */}
+      {status && !status.cloudflaredInstalled && (
         <div className="glass-nested rounded-xl p-3 space-y-2">
           <p className="text-xs text-ui/55">cloudflared is not installed.</p>
           <button
