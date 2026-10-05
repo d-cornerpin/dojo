@@ -64,6 +64,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -357,6 +358,42 @@ if (!fs.existsSync(shippedGenerator)) {
     if (!fs.existsSync(anchor)) return true;                          // no anchor = refused
     return repoSouls.some((f) => !fs.existsSync(path.resolve(anchor, '../../../../templates', f)));
   };
+
+  /**
+   * §4's OWN RESOLUTION, SHAPED LIKE `detects` (re-review N2).
+   *
+   * The manual control used to inline the literal `'packages/server/dist/tools/docs'` against a
+   * directory that cannot exist, so `!fs.existsSync(...)` was unconditionally true and `.some`
+   * was a constant — it asserted nothing about §4, and it hard-coded the one path §4 deliberately
+   * RECOMPUTES from the compiled generator's anchor, which is the rule this file exists to hold.
+   * This walks the same hop §4 walks: find the generator, resolve `./docs` beside it, ask for each
+   * named manual.
+   */
+  const detectsManual = (dir) => {
+    const generator = path.join(dir, 'packages', 'server', 'dist', 'tools', 'index-generator.js');
+    if (!fs.existsSync(generator)) return true;                       // no anchor = refused
+    const docs = path.resolve(path.dirname(generator), './docs');
+    return REQUIRED_TOOL_MANUALS.some((f) => !fs.existsSync(path.join(docs, f)));
+  };
+
+  /**
+   * A throwaway artifact with the generator anchor PRESENT, so the controls can reach the branch
+   * the no-anchor shortcut skips. `omit` names a manual to leave out; everything else is written.
+   * Under the OS temp dir and never inside the repo or the real payload — this gate reads an
+   * artifact, and a check that writes into the thing it is judging would be measuring itself.
+   */
+  const temporaryControlDirs = [];
+  const syntheticArtifact = ({ omit }) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shipped-souls-control-'));
+    const docs = path.join(root, 'packages', 'server', 'dist', 'tools', 'docs');
+    fs.mkdirSync(docs, { recursive: true });
+    fs.writeFileSync(path.join(docs, '..', 'index-generator.js'), '// synthetic anchor\n');
+    for (const f of REQUIRED_TOOL_MANUALS) {
+      if (f !== omit) fs.writeFileSync(path.join(docs, f), '# synthetic manual\n');
+    }
+    temporaryControlDirs.push(root);
+    return root;
+  };
   const controls = [
     {
       id: 'a-templates-directory-that-is-missing-is-refused',
@@ -376,9 +413,22 @@ if (!fs.existsSync(shippedGenerator)) {
     {
       id: 'a-tool-manual-missing-from-the-artifact-is-refused',
       why: 'the T8 failure — the manuals copy step dropped, or landed where the generator does not look',
-      ok: REQUIRED_TOOL_MANUALS.some(
-        (f) => !fs.existsSync(path.join(platformDir, '__no_such_platform__', 'packages/server/dist/tools/docs', f)),
-      ),
+      ok: detectsManual(path.join(platformDir, '__no_such_platform__')),
+    },
+    {
+      // ⚠ THE ONE THAT ACTUALLY EXERCISES §4'S LOGIC (re-review N2). The control above and its
+      // soul-side twin both answer through the NO-ANCHOR shortcut, so neither reaches the
+      // existence check that does the real work. This one builds a synthetic artifact WITH the
+      // compiled generator in place and ONE named manual deleted — the exact T8 shape — so the
+      // `.some` branch is the thing being asserted rather than the thing being skipped.
+      id: 'a-real-anchor-with-one-manual-absent-is-still-refused',
+      why: 'the manuals landed in a real artifact but one of the named floor is missing',
+      ok: detectsManual(syntheticArtifact({ omit: REQUIRED_TOOL_MANUALS[0] })),
+    },
+    {
+      id: 'a-real-anchor-with-every-manual-present-is-accepted',
+      why: 'the manual rule must not simply refuse everything, which is what a constant-true control hid',
+      ok: !detectsManual(syntheticArtifact({})),
     },
     {
       id: 'every-named-floor-manual-is-a-file-the-repo-actually-ships',
