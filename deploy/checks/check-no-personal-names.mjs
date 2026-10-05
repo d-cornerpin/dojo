@@ -603,6 +603,18 @@ const FIXTURES = [
  * because `tsconfig.base.json` does not set `removeComments` and a comment is a shipped byte.
  * String-aware enough for this job: a `//` inside a quoted string does not open a comment.
  */
+/**
+ * A literal `\n` in a source string is two characters, and `n` is a word character — so a
+ * whole-word needle finds no boundary before a name written straight after one. Souls, prompts and
+ * assertion fixtures are all one-line strings with escaped newlines, which is where this bites.
+ * Normalising the escape to a space before matching is the fix; a space cannot complete an address,
+ * a path or a handle, so it invents nothing, and the substitution is length-preserving-enough that
+ * per-line reporting is unaffected (the RAW line is what gets printed).
+ */
+function unescapeForMatching(line) {
+  return line.replace(/\\[nrtfv]/g, ' ');
+}
+
 function stripComments(text) {
   let out = '', i = 0, quote = null, inRegex = false;
   // ⚠ REGEX LITERALS MUST BE TRACKED, and the first cut did not: this very file is mostly patterns,
@@ -738,6 +750,26 @@ function selfTest() {
     if (!ok) bad++;
     console.log(`  ${ok ? '✓' : '✗'} ${String(got).padEnd(5)} want ${String(want).padEnd(5)} "${name}" in ${line.trim().slice(0, 52)}`);
   }
+  // ── lane t101: a name written straight after a literal `\n` escape. BOTH DIRECTIONS: the name
+  // must be FOUND through the escape, and the normalisation must not invent a name where the needle
+  // genuinely is part of a longer word.
+  const throughEscape = [
+    ["'You are A, the PM. Escalate to B.\\nZergblatt does not have iMessage.'", 'Zergblatt', true],
+    ["'# Zergo\\n\\nYou are Zergo.'", 'Zergo', true],
+    ["'line one\\tZergo owns it'", 'Zergo', true],
+    ["'nothing here but prose\\nand more prose'", 'Zergo', false],
+    // the needle really is inside a longer word, and a space must not be conjured mid-word:
+    ['const zergoCount = 1;', 'Zergo', false],
+    ['// marbles are not an agent', 'Arble', false],
+  ];
+  console.log('── a name after a literal \\n escape is still a name (whole-word would miss it) ──');
+  for (const [line, name, want] of throughEscape) {
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const got = new RegExp(`\\b${esc}\\b`, 'i').test(unescapeForMatching(line));
+    const ok = got === want;
+    if (!ok) bad++;
+    console.log(`  ${ok ? '✓' : '✗'} ${String(got).padEnd(5)} want ${String(want).padEnd(5)} "${name}" in ${line.trim().slice(0, 52)}`);
+  }
   console.log('── roster matching is whole-word, so vendor identifiers are not names ──');
   for (const [line, name, want] of wordOnly) {
     const got = new RegExp(`\\b${name}\\b`).test(line);
@@ -820,31 +852,41 @@ for (const rel of files) {
         return { from: o, to: c };
       })()
     : null;
-  lines.forEach((line, i) => {
+  lines.forEach((rawLine, i) => {
+    // ⚠ A LITERAL `\n` IN A STRING HIDES THE NAME AFTER IT, and this gate had the blind spot it was
+    // built to close (lane t101, found by a test that counts renames rather than by the gate).
+    // Souls, prompts and assertion fixtures are written as one-line strings with escaped newlines:
+    //     'You are <a name>, the project manager. Escalate to <a name>.\nKelly does not have iMessage.'
+    // Every needle here is WHOLE-WORD, and in the FILE those four characters are `.`, `\`, `n`, `K` —
+    // so `n` and `K` are both word characters and `\b` finds NO boundary before the name. The name
+    // rides green, and so does a scrub that uses the same whole-word rule. Normalising the escape to
+    // a space before matching is the whole fix; it cannot invent a hit (a space never completes an
+    // address, a path or a handle) and the line number is untouched because this is per line.
+    const line = unescapeForMatching(rawLine);
     if (!rosterExempt) for (const { name, re, lower } of rosterNeedles) {
-      if (re.test(line)) findings.push({ rel, line: i + 1, kind: 'agent-name', detail: name, text: line.trim() });
+      if (re.test(line)) findings.push({ rel, line: i + 1, kind: 'agent-name', detail: name, text: rawLine.trim() });
       // ⚠ THE LOWERCASE PASS, and review M1 is why it exists: the roster match is case-SENSITIVE so a
       // vendor voice id (`nova`) is not an agent called `Nova` — and that let the audit's own worst
       // finding ride green, because `createdBy: 'kevin'` is the roster name in a LIVE STRING LITERAL.
       // Case-insensitivity is therefore restricted to QUOTED strings: an agent id written as data is
       // the shape that shipped, while a bare lowercase identifier stays exempt.
-      else if (lower.test(line)) findings.push({ rel, line: i + 1, kind: 'agent-name-in-string', detail: name, text: line.trim() });
+      else if (lower.test(line)) findings.push({ rel, line: i + 1, kind: 'agent-name-in-string', detail: name, text: rawLine.trim() });
     }
     for (const id of agentIds) {
-      if (line.includes(id)) findings.push({ rel, line: i + 1, kind: 'live-agent-id', detail: id, text: line.trim() });
+      if (line.includes(id)) findings.push({ rel, line: i + 1, kind: 'live-agent-id', detail: id, text: rawLine.trim() });
     }
     for (const h of handles) {
       if (new RegExp(`\\b${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(line)) {
-        findings.push({ rel, line: i + 1, kind: 'derived-identity', detail: h, text: line.trim() });
+        findings.push({ rel, line: i + 1, kind: 'derived-identity', detail: h, text: rawLine.trim() });
       }
     }
     for (const { name, re, lower } of ownerNeedles) {
-      if (re.test(line)) findings.push({ rel, line: i + 1, kind: 'owner-name', detail: name, text: line.trim() });
-      else if (lower.test(line)) findings.push({ rel, line: i + 1, kind: 'owner-name-in-string', detail: name, text: line.trim() });
+      if (re.test(line)) findings.push({ rel, line: i + 1, kind: 'owner-name', detail: name, text: rawLine.trim() });
+      else if (lower.test(line)) findings.push({ rel, line: i + 1, kind: 'owner-name-in-string', detail: name, text: rawLine.trim() });
     }
     if (fenced && i >= fenced.from && i <= fenced.to) return;   // the corpus, not the defect
     for (const h of runPatterns(line, codeLines[i] ?? '')) {
-      findings.push({ rel, line: i + 1, kind: h.id, detail: h.captured ?? h.match, text: line.trim() });
+      findings.push({ rel, line: i + 1, kind: h.id, detail: h.captured ?? h.match, text: rawLine.trim() });
     }
   });
 }
