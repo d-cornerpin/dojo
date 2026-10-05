@@ -231,6 +231,19 @@ const DECLARED_OPENERS: Record<string, { readonly: boolean; reason: string }> = 
       + 'that file itself deliberately — routing it through the singleton would target the '
       + 'wrong file the day the path argument is not the live one. UPDATE only.',
   },
+  'memory/fts-health.ts': {
+    readonly: false,
+    reason: 'The FTS repair WORKER opens the body on its own connection to rebuild the search '
+      + 'index inside BEGIN IMMEDIATE, chunked and stop-checked (t89). It touches only the '
+      + 'messages_fts shadow tables, which no foreign key points at, so it cannot delete a '
+      + 'parent row; the transaction leaves the prior index intact if killed.',
+  },
+  'memory/reader-pool.ts': {
+    readonly: true,
+    reason: 'The reader WORKER (t89) holds one long-lived connection opened readonly: true, '
+      + 'fileMustExist: true against the same body, so bounded searches run off the serving '
+      + 'thread. A readonly handle cannot write, so it cannot strand a row.',
+  },
   'services/imessage-bridge.ts': {
     readonly: true,
     reason: 'Apple’s `chat.db`, not the dojo body, and opened `readonly: true` with '
