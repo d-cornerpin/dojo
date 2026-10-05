@@ -28,8 +28,9 @@
 //   greps `\bfetch\s*\(`, to which `node:https` is invisible (the same blindness §L93.5
 //   recorded as the two-hop prong-C limit).
 //
-// So the guard was a pin on the two files somebody thought to pin, in front of a 582-module
-// graph, against a vocabulary of one word. What was missing is not another name on a list:
+// So the guard was a pin on the two files somebody thought to pin, in front of a graph of some
+// five to six HUNDRED modules (582 when this was written; main is already past it, which is why
+// no clause here pins the number), against a vocabulary of one word. What was missing is not another name on a list:
 //
 //   · the walk has to be TRANSITIVE, so the depth of the wiring stops mattering, and
 //   · the vocabulary has to be CLOSED over ways out, so the spelling stops mattering.
@@ -118,7 +119,7 @@
 //      walk, so `import OpenAI from 'openai'` with a custom `baseURL` sends without any
 //      vocabulary word appearing. INSIDE the feature this is CLOSED by E1c, which pins the
 //      exact set of non-relative specifiers the feature's own modules may import; elsewhere
-//      in the 582-module closure it is open, and pinning every package the engine imports
+//      in the engine's own closure — hundreds of modules — it is open, and pinning every package
 //      would be a different (and much noisier) guard.
 //  10. AN ALIASED OR STRING-INDEXED GLOBAL `fetch` — `const { fetch: send } = globalThis`, or
 //      `globalThis['fetch'](…)`. Row 1 covers string-built MODULE specifiers; these need no
@@ -293,7 +294,8 @@ const SHELL_EGRESS_IN_CLOSURE: readonly string[] = [
  * `node:child_process` cannot appear in the feature at all without failing here.
  *
  * ⚠ OUTSIDE the feature this stays open — cannot-see rows 9 and 11. Pinning every package the
- * 582-module engine closure imports would be a different and much noisier guard.
+ * engine's whole closure (hundreds of modules, and growing) imports would be a different and
+ * much noisier guard.
  */
 const FEATURE_PACKAGES: readonly string[] = [
   '@dojo/shared',   // first-party, and the walk RESOLVES it (I5) rather than leaving it a leaf
@@ -338,6 +340,8 @@ const SPEC = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s*)(['"`]
 
 /** Parsing is ~2.5ms a file and the census reads each module several times over. */
 const STRIP_CACHE = new Map<string, string>();
+/** Raw text per file, so the parse-and-check at the file door happens once each. */
+const FILE_CACHE = new Map<string, string>();
 
 // ⚠ THE COMMENT STRIPPER IS THE TYPESCRIPT COMPILER'S OWN, AND THREE ROUNDS OF REVIEW ARE WHY.
 //
@@ -380,15 +384,18 @@ const STRIP_CACHE = new Map<string, string>();
 // COMMENT RANGES ONLY: they are the compiler's own trivia scanner, the same one that decides what
 // `tsc` ignores. A template literal is a single token to the parser, so text inside one is never
 // trivia and is never blanked — that is X1, X4 and Y1 closed by construction, not by a rule that
-// happens to cover them. The one way this reader can still be WRONG is by MISSING a comment (if
-// the traversal below failed to visit some token's trivia), and a missed comment leaves comment
-// text in the source, which can only ADD a module to a manifest. **Every possible error of this
-// reader is an OVER-read.** That sentence has been false twice in this file; it is now a property
+// happens to cover them. The one way this reader can still be WRONG is by MISSING a comment, and
+// there is a real example rather than a hedge: a comment ALONE INSIDE AN EMPTY BODY —
+// `const f = () => { /* … */ };` — is nobody's leading or trailing trivia, because an empty body
+// has no child node for the traversal to hang it on, so its text survives. It has a fixture row
+// of its own. A missed comment leaves comment text in the source, which can only ADD a module to
+// a manifest. **Every possible error of this reader is an OVER-read.** That sentence has been false twice in this file; it is now a property
 // of where the ranges come from.
 //
-// MEASURED BEFORE IT WAS ADOPTED, over all 1,126 `.ts`/`.tsx` files of `packages/server/src` and
-// `packages/shared/src`: the walk is UNCHANGED (closure 582, unresolved 0, egress 34, shell 3,
-// feature 44, the two audited doors, five packages), and the only per-file difference anywhere in
+// MEASURED BEFORE IT WAS ADOPTED, over every `.ts`/`.tsx` file of `packages/server/src` and
+// `packages/shared/src` (1,126 of them at the time): the walk is UNCHANGED — same closure, zero
+// unresolved, the same 34-module egress manifest, the same 3 shell modules, the same 44 feature
+// files, the two audited doors, five packages — and the only per-file difference anywhere in
 // the tree is that `agent/model.ts` loses one PHANTOM specifier (`'tools'`, from inside a trailing
 // comment) and NO file gains an edge. Strictly fewer phantoms, nothing new hidden. The reviewer's
 // prescribed two-line patch (move the `*/` test inside the continuation branch) was prototyped and
@@ -398,10 +405,23 @@ const STRIP_CACHE = new Map<string, string>();
 // COST: ~2.5ms per file against ~0.07ms for a line rule, so the strip is memoised by source text
 // and the whole census runs in a couple of seconds rather than 200ms. That is the right trade for
 // the one reader every clause in this file rests on.
-function stripComments(code: string): string {
+//
+// ⚠ AND THE GUARANTEE IS THE PARSER'S, SO IT ONLY HOLDS FOR TEXT THE PARSER CAN READ (NB6).
+// Two consequences, both handled at the file door in `readSource` rather than here:
+//   · the SCRIPT KIND comes from the extension. The walk resolves `.tsx` as well as `.ts`, and
+//     a `.tsx` parsed as `.ts` is parsed wrong — JSX text is not string-or-comment trivia to a
+//     `.ts` parser, so a `/*` inside JSX can be read as a comment that never closes.
+//   · a file with SYNTACTIC ERRORS fails CLOSED. On a broken tree the comment ranges are
+//     whatever the error recovery produced, which is exactly the "comment boundaries I guessed
+//     at" situation this reader exists to end. A reachable module that does not parse is a
+//     named RED, never a quiet scan of a half-built tree. Measured: every file in both packages
+//     parses with zero diagnostics today (1,126 of 1,126 when this was written), so the clause
+//     costs nothing now and bites on the day it should.
+function stripComments(code: string, kind: ts.ScriptKind = ts.ScriptKind.TS): string {
   const cached = STRIP_CACHE.get(code);
   if (cached !== undefined) return cached;
-  const source = ts.createSourceFile('census.ts', code, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  const name = kind === ts.ScriptKind.TSX ? 'census.tsx' : 'census.ts';
+  const source = ts.createSourceFile(name, code, ts.ScriptTarget.Latest, false, kind);
   const chars = code.split('');
   const blanked = new Set<string>();
   const blank = (range: ts.CommentRange): void => {
@@ -428,6 +448,54 @@ function stripComments(code: string): string {
   const stripped = chars.join('');
   STRIP_CACHE.set(code, stripped);
   return stripped;
+}
+
+/** `.tsx` is a different grammar, not a different file name (NB6). */
+const scriptKindOf = (file: string): ts.ScriptKind =>
+  (file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+
+/**
+ * The syntactic diagnostics of one module, parsed as its extension says it should be.
+ * `parseDiagnostics` is not on the public `SourceFile` type, so it is reached through a narrow
+ * cast — the alternative is a whole `ts.Program`, which would mean resolving the tree's modules
+ * and configs to answer a question about one file's syntax.
+ */
+function parseErrorsOf(file: string, code: string): readonly ts.Diagnostic[] {
+  const source = ts.createSourceFile(
+    file, code, ts.ScriptTarget.Latest, false, scriptKindOf(file),
+  ) as unknown as { parseDiagnostics?: readonly ts.Diagnostic[] };
+  return source.parseDiagnostics ?? [];
+}
+
+/**
+ * THE ONE DOOR EVERY FILE IN THIS CENSUS IS READ THROUGH, so the two NB6 conditions are met
+ * once rather than at every call site: the text is parsed under the kind its extension implies,
+ * and a module with syntactic errors throws instead of being scanned. The strip is pre-computed
+ * here under that kind and memoised by text, so the readers downstream — which take a string
+ * and know nothing about file names — get the right answer from the cache.
+ *
+ * Fixture snippets deliberately do NOT come through here: a row's expected output is written
+ * beside it, and several rows are fragments or malformed on purpose.
+ */
+function readSource(file: string): string {
+  const cached = FILE_CACHE.get(file);
+  if (cached !== undefined) return cached;
+  const code = fs.readFileSync(file, 'utf8');
+  const errors = parseErrorsOf(file, code);
+  if (errors.length > 0) {
+    const first = ts.flattenDiagnosticMessageText(errors[0].messageText, ' ');
+    throw new Error(
+      `${path.relative(SRC, file)} does not parse (${errors.length} syntactic error(s); first: `
+      + `${first}). This census FAILS CLOSED on it rather than measuring a broken tree: the `
+      + 'comment reader\'s whole guarantee is the TypeScript parser\'s, and on a file the parser '
+      + 'cannot read the comment ranges are whatever error recovery invented — which is the '
+      + '"boundaries somebody guessed at" situation this reader exists to end. Fix the file, or '
+      + 'if it is deliberately unparseable it does not belong in the handler\'s reach.',
+    );
+  }
+  FILE_CACHE.set(file, code);
+  stripComments(code, scriptKindOf(file));
+  return code;
 }
 
 /** Every module specifier in a piece of code, in any spelling that creates an EDGE. */
@@ -463,7 +531,8 @@ function shellEgressIn(code: string): boolean {
  * already read. Left as a leaf — which it was — a `fetch(` added anywhere under
  * `packages/shared/src` rode this census green, and that is not a hypothetical surface: the
  * shared package is edited in this very wave, and five of the feature's own modules import it.
- * Resolving it adds 12 modules to the closure (570 → 582) and ZERO entries to any manifest,
+ * Resolving it adds the shared package's dozen modules to the closure (570 → 582 when it was
+ * measured; both numbers move with main, which is why nothing pins them) and ZERO entries to any manifest,
  * because nothing under `packages/shared/src` holds egress today — so the cost is nil and the
  * class is closed rather than written down. There is exactly one spelling of the specifier in
  * the tree (no subpath imports), which is what makes a one-line resolution sound.
@@ -494,7 +563,7 @@ function closureFrom(entries: readonly string[]): { modules: string[]; unresolve
     const file = stack.pop()!;
     if (seen.has(file)) continue;
     seen.add(file);
-    for (const spec of specifiersIn(fs.readFileSync(file, 'utf8'))) {
+    for (const spec of specifiersIn(readSource(file))) {
       const resolved = resolveSpec(file, spec);
       if (resolved) stack.push(resolved);
       else if (spec.startsWith('.')) unresolved.push(`${path.relative(SRC, file)} -> ${spec}`);
@@ -507,7 +576,7 @@ function closureFrom(entries: readonly string[]): { modules: string[]; unresolve
 }
 
 const CLOSURE = closureFrom(HANDLER_ENTRIES);
-const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
+const read = (rel: string): string => readSource(path.join(SRC, rel));
 const inFeature = (rel: string): boolean => FEATURE_DIRS.some(d => d.test(rel));
 const egressBearing = (mods: readonly string[]): string[] =>
   mods.filter(m => egressMarkersIn(read(m)).length > 0);
@@ -516,7 +585,7 @@ const egressBearing = (mods: readonly string[]): string[] =>
 // two regexes seeing what is actually written in this repo, and the feature's own history is
 // three rounds of a census reading one spelling out of six and reporting green. So the
 // vocabulary is pinned as fixtures, here, where a missing form is a FAILING CLAUSE rather
-// than a silent hole in a 582-module walk.
+// than a silent hole in a walk of several hundred modules.
 
 describe('the specifier reader sees every import spelling that creates an edge', () => {
   const FORMS: readonly [string, string][] = [
@@ -642,6 +711,47 @@ describe('the specifier reader sees every import spelling that creates an edge',
       ).toEqual(['node:https']);
     });
   }
+
+  // ── THE PARSER'S GUARANTEE ONLY COVERS TEXT IT CAN READ (re-review NB6) ──────────────
+  it('fails CLOSED on a module with syntactic errors, naming it', () => {
+    // The reader's whole safety argument is the parser's. On a broken tree the comment ranges
+    // are whatever error recovery produced, so the census refuses the file instead of
+    // measuring it. Driven through a real file so the FILE DOOR is what is tested.
+    const broken = path.join(SRC, 'report', '__tests__', 't99-unparseable.fixture.ts');
+    fs.writeFileSync(broken, 'export const C = () => <div>{/* a /* b</div>;\n');
+    try {
+      expect(() => readSource(broken)).toThrow(/does not parse/);
+    } finally {
+      fs.unlinkSync(broken);
+    }
+  });
+
+  it('...and a clean module raises nothing', () => {
+    expect(parseErrorsOf('x.ts', `import https from 'node:https';`)).toEqual([]);
+  });
+
+  it('parses a .tsx module as TSX, because .tsx is a different grammar', () => {
+    // A `.tsx` read as `.ts` is read WRONG — JSX text is not trivia to a `.ts` parser, so a
+    // `/*` inside JSX can look like a comment that never closes. The walk resolves `.tsx`, so
+    // the kind must come from the extension rather than from a hardcoded constant.
+    expect(scriptKindOf('a/b/Panel.tsx')).toBe(ts.ScriptKind.TSX);
+    expect(scriptKindOf('a/b/panel.ts')).toBe(ts.ScriptKind.TS);
+    const jsx = 'export const C = () => <div>{1}</div>;\n';
+    expect(parseErrorsOf('C.tsx', jsx), 'valid TSX was reported as broken').toEqual([]);
+    expect(parseErrorsOf('C.ts', jsx).length, 'the two grammars are not being distinguished')
+      .toBeGreaterThan(0);
+  });
+
+  it('the residue, driven: a comment alone inside an empty body is LEFT, not removed', () => {
+    // The one error this reader can make, with a concrete example rather than a hedge. An
+    // empty body has no child node, so the comment inside it is nobody's leading or trailing
+    // trivia and the traversal never reaches it. The text stays — which can only ADD a name to
+    // a manifest, never remove one.
+    expect(
+      specifiersIn(`const f = () => { /* import https from 'node:https'; */ };`),
+      'if this ever returns [] the residue sentence at `stripComments` is out of date',
+    ).toEqual(['node:https']);
+  });
 
   it('and the egress reader sees the POST in the X1 shape (X8)', () => {
     const x8 = [
