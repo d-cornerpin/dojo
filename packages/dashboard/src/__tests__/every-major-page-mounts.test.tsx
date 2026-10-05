@@ -137,13 +137,13 @@ beforeEach(() => {
     { status: 503, headers: { 'content-type': 'application/json' } },
   )));
 
-  // 2. ONE TYPED ANSWER, because the permissive `data: []` default is not the shape
-  //    this door speaks and `pages/Agents.tsx:353` reads `result.data.warnings.length`
-  //    with no guard of its own. Overriding it here keeps the floor about MOUNTING
-  //    rather than about my mock's shape — and the unguarded read is recorded in the
-  //    report as an observation, since a door answering `ok` without that field costs
-  //    the owner the warning and says nothing.
-  vi.mocked(api.getOllamaLockStatus).mockResolvedValue({ ok: true, data: { warnings: [] } } as never);
+  // ── THE CONCESSION THAT USED TO BE HERE IS GONE, AND THAT IS THE POINT ──
+  // This block overrode `getOllamaLockStatus` with a hand-shaped `{ warnings: [] }`
+  // because `pages/Agents.tsx` read `result.data.warnings.length` with nothing but
+  // `result.ok` in front of it, so the permissive `data: []` default crashed the
+  // page. The read is guarded now, so the floor gets the SAME permissive answer
+  // every other door gets. Put the unguarded read back and Agents reds here: that
+  // is the mutant, and it is why this override is not needed any more.
 });
 afterEach(() => { vi.clearAllMocks(); });
 
