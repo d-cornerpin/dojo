@@ -73,6 +73,7 @@ import { runMigrations } from '../../../db/migrations.js';
 import { getFilteredTools } from '../../tools/surface.js';
 import { generateToolsGuidance_v2, applySoulCapabilityTruth, SOUL_CAPABILITY_CLAIMS } from '../../../prompt/assembler.js';
 import { DEFAULT_SOUL_MD } from '../../../prompt/templates.js';
+import { SOUL_ADMIN_COMMANDS_LINE } from '../../brokers/sudo-claim.js';
 import { forgetAccessGrants, mayUseChannel } from '../read.js';
 import { channelForTool } from '../channels.js';
 import { deriveLegacyGrants } from '../derive.js';
@@ -135,10 +136,14 @@ describe('the soul capability register', () => {
     }
   });
 
-  it('the register covers spawn AND exec — T3\'s line, plus the one the census found', () => {
+  it('the register covers spawn, exec AND the sudo door — T3\'s line, the census\'s, and A4\'s fold-in', () => {
     const lines = SOUL_CAPABILITY_CLAIMS.map((c) => c.line);
     expect(lines).toContain('- You can manage sub-agents for specialized tasks.\n');
     expect(lines).toContain('- You can execute shell commands.\n');
+    // t92 (BACKLOG 111): the administrator-commands claim, whose bytes and whose door live
+    // together in `agent/brokers/sudo-claim.ts` — the same module the exec/shell tool
+    // descriptions read, so the two surfaces cannot disagree.
+    expect(lines).toContain(SOUL_ADMIN_COMMANDS_LINE);
   });
 
   it('⚠ A HOLDER GETS THE STRING BACK BY IDENTITY — a prefix byte cannot move for it', () => {
@@ -155,8 +160,14 @@ describe('the soul capability register', () => {
     expect(out).not.toContain('- You can execute shell commands.');
     // The claims are independent: spawn is held, so its line stays.
     expect(out).toContain('- You can manage sub-agents for specialized tasks.');
-    // And nothing else moved: the only delta is that one line.
-    expect(DEFAULT_SOUL_MD.replace('- You can execute shell commands.\n', '')).toBe(out);
+    // AND THE ADMINISTRATOR LINE GOES TOO — t92, and it is TWO independent falsehoods for this
+    // agent, not one: `reader` is not the box primary (the role wall `authorizeSudoLine` applies
+    // before it reads any policy) and it holds no command grant to run a privileged line through.
+    expect(out).not.toContain(SOUL_ADMIN_COMMANDS_LINE.trimEnd());
+    // And nothing else moved: the delta is exactly those two lines, still an EXACT equality.
+    expect(DEFAULT_SOUL_MD
+      .replace('- You can execute shell commands.\n', '')
+      .replace(SOUL_ADMIN_COMMANDS_LINE, '')).toBe(out);
   });
 
   it('an agent that holds NEITHER loses both, and the surrounding list survives', () => {
