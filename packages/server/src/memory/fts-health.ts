@@ -83,11 +83,21 @@ export const FTS_REPAIR_DEADLINE_MS = 10 * 60_000;
  * condition is enforced rather than promised: a clause reads `db/migrations/129b_stable_merge_messages.sql`
  * and asserts these three statements match the migration's, normalised for whitespace. If the migration
  * ever redeclares the index differently, that clause reds and this string is corrected with it.
+ *
+ * ⚠ ONE DELIBERATE DIFFERENCE FROM THE MIGRATION'S OWN TEXT, and it is not drift: the populate
+ * statement projects `seq AS rowid` where the migration writes a bare `rowid`. Same value — PHASE-1
+ * T10 made `seq` the table's rowid alias (`INTEGER PRIMARY KEY AUTOINCREMENT`) — and the INSERT binds
+ * positionally, so nothing about the repair changes. What changes is that a bare `rowid` projection
+ * over `messages` is refused in TypeScript by T10's own reader guard (`memory/__tests__/lane-readers`),
+ * because SQLite names that result column `seq` and a JavaScript `row.rowid` read then returns
+ * `undefined` WITHOUT THROWING. The guard does not care that this particular projection is never read
+ * from JavaScript, and it is right not to: the rule earns its value by having no exceptions. The clause
+ * normalises this one substitution by name before comparing, so the comparison stays byte-level.
  */
 export const FTS_RECREATE_SQL = [
   'DROP TABLE IF EXISTS messages_fts;',
   "CREATE VIRTUAL TABLE messages_fts USING fts5(content, content='messages', content_rowid='rowid');",
-  'INSERT INTO messages_fts(rowid, content) SELECT rowid, content FROM messages;',
+  'INSERT INTO messages_fts(rowid, content) SELECT seq AS rowid, content FROM messages;',
 ].join('\n');
 
 /** fts5's own repair command, for an index that exists but does not answer for its rows. */

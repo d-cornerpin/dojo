@@ -64,13 +64,13 @@ function makeDb(name: string, opts: { index: 'good' | 'none' | 'partial' | 'extr
   if (opts.index !== 'none') {
     db.exec(`CREATE VIRTUAL TABLE messages_fts USING fts5(content, content='messages', content_rowid='rowid')`);
     if (opts.index === 'good') {
-      db.exec('INSERT INTO messages_fts(rowid, content) SELECT rowid, content FROM messages');
+      db.exec('INSERT INTO messages_fts(rowid, content) SELECT seq AS rowid, content FROM messages');
     } else if (opts.index === 'partial') {
       // Half the history indexed — the shape of a database that grew past a half-finished reindex.
-      db.exec(`INSERT INTO messages_fts(rowid, content) SELECT rowid, content FROM messages WHERE rowid <= ${ROWS / 2}`);
+      db.exec(`INSERT INTO messages_fts(rowid, content) SELECT seq AS rowid, content FROM messages WHERE rowid <= ${ROWS / 2}`);
     } else {
       // MORE entries than rows: the 809-stale-row shape migration 129b measured on a lived-in box.
-      db.exec('INSERT INTO messages_fts(rowid, content) SELECT rowid, content FROM messages');
+      db.exec('INSERT INTO messages_fts(rowid, content) SELECT seq AS rowid, content FROM messages');
       db.exec(`INSERT INTO messages_fts(rowid, content) VALUES (${ROWS + 1}, 'an entry with no row behind it')`);
     }
   }
@@ -341,10 +341,21 @@ describe('⚠ THE INDEX DECLARATION HAS ONE OWNER — the migration, enforced ra
     expect(squash(mig), 'migration 129b no longer declares the index this way — correct the module')
       .toContain(declaration);
     // And the populate statement, which is the other half of "a table with rows in it".
-    expect(squash(FTS_RECREATE_SQL)).toContain(
-      squash('INSERT INTO messages_fts(rowid, content) SELECT rowid, content FROM messages;'));
-    expect(squash(mig)).toContain(
-      squash('INSERT INTO messages_fts(rowid, content) SELECT rowid, content FROM messages;'));
+    // ⚠ AND THE POPULATE STATEMENT, whose expected value is EXTRACTED FROM THE MIGRATION rather than
+    // written out here — so there is no third copy to drift, and (not incidentally) no bare `rowid`
+    // projection literal in this file for T10's own reader guard to flag.
+    //
+    // ONE NAMED SUBSTITUTION is applied to the module's side, and it is a normalisation rather than a
+    // loosening: the module projects `seq AS rowid` where the migration writes a bare `rowid`.
+    // Identical values (T10 made `seq` the table's rowid alias) and identical behaviour (the INSERT
+    // binds positionally), but a bare `rowid` projection over `messages` is refused in TypeScript by
+    // that guard, which is right to have no exceptions. Substituting it BY NAME keeps this a
+    // byte-level comparison: any OTHER difference between the two statements still reds.
+    const populate = squash(mig).match(/insertintomessages_fts\(rowid,content\)select[a-z,_]*frommessages;/)?.[0];
+    expect(populate, 'migration 129b no longer populates the index this way — correct the module')
+      .toBeTruthy();
+    expect(squash(FTS_RECREATE_SQL).replace('seqasrowid', 'rowid'),
+      'the module no longer populates the index the way the migration does').toContain(populate!);
   });
 
   it('the rebuild command is fts5\'s own, not a hand-rolled reindex', () => {
