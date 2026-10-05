@@ -199,6 +199,18 @@ export const GATES = [
   },
 
   {
+    id: 'shipped-tool-docs',
+    tier: 'blocking',
+    phase: 'post-smoke',
+    script: 'deploy/checks/check-shipped-tool-docs.mjs',
+    args: [],
+    releaseArgs: ['"$SMOKE_HOME"', '"$SMOKE_PORT"', '--require-boot'],
+    title: 'Shipped tool-docs gate (the boot wrote every manual the registry owed)',
+    fail: 'Shipped tool-docs gate: the packaged build booted and did not write every tool manual its own registry declares, or could not say whether it had. Agents on that build would read the PREVIOUS version\'s instructions, which look exactly like current ones. NOT publishing.',
+    why: 'The installed-box audit, 2026-09-26: the doc generator wrote each `~/.dojo/tools/<tool>.md` inside its own try/catch, logged `warn` on failure and counted only successes. An unwritable docs directory does not make `mkdirSync(…, {recursive:true})` throw — the directory already exists — so a box produced N warn lines, `count: 0`, an INFO line reading "Tool docs generated", and served the previous version\'s manuals for ever. The failure is silent by construction: a stale manual reads exactly like a current one. The runtime half shipped (`tools/doc-freshness.ts` compares written against the registry, speaks at ERROR, and reaches `/api/health` as `data.toolDocs` and the Vitals card through `@dojo/shared`\'s `toolDocsShortfall`); this is the question nobody asked at the one moment it is cheap — does the thing we are about to publish actually do it. Post-smoke because it asks the ARTIFACT: the release already unzips the package, installs it and boots it against a scratch HOME, so this reads that boot. DOUBLE ENTRY on purpose: the boot\'s own arithmetic from `/api/health`, AND an independent count of the `*.md` files in the sandbox HOME, with the directory the runtime NAMES asserted to be that sandbox — a runtime reporting a complete set over an empty directory fails the second, a pre-seeded directory fails the first, and a gate that counted the developer\'s own ~/.dojo/tools would otherwise pass for ever while measuring nothing. `expected` must clear a vacuity FLOOR (not a ratchet) because `missing === 0` is satisfiable by `expected === 0`; 443 manuals measured on a live box 2026-10-05. Offline it SKIPS LOUDLY like the upgrade-bypass and shipped-souls gates, and the release passes --require-boot so a skip cannot stand in for an answer.',
+  },
+
+  {
     id: 'must-consume',
     tier: 'blocking',
     phase: 'pre-build',

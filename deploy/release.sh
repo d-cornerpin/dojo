@@ -456,6 +456,25 @@ step "Shipped-souls gate (the built artifact carries templates/*-SOUL.md where t
 node "$SCRIPT_DIR/checks/check-shipped-souls.mjs" "$SMOKE_PLATFORM" --require-artifact \
   || fail "Shipped-souls gate: the packaged build is missing a soul template, or ships one the compiled assembler cannot resolve. NOT publishing."
 
+# ── Blocking gate `shipped-tool-docs`, declared post-smoke in gate-manifest.mjs ──
+# The installed-box audit's cheap gate-side close. The doc generator writes one
+# `~/.dojo/tools/<tool>.md` per registered tool at boot and counted only its
+# SUCCESSES — so a box whose docs directory was not writable logged warn lines,
+# reported `count: 0`, and served the previous version's manuals for ever. A stale
+# manual reads exactly like a current one, so nothing surfaced.
+#
+# The smoke boot above already ran the shipped artifact against $SMOKE_HOME, which
+# means the answer is sitting right here and has never been asked for. This gate asks
+# it twice over: the boot's OWN arithmetic (`/api/health` → `data.toolDocs`, the same
+# numbers the owner's Vitals card renders) and an independent count of the `.md`
+# files in that sandbox HOME — with the directory the runtime NAMES asserted to be
+# that sandbox, because a gate that counted the developer's own ~/.dojo/tools would
+# pass every time while measuring nothing. --require-boot turns the offline SKIP
+# (correct for `npm run gates`) into a failure.
+step "Shipped tool-docs gate (the boot wrote every manual the registry owed)"
+node "$SCRIPT_DIR/checks/check-shipped-tool-docs.mjs" "$SMOKE_HOME" "$SMOKE_PORT" --require-boot \
+  || fail "Shipped tool-docs gate: the packaged build booted and did not write every tool manual its own registry declares, or could not say whether it had. NOT publishing."
+
 # The smoke server has now answered every question we have for it. Stop it
 # BEFORE the prefix-determinism gate below, which opens the same sandbox
 # database from a second process; the trap above is the backstop, not the plan.
