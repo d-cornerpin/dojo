@@ -22,6 +22,7 @@ import { probeFsCaseInsensitive, setFsCaseInsensitive } from './agent/path-guard
 import { homeDir } from './home.js';
 import { startStallSentinel } from './observability/stall-sentinel.js';
 import { warmReaderPool } from './memory/reader-pool.js';
+import { scheduleFtsHealthCheck } from './memory/fts-health.js';
 
 const logger = createLogger('main');
 const PORT = parseInt(process.env.DOJO_PORT ?? '3001', 10);
@@ -1111,6 +1112,13 @@ async function main(): Promise<void> {
   // says so now rather than inside somebody's query. Best-effort by construction: a box without worker
   // threads keeps working, with searches on the serving thread exactly as before.
   void warmReaderPool();
+
+  // ⚠ FTS HEALTH (t89 deliverable 3). One line, and the deferral is NOT here on purpose: the "never
+  // boot-blocking" property lives inside `scheduleFtsHealthCheck`, which returns immediately and
+  // touches no database, so a caller cannot get it wrong by forgetting to wrap it. A broken message
+  // index is why a database born in April LIKE-scans for ever; the repair runs on its own thread
+  // once the box is serving, and until it finishes search takes the bounded fallback.
+  scheduleFtsHealthCheck();
   cleanupOldUploads(); // Run once on startup
 
   // Auto-start tunnel if enabled (delay to ensure HTTP server is fully ready)
