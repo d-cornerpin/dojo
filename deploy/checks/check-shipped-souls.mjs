@@ -436,6 +436,12 @@ if (!fs.existsSync(shippedGenerator)) {
       ok: REQUIRED_TOOL_MANUALS.every((f) => fs.existsSync(path.join(REPO_TOOL_DOCS, f))) || failed,
     },
   ];
+  // The synthetic artifacts have been read by now (`controls` is a built array, not lazy), so the
+  // two throwaway directories go. Swept here rather than in a `finally`: a gate that leaves litter
+  // in the OS temp dir on every release run is a small version of the untidiness it exists to
+  // refuse, and `temporaryControlDirs` existing without a reader was the review's own catch.
+  for (const d of temporaryControlDirs) fs.rmSync(d, { recursive: true, force: true });
+
   const bad = controls.filter((c) => !c.ok);
   if (bad.length) {
     fail(`✗ ${bad.length} control(s) FAILED — this gate's verdict is unreliable:`, '');
