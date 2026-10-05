@@ -14,52 +14,48 @@
 // `runCondensation` was called with `DEFAULTS.incrementalMaxDepth` = 1 and skipped any level
 // holding fewer than `condensedMinFanout` = 4 waiting summaries.
 //
-// ⚠ STATED PRECISELY, BECAUSE THE SHORT VERSION OF IT IS WRONG. The dispatch brief and BACKLOG
-// line 120 both say "depth 2 is unreachable". Re-read at main `eef45913`: the loop was
-// `for (depth = 0; depth <= maxDepth; depth++)` writing parents at `depth + 1`, so with maxDepth
-// 1 it wrote depths 1 AND 2 — a depth-1 level holding ≥4 waiting summaries DID reach the depth-2
-// prompt. What was true is worse: `newDepth` could never EXCEED 2, so the DAG had a hard ceiling
-// and a depth-2 summary could never be condensed again by construction — two oversized depth-2
-// summaries were a permanent dead end at any pressure. `deep condensation (depth ${depth})`
-// could therefore only ever print 2, and everything that prompt says about depth 3 and beyond
-// was unreachable prose. And two or three oversized summaries at ANY level never shrank at all,
-// which is the incident's own shape.
+// ⚠ NOT "depth 2 is unreachable", which is what the brief and BACKLOG line 120 say; commit
+// `1a894a61` carries the re-read of the removed lines. The truth is worse: `newDepth` could
+// never EXCEED 2, so the DAG had a hard ceiling and a depth-2 summary could never be condensed
+// again by construction. And two or three oversized summaries at ANY level never shrank at all.
 // On the incident box ~86K of a 114K context was already summaries. Nothing in the tree could
 // make that number go down, which is why the only honest thing the platform could say was
 // "archive or reset". That card is gone; this file is what replaces it.
 //
 // ── WHAT "FITS" MEANS, AND WHY IT IS NOT THE GATE'S PERCENTAGE ──
-// Measured, 2026-10-05: the compaction gate's own total CANNOT be moved by condensation,
-// and reading `compaction.ts` is enough to see why —
-//     summaryTokens = Math.min(rawSummaryTokens, summaryBudget)
-// The gate already reports what the assembler will ADMIT, not what the agent holds. So an
-// agent with 86K of summaries against a 30K summary budget is reported at 30K whether it
-// has 86K or 31K, and a loop keyed on that number would condense for ever and never see
-// its own progress. (The gate's total goes over threshold on the FRESH TAIL, which is a
-// different lane's problem and not one condensation can fix.)
+// Measured, 2026-10-05: the compaction gate's total CANNOT be moved by condensation, and one
+// line of `compaction.ts` is why — `summaryTokens = Math.min(rawSummaryTokens, summaryBudget)`.
+// The gate already reports what the assembler will ADMIT, not what the agent HOLDS, so 86K of
+// summaries against a 30K budget reports 30K whether the agent holds 86K or 31K: a loop keyed
+// on it would condense for ever and never see its own progress. (That total crosses its
+// threshold on the FRESH TAIL, which is another lane's problem and not one condensation can fix.)
 //
-// The number condensation DOES own is the one that cap is hiding: **is the assembler going
-// to throw summaries away?** `budgetSummaries` drops OLDEST-FIRST to fit, so every token
-// of `rawSummaryTokens` above the budget is an oldest summary silently leaving the agent's
-// context — the real harm, and exactly what merging fixes. So:
+// The number condensation owns is the one that cap hides: IS THE ASSEMBLER GOING TO THROW
+// SUMMARIES AWAY? `budgetSummaries` drops OLDEST-FIRST to fit, so every raw token above the
+// budget is an oldest summary silently leaving the agent's context. So:
 //
 //     FITS  ⇔  raw summary tokens ≤ what the single estimate says will be admitted
 //
-// Both halves come from one place: the admitted figure is the estimate's own
-// `summaryTokens` output (t87's single estimate, passed in by the caller as `measure`), and
-// the raw figure is one indexed SUM over the same rows — not a second model of the
-// assembly, and not the 340KB of summary TEXT the estimate reads.
+// Both halves come from one place: the admitted figure IS the estimate's own `summaryTokens`
+// output (t87's single estimate, passed in as `measure`), and the raw figure is one indexed SUM
+// over the same rows — no second model of the assembly, and not the 340KB of summary TEXT.
 //
-// ── THE RULE ──
-// While the assembler would trim this agent's summaries, condense the SHALLOWEST level that
-// still has top-level summaries, and climb:
-//   · fanout ≥ minFanout → batches of minFanout, exactly as before (unchanged behaviour for
-//     the only case that already worked);
-//   · fanout 2 … minFanout-1 → ONE parent (the case the old floor refused);
-//   · fanout 1 → re-summarise that one summary to a STRICTLY SMALLER target, keeping the old
+// ── THE RULE, AND WHAT A "LEVEL" IS ──
+// A LEVEL IS THE WHOLE TOP-LEVEL SET, not one depth. ⚠ The first cut took the shallowest depth
+// holding rows and condensed only that, which review C1 probed into a dead end: a depth-3
+// 12,000-token summary beside a depth-0 400-token leaf gave `calls=0`, stage
+// `single_summary_at_floor`, a force-binding brake and `condensable=2` — the engine refusing a
+// shape it could see two compressible summaries in, every fifteen minutes, while never touching
+// the bloat. That is "compaction ends", which is the one thing the ruling forbids. Depth is a
+// record of how often a span has been folded; it is not a reason to refuse to merge.
+// So, while the assembler would trim this agent's summaries:
+//   · ≥2 top-level rows → batch them by minFanout SHALLOWEST-FIRST and regardless of depth,
+//     each parent written at `max(child depth) + 1` (so the DAG still records the deepest
+//     fold) with the batch's true min/max timestamps;
+//   · exactly 1 top-level row → re-summarise it to a STRICTLY SMALLER target, keeping the old
 //     row unless the new one really is smaller.
-// A trailing batch of ONE is left alone: it joins the parents this level just made and is
-// condensed with them next level, which costs one model call instead of two.
+// A trailing batch of ONE is left alone: because the next level reads the whole set again, it
+// IS condensed with the parents this level just made, for one model call instead of two.
 //
 // ── THE BOUND, AND WHY THE LOOP IS FINITE PER RUN ──
 // Three independent bounds, any one of which ends the run:
@@ -196,12 +192,29 @@ export function rawContextSummaryTokens(agentId: string): number {
 }
 
 /**
+ * EVERY TOP-LEVEL SUMMARY, SHALLOWEST FIRST — the set a level operates on (review C1).
+ *
+ * Built from `topLevelByDepth` + the existing per-depth reader rather than new SQL, so there is
+ * still ONE implementation of "which summaries are not yet condensed" and this module cannot
+ * drift from `dag.ts`. One indexed read per distinct depth, and there are at most a handful.
+ */
+function topLevelRows(agentId: string): Summary[] {
+  const rows: Summary[] = [];
+  for (const d of topLevelByDepth(agentId)) rows.push(...getLeafSummariesNotCondensed(agentId, d.depth));
+  return rows;
+}
+
+/**
  * CAN THIS AGENT'S SUMMARIES STILL SHRINK? Asked by the entry point BEFORE it decides a pass
  * is pointless, which is the question the deleted terminal latch answered backwards: summaries
  * over budget is the CASE FOR condensation, not proof it cannot help.
  *
- * Two or more top-level summaries always can (they merge). A single one can while it is above
- * the floor. Zero cannot, and that is a defect to report, not a card to show.
+ * Two or more top-level summaries always can (they merge, at ANY mix of depths). A single one
+ * can while it is above the floor. Zero cannot, and that is a defect to report, not a card.
+ *
+ * ⚠ THIS FUNCTION AND THE LOOP MUST AGREE, which is what C1 broke: it counted the whole set
+ * while the loop looked at one depth, so it promised a merge the loop would not attempt. The
+ * invariant is now a clause: `condensableSummaries(a) >= 2` ⇒ a forced pass writes a parent.
  */
 export function condensableSummaries(agentId: string): number {
   const rows = topLevelByDepth(agentId);
@@ -237,15 +250,25 @@ function yieldToLoop(): Promise<void> {
 
 interface LevelResult { created: number; calls: number; stage: RefusedStage | null; detail: string | null }
 
+/** A parent records the deepest fold it contains, and the TRUE span of its children — which a
+ *  mixed-depth batch makes a real computation rather than `batch[0]`/`batch[last]`. */
+function parentShape(batch: readonly Summary[]): { depth: number; earliestAt: string; latestAt: string } {
+  return {
+    depth: Math.max(...batch.map(s => s.depth)) + 1,
+    earliestAt: batch.reduce((a, s) => (s.earliestAt < a ? s.earliestAt : a), batch[0].earliestAt),
+    latestAt: batch.reduce((a, s) => (s.latestAt > a ? s.latestAt : a), batch[0].latestAt),
+  };
+}
+
 /**
- * ONE LEVEL. Condenses the summaries handed to it into depth+1 parents and reports what
+ * ONE LEVEL — the WHOLE top-level set (review C1). Condenses it into parents and reports what
  * refused if nothing was written.
  *
- * The three fanout arms are the deliverable: ≥ minFanout is the pre-existing behaviour,
- * 2…minFanout-1 is the case the old floor silently refused, and 1 is the re-summarise.
+ * The arms are the deliverable: ≥ minFanout batches as before, 2…minFanout-1 is the case the
+ * old floor silently refused, and the lone arm runs only when the set really is one row.
  */
 async function condenseLevel(
-  rows: Summary[], depth: number, args: CondenseArgs, callBudget: number,
+  rows: Summary[], args: CondenseArgs, callBudget: number,
 ): Promise<LevelResult> {
   const { agentId, modelId, minFanout, targetTokens, abortSignal } = args;
   let created = 0;
@@ -253,9 +276,10 @@ async function condenseLevel(
   let stage: RefusedStage | null = null;
   let detail: string | null = null;
 
-  // THE LONE SUMMARY. Nothing to merge it with, so the compression asked for is its own size
-  // halved — and the old row is kept unless the new one is genuinely smaller, because swapping
-  // a summary for an equally large one is the zero-yield pass this file exists to report.
+  // THE LONE SUMMARY — and ONLY when the whole set is one row, because merging beats shrinking
+  // whenever there is anything to merge with. The compression asked for is its own size halved,
+  // and the old row is kept unless the new one is genuinely smaller: swapping a summary for an
+  // equally large one is the zero-yield pass this file exists to report.
   if (rows.length === 1) {
     const only = rows[0];
     if (only.tokenCount <= CONDENSE_MIN_TARGET_TOKENS) {
@@ -267,14 +291,14 @@ async function condenseLevel(
     }
     try {
       const summary = await generateSummary({
-        content: summaryInput([only]), depth: depth + 1, targetTokens: target, agentId, modelId, abortSignal,
+        content: summaryInput([only]), depth: only.depth + 1, targetTokens: target, agentId, modelId, abortSignal,
       });
       calls += 1;
       if (!summary.ok) return { created: 0, calls, stage: 'summariser_refused', detail: summary.reason };
       if (summary.tokenCount >= only.tokenCount) {
         return { created: 0, calls, stage: 'single_summary_did_not_shrink', detail: `${only.tokenCount} → ${summary.tokenCount}` };
       }
-      createCondensedSummary(agentId, summary.text, summary.tokenCount, [only.id], depth + 1, only.earliestAt, only.latestAt);
+      createCondensedSummary(agentId, summary.text, summary.tokenCount, [only.id], only.depth + 1, only.earliestAt, only.latestAt);
       return { created: 1, calls, stage: null, detail: null };
     } catch (err) {
       return { created: 0, calls: calls + 1, stage: 'summariser_threw', detail: err instanceof Error ? err.message : String(err) };
@@ -284,36 +308,38 @@ async function condenseLevel(
   for (const batch of batchesOf(rows, minFanout)) {
     if (calls >= callBudget) break;
     if (abortSignal?.aborted) { stage ??= 'bounded_without_progress'; detail ??= 'aborted mid-level'; break; }
-    // A trailing single waits for the next level rather than paying a call to become itself.
+    // A trailing single waits for the next level, which reads the whole set again and so merges
+    // it with the parents just written — one model call instead of two.
     if (batch.length === 1) continue;
     if (summaryWriterUnavailable(agentId, modelId)) { stage = 'summary_writer_unavailable'; detail = modelId; break; }
+    const shape = parentShape(batch);
     try {
       const summary = await generateSummary({
-        content: summaryInput(batch), depth: depth + 1, targetTokens, agentId, modelId, abortSignal,
+        content: summaryInput(batch), depth: shape.depth, targetTokens, agentId, modelId, abortSignal,
       });
       calls += 1;
       if (!summary.ok) {
         logger.warn('SUMMARY_REFUSED condensation batch left uncondensed', {
-          depth: depth + 1, parentCount: batch.length, reason: summary.reason,
+          depth: shape.depth, parentCount: batch.length, reason: summary.reason,
         }, agentId);
         stage ??= 'summariser_refused'; detail ??= summary.reason;
         continue;
       }
       createCondensedSummary(
-        agentId, summary.text, summary.tokenCount, batch.map(s => s.id), depth + 1,
-        batch[0].earliestAt, batch[batch.length - 1].latestAt,
+        agentId, summary.text, summary.tokenCount, batch.map(s => s.id), shape.depth,
+        shape.earliestAt, shape.latestAt,
       );
       created += 1;
     } catch (err) {
       calls += 1;
       logger.error('Failed to create condensed summary', {
-        depth: depth + 1, parentCount: batch.length, error: err instanceof Error ? err.message : String(err),
+        depth: shape.depth, parentCount: batch.length, error: err instanceof Error ? err.message : String(err),
       }, agentId);
       stage ??= 'summariser_threw'; detail ??= err instanceof Error ? err.message : String(err);
     }
   }
   if (created > 0) return { created, calls, stage: null, detail: null };
-  return { created, calls, stage: stage ?? 'condensation_produced_no_parent', detail: detail ?? `depth ${depth}` };
+  return { created, calls, stage: stage ?? 'condensation_produced_no_parent', detail: detail ?? `${rows.length} top-level row(s)` };
 }
 
 /**
@@ -326,6 +352,13 @@ async function condenseLevel(
  */
 export async function condenseUntilFits(args: CondenseArgs): Promise<CondensationOutcome> {
   const { agentId, rebuild, abortSignal } = args;
+  // ⚠ REBUILD BEFORE THE FIRST MEASUREMENT (review I1). `createLeafSummary` writes `summaries`
+  // only, and both halves of the admission test read the `context_items` join — so a pass that
+  // had just written ten fresh leaves measured a snapshot WITHOUT them, could declare "fits" and
+  // skip the very summaries it created. The old loop read `getLeafSummariesNotCondensed` (no
+  // join) and condensed them in the same pass, so that was a regression. Idempotent: one indexed
+  // read and one transaction, and every caller already rebuilds after this returns.
+  rebuild();
   const first = await args.measure();
   const rawBefore = rawContextSummaryTokens(agentId);
   const out: CondensationOutcome = {
@@ -341,26 +374,19 @@ export async function condenseUntilFits(args: CondenseArgs): Promise<Condensatio
     if (abortSignal?.aborted) break;
     if (out.modelCalls >= CONDENSE_MAX_CALLS_PER_RUN) break;
 
-    const byDepth = topLevelByDepth(agentId);
-    if (byDepth.length === 0) {
-      out.refusedStage = 'nothing_left_to_condense';
-      out.refusedDetail = 'this agent has no summaries at all';
-      break;
-    }
-    const depth = byDepth[0].depth;
-    const rows = getLeafSummariesNotCondensed(agentId, depth);
+    const rows = topLevelRows(agentId);
     if (rows.length === 0) {
       out.refusedStage = 'nothing_left_to_condense';
-      out.refusedDetail = `depth ${depth} census and read disagree`;
+      out.refusedDetail = 'this agent has no top-level summaries at all';
       break;
     }
 
-    const res = await condenseLevel(rows, depth, args, CONDENSE_MAX_CALLS_PER_RUN - out.modelCalls);
+    const res = await condenseLevel(rows, args, CONDENSE_MAX_CALLS_PER_RUN - out.modelCalls);
     out.modelCalls += res.calls;
     out.condensedCreated += res.created;
     if (res.created > 0) {
       out.levels += 1;
-      out.deepestDepth = Math.max(out.deepestDepth, depth + 1);
+      out.deepestDepth = Math.max(out.deepestDepth, ...rows.map(r => r.depth + 1));
       rebuild();
     }
     if (res.stage) { out.refusedStage = res.stage; out.refusedDetail = res.detail; break; }
@@ -371,7 +397,8 @@ export async function condenseUntilFits(args: CondenseArgs): Promise<Condensatio
     out.admittedSummaryTokens = now.summaryTokens;
     out.assembledTotalAfter = now.total;
     logger.info('Condensation level complete', {
-      depth, newDepth: depth + 1, condensedAtLevel: res.created, modelCalls: out.modelCalls,
+      topLevelRows: rows.length, depths: [...new Set(rows.map(r => r.depth))],
+      condensedAtLevel: res.created, modelCalls: out.modelCalls,
       summaryTokens: out.summaryTokensAfter, admittedSummaryTokens: now.summaryTokens,
     }, agentId);
     if (out.summaryTokensAfter <= now.summaryTokens) { out.fits = true; out.refusedStage = null; return out; }

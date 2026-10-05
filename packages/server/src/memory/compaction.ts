@@ -559,8 +559,12 @@ async function runCheckAndCompact(
   {
     const resolved = resolveSummaryWriterModel(agentId, modelId);
     if (!resolved) {
+      // OR-COMPACT-1 part 3 (review I3): under pressure this is a repairable reason, not a shrug.
+      // `force` IS the pressure signal — the gate only forces at ≥96% — so no reorder is needed
+      // to know this agent is in trouble, and the brake spaces the card to once per 15 minutes.
+      if (options?.force) notePassOutcome(agentId, true, NO_COMPACTION, { stage: 'summary_writer_unresolvable', modelId: turnModelId });
       logger.warn('No text-capable model available for compaction, skipping', {}, agentId);
-      return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
+      return NO_COMPACTION;
     }
     modelId = resolved;
   }

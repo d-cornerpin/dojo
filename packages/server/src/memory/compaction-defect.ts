@@ -62,7 +62,11 @@ export interface CompactionPassFacts {
 const failures = new Map<string, CompactionFailure>();
 
 /** The stages the owner can repair. Everything else is the platform's own bug. */
-const REPAIRABLE_BY_THE_OWNER = new Set(['summary_writer_unavailable', 'summariser_refused', 'summariser_threw']);
+const REPAIRABLE_BY_THE_OWNER = new Set([
+  'summary_writer_unavailable', 'summariser_refused', 'summariser_threw',
+  // review I3: no enabled model can write a summary at all, so compaction cannot even start.
+  'summary_writer_unresolvable',
+]);
 
 /** The breaker on a summary-writer model's provider, read WITHOUT logging — the brake asks
  *  this on every braked turn, and a warn per turn is the toast spam, in the log. */
@@ -80,11 +84,13 @@ export function writerBreaker(modelId: string | null | undefined): OpenBreaker |
  *  repairable reason, promises the recovery is automatic, and instructs nothing
  *  destructive — no archiving, no resetting, no "your memory is full". */
 export function compactionFailingCardText(stage: string): string {
-  const why = stage === 'summary_writer_unavailable'
-    ? 'the model that writes its summaries is not answering'
-    : 'the model that writes its summaries returned nothing usable';
+  const why = stage === 'summary_writer_unresolvable'
+    ? 'no enabled model can write its summaries'
+    : stage === 'summary_writer_unavailable'
+      ? 'the model that writes its summaries is not answering'
+      : 'the model that writes its summaries returned nothing usable';
   return `This agent's memory compaction is failing — ${why}. `
-    + 'It keeps answering, and compaction resumes by itself as soon as that model works again. '
+    + 'It keeps answering, and compaction resumes by itself as soon as a model can write them. '
     + 'Check the compaction model in Settings → Models, or point this agent at a provider that is answering.';
 }
 

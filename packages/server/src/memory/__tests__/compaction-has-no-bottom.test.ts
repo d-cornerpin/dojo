@@ -58,6 +58,34 @@ vi.mock('../../db/connection.js', async () => {
   };
 });
 
+/**
+ * THE LOG SEAM (review I2). D3 — *"a pass that ends over budget having reclaimed nothing logs
+ * ONE structured line at error level naming WHICH STAGE refused"* — is the deliverable the
+ * owner's ruling turns every failure into, and NOTHING asserted it: deleting the `logger.error`
+ * left all 55 clauses of the first round green, because they pinned the failure NOTE
+ * (`compactionFailureReason`) which is a different thing. So the logger is mocked and the line
+ * itself, its LEVEL and its FIELDS are now assertions.
+ */
+interface LogLine { level: string; component: string; message: string; meta: Record<string, unknown> }
+const logLines: LogLine[] = [];
+vi.mock('../../logger.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../logger.js')>();
+  const at = (component: string, level: string) =>
+    (message: string, meta?: Record<string, unknown>): void => {
+      logLines.push({ level, component, message, meta: meta ?? {} });
+    };
+  return {
+    ...actual,
+    createLogger: (component: string) => ({
+      debug: at(component, 'debug'), info: at(component, 'info'),
+      warn: at(component, 'warn'), error: at(component, 'error'),
+    }),
+  };
+});
+
+/** Every D3 defect line this pass emitted. */
+const defectLines = (): LogLine[] => logLines.filter(l => l.message.startsWith('COMPACTION_DEFECT'));
+
 const frames: Array<{ type: string; code?: string; error?: string; retryable?: boolean; agentId?: string }> = [];
 vi.mock('../../gateway/ws.js', () => ({
   broadcast: (e: { type: string; code?: string; error?: string; retryable?: boolean; agentId?: string }) => { frames.push(e); },
@@ -171,6 +199,24 @@ function seedSummaries(count: number, depth: number, tokensEach: number): void {
   rebuildContextItems(AGENT);
 }
 
+/** Seed top-level summaries at EXPLICIT, possibly different depths (review C1's shapes). */
+function seedMixed(rows: ReadonlyArray<{ depth: number; tokens: number }>): void {
+  const db = mockDb.current!;
+  const insert = db.prepare(
+    `INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, earliest_at, latest_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const tx = db.transaction(() => {
+    rows.forEach((r, i) => {
+      const at = new Date(Date.now() - (rows.length - i) * 60_000).toISOString();
+      insert.run(`mix-${i}-d${r.depth}`, AGENT, r.depth, r.depth === 0 ? 'leaf' : 'condensed',
+        's'.repeat(r.tokens * 4), r.tokens, at, at, at);
+    });
+  });
+  tx();
+  rebuildContextItems(AGENT);
+}
+
 /** What the single estimate says the assembler will ADMIT of this agent's summaries. */
 async function admitted(): Promise<number> {
   return (await estimateAssembledTokens(AGENT, 65_536, MODEL_64K)).summaryTokens;
@@ -228,6 +274,7 @@ beforeEach(() => {
   runMigrations();
   frames.length = 0;
   calls.length = 0;
+  logLines.length = 0;
   answer = producesWhatItWasAskedFor;
   __resetBrakesForTests();
   __resetEstimateCacheForTests();
@@ -663,5 +710,196 @@ describe('§4 what an ordinary agent pays, and what stays responsive', () => {
     // Kept there rather than duplicated here: one census, in the file whose own clauses the
     // ruling re-aimed.
     expect(true).toBe(true);
+  });
+});
+
+// ── §5 — FIX ROUND 1: the shapes the first round's fixtures could not see ─────────────────
+
+describe('§5 a level is the WHOLE top-level set, at any mix of depths', () => {
+  /**
+   * ⚠ REVIEW C1, REPRODUCED AND THEN FIXED. The first cut took the SHALLOWEST depth holding
+   * top-level rows and condensed only that, and ran the lone arm on a single row by itself. So
+   * a depth-3 12,000-token summary beside a depth-0 400-token leaf was a dead end, measured at
+   * the previous HEAD by the reviewer and again by me before touching anything:
+   *
+   *     PROBE A  held=12400 admitted=9982 condensable=2
+   *     PROBE A  after: calls=0 held=12400 stage=single_summary_at_floor braked=true cards=0
+   *
+   * Zero calls, a force-binding brake, a stage that says "at the floor" about an agent holding
+   * 12,000 condensable tokens, and the same refusal every fifteen minutes. That is "compaction
+   * ends" for a shape with two compressible summaries — the one thing the ruling forbids. And it
+   * is not exotic: it is the repaired agent's own state the day after repair (top-level depth 3)
+   * the moment routine leaf compaction writes one small leaf.
+   *
+   * THE MUTANT: restore the per-depth selection — `const rows = getLeafSummariesNotCondensed(
+   * agentId, topLevelByDepth(agentId)[0].depth)` in place of `topLevelRows(agentId)` — and this
+   * clause goes RED with calls=0 and that false stage.
+   */
+  it('⚠ C1: a deep oversized summary beside a shallow tiny leaf MERGES, in one call', async () => {
+    seedMixed([{ depth: 3, tokens: 12_000 }, { depth: 0, tokens: 400 }]);
+    const budget = await admitted();
+    expect(held(), 'non-vacuity: the probed shape, and it really is over').toBeGreaterThan(budget);
+    expect(condensableSummaries(AGENT), 'the engine can see two summaries to merge').toBe(2);
+
+    await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
+
+    expect(calls.length, 'two rows are a batch of two — one model call, not zero').toBeLessThanOrEqual(2);
+    expect(calls.length, 'and not zero: the first cut spent nothing at all').toBeGreaterThan(0);
+    expect(held(), 'and the bloat is gone').toBeLessThanOrEqual(await admitted());
+    expect(compactionFailureReason(AGENT), 'nothing refused').toBeNull();
+    expect(compactionIsBraked(AGENT, true), 'and no brake on an agent that succeeded').toBe(false);
+    // The parent records the DEEPEST fold it contains, not the shallowest child's depth.
+    expect(Math.max(...depthsWritten()), 'max(child depth) + 1').toBe(4);
+  });
+
+  /**
+   * ⚠ THE INVARIANT THE FIRST CUT VIOLATED, and the reason C1 was a Critical rather than a
+   * fixture gap: `condensableSummaries` counted the whole top-level set while the loop looked at
+   * one depth, so the engine promised a merge it would not attempt. Driven over five mixed-depth
+   * shapes, each with a working summariser, because one shape is one anecdote.
+   */
+  it.each([
+    [[{ depth: 0, tokens: 8_000 }, { depth: 5, tokens: 8_000 }], 'shallow + very deep'],
+    [[{ depth: 2, tokens: 9_000 }, { depth: 3, tokens: 9_000 }, { depth: 4, tokens: 500 }], 'three depths, one at the floor'],
+    [[{ depth: 7, tokens: 11_000 }, { depth: 0, tokens: 600 }], 'past the old halving chain\'s reach'],
+    [[{ depth: 1, tokens: 6_000 }, { depth: 1, tokens: 6_000 }, { depth: 4, tokens: 6_000 }], 'two same-depth plus a deeper one'],
+    [[{ depth: 0, tokens: 400 }, { depth: 0, tokens: 400 }, { depth: 6, tokens: 20_000 }], 'two floor leaves and a huge parent'],
+  ] as const)('condensable >= 2 ⇒ a forced pass writes a parent (%#: %s)', async (rows) => {
+    seedMixed([...rows]);
+    expect(condensableSummaries(AGENT)).toBeGreaterThanOrEqual(2);
+    const before = depthsWritten().length;
+    const result = await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
+    expect(result.condensedCreated, 'the engine may not see a merge it refuses to attempt').toBeGreaterThan(0);
+    expect(depthsWritten().length, 'and a new depth really was written').toBeGreaterThan(before - 1);
+    expect(compactionFailureReason(AGENT), 'a pass that merged is not failing').toBeNull();
+  });
+
+  /**
+   * ⚠ REVIEW I1 — THE REACTIVE PATH, which no first-round clause drove at all.
+   *
+   * `createLeafSummary` writes `summaries` only; both halves of the admission test read the
+   * `context_items` join. So `runLeafCompaction` → `condenseUntilFits` measured a snapshot
+   * WITHOUT the leaves it had just written, and if the OLD summaries fit it declared "fits" and
+   * skipped them — a regression against the deleted loop, which read `getLeafSummariesNotCondensed`
+   * (no join) and condensed >=4 leaves in the same pass.
+   *
+   * THE MUTANT: remove the `rebuild()` ahead of the first `measure()` in `condenseUntilFits` and
+   * this clause goes RED at `condensedCreated`.
+   */
+  it('⚠ I1: leaves written THIS pass are condensed in the SAME pass', async () => {
+    // Old summaries that comfortably fit, so only the fresh leaves can make it over budget.
+    seedSummaries(1, 0, 500);
+    // ⚠ THE FRESH TAIL IS THE LAST 40 ROWS BY `seq`, NOT BY `created_at` — which this clause
+    // learned the hard way: fat rows appended after the fixture's own became the TAIL, drove the
+    // summary budget to zero and made the precondition unsatisfiable. So the whole message table
+    // is re-seeded in order: the fat rows first (outside the tail, where leaf chunking finds
+    // them), the small ones last (the tail itself).
+    const db = mockDb.current!;
+    db.prepare('DELETE FROM messages WHERE agent_id = ?').run(AGENT);
+    const insert = db.prepare(
+      `INSERT INTO messages (id, agent_id, role, lane, content, display_kind, display_tier,
+                             turn_number, provenance, authorized, token_count, created_at)
+       VALUES (?, ?, ?, 'owner', ?, 'agent-text', 'agent-only', 1, 'live', 1, ?, ?)`,
+    );
+    const tx = db.transaction(() => {
+      for (let i = 0; i < 40; i += 1) {
+        insert.run(`old-${i}`, AGENT, i % 2 === 0 ? 'user' : 'assistant',
+          's'.repeat(4_000 * 4), 4_000, Date.now() - (1_000 + 40 - i) * 1000);
+      }
+      for (let i = 0; i < FRESH_TAIL_ROWS; i += 1) {
+        insert.run(`tail-${i}`, AGENT, 'assistant',
+          's'.repeat(TAIL_TOKENS_EACH * 4), TAIL_TOKENS_EACH, Date.now() - (FRESH_TAIL_ROWS - i) * 1000);
+      }
+    });
+    tx();
+    __resetEstimateCacheForTests();
+    expect(held(), 'precondition: what the agent HOLDS fits before the pass')
+      .toBeLessThanOrEqual(await admitted());
+
+    const result = await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
+
+    expect(result.leafCreated, 'leaf compaction must really have written several').toBeGreaterThanOrEqual(2);
+    expect(result.condensedCreated, 'and the SAME pass must condense them, not next week').toBeGreaterThan(0);
+    expect(held(), 'leaving the agent fully admitted').toBeLessThanOrEqual(await admitted());
+  });
+});
+
+// ── §6 — FIX ROUND 1: the defect line itself, and the writer that cannot be resolved ──────
+
+describe('§6 the D3 line and the I3 card', () => {
+  /**
+   * ⚠ REVIEW I2. D3 is the owner's whole answer to a compaction that fails, and the first round
+   * asserted the failure NOTE instead of the LINE — so deleting the `logger.error` was green.
+   *
+   * THE MUTANT: delete the `logger.error('COMPACTION_DEFECT …')` call in `compaction-defect.ts`
+   * and this clause goes RED on the very first row.
+   */
+  it('⚠ I2: a failing pass logs ONE COMPACTION_DEFECT line, at error level, with its numbers', async () => {
+    answer = refuses;
+    seedSummaries(8, 0, 6_000);
+
+    await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
+
+    const lines = defectLines();
+    expect(lines.length, 'exactly one line per failing pass — the brake is what keeps it rare').toBe(1);
+    expect(lines[0].level, 'addressed to whoever repairs the platform, so ERROR').toBe('error');
+    expect(lines[0].component).toBe('compaction-defect');
+    expect(lines[0].meta.stage, 'naming WHICH stage refused').toBe('summariser_refused');
+    expect(lines[0].meta.detail, 'and why').toBe('summarizer returned empty text');
+    // THE NUMBERS. Non-null, because a defect report without them cannot be acted on — and these
+    // four are what distinguish "the summaries are the bloat" from "the tail is the bloat".
+    for (const field of ['assembledTokens', 'budgetTokens', 'summaryTokens', 'admittedSummaryTokens']) {
+      expect(lines[0].meta[field], `${field} must be reported, not null`).not.toBeNull();
+      expect(typeof lines[0].meta[field], `${field} must be a number`).toBe('number');
+    }
+    expect(lines[0].meta.repairableByTheOwner).toBe(true);
+    expect(lines[0].meta.summaryTokens, 'the summaries really are over their admission')
+      .toBeGreaterThan(lines[0].meta.admittedSummaryTokens as number);
+  });
+
+  it('a pass that SUCCEEDS logs no defect line at all — the control', async () => {
+    seedSummaries(8, 0, 6_000);
+    await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
+    expect(held()).toBeLessThanOrEqual(await admitted());
+    expect(defectLines(), 'a working compaction is not a defect').toEqual([]);
+  });
+
+  /**
+   * ⚠ REVIEW I3. No enabled model can write a summary, so compaction cannot even start — which
+   * under OR-COMPACT-1 part 3 is exactly "it fails for a different reason; repair it". The first
+   * round left this at a bare `warn` with no stage and no card, on the reasoning that carding it
+   * needed the budget first. It does not: `force` IS the pressure signal, since the gate only
+   * forces at >=96%.
+   *
+   * THE MUTANT: drop the `if (options?.force) notePassOutcome(…)` line from the `!resolved`
+   * branch of `runCheckAndCompact` and this clause goes RED on the card and the stage.
+   */
+  it('⚠ I3: an unresolvable summary writer is carded once, and named', async () => {
+    seedSummaries(8, 0, 6_000);
+    // The only enabled model loses its text capability, so `resolveSummaryWriterModel` finds none.
+    mockDb.current!.prepare("UPDATE models SET capabilities = '[\"embedding\"]' WHERE id = ?").run(MODEL_64K);
+
+    const result = await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
+
+    expect(result).toEqual({ leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
+    expect(calls.length, 'there is nothing to dial').toBe(0);
+    expect(compactionFailureReason(AGENT)).toBe('summary_writer_unresolvable');
+    const cards = frames.filter(f => f.code === 'COMPACTION_FAILING');
+    expect(cards.length, 'the owner is told once').toBe(1);
+    expect(cards[0].error).toContain('no enabled model can write its summaries');
+    expect(cards[0].error).toContain('Settings → Models');
+    expect(cards[0].retryable).toBe(true);
+    expect(defectLines().length, 'and the repair audience gets its line').toBe(1);
+    expect(defectLines()[0].meta.stage).toBe('summary_writer_unresolvable');
+
+    // AND THE CONTROL: a ROUTINE pass on the same box says nothing — the gate has not called it
+    // an emergency, and a card per turn for every agent on a mis-set box is the toast spam t87
+    // refused.
+    __resetBrakesForTests();
+    frames.length = 0;
+    logLines.length = 0;
+    await checkAndCompact(AGENT, MODEL_64K, 65_536);
+    expect(frames.filter(f => f.code === 'COMPACTION_FAILING'), 'no pressure, no card').toEqual([]);
+    expect(defectLines(), 'and no defect line either').toEqual([]);
   });
 });
