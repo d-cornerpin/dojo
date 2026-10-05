@@ -704,3 +704,52 @@ describe('the log slice says when the global read was full before this agent was
     expect(note, `a complete read claimed something was missing: ${note}`).toBeFalsy();
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// FIX-ROUND-2 REVIEW L4 — THE UNBOUNDED BRIEF, AND THE PROPERTY THAT MAKES IT SAFE.
+//
+// The BRIEF is deliberately not bounded (`bounds.ts` argues why: it is the text the user is about
+// to be shown and the agent is being told to re-read it, so trimming the thing under review would
+// be the defect this round exists to fix, one document over). The schema also declares NO
+// `maxLength` on any of its five fields — measured from `definitions.ts`.
+//
+// So a maximal brief CAN fire the engine cap: 12,000 characters per field renders ~74,880 chars
+// ≈ 18,720 tokens and `applyMaxResultTokensCap` DOES truncate. What makes that safe is HEAD-FIRST
+// ORDERING, and the review's finding was that this property was argued in a comment and asserted
+// NOWHERE — clause 3 drives `gather` through a real engine truncation, and the draft arm had no
+// equivalent. Clause 17 measures a five-WORD brief, which is the easy case.
+//
+// This is that missing clause. It does not assert the cap stays unfired — on this input it fires,
+// and that is the honest shape of the thing. It asserts that when it fires, the hand-off survives.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('a brief big enough to fire the cap still cannot cost the hand-off', () => {
+  it('25 — the cap FIRES on a maximal brief, and `submit` is still in the head', async () => {
+    seedOversize(200);
+    const id = idIn((await call({ phase: 'gather' })).content);
+
+    // 12,000 characters in each of the five brief fields — the review's own measured worst case.
+    const FAT = 'The step that follows was cut off the end of a tool result. '.repeat(200).slice(0, 12_000);
+    const drafted = await call({
+      phase: 'draft', report_id: id, lane: 'other',
+      title: FAT, what_happened: FAT, what_should_have_happened: FAT,
+      why_it_went_wrong: FAT, fix_ideas: FAT,
+    });
+    expect(drafted.isError, drafted.content).toBe(false);
+
+    // NON-VACUITY, AND IT IS THE POINT: the engine really does truncate this one.
+    const cut = applyMaxResultTokensCap('dojo_report', drafted.content);
+    const tokens = Math.ceil(drafted.content.length / 4);
+    expect(cut, `a ${tokens}-token draft result was NOT truncated — this clause is vacuous and the `
+      + 'brief can no longer reach the cap, so the head-first property is untested')
+      .not.toBe(drafted.content);
+
+    // THE PROPERTY: what the engine left still carries the whole next step.
+    expect(cut.slice(0, HEAD_CHARS), 'the submit hand-off was truncated away with the brief')
+      .toContain('submit');
+    expect(cut, 'the report id did not survive the cut').toContain(id);
+    // And the honest state survives too, so a severed result cannot read as FINISHED.
+    expect(cut.slice(0, HEAD_CHARS).toUpperCase(), 'the not-yet-filed truth was cut away')
+      .toMatch(/NOT.{0,20}FILED/);
+  });
+});
