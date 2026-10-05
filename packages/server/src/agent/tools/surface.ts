@@ -47,6 +47,8 @@ import { agentCanSelfComplete } from './util.js';
 import { toolDefinitions } from './definitions.js';
 import { isPrimaryAgent, isPMAgent } from '../../config/platform.js';
 import { getSudoPolicy } from '../brokers/sudo-policy.js';
+import { agentMayRunAdminCommands, adminCommandsToolSentence } from '../brokers/sudo-claim.js';
+import type { SudoPolicy } from '../brokers/sudo-copy.js';
 import { getToolConfigGeneration } from '../tool-config-generation.js';
 import { pdfToolDefinitions } from '../pdf-tools.js';
 import { googleReadToolDefinitions } from '../../google/tools-read.js';
@@ -228,7 +230,7 @@ export function getAgentDenySet(agentId: string): Set<string> {
 // PHASE-5 T4: `resolveSpawnSquad` moved to `agent/tools/cat/agents.ts` with
 // `spawn_agent`, its only caller (re-derived at that HEAD).
 
-function computeFilteredTools(agentId: string, sudoPolicy: string): ToolDefinition[] {
+function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefinition[] {
   const manifest = getAgentPermissions(agentId);
 
   // Get tools policy from DB
@@ -335,20 +337,13 @@ function computeFilteredTools(agentId: string, sudoPolicy: string): ToolDefiniti
   // allowlist (proc.ts:188), goes unreached. So the sentence renders for the BOX
   // PRIMARY under gated/free on BOTH command tools, whatever the allowlist shape;
   // a finite allowlist adds the caveat that sudo does not widen the grant.
-  const primaryHere = isPrimaryAgent(agentId);
-  const sudoDoorSentence = (finiteList: boolean): string => {
-    if (!primaryHere) return '';
-    const caveat = finiteList
-      ? ' The command inside the sudo line must still be one of your permitted commands — sudo raises privilege, it does not widen your command list.'
-      : '';
-    if (sudoPolicy === 'gated') {
-      return ' Administrator commands: as this box\'s primary agent you may issue a `sudo` command — it will not run immediately; it is HELD and the owner is asked to approve it on their dashboard, and the tool result will say so. Do not treat that hold as a failure and do not retry it.' + caveat;
-    }
-    if (sudoPolicy === 'free') {
-      return ' Administrator commands: as this box\'s primary agent you may issue a `sudo` command — the box\'s sudo policy runs it directly, subject to a safety floor that refuses catastrophic commands.' + caveat;
-    }
-    return '';
-  };
+  //
+  // UX-ACCESS A4 FOLD-IN: the door and the words now live in `brokers/sudo-claim.ts`,
+  // which the soul capability register reads too (`prompt/assembler.ts`). This file
+  // spells neither — one predicate, two renderings, no way for them to disagree.
+  const mayRunAdminCommands = agentMayRunAdminCommands(agentId, sudoPolicy);
+  const sudoDoorSentence = (finiteList: boolean): string =>
+    (mayRunAdminCommands ? adminCommandsToolSentence(sudoPolicy, finiteList) : '');
   if (hasExec && manifest.exec_allow[0] !== '*') {
     const allowedCmds = manifest.exec_allow.join(', ');
     // FN-8: only suggest complete_task(status="blocked") to agents that can

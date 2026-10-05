@@ -8,6 +8,7 @@ import { createLogger } from '../logger.js';
 import { toolDefinitions } from '../agent/tools/definitions.js';
 import { getFilteredTools } from '../agent/tools/surface.js';
 import { getAgentPermissions } from '../agent/manifest.js';
+import { SOUL_ADMIN_COMMANDS_CLAIM } from '../agent/brokers/sudo-claim.js';
 import { isPrimaryAgent, isPMAgent, isTrainerAgent, isHealerAgent, isImaginerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getHealerAgentId, getHealerAgentName, getImaginerAgentName, ownerNameIsSet} from '../config/platform.js';
 import type { TurnCounterparty } from '../agent/v2/counterparty.js';
 import { NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, type Channel } from '@dojo/shared';
@@ -906,6 +907,11 @@ export const SOUL_CAPABILITY_CLAIMS: readonly SoulCapabilityClaim[] = [
     line: '- You can execute shell commands.\n',
     holds: (agentId) => getAgentPermissions(agentId).exec_allow.length > 0,
   },
+  // THE SUDO DOOR, folded in (UX-ACCESS A4 / BACKLOG 111). v3.2.2 put the truth
+  // about administrator commands in the exec/shell tool DESCRIPTIONS only. Claim,
+  // wording and door are defined ONCE in `agent/brokers/sudo-claim.ts` — the same
+  // module `agent/tools/surface.ts` reads — so neither surface spells the sentence.
+  SOUL_ADMIN_COMMANDS_CLAIM,
 ];
 
 /** Strip every `## Capabilities` claim this agent cannot make. */

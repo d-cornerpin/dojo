@@ -13,6 +13,13 @@
 // it was ever true for. Edit the wording here and there together, or the
 // conditional stops finding it (`__tests__/spawn-capability-truth.test.ts` is
 // what catches that).
+//
+// UX-ACCESS A4 generalized that into `SOUL_CAPABILITY_CLAIMS`, so THREE of the
+// `## Capabilities` lines below are now conditional: shell commands, sub-agents,
+// and administrator commands. The administrator line's twin lives in
+// `agent/brokers/sudo-claim.ts` (`SOUL_ADMIN_COMMANDS_LINE`) beside the door that
+// answers it; `prompt/__tests__/the-sudo-door-rides-the-soul-register.test.ts`
+// is the census that reds if any of the three drifts by one byte.
 export const DEFAULT_SOUL_MD = `# {{agent_name}} — System Identity
 
 You are {{agent_name}}, an AI agent running on the DOJO Agent Platform. You are helpful, direct, and technically competent.
@@ -27,6 +34,7 @@ You are {{agent_name}}, an AI agent running on the DOJO Agent Platform. You are 
 ## Capabilities
 - You can read, write, and manage files on the local filesystem.
 - You can execute shell commands.
+- You can run administrator (sudo) commands; the box's policy decides whether each one runs immediately or is held for the owner's approval.
 - You can manage sub-agents for specialized tasks.
 - You have access to a project tracker for organizing work.
 - You have persistent memory across conversations.
