@@ -6028,6 +6028,13 @@
       "to": 674,
       "by": "t96 dashboard hygiene (BACKLOG line 27) - the Automation hint names the right thing",
       "why": "+1 NET (+2/-1), AND IT IS THE MINIMUM POSSIBLE RAISE ON THIS FILE: one `import { automationInstructions, AUTOMATION_VERIFY } from '../lib/automation-permission'`, and the hint string replaced by `${automationInstructions(permissions.serverExecPath)} ${AUTOMATION_VERIFY}` - a surface cannot render shared copy without importing it. THE COPY ITSELF IS ELSEWHERE BY DESIGN, exactly as item D's Full Disk Access fix did it: `lib/automation-permission.ts` (114 lines, well under the 400-line new-file cap), where a clause can drive the words and both surfaces read ONE source instead of disagreeing. So the pressure this file would have absorbed went into a new leaf file, which is the direction this ratchet exists to push. Paid for by -225 lines of tightening in the same commit. THE DIRECTION IS UNCHANGED: 674 may only fall from here."
+    },
+    {
+      "path": "packages/dashboard/src/pages/Settings.tsx",
+      "from": 7188,
+      "to": 7194,
+      "by": "t96 fix round 1b (ruled) - the doubled `/api` prefix that made item D's FDA hint inert on this page",
+      "why": "+6, ALL COMMENT, and this is a GIVE-BACK rather than a raise: the merge-base value was 7194, t96's `8ed8b000` tightened it to 7188, and this returns it. The lane's NET on this file is therefore ZERO, and the other six tightenings from that commit (-219: api.ts 2539->2420, ImportWizard 712->663, TechniqueSessionProvider 533->502, Setup 1995->1985, TechniqueDetail 410->402, Health 662->660) all stand. THE CODE CHANGE IS FIVE CHARACTERS: `'/api/setup/permissions/check'` -> `'/setup/permissions/check'`, because the door prepends `/api` and this call had been asking for `/api/api/setup/permissions/check` and 404ing silently since it was written - so `serverExecPath` never arrived and the Full Disk Access hint rendered its 'the server reports its exact path once it is running' wording PERMANENTLY, on a screen where the server was running and reporting it. The six comment lines say that, at the call site, because the next person to read one line of plumbing has no other way to learn that the door owns the prefix. I DID NOT SHAVE THEM TO FIT THE PIN - G5 forbids exactly that, and the tightening I claimed six commits ago is simply the thing that was premature. The rule is now enforced rather than remembered: `__tests__/the-dashboard-has-one-network-door.test.ts` refuses any door call whose literal path starts with `/api/`, and a render clause asserts the path reaches the sentence. THE DIRECTION IS UNCHANGED: 7194 may only fall from here."
     }
   ],
   "maxNewFileLines": 400,
@@ -6064,7 +6071,7 @@
     "packages/dashboard/src/pages/Costs.tsx": 686,
     "packages/dashboard/src/pages/Health.tsx": 660,
     "packages/dashboard/src/pages/Memory.tsx": 499,
-    "packages/dashboard/src/pages/Settings.tsx": 7188,
+    "packages/dashboard/src/pages/Settings.tsx": 7194,
     "packages/dashboard/src/pages/Setup.tsx": 1985,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 402,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
