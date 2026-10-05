@@ -258,8 +258,28 @@ async function searchMessagesLike(
   // ⚠ `seq` IS THE ROWID ALIAS HERE (PHASE-1 T10, migration 133), and the reader guard refuses a bare
   // `rowid` for a reason worth keeping: SQLite would name the column `seq`, `row.rowid` would read
   // `undefined`, and nothing would throw — the silent shape that broke 45 tests once already.
+  // ⚠ BOTH ENDS OF THE WALK, NOT JUST THE TOP (C1). The ceiling says where to start; the FLOOR is
+  // what stops the walk, and before this fix nothing did — an empty chunk was read as "there is
+  // nothing older", so any 20,000-key stretch owned entirely by other agents ended the search and
+  // reported a COMPLETE answer. Reproduced at 50 matching rows returned as 0.
+  //
+  // ⚠ TWO STATEMENTS, NOT ONE, AND THE REASON IS MEASURED — SQLite's min/max optimisation reads a
+  // single aggregate off the end of a b-tree, and it DOES NOT APPLY to `SELECT MIN(x), MAX(x)` in one
+  // statement: that form walks every index entry the WHERE matches. Measured on a 40,200-row fixture
+  // with the production index set, agent-a sparse:
+  //     SELECT MIN(seq), MAX(seq) … WHERE agent_id = ?   23.457 ms
+  //     SELECT MIN(seq)            … WHERE agent_id = ?    0.015 ms
+  //     SELECT MAX(seq)            … WHERE agent_id = ?    0.007 ms
+  // ⚠ AND `EXPLAIN QUERY PLAN` PRINTS THE IDENTICAL STRING FOR ALL THREE
+  // (`SEARCH messages USING COVERING INDEX idx_messages_agent_id (agent_id=?)`), so a plan clause
+  // cannot see this difference and the clause that guards it is a measurement plus a source shape.
+  // Combining them is the obvious tidy-up; it costs a 23 ms main-thread stall per search.
   const maxSeq = (db.prepare('SELECT MAX(seq) AS r FROM messages WHERE agent_id = ?')
     .get(agentId) as { r: number | null } | undefined)?.r ?? 0;
+  const oldestSeq = (db.prepare('SELECT MIN(seq) AS r FROM messages WHERE agent_id = ?')
+    .get(agentId) as { r: number | null } | undefined)?.r ?? 1;
+  // Exclusive, so the agent's own oldest row is still inside the walk.
+  const minSeq = Math.max(0, oldestSeq - 1);
   const chunkStmt = db.prepare(`
     SELECT id, role, content, datetime(created_at/1000,'unixepoch') AS created_at, seq AS rowid
     FROM messages
@@ -276,6 +296,7 @@ async function searchMessagesLike(
   const scanOpts = {
     limit: fetchLimit,
     startRowidCeiling: maxSeq,
+    floorRowid: minSeq,
   };
   // ⚠ THE WIRE (t89 deliverable 1): pool up → each chunk is two worker-side reads (the honest count,
   // then the page) and the serving thread breathes between chunks; pool down → the same arithmetic
@@ -353,8 +374,24 @@ async function searchSummariesInner(
       // order lives in the implicit rowid, and PHASE-1 T10's reader guard refuses a BARE `rowid`
       // projection — the shape where SQLite names the column something else, the read comes back
       // `undefined`, and nothing throws. One name, chosen here.
-      const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM summaries WHERE agent_id = ?')
-        .get(agentId) as { r: number | null } | undefined)?.r ?? 0;
+      // ⚠ THE SUMMARIES BOUNDS ARE GLOBAL, AND THAT IS TWO FIXES IN ONE LINE (C1 + I5).
+      // I5: `summaries` has NO INDEX ON agent_id (grep of db/ — none), so
+      // `MAX(rowid) WHERE agent_id = ?` is a REVERSE TABLE SCAN that stops at the first matching row —
+      // measured at 50-55 ms warm, on the serving thread, for an agent whose newest summary is old or
+      // who has none (the PM is exactly that agent). The global MIN/MAX are two O(log n) primary-key
+      // probes.
+      // C1: the global MIN is also the honest `floorRowid`, so the walk stops on a key rather than on
+      // an empty chunk. The agent filter stays in the chunk SQL, so the ROWS are unchanged — the
+      // global bounds are loop bounds, not a result filter.
+      // ⚠ ONE STATED CONSEQUENCE for the FTS arm: the candidate floor is now the newest
+      // `FTS_CANDIDATE_ROWS` rowids of the TABLE rather than of this agent. That is the correct axis
+      // for the cost being bounded — `summaries_fts MATCH` ranks EVERY agent's matching rows before
+      // `s.agent_id = ?` filters — and it is a tighter window on a box holding more than 50,000
+      // summaries across all agents, where a per-agent window would let one agent's search rank the
+      // whole table. Below 50,000 rows the floor is 0 and nothing changes at all, which is every box
+      // measured so far.
+      const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM summaries')
+        .get() as { r: number | null } | undefined)?.r ?? 0;
       const candidateFloor = ftsCandidateRowidFloor(maxRid);
       const floorClause = candidateFloor > 0 ? 'AND s.rowid > ?' : '';
       const sql = `
@@ -431,8 +468,15 @@ async function searchSummariesLike(
   // `undefined` without throwing.
   const likeParams: unknown[] = [agentId, `%${pattern}%`];
   const fetchLimit = (limit ?? 20) * 3;
-  const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM summaries WHERE agent_id = ?')
-    .get(agentId) as { r: number | null } | undefined)?.r ?? 0;
+  // The global span, for the two reasons stated in full at the FTS arm above (C1's honest floor and
+  // I5's reverse table scan). The agent filter stays in the chunk SQL.
+  // Two single-aggregate statements, for the measured reason stated at `searchMessagesLike`: a
+  // combined `MIN(x), MAX(x)` loses SQLite's min/max optimisation (1.337 ms vs 0.001 ms on a
+  // 40,000-row summaries fixture) and EXPLAIN QUERY PLAN cannot tell the two apart.
+  const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM summaries')
+    .get() as { r: number | null } | undefined)?.r ?? 0;
+  const minRid = Math.max(0, ((db.prepare('SELECT MIN(rowid) AS r FROM summaries')
+    .get() as { r: number | null } | undefined)?.r ?? 1) - 1);
   const chunkSql = `
     SELECT id, depth, kind, content, earliest_at, latest_at, rowid AS rid FROM summaries
     WHERE agent_id = ? AND content LIKE ? AND rowid <= ? AND rowid > ?
@@ -450,7 +494,7 @@ async function searchSummariesLike(
     earliest_at: string; latest_at: string; rid: number;
   };
   type CostRow = { n: number; bytes: number };
-  const scanOpts = { limit: fetchLimit, startRowidCeiling: maxRid };
+  const scanOpts = { limit: fetchLimit, startRowidCeiling: maxRid, floorRowid: minRid };
   // ⚠ THE WIRE (t89 item 2), the messages path's fork verbatim: pool up → each chunk is two
   // worker-side reads (the honest cost, then the page) and the serving thread breathes between
   // chunks; pool down → the same arithmetic on-thread, bounded identically. One scan loop owns the
@@ -629,8 +673,9 @@ async function expandSummariesFts(
     // only. `MAX(rowid) AS r` is aliased at the expression level, which is the form PHASE-1 T10's
     // reader guard accepts; a BARE projected `rowid` is the shape SQLite may name something else,
     // which then reads `undefined` without throwing.
-    const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM summaries WHERE agent_id = ?')
-      .get(agentId) as { r: number | null } | undefined)?.r ?? 0;
+    // The GLOBAL max, for the reasons stated in full at `searchSummariesInner` (C1 + I5).
+    const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM summaries')
+      .get() as { r: number | null } | undefined)?.r ?? 0;
     const candidateFloor = ftsCandidateRowidFloor(maxRid);
     const floorClause = candidateFloor > 0 ? 'AND s.rowid > ?' : '';
     const sql = `
@@ -665,8 +710,12 @@ async function expandSummariesLike(
   const crumb = markQueryDispatched(breadcrumbFor('history_expand', 'like'));
   try {
     const likeParams: unknown[] = [agentId, `%${query}%`];
-    const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM summaries WHERE agent_id = ?')
-      .get(agentId) as { r: number | null } | undefined)?.r ?? 0;
+    // The GLOBAL span, for the reasons stated in full at `searchSummariesInner` (C1 + I5).
+    // Two single-aggregate statements — see `searchMessagesLike` for the measurement.
+    const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM summaries')
+      .get() as { r: number | null } | undefined)?.r ?? 0;
+    const minRid = Math.max(0, ((db.prepare('SELECT MIN(rowid) AS r FROM summaries')
+      .get() as { r: number | null } | undefined)?.r ?? 1) - 1);
     const chunkSql = `
       SELECT id, content, depth, earliest_at, latest_at, rowid AS rid FROM summaries
       WHERE agent_id = ? AND content LIKE ? AND rowid <= ? AND rowid > ?
@@ -679,7 +728,7 @@ async function expandSummariesLike(
     `;
     type ExpandLikeRow = ExpandSummaryRow & { rid: number };
     type CostRow = { n: number; bytes: number };
-    const scanOpts = { limit: EXPAND_SUMMARY_LIMIT, startRowidCeiling: maxRid };
+    const scanOpts = { limit: EXPAND_SUMMARY_LIMIT, startRowidCeiling: maxRid, floorRowid: minRid };
     // THE WIRE, again the same fork: pool up → each chunk is two worker-side reads (the honest
     // cost, then the page); pool down → the same arithmetic on-thread, bounded identically. One
     // scan loop owns the budget either way, which is what keeps the fallback a fallback rather

@@ -100,6 +100,36 @@ export interface BoundedScanChunk<T> {
 }
 
 /**
+ * ⚠ WHERE THE WALK IS ALLOWED TO STOP, AND WHY IT NEEDS TELLING (C1, fix round 1).
+ *
+ * THE DEFECT THIS EXISTS TO PREVENT, reproduced before it was fixed: the chunks are ranges of the
+ * GLOBAL insertion key, but a chunk's `rowsExamined` counts only THIS AGENT's rows in the range. So any
+ * 20,000-key stretch owned entirely by other agents — a parent idle while a sibling or the PM produces
+ * 20,000 messages, which is days of the PM's own every-minute churn — examined zero rows, and the loop
+ * read that as "there is nothing older" and stopped. On a 300,000-row two-agent fixture with the needle
+ * in the agent's OLDEST fifty rows:
+ *
+ *     rows actually matching in the table: 50
+ *     bounded walk returned: 0 rows — {"rowsScanned":140000,"chunks":8,"matched":0,
+ *                                      "stoppedBecause":"exhausted","truncated":false}
+ *     budget headroom left when it stopped: 60,000 rows
+ *
+ * `truncated: false` and `stoppedBecause: 'exhausted'` mean "this answer is COMPLETE", so
+ * `logBoundedFallback` reported a complete answer where the pre-fix unbounded walk — slow as it was —
+ * found all fifty. A bound that silently bounds the ANSWER is the one thing this file must never be.
+ *
+ * THE FIX IS TO STOP GUESSING WHERE THE DATA ENDS AND BE TOLD. `floorRowid` is the caller's own
+ * answer to "below this key there is nothing of mine", computed once from an indexed MIN (or the
+ * table's global MIN where the caller has no per-agent index), and the walk now stops ONLY on that
+ * floor or on a budget. An empty chunk means an empty chunk.
+ *
+ * THE COST OF NOT GUESSING, stated: a sparse agent now walks every chunk between its newest and oldest
+ * key instead of stopping at the first gap. That count is bounded by construction — the agent's own key
+ * SPAN divided by `LIKE_CHUNK_ROWS`, so about 50 chunks on a million-row database — and each empty
+ * chunk is two indexed reads over a range holding none of its rows. The row and byte budgets still cap
+ * the real work. Fifty cheap reads to not lie about the answer is the trade.
+ */
+/**
  * Walk a recency window in chunks until the caller's limit fills or a budget is spent.
  *
  * `fetchChunk` is handed a rowid ceiling (exclusive) and the chunk size, and returns what it found plus
@@ -110,6 +140,10 @@ export interface BoundedScanChunk<T> {
 export function boundedRecencyScanSync<T>(opts: {
   readonly limit: number;
   readonly startRowidCeiling: number;
+  /** See `floorRowid` on the async twin: the key below which the caller has nothing. Required in
+   *  spirit — the default of 0 only preserves the old behaviour for a caller that walks a whole
+   *  table, and every caller in this tree passes one. */
+  readonly floorRowid?: number;
   readonly fetchChunk: (rowidCeiling: number, chunkRows: number) => BoundedScanChunk<T>;
   readonly chunkRows?: number;
   readonly maxRows?: number;
@@ -118,6 +152,7 @@ export function boundedRecencyScanSync<T>(opts: {
   const chunkRows = opts.chunkRows ?? LIKE_CHUNK_ROWS;
   const maxRows = opts.maxRows ?? LIKE_MAX_ROWS_SCANNED;
   const maxBytes = opts.maxBytes ?? LIKE_MAX_BYTES_SCANNED;
+  const floorRowid = opts.floorRowid ?? 0;
   const rows: T[] = [];
   let rowsScanned = 0;
   let bytesScanned = 0;
@@ -125,7 +160,7 @@ export function boundedRecencyScanSync<T>(opts: {
   let ceiling = opts.startRowidCeiling;
   let stoppedBecause: BoundedStopReason = 'exhausted';
   while (rows.length < opts.limit) {
-    if (ceiling <= 0) { stoppedBecause = 'exhausted'; break; }
+    if (ceiling <= floorRowid) { stoppedBecause = 'exhausted'; break; }
     if (rowsScanned >= maxRows) { stoppedBecause = 'row_budget'; break; }
     if (bytesScanned >= maxBytes) { stoppedBecause = 'byte_budget'; break; }
     const chunk = opts.fetchChunk(ceiling, chunkRows);
@@ -133,7 +168,7 @@ export function boundedRecencyScanSync<T>(opts: {
     rowsScanned += chunk.rowsExamined;
     bytesScanned += chunk.bytesRead;
     rows.push(...chunk.rows.slice(0, opts.limit - rows.length));
-    if (chunk.rowsExamined === 0) { stoppedBecause = 'exhausted'; break; }
+    // ⚠ NO ZERO-ROWS BREAK. An empty chunk means an empty chunk — see the C1 paragraph above.
     ceiling -= chunkRows;
     if (rows.length >= opts.limit) { stoppedBecause = 'satisfied'; break; }
   }
@@ -157,6 +192,14 @@ export function boundedRecencyScanSync<T>(opts: {
 export async function boundedRecencyScan<T>(opts: {
   readonly limit: number;
   readonly startRowidCeiling: number;
+  /**
+   * ⚠ THE KEY BELOW WHICH THE CALLER HAS NOTHING — the fix for C1, and the reason the walk no longer
+   * infers the end of the data from an empty chunk. Computed once by the caller from an indexed MIN
+   * (`messages`: `MIN(seq) WHERE agent_id = ?`, covering `idx_messages_agent_id`) or from the table's
+   * GLOBAL `MIN(rowid)` where the caller has no per-agent index (`summaries`), in which case the agent
+   * filter simply stays in the chunk SQL. Exclusive: the walk stops when `ceiling <= floorRowid`.
+   */
+  readonly floorRowid?: number;
   // Sync OR async: the worker-pool caller's chunk is an awaited round-trip (t89 wire); a sync
   // caller's chunk is a direct statement run. One loop serves both — the await below costs a
   // microtask on a sync return, not a turn.
@@ -170,6 +213,7 @@ export async function boundedRecencyScan<T>(opts: {
   const chunkRows = opts.chunkRows ?? LIKE_CHUNK_ROWS;
   const maxRows = opts.maxRows ?? LIKE_MAX_ROWS_SCANNED;
   const maxBytes = opts.maxBytes ?? LIKE_MAX_BYTES_SCANNED;
+  const floorRowid = opts.floorRowid ?? 0;
 
   const rows: T[] = [];
   let rowsScanned = 0;
@@ -179,7 +223,7 @@ export async function boundedRecencyScan<T>(opts: {
   let stoppedBecause: BoundedStopReason = 'exhausted';
 
   while (rows.length < opts.limit) {
-    if (ceiling <= 0) { stoppedBecause = 'exhausted'; break; }
+    if (ceiling <= floorRowid) { stoppedBecause = 'exhausted'; break; }
     if (rowsScanned >= maxRows) { stoppedBecause = 'row_budget'; break; }
     if (bytesScanned >= maxBytes) { stoppedBecause = 'byte_budget'; break; }
 
@@ -189,9 +233,9 @@ export async function boundedRecencyScan<T>(opts: {
     bytesScanned += chunk.bytesRead;
     rows.push(...chunk.rows.slice(0, opts.limit - rows.length));
 
-    // A chunk that examined nothing means there is nothing older left to examine; without this the loop
-    // would spin on an empty tail forever.
-    if (chunk.rowsExamined === 0) { stoppedBecause = 'exhausted'; break; }
+    // ⚠ NO ZERO-ROWS BREAK — it was the C1 defect. A chunk owned entirely by OTHER agents examines
+    // zero of THIS agent's rows and says nothing whatever about whether older rows of its own exist.
+    // `floorRowid` is the only honest answer to that question, and the caller computes it.
     ceiling -= chunkRows;
     if (rows.length >= opts.limit) { stoppedBecause = 'satisfied'; break; }
     if (opts.breathe) await opts.breathe();
