@@ -1,8 +1,9 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { withLock } from '../db/with-lock.js';
-import { MIN_COMPACTABLE_ROWS, compactionIsBraked, noteLowYield, noteForcedOutcome, latchIfSummariesExceedBudget,
-  summaryWriterUnavailable } from './compaction-brakes.js';  // v3.2.3 L1
+import { MIN_COMPACTABLE_ROWS, compactionIsBraked, noteLowYield, notePassOutcome,
+  summaryWriterUnavailable } from './compaction-brakes.js';  // v3.2.3 L1, re-aimed by OR-COMPACT-1
+import { condenseUntilFits, condensableSummaries, type CondensationOutcome } from './condense-until-fits.js';   // OR-COMPACT-1
 import { cachedAssembledEstimate, cachedToolPayloadTokens, toolSurfaceKey } from './assembled-estimate-cache.js';
 export { forcedCompactionOptions } from './compaction-brakes.js';   // the emergency path's bounds, published where its callers already look
 import { createLogger } from '../logger.js';
@@ -290,8 +291,11 @@ const DEFAULTS = {
   leafChunkTokens: 30000,
   leafTargetTokens: 5000,
   condensedTargetTokens: 6000,
+  // OR-COMPACT-1: the fanout is still the batch SIZE for a level with enough waiting
+  // summaries, but it is no longer a FLOOR below which a level refuses to condense —
+  // `condense-until-fits.ts` condenses 2, 3 or even 1. `incrementalMaxDepth: 1` is gone
+  // with it: it is what made `summarize.ts`'s depth ≥2 prompt unreachable dead code.
   condensedMinFanout: 4,
-  incrementalMaxDepth: 1,
 };
 
 /** Summary size targets, exposed for the nightly summary rebuild so regenerated
@@ -665,22 +669,19 @@ async function runCheckAndCompact(
     // after any low-yield run back off for a while. Emergency (force) always
     // bypasses, pressure at 96%+ must act regardless of yield.
     if (compactionIsBraked(agentId, force)) return NO_COMPACTION;
-    if (latchIfSummariesExceedBudget(agentId, assembled.summaryTokens, Math.max(0, contextWindow - assembled.reserveTokens), guardUncompactedCount)) return NO_COMPACTION;   // v3.2.3 M3: terminal BEFORE any model call — two facts, see the brake's doc
-    if (!force && guardUncompactedCount > 0 && guardUncompactedCount < MIN_COMPACTABLE_ROWS) {
-      logger.info('Compaction skipped: outside-tail region too small to reclaim meaningfully', {
-        assembledTokens: totalTokens, threshold, uncompactedOutsideTail: guardUncompactedCount,
-      }, agentId);
-      noteLowYield(agentId);
-      return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
-    }
-    if (!force && guardUncompactedCount === 0) {
-      logger.warn('Compaction gate exceeded but nothing outside fresh tail to compact, skipping (bloat is in fresh tail itself)', {
-        assembledTokens: totalTokens,
-        threshold,
-        freshTailCount: assembled.freshTailCount,
-        freshTailTokens: assembled.freshTailTokens,
-      }, agentId);
-      return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
+    // ── OR-COMPACT-1: NOTHING LEFT AT THE LEAF IS THE CASE FOR CONDENSATION ──
+    // Three things stood here and all three said "no pass can help": t87's pre-work latch
+    // `latchIfSummariesExceedBudget` (premise: summaries already over budget ⇒ terminal) and
+    // the two `!force` no-op guards that returned zero while the assembly was over budget.
+    // That trio IS the incident's state — ~86K of summaries with nothing raw left to fold —
+    // and the owner ruled that state is more condensation, not a dead end.
+    // ⚠ THE ANTI-THRASH PROPERTY IS NOT LOST, which is what those guards were really for: the
+    // pass below runs NO continuity brief, NO archive and NO leaf chunking (so the treadmill
+    // of re-summarising a handful of rows cannot happen), it returns early when the assembly
+    // is in fact within budget, and a pass that reclaims nothing arms the same 15-minute
+    // backoff through `notePassOutcome`.
+    if (guardUncompactedCount < MIN_COMPACTABLE_ROWS) {
+      return condenseOnlyPass(agentId, modelId, turnModelId, contextWindow, threshold, force, guardUncompactedCount, options);
     }
 
     // Full reactive compaction
@@ -751,9 +752,10 @@ async function runCheckAndCompact(
     // the depth tree and can do multiple LLM calls; backlog drains will
     // accumulate enough leaf summaries that condensation runs naturally on
     // the next forced/emergency compaction.
-    const condensedCreated = options?.skipContinuityBrief
-      ? 0
-      : await runCondensation(agentId, modelId, DEFAULTS.incrementalMaxDepth);
+    const condensation = options?.skipContinuityBrief
+      ? null
+      : await condenseUntilFits(condenseArgs(agentId, modelId, turnModelId, contextWindow, threshold, options?.abortSignal));
+    const condensedCreated = condensation?.condensedCreated ?? 0;
     rebuildContextItems(agentId);
     // T56 leg (b): the prefix has just been rewritten, so this is the one instant at which
     // retiring reasoning costs no cache reuse. Gated on a summary actually having been
@@ -768,7 +770,10 @@ async function runCheckAndCompact(
 
     const result = { leafCreated, condensedCreated, tokensReclaimed: Math.max(tokensReclaimed, 0) };
 
-    noteForcedOutcome(agentId, Boolean(force), result, assembled.summaryTokens, Math.max(0, contextWindow - assembled.reserveTokens));   // v3.2.3 L1
+    // v3.2.3 L1, re-aimed by OR-COMPACT-1: the brake, plus the D3 defect report. The stage
+    // the condenser named (if any) travels with the numbers, so a pass that ended over
+    // budget having reclaimed nothing says WHICH stage refused instead of showing a card.
+    notePassOutcome(agentId, Boolean(force), result, passFacts(condensation, tokensAfter, threshold, tokensBefore, guardUncompactedCount, agentId, modelId));
     broadcast({
       type: 'memory:compaction',
       agentId,
@@ -853,7 +858,7 @@ async function runCheckAndCompact(
 
     const result = { leafCreated, condensedCreated: 0, tokensReclaimed: 0 };
 
-    noteForcedOutcome(agentId, Boolean(force), result, assembled.summaryTokens, Math.max(0, contextWindow - assembled.reserveTokens));   // v3.2.3 L1
+    notePassOutcome(agentId, Boolean(force), result);   // v3.2.3 L1 — proactive: under budget by construction, so the brake is the whole report
     broadcast({
       type: 'memory:compaction',
       agentId,
@@ -874,6 +879,78 @@ async function runCheckAndCompact(
   }
 
   return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
+}
+
+// ── OR-COMPACT-1 — the recursion's three call-site helpers ──────────────────────────────
+//
+// The policy itself lives in `memory/condense-until-fits.ts`. These three are only the seam:
+// what to pass it, what to tell the brake afterwards, and the leaf-less pass. They sit here
+// because the SINGLE assembled estimate and `rebuildContextItems` are this module's, and the
+// condenser takes both as arguments precisely so there is never a second estimator.
+
+/** The condenser's arguments, with THE single estimate wired in as its `measure`. */
+function condenseArgs(
+  agentId: string, modelId: string, turnModelId: string, contextWindow: number,
+  budgetTokens: number, abortSignal?: AbortSignal,
+): Parameters<typeof condenseUntilFits>[0] {
+  return {
+    agentId, modelId, budgetTokens,
+    minFanout: DEFAULTS.condensedMinFanout,
+    targetTokens: DEFAULTS.condensedTargetTokens,
+    abortSignal,
+    measure: () => cachedAssembledEstimate(agentId, contextWindow, modelId, () =>
+      estimateAssembledTokens(agentId, contextWindow, modelId, { ceilingModelId: turnModelId })),
+    rebuild: () => rebuildContextItems(agentId),
+  };
+}
+
+/** What the brake and the defect line need to know about the pass that just ran. */
+function passFacts(
+  condensation: CondensationOutcome | null, assembledTokens: number, budgetTokens: number,
+  tokensBefore: number, compactableRows: number, agentId: string, modelId: string,
+): Parameters<typeof notePassOutcome>[3] {
+  return {
+    stage: condensation?.refusedStage ?? null, detail: condensation?.refusedDetail ?? null,
+    assembledTokens, budgetTokens, tokensBefore, compactableRows,
+    topLevelSummaries: condensableSummaries(agentId), modelId,
+  };
+}
+
+/**
+ * THE LEAF-LESS PASS — over budget with nothing raw left to fold, which is the incident's
+ * own state and used to be the dead end.
+ *
+ * It runs condensation and nothing else: no continuity brief (the agent is losing no raw
+ * tail, so the brief is pure overhead — the routine drain's own argument), no archive (there
+ * is nothing to archive), no leaf chunking (the handful of rows outside the tail is below the
+ * floor that makes folding them worth a model call). An assembly that is in fact within this
+ * module's own threshold returns before spending anything at all.
+ */
+async function condenseOnlyPass(
+  agentId: string, modelId: string, turnModelId: string, contextWindow: number,
+  threshold: number, force: boolean, compactableRows: number, options?: CheckAndCompactOptions,
+): Promise<CompactionResult> {
+  const args = condenseArgs(agentId, modelId, turnModelId, contextWindow, threshold, options?.abortSignal);
+  const tokensBefore = (await args.measure()).total;
+  if (tokensBefore <= threshold) {
+    logger.info('Compaction skipped: nothing outside the fresh tail, and the assembly is inside its budget', {
+      assembledTokens: tokensBefore, threshold, uncompactedOutsideTail: compactableRows,
+    }, agentId);
+    return NO_COMPACTION;
+  }
+  const condensation = await withCompactionActivity(agentId, () => condenseUntilFits(args));
+  const result = {
+    leafCreated: 0, condensedCreated: condensation.condensedCreated,
+    tokensReclaimed: Math.max(tokensBefore - condensation.assembledAfter, 0),
+  };
+  notePassOutcome(agentId, force, result, passFacts(condensation, condensation.assembledAfter, threshold, tokensBefore, compactableRows, agentId, modelId));
+  broadcast({ type: 'memory:compaction', agentId, ...result });
+  logger.info('Condensation-only compaction complete', {
+    ...result, levels: condensation.levels, modelCalls: condensation.modelCalls,
+    deepestDepth: condensation.deepestDepth, fits: condensation.fits,
+    assembledTokens: condensation.assembledAfter, threshold,
+  }, agentId);
+  return result;
 }
 
 // ── T56 leg (b) — the age-out, and the boundary it may never cross ──────────────────────
@@ -1237,84 +1314,6 @@ export async function runLeafCompaction(
   return summariesCreated;
 }
 
-// ── Condensation ──
-
-export async function runCondensation(
-  agentId: string,
-  modelId: string,
-  maxDepth: number,
-): Promise<number> {
-  let totalCondensed = 0;
-
-  for (let depth = 0; depth <= maxDepth; depth++) {
-    const uncondensed = getLeafSummariesNotCondensed(agentId, depth);
-
-    if (uncondensed.length < DEFAULTS.condensedMinFanout) {
-      logger.debug('Not enough uncondensed summaries at depth', {
-        depth,
-        count: uncondensed.length,
-        minFanout: DEFAULTS.condensedMinFanout,
-      }, agentId);
-      continue;
-    }
-
-    // Group uncondensed summaries into batches of condensedMinFanout
-    const batches = chunkArray(uncondensed, DEFAULTS.condensedMinFanout);
-
-    for (const batch of batches) {
-      if (batch.length < DEFAULTS.condensedMinFanout) continue;
-
-      const content = batch.map(s => {
-        return `<summary id="${s.id}" depth="${s.depth}" earliest="${s.earliestAt}" latest="${s.latestAt}">\n${s.content}\n</summary>`;
-      }).join('\n\n');
-
-      const parentIds = batch.map(s => s.id);
-      const earliestAt = batch[0].earliestAt;
-      const latestAt = batch[batch.length - 1].latestAt;
-      const newDepth = depth + 1;
-
-      try {
-        const summary = await generateSummary({
-          content,
-          depth: newDepth,
-          targetTokens: DEFAULTS.condensedTargetTokens,
-          agentId,
-          modelId,
-        });
-
-        // PHASE-3 T5 Step 2: same rule one level up. `createCondensedSummary` marks the
-        // child summaries condensed; a refusal must not.
-        if (!summary.ok) {
-          logger.warn('SUMMARY_REFUSED condensation batch left uncondensed', {
-            depth: newDepth, parentCount: batch.length, reason: summary.reason,
-          }, agentId);
-          continue;
-        }
-
-        createCondensedSummary(
-          agentId,
-          summary.text,
-          summary.tokenCount,
-          parentIds,
-          newDepth,
-          earliestAt,
-          latestAt,
-        );
-
-        totalCondensed++;
-      } catch (err) {
-        logger.error('Failed to create condensed summary', {
-          depth: newDepth,
-          parentCount: batch.length,
-          error: err instanceof Error ? err.message : String(err),
-        }, agentId);
-      }
-    }
-  }
-
-  return totalCondensed;
-}
-
 // ── Rebuild Context Items ──
 
 export function rebuildContextItems(agentId: string): void {
@@ -1600,13 +1599,5 @@ function chunkMessages(messages: Message[], targetTokens: number): Message[][] {
     chunks.push(currentChunk);
   }
 
-  return chunks;
-}
-
-function chunkArray<T>(arr: T[], size: number): T[][] {
-  const chunks: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) {
-    chunks.push(arr.slice(i, i + size));
-  }
   return chunks;
 }
