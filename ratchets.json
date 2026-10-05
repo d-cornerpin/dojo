@@ -6235,7 +6235,7 @@
     {
       "path": "packages/server/src/agent/runtime.ts",
       "from": 1739,
-      "to": 1754,
+      "to": 1767,
       "by": "t90 FIX ROUND 3b — `.unref?.()` on the two module-scope sweeps, the root fix for the merge gate's `[vitest-worker]: Timeout calling \"onTaskUpdate\"`",
       "why": "+15 NET (`git diff --numstat` = +17/-2 for this file; 1739 -> 1754 by `wc -l`). Composition: 2 CODE lines added and 2 REWRITTEN, 13 comment. THE CODE: `setInterval(recoverStuckAgents, STUCK_AGENT_CHECK_MS);` and `setInterval(repairOrphanedModelPointers, STUCK_AGENT_CHECK_MS);` become `const stuckAgentSweep = setInterval(...)` / `stuckAgentSweep.unref?.();` and the same for `orphanedModelSweep` -- a timer has to be captured before it can be unref'd, which is why two statements become four. WHY IT COULD NOT BE TRADED: a ref'd handle armed at MODULE SCOPE keeps an event loop alive for the life of whatever imported the module, so every vitest worker that reached this file kept a live loop through its own teardown and the rest of the run. MEASURED (round 3): a test file importing this module held 2 more `Timeout` entries in `process.getActiveResourcesInfo()` than a control file that does not, and mocking the module took the count back to the control exactly -- the two extra were these two intervals, counted rather than inferred. The full-suite run then exited 1 on a worker->main RPC unanswered inside vitest's 60 s birpc deadline (`vitest/dist/chunks/index.*.js`: `DEFAULT_TIMEOUT = 6e4`). PRODUCTION IS UNCHANGED: the server's listening socket holds its loop open, so an unref'd interval fires on exactly the cadence it always did; only a short-lived importer ever noticed, which is why this survived to v3.3. THE 13 COMMENT LINES are the reason the next reader does not delete the `.unref?.()` as noise: they carry the measurement, the production argument, the pointer to the clause that pins it, and the note that this file ALREADY unref's its other two timers (`:1503`, `:1550`, argued at `:1518`) -- so these two were the outlier, not the house style. REFUSED: moving the two sweeps into a `start()` the boot calls, which would be the cleaner architecture and is how a fresh design would do it -- it changes WHEN the sweeps arm on a real boot, and this round is a handle fix with a merge gate waiting, not a lifecycle redesign; recorded in the t90 report as the follow-up it is. REFUSED: trimming the comment to fit under 1739 -- the lines being trimmed would be the measurement that justifies the two code lines, and a `.unref?.()` with no argument beside it is exactly the call a later cleanup removes. From 1754 this file may only shrink."
     }
@@ -6296,7 +6296,7 @@
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 400,
-    "packages/server/src/agent/runtime.ts": 1754,
+    "packages/server/src/agent/runtime.ts": 1767,
     "packages/server/src/agent/shared-state.ts": 415,
     "packages/server/src/config/schema.ts": 300,
     "packages/server/src/credentials/store.ts": 412,
