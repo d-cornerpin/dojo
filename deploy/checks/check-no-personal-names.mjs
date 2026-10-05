@@ -30,19 +30,35 @@
 //     `github-handle-beside-our-org` and `agent-uuid-in-context` — because a gate whose cover depends
 //     on the checking box's own data passes trivially in CI.
 //
-// ── WHAT COUNTS AS A SHIPPED SURFACE ──
-// The same corpus rules the other gates use, and they are not a guess:
+// ── WHAT COUNTS AS A SCANNED SURFACE: TWO CORPORA, NOT ONE ──
+// ⚠ THE FIRST CUT OF THIS GATE SCANNED ONLY WHAT REACHES A USER'S DISK, AND THAT WAS HALF THE RULE.
+// Three reviewers of the v3.3 campaign found the same hole independently: tests, `deploy/checks/**`
+// and the root gate JSON were excluded BY DESIGN, so the owner's rule was enforced on them by review
+// only — and review missed the owner's own first name in a fixture, his agents' names in 169 test
+// files, his real email addresses and GitHub handle in four more, and three measurement notes in
+// `ratchets.json` that name the box's agents. The rule says "anything that goes live". THIS
+// REPOSITORY IS PUBLIC, so a name in a test file is published the moment it is pushed, exactly as
+// surely as a name in a comment that compiles into `dist`. Hence two corpora:
+//
+//   SHIPPED — reaches a user's disk:
 //   · `packages/*/src/**/*.ts(x)` COMPILES INTO `dist`, and `tsconfig.base.json` does NOT set
 //     `removeComments` — so every comment ships. That is the audit's §1.2 finding and the reason
 //     this gate reads comments at all.
 //   · `packages/server/src/db/migrations/*.sql`, `packages/server/src/tools/docs/*.md` and
 //     `templates/*.md` are RAW-COPIED by `deploy/build-package.sh` (:57-58, :72-79, :129-130).
 //   · `deploy/scripts/**` is raw-copied and runs on the user's box.
-//   · TESTS ARE EXCLUDED because they do not ship: `packages/server/tsconfig.json` excludes
-//     `src/**/__tests__/**` and `src/**/*.test.ts`, and the packager copies `dist` wholesale.
-//     (Standing hazard, stated: `packages/shared/tsconfig.json` has no `exclude`, so the day a
-//     `packages/shared/src/*.test.ts` appears it WILL ship. This gate scans shared's tests for that
-//     reason — see SHARED_TESTS_SHIP.)
+//
+//   PUBLIC — never reaches `dist`, but every byte of it is readable by anyone on the internet:
+//   · every `__tests__/**` and `*.test.*`/`*.spec.*` under `packages/*/src`. (`packages/server`'s
+//     tsconfig excludes them from `dist`, which is why they were argued out of the first cut; it is
+//     also irrelevant to a public repository. `packages/shared`'s tsconfig has NO `exclude`, so its
+//     tests ship as well — that file-shape used to need its own clause and no longer does, because
+//     the two corpora together cover it either way.)
+//   · `watchdog/src/**/*.ts` — product code that the packager builds separately.
+//   · `deploy/checks/**` — the gate sources, their fixtures, `gate-manifest.mjs`,
+//     `growth-baseline.json`, `spine-manifest.json` and `capability-ledger.csv`.
+//   · `deploy/release.sh`, `ratchets.json`, `lint-baseline.json` — the pin and ritual files, whose
+//     `why` prose is where worker measurement notes name the box's agents.
 //
 // ── WHAT IS NOT A LEAK, AND WHY EACH EXEMPTION IS SAFE ──
 //   · THE SERVICE-AGENT ROLE NAMES (`Agent`, `PM`, `Trainer`, `Imaginer`, `Healer`, `Dreamer`) are
@@ -66,7 +82,7 @@ import { execFileSync, execSync } from 'node:child_process';
 const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const VERBOSE = process.argv.includes('--verbose');
 
-// ── THE SHIPPED CORPUS ──────────────────────────────────────────────────────
+// ── CORPUS ONE: WHAT REACHES A USER'S DISK ──────────────────────────────────
 const SHIPPED = [
   /^packages\/[^/]+\/src\/.*\.(?:ts|tsx)$/,
   /^packages\/server\/src\/db\/migrations\/.*\.sql$/,
@@ -74,18 +90,23 @@ const SHIPPED = [
   /^templates\/.*\.md$/,
   /^deploy\/scripts\/.*$/,
 ];
-// Tests do not ship — except from `packages/shared`, whose tsconfig has no `exclude`.
-const SHARED_TESTS_SHIP = /^packages\/shared\/src\/.*(?:__tests__|\.test\.tsx?)/;
-const NOT_SHIPPED = (rel) =>
-  !SHARED_TESTS_SHIP.test(rel) && /(?:^|\/)__tests__\//.test(rel) === false
-    ? /\.(?:test|spec)\.tsx?$/.test(rel)
-    : /(?:^|\/)__tests__\//.test(rel);
 
-function shippedFiles() {
+// ── CORPUS TWO: WHAT REACHES THE PUBLIC REPOSITORY ──────────────────────────
+// Nothing here is excluded for "not shipping" any more; see the header. A file matching PUBLIC is
+// scanned whether or not SHIPPED also claims it, which is why `packages/shared`'s tests no longer
+// need the special case the first cut gave them.
+const PUBLIC = [
+  /^packages\/[^/]+\/src\/.*(?:(?:^|\/)__tests__\/|\.(?:test|spec)\.tsx?$)/,
+  /^watchdog\/src\/.*\.ts$/,
+  /^deploy\/checks\/.*$/,
+  /^deploy\/release\.sh$/,
+  /^(?:ratchets|lint-baseline)\.json$/,
+];
+
+function scannedFiles() {
   return execSync("git ls-files", { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
     .split('\n').filter(Boolean)
-    .filter((rel) => SHIPPED.some((re) => re.test(rel)))
-    .filter((rel) => SHARED_TESTS_SHIP.test(rel) || !NOT_SHIPPED(rel));
+    .filter((rel) => PUBLIC.some((re) => re.test(rel)) || SHIPPED.some((re) => re.test(rel)));
 }
 
 // ── THE PRODUCT'S OWN VOCABULARY, READ RATHER THAN LISTED ───────────────────
@@ -156,6 +177,16 @@ const HANDLE_PLACEHOLDERS = new Set([
   'the-owner', 'anyone', 'handle', 'account', 'redacted', 'example', 'org', 'repo',
 ]);
 
+/**
+ * Words that occupy the home-directory position but name nobody (lane t101). Moved out of the
+ * `home-path-username` lookahead, where an incomplete list silently flagged the gate's own remedy.
+ */
+const PATH_PLACEHOLDERS = new Set([
+  'me', 'you', 'your-user', 'your-handle', 'username', 'user', 'a-user', 'the-user', 'someone',
+  'somebody', 'anyone', 'owner', 'the-owner', 'an-owner', 'a-person', 'the-person', 'person',
+  'redacted', 'example', 'name', 'firstname-lastname', 'nobody', 'shared',
+]);
+
 const NOT_AN_ACCOUNT = new Set([
   'login', 'repos', 'user', 'users', 'orgs', 'settings', 'apps', 'marketplace', 'features',
   'pricing', 'about', 'explore', 'topics', 'notifications', 'search', 'codespaces', 'sponsors',
@@ -176,7 +207,46 @@ const ROSTER_EXEMPT_FILES = new Map([
   ['packages/server/src/services/voice-catalog.ts', 'vendor TTS voice catalogue'],
   ['packages/server/src/services/audio-generation.ts', 'vendor TTS/music voice ids'],
   ['packages/server/src/services/capabilities.ts', 'names a vendor voice in a capability example'],
+  // ── THIS FILE, and it is the one exemption the widening genuinely needs (lane t101, D5) ──
+  // Widening the corpus to `deploy/checks/**` points the gate at its own source, and the roster
+  // half then fires on this file for two reasons that are both the opposite of a leak:
+  //   (1) the fixture tables below hold SYNTHETIC agent names (`Zergo`, `Zergblatt`) chosen to be
+  //       names nobody would use — and "nobody would use it" is exactly the property that breaks
+  //       the day somebody does, on one box, by coincidence;
+  //   (2) the vendor-voice-id argument CANNOT BE WRITTEN WITHOUT THE COLLISION IT IS ABOUT. The
+  //       whole point of the case-sensitivity note is that the Kokoro voice id `nova` is product
+  //       vocabulary while an agent called `Nova` is a name; stating it requires writing both, and
+  //       a box with an agent of that name turns the explanation into a finding.
+  // The exemption is ROSTER-HALF ONLY. The pattern half still reads every line of this file except
+  // the fixture block (see CORPUS_FENCE), so a home path, an address, a handle or a live agent id
+  // planted in this file's prose or code is still caught here — proven by its own planted fault.
+  ['deploy/checks/check-no-personal-names.mjs',
+    'its own synthetic name fixtures + the vendor-voice-id collision argument (pattern half still runs)'],
 ]);
+
+/**
+ * THE ONE CORPUS EXEMPTION (lane t101, D5), and it is as narrow as it can be made.
+ *
+ * `FIXTURES` below is a names-gate TEST CORPUS: every positive row is a deliberate instance of a
+ * shape this gate must catch, so pointing the gate at it reports the test suite as the defect. The
+ * fence is therefore a REGION, not a file — two sentinel comments, and the pattern half skips only
+ * the lines between them. Everything else in this file — the doctrine header, the patterns, the
+ * matching code, the report — is scanned exactly like any other file in `deploy/checks/**`.
+ *
+ * A file-level exemption was the obvious alternative and is REFUSED: this is the longest file in
+ * `deploy/checks` and the one most likely to be edited by a worker pasting a measurement, and an
+ * exemption that covers the whole thing would make the gate blind precisely where it is loudest.
+ */
+// ⚠ THE SENTINEL STRINGS ARE BUILT FROM PIECES ON PURPOSE, and the first cut's bug is the reason:
+// written out whole, each literal here IS an occurrence of the sentinel it searches for, so the
+// opener matched this declaration, the closer matched the line below it, and the "fence" enclosed
+// two lines of its own definition while the fixture table it exists for stayed exposed. The gate
+// reported three of its own fixture rows as findings and that is how it was caught.
+const CORPUS_FENCE = {
+  file: 'deploy/checks/check-no-personal-names.mjs',
+  open: 'BEGIN NAMES-GATE' + ' TEST CORPUS',
+  close: 'END NAMES-GATE' + ' TEST CORPUS',
+};
 
 /**
  * ── HALF 1b: THE MACHINE'S OWN IDENTITIES, DERIVED AT CHECK TIME (review M1) ─────────────
@@ -220,6 +290,53 @@ function derivedIdentities() {
 }
 
 /**
+ * ── HALF 1c: THE OWNER'S OWN NAME, READ AT RUNTIME (v3.3, lane t101) ─────────────────────
+ *
+ * THE HOLE THIS CLOSES, stated because it is the reason this lane exists: the roster half reads
+ * `agents.name`, and the OWNER IS NOT AN AGENT. So `setConfig('owner_name', '<his first name>')` —
+ * which two independent reviewers found seeded in seven prompt and gateway fixtures — matched
+ * NOTHING. It rode green past a gate named "no personal names" while holding a personal name.
+ *
+ * On the box this was written on it was caught by accident, and the accident is the argument: the
+ * owner's git email local part happens to contain his name, so `derivedIdentities()` covered it.
+ * That cover is luck. In CI, and on any box whose git identity is unset or impersonal, the derived
+ * set is empty and the seeded name rides again. So the name is read STRUCTURALLY, from the same
+ * place the product reads it (`config.owner_name`, the key `config/platform.ts` resolves through
+ * `ownerName()`), at check time, and — like the roster — it is never written down here.
+ *
+ * The product's own FALLBACK is subtracted (`OWNER_NAME_FALLBACK` in `config/platform.ts`, read
+ * rather than typed), because a box that never finished setup holds the placeholder, and flagging
+ * the placeholder would flag the cure. The anonymising words the scrub itself writes are subtracted
+ * for the same reason `HANDLE_PLACEHOLDERS` exists: `the owner`, `a user`, `User`.
+ */
+function ownerNames() {
+  const dbPath = path.join(process.env.DOJO_HOME ?? os.homedir(), '.dojo/data/dojo.db');
+  if (!fs.existsSync(dbPath)) return { available: false, names: [] };
+  let fallback = null;
+  try {
+    const src = fs.readFileSync(path.join(ROOT, 'packages/server/src/config/platform.ts'), 'utf8');
+    const m = src.match(/OWNER_NAME_FALLBACK\s*=\s*'([^']+)'/);
+    fallback = m ? m[1].toLowerCase() : null;
+  } catch { /* the roleNames() read above already fails loudly if this file is unreadable */ }
+  try {
+    const out = execSync(`sqlite3 -readonly ${JSON.stringify(dbPath)} `
+      + `"SELECT value FROM config WHERE key = 'owner_name'"`,
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const names = out.split('\n').map((s2) => s2.trim()).filter(Boolean)
+      .filter((n) => n.length >= 3 && /^[A-Za-z][A-Za-z0-9 ._-]*$/.test(n))
+      .filter((n) => n.toLowerCase() !== fallback)
+      .filter((n) => !OWNER_PLACEHOLDERS.has(n.toLowerCase()));
+    return { available: true, names };
+  } catch { return { available: false, names: [] }; }
+}
+
+/** The anonymising words the scrub writes in an owner's place. Flagging the cure trains people off. */
+const OWNER_PLACEHOLDERS = new Set([
+  'the owner', 'owner', 'a user', 'the user', 'user', 'you', 'me', 'someone', 'somebody',
+  'anyone', 'a person', 'the person', 'redacted', 'example', 'nobody',
+]);
+
+/**
  * Agent UUIDs from the live table (review M1): the audit's §3.1 shipped one FIVE times as a literal.
  * A UUID is an identifier of a specific machine's agent, which is exactly what the rule calls
  * identifiable information — and like the roster, the list is read at check time and never stored.
@@ -240,7 +357,14 @@ const PATTERNS = [
   {
     id: 'home-path-username',
     // /Users/<name>/ where <name> is not a placeholder. Placeholders are the fix, not the defect.
-    re: /\/Users\/(?!<|\.\.\.|me\/|you\/|your-user|name>|old>|user\/|username\/)([A-Za-z][A-Za-z0-9._-]{1,31})\//g,
+    //
+    // ⚠ THE LOOKAHEAD USED TO CARRY THE PLACEHOLDER LIST AND IT WAS INCOMPLETE (lane t101): widening
+    // the corpus to tests surfaced `/Users/someone/` and `/Users/a-user/` beside a path carrying a
+    // real first name, and the first two are the anonymised form this gate asks for while the third
+    // is the leak. A lookahead that knows four placeholders and not the fifth flags the cure, so the
+    // moved OUT of the regex and into `PATH_PLACEHOLDERS`, checked against the CAPTURE below — one
+    // place to add a word, and the same shape `HANDLE_PLACEHOLDERS` already uses for handles.
+    re: /\/Users\/(?!<|\.\.\.)([A-Za-z][A-Za-z0-9._-]{1,31})\//g,
     why: 'a real account name in a home-directory path identifies the machine\'s owner',
   },
   {
@@ -249,7 +373,22 @@ const PATTERNS = [
     // The local part may be a placeholder (`name@`, `user@`, `you@`, `someone@`) and the domain may
     // be any documented example domain, including a subdomain of one (`northwind.example.com` is how
     // the prompt docs write a fictional company).
-    re: /\b(?!name@|user@|you@|someone@|anyone@|noreply@|no-reply@)[A-Za-z0-9._%+-]+@(?![A-Za-z0-9.-]*example\.(?:com|org|net)\b|x\.com\b|org\.com\b|odata\.bind\b|icloud\.com\b|anthropic\.com\b|domain\.com\b|email\.com\b|company\.com\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
+    //
+    // ⚠ THE RESERVED TLDs ARE EXEMPT, AND THAT IS NOT A LOOSENING (lane t101). `.test`, `.example`,
+    // `.invalid` and `.localhost` are reserved BY THE IETF for exactly this purpose — RFC 2606 §2
+    // and RFC 6761 — so `a.person@somewhere.test` cannot be anybody's inbox by construction, the way
+    // the same local part on a LIVE top-level domain can. Widening the corpus to tests put ~40 of
+    // the reserved form beside four real addresses; a gate that cannot tell the standard from the
+    // leak buries the leak. (The counter-instance belongs in the fenced fixture table below, not
+    // in this note — this gate reads its own comments, and it caught this paragraph writing one.)
+    // The four real ones are the finding, and they are scrubbed; the reserved ones are
+    // the shape this gate should be ASKING for, and `@ex.com`/`@ms.com`-style abbreviations of a
+    // live TLD were rewritten to `.test` rather than exempted, because they are not reserved.
+    re: /\b(?!name@|user@|you@|someone@|anyone@|noreply@|no-reply@)[A-Za-z0-9._%+-]+@(?![A-Za-z0-9.-]*example\.(?:com|org|net)\b|[A-Za-z0-9.-]*\.(?:test|example|invalid|localhost)\b|x\.com\b|org\.com\b|odata\.bind\b|icloud\.com\b|anthropic\.com\b|domain\.com\b|email\.com\b|company\.com\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/gi,
+    // ⚠ CASE-INSENSITIVE, and it was not (lane t101): a fixture wrote `Pat@Example.com` and the
+    // lowercase exemption did not see `Example.com`, so the documented example domain — the one
+    // right answer — was reported as somebody's inbox. Every character class here already spans
+    // both cases, so the flag only fixes the exemptions.
     why: 'an address that is not one of the documented example domains is somebody\'s real inbox',
   },
   {
@@ -303,12 +442,59 @@ const PATTERNS = [
     // The prose arm requires the handle to be QUOTED (`github user \`someone\``), because that is how
     // a handle is actually written here and because unquoted prose is English: the first cut matched
     // "the GitHub account connected to this Mac" and captured "connected".
-    re: /(?:github\.com\/(?![A-Za-z0-9-]+\/[A-Za-z0-9._-])|github\s+(?:user|handle|account)\s+[`'"])([A-Za-z][A-Za-z0-9-]{2,38})\b/gi,
+    // ⚠ A SUBDOMAIN IS NOT AN ACCOUNT PATH (lane t101): the corpus widening surfaced
+    // `https://docs.github.com/rest` in a test, read as the account `rest`, because `github.com/`
+    // matches inside `docs.github.com/`. `docs.`, `api.`, `raw.` and `gist.` are GitHub's own
+    // service hosts and what follows them is a document path, never a person. The negative
+    // lookbehind for a dot is the whole fix, and it is cheaper than naming every subdomain.
+    re: /(?:(?<![A-Za-z0-9.-])github\.com\/(?![A-Za-z0-9-]+\/[A-Za-z0-9._-])|github\s+(?:user|handle|account)\s+[`'"])([A-Za-z][A-Za-z0-9-]{2,38})\b/gi,
     why: 'a personal account handle is identifying; the product\'s own public slug is exempted',
+  },
+  {
+    id: 'logic-keyed-on-a-name',
+    /**
+     * ── D3: NOTHING MAY RELY ON A SPECIFIC NAME ──────────────────────────────────────────
+     *
+     * The owner's rule has two halves and this gate only ever enforced one. "No names in anything
+     * that goes live" is the half about LEAKS; "nothing about your code should be reliant on any
+     * specific agent names" is the half about BEHAVIOUR, and a scrub cannot see it: deleting the
+     * name from `if (agent.name === 'Zargo')` and leaving the comparison is not a fix, it is a
+     * rename. The 2026-09-26 audit found four such sites and routed all four through
+     * `config/platform.ts` accessors (`primaryAgentId()`, `ownerName()`, …) so the code asks the
+     * configuration who somebody is instead of recognising a word. Nothing re-grew them — this
+     * clause is what says so on every run instead of once.
+     *
+     * IT IS A SHAPE, NOT A NAME LIST, so it reds on a literal nobody has thought of yet and it
+     * works on a box with no database.
+     *
+     * ⚠ THE OBVIOUS PATTERN IS USELESS AND WAS MEASURED BEFORE BEING DISCARDED: `name === '<word>'`
+     * matches 218 sites in this tree and every one of them is legitimate — tool names
+     * (`name === 'send_to_agent'`), mail headers (`h.name === 'Subject'`), DOM error names
+     * (`e.name === 'AbortError'`), directory entries (`entry.name === 'data'`). A clause with 218
+     * false positives is a clause somebody deletes. TWO conjuncts make it precise:
+     *   (1) the expression must name a PERSON OR AGENT — `agentName`, `agent.name`, `owner_name`,
+     *       `assigneeName`, `creator.name` — not a tool, a header, a file or an error;
+     *   (2) the literal must be a DISPLAY NAME: one capitalised word. Tool and header names are
+     *       snake_case or multi-capital (`Message-ID`, `AbortError`), and both fail this.
+     * Role names are then subtracted at match time from `config/platform.ts`'s own defaults, because
+     * `agent.name === 'Healer'` recognises a product ROLE, which is vocabulary and not a person —
+     * the same subtraction the roster half already makes, read from the same place.
+     *
+     * COMMENTS ARE STRIPPED BEFORE THIS ONE RUNS, and only this one (see `runPatterns`). Every other
+     * pattern here exists BECAUSE comments ship. This clause is about what the code DOES, and
+     * `tools/index-notes.ts` carries a note that quotes the audit's old `row?.name === 'Dreamer'`
+     * shape to record that it was removed — a clause that fires on that note tests the prose.
+     */
+    re: /\b(?:agent|owner|primary|pm|trainer|healer|dreamer|imaginer|assignee|creator|counterparty|person|people|contact|user)\w*(?:\.|_|->)?(?:name|Name)\b\s*(?:===|!==|==|!=)\s*['"`]([A-Z][A-Za-z]{2,30})['"`]/g,
+    why: 'logic that recognises an agent or a person by NAME breaks the day it is renamed; ask '
+      + '`config/platform.ts` who somebody is instead',
+    codeOnly: true,
+    roleAware: true,
   },
 ];
 
 // ── THE FIXTURE TABLE — the census-reader law: caught AND ignored, both proven ──
+// BEGIN NAMES-GATE TEST CORPUS  (the pattern half skips to the closing sentinel; see CORPUS_FENCE)
 const FIXTURES = [
   // [ text, expected pattern id or null ]
   // ⚠ EVERY FIXTURE STRING BELOW IS SYNTHETIC, AND THAT IS NOT A STYLE NOTE — IT IS THIS FILE'S ONE
@@ -323,9 +509,14 @@ const FIXTURES = [
   ['// generic: /Users/you/Library', null],
   ['// generic: /Users/<your-user>/Desktop', null],
   ['// a path with no user at all: /usr/local/bin/node', null],
-  ['await sendMail("a.person@somewhere.test")', 'email-address'],
-  ['// reply-to: another.person@corp.test in the header', 'email-address'],
-  ['// a placeholder local part is not an inbox: someone@corp.test', null],
+  // ⚠ THESE TWO ROWS USED TO END `.test` AND THAT WAS WRONG (lane t101), stated rather than quietly
+  // swapped: `.test` is RESERVED by RFC 2606 §2 and can never resolve to anybody's inbox, so a
+  // fixture asserting it IS a leak was asserting the opposite of the truth. They now carry a live
+  // TLD, which is what makes an address somebody's; the reserved forms moved to the ignore rows
+  // below. The local parts stay synthetic, per this table's one rule.
+  ['await sendMail("a.person@somewhere.net")', 'email-address'],
+  ['// reply-to: another.person@corp.io in the header', 'email-address'],
+  ['// a placeholder local part is not an inbox: someone@corp.io', null],
   ['// the docs example: user@example.com', null],
   ['// Anthropic\'s own: noreply@anthropic.com', null],
   ['// a Graph API keyword, not an address: user@odata.bind', null],
@@ -366,13 +557,113 @@ const FIXTURES = [
   ['const CLIENT_ID = \'9e5f94bc-e8a4-4e73-b8be-63364c29d753\'; // Microsoft\'s published id', null],
   ['// the work row: ask:11111111-2222-3333-4444-555555555555', null],
   ['// a plain uuid in a doc example: 11111111-2222-3333-4444-555555555555', null],
-];
 
-function runPatterns(text) {
+  // ── lane t101: the placeholder list that moved out of the home-path lookahead ──
+  ['// the anonymised form this gate asks for: /Users/someone/.nvm/bin/node', null],
+  ['const HOME = \'/Users/a-user/.dojo/uploads\';', null],
+  ['// the leak the placeholders sat beside: /Users/qwertyuser/taxes.pdf', 'home-path-username'],
+
+  // ── lane t101: the IETF's reserved TLDs (RFC 2606 §2, RFC 6761) are how a test writes an inbox ──
+  ['// reserved, cannot be anybody: a.person@somewhere.test', null],
+  ['{ email: \'owner@outlook.example\' }', null],
+  ['// reserved: thing@host.invalid and thing@host.localhost', null],
+  ['// a LIVE tld is not reserved, whoever short the label: a.person@somewhere.co', 'email-address'],
+
+  // ── lane t101: a GitHub SUBDOMAIN is a document host, not an account path ──
+  ['// the REST docs: (https://docs.github.com/rest)', null],
+  ['// the releases API: https://api.github.com/repos/someorg/their-tool/releases', null],
+  ['// an account page on the real host is still an account: github.com/someperson', 'personal-github-handle'],
+
+  // ── lane t101, D3: logic that RECOGNISES somebody by name, and the 218 shapes that must not fire ──
+  ["if (agent.name === 'Zergblatt') return true;", 'logic-keyed-on-a-name'],
+  ['if (ownerName === "Qwertyuser") skip();', 'logic-keyed-on-a-name'],
+  ["const isIt = assigneeName !== 'Zergo';", 'logic-keyed-on-a-name'],
+  // A ROLE is product vocabulary, read from `config/platform.ts`'s defaults, so it is not a person:
+  ["if (row?.name === 'Healer') return healerId();", null],
+  ["if (agent.name === 'Dreamer') return dreamerId();", null],
+  // The shapes that made the loose version unusable — a tool, a header, an error, a directory entry:
+  ["if (name === 'send_to_agent') return true;", null],
+  ["const from = headers.find(h => h.name === 'From')?.value;", null],
+  ["if (e.name === 'AbortError') return true;", null],
+  ["if (entry.name === 'data') continue;", null],
+  ["if (providerName === 'System') return null;", null],
+  ["if (toolName === 'file_delete') return 'file deletion';", null],
+  // snake_case and multi-capital literals are identifiers, never display names:
+  ["if (agent_name === 'primary_agent') return true;", null],
+  ["if (agentName === 'Message-ID') return true;", null],
+  // ⚠ A COMMENT QUOTING THE OLD SHAPE IS A RECORD OF ITS REMOVAL, and `tools/index-notes.ts` keeps
+  // one. This row is why the census clause strips comments and the other patterns do not.
+  ["// the audit's own shape, recorded as removed: read `row?.name === 'Zergo'` until 2026-09-26", null],
+];
+// END NAMES-GATE TEST CORPUS
+
+/**
+ * Strip `//` and `/* *\/` comments. Used ONLY by `codeOnly` patterns — the census clause (D3), whose
+ * subject is what the code DOES. Every other pattern in this file deliberately reads comments,
+ * because `tsconfig.base.json` does not set `removeComments` and a comment is a shipped byte.
+ * String-aware enough for this job: a `//` inside a quoted string does not open a comment.
+ */
+function stripComments(text) {
+  let out = '', i = 0, quote = null, inRegex = false;
+  // ⚠ REGEX LITERALS MUST BE TRACKED, and the first cut did not: this very file is mostly patterns,
+  // and `/['"`][^'"`\n]*/` contains three quote characters. A stripper that reads the first of them
+  // as opening a string desynchronises for the rest of the file — every `//` and `/*` after it then
+  // looks like string content, so NOTHING gets stripped and the census clause reads the doctrine
+  // above it as code. It fired on this file's own explanation of itself, which is how it was caught.
+  // `prev` is the standard disambiguator: after a value (identifier, `)`, `]`, literal) a `/` is
+  // division; after an operator, a comma, a brace or the start of input it opens a regex.
+  const DIVIDES_AFTER = /[A-Za-z0-9_$)\]'"`]$/;
+  while (i < text.length) {
+    const c = text[i], c2 = text[i + 1];
+    if (quote) {
+      if (c === '\\') { out += c + (c2 ?? ''); i += 2; continue; }
+      if (c === quote) quote = null;
+      out += c; i++; continue;
+    }
+    if (inRegex) {
+      if (c === '\\') { out += c + (c2 ?? ''); i += 2; continue; }
+      if (c === '[') { // a character class may hold an unescaped `/`
+        while (i < text.length && text[i] !== ']') { if (text[i] === '\\') { out += text[i]; i++; } out += text[i]; i++; }
+        out += text[i] ?? ''; i++; continue;
+      }
+      if (c === '/' || c === '\n') inRegex = false;
+      out += c; i++; continue;
+    }
+    if (c === '"' || c === "'" || c === '`') { quote = c; out += c; i++; continue; }
+    if (c === '/' && c2 === '/') { while (i < text.length && text[i] !== '\n') i++; continue; }
+    if (c === '/' && c2 === '*') {
+      i += 2;
+      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) { if (text[i] === '\n') out += '\n'; i++; }
+      i += 2; continue;
+    }
+    if (c === '/' && !DIVIDES_AFTER.test(out.replace(/\s+$/, ''))) { inRegex = true; out += c; i++; continue; }
+    out += c; i++;
+  }
+  return out;
+}
+
+/**
+ * `codeText` is the same text with comments already removed. It is a PARAMETER rather than computed
+ * here because the scan runs line by line, and a `/**` block comment's inner lines carry no opener —
+ * stripping them one at a time would leave every line of this file's own doctrine looking like code.
+ * The caller strips the whole file once (newlines preserved, so line numbers still line up).
+ */
+function runPatterns(text, codeText) {
   const hits = [];
   for (const p of PATTERNS) {
+    const subject = p.codeOnly ? (codeText ?? stripComments(text)) : text;
     p.re.lastIndex = 0;
-    for (const m of text.matchAll(p.re)) {
+    for (const m of subject.matchAll(p.re)) {
+      if (p.roleAware) {
+        // `agent.name === 'Healer'` recognises a product ROLE, which is vocabulary and not a
+        // person. The role list is read from `config/platform.ts`'s own defaults, so a renamed role
+        // cannot turn this clause into a false alarm and a NEW role is covered the day it lands.
+        if (roleNames().has((m[1] ?? '').toLowerCase())) continue;
+      }
+      if (p.id === 'home-path-username') {
+        const got = (m[1] ?? '').toLowerCase();
+        if (PATH_PLACEHOLDERS.has(got) || got.startsWith('<')) continue;
+      }
       if (p.needsOrgOnLine) {
         const slug = publicSlug();
         const org = slug ? slug.split('/')[0] : null;
@@ -411,7 +702,7 @@ function selfTest() {
   console.log('── fixture table: the pattern half, caught and ignored ──');
   for (const [textRaw, want] of FIXTURES) {
     const text = textRaw.replaceAll('<SLUG>', slug).replaceAll('<ORG>', slug.split('/')[0]);
-    const hits = runPatterns(text);
+    const hits = runPatterns(text, stripComments(text));
     const got = hits.length ? hits[0].id : null;
     const ok = got === want;
     if (!ok) bad++;
@@ -460,9 +751,10 @@ function selfTest() {
 // ── THE SCAN ────────────────────────────────────────────────────────────────
 const roles = roleNames();
 const roster = liveRoster();
+const owner = ownerNames();
 const handles = derivedIdentities();
 const agentIds = liveAgentIds();
-const files = shippedFiles();
+const files = scannedFiles();
 
 const selfTestBad = selfTest();
 if (selfTestBad > 0) {
@@ -488,13 +780,46 @@ const rosterNeedles = roster.names
     };
   });
 
+/**
+ * The owner's own name, needled exactly like a roster name (lane t101, half 1c). Whole-word and
+ * case-SENSITIVE for the bare pass, case-insensitive inside quotes — the same two passes, for the
+ * same reason: `setConfig('owner_name', '<name>')` is a display name written as DATA, which is the
+ * shape the reviewers actually found, while a lowercase bare word may be an ordinary English one.
+ */
+const ownerNeedles = owner.names.map((n) => {
+  const esc = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return {
+    name: n,
+    re: new RegExp(`\\b${esc}\\b`),
+    lower: new RegExp(`['"\`][^'"\`\n]*\\b${esc}\\b[^'"\`\n]*['"\`]`, 'i'),
+  };
+});
+
 const findings = [];
 for (const rel of files) {
   const abs = path.join(ROOT, rel);
   if (!fs.existsSync(abs)) continue;
   const text = fs.readFileSync(abs, 'utf8');
   const lines = text.split('\n');
+  // Comments stripped ONCE per file, newlines preserved, so `codeLines[i]` is still line i + 1.
+  const codeLines = stripComments(text).split('\n');
   const rosterExempt = ROSTER_EXEMPT_FILES.has(rel);
+  // The one corpus exemption (D5): inside this file's sentinel-delimited fixture table, a shape is
+  // the test rather than the defect. Pattern half only, and only between the two sentinels.
+  const fenced = rel === CORPUS_FENCE.file
+    ? (() => {
+        const o = lines.findIndex((l) => l.includes(CORPUS_FENCE.open));
+        const c = lines.findIndex((l) => l.includes(CORPUS_FENCE.close));
+        if (o < 0 || c < 0 || c < o) {
+          console.error(`✗ names gate: ${CORPUS_FENCE.file} has lost its corpus sentinels `
+            + `("${CORPUS_FENCE.open}" / "${CORPUS_FENCE.close}"). The fixture table is the one place `
+            + 'a shape is allowed to be an instance, and a fence that cannot be found silently '
+            + 'either blinds the gate or reports its own test suite.');
+          process.exit(1);
+        }
+        return { from: o, to: c };
+      })()
+    : null;
   lines.forEach((line, i) => {
     if (!rosterExempt) for (const { name, re, lower } of rosterNeedles) {
       if (re.test(line)) findings.push({ rel, line: i + 1, kind: 'agent-name', detail: name, text: line.trim() });
@@ -513,7 +838,12 @@ for (const rel of files) {
         findings.push({ rel, line: i + 1, kind: 'derived-identity', detail: h, text: line.trim() });
       }
     }
-    for (const h of runPatterns(line)) {
+    for (const { name, re, lower } of ownerNeedles) {
+      if (re.test(line)) findings.push({ rel, line: i + 1, kind: 'owner-name', detail: name, text: line.trim() });
+      else if (lower.test(line)) findings.push({ rel, line: i + 1, kind: 'owner-name-in-string', detail: name, text: line.trim() });
+    }
+    if (fenced && i >= fenced.from && i <= fenced.to) return;   // the corpus, not the defect
+    for (const h of runPatterns(line, codeLines[i] ?? '')) {
       findings.push({ rel, line: i + 1, kind: h.id, detail: h.captured ?? h.match, text: line.trim() });
     }
   });
@@ -521,7 +851,8 @@ for (const rel of files) {
 
 // ── THE REPORT. It names the FILE and the LINE; it prints the offending token only as a length and
 // a class, because this gate's own output is pasted into commit messages and issues.
-console.log(`\n── scanned ${files.length} shipped file(s) ──`);
+console.log(`\n── scanned ${files.length} file(s): what reaches a user's disk AND what reaches the `
+  + 'public repository (tests, deploy/checks, the pin files) ──');
 console.log(`  identities derived at check time: ${handles.length} handle(s) (github_account.login + git `
   + `config, product org/repo subtracted), ${agentIds.length} live agent id(s)`
   + (handles.length === 0 ? ' — ⚠ NO handle derivable on this box, so the structural '
@@ -532,6 +863,11 @@ console.log(roster.available
   : `  ⚠ roster half SKIPPED — no database at ${roster.dbPath}. The pattern half still ran. `
     + 'On a developer box with no dojo installed this is expected; in CI it means the agent-name '
     + 'half of this gate did not run and must not be read as a pass.');
+console.log(owner.available
+  ? `  owner half: ${ownerNeedles.length} name(s) read from config.owner_name at check time `
+    + '(the product fallback and the anonymising placeholders subtracted; nothing written down)'
+  : '  ⚠ owner half SKIPPED — no database to read `config.owner_name` from. This is the half that '
+    + 'catches a fixture seeding the owner\'s own first name, and a skip is not a pass.');
 
 
 
@@ -580,7 +916,7 @@ console.error(`\n✗ names gate: ${live.length} finding(s) in ${byFile.size} shi
 for (const [rel, list] of byFile) {
   console.error(`  ${rel}`);
   for (const f of list) {
-    const kind = f.kind === 'agent-name' ? 'agent name' : f.kind;
+    const kind = f.kind === 'agent-name' ? 'agent name' : f.kind === 'owner-name' ? 'owner name' : f.kind;
     const shown = VERBOSE ? `${kind} → ${f.detail}` : `${kind}, ${String(f.detail).length} chars`;
     console.error(`    :${f.line}  ${shown}`);
     if (VERBOSE) console.error(`        ${f.text.slice(0, 120)}`);
