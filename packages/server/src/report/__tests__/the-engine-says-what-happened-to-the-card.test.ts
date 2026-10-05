@@ -113,6 +113,25 @@ function seedReport(p: { id: string; status: string; updatedAt: string; agentId?
 const daysAgo = (n: number): string =>
   new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 19).replace('T', ' ');
 
+/**
+ * SEED A ROW ON THE DATABASE'S OWN CLOCK, the same clock the SETTLED filter reads.
+ *
+ * `recentReportRows` bounds terminal rows with `updated_at >= datetime('now', '-7 days')` — and
+ * that `now` is SQLITE'S, which no JS fake timer can move. A fixture that stamps a row from
+ * JavaScript is therefore measuring its seed against a DIFFERENT clock than production measures
+ * the filter against, and the two agree only by luck of the calendar. `modifier` is handed
+ * straight to SQLite so the seed and the filter cannot drift apart: `'-7 days', '+1 minute'` is
+ * "just inside the horizon" for ever, on any day this suite is ever run.
+ */
+function seedReportAtDbTime(id: string, status: string, ...modifiers: string[]): string {
+  const mods = modifiers.map(() => ', ?').join('');
+  db().prepare(
+    `INSERT INTO dojo_reports (id, agent_id, status, lane, signature, created_at, updated_at)
+     VALUES (?, ?, ?, 'other', ?, datetime('now'${mods}), datetime('now'${mods}))`,
+  ).run(id, AGENT, status, `sig-${id}`, ...modifiers, ...modifiers);
+  return id;
+}
+
 const block = (agentId = AGENT): string => buildReportStateInjection(agentId) ?? '';
 
 beforeEach(() => {
@@ -447,6 +466,33 @@ describe('§5 it does not tick, and it does not touch the prefix', () => {
     vi.setSystemTime(new Date(t0.getTime() + 90 * 60_000));
     expect(block(), 'a relative time term would have re-billed this block at every bucket boundary')
       .toBe(before);
+  });
+
+  // ⚠ THE TIME AXIS ITSELF, HELD IN BOTH DIRECTIONS AT THE EDGE.
+  // The clause above rotted because its seed and the filter it drives read DIFFERENT clocks.
+  // This one pins the property that makes that impossible to reintroduce: a row seeded on the
+  // DATABASE'S clock is classified by the test exactly as production classifies it, on both
+  // sides of the horizon. Seeded at `datetime('now','-7 days','±1 minute')`, so it is a true
+  // edge case on every day this suite is ever run rather than on one week in September.
+  it('the 7-day horizon is the same edge for the fixture and for production, both ways', () => {
+    const inside = seedReportAtDbTime('edge-in', 'cancelled', `-${REPORT_STATE_WINDOW_DAYS} days`, '+1 minute');
+    const outside = seedReportAtDbTime('edge-out', 'cancelled', `-${REPORT_STATE_WINDOW_DAYS} days`, '-1 minute');
+
+    // PRODUCTION's own answer, read from the reader rather than inferred from the rendering.
+    const rows = recentReportRows(AGENT);
+    const settledIds = rows.settled.map(r => r.id);
+    expect(settledIds, `a row 1 minute INSIDE the ${REPORT_STATE_WINDOW_DAYS}-day horizon was dropped`)
+      .toContain(inside);
+    expect(settledIds, `a row 1 minute OUTSIDE the ${REPORT_STATE_WINDOW_DAYS}-day horizon was kept`)
+      .not.toContain(outside);
+    // The in-window TOTAL counts the same edge the same way, so the elision sentence cannot
+    // disagree with the list it is explaining.
+    expect(rows.settledInWindow, 'the horizon total and the horizon list disagree at the edge').toBe(1);
+
+    // And the rendered block agrees with the reader — the half a user actually sees.
+    const b = block();
+    expect(b, 'the row inside the horizon never reached the block').toContain('WITHDRAWN');
+    expect(b, 'the row outside the horizon was rendered anyway').not.toContain('edge-out');
   });
 
   it('F5 THE SUPERSEDING SENTENCE, on its own: the whole point of the lane, in one clause', () => {
