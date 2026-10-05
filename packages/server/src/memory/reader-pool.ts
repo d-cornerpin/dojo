@@ -30,6 +30,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { Worker } from 'node:worker_threads';
+import { createRequire } from 'node:module';
 import { createLogger } from '../logger.js';
 import { getDbPath } from '../db/connection.js';
 
@@ -50,6 +51,11 @@ interface Pending {
   readonly reject: (err: Error) => void;
   readonly timer: NodeJS.Timeout;
   readonly label: string;
+  /** ⚠ WHICH WORKER THIS QUERY IS WAITING ON (I7). The deadline path kills a worker and used to
+   *  leave its OTHER in-flight queries waiting out their own full 15 seconds against a dead thread,
+   *  because it nulled `worker` before `terminate()` and the exit handler's `worker === w` guard
+   *  then skipped them. The fix for one orphaning bug created its twin; this field closes both. */
+  readonly worker: Worker;
 }
 
 /**
@@ -59,7 +65,11 @@ interface Pending {
  */
 const WORKER_SOURCE = `
   const { parentPort, workerData } = require('node:worker_threads');
-  const Database = require('better-sqlite3');
+  // ⚠ AN ABSOLUTE PATH, RESOLVED ON THE MAIN THREAD (I3). An eval worker has no file of its own, so
+  // its bare \`require('better-sqlite3')\` resolves from process.cwd() — which is the platform
+  // directory in production and verified to be \`Cannot find module\` from, say, \`/\`. The parent
+  // knows exactly where the module is; passing the path removes the question entirely.
+  const Database = require(workerData.betterSqlitePath);
   let db;
   try {
     db = new Database(workerData.dbPath, { readonly: true, fileMustExist: true });
@@ -82,19 +92,51 @@ let worker: Worker | null = null;
 let pending = new Map<string, Pending>();
 let nextId = 0;
 let spawnFailed = false;
+/** True once a worker has answered anything. An error before that is a broken worker (I3). */
+let sawFirstReply = false;
+
+/** Where `better-sqlite3` actually lives, asked on the MAIN thread where the answer is knowable. */
+function betterSqliteModulePath(): string {
+  return createRequire(import.meta.url).resolve('better-sqlite3');
+}
+
+/**
+ * The pool is shut and callers go back to the serving thread (I3).
+ *
+ * ⚠ LATCHED, not "retried next time": every failure that reaches here is one a respawn would
+ * reproduce — the database cannot be opened read-only, the native module cannot be found, the thread
+ * cannot start. Retrying each of those once per search turns one broken instrument into a per-query
+ * rejection storm while the sync path that works sits unused.
+ */
+function failPool(err: Error, w: Worker): void {
+  spawnFailed = true;
+  if (worker === w) worker = null;
+  failAllPending(err);
+  void w.terminate();
+}
 
 function spawn(): Worker | null {
   if (spawnFailed) return null;
   try {
-    const w = new Worker(WORKER_SOURCE, { eval: true, workerData: { dbPath: getDbPath() } });
+    const w = new Worker(WORKER_SOURCE, {
+      eval: true,
+      workerData: { dbPath: getDbPath(), betterSqlitePath: betterSqliteModulePath() },
+    });
     w.unref();                       // an instrument must never be why a process refuses to exit
     w.on('message', (msg: { id: string; rows?: unknown[]; error?: string }) => {
       if (msg.id === '__open_failed__') {
+        // ⚠ LATCH IT (I3). This line used to SAY "searches stay on the serving thread" and then not
+        // arrange it: `readerPoolAvailable()` kept answering true, every `readerQuery` rejected, the
+        // FTS arm's catch fell to the LIKE arm which rejected too, and `history_search` ERRORED.
+        // The sync path was never taken. A log line that describes a fallback must be the line that
+        // engages it.
         logger.warn('reader worker could not open the database read-only — searches stay on the serving thread', {
           error: msg.error,
         });
+        failPool(new Error(`reader database could not be opened: ${msg.error ?? 'unknown'}`), w);
         return;
       }
+      sawFirstReply = true;
       const p = pending.get(msg.id);
       // ⚠ NO ENTRY MEANS DISCARDED: the caller aborted, and a late answer resolves nothing. This is the
       // whole of "a stop can genuinely cancel" — the work may still be running, but nobody is waiting.
@@ -111,6 +153,18 @@ function spawn(): Worker | null {
     // deliberate kill of a timed-out worker rejected the NEXT, innocent query with "reader worker
     // exited". In production that is a terminate taking an unrelated in-flight search down with it.
     w.on('error', (err) => {
+      // ⚠ AN ERROR BEFORE THE FIRST SUCCESSFUL REPLY IS A BROKEN WORKER, NOT A HICCUP (I3) — a
+      // missing native module, a bad path, a thread that cannot start. Respawning it on the next
+      // query re-runs the same failure, so the pool latches shut and callers take the sync path,
+      // which is what the warn claimed all along. An error AFTER a worker has answered once is the
+      // measured self-healing case and keeps its old behaviour: replaced on the next query.
+      if (!sawFirstReply) {
+        logger.warn('reader worker failed before it ever answered — searches stay on the serving thread', {
+          error: err.message,
+        });
+        failPool(new Error(`reader worker error: ${err.message}`), w);
+        return;
+      }
       logger.warn('reader worker errored; it will be replaced on the next query', { error: err.message });
       if (worker === w) {
         failAllPending(new Error(`reader worker error: ${err.message}`));
@@ -140,6 +194,16 @@ function failAllPending(err: Error): void {
   const entries = [...pending.values()];
   pending = new Map();
   for (const p of entries) {
+    clearTimeout(p.timer);
+    p.reject(err);
+  }
+}
+
+/** Fail exactly the queries bound to one worker, leaving its replacement's callers alone (I7). */
+function failPendingFor(w: Worker, err: Error): void {
+  for (const [id, p] of [...pending.entries()]) {
+    if (p.worker !== w) continue;
+    pending.delete(id);
     clearTimeout(p.timer);
     p.reject(err);
   }
@@ -195,12 +259,19 @@ export function readerQuery<T>(
       if (worker === w) worker = null;
       void w.terminate();
       reject(new Error(`reader query '${label}' exceeded ${deadlineMs}ms and the worker was terminated`));
+      // ⚠ AND EVERYTHING ELSE THAT WAS WAITING ON *THIS* WORKER (I7). The thread is about to die
+      // inside `sqlite3_step`; its siblings will never be answered. Before this they waited out
+      // their own 15 seconds and then each logged "terminating the reader worker" at a worker that
+      // was already dead. Scoped to `w`, so the replacement's callers are untouched — which is the
+      // bug the `worker === w` guard was added to fix, kept.
+      failPendingFor(w, new Error(`reader worker was terminated while '${label}' overran its deadline`));
     }, deadlineMs);
     timer.unref?.();
 
     pending.set(id, {
       label,
       timer,
+      worker: w,
       resolve: (rows) => resolve(rows as T[]),
       reject,
     });
@@ -259,6 +330,7 @@ export async function warmReaderPool(): Promise<boolean> {
 export function resetReaderPoolForTest(): void {
   spawnFailed = false;
   closed = false;
+  sawFirstReply = false;
   worker = null;
   pending = new Map();
 }

@@ -21,8 +21,11 @@ const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-t89-offload-'));
 const dbPath = path.join(dbDir, 'fixture.db');
 
 // The pool asks `getDbPath()` where to read, so the fixture IS the database as far as it is concerned.
+// ⚠ OVERRIDABLE (I3): one clause needs the pool pointed at a path the worker CANNOT open, which is
+// the asynchronous failure mode the old code could not see — the spawn succeeds and the open does not.
+let dbPathOverride: string | null = null;
 vi.mock('../../db/connection.js', () => ({
-  getDbPath: () => dbPath,
+  getDbPath: () => dbPathOverride ?? dbPath,
   getDb: () => { throw new Error('the offload clauses never touch the serving-thread connection'); },
 }));
 vi.mock('../../logger.js', () => ({
@@ -346,5 +349,96 @@ describe('⚠ 4. THE CROSS-CHECK: a worker-side search does NOT trip the stall s
     console.log(`SENTINEL CROSS-CHECK  worst drift during the off-thread read: ${worstDrift}ms `
       + `(threshold 1000ms) → ${report ? 'STALL REPORTED' : 'no stall'}`);
     expect(report, 'an off-thread read tripped the stall sentinel — the offload is not working').toBeNull();
+  }, 60_000);
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// ⚠ FIX ROUND 1 — THE POOL'S FALLBACK HAS TO ENGAGE, AND A KILL HAS TO TAKE ONLY ITS OWN WORK.
+//
+// I3: the sync fallback engaged only on a SYNCHRONOUS spawn failure. Every other failure mode —
+// the database cannot be opened read-only, the native module cannot be resolved, the thread cannot
+// start — logged "searches stay on the serving thread" and then left `readerPoolAvailable()`
+// answering TRUE, so every `readerQuery` rejected, the FTS arm's catch fell to the LIKE arm which
+// rejected too, and `history_search` ERRORED while the sync path that works sat unused.
+//
+// I7: a deadline kill nulled `worker` before `terminate()`, so the exit handler's `worker === w`
+// guard skipped the dying worker's OTHER in-flight queries. Each waited out its own full 15 seconds
+// and then logged "terminating the reader worker" at a thread that was already dead. That guard was
+// itself the fix for a real bug (a terminate rejecting the REPLACEMENT's innocent callers), so both
+// directions have to hold at once — which is what these clauses assert.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('⚠ I3 — A FALLBACK THAT IS LOGGED MUST BE A FALLBACK THAT IS ENGAGED', () => {
+  it('a database the worker cannot open LATCHES the pool shut, so callers go back on-thread', async () => {
+    resetReaderPoolForTest();
+    const gone = path.join(dbDir, 'no-such-database.db');
+    fs.rmSync(gone, { force: true });
+    dbPathOverride = gone;
+    try {
+      // The spawn itself SUCCEEDS — this is the asynchronous failure the old code could not see.
+      expect(readerPoolAvailable(), 'the worker should spawn; it is the OPEN that fails').toBe(true);
+      await expect(readerQuery('open-fail-clause', 'SELECT 1 AS ok', [])).rejects.toThrow();
+      // ⚠ THE CLAIM: not "the query failed" but "the pool stepped aside". A caller asking again now
+      // gets FALSE and runs its own query, which is what the warn says happens.
+      await vi.waitFor(() => {
+        expect(readerPoolAvailable(), 'the pool still claims to be available after an open failure')
+          .toBe(false);
+      }, { timeout: 5_000 });
+      // And it STAYS shut — a respawn would re-run the same failure once per search.
+      expect(readerPoolAvailable()).toBe(false);
+      expect(readerPendingCount(), 'an in-flight query was left hanging').toBe(0);
+    } finally {
+      dbPathOverride = null;
+      resetReaderPoolForTest();
+    }
+  }, 30_000);
+
+  it('the worker is told WHERE better-sqlite3 is, so its require does not depend on cwd', () => {
+    // An eval worker has no file of its own, so a bare `require('better-sqlite3')` resolves from
+    // `process.cwd()`. Production's cwd makes that work today, which is luck, not design.
+    const src = fs.readFileSync(new URL('../reader-pool.ts', import.meta.url), 'utf-8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    expect(src, 'the worker still resolves the native module from cwd')
+      .not.toMatch(/require\('better-sqlite3'\)/);
+    expect(src, 'the path must be resolved on the main thread, where it is knowable')
+      .toMatch(/createRequire\(import\.meta\.url\)\.resolve\('better-sqlite3'\)/);
+    expect(src, 'and handed to the worker').toMatch(/betterSqlitePath/);
+  });
+});
+
+describe('⚠ I7 — A DEADLINE KILL TAKES ITS OWN WORKER\'S QUERIES, AND ONLY THOSE', () => {
+  it('a sibling of an overrun query rejects PROMPTLY, not after its own deadline', async () => {
+    resetReaderPoolForTest();
+    await warmReaderPool();
+    // Two heavy reads in flight on the same worker. The first carries a 1 ms deadline, so it kills
+    // the thread while both are queued; the second has the full default deadline.
+    const victim = readerQuery('i7-overrun', HEAVY_SQL, [], { deadlineMs: 1 });
+    const sibling = readerQuery('i7-sibling', HEAVY_SQL, []);
+    const t0 = Date.now();
+    await expect(victim).rejects.toThrow(/exceeded 1ms/);
+    await expect(sibling).rejects.toThrow(/terminated/i);
+    const waited = Date.now() - t0;
+    // eslint-disable-next-line no-console
+    console.log(`I7  the sibling of a deadline-killed query rejected after ${waited}ms `
+      + `(its own deadline is ${READER_DEADLINE_MS}ms)`);
+    // ⚠ A FRACTION OF ITS OWN DEADLINE, not a millisecond ceiling — seven lanes share this machine
+    // and the claim is "it did not wait out its deadline", which a tenth of it states safely.
+    expect(waited, 'the sibling waited out its own deadline against a dead worker')
+      .toBeLessThan(READER_DEADLINE_MS / 10);
+    expect(readerPendingCount(), 'the dead worker left entries behind').toBe(0);
+  }, 60_000);
+
+  it('…and the REPLACEMENT worker\'s callers are NOT collateral — the other direction', async () => {
+    // The guard this fix had to keep. `terminate()` resolves BEFORE the thread's `exit` event, so by
+    // the time that event lands the pool has spawned a replacement and the next caller is already
+    // queued against it. A blanket "fail everything on exit" rejected that innocent caller with
+    // "reader worker exited" — the defect the first round recorded. Scoping by worker keeps both.
+    resetReaderPoolForTest();
+    await warmReaderPool();
+    await expect(readerQuery('i7-kill', HEAVY_SQL, [], { deadlineMs: 1 })).rejects.toThrow(/exceeded/);
+    const after = await readerQuery<{ n: number }>('i7-after-kill',
+      'SELECT COUNT(*) AS n FROM messages WHERE agent_id = ?', ['agent-fixture']);
+    expect(after[0].n, 'the query that followed the kill was failed by the dead worker\'s exit')
+      .toBe(ROWS);
   }, 60_000);
 });
