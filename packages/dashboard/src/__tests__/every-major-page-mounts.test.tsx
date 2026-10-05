@@ -57,7 +57,6 @@ vi.mock('../hooks/useToast', async () => {
   };
 });
 
-import * as api from '../lib/api';
 import { AuthProvider } from '../hooks/useAuth';
 import { Login } from '../pages/Login';
 import { Chat } from '../pages/Chat';
@@ -110,40 +109,24 @@ const PAGES: ReadonlyArray<readonly [string, () => ReactElement]> = [
 beforeEach(() => {
   resetFrames();
 
-  // ── TWO HONEST CONCESSIONS, BOTH MEASURED WHILE WRITING THIS FILE ──
+  // ── BOTH CONCESSIONS THAT USED TO LIVE HERE ARE GONE, AND THAT IS THE POINT ──
   //
-  // 1. AN OFFLINE `fetch` INSTEAD OF THE TRIPWIRE. 18 files under `src/` call the
-  //    global `fetch` DIRECTLY rather than through `lib/api` (census: pages
-  //    Settings, Health, Techniques, TechniqueDetail, Setup; components
-  //    TechniqueSelector, TechniqueCard, TechniqueSessionProvider, MigrationExport,
-  //    ActiveJobsIndicator, LinkPreview, CanvasView, ImportWizard,
-  //    PostMigrationBanner, GoogleActivityLog, MicrosoftActivityLog,
-  //    orb/useOrbActivity, lib/voice/voice-client). Those calls have no door a test
-  //    can mock, so mounting their pages trips the setup file's tripwire. A REJECTED
-  //    fetch is what a browser with no server does, and every one of those sites has
-  //    to survive it — so that is what they get here: a server that ANSWERS 503,
-  //    which is the weakest thing every one of those sites must already handle.
+  // 1. THE TRIPWIRE NOW STANDS FOR THIS FILE TOO. This block used to replace the
+  //    setup file's throwing `fetch` with a 503-answering stub, because 16 files
+  //    called the global `fetch` directly and mounting their pages tripped it.
+  //    Every one of those calls goes through `lib/api` now (BACKLOG line 31), and
+  //    `lib/api` is MOCKED above — so no page reaches the network at all and the
+  //    tripwire can do its job. That makes this floor strictly stronger than the
+  //    stub did: a page that mounts here is a page with no un-mockable network
+  //    call left in it, and the next direct `fetch` anyone adds reds this file
+  //    with the tripwire's own message rather than being quietly served a 503.
   //
-  //    ⚠ IT ANSWERS RATHER THAN REJECTS, AND THE REASON IS A FINDING, NOT A
-  //    CONVENIENCE. A REJECTING fetch (a box with no server at all) escapes as an
-  //    UNHANDLED REJECTION out of `pages/Techniques.tsx:35` (`fetchTechniques`, via
-  //    `load` at :93) and `pages/Settings.tsx:1014` (`load`, via :1030) — neither
-  //    loader has a `.catch`, so with the server down the list silently never
-  //    arrives and the owner is told nothing. That is reported for routing rather
-  //    than patched here: both files belong to other lanes this round. When it is
-  //    fixed, flip this stub back to a rejection and the floor gets stronger.
-  vi.stubGlobal('fetch', () => Promise.resolve(new Response(
-    JSON.stringify({ ok: false, error: 'offline: the smoke floor never reaches a server' }),
-    { status: 503, headers: { 'content-type': 'application/json' } },
-  )));
-
-  // ── THE CONCESSION THAT USED TO BE HERE IS GONE, AND THAT IS THE POINT ──
-  // This block overrode `getOllamaLockStatus` with a hand-shaped `{ warnings: [] }`
-  // because `pages/Agents.tsx` read `result.data.warnings.length` with nothing but
-  // `result.ok` in front of it, so the permissive `data: []` default crashed the
-  // page. The read is guarded now, so the floor gets the SAME permissive answer
-  // every other door gets. Put the unguarded read back and Agents reds here: that
-  // is the mutant, and it is why this override is not needed any more.
+  // 2. NO HAND-SHAPED ANSWER FOR ONE DOOR. `getOllamaLockStatus` used to be
+  //    overridden with `{ warnings: [] }` because `pages/Agents.tsx` read
+  //    `result.data.warnings.length` with nothing but `result.ok` in front of it,
+  //    so the permissive `data: []` default crashed the page. The read is guarded
+  //    now and this door gets the same answer as every other. Put the unguarded
+  //    read back and Agents reds here — that is the mutant.
 });
 afterEach(() => { vi.clearAllMocks(); });
 

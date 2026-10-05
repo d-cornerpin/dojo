@@ -1,15 +1,9 @@
 import { useState, useEffect } from 'react';
 import { formatTimeOnly } from '../lib/dates';
+import { request } from '../lib/api';
 
-const TOKEN = () => localStorage.getItem('dojo_token');
-
-const fetchApi = async (path: string) => {
-  const token = TOKEN();
-  const res = await fetch(path, {
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-  });
-  return res.json();
-};
+// Activity rows come through `lib/api`'s one door (BACKLOG line 31) instead of a
+// hand-rolled `fetch` + token read, so this component has a seam a test can mock.
 
 interface ActivityEntry {
   id: string;
@@ -32,10 +26,10 @@ export const MicrosoftActivityLog = () => {
 
   const loadEntries = async () => {
     setLoading(true);
-    let url = '/api/microsoft/activity?limit=50';
+    let url = '/microsoft/activity?limit=50';
     if (filterType !== 'all') url += `&type=${filterType}`;
-    const data = await fetchApi(url);
-    if (data.ok) setEntries(data.data);
+    const result = await request<ActivityEntry[]>(url);
+    if (result.ok) setEntries(result.data);
     setLoading(false);
   };
 

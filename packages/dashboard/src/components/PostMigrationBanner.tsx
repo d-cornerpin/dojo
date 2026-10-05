@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import type { PostMigrationCheck } from '@dojo/shared';
 import { useWebSocket } from '../hooks/useWebSocket';
+import { request } from '../lib/api';
 import { ImportWizard } from './ImportWizard';
 
 // FENG-SHUI EXEMPTION: migration flow uses standard Tailwind status colors.
@@ -50,29 +51,18 @@ export const PostMigrationBanner = () => {
   const [resume, setResume] = useState(false);
   const { subscribe } = useWebSocket();
 
-  const getHeaders = useCallback((): Record<string, string> => {
-    const token = localStorage.getItem('dojo_token');
-    const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
-    const csrf = csrfMatch ? csrfMatch[1] : null;
-    return {
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-    };
-  }, []);
-
   useEffect(() => {
     (async () => {
-      try {
-        const res = await fetch('/api/migration/import/status', { headers: getHeaders() });
-        const data = await res.json();
-        if (data.ok) {
-          setChecks(data.data.checks || []);
-          setDismissed(data.data.dismissed);
-        }
-      } catch { /* ignore */ }
+      const result = await request<{ checks?: PostMigrationCheck[]; dismissed: boolean }>(
+        '/migration/import/status',
+      );
+      if (result.ok) {
+        setChecks(result.data.checks || []);
+        setDismissed(result.data.dismissed);
+      }
       setLoading(false);
     })();
-  }, [getHeaders]);
+  }, []);
 
   useEffect(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -84,10 +74,7 @@ export const PostMigrationBanner = () => {
   }, [subscribe]);
 
   const handleDismiss = async () => {
-    await fetch('/api/migration/import/dismiss', {
-      method: 'POST',
-      headers: { ...getHeaders(), 'Content-Type': 'application/json' },
-    });
+    await request('/migration/import/dismiss', { method: 'POST' });
     setDismissed(true);
   };
 

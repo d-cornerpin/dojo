@@ -224,7 +224,11 @@ export function CanvasView({ dock }: { dock: Extract<DockSpec, { kind: 'canvas' 
     setRenderErr(null);
     (async () => {
       try {
-        const res = await fetch(inlineUrl, { credentials: 'include' });
+        // `fetchUrl`: a URL the server handed us on the canvas meta, not an
+        // `/api` path we built — but still through the one door (BACKLOG line 31).
+        const sent = await api.fetchUrl(inlineUrl, { credentials: 'include' });
+        if (!sent.ok) throw new Error(sent.error);
+        const res = sent.response;
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const html = await res.text();
         if (!cancelled) setRenderedHtml(html);
@@ -258,13 +262,14 @@ export function CanvasView({ dock }: { dock: Extract<DockSpec, { kind: 'canvas' 
       const frame = document.querySelector('.dojo3-dock__frame') as HTMLIFrameElement | null;
       text = frame?.contentDocument?.body?.innerText?.trim() ?? '';
       if (!text) {
-        try {
-          const tok = localStorage.getItem('dojo_token');
-          const res = await fetch(meta.renderUrl, { headers: tok ? { authorization: `Bearer ${tok}` } : {} });
-          const html = await res.text();
-          const parsed = new DOMParser().parseFromString(html, 'text/html');
-          text = (parsed.body?.innerText || parsed.body?.textContent || '').trim();
-        } catch { /* leave empty */ }
+        const sent = await api.fetchUrl(meta.renderUrl, { authorize: true });
+        if (sent.ok) {
+          try {
+            const html = await sent.response.text();
+            const parsed = new DOMParser().parseFromString(html, 'text/html');
+            text = (parsed.body?.innerText || parsed.body?.textContent || '').trim();
+          } catch { /* leave empty */ }
+        }
       }
     }
     if (!text) return;

@@ -82,17 +82,18 @@ interface ResourceData {
   ollamaLock?: OllamaLockData;
 }
 
+type TunnelCardStatus = { enabled: boolean; mode: string; status: string; url: string | null; startedAt: number | null };
+
 const RemoteAccessCard = () => {
-  const [tunnel, setTunnel] = useState<{ enabled: boolean; mode: string; status: string; url: string | null; startedAt: number | null } | null>(null);
+  const [tunnel, setTunnel] = useState<TunnelCardStatus | null>(null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    const token = localStorage.getItem('dojo_token');
-    fetch('/api/system/tunnel', {
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    }).then(r => r.json()).then(data => {
-      if (data.ok) setTunnel(data.data);
-    }).catch(() => {});
+    // Through the one door (BACKLOG line 31). A failure leaves `tunnel` null and
+    // the card renders nothing, which is this card's own "not configured" state.
+    void api.request<TunnelCardStatus>('/system/tunnel').then((r) => {
+      if (r.ok) setTunnel(r.data);
+    });
   }, []);
 
   if (!tunnel || !tunnel.enabled) return null;
@@ -149,12 +150,9 @@ const GoogleWorkspaceCard = () => {
   } | null>(null);
 
   useEffect(() => {
-    const token = localStorage.getItem('dojo_token');
-    fetch('/api/google/status', {
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    }).then(r => r.json()).then(data => {
-      if (data.ok) setStatus(data.data);
-    }).catch(() => {});
+    void api.request<NonNullable<typeof status>>('/google/status').then((r) => {
+      if (r.ok) setStatus(r.data);
+    });
   }, []);
 
   if (!status || !status.connected) return null;

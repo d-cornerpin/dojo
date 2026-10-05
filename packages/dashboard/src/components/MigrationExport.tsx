@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
+import { requestRaw } from '../lib/api';
 
 export const MigrationExport = () => {
   const [showModal, setShowModal] = useState(false);
@@ -27,19 +28,15 @@ export const MigrationExport = () => {
     setStage('Exporting... this may take a moment.');
 
     try {
-      const token = localStorage.getItem('dojo_token');
-      const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
-      const csrf = csrfMatch ? csrfMatch[1] : null;
-
-      const res = await fetch('/api/migration/export', {
+      // `requestRaw`, not `request`: the body is a ZIP to hand the browser, not an
+      // envelope to parse (BACKLOG line 31).
+      const sent = await requestRaw('/migration/export', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password }),
       });
+      if (!sent.ok) throw new Error(sent.error);
+      const res = sent.response;
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({ error: 'Export failed' }));

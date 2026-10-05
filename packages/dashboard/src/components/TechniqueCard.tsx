@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formatRelative } from '../lib/dates';
 import { useToast } from '../hooks/useToast';
+import { requestRaw } from '../lib/api';
 
 interface TechniqueData {
   id: string;
@@ -36,17 +37,12 @@ interface ExportResolution {
 }
 
 async function exportTechniqueToBrowser(id: string): Promise<{ resolutions: ExportResolution[] }> {
-  const token = localStorage.getItem('dojo_token');
-  const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
-  const csrf = csrfMatch ? csrfMatch[1] : null;
-
-  const res = await fetch(`/api/techniques/${id}/export`, {
-    method: 'POST',
-    headers: {
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-    },
-  });
+  // `requestRaw`, not `request`: this call's answer is a zip plus two RESPONSE
+  // HEADERS (`X-Dojo-Export-Resolutions`, `Content-Disposition`) that no JSON
+  // envelope carries (BACKLOG line 31).
+  const sent = await requestRaw(`/techniques/${id}/export`, { method: 'POST' });
+  if (!sent.ok) throw new Error(sent.error);
+  const res = sent.response;
 
   if (!res.ok) {
     let message = `Export failed (${res.status})`;

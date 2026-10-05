@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom';
 import type { Model, Provider } from '@dojo/shared';
 import * as api from '../lib/api';
+import { AUTOMATION_SEND_HINT } from '../lib/automation-permission';
 import { SetupDeps, SetupPermissions } from '../components/SetupDeps';
 import { VoiceSetupStep } from '../components/VoiceSetupStep';
 import { OrbProvider, useDojoOrb } from '../components/orb/OrbProvider';
@@ -1565,25 +1566,14 @@ const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
     // Send welcome message to start the bridge and verify it works
     if (enabled && effectiveDefault) {
       setSending(true);
-      const token = localStorage.getItem('dojo_token');
-      const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
-      const csrf = csrfMatch ? csrfMatch[1] : null;
-      try {
-        const res = await fetch('/api/system/imessage/welcome', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-          },
-          body: JSON.stringify({ recipient: effectiveDefault }),
-        });
-        const data = await res.json();
-        if (!data.ok) {
-          setError(`iMessage saved but welcome message failed: ${data.error}. You may need to grant Automation permission for Messages.`);
-        }
-      } catch {
-        setError('Settings saved but could not send welcome message. Check Automation permissions.');
+      // Through the one door (BACKLOG line 31): the dead-network case arrives as
+      // `{ ok: false }` rather than a throw, so the two branches below are one.
+      const result = await api.request('/system/imessage/welcome', {
+        method: 'POST',
+        body: JSON.stringify({ recipient: effectiveDefault }),
+      });
+      if (!result.ok) {
+        setError(`iMessage saved, but the welcome message did not send: ${result.error}. ${AUTOMATION_SEND_HINT}`);
       }
       setSending(false);
     }

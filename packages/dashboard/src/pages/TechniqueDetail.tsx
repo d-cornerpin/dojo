@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { formatDate } from '../lib/dates';
+import { request } from '../lib/api';
 
 // ── Types ──
 
@@ -52,25 +53,16 @@ const stateBadge: Record<string, { cls: string; label: string }> = {
   needs_setup: { cls: 'pill--draft', label: 'Needs setup' },
 };
 
-function getToken(): string | null { return localStorage.getItem('dojo_token'); }
-
-async function api(path: string, options?: RequestInit) {
-  const token = getToken();
-  const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
-  const csrf = csrfMatch ? csrfMatch[1] : null;
-  const method = options?.method?.toUpperCase() ?? 'GET';
-  const needsCsrf = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
-
-  const res = await fetch(`/api/techniques${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(needsCsrf && csrf ? { 'X-CSRF-Token': csrf } : {}),
-      ...options?.headers,
-    },
-  });
-  return res.json();
+/**
+ * This WAS a hand-rolled copy of `lib/api`'s `request` — same token read, same
+ * csrf scrape, same conditional headers — on a bare `fetch` with no seam
+ * (BACKLOG line 31). It keeps its name, its `/techniques` prefix and its loose
+ * return type so the seven call sites below read exactly as they did, and now it
+ * is three lines over the real door.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function api(path: string, options?: RequestInit): Promise<any> {
+  return request(`/techniques${path}`, options);
 }
 
 type Tab = 'overview' | 'instructions' | 'files' | 'usage' | 'versions';

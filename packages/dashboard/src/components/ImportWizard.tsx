@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback, type DragEvent } from 'react'
 import { createPortal } from 'react-dom';
 import type { PostMigrationCheck } from '@dojo/shared';
 import { useWebSocket } from '../hooks/useWebSocket';
+import { request } from '../lib/api';
 import type { ExportManifest } from './PostMigrationBanner';
 
 // FENG-SHUI EXEMPTION: the migration flow uses standard Tailwind status colors
@@ -44,7 +45,9 @@ const fmtBytes = (n: number | null | undefined): string => {
 };
 
 export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onComplete, onClose }: Props) => {
-  const apiBase = '/api/migration'; // ONE mount; the public /api/setup/migration alias is deleted (PHASE-0 T9) and the wizard runs authenticated
+  // ONE mount; the public /api/setup/migration alias is deleted (PHASE-0 T9) and the
+  // wizard runs authenticated. The leading `/api` belongs to `lib/api`'s door now.
+  const apiBase = '/migration';
   const { subscribe } = useWebSocket();
 
   const [step, setStep] = useState<WizardStep>(initialStep ?? 'upload');
@@ -86,16 +89,6 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   const [modelErr, setModelErr] = useState<Record<string, string>>({});
   const daemonStartedRef = useRef(false);
 
-  const getHeaders = useCallback((): Record<string, string> => {
-    const token = localStorage.getItem('dojo_token');
-    const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
-    const csrf = csrfMatch ? csrfMatch[1] : null;
-    return {
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-    };
-  }, []);
-
   // Live WS wiring for the lifetime of the wizard.
   useEffect(() => {
     const unsubs = [
@@ -121,11 +114,8 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   useEffect(() => {
     if (step !== 'setup' || checks.length > 0) return;
     (async () => {
-      try {
-        const res = await fetch(`${apiBase}/import/status`, { headers: getHeaders() });
-        const data = await res.json();
-        if (data.ok) setChecks(data.data.checks || []);
-      } catch { /* ignore */ }
+      const result = await request<{ checks?: PostMigrationCheck[] }>(`${apiBase}/import/status`);
+      if (result.ok) setChecks(result.data.checks || []);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step]);
@@ -134,29 +124,23 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   useEffect(() => {
     if (!depDone) return;
     (async () => {
-      try {
-        const res = await fetch(`${apiBase}/import/status`, { headers: getHeaders() });
-        const data = await res.json();
-        if (data.ok) setChecks(data.data.checks || []);
-      } catch { /* checks also arrive via WS */ }
+      const result = await request<{ checks?: PostMigrationCheck[] }>(`${apiBase}/import/status`);
+      if (result.ok) setChecks(result.data.checks || []); // they also arrive via WS
       setStep('setup');
     })();
-  }, [depDone, apiBase, getHeaders]);
+  }, [depDone, apiBase]);
 
   // ── Step actions ──
 
   const handleFile = async (selected: File) => {
     setError(null); setManifest(null); setFile(selected);
-    try {
-      const res = await fetch(`${apiBase}/manifest`, {
-        method: 'POST',
-        headers: { ...getHeaders(), 'Content-Type': 'application/octet-stream' },
-        body: selected,
-      });
-      const data = await res.json();
-      if (data.ok) setManifest(data.data);
-      else { setError(data.error || 'Invalid export file'); setFile(null); }
-    } catch { setError('Failed to read export file'); setFile(null); }
+    const result = await request<ExportManifest>(`${apiBase}/manifest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: selected,
+    });
+    if (result.ok) setManifest(result.data);
+    else { setError(result.error || 'Invalid export file'); setFile(null); }
   };
 
   const onDrop = (e: DragEvent) => {
@@ -169,49 +153,40 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   const runScan = async () => {
     if (!file) return;
     setStep('scan'); setScanning(true); setPreflight(null); setError(null);
-    try {
-      const res = await fetch(`${apiBase}/preflight`, {
-        method: 'POST',
-        headers: { ...getHeaders(), 'Content-Type': 'application/octet-stream', 'X-Export-Password': encodeURIComponent(password) },
-        body: file,
-      });
-      const data = await res.json();
-      if (data.ok) setPreflight(data.data);
-      else setError(data.error || 'Scan failed');
-    } catch (e) { setError(e instanceof Error ? e.message : 'Scan failed'); }
-    finally { setScanning(false); }
+    const result = await request<typeof preflight>(`${apiBase}/preflight`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Export-Password': encodeURIComponent(password) },
+      body: file,
+    });
+    if (result.ok) setPreflight(result.data);
+    else setError(result.error || 'Scan failed');
+    setScanning(false);
   };
 
   const runRestore = useCallback(async () => {
     if (!file) return;
     setRestoring(true); setError(null);
     setRestoreProgress({ progress: 2, message: 'Starting…' });
-    try {
-      const res = await fetch(`${apiBase}/import`, {
-        method: 'POST',
-        headers: { ...getHeaders(), 'Content-Type': 'application/octet-stream', 'X-Export-Password': encodeURIComponent(password) },
-        body: file,
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setChecks(data.data.checks || []);
-        setRestoreProgress({ progress: 100, message: 'Restored.' });
-        setStep('deps');
-      } else {
-        setError(data.error || 'Import failed');
-      }
-    } catch (e) { setError(e instanceof Error ? e.message : 'Import failed'); }
-    finally { setRestoring(false); }
-  }, [file, password, apiBase, getHeaders]);
+    const result = await request<{ checks?: PostMigrationCheck[] }>(`${apiBase}/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Export-Password': encodeURIComponent(password) },
+      body: file,
+    });
+    if (result.ok) {
+      setChecks(result.data.checks || []);
+      setRestoreProgress({ progress: 100, message: 'Restored.' });
+      setStep('deps');
+    } else {
+      setError(result.error || 'Import failed');
+    }
+    setRestoring(false);
+  }, [file, password, apiBase]);
 
   const runDeps = useCallback(async () => {
     setDepRunning(true); setDepDone(false); setDepLines([]); setError(null);
-    try {
-      const res = await fetch(`${apiBase}/run-dependency-setup`, { method: 'POST', headers: { ...getHeaders(), 'Content-Type': 'application/json' } });
-      const data = await res.json();
-      if (!data.ok) { setError(data.error || 'Could not start the installer'); setDepRunning(false); setDepDone(true); }
-    } catch (e) { setError(e instanceof Error ? e.message : 'Installer failed to start'); setDepRunning(false); setDepDone(true); }
-  }, [apiBase, getHeaders]);
+    const result = await request(`${apiBase}/run-dependency-setup`, { method: 'POST' });
+    if (!result.ok) { setError(result.error || 'Could not start the installer'); setDepRunning(false); setDepDone(true); }
+  }, [apiBase]);
 
   // Auto-run restore on entering the step; auto-run deps on entering that step.
   const restoreStartedRef = useRef(false);
@@ -222,25 +197,18 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   }, [step, runRestore, runDeps]);
 
   const recheck = async () => {
-    try {
-      const res = await fetch(`${apiBase}/import/recheck`, { method: 'POST', headers: { ...getHeaders(), 'Content-Type': 'application/json' } });
-      const data = await res.json();
-      if (data.ok) setChecks(data.data.checks || []);
-    } catch { /* ignore */ }
+    const result = await request<{ checks?: PostMigrationCheck[] }>(`${apiBase}/import/recheck`, { method: 'POST' });
+    if (result.ok) setChecks(result.data.checks || []);
   };
 
   const openSystemSettings = async (pane: string) => {
     setBusyCta(`sys-${pane}`);
     setError(null);
-    try {
-      const res = await fetch(`/api/setup/permissions/request/${pane}`, { method: 'POST', headers: { ...getHeaders(), 'Content-Type': 'application/json' } });
-      const data = await res.json().catch(() => ({ ok: res.ok }));
-      if (!data.ok) setError(data.error || `Couldn't open System Settings (${res.status}).`);
-      // The user needs a moment to toggle the permission; auto re-check after.
-      else setTimeout(() => { void recheck(); }, 6000);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't open System Settings.");
-    } finally { setBusyCta(null); }
+    const result = await request(`/setup/permissions/request/${pane}`, { method: 'POST' });
+    if (!result.ok) setError(result.error || "Couldn't open System Settings.");
+    // The user needs a moment to toggle the permission; auto re-check after.
+    else setTimeout(() => { void recheck(); }, 6000);
+    setBusyCta(null);
   };
 
   // Start an OAuth reconnect right here. target is "<provider>:<accountId>" for a
@@ -256,28 +224,19 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
     const tab = window.open('about:blank', '_blank');
     setBusyCta(`oauth-${target}`);
     setError(null);
-    try {
-      const qs = accountId ? `?accountId=${encodeURIComponent(accountId)}` : '?slot=agent';
-      const res = await fetch(`/api/${provider}/connect${qs}`, {
-        method: 'POST',
-        headers: { ...getHeaders(), 'Content-Type': 'application/json' },
-      });
-      const data = await res.json();
-      if (data.ok && data.data?.authUrl) {
-        if (tab) tab.location.href = data.data.authUrl;
-        else window.open(data.data.authUrl, '_blank'); // fallback: a new tab
-        // Re-check after the user has had time to finish the browser sign-in.
-        setTimeout(() => { void recheck(); }, 8000);
-      } else {
-        if (tab) tab.close();
-        setError(data.error || 'Could not start the reconnect. If you just imported in first-run setup, finish entering the dojo, then reconnect from Settings.');
-      }
-    } catch (e) {
+    const qs = accountId ? `?accountId=${encodeURIComponent(accountId)}` : '?slot=agent';
+    const result = await request<{ authUrl?: string }>(`/${provider}/connect${qs}`, { method: 'POST' });
+    if (result.ok && result.data?.authUrl) {
+      if (tab) tab.location.href = result.data.authUrl;
+      else window.open(result.data.authUrl, '_blank'); // fallback: a new tab
+      // Re-check after the user has had time to finish the browser sign-in.
+      setTimeout(() => { void recheck(); }, 8000);
+    } else {
       if (tab) tab.close();
-      setError(e instanceof Error ? e.message : 'Could not start the reconnect.');
-    } finally {
-      setBusyCta(null);
+      setError((result.ok ? undefined : result.error)
+        || 'Could not start the reconnect. If you just imported in first-run setup, finish entering the dojo, then reconnect from Settings.');
     }
+    setBusyCta(null);
   };
 
   const rerunInstaller = async () => {
@@ -289,16 +248,15 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   useEffect(() => {
     if (!pullingModel) return;
     const id = setInterval(async () => {
-      try {
-        const res = await fetch('/api/setup/ollama/pull-progress', { headers: getHeaders() });
-        const data = await res.json();
-        if (data.ok && data.data && data.data.model === pullingModel) {
-          setModelProgress({ completed: data.data.completed, total: data.data.total, status: data.data.status });
-        }
-      } catch { /* ignore */ }
+      const result = await request<{ model: string; completed: number; total: number; status: string }>(
+        '/setup/ollama/pull-progress',
+      );
+      if (result.ok && result.data && result.data.model === pullingModel) {
+        setModelProgress({ completed: result.data.completed, total: result.data.total, status: result.data.status });
+      }
     }, 1000);
     return () => clearInterval(id);
-  }, [pullingModel, getHeaders]);
+  }, [pullingModel]);
 
   const pullModel = useCallback(async (model: string) => {
     setModelErr((e) => { const n = { ...e }; delete n[model]; return n; });
@@ -307,24 +265,17 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
     // brew install doesn't start the daemon — make sure it's up before the first pull.
     if (!daemonStartedRef.current) {
       daemonStartedRef.current = true;
-      try { await fetch('/api/setup/deps/install/ollama-start', { method: 'POST', headers: { ...getHeaders(), 'Content-Type': 'application/json' } }); } catch { /* best effort */ }
+      await request('/setup/deps/install/ollama-start', { method: 'POST' }); // best effort
     }
-    try {
-      const res = await fetch('/api/setup/ollama/pull', {
-        method: 'POST',
-        headers: { ...getHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model }),
-      });
-      const data = await res.json();
-      if (data.ok) setModelDone((d) => new Set(d).add(model));
-      else setModelErr((e) => ({ ...e, [model]: data.error || 'Download failed' }));
-    } catch (err) {
-      setModelErr((e) => ({ ...e, [model]: err instanceof Error ? err.message : String(err) }));
-    } finally {
-      setPullingModel(null);
-      setModelProgress(null);
-    }
-  }, [getHeaders]);
+    const result = await request('/setup/ollama/pull', {
+      method: 'POST',
+      body: JSON.stringify({ model }),
+    });
+    if (result.ok) setModelDone((d) => new Set(d).add(model));
+    else setModelErr((e) => ({ ...e, [model]: result.error || 'Download failed' }));
+    setPullingModel(null);
+    setModelProgress(null);
+  }, []);
 
   const pullAllModels = useCallback(async (models: string[]) => {
     for (const m of models) {

@@ -15,6 +15,7 @@
 
 import { MicVAD } from '@ricky0123/vad-web';
 import * as ortEnv from 'onnxruntime-web';
+import { fetchUrl } from '../api';
 
 export type VoiceState =
   | 'idle'
@@ -740,7 +741,11 @@ export class VoiceClient {
     const ctx = this.audioContext;
     const loading = (async () => {
       try {
-        const res = await fetch(url);
+        // Through `lib/api`'s one door (BACKLOG line 31) even though this is an
+        // asset URL rather than an `/api` path: one mockable network seam.
+        const sent = await fetchUrl(url);
+        if (!sent.ok) return null;
+        const res = sent.response;
         if (!res.ok) return null;
         const buf = await res.arrayBuffer();
         const decoded = await ctx.decodeAudioData(buf);

@@ -27,7 +27,7 @@
 // testing nothing.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
 import {
   hasCredentialPlaceholder, splitCredentialPlaceholders,
@@ -77,13 +77,14 @@ describe('a credential the platform is holding draws a chip', () => {
   });
 
   it('leaves ordinary markdown alone — the fast path is still the fast path', () => {
-    // ⚠ MEASURED WHILE WRITING THIS FILE, AND WORTH KNOWING: rendering a link mounts
-    // `components/LinkPreview.tsx`, which calls the GLOBAL `fetch` directly instead of
-    // going through `lib/api` — so it is the one component in this package with no door
-    // a test can mock. The network tripwire caught it on the first run. This clause opts
-    // into an explicit OFFLINE fetch (which is what `LinkPreview`'s own `.catch` is
-    // written for) rather than weakening the tripwire for everyone.
-    vi.stubGlobal('fetch', () => Promise.reject(new Error('offline: stubbed for this clause')));
+    // ⚠ THIS CLAUSE USED TO NEED A `vi.stubGlobal('fetch', ...)` AND NO LONGER DOES.
+    // Rendering a link mounts `components/LinkPreview.tsx`, which called the GLOBAL
+    // `fetch` directly — the one component in this package with no door a test could
+    // mock — and the network tripwire caught it on the first run. It goes through
+    // `lib/api` now (BACKLOG line 31), and that door turns the tripwire's throw into a
+    // `{ ok: false }` VALUE, which is exactly the "no preview" case the card is written
+    // for. So the tripwire stays armed for this clause and the preview simply does not
+    // appear. Put the bare `fetch` back in LinkPreview and this reds.
     const { container } = render(<Markdown content={'**bold** and a [link](https://example.invalid/p)'} />);
     expect(container.querySelector('strong')?.textContent).toBe('bold');
     expect(container.querySelector('a')?.getAttribute('href')).toBe('https://example.invalid/p');

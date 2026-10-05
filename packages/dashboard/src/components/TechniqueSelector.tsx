@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { request } from '../lib/api';
 
 interface TechniqueOption {
   id: string;
@@ -25,13 +26,10 @@ export const TechniqueSelector = ({ selected, onChange, only }: TechniqueSelecto
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = localStorage.getItem('dojo_token');
-    fetch('/api/techniques?state=published', {
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    }).then(r => r.json()).then(data => {
-      if (data.ok) setTechniques(data.data.map((t: { id: string; name: string }) => ({ id: t.id, name: t.name })));
+    void request<Array<{ id: string; name: string }>>('/techniques?state=published').then((result) => {
+      if (result.ok) setTechniques(result.data.map((t) => ({ id: t.id, name: t.name })));
       setLoading(false);
-    }).catch(() => setLoading(false));
+    });
   }, []);
 
   const grantable = only ? techniques.filter(t => only.includes(t.id)) : techniques;

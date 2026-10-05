@@ -143,12 +143,6 @@ const FALLBACK: TechniqueSessionApi = {
 
 const TechniqueSessionContext = createContext<TechniqueSessionApi | null>(null);
 
-function getToken(): string | null { return localStorage.getItem('dojo_token'); }
-function getCsrf(): string | null {
-  const m = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
-  return m ? m[1] : null;
-}
-
 export function TechniqueSessionProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const { subscribe } = useWebSocket();
@@ -192,12 +186,11 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
   }, []);
 
   const loadTechniqueFromDisk = useCallback(async (id: string) => {
-    const token = getToken();
-    const res = await fetch(`/api/techniques/${id}`, {
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    });
-    const data = await res.json().catch(() => null);
-    if (data?.ok) {
+    // Through `lib/api`'s one door (BACKLOG line 31); the token read and csrf
+    // scrape this file used to repeat four times over live there now.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data = await api.request<any>(`/techniques/${id}`);
+    if (data.ok) {
       // Load each file's BODY (not just its path) so the file is editable on the
       // canvas and edits round-trip on save (saveTechnique only uploads files
       // that carry `content`). Path segments are URL-encoded so spaces / # / ?
@@ -207,16 +200,9 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
         .map((f: { path: string }) => f.path);
       const files = await Promise.all(
         filePaths.map(async (p) => {
-          try {
-            const enc = p.split('/').map(encodeURIComponent).join('/');
-            const fr = await fetch(`/api/techniques/${data.data.id}/files/${enc}`, {
-              headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-            });
-            const fd = await fr.json().catch(() => null);
-            return fd?.ok ? { path: p, content: fd.data.content as string } : { path: p };
-          } catch {
-            return { path: p };
-          }
+          const enc = p.split('/').map(encodeURIComponent).join('/');
+          const fd = await api.request<{ content: string }>(`/techniques/${data.data.id}/files/${enc}`);
+          return fd.ok ? { path: p, content: fd.data.content } : { path: p };
         }),
       );
       setCanvas({
@@ -267,15 +253,7 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
       lastTrainerActivityAtRef.current = latest?.createdAt ?? null;
     } else {
       // Fresh start: wipe the trainer session server-side.
-      const tk = getToken();
-      const csrf = getCsrf();
-      await fetch('/api/techniques/clear-session', {
-        method: 'POST',
-        headers: {
-          ...(tk ? { Authorization: `Bearer ${tk}` } : {}),
-          ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-        },
-      }).catch(() => { /* best effort */ });
+      await api.request('/techniques/clear-session', { method: 'POST' }); // best effort
       contextSentRef.current = false;
     }
     if (token === startTokenRef.current) setReady(true);
@@ -440,33 +418,26 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
     setSaving(true);
     const slug = c.name.trim() || c.displayName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     try {
-      const token = getToken();
-      const csrf = getCsrf();
-      const headers = {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-      };
       const sess = sessionRef.current;
       const existingId = createdTechniqueIdRef.current || (sess?.mode === 'edit' ? sess.editId : null);
       if (existingId) {
         const filesToUpload = c.files.filter((f) => typeof f.content === 'string');
         for (const file of filesToUpload) {
           const enc = file.path.split('/').map(encodeURIComponent).join('/');
-          const fr = await fetch(`/api/techniques/${existingId}/files/${enc}`, {
-            method: 'PUT', headers, body: JSON.stringify({ content: file.content }),
+          const fr = await api.request(`/techniques/${existingId}/files/${enc}`, {
+            method: 'PUT', body: JSON.stringify({ content: file.content }),
           });
-          if (!fr.ok) throw new Error(`Failed to save file "${file.path}"`);
+          if (!fr.ok) throw new Error(`Failed to save file "${file.path}": ${fr.error}`);
         }
         if (c.instructions.trim()) {
-          const ir = await fetch(`/api/techniques/${existingId}/instructions`, {
-            method: 'PUT', headers,
+          const ir = await api.request(`/techniques/${existingId}/instructions`, {
+            method: 'PUT',
             body: JSON.stringify({ content: c.instructions.trim(), changeSummary: 'Updated from Technique Trainer' }),
           });
-          if (!ir.ok) throw new Error('Failed to save instructions');
+          if (!ir.ok) throw new Error(`Failed to save instructions: ${ir.error}`);
         }
-        const metaRes = await fetch(`/api/techniques/${existingId}`, {
-          method: 'PUT', headers,
+        const metaRes = await api.request(`/techniques/${existingId}`, {
+          method: 'PUT',
           body: JSON.stringify({
             displayName: c.displayName.trim(),
             description: c.description.trim(),
@@ -474,17 +445,16 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
             ...(publish ? { state: 'published' } : {}),
           }),
         });
-        const metaData = await metaRes.json().catch(() => null);
-        if (!metaRes.ok || metaData?.ok === false) {
-          throw new Error(metaData?.error || 'Failed to update technique metadata');
+        if (!metaRes.ok) {
+          throw new Error(metaRes.error || 'Failed to update technique metadata');
         }
         if (publish) {
-          await fetch(`/api/techniques/${existingId}/publish`, { method: 'POST', headers });
+          await api.request(`/techniques/${existingId}/publish`, { method: 'POST' });
         }
         navigate(`/techniques/${existingId}`);
       } else {
-        const res = await fetch('/api/techniques', {
-          method: 'POST', headers,
+        const data = await api.request<{ id: string }>('/techniques', {
+          method: 'POST',
           body: JSON.stringify({
             name: slug,
             displayName: c.displayName.trim(),
@@ -495,7 +465,6 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
             publish,
           }),
         });
-        const data = await res.json();
         if (data.ok) navigate(`/techniques/${data.data.id}`);
         else setError(data.error || 'Failed to save technique');
       }

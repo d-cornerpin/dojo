@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { request } from '../lib/api';
 
 interface OgData {
   url: string;
@@ -23,21 +24,16 @@ export const LinkPreview = ({ url }: { url: string }) => {
       return;
     }
 
-    const token = localStorage.getItem('dojo_token');
-    fetch(`/api/og-preview?url=${encodeURIComponent(url)}`, {
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    })
-      .then(r => r.json())
-      .then(res => {
-        const ogData = res.ok ? res.data : null;
-        previewCache.set(url, ogData);
-        setData(ogData);
-        setLoading(false);
-      })
-      .catch(() => {
-        previewCache.set(url, null);
-        setLoading(false);
-      });
+    // Through `lib/api`'s door (BACKLOG line 31). This component was the one the
+    // credential-chip clause tripped over: rendering a link mounted it, its bare
+    // `fetch` had no seam, and the suite's tripwire fired. A failed preview still
+    // caches `null` — that is the point of the card, not an error to show.
+    void request<OgData>(`/og-preview?url=${encodeURIComponent(url)}`).then((res) => {
+      const ogData = res.ok ? res.data : null;
+      previewCache.set(url, ogData);
+      setData(ogData);
+      setLoading(false);
+    });
   }, [url]);
 
   // No preview data — don't render anything. The URL is already
