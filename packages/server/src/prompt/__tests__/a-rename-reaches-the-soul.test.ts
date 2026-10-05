@@ -40,15 +40,30 @@ import fs from 'node:fs';
 import Database from 'better-sqlite3';
 import { fileURLToPath } from 'node:url';
 
-// ⚠ PER-PROCESS, AND THAT IS THE FIX FOR A MEASURED FLAKE (backlog 2026-09-26, lanes 3-4:
-// "a FIXED os.tmpdir() path (needs per-run suffix) ... the temp-dir ENOENT under concurrent
-// lanes — same family"). The path was a CONSTANT under the shared system temp dir, and
-// `beforeEach` opens with `rmSync(HOME, {recursive:true})`. Two vitest workers running this
-// file — or its sibling in the same family — therefore deleted each other's fixture mid-run,
-// and the loser failed with ENOENT on a file it had just written. `process.pid` is visible
-// both here and inside the HOISTED mock factory below (which cannot see this module's
-// bindings), so one process can never reach another's directory.
-const HOME_DIR_NAME = `dojo-t50-rename-souls-${process.pid}`;
+// ⚠ PER-RUN *AND* PER-WORKER, INSIDE THE RUN ROOT (backlog 2026-09-26, lanes 3-4: "a FIXED
+// os.tmpdir() path (needs per-run suffix) ... the temp-dir ENOENT under concurrent lanes —
+// same family"; the twin was fixed in `t97`, this is its hand-up).
+//
+// The path was a CONSTANT under the shared system temp dir, and `beforeEach` opens with
+// `rmSync(HOME, {recursive:true})`: two workers running this file deleted each other's fixture
+// mid-run and the loser failed with ENOENT on a file it had just written. A `process.pid`
+// suffix alone — what this file carried until now — fixed the two-worker case and left two
+// real ones. (i) The directory sat OUTSIDE `DOJO_TEST_HOME_ROOT`, the per-run root
+// `vitest.config.ts` computes and `vitest.global-setup.ts` removes at the end of the run, so
+// every run stranded a tree in the system temp dir forever. (ii) Those stranded trees are what
+// make pid REUSE reachable: seven worktrees run this suite on one box, the OS recycles pids,
+// and `beforeEach`'s `rmSync` then deletes a directory this process does not own.
+//
+// So the root is the RUN ROOT and the leaf carries the worker id as well as the pid — the
+// SAME shape and the same fallback `vitest.setup.ts:36-42` uses for every worker's home, which
+// is the point: one convention for scratch homes, not a second one invented here. Both halves
+// are computed twice (here and in the HOISTED factory below, which cannot see this module's
+// bindings) and `beforeEach`'s first act is the clause that refuses a drift between the copies.
+const TEST_HOME_ROOT = process.env.DOJO_TEST_HOME_ROOT && process.env.DOJO_TEST_HOME_ROOT !== ''
+  ? process.env.DOJO_TEST_HOME_ROOT
+  : path.join(realOs.tmpdir(), 'dojo-test-homes', 'orphan-run');
+const WORKER_ID = process.env.VITEST_POOL_ID ?? process.env.VITEST_WORKER_ID ?? 'x';
+const HOME_DIR_NAME = `t50-rename-souls-w${WORKER_ID}-${process.pid}`;
 
 // The platform resolves `~/.dojo` in exactly one place — `src/home.ts` — so that is
 // what a test redirects. Computed inside the factory, which runs before this module's
@@ -56,7 +71,12 @@ const HOME_DIR_NAME = `dojo-t50-rename-souls-${process.pid}`;
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
-  const dir = p.join(o.tmpdir(), `dojo-t50-rename-souls-${process.pid}`);
+  // The other copy of the two the `beforeEach` drift clause holds together.
+  const root = process.env.DOJO_TEST_HOME_ROOT && process.env.DOJO_TEST_HOME_ROOT !== ''
+    ? process.env.DOJO_TEST_HOME_ROOT
+    : p.join(o.tmpdir(), 'dojo-test-homes', 'orphan-run');
+  const worker = process.env.VITEST_POOL_ID ?? process.env.VITEST_WORKER_ID ?? 'x';
+  const dir = p.join(root, `t50-rename-souls-w${worker}-${process.pid}`);
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
@@ -82,7 +102,7 @@ import { readSoulFile, soulFileForAgent } from '../assembler.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../../../../..');
-const HOME = path.join(realOs.tmpdir(), HOME_DIR_NAME);
+const HOME = path.join(TEST_HOME_ROOT, HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
 
 const PRIMARY = 'kevin';
