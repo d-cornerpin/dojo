@@ -33,6 +33,29 @@ vi.mock('../../../db/connection.js', () => ({
   closeDb: vi.fn(),
 }));
 /**
+ * ⚠ FIX ROUND 3 — THE REAL `agent/runtime.ts` IS KEPT OUT OF THIS WORKER, AND THE REASON IS A
+ * PRODUCT DEFECT THIS LANE DOES NOT OWN. `runtime.ts:1710-1711` creates TWO `setInterval`s at
+ * MODULE SCOPE with no `.unref()`:
+ *
+ *     setInterval(recoverStuckAgents, STUCK_AGENT_CHECK_MS);
+ *     setInterval(repairOrphanedModelPointers, STUCK_AGENT_CHECK_MS);
+ *
+ * so merely IMPORTING the module arms two ref'd 5-minute handles that nothing ever clears. A ref'd
+ * handle keeps a vitest worker's event loop alive for the rest of the run, which is the class of
+ * thing behind the merge gate's `[vitest-worker]: Timeout calling "onTaskUpdate"`. MEASURED here
+ * with `process.getActiveResourcesInfo()`: this file held 3 `Timeout` resources against an empty
+ * control file's 1, and mocking this module takes it to exactly 1 — the two extra are those two
+ * intervals, counted. The same file unref's its OTHER timers deliberately (`:1503`, `:1550`, with
+ * the comment at `:1518` saying why), so these two are the outlier, not the convention.
+ *
+ * ⛔ THE REAL FIX IS `.unref()` ON BOTH, IN `agent/runtime.ts`, WHICH IS t93's FENCE, NOT t90's —
+ * reported to the orchestrator rather than edited here. This mock is the in-fence mitigation: it
+ * keeps t90's own new files from arming them, and nothing in this suite needs the runtime.
+ */
+vi.mock('../../runtime.js', () => ({
+  getAgentRuntime: () => ({ handleMessage: async () => { /* no-op */ } }),
+}));
+/**
  * ⚠ FIX ROUND 3 — THE LOGGER IS STUBBED, AND IT IS A HANDLE FIX, NOT TIDINESS.
  *
  * This file drives `runMigrations()` against the real migration set, which logs heavily, and the
