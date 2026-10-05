@@ -49,6 +49,10 @@ export interface CompactionPassFacts {
   assembledTokens?: number;
   budgetTokens?: number;
   tokensBefore?: number;
+  /** What this agent's summaries cost, and what the assembler will admit of them — the pair
+   *  the condenser actually works on (the gate's total above cannot see summary bloat). */
+  summaryTokens?: number;
+  admittedSummaryTokens?: number;
   compactableRows?: number;
   topLevelSummaries?: number;
   /** The summary-WRITER model, so a writer-caused failure can name and clear itself. */
@@ -104,6 +108,7 @@ export function reportCompactionDefect(
     assembledTokens: facts?.assembledTokens ?? null, budgetTokens: facts?.budgetTokens ?? null,
     tokensBefore: facts?.tokensBefore ?? null, tokensReclaimed: result.tokensReclaimed,
     leafCreated: result.leafCreated, condensedCreated: result.condensedCreated,
+    summaryTokens: facts?.summaryTokens ?? null, admittedSummaryTokens: facts?.admittedSummaryTokens ?? null,
     compactableRows: facts?.compactableRows ?? null, topLevelSummaries: facts?.topLevelSummaries ?? null,
     summaryWriterModelId: facts?.modelId ?? null, providerBreakerOpen: breaker?.reason ?? null,
     repairableByTheOwner: REPAIRABLE_BY_THE_OWNER.has(stage),

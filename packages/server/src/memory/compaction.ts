@@ -3,7 +3,7 @@ import { getDb } from '../db/connection.js';
 import { withLock } from '../db/with-lock.js';
 import { MIN_COMPACTABLE_ROWS, compactionIsBraked, noteLowYield, notePassOutcome,
   summaryWriterUnavailable } from './compaction-brakes.js';  // v3.2.3 L1, re-aimed by OR-COMPACT-1
-import { condenseUntilFits, condensableSummaries, type CondensationOutcome } from './condense-until-fits.js';   // OR-COMPACT-1
+import { condenseUntilFits, condensableSummaries, rawContextSummaryTokens, type CondensationOutcome } from './condense-until-fits.js';   // OR-COMPACT-1
 import { cachedAssembledEstimate, cachedToolPayloadTokens, toolSurfaceKey } from './assembled-estimate-cache.js';
 export { forcedCompactionOptions } from './compaction-brakes.js';   // the emergency path's bounds, published where its callers already look
 import { createLogger } from '../logger.js';
@@ -754,7 +754,7 @@ async function runCheckAndCompact(
     // the next forced/emergency compaction.
     const condensation = options?.skipContinuityBrief
       ? null
-      : await condenseUntilFits(condenseArgs(agentId, modelId, turnModelId, contextWindow, threshold, options?.abortSignal));
+      : await condenseUntilFits(condenseArgs(agentId, modelId, turnModelId, contextWindow, options?.abortSignal));
     const condensedCreated = condensation?.condensedCreated ?? 0;
     rebuildContextItems(agentId);
     // T56 leg (b): the prefix has just been rewritten, so this is the one instant at which
@@ -773,7 +773,7 @@ async function runCheckAndCompact(
     // v3.2.3 L1, re-aimed by OR-COMPACT-1: the brake, plus the D3 defect report. The stage
     // the condenser named (if any) travels with the numbers, so a pass that ended over
     // budget having reclaimed nothing says WHICH stage refused instead of showing a card.
-    notePassOutcome(agentId, Boolean(force), result, passFacts(condensation, tokensAfter, threshold, tokensBefore, guardUncompactedCount, agentId, modelId));
+    notePassOutcome(agentId, Boolean(force), result, { ...passFacts(condensation, threshold, guardUncompactedCount, agentId, modelId), assembledTokens: tokensAfter, tokensBefore });
     broadcast({
       type: 'memory:compaction',
       agentId,
@@ -891,10 +891,10 @@ async function runCheckAndCompact(
 /** The condenser's arguments, with THE single estimate wired in as its `measure`. */
 function condenseArgs(
   agentId: string, modelId: string, turnModelId: string, contextWindow: number,
-  budgetTokens: number, abortSignal?: AbortSignal,
+  abortSignal?: AbortSignal,
 ): Parameters<typeof condenseUntilFits>[0] {
   return {
-    agentId, modelId, budgetTokens,
+    agentId, modelId,
     minFanout: DEFAULTS.condensedMinFanout,
     targetTokens: DEFAULTS.condensedTargetTokens,
     abortSignal,
@@ -906,13 +906,14 @@ function condenseArgs(
 
 /** What the brake and the defect line need to know about the pass that just ran. */
 function passFacts(
-  condensation: CondensationOutcome | null, assembledTokens: number, budgetTokens: number,
-  tokensBefore: number, compactableRows: number, agentId: string, modelId: string,
+  condensation: CondensationOutcome | null, budgetTokens: number,
+  compactableRows: number, agentId: string, modelId: string,
 ): Parameters<typeof notePassOutcome>[3] {
   return {
     stage: condensation?.refusedStage ?? null, detail: condensation?.refusedDetail ?? null,
-    assembledTokens, budgetTokens, tokensBefore, compactableRows,
-    topLevelSummaries: condensableSummaries(agentId), modelId,
+    assembledTokens: condensation?.assembledTotalAfter, budgetTokens,
+    summaryTokens: condensation?.summaryTokensAfter, admittedSummaryTokens: condensation?.admittedSummaryTokens,
+    compactableRows, topLevelSummaries: condensableSummaries(agentId), modelId,
   };
 }
 
@@ -930,25 +931,31 @@ async function condenseOnlyPass(
   agentId: string, modelId: string, turnModelId: string, contextWindow: number,
   threshold: number, force: boolean, compactableRows: number, options?: CheckAndCompactOptions,
 ): Promise<CompactionResult> {
-  const args = condenseArgs(agentId, modelId, turnModelId, contextWindow, threshold, options?.abortSignal);
-  const tokensBefore = (await args.measure()).total;
-  if (tokensBefore <= threshold) {
-    logger.info('Compaction skipped: nothing outside the fresh tail, and the assembly is inside its budget', {
-      assembledTokens: tokensBefore, threshold, uncompactedOutsideTail: compactableRows,
+  const args = condenseArgs(agentId, modelId, turnModelId, contextWindow, options?.abortSignal);
+  // Asked BEFORE the activity broadcast, so a tail-bloated agent does not flicker
+  // "Compacting memory" on the dashboard every turn for work nobody is going to do.
+  const est = await args.measure();
+  if (rawContextSummaryTokens(agentId) <= est.summaryTokens && est.total <= threshold) {
+    logger.info('Compaction skipped: nothing outside the fresh tail, and every summary already fits', {
+      assembledTokens: est.total, threshold, uncompactedOutsideTail: compactableRows,
     }, agentId);
     return NO_COMPACTION;
   }
   const condensation = await withCompactionActivity(agentId, () => condenseUntilFits(args));
+  // ⚠ RECLAIMED IN SUMMARY TOKENS, NOT IN THE GATE'S TOTAL, and the module header says why:
+  // the gate's total already reports the CAPPED figure, so condensation cannot move it. What
+  // these tokens buy is oldest summaries NOT being dropped from the agent's context.
   const result = {
     leafCreated: 0, condensedCreated: condensation.condensedCreated,
-    tokensReclaimed: Math.max(tokensBefore - condensation.assembledAfter, 0),
+    tokensReclaimed: Math.max(condensation.summaryTokensBefore - condensation.summaryTokensAfter, 0),
   };
-  notePassOutcome(agentId, force, result, passFacts(condensation, condensation.assembledAfter, threshold, tokensBefore, compactableRows, agentId, modelId));
+  notePassOutcome(agentId, force, result, passFacts(condensation, threshold, compactableRows, agentId, modelId));
   broadcast({ type: 'memory:compaction', agentId, ...result });
   logger.info('Condensation-only compaction complete', {
     ...result, levels: condensation.levels, modelCalls: condensation.modelCalls,
     deepestDepth: condensation.deepestDepth, fits: condensation.fits,
-    assembledTokens: condensation.assembledAfter, threshold,
+    summaryTokens: condensation.summaryTokensAfter, admittedSummaryTokens: condensation.admittedSummaryTokens,
+    assembledTokens: condensation.assembledTotalAfter, threshold,
   }, agentId);
   return result;
 }
