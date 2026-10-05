@@ -812,6 +812,25 @@ describe('§5 a level is the WHOLE top-level set, at any mix of depths', () => {
       }
     });
     tx();
+    // ── t100: THE OLD SUMMARY NEEDS A COMPACTION BOUNDARY, BECAUSE A REAL ONE HAS ONE ─────
+    //
+    // `seedSummaries` writes `summaries` rows and no `summary_messages` links, so this agent
+    // held a summary that covered NO MESSAGE. That was invisible while the compaction gate
+    // measured its tail with the ROW CAP: it read the newest 40 rows (the small ones, 32,000
+    // tokens), the summary budget was large and the precondition held. Since t100 the gate
+    // reads the tail the assembler actually sends — every row since the compaction boundary —
+    // and with no boundary at all that is ALL EIGHTY ROWS: 40 × 4,000 + 40 × 800 = 192,000
+    // tokens against a 64K window, so `summaryBudget` clamps to 0 and `admitted()` answers 0.
+    //
+    // The gate is right and the fixture was not. "Old summaries that comfortably fit" means an
+    // agent that HAS compacted before, and in production a leaf summary covers messages — so
+    // the seeded one is linked to the last fat row, which is exactly where its boundary would
+    // be. `rowsSinceBoundary` is then the 40 tail rows (the horizon's FLOOR, `keepFromSeq: 0`),
+    // the gate measures the same 32,000 tokens it measured pre-t100, and every number in this
+    // clause is unchanged. `old-39` joins `getCompactedMessageIds`, leaving 39 fat rows outside
+    // the row cap for leaf chunking — still far more than the two leaves asserted below.
+    db.prepare('INSERT INTO summary_messages (summary_id, message_id) VALUES (?, ?)')
+      .run('sum-d0-0', 'old-39');
     __resetEstimateCacheForTests();
     expect(held(), 'precondition: what the agent HOLDS fits before the pass')
       .toBeLessThanOrEqual(await admitted());
