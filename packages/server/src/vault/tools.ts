@@ -6,7 +6,7 @@
 import { getDb } from '../db/connection.js';
 import { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 import { createLogger } from '../logger.js';
-import { createEntry, semanticSearch, findNearDuplicateEntry, markObsolete, getEntry, updateEntry, listEntries, formatCitationSuffix, resolveRecallScope, OWNER_VAULT_AGENT_ID } from './store.js';
+import { createEntry, semanticSearch, findNearDuplicateEntry, markObsolete, getEntry, updateEntry, listEntriesBounded, formatCitationSuffix, resolveRecallScope, OWNER_VAULT_AGENT_ID } from './store.js';
 import { searchUnfiledArchives, UNFILED_ARCHIVE_LABEL, type UnfiledArchiveSnippet } from './retrieval.js';
 import { obligationShape } from '../work/obligation-memory.js';
 
@@ -426,7 +426,12 @@ export async function executeVaultSearch(
       // W3-4: scoped to the calling agent's own vault plus the owner scope
       // (per-agent by design; squad namespaces + owner-authored dashboard
       // entries are the deliberate sharing mechanisms).
-      const rows = listEntries({ search: query, type, limit, agentId, includeOwnerScope: true });
+      // ⚠ THE POOLED DOOR: THE DIFFERENCE IS WHERE THE WORK RUNS, NOT WHAT COMES BACK. The sync
+      // `listEntries` always returned real rows here — there was no Promise and no empty answer to
+      // fix — but it read on the thread that serves HTTP, and a leading-wildcard LIKE cannot use an
+      // index, so the walk AND its cost count both ran here. That thread, pinned inside one
+      // synchronous read during `vault_search`, is the capture that opened this package.
+      const rows = await listEntriesBounded({ search: query, type, limit, agentId, includeOwnerScope: true });
       // FN-1: exact mode uses substring matching against still-unfiled archives.
       const bridge = searchUnfiledArchives(agentId, query, { mode: 'substring' });
       if (rows.length === 0) {
@@ -459,7 +464,7 @@ export async function executeVaultSearch(
     // W3-4/D-A: recall author scope is resolveRecallScope(agentId) (vault/store.js),
     // household-shared for members, self+owner otherwise.
     // FA-V6: personalOnly:true so semantic mode matches exact mode's contract
-    // (listEntries above defaults to namespace IS NULL). Squad-namespaced entries
+    // (listEntriesBounded above defaults to namespace IS NULL). Squad-namespaced entries
     // stay OUT of personal recall and flow via squad_recall instead. This remains
     // correct under D-A: household sharing is BUILT and LIVE, but it is a separate
     // AXIS (which author ids are in scope), not namespaces; squad namespaces stay opt-in.
