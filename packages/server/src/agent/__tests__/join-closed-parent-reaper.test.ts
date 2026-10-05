@@ -85,7 +85,7 @@ import {
   landPiece, joinPieces, dueJoins, dueJoinsUnderClosedParent,
 } from '../../work/store.js';
 
-const AGENT = 'kevin';
+const AGENT = 'zargo';
 const T1 = 'thread-aaaaaaaa-1111';
 const T2 = 'thread-bbbbbbbb-2222';
 
@@ -175,7 +175,7 @@ beforeEach(() => {
   runMigrations();
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at) VALUES
-       (?, 'Kevin', 'idle', '1970-01-01'), ('ana', 'Ana', 'idle', '1970-01-01'),
+       (?, 'Zargo', 'idle', '1970-01-01'), ('ana', 'Ana', 'idle', '1970-01-01'),
        ('bo', 'Bo', 'idle', '1970-01-01')`,
   ).run(AGENT);
   db.prepare(
