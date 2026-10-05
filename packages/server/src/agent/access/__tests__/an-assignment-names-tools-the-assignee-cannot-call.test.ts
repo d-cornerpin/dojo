@@ -48,9 +48,13 @@ vi.mock('../../../db/connection.js', () => ({
  * intervals, counted. The same file unref's its OTHER timers deliberately (`:1503`, `:1550`, with
  * the comment at `:1518` saying why), so these two are the outlier, not the convention.
  *
- * ⛔ THE REAL FIX IS `.unref()` ON BOTH, IN `agent/runtime.ts`, WHICH IS t93's FENCE, NOT t90's —
- * reported to the orchestrator rather than edited here. This mock is the in-fence mitigation: it
- * keeps t90's own new files from arming them, and nothing in this suite needs the runtime.
+ * ✅ FIXED AT THE ROOT IN ROUND 3b: both lines now carry `.unref?.()`, pinned by
+ * `agent/__tests__/the-runtime-arms-no-refd-timer-at-import.test.ts`. (It was t93's fence when
+ * this comment was first written; t93 merged, and the root fix came here.) This mock therefore no
+ * longer carries the fix — it stays because nothing in this suite needs the runtime, and not
+ * loading a 1,754-line module with the whole turn loop in it is the right default for a suite
+ * about grant refusals. The measurement above is kept as the record of what a module-scope ref'd
+ * timer costs a worker.
  */
 vi.mock('../../runtime.js', () => ({
   getAgentRuntime: () => ({ handleMessage: async () => { /* no-op */ } }),

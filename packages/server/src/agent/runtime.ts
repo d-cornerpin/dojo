@@ -1720,8 +1720,23 @@ function repairOrphanedModelPointers(): void {
 // Start the stuck-agent recovery check + the orphaned model_id repair (v2.3.19,
 // catches a provider re-create nuking a model row and leaving agents on a dead
 // UUID). Both run on the same cadence.
-setInterval(recoverStuckAgents, STUCK_AGENT_CHECK_MS);
-setInterval(repairOrphanedModelPointers, STUCK_AGENT_CHECK_MS);
+//
+// ⚠ BOTH ARE UNREF'D, for the same reason the two timers above are (`:1503`, `:1550`, argued at
+// `:1518`), and this pair is the one that had to learn it the hard way. A ref'd handle armed at
+// MODULE SCOPE holds an event loop open for the life of whatever imported the module. Production
+// never notices: the server's own listening socket holds the loop, so an unref'd interval fires on
+// exactly the same five-minute cadence it always did. A vitest WORKER does notice — importing this
+// module armed two ref'd intervals that nothing ever cleared, so every worker that reached
+// `agent/runtime.ts` kept a live event loop through its own teardown and the rest of the run.
+// MEASURED (t90 fix round 3b): a test file importing this module held 2 more `Timeout` entries in
+// `process.getActiveResourcesInfo()` than a control file that does not, and the merge gate's
+// full-suite run minted `[vitest-worker]: Timeout calling "onTaskUpdate"` — a worker→main RPC
+// unanswered inside vitest's 60 s birpc deadline. Pinned by
+// `__tests__/the-runtime-arms-no-refd-timer-at-import.test.ts`, which measures its own control.
+const stuckAgentSweep = setInterval(recoverStuckAgents, STUCK_AGENT_CHECK_MS);
+stuckAgentSweep.unref?.();
+const orphanedModelSweep = setInterval(repairOrphanedModelPointers, STUCK_AGENT_CHECK_MS);
+orphanedModelSweep.unref?.();
 
 // Also run once at startup to clean up after a crash. main() calls this after
 // the port is bound and the migrations have run.
