@@ -144,8 +144,14 @@ describe('§1 the boot sweep closes the turn the dead process abandoned', () => 
     agent('a-crashed', 'working');
     openTurn('a-crashed', 7);
     openTurn('a-crashed', 8);
-    resetWorkingAgentsToIdleAtBoot();
+    // ⚠ AND THE RETURN IS THE *AGENT* COUNT, which only THIS fixture can tell apart: one
+    // agent, two turns. Every other clause here has them equal, so a refactor that returned
+    // `turnsClosed` would pass them all and make `index.ts`'s boot line say "Reset 2 agent(s)"
+    // about one agent. The two counts mean different things and the caller reads one of them.
+    expect(resetWorkingAgentsToIdleAtBoot(), 'the return is agents repaired, never turns closed').toBe(1);
     expect(rows().map((x) => x.exit_reason)).toEqual(['terminated', 'terminated']);
+    expect(infos.filter((m) => /Closed 2 turn record\(s\)/.test(m)), 'and the turns are counted in the log')
+      .toHaveLength(1);
   });
 
   it('an already-finalized turn of the same agent is left exactly as it stands', () => {
