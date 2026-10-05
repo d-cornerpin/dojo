@@ -105,6 +105,9 @@ import {
   TAIL_HORIZON_CEILING_MULTIPLE, tailCeilingStepRows, tailTrimBlockGroups,
   groupsToDropForBudget, freshTailHorizon,
 } from '../tail-horizon.js';
+// t100 §9's floor fixture: the deep-compaction state is built by hand, so a leaf summary is
+// written directly rather than driven out of a pass whose divider is throttled.
+import { createLeafSummary } from '../dag.js';
 import { runMigrations } from '../../db/migrations.js';
 import {
   serialiseAssembly, runDeltas, discontinuities, renderTable, abridge,
@@ -182,19 +185,29 @@ function appendTurn(): void {
   });
 }
 
+/** Every routine pass that actually compacted, with the numbers it reported. t100 §7 reads
+ *  `tokensReclaimed` out of here: the drain's cadence is decided by the LOW-YIELD BACKOFF
+ *  (`compaction.ts`: `tokensReclaimed < 2000 && leafCreated <= 1` → `noteLowYield`), and that
+ *  predicate is a question about the gate's OWN estimate. A probe that only counted
+ *  discontinuities could see the cadence change and not know which number moved it. */
+const passLog: Array<{ turn: number; leafCreated: number; tokensReclaimed: number }> = [];
+
 /** The production pre-call gate's ROUTINE arm, as `agent/v2/steps/pre-call-gates/
  *  context-gates.ts` runs it: a gap over the threshold drains one chunk. Awaited here
- *  (production fires and forgets) so the run is deterministic. */
-async function runRoutineCompactionGate(): Promise<boolean> {
+ *  (production fires and forgets) so the run is deterministic. Returns the pass's own result
+ *  when it compacted, and null otherwise — the boolean it used to return is `!== null`. */
+async function runRoutineCompactionGate(): Promise<{ leafCreated: number; tokensReclaimed: number } | null> {
   const gap = getUncompactedGapCount(AGENT, windowNow.value);
-  if (gap <= UNCOMPACTED_GAP_THRESHOLD) return false;
+  if (gap <= UNCOMPACTED_GAP_THRESHOLD) return null;
   try {
     const r = await checkAndCompact(AGENT, MODEL, windowNow.value, {
       maxChunksPerRun: 1, skipContinuityBrief: true,
     });
-    return r.leafCreated > 0 || r.condensedCreated > 0;
+    return r.leafCreated > 0 || r.condensedCreated > 0
+      ? { leafCreated: r.leafCreated, tokensReclaimed: r.tokensReclaimed }
+      : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -211,7 +224,8 @@ async function driveRun(opts: RunOptions): Promise<TurnSnapshot[]> {
   for (let t = 1; t <= opts.turns; t++) {
     appendTurn();
     let note = '';
-    if (opts.compaction !== false && await runRoutineCompactionGate()) note = 'compaction ran';
+    const pass = opts.compaction === false ? null : await runRoutineCompactionGate();
+    if (pass) { passLog.push({ turn: t, ...pass }); note = 'compaction ran'; }
     if (opts.between) await opts.between(t);
     const ctx = await assembleContext(AGENT, MODEL);
     snaps.push({
@@ -226,6 +240,7 @@ async function driveRun(opts: RunOptions): Promise<TurnSnapshot[]> {
 
 beforeEach(() => {
   turnNo = 0;
+  passLog.length = 0;
   __resetBrakesForTests();
   summariser.up = true;
   summariser.calls = 0;
@@ -630,8 +645,32 @@ describe('t94 §6 — the budget, named, with its unit', () => {
 // ending state) has a gap that stays over the threshold for many turns, so the gate drains a
 // chunk on EVERY turn until it is clear, and every one of those turns advances the boundary.
 // This clause drives it and records the number rather than claiming one.
+//
+// ── RE-AIMED BY t100, AND THE OLD WORDING IS WORTH KEEPING TO EXPLAIN WHY ───────────────
+// Until the seam landed this clause asserted ONE discontinuity in the 25 turns after the
+// drain, and explained the 24 quiet turns like this: *"the gap RE-ACCUMULATES past the
+// threshold (measured: 49 rows by turn 25) and compaction does NOT run again —
+// `compaction-brakes.ts`'s 15-minute low-yield backoff is holding it off, correctly, because
+// there is little left to win."*
+//
+// HALF OF THAT WAS THE SEAM'S OWN BLINDNESS WEARING A REASON. "There is little left to win"
+// was never measured — it was READ OFF THE GATE, and the gate was reading a 40-row slice of a
+// 160-row tail. `compaction.ts` arms the backoff on
+// `tokensReclaimed < 2000 && leafCreated <= 1`, and `tokensReclaimed` is `tokensBefore −
+// tokensAfter` with BOTH terms coming from `estimateAssembledTokens`. Capped at the row cap,
+// a pass that took the array from 160 messages to 43 subtracted two 40-row readings and
+// reported — MEASURED by planting that read back, not reasoned about — a yield of EXACTLY
+// ZERO. So the agent sat out a 15-minute backoff it had earned by accident, and the gap it
+// was ignoring stood at 48 rows against a threshold of 30 by the end of the run.
+//
+// POST-SEAM the same pass measures its real yield, the backoff does not arm, and when the gap
+// re-accumulates past the threshold a SECOND drain runs — measured at turn 17. The count is
+// therefore TWO, and that is not a regression of this lane's claim: the lane's claim is that
+// the prefix moves only when COMPACTION moves, and both discontinuities are compactions, with
+// every other turn append-only. What changed is the compaction cadence, which is the thing
+// §7's own opening paragraph says this clause hands to `memory/compaction.ts` to decide.
 describe('t94 §7 — the seam: a compaction backlog drains across consecutive turns', () => {
-  it('a 300-row backlog costs ONE discontinuity, not one per turn', async () => {
+  it('a 300-row backlog costs one discontinuity per drain, never one per turn', async () => {
     // The backlog arrives while the writer is down — exactly the state §2 ends in. Two turns
     // are driven first so there is a snapshot to compare the drain against.
     summariser.up = false;
@@ -639,7 +678,10 @@ describe('t94 §7 — the seam: a compaction backlog drains across consecutive t
     const before = await driveRun({ turns: 2 });
     __resetBrakesForTests();
 
-    // The writer comes back. Every turn now runs the production routine gate.
+    // The writer comes back. Every turn now runs the production routine gate. The pass log is
+    // cleared here so it holds the DRAIN's passes only (the writer-down turns threw and
+    // compacted nothing, but the clause should not depend on that to read its own numbers).
+    passLog.length = 0;
     summariser.up = true;
     const after = await driveRun({ turns: 25 });
     const deltas = runDeltas([...before.slice(-1), ...after]);
@@ -652,32 +694,45 @@ describe('t94 §7 — the seam: a compaction backlog drains across consecutive t
       deltas, abridge(deltas),
     ));
 
-    // THE MEASUREMENT. The drain happened, it rewrote the prefix, and it did so ONCE —
-    // `getLeafChunkTokens`'s chunk swallowed the whole gap in a single pass, so "the prefix
-    // moves when compaction moves" costs one turn here and not twenty-five.
-    expect(compactions).toBeGreaterThan(0);
-    // ONE. A 300-row backlog drains in a single pass and costs a single prefix rewrite.
-    //
-    // This clause was a RANGE in the first cut, with a comment blaming "module-level caches"
-    // for measuring 1 discontinuity alone and 2 in the full file. That was the wrong cause
-    // and review I1 found the right one: the compaction DIVIDER is throttled to once per ten
-    // minutes, an earlier probe in the same file had consumed the window, and the horizon's
-    // floor then re-admitted the rows the summary had just covered. With the slack made
-    // conditional at the ask, the count is 1 either way — so this is an equality now, and
-    // the comment that excused the flake is gone with the flake.
-    expect(bad.length).toBe(1);
-    expect(deltas.length - bad.length).toBe(deltas.length - 1);
+    const gapAtEnd = getUncompactedGapCount(AGENT, windowNow.value);
+    // eslint-disable-next-line no-console
+    console.log(`t100 §7 — drains: ${JSON.stringify(passLog)} · uncompacted gap at the last turn: ${gapAtEnd} (threshold ${UNCOMPACTED_GAP_THRESHOLD})`);
 
-    // AND THE PART THAT MAKES THE SEAM A NON-ISSUE, which this probe found rather than
-    // assumed. After the drain the gap RE-ACCUMULATES past the threshold (measured: 49 rows
-    // by turn 25) and compaction does NOT run again — `compaction-brakes.ts`'s 15-minute
-    // low-yield backoff is holding it off, correctly, because there is little left to win.
-    // Pre-t94 those twenty-four turns each front-trimmed two rows while compaction was
-    // backed off: the trimmer and the compactor disagreed about whether the conversation was
-    // under pressure, and the trimmer won every turn. Now the tail simply GROWS through the
-    // backoff, append-only, until compaction is ready — which is the whole point of the lane.
-    expect(getUncompactedGapCount(AGENT, windowNow.value)).toBeGreaterThan(UNCOMPACTED_GAP_THRESHOLD);
+    // THE MEASUREMENT. The drain happened and it rewrote the prefix on the turn it ran.
+    expect(compactions).toBeGreaterThan(0);
+
+    // ONE DISCONTINUITY PER DRAIN, AND EVERY DISCONTINUITY IS A DRAIN — the policy's single
+    // legitimate cause. Equalities, so a third discontinuity, or a scrolling tail, reds this.
+    expect(bad.map((d) => d.note)).toEqual(['compaction ran', 'compaction ran']);
+    expect(bad.map((d) => d.turn)).toEqual([1, 17]);
+    // "NEVER ONE PER TURN" is the claim that matters, so it is asserted as a cadence and not
+    // left implied by the turn list above: the drains are far apart.
+    expect(bad[1].turn - bad[0].turn).toBeGreaterThanOrEqual(15);
+    // And every other turn is a pure append. The run length is asserted directly, replacing
+    // the tautology review M1 found here (`deltas.length - bad.length === deltas.length - 1`
+    // asserts nothing once `bad.length` has been checked).
+    expect(deltas.length).toBe(25);
     expect(deltas.filter((d) => d.appendOnly).length).toBe(deltas.length - bad.length);
+
+    // AND THE NUMBER THAT DECIDES THE CADENCE, which is the seam itself (see the header).
+    // `compaction.ts` arms a 15-minute backoff on `tokensReclaimed < 2000 && leafCreated <= 1`,
+    // and `tokensReclaimed` is a subtraction of two `estimateAssembledTokens` readings. Now
+    // that those readings see the span the assembler admits, the first drain reports its real
+    // yield, the backoff does not arm, and the second drain runs when the gap re-accumulates.
+    // Pre-seam both terms were 40-row readings of a 160-row tail and the same pass reported a
+    // yield under the floor — braking itself for a quarter of an hour on its own blind spot.
+    //
+    // MEASURED, both drains: turn 1 reclaims 10,664 tokens and turn 17 reclaims 1,293. So the
+    // brake is not weakened by the seam — it is finally reading the truth. It declines to arm
+    // on the pass that reclaimed ten thousand tokens and DOES arm on the pass that reclaimed
+    // thirteen hundred, which is the predicate's whole intent; the run ends quiet because of
+    // the second one, not because the first was misjudged.
+    expect(passLog.map((p) => p.turn)).toEqual([1, 17]);
+    expect(passLog[0].tokensReclaimed).toBeGreaterThan(2000);
+    expect(passLog[1].tokensReclaimed).toBeLessThan(2000);
+    // After the second drain the gap is back UNDER the threshold, which is why the run ends
+    // quiet: the tail grows append-only from there, exactly as §1's healthy path does.
+    expect(gapAtEnd).toBeLessThanOrEqual(UNCOMPACTED_GAP_THRESHOLD);
   }, 300_000);
 });
 
@@ -709,73 +764,105 @@ describe('t94 §8 — the horizon\'s ceiling trim reaches FA-M1', () => {
   });
 });
 
-// ── §9 THE HANDED-UP SEAM (D3), MEASURED AND PINNED ─────────────────────────────────────
+// ── §9 THE SEAM WITH THE COMPACTION GATE: CLOSED (t94 handed it up, t100 landed it) ─────
 //
-// t91 established, and this was re-verified at this lane's HEAD, that the compaction gate's
-// TOKEN trigger can only ever be crossed by the FRESH TAIL: `compaction.ts:206` caps the
-// summary half at the budget (`summaryTokens = Math.min(rawSummaryTokens, summaryBudget)`,
+// t91 established, and t94 re-verified, that the compaction gate's TOKEN trigger can only
+// ever be crossed by the FRESH TAIL: `compaction.ts` caps the summary half at the budget
+// (`summaryTokens = Math.min(rawSummaryTokens, summaryBudget)`,
 // `summaryBudget = floor((assemblyBudget − brief − freshTail) × 0.7)`), so summaries alone
 // can never push `total` over a 0.96 threshold. Growing the tail to a boundary is therefore
-// SELF-TERMINATING through that trigger as well as through the row-gap one — which is the
-// half of this seam that works.
+// SELF-TERMINATING through that trigger as well as through the row-gap one — and THAT is why
+// which rows the gate measures decides when the policy above stops growing.
 //
-// THE HALF THAT DOES NOT, AND IT IS THIS LANE'S TO HAND UP. The gate measures the tail with
-// its OWN read, `compaction.ts:173`:
+// ── WHAT THIS CLAUSE SAID BEFORE t100, AND WHY IT HAD TO CHANGE ─────────────────────────
+// t94 left this as a TRIPWIRE. The gate measured the tail with its own read,
+// `getRecentMessages(agentId, policy.freshTailCount)` — the ROW CAP. Before t94 that was the
+// same set the assembler admitted, so the gate's dry run and the real assembly agreed by
+// construction; afterwards the assembler admitted every row since the compaction boundary,
+// which is MORE, and the gate UNDER-REPORTED the assembly it was gating. This clause asserted
+// that divergence WITH ITS NUMBER — 68 rows admitted, 40 seen, blind to 28 — precisely so
+// that landing the fix would turn it RED and force whoever landed it to come here and assert
+// AGREEMENT instead. That is what happened; this is the agreement form.
 //
-//     const freshTail = getRecentMessages(agentId, policy.freshTailCount);
+// ── THE IDENTITY NOW HELD, AND THE TWO WAYS TO BREAK IT ─────────────────────────────────
+// The gate measures the assembler's ASK: the span admitted before `budgetFreshTail`'s token
+// trim runs. (That is the right input to "should this agent compact" and it is also what the
+// row cap used to measure — if the ASK is over the window the assembler is about to
+// front-trim, and getting a compaction to run first is the gate's whole job.) So:
 //
-// — the ROW CAP. Before t94 that was the same set the assembler admitted, so the gate's model
-// and the real assembly agreed by construction. The assembler now admits every row since the
-// compaction boundary, which is MORE, so the gate UNDER-REPORTS the assembly it is gating.
-// Consequences, in order of how much they matter:
-//   * The token trigger and `context-gates.ts`'s warn/compact/block rungs read low, so
-//     preemptive compaction fires later than the real pressure warrants. Bounded, because the
-//     ROW-GAP trigger (`UNCOMPACTED_GAP_THRESHOLD = 30` past the cap) is not token-based and
-//     still fires on schedule — which is what keeps the healthy path honest.
-//   * It is not a correctness hole: the assembler's own `assemblyBudgetTokens` and the block
-//     trim still bound what is SENT, so no over-window prompt is built that was not built
-//     before, and `refuseIfDoomed` is still the last guard.
-// The one-line fix belongs in `memory/compaction.ts`, which this lane may read and not edit.
-// The report carries the proposed diff.
+//   * A gate that reads the ROW CAP again reds the first clause below — it sees 40 of 68.
+//   * A gate that reads the horizon but ADDS SLACK to the ask reds the second clause — the
+//     FLOOR case, where `keepFromSeq` is 0 and nothing is filtered, so an ask padded by one
+//     row cap simply answers twice as many rows as the assembler will ever send. This is the
+//     direction the handed-up diff in `t94-report.md` got wrong (it padded unconditionally,
+//     in a function that has no `turnCutoff` and therefore no reason to pad at all — t94's
+//     own review I1 defect, on the gate side), and it is invisible in the common case: with
+//     `rows_since > cap` the seq filter trims the padding off again and the count comes out
+//     right for the wrong reason. The floor fixture is the one that catches it.
 //
-// THE RISK, RE-DERIVED (review I3 — the first version of this paragraph had it backwards).
-// It is NOT that a bigger measured tail could latch an agent INCOMPRESSIBLE. At this lane's
-// base, `compaction-brakes.ts latchIfSummariesExceedBudget` returns null whenever
-// `summaryTokens <= assemblyBudgetTokens`, and `summaryTokens` is the CAPPED figure
-// (`min(raw, summaryBudget)`, `summaryBudget <= 0.7 x assemblyBudget`) — so a bigger tail
-// shrinks the cap and makes that latch LESS likely, not more. Verified by reading both
-// functions, not inferred.
+// ── THE RISK, RE-DERIVED (t94 review I3 — the first version had it backwards) ───────────
+// A bigger measured tail does NOT latch an agent INCOMPRESSIBLE. `summaryTokens` is the
+// CAPPED figure (`min(raw, summaryBudget)`, `summaryBudget <= 0.7 × assemblyBudget`), so a
+// bigger tail shrinks the cap, and OR-COMPACT-1 abolished the terminal state anyway: the
+// estimate feeds `condenseUntilFits`, so a bigger measured tail means a SMALLER summary
+// target and MORE condensation, which is the correct direction.
 //
-// And on the compaction lane's own HEAD (`a8e254c7`, which is past the commit the review
-// cited) that latch is GONE — `latchIfSummariesExceedBudget` survives there only as a
-// historical mention in a comment at `:680`, with nothing calling it, because OR-COMPACT-1
-// abolished the terminal state. The estimate now feeds `condenseArgs` -> `condenseUntilFits`,
-// so a bigger measured tail means a SMALLER summary target and MORE condensation, which is
-// the correct direction. The real thing for that lane to sanity-check is whether the
-// condenser's "fits" can become unreachable when the true tail sits near the row ceiling —
-// a question about its loop bound, not about this read.
-//
-// That HEAD also still carries the row-cap read at its own `:174`, so this clause stays
-// GREEN through the compaction lane's merge and reds only when the seam commit lands.
-//
-// THIS CLAUSE IS THE TRIPWIRE, AND IT COUNTS BOTH WAYS (G4). It pins the divergence that
-// exists today, with its number. When the gate is taught the horizon, this clause goes RED
-// and whoever lands that fix must change it to assert AGREEMENT — which is the point: a seam
-// recorded only in a report rots, and a seam recorded in a clause cannot.
-describe('t94 §9 — the gate still measures the tail by the row cap (handed up)', () => {
-  it('the gate sees the row cap while the assembler admits the whole span', async () => {
+// The EFFECT of the seam — that the token trigger now fires when the real tail is heavy, and
+// does not fire when it is not — is driven in `the-gate-measures-the-tail-it-gates.test.ts`.
+// This clause holds the identity; that file holds what the identity buys.
+describe('t94 §9 / t100 — the gate measures the tail the assembler actually sends', () => {
+  it('the common case: the gate sees the WHOLE span, and it is the assembler\'s own set', async () => {
     const policy = contextWindowPolicy(WINDOW, { toolPayloadTokens: 1000, maxOutputTokens: 4096 });
     for (let t = 1; t <= 34; t++) appendTurn();             // 68 rows, nothing compacted yet
 
     const horizon = freshTailHorizon(AGENT, policy);
     const est = await estimateAssembledTokens(AGENT, WINDOW, MODEL);
+    const ctx = await assembleContext(AGENT, MODEL);
+    const liveRows = (ctx.messages as Array<{ content: unknown }>)
+      .filter((m) => JSON.stringify(m.content).includes('[t')).length;
 
-    // What the assembler will admit, and what the gate thinks it will admit.
     expect(horizon.rowsSinceBoundary).toBe(68);
-    expect(est.freshTailCount).toBe(policy.freshTailCount);  // 40 — the row cap, not 68
-    expect(est.freshTailCount).toBeLessThan(horizon.rowsSinceBoundary);
-    // The gate is blind to 28 of the 68 rows it is gating. That is the seam, in rows.
-    expect(horizon.rowsSinceBoundary - est.freshTailCount).toBe(28);
+    expect(est.freshTailCount).toBe(68);                     // the span — not the 40-row cap
+    expect(est.freshTailCount).toBeGreaterThan(policy.freshTailCount);
+    // THE SEAM, in rows, and it is now zero. Asserted against the assembled array as well as
+    // against the horizon struct, because a clause that only asks the horizon what it decided
+    // would be satisfied by a gate that re-derived the same answer from the wrong read.
+    expect(horizon.rowsSinceBoundary - est.freshTailCount).toBe(0);
+    expect(est.freshTailCount).toBe(liveRows);
+  }, 120_000);
+
+  it('the FLOOR case: the ask is exactly the row cap, unfiltered, with no slack', async () => {
+    const cap = getFreshTailCount(WINDOW);
+    const policy = contextWindowPolicy(WINDOW, { toolPayloadTokens: 1000, maxOutputTokens: 4096 });
+    for (let t = 1; t <= 60; t++) appendTurn();              // 120 rows in the session
+
+    // THE DEEP-COMPACTION FLOOR, built by hand rather than driven. A real pass leaves
+    // `rows_since == cap` exactly and the divider nudges it to `cap + 1`, which is the
+    // FILTERED case — the one that cannot see an over-ask. The state that can is `anchor > 0`
+    // with `rows_since < cap`, reachable in production on a mid-session switch to a LARGER
+    // window and on any pass that leaves fewer than `cap` live rows; a hand-built leaf
+    // summary is the deterministic way to sit in it.
+    const covered = db().prepare(
+      'SELECT id FROM messages WHERE agent_id = ? ORDER BY seq ASC LIMIT 110',
+    ).all(AGENT) as Array<{ id: string }>;
+    expect(covered.length).toBe(110);
+    createLeafSummary(AGENT, 'The depot inventory run so far, condensed.', 400,
+      covered.map((r) => r.id), '2026-01-01 00:00:00', '2026-01-02 00:00:00');
+
+    const horizon = freshTailHorizon(AGENT, policy);
+    expect(horizon.rowsSinceBoundary).toBe(10);              // 10 <= cap, so: the floor
+    expect(horizon.keepFromSeq).toBe(0);                     // nothing is filtered
+    expect(horizon.requestRows).toBe(cap);                   // the floor's ask IS the cap
+
+    // 120 rows exist, so with nothing filtered the COUNT IS THE ASK: an ask of `cap` answers
+    // 40 and an ask of `cap + cap` answers 80. The assembler admits 40 here; so must the gate.
+    const est = await estimateAssembledTokens(AGENT, WINDOW, MODEL);
+    const ctx = await assembleContext(AGENT, MODEL);
+    const liveRows = (ctx.messages as Array<{ content: unknown }>)
+      .filter((m) => JSON.stringify(m.content).includes('[t')).length;
+    expect(liveRows).toBe(cap);
+    expect(est.freshTailCount).toBe(cap);
+    expect(est.freshTailCount).toBe(liveRows);
   }, 120_000);
 });
 

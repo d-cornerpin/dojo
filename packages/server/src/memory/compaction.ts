@@ -10,6 +10,9 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
 import { getMessagesOutsideFreshTail, getRecentMessages } from './store.js';
+// t100: the fresh tail's front is the compaction boundary (t94). The gate READS that decision
+// so its dry run measures the span the assembler will actually admit — see the call below.
+import { freshTailHorizon } from './tail-horizon.js';
 import { estimateTokens, getFreshTailCount, contextWindowPolicy, storedRowCost, CONTEXT_THRESHOLD, CONTEXT_WARN_THRESHOLD } from './budget.js';
 // T82a: `agent/stream-patience.ts` is a LEAF (no imports of its own — see its header), so
 // importing its arithmetic here does not create the cycle `agent/model.ts` is dynamically
@@ -171,7 +174,38 @@ export async function estimateAssembledTokens(
   const summaries = getContextSummaries(agentId);
   const rawSummaryTokens = summaries.reduce((sum, s) => sum + (s.tokenCount ?? 0), 0);
 
-  const freshTail = getRecentMessages(agentId, policy.freshTailCount);
+  // ── t100: THE GATE MEASURES THE TAIL THE ASSEMBLER ACTUALLY SENDS ──────────────────────
+  //
+  // This read was `getRecentMessages(agentId, policy.freshTailCount)` — the ROW CAP. Before
+  // t94 that was the same set the assembler admitted, so the dry run and the real assembly
+  // agreed by construction. t94 made the assembler's tail HORIZON-BOUNDED (every row since
+  // the compaction boundary — `memory/tail-horizon.ts` carries the whole derivation), which
+  // is MORE, so this estimate under-reported the assembly it is gating: measured at 68 rows
+  // admitted against 40 seen, blind to 28 of them. Both readers of this number — the token
+  // trigger in `runCheckAndCompact` below and `context-gates.ts`'s warn / compact / block
+  // rungs — therefore read LOW, and preemptive compaction fired later than the real pressure
+  // warranted. (Not a correctness hole while it stood: the assembler's own
+  // `assemblyBudgetTokens` still bounds what is SENT, and the ROW-GAP trigger below is not
+  // token-based and kept firing on schedule, which is what held the healthy path honest.)
+  //
+  // THE HORIZON IS READ HERE, NEVER RE-DERIVED. One module decides where the live
+  // conversation starts; this is a dry run of that decision, not a second model of it — the
+  // same rule that made this whole function an allocator dry run at PHASE-3 T2.
+  //
+  // AND THE ASK CARRIES NO SLACK, deliberately. The assembler pads its own ask by one row cap
+  // in the FILTERED case only, and for one reason: its read excludes the newest user rows
+  // with a `turnCutoff`, so a `LIMIT` sized to the span reaches that many rows further back
+  // and the seq filter trims them off again. This function has no `turnCutoff` and excludes
+  // nothing, so slack here would be pure over-ask — and in the FLOOR case (`keepFromSeq: 0`,
+  // nothing filtered) it would measure up to 2×cap rows the assembler will never send. That
+  // is t94 review I1's defect, removed from the assembler in its own fix round; the handed-up
+  // diff reintroduced it on this side and it is not reproduced here.
+  // `__tests__/the-tail-trims-only-at-a-boundary.test.ts` §9 holds both halves.
+  const horizon = freshTailHorizon(agentId, policy);
+  const freshTailRows = getRecentMessages(agentId, horizon.requestRows);
+  const freshTail = horizon.keepFromSeq > 0
+    ? freshTailRows.filter((m) => (m.rowid ?? 0) >= horizon.keepFromSeq)
+    : freshTailRows;
   // T56 leg (a): `storedRowCost` is the assembler's own unit, now shared (it used to be
   // re-spelled here as `?? estimateTokens(…)`, which billed a stored `token_count` of 0 as
   // free). It includes the `reasoning_content` the replay site will actually send, so
