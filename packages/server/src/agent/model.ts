@@ -780,6 +780,9 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
   return {
     providerId: row.provider_id,
     apiModelId: row.api_model_id,
+    // The model's ADVERTISED window, as stored. The RAM-aware cap the engine BUDGETS against is
+    // applied at `getContextWindow`, deliberately not here — t103 C's own note says why, and the
+    // utility dial's per-call widening is the reason.
     contextWindow: row.context_window ?? 200000,
     // Use the provider-reported value from DB, fall back to derived value for older records
     maxOutputTokens: row.max_output_tokens ?? getMaxOutputTokens(row.api_model_id, row.provider_type),
@@ -814,6 +817,76 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
     numCtxOverride: typeof row.num_ctx_override === 'number' ? row.num_ctx_override : null,
     numCtxRecommended: typeof row.num_ctx_recommended === 'number' ? row.num_ctx_recommended : null,
   };
+}
+
+/**
+ * ════════════════════════════════════════════════════════════════════════════════════════
+ * THE RAM RECOMMENDATION IS THE DEFAULT CAP (t103 item C — OWNER RULING 2026-10-05 #2).
+ * ════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * ── WHAT WAS MEASURED AT `09514572` ──────────────────────────────────────────────────
+ * `services/num-ctx-calculator.ts` sizes a KV window to the box's actual obligations (total
+ * RAM, this model's weights, the OTHER enabled models' weights, a desktop reserve and an
+ * engine reserve) and stores it in `models.num_ctx_recommended`. `callOllamaModel` already sent
+ * it as `options.num_ctx`, so Ollama was told the truth about the box.
+ *
+ * The ENGINE was not. Everything that decides how much prompt to BUILD — `memory/assembler.ts`,
+ * `memory/budget.ts`'s policy, the compaction trigger, `reassemble-for-fit`, the recovery
+ * compactor — reads `getContextWindow(modelId)`, which returned `models.context_window`: the
+ * model's advertised maximum. So on a tight box the assembler packed a full advertised window
+ * into a KV cache sized for a fraction of it, and the recommendation it was shown beside did
+ * nothing to stop it. "Small models still land at max context" is that gap, and the backlog
+ * line's own question — "should the recommendation itself bite?" — is what the ruling answers.
+ *
+ * ── THE RULE ────────────────────────────────────────────────────────────────────────
+ *   no override            → the window the engine budgets against IS the recommendation;
+ *   override set           → the override wins (it is the user's number, and a person who
+ *                            types one has decided);
+ *   no recommendation and  → today's behaviour exactly, byte-identical: the advertised window.
+ *   no override              This is every hosted provider — the columns are Ollama's — so the
+ *                            change cannot reach a row that has nothing to say about itself.
+ *
+ * Always a `min` against the advertised window, so neither knob can talk the engine into
+ * budgeting for MORE context than the model admits to having. That direction is one-way on
+ * purpose: a too-small budget costs a compaction, a too-large one costs a truncated prompt and
+ * an answer built on history the model never saw.
+ *
+ * NO MIGRATION, verified: not one stored row changes meaning. `num_ctx_recommended` already
+ * meant "the window this box can afford" and `num_ctx_override` already meant "the window the
+ * user chose"; what changed is which of them the ENGINE's budget reads. The API still reports
+ * `context_window` as the model's advertised maximum (`gateway/routes/config.ts`'s `rowToModel`
+ * is untouched), so the Settings card keeps showing the model's real ceiling beside the
+ * recommendation rather than quietly restating it.
+ */
+export interface NumCtxResolution {
+  /** The `num_ctx` this model's calls carry, or null for "send none, let the Modelfile decide". */
+  effective: number | null;
+  /** Which knob answered. `default` means neither column is set — the hosted-provider case. */
+  source: 'override' | 'recommended' | 'default';
+}
+
+/** Which num_ctx knob wins, said ONCE: the wire and the budget cannot disagree about it. */
+export function resolveNumCtx(info: {
+  numCtxOverride: number | null;
+  numCtxRecommended: number | null;
+}): NumCtxResolution {
+  if (typeof info.numCtxOverride === 'number') {
+    return { effective: info.numCtxOverride, source: 'override' };
+  }
+  if (typeof info.numCtxRecommended === 'number') {
+    return { effective: info.numCtxRecommended, source: 'recommended' };
+  }
+  return { effective: null, source: 'default' };
+}
+
+/**
+ * The window the engine budgets against: the advertised one, capped by whatever num_ctx the
+ * calls actually carry. `null` num_ctx — every hosted row — returns the advertised window
+ * UNCHANGED, which is the both-directions control.
+ */
+export function effectiveContextWindow(declaredWindow: number, numCtx: number | null): number {
+  if (typeof numCtx !== 'number' || !Number.isFinite(numCtx) || numCtx <= 0) return declaredWindow;
+  return Math.min(declaredWindow, numCtx);
 }
 
 /**
@@ -1083,14 +1156,12 @@ async function callOllamaModel(
   // Effective num_ctx: the user's explicit override wins, otherwise the
   // auto-computed RAM-aware recommendation, otherwise no value at all
   // (Ollama falls back to the model's Modelfile default).
-  const effectiveNumCtx: number | null =
-    typeof modelInfo.numCtxOverride === 'number'
-      ? modelInfo.numCtxOverride
-      : (typeof modelInfo.numCtxRecommended === 'number' ? modelInfo.numCtxRecommended : null);
-  const numCtxSource: 'override' | 'recommended' | 'default' =
-    typeof modelInfo.numCtxOverride === 'number'
-      ? 'override'
-      : (typeof modelInfo.numCtxRecommended === 'number' ? 'recommended' : 'default');
+  //
+  // t103 C: this WAS two hand-rolled ternaries here, and the same precedence is now what the
+  // engine's own context budget reads (`getModelInfo`'s `contextWindow`). Two copies of a
+  // precedence rule is how the wire and the budget come to disagree about which number is real,
+  // so there is one resolver and both callers use it.
+  const { effective: effectiveNumCtx, source: numCtxSource } = resolveNumCtx(modelInfo);
 
   logger.info('Calling Ollama native /api/chat (streaming)', {
     model: ollamaModelName,
@@ -3677,10 +3748,27 @@ export function clearClientCache(providerId?: string): void {
   }
 }
 
+/**
+ * THE WINDOW THE ENGINE BUDGETS AGAINST — advertised, capped by what this box can afford.
+ *
+ * The ONE door every prompt-size decision reads: `memory/assembler.ts`, `memory/budget.ts`'s
+ * policy, the compaction trigger, `agent/v2/steps/call-llm/reassemble-for-fit.ts` and the
+ * recovery compactor. t103 C makes the RAM recommendation bite HERE, and the placement is the
+ * design rather than a convenience:
+ *
+ *   * this is the question the ruling is about — "how much prompt may I BUILD" — and capping it
+ *     once reaches every builder without touching any of them;
+ *   * `getModelInfo().contextWindow` stays the ADVERTISED number, so the utility dial keeps
+ *     working. t88 widens `num_ctx` PER CALL for a dial whose input is large (a screenshot
+ *     caption asks for more window than its one sentence would), and a cap applied inside
+ *     `getModelInfo` would have told the provider boundary to refuse the very assembly the dial
+ *     had just widened the window for. Decision #2's own wording — "stay advisory now the
+ *     per-call window protects the box" — names that mechanism; this keeps it.
+ */
 export function getContextWindow(modelId: string): number {
   try {
     const info = getModelInfo(modelId);
-    return info.contextWindow;
+    return effectiveContextWindow(info.contextWindow, resolveNumCtx(info).effective);
   } catch {
     return 200000; // Default fallback
   }

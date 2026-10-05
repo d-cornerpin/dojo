@@ -2045,8 +2045,28 @@ configRouter.patch('/models/:id/num-ctx', async (c) => {
     .run(override, id);
 
   const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
-  logger.info('Model num_ctx override updated', { modelId: id, override });
-  return c.json({ ok: true, data: rowToModel(row) });
+
+  // ── ONE HONEST LINE, NOT A BLOCK (t103 C — OWNER RULING 2026-10-05 #2) ────────────────
+  // The recommendation is the DEFAULT cap now, and an override still wins — "user-overridable"
+  // is half the ruling. But the recommendation is sized to what this box can actually afford
+  // (`services/num-ctx-calculator.ts` budgets against total RAM, this model's weights, the other
+  // enabled models' weights and two reserves), so an override ABOVE it is a person choosing to
+  // spend memory the sizer says is not there. That is their call to make; it is not a thing they
+  // should have to infer. So the response SAYS what the recommendation was and by how much the
+  // override exceeds it, and refuses nothing — a block here would be the platform overruling an
+  // owner on his own hardware.
+  const recommended = typeof row.num_ctx_recommended === 'number' ? row.num_ctx_recommended : null;
+  const exceedsRecommended = typeof override === 'number' && recommended !== null && override > recommended;
+  const notice = exceedsRecommended
+    ? `This override is ${(override - recommended!).toLocaleString()} tokens above the `
+      + `${recommended!.toLocaleString()}-token window auto-sized for this machine's RAM. It will be used `
+      + 'as you set it; if the model starts failing to load or the box starts swapping, this is the dial to lower.'
+    : null;
+
+  logger.info('Model num_ctx override updated', {
+    modelId: id, override, recommended, exceedsRecommended,
+  });
+  return c.json({ ok: true, data: rowToModel(row), notice });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════
