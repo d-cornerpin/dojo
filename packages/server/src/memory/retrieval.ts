@@ -136,12 +136,22 @@ function summariesFtsWindow(db: ReturnType<typeof getDb>, agentId: string): Summ
  * RECENT matched" re-asks with new wording, which is the self-echo loop `isPureToolCallMessage` exists
  * to break. Returns that sentence, or null when the bound did not bite.
  *
+ * ⚠ THE REMEDY IS THE CALLER'S TO STATE, AND ROUND 3 IS WHY. Round 2 wrote one sentence for all three
+ * arms — "Pass before=… to search further back" — and it is not true on ANY of them. `searchSummaries`
+ * has no `before` parameter at all; `history_expand` applies the same floor and takes no date filter;
+ * and even on messages `before` adds a `created_at` CEILING while the rowid floor still applies, so it
+ * can re-order matches inside the window and cannot reach below it. A remedy an agent cannot act on is
+ * worse than no remedy: it sends the model round the loop this note exists to break. So `remedy` is a
+ * required argument and each arm states what is actually available to it.
+ *
  * The guard needs BOTH that a floor applied and that the limit went unfilled: announcing a bound
  * nobody reached is the noise that makes real lines ignorable.
  */
 function noteBoundedFtsMiss(p: {
   readonly subsystem: string;
   readonly unit: 'messages' | 'summaries';
+  /** What the AGENT can actually do on THIS arm. See the header: there is no one true sentence. */
+  readonly remedy: string;
   readonly agentId: string;
   readonly candidateFloor: number;
   readonly matched: number;
@@ -164,8 +174,7 @@ function noteBoundedFtsMiss(p: {
     beforeGiven: p.beforeGiven ?? false,
   }, p.agentId);
   return `[searched the newest ${FTS_CANDIDATE_ROWS.toLocaleString('en-US')} ${p.unit} only`
-    + ` — older history was not scanned. Pass before="<ISO date>" to search further back,`
-    + ` or use history_expand for a deep recall.]`;
+    + ` — older history was not scanned. ${p.remedy}]`;
 }
 
 // ── history_search: FTS5 search on messages and summaries ──
@@ -283,8 +292,37 @@ async function searchMessagesInner(
     const maxSeq = (db.prepare('SELECT MAX(seq) AS r FROM messages WHERE agent_id = ?')
       .get(agentId) as { r: number | null } | undefined)?.r ?? 0;
     const candidateFloor = ftsCandidateRowidFloor(maxSeq);
+    // ⚠ THE FLOOR IS SPELLED ON THE FTS SIDE (round 3), AND WHAT THAT BUYS DIFFERS BY ARM —
+    // measured per arm, because the one-sentence version of this is wrong.
+    //
+    // ON SUMMARIES IT IS THE WHOLE BOUND. `idx_summaries_agent_depth (agent_id, depth, created_at)`
+    // has no rowid prefix, so the planner has no `(agent_id=? AND rowid>?)` range to drive from and
+    // keeps `SCAN summaries_fts | SEARCH s USING INTEGER PRIMARY KEY`. Written `AND s.rowid > ?` the
+    // range is NOT pushed into the virtual-table scan: fts5 yields every match and SQLite JOINS each
+    // one before discarding it, so the floor was a pure COST with no bound. Written
+    // `AND summaries_fts.rowid > ?` the range goes inside the scan (`INDEX 32:M1>`). Measured on a
+    // 293 MB on-disk fixture (60,000 rows x 3 KB content, 2 MB cache, fresh connection per run, best
+    // of 3), 10,000-row window:
+    //     no floor              27.2 ms   ·  60,000 rows reach the join
+    //     JOINED-table floor    70.1 ms   ·  60,000 rows reach the join   (2.6x WORSE than no floor)
+    //     FTS-side floor        29.9 ms   ·  10,000 rows reach the join   (6.0x fewer joins)
+    //
+    // ⚠ ON MESSAGES — THIS ARM — THE FLOOR WAS ALREADY PUSHED, and the round-3 finding's premise does
+    // not hold here. `ix_msg_agent_seq (agent_id, seq)` gives the planner exactly that range, so with
+    // ANY spelling it INVERTS the join: `SEARCH m USING INDEX ix_msg_agent_seq (agent_id=? AND seq>?)`
+    // drives and `messages_fts` is probed per candidate (`INDEX 32:=M1`), with a temp B-tree for the
+    // ORDER BY. All three spellings produce the identical plan, asserted by a clause.
+    //
+    // ⚠ SO WHY CHANGE IT HERE AT ALL: it is free (identical plan), it keeps one spelling across the
+    // three arms, and it is the spelling that still pushes if the planner ever flips to FTS-first —
+    // which it does once `sqlite_stat1` exists, and this platform never runs ANALYZE (round-1 M7).
+    //
+    // ⚠ AND THE HONEST LIMIT OF THE WHOLE CLAIM: on neither arm does the floor make this query FASTER
+    // than no floor, because `ORDER BY rank` scores the whole doclist either way. What it buys is a
+    // bounded JOIN count — the pread storm the brief describes (`sqlite3_step -> readDbPage ->
+    // pread`), not the ranking.
     if (candidateFloor > 0) {
-      conditions.push('m.seq > ?');
+      conditions.push('messages_fts.rowid > ?');
       params.push(candidateFloor);
     }
 
@@ -324,6 +362,10 @@ async function searchMessagesInner(
       // so a summaries bound could truncate in silence — two copies of a policy is how that recurs.
       const note = noteBoundedFtsMiss({
         subsystem: 'history_search:fts', unit: 'messages', agentId,
+        // `before` is a created_at CEILING and the rowid floor still applies underneath it, so it
+        // re-orders what is inside the window and cannot reach below it. Say that, not "search back".
+        remedy: 'A narrower or more distinctive term is what reaches further back; a before="<ISO date>"'
+          + ' filter re-orders matches inside this window but cannot search below it.',
         candidateFloor, matched: rows.length, limit: limit ?? 20, newestRowid: maxSeq,
         sinceGiven: Boolean(since), beforeGiven: Boolean(before),
       });
@@ -513,12 +555,16 @@ async function searchSummariesInner(
       // their own: `ORDER BY rank` scores EVERY match before it knows which twenty win, and a
       // summary row is a condensed BODY — the join pulls each matching one to rank it. A long-lived
       // agent's summary table is smaller than its messages table but its rows are far larger, so the
-      // bytes read per ranked candidate are worse, not better. `ftsCandidateRowidFloor` makes
-      // recency the bound here exactly as it does there.
+      // bytes read per ranked candidate are worse, not better.
       // ⚠ `rowid AS rid`, aliased on purpose: `summaries.id` is a TEXT primary key, so the insertion
       // order lives in the implicit rowid, and PHASE-1 T10's reader guard refuses a BARE `rowid`
       // projection — the shape where SQLite names the column something else, the read comes back
       // `undefined`, and nothing throws. One name, chosen here.
+      // ⚠ THE FLOOR IS SPELLED `summaries_fts.rowid`, NOT `s.rowid`, AND THIS IS THE ARM WHERE THAT
+      // IS THE WHOLE BOUND — see `searchMessagesInner` for the measurement and for why the messages
+      // arm was never affected. On the joined table the range is not pushed into the virtual-table
+      // scan, so the floor cost 2.6x while bounding nothing; on the FTS table it filters inside the
+      // scan and 6x fewer rows reach the join.
       // THE CANDIDATE WINDOW, and both of round 2's findings are answered in `summariesFtsWindow`:
       // the global floor is kept where it bounds anything and RE-SEATED on the agent when it would
       // exclude every row the agent owns, and the per-agent read it needs is an indexed probe rather
@@ -526,7 +572,7 @@ async function searchSummariesInner(
       // before changing this line; the reproduction and the measurements are there.
       const window = summariesFtsWindow(db, agentId);
       const candidateFloor = window.candidateFloor;
-      const floorClause = candidateFloor > 0 ? 'AND s.rowid > ?' : '';
+      const floorClause = candidateFloor > 0 ? 'AND summaries_fts.rowid > ?' : '';
       const sql = `
         SELECT s.id, s.depth, s.kind, s.content, s.earliest_at, s.latest_at,
                snippet(summaries_fts, 0, '>>>', '<<<', '...', 64) as snippet
@@ -566,6 +612,10 @@ async function searchSummariesInner(
       // The treatment the messages arm already had, and whose absence here WAS round-2 finding A.
       const note = noteBoundedFtsMiss({
         subsystem: 'summary_search:fts', unit: 'summaries', agentId,
+        // This search takes NO date filter — there is no `before` on `searchSummaries` — so the term
+        // is the only lever the agent has, and history_search reaches the raw messages behind these.
+        remedy: 'A narrower or more distinctive term is the only lever here; this search takes no date'
+          + ' filter. history_search reaches the raw messages these summaries were built from.',
         candidateFloor, matched: rows.length, limit: limit ?? 20,
         newestRowid: window.globalMax, reseated: window.reseated,
       });
@@ -814,12 +864,13 @@ async function expandSummariesFts(
     // only. `MAX(rowid) AS r` is aliased at the expression level, which is the form PHASE-1 T10's
     // reader guard accepts; a BARE projected `rowid` is the shape SQLite may name something else,
     // which then reads `undefined` without throwing.
+    // The floor is spelled on the FTS side (round 3) — see `searchMessagesInner` for the measurement.
     // The same window as `searchSummariesInner`, through the same helper — round 2's finding A was
     // present identically on this arm, so deep recall went quiet on exactly the agents whose history
     // is old enough to need it.
     const window = summariesFtsWindow(db, agentId);
     const candidateFloor = window.candidateFloor;
-    const floorClause = candidateFloor > 0 ? 'AND s.rowid > ?' : '';
+    const floorClause = candidateFloor > 0 ? 'AND summaries_fts.rowid > ?' : '';
     const sql = `
         SELECT s.id, s.content, s.depth, s.earliest_at, s.latest_at
         FROM summaries_fts
@@ -846,6 +897,11 @@ async function expandSummariesFts(
     // reaches this door through `history_expand`, whose own answer is the model's prose.
     void noteBoundedFtsMiss({
       subsystem: 'history_expand:fts', unit: 'summaries', agentId,
+      // Deep recall applies the same floor and exposes no way to move it, so the honest sentence
+      // states the bound and offers the one thing that does change the answer. It is carried even
+      // though this arm renders no agent line (see below), so a future wiring starts out true.
+      remedy: 'A narrower or more distinctive term is the only lever here; this bound is not'
+        + ' adjustable from the call.',
       candidateFloor, matched: rows.length, limit: EXPAND_SUMMARY_LIMIT,
       newestRowid: window.globalMax, reseated: window.reseated,
     });

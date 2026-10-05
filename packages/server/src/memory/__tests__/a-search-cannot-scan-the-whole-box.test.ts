@@ -617,7 +617,7 @@ describe('⚠ I6 — A BOUNDED FTS MISS IS NOT A MISS, AND BOTH AUDIENCES ARE TO
     // could truncate in silence. Two copies of a policy is how that recurs.
     const src = code();
     const helper = src.slice(src.indexOf('function noteBoundedFtsMiss'),
-      src.indexOf('// ── history_search: FTS5 search'));
+      src.indexOf('export async function memoryGrep'));
     expect(helper.length, 'the shared bounded-miss helper was not found by name').toBeGreaterThan(0);
     // The guard is on BOTH conditions: a floor that did not bite, or a result that filled its limit,
     // says nothing. Announcing a bound nobody reached is the noise that makes real lines ignorable.
@@ -627,8 +627,14 @@ describe('⚠ I6 — A BOUNDED FTS MISS IS NOT A MISS, AND BOTH AUDIENCES ARE TO
       .toMatch(/logger\.warn\(`\$\{p\.subsystem\} answered from a bounded candidate window/);
     expect(helper, 'the AGENT is not told — it cannot tell "nothing matched" from "nothing recent matched"')
       .toMatch(/return `\[searched the newest/);
-    expect(helper, 'the agent line must name the door out, or it is just an apology')
-      .toMatch(/before="<ISO date>"/);
+    // ⚠ THE REMEDY IS THE CALLER'S, per round 3: one sentence cannot be true of all three arms —
+    // `searchSummaries` has no `before` parameter, `history_expand` takes no date filter, and even on
+    // messages `before` is a created_at ceiling that cannot reach below the rowid floor. A remedy an
+    // agent cannot act on sends the model round the loop this note exists to break.
+    expect(helper, 'the remedy must come from the arm, not be guessed here')
+      .toMatch(/\$\{p\.remedy\}/);
+    expect(helper, 'the helper must not hard-code a remedy of its own')
+      .not.toMatch(/before="<ISO date>"/);
   });
 
   it('⚠ EVERY FTS ARM IS WIRED TO IT — counted, in both directions', () => {
@@ -638,6 +644,17 @@ describe('⚠ I6 — A BOUNDED FTS MISS IS NOT A MISS, AND BOTH AUDIENCES ARE TO
     const calls = (src.match(/noteBoundedFtsMiss\(\{/g) ?? []).length;
     expect(calls, 'one bounded-miss note per FTS arm — add an arm, wire it or red this').toBe(3);
     const subsystems = [...src.matchAll(/subsystem: '([a-z_]+:fts)'/g)].map((m) => m[1]);
+    // ⚠ AND EACH ARM STATES ITS OWN REMEDY, all three DISTINCT — round 3's finding was one shared
+    // sentence that was false on every arm. Counted so a fourth arm cannot copy a neighbour's.
+    const remedies = [...src.matchAll(/remedy: '([^']+)'/g)].map((m) => m[1]);
+    expect(remedies.length, 'every FTS arm must state what the agent can actually do').toBe(3);
+    expect(new Set(remedies).size, 'two arms share a remedy — one of them is lying').toBe(3);
+    // The one claim that was false everywhere must not come back on an arm that cannot honour it.
+    const summariesRemedies = remedies.filter((_, i) => i > 0);
+    for (const r of summariesRemedies) {
+      expect(r, 'a summaries arm promises a date filter it does not have')
+        .not.toMatch(/before=/);
+    }
     expect(new Set(subsystems)).toEqual(
       new Set(['history_search:fts', 'summary_search:fts', 'history_expand:fts']));
     // ⚠ AND THE TWO THAT CAN SHOW THE AGENT A LINE DO SHOW IT. `history_expand` deliberately does
@@ -652,7 +669,7 @@ describe('⚠ I6 — A BOUNDED FTS MISS IS NOT A MISS, AND BOTH AUDIENCES ARE TO
   it('⚠ NO PATTERN IN THE WARN — counts, the floor, and whether filters were given', () => {
     const src = code();
     const helper = src.slice(src.indexOf('function noteBoundedFtsMiss'),
-      src.indexOf('// ── history_search: FTS5 search'));
+      src.indexOf('export async function memoryGrep'));
     const warnBody = helper.slice(helper.indexOf('logger.warn('), helper.indexOf('}, p.agentId);'));
     // ⚠ The whole-file rule this package carries: this line is pasted into bug reports. `since` and
     // `before` are reported as BOOLEANS — whether a filter was given, never its value.
@@ -831,5 +848,152 @@ describe('⚠ A — AN AGENT WHOSE SUMMARIES ARE ALL OLD STILL FINDS THEM', () =
     expect((src.match(/ftsCandidateRowidFloor\(/g) ?? []).length,
       'only the messages arm may seat its own floor — summaries go through ftsAgentCandidateFloor')
       .toBe(1);
+  });
+});
+
+describe('⚠ ROUND 3 — THE FLOOR IS SPELLED ON THE FTS SIDE, OR IT BOUNDS NOTHING', () => {
+  // ⚠ THE FINDING, MEASURED BEFORE IT WAS FIXED. The floor exists to bound the work; written on the
+  // JOINED table (`m.seq > ?` / `s.rowid > ?`) it does the opposite. fts5 yields every match and
+  // SQLite JOINS each one before discarding it, so the floor adds joins instead of removing them. On
+  // a 293 MB on-disk fixture (60,000 rows × 3 KB content, 2 MB cache, fresh connection per run,
+  // best of 3) with a 10,000-row window:
+  //     no floor              27.2 ms  ·  60,000 rows reach the join
+  //     JOINED-table floor    70.1 ms  ·  60,000 rows reach the join   (2.6× WORSE than no floor)
+  //     FTS-side floor        29.9 ms  ·  10,000 rows reach the join   (6.0× fewer joins)
+  //
+  // ⚠ AND THE LIMIT OF THE CLAIM, because overstating it is how the original cost argument went
+  // unexamined for three rounds: the FTS-side spelling is NOT faster than no floor here, since
+  // `ORDER BY rank` scores the whole doclist either way. What it buys is that the floor stops costing
+  // 2.6× and starts bounding the JOIN count — which is the pread storm the brief describes
+  // (`sqlite3_step → readDbPage → pread`), not the ranking.
+  //
+  // The clause is a PLAN assertion rather than a timing one on purpose: `INDEX 32:M1>` versus
+  // `INDEX 32:M1` is the planner telling us the range went inside the scan, and it is the same
+  // answer on a loaded box as on an idle one.
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.exec(`CREATE TABLE summaries (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL,
+      depth INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL, content TEXT NOT NULL,
+      token_count INTEGER NOT NULL DEFAULT 0, earliest_at TEXT NOT NULL, latest_at TEXT NOT NULL,
+      descendant_count INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')))`);
+    db.exec('CREATE INDEX idx_summaries_agent_depth ON summaries(agent_id, depth, created_at)');
+    db.exec(`CREATE VIRTUAL TABLE summaries_fts USING fts5(content, content='summaries', content_rowid='rowid')`);
+    db.exec(`CREATE TABLE messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT, agent_id TEXT NOT NULL,
+      role TEXT, content TEXT NOT NULL, created_at INTEGER NOT NULL)`);
+    db.exec('CREATE INDEX ix_msg_agent_seq ON messages(agent_id, seq)');
+    db.exec(`CREATE VIRTUAL TABLE messages_fts USING fts5(content, content='messages', content_rowid='rowid')`);
+    const si = db.prepare(`INSERT INTO summaries (rowid,id,agent_id,depth,kind,content,earliest_at,latest_at)
+      VALUES (?,?,'agent-a',0,'k',?,'t','t')`);
+    const mi = db.prepare(`INSERT INTO messages (seq,id,agent_id,role,content,created_at) VALUES (?,?,'agent-a','user',?,?)`);
+    db.transaction(() => {
+      for (let r = 1; r <= 500; r += 1) {
+        si.run(r, `s-${r}`, `commonterm fixture body ${r}`);
+        mi.run(r, `m-${r}`, `commonterm fixture body ${r}`, 1_700_000_000_000 + r);
+      }
+    })();
+    db.exec('INSERT INTO summaries_fts(rowid, content) SELECT rowid, content FROM summaries');
+    db.exec('INSERT INTO messages_fts(rowid, content) SELECT seq AS rowid, content FROM messages');
+  });
+  afterEach(() => { db.close(); });
+
+  const detail = (sql: string, params: readonly unknown[]): string =>
+    (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as Array<{ detail: string }>)
+      .map((r) => r.detail).join(' | ');
+
+  /** The FTS-side half of each arm's plan — where the range either is or is not pushed. */
+  const ftsStep = (d: string): string => d.split(' | ').find((x) => x.includes('VIRTUAL TABLE')) ?? '';
+
+  const ARMS: ReadonlyArray<{ name: string; fts: string; tbl: string; alias: string; key: string }> = [
+    { name: 'history_search:fts', fts: 'messages_fts', tbl: 'messages', alias: 'm', key: 'seq' },
+    { name: 'summary_search:fts', fts: 'summaries_fts', tbl: 'summaries', alias: 's', key: 'rowid' },
+    // history_expand's arm is the same table and the same spelling; its projection differs only.
+    { name: 'history_expand:fts', fts: 'summaries_fts', tbl: 'summaries', alias: 's', key: 'rowid' },
+  ];
+
+  it('⚠ THE FLOOR IS PUSHED INTO A SCAN, and WHICH scan differs by arm — measured, not assumed', () => {
+    // ⚠ A CORRECTION TO THE FINDING'S PREMISE, FOUND BY MEASURING ALL THREE ARMS INSTEAD OF ONE.
+    // The finding reads "all three arms use the joined-table spelling", which is true as a spelling
+    // observation, but the CONSEQUENCE holds only on summaries:
+    //
+    //   SUMMARIES — `idx_summaries_agent_depth (agent_id, depth, created_at)` has no rowid prefix, so
+    //     there is no `(agent_id=? AND rowid>?)` range for the planner to drive from. It keeps
+    //     `SCAN summaries_fts | SEARCH s USING INTEGER PRIMARY KEY`, and only the FTS-side spelling
+    //     puts the range inside that scan (`INDEX 32:M1>`). The joined-table spelling really did
+    //     filter AFTER the join. This is the defect, and it is real.
+    //   MESSAGES — `ix_msg_agent_seq (agent_id, seq)` DOES give the planner that range, so with ANY
+    //     floor spelling it INVERTS the join: `SEARCH m USING INDEX ix_msg_agent_seq (agent_id=? AND
+    //     seq>?)` drives, and `messages_fts` is probed per candidate (`INDEX 32:=M1`) with a temp
+    //     B-tree for the ORDER BY. The floor was ALREADY pushed there — into the index range rather
+    //     than into the FTS scan. The messages arm was never broken.
+    //
+    // So the property to assert is "the floor is in a RANGE in whichever scan drives the query",
+    // not "the FTS index detail carries a `>`". The FTS-side spelling is kept on all three anyway:
+    // it is uniform, it costs nothing on messages (identical plan), and it is the spelling that still
+    // pushes if the planner ever flips to FTS-first — which it does once `sqlite_stat1` exists, and
+    // this platform never runs ANALYZE (round-1 M7).
+    const q = (tbl: string, alias: string, fts: string, clause: string): string =>
+      `SELECT ${alias}.id FROM ${fts} INNER JOIN ${tbl} ${alias} ON ${fts}.rowid = ${alias}.rowid
+       WHERE ${fts} MATCH ? AND ${alias}.agent_id = ? ${clause} ORDER BY rank LIMIT ?`;
+
+    // ── SUMMARIES: the arm the finding is about. Only the FTS-side spelling pushes. ──
+    const sumPushed = detail(q('summaries', 's', 'summaries_fts', 'AND summaries_fts.rowid > ?'),
+      ['commonterm', 'agent-a', 100, 20]);
+    const sumJoined = detail(q('summaries', 's', 'summaries_fts', 'AND s.rowid > ?'),
+      ['commonterm', 'agent-a', 100, 20]);
+    // eslint-disable-next-line no-console
+    console.log(`R3 PLAN  summaries FTS-side : ${ftsStep(sumPushed)}\n`
+      + `R3 PLAN  summaries joined   : ${ftsStep(sumJoined)}`);
+    expect(ftsStep(sumPushed), 'the range is not inside the summaries FTS scan')
+      .toMatch(/VIRTUAL TABLE INDEX \S*>/);
+    // ⚠ The other direction, which is what makes this evidence rather than decoration: the shipped
+    // spelling demonstrably did NOT push. If this ever starts passing, the finding is obsolete and
+    // the comment above must be re-measured before anyone trusts it.
+    expect(ftsStep(sumJoined), 'the joined-table spelling pushes too now — re-measure the finding')
+      .not.toMatch(/VIRTUAL TABLE INDEX \S*>/);
+
+    // ── MESSAGES: every spelling gives the same inverted plan, and the floor is in the index range. ──
+    const msgPlans = ['AND messages_fts.rowid > ?', 'AND m.seq > ?'].map((c) =>
+      detail(q('messages', 'm', 'messages_fts', c), ['commonterm', 'agent-a', 100, 20]));
+    // eslint-disable-next-line no-console
+    console.log(`R3 PLAN  messages (either spelling): ${msgPlans[0].split(' | ')[0]}`);
+    for (const pl of msgPlans) {
+      expect(pl, 'the messages floor is no longer a range in the driving index — re-measure')
+        .toMatch(/ix_msg_agent_seq \(agent_id=\? AND seq>\?\)/);
+    }
+    expect(msgPlans[0], 'the two messages spellings no longer agree — the uniform spelling needs re-arguing')
+      .toBe(msgPlans[1]);
+  });
+
+  it('⚠ FEWER ROWS REACH THE JOIN — the pread-storm metric, counted rather than timed', () => {
+    const FLOOR = 400;   // the newest 100 of 500
+    const all = (db.prepare(`SELECT COUNT(*) AS n FROM summaries_fts
+      JOIN summaries s ON summaries_fts.rowid = s.rowid
+      WHERE summaries_fts MATCH ? AND s.agent_id = ?`).get('commonterm', 'agent-a') as { n: number }).n;
+    const inWindow = (db.prepare(`SELECT COUNT(*) AS n FROM summaries_fts
+      JOIN summaries s ON summaries_fts.rowid = s.rowid
+      WHERE summaries_fts MATCH ? AND s.agent_id = ? AND summaries_fts.rowid > ?`)
+      .get('commonterm', 'agent-a', FLOOR) as { n: number }).n;
+    // eslint-disable-next-line no-console
+    console.log(`R3 JOINS  joined-table spelling joins ${all} rows · FTS-side joins ${inWindow} `
+      + `· ${(all / inWindow).toFixed(1)}x fewer for the same answer`);
+    expect(all).toBe(500);
+    expect(inWindow).toBe(100);
+    expect(all / inWindow, 'the floor no longer reduces what reaches the join').toBeGreaterThanOrEqual(5);
+  });
+
+  it('every arm in the product spells it on the FTS side, counted in both directions', () => {
+    const src = retrievalSource().replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    // Three arms: one `messages_fts.rowid > ?` pushed into `conditions`, two `summaries_fts.rowid > ?`
+    // in a `floorClause`. Counted EXACTLY so a fourth arm cannot be added with the wrong spelling.
+    expect((src.match(/messages_fts\.rowid > \?/g) ?? []).length).toBe(1);
+    expect((src.match(/summaries_fts\.rowid > \?/g) ?? []).length).toBe(2);
+    // ⚠ AND THE JOINED-TABLE SPELLING IS GONE. This is the half that matters: a fix that adds the
+    // pushed spelling beside the unpushed one has changed nothing.
+    expect(src, 'an arm still floors on the joined table — the range will not be pushed')
+      .not.toMatch(/\bm\.seq > \?/);
+    expect(src, 'an arm still floors on the joined table — the range will not be pushed')
+      .not.toMatch(/AND s\.rowid > \?/);
   });
 });
