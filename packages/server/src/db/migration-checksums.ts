@@ -15,6 +15,7 @@
 import crypto from 'node:crypto';
 import type { getDb } from './connection.js';
 import { createLogger } from '../logger.js';
+import { EFFECT_VERIFIED, type EffectVerification } from './migration-effects.js';
 
 const logger = createLogger('migrations');
 
@@ -22,6 +23,11 @@ const logger = createLogger('migrations');
  *  Injected rather than read here: the chain runner already owns the directory and the
  *  filesystem, and this module answers a question ABOUT files, not one about disks. */
 export type ReadMigration = (name: string) => string | null;
+
+// The effect ledger lives in `migration-effects.ts` — the DATA and its predicates, separate
+// from the detector that consults them, so this module stays the thing that COMPARES. Re-
+// exported here because every existing reader of divergence types imports this file.
+export { EFFECT_VERIFIED, type EffectVerification } from './migration-effects.js';
 
 /**
  * An examined divergence, bound to the EXACT pair of hashes it was examined at.
@@ -65,6 +71,11 @@ export type MigrationChecksumFinding = {
   actual: string | null;
   /** Present when this exact (file, recorded, actual) triple carries a ledger entry. */
   adjudicated?: KnownDivergence;
+  /** Present when this file carries an effect check: `true` when the schema effect was
+   *  confirmed on THIS database, `false` when the check exists and did not hold. */
+  effectVerified?: boolean;
+  /** The effect entry, when one applies — so the log line can say what was checked. */
+  effect?: EffectVerification;
 };
 
 export type MigrationChecksumAudit = {
@@ -74,6 +85,8 @@ export type MigrationChecksumAudit = {
   unverifiable: number;
   /** findings that carry a ledger entry — examined, and no longer news */
   adjudicated: number;
+  /** findings whose SCHEMA EFFECT was confirmed on this database this boot */
+  effectConfirmed: number;
   findings: MigrationChecksumFinding[];
 };
 
@@ -237,8 +250,11 @@ export function auditMigrationChecksums(
   db: Db,
   read: ReadMigration,
   ledger: readonly KnownDivergence[] = KNOWN_DIVERGENCES,
+  effects: readonly EffectVerification[] = EFFECT_VERIFIED,
 ): MigrationChecksumAudit {
-  const audit: MigrationChecksumAudit = { verified: 0, unverifiable: 0, adjudicated: 0, findings: [] };
+  const audit: MigrationChecksumAudit = {
+    verified: 0, unverifiable: 0, adjudicated: 0, effectConfirmed: 0, findings: [],
+  };
   let rows: { name: string; checksum: string | null }[];
   try {
     rows = db.prepare('SELECT name, checksum FROM _migrations ORDER BY name').all() as typeof rows;
@@ -269,7 +285,22 @@ export function auditMigrationChecksums(
       d => d.file === row.name && d.appliedChecksum === row.checksum && d.fileChecksum === actual,
     );
     if (adjudicated) audit.adjudicated += 1;
-    audit.findings.push({ file: row.name, kind: 'diverged', recorded: row.checksum, actual, ...(adjudicated ? { adjudicated } : {}) });
+    // No provenance warrant: does this file carry an EFFECT check instead? Matched on the
+    // FILE, which is safe here precisely because the verdict is not a recorded hash — it is
+    // a predicate re-run against this database, so it cannot pre-approve anything.
+    const effect = adjudicated ? undefined : effects.find(e => e.file === row.name);
+    // The audit does not TRUST a verifier to be total: a throw is a failure to establish the
+    // effect, which is the loud direction, and it must not take the rest of the audit with it.
+    let effectVerified: boolean | undefined;
+    if (effect) {
+      try { effectVerified = effect.verify(db); } catch { effectVerified = false; }
+    }
+    if (effectVerified === true) audit.effectConfirmed += 1;
+    audit.findings.push({
+      file: row.name, kind: 'diverged', recorded: row.checksum, actual,
+      ...(adjudicated ? { adjudicated } : {}),
+      ...(effect ? { effect, effectVerified } : {}),
+    });
   }
   return audit;
 }
@@ -288,6 +319,23 @@ export function reportMigrationChecksums(db: Db, read: ReadMigration): Migration
           'Migration divergence (examined): this file was amended after this database applied it, and the difference has been diagnosed.',
           { file: f.file, appliedChecksum: f.recorded, fileChecksum: f.actual, since: f.adjudicated.since, reason: f.adjudicated.reason },
         );
+      } else if (f.kind === 'diverged' && f.effectVerified === true) {
+        // The bytes cannot be traced, so the EFFECT was checked instead — on this database,
+        // this boot. Said out loud with what was checked, because a reader who finds this
+        // line must be able to re-run the same question by hand.
+        logger.info(
+          'Migration divergence (effect verified): the bytes this database applied cannot be traced, so the schema effect of this file was checked directly on this database, and it holds.',
+          { file: f.file, appliedChecksum: f.recorded, fileChecksum: f.actual,
+            since: f.effect!.since, effect: f.effect!.effect, whyNotHashed: f.effect!.whyNotHashed },
+        );
+      } else if (f.kind === 'diverged' && f.effectVerified === false) {
+        // LOUDER than the checksum complaint, and actionable: this does not say "two hashes
+        // differ", it says the schema is not what the repo describes, and names the claim.
+        logger.error(
+          'MIGRATION EFFECT CHECK FAILED: this file diverges from what this database applied, AND the schema effect it should have produced is NOT present. This is the case the divergence alarm exists for — the schema is not the one the repo describes. Re-apply the effect deliberately or ship a new numbered migration.',
+          { file: f.file, appliedChecksum: f.recorded, fileChecksum: f.actual,
+            expectedEffect: f.effect!.effect },
+        );
       } else if (f.kind === 'diverged') {
         logger.error(
           'MIGRATION DIVERGENCE: this database was built by a version of this file that is not the version on disk. The schema it produced is NOT described by the repo, and re-running is not automatic (the name is already recorded). Re-apply deliberately or ship a new numbered migration.',
@@ -303,8 +351,12 @@ export function reportMigrationChecksums(db: Db, read: ReadMigration): Migration
     logger.info('Migration checksum audit', {
       verified: audit.verified,
       unverifiable: audit.unverifiable,
-      diverged: audit.findings.filter(f => f.kind === 'diverged' && !f.adjudicated).length,
+      // The count a reader should act on: diverged, with NEITHER warrant.
+      diverged: audit.findings.filter(
+        f => f.kind === 'diverged' && !f.adjudicated && f.effectVerified !== true,
+      ).length,
       divergedExamined: audit.adjudicated,
+      divergedEffectVerified: audit.effectConfirmed,
       superseded: audit.findings.filter(f => f.kind === 'superseded').length,
     });
     return audit;
