@@ -185,18 +185,32 @@ describe('§1 the loop cap reaches the turn record as itself', () => {
     expect(undecided, 'the recorder can write it and the ladder never decided about it').toEqual([]);
   });
 
-  it('the eight words with no writer are classified anyway, and that is deliberate', () => {
-    // `stop`, `preempt`, `provider_error`, `stream_idle`, `abort`, `terminated`, `budget` and
-    // `identical_call` are declared in `TurnExitReason` and written by NOTHING — measured: 0 rows
-    // each across 10,934 turns. Classifying them costs a set entry and means the day one is wired
-    // the right treatment is already decided instead of discovered. Held as a clause so a future
-    // reader does not "tidy up" an unreachable branch that is load-bearing on purpose.
+  it('the eight that had no writer are classified — AND NOW WRITTEN (t93)', () => {
+    // WHAT THIS CLAUSE USED TO SAY, and why the change is the fix landing rather than the guard
+    // being weakened. `stop`, `preempt`, `provider_error`, `stream_idle`, `abort`, `terminated`,
+    // `budget` and `identical_call` were declared in `TurnExitReason` and written by NOTHING —
+    // measured: 0 rows each across 10,934 turns. They were classified ANYWAY, so that the day one
+    // was wired the right treatment was already decided instead of discovered, and this clause
+    // existed so a reader would not "tidy up" an unreachable branch that was load-bearing.
+    //
+    // t93 (BACKLOG line 17) is that day: the engine sites that end a turn for each cause now
+    // carry their reason to the recorder. So the clause keeps its first half — the classification
+    // must still name all eight — and its second half becomes the opposite assertion: the file
+    // must no longer claim they are unwritable, because a comment that outlived its subject is
+    // how a guard turns into a list of lies. The census that holds the WIRING true in both
+    // directions is `agent/v2/__tests__/eight-exit-reasons-get-their-writers.test.ts`.
     const attribution = read('work/exit-attribution.ts');
     for (const w of ['stop', 'preempt', 'provider_error', 'stream_idle', 'abort', 'terminated',
       'budget', 'identical_call']) {
       expect(attribution, w).toContain(`'${w}'`);
     }
-    expect(attribution).toContain('NO WRITER IN PRODUCTION');
+    expect(attribution).not.toContain('NO WRITER IN PRODUCTION');
+    expect(attribution, 'the correction has to name where the writers now are')
+      .toContain('ALL ELEVEN ARE NOW WRITTEN');
+    // The two members that are STILL unwritten are named there rather than left to be
+    // re-measured by whoever next reads a zero off this box.
+    expect(attribution).toContain('delegation_exit');
+    expect(attribution).toContain('compile_pending');
   });
 });
 
