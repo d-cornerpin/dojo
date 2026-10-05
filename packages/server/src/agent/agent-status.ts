@@ -53,6 +53,9 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { turnContext } from './turn-context.js';
+// The one module that writes `turns`. The boot sweep below holds the verdict ('this row
+// reads working and no run owns it'); the statement lives where the table's owner is.
+import { markTurnsTerminated } from './v2/turn-record.js';
 import type { AgentStatus } from '@dojo/shared';
 
 const logger = createLogger('agent-status');
@@ -151,9 +154,41 @@ export function terminateDuplicateAgentsByName(name: string, keepId: string): nu
  * verbatim from `index.ts`, no `updated_at` bump: the 75-minute stuck-agent reaper reads
  * `updated_at` and touching every row here would reset that clock on the whole roster.
  *
- * Returns how many rows it repaired, so the caller can say so out loud.
+ * ── t93 FIX ROUND 1 (review I-1) — IT REPAIRS THE TURN ROW TOO, AND IT HAD TO BE HERE ────
+ * This docstring's own first sentence is the argument: the turn those rows were serving died
+ * with the process, and restarting is the only thing that can know that. It repaired `agents`
+ * and left `turns` with `ended_at IS NULL` for ever — `terminated` is the enum's word for
+ * exactly that and it had never once been written.
+ *
+ * THE PERIODIC REAPER DOES NOT COVER IT. `index.ts` runs `runStartupRecoverySweep()` — which
+ * contains the reaper — BEFORE this function, and the reaper only reaps rows whose
+ * `updated_at` is past the 75-minute cliff. So a process killed and restarted inside the hour
+ * (the ordinary restart, the update, the crash-loop) was reaped by nothing: this function set
+ * the row `idle`, and once it reads `idle` the periodic reaper never visits it again. The
+ * reaper covers the >75-minute-stale case; this covers the common one.
+ *
+ * SELECT, THEN WRITE THROUGH THE ONE WRITER — the shape `terminateDuplicateAgentsByName`
+ * above already uses, and its reason verbatim: "the statement count stays at one owner".
+ * `agent/v2/turn-record.ts` is the only module that writes `turns`, and the verdict ("this
+ * row reads `working` and no run owns it") is this function's.
+ *
+ * ⚠ THE READ HAPPENS BEFORE THE STATUS UPDATE and that is the whole mechanism, not an
+ * ordering preference: afterwards no row reads `working`, the loop runs zero times, and a
+ * sweep that closed nothing is indistinguishable from a boot with nothing to close.
+ *
+ * Returns how many AGENT rows it repaired — unchanged, because `index.ts`'s existing call
+ * site reads that number and `index.ts` is not this change's to edit. The turn count is
+ * logged here instead of returned, so the boot record still names it.
  */
 export function resetWorkingAgentsToIdleAtBoot(): number {
+  const crashed = getDb()
+    .prepare("SELECT id FROM agents WHERE status = 'working'")
+    .all() as Array<{ id: string }>;
+  let turnsClosed = 0;
+  for (const c of crashed) turnsClosed += markTurnsTerminated(c.id);
+  if (turnsClosed > 0) {
+    logger.info(`Closed ${turnsClosed} turn record(s) left open by a run that died mid-turn, as 'terminated'`);
+  }
   return getDb().prepare("UPDATE agents SET status = 'idle' WHERE status = 'working'").run().changes;
 }
 

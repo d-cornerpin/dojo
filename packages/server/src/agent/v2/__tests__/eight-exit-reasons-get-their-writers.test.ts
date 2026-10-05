@@ -85,14 +85,20 @@ const read = (rel: string): string => fs.readFileSync(path.join(SERVER_SRC, rel)
  * `engine-sources.ts`'s header makes the rule: the shared derivation is the driver plus the
  * step packages, and "a guard that wants one of those reads it by name". Three of the four
  * writers outside the step packages are deliberate design choices argued at their sites —
- * the carrier, the table's one write module, and the reaper — so naming them is the narrower
- * and therefore stronger corpus.
+ * the carrier, the table's one write module, the reaper and the boot sweep — so naming them
+ * is the narrower and therefore stronger corpus.
  */
 const COLLABORATORS = [
   'agent/v2/engine-exit.ts',
   'agent/v2/turn-record.ts',
   'agent/v2/recovery.ts',
   'agent/runtime.ts',
+  // t93 fix round 1 (review I-1): the boot sweep. It is the site that KNOWS a process died
+  // mid-turn — its own docstring says restarting is the only thing that can — and it is the
+  // only CALLER of the `terminated` writer that fires on the COMMON crash (killed and
+  // restarted inside the reaper's 75-minute cliff). Without it in the corpus the census would
+  // resolve `terminated` only from a site the boot order starves: exactly the gap I-1 found.
+  'agent/agent-status.ts',
 ] as const;
 
 interface Corpus { rel: string; code: string }
@@ -255,7 +261,7 @@ describe('§0 the writer resolver answers about writers, not about the word appe
     expect(resolveWriters([{ rel: 'x.ts', code: 'latchEngineCut(state, thrownCut);' }])).toEqual([]);
   });
 
-  it('the real corpus is not vacuous — it is the driver, the step packages and the four named files', () => {
+  it('the real corpus is not vacuous — it is the driver, the step packages and the five named files', () => {
     const corpus = productionCorpus();
     expect(corpus.length, 'the corpus collapsed').toBeGreaterThan(40);
     for (const rel of COLLABORATORS) {
@@ -308,6 +314,11 @@ describe('§1 every exit reason the record can hold has a production writer', ()
     expect(by.get('stop')!.map((w) => w.shape)).toContain('classifyThrownCut');
     expect(by.get('terminated')!.map((w) => w.shape)).toContain('UPDATE turns');
     expect(by.get('terminated')!.map((w) => w.rel)).toContain('agent/v2/turn-record.ts');
+    // …and the two CALL SITES are pinned separately in §2: the boot sweep and the reaper
+    // cover different crashes (review I-1), so one of them going away is a coverage
+    // regression rather than a tidy-up, and the SQL shape alone cannot see that.
+    expect(by.get('terminated')!.filter((w) => w.shape === 'UPDATE turns').length,
+      'the one statement in the one module').toBe(1);
     expect(by.get('identical_call')!.map((w) => w.shape)).toContain('recorder derivation');
   });
 
@@ -381,12 +392,22 @@ describe('§2 the sites that end a turn carry their reason, and the recorder rea
     expect(code).toMatch(/turn-continuation-cap/);
   });
 
-  it('the reaper closes the rows a dead process abandoned, and the write stays in one module', () => {
+  it('BOTH `terminated` CALL SITES are wired, and the statement stays in one module', () => {
+    // t93 fix round 1 (review I-1). TWO callers, two cases, neither claiming the other's:
+    //   the boot sweep — the COMMON crash (killed mid-turn, restarted inside the hour);
+    //   the periodic reaper — the >75-minute-stale case only.
+    // The first cut had only the reaper, which `index.ts`'s boot order runs BEFORE the status
+    // reset, so the common crash reached no writer at all and the row stayed open for ever.
     const runtime = stripComments(read('agent/runtime.ts'));
     expect(runtime, 'the reaper no longer closes the abandoned turn rows').toMatch(/markTurnsTerminated\(agent\.id\)/);
-    // One module owns `UPDATE turns`, which is why the reaper calls instead of writing.
+    const status = stripComments(read('agent/agent-status.ts'));
+    expect(status, 'the boot sweep no longer closes the abandoned turn rows')
+      .toMatch(/markTurnsTerminated\(c\.id\)/);
+    // One module owns `UPDATE turns`, which is why both of them CALL instead of writing.
     expect(runtime).not.toMatch(/UPDATE\s+turns/);
-    expect(stripComments(read('agent/v2/turn-record.ts'))).toMatch(/exit_reason = 'terminated'/);
+    expect(status).not.toMatch(/UPDATE\s+turns/);
+    expect([...stripComments(read('agent/v2/turn-record.ts')).matchAll(/exit_reason = 'terminated'/g)].length,
+      'one statement, two callers').toBe(1);
   });
 
   it('the recovery arm classifies the throw and latches what it found, before the cascade runs', () => {
