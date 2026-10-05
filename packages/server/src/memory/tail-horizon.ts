@@ -218,8 +218,18 @@ export function freshTailHorizon(agentId: string, policy: ContextWindowPolicy): 
 
   // THE FLOOR. A span smaller than the row cap is the pre-t94 answer, byte for byte: ask for
   // the cap, filter nothing. This is the case on every young conversation and on the turn
-  // right after a compaction that reclaimed down to the cap.
-  if (boundary.rows_since <= cap) return { ...floorAnswer, anchorSeq: boundary.anchor };
+  // right after a compaction that reclaimed down to the cap — which is NOT a rare turn, and
+  // review I1 is what that cost before the ask stopped padding it (`assembler.ts`, the
+  // conditional slack: where nothing filters, asking for more than the cap admits rows a
+  // summary already covers).
+  //
+  // `rowsSinceBoundary` reports the REAL count here, not the placeholder (review M5): the
+  // handed-up `compaction.ts` one-liner and `__tests__` §9 both read this struct, and a
+  // field whose doc says "rows between the boundary and now" may not answer 0 on the one
+  // branch where that number is small enough to matter.
+  if (boundary.rows_since <= cap) {
+    return { ...floorAnswer, anchorSeq: boundary.anchor, rowsSinceBoundary: boundary.rows_since };
+  }
 
   const ceiling = cap * TAIL_HORIZON_CEILING_MULTIPLE;
   const step = tailCeilingStepRows(cap);

@@ -1402,10 +1402,22 @@ async function assembleMessageContext(
       // whole derivation, the ceiling and its hysteresis.
       const horizon = freshTailHorizon(agentId, policy);
       horizonSkippedRows = horizon.skippedRows;
-      // The ASK is bounded by the horizon's ceiling; the row-cap slack covers the rows
-      // `turnCutoff` excludes, and the seq filter below is what makes the front exact.
+      // THE ASK, and the slack is CONDITIONAL — review I1. The slack exists for ONE reason:
+      // `turnCutoff` excludes the newest user rows, so a `LIMIT` sized to the span would
+      // reach that many rows further back, and the seq filter below is what trims them off
+      // again. Where there is no filter — the FLOOR, `keepFromSeq: 0` — slack is pure
+      // over-ask, and `getRecentMessages` excludes nothing a summary already covers (nor
+      // does anything else in this assembly). Asking 2×cap unfiltered there put up to `cap`
+      // already-summarised rows into the live tail BESIDE the summary covering them, on the
+      // one turn the context is tightest, and the next turn dropped them and paid a second
+      // prefix rewrite. Conditional, the floor is LITERALLY the pre-t94 call — which is what
+      // the horizon's own floor comment promises, and the conservative reading of G2: no
+      // prompt byte can move for any agent in the floor case, the deep-compaction one
+      // (`rows_since < cap`) included. `__tests__` §10 holds it with the divider deleted.
       const freshTailRows = getRecentMessages(
-        agentId, horizon.requestRows + policy.freshTailCount, turnCutoff,
+        agentId,
+        horizon.keepFromSeq > 0 ? horizon.requestRows + policy.freshTailCount : horizon.requestRows,
+        turnCutoff,
       );
       const freshTailRaw = horizon.keepFromSeq > 0
         ? freshTailRows.filter((m) => (m.rowid ?? 0) >= horizon.keepFromSeq)

@@ -612,14 +612,17 @@ describe('t94 §7 — the seam: a compaction backlog drains across consecutive t
     // `getLeafChunkTokens`'s chunk swallowed the whole gap in a single pass, so "the prefix
     // moves when compaction moves" costs one turn here and not twenty-five.
     expect(compactions).toBeGreaterThan(0);
-    // THE DRAIN COSTS AT MOST A COUPLE OF TURNS, not one per turn. The bound is a RANGE and
-    // not an equality on purpose: a compaction pass is not deterministic across wall-clock
-    // seconds here (the chunker, the archive high-water and the low-yield backoff all read
-    // real time), and two runs of this probe measured 1 and 2 discontinuities for the same
-    // 300-row backlog. What is stable, and what the clause is for, is that the rest of the
-    // run only appends.
-    expect(bad.length).toBeLessThanOrEqual(2);
-    expect(deltas.length - bad.length).toBeGreaterThanOrEqual(20);
+    // ONE. A 300-row backlog drains in a single pass and costs a single prefix rewrite.
+    //
+    // This clause was a RANGE in the first cut, with a comment blaming "module-level caches"
+    // for measuring 1 discontinuity alone and 2 in the full file. That was the wrong cause
+    // and review I1 found the right one: the compaction DIVIDER is throttled to once per ten
+    // minutes, an earlier probe in the same file had consumed the window, and the horizon's
+    // floor then re-admitted the rows the summary had just covered. With the slack made
+    // conditional at the ask, the count is 1 either way — so this is an equality now, and
+    // the comment that excused the flake is gone with the flake.
+    expect(bad.length).toBe(1);
+    expect(deltas.length - bad.length).toBe(deltas.length - 1);
 
     // AND THE PART THAT MAKES THE SEAM A NON-ISSUE, which this probe found rather than
     // assumed. After the drain the gap RE-ACCUMULATES past the threshold (measured: 49 rows
@@ -710,4 +713,68 @@ describe('t94 §9 — the gate still measures the tail by the row cap (handed up
     // The gate is blind to 28 of the 68 rows it is gating. That is the seam, in rows.
     expect(horizon.rowsSinceBoundary - est.freshTailCount).toBe(28);
   }, 120_000);
+});
+
+// ── §10 THE FLOOR IS LITERALLY THE PRE-t94 CALL, AND THE DIVIDER IS NOT LOAD-BEARING ────
+//
+// REVIEW I1, and it is the defect that hid behind this file's own flake. Routine leaf
+// compaction summarises exactly `getMessagesOutsideFreshTail(agent, cap)`, so the instant it
+// finishes `rowsSinceBoundary == cap` — the horizon's FLOOR, which returns `keepFromSeq: 0`
+// (no filter) and `requestRows: cap`. The assembler then added the row-cap slack to that ask
+// unconditionally, so the real ask was 2×cap WITH NOTHING FILTERED, and
+// `store.ts getRecentMessages` does not exclude summarised rows — nothing in the assembler
+// does either. So on the one turn where the context is by definition at its tightest, up to
+// `cap` already-summarised rows rode in the live tail BESIDE the summary that covers them,
+// and the next turn dropped them and paid a second prefix rewrite. Two per compaction, in
+// the lane whose single job is one.
+//
+// The fixture dodged it only because `insertCompactionDivider` writes a system row, which
+// pushes `rowsSinceBoundary` to `cap + 1` — the common case, filtered. THAT DIVIDER IS
+// THROTTLED TO ONCE PER TEN MINUTES (`compaction.ts COMPACTION_DIVIDER_THROTTLE_MS`), and
+// the reachable paths where it is absent are ordinary: the awaited emergency and context-full
+// arms (`context-gates.ts` → `queueSelfWake`, which writes no row), a background drain
+// completing between the gate and the assembly, and any compaction that leaves fewer than
+// `cap` live rows. A prefix invariant may not depend on a cosmetic chat row arriving.
+//
+// So the probe DELETES the divider on every turn — the permanently-throttled case — and the
+// claim is unchanged: one compaction, one discontinuity.
+describe('t94 §10 — a compaction with its divider throttled still costs ONE discontinuity', () => {
+  it('the floor admits the row cap and nothing a summary already covers', async () => {
+    const cap = getFreshTailCount(WINDOW);
+    const dropDivider = () => {
+      db().prepare("DELETE FROM messages WHERE agent_id = ? AND content LIKE '%Memory Compacted%'")
+        .run(AGENT);
+    };
+    const snaps = await driveRun({ turns: 48, between: dropDivider });
+    const deltas = runDeltas(snaps);
+    const bad = discontinuities(deltas);
+
+    // eslint-disable-next-line no-console
+    console.log(renderTable(
+      't94 I1 — 48 turns with the compaction divider deleted every turn (the throttled case)',
+      deltas, abridge(deltas),
+    ));
+
+    // ONE discontinuity, and it is the compaction. At HEAD before this fix it was TWO: the
+    // compaction turn re-admitted the summarised rows, and the turn after dropped them.
+    expect(bad.map((d) => d.note)).toEqual(['compaction ran']);
+
+    // And the direct statement of the same thing, on the compaction turn's own array: the
+    // live tail holds the row cap, and holds NO row that `summary_messages` already covers.
+    const compactionTurn = bad[0].turn;
+    const arr = snaps[compactionTurn - 1].messages as Array<{ content: unknown }>;
+    const conversationRows = arr.filter((m) => JSON.stringify(m.content).includes('[t'));
+    expect(conversationRows.length).toBe(cap);
+
+    const summarised = db().prepare(
+      `SELECT m.content AS content FROM messages m
+         JOIN summary_messages sm ON sm.message_id = m.id
+         JOIN summaries s ON s.id = sm.summary_id
+        WHERE s.agent_id = ?`,
+    ).all(AGENT) as Array<{ content: string }>;
+    expect(summarised.length).toBeGreaterThan(0);                 // something WAS summarised
+    const live = arr.map((m) => JSON.stringify(m.content)).join('\n');
+    const leaked = summarised.filter((r) => live.includes(r.content.slice(0, 60)));
+    expect(leaked.map((r) => r.content.slice(0, 40))).toEqual([]);
+  }, 180_000);
 });
