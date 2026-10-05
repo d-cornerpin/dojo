@@ -96,6 +96,83 @@ export const PLATFORM_SOUL_PLACEHOLDERS = [
   'pm_agent_name', 'trainer_agent_name', 'imaginer_agent_name', 'primary_agent_name', 'owner_name',
 ] as const;
 
+/**
+ * ════════════════════════════════════════════════════════════════════════════════════════
+ * `{{agent_name}}` IS THE AGENT'S OWN NAME, AT ASSEMBLY TIME, EVERY TURN.
+ * (OWNER RULING 2026-10-05, verbatim: "the dojo should always replace that variable with the
+ *  actual agent's name.")
+ * ════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * ── WHY THIS WAS NOT ALREADY TRUE, measured at `09514572` ──────────────────────────────
+ * `{{agent_name}}` is the ONE placeholder in the shipped soul vocabulary that nothing filled.
+ * `substitutePlatformNames` above fills the five PLATFORM names (they are box-wide config, so
+ * one substituter can answer them); `agent_name` is per-agent, so it was not in that list, and
+ * it was not in `UNSUBSTITUTED` either — which means the W24 re-seed path could never notice it
+ * and `SOUL.md`'s `reseedUnsubstituted` flag is deliberately absent. The two places it ships —
+ * `DEFAULT_SOUL_MD` and `templates/SOUL.md`, both the PRIMARY agent's identity — therefore
+ * reached the model as the literal characters `{{agent_name}}` on any box whose `SOUL.md` was
+ * seeded by the engine rather than written by the OOBE form (`gateway/routes/config.ts`'s
+ * identity-generation route bakes the typed name in, which is why this was invisible to anyone
+ * who completed setup).
+ *
+ * ── WHY RENDER TIME AND NOT A FILE REWRITE ────────────────────────────────────────────
+ * The ruling says no edits to files on user boxes, and it is also the only correct place: a
+ * stored soul is what an owner EDITS, and an agent can be renamed (`prompt/agent-rename.ts`)
+ * after the file was written. Substituting where the soul becomes a prompt — `getSoulContent`,
+ * which `prompt/registry/entries.ts` renders as `sys.identity` — makes the name true for every
+ * agent on every turn without touching a byte on disk, and a rename is reflected on the next
+ * assembly with no migration of anything.
+ *
+ * ── CACHE-PRESERVATION (G2), ARGUED ───────────────────────────────────────────────────
+ * The substitution is a pure function of (stored bytes, agent name). Both are static across the
+ * turns of a session, so the assembled prefix is byte-identical turn to turn — which is the
+ * property `deploy/check-prefix-determinism.mjs` asserts, and it still holds. The prefix moves
+ * ONCE per affected agent (token → name) and then never again. No stored golden in this repo
+ * carries soul bytes, so there is nothing to re-bless.
+ */
+export const AGENT_SOUL_PLACEHOLDER = 'agent_name';
+
+/** The CLOSED vocabulary of placeholders a shipped prompt template may carry. Every one of them
+ *  is filled by this module; a template written against a sixth name is a RED census, not a
+ *  literal on a model's screen. */
+export const SOUL_PLACEHOLDERS = [...PLATFORM_SOUL_PLACEHOLDERS, AGENT_SOUL_PLACEHOLDER] as const;
+
+/**
+ * This agent's display name, for the one placeholder that is per-agent.
+ *
+ * `agents.name` is the authority: `renameAgent` writes the row and the `<role>_agent_name`
+ * config key in ONE transaction, so the row can never be the stale half. The platform getter is
+ * the fallback for the primary because a box can carry the role name before the row exists
+ * (OOBE order), and `'Agent'` is the last resort — the same word the sub-agent identity branch
+ * below already falls back to, so the two cannot disagree.
+ */
+function agentDisplayName(agentId: string): string {
+  try {
+    const row = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as
+      | { name: string | null } | undefined;
+    const name = (row?.name ?? '').trim();
+    if (name) return name;
+  } catch { /* fall through to the platform answer */ }
+  if (isPrimaryAgent(agentId)) {
+    const platform = getPrimaryAgentName().trim();
+    if (platform) return platform;
+  }
+  return 'Agent';
+}
+
+/**
+ * Fill `{{agent_name}}`, and RETURN THE INPUT BY IDENTITY when there is nothing to fill.
+ *
+ * The identity return is not an optimisation — it is the clause. Every soul that does NOT carry
+ * the token (which is every owner-authored one) must come back as the same string, so this
+ * function cannot be the thing that moves a prompt prefix for an agent it has no business
+ * touching. `includes` before `replace` is what makes that observable.
+ */
+export function substituteAgentName(md: string, agentId: string): string {
+  if (!md.includes(`{{${AGENT_SOUL_PLACEHOLDER}}}`)) return md;
+  return md.split(`{{${AGENT_SOUL_PLACEHOLDER}}}`).join(agentDisplayName(agentId));
+}
+
 /** A stored soul that still carries one of those placeholders was written by the engine's own
  *  default-seeding and never passed through a substituting writer. Nobody authors this. */
 export const UNSUBSTITUTED = new RegExp(`\\{\\{(?:${PLATFORM_SOUL_PLACEHOLDERS.join('|')})\\}\\}`);
@@ -418,7 +495,20 @@ export function readStoredCharter(agentId: string): string {
   }
 }
 
+/**
+ * THE IDENTITY THE MODEL READS — every branch, with `{{agent_name}}` already filled.
+ *
+ * The substitution is applied HERE, over the resolved text of every branch, rather than inside
+ * any one of them: the token can ride a soul FILE, an in-code fallback, a shipped template, or a
+ * creator-written charter (a person typing `{{agent_name}}` into the charter box is exactly the
+ * case the ruling's "every agent" covers), and a per-branch fix would have left whichever branch
+ * nobody thought of. One wrapper, one guarantee. See `substituteAgentName` for the cache argument.
+ */
 export function getSoulContent(agentId: string): string {
+  return substituteAgentName(resolveSoulContent(agentId), agentId);
+}
+
+function resolveSoulContent(agentId: string): string {
   // Primary / PM / Trainer / per-agent souls all live in a file (see `soulFileForAgent`).
   const soulFile = soulFileForAgent(agentId);
   if (soulFile) {
