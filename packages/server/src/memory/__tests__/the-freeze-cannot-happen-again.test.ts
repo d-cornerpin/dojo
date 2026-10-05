@@ -33,7 +33,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -59,11 +59,17 @@ vi.mock('../../gateway/ws.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import {
-  compactionIsBraked, noteForcedOutcome, isIncompressible,
-  forcedCompactionOptions, summaryWriterUnavailable, incompressibleCardText,
+  compactionIsBraked, notePassOutcome,
+  forcedCompactionOptions, summaryWriterUnavailable,
   FORCED_MAX_CHUNKS_PER_RUN, FORCED_WALL_CLOCK_MS, LOW_YIELD_BACKOFF_MS,
   __resetBrakesForTests,
 } from '../compaction-brakes.js';
+// OR-COMPACT-1 (owner, 2026-10-02): the terminal latch and its "archive or reset" card are
+// gone. `noteForcedOutcome` is `notePassOutcome`, `isIncompressible` is
+// `compactionFailureReason` (a stage to repair, not a state to live in), and
+// `incompressibleCardText` has no successor — a no-yield pass shows NO card at all.
+import { compactionFailureReason, compactionFailingCardText } from '../compaction-defect.js';
+import { condensableSummaries } from '../condense-until-fits.js';
 import {
   cachedAssembledEstimate, cachedToolPayloadTokens, assembledEstimateStats,
   __resetEstimateCacheForTests, type AssembledEstimate,
@@ -357,76 +363,94 @@ describe('§1 a 402 is permanent, and two of them end the dialling', () => {
   });
 });
 
-// ── §2 — LAYER 1: the brakes work under force, and there is a terminal state ─────────────
+// ── §2 — LAYER 1: the brakes work under force, and NO terminal state exists ──────────────
 
-describe('§2 the forced path has brakes and a terminal state', () => {
-  it('⚠ THE DEFECT: a forced pass that won nothing now arms the brake and latches', () => {
+describe('§2 the forced path has a brake and NO terminal state', () => {
+  // OR-COMPACT-1 re-aim: v3.2.3's §2 asserted "and there is a terminal state". The owner
+  // abolished it. The anti-thrash half is unchanged and still asserted here; what changed is
+  // that every arm of the brake LETS GO, and a pass that reclaims nothing is a defect report.
+  it('⚠ THE DEFECT: a forced pass that won nothing arms the brake — under force, and on a clock', () => {
     // Pre-fix this returned nothing and the next prompt ran the identical pass.
-    const latch = noteForcedOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 16 });
-    expect(latch, 'a forced pass that reclaimed 16 tokens must be terminal').toBeTruthy();
-    expect(isIncompressible(AGENT)).toBe('no_yield');
-    // And the brake now holds WITH force, which is the whole fix.
-    expect(compactionIsBraked(AGENT, true), 'force must not bypass a terminal state').toBe(true);
+    const defect = notePassOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 16 },
+      { assembledTokens: 114_000, budgetTokens: 62_000 });
+    expect(defect, 'a forced pass that reclaimed 16 tokens while over budget is a DEFECT to repair').toBeTruthy();
+    expect(compactionFailureReason(AGENT), 'named by the stage that refused, not by a state').toBe('no_yield');
+    // And the brake now holds WITH force, which is the v3.2.3 fix, kept.
+    expect(compactionIsBraked(AGENT, true), 'force must not bypass a brake the emergency itself armed').toBe(true);
     expect(compactionIsBraked(AGENT, false)).toBe(true);
+    // ⚠ AND IT IS NOT FOR EVER — the whole of OR-COMPACT-1 in one assertion. Fifteen minutes
+    // and one millisecond later the same agent, with nothing else changed, may compact again.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.now() + LOW_YIELD_BACKOFF_MS + 1);
+      expect(compactionIsBraked(AGENT, false), 'a brake with no expiry is the terminal state, re-grown').toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('the card says what it is and the only two things that work', () => {
-    noteForcedOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
-    const card = frames.find(f => f.code === 'MEMORY_INCOMPRESSIBLE');
-    expect(card, 'the owner was not told').toBeTruthy();
-    expect(card!.error).toContain('cannot compress further');
-    expect(card!.error).toContain('It will keep answering');
-    expect(card!.error).toContain('Archive this conversation or reset the agent');
-    expect(card!.error).toContain('larger context window');
-    // One latch, one card — a per-turn card would be the toast spam again.
-    noteForcedOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
-    expect(frames.filter(f => f.code === 'MEMORY_INCOMPRESSIBLE').length).toBe(1);
+  it('OR-COMPACT-1: a no-yield pass shows the owner NO card, and says so in the log instead', () => {
+    // The clause this replaces demanded a card reading "This agent's memory cannot compress
+    // further… Archive this conversation or reset the agent's session to give it room". The
+    // owner deleted that sentence: a person must never be asked to destroy memory because the
+    // engine ran out of ideas. So the assertion inverts — nothing user-facing is emitted at
+    // all for a stage the owner cannot repair, and the repair audience is the defect log line
+    // (`compaction-has-no-bottom.test.ts` §3 drives that line and its fields).
+    notePassOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 },
+      { assembledTokens: 114_000, budgetTokens: 62_000 });
+    expect(frames.filter(f => f.type === 'chat:error'), 'no card for a stage the owner cannot act on').toEqual([]);
+    expect(compactionFailureReason(AGENT), 'but the platform knows it is failing').toBe('no_yield');
+    // And the one card that IS left names a repairable reason and promises nothing destructive.
+    const failing = compactionFailingCardText('summary_writer_unavailable');
+    expect(failing).toContain('memory compaction is failing');
+    expect(failing).toContain('compaction resumes by itself');
+    expect(failing).not.toMatch(/archiv/i);
+    expect(failing).not.toMatch(/reset/i);
+    expect(failing).not.toMatch(/cannot compress/i);
   });
 
-  it('the summaries fact names the REASON, and never predicts terminality on its own', () => {
-    // ⚠ THE CORRECTION AN EXISTING CLAUSE FORCED. The first cut latched before the work whenever
-    // summaries already exceeded the assembly budget — and `the-clock-does-not-overrule-the-token-
-    // math`'s "THE TOKEN PATH IS UNTOUCHED" clause is a counterexample: raw rows outside the fresh
-    // tail can still be summarised when the summaries are large, so a forced pass is entitled to
-    // try once. Terminality is decided on EVIDENCE; the summaries fact only names the reason.
-    // The reported shape — 86K of summaries against what a 64K-window model admits — after a pass that won
-    // nothing:
-    expect(noteForcedOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 }, 86_000, 50_000))
-      .toBeTruthy();
-    expect(isIncompressible(AGENT)).toBe('summaries_exceed_budget');
-    expect(incompressibleCardText('summaries_exceed_budget')).toContain('summaries alone fill the window');
+  it('OR-COMPACT-1: "the summaries are already over budget" is now the CASE FOR condensation', async () => {
+    // ⚠ THE REASON THIS CLAUSE INVERTS. v3.2.3 made "summaries exceed the assembly budget" the
+    // name of a terminal state (`summaries_exceed_budget`), with a card saying the summaries
+    // alone fill the window. The owner's ruling is the opposite reading of the same fact: a
+    // summary is compressible, so a window full of summaries is work to do, not a wall. The
+    // reported shape — 43 leaf summaries, ~86K of tokens — must therefore report itself as
+    // CONDENSABLE, and the reason vocabulary no longer contains the word.
+    const { __resetEstimateCacheForTests: resetEst } = await import('../assembled-estimate-cache.js');
+    resetEst();
+    seedBox({ messages: 40, summaryTokens: 86_000 });
+    expect(condensableSummaries(AGENT), '43 top-level summaries can always merge').toBeGreaterThan(1);
 
-    // Same empty pass, summaries INSIDE the budget: still terminal (the pass won nothing), but the
-    // card must not claim the summaries are the problem.
-    __resetBrakesForTests();
-    expect(noteForcedOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 }, 20_000, 50_000))
-      .toBeTruthy();
-    expect(isIncompressible(AGENT)).toBe('no_yield');
+    // A pass that won nothing while over budget is a defect named by the STAGE that refused…
+    expect(notePassOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 },
+      { assembledTokens: 114_000, budgetTokens: 50_000, stage: 'bounded_without_progress' })).toBeTruthy();
+    expect(compactionFailureReason(AGENT)).toBe('bounded_without_progress');
 
-    // And a pass that WON never latches, whatever the summaries say — the counterexample, pinned.
+    // …and a pass that WON clears it, whatever the summaries say — the counterexample, pinned.
     __resetBrakesForTests();
-    expect(noteForcedOutcome(AGENT, true, { leafCreated: 2, condensedCreated: 0, tokensReclaimed: 30_000 }, 86_000, 50_000))
+    expect(notePassOutcome(AGENT, true, { leafCreated: 2, condensedCreated: 0, tokensReclaimed: 30_000 }, { assembledTokens: 40_000, budgetTokens: 50_000 }))
       .toBeNull();
-    expect(isIncompressible(AGENT), 'a forced pass that summarised something is not terminal').toBeNull();
+    expect(compactionFailureReason(AGENT), 'a pass that summarised something is not failing').toBeNull();
   });
 
   /**
-   * ⚠ THE CARD MUST NOT LIE. (review M2)
+   * ⚠ THE DOORS STILL WORK, AND NOW THEY WORK ON THE BRAKE. (review M2, re-aimed by OR-COMPACT-1)
    *
-   * The owner is told three things clear this: archive the conversation, reset the session, switch
-   * to a bigger model. The review found `clearIncompressible` had ZERO callers, so none of them
-   * did — a model switch to a 131K window left the agent waiting six prompts. Each row below is
-   * one of the card's own promises, driven through the real door, not through the clear function.
+   * v3.2.3 wrote a card promising three things cleared the latch — archive, reset the session,
+   * switch to a bigger model — and the review found `clearIncompressible` had ZERO callers, so
+   * none of them did. The card is deleted, but the three doors are still the three things that
+   * genuinely give an agent room, and each must still let the brake go EARLY rather than waiting
+   * out the fifteen minutes. Driven through the real door, never through the clear function.
    */
-  it('the card\'s three promises all release the latch, each through its real door', async () => {
-    const { compactionIsBraked, noteForcedOutcome, __resetBrakesForTests } = await import('../compaction-brakes.js');
+  it('the three doors that give an agent room each release the backoff early', async () => {
+    const { compactionIsBraked, notePassOutcome, __resetBrakesForTests } = await import('../compaction-brakes.js');
     const { archiveAgentConversation } = await import('../../vault/archive.js');
     seedBox({ messages: 40, summaryTokens: 4_000 });
     const db = mockDb.current!;
     const latchIt = (): void => {
       __resetBrakesForTests();
-      noteForcedOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
-      expect(compactionIsBraked(AGENT, true), 'precondition: the agent is latched').toBe(true);
+      notePassOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
+      expect(compactionIsBraked(AGENT, true), 'precondition: the agent is braked').toBe(true);
     };
 
     // PROMISE 1 — "archive this conversation". The chokepoint all six doors call.
@@ -447,81 +471,89 @@ describe('§2 the forced path has brakes and a terminal state', () => {
     expect(compactionIsBraked(AGENT, true), 'a bigger window must give the agent room back').toBe(false);
     db.prepare('UPDATE agents SET model_id = ? WHERE id = ?').run(MODEL_64K, AGENT);
 
-    // AND THE CONTROL: none of those happened, so the latch still binds. Without this row the
-    // three above would pass just as well on a latch that never holds at all.
+    // AND THE CONTROL: none of those happened, so the brake still binds. Without this row the
+    // three above would pass just as well on a brake that never holds at all.
     latchIt();
-    expect(compactionIsBraked(AGENT, true), 'an agent given no room stays latched').toBe(true);
+    expect(compactionIsBraked(AGENT, true), 'an agent given no room stays braked').toBe(true);
   });
 
   /**
-   * ⚠ THE PRE-WORK CHECK, AND THE PROOF THAT SOMETHING CALLS IT. (review M3)
+   * ⚠ THE PRE-WORK LATCH IS GONE, AND ITS SLOT NOW ROUTES TO CONDENSATION. (review M3, re-aimed
+   * by OR-COMPACT-1)
    *
-   * The review found `latchIfSummariesExceedBudget` written, documented as *"checked by the entry
-   * point"*, and never called — so an agent in a terminal state still paid a full forced pass to
-   * discover it. Two clauses, because a function like this needs both halves proved: the arithmetic
-   * here, and the WIRING below. A behavioural clause alone is what let a zero-caller function look
-   * finished.
+   * `latchIfSummariesExceedBudget` latched BEFORE any model call on two facts: the summaries
+   * already exceed the assembly budget, and there is nothing left outside the fresh tail worth
+   * compacting. Those two facts together are the incident, and the owner ruled they are the
+   * CASE FOR condensation. So the function is deleted and the same slot — ahead of the
+   * continuity brief, the chunk loop and every provider dial — now hands that state to
+   * `condenseOnlyPass`. Two clauses again, because the deletion needs both halves proved: that
+   * no latch survives anywhere, and that something real took its place.
    */
-  it('the pre-work latch needs BOTH facts: big summaries AND nothing left to compact', async () => {
-    const { latchIfSummariesExceedBudget, isIncompressible, __resetBrakesForTests } = await import('../compaction-brakes.js');
-    seedBox({ messages: 40, summaryTokens: 4_000 });
-
-    // Summaries over budget, but 400 rows outside the tail still have give — a pass may try, and
-    // `the-clock-does-not-overrule-the-token-math` depends on exactly this answer.
-    expect(latchIfSummariesExceedBudget(AGENT, 86_000, 53_000, 400), 'raw rows can still shrink').toBeNull();
-    expect(isIncompressible(AGENT), 'and nothing was latched behind our back').toBeNull();
-
-    // Under budget, nothing to compact: not terminal either, just quiet.
-    expect(latchIfSummariesExceedBudget(AGENT, 20_000, 53_000, 0)).toBeNull();
-
-    // BOTH facts: large summaries and no compactable region. Every future turn is the same
-    // question with the same answer, so the owner is told once and the asking stops.
-    const latch = latchIfSummariesExceedBudget(AGENT, 86_000, 53_000, 2);
-    expect(latch?.reason, 'this is the terminal state, named').toBe('summaries_exceed_budget');
-    expect(frames.filter(f => f.code === 'MEMORY_INCOMPRESSIBLE').length, 'and carded once').toBe(1);
-  });
-
-  it('⚠ AND THE ENTRY POINT CALLS IT — before any model call, with the gap count', () => {
-    // Driving the real `checkAndCompact` here would need the summariser, the assembler and a
-    // provider mocked three deep; what the review actually caught was an absent CALL, and that is
-    // a property of the source. So this reads the entry point and pins the wiring itself — the
-    // clause that would have failed on the package as submitted.
+  it('the entry point has NO terminal pre-work latch left, and routes that state to condensation', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const src = readFileSync(join(here, '..', 'compaction.ts'), 'utf8');
-    const call = src.match(/^\s*if \(latchIfSummariesExceedBudget\(.*$/m)?.[0];
-    expect(call, '`compaction.ts` must CALL the pre-work latch, not merely document it').toBeTruthy();
-    expect(call, 'it must be asked about the real summary total').toContain('assembled.summaryTokens');
-    expect(call, 'and the real assembly budget').toContain('contextWindow - assembled.reserveTokens');
-    expect(call, 'and the compactable-row count — the second fact it needs').toContain('guardUncompactedCount');
-    expect(call, 'and a latch must STOP the pass').toContain('return NO_COMPACTION');
-    // BEFORE the work: ahead of the continuity brief, the chunk loop and every provider dial.
-    const latchAt = src.indexOf('latchIfSummariesExceedBudget(agentId');
-    const briefAt = src.indexOf('Pre-compaction continuity brief');
-    expect(latchAt).toBeGreaterThan(0);
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+    // THE DELETION, in the only place that can prove it: no latch call, under any name.
+    expect(code, 'the pre-work terminal latch must be gone from the entry point, not merely unused')
+      .not.toMatch(/latchIfSummariesExceedBudget|latchIncompressible|isIncompressible/);
+    // AND THE REPLACEMENT, asserted as a call SHAPE with its application (G4): the leaf-less
+    // branch must RETURN the condensation pass, or it is prose above a dead end.
+    const call = code.match(/^\s*return condenseOnlyPass\(.*$/m)?.[0];
+    expect(call, '`compaction.ts` must route the leaf-less over-budget state to the condenser').toBeTruthy();
+    expect(call, 'with the summary-writer model it must dial').toContain('modelId');
+    expect(call, 'with the budget it is trying to get under').toContain('threshold');
+    expect(call, 'and the compactable-row count the branch was chosen on').toContain('guardUncompactedCount');
+    const guard = code.match(/^\s*if \(guardUncompactedCount < MIN_COMPACTABLE_ROWS\) \{$/m);
+    expect(guard, 'the branch must be chosen by the row floor, not by force').toBeTruthy();
+    // IN THE SAME SLOT: ahead of the continuity brief, the chunk loop and every provider dial.
+    const routeAt = code.indexOf('return condenseOnlyPass(agentId');
+    const briefAt = code.indexOf('generateContinuityBrief(agentId');
+    expect(routeAt).toBeGreaterThan(0);
     expect(briefAt).toBeGreaterThan(0);
-    expect(latchAt, 'a pre-work check that runs after the work is not a pre-work check')
+    expect(routeAt, 'a pre-work route that runs after the work is not a pre-work route')
       .toBeLessThan(briefAt);
   });
 
+  it('⚠ AND THE WORD IS GONE FROM EVERY SHIPPED SOURCE LINE — the census', () => {
+    // OR-COMPACT-1 abolished the concept, so the census is the clause: not one production line
+    // in the server or the shared wire may still say it. Comments are STRIPPED first, because a
+    // clause satisfiable by prose tests the prose (G4); this file's own notes may say the word.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const roots = [join(here, '..', '..'), join(here, '..', '..', '..', '..', 'shared', 'src')];
+    const hits: string[] = [];
+    const walk = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, e.name);
+        if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'node_modules') walk(full); continue; }
+        if (!/\.tsx?$/.test(e.name) || /\.test\.tsx?$/.test(e.name)) continue;
+        const code = readFileSync(full, 'utf8')
+          .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+        if (/INCOMPRESSIBLE/i.test(code)) hits.push(full);
+      }
+    };
+    for (const r of roots) walk(r);
+    expect(hits, 'a terminal state the owner abolished may not survive in code').toEqual([]);
+  });
+
   it('a purge that SHRINKS the history releases it too — the old rule only looked up', async () => {
-    const { compactionIsBraked, noteForcedOutcome, __resetBrakesForTests } = await import('../compaction-brakes.js');
+    const { compactionIsBraked, notePassOutcome, __resetBrakesForTests } = await import('../compaction-brakes.js');
     seedBox({ messages: 40, summaryTokens: 4_000 });
     const db = mockDb.current!;
     __resetBrakesForTests();
-    noteForcedOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
+    notePassOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
     expect(compactionIsBraked(AGENT, true)).toBe(true);
     // The most room an agent can gain. `MAX(seq) - seqAtLatch` goes NEGATIVE, which the
     // six-rows-gained rule read as "nothing changed" and held the latch on an empty history.
     db.prepare('DELETE FROM messages WHERE agent_id = ? AND seq > (SELECT MIN(seq) FROM messages WHERE agent_id = ?)')
       .run(AGENT, AGENT);
-    expect(compactionIsBraked(AGENT, true), 'a purged history cannot be incompressible').toBe(false);
+    expect(compactionIsBraked(AGENT, true), 'a purged history is a different question').toBe(false);
   });
 
   it('a pass that WON resets everything — the fix must not become "compaction never runs"', () => {
-    noteForcedOutcome(AGENT, false, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
+    notePassOutcome(AGENT, false, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
     expect(compactionIsBraked(AGENT, false), 'the 15-minute brake is armed').toBe(true);
     expect(compactionIsBraked(AGENT, true), 'but a real emergency still acts').toBe(false);
-    noteForcedOutcome(AGENT, false, { leafCreated: 3, condensedCreated: 1, tokensReclaimed: 40_000 });
+    notePassOutcome(AGENT, false, { leafCreated: 3, condensedCreated: 1, tokensReclaimed: 40_000 });
     expect(compactionIsBraked(AGENT, false), 'progress clears the brake').toBe(false);
     expect(LOW_YIELD_BACKOFF_MS).toBe(15 * 60_000);
   });
@@ -705,9 +737,9 @@ describe('§4 the controls: the same body that freezes on 64K is quiet on 131K',
     expect(providerBreaker(LIVE_PROVIDER), 'transient failures must never open a breaker').toBeNull();
     expect(mayDialProvider(LIVE_PROVIDER)).toBe(true);
     expect(frames.filter(f => f.code === 'QUOTA_EXHAUSTED').length, 'no card for a bad minute').toBe(0);
-    // And a real summary run clears the brake rather than latching.
-    expect(noteForcedOutcome(AGENT, true, { leafCreated: 4, condensedCreated: 0, tokensReclaimed: 52_000 })).toBeNull();
-    expect(isIncompressible(AGENT), 'a pass that won must not latch').toBeNull();
+    // And a real summary run clears the brake rather than reporting a defect.
+    expect(notePassOutcome(AGENT, true, { leafCreated: 4, condensedCreated: 0, tokensReclaimed: 52_000 })).toBeNull();
+    expect(compactionFailureReason(AGENT), 'a pass that won must not be marked failing').toBeNull();
     expect(compactionIsBraked(AGENT, true)).toBe(false);
   });
 });
