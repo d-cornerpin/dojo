@@ -2,11 +2,12 @@
 // WHAT THE GITHUB CARD IS ALLOWED TO SAY, AS FOUR DECISIONS SOMETHING CAN ARGUE WITH.
 //
 // ── WHY THIS IS NOT IN `GitHubSettings.tsx` ──
-// `packages/dashboard` has NO test runner, so every rule that stays inside a `.tsx` file is a
-// rule nothing checks. The v3.1.27 precedent is `lib/provider-edits.ts`, whose header says the
-// same thing and whose rules are held from `packages/server`'s suite by direct import. The
-// rules below are the ones where being wrong is a LIE ABOUT A CONNECTION rather than a cosmetic
-// slip, so they live here and the server-side suite drives them against the real engine doors.
+// This package gained a component runner on 2026-09-26, and it does not change where these
+// rules live. What a component test can assert is what was RENDERED; what it cannot do is drive
+// a rule against the REAL ENGINE DOORS, and that is the half that matters here — being wrong
+// about any of these four is a LIE ABOUT A CONNECTION rather than a cosmetic slip. So they stay
+// in a pure module that `packages/server`'s suite imports directly, the v3.1.27 arrangement
+// `lib/provider-edits.ts` set and whose header makes the same argument.
 //
 // ── THE DOCTRINE THESE FOUR DECISIONS SERVE (`memory/integration-status-lane.ts`, the ".24"
 //    rule) ── *"The agent must never have to trust a notebook entry saying a connection is

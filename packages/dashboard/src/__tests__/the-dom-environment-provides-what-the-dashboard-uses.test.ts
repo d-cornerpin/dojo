@@ -15,6 +15,9 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import url from 'node:url';
 
 describe('the DOM environment provides what the dashboard calls', () => {
   /**
@@ -113,5 +116,104 @@ describe('the DOM environment provides what the dashboard calls', () => {
 
     // 3. And the stub is on the PROTOTYPE, so it answers for canvases created before it ran too.
     expect(Object.prototype.hasOwnProperty.call(HTMLCanvasElement.prototype, 'getContext')).toBe(true);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// AND THE MOST BASIC FACT IN THAT CONTRACT: THE RUNNER EXISTS.
+//
+// BACKLOG line 31 asked for "four stale `this package has no test runner`
+// headers to sweep". They were not decoration. Every one of them was the stated
+// JUSTIFICATION for a design — "a rule inside a `.tsx` is a rule nothing
+// checks, so it moves to `lib/`" — and when the runner landed on 2026-09-26
+// that premise became false while the sentence stayed. Six modules were
+// corrected then (`provider-edits.ts`, `credential-placeholder.ts`,
+// `stop-affordance.ts`, `GitHubSettings.tsx`, `ReportPreviewCard.tsx`,
+// `Markdown.tsx`); three were missed, which is exactly how a comment that
+// nobody can run goes on arguing for years.
+//
+// The design those headers describe is still right, for a reason that has
+// nothing to do with the runner: a rule driven from `packages/server`'s suite is
+// driven against the REAL ENGINE DOORS, which a component test cannot do. So the
+// corrections restate the reason rather than delete the module — and this clause
+// stops the FALSE half coming back.
+//
+// ── WHAT IT DELIBERATELY DOES NOT CATCH ──
+// A verbatim QUOTE of a report written before the runner existed is history, not
+// a stale claim, and several test headers quote exactly that (`"…has no DOM
+// runner…"`, DOJO-REPORT T7 §6). Those lines are marked as quotes with a leading
+// `|`, so quote lines are skipped. A clause that failed them would be pushing
+// agents to misquote their own evidence.
+// ════════════════════════════════════════════════════════════════════════════
+
+const SRC = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
+
+/** The present-tense claim that this package cannot run a test. */
+const CLAIMS_NO_RUNNER = /(has|have)\s+NO\s+test\s+runner|(has|have)\s+no\s+test\s+runner/i;
+
+/**
+ * STILL TRUE AT THE TIME OF WRITING, and listed rather than excused.
+ *
+ * `lib/report-edits.ts` carries the claim and belongs to another lane in this
+ * sitting (the report-card work), so t96 left it alone rather than editing a
+ * file it does not own. It is named here so the sweep is HONEST about being
+ * incomplete instead of silently scoping itself around the leftover.
+ *
+ * ⚠ THE SET IS ASSERTED EXACTLY, SO THIS ENTRY CANNOT ROT. When that lane
+ * corrects the header, this clause goes RED saying so — and the fix is to DELETE
+ * the entry, not to re-add it.
+ */
+const KNOWN_REMAINING = [path.join('lib', 'report-edits.ts')];
+
+/**
+ * THIS FILE, because it has to say the sentence in order to forbid it — the same
+ * self-reference `the-dashboard-has-one-network-door.test.ts` makes for the
+ * tripwire clause that must name `fetch` to assert it throws. Measured, not
+ * assumed: the first run of the clause below flagged itself.
+ */
+const HOLDS_THE_RULE = path.join('__tests__', 'the-dom-environment-provides-what-the-dashboard-uses.test.ts');
+
+function filesUnder(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) { out.push(...filesUnder(full)); continue; }
+    if (/\.tsx?$/.test(entry.name)) out.push(full);
+  }
+  return out;
+}
+
+describe('nothing in this package still argues that it cannot be tested', () => {
+  it('⚠ no source file claims the package has no test runner', () => {
+    const files = filesUnder(SRC);
+    expect(files.length, 'the source walk found almost nothing').toBeGreaterThan(100);
+
+    const offenders: string[] = [];
+    for (const file of files) {
+      if (path.relative(SRC, file) === HOLDS_THE_RULE) continue;
+      const lines = fs.readFileSync(file, 'utf8').split('\n');
+      // A quoted line (`//   | …`) is somebody's evidence, not this package's
+      // own claim about itself.
+      const asserts = lines.some((l) => CLAIMS_NO_RUNNER.test(l) && !/^\s*\/\/\s*\|/.test(l));
+      if (asserts) offenders.push(path.relative(SRC, file));
+    }
+
+    expect(
+      offenders.sort(),
+      'a file claims this package has no test runner. It has had one since 2026-09-26 '
+      + '(`vitest.config.ts`), and these sentences are the stated reason a design is the way it '
+      + 'is — so a false one argues for the wrong thing. Restate the REAL reason (a rule driven '
+      + 'from the server suite is driven against the engine doors, which a component test cannot '
+      + 'do) rather than deleting the module. If a listed file was just FIXED, delete it from '
+      + 'KNOWN_REMAINING above.',
+    ).toEqual(KNOWN_REMAINING.sort());
+  });
+
+  it('the runner that makes the clause above true is actually configured', () => {
+    // Non-vacuity, and the other direction: the sweep is only correct while the
+    // runner exists. If someone deletes the config, the headers were right.
+    const config = fs.readFileSync(path.join(SRC, '..', 'vitest.config.ts'), 'utf8');
+    expect(config).toMatch(/environment:\s*'happy-dom'/);
+    expect(config).toMatch(/setupFiles:\s*\['\.\/vitest\.setup\.ts'\]/);
   });
 });

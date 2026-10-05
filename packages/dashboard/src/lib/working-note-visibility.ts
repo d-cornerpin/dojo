@@ -3,11 +3,12 @@
 // platform silent.
 //
 // ── WHY THIS IS A LIBRARY MODULE AND NOT A BRANCH IN `Chat.tsx` ──
-// `packages/dashboard` has NO test runner. The house's rule for that is written down and has
-// a precedent (`lib/dates.ts`, driven from `server/src/__tests__/dashboard-dates.test.ts`):
-// every rule worth testing moves into `dashboard/src/lib/*.ts`, which server-side vitest can
-// import. These three rules decide whether the owner sees his agent's words at all, so they
-// are exactly that kind of rule.
+// This package gained a component runner on 2026-09-26, and the arrangement it does not replace
+// is this one: a rule that is a DECISION moves into `dashboard/src/lib/*.ts`, where server-side
+// vitest can import it and drive it against the engine that produces the rows — the precedent
+// is `lib/dates.ts`, driven from `server/src/__tests__/dashboard-dates.test.ts`. These three
+// rules decide whether the owner sees his agent's words at all, so they are exactly that kind
+// of rule.
 //
 // ── THE THREE ARMS, AND WHICH OF THEM IS NEW ──
 //
