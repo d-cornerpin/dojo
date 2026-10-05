@@ -519,12 +519,53 @@ describe('§5 it does not tick, and it does not touch the prefix', () => {
   });
 
   it('CONTROL — when a row actually changes, the bytes change', () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-09-26T12:00:00Z'));
-    seedReport({ id: 'ctrl', status: 'awaiting_approval', updatedAt: '2026-09-26 11:20:00' });
+    // ⚠ THE SAME ONE-CLOCK RULE AS THE CLAUSE ABOVE, AND IT WAS LEARNED HERE TWICE.
+    // The first cut of this control seeded an absolute `2026-09-26` and then UPDATEd the row to
+    // `cancelled` at `2026-09-26 11:50:00`. `awaiting_approval` is NON-TERMINAL, so it is a LIVE
+    // row with no horizon and `before` rendered fine — but `cancelled` is TERMINAL, so the
+    // updated row fell under SQLite's 7-day horizon and, once the real calendar passed it,
+    // dropped out entirely. Measured: `before` 1,032 chars, `after` 0. The assertion
+    // `not.toBe(before)` was then satisfied by `'' !== before` — so the control had quietly
+    // stopped testing "a changed row RE-RENDERS" and started testing "a row that LEAVES THE
+    // WINDOW changes the bytes", which is a different claim and not the one §5 needs.
+    //
+    // Two repairs, both required: the stamps come from the DATABASE'S clock (the only clock the
+    // SETTLED filter reads), and the after-assertion names the NEW RENDERING rather than merely
+    // differing from the old one. A control that can be satisfied by a disappearance is not a
+    // control for "the bytes change when the row changes".
+    // ⚠ EVERY ASSERTION BELOW NAMES THE ROW LINE (`<id> — <STATE>`), NEVER THE BARE STATE.
+    // The block's own preamble explains what each state MEANS, so it carries the literal
+    // "PREVIEW CARD UP" whatever the rows say — a clause matching the bare phrase would be
+    // testing the doctrine paragraph instead of the row, which is how a control goes quiet.
+    const id = seedReportAtDbTime('ctrl', 'awaiting_approval');
     const before = block();
-    db().prepare("UPDATE dojo_reports SET status = 'cancelled', updated_at = '2026-09-26 11:50:00'").run();
-    expect(block()).not.toBe(before);
+    expect(before, 'the live row did not render at all — the fixture, not the product')
+      .toContain(`${id} — PREVIEW CARD UP`);
+
+    // The row really changes, and stays INSIDE the horizon so the change is a re-render.
+    db().prepare(
+      "UPDATE dojo_reports SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?",
+    ).run(id);
+    const after = block();
+    expect(after, 'a cancelled row inside the horizon did not re-render as WITHDRAWN')
+      .toContain(`${id} — WITHDRAWN`);
+    expect(after, 'the bytes did not change when the row changed').not.toBe(before);
+    expect(after, 'the old state is still being claimed for this row')
+      .not.toContain(`${id} — PREVIEW CARD UP`);
+    // NON-VACUITY: the change is a RE-RENDER, not the disappearance the first cut measured.
+    expect(after.length, 'the block collapsed — this control is passing on an absence again')
+      .toBeGreaterThan(0);
+
+    // ── THE OTHER DIRECTION, so the clause above cannot be green by accident of the horizon ──
+    // The same row, pushed one minute PAST the 7-day horizon, must be EXCLUDED — which is what
+    // the first cut was accidentally measuring, now asserted deliberately and in one clock.
+    db().prepare(
+      `UPDATE dojo_reports SET updated_at = datetime('now', ?, '-1 minute') WHERE id = ?`,
+    ).run(`-${REPORT_STATE_WINDOW_DAYS} days`, id);
+    expect(recentReportRows(AGENT).settled.map(r => r.id),
+      `a terminal row past the ${REPORT_STATE_WINDOW_DAYS}-day horizon was still served`)
+      .not.toContain(id);
+    expect(block(), 'an aged-out terminal row still rendered').toBe('');
   });
 
   it('the lane is injected PAST the volatile boundary, beside the snapshot it is modelled on', () => {
