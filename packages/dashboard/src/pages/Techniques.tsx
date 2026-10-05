@@ -237,7 +237,15 @@ export const Techniques = () => {
         <div className="stub">
           <p className="stub__line">Loading techniques...</p>
         </div>
-      ) : techniques.length === 0 ? (
+      ) : techniques.length === 0 && !loadError ? (
+        // ⚠ `&& !loadError` IS THE REST OF THE FIX, and my own new clause caught
+        // that I had missed it. "No techniques yet" is a CLAIM, and on a failed
+        // load it is the same false claim the banner above has just denied — the
+        // owner would read an error and an invitation to create his first
+        // technique, next to each other, while his existing ones were simply
+        // unreachable. It is the identical lie `RemoteAccessSettings` tells with
+        // "cloudflared is not installed", which is gated on the status having
+        // ARRIVED; this is that gate, here.
         <div className="stub">
           <p className="stub__line" style={{ fontWeight: 600, color: 'var(--dojo3-ink-2)', marginBottom: 8 }}>No techniques yet</p>
           <p className="stub__line">
