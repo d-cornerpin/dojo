@@ -843,7 +843,7 @@ export async function buildRecallLaneMessage(
       // context could recall other agents' private entries. FA-V6: personalOnly so this
       // auto-recall path matches its own listEntries fallback and exact mode's contract —
       // squad-namespaced entries stay out of PERSONAL recall (D-A, squad namespaces opt-in).
-      const { semanticSearch, getPinnedEntries, listEntries } = await import('../vault/store.js');
+      const { semanticSearch, getPinnedEntries, listEntriesBounded } = await import('../vault/store.js');
       const pinnedIds = new Set(getPinnedEntries(agentId).map((e) => e.id));
       const hits = queryEmbedding
         ? await semanticSearch(queryText, {
@@ -851,7 +851,13 @@ export async function buildRecallLaneMessage(
             minSimilarity: laneLimit(RECALL_LANE_ID, 'retrieval', 'vaultMinSimilarity'),
             queryEmbedding, agentId, personalOnly: true,
           })
-        : listEntries({
+        // ⚠ THE POOLED DOOR (t98 fix round 1, I3). This arm is the auto-recall path's embed-outage
+        // fallback — it runs EVERY TURN for the duration of an embedding outage, which is the same
+        // "not a rare path" argument that put `semanticSearch`'s own fallback on the pool. It was
+        // the synchronous `listEntries`, reading a leading-wildcard LIKE on the thread that serves
+        // HTTP; `listEntriesBounded` is the same query and the same rows, off-thread when the pool
+        // is up and bounded either way.
+        : await listEntriesBounded({
             search: queryText,
             limit: laneLimit(RECALL_LANE_ID, 'retrieval', 'vaultEntryLimit'),
             agentId, includeOwnerScope: true,
