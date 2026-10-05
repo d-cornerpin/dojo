@@ -5,7 +5,7 @@
 //   message     44,883    630 ORPHANED (1.4%)
 //   summary        314      0 ORPHANED
 //   technique       19     15 ORPHANED (78.9%)
-//   briefing         0      — declared by the type, no producer yet
+//   briefing         0      — declared by the type, no producer. RETIRED, see below.
 // …and the search read took `content_preview` with no liveness check at all, serving it straight
 // to the caller. So all 645 were live semantic hits carrying the first 200 characters of content
 // the platform had already deleted.
@@ -35,23 +35,41 @@
  * kind whose dead rows serve for ever, and `Record<EmbeddingSourceType, string>` below is what
  * makes that a compile error rather than a silent hole.
  */
-export type EmbeddingSourceType = 'message' | 'summary' | 'briefing' | 'technique';
+export type EmbeddingSourceType = 'message' | 'summary' | 'technique';
 
 /**
  * The table whose surviving row makes an embedding of this kind still true.
  *
- * CLOSED AND EXHAUSTIVE by its own type. `briefing` has no producer today (0 rows) and is
- * declared anyway: the type admits it, the table exists, and a lane that starts writing them must
- * not have to remember this file.
+ * CLOSED AND EXHAUSTIVE by its own type.
+ *
+ * ── ⛔ `briefing` IS RETIRED (t103 item D — OWNER RULING 2026-10-05, decision #6) ──────
+ * It was declared here and in the type with ZERO producers, on the argument that "a lane that
+ * starts writing them must not have to remember this file". The owner's ruling is the other way
+ * round, and the measurement is why: re-verified at `09514572`, nothing in the tree embeds a
+ * briefing. `memory/backfill.ts` enumerates `message | summary | technique`; the two
+ * `queueEmbedding` call sites pass `message` and `summary`; `memory/briefing.ts` writes a
+ * `briefings` row and embeds nothing. A declared kind with no producer is not an affordance —
+ * it is a liveness rule, a SQL arm, a census row and a type member that every reader of this
+ * file has to understand and that no row has ever exercised. The lane that one day writes
+ * briefings adds its kind back in the same commit as its producer, where the two can be read
+ * together.
+ *
+ * The `briefings` TABLE is untouched — `memory/briefing.ts` still writes it and
+ * `migrations/002` still creates it. What is gone is the claim that it backs an embedding kind.
+ *
+ * NO MIGRATION, verified: zero producers means zero rows, and `migrations/175` already carries a
+ * by-name sweep of orphaned `source_type = 'briefing'` rows for any box that somehow holds one.
+ * That file is applied history and is deliberately not edited. A legacy row that survived it is
+ * handled by the read path's fail-closed arm and by `insertEmbeddingIfSourceAlive`'s unknown-kind
+ * arm below: excluded and reported, never crashed on.
  *
  * Every table named here is created by the migration chain and can never be absent from a booted
- * box — which is what makes it safe for `embeddingSourceAliveSql` to name all four unconditionally
- * in one prepared statement.
+ * box — which is what makes it safe for `embeddingSourceAliveSql` to name all of them
+ * unconditionally in one prepared statement.
  */
 export const EMBEDDING_SOURCE_TABLES: Record<EmbeddingSourceType, string> = {
   message: 'messages',
   summary: 'summaries',
-  briefing: 'briefings',
   technique: 'techniques',
 };
 
@@ -74,6 +92,15 @@ export function embeddingSourceAliveSql(alias = 'e'): string {
       `(${alias}.source_type = '${kind}' AND EXISTS (SELECT 1 FROM ${table} src WHERE src.id = ${alias}.source_id))`,
   );
   return `(${arms.join(' OR ')})`;
+}
+
+/** The liveness table for a kind, or `null` for one this file does not declare. The `null` is
+ *  reachable only from UNTYPED callers and from legacy stored rows (the retired `briefing` kind
+ *  is the one that has ever existed); every typed caller gets a string. */
+export function embeddingSourceTableFor(kind: string): string | null {
+  return Object.prototype.hasOwnProperty.call(EMBEDDING_SOURCE_TABLES, kind)
+    ? EMBEDDING_SOURCE_TABLES[kind as EmbeddingSourceType]
+    : null;
 }
 
 /** The narrow database surface this leaf needs, so it stays import-free: the caller passes its
@@ -110,8 +137,24 @@ export interface EmbeddingRow {
  * "narrower" is what kept this invisible for months. `INSERT … SELECT … WHERE EXISTS` decides the
  * source's liveness and writes the row together, or does neither.
  */
-export function insertEmbeddingIfSourceAlive(db: EmbeddingWriteDb, row: EmbeddingRow): boolean {
-  const table = EMBEDDING_SOURCE_TABLES[row.sourceType];
+export function insertEmbeddingIfSourceAlive(
+  db: EmbeddingWriteDb,
+  row: EmbeddingRow,
+  /** Reported, not thrown, when a kind this file does not declare reaches the write. Injected so
+   *  the leaf keeps its no-imports property (the same discipline `prompt/assembler.ts` uses for
+   *  its last-resort path). */
+  onUnknownKind?: (kind: string) => void,
+): boolean {
+  // ⚠ TOLERATE AND REPORT, NEVER CRASH (t103 item D). Before the retired `briefing` kind there
+  // was no arm here at all: an unknown kind produced `FROM undefined` and threw inside a
+  // fire-and-forget write. An untyped caller, or a legacy row replayed through a backfill, must
+  // not be able to take a turn down with it — and writing nothing is the fail-closed direction
+  // the whole module is built on.
+  const table = embeddingSourceTableFor(row.sourceType);
+  if (table === null) {
+    onUnknownKind?.(row.sourceType);
+    return false;
+  }
   const result = db.prepare(`
     INSERT INTO embeddings (id, source_type, source_id, agent_id, content_preview, embedding, dimensions, created_at)
     SELECT ?, ?, ?, ?, ?, ?, ?, datetime('now')
