@@ -12,7 +12,7 @@
 // eight `plaud_*` tools turns it into a sentence for the MODEL
 // (`tools-read.ts`) and returns. Nothing flips the stored `plaud_connected`
 // flag, so `getPlaudStatus()` keeps reporting connected (the card kept saying
-// "Connected as david@cornerp.in since 25 May" — the live box's own config rows
+// "Connected as marcus@northwind.example since 25 May" — the live box's own config rows
 // at the time of this fix), `isPlaudConnected()` keeps offering the tools, and
 // the user is told nothing at all. The ONE path that did flip the flag,
 // `refreshPlaudAccountInfo()`, is reachable only from `POST /api/plaud/refresh`
@@ -81,7 +81,7 @@ const { getPlaudStatus, isPlaudConnected } = await import('../auth.js');
 function connected(): void {
   config.clear();
   config.set('plaud_connected', 'true');
-  config.set('plaud_email', 'david@example.com');
+  config.set('plaud_email', 'marcus@example.com');
   config.set('plaud_connected_at', '2026-05-25T23:02:02.310Z');
 }
 const toasts = (): Array<Record<string, unknown>> => broadcasts.filter((b) => b.type === 'chat:error');
@@ -135,13 +135,13 @@ describe('an expired Plaud login tells the user, exactly once per episode', () =
 
   it('the stored email and connected-at SURVIVE the expiry, so the card can name the account', async () => {
     await runPlaudCommand(['files'], { agentId: 'zargo' });
-    expect(config.get('plaud_email')).toBe('david@example.com');
+    expect(config.get('plaud_email')).toBe('marcus@example.com');
     expect(config.get('plaud_connected_at')).toBe('2026-05-25T23:02:02.310Z');
   });
 
   it('`getPlaudStatus` reports reauthRequired — distinguishable from never-connected', async () => {
     await runPlaudCommand(['files'], { agentId: 'zargo' });
-    expect(getPlaudStatus()).toMatchObject({ connected: false, reauthRequired: true, email: 'david@example.com' });
+    expect(getPlaudStatus()).toMatchObject({ connected: false, reauthRequired: true, email: 'marcus@example.com' });
 
     config.clear();                    // never connected at all
     expect(getPlaudStatus()).toMatchObject({ connected: false, reauthRequired: false });

@@ -222,7 +222,7 @@ describe('(3) an unrecognised value fails CLOSED, it does not pass through', () 
   it('replaces an off-list enum value with the sentinel, never the value', () => {
     const out = buildTelemetry(sources({
       turns: [{ kind: 'user', subjectKind: 'conv', lane: null,
-                exitReason: 'exploded_spectacularly_/Users/dave/taxes.pdf',
+                exitReason: 'exploded_spectacularly_/Users/someone/taxes.pdf',
                 answered: false, effectfulCalls: 0, durationMs: 1 }],
     }));
     const turn = (out.turns as Record<string, unknown>[])[0];
@@ -286,9 +286,9 @@ describe('(5) a version or digest is checked against its OWN declared shape', ()
   // the schema constant, so every one of them must now come out as the sentinel.
   const PROBES: readonly [string, string][] = [
     ['prose sentence', 'the model kept saying my wife Sarah was wrong'],
-    ['absolute path', '/Users/dave/taxes.pdf'],
+    ['absolute path', '/Users/someone/taxes.pdf'],
     ['windows path', 'C:\\Users\\dave\\taxes.pdf'],
-    ['email', 'dave@cornerp.in'],
+    ['email', 'marcus@northwind.example'],
     ['quoted text', '"my password is hunter2"'],
     ['bare filename', 'taxes.pdf'],
     ['bare filename 2', 'Sarah-divorce-settlement.docx'],

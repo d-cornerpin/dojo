@@ -70,7 +70,7 @@ import { detectMultistepAndScaffold } from '../multistep-detection.js';
 import { START_ACK_STEER_TEXT } from '../steer-checkpoint.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
 
-const AGENT = '57b52025-0b0f-40a6-b916-9efdb9a642a3';
+const AGENT = 'agent-one';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = (rel: string): string => fs.readFileSync(path.resolve(HERE, rel), 'utf8');
 
@@ -91,7 +91,7 @@ const bag = (over: Partial<Bag> = {}): Bag => ({
 });
 
 const person = (over: Partial<TurnCounterparty> = {}): TurnCounterparty => ({
-  kind: 'user', name: 'David', relation: 'owner', channel: 'imessage',
+  kind: 'user', name: 'Marcus', relation: 'owner', channel: 'imessage',
   senderId: '+15550000000', threadId: null, senderIsAgent: false, ...over,
 } as TurnCounterparty);
 

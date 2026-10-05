@@ -7,8 +7,8 @@
 // empty — it always contains `dojo-report` — so the request `createIssue` sent was one that only
 // a collaborator on the destination repository could make.
 //
-// The owner met it live. 00:24Z, 2026-09-26: connected as `dcliff9`, filing against
-// `d-cornerpin/dojo-report-live-test`, which `d-cornerpin` owns and on which `dcliff9` holds
+// The owner met it live. 00:24Z, 2026-09-26: connected as `the-owner`, filing against
+// `d-cornerpin/dojo-report-live-test`, which `d-cornerpin` owns and on which `the-owner` holds
 // `pull` only. HTTP 403, nothing posted, one sentence in the log. And every ordinary user of a
 // shipped Dojo stands in exactly that relation to `d-cornerpin/dojo`: a reporting feature only
 // its own maintainers can use is not a reporting feature.

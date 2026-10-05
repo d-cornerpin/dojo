@@ -52,8 +52,8 @@ const MS_IN = Date.parse('2026-09-24T11:00:00Z');
 const MS_EDGE = Date.parse('2026-09-24T10:00:00Z');
 const MS_OUT = Date.parse('2026-09-24T09:59:59Z');
 
-const SECRET_PATH = '/Users/dave/taxes.pdf';
-const STALE_PATH = '/Users/dave/last-tuesday.pdf';
+const SECRET_PATH = '/Users/someone/taxes.pdf';
+const STALE_PATH = '/Users/someone/last-tuesday.pdf';
 
 describe('resolveWindow bounds what the agent asked for', () => {
   it('gives the standing window when nothing is asked, and calls it untruncated', () => {

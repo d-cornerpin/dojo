@@ -120,12 +120,12 @@ const LIVE_CORPUS_NON_OBLIGATION = [
   '[2026-08-06] orbit biscuit idpw8d',
   'Remember this exact phrase : "orbit biscuit zth1yw"',
   '[2026-08-06] Remember this exact phrase : "orbit biscuit u5ygd5"',
-  '[2026-08-06] Solar-battery 4e520793: summary delivered David chat 14:56 UTC (74681ab2); fd35e92d/2028bb17/b3bd894a auto-closed, retries Task not found.',
+  '[2026-08-06] Solar-battery 4e520793: summary delivered Marcus chat 14:56 UTC (74681ab2); fd35e92d/2028bb17/b3bd894a auto-closed, retries Task not found.',
   '[2026-08-06] For your records: my beekeeping club membership number is BEE-YGD5-42.',
   'Remember this exact phrase : "orbit biscuit wf6qe5"',
-  '[2026-08-09] David\'s beekeeping club membership number is BEE-VNAD-42.',
-  '[2026-08-09] David\'s locker code at the north gym is GYM-O1VNAD-DC2.',
-  '[2026-08-10] T7 status probe ran on Aug 9, 2026 (logged per David\'s request via HarnessBot\'s task "Log T7 status probe").',
+  '[2026-08-09] Marcus\'s beekeeping club membership number is BEE-VNAD-42.',
+  '[2026-08-09] Marcus\'s locker code at the north gym is GYM-O1VNAD-DC2.',
+  '[2026-08-10] T7 status probe ran on Aug 9, 2026 (logged per Marcus\'s request via HarnessBot\'s task "Log T7 status probe").',
   '[2026-08-10] Asana brief (Zargo 8/10, thr 49ca907e): Free=2-user cap; Starter $10.99/u/mo ann (3 seats ≈$395/yr); Advanced ≈$900/yr; 1-assignee; 2-3 team: heavy.',
   '[2026-08-10] Pick: Squarespace Core ~$276/yr — zero maintenance; WordPress only if heavy SEO/customization + maintenance budget. Sources: Tyndo 1a952a39, Zargo 34430191.',
   'My car is at 86,900 miles and the oil change is due at 87,500.',
@@ -153,7 +153,7 @@ describe('§1 obligation shape is narrow enough to refuse on', () => {
     // "due" is a fact about the world; a third party's future act is not the agent's
     // obligation; a past delivery is a record, not a promise.
     expect(obligationShape('My car is at 86,900 miles and the oil change is due at 87,500.')).toBeNull();
-    expect(obligationShape('David will send the address when he has it.')).toBeNull();
+    expect(obligationShape('Marcus will send the address when he has it.')).toBeNull();
     expect(obligationShape('Bob promised to send his address.')).toBeNull();
     expect(obligationShape('Delivered the roof quote to Bob on Aug 1.')).toBeNull();
     expect(obligationShape('The user prefers a follow-up email over a call.')).toBeNull();
@@ -201,7 +201,7 @@ describe('§2 a vault line is resolved against the spine before it is believed',
   });
 
   it('a non-obligation line is never resolved at all', () => {
-    expect(obligationVerdict('David\'s locker code at the north gym is GYM-O1VNAD-DC2.').kind)
+    expect(obligationVerdict('Marcus\'s locker code at the north gym is GYM-O1VNAD-DC2.').kind)
       .toBe('not-an-obligation');
   });
 

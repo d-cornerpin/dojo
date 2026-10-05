@@ -35,7 +35,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../../../db/connection.js', () => ({
   getDb: () => ({ prepare: () => ({ get: () => ({ name: 'zargo' }), run: () => undefined }) }),
 }));
-vi.mock('../../../../config/platform.js', () => ({ isPrimaryAgent: () => true, isPMAgent: () => false, getOwnerName: () => 'David' }));
+vi.mock('../../../../config/platform.js', () => ({ isPrimaryAgent: () => true, isPMAgent: () => false, getOwnerName: () => 'Marcus' }));
 vi.mock('../../util.js', () => ({ auditLog: () => undefined }));
 
 // The header resolves the address through the SAME resolver the tool used, so
@@ -105,7 +105,7 @@ describe('the mail-read ownership header', () => {
   // ── CLAUSE 2: THE BEHAVIOUR, PER TOOL, BOTH PROVIDERS ──
   it.each([...USER_MAILBOX_READ_TOOLS])('%s names the OWNER and carries the injection guard', async (name) => {
     const out = await call(name);
-    expect(out.content.startsWith('[Mailbox: David\'s inbox — owner@'), `${name} lost its mailbox header`).toBe(true);
+    expect(out.content.startsWith('[Mailbox: Marcus\'s inbox — owner@'), `${name} lost its mailbox header`).toBe(true);
     for (const sentence of INJECTION_GUARD) expect(out.content).toContain(sentence);
     expect(out.isError).toBe(false);
   });
@@ -114,7 +114,7 @@ describe('the mail-read ownership header', () => {
   it.each([...AGENT_MAILBOX_READ_TOOLS])('%s names the AGENT\'s own account', async (name) => {
     const out = await call(name);
     expect(out.content.startsWith('[Mailbox: your OWN inbox — agent@'), `${name} says nothing about whose inbox it is`).toBe(true);
-    expect(out.content).toContain('not David\'s');
+    expect(out.content).toContain('not Marcus\'s');
     expect(out.isError).toBe(false);
   });
 
@@ -152,7 +152,7 @@ describe('the mail-read ownership header', () => {
 
   // ── CLAUSE 5: THE FUNCTION'S OWN CONTRACT ──
   it('headers only the sixteen declared names and passes everything else through', () => {
-    expect(prependMailboxOwnerHeader('X', 'user_gmail_read', {}).startsWith('[Mailbox: David')).toBe(true);
+    expect(prependMailboxOwnerHeader('X', 'user_gmail_read', {}).startsWith('[Mailbox: Marcus')).toBe(true);
     expect(prependMailboxOwnerHeader('X', 'gmail_read', {}).startsWith('[Mailbox: your OWN')).toBe(true);
     expect(prependMailboxOwnerHeader('X', 'user_calendar_list', {})).toBe('X');
     expect(prependMailboxOwnerHeader('X', 'calendar_agenda', {})).toBe('X');

@@ -60,7 +60,7 @@ const TURN = 77;
 const FETCHED = 'ruling13-chat-gate-0000';
 
 const OWNER_ON_DASHBOARD: TurnCounterparty = {
-  kind: 'user', name: 'David', relation: 'owner', channel: 'dashboard',
+  kind: 'user', name: 'Marcus', relation: 'owner', channel: 'dashboard',
   senderId: null, threadId: null, senderIsAgent: false,
 };
 

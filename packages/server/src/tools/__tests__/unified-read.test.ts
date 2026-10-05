@@ -19,11 +19,11 @@ import {
 } from '../unified-read.js';
 
 // Fabricated sources — no network, no DB.
-const agentGoogle: UnifiedSource = { providerLabel: 'Google', slot: 'agent', email: 'agent@ex.com', labelKey: 'agent Google' };
-const ownerGoogle: UnifiedSource = { providerLabel: 'Google', slot: 'owner', email: 'owner@ex.com', labelKey: 'owner Google' };
-const agentMs: UnifiedSource = { providerLabel: 'Microsoft', slot: 'agent', email: 'agent@ms.com', labelKey: 'agent Microsoft' };
+const agentGoogle: UnifiedSource = { providerLabel: 'Google', slot: 'agent', email: 'agent@ex.test', labelKey: 'agent Google' };
+const ownerGoogle: UnifiedSource = { providerLabel: 'Google', slot: 'owner', email: 'owner@ex.test', labelKey: 'owner Google' };
+const agentMs: UnifiedSource = { providerLabel: 'Microsoft', slot: 'agent', email: 'agent@ms.test', labelKey: 'agent Microsoft' };
 // Two Google agent accounts share a label — the ambiguity case.
-const agentGoogle2: UnifiedSource = { providerLabel: 'Google', slot: 'agent', email: 'second@ex.com', labelKey: 'agent Google' };
+const agentGoogle2: UnifiedSource = { providerLabel: 'Google', slot: 'agent', email: 'second@ex.test', labelKey: 'agent Google' };
 
 function cal(title: string, sortKey: number, source: UnifiedSource, extra: Partial<UnifiedCalendarItem> = {}): UnifiedCalendarItem {
   return {
@@ -40,7 +40,7 @@ function cal(title: string, sortKey: number, source: UnifiedSource, extra: Parti
 function mail(id: string, sortKey: number, source: UnifiedSource, extra: Partial<UnifiedMailItem> = {}): UnifiedMailItem {
   return {
     id,
-    from: extra.from ?? 'Sender <s@ex.com>',
+    from: extra.from ?? 'Sender <s@ex.test>',
     subject: extra.subject ?? `subject-${id}`,
     when: extra.when ?? `when-${id}`,
     sortKey,
@@ -109,7 +109,7 @@ describe('computeAmbiguousLabels / formatSourceLabel', () => {
 
   it('shows the email only for ambiguous labels', () => {
     const amb = computeAmbiguousLabels([agentGoogle, agentGoogle2]);
-    expect(formatSourceLabel(agentGoogle, amb)).toBe('[agent Google] (agent@ex.com)');
+    expect(formatSourceLabel(agentGoogle, amb)).toBe('[agent Google] (agent@ex.test)');
     expect(formatSourceLabel(ownerGoogle, new Set())).toBe('[owner Google]');
   });
 });
@@ -133,9 +133,9 @@ describe('renderCalendarAgenda', () => {
   });
 
   it('renders per-account failures at the end and never throws on them', () => {
-    const out = renderCalendarAgenda([], new Set(), [{ label: 'owner Microsoft calendar (o@ms.com)', error: 'token expired' }], { days: 1, accountCount: 1 });
+    const out = renderCalendarAgenda([], new Set(), [{ label: 'owner Microsoft calendar (o@ms.test)', error: 'token expired' }], { days: 1, accountCount: 1 });
     expect(out).toContain('No events on any connected calendar in this window.');
-    expect(out).toContain('could not read owner Microsoft calendar (o@ms.com): token expired');
+    expect(out).toContain('could not read owner Microsoft calendar (o@ms.test): token expired');
   });
 });
 
@@ -149,7 +149,7 @@ describe('mergeMailByRecency', () => {
 describe('renderEmailSearch', () => {
   it('labels each result by source and marks unread', () => {
     const items = mergeMailByRecency([
-      mail('m1', 200, agentGoogle, { unread: true, subject: 'Invoice', from: 'A <a@ex.com>' }),
+      mail('m1', 200, agentGoogle, { unread: true, subject: 'Invoice', from: 'A <a@ex.test>' }),
       mail('m2', 100, ownerGoogle, { subject: 'Receipt' }),
     ]);
     const out = renderEmailSearch(items, new Set(), [], { query: 'invoice', accountCount: 2 });
@@ -161,17 +161,17 @@ describe('renderEmailSearch', () => {
   });
 
   it('handles the empty + partial-failure case plainly', () => {
-    const out = renderEmailSearch([], new Set(), [{ label: 'agent Outlook (x@ms.com)', error: 'HTTP 503' }], { query: 'foo', accountCount: 1 });
+    const out = renderEmailSearch([], new Set(), [{ label: 'agent Outlook (x@ms.test)', error: 'HTTP 503' }], { query: 'foo', accountCount: 1 });
     expect(out).toContain('No matching email in any connected mailbox.');
-    expect(out).toContain('could not read agent Outlook (x@ms.com): HTTP 503');
+    expect(out).toContain('could not read agent Outlook (x@ms.test): HTTP 503');
   });
 });
 
 // ── Narrow-tool DATA-floor helpers ──
 
 // Mail-surface sources carry Gmail/Outlook provider labels (calendar carries Google/Microsoft).
-const agentGmail: UnifiedSource = { providerLabel: 'Gmail', slot: 'agent', email: 'a@ex.com', labelKey: 'agent Gmail' };
-const ownerOutlook: UnifiedSource = { providerLabel: 'Outlook', slot: 'owner', email: 'o@ms.com', labelKey: 'owner Outlook' };
+const agentGmail: UnifiedSource = { providerLabel: 'Gmail', slot: 'agent', email: 'a@ex.test', labelKey: 'agent Gmail' };
+const ownerOutlook: UnifiedSource = { providerLabel: 'Outlook', slot: 'owner', email: 'o@ms.test', labelKey: 'owner Outlook' };
 
 describe('compactEventTime', () => {
   it('returns "All day" for all-day events regardless of the start', () => {
@@ -224,8 +224,8 @@ describe('renderOtherCalendarsSection', () => {
     ];
     const ambiguous = computeAmbiguousLabels([agentGoogle, agentGoogle2]);
     const out = renderOtherCalendarsSection(rows, ambiguous);
-    expect(out).toContain('[agent Google] (agent@ex.com)');
-    expect(out).toContain('[agent Google] (second@ex.com)');
+    expect(out).toContain('[agent Google] (agent@ex.test)');
+    expect(out).toContain('[agent Google] (second@ex.test)');
   });
 });
 
@@ -270,12 +270,12 @@ describe('renderOtherCalendarsSection — coverage floor', () => {
     const rows: OtherCalendarRow[] = [{ title: 'Sync', when: '9:00 AM', source: agentGoogle }];
     const out = renderOtherCalendarsSection(rows, new Set(), {
       emptySurfaces: [ownerGoogle],
-      failed: [{ label: 'agent Microsoft calendar (a@ms.com)', error: 'HTTP 503' }],
+      failed: [{ label: 'agent Microsoft calendar (a@ms.test)', error: 'HTTP 503' }],
     });
     expect(out).toContain('Also on other connected calendars (not shown above):');
     expect(out).toContain('- Sync, 9:00 AM [agent Google]');
     expect(out).toContain('Also checked, nothing in this window: [owner Google]');
-    expect(out).toContain('could not check: agent Microsoft calendar (a@ms.com) (HTTP 503)');
+    expect(out).toContain('could not check: agent Microsoft calendar (a@ms.test) (HTTP 503)');
   });
 
   it('keeps a FAILED surface distinguishable from a checked-EMPTY one', () => {
@@ -307,7 +307,7 @@ describe('renderOtherCalendarsSection — coverage floor', () => {
   it('disambiguates a checked-empty surface by email when its slot+provider has >1 account', () => {
     const ambiguous = computeAmbiguousLabels([agentGoogle, agentGoogle2]);
     const out = renderOtherCalendarsSection([], ambiguous, { emptySurfaces: [agentGoogle2] });
-    expect(out).toContain('Also checked, nothing in this window: [agent Google] (second@ex.com)');
+    expect(out).toContain('Also checked, nothing in this window: [agent Google] (second@ex.test)');
   });
 });
 
@@ -320,11 +320,11 @@ describe('renderOtherMailboxesCount — coverage floor', () => {
   it('combines matches, empties, and failures on distinct lines', () => {
     const out = renderOtherMailboxesCount([{ source: agentGmail, count: 2 }], new Set(), {
       emptySurfaces: [ownerOutlook],
-      failed: [{ label: 'agent Outlook (x@ms.com)', error: 'HTTP 500' }],
+      failed: [{ label: 'agent Outlook (x@ms.test)', error: 'HTTP 500' }],
     });
     expect(out).toContain('Also matching in other connected mailboxes: 2 in [agent Gmail]');
     expect(out).toContain('No matches in: [owner Outlook]');
-    expect(out).toContain('could not check: agent Outlook (x@ms.com) (HTTP 500)');
+    expect(out).toContain('could not check: agent Outlook (x@ms.test) (HTTP 500)');
   });
 
   it('keeps a FAILED mailbox distinguishable from a checked-EMPTY one', () => {

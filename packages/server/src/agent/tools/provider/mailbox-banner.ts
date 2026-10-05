@@ -102,7 +102,7 @@ export function prependMailboxOwnerHeader(
   if (isUser) {
     // The four sentences below are the INJECTION GUARD and are unchanged. Only
     // the identification clause moved, from "owner@example.com," to
-    // "David's inbox — owner@example.com", so the model reads WHOSE before it
+    // "Marcus's inbox — owner@example.com", so the model reads WHOSE before it
     // reads WHICH.
     const label = address ? `${owner}'s inbox — ${address}` : `${owner}'s inbox`;
     return (

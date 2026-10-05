@@ -126,7 +126,7 @@ export function getChannelCapabilities(): ChannelCapabilities {
 // Round-7 S3: the user asked for a text and no text was sent on any channel. Both agents
 // reached for the DISABLED iMessage bridge, and the engine's own door text then sent them the
 // wrong way — "respond to them in the dashboard chat instead" — while `twilio_config` on that
-// same box had `enabled=1, sms_enabled=1` and David's number on the approved list. The door
+// same box had `enabled=1, sms_enabled=1` and Marcus's number on the approved list. The door
 // was not wrong about iMessage; it was wrong about the alternative, and it was wrong because
 // it never asked.
 //

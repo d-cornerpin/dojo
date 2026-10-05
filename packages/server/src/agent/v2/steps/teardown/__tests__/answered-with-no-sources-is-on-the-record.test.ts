@@ -100,7 +100,7 @@ function ctxFor(turnCtx: Bag, over: Partial<TeardownContext> = {}): TeardownCont
     chosenConvKey: 'dashboard:owner', chosenConversationId: CONV, lastAssembledAtIso: null,
     terminalAnswerRowId: 'answer-1', triggerWorkId: ASK,
     toolPhaseEndedBySpinBrake: false, turnInjectedTechniqueId: null,
-    counterparty: { kind: 'user', name: 'David', relation: 'owner', channel: 'dashboard', senderId: 'owner', senderIsAgent: false } as never,
+    counterparty: { kind: 'user', name: 'Marcus', relation: 'owner', channel: 'dashboard', senderId: 'owner', senderIsAgent: false } as never,
     isA2ATurn: false, isEngineTurn: false,
     turnStartedAt: new Date(Date.now() - 6_000).toISOString().slice(0, 19).replace('T', ' '),
     inboundChannel: 'dashboard', inboundContext: null,

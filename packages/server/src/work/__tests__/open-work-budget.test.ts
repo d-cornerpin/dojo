@@ -68,7 +68,7 @@ vi.mock('../../db/connection.js', async () => {
 import { runMigrations } from '../../db/migrations.js';
 import { buildOpenWorkInjection } from '../obligations.js';
 
-const AGENT = '57b52025-0b0f-40a6-b916-9efdb9a642a3';
+const AGENT = 'agent-one';
 const CUR = '616f857b-2026-44f3-b64e-943032f913ec';
 
 /** The eight cross-conversation rows the box carried through the whole run — id, conversation,
@@ -177,7 +177,7 @@ describe('the OPEN WORK budget never silently drops the obligation the turn just
         `a deliberately long inbound title number ${i} that exists to push this block past its character budget`);
     }
     seedRow('cmt:freshest', 'commitment', CUR, shift(1785953690000),
-      'Send David the quarterly summary on Friday, and confirm when it has gone out');
+      'Send Marcus the quarterly summary on Friday, and confirm when it has gone out');
     expect(namesPromise(buildOpenWorkInjection(AGENT, CUR), 'cmt:freshest')).toBe(true);
   });
 
@@ -216,7 +216,7 @@ describe('the OPEN WORK budget never silently drops the obligation the turn just
       seedRow(`ask:debris-${i}`, 'ask', 'conv-other', shift(1785900000000 + i * 1000),
         `[SOURCE: IMESSAGE FROM a-stranger]\n\nan unservable row number ${i} that nobody can answer any more`);
     }
-    seedRow('cmt:freshest', 'commitment', CUR, shift(1785953690000), 'Send David the quarterly summary on Friday');
+    seedRow('cmt:freshest', 'commitment', CUR, shift(1785953690000), 'Send Marcus the quarterly summary on Friday');
     expect(namesPromise(buildOpenWorkInjection(AGENT, CUR), 'cmt:freshest')).toBe(true);
   });
 

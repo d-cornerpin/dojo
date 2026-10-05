@@ -153,7 +153,7 @@ describe('a completion the owner already has does not ride the event', () => {
 
   it('an iMessage receipt is owner-evidence too — the routed channel, not just the dashboard', async () => {
     const t = Date.now() - 5 * 60_000;
-    delivery('d-im', { channel: 'imessage', tool: 'auto-route', recipientId: 'David' });
+    delivery('d-im', { channel: 'imessage', tool: 'auto-route', recipientId: 'Marcus' });
     doneTask('task-im', 'd-im', Date.now(), t);
 
     await scheduleCompletionReport(ctx(asTurnStartedAt(t)));

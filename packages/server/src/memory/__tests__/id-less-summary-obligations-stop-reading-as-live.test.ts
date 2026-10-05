@@ -14,7 +14,7 @@
 //
 // WHAT IS BEING PROVEN HERE IS AS MUCH WHAT THE MATCHER REFUSES AS WHAT IT CATCHES. The
 // first cut of it was measured on the worn-in body before anything was written, and it
-// joined "David is still owed the final reply" to a commitment about a codeword on the
+// joined "Marcus is still owed the final reply" to a commitment about a codeword on the
 // strength of the name plus the word "final". §2 is the record of what that measurement
 // bought: a phrase requirement, and an id-disagreement refusal.
 // ════════════════════════════════════════════════════════════════════════════════
@@ -83,9 +83,9 @@ const BOB_FENCE = "Email the fence estimate to Bob (promise-bmshmu5ygd5) once he
 const STORED_BOB_LINES = [
   "- OPEN (per HarnessBot's status): two quotes waiting on Bob's address — for **fence** and "
     + '**roof** — which HarnessBot will send the moment Bob provides the address. [Owner of this '
-    + "pending item: David's quote requests; dependent on Bob's address.]",
+    + "pending item: Marcus's quote requests; dependent on Bob's address.]",
   "DEFERRED: Fence and roof quotes — pending Bob's address before HarnessBot can send them.",
-  '- First ask: HarnessBot called work_update (status set to on_deck), then told David: '
+  '- First ask: HarnessBot called work_update (status set to on_deck), then told Marcus: '
     + '"Everything from last night is done (cheat sheet, desk picks, parking reminder), with one '
     + "honest hiccup: the 6:45 AM 'routine' reminder fired this morning but the message delivery "
     + 'glitched on my end and never reached your screen. The schedule is intact — it\'s set to fire '
@@ -104,7 +104,7 @@ const STORED_BOB_LINES = [
     + 'or mine."',
   'DEFERRED / STILL PENDING: Mariners score check — task 92fba53b-1f94-49bf-a51c-77a967355af6 '
     + 'created scheduled Mon Aug 10, 2026 14:06, but the turn closed without HarnessBot messaging '
-    + 'David the score. HarnessBot stated fence and roof quotes remain parked on Bob\'s address — '
+    + 'Marcus the score. HarnessBot stated fence and roof quotes remain parked on Bob\'s address — '
     + "on Bob's side, not HarnessBot's.",
 ];
 
@@ -204,22 +204,22 @@ describe('resemblance is not a join', () => {
   });
 
   it('the name plus one common noun is NOT enough — the phrase must be shared', () => {
-    // The measured false positive, verbatim in shape: this joined on "David" + "final".
+    // The measured false positive, verbatim in shape: this joined on "Marcus" + "final".
     seedCommitment('abandoned',
-      'When BehavWorker delivers their codeword, send David ONE final message containing the '
+      'When BehavWorker delivers their codeword, send Marcus ONE final message containing the '
       + 'Part 1 morning-walks benefit sentence AND the exact codeword they delivered.');
-    const line = '- David is still owed the final reply "done" (his instruction was to reply with '
+    const line = '- Marcus is still owed the final reply "done" (his instruction was to reply with '
       + 'just "done" after the eight echoes).';
     expect(annotateSummaryObligations(line, AGENT)).toBe(line);
   });
 
   it('when both sides name a run id and the ids DISAGREE, it is not a match', () => {
     seedCommitment('abandoned',
-      'Tell David about the fail-open probe project (failproj-bmsgoeiyu25-a1) ending with a fallen '
+      'Tell Marcus about the fail-open probe project (failproj-bmsgoeiyu25-a1) ending with a fallen '
       + 'step, and hold today\'s pending HarnessBot validation checks until his yes/no ruling.');
-    const same = '- PENDING: Tell David about the fail-open probe project (failproj-bmsgoeiyu25-a1) '
+    const same = '- PENDING: Tell Marcus about the fail-open probe project (failproj-bmsgoeiyu25-a1) '
       + 'ending with a fallen step, and hold today\'s pending HarnessBot validation checks.';
-    const other = '- PENDING: Tell David about the fail-open probe project (failproj-bmsfkglb1e0-a1) '
+    const other = '- PENDING: Tell Marcus about the fail-open probe project (failproj-bmsfkglb1e0-a1) '
       + 'ending with a fallen step, and hold today\'s pending HarnessBot validation checks.';
     expect(annotateSummaryObligations(same, AGENT)).toContain(SUMMARY_OBLIGATION_MARK);
     expect(annotateSummaryObligations(other, AGENT)).toBe(other);

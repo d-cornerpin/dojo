@@ -80,7 +80,7 @@ import { runTerminalText } from '../terminal-text.js';
 import { answersALiveAsk } from '../answer-to-a-live-ask.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
 
-const AGENT = 'a504e5c9-1f2b-4c3d-8e9f-0a1b2c3d4e5f';
+const AGENT = 'agent-one';
 
 /** seq 76946's own text, as the investigation quoted it. */
 const THE_STATUS = "I'm continuing the Gmail organization work — the project is already on the "

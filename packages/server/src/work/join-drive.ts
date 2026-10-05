@@ -209,7 +209,7 @@ export function engineRelayPreface(total: number): string {
 // then `join_engine_relay 1/1` shipped the pieces and the ask closed `done` on delivery
 // `9b15cc2f` with `compile_resolved`. The disarm walk reached the ask, the compile flag, the
 // adjudication and the doorbell — and left the model's own card for the same job, task
-// `708985b4` "Combine anniversary dinner plan and deliver to David", sitting `blocked` and
+// `708985b4` "Combine anniversary dinner plan and deliver to Marcus", sitting `blocked` and
 // PM-upheld, which by `pm-agent.ts`'s own queue rules is never re-adjudicated and surfaces
 // only as a 30-minute `BLOCKED:` notice about work that was finished an hour ago.
 //

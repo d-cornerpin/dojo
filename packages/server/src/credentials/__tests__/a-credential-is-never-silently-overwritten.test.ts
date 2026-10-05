@@ -123,7 +123,7 @@ afterEach(() => {
 async function seedOwnersKey(): Promise<void> {
   const { addCredential } = await import('../store.js');
   const r = addCredential('sendgrid', { api_key: 'SG.real.owner-key' },
-    'SendGrid API key provided by David on 2026-06-21', OWNER_AGENT);
+    'SendGrid API key provided by Marcus on 2026-06-21', OWNER_AGENT);
   expect(r.ok).toBe(true);
   mockDb.current!.prepare(
     "UPDATE agent_credentials SET created_at = '2026-06-21 03:03:03', updated_at = '2026-06-21 03:03:03' WHERE service_name = 'sendgrid'",

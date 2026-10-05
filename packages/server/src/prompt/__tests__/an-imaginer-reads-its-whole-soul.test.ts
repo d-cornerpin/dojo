@@ -88,7 +88,7 @@ beforeEach(async () => {
   setConfig('primary_agent_name', 'Zargo');
   setConfig('imaginer_agent_id', IMAGINER);
   setConfig('imaginer_agent_name', 'Iris');
-  setConfig('owner_name', 'David');
+  setConfig('owner_name', 'Marcus');
   const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();
   mockDb.current
@@ -122,12 +122,12 @@ describe('the Imaginer runs on its whole soul', () => {
     expect(soul).toContain('You are Iris, the dojo\'s image generation specialist');
     // The other two names the template uses come from the same door.
     expect(soul).toContain('Zargo');
-    expect(soul).toContain('David');
+    expect(soul).toContain('Marcus');
     expect(soul).toBe(
       SHIPPED
         .replace(/\{\{imaginer_agent_name\}\}/g, 'Iris')
         .replace(/\{\{primary_agent_name\}\}/g, 'Zargo')
-        .replace(/\{\{owner_name\}\}/g, 'David'),
+        .replace(/\{\{owner_name\}\}/g, 'Marcus'),
     );
   });
 

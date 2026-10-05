@@ -65,8 +65,8 @@
 //     title carries) AND one of its deliverable nouns,
 //   · AND the line and the title must share a three-word PHRASE containing that
 //     counterparty. Bag-of-words agreement alone was measured on the worn-in body first
-//     and it was not good enough: it joined "David is still owed the final reply" to a
-//     commitment about a codeword on the strength of "David" plus "final", and it hung a
+//     and it was not good enough: it joined "Marcus is still owed the final reply" to a
+//     commitment about a codeword on the strength of "Marcus" plus "final", and it hung a
 //     validity marker on a bare heading. The phrase requirement is what makes a match
 //     something a reader can check in one glance ("waiting on Bob's address" is in both),
 //     and it is the difference between a join and a resemblance,

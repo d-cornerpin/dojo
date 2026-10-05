@@ -78,7 +78,7 @@ function seedS5(): { project: string; done: string; paused: string; delivery: st
     origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null },
   });
   const paused = openTrackerTask({
-    projectId: project, title: 'Delete confirmed junk after David approves',
+    projectId: project, title: 'Delete confirmed junk after Marcus approves',
     status: 'in_progress', assignedTo: AGENT, createdBy: AGENT,
     origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null },
   });
@@ -95,7 +95,7 @@ function seedS5(): { project: string; done: string; paused: string; delivery: st
   });
   writeTaskLog({
     taskId: paused, fromEntity: `agent:${AGENT}`, entryKind: 'observation',
-    note: "Waiting on David's approval of the deletion list before removing anything.",
+    note: "Waiting on Marcus's approval of the deletion list before removing anything.",
   });
   // The approval arrives, the work is done and delivered, and the agent files its close FROM
   // the paused row — the exact call that produced event 22401.

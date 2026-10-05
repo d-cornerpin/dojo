@@ -190,7 +190,7 @@ describe('isStandingStateClaimReply', () => {
 
   it('returns the asserting SENTENCE, so the steer can quote the claim and not the greeting', () => {
     const claim = standingStateClaimSentence(
-      "Here's the week, David. We finished the Denver checklist and tidied three folders. "
+      "Here's the week, Marcus. We finished the Denver checklist and tidied three folders. "
       + 'Two fence quotes are still parked, waiting on Bob\'s address.');
     expect(claim).toBe("Two fence quotes are still parked, waiting on Bob's address.");
   });

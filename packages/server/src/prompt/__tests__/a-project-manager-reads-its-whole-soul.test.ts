@@ -100,7 +100,7 @@ beforeEach(async () => {
   setConfig('primary_agent_name', 'Zargo');
   setConfig('pm_agent_id', PM);
   setConfig('pm_agent_name', 'Quilba');
-  setConfig('owner_name', 'David');
+  setConfig('owner_name', 'Marcus');
   const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();
   mockDb.current
@@ -134,7 +134,7 @@ describe('the PM runs on its whole soul', () => {
     expect(soul).not.toContain('{{');
     expect(soul).toContain('You are Quilba,');
     expect(soul).toContain('Zargo');
-    expect(soul).toContain('David');
+    expect(soul).toContain('Marcus');
   });
 
   it('T40 HOLDS: the settings card shows exactly what the runtime reads', () => {

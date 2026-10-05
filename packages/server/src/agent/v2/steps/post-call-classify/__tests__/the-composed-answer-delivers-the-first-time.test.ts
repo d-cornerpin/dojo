@@ -91,7 +91,7 @@ import { runTerminalText } from '../terminal-text.js';
 import { START_ACK_ORIGIN_INTENT } from '../../../../../memory/message-store.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
 
-const AGENT = '57b52025-0b0f-40a6-b916-9efdb9a642a3';
+const AGENT = 'agent-one';
 const ASK = 'ask:351d9670-4af7-4f22-802d-34f239b24f18';
 /** The incident's own text, opening line for opening line (S5 §8.11). */
 const THE_PLAN = "Here's the combined day plan — both research pieces merged:\n\n"

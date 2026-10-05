@@ -97,7 +97,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = (rel: string): string => fs.readFileSync(path.resolve(HERE, rel), 'utf8');
 
 const person = (over: Partial<TurnCounterparty> = {}): TurnCounterparty => ({
-  kind: 'user', name: 'David', relation: 'owner', channel: 'imessage',
+  kind: 'user', name: 'Marcus', relation: 'owner', channel: 'imessage',
   senderId: '+15550000000', threadId: null, senderIsAgent: false, ...over,
 } as TurnCounterparty);
 
@@ -166,7 +166,7 @@ describe('the predicate: the door opens where the ack can now actually be pushed
 
 describe('the delivery: the ack REACHES a Teams chat, through the send the router already uses', () => {
   it('RED→GREEN: the ack is pushed to the originating chat as a `teams_send_message`', async () => {
-    const deliver = ackFor(person({ channel: 'teams', senderId: 'david@cornerp.in' }), { chatId: CHAT_ID });
+    const deliver = ackFor(person({ channel: 'teams', senderId: 'marcus@northwind.example' }), { chatId: CHAT_ID });
     await deliver('On it — pulling the numbers now.', 'start_ack', null, 'agent-text');
 
     expect(executeToolSpy).toHaveBeenCalledTimes(1);
@@ -221,7 +221,7 @@ describe('the delivery: the ack REACHES a Teams chat, through the send the route
   });
 
   it('CONTROL — EMAIL IS NOT PUSHED. The ack row is written and broadcast and that is all', async () => {
-    const deliver = ackFor(person({ channel: 'email', senderId: 'david@cornerp.in' }),
+    const deliver = ackFor(person({ channel: 'email', senderId: 'marcus@northwind.example' }),
       { emailMessageId: '<abc@mail>' });
     await deliver('On it.', 'start_ack', null, 'agent-text');
     expect(executeToolSpy).not.toHaveBeenCalled();

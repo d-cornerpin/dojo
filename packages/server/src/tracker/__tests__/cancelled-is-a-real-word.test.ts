@@ -137,7 +137,7 @@ describe('§1 status:"cancelled" lands on the spine as `abandoned`', () => {
     seedTrackerTask(mockDb.current!, { id: TASK, title: 'Take the trash out', status: 'on_deck' });
     const out = trackerUpdateStatus(AGENT, {
       taskId: TASK, status: 'cancelled',
-      notes: 'Cancelled per David: he\'ll take the trash out tonight instead.',
+      notes: 'Cancelled per Marcus: he\'ll take the trash out tonight instead.',
     });
     expect(out).toContain('[OK]');
     expect(rowOf().state).toBe('abandoned');

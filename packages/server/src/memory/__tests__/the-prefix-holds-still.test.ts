@@ -162,7 +162,7 @@ function seedActiveTask(): void {
                        last_answered_turn, last_answered_at, last_delivery_summary)
      VALUES ('task-aaaaaaaa', 'task', ?, 'owner', 'tracker', 'task-aaaaaaaa', 'claimed', 'tracker',
              0, 0, 'Rewire the porch light', 'the description', 'normal', ?, ?, 7, ?,
-             'sent by sms to David')`,
+             'sent by sms to Marcus')`,
   ).run(AGENT, DAY_ONE - 7_200_000, DAY_ONE - 7_200_000,
     new Date(DAY_ONE - 600_000).toISOString().replace('T', ' ').slice(0, 19));
   // The stamp line the lane renders is DERIVED from `work_events` (tracker-view
@@ -171,7 +171,7 @@ function seedActiveTask(): void {
   db.prepare(
     `INSERT INTO work_events (work_id, kind, actor, payload, created_at)
      VALUES ('task-aaaaaaaa', 'activity', ?, ?, ?)`,
-  ).run(AGENT, JSON.stringify({ turn: 7, answered: 1, outcome: 'answered', delivery_summary: 'sent by sms to David' }),
+  ).run(AGENT, JSON.stringify({ turn: 7, answered: 1, outcome: 'answered', delivery_summary: 'sent by sms to Marcus' }),
     DAY_ONE - 600_000);
 }
 
@@ -231,7 +231,7 @@ function seedVault(): void {
   db.prepare(
     `INSERT INTO vault_entries (id, agent_id, type, content, confidence, is_permanent, is_pinned,
                                 is_obsolete, created_at, updated_at)
-     VALUES ('vault-pin', ?, 'fact', 'David''s wife is named Claire.', 1.0, 1, 1, 0, ?, ?)`,
+     VALUES ('vault-pin', ?, 'fact', 'Marcus''s wife is named Claire.', 1.0, 1, 1, 0, ?, ?)`,
   ).run(AGENT, '2026-07-01 10:00:00', '2026-07-01 10:00:00');
 }
 

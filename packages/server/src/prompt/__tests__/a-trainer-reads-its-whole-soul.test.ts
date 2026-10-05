@@ -90,7 +90,7 @@ beforeEach(async () => {
   setConfig('primary_agent_name', 'Zargo');
   setConfig('trainer_agent_id', TRAINER);
   setConfig('trainer_agent_name', 'Tyndo');
-  setConfig('owner_name', 'David');
+  setConfig('owner_name', 'Marcus');
   const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();
   mockDb.current

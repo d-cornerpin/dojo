@@ -349,8 +349,8 @@ export function selectRowsSkippedAsDelivered(
 // The old text was written 2026-06-01 (`06e6ee3`), moved onto a live model-visible lane on
 // 2026-07-17 (`2f302dc`) with the commit stating *"The note text is unchanged"*, and never
 // included in the OR2 conversions. It read, in the ENGINE's voice, with the owner's name in
-// it: *"David, is this actually in_progress? Reply yes/no with any context. **Primary agent**:
-// when David replies, call work_validate(action="apply_user_validation", task_id="77cba094-…",
+// it: *"Marcus, is this actually in_progress? Reply yes/no with any context. **Primary agent**:
+// when Marcus replies, call work_validate(action="apply_user_validation", task_id="77cba094-…",
 // …)"*. 732 chars, sliced to 400 by the events lane, cut MID-TASK-ID — so the instruction
 // could not have been complied with even in principle.
 //

@@ -828,7 +828,7 @@ describe('the card\'s sentence and the route\'s branch answer the same question'
 // ── THE SENTENCE NAMES THE DESTINATION, AND THE DESTINATION IS THE SERVER'S (T8 finding 5) ──
 //
 // The live T8 card read *"This will be posted as a public issue on the Dojo's issue tracker, as
-// dcliff9"* while `DOJO_REPORT_REPO` pointed at `d-cornerpin/dojo-report-live-test`. The
+// the-owner"* while `DOJO_REPORT_REPO` pointed at `d-cornerpin/dojo-report-live-test`. The
 // destination the owner was shown and the destination the poster used were different pages, in
 // the one sentence whose whole job is to say where their words go. Two halves to the fix and both
 // are here: the sentence NAMES the repository, and the repository it names is the one the SERVER
@@ -861,7 +861,7 @@ describe('the card is told WHERE the report goes, by the door that decides it', 
     // …and the sentence built from that answer names the scratch repository rather than the
     // Dojo's own tracker. This is the live T8 defect, end to end.
     const sentence = postTargetSentence({
-      connected: true, login: 'dcliff9', loginInProgress: false,
+      connected: true, login: 'the-owner', loginInProgress: false,
       repo: (body as unknown as { destinationRepo?: string }).destinationRepo ?? '',
     });
     expect(sentence).toContain('d-cornerpin/dojo-report-live-test');

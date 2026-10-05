@@ -256,7 +256,7 @@ describe('§2 the snapshot supersedes', () => {
 
   it('every live row is listed, with the id the model needs and its state', () => {
     seedCommitment({ id: 'cmt:111111111111', title: 'Email the roof quote to Bob', state: 'open', daysAgo: 3 });
-    seedCommitment({ id: 'cmt:222222222222', title: 'Send David the venue shortlist', state: 'blocked', daysAgo: 1 });
+    seedCommitment({ id: 'cmt:222222222222', title: 'Send Marcus the venue shortlist', state: 'blocked', daysAgo: 1 });
     seedCommitment({ id: 'cmt:333333333333', title: 'A closed one', state: 'failed', daysAgo: 4 });
     const text = textOf(renderRecallLane(ctxWith()));
     expect(text).toContain('[cmt:111111111111]');
@@ -271,10 +271,10 @@ describe('§2 the snapshot supersedes', () => {
 
   it('NEGATIVE CONTROL: an agent that never recorded a commitment gets no snapshot at all', () => {
     const text = textOf(renderRecallLane(ctxWith({
-      vaultHits: [{ id: 'v-1', type: 'preference', content: 'David prefers dark mode.' }],
+      vaultHits: [{ id: 'v-1', type: 'preference', content: 'Marcus prefers dark mode.' }],
     })));
     expect(text).not.toContain(SNAPSHOT_HEAD);
-    expect(text).toContain('David prefers dark mode.');
+    expect(text).toContain('Marcus prefers dark mode.');
   });
 
   it('the row cap binds and the count sentence stays TRUE — an elision is never silent', () => {
@@ -318,9 +318,9 @@ describe('§3 the per-hit obligation serving is withdrawn while the snapshot ser
   it('a NON-obligation vault hit is byte-identical to today, snapshot or no snapshot', () => {
     seedCommitment({ id: 'cmt:666666666666', title: 'anything', state: 'abandoned' });
     const text = textOf(renderRecallLane(ctxWith({
-      vaultHits: [{ id: 'v-2', type: 'preference', content: 'David takes his coffee black.' }],
+      vaultHits: [{ id: 'v-2', type: 'preference', content: 'Marcus takes his coffee black.' }],
     })));
-    expect(text).toContain('- [vault:preference] David takes his coffee black.');
+    expect(text).toContain('- [vault:preference] Marcus takes his coffee black.');
   });
 
   it('WITHOUT a snapshot the T17 path is untouched — the marker still marks, the closed line still drops', () => {
@@ -631,10 +631,10 @@ describe('§6 the board counts are complete, and they agree with the spine at re
 
     it('NEGATIVE CONTROL: no history and nothing open still renders NOTHING — truly empty agents are spared', () => {
       const text = textOf(renderRecallLane(ctxWith({
-        vaultHits: [{ id: 'v-none', type: 'preference', content: 'David prefers dark mode.' }],
+        vaultHits: [{ id: 'v-none', type: 'preference', content: 'Marcus prefers dark mode.' }],
       })));
       expect(text).not.toContain(SNAPSHOT_HEAD);
-      expect(text).toContain('David prefers dark mode.');
+      expect(text).toContain('Marcus prefers dark mode.');
     });
 
     it('NEGATIVE CONTROL: CLOSED board rows do not open the gate — a terminal row is not an open one', () => {

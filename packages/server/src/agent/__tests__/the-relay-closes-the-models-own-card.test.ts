@@ -9,7 +9,7 @@
 // delivery `9b15cc2f` with `compile_resolved` beside it.
 //
 // AND THE MODEL'S OWN CARD FOR THE SAME JOB STAYED OPEN: task `708985b4`, "Combine anniversary
-// dinner plan and deliver to David", opened on turn 4985 — which is `join_redrive 1/3` for this
+// dinner plan and deliver to Marcus", opened on turn 4985 — which is `join_redrive 1/3` for this
 // very ask — sat `blocked` and PM-upheld. By `pm-agent.ts`'s own queue rules an upheld block is
 // never re-adjudicated, so the row's only remaining surface is a 30-minute `BLOCKED:` notice
 // about work the engine finished an hour earlier.
@@ -198,7 +198,7 @@ describe('T66: the disarm walk reaches the card the model opened for the same jo
     // put the owed compile back in front of the model and the model wrote itself a card instead.
     advanceTurnTo(CLAIM_TURN + 1);
     const card = modelCard({
-      title: 'Combine anniversary dinner plan and deliver to David',
+      title: 'Combine anniversary dinner plan and deliver to Marcus',
       originTurn: CLAIM_TURN + 1, state: 'blocked',
     });
     expect(workRow(card).state, 'premise: the card is open and blocked, as the measured row was').toBe('blocked');

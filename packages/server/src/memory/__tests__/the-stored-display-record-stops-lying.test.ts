@@ -58,7 +58,7 @@ const S1 = {
   58425: [tool('load_tool_docs', { tools: ['work_open', 'work_note'] }),
           tool('web_search', { query: 'best note-taking apps 2026 comparison', count: 8 }),
           tool('web_search', { query: 'best note-taking app 2026 fast reliable search', count: 8 })],
-  58427: [tool('work_open', { kind: 'task', title: 'Research note-taking apps for David' }),
+  58427: [tool('work_open', { kind: 'task', title: 'Research note-taking apps for Marcus' }),
           tool('web_fetch', { url: 'https://www.pcmag.com/picks/the-best-note-taking-apps' }),
           tool('web_fetch', { url: 'https://zapier.com/blog/best-note-taking-apps/' })],
   58429: [tool('web_fetch', { url: 'https://unstar.app/blog/ranked-2026' }),

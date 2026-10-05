@@ -68,7 +68,7 @@ function ctxFor(turnCtx: Bag, over: Partial<TeardownContext> = {}): TeardownCont
     chosenConvKey: 'imessage:+1555', chosenConversationId: CONV, lastAssembledAtIso: null,
     terminalAnswerRowId: null, triggerWorkId: ASK,
     toolPhaseEndedBySpinBrake: false, turnInjectedTechniqueId: null,
-    counterparty: { kind: 'user', name: 'David', relation: 'owner', channel: 'imessage', senderId: '+1555', senderIsAgent: false } as never,
+    counterparty: { kind: 'user', name: 'Marcus', relation: 'owner', channel: 'imessage', senderId: '+1555', senderIsAgent: false } as never,
     isA2ATurn: false, isEngineTurn: false,
     turnStartedAt: new Date(Date.now() - 180_000).toISOString().slice(0, 19).replace('T', ' '),
     inboundChannel: 'imessage', inboundContext: null,

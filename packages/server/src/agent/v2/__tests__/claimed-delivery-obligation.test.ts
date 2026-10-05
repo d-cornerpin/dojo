@@ -93,7 +93,7 @@ function decide(responseText: string, over: Partial<{
     turnNumber: over.turnNumber === undefined ? TURN : over.turnNumber,
     responseText,
     toolCallsThisTurn: over.toolCallsThisTurn ?? [],
-    counterpartyName: over.counterpartyName ?? 'David',
+    counterpartyName: over.counterpartyName ?? 'Marcus',
     hasDeliveryReceipt: over.hasDeliveryReceipt ?? (() => false),
   });
 }
@@ -111,7 +111,7 @@ describe('THE DEFECT the owner caught — the old trigger was the model’s pros
     const old = detectUngroundedDeliveryClaim({
       responseText: WEDDING_TRANSCRIPT_REPLY,
       toolCallsThisTurn: [],
-      counterpartyName: 'David',
+      counterpartyName: 'Marcus',
     });
     expect(old.ungrounded).toBe(true);
     expect(old.ungrounded && old.recipient).toBe('Michael');
@@ -119,7 +119,7 @@ describe('THE DEFECT the owner caught — the old trigger was the model’s pros
 
   it('and it cannot tell that case apart from a real one — same verdict, opposite truth', () => {
     const real = detectUngroundedDeliveryClaim({
-      responseText: UNBACKED_SEND_CLAIM, toolCallsThisTurn: [], counterpartyName: 'David',
+      responseText: UNBACKED_SEND_CLAIM, toolCallsThisTurn: [], counterpartyName: 'Marcus',
     });
     expect(real.ungrounded).toBe(true);
     // Two replies, one true and one false, and the old trigger returns the identical shape.
@@ -210,7 +210,7 @@ describe('ARM B — the hole the old guard could not see: a send the door record
     const oldVerdict = detectUngroundedDeliveryClaim({
       responseText: UNBACKED_SEND_CLAIM,
       toolCallsThisTurn: [{ name: 'imessage_send' }],
-      counterpartyName: 'David',
+      counterpartyName: 'Marcus',
     });
     expect(oldVerdict.ungrounded).toBe(false); // ← the hole, measured
 

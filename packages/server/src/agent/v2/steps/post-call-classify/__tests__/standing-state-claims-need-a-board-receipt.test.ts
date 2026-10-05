@@ -78,7 +78,7 @@ const TURN = 4723; // the S5 turn
  * The S5 recap, verbatim from the round-9 catalog (§9.1, row 36c456f9, seq 61276) — markdown,
  * newlines and all, because that is exactly what reached `persistedContent`.
  */
-const S5_RECAP = `Here's the week, David — the bulk of it landed today:
+const S5_RECAP = `Here's the week, Marcus — the bulk of it landed today:
 
 **Today (Mon, Aug 10)**
 - **Denver trip prep** — your big one: packed-for-you carry-on checklist (rain shell included, showers forecast 82–85°F days / 60–61°F nights), flight logistics (Fri 6:30 AM out of SEA, be there by 4:30), plus a 5:30 AM reminder so you're not up before it.
@@ -95,7 +95,7 @@ Still on deck: parking pass renewal, and the fence quote once Bob sends his addr
 
 /** The same week, told without a single claim about what is still live. */
 const PAST_ONLY_RECAP =
-  "Here's the week, David. We finished the Denver trip prep — the carry-on checklist and the "
+  "Here's the week, Marcus. We finished the Denver trip prep — the carry-on checklist and the "
   + 'departure brief — tidied three uploads folders and cleared 11 junk files with your sign-off, '
   + 'and answered the Mariners, inbox, commute-cost and Labor Day flight questions. The cheapest '
   + 'direct SEA-Chicago fare came back at $297 and nothing was booked.';
@@ -192,7 +192,7 @@ describe('T36: a reply that asserts standing state without reading the board is 
     // The FIRST standing-state claim in the recap, which is not its first sentence: a 200-char
     // slice of a 1,100-char recap would have quoted the greeting back and named nothing.
     expect(text).toContain('schedule intact for tomorrow');
-    expect(text).not.toContain("Here's the week, David");
+    expect(text).not.toContain("Here's the week, Marcus");
   });
 
   it('each of the three S5 claim shapes fires on its own', () => {

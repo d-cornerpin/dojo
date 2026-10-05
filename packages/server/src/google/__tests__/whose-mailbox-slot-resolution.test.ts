@@ -15,8 +15,8 @@
 //     go configure something.
 //
 // Measured on the dev box before the fix: four connected accounts, one per
-// slot per provider (agent kbrns66@gmail.com / kbrns6@outlook.com, user
-// dcliff9@gmail.com / dcliff9@live.com). Every slot holds exactly one account,
+// slot per provider (agent agent@northwind.example / agent@northwind-mail.example, user
+// owner@northwind.example / owner@northwind-mail.example). Every slot holds exactly one account,
 // so the pre-existing "label it when the slot is ambiguous" rule never fired
 // and no read ever named its mailbox.
 // ════════════════════════════════════════════════════════════════════════════
@@ -66,16 +66,16 @@ beforeEach(() => { rows = []; });
 
 describe('the slot is decided by the tool name, not by the account table', () => {
   it('the agent slot resolves to the AGENT account even when a user account exists', () => {
-    seed([G('agent', 'agent', 'kbrns66@gmail.com'), G('user', 'user', 'dcliff9@gmail.com')]);
+    seed([G('agent', 'agent', 'agent@northwind.example'), G('user', 'user', 'owner@northwind.example')]);
     const agent = resolveGoogleAccountForRead('agent');
     const user = resolveGoogleAccountForRead('user');
-    expect('error' in agent ? agent.error : agent.account.email).toBe('kbrns66@gmail.com');
-    expect('error' in user ? user.error : user.account.email).toBe('dcliff9@gmail.com');
+    expect('error' in agent ? agent.error : agent.account.email).toBe('agent@northwind.example');
+    expect('error' in user ? user.error : user.account.email).toBe('owner@northwind.example');
   });
 
   it('`account` cannot reach across into the other slot', () => {
-    seed([G('agent', 'agent', 'kbrns66@gmail.com'), G('user', 'user', 'dcliff9@gmail.com')]);
-    const crossed = resolveGoogleAccountForRead('agent', 'dcliff9@gmail.com');
+    seed([G('agent', 'agent', 'agent@northwind.example'), G('user', 'user', 'owner@northwind.example')]);
+    const crossed = resolveGoogleAccountForRead('agent', 'owner@northwind.example');
     expect('error' in crossed).toBe(true);
     if ('error' in crossed) expect(crossed.error).toMatch(/No connected agent Google account matches/);
   });
@@ -83,7 +83,7 @@ describe('the slot is decided by the tool name, not by the account table', () =>
 
 describe('an empty slot refuses, and the refusal points at the slot that is connected', () => {
   it('THE RED: agent slot empty, user slot connected → the refusal names the user slot', () => {
-    seed([G('user', 'user', 'dcliff9@gmail.com')]);
+    seed([G('user', 'user', 'owner@northwind.example')]);
     const out = resolveGoogleAccountForTool('agent');
     expect('error' in out).toBe(true);
     if (!('error' in out)) throw new Error('unreachable');
@@ -93,7 +93,7 @@ describe('an empty slot refuses, and the refusal points at the slot that is conn
   });
 
   it('user slot empty, agent slot connected → the refusal names the unprefixed tools', () => {
-    seed([G('agent', 'agent', 'kbrns66@gmail.com')]);
+    seed([G('agent', 'agent', 'agent@northwind.example')]);
     const out = resolveGoogleAccountForTool('user');
     expect('error' in out).toBe(true);
     if (!('error' in out)) throw new Error('unreachable');

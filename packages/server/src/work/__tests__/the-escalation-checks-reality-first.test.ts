@@ -161,7 +161,7 @@ describe('T12 (3): the nudge speaks per OR2 and survives the 400-char events gis
   const nudge = (): string => ownerVerdictNudgeText({
     taskId: '77cba094-e823-4c22-88d4-bea9645b3191',
     title: 'Synthesize the Squarespace and WordPress research into one rundown',
-    status: 'in_progress', agentName: 'HarnessBot', ownerName: 'David', boundMin: 5,
+    status: 'in_progress', agentName: 'HarnessBot', ownerName: 'Marcus', boundMin: 5,
   });
 
   it('it fits the events lane gist WHOLE — the cap is not touched, the copy is', () => {

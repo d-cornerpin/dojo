@@ -154,7 +154,7 @@ describe('§2 the board-read result states the commitment position', () => {
   });
 
   it('with live commitments it states the COUNT and points at the one place they are listed', () => {
-    seedCommitment({ id: 'cmt:bbbbbbbbbbbb', title: 'Send David the venue shortlist', state: 'open' });
+    seedCommitment({ id: 'cmt:bbbbbbbbbbbb', title: 'Send Marcus the venue shortlist', state: 'open' });
     seedCommitment({ id: 'cmt:cccccccccccc', title: 'Email the fence estimate', state: 'open' });
     const out = trackerListActive(AGENT, {});
     expect(out).toMatch(/2 open commitments/);
