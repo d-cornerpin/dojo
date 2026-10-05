@@ -44,9 +44,8 @@ export type TurnExitReason =
  * the model's own disposition (`answered`, `handoff`) or the quarantine value (`unknown`).
  *
  * `brake` and `identical_call` are absent BECAUSE THEY ARE NOT LATCHED: both are derived in
- * the recorder from the tool phase's own state (the brake flag, and the brake ledger's
- * refusal count), one statement from the facts they name, so a carrier for them would be a
- * second copy of something already true at the read point.
+ * the recorder from the tool phase's own state — the brake flag, and the brake ledger's
+ * refusal count — so a carrier for them would be a second copy of a fact already true there.
  */
 export type EngineCutReason = Extract<TurnExitReason,
   'stop' | 'preempt' | 'abort' | 'terminated' | 'budget' | 'provider_error' | 'stream_idle'>;
@@ -254,14 +253,13 @@ export function bumpEffectfulCalls(agentId: string, turnNumber: number, by = 1):
  * quarantine value. Naming a cause we did not observe is the failure this project keeps
  * finding, and that refusal is unchanged.
  *
- * ── t93: WHY IT NOW TAKES THE REASON, AND WHY THAT IS NOT A WEAKENING ────────────────────
- * This runs on the `catch` arm, ~40 statements AHEAD of the `finally` arm's `finalizeTurn`,
- * and every statement here carries `AND ended_at IS NULL` — so on the injury path THIS write
- * wins and the recorder's own derivation is a no-op. A turn killed by the stream watchdog or
- * by a 402 therefore recorded `unknown` even once the engine knew better. The caller passes
- * what `engine-exit.ts` OBSERVED (`state.engineCutExit`), never a guess: the classifier
- * returns null for an error it cannot place, the default stands, and `unknown` keeps meaning
- * exactly what its paragraph above says.
+ * t93: WHY IT NOW TAKES THE REASON, AND WHY THAT IS NOT A WEAKENING. This runs on the `catch`
+ * arm, ~40 statements AHEAD of the `finally` arm's `finalizeTurn`, and both statements carry
+ * `AND ended_at IS NULL` — so on the injury path THIS write wins and the recorder's derivation
+ * is a no-op. A turn killed by the stream watchdog or by a 402 therefore recorded `unknown`
+ * even once the engine knew better. The caller passes what `engine-exit.ts` OBSERVED
+ * (`state.engineCutExit`), never a guess: the classifier answers null for an error it cannot
+ * place, the default stands, and `unknown` keeps meaning what the paragraph above says.
  */
 export function markTurnDied(
   agentId: string, turnNumber: number, reason: TurnExitReason = 'unknown',
@@ -278,30 +276,25 @@ export function markTurnDied(
  * THE REAPER'S WRITE — t93. Close every still-open turn of a run the engine has just declared
  * dead, as `terminated`.
  *
- * ── THE ZERO THIS FILLS, AND IT IS A POPULATION, NOT A THEORY ───────────────────────────
- * `turns` rows are opened at pickup and closed in the turn's `finally`. A process killed
- * mid-turn runs no `finally`, so the row stays open for ever: `work/occurrences.ts` measured
- * 22 unended rows on one agent and 279 across seven on a lived-in box, "every one of them a
- * turn some crash or restart never closed", and had to narrow a live-turn guard to the
- * occurrence because the per-agent question is permanently true. `terminated` is the word the
- * enum reserves for exactly that and nothing wrote it once in 10,934 turns.
+ * THE ZERO THIS FILLS IS A POPULATION, NOT A THEORY. A process killed mid-turn runs no
+ * `finally`, so its row stays open for ever: `work/occurrences.ts` measured 22 unended rows on
+ * one agent and 279 across seven, "every one of them a turn some crash or restart never
+ * closed", and had to narrow a live-turn guard to the occurrence because the per-agent
+ * question is permanently true on a lived-in box. `terminated` is the enum's word for exactly
+ * this and nothing wrote it once in 10,934 turns.
  *
- * ── WHY THE REAPER AND NOT BOOT ──────────────────────────────────────────────────────────
- * The reaper is the component that already DECIDES a run is dead, on evidence this module has
- * no access to: a `working` row stale past the 75-minute cliff AND no live entry in this
- * process's `activeRuns`. Closing the rows anywhere else would mean re-deriving that verdict
- * beside it, which is the duplicate-mechanism disease. It is scoped to ONE agent for the same
- * reason `markTurnDied` is scoped to one turn: a sweep over the table would close turns
- * belonging to runs nobody has judged.
+ * THE REAPER AND NOT BOOT, because the reaper already DECIDES a run is dead on evidence this
+ * module cannot see: a `working` row stale past the 75-minute cliff AND no live entry in
+ * `activeRuns`. Re-deriving that verdict elsewhere is the duplicate-mechanism disease. Scoped
+ * to ONE agent for the reason `markTurnDied` is scoped to one turn — a sweep over the table
+ * would close turns belonging to runs nobody has judged.
  *
- * RESIDUAL, STATED: if such a run is not dead but catatonic and later finalizes, its own
- * `finalizeTurn` finds `ended_at` already set and writes nothing — the same precedence the
- * injury path has always had. The reaper's verdict is the one that fires at 75 minutes of
- * missing heartbeats, so that is the direction worth being wrong in: a row that says
- * `terminated` is readable, and an open row is invisible for ever.
+ * RESIDUAL, STATED: a run that is catatonic rather than dead and later finalizes finds
+ * `ended_at` already set and writes nothing — the same precedence the injury path has always
+ * had. That is the direction worth being wrong in: a row saying `terminated` is readable, an
+ * open row is invisible for ever.
  *
- * @returns how many rows were closed — the reaper logs it, so a sweep that closed nothing and
- *          a sweep that closed nine are distinguishable in the record.
+ * @returns how many rows were closed, so the reaper's log distinguishes nothing from nine.
  */
 export function markTurnsTerminated(agentId: string): number {
   try {
