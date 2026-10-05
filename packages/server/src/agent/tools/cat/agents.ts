@@ -32,9 +32,10 @@
 import { getDb } from '../../../db/connection.js';
 import { broadcast } from '../../../gateway/ws.js';
 import { writeAgentStatus } from '../../agent-status.js';
-import { isPrimaryAgent } from '../../../config/platform.js';
+import { isPrimaryAgent, isHealerAgent } from '../../../config/platform.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../../../prompt/agent-prompt-surface.js';
-import { renameAgent } from '../../../prompt/agent-rename.js';import { mismatchWarning } from '../assignment-capability.js';   // t90 D3, second statement on this line: the file is AT its 1538 pin
+import { renameAgent } from '../../../prompt/agent-rename.js';
+import { mismatchWarning } from '../assignment-capability.js';
 import { writeToolReceipt } from '../../../receipts/store.js';
 import { taskScope, projectScope, STATE_TO_STATUS_SQL } from '../../../work/tracker-view.js';
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../../../work/tracker-store.js';
@@ -52,7 +53,6 @@ import { turnContext } from '../../turn-context.js';
 import { decideApproval } from '../../destructive-gate.js';
 import { findInboundAssignByThread, recordA2AReply } from '../../a2a-replies.js';
 import { getAgentPermissions } from '../../permissions.js';
-import { isHealerAgent } from '../../../config/platform.js';
 import { isNoWakeIntent, deliverA2AMessage, deliverA2AMessage as deliverBc } from '../../a2a-transport.js';
 import { onAgentRecovered } from '../../../healer/injury-recovery.js';
 import { resolveTaskId, getTask } from '../../../tracker/schema.js';
