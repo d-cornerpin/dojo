@@ -2,6 +2,76 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/server/src/agent/v2/turn-record.ts",
+      "from": 250,
+      "to": 312,
+      "by": "t93 exit reasons — eight words that had never been written get their writers",
+      "why": "The table's one write module gains the reaper's writer. 250 -> 312 (+62: ~20 code, ~42 comment). TWO ADDITIONS. (1) `markTurnsTerminated` — a process killed mid-turn runs no `finally`, so its `turns` row stays open for ever; `work/occurrences.ts` measured 22 unended rows on one agent and 279 across seven and had to narrow a live-turn guard because of it, and `terminated` is the enum's word for exactly that with 0 rows in 10,934 turns. It lives HERE and not in the reaper because this module is the only one permitted to write `UPDATE turns`, and a census clause now asserts the reaper carries no SQL of its own. (2) `EngineCutReason`, the typed subset a turn site may latch, declared beside the vocabulary it narrows so a site cannot latch a model disposition. REFUSED: a new module for the reaper's statement — it would be a second writer of the one table this file exists to own. The prose was tightened by 7 lines in its own product commit before this raise, which is what kept the growth detector's 25% rule green at 312 of 312. From 312 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/state.ts",
+      "from": 730,
+      "to": 769,
+      "by": "t93 exit reasons — eight words that had never been written get their writers",
+      "why": "730 -> 769 (+39: 2 code, 37 comment). Two fields and one type-only import. `engineCutExit` is the ONE carrier for all seven engine/owner cuts — the alternative was seven booleans and a precedence nobody wrote down — and `identicalCallRefusedThisTurn` is the identical-call brake's lower rung. Both sit beside `recallLaneReachedModelThisTurn`, whose own docstring already argues the shape they reuse (one writer per site, one reader in teardown, no closure and no timer between). The comment ratio is this file's own convention: every field here carries the incident that put it there, and a field with no argument is how the ~20 scattered `let`s this object replaced got there in the first place. From 769 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts",
+      "from": 335,
+      "to": 353,
+      "by": "t93 exit reasons — eight words that had never been written get their writers",
+      "why": "335 -> 353 (+18: 3 code, 15 comment). Three latches: `budget` on the unattended-budget cap trip, `budget` on the 15-minute checkpoint continuation, `stop` on the arm that re-reads the fence after the compaction check. All three previously recorded `no_reply_intended` — the MODEL'S intent, for a turn the engine cut — and the ask ladder spent a rung on each. The comment on the checkpoint arm is the one that needed arguing: it is the same cause as the cap at a lower severity, and saying so is what stops the next reader splitting them. From 353 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/index.ts",
+      "from": 300,
+      "to": 317,
+      "by": "t93 exit reasons — eight words that had never been written get their writers",
+      "why": "300 -> 317 (+17: 3 code, 14 comment). The recovery arm classifies the throw and latches what it found. FOUR of the eight zeroes live on this arm (`stream_idle`, `abort`, `provider_error`, and a `stop` whose abort surfaced as an ordinary transport failure), and the comment earns its lines by stating the ORDER: it runs BEFORE `recoverFromError`, because `recordInjury` closes the row itself and a latch applied afterwards would be written to a state the row had stopped listening to. From 317 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/finalize-record.ts",
+      "from": 546,
+      "to": 562,
+      "by": "t93 exit reasons — eight words that had never been written get their writers",
+      "why": "The recorder reads the carrier. 546 -> 562 (+16: 2 code, 14 comment). Two arms on the exit-reason ternary. The comment is the PRECEDENCE, which is the part a reader cannot reconstruct from the code: `brake` keeps the top because d54cd1f's measured class pins that order and both words are engine-imposed anyway, so the settlement cannot tell them apart; the cut goes ABOVE `answerRow` because `turns.answered` records the reply separately — the exact pair the PHASE-2 column split exists to represent instead of flattening to one word; `identical_call` goes LAST because it is not the ending event. From 562 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/index.ts",
+      "from": 295,
+      "to": 309,
+      "by": "t93 exit reasons — eight words that had never been written get their writers",
+      "why": "295 -> 309 (+14: 3 code, 11 comment). The executor's stopped-mid-batch arm latches `stop`, and the identical-call brake's refusal count is read onto the state the recorder reads. The comment says why the read is HERE and not at the refusal site: the refusals are bumped inside the parallel `runOne` callbacks whose `state` reassignments clobber each other — the hazard this file already records for `sentToAgentThisTurn` a dozen lines further down. From 309 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1739,
+      "to": 1752,
+      "by": "t93 exit reasons — eight words that had never been written get their writers",
+      "why": "1739 -> 1752 (+13: 3 code, 10 comment). The reaper closes the turn rows a dead process abandoned. It has repaired the `agents` row since its first version and never the `turns` row, and the reaper is the component that already holds the verdict (stale past the 75-minute cliff AND not live in `activeRuns`), so re-deriving that anywhere else would be the duplicate-mechanism disease. The write itself is a call into `turn-record.ts`: a census clause asserts this file carries no `UPDATE turns` of its own. From 1752 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/recovery.ts",
+      "from": 893,
+      "to": 901,
+      "by": "t93 exit reasons — eight words that had never been written get their writers",
+      "why": "893 -> 901 (+8: 1 code, 7 comment). `markTurnDied` is handed the reason the recovery arm OBSERVED. That statement closes the row ~40 statements before the recorder's own, so on the injury path its word is the one that lands — and it was `unknown` even for a stream-watchdog cut or a non-retryable provider failure the engine had already classified. The comment states the refusal that keeps `unknown` honest: the classifier answers null for anything it cannot place, so a bug in this engine still records `unknown`. From 901 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/model-call.ts",
+      "from": 435,
+      "to": 443,
+      "by": "t93 exit reasons — eight words that had never been written get their writers",
+      "why": "435 -> 443 (+8: 0 code, 8 comment — both latches are inline in existing expressions). The turn's stop abandon and its preempt abandon now carry their reason. This is the BACKLOG item's headline shape: an abandon still runs the `finally`, so the recorder DID see these turns — it simply had no fact to see and derived `no_reply_intended` from the absence of a reply, which is what spent the rung. From 443 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/index.ts",
+      "from": 182,
+      "to": 185,
+      "by": "t93 exit reasons — eight words that had never been written get their writers",
+      "why": "182 -> 185 (+3: 0 code, 3 comment — both latches are inline). The gate's stop and preempt arms carry their reason. The smallest raise in the set and the closest to the item's own sentence: this is the checkpoint an owner's stop most often lands on, and it is the one that recorded the press as the model choosing silence. From 185 it may only shrink."
+    },
+    {
       "path": "packages/shared/src/access.ts",
       "from": 301,
       "to": 338,
@@ -6122,6 +6192,8 @@
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 400,
     "packages/server/src/agent/runtime.ts": 1739,
+    "packages/server/src/agent/provider-error.ts": 390,
+    "packages/server/src/agent/runtime.ts": 1752,
     "packages/server/src/agent/shared-state.ts": 415,
     "packages/server/src/config/schema.ts": 300,
     "packages/server/src/credentials/store.ts": 412,
@@ -6162,8 +6234,8 @@
     "packages/server/src/agent/v2/receipt.ts": 546,
     "packages/server/src/agent/v2/recorded-commitment.ts": 209,
     "packages/server/src/agent/v2/refused-delivery.ts": 111,
-    "packages/server/src/agent/v2/recovery.ts": 893,
-    "packages/server/src/agent/v2/state.ts": 730,
+    "packages/server/src/agent/v2/recovery.ts": 901,
+    "packages/server/src/agent/v2/state.ts": 769,
     "packages/server/src/agent/v2/steer-queue.ts": 341,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
     "packages/server/src/agent/v2/steps/assemble/index.ts": 388,
@@ -6171,12 +6243,12 @@
     "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 125,
     "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 233,
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 246,
-    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 435,
+    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 443,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 407,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 165,
     "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 266,
-    "packages/server/src/agent/v2/steps/execute/index.ts": 295,
+    "packages/server/src/agent/v2/steps/execute/index.ts": 309,
     "packages/server/src/agent/v2/steps/execute/post-result.ts": 351,
     "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 404,
     "packages/server/src/agent/v2/steps/execute/result-notes.ts": 152,
@@ -6214,9 +6286,9 @@
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 235,
     "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 197,
-    "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 182,
+    "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 185,
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 411,
-    "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 335,
+    "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 353,
     "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 238,
     "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts": 293,
     "packages/server/src/agent/v2/steps/preflight/inbound-and-abort.ts": 202,
@@ -6230,9 +6302,9 @@
     "packages/server/src/agent/v2/steps/step-outcome.ts": 140,
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
     "packages/server/src/agent/v2/steps/teardown/conversation-tagging.ts": 70,
-    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 546,
-    "packages/server/src/agent/v2/steps/teardown/index.ts": 300,
-    "packages/server/src/agent/v2/turn-record.ts": 250,
+    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 562,
+    "packages/server/src/agent/v2/steps/teardown/index.ts": 317,
+    "packages/server/src/agent/v2/turn-record.ts": 312,
     "packages/server/src/costs/tracker.ts": 563,
     "packages/server/src/costs/prefill-calibration.ts": 309,
     "packages/server/src/costs/ledger-calibration.ts": 311,
