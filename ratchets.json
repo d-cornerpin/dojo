@@ -6660,7 +6660,7 @@
     "packages/server/src/tools/unified-read.ts": 761,
     "packages/server/src/tools/work-verbs.ts": 399,
     "packages/server/src/tracker/delivery-evidence.ts": 320,
-    "packages/server/src/tracker/pm-agent.ts": 2944,
+    "packages/server/src/tracker/pm-agent.ts": 2963,
     "packages/server/src/tracker/schema.ts": 1105,
     "packages/server/src/tracker/task-stamps.ts": 296,
     "packages/server/src/tracker/tools.ts": 5067,
