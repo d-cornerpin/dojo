@@ -2,6 +2,13 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/server/src/agent/agent-status.ts",
+      "from": 233,
+      "to": 268,
+      "by": "t93 fix round 1 (review I-1) — the boot sweep repairs the turn row, not only the agent row",
+      "why": "233 -> 268 (+35: 7 code, 28 comment). THE DEFECT I-1 MEASURED: `terminated` was written only by the periodic reaper, and `index.ts` runs that sweep BEFORE this function while the reaper only reaps rows stale past the 75-minute cliff — so a process killed mid-turn and restarted inside the hour (the ordinary restart, the update, the crash-loop) reached NO writer: this function set the agent row `idle` and the turn row stayed `ended_at IS NULL`, and once a row reads `idle` the periodic reaper never visits it again. This docstring's own pre-existing first sentence is the argument for the site — \"a process that died mid-turn leaves rows reading working that no run owns. Restarting is the only thing that can know that\" — and it repaired `agents` and not `turns`. The 7 code lines read the crashed ids and write through `agent/v2/turn-record.ts`, which stays the only module that writes that table; the shape is `terminateDuplicateAgentsByName`'s, twenty lines above, with its reason verbatim (\"the statement count stays at one owner\"). THE 28 ARE THE TWO THINGS A READER CANNOT RECONSTRUCT: which case each of the two callers covers (boot the common crash, reaper the >75-minute-stale case), and that THE READ MUST PRECEDE THE STATUS UPDATE — afterwards nothing reads `working`, the loop runs zero times, and a sweep that closed nothing is indistinguishable from a boot with nothing to close. Both are clauses as well as comments (`agent/__tests__/a-crashed-run-does-not-leave-its-turn-open.test.ts`). REFUSED: a second `UPDATE turns` statement here — two writers of one table is the shape this module's own census exists to refuse. REFUSED: the brief's second function in `turn-record.ts` — it put that file 41 lines past the growth detector's 25% rule, whose only other escape is re-recording a baseline shared with six other lanes. Growth: 268 against a 291 limit. From 268 this file may only shrink."
+    },
+    {
       "path": "packages/server/src/agent/v2/turn-record.ts",
       "from": 250,
       "to": 312,
@@ -6174,7 +6181,7 @@
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 402,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
     "packages/server/src/agent/a2a-transport.ts": 2682,
-    "packages/server/src/agent/agent-status.ts": 233,
+    "packages/server/src/agent/agent-status.ts": 268,
     "packages/server/src/agent/brokers/deny.ts": 385,
     "packages/server/src/agent/brokers/grants.ts": 344,
     "packages/server/src/agent/brokers/proc.ts": 445,
