@@ -361,6 +361,15 @@ const refusal = (excesses: string[]): string =>
  * back to the floor rather than to the granter's own holdings. Omitting a field
  * can never be a way to inherit access.
  *
+ * `base` IS THAT DEFAULT, AND IT IS A PARAMETER BECAUSE ONE DOOR'S DEFAULT MOVED
+ * (owner ruling 2026-10-05 #4). Every AGENT-driven spawn still starts at ruling
+ * 2's floor — that is the argument default, so no call site changed meaning. The
+ * dashboard CREATE route passes `DASHBOARD_CREATE_DEFAULT_GRANTS`
+ * (`access/create-defaults.ts`), the floor plus Conversation Recall, because the
+ * owner pressing a button is not an agent handing out its own access. Whatever
+ * is passed is CLAMPED to the granter first, exactly as the floor is, so a wider
+ * base can never widen what the granter actually holds.
+ *
  * `toolsPolicy` is `spawn_agent`'s PRE-A2 `tools:{allow,deny}` argument, folded
  * in verbatim and deliberately NOT subject to the no-escalation rule. A1 made
  * the grants object the authority for what the `tools_policy` column used to
@@ -373,8 +382,9 @@ export function resolveSpawnGrants(
   granter: AccessGrants,
   granterIsPrimary: boolean,
   toolsPolicy?: { allow?: string[]; deny?: string[] } | null,
+  defaults: AccessGrants = MOST_RESTRICTIVE_GRANTS,
 ): GrantsResolution {
-  const base = clampGrantsTo(MOST_RESTRICTIVE_GRANTS, granter);
+  const base = clampGrantsTo(defaults, granter);
   let resolved = base;
   if (requested !== undefined && requested !== null) {
     const validated = validateGrants(requested);

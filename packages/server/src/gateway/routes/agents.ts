@@ -23,6 +23,10 @@ import { renameAgent } from '../../prompt/agent-rename.js';
 // UX-ACCESS A2: the owner-side half of the grant door — same resolver, same
 // schema, same merge as `spawn_agent` / `update_agent` use.
 import { resolveSpawnGrants, resolveUpdateGrants, grantsDelta } from '../../agent/access/authorize.js';
+// OWNER RULING 2026-10-05 #4: this door's DEFAULT is the floor plus Conversation Recall.
+// The module carries the ruling, why the shared floor did not move, and the recorded
+// decision NOT to backfill agents that already exist.
+import { DASHBOARD_CREATE_DEFAULT_GRANTS } from '../../agent/access/create-defaults.js';
 import { getAccessGrants } from '../../agent/access/read.js';
 import { writeGrants } from '../../agent/access/materialize.js';
 import { auditLog } from '../../agent/tools/util.js';
@@ -163,20 +167,28 @@ agentsRouter.post('/', async (c) => {
       return c.json({ ok: false, error: `Agent not created — ${scope.reason}` }, 400);
     }
 
-    // ── THE ACCESS GRANTS, BY THE SAME RULE THE TOOL USES (UX-ACCESS A2) ──
-    // Owner ruling 2 says ALL new agents, and this route creates one, so it gets
-    // the same most-restrictive default a spawn does — through the same resolver,
-    // so there is one answer to "what does a new agent start with" rather than
-    // two that drift. The ceiling is the primary's own grants for the same reason
-    // the manifest's is: the route is the owner acting, and the owner's agent is
-    // the ceiling. That also makes `granterIsPrimary` true here, which is what
-    // lets an owner switch a new agent's human-channel master on from the
-    // dashboard — the one thing a non-primary AGENT may never do.
+    // ── THE ACCESS GRANTS, THROUGH THE SAME RESOLVER, FROM THIS DOOR'S DEFAULT ──
+    // Owner ruling 2 says ALL new agents start at the most-restrictive object, and
+    // every AGENT-driven spawn still does. OWNER RULING #4 (2026-10-05) moved THIS
+    // door's default one field: a dashboard-created agent holds Conversation
+    // Recall, because the owner pressing Recruit is not an agent handing out its
+    // own access. Everything else in the floor is unchanged — no channels, no
+    // integrations, no credentials, no techniques.
+    //
+    // Still the same resolver, so there is one answer to "what does a new agent
+    // start with" rather than two that drift, and the base is CLAMPED to the
+    // ceiling below before anything merges over it. The ceiling is the primary's
+    // own grants for the same reason the manifest's is: the route is the owner
+    // acting, and the owner's agent is the ceiling. That also makes
+    // `granterIsPrimary` true here, which is what lets an owner switch a new
+    // agent's human-channel master on from the dashboard — the one thing a
+    // non-primary AGENT may never do.
     const grantScope = resolveSpawnGrants(
       body.grants,
       getAccessGrants(getPrimaryAgentId()),
       true,
       body.toolsPolicy,
+      DASHBOARD_CREATE_DEFAULT_GRANTS,
     );
     if (!grantScope.ok) {
       logger.warn('Dashboard agent creation refused invalid grants', { reason: grantScope.reason });
