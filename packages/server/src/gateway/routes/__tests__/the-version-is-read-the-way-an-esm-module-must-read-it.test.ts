@@ -258,4 +258,87 @@ describe('the sentinel cannot be mistaken for a version anywhere it travels', ()
     expect(field!.pattern!.test('0.0.0'), 'this is why a plausible-looking fallback was '
       + 'expensive — every mechanism above admits it').toBe(true);
   });
+
+  // ── F8: AND THE PATH ABOVE IS NOT THE PATH PRODUCTION TAKES ──
+  // (a) hands `issueLabelsFor` the sentinel directly. Production never does: `report/gather.ts`
+  // puts `getCurrentVersion()` into `platform.version`, the whitelist refuses a non-semver
+  // FIRST, and the STORED telemetry carries `UNRECOGNISED`. `reportVersion`/`issueLabelsFor`
+  // read the ROW's telemetry, so the value they actually meet is `'<unrecognised>'`. The
+  // outcome is identical — both are non-semver — which is why this was a wording defect and not
+  // a live one. But a clause asserting a travel path the code does not take is a clause the next
+  // reader builds on, so the real path gets its own arm: the SUBSTITUTED value, refused too.
+  it('F8: the value those two readers actually meet is the SUBSTITUTED one, refused as well', async () => {
+    const { issueLabelsFor, REPORT_ISSUE_LABELS, reportVersion } =
+      await import('../../../report/issue-body.js');
+    const { UNRECOGNISED } = await import('../../../report/telemetry-whitelist.js');
+
+    // The two strings are different, which is the whole point of this arm.
+    expect(UNRECOGNISED, 'the substituted value and the sentinel are the same string, so there '
+      + 'is no second path to pin').not.toBe(VERSION_UNREADABLE);
+
+    // THE REAL PATH, through a row's telemetry rather than the raw sentinel.
+    const rowWith = (version: string) => ({
+      telemetry: { report: { schema: 'dojo-telemetry-1' }, platform: { version } },
+    } as unknown as Parameters<typeof reportVersion>[0]);
+
+    expect(reportVersion(rowWith(UNRECOGNISED)), 'the substituted value was read back as a '
+      + 'version').toBeNull();
+    expect(issueLabelsFor(reportVersion(rowWith(UNRECOGNISED)) ?? ''), 'the platform would ask a '
+      + `public tracker for a label called v${UNRECOGNISED}`).toEqual([...REPORT_ISSUE_LABELS]);
+
+    // …and the positive control on the SAME path, so this is about the value and not about a
+    // reader that answers null for everything.
+    expect(reportVersion(rowWith('3.1.28'))).toBe('3.1.28');
+    expect(issueLabelsFor(reportVersion(rowWith('3.1.28')) ?? ''))
+      .toEqual([...REPORT_ISSUE_LABELS, 'v3.1.28']);
+  });
+});
+
+// ── 5. THE ORDERING PATH HAS ITS OWN MECHANISM NOW (fix round F7) ─────────────────────────
+//
+// §4 pins the three REPORT instruments. The doctrine paragraph read as though the version
+// authority AS A WHOLE failed closed on an unreadable version, and it did not: `parseVersion`
+// clamps non-numeric segments to 0 (FA-D7, for the preflight sort's sake), so
+// `parseVersion(VERSION_UNREADABLE)` is `{ base: [0], pre: null }` — byte-for-byte what
+// `'0.0.0'` produces. On the ordering path the sentinel therefore changed NOTHING, which is the
+// one property it exists to deny. Not a regression, and that is why it was a minor; but the gap
+// was unpinned, so an edit could turn the rollback door's accidental refusal into an acceptance.
+
+describe('a version this box cannot read is not ordered against real releases', () => {
+  it('F7: the sentinel is not orderable, and `0.0.0` — the old fallback — is', async () => {
+    const { versionIsOrderable, compareVersions } = await import('../update.js');
+
+    expect(versionIsOrderable(VERSION_UNREADABLE), 'the ordering path cannot tell an unreadable '
+      + 'version from a real one').toBe(false);
+    // THE CONTROL THAT IS THE WHOLE DEFECT: the clamp makes these two indistinguishable, so a
+    // predicate that answered `false` for both would prove nothing about the sentinel.
+    expect(versionIsOrderable('0.0.0'), 'the predicate refuses a real version').toBe(true);
+    expect(versionIsOrderable('3.1.28')).toBe(true);
+    expect(versionIsOrderable('3.1.28-preflight.4')).toBe(true);
+
+    // And the clamp really is still there — this clause is not quietly resting on a changed
+    // `parseVersion`. Both compare EQUAL, which is the measurement the review made.
+    expect(compareVersions(VERSION_UNREADABLE, '0.0.0'), 'the clamp is gone, so this section is '
+      + 'pinning a premise that no longer holds').toBe(0);
+  });
+
+  it('F7: the rollback door REFUSES rather than guessing a direction it cannot know', async () => {
+    const { authorizeRollbackTarget } = await import('../update.js');
+
+    const refused = authorizeRollbackTarget('v3.1.20', VERSION_UNREADABLE);
+    expect(refused.ok, 'the rollback door accepted a target it could not order against the '
+      + 'installed version').toBe(false);
+    // The refusal names the cause, because "is not earlier than the installed <unreadable>" is
+    // the sentence this arm exists to replace: it reads as a comparison that happened.
+    expect(!refused.ok && refused.error, 'the refusal does not say the box cannot read its own '
+      + 'version').toMatch(/cannot read its own installed version/);
+    expect(!refused.ok && refused.error).toContain('refused rather than guessed');
+
+    // THE POSITIVE CONTROL. A legitimate rollback is the recovery path and must still work.
+    const allowed = authorizeRollbackTarget('v3.1.20', '3.1.28');
+    expect(allowed.ok, 'a genuine rollback was refused').toBe(true);
+    expect(allowed.ok && allowed.targetVersion).toBe('3.1.20');
+    // …and a forward "rollback" is still refused, on the ordinary arm.
+    expect(authorizeRollbackTarget('v3.1.30', '3.1.28').ok).toBe(false);
+  });
 });

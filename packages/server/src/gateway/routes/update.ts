@@ -203,6 +203,20 @@ let cleanupState: CleanupState = {
  * telemetry whitelist's `platform.version` admits only a bounded semver. A plausible-looking
  * lie defeats every instrument built to catch an honest absence; a sentinel re-arms all three.
  *
+ * ── WHAT IT DOES AND DOES NOT REACH (corrected, F7/F8) ──
+ * THREE REPORT INSTRUMENTS — not the version authority as a whole, which is how "re-arms all
+ * three" above used to read. `parseVersion` clamps non-numeric segments to 0, so on the ORDERING
+ * path this sentinel was indistinguishable from `'0.0.0'`: `applyUpdate`'s guard proceeded,
+ * `isCurrent` matched nothing, and the rollback door refused only because `0.0.0` is lower than
+ * every real tag. `versionIsOrderable` below is that path's own mechanism; each door now decides
+ * what "unknown" means for itself, on the record.
+ *
+ * AND THOSE THREE SEE A DIFFERENT STRING. The whitelist substitutes first: `report/gather.ts`
+ * puts `getCurrentVersion()` into `platform.version`, the whitelist refuses a non-semver, and
+ * the STORED telemetry carries `'<unrecognised>'`. `reportVersion`/`issueLabelsFor` read the
+ * row's telemetry, so they meet that, never this literal. Both non-semver, identical outcome —
+ * but do not expect to find this string at those call sites, because it never gets there.
+ *
  * Angle-bracketed to match `telemetry-whitelist.ts`'s `<absent>`/`<unrecognised>`, and free of
  * a `-` deliberately: `parseVersion` below reads the first `-` as a pre-release suffix, and a
  * sentinel that parses as "0 with a pre-release" is one pretending to be ordered.
@@ -340,6 +354,24 @@ export function compareVersions(a: string, b: string): number {
 }
 
 /**
+ * CAN THIS MODULE ORDER THIS VERSION AT ALL? (F7.)
+ *
+ * The clamp above is right for SORTING release tags — FA-D7's reason is that `NaN` scrambles the
+ * preflight sort and slips past the downgrade guard, since `NaN <= 0` is false. It is wrong as an
+ * answer to "which of these is newer", because it makes an unreadable version INDISTINGUISHABLE
+ * FROM `0.0.0`: `parseVersion(VERSION_UNREADABLE)` is `{ base: [0], pre: null }`, byte-for-byte
+ * what `'0.0.0'` produces. So the sentinel built because a plausible-looking lie defeats every
+ * honest-absence instrument became one itself, on the single path with no mechanism of its own.
+ *
+ * This is that mechanism. It asks what `compareVersions` cannot answer from a number — which has
+ * no room for "I do not know" — so each caller decides what unknown MEANS for its own door
+ * instead of inheriting `0.0.0` by accident.
+ */
+export function versionIsOrderable(v: string): boolean {
+  return isValidVersionTag(v);
+}
+
+/**
  * THE ROLLBACK ORDERING CHECK (PHASE-5 T6B). `/rollback` took the caller's
  * `tag` and interpolated it straight into a GitHub API URL — so a path-shaped
  * tag selected a DIFFERENT artifact, which was then rsynced with `--delete`
@@ -373,6 +405,20 @@ export function authorizeRollbackTarget(
     return { ok: false, error: `"${trimmed}" is not a version tag (expected e.g. "v3.1.16").` };
   }
   const targetVersion = trimmed.replace(/^v/, '');
+  // FAIL CLOSED ON AN UNREADABLE INSTALLED VERSION (F7). This door's whole question — is the
+  // target EARLIER than what is installed — has no answer on a box whose manifest could not be
+  // read. The clamp supplied one anyway: the sentinel parses to `0.0.0`, so every real tag
+  // compared `>= 0` and the door refused — the right outcome by accident, which an edit to
+  // `parseVersion` would silently flip. Refusing is also safe: the watchdog's AUTOMATIC rollback
+  // shells `rollback.sh` against a local backup and never comes through here.
+  if (!versionIsOrderable(currentVersion)) {
+    return {
+      ok: false,
+      error: `This box cannot read its own installed version (it reports ${currentVersion}), so it `
+        + 'cannot tell whether ' + targetVersion + ' would be a step backward. Rollback is refused '
+        + 'rather than guessed. Reinstall the platform, or use Check for updates to move forward.',
+    };
+  }
   if (compareVersions(targetVersion, currentVersion) >= 0) {
     return {
       ok: false,
@@ -695,7 +741,17 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
     }
 
     const latestVersion = release.tag_name.replace(/^v/, '');
-    if (compareVersions(latestVersion, currentVersion) <= 0) {
+    // "ALREADY UP TO DATE" IS A CLAIM, AND AN UNREADABLE VERSION CANNOT SUPPORT IT (F7). This
+    // is the one door where proceeding is the SAFE answer to an unknown: a box that cannot read
+    // its own manifest is a broken install, and the channel's latest is the repair. Same outcome
+    // the clamp produced, now a branch with a reason, a log line and a clause. What must never
+    // happen is the other arm — "Already up to date" about a version nobody could read.
+    if (!versionIsOrderable(currentVersion)) {
+      logger.warn('installing over a box whose own version could not be read', {
+        currentVersion, latestVersion, channel: ch,
+        why: 'the ordering question has no answer here, and a forward install is the repair',
+      });
+    } else if (compareVersions(latestVersion, currentVersion) <= 0) {
       return { ok: true, message: 'Already up to date', newVersion: currentVersion };
     }
 
