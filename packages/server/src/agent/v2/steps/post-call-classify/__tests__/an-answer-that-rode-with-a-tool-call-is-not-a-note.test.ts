@@ -374,6 +374,64 @@ describe('an ordinary waiting-human turn keeps the 2026-07-23 ruling, byte for b
       surfacedReplyThisTurn: false, startAckRepliedNow: () => false,
     })).toBe(false);
   });
+
+  // ── t113 E (BACKLOG line 35): THE DOUBLE COPY, MEASURED AND PINNED WHERE IT HAPPENS ──
+  //
+  // The line reads: "the seam writes the note AND deferred-recovery later delivers the same
+  // text — one answer stored twice; untouched because fixing it touches the five control
+  // clauses." That premise is CONFIRMED at this head, and this clause is the measurement, so
+  // the next lane does not have to rediscover it — and so that nobody closes it by accident.
+  //
+  // WHAT IS TRUE, driven rather than read. After this seam, on an ordinary waiting-human turn:
+  //   · ONE `[working-note]` system row carries the text (the 2026-07-23 ruling, above)
+  //   · the words are STILL REMEMBERED in `deferredUserReplyWithTools`
+  //   · nothing has set `lastAssistantTextForIM`
+  // and `finalize/deferred-recovery.ts`'s entire guard is
+  // `if (turnCtx.deferredUserReplyWithTools && !state.lastAssistantTextForIM)`. So on this turn
+  // class the recovery WILL fire and insert a second row — role `assistant`, a new id, the same
+  // characters — and broadcast a fresh `chat:message` bubble beside the dimmed note. On a
+  // ROUTED-channel turn the note is marked internal and hidden outside wordy mode, so only the
+  // bubble shows; on a DASHBOARD turn the note is visible-dimmed, so the person sees the same
+  // sentence twice.
+  //
+  // WHY IT IS NOT FIXED HERE, and this is a G10/G14 boundary rather than a shrug. The engine
+  // already states the governing principle three times in `terminal-text.ts` — "the text went
+  // out WHOLE, so a note beside it would be the second copy this task exists to remove" — and
+  // acts on it for all THREE promoted cases (`deliveredAsStartLine`,
+  // `deliveredAsCompiledAnswer`, `deliveredAsAnswerToLiveAsk`), each of which skips the note.
+  // The deferred case cannot: at this seam the turn has not yet decided whether a proper
+  // tool-less reply will land, so whether this text ends up an ANSWER or a NOTE is not yet
+  // knowable. Resolving it needs one of exactly two mechanisms, and both are the owner's:
+  //   1. do not write the note here, and write it from finalize only if recovery did not fire —
+  //      which moves the note off this seam and reds the five reviewed control clauses that
+  //      pin it here, i.e. it reopens owner ruling 2026-07-23;
+  //   2. write it here as now, and RETIRE it when recovery promotes the same text — which is
+  //      literally one of the two candidate mechanisms BACKLOG already records as needing the
+  //      owner's word ("becoming the first runtime writer of `messages.retired_at`" against "a
+  //      Chat.tsx `promoted:true` mirror").
+  // Neither is a worker's call (G14), so t113 measured it, pinned it, and handed it back.
+  it('⚠ OPEN DEFECT, PINNED: this seam leaves the finalize recovery able to deliver the same text again', async () => {
+    const turnCtx = turnCtxFor();
+    await runTerminalText(state, ctxFor(turnCtx, { hasUnansweredUser: true }), scratchFor());
+
+    // the note exists — the ruling's half
+    expect(notesWritten(), 'one demoted note carries the text').toHaveLength(1);
+    expect(notesWritten()[0]).toContain(THE_STATUS);
+
+    // …AND every term of `deferred-recovery.ts`'s guard is satisfied, which is the defect.
+    expect(turnCtx.deferredUserReplyWithTools,
+      'the words survive this seam, so recovery can still speak them').toBe(THE_STATUS);
+    expect(state.lastAssistantTextForIM,
+      'and nothing has claimed a reply, so recovery is not stood down').toBeFalsy();
+
+    // Stated as the implication, so this clause says what WILL happen rather than only what is:
+    const recoveryWillFire = Boolean(turnCtx.deferredUserReplyWithTools) && !state.lastAssistantTextForIM;
+    expect(recoveryWillFire,
+      'BACKLOG line 35 is still open: the same text is about to be stored a second time as an '
+      + 'assistant row. When it is closed — by ruling, one of the two mechanisms in the comment '
+      + 'above — this expectation is the one to invert, and the five control clauses beside it '
+      + 'are the ones to re-state honestly.').toBe(true);
+  });
 });
 
 // ── THE PREDICATE'S OWN TABLE, so each clause of it is named once ──────────────────────
