@@ -4,7 +4,7 @@
 // ════════════════════════════════════════
 
 import { Hono } from 'hono';
-import { execSync, exec } from 'node:child_process';
+import { execSync, exec, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
@@ -13,6 +13,8 @@ import { createLogger } from '../../logger.js';
 import { deleteAllForAgent } from '../../memory/message-store.js';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
 import { homeDir } from '../../home.js';
+import { idleStreamDeadline } from '../../services/idle-stream-deadline.js';
+import { attachIdleBound } from '../../child-idle-bound.js';
 
 const logger = createLogger('setup-deps');
 
@@ -115,9 +117,9 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
         // Use --cask to install the full macOS app (background service, PATH setup, etc.)
         // Falls back to formula if cask fails (e.g., headless server)
         try {
-          execSync('brew install --cask ollama', { encoding: 'utf-8', timeout: 180000, env: execEnv });
+          await installIdleBounded('brew install --cask ollama');
         } catch {
-          execSync('brew install ollama', { encoding: 'utf-8', timeout: 120000, env: execEnv });
+          await installIdleBounded('brew install ollama');
         }
         return c.json({ ok: true, data: { installed: true } });
       }
@@ -136,18 +138,18 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
       }
       case 'cliclick': {
         if (!cmdExists('brew')) return c.json({ ok: false, error: 'Homebrew required' }, 400);
-        execSync('brew install cliclick', { encoding: 'utf-8', timeout: 60000, env: execEnv });
+        await installIdleBounded('brew install cliclick');
         return c.json({ ok: true, data: { installed: true } });
       }
       case 'playwright': {
-        execSync('npx playwright install chromium', { encoding: 'utf-8', timeout: 180000, cwd: process.cwd(), env: execEnv });
+        await installIdleBounded('npx playwright install chromium', { cwd: process.cwd() });
         return c.json({ ok: true, data: { installed: true } });
       }
       case 'gws': {
         // Try global install first (works on Homebrew Apple Silicon where prefix is user-writable).
         // If EACCES, reconfigure npm to use ~/.npm-global and retry — avoids needing sudo.
         try {
-          execSync('npm install -g @googleworkspace/cli', { encoding: 'utf-8', timeout: 120000, env: execEnv });
+          await installIdleBounded('npm install -g @googleworkspace/cli');
         } catch (firstErr) {
           const errMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
           if (errMsg.includes('EACCES')) {
@@ -155,7 +157,7 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
             execSync(`mkdir -p "${globalDir}"`, { encoding: 'utf-8', env: execEnv });
             execSync(`npm config set prefix "${globalDir}"`, { encoding: 'utf-8', env: execEnv });
             const npmGlobalEnv = { ...execEnv, PATH: `${globalDir}/bin:${execEnv.PATH}` };
-            execSync('npm install -g @googleworkspace/cli', { encoding: 'utf-8', timeout: 120000, env: npmGlobalEnv });
+            await installIdleBounded('npm install -g @googleworkspace/cli', { env: npmGlobalEnv });
           } else {
             throw firstErr;
           }
@@ -164,7 +166,7 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
       }
       case 'gcloud': {
         if (!cmdExists('brew')) return c.json({ ok: false, error: 'Homebrew required' }, 400);
-        execSync('brew install --cask gcloud-cli', { encoding: 'utf-8', timeout: 300000, env: execEnv });
+        await installIdleBounded('brew install --cask gcloud-cli');
         return c.json({ ok: true, data: { installed: true } });
       }
       default:
@@ -204,6 +206,51 @@ let currentPullProgress: {
   error: string | null;
 } | null = null;
 
+// ── t114 (census U8) — the pull's three bounds, each named for its own job ──
+// The old flat 1,800,000 was asked to be all three at once. A registry that never answers is a
+// different failure from one that stops mid-download, and neither is "this model is too big".
+const OLLAMA_PULL_FIRST_BYTE_MS = 60_000;
+const OLLAMA_PULL_IDLE_MS = 2 * 60_000;
+const OLLAMA_PULL_CEILING_MS = 6 * 60 * 60_000;
+
+// ── t114 (CENSUS U22) — AN INSTALLER THAT IS DOWNLOADING IS NOT A WEDGED INSTALLER ──
+//
+// THE DEFECT: every dependency install was an `execSync` with a flat total cap — brew cask 180s,
+// brew formula 120s, `npx playwright install chromium` 180s, `npm install -g` 120s, gcloud-cli
+// 300s. Each of those routinely exceeds its cap on an ordinary connection while downloading
+// perfectly, and the kill is a SIGKILL of a package manager mid-write: brew and npm are left
+// partially installed behind a generic error, which is worse than not having started, because the
+// next attempt begins from a broken tree.
+//
+// Every one of these tools reports progress continuously, so the fix is the shared idle bound —
+// a download that is talking keeps going, a genuinely stuck one is still ended, and a ceiling
+// that does not re-arm keeps a runaway bounded. `execSync` becomes a spawn because a synchronous
+// call has no per-chunk signal to read; the route handlers are already async.
+const INSTALL_IDLE_MS = 90_000;
+const INSTALL_CEILING_MS = 60 * 60_000;
+
+/**
+ * Run an installer under an output-idle bound, in the shape `execSync` was called in here.
+ * Throws on failure like `execSync` did, with a message naming which bound fired when one did,
+ * so the route's own error path keeps working unchanged.
+ */
+async function installIdleBounded(cmd: string, opts?: { cwd?: string; env?: NodeJS.ProcessEnv }): Promise<string> {
+  const child = spawn('/bin/sh', ['-c', cmd], {
+    ...(opts?.cwd ? { cwd: opts.cwd } : {}),
+    env: opts?.env ?? execEnv,
+  });
+  try {
+    const { stdout, stderr } = await attachIdleBound(child, {
+      idleMs: INSTALL_IDLE_MS, ceilingMs: INSTALL_CEILING_MS,
+    });
+    return stdout || stderr;
+  } catch (err) {
+    const f = err as { message?: string; stderr?: string; stdout?: string };
+    const detail = (f.stderr || f.stdout || '').trim().slice(0, 400);
+    throw new Error(`${cmd} failed${f.message ? `: ${f.message}` : ''}${detail ? ` — ${detail}` : ''}`);
+  }
+}
+
 // GET /ollama/pull-progress — poll current pull progress
 setupDepsRouter.get('/ollama/pull-progress', (c) => {
   return c.json({ ok: true, data: currentPullProgress });
@@ -217,12 +264,29 @@ setupDepsRouter.post('/ollama/pull', async (c) => {
   const model = body.model as string;
   currentPullProgress = { model, status: 'starting', completed: 0, total: 0, layers: 0, error: null };
 
+  const pullDeadline = idleStreamDeadline({
+    firstByteMs: OLLAMA_PULL_FIRST_BYTE_MS,
+    idleMs: OLLAMA_PULL_IDLE_MS,
+    ceilingMs: OLLAMA_PULL_CEILING_MS,
+  });
+
   try {
     const resp = await fetch('http://localhost:11434/api/pull', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, stream: true }),
-      signal: AbortSignal.timeout(1800000), // 30 min
+      // ── t114 (CENSUS U8) — THE PULL IS BOUNDED BY SILENCE, NOT BY A HALF-HOUR WALL ──
+      //
+      // THE DEFECT: a flat 30 minutes covering the whole streamed pull. A 70 GB model on a home
+      // line takes longer than that, so the download was aborted mid-transfer WHILE
+      // `digestProgress` (built ten lines below this clock) was actively tracking real bytes
+      // arriving — the progress fact was in hand and the clock never consulted it. The UI bar was
+      // left frozen at whatever fraction it had reached, which is the part a user actually sees.
+      //
+      // Ollama streams a JSON progress line per chunk, so arrival is the measured fact of
+      // liveness. The bound re-arms on each line; a registry that goes quiet is still cut, and a
+      // non-re-arming ceiling keeps a pull that dribbles for ever from holding the route open.
+      signal: pullDeadline.signal,
     });
 
     if (!resp.ok) {
@@ -242,6 +306,8 @@ setupDepsRouter.post('/ollama/pull', async (c) => {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      // t114 (U8): a progress line IS the proof the pull is moving. This is the whole fix.
+      pullDeadline.bump();
       const text = decoder.decode(value, { stream: true });
       const lines = text.trim().split('\n');
 
@@ -287,7 +353,17 @@ setupDepsRouter.post('/ollama/pull', async (c) => {
     currentPullProgress = null;
     return c.json({ ok: true, data: { model, pulled: true, status: lastStatus } });
   } catch (err) {
+    // t114 (U8): say which bound ended it. "the registry went quiet" is a different problem from
+    // "this model is too big to pull", and the old flat wall could not tell them apart.
+    if (pullDeadline.fired()) {
+      currentPullProgress = {
+        model, status: 'error', completed: 0, total: 0, layers: 0,
+        error: `the pull stopped making progress for ${Math.round(OLLAMA_PULL_IDLE_MS / 1000)}s and was stopped`,
+      };
+    }
     return routeFailure(c, logger, err, { status: 500 });
+  } finally {
+    pullDeadline.done();
   }
 });
 
