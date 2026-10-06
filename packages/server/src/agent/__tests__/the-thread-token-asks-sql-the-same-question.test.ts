@@ -25,10 +25,13 @@
 // twin, `a2aThreadTokenMatchesSql`, beside the JS one. A twin is only ONE answer for as long as
 // the two halves agree, and §1 is what holds them together.
 //
-// Two further sites of the same hand-rolled shape turned up in this lane's own census and are
-// fixed here too, in the one-home direction and byte-identically: `a2a-replies.ts:164`'s
-// `threadId.slice(0, 8)` (the key for the genuinely-short legacy row query) and
-// `a2a-transport.ts:1770`'s second `IN` member, both now `a2aThreadShortLegacy(threadId)`.
+// Two further sites of the same hand-rolled shape turned up in this lane's own census.
+// `a2a-replies.ts:164`'s `threadId.slice(0, 8)` — the key for the genuinely-short legacy row
+// query — is fixed here, byte-identically, as `a2aThreadShortLegacy(threadId)`: named, so a
+// reader can tell WHICH era's token the line means. `a2a-transport.ts:1770`'s second `IN`
+// member is the same shape and is HANDED UP, not fixed: the live lane `t114-flat-timers` holds
+// that file and a rehearsed `git merge-tree` CONFLICTED on the shared import line. Nothing is
+// wrong there today — both `IN` members are exact, never prefixes — see the clause below.
 //
 // ── UNITS ──
 //
@@ -189,12 +192,19 @@ describe('the thread token asks SQL the same question it asks JavaScript', () =>
     expect(src).toMatch(/\.get\(agentId,\s*threadShort,\s*threadShort\)/);
   });
 
-  it('and a2a-transport.ts names the legacy IN member instead of slicing it', () => {
-    const src = read('agent/a2a-transport.ts');
-    expect(src, 'both IN members come from the vocabulary, and the second is the legacy spelling')
-      .toMatch(/\.get\(agentId,\s*agentId,\s*sinceMs[^)]*,\s*threadId,\s*a2aThreadShortLegacy\(threadId\)\)/);
-    expect(src, 'and the marker PRODUCER is still the current form — t109 B must not be undone')
-      .toMatch(/const threadShort = a2aThreadShort\(threadId\);/);
+  it('and the marker PRODUCER is still the current form — t109 B must not be undone', () => {
+    // The whole false-negative half of this item exists BECAUSE the producer moved to the
+    // varying region. If someone "fixes" the readers by moving the producer back, every clause
+    // above goes green again while the collision class returns. So the producer is pinned here.
+    expect(read('agent/a2a-transport.ts')).toMatch(/const threadShort = a2aThreadShort\(threadId\);/);
+    // ⚠ HANDED UP, NOT FORGOTTEN: `findUnlandedInboundReply` (a2a-transport.ts:1770) keys its
+    // second `IN` member on a hand-rolled `threadId.slice(0, 8)`. It is byte-identical in
+    // behaviour to `a2aThreadShortLegacy(threadId)` and both members are EXACT, never prefixes,
+    // so nothing is wrong today — only the WHICH-ERA ambiguity that let the same slice be
+    // retyped in three other modules. t113 fixed it, then backed it out: branch
+    // `t114-flat-timers` holds this file and a rehearsed `git merge-tree` CONFLICTED on the
+    // shared `@dojo/shared` import line. Handed up rather than forced, per the campaign's
+    // live-lane rule. The exact fix is in overhaul-plans/t113-report.md item A2.
   });
 
   // ── §4 THE CENSUS: no query in the tree asks this by hand ──
