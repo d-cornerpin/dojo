@@ -598,7 +598,16 @@ export const SetupPermissions = () => {
     },
   ];
 
-  const allGranted = permItems.every(item => permissions[item.key] === 'granted');
+  // t113: THREE STATES, BECAUSE THE SERVER HAS THREE ANSWERS. `allGranted` alone could no
+  // longer be reached once the Automation probe stopped claiming `granted` it could not
+  // establish — Automation is granted per (client, target) pair, so there is no boolean — and
+  // the Accessibility row has always answered `unknown` on a box without cliclick. A label that
+  // can never render is a reassurance the owner silently stops getting, so the unprobeable case
+  // gets its own sentence rather than being folded into failure.
+  const statusOf = (key: string): string => permissions[key] ?? 'unknown';
+  const allGranted = permItems.every(item => statusOf(item.key) === 'granted');
+  const anyDenied = permItems.some(item => statusOf(item.key) === 'denied');
+  const unprobeable = permItems.filter(item => statusOf(item.key) === 'unknown').length;
 
   return (
     <div className="space-y-4">
@@ -667,6 +676,11 @@ export const SetupPermissions = () => {
         </button>
         {allGranted && (
           <span className="text-xs text-green-700">All permissions granted</span>
+        )}
+        {!allGranted && !anyDenied && unprobeable > 0 && (
+          <span className="text-xs text-ui/40">
+            Nothing is blocked. {unprobeable === 1 ? 'One row' : `${unprobeable} rows`} Dojo cannot check from here — see Help.
+          </span>
         )}
       </div>
     </div>

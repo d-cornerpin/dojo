@@ -38,6 +38,16 @@ const SETUP_PAGE = path.join(REPO_ROOT, 'packages/dashboard/src/pages/Setup.tsx'
 const SURFACES = [SETUP_DEPS, SETUP_PAGE];
 const read = (p: string): string => fs.readFileSync(p, 'utf-8');
 
+/**
+ * Comments blanked, length and line structure kept (G4). t113 needed this and found out the
+ * blunt way: the rewritten Automation probe EXPLAINS the old `osascript -e "return 1"` in the
+ * comment above it, so a clause asserting that string is absent failed on the explanation while
+ * the code was correct. A source-matching clause that reads prose is testing the prose.
+ */
+const stripComments = (s: string): string => s
+  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+  .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
+
 describe('the words name the right target', () => {
   it('⚠ names the APPLICATION being driven, which the old hint never did', () => {
     // The old copy stopped at the asking process ("node") and never said the word
@@ -155,13 +165,45 @@ describe('the premises are still true of the code that creates them', () => {
       .not.toMatch(/osascript|imsg|tell application/);
   });
 
-  it('⚠ the Automation PROBE still proves nothing, which is why the verify line hedges', () => {
-    // `osascript -e "return 1"` drives no application, so it needs no Automation grant to
-    // succeed and the row reports "granted" on a box where sending is blocked. Handed up
-    // (it is a server file). When it is fixed to attempt a real AppleEvent, come back and
-    // let `AUTOMATION_VERIFY` claim what its FDA sibling claims.
-    const route = read(path.join(REPO_ROOT, 'packages/server/src/gateway/routes/setup-deps.ts'));
-    expect(route).toMatch(/case 'automation':[\s\S]{0,200}osascript -e "return 1"/);
+  it('the Automation probe no longer CLAIMS anything, which is why the verify line is right', () => {
+    // ── WHAT THIS CLAUSE USED TO ASSERT, AND WHY IT WAS WRITTEN THAT WAY ──
+    //
+    // It deliberately asserted the DEFECT: `expect(route).toMatch(/osascript -e "return 1"/)`.
+    // t96 found that probe reports `granted` on a box where sending iMessage is blocked —
+    // `osascript -e "return 1"` drives no application, so it needs no Automation grant — but
+    // the probe lives in a server file that was outside t96's fence and t110's. The clause
+    // pinned today's truth so that whoever fixed the server would be told by a red test that
+    // this copy needed revisiting. That is the coupling, and it is why E1 was handed up as a
+    // pair rather than as two items: fixing the server alone turned this suite red.
+    //
+    // t113 fixed it, and both halves move in the SAME COMMIT. The probe now returns `unknown`:
+    // Automation is granted per (client, target) pair so no single boolean can express it, and
+    // the only probe that would answer for Messages raises a TCC consent dialog, which a
+    // polled status endpoint must not do.
+    //
+    // So this clause flips from "the defect is still here" to "the probe does not claim what
+    // it cannot know", in both directions — the `.not.toMatch` half is what reds if someone
+    // restores the old probe or invents a new one that answers `granted`.
+    // STRIPPED FIRST: the rewritten probe explains the old one in the comment above it, so an
+    // unstripped read would fail on the explanation while the code is correct (G4).
+    const route = stripComments(read(path.join(REPO_ROOT, 'packages/server/src/gateway/routes/setup-deps.ts')));
+    const probe = route.slice(route.indexOf("case 'automation':"));
+    const body = probe.slice(0, probe.indexOf('default:'));
+    expect(body, 'the probe answers `unknown`, which the response type already carries')
+      .toMatch(/return 'unknown';/);
+    expect(body, 'and it claims neither outcome it cannot establish')
+      .not.toMatch(/return 'granted'|return 'denied'/);
+    expect(body, 'the probe that proved nothing is gone')
+      .not.toMatch(/osascript -e "return 1"/);
+    expect(body, 'and nothing here drives an application, which is what would raise a TCC dialog')
+      .not.toMatch(/tell application|execSync|execFileSync/);
+
+    // AND THE COPY IS NOW CORRECT RATHER THAN MERELY CAUTIOUS. `AUTOMATION_VERIFY` says Dojo
+    // cannot check this from here; under `unknown` that is the literal truth of the row, so it
+    // keeps saying it — this is the assertion that reds if someone "upgrades" the copy to claim
+    // parity with its FDA sibling while the probe still answers `unknown`.
+    expect(AUTOMATION_VERIFY, 'the copy still refuses to claim a check')
+      .toMatch(/cannot check this one for you from here/);
   });
 
   it('⚠ the server still reports the path this copy renders', () => {

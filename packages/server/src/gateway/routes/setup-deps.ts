@@ -396,13 +396,29 @@ setupDepsRouter.get('/permissions/check', (c) => {
           }
         }
         case 'automation': {
-          // Try a simple AppleScript
-          try {
-            execSync('osascript -e "return 1"', { timeout: 3000 });
-            return 'granted';
-          } catch {
-            return 'denied';
-          }
+          // ── THIS CANNOT BE PROBED WITHOUT SIDE EFFECTS, SO IT IS NOT CLAIMED ──
+          //
+          // The old probe ran `osascript -e "return 1"`. That script drives NO application, so
+          // it needs no Automation grant at all: it succeeded on every box, and this row
+          // reported `granted` while sending an iMessage was blocked. A green light on a
+          // permission the user does not have is worse than no light — it sends them looking
+          // for the fault anywhere but the place it is.
+          //
+          // There is also no single boolean to report even in principle. macOS grants
+          // Automation per (client, target) PAIR, so "is Automation granted?" has as many
+          // answers as there are target apps. The only probe that would answer for Messages is
+          // an actual AppleEvent to Messages — and that raises a TCC consent dialog on first
+          // call. A status endpoint the dashboard polls on mount must not put a modal in front
+          // of the user, so that probe is not available here either.
+          //
+          // So: `unknown`, which this response type already carries (`accessibility` returns it
+          // when cliclick is absent), and the dashboard's own copy — `AUTOMATION_VERIFY` — tells
+          // the owner the honest test is to send a message and watch it arrive.
+          //
+          // ⚠ The louder variant — drive Messages for real and read error -1743 as `denied` —
+          // answers more and is the OWNER'S CALL, not a worker's, because it trades a status
+          // endpoint's silence for a consent dialog (G14). It is recorded on BACKLOG line 75.
+          return 'unknown';
         }
         default:
           return 'unknown';
