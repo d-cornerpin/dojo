@@ -124,6 +124,18 @@ function seedJoin(opts: { hopCount?: number } = {}): { parent: string; childId: 
     ttlAt: Date.now() + 60 * 60_000,
     threads: [{ threadId: T_ASSIGN, assigneeAgent: PUNTER, intent: 'ASSIGN', hopCount: opts.hopCount ?? 1 }],
   });
+  // ⚠ t109 FIX ROUND 1 — THE DELIVERY CLOCK IS PART OF THE FIXTURE NOW. The hop cap ages
+  // against `a2a_threads.updated_at`, the only column no non-delivery writer touches (the
+  // argument is at `work/store.ts`'s `threadHopCountInWindow`). A spine row carrying a hop
+  // count with NO thread row is a state production cannot reach — `ensureThread` runs at the
+  // top of every delivery and the purge spares any thread with a live `work` row — so without
+  // this row the fixture asserted the cap against a clock that said "never delivered", the
+  // count aged to zero, and the HOP CAP clause below passed or failed for the wrong reason.
+  // `datetime('now')`: this thread was just delivered on, which is what a hop count means.
+  mockDb.current!.prepare(
+    `INSERT OR REPLACE INTO a2a_threads (thread_id, hop_count, last_sender, created_at, updated_at)
+     VALUES (?, ?, ?, datetime('now'), datetime('now'))`,
+  ).run(T_ASSIGN, opts.hopCount ?? 1, OWNER_AGENT);
   return { parent, childId: findJoinChildByThread(OWNER_AGENT, T_ASSIGN)!.id };
 }
 
