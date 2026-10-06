@@ -390,11 +390,18 @@ describe('§3 every production file that writes `work` with raw SQL has a verdic
     expect(stale, 'REVIEWED_RAW_WRITERS names files that no longer write `work`').toEqual([]);
   });
 
-  it('the two source-side seams t118 fixed still redact (the actor-keyed cases the doors cannot key)', () => {
-    // These two are NOT covered by the doors, and the distinction is load-bearing: the doors
-    // key on the agents the ROW belongs to, which is right for a creator writing its own row
-    // and wrong when the ACTOR is someone else (a PM, or an agent closing a task assigned
-    // elsewhere). Both seams below are actor-keyed, so they redact at the source.
+  it('all THREE source-side seams t118 fixed still redact', () => {
+    // THREE, not two. The clause title used to say "the two source-side seams" while t118
+    // fixed three and its own census table listed three — review caught the gap, and the
+    // unpinned one was `fileAssignDeliverableCloseRequest`, the seam the census NEWLY found
+    // leaking. An oversight of exactly the shape this lane exists to end.
+    //
+    // The first two are genuine door blind spots, and the distinction is load-bearing: the
+    // doors key on the agents the ROW belongs to, which is right for a creator writing its
+    // own row and wrong when the ACTOR is someone else — reachable on `trackerUpdateStatus`
+    // because task-id resolution is scoped by KIND, not by caller. The THIRD is belt: its own
+    // lookup pins the row's agent to the sender, so the door covers it too, and its source
+    // redaction holds only if that lookup is ever widened. Measured, not assumed (M4/M5).
     // Driven behaviourally next door, in `the-scaffold-floor-never-persists-a-credential`,
     // which crosses the real >=6 floor; this is the source half, so a removal is caught even
     // if someone deletes that file.
@@ -412,5 +419,13 @@ describe('§3 every production file that writes `work` with raw SQL has a verdic
     const tools = codeOnly(readRel('tracker/tools.ts'));
     expect(tools).toContain('redactHandedCredentials(agentId, result)');
     expect(tools).toContain('redactHandedCredentials(agentId, JSON.stringify(evidenceOut))');
+    // Seam three: `fileAssignDeliverableCloseRequest`'s bind. Driven behaviourally in
+    // `tracker/__tests__/a-closing-credential-never-lands-on-the-row` §3; pinned here too so
+    // a deletion reds even if that file is removed.
+    expect(
+      tools,
+      'the A2A assign-deliverable close no longer redacts the assignee\'s deliverable text '
+      + 'before binding it to `work.result`',
+    ).toContain('redactHandedCredentials(\n    senderAgentId,');
   });
 });

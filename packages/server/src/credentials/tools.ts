@@ -133,6 +133,15 @@ export async function executeCredentialTool(
         agentId,
         Object.values(record.credentials).map((v) => (typeof v === 'string' ? v : JSON.stringify(v))),
       );
+      // t118 round 2: the READ side can also be the first time this process learns a value
+      // (a fresh boot fetching a credential stored in an earlier session), so it re-vets ask
+      // titles for the same reason the write side does. Dynamically imported: this module is
+      // reached from the tool layer that `work/ask-title.ts` sits above, and a static edge
+      // here would point the credential store at the work spine — the cycle the ask-title
+      // header warns about on its own system-model imports.
+      void import('../work/ask-title.js')
+        .then((m) => { m.revetOpenAskTitles(agentId); })
+        .catch(() => { /* a re-vet that cannot load may not cost the fetch its answer */ });
       // Lead with the engine sentinel so this secret-bearing result is stubbed
       // deterministically if it ever ages into a compaction summary (Rule 6:
       // secrets never enter the memory DAG). The sentinel is invisible guidance

@@ -367,6 +367,89 @@ function retitleIfStillUnnamed(workId: string, title: string): boolean {
   });
 }
 
+/**
+ * ── t118 ROUND 2 — THE FIRST-INTRODUCTION RE-VET ──────────────────────────────
+ *
+ * THE RACE THE REFUSAL ABOVE DOES NOT WIN. `acceptModelTitle` is a HANDED-VALUE
+ * check, so it can only fire once a value has been registered. The titler runs
+ * on the INBOUND path (`insertInboundMessageIfAbsent` below, `void`-dispatched,
+ * awaiting a system model), and on the message that FIRST introduces a
+ * credential nothing is registered yet. Driven by review, in all three
+ * orderings:
+ *
+ *     value not yet handed -> the title is ACCEPTED verbatim
+ *     value handed         -> REFUSED (the guard is correct)
+ *     clean title, handed  -> ACCEPTED (no false positive)
+ *
+ * So on an account-setup message — the shape the red draw drew — the refusal at
+ * `:220` was a RACE against the turn's first `credential_add`, not the property
+ * the header claimed. `work.title` is broadcast to the dashboard and handed to
+ * the PM, so a lost race is a real surface.
+ *
+ * THIS CLOSES IT FROM THE OTHER SIDE. Registration is the moment the process
+ * first learns a value, so registration is where already-minted titles are
+ * re-vetted. Both orderings are then covered and neither depends on timing:
+ *   · credential first, then title -> `acceptModelTitle` refuses (unchanged);
+ *   · title first, then credential -> this re-vet restores the identifier.
+ *
+ * REFUSAL PARITY, NOT REPAIR. Rule 3 in this file's header is emphatic and it
+ * governs here too: "the title is never repaired by writing the scrubbed form.
+ * A title that had to be scrubbed is a title the model copied from, and what it
+ * copied the rest of is not knowable." So the remedy is the SAME remedy the
+ * mint-time path uses — the ticket gets its own identifier back — not a
+ * placeholder-bearing title. The review's phrasing ("redact retroactively") is
+ * answered with the stronger of the two verdicts, deliberately.
+ *
+ * NO NEW SCANNER, AND NOTHING SHAPE-BASED. It reuses the one redactor as the
+ * predicate, `patchWork` as the writer and `askIdForMessage`'s own invariant
+ * (an ask's id IS its filed title) as the restore value. The
+ * "does this look like a key" class this overhaul removed is not reintroduced.
+ *
+ * BOUNDED BY RECENCY, measured rather than copied: the ticket's own titler
+ * answers within seconds, so a credential-bearing title can only be among this
+ * agent's most recent asks. `opened_at` is INTEGER MILLISECONDS on the spine
+ * (migration-level `opened_at INTEGER NOT NULL`), which is why this does NOT
+ * use `withSessionBoundary` — that helper compares TEXT timestamps and would
+ * silently match nothing on this column.
+ *
+ * Never throws: it runs behind a registration that has already succeeded, and a
+ * failure to re-vet may not cost a credential its registration.
+ */
+const ASK_TITLE_REVET_SCAN = 50;
+
+export function revetOpenAskTitles(agentId: string): number {
+  try {
+    const rows = getDb().prepare(
+      `SELECT id, title FROM work
+        WHERE kind = 'ask' AND agent_id = ? AND title IS NOT NULL AND title <> id
+        ORDER BY opened_at DESC LIMIT ?`,
+    ).all(agentId, ASK_TITLE_REVET_SCAN) as Array<{ id: string; title: string }>;
+
+    let restored = 0;
+    for (const r of rows) {
+      // The ONE redactor as the predicate. Unchanged string -> nothing this agent
+      // has handled is in this title, which is the common case and costs a map lookup.
+      if (redactHandedCredentials(agentId, r.title) === r.title) continue;
+      const applied = withUnit(() => patchWork(r.id, { title: r.id }).kind === 'applied');
+      if (applied) {
+        restored++;
+        // LOUD on purpose. This fired because a system model copied a value into a
+        // title despite being told not to, and the only reason it was recoverable is
+        // that the value was registered a moment later. That is worth a line.
+        logger.warn('ask title re-vetted after a credential was registered: the model had '
+          + 'copied a now-known secret value into it, so the ticket got its own identifier '
+          + 'back', { workId: r.id }, agentId);
+      }
+    }
+    return restored;
+  } catch (err) {
+    logger.warn('ask title re-vet could not run (titles minted this turn keep what they have)', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+    return 0;
+  }
+}
+
 // ── THE INGEST DOOR ─────────────────────────────────────────────────────────
 //
 // Every channel that carries a person's message writes it through here rather

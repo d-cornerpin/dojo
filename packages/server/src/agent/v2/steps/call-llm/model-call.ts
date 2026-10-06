@@ -29,6 +29,7 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { isStopFenced, preemptedAgents } from '../../../shared-state.js';
 import { hydrateCredentialsInMessages } from '../../../../credentials/secret-values.js';
 import { noteDeclaredSecretsFromToolCalls } from '../../../../credentials/secret-fields.js';
+import { revetOpenAskTitles } from '../../../../work/ask-title.js';
 import { AgentError } from '../../../errors.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { TurnCounterparty } from '../../counterparty.js';
@@ -465,6 +466,12 @@ export async function callWithRetryAndFallback(
   // before it reaches any persist / index / broadcast seam below. The live
   // tool call keeps the real value; every stored copy gets the sentinel.
   noteDeclaredSecretsFromToolCalls(agentId, result.toolCalls);
+  // t118 round 2: registration is the moment this process first LEARNS a value, so it is
+  // where an ask title minted before the learning gets re-vetted. On a first-introduction
+  // message the inbound titler runs before any `credential_add`, so `acceptModelTitle`'s
+  // handed-value refusal has nothing to match yet — a race, not a property. This closes the
+  // other ordering; see `work/ask-title.ts`'s re-vet header.
+  revetOpenAskTitles(agentId);
 
   return { state, result, modelId };
 }

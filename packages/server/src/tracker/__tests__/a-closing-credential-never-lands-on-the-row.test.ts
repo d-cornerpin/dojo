@@ -69,6 +69,10 @@ const TASK = 'task-t118-0001';
 const FAKE_TOKEN = 'ghp-t118-4RtY7uIo2PaS9dFg6HjK';
 const FAKE_PW = 'pw-t118-Xc3Vb8Nm1QwE5rTz';
 
+// `deliveries.created_at` is declared TEXT on purpose: `deliveryForAgentSince` reads it
+// through `strftime('%s', created_at)`, and an INTEGER-affinity column handed a timestamp
+// string would coerce it to the year. Declared wrong, the §3 close below would find no
+// delivery on the ledger and would silently skip the very seam it exists to drive.
 function applySchema(db: Database.Database): void {
   createWorkTable(db);
   db.exec(`
@@ -84,7 +88,18 @@ function applySchema(db: Database.Database): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE TABLE IF NOT EXISTS deliveries (
-      id TEXT PRIMARY KEY, agent_id TEXT, outcome TEXT, tool TEXT, created_at INTEGER
+      id TEXT PRIMARY KEY, agent_id TEXT, outcome TEXT, tool TEXT,
+      conversation_id TEXT, message_id TEXT, channel TEXT, turn_number INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS turn_artifacts (
+      id TEXT, agent_id TEXT, turn_number INTEGER, kind TEXT, path TEXT,
+      payload_json TEXT, delivered_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS turns (
+      agent_id TEXT NOT NULL, turn_number INTEGER NOT NULL, started_at TEXT,
+      conv_key TEXT, answered INTEGER DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS messages (
       seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, agent_id TEXT NOT NULL,
@@ -245,5 +260,90 @@ describe('§2 an ordinary close is unchanged', () => {
     // Keyed per agent, as the redactor is everywhere else in the tree. This clause exists so
     // a future "redact against every agent in the process" shortcut cannot land unnoticed.
     expect(rowOf().result).toBe(result);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §3 — THE THIRD SOURCE-REDACTED SEAM: `fileAssignDeliverableCloseRequest`.
+//
+// Added on review. This is the seam t118's own census NEWLY DISCOVERED leaking (census row 3)
+// and it was the one of the three source-redacted seams with no clause of its own — the exact
+// five-month mechanism the lane exists to end, left open on one line.
+//
+// ── AND THE MUTANT CORRECTED THE REASON IT IS REDACTED, so the record is honest ──
+// The review's framing (and t118's own §2 note) said the doors "provably cannot cover" this
+// seam. Measured, that is WRONG HERE, and the measurement is cheap to state: the function's
+// own lookup pins `w.agent_id = ?` to `senderAgentId`
+// (`tools.ts:333-338`), so on this path the ACTOR IS the row's agent and `patchWork`'s
+// row-keyed redaction covers it too. Removing the seam's own redaction alone leaves these
+// clauses GREEN (M4); removing the seam AND the door reds them (M5).
+//
+// The source redaction stays, and the argument is narrow rather than inflated: it is keyed to
+// the AUTHOR explicitly instead of inheriting safety from a WHERE clause forty lines away, so
+// it still holds if that lookup is ever widened (dropping the `agent_id` predicate to let a
+// supervisor file a close, say). That is belt, and it is labelled as belt — not as the door's
+// blind spot. The genuine blind spots are the floor's non-column surfaces (the PM rename row,
+// the broadcast, the engine note) and `trackerUpdateStatus`, where an actor CAN write prose
+// onto a row it does not own because task-id resolution is not agent-scoped
+// (`schema.ts:757-777` scopes by KIND, only title resolution is scoped to the caller).
+//
+// Driven through the REAL exported function with a real claimed ASSIGN task and a real
+// delivery on the ledger, because a source-shape assertion alone is what let this seam ship
+// unpinned in the first place.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+import { fileAssignDeliverableCloseRequest } from '../tools.js';
+
+const THREAD = 'thr-t118-assign-1';
+const ASSIGN_TASK = 'task-t118-assign-1';
+
+/** The delivery receipt the close is filed FROM. Must be newer than the task's `opened_at`
+ *  (the fixture seeds 1700000000000) and carry a parseable text timestamp. */
+function seedDelivery(agentId: string): void {
+  mockDb.current!.prepare(
+    `INSERT INTO deliveries (id, agent_id, outcome, tool, channel, conversation_id,
+                             message_id, turn_number, created_at, updated_at)
+     VALUES (?, ?, 'delivered', 'a2a_send', 'a2a', NULL, NULL, NULL,
+             datetime('now'), datetime('now'))`,
+  ).run(`del-${agentId}-1`, agentId);
+}
+
+describe('§3 an A2A deliverable that quotes a handed credential never lands in `result`', () => {
+  it('RED BEFORE THE FIX: the assignee\'s deliverable text is redacted on the close bind', async () => {
+    seedTrackerTask(mockDb.current!, {
+      id: ASSIGN_TASK, title: 'Pull the ledger', status: 'in_progress',
+      agentId: AGENT, a2a_thread_id: THREAD,
+    });
+    seedDelivery(AGENT);
+    noteHandedCredentialValues(AGENT, [FAKE_TOKEN]);
+
+    await fileAssignDeliverableCloseRequest(
+      AGENT, THREAD,
+      `Done — authenticated with ${FAKE_TOKEN} and reconciled 212 rows against the ledger.`,
+    );
+
+    const row = rowOf(ASSIGN_TASK);
+    // The bind happens before the status transition, so the columns carry the redacted text
+    // whether or not the close itself goes on to be accepted.
+    expect(row.result, 'the close bind wrote `result`').not.toBeNull();
+    expect(row.result!).not.toContain(FAKE_TOKEN);
+    expect(row.result!).toContain(redactedPlaceholderFor(AGENT, FAKE_TOKEN));
+    // The deliverable still reads as a deliverable.
+    expect(row.result!).toContain('reconciled 212 rows');
+    expect(sweepForValue(FAKE_TOKEN)).toEqual([]);
+  });
+
+  it('WHAT THE FIX MAY NOT COST: an ordinary deliverable is stored verbatim', async () => {
+    seedTrackerTask(mockDb.current!, {
+      id: ASSIGN_TASK, title: 'Pull the ledger', status: 'in_progress',
+      agentId: AGENT, a2a_thread_id: THREAD,
+    });
+    seedDelivery(AGENT);
+
+    await fileAssignDeliverableCloseRequest(
+      AGENT, THREAD, 'Done — reconciled 212 rows against the ledger.',
+    );
+
+    expect(rowOf(ASSIGN_TASK).result).toBe('Done — reconciled 212 rows against the ledger.');
   });
 });
