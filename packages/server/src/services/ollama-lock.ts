@@ -125,9 +125,11 @@ class OllamaModelLock {
    * Acquire a slot for the given provider+model. Resolves when the caller may proceed.
    *
    * `declaredFirstChunkMs`, T81c: the CALLER's own declared first-chunk patience for THIS
-   * request (`agent/model.ts` already has `resolveStreamPatience(modelInfo).firstChunkMs` in
-   * hand right before calling this) — used only to bound how long a request queued BEHIND a
-   * same-model call may wait; see `sameModelQueueTimeoutMs`'s own doc.
+   * request — bounds how long a queued request may wait, on BOTH queueing paths (t114 brought the
+   * cross-model swap arm onto the same resolver; it was a flat 60s before). `agent/model.ts`
+   * passes the LIFTED `bounds.firstChunkMs`, which is the same number its watchdog arms — t114
+   * census row 8's first clause was that it passed the raw one, so a waiter gave up at 90s on a
+   * call entitled to 300. See `sameModelQueueTimeoutMs`'s own doc.
    */
   async acquire(providerId: string, modelName: string, declaredFirstChunkMs?: number): Promise<void> {
     // Re-read config on each acquire (single DB read, ~0.1ms)
@@ -210,10 +212,20 @@ class OllamaModelLock {
         if (idx !== -1) this.queue.splice(idx, 1);
         this.broadcastStatus();
         reject(new Error(
-          `Ollama model swap timed out on provider ${providerId} — other model(s) (${currentModels}) still in use. ` +
-          `Try again or switch this agent to the same model.`
+          `Ollama model swap timed out after ${Math.round(sameModelQueueTimeoutMs(declaredFirstChunkMs) / 1000)}s ` +
+          `on provider ${providerId} — other model(s) (${currentModels}) still in use. ` +
+          `Try again, switch this agent to the same model, or raise this provider's declared patience.`
         ));
-      }, QUEUE_TIMEOUT_MS);
+        // ── t114 (CENSUS ROW 8, second clause) — THE CROSS-MODEL QUEUE HONOURS PATIENCE TOO ──
+        //
+        // This bound was a flat `QUEUE_TIMEOUT_MS` (60s) with no declared-patience input at all,
+        // while the same-model arm above has taken the caller's own bound since T81c. The two
+        // waits are the same kind of wait — "another call has the GPU and I am next" — so a
+        // provider that declares long patience was honoured on one path and ignored on the other,
+        // and a healthy turn on a slow box was rejected at 60s for queueing behind a model swap
+        // it was entitled to wait out. Same resolver as the same-model arm, so the two cannot
+        // disagree: a declared row gets its number, an undeclared row keeps today's 60s exactly.
+      }, sameModelQueueTimeoutMs(declaredFirstChunkMs));
 
       this.queue.push({ providerId, modelName, resolve, reject, queuedAt: Date.now(), timer });
       this.broadcastStatus();

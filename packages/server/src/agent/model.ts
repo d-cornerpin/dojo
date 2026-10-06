@@ -1320,16 +1320,6 @@ async function callOllamaModel(
   ).tokens;
   refuseIfDoomed(agentId, nativeEstimate, patience, modelInfo.prefillTokensPerSec, modelInfo.measuredPrefillTokensPerSec);
 
-  // Acquire the Ollama model lock (waits if a different model is in use
-  // ON THE SAME PROVIDER, remote Ollama hosts have their own slot pool).
-  const lock = getOllamaLock();
-  // T81c: `patience.firstChunkMs` is already in hand (line above) — handing it to the lock
-  // costs nothing new and is what lets a request queued behind a same-model call use THAT
-  // call's own declared patience as its wait bound instead of the lock's flat swap timeout.
-  await lock.acquire(modelInfo.providerId, ollamaModelName, patience.firstChunkMs);
-
-  const startTime = Date.now();
-
   // ════════════════════════════════════════════════════════════════════════════════════════
   // T83b — THE BOUNDS THIS TRANSPORT ARMS, AND WHY THEY ARE NOT `patience`'s TWO NUMBERS.
   //
@@ -1355,6 +1345,26 @@ async function callOllamaModel(
     firstChunkDeclared: patience.firstChunkDeclared,
     idleDeclared: patience.idleDeclared,
   };
+
+  // Acquire the Ollama model lock (waits if a different model is in use
+  // ON THE SAME PROVIDER, remote Ollama hosts have their own slot pool).
+  const lock = getOllamaLock();
+  // ── t114 (CENSUS ROW 8) — THE WAIT BOUND IS THE SAME NUMBER THE OCCUPANT IS ENTITLED TO ──
+  //
+  // T81c handed the lock `patience.firstChunkMs` — the RAW resolved value, 90s on an undeclared
+  // row — while the transport below arms `bounds.firstChunkMs`, the LIFTED value, which for that
+  // same undeclared row is `TRANSPORT_DEFAULT_TIMEOUT_MS` (300s). So agent B queued behind an
+  // entirely healthy same-model call that is ENTITLED to 300 seconds of prefill was rejected at
+  // 90 with "timed out waiting behind a long prefill": a healthy turn killed by the gap between
+  // two numbers that were always meant to be the same one.
+  //
+  // `bounds` is therefore computed above this line rather than below it, and the lock is handed
+  // the identical number the watchdog will arm. The two cannot drift again without someone
+  // editing one expression that both read.
+  await lock.acquire(modelInfo.providerId, ollamaModelName, bounds.firstChunkMs);
+
+  const startTime = Date.now();
+
   // T83b: the SAME `makeStreamWatchdog` the other two transports arm — bumped per chunk,
   // `contentStarted()` on the first delta — replacing T79e's flat total-duration timeout that
   // killed healthy long generations (census row 7). External stop rides `AbortSignal.any` as before.
