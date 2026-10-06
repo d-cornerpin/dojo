@@ -193,6 +193,33 @@ describe('T82c — CONTROL: non-size injuries (and no injury at all) are byte-id
   });
 });
 
+// ⚠ WHY THESE TWO CLAUSES COUNT **INJURY ALERTS** AND NOT ALL DELIVERIES (t113 A1).
+//
+// They used to assert `toHaveBeenCalledTimes(1)` over every call to the mocked transport, and
+// that passed for a reason that had nothing to do with what they test. Each `it` builds its OWN
+// `vi.fn()` and `vi.doMock`s the transport with it, and this file leaves an in-flight RECOVERY
+// notification behind from an earlier case — an async `notifyHealerOfRecovery` that no case
+// awaits. Which spy that late FYI lands on depends on module-cache timing, not on the subject
+// under test, so the count was a coin flip that happened to land right.
+//
+// t113 A1 moved the recovery notice onto the shared notice door (`agent/a2a-notice.ts`), which
+// changed the resolution order by one module and made the stray FYI land HERE instead — so this
+// file failed while both the product and the behaviour it asserts were correct. Measured, with
+// the two payloads printed: one `FYI … has recovered from its injured state` and one
+// `QUESTION [INJURY ALERT] …`.
+//
+// The guard these clauses actually want is "the injury alert is delivered EXACTLY ONCE, and it
+// says the right thing" — an agent notified of its injury twice is the defect worth catching.
+// So they count injury alerts by name. An unrelated recovery FYI from a sibling case no longer
+// decides the verdict, and double-notification still reds.
+//
+// The leak itself is NOT fixed here: it is a pre-existing un-awaited async notification in this
+// file's fixture, out of this lane's fence, and recorded in overhaul-plans/t113-report.md.
+const injuryAlerts = (spy: { mock: { calls: unknown[][] } }): Array<{ payload: string }> =>
+  spy.mock.calls
+    .map((c) => c[0] as { payload?: string })
+    .filter((e): e is { payload: string } => typeof e.payload === 'string' && e.payload.includes('[INJURY ALERT]'));
+
 describe('T82c — the steering note for size-class injuries carries the ordering text', () => {
   it('the injury note for a declared-patience injury names compaction first and never suggests reset_session', async () => {
     vi.useFakeTimers();
@@ -208,8 +235,9 @@ describe('T82c — the steering note for size-class injuries carries the orderin
     onAgentInjured(TARGET, PATIENCE_LAST_ERROR, DECLARED_PATIENCE_EXCEEDED_CODE);
     await vi.advanceTimersByTimeAsync(10_000);
 
-    expect(deliverA2AMessage).toHaveBeenCalledTimes(1);
-    const payload = (deliverA2AMessage.mock.calls.at(-1) as [{ payload: string }])[0].payload;
+    const alerts = injuryAlerts(deliverA2AMessage);
+    expect(alerts, 'the injury alert is delivered exactly once').toHaveLength(1);
+    const payload = alerts[0].payload;
     expect(payload).toContain('already ran ONE forced compaction');
     expect(payload).toContain('BEFORE session reset');
     expect(payload).not.toContain('context corruption: reset_session');
@@ -228,8 +256,9 @@ describe('T82c — the steering note for size-class injuries carries the orderin
     onAgentInjured(TARGET, CORRUPTION_LAST_ERROR);
     await vi.advanceTimersByTimeAsync(10_000);
 
-    expect(deliverA2AMessage).toHaveBeenCalledTimes(1);
-    const payload = (deliverA2AMessage.mock.calls.at(-1) as [{ payload: string }])[0].payload;
+    const alerts = injuryAlerts(deliverA2AMessage);
+    expect(alerts, 'the injury alert is delivered exactly once').toHaveLength(1);
+    const payload = alerts[0].payload;
     expect(payload).toContain('context corruption: reset_session');
     vi.useRealTimers();
   });
