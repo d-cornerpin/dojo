@@ -41,6 +41,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   CHARS_PER_TOKEN,
+  estimateTokens,
   estimateTokensFromChars,
   estimateRequestTokens,
   effectiveDivisor,
@@ -260,27 +261,73 @@ describe('§THE LEDGER CONTRACT — the loop measures the tokeniser, not itself'
   });
 });
 
-describe('§THE WIRING — both dial sites really spend it (G4, both ways)', () => {
+describe('§THE WIRING — ALL FOUR dial sites really spend it (G4, both ways)', () => {
+  // ⚠ IT WAS TWO, AND t113 D MADE IT FOUR. t108 wired the two transports whose estimate it
+  // owned and its own review recorded the residual: the `agent-sdk` and `ollama` transports
+  // have their own pre-dial fit gates, and both were still spending the raw `/4` constant
+  // (BACKLOG line 101). No regression — they always did — but the same undercount class on two
+  // side doors, so on a provider whose own ledger says its dense prompts run nearer 2
+  // chars/token those two gates decided against roughly half the real size.
+  //
+  // The count pin MOVED rather than being deleted, deliberately: it is the thing that notices a
+  // fifth transport arriving without a gate, or one of these four quietly dropping back to the
+  // constant.
+  const DIAL_SITES = 4;
+
   it('every dial site that produces an estimate produces it through `estimateRequestTokens`', () => {
     const model = code('agent/model.ts');
     const calls = [...model.matchAll(/estimateRequestTokens\(/g)].length;
-    expect(calls, 'a dial site stopped spending the measured divisor').toBe(2);
+    expect(calls, 'a dial site stopped spending the measured divisor').toBe(DIAL_SITES);
     // The APPLICATION, not the presence: each must be seeded with the provider's own readings.
     expect([...model.matchAll(/measuredDivisorsFor\(modelInfo\.providerId\)/g)].length)
-      .toBe(2);
+      .toBe(DIAL_SITES);
   });
 
-  it('neither site re-sums `estimateTokens` into an input estimate behind the new door', () => {
+  it('no site re-sums `estimateTokens` into an input estimate behind the new door', () => {
     // The both-ways direction: the old arithmetic coming back ALONGSIDE the new door would leave
-    // the clauses above green while the wire still undercounted.
+    // the clauses above green while the wire still undercounted. All four estimates are named
+    // here, so a site reverting to a raw sum reds by name.
     const model = code('agent/model.ts');
-    for (const name of ['finalInputEstimate', 'inputEstimate']) {
-      const assignment = new RegExp(`const ${name}\\s*=\\s*([^;]+);`).exec(model)?.[1] ?? '';
-      expect(assignment, `${name} is still assembled from raw estimateTokens() sums`)
+    for (const name of ['finalInputEstimate', 'inputEstimate', 'nativeEstimate', 'sdkInputEstimate']) {
+      const assignment = new RegExp(`const ${name}\\s*=\\s*([\\s\\S]*?);\\n`).exec(model)?.[1] ?? '';
+      expect(assignment, `${name} was not found, or is still assembled from raw estimateTokens() sums`)
         .not.toMatch(/estimateTokens\(/);
       expect(assignment, `${name} is no longer the measured-divisor estimate`)
-        .toMatch(/Estimate\.tokens/);
+        .toMatch(/estimateRequestTokens\(|Estimate\.tokens/);
     }
+  });
+
+  it('the two side doors split PROSE from SCHEMA, which is the whole reason for two divisors', () => {
+    // A site that passed the whole request as `proseChars` would spend the prose divisor on a
+    // dense tools array — green on the clauses above, and wrong. So the split is asserted at
+    // each new site, with the tools array on the schema side where it belongs.
+    const model = code('agent/model.ts');
+    expect(model, 'the ollama gate puts its tools array on the schema side')
+      .toMatch(/proseChars: JSON\.stringify\(nativeMessages\)\.length,\s*schemaChars: JSON\.stringify\(nativeTools \?\? \[\]\)\.length,/);
+    expect(model, 'the agent-sdk gate counts system prompt + messages as prose, toolDefs as schema')
+      .toMatch(/proseChars: systemPrompt\.length \+ JSON\.stringify\(messages\)\.length,\s*schemaChars: JSON\.stringify\(toolDefs\)\.length,/);
+  });
+
+  it('and on an UNMEASURED provider both side doors return today\'s number, byte for byte', () => {
+    // The no-behaviour-change half the line asks for explicitly, asserted as ARITHMETIC rather
+    // than as a promise: with no reading, both of `estimateRequestTokens`'s bounds collapse to
+    // `/CHARS_PER_TOKEN` over the same total characters, so the new call equals the old sum.
+    const prose = 'a prose system prompt and its messages, of some length'.repeat(37);
+    const schema = JSON.stringify([{ name: 'a_tool', input_schema: { type: 'object' } }]);
+    const wasOllama = estimateTokens(prose) + estimateTokens(schema);
+    const nowOllama = estimateRequestTokens(
+      { proseChars: prose.length, schemaChars: schema.length }, { prose: null, dense: null },
+    ).tokens;
+    // ⚠ The two forms differ by at most the per-term `Math.ceil` the old sum paid TWICE and the
+    // new floor pays ONCE over the total — never by more, and never downward. Stated as the
+    // bound it is rather than as an equality that would be a coincidence.
+    expect(nowOllama).toBeLessThanOrEqual(wasOllama);
+    expect(nowOllama).toBeGreaterThanOrEqual(wasOllama - 1);
+    // and the direction that matters: a MEASURED provider can only make it bigger
+    const measured = estimateRequestTokens(
+      { proseChars: prose.length, schemaChars: schema.length }, { prose: 2, dense: 2 },
+    ).tokens;
+    expect(measured, 'a denser box estimates more, never less').toBeGreaterThan(nowOllama);
   });
 
   it('the effective divisor reaches the ledger from both sites', () => {

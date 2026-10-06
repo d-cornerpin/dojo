@@ -1291,7 +1291,33 @@ async function callOllamaModel(
   // use, and this transport's estimate is cheap enough that computing it lock-free costs
   // nothing measurable.
   const patience = resolveStreamPatience(modelInfo);
-  const nativeEstimate = estimateTokens(JSON.stringify(nativeMessages)) + estimateTokens(JSON.stringify(nativeTools ?? []));
+  // t113 D (BACKLOG line 101): THROUGH THE SHARED ESTIMATOR, like the other two gates.
+  //
+  // t108 wired the learned per-population divisor into `estimateRequestTokens` and three
+  // consumers read the truer number — the OpenAI-compatible transport's gate, the output budget
+  // and the ledger row. This side door, and the agent-sdk one below, kept spending the raw
+  // `/4` constant, so on a provider whose own ledger says its dense prompts run nearer 2
+  // chars/token these two gates were deciding against roughly half the real size. No regression
+  // (they always did it) but the same undercount class on two doors, which is what the line
+  // routed rather than patched.
+  //
+  // THE PROSE/SCHEMA SPLIT IS THE POINT, not a formatting change: the messages are prose and
+  // the tools array is dense JSON, and the two populations have different measured divisors.
+  // Counting them together would spend the prose divisor on a schema, which is the thing
+  // `estimateRequestTokens`'s two bounds exist to prevent.
+  //
+  // ⚠ BYTE-PRESERVING WHERE NOTHING WAS MEASURED, which is every box until it has measured
+  // itself: with `{prose: null, dense: null}` both bounds reduce to `/CHARS_PER_TOKEN` over the
+  // same total characters, so the estimate is identical to the line this replaces. That half is
+  // claused as explicitly as the improvement.
+  const nativeDivisors = measuredDivisorsFor(modelInfo.providerId);
+  const nativeEstimate = estimateRequestTokens(
+    {
+      proseChars: JSON.stringify(nativeMessages).length,
+      schemaChars: JSON.stringify(nativeTools ?? []).length,
+    },
+    nativeDivisors,
+  ).tokens;
   refuseIfDoomed(agentId, nativeEstimate, patience, modelInfo.prefillTokensPerSec, modelInfo.measuredPrefillTokensPerSec);
 
   // Acquire the Ollama model lock (waits if a different model is in use
@@ -2913,9 +2939,20 @@ async function callAnthropicSdkModel(
   // two transports already pay at their own estimate sites — not new work invented for this
   // gate. Byte-preserving no-op when this provider has not declared a prefill throughput,
   // identical to the other two call sites.
-  const sdkInputEstimate = estimateTokens(systemPrompt)
-    + estimateTokens(JSON.stringify(messages))
-    + estimateTokens(JSON.stringify(toolDefs));
+  //
+  // t113 D (BACKLOG line 101): and through the SHARED estimator, the second of the two side
+  // doors. Same argument as the Ollama gate above — the system prompt and the messages are
+  // prose, `toolDefs` is dense JSON, the two populations carry different measured divisors, and
+  // an unmeasured provider gets today's number byte for byte because both of
+  // `estimateRequestTokens`'s bounds collapse to `/CHARS_PER_TOKEN` with no reading.
+  const sdkDivisors = measuredDivisorsFor(modelInfo.providerId);
+  const sdkInputEstimate = estimateRequestTokens(
+    {
+      proseChars: systemPrompt.length + JSON.stringify(messages).length,
+      schemaChars: JSON.stringify(toolDefs).length,
+    },
+    sdkDivisors,
+  ).tokens;
   refuseIfDoomed(agentId, sdkInputEstimate, patience, modelInfo.prefillTokensPerSec, modelInfo.measuredPrefillTokensPerSec);
 
   const startTime = Date.now();
