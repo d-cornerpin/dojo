@@ -378,7 +378,14 @@ async function tryContextOverflowRecovery(
     );
     if (!isContextOverflowError(fullErrText)) return false;
 
-    logger.warn(`v2: context overflow detected — ${message}`, { agentId, code, cause }, agentId);
+    // t113 B3: BOUNDED, like every other consumer in this file. A provider's overflow message
+    // can be enormous (some echo the whole offending prompt back), and an unbounded one in the
+    // log MESSAGE position pushes everything after it — including the `code` and `cause` that
+    // say what class of failure this was — past whatever the reader's log view truncates at.
+    // 200 is this file's own convention for a message in a log (`:608`, `:690`), not a new
+    // number, and the untruncated text is not lost: `cause` and the structured fields carry the
+    // diagnosis, which is what a reader needs first.
+    logger.warn(`v2: context overflow detected — ${message.slice(0, 200)}`, { agentId, code, cause }, agentId);
 
     const { getDreamerAgentId } = await import('../../config/platform.js');
     if (agentId === getDreamerAgentId()) {
@@ -747,7 +754,10 @@ async function recordInjury(
   declaredPatienceDidCompact = false,
 ): Promise<void> {
   const agentId = state.agentId;
-  logger.error(`v2 agent loop failed: ${message}`, { agentId, code, cause }, agentId);
+  // t113 B3: BOUNDED — same reason and the same 200 as the sibling above. This is the line a
+  // reader finds FIRST when a turn died, so the fields that classify the death must not be
+  // pushed off the end of it by a provider that returned a wall of text.
+  logger.error(`v2 agent loop failed: ${message.slice(0, 200)}`, { agentId, code, cause }, agentId);
   // P4 turn record: a turn that died on an exception gets an honest terminal
   // state instead of an open-ended row.
   //
