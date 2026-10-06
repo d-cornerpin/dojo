@@ -6644,6 +6644,20 @@
       "to": 409,
       "by": "t105 — the SMS inbound frame carries the sender's conversation (t106's hand-up)",
       "why": "406 -> 409 (+3 net: 1 code, 2 comment). One field on the broadcast from the id this producer already resolved for its insert, plus the two-line pointer at the census. From 409 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/access/authorize.ts",
+      "from": 444,
+      "to": 454,
+      "by": "t107 B — the dashboard create door's DEFAULT grant set (OWNER RULING 2026-10-05 #4)",
+      "why": "444 -> 454 (+10 net: 2 code added, 1 code rewritten in place, 8 comment added, 0 removed). THE CODE IS ONE OPTIONAL PARAMETER AND ITS USE: `defaults: AccessGrants = MOST_RESTRICTIVE_GRANTS` on `resolveSpawnGrants`, and `clampGrantsTo(defaults, granter)` where the line read `clampGrantsTo(MOST_RESTRICTIVE_GRANTS, granter)`. The argument default IS today's floor, so not one existing call site changes meaning and `the-tool-door-grants.test.ts`'s floor-identity clause is untouched. THE 8 COMMENT LINES ARE WHY THE RAISE IS WORTH TAKING RATHER THAN THE REASON TO TRIM: the docstring directly above them states \"No grants named -> owner ruling 2's MOST RESTRICTIVE object\", and ruling #4 makes that sentence FALSE for one of the two doors this function serves. A parameter added without amending the sentence leaves the module asserting a rule it no longer holds, which is the drift the whole overhaul exists to delete; the new paragraph names the one door that passes something else, names the module that declares it, and states that whatever is passed is CLAMPED first so a wider base can never widen what the granter holds. WHAT WAS REFUSED: (a) widening `MOST_RESTRICTIVE_GRANTS` in `@dojo/shared` instead, which is +0 here and WRONG — that object is ruling 2's floor, shared with `spawn_agent`, the squad paths and `grantsDelta`'s audit arithmetic, so it would hand the category to every agent an AGENT spawns, and ruling #4 is about the button the OWNER presses; (b) passing the object as the `requested` PATCH from the route, +0 here and a real regression — a patch is judged by the no-escalation rule, so a box whose primary does not hold the category would get a 400 on every dashboard create instead of a clamped fallback; (c) cramming the parameter onto the `toolsPolicy` line to land at +9, which hides a parameter inside another one's line to satisfy a number. From 454 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/agents.ts",
+      "from": 963,
+      "to": 975,
+      "by": "t107 B — the dashboard create door's DEFAULT grant set (OWNER RULING 2026-10-05 #4)",
+      "why": "963 -> 975 (+12 net: 2 code added (the import and the fifth argument), 0 code removed, 10 comment added net — 16 new against 6 of the old block the ruling made false). THE TWO CODE LINES ARE THE WHOLE CHANGE AT THIS DOOR: one import of `DASHBOARD_CREATE_DEFAULT_GRANTS` from the new leaf `agent/access/create-defaults.ts` (71 lines, unpinned, under the 400 new-file cap, and the home of the ruling text, the no-backfill decision and the argument for why the shared floor did not move), and one argument on the `resolveSpawnGrants` call. THE COMMENT ARITHMETIC IS A REPLACEMENT, NOT AN ADDITION: the block above that call said \"it gets the same most-restrictive default a spawn does\" and ruling #4 makes that sentence false, so six lines went and sixteen say what is true now — which default this door resolves against, that everything else in the floor is unchanged (the half of the ruling as load-bearing as the addition), and that the base is clamped to the ceiling before anything merges over it. A reader who trims that paragraph re-derives \"this route is the same as a spawn\" and deletes the argument as redundant. WHAT WAS REFUSED: (a) putting the constant in `access/read.ts` or `access/authorize.ts` so it could join an EXISTING import line here, saving the 2 code lines — `read.ts` is the derivation and `authorize.ts` decides what may be WRITTEN, while this is a POLICY about one door, and the no-backfill decision has to be written somewhere a reader will find it; (b) appending the fifth argument to the `body.toolsPolicy` line, which hides an argument inside another's line to satisfy a number and would also defeat the wire clause's POSITION assertion. From 975 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6671,6 +6685,7 @@
     "packages/dashboard/src/lib/manifest-edits.ts": 205,
     "packages/dashboard/src/lib/sudo-policy.ts": 85,
     "packages/dashboard/src/lib/voice/voice-client.ts": 878,
+    "packages/dashboard/src/lib/working-note-visibility.ts": 283,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 392,
     "packages/dashboard/src/pages/Agents.tsx": 683,
     "packages/dashboard/src/pages/Chat.tsx": 2109,
@@ -6682,7 +6697,7 @@
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 402,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
     "packages/server/src/agent/a2a-transport.ts": 2682,
-    "packages/server/src/agent/access/authorize.ts": 444,
+    "packages/server/src/agent/access/authorize.ts": 454,
     "packages/server/src/agent/access/read.ts": 264,
     "packages/server/src/agent/agent-status.ts": 268,
     "packages/server/src/agent/brokers/deny.ts": 385,
@@ -6950,7 +6965,6 @@
     "packages/shared/src/visibility.ts": 989,
     "packages/shared/src/ws.ts": 1270,
     "watchdog/src/auto-rollback.ts": 333,
-    "watchdog/src/index.ts": 1217,
-    "packages/dashboard/src/lib/working-note-visibility.ts": 283
+    "watchdog/src/index.ts": 1217
   }
 }
