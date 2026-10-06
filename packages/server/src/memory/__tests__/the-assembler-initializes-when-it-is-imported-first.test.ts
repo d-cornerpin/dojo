@@ -106,6 +106,45 @@ describe('a module in the assembler graph can be the first thing a process impor
   }, 200_000);
 });
 
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE SAME DEFECT, ONE FILE OVER — AND WHY IT IS HELD HERE RATHER THAN IN ITS OWN FILE.
+//
+// The sweep that found the constant above imported each of the 466 modules reachable from
+// `memory/assembler.ts` first, alone, in a fresh process. 33 threw. Fixing the origin-intent
+// read took 31 of them green and UNMASKED the 33rd: `scheduler/runner.ts` could never be a
+// first import either, because `tracker/pm-agent.ts` derives `VALIDATION_COVERAGE_BOUND_MS`
+// from `runner`'s `VALIDATION_ESCALATION_MIN` at module scope while `runner` reaches `pm-agent`
+// back through its own graph. Identical shape, identical fix: the clock moved to the leaf
+// `scheduler/validation-clock.ts`.
+//
+// It is held in THIS file because it is the same defect and the same proof: a cycle that
+// resolves by luck of import order. The arms below are the ones that were masked.
+//
+// MUTANT: move `VALIDATION_ESCALATION_MIN` back into `scheduler/runner.ts` and both arms red.
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('the owner-escalation clock is readable from module scope too', () => {
+  it('scheduler/runner.ts initializes when imported first in a fresh process', () => {
+    expect(importsCleanlyAlone('scheduler/runner.ts')).toBe('OK');
+  }, 200_000);
+
+  it('tracker/pm-agent.ts initializes when imported first in a fresh process', () => {
+    expect(importsCleanlyAlone('tracker/pm-agent.ts')).toBe('OK');
+  }, 200_000);
+
+  it('scheduler/validation-clock.ts is a leaf — it imports nothing', () => {
+    const stripped = codeOf('scheduler', 'validation-clock.ts');
+    expect([...stripped.matchAll(/\bfrom\s*['"]([^'"]+)['"]/g)].map((m) => m[1])).toEqual([]);
+    expect(stripped).not.toMatch(/^\s*import\s*['"]/m);
+  });
+
+  // Again the DECLARATION, not the import path — see the note on the origin-intent arm below.
+  it('runner.ts re-exports the clock and declares no second one', () => {
+    const src = codeOf('scheduler', 'runner.ts');
+    expect(src, 'VALIDATION_ESCALATION_MIN is not declared in runner.ts')
+      .not.toMatch(/(export\s+)?(const|let|var)\s+VALIDATION_ESCALATION_MIN\s*=/);
+  });
+});
+
 describe('the origin-intent vocabulary stays readable from module scope', () => {
   // The STRUCTURAL half: a leaf cannot be mid-initialization when someone reads it. If the
   // vocabulary ever acquires an import of its own, it stops being a leaf and the TDZ can

@@ -14,6 +14,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { retireEngineEventsForRun, retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { getDb } from '../db/connection.js';
+import { VALIDATION_ESCALATION_MIN } from './validation-clock.js';
 import { HARD_STUCK_THRESHOLD_MINUTES } from '../agent/stuck-thresholds.js';
 import { withUnit } from '../db/unit.js';
 import {
@@ -355,12 +356,19 @@ async function sweepStaleUserVerdictRequests(): Promise<void> {
 // task alone — the dashboard bug icon stays until either PM, the user, or
 // the assigned agent (acting on user feedback) validates.
 
-// EXPORTED, SWEEP-A TB8 JOB 2. This is the only clock in the product that says how long a
-// row may await Key 2 before the OWNER is told about it, so it is also the only honest
-// bound on how long the platform's own validator may take. `tracker/pm-agent.ts` reads it
-// from here rather than declaring a second number — the two clocks must be ORDERED (the
-// validator is accountable before the owner is bothered), and two copies cannot be ordered.
-export const VALIDATION_ESCALATION_MIN = 5;
+// EXPORTED, SWEEP-A TB8 JOB 2 — the only clock in the product that says how long a row may
+// await Key 2 before the OWNER is told about it, and so also the only honest bound on how long
+// the platform's own validator may take. Still ONE number: `tracker/pm-agent.ts` reads it
+// rather than declaring a second, because the two clocks must be ORDERED (the validator is
+// accountable before the owner is bothered) and two copies cannot be ordered.
+//
+// It is DECLARED one file over, in `validation-clock.ts`, because pm-agent derives its bound
+// from it at MODULE SCOPE and this module reaches pm-agent again through its own dependency
+// graph — so a declaration here was a temporal dead zone for any process that entered this
+// module first (t117; the full argument is in `validation-clock.ts`). Reading it through this
+// re-export is safe — an ESM re-export binds to the leaf's own binding — but the DECLARATION
+// must not come back here.
+export { VALIDATION_ESCALATION_MIN };
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // SWEEP CORE-2 ITEM 1 — THE ORDERING LAW LANDS HERE. TB8 handed this up and named it a

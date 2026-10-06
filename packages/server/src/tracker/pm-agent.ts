@@ -20,7 +20,12 @@ import {
   setValidationDoorbellHandler, validationAttemptCountExpr, validationQueueOrderExpr,
   VALIDATION_ATTEMPT_MISS, VALIDATION_ATTEMPT_UNAVAILABLE, type DoorbellRing,
 } from '../work/validation-drive.js';
-import { VALIDATION_ESCALATION_MIN } from '../scheduler/runner.js';
+// FROM THE LEAF (t117): `VALIDATION_COVERAGE_BOUND_MS` below derives from this constant at
+// MODULE SCOPE, and `scheduler/runner.ts` reaches this file again through its own dependency
+// graph — so while the clock was DECLARED in `runner.ts`, this read was a temporal dead zone
+// for any process that entered `runner.ts` first. `validation-clock.ts` imports nothing, so it
+// is always fully initialized. It is still the ONE declaration: runner.ts reads the same leaf.
+import { VALIDATION_ESCALATION_MIN } from '../scheduler/validation-clock.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { sendAgentMessage } from '../agent/agent-bus.js';

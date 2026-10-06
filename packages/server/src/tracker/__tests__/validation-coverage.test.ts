@@ -58,9 +58,15 @@ const NOW = 1_785_980_000_000;
 
 describe('TB8 JOB 2 — the bound is the product’s own escalation clock, single-sourced', () => {
   it('is the scheduler’s VALIDATION_ESCALATION_MIN, not a second number', () => {
+    // Read through `scheduler/runner.js` at the top of this file, which is where every reader
+    // has always read it — so this equality also holds runner's re-export honest.
     expect(VALIDATION_COVERAGE_BOUND_MS).toBe(VALIDATION_ESCALATION_MIN * 60_000);
-    // …and the scheduler still owns it: pm-agent must IMPORT it rather than re-declare.
-    expect(pmSource()).toMatch(/import\s*\{[^}]*VALIDATION_ESCALATION_MIN[^}]*\}\s*from\s*'\.\.\/scheduler\/runner\.js'/);
+    // …and it is still SINGLE-SOURCED: pm-agent IMPORTS the clock rather than re-declaring it.
+    // The declaration moved to the leaf `scheduler/validation-clock.ts` in t117 — deriving this
+    // bound at module scope while importing from `runner.ts` was a temporal dead zone, because
+    // runner reaches pm-agent back through its own graph. One declaration either way; what this
+    // clause protects is that there is no SECOND number, which is unchanged.
+    expect(pmSource()).toMatch(/import\s*\{[^}]*VALIDATION_ESCALATION_MIN[^}]*\}\s*from\s*'\.\.\/scheduler\/validation-clock\.js'/);
     expect(pmSource()).not.toMatch(/const\s+VALIDATION_ESCALATION_MIN\s*=/);
   });
 });
