@@ -1004,6 +1004,29 @@ export const JOIN_TTL_MINUTES = 60;
 export const JOIN_MAX_AGE_DAYS = 7;
 
 /**
+ * t114 (census U3) — THE HARD CEILING ON TTL EXTENSION, declared beside the TTL it bounds.
+ *
+ * `JOIN_TTL_MINUTES` above used to be the whole story: at minute 60 the join was failed closed
+ * on wall-clock alone, with no read of whether the agent it was waiting on was still working.
+ * A sub-agent healthily grinding its delegated piece at minute 61 — well inside its own
+ * creator-set runtime — had its join declared dead, the owner told the answer never came, and
+ * its eventual reply arrived to a terminal join. That is the opposite of row 33's contract one
+ * file over, where a spawn timeout lands on a DECISION POINT rather than a kill.
+ *
+ * So the deadline now yields to PROOF OF LIFE: while an outstanding piece's assignee is
+ * provably working, the reaper grants more time instead of failing the join. This number is the
+ * bound on that generosity, and it exists because "every sign of life buys unlimited further
+ * time" is the same unbounded-renewal trap the stream watchdog's own header refuses — a wedged
+ * agent that looks busy for ever would never be reaped at all.
+ *
+ * FOUR HOURS, and the unit is a MULTIPLE of the declared TTL rather than a new invented cliff
+ * (#14): four turns of the platform's own declared answer to "how long may a delegated reply be
+ * waited for". Past it the join fails closed whatever the assignee looks like, and the exit
+ * reason says that is what happened.
+ */
+export const JOIN_LIVENESS_MAX_TOTAL_MS = 4 * JOIN_TTL_MINUTES * 60_000;
+
+/**
  * The A2A per-thread hop cap, declared ONCE, beside the column it now keys on.
  *
  * DECIDED D2 (PHASE-2 T0): the transport's private `MAX_HOPS_PER_THREAD` dissolves into
@@ -1100,6 +1123,9 @@ export interface JoinState {
   compilePending: boolean;
   replyConversationId: string | null;
   ttlAt: number | null;
+  /** t114: when the join opened, so a TTL extension can be bounded against its TOTAL life
+   *  rather than against a deadline it has itself moved. */
+  openedAt: number | null;
   rootId: string;
   /** What an at-zero join can honestly do: compile the pieces, or admit it got nothing. */
   outcome: 'compile' | 'fail-closed';
@@ -1322,12 +1348,12 @@ export function joinState(parentWorkId: string): JoinState | null {
   const db = getDb();
   const p = db.prepare(
     `SELECT id, agent_id, state, remaining_children, compile_pending, reply_conversation_id,
-            ttl_at, root_id
+            ttl_at, opened_at, root_id
        FROM work WHERE id = ?`,
   ).get(parentWorkId) as
     | { id: string; agent_id: string; state: WorkState; remaining_children: number | null;
         compile_pending: number; reply_conversation_id: string | null; ttl_at: number | null;
-        root_id: string }
+        opened_at: number | null; root_id: string }
     | undefined;
   if (!p || p.remaining_children === null) return null;
   const counts = db.prepare(
@@ -1338,7 +1364,8 @@ export function joinState(parentWorkId: string): JoinState | null {
     id: p.id, agentId: p.agent_id, parentState: p.state,
     total: counts.total, landed, remaining: p.remaining_children,
     complete: p.remaining_children === 0, compilePending: p.compile_pending === 1,
-    replyConversationId: p.reply_conversation_id, ttlAt: p.ttl_at, rootId: p.root_id,
+    replyConversationId: p.reply_conversation_id, ttlAt: p.ttl_at, openedAt: p.opened_at,
+    rootId: p.root_id,
     outcome: landed > 0 ? 'compile' : 'fail-closed',
   };
 }
@@ -1370,7 +1397,7 @@ function joinAfter(childId: string): JoinState & { complete: boolean } {
   return st ?? {
     id: parentId ?? '', agentId: '', parentState: 'open', total: 0, landed: 0, remaining: 0,
     complete: false, compilePending: false, replyConversationId: null, ttlAt: null,
-    rootId: '', outcome: 'fail-closed',
+    openedAt: null, rootId: '', outcome: 'fail-closed',
   };
 }
 
@@ -1695,6 +1722,38 @@ export function failJoinClosed(
     to: 'failed', by: 'scheduler', actorId: 'work-reaper',
     reason: p.reason, expectedState: p.expectedState,
   });
+}
+
+/**
+ * t114 (census U3) — GRANT A WAITING JOIN MORE TIME, because the agent it waits on is provably
+ * still working. The alternative at this point in the reaper is `failJoinClosed`, so this is the
+ * "do not kill work you cannot prove is dead" door.
+ *
+ * It is a `ttl_at` write and NOT a `transition()`: nothing about the join's state changes, which
+ * is the point — the join stays exactly as open as it was and keeps every exactly-once guard it
+ * had. `work.state` writes still belong to `transition`; this module remains their single writer.
+ *
+ * REFUSES rather than clamps when the join's TOTAL life has passed `JOIN_LIVENESS_MAX_TOTAL_MS`,
+ * and returns `false` so the caller can fail the join closed with an exit reason that says the
+ * ceiling is what ended it. A `null` `opened_at` also refuses: an extension that cannot be
+ * bounded is the unbounded renewal the ceiling exists to prevent.
+ */
+export function extendJoinTtl(
+  parentWorkId: string, p: { grantMs: number; nowMs?: number },
+): { extended: boolean; ttlAt: number | null; reason?: 'no-join' | 'no-opened-at' | 'past-ceiling' } {
+  const nowMs = p.nowMs ?? now();
+  const state = joinState(parentWorkId);
+  if (!state) return { extended: false, ttlAt: null, reason: 'no-join' };
+  if (state.openedAt === null) return { extended: false, ttlAt: state.ttlAt, reason: 'no-opened-at' };
+  if (nowMs - state.openedAt >= JOIN_LIVENESS_MAX_TOTAL_MS) {
+    return { extended: false, ttlAt: state.ttlAt, reason: 'past-ceiling' };
+  }
+  // Granted from NOW, never from the expired deadline: a reaper that ran late must not hand out
+  // a grant that is already spent.
+  const ttlAt = nowMs + p.grantMs;
+  getDb().prepare('UPDATE work SET ttl_at = ?, updated_at = ? WHERE id = ?')
+    .run(ttlAt, nowMs, parentWorkId);
+  return { extended: true, ttlAt };
 }
 
 // ── DEMOLISHED, SWEEP-A TB2: `settleJoinDelivered` ──

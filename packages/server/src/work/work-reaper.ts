@@ -148,7 +148,7 @@ export const DEADLINES: Readonly<Record<DeadlineId, Deadline>> = {
   join_ttl: {
     id: 'join_ttl', ms: 60 * MIN,
     reason:
-      'How long a delegated join may wait before the engine fails it CLOSED and tells the owner on the join\'s own channel. The owner is never left in silence because the asked agent died, was terminated, or dropped the ask.',
+      'How long a delegated join may wait before the engine fails it CLOSED and tells the owner on the join\'s own channel. The owner is never left in silence because the asked agent died, was terminated, or dropped the ask. t114 (census U3): this deadline YIELDS TO PROOF OF LIFE — the census recorded it as the one row of these thirteen that KILLED work rather than expiring an obligation, because a delegate still grinding its piece at minute 61 was failed closed with no liveness read. The reaper now grants a patience-scaled extension while an outstanding piece\'s assignee is provably working, bounded by JOIN_LIVENESS_MAX_TOTAL_MS; past that ceiling it fails closed and says so.',
     carriedFrom: 'JOIN_TTL_MINUTES = 60 — work/store.ts, carried verbatim from the deleted PARK_TTL_MINUTES (agent/a2a-transport.ts)',
   },
   approval_ttl: {

@@ -14,6 +14,10 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+// t114 (census U3): the liveness fact every other reaper in the tree guards on, and the
+// patience ladder that scales a grant by the assignee's own declared model speed.
+import { activeRuns } from './shared-state.js';
+import { patienceFloorFor } from '../tracker/assignee-patience.js';
 import { A2A_THREAD_SHORT_LENGTH, a2aThreadShort, OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -39,6 +43,7 @@ import {
   dueJoinsUnderClosedParent,
   compilePendingJoins, failJoinClosed, clearJoinCompilePending,
   claimFailedJoinForLateAnswer, threadHopCountInWindow, bumpThreadHopCount, hopWindowLapsed,
+  extendJoinTtl, JOIN_LIVENESS_MAX_TOTAL_MS,
   type JoinState, type JoinPiece,
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';   // t90 D2
@@ -2403,9 +2408,43 @@ function steerAgentToTellOwnerStuck(join: JoinState, rung: JoinDriveDecision): v
  *      on the join's own channel, exactly once, and the join is terminal so it cannot fire again.
  *   3. Otherwise leave it for the next pass.
  */
+/**
+ * t114 (census U3) — IS ANY AGENT THIS JOIN IS WAITING ON PROVABLY STILL WORKING?
+ *
+ * Two facts, in the order the rest of the tree reads them. `activeRuns` is the in-process truth
+ * every other reaper in the codebase defers to (`runtime.ts`'s `recoverStuckAgents`,
+ * `healer-agent.ts`, `auto-fix.ts`, `vault/maintenance.ts`, `pm-agent.ts` all guard on it); the
+ * `agents.status` read is the cross-restart fallback, because a run that began before a restart
+ * is not in this process's map but its row still says `working`.
+ *
+ * Returns the FIRST live assignee it finds, with its model's declared patience, so the grant can
+ * scale with the worker's speed instead of being one number for every box (the merged patience
+ * family's rule — `tracker/assignee-patience.ts`). A piece with no assignee recorded cannot be
+ * proven alive and is deliberately not counted.
+ */
+function liveAssigneeForJoin(join: JoinState): { agentId: string; grantMs: number; basis: string } | null {
+  for (const piece of joinPieces(join.id)) {
+    if (isTerminal(piece.state)) continue;
+    const assignee = piece.assigneeAgent;
+    if (!assignee) continue;
+    let live = activeRuns.has(assignee);
+    if (!live) {
+      try {
+        const row = getDb().prepare('SELECT status FROM agents WHERE id = ?').get(assignee) as
+          | { status: string } | undefined;
+        live = row?.status === 'working';
+      } catch { live = false; }
+    }
+    if (!live) continue;
+    const floor = patienceFloorFor(assignee);
+    return { agentId: assignee, grantMs: floor.floorSeconds * 1000, basis: floor.basis };
+  }
+  return null;
+}
+
 async function resolveOpenJoin(
   join: JoinState, opts: { failIfUnanswered: boolean; askedNameHint?: string | null },
-): Promise<'relayed' | 'failed-closed' | 'left-open' | 'already-settled'> {
+): Promise<'relayed' | 'failed-closed' | 'left-open' | 'already-settled' | 'extended'> {
   const ask = askRowForJoin(join);
   let state: JoinState | null = join;
   for (const piece of joinPieces(join.id)) {
@@ -2429,8 +2468,41 @@ async function resolveOpenJoin(
     return 'relayed';
   }
   if (!opts.failIfUnanswered) return 'left-open';
+
+  // ── t114 (census U3) — THE DEADLINE YIELDS TO PROOF OF LIFE ──
+  //
+  // This is where a healthy sub-agent used to be killed. `dueJoins` selects on `ttl_at` alone, so
+  // a delegate still grinding its piece at minute 61 — well inside its own creator-set
+  // `max_runtime` — reached this line, the join was failed closed, and the owner was told the
+  // answer never came back. No assignee liveness was ever read and no landed-piece count
+  // consulted. Row 33's spawn-timeout contract one file over lands every expiry on a DECISION
+  // POINT; the delegation it spawns got a kill.
+  //
+  // Proof of life now buys one patience-scaled grant — the assignee's own declared model speed,
+  // not a number chosen here — and the grant is bounded by `JOIN_LIVENESS_MAX_TOTAL_MS` so a
+  // permanently busy-looking agent cannot renew for ever. Past that ceiling the join DOES fail,
+  // and the reason below says the ceiling is what ended it rather than claiming silence.
+  const alive = liveAssigneeForJoin(state);
+  if (alive) {
+    const granted = extendJoinTtl(state.id, { grantMs: alive.grantMs });
+    if (granted.extended) {
+      logger.info('a2a join past its deadline but its assignee is still WORKING — granting more time, not failing it', {
+        joinId: state.id, assignee: alive.agentId, grantMs: alive.grantMs,
+        patienceBasis: alive.basis, newTtlAt: granted.ttlAt,
+        landed: state.landed, total: state.total,
+      });
+      return 'extended';
+    }
+    logger.warn('a2a join assignee still looks alive but the join hit its hard ceiling — failing closed', {
+      joinId: state.id, assignee: alive.agentId, refusedBecause: granted.reason,
+      ceilingMs: JOIN_LIVENESS_MAX_TOTAL_MS,
+    });
+  }
+
   const claimed = failJoinClosed(state.id, {
-    reason: 'the delegated answer never came back inside the deadline',
+    reason: alive
+      ? 'the delegated answer never came back, and the wait reached its hard ceiling'
+      : 'the delegated answer never came back inside the deadline',
     expectedState: state.parentState,
   });
   if (claimed.kind !== 'applied') return 'already-settled';
@@ -2565,8 +2637,13 @@ async function resolveJoinUnderClosedParent(
 export async function sweepExpiredJoins(): Promise<{
   failedClosed: number; relayedReplies: number; noticedUnderClosedParent: number;
   compileDrives: number;
+  /** t114 (U3): joins the reaper REFUSED to fail because their assignee was provably working. */
+  extendedForLiveAssignee: number;
 }> {
-  const out = { failedClosed: 0, relayedReplies: 0, noticedUnderClosedParent: 0, compileDrives: 0 };
+  const out = {
+    failedClosed: 0, relayedReplies: 0, noticedUnderClosedParent: 0, compileDrives: 0,
+    extendedForLiveAssignee: 0,
+  };
 
   // ── THE COMPILE DRIVE, ON THE REAPER'S OWN CADENCE (SWEEP-A TB2) ──
   // The turn-end drain drives a compile-pending join whenever the agent is taking turns. An
@@ -2613,7 +2690,12 @@ export async function sweepExpiredJoins(): Promise<{
       const outcome = await resolveOpenJoin(join, { failIfUnanswered: true });
       if (outcome === 'relayed') out.relayedReplies++;
       else if (outcome === 'failed-closed') out.failedClosed++;
-      logger.info('join TTL reaper: closed expired join', {
+      else if (outcome === 'extended') out.extendedForLiveAssignee++;
+      // t114: the old wording was 'closed expired join' for every outcome, which now lies for
+      // the one that deliberately closed nothing.
+      logger.info(outcome === 'extended'
+        ? 'join TTL reaper: expired join KEPT OPEN — its assignee is still working'
+        : 'join TTL reaper: closed expired join', {
         agentId: join.agentId, work: join.id, outcome,
       });
     } catch (err) {
