@@ -6980,6 +6980,13 @@
       "to": 244,
       "by": "t113 C - the published telemetry enum drops the two retired members",
       "why": "Plus 3 lines: 3 comment, and the executable half is a NET LOSS of two list members on the same lines. The three lines say why a telemetry enum is not merely a list: this file is what a report PUBLISHES, so a member nothing can emit tells the report's reader that the value is possible - which is the same dishonest-record defect as the enum itself, one audience further out. THE ALTERNATIVE REFUSED: drop the two members silently (+0, net -2). Refused because this whitelist is hand-maintained against the source enum and the only clause binding them is in the engine-side census; a reader diffing this file wants to know whether the removal was deliberate or a merge accident. The binding clause (`the telemetry whitelist publishes exactly the source enum`) derives both sides from the enum, so it passed unchanged across this edit and needed no update."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 3877,
+      "to": 3914,
+      "by": "t113 D - the ollama and agent-sdk fit gates route through the shared learned-divisor estimator (BACKLOG line 101)",
+      "why": "Plus 37 lines: 24 comment and 13 executable, across TWO sites. The executable half per site is the `measuredDivisorsFor` read plus the `estimateRequestTokens` call spelled over its two character populations - which is three lines where one bare sum used to be, because the call takes prose and schema SEPARATELY and that separation is the entire point of the fix. THE COMMENT HALF: 24 lines over two sites, and the bulk of it is one block at the ollama gate that the agent-sdk gate then refers back to rather than repeating. It records four things a reader needs and cannot derive: that this is the SAME undercount t108 fixed elsewhere and not a new idea, that the prose/schema split is substantive rather than formatting (a site that passed the whole request as proseChars would spend the prose divisor on a dense tools array and be wrong while looking wired - which is one of the two mutants), that an unmeasured provider gets today's number byte for byte because both bounds collapse to /CHARS_PER_TOKEN, and that there was no regression here because these gates always did this. ALTERNATIVES REFUSED, with their line costs: keep the bare `estimateTokens` sums and spend 0 - refused, that IS the defect the line routes; call `estimateRequestTokens` with the whole request as prose, which would be about -6 lines and ONE character count instead of two - refused on correctness, it spends the wrong population's divisor on the tools array, and the clause `the two side doors split PROSE from SCHEMA` exists because that mistake looks identical to the fix from a presence-only reading; extract a helper taking (systemPrompt, messages, tools, providerId) to serve all four gates, about -10 lines here - refused because the four transports genuinely differ in WHAT is prose (the ollama gate has no separate systemPrompt argument at this point, the sdk one does) and a helper papering over that would hide the very distinction the two divisors exist for. ⚠ G2 UNTOUCHED: no prompt byte moves - this changes an ESTIMATE of the prompt, never the prompt. Live lane t114 holds this file; the merge was rehearsed with `git merge-file` (exit 0, zero conflict markers, both lanes' changes present) rather than assumed."
     }
   ],
   "maxNewFileLines": 400,
@@ -7044,7 +7051,7 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 187,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 3877,
+    "packages/server/src/agent/model.ts": 3914,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
