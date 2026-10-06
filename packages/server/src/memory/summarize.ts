@@ -42,13 +42,13 @@ export function getDepthPrompt(depth: number, targetTokens: number, previousCont
 ${identity}
 
 INPUT FORMAT: The conversation below is formatted as [ROLE · PARTY] followed by the message content, separated by --- dividers.
-[USER · <name>] = an inbound message, tagged with WHO it is from and on which channel (e.g. [USER · the owner], [USER · Alex Chen (imessage)], [USER · priya@northwind.example.com (email)], [USER · a PM agent (agent)])
+[USER · <name>] = an inbound message, tagged with WHO it is from and on which channel (e.g. [USER · the owner], [USER · <a contact> (imessage)], [USER · <an address> (email)], [USER · a PM agent (agent)])
 [ASSISTANT · <party>] / [TOOL · <party>] = the AI assistant's own reply / a tool result, tagged with the conversation it was part of
 The PARTY tag tells you which conversation each message belongs to. These are SEPARATE conversations with different people, not one stream.
 [USER · <name> · ANSWERED in turn <N>] = the engine's own record that this ask WAS ALREADY ANSWERED, on turn N. Carry that state into the summary — write "asked X; answered on turn N" — and NEVER list such an ask as outstanding, pending, or awaiting a reply. An ask with no ANSWERED tag is simply an ask; say what was asked, not that it is still owed.
 
 CONVERSATION ATTRIBUTION — CRITICAL:
-- Every fact, request, reminder, pending task, or decision MUST state which party/conversation it belongs to. Write "the owner asked to move their dentist to 3pm" and "Priya (email) asked for the offsite budget" — NEVER an unattributed "dentist moved to 3pm; offsite budget requested" that drops who it was for.
+- Every fact, request, reminder, pending task, or decision MUST state which party/conversation it belongs to. Write "the owner asked to move their dentist to 3pm" and "<that contact> (email) asked for the offsite budget" — NEVER an unattributed "dentist moved to 3pm; offsite budget requested" that drops who it was for.
 - Keep different parties' items separate. Do not merge a request from one person with an action for another. A later reader uses these labels to act on the RIGHT person's request on the right turn; an unlabeled fact causes it to act on the wrong conversation.
 
 TEMPORAL ANCHORING — CRITICAL:
@@ -66,7 +66,7 @@ ABSOLUTE RULES — NEVER VIOLATE THESE:
 - Preserve ALL technical specifics: error messages, config values, commands run, API responses
 - When the user says "X is Y", write "X is Y" — do not generalize to "discussed X"
 - Capability / tool availability is VOLATILE state, not a durable fact. Record what was ATTEMPTED and the OUTCOME ("tried to download from the user's account, got a 'no such tool' error"), but NEVER write a standing verdict like "the agent cannot download user attachments" or "that feature isn't supported" — the platform gains tools over time and such verdicts silently go false. Keep the dated attempt, drop the conclusion.
-- Note any unresolved questions, pending tasks, or open decisions in the narrative, tagged with the party/conversation they belong to. An OBLIGATION — something still owed to someone — may only be written if the conversation gives you its work id, cited as written (e.g. "still owed: email Bob the roof quote [cmt:1a2b3c4d5e6f]"). If there is no id for it, leave it out: the id is the record, the summary is the context around it. A summary is a record of what was SAID, never of what is currently owed; the OPEN WORK block in the live prompt is the current status, and an obligation line here is history whatever tense it is written in.
+- Note any unresolved questions, pending tasks, or open decisions in the narrative, tagged with the party/conversation they belong to. An OBLIGATION — something still owed to someone — may only be written if the conversation gives you its work id, cited as written (e.g. "still owed: email <that contact> the roof quote [cmt:1a2b3c4d5e6f]"). If there is no id for it, leave it out: the id is the record, the summary is the context around it. A summary is a record of what was SAID, never of what is currently owed; the OPEN WORK block in the live prompt is the current status, and an obligation line here is history whatever tense it is written in.
 - Attribute every fact to the correct person AND the correct conversation, using the [ROLE · PARTY] tags. Carry the party label into the summary text so whose-request-is-whose survives compression.
 - CRITICAL — Preserve resolution state. At the end of the summary, include a section:
   RESOLVED: [issue] — fixed [how/when]
