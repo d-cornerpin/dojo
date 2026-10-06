@@ -6700,6 +6700,27 @@
       "to": 694,
       "by": "t109 item A — the a2a_threads purge gets the one clock it needs",
       "why": "680 -> 694 (+14 net: 12 code, 2 comment, 1 import line replaced in place). THE CODE is one `ReaperKind` entry: id, `everyMs`, `cadenceFrom`, `wakes` and a 4-line `run` that calls `purgeDeadA2AThreads` and logs only when something went. It is here because this module is the platform's declared single home for periodic sweeps — the file's own header exists to stop the 'nearest available setInterval' pattern that scattered eleven deadlines across three files — and a sweep with no clock is a sweep that never runs (the clause asserts the kind, its period and its `cadenceFrom`). The hour is CARRIED from the sibling with the same shape, `terminal-task-prune`'s PRUNE_INTERVAL_MS, because this horizon is measured in DAYS (`JOIN_MAX_AGE_DAYS`) and an hourly look is already more than enough; nothing is chosen (#14). The 2 comment lines point at where the disposal rule and its two guards are argued, rather than restating them. ALTERNATIVE REFUSED: calling the purge opportunistically from `ensureThread` behind a time or probability gate (+0 here) — that is a hidden sweep on a hot path with an invented gate, which is both of the things this module was built to delete. From 694 this file may only shrink."
+    },
+    {
+      "path": "packages/shared/src/markers.ts",
+      "from": 286,
+      "to": 323,
+      "by": "t109 item B — the marker's eight characters come from the varying region, and the legacy form is kept by name",
+      "why": "286 -> 323 (+37 net: 11 code, 26 comment; `wc -l` before and after, nothing deleted). THE CODE is three small functions, and all three are needed: `a2aThreadShort` (1 line, THE ONE PRODUCER of a marker's thread token — `a2a-transport.ts:721` is its only caller, so the wire shape has a single home); `a2aThreadShortLegacy` (1 line, the PRE-t109 front slice, kept and NAMED rather than inlined, because markers already sitting in every agent's history carry it and 'what the old form was' is a fact a reader must be able to look up); `a2aThreadTokenMatches` (4 lines, the comparison both sides must use — a stored id is FULL, so a reader that compares a token to `substr(id,1,8)` is the collision this item fixes, and a shared matcher is what stops the next reader re-deriving it wrong). They are HERE because this module is the declared home of the marker grammar and `@dojo/shared` is what both the server's producer and its consumer can import; a server-side copy would be two spellings of one wire format, which is the disease the overhaul exists to delete. THE COMMENT HALF IS 26 AND WAS 44: what the collision COST (one reply filtering the salience lift off every other named thread) and the clause list live ONCE, in `memory/__tests__/two-named-threads-are-two-threads.test.ts`'s header, and this file points at it. What stays is what cannot live elsewhere: WHY the varying region (the id shape, and the ~36 buckets the front slice reaches), that the length and grammar are unchanged, and the both-sides rule stated AT the producer so a future reader cannot add a `substr` consumer without reading it. ALTERNATIVES REFUSED: (i) put the FULL id in the marker and delete the short entirely (-1 here) — measured and refused in the commit: the envelope's capture feeds `threadShort` through eight files of `agent/v2/**`, including a `length < 8` guard and two `substr(thread_id,1,8)` comparisons, none in this lane's fence, all of which would silently stop matching; (ii) a new `packages/shared/src/a2a-thread-key.ts` (+0 here) — three one-to-four-line functions over a grammar this file already owns, and `A2A_THREAD_RE`/`A2A_THREAD_SHORT_LENGTH`/`parseA2AThreadShort` would then be split across two files. From 323 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2745,
+      "to": 2756,
+      "by": "t109 item B — the A2A salience dedupe reads whole thread ids",
+      "why": "2745 -> 2756 (+11 net: 9 code, 2 comment; 4 lines replaced in place, so the gross comment add is 11 and the net is what is recorded here). THE CODE: the `repliedShorts` Set of 8-char buckets becomes a `repliedFullIds` array built from `SELECT DISTINCT thread_id` (+4, the widened query and the guarded push), plus one `alreadyReplied(token)` helper (+2) that routes every comparison through `@dojo/shared`'s `a2aThreadTokenMatches`. The helper exists rather than three inline `.some(...)` calls because the dedupe asks the same question in THREE places (the filter, and the two arms of the backward scan for the newest unreplied row) and three copies of a matcher is how the front-slice bug survived in two files for as long as it did; the three call sites each got SHORTER as a result, which is why 11 gross lands at +11 net rather than +15. THE COMMENT HALF IS 2 LINES AT THE SITE plus the paragraph that replaced the old one in place: it names the consequence (a reply on one named thread filtered the lift off every other) because this is the one place a reader meets the dedupe, and a reader who thinks the key is arbitrary will 'simplify' it back to a substr. ALTERNATIVE REFUSED: resolve each tail row's structural `messages.a2a_thread_id` instead of parsing the marker (+~15 here) — strictly more exact, and refused because the dedupe works on the MERGED array, whose contents have already been concatenated by `mergeConsecutiveRoles` and prefixed by earlier post-budget lanes, so matching a merged message back to its source row needs a content heuristic; a heuristic is a worse key than an exact 8-character one. From 2756 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 2722,
+      "to": 2726,
+      "by": "t109 item B — the marker token comes from the one producer",
+      "why": "2722 -> 2726 (+4 net: 2 code, 2 comment; 1 line replaced in place). THE CODE: `threadId.slice(0, A2A_THREAD_SHORT_LENGTH)` becomes `a2aThreadShort(threadId)`, and the import line gains the symbol. That is the whole change, and it is the producer end of item B: this one expression is what every `[A2A:… thread:X …]` marker on the box is built from, so moving it moves the key everywhere at once. The 2 comment lines say WHY the slice moved and point at `markers.ts` for the derivation, which matters here specifically because this file's OWN `makeThreadId` header already warns that an 8-char front prefix 'collides heavily' — a reader who sees the warning and the old slice fifteen hundred lines apart should find the resolution at the slice. ALTERNATIVE REFUSED: none worth recording; there is no smaller change that moves the key. From 2726 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6738,7 +6759,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1985,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 402,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
-    "packages/server/src/agent/a2a-transport.ts": 2722,
+    "packages/server/src/agent/a2a-transport.ts": 2726,
     "packages/server/src/agent/access/authorize.ts": 454,
     "packages/server/src/agent/access/read.ts": 264,
     "packages/server/src/agent/agent-status.ts": 268,
@@ -6896,7 +6917,7 @@
     "packages/server/src/healer/healer-agent.ts": 1163,
     "packages/server/src/healer/injury-recovery.ts": 1155,
     "packages/server/src/index.ts": 1310,
-    "packages/server/src/memory/assembler.ts": 2745,
+    "packages/server/src/memory/assembler.ts": 2756,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
     "packages/server/src/memory/budget.ts": 699,
@@ -7000,7 +7021,7 @@
     "packages/server/src/work/validation-drive.ts": 615,
     "packages/server/src/work/work-reaper.ts": 694,
     "packages/shared/src/access.ts": 338,
-    "packages/shared/src/markers.ts": 286,
+    "packages/shared/src/markers.ts": 323,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
     "packages/shared/src/types.ts": 649,
