@@ -6994,6 +6994,90 @@
       "to": 911,
       "by": "t113 B3 (t110 C/L3) - two unbounded error messages leave the log MESSAGE position",
       "why": "Plus 10 lines: 10 comment, ZERO net executable - both changes are `${message}` becoming `${message.slice(0, 200)}` on the lines they already occupied. The comment explains the POSITION, which is the non-obvious part and the reason a reader would otherwise undo it: `logger.<level>(message, meta, agentId)` writes `message` FIRST, so an unbounded provider string there pushes the `code` and `cause` that classify the failure past whatever the reader's log view truncates at - the diagnosis is displaced by the thing being diagnosed. It also records that 200 is this file's OWN existing convention for a message in a log (`:608`, `:690`) rather than a number invented here, and that the untruncated text is not lost because the structured fields still carry it. THE ALTERNATIVE REFUSED: slice with no comment (+0). Refused because a bare `.slice(0, 200)` on a log line reads as pointless defensive noise and is exactly the kind of thing a later reader removes while tidying; the four sentences are what make it a decision. Note the count t110 handed up was of the wrong population (five interpolated log messages, only two carrying an unbounded error message) - the correction and its command are in the new clause file's header, not here. No prompt byte moves (G2 untouched)."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 2752,
+      "to": 2834,
+      "by": "t114 flat timers — a timer may only end work it can prove is dead",
+      "why": "2752 -> 2834 (+82: 51 code, 31 comment). CENSUS U3 — the one row of the work-reaper's thirteen declared deadlines that KILLED work instead of expiring an obligation. `dueJoins` selects on `ttl_at` alone and `resolveOpenJoin` went straight from 'nothing landed' to `failJoinClosed`, so a sub-agent healthily grinding its delegated piece at minute 61 — well inside its own creator-set runtime — had its join declared dead, the owner was told the answer never came, and the delegate's eventual reply met a terminal join. No assignee liveness was ever read. THE CODE: `liveAssigneeForJoin` (the `activeRuns` read every other reaper in this tree already guards on, plus the `agents.status` row as the cross-restart fallback), the extension branch before the kill, and the reaper's `extendedForLiveAssignee` accounting. THE COMMENT is the two things a reader cannot reconstruct: that this contradicted row 33's spawn-timeout contract one file over (every expiry there lands on a DECISION POINT), and WHY the grant is bounded — unlimited renewal on every sign of life is the trap the stream watchdog's own header refuses, so a forever-busy agent cannot hold a join open. REFUSED: a new module for the liveness read — it is six lines against two facts and belongs beside the only caller that may act on it. REFUSED: lengthening `JOIN_TTL_MINUTES`, which is also `THREAD_HOP_WINDOW_MS` and would silently move the A2A hop cap. From 2834 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/providers/anthropic-sdk.ts",
+      "from": 516,
+      "to": 587,
+      "by": "t114 flat timers — a timer may only end work it can prove is dead",
+      "why": "516 -> 587 (+71: 34 code, 48 comment). CENSUS ROW 35, the worst of the 26 — T81d armed this transport's first clock as a flat TOTAL-duration `setTimeout` that nothing ever bumped, while the `for await` loop took content and called `onChunk` throughout. Row 7's exact mechanism on a different transport, and worse in one respect: it arms ONLY for a row that DECLARED patience, so it punished exactly the owner who tried to configure the problem away — a declared 600s row got 630s and lost a healthy 700-second generation mid-sentence. THE CODE: a re-entrant `arm()`, `bumpGap`/`noteContent` (which is `makeStreamWatchdog`'s `bump`/`contentStarted` contract expressed locally, because `model.ts` is what dynamically imports this file and importing the shared one would cycle), the `idleTimeoutMs` parameter, and `trippedBoundMs` so the error names the gap that actually expired. THE COMMENT carries what the file previously asserted and got WRONG: its own prose cited T79e as precedent for the flat shape, which the census's row 7 note records as insufficient ('a derived flat ceiling is still a flat ceiling'), and claimed `query()` offered no per-token hook when it yields a message per chunk. A reader who is not told that will re-derive the same wrong conclusion. REFUSED: arming the bound for undeclared rows too — that is a behaviour change beyond the defect, so the arming CONDITION is byte-identical. From 587 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 2189,
+      "to": 2248,
+      "by": "t114 flat timers — a timer may only end work it can prove is dead",
+      "why": "2189 -> 2248 (+59: 22 code, 37 comment). U3's store half. THE CODE: `extendJoinTtl` (a `ttl_at` write, deliberately NOT a `transition()` — nothing about the join's state changes, which is what lets it keep every exactly-once guard it has, and `transition` stays the only writer of `work.state`), `JOIN_LIVENESS_MAX_TOTAL_MS`, and `openedAt` on `JoinState` plus its select. THE COMMENT argues the two choices a reader would otherwise have to guess: why the ceiling is a MULTIPLE of the declared TTL rather than a new invented cliff (#14 forbids inventing a threshold), and why the function REFUSES rather than clamps when the join is past it — the caller needs to distinguish 'granted' from 'ceiling reached' to write an honest exit reason instead of claiming silence. `openedAt` is read rather than the deadline because the extension itself MOVES the deadline, so bounding against it would let a join renew for ever. REFUSED: a migration — `opened_at` is an existing column and this is a read-shape change only. From 2248 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/voice/voice-ws.ts",
+      "from": 2302,
+      "to": 2352,
+      "by": "t114 flat timers — a timer may only end work it can prove is dead",
+      "why": "2302 -> 2352 (+50: 19 code, 31 comment). CENSUS U5 — a flat 30s bound on a job whose cost is proportional to the length of the recording, with `session.pcmChunks` CLEARED before the transcribe begins. When it fired the user's real, fully-captured speech was gone: no retry, no re-queue, just `voice:state error`. A two-minute dictation exceeded it as a matter of course, and the size fact (`pcm.length`) was already in use eleven lines above to gate the tiny-utterance drop. THE CODE: `transcribeBudgetMsFor` plus its three named constants and the reason string that quotes both numbers. It is EXPORTED on purpose, and that came out of the mutation run: with the arithmetic re-derived as an oracle in the test, planting a flat bound in the product left every arithmetic clause GREEN because they tested the copy — a clause that can pass while the shipped code says otherwise is how this bound survived a release ritual. Pointed at the real seam the same mutant turns four clauses red instead of one. THE COMMENT splits the three numbers by the job each does (boot allowance / per-audio-second grant / ceiling), because one constant doing three jobs is what made the original un-arguable. From 2352 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/video-job-poller.ts",
+      "from": 417,
+      "to": 458,
+      "by": "t114 flat timers — a timer may only end work it can prove is dead",
+      "why": "417 -> 458 (+41: 13 code, 28 comment). CENSUS U4 — the wall-clock guard force-failed the job ONE LINE above `pollProviderVideo`, so the measured fact (the provider's own status, and the progress percentage beside it) was fetched on the very next line and never got to speak. `failed` is terminal for this row — the boot resume only picks up `queued`/`polling` — so a render the provider finished two minutes after the wall had its asset dropped and the owner was billed for a video they never saw. THE CODE: the age becomes `pastWall` and is carried, the kill moves into the one branch where the provider returned nothing usable, the overrun is logged with the provider's own progress reading, and the exit reason names the absence of evidence instead of asserting a 'provider did not finish' nobody observed. THE COMMENT records why the clock may act in that ONE branch and nowhere else, since the obvious future edit is to 'simplify' it back above the poll. REFUSED: removing the wall — a provider that goes quiet must still end the job, and a control clause pins that. From 458 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/microsoft/tools-office.ts",
+      "from": 3508,
+      "to": 3538,
+      "by": "t114 flat timers — a timer may only end work it can prove is dead",
+      "why": "3508 -> 3538 (+30: 10 code, 20 comment). CENSUS U12 — this module moves whole re-zipped Office documents through download -> unzip -> edit -> re-zip -> PUT and both wire legs carried a FLAT bound with no size branch at all (30s down, 60s up), while its own sibling `tools-write.ts` branches at 4 MB and chunks. The write-back is the one that hurts: an abort there DISCARDS ALL COMPLETED EDIT WORK with nothing to resume from, and can leave a partial PUT — a flat clock destroying work it could not prove was dead. THE CODE: `officeTimeoutForBytes` and three named constants, applied to the leg whose body is in hand. THE COMMENT names the sibling whose shape is being copied, because the census's structural finding was that this tree held TWO timeout philosophies and the repair is to stop adding answers, not to add a better one. REFUSED: scaling the DOWNLOAD leg by a size it cannot know until the headers arrive — it keeps its baseline, now as a named constant. From 3538 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 3877,
+      "to": 3905,
+      "by": "t114 flat timers — a timer may only end work it can prove is dead",
+      "why": "3877 -> 3905 (+28: 7 code, 41 comment; 21 lines were also deleted). TWO CENSUS ROWS. ROW 8: this file handed the Ollama lock `patience.firstChunkMs` — the RAW resolved value, 90s on an undeclared row — while the transport eleven lines below armed `bounds.firstChunkMs`, the LIFTED 300s. A turn queued behind an entirely healthy same-model call that was ENTITLED to 300 seconds of prefill was rejected at 90. The `bounds` block MOVES above the acquire so both readers take the one expression and cannot drift again. ROW 35: the SDK call site hands down the two bounds separately now that the transport applies them as gaps. THE COMMENT is net positive while the code is nearly flat because two existing comment blocks DESCRIBED THE DEFECT AS THE DESIGN — one justified the flat ceiling by citing T79e, the other claimed no per-token hook existed — and a stale comment that argues for a defect is worse than none. Both are replaced with what the code now does and why the old reasoning was wrong. From 3905 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/browser.ts",
+      "from": 416,
+      "to": 433,
+      "by": "t114 flat timers — a timer may only end work it can prove is dead",
+      "why": "416 -> 433 (+17: 12 code, 5 comment). CENSUS ROW 34's `web_browse` extractor arm. The 45s bound is KEPT and that is deliberate — W3-1 carried F3's measured finding that a busy local extractor stalls real turns for MINUTES against the provider's 5-minute default, and failing fast to a genuine raw-page fallback is the point of the path; a control clause pins the bound so a future reader cannot 'finish the job' by deleting it. What was NOT defensible is that the degradation was SILENT: the agent asked for a goal to be applied, received the raw page under an unchanged header, and could not tell its goal had been dropped. THE CODE: an `extractionSkipped` reason that rides the RESULT rather than only the log, distinguishing an ABANDONED extractor from a FAILED one because the agent needs to know which it was before deciding whether to ask again. From 433 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/ollama-lock.ts",
+      "from": 448,
+      "to": 460,
+      "by": "t114 flat timers — a timer may only end work it can prove is dead",
+      "why": "448 -> 460 (+12: 4 code, 14 comment; 6 deleted). CENSUS ROW 8's second clause — the cross-model swap queue was a flat `QUEUE_TIMEOUT_MS` (60s) with no declared-patience input at all, while the same-model arm has taken the caller's own bound since T81c. Both are the same wait ('another call has the GPU and I am next'), so a provider declaring long patience was honoured on one path and ignored on the other and a healthy turn on a slow box was rejected at 60s for queueing behind a swap it was entitled to wait out. THE CODE: both arms now call the one resolver, and the swap rejection names the bound that fired instead of quoting no number. THE COMMENT records that an UNDECLARED row keeps today's 60s exactly — nothing was invented for the row that declared nothing — which is the property its own control clause drives. From 460 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/web-tools.ts",
+      "from": 0,
+      "to": 409,
+      "by": "t114 flat timers — a timer may only end work it can prove is dead",
+      "why": "NEWLY LISTED at 409, 9 past the 400-line new-file cap, and listed rather than split because the cap's own instruction is that the addition is meant to be SEEN AND ARGUED WITH. +26 (11 code, 15 comment) for CENSUS ROW 34's `web_fetch` extractor arm. As with `browser.ts`, the 45s bound is KEPT — F3 measured a busy extractor stalling real turns for minutes and the raw-fetch fallback below is genuine, so failing fast to it is the design and a control clause pins it. The defect was the SILENCE: the extraction was discarded and the agent received the raw page under an unchanged header, unable to tell that the prompt it asked to be applied never was — a silent quality degradation, worst exactly when the page is large enough to need extracting. THE CODE: an `extractionSkipped` reason carried into the returned header, which distinguishes an abandoned extractor from a failed one. REFUSED: splitting this file in a timer lane — the split is a real piece of work with its own blast radius and it is not this lane's fence; it is handed up in the report instead of being done badly here. From 409 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/microsoft/client.ts",
+      "from": 0,
+      "to": 257,
+      "by": "t114 flat timers — a timer may only end work it can prove is dead",
+      "why": "NEWLY LISTED at 257 — the growth detector flagged it for crossing 60% of the 400-line cap (228 -> 257), which is the 'argue cheaply now' warning rather than a failure, and listing it is the response the gate asks for: decrease-only from here, with the decision visible. +29 (11 code, 18 comment) for CENSUS U13: `TIMEOUT_MS` was a flat 30 seconds for EVERY Graph call, body-size-independent, while `google/client.ts:timeoutForBody` in this same tree already scales 30s + 30s/MB capped at 5 minutes for the same job — the census names those two files as the tree's two timeout philosophies and most of its unregistered-suspect list as the gap between them. The flat bound is also AMBIGUOUS rather than merely impatient: a large `sendMail` aborted at 30s may already have been ACCEPTED by Graph (a 202 with no id), and this codebase ships `refetchOutlookSentId` precisely because of that, so the clock manufactured the uncertainty another module exists to clean up. THE CODE: `graphTimeoutForBody` plus the ceiling, carried in the sibling's shape rather than invented, and applied at the two arming sites. A bodyless call is bounded exactly as it is today. REFUSED: splitting this client in a timer lane — it is a real piece of work with its own blast radius and it is not this lane's fence; handed up in the report. From 257 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 3914,
+      "to": 3942,
+      "by": "t114 rebase onto main 8ff1fd04 — the one both-changed pin, re-derived",
+      "why": "3914 -> 3942. NOT new work: this is the arithmetic of two lanes landing in one file. The 3-way merge flagged it as the single both-changed pin (base 3877, t113 3914, t114 3905) and the value is RE-DERIVED BY MEASUREMENT rather than by picking a side: `wc -l packages/server/src/agent/model.ts` on the rebased head is 3942, which is exactly 3877 + t113's 37 + t114's 28. That the two deltas are purely additive is itself the check that the auto-merge kept BOTH lanes' changes — t113's divisor reads in the fit gates and t114's clock handling in the ollama and agent-sdk transports — rather than silently dropping one. Taking either lane's number would have pinned the file below its own content and failed the gate on the next line anybody wrote. From 3942 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7040,7 +7124,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1985,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 402,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
-    "packages/server/src/agent/a2a-transport.ts": 2752,
+    "packages/server/src/agent/a2a-transport.ts": 2834,
     "packages/server/src/agent/access/authorize.ts": 454,
     "packages/server/src/agent/access/read.ts": 264,
     "packages/server/src/agent/agent-status.ts": 268,
@@ -7050,7 +7134,7 @@
     "packages/server/src/agent/brokers/sudo-copy.ts": 168,
     "packages/server/src/agent/brokers/sudo-policy.ts": 1320,
     "packages/server/src/agent/brokers/sudo-probe.ts": 82,
-    "packages/server/src/agent/browser.ts": 416,
+    "packages/server/src/agent/browser.ts": 433,
     "packages/server/src/agent/destructive-gate.ts": 595,
     "packages/server/src/agent/effects/capability.ts": 308,
     "packages/server/src/agent/effects/fs.ts": 258,
@@ -7058,7 +7142,7 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 187,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 3914,
+    "packages/server/src/agent/model.ts": 3942,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
@@ -7167,6 +7251,7 @@
     "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 562,
     "packages/server/src/agent/v2/steps/teardown/index.ts": 317,
     "packages/server/src/agent/v2/turn-record.ts": 332,
+    "packages/server/src/agent/web-tools.ts": 409,
     "packages/server/src/config/schema.ts": 240,
     "packages/server/src/costs/ledger-calibration.ts": 440,
     "packages/server/src/costs/prefill-calibration.ts": 309,
@@ -7223,7 +7308,8 @@
     "packages/server/src/memory/tail-horizon.ts": 391,
     "packages/server/src/memory/work-board-lane.ts": 266,
     "packages/server/src/microsoft/auth.ts": 635,
-    "packages/server/src/microsoft/tools-office.ts": 3508,
+    "packages/server/src/microsoft/client.ts": 257,
+    "packages/server/src/microsoft/tools-office.ts": 3538,
     "packages/server/src/microsoft/tools-read.ts": 1631,
     "packages/server/src/microsoft/tools-write.ts": 2212,
     "packages/server/src/migration/checks.ts": 531,
@@ -7231,7 +7317,7 @@
     "packages/server/src/prompt/assembler.ts": 2000,
     "packages/server/src/prompt/registry/entries.ts": 638,
     "packages/server/src/prompt/registry/types.ts": 491,
-    "packages/server/src/providers/anthropic-sdk.ts": 516,
+    "packages/server/src/providers/anthropic-sdk.ts": 587,
     "packages/server/src/providers/billing-breaker.ts": 316,
     "packages/server/src/report/bounds.ts": 320,
     "packages/server/src/report/state-lane.ts": 333,
@@ -7250,13 +7336,13 @@
     "packages/server/src/services/image-generation.ts": 476,
     "packages/server/src/services/imessage-bridge.ts": 2322,
     "packages/server/src/services/num-ctx-calculator.ts": 563,
-    "packages/server/src/services/ollama-lock.ts": 448,
+    "packages/server/src/services/ollama-lock.ts": 460,
     "packages/server/src/services/outlook-watcher.ts": 520,
     "packages/server/src/services/teams-watcher.ts": 464,
     "packages/server/src/services/transcription.ts": 399,
     "packages/server/src/services/tunnel.ts": 683,
     "packages/server/src/services/video-generation.ts": 402,
-    "packages/server/src/services/video-job-poller.ts": 417,
+    "packages/server/src/services/video-job-poller.ts": 458,
     "packages/server/src/techniques/dependencies.ts": 586,
     "packages/server/src/techniques/share-export.ts": 464,
     "packages/server/src/techniques/share-import.ts": 311,
@@ -7287,7 +7373,7 @@
     "packages/server/src/voice/hume-engine.ts": 605,
     "packages/server/src/voice/model-manager.ts": 585,
     "packages/server/src/voice/stt-service.ts": 538,
-    "packages/server/src/voice/voice-ws.ts": 2302,
+    "packages/server/src/voice/voice-ws.ts": 2352,
     "packages/server/src/work/ask-remediation.ts": 310,
     "packages/server/src/work/ask-settlement.ts": 1307,
     "packages/server/src/work/ask-title.ts": 444,
@@ -7296,7 +7382,7 @@
     "packages/server/src/work/obligation-memory.ts": 630,
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
-    "packages/server/src/work/store.ts": 2189,
+    "packages/server/src/work/store.ts": 2248,
     "packages/server/src/work/tracker-store.ts": 647,
     "packages/server/src/work/tracker-view.ts": 622,
     "packages/server/src/work/validation-drive.ts": 615,
