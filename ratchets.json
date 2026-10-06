@@ -6931,6 +6931,20 @@
       "to": 2752,
       "by": "t113 A2 - the raise is WITHDRAWN, because the change it paid for was handed up",
       "why": "TIGHTENED back to where it was, and recorded rather than quietly deleted so the pin's history reads straight. The 2752 -> 2755 entry three rows up paid for three comment lines naming the legacy `IN` member at `findUnlandedInboundReply`. Those lines are gone: the live lane `t114-flat-timers` took this file mid-sitting, a rehearsed `git merge-tree t113-reconciliation t114-flat-timers` CONFLICTED on the shared `@dojo/shared` import line that both lanes edit, and the campaign's live-lane rule is hand up rather than force. So the file is back at main's bytes (sha ff21beb4) and the ceiling is back at 2752 — a pin left at 2755 would be three lines of headroom nobody argued for, which is how a ratchet stops ratcheting. The fix is written down in overhaul-plans/t113-report.md item A2 for whoever owns the file next; it is byte-identical in behaviour, so nothing is broken in the meantime."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/setup-deps.ts",
+      "from": 514,
+      "to": 530,
+      "by": "t113 B2 (E1) - the Automation probe stops claiming what it cannot know",
+      "why": "Plus 16 lines, of which 22 are comment and SIX ARE DELETED CODE: the probe went from a seven-line try/catch around `osascript -e \"return 1\"` to one line, `return 'unknown'`. Executable movement is NEGATIVE SIX. The comment is 22 lines because this is a deliberate REFUSAL TO MEASURE sitting among three siblings that all measure, and the next reader will otherwise restore the probe believing it was lost: it records that `osascript -e \"return 1\"` drives no application and so needed no grant (the false green t96 found), that macOS grants Automation per (client, target) PAIR so no single boolean can express it even in principle, that the only probe which WOULD answer for Messages raises a TCC consent dialog and a polled status endpoint must not, and that the louder variant is the OWNER'S call under G14 with its BACKLOG line named. Every one of those four facts is a reason someone would otherwise undo this. THE ALTERNATIVE REFUSED, with its line cost: a one-line comment (\"cannot be probed; see BACKLOG 75\") at +1 instead of +22. Refused because it answers none of the four - a reader who does not know about the per-pair grant will write the Messages probe, ship the consent dialog, and discover the reason from a user. The pointer-to-a-doc form was also refused: BACKLOG lines are closed and swept, and this constraint outlives the line. NOT a prompt file; no cache prefix moves (G2 untouched)."
+    },
+    {
+      "path": "packages/dashboard/src/components/SetupDeps.tsx",
+      "from": 674,
+      "to": 688,
+      "by": "t113 B2 (E1) - the permissions summary gains the unprobeable state",
+      "why": "Plus 14 lines: 6 comment, 8 executable, and the 8 are a DIRECT CONSEQUENCE of the server fix in the same product commit rather than new scope. `allGranted` required every row to be `granted`; once the Automation probe stopped claiming `granted` it could not establish, that expression became unreachable and the \"All permissions granted\" label could never render again. A label that can never render is a reassurance the owner silently stops getting, so the three server answers get three outcomes: all granted, nothing blocked with N rows unprobeable, or neither. It was already LATENT before this lane - the Accessibility row has always answered `unknown` on a box without cliclick, so `allGranted` was already dead there - which is the argument for fixing the expression rather than special-casing Automation. THE ALTERNATIVE REFUSED: exclude Automation from `allGranted` (+1 line). Refused because it makes the label lie in the other direction, reporting \"All permissions granted\" on a box whose Automation is actually denied, which is the same class of false green this item exists to remove. ⚠ DECLARED FENCE DEVIATION: the brief fenced the dashboard CLAUSE, not this component; argued in overhaul-plans/t113-report.md. Dashboard suite 116/116 before and after."
     }
   ],
   "maxNewFileLines": 400,
@@ -6948,7 +6962,7 @@
     "packages/dashboard/src/components/PermissionsEditor.tsx": 448,
     "packages/dashboard/src/components/PlaudSettings.tsx": 254,
     "packages/dashboard/src/components/RouterConfig.tsx": 577,
-    "packages/dashboard/src/components/SetupDeps.tsx": 674,
+    "packages/dashboard/src/components/SetupDeps.tsx": 688,
     "packages/dashboard/src/components/TechniqueSessionProvider.tsx": 502,
     "packages/dashboard/src/components/TwilioSettings.tsx": 563,
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
@@ -7118,7 +7132,7 @@
     "packages/server/src/gateway/routes/config.ts": 2977,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/reports.ts": 250,
-    "packages/server/src/gateway/routes/setup-deps.ts": 514,
+    "packages/server/src/gateway/routes/setup-deps.ts": 530,
     "packages/server/src/gateway/routes/tracker.ts": 985,
     "packages/server/src/gateway/routes/twilio.ts": 512,
     "packages/server/src/gateway/routes/update.ts": 1305,
