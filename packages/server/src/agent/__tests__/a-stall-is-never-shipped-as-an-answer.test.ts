@@ -110,6 +110,37 @@ const requests = { openai: 0, anthropic: 0 };
 /** Sockets deliberately left hanging; destroyed in afterAll so the server can close. */
 const stalled: http.ServerResponse[] = [];
 
+// ── t121 — THE DETERMINISM HOOK, and why a timer could not be one ──
+//
+// Four clauses below needed "the user presses stop while the stream is stalled". They did it with
+// `setTimeout(() => stop.abort(), 200|400)` racing a seeded stall, which is a WALL-CLOCK GUESS
+// about when the stream reaches its stall. Under full-suite CPU starvation the abort lands late,
+// the wrong signal wins, and the clause fails while the product is correct — the release gate
+// refused on exactly this. It is also the defect this lane spent itself removing from the
+// product: a timer deciding an outcome it cannot observe.
+//
+// There are TWO causal points and they are not interchangeable. `onStall` fires when the stub
+// decides to stall — right for a clause about the SERVER's behaviour. `onChunk` (see `call`)
+// fires when the client has actually consumed the partial — right for "the user presses stop
+// MID-ANSWER", because there has to BE an answer so far. Using the server hook for the OpenAI
+// stop clauses aborted before the partial was read and turned them into "Request was aborted";
+// measured, not guessed. Either way ordering is causal instead of statistical, so the clause
+// proves its subject at any load. `onStall` is consumed once per arming, so a leftover hook
+// cannot reach into the next case.
+let onStall: (() => void) | null = null;
+const fireStall = (): void => {
+  const hook = onStall;
+  onStall = null;
+  if (hook) hook();
+};
+
+/** Resolve when `signal` aborts. WAITING FOR AN EVENT is deterministic; racing a timer is not. */
+const awaitAbort = (signal: AbortSignal): Promise<void> => (
+  signal.aborted
+    ? Promise.resolve()
+    : new Promise<void>(r => signal.addEventListener('abort', () => r(), { once: true }))
+);
+
 const take = (which: 'openai' | 'anthropic'): Behaviour => {
   const q = script[which];
   return q.length > 1 ? (q.shift() as Behaviour) : (q[0] ?? 'complete');
@@ -131,7 +162,7 @@ const anthEvent = (type: string, data: unknown): string =>
 const serveOpenAI = (res: http.ServerResponse, mode: Behaviour): void => {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
   res.write(oaChunk({ role: 'assistant', content: HALF }));
-  if (mode === 'half-then-stall') { stalled.push(res); return; } // ...and then nothing, ever.
+  if (mode === 'half-then-stall') { stalled.push(res); fireStall(); return; } // ...and then nothing, ever.
   res.write(oaChunk({ content: REST }));
   res.write(oaChunk({}, 'stop'));
   res.write(sse({
@@ -149,7 +180,7 @@ const serveAnthropic = (res: http.ServerResponse, mode: Behaviour): void => {
   } }));
   res.write(anthEvent('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }));
   res.write(anthEvent('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: HALF } }));
-  if (mode === 'half-then-stall') { stalled.push(res); return; } // ...and then nothing, ever.
+  if (mode === 'half-then-stall') { stalled.push(res); fireStall(); return; } // ...and then nothing, ever.
   res.write(anthEvent('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: REST } }));
   res.write(anthEvent('content_block_stop', { type: 'content_block_stop', index: 0 }));
   res.write(anthEvent('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 4 } }));
@@ -229,14 +260,30 @@ const seedAnthropic = (firstChunkMs: number | null, idleMs: number | null): void
   `).run();
 };
 
-const call = (modelId: string, abortSignal?: AbortSignal): Promise<ModelCallResult> => callModel({
+// t121: `onChunk` is the CLIENT-SIDE causal hook. The server's stall hook fires before the client
+// has parsed the chunk already on the wire, which is too early — aborting there cut the request
+// before the partial was consumed and the call came back "Request was aborted" instead of the
+// partial. `onChunk` fires once the transport has actually handed the text up, which is precisely
+// what "the user presses stop MID-ANSWER" means: there is an answer so far, and now it stops.
+const call = (
+  modelId: string,
+  abortSignal?: AbortSignal,
+  onChunk?: (chunk: string) => void,
+): Promise<ModelCallResult> => callModel({
   agentId: 'zargo',
   modelId,
   messages: [{ role: 'user', content: 'Is it done?' }],
   systemPrompt: 'You are a local model.',
   tools: false,
   abortSignal,
+  onChunk,
 });
+
+/** Abort `c` the first time a chunk reaches the client. One-shot, so a retry cannot re-trigger it. */
+const stopOnFirstChunk = (c: AbortController): ((chunk: string) => void) => {
+  let fired = false;
+  return () => { if (!fired) { fired = true; c.abort(); } };
+};
 
 beforeEach(() => {
   fs.rmSync(FAKE_HOME, { recursive: true, force: true });
@@ -400,23 +447,39 @@ describe('T65b — the one-retry grant becomes reachable for a mid-stream stall'
 // ════════════════════════════════════════════════════════════════════════════════════
 describe('T65b — CONTROL: a user stop mid-answer is unchanged', () => {
   it('OpenAI: the partial text comes back as a result, exactly as it always has', async () => {
+    // t121 — SAME SUBJECT, CAUSAL TRIGGER. Before: `setTimeout(… 400)` hoped to land inside the
+    // stall window. After: the stop fires AT the stall, so "mid-answer" is a fact about the stream
+    // rather than a bet on the scheduler. The standing 90s/60s bounds still mean the watchdog
+    // never fires, so what is proven is unchanged: a user stop returns the partial as a RESULT.
     script.openai = ['half-then-stall'];
     seedOpenAI(null, null); // standing 90s/60s bounds: the watchdog never fires here
     const stop = new AbortController();
-    setTimeout(() => stop.abort(), 400);
-    const result = await call('m-local', stop.signal);
+    const result = await call('m-local', stop.signal, stopOnFirstChunk(stop));
     expect(result.content).toBe(HALF);
     expect(result.stopReason).toBe('end_turn');
   });
 
-  it('OpenAI: and a stop arriving AFTER the watchdog still reads as a stop, not a timeout', async () => {
+  it('OpenAI: a stop under a TIGHT watchdog still reads as a stop, not a timeout', async () => {
     // Both signals fired. `streamWasCutByWatchdog` answers "no" whenever the external
     // signal is aborted, which is the same precedence the catch has always applied.
+    //
+    // ── t121: THIS IS THE CLAUSE THE RELEASE GATE REFUSED ON, and its title is now honest ──
+    //
+    // BEFORE: `setTimeout(… 200)` against a 300ms idle bound — two timers 100ms apart, and the
+    // assertion depended on which won. Under full-suite starvation the abort landed after the
+    // watchdog had already thrown and the call came back a timeout. The clause was a coin flip
+    // whose odds happened to be good on an idle machine.
+    //
+    // AFTER: the stop fires AT the stall, deterministically, with the tight 300ms idle bound still
+    // armed — so the external signal is guaranteed aborted when the catch reads it, which is the
+    // precedence this clause exists for. The ORDERING half ("after the watchdog also fired") is
+    // NOT provable from out here without re-introducing a race, so it is proven where it can be:
+    // `streamWasCutByWatchdog`'s own clause below sets both signals explicitly and asserts the
+    // predicate directly. The title no longer claims an ordering this clause does not establish.
     script.openai = ['half-then-stall'];
     seedOpenAI(6_000, 300);
     const stop = new AbortController();
-    setTimeout(() => stop.abort(), 200);
-    const result = await call('m-local', stop.signal);
+    const result = await call('m-local', stop.signal, stopOnFirstChunk(stop));
     expect(result.content).toBe(HALF);
   });
 
@@ -424,10 +487,11 @@ describe('T65b — CONTROL: a user stop mid-answer is unchanged', () => {
     // The two transports genuinely differ here and T65b changes neither: the Anthropic SDK
     // raises `APIUserAbortError` on the user's stop, so this path has always thrown rather
     // than returning the partial. Pinned so the fix above cannot quietly harmonise it.
+    // t121: causal trigger, same subject — the Anthropic SDK still raises on the user's stop.
     script.anthropic = ['half-then-stall'];
     seedAnthropic(null, null);
     const stop = new AbortController();
-    setTimeout(() => stop.abort(), 400);
+    onStall = () => stop.abort();
     const err = await call('m-anth', stop.signal).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).not.toContain(STREAM_IDLE_TIMEOUT_ERROR);
@@ -505,18 +569,25 @@ describe('T65b — streamWasCutByWatchdog', () => {
     w.finish();
   });
 
+  // t121: `await sleep(260)` against a 200ms bound was the same wall-clock race in miniature —
+  // 60ms of headroom, and under starvation the watchdog's timer had not fired when the sleep
+  // returned, so `timedOut()` was still false and the clause redded with nothing wrong. Both now
+  // AWAIT THE WATCHDOG'S OWN ABORT, which cannot be early or late: it is the event itself.
   it('is true once the watchdog has fired with no external signal', async () => {
     const w = makeStreamWatchdog(undefined, 200, 200);
-    await sleep(260);
+    await awaitAbort(w.signal);
     expect(streamWasCutByWatchdog(w, undefined)).toBe(true);
     w.finish();
   });
 
   it('is FALSE for a user stop, even after the watchdog also fired', async () => {
+    // THE ORDERING CLAUSE, and the reason the integration clause above no longer claims it: here
+    // both signals are set explicitly, the watchdog's firing is awaited rather than raced, and the
+    // predicate is read directly. This is where "stop AFTER the watchdog" is actually proven.
     const external = new AbortController();
     const w = makeStreamWatchdog(external.signal, 200, 200);
-    await sleep(260);
-    expect(w.timedOut()).toBe(true);
+    await awaitAbort(w.signal);
+    expect(w.timedOut(), 'the watchdog really did fire first').toBe(true);
     external.abort();
     expect(streamWasCutByWatchdog(w, external.signal)).toBe(false);
     w.finish();
