@@ -42,6 +42,18 @@ export interface PhasedTransferOptions {
   external?: AbortSignal;
 }
 
+/**
+ * The two phases, as a NAMED type rather than inline unions.
+ *
+ * Not cosmetic. `work/__tests__/work-event-kinds-conformance.test.ts` walks the whole tree for
+ * `<member>: '<literal>'` to resolve which kind each `appendEvent` call site writes, so the
+ * inline annotations `let phase: 'headers' | 'body'` and `let fired: 'headers' | ...` read as a
+ * bound constant's members and injected `'headers'` into that census of written event kinds —
+ * which also made `occurrence_fired` look as though it had gained a writer. The alias keeps a
+ * neighbour's clause measuring what it is for.
+ */
+export type TransferPhase = 'headers' | 'body';
+
 export interface PhasedTransfer {
   /** Hand this to `fetch` AND to any body read that follows it. */
   signal: AbortSignal;
@@ -54,7 +66,7 @@ export interface PhasedTransfer {
   /** Settle: clears whichever timer is live. Safe to call twice. */
   done(): void;
   /** Which phase's bound expired, or null if this deadline never fired. */
-  firedPhase(): 'headers' | 'body' | null;
+  firedPhase(): TransferPhase | null;
   /** The body allowance that was actually granted, for an honest error message. */
   grantedBodyMs(): number | null;
 }
@@ -62,8 +74,8 @@ export interface PhasedTransfer {
 export function phasedTransferDeadline(opts: PhasedTransferOptions): PhasedTransfer {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let phase: 'headers' | 'body' = 'headers';
-  let fired: 'headers' | 'body' | null = null;
+  let phase: TransferPhase = 'headers';
+  let fired: TransferPhase | null = null;
   let grantedBodyMs: number | null = null;
 
   const arm = (ms: number): void => {
