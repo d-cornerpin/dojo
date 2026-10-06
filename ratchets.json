@@ -7127,6 +7127,48 @@
       "to": 435,
       "by": "t114 flat timers, continuation 2 — the ten unreached timers",
       "why": "NEWLY LISTED at 435, past the 400-line new-file cap, and listed rather than split because the cap's own instruction is that the addition is meant to be SEEN AND ARGUED WITH. +52 (32 code, 20 comment) for CENSUS U11: a flat 180s covering the whole dial INCLUDING the streamed body, so a long narration still delivering `pcm16` at t=180s was cut and ALL COLLECTED AUDIO DISCARDED — the collector throws and every second of speech already assembled goes with it. The body is a STREAM and chunk arrival is the one fact that proves the provider is working; it was never consulted. THE CODE: an `onChunk` hook on `collectAudioStream` (the signal the loop always had and nobody read), the idle-bounded dial with three named bounds instead of one number doing three jobs, `done()` on every exit path, and a stalled-stream error that says it STALLED rather than blaming the provider. REFUSED: splitting this file in a timer lane — handed up. From 435 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/healer/injury-recovery.ts",
+      "from": 1155,
+      "to": 1233,
+      "by": "t114 rebase sitting — the four collision-blocked timers, the widened memory fence, and t113 hand-up 2",
+      "why": "1155 -> 1233 (+78: 18 code, 60 comment). TWO items in one file. CENSUS U1: `onAgentRecovered` is the single chokepoint for 'this agent is healthy again' and the 5-minute sweep called it on ELAPSED TIME ALONE, which reset row 14's escalate-to-a-human ladder, deleted `last_error`, and cleared the T82c marker — the only thing between an agent and a second doomed cold-redial chain. THE CODE is small and the argument is not: a `RecoveryBasis` parameter and three one-line guards. THE COMMENT is 60 lines because the reason a given clear is evidence-only is NOT recoverable from the code — a future reader deleting the `basis === 'evidence'` on the marker would see a redundant-looking condition, which is exactly how this defect was built the first time (FA-X3 fixed bookkeeping staleness and wired the clock to the guard's reset). PLUS t113 hand-up 2: `trackRecoveryNotice`/`drainRecoveryNotices`, the handle an unawaited recovery FYI never had, which is what stopped it settling against an unrelated test's spy. REFUSED: making `onAgentRecovered` async — it would ripple into three sync callers for a notice that is deliberately fire-and-forget, and the handle was the fix, not the signature. From 1233 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/setup-deps.ts",
+      "from": 530,
+      "to": 606,
+      "by": "t114 rebase sitting — the four collision-blocked timers, the widened memory fence, and t113 hand-up 2",
+      "why": "530 -> 606 (+76: 46 code, 30 comment). CENSUS U8 + U22, the two the first sitting could not take because a live lane held this file. U8: the model pull had a flat 30 minutes over the whole streamed download, so a 70 GB model on a home line was aborted mid-transfer while `digestProgress` — built ten lines below that clock — tracked real bytes arriving, leaving the UI bar frozen. U22: seven installer call sites each had a flat total cap (brew cask 180s, brew 120s, playwright 180s, npm -g 120s, gcloud 300s) and each SIGKILLed a package manager mid-write, leaving brew or npm partially installed — worse than never starting, because the next attempt begins from a broken tree. THE CODE is the `installIdleBounded` helper plus seven swapped call sites; `execSync` had to become a spawn because a synchronous call has no per-chunk signal to read. BUILT ON the shared mechanism this lane already carries rather than forking a second one, as the ruling directed. From 606 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/healer/auto-fix.ts",
+      "from": 421,
+      "to": 476,
+      "by": "t114 rebase sitting — the four collision-blocked timers, the widened memory fence, and t113 hand-up 2",
+      "why": "421 -> 476 (+55: 30 code, 25 comment). CENSUS U1's sweep half. Both arms — `fixPausedAgent` and `fixErrorAgent` — now read the CAUSE before writing a status, and the sweep passes `'cooldown'` so the chokepoint withholds the three clears only evidence earns. THE CODE is `cooldownSweepMayRecover` plus a guard in each arm. THE COMMENT argues the one thing a reader cannot re-derive: WHY a declared-patience failure is the class a restart provably cannot fix (the request cannot finish inside the patience its own provider row declares, so re-dialling produces the identical refusal and burns the box again). An unreadable row deliberately returns NO permission rather than defaulting to act — the sweep is an optimisation, never an obligation. From 476 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/scheduler/runner.ts",
+      "from": 2016,
+      "to": 2065,
+      "by": "t114 rebase sitting — the four collision-blocked timers, the widened memory fence, and t113 hand-up 2",
+      "why": "2016 -> 2065 (+49: 21 code, 28 comment). CENSUS R30. TWO defects, both required: the SQL took `MIN(...)` of two clocks — the OLDER — so a row was stale if EITHER side was, and one of those two only moves on an explicit `work_*` tool write while the 30-second heartbeat touches a different table this query never reads; and nothing asked whether the run was still RUNNING, `scheduler/` having imported `activeRuns` nowhere, which made this the only reaper in the tree without the guard five other modules carry. THE CODE: `MIN`->`MAX`, the import, a filter between the scan and the verdict, the same guard on the 120-minute arm (which had to start selecting the assignee to be able to ask), and an exit reason that states what was measured. THE COMMENT carries the duplicate-work consequence a reader would not guess: the row is re-scheduled after the force-fail, so the next tick could dispatch a SECOND run of the same task against the same agent. From 2065 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/retrieval.ts",
+      "from": 1142,
+      "to": 1171,
+      "by": "t114 rebase sitting — the four collision-blocked timers, the widened memory fence, and t113 hand-up 2",
+      "why": "1142 -> 1171 (+29: 13 code, 16 comment). CENSUS U7, in the fence the ruling widened. A flat 60s on a synthesis this same function sizes at up to `maxInputTokens = 100000` sixteen lines above, so the bigger the legitimately-retrieved corpus the MORE CERTAIN the abort — and the failure was invisible, because the catch returns the raw dump and the agent silently receives unsynthesised material. THE CODE: a size-derived budget and a fallback label that tells an ABANDONED synthesis from a FAILED model call. W3-1's fail-fast reasoning is preserved and cited rather than discarded — this still must not ride the provider's 5-minute default, because it blocks a live tool result. G2: no prompt byte moves; the goldens are byte-unchanged. From 1171 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/embeddings.ts",
+      "from": 319,
+      "to": 332,
+      "by": "t114 rebase sitting — the four collision-blocked timers, the widened memory fence, and t113 hand-up 2",
+      "why": "319 -> 332 (+13: 1 code, 12 comment). CENSUS U16, and this file is the campaign's decision #12 ('embeddings.ts at its 319 pin exactly') which was RE-CLASSED as a maintainer call explicitly handled by ratchet discipline, so it is raised here rather than escalated. THE CODE IS ONE LINE: the OpenAI-compatible transport armed a hardcoded 30s while the Ollama branch thirty lines above arms the caller's own `timeoutMs` — census row 8's shape, two numbers that were always meant to be one, and a caller's declared bound silently discarded on one of two paths. A one-line fix cannot be made to fit a pin the file already sat on exactly, which is the whole content of decision #12. THE COMMENT records why this is the WHOLE fix and not half of one: an abort already classifies as backend-unavailable behind the announce-once latch, and `memory/backfill.ts` re-embeds what was missed, so the row was never permanently lost — only the declared bound was. From 332 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7315,7 +7357,7 @@
     "packages/server/src/gateway/routes/config.ts": 2977,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/reports.ts": 250,
-    "packages/server/src/gateway/routes/setup-deps.ts": 530,
+    "packages/server/src/gateway/routes/setup-deps.ts": 606,
     "packages/server/src/gateway/routes/tracker.ts": 985,
     "packages/server/src/gateway/routes/twilio.ts": 512,
     "packages/server/src/gateway/routes/update.ts": 1412,
@@ -7327,10 +7369,10 @@
     "packages/server/src/google/tools-slides.ts": 3022,
     "packages/server/src/google/tools-write.ts": 2020,
     "packages/server/src/healer/approval-routing.ts": 513,
-    "packages/server/src/healer/auto-fix.ts": 421,
+    "packages/server/src/healer/auto-fix.ts": 476,
     "packages/server/src/healer/diagnostic.ts": 1067,
     "packages/server/src/healer/healer-agent.ts": 1163,
-    "packages/server/src/healer/injury-recovery.ts": 1155,
+    "packages/server/src/healer/injury-recovery.ts": 1233,
     "packages/server/src/index.ts": 1310,
     "packages/server/src/memory/assembler.ts": 2786,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
@@ -7340,7 +7382,7 @@
     "packages/server/src/memory/compaction.ts": 1650,
     "packages/server/src/memory/condense-until-fits.ts": 427,
     "packages/server/src/memory/deliveries-lane.ts": 257,
-    "packages/server/src/memory/embeddings.ts": 319,
+    "packages/server/src/memory/embeddings.ts": 332,
     "packages/server/src/memory/fts-health.ts": 536,
     "packages/server/src/memory/integration-status-lane.ts": 461,
     "packages/server/src/memory/lanes.ts": 1275,
@@ -7349,7 +7391,7 @@
     "packages/server/src/memory/reader-pool.ts": 336,
     "packages/server/src/memory/recall-lane.ts": 907,
     "packages/server/src/memory/recall.ts": 510,
-    "packages/server/src/memory/retrieval.ts": 1142,
+    "packages/server/src/memory/retrieval.ts": 1171,
     "packages/server/src/memory/search-bounds.ts": 327,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
@@ -7376,7 +7418,7 @@
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
     "packages/server/src/scheduler/engine.ts": 414,
-    "packages/server/src/scheduler/runner.ts": 2016,
+    "packages/server/src/scheduler/runner.ts": 2065,
     "packages/server/src/services/audio-generation.ts": 435,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/capability-registry.ts": 251,
