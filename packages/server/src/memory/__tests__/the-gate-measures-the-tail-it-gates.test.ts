@@ -262,9 +262,18 @@ describe('t100 §2 — a young conversation is the pre-seam answer exactly', () 
   // The same control on the other side of a compaction: the DEEP-COMPACTION FLOOR, where a
   // summary already covers nearly everything and the span left over is smaller than the cap.
   // This is the state where an over-ask is most expensive — the gate would count rows the
-  // summary beside them already represents — so the floor's ask is pinned here too, as a
-  // count, which is what an ask is when nothing is filtered.
-  it('the deep-compaction floor still asks for exactly the cap', async () => {
+  // summary beside them already represents — so the ask is pinned here too, as a count.
+  //
+  // ⚠ RE-PINNED BY t109 ITEM E, DELIBERATELY. This read "the deep-compaction floor still asks
+  // for exactly the cap", and the cap is what it must NOT ask for in this state. Unfiltered,
+  // `requestRows: cap` means THE NEWEST cap ROWS measured from the back: with only ten rows
+  // past the boundary the other thirty come from BEFORE it, the summary in the same prompt
+  // already covers them, and each appended row pushes one off the front — eight of eight turns
+  // discontinuous, measured in `the-tail-trims-only-at-a-boundary.test.ts` §11. So the horizon
+  // now anchors the front to the boundary here, and this clause's own subject is unchanged: the
+  // GATE counts what the ASSEMBLER sends. It is strictly stronger than the old version, because
+  // the number it pins (ten) is also the number that carries no duplicate of the summary.
+  it('the deep-compaction state asks for the SPAN, and the gate counts the span', async () => {
     const cap = getFreshTailCount(WINDOW);
     const policy = contextWindowPolicy(WINDOW, { toolPayloadTokens: 1000, maxOutputTokens: 4096 });
     for (let t = 1; t <= 60; t++) appendTurn(150);                       // 120 light rows
@@ -276,13 +285,15 @@ describe('t100 §2 — a young conversation is the pre-seam answer exactly', () 
       covered.map((r) => r.id), '2026-01-01 00:00:00', '2026-01-02 00:00:00');
 
     const horizon = freshTailHorizon(AGENT, policy);
-    expect(horizon.rowsSinceBoundary).toBe(10);                          // 10 <= cap: the floor
-    expect(horizon.keepFromSeq).toBe(0);
-    expect(horizon.requestRows).toBe(cap);
+    expect(horizon.rowsSinceBoundary).toBe(10);
+    expect(horizon.rowsSinceBoundary, 'the state: a span SHORTER than the cap').toBeLessThan(cap);
+    expect(horizon.keepFromSeq, 'the front is the boundary, a fixed address')
+      .toBe(horizon.anchorSeq + 1);
+    expect(horizon.requestRows, 'and the ask is the span, not the cap').toBe(10);
 
-    // 120 rows exist, so an ask of `cap + cap` would answer 80 here and an ask of `cap`
-    // answers 40. The count IS the ask.
+    // 120 rows exist. The old answer counted 40 of them — thirty being rows the summary above
+    // already represents. The count is now the span.
     const est = await estimateAssembledTokens(AGENT, WINDOW, MODEL);
-    expect(est.freshTailCount).toBe(cap);
+    expect(est.freshTailCount).toBe(10);
   }, 120_000);
 });

@@ -831,17 +831,32 @@ describe('t94 §9 / t100 — the gate measures the tail the assembler actually s
     expect(est.freshTailCount).toBe(liveRows);
   }, 120_000);
 
-  it('the FLOOR case: the ask is exactly the row cap, unfiltered, with no slack', async () => {
+  /**
+   * ⚠ REWRITTEN BY t109 ITEM E, DELIBERATELY, AND THIS IS THE ARGUMENT.
+   *
+   * This clause used to read "the FLOOR case: the ask is exactly the row cap, unfiltered, with
+   * no slack", and its own fixture comment named the state it was pinning as *"reachable in
+   * production on a mid-session switch to a LARGER window"*. That state — `anchor > 0` with
+   * `rows_since < cap` — IS the defect item E fixes: unfiltered means the assembler asks for
+   * THE NEWEST cap ROWS, so with only `rows_since` rows past the boundary the other
+   * `cap - rows_since` come from BEFORE it, a summary in the same prompt already covers them,
+   * and every appended row pushes one off the front. Measured in §11 below: eight of eight
+   * turns discontinuous, 20.6× byte waste.
+   *
+   * So the horizon's answer for this fixture moves — `keepFromSeq` becomes the boundary and
+   * `requestRows` becomes the span — and the clause's SUBJECT does not. §9 exists to hold ONE
+   * identity: whatever the horizon decides, the GATE's count and the ASSEMBLER's array agree
+   * about it. That identity is what is asserted below, now against the anchored answer, and it
+   * is strictly stronger than the old version because it also pins that the live rows are the
+   * post-boundary ones and NOT a summarised row beside its own summary.
+   */
+  it('the ANCHORED case: a short span past a real boundary is filtered, and the gate agrees', async () => {
     const cap = getFreshTailCount(WINDOW);
     const policy = contextWindowPolicy(WINDOW, { toolPayloadTokens: 1000, maxOutputTokens: 4096 });
     for (let t = 1; t <= 60; t++) appendTurn();              // 120 rows in the session
 
-    // THE DEEP-COMPACTION FLOOR, built by hand rather than driven. A real pass leaves
-    // `rows_since == cap` exactly and the divider nudges it to `cap + 1`, which is the
-    // FILTERED case — the one that cannot see an over-ask. The state that can is `anchor > 0`
-    // with `rows_since < cap`, reachable in production on a mid-session switch to a LARGER
-    // window and on any pass that leaves fewer than `cap` live rows; a hand-built leaf
-    // summary is the deterministic way to sit in it.
+    // A hand-built leaf summary is the deterministic way to sit in `anchor > 0`,
+    // `rows_since < cap`: 110 of the 120 rows covered, so ten rows are live.
     const covered = db().prepare(
       'SELECT id FROM messages WHERE agent_id = ? ORDER BY seq ASC LIMIT 110',
     ).all(AGENT) as Array<{ id: string }>;
@@ -850,19 +865,37 @@ describe('t94 §9 / t100 — the gate measures the tail the assembler actually s
       covered.map((r) => r.id), '2026-01-01 00:00:00', '2026-01-02 00:00:00');
 
     const horizon = freshTailHorizon(AGENT, policy);
-    expect(horizon.rowsSinceBoundary).toBe(10);              // 10 <= cap, so: the floor
-    expect(horizon.keepFromSeq).toBe(0);                     // nothing is filtered
-    expect(horizon.requestRows).toBe(cap);                   // the floor's ask IS the cap
+    expect(horizon.rowsSinceBoundary).toBe(10);
+    expect(horizon.rowsSinceBoundary, 'the state: BELOW the cap, past a real boundary')
+      .toBeLessThan(cap);
+    expect(horizon.anchorSeq).toBeGreaterThan(0);
+    // t109 E: the front is the BOUNDARY — a fixed address — not "the newest cap rows".
+    expect(horizon.keepFromSeq).toBe(horizon.anchorSeq + 1);
+    expect(horizon.requestRows).toBe(10);
 
-    // 120 rows exist, so with nothing filtered the COUNT IS THE ASK: an ask of `cap` answers
-    // 40 and an ask of `cap + cap` answers 80. The assembler admits 40 here; so must the gate.
+    // THE IDENTITY, which is what this section is for: the gate counts what the assembler
+    // sends, and that is the ten live rows rather than forty rows with thirty of them
+    // duplicating the summary above them.
     const est = await estimateAssembledTokens(AGENT, WINDOW, MODEL);
     const ctx = await assembleContext(AGENT, MODEL);
     const liveRows = (ctx.messages as Array<{ content: unknown }>)
       .filter((m) => JSON.stringify(m.content).includes('[t')).length;
-    expect(liveRows).toBe(cap);
-    expect(est.freshTailCount).toBe(cap);
+    expect(liveRows).toBe(10);
+    expect(est.freshTailCount).toBe(10);
     expect(est.freshTailCount).toBe(liveRows);
+
+    // And not one of the covered rows rides beside its own summary (review I1's property,
+    // which the old floor answer could not keep in this state).
+    const live = (ctx.messages as Array<{ content: unknown }>)
+      .map((m) => JSON.stringify(m.content)).join('\n');
+    const leaked = db().prepare(
+      `SELECT m.content AS content FROM messages m
+         JOIN summary_messages sm ON sm.message_id = m.id
+        WHERE m.agent_id = ?`,
+    ).all(AGENT) as Array<{ content: string }>;
+    expect(leaked.length).toBe(110);
+    expect(leaked.filter((r) => live.includes(r.content.slice(0, 60))).map((r) => r.content.slice(0, 30)))
+      .toEqual([]);
   }, 120_000);
 });
 
@@ -928,4 +961,88 @@ describe('t94 §10 — a compaction with its divider throttled still costs ONE d
     const leaked = summarised.filter((r) => live.includes(r.content.slice(0, 60)));
     expect(leaked.map((r) => r.content.slice(0, 40))).toEqual([]);
   }, 180_000);
+});
+
+// ── §11 t109 ITEM E — THE DEEP-COMPACTION FLOOR STATE ───────────────────────────────────
+//
+// The t94 RE-REVIEW's out-of-scope finding, now this lane's item E. BACKLOG, verbatim: *"THE
+// DEEP-COMPACTION FLOOR STATE still trims per turn: when the tail horizon is at its floor
+// (`rows_since < cap` for several turns after a deep compaction) the assembler's ask is the
+// pre-t94 row-cap read, byte-identical by design (G2 choice), and a probe shows 8 of 8 turns
+// discontinuous — the owner's defect shape. Unreachable by compaction today; REACHABLE on a
+// mid-session switch to a LARGER window."*
+//
+// WHY THE FLOOR SCROLLED. The floor branch returns `keepFromSeq: 0` — NO front filter — and
+// `requestRows: cap`, so the assembler asks `getRecentMessages(agent, cap)`: THE NEWEST cap
+// ROWS, measured from the BACK. When `rows_since == cap` exactly (the routine case §10 pins)
+// those are precisely the post-boundary rows and nothing scrolls. When `rows_since < cap` they
+// are the post-boundary rows PLUS `cap - rows_since` rows from before it — rows a summary
+// already covers — and every appended row pushes one of them off the front. A quantity
+// measured from the back is a scrolling window by definition; this module's own header says so.
+//
+// A LARGER WINDOW IS THE REACHABLE DOOR because `getFreshTailCount` is a ladder in the window
+// (24/40/64/80) while `rows_since` is a property of the HISTORY. Raise the window mid-session
+// and the cap steps up under a boundary that did not move, so the floor is entered with
+// `rows_since` well below it and stays there for `cap - rows_since` turns.
+//
+// THE FIX, in the floor branch: the floor now applies only when there is nothing to anchor TO
+// — no compaction has ever run (`anchor === 0`), or nothing has been said since it
+// (`rows_since === 0`, where filtering would leave an empty tail and the already-summarised
+// rows are better than none). Everywhere else the front IS the boundary, which is a fixed
+// address, so the tail is a pure append.
+//
+// WHAT IT COSTS, stated: for `cap - rows_since` turns after a deep compaction the live view is
+// SHORTER than the row cap. The rows it no longer shows are the ones a summary in the same
+// prompt already covers — review I1 called admitting them beside their summary a defect in its
+// own right — and the owner's ranking is explicit: *"byte-stability beats shortness… dropping 2
+// messages costs the same as dropping 200."*
+describe('t109 §11 — the deep-compaction floor re-anchors instead of trimming per turn', () => {
+  it('⚠ E: a mid-session switch to a LARGER window is append-only for every turn after it', async () => {
+    // Enough turns to compact at least once, so there IS a boundary to anchor to.
+    const before = await driveRun({ turns: 40 });
+    expect(passLog.length, 'precondition: a compaction ran, so a boundary exists')
+      .toBeGreaterThan(0);
+
+    // THE DOOR: a LARGER box. 32K -> 128K steps `getFreshTailCount` 40 -> 64, so the cap
+    // lands above `rows_since` and the horizon enters its floor with room to spare.
+    const capBefore = getFreshTailCount(WINDOW);
+    windowNow.value = 128_000;
+    db().prepare('UPDATE models SET context_window = 128000 WHERE id = ?').run(MODEL);
+    const capAfter = getFreshTailCount(128_000);
+    expect(capAfter, 'precondition: the cap really did step UP').toBeGreaterThan(capBefore);
+
+    // And the horizon really is at its floor with room: fewer rows since the boundary than
+    // the new cap, which is the state the BACKLOG line names.
+    const h = freshTailHorizon(AGENT, contextWindowPolicy(128_000, { toolPayloadTokens: 1000, maxOutputTokens: 4096 }));
+    expect(h.rowsSinceBoundary, 'precondition: BELOW the cap, not at it').toBeLessThan(capAfter);
+    expect(h.anchorSeq, 'precondition: and there is a boundary to anchor to').toBeGreaterThan(0);
+
+    const after = await driveRun({ turns: 8 });
+    const across = runDeltas([before[before.length - 1], ...after]);
+
+    // eslint-disable-next-line no-console
+    console.log(renderTable(
+      't109 E — 8 turns after a mid-session switch to a LARGER window (32K -> 128K)',
+      across, across,
+    ));
+
+    // THE DEFECT SHAPE, as the line measured it: 8 of 8 turns discontinuous. Now every turn
+    // that is not itself a compaction is a pure append.
+    const bad = discontinuities(across);
+    for (const d of bad) expect(d.note, 'the only legitimate discontinuity is a compaction').toBe('compaction ran');
+    expect(bad.length, 'and not one per turn').toBeLessThanOrEqual(1);
+  }, 300_000);
+
+  it('⚠ E, THE OTHER DIRECTION: the floor still applies where there is nothing to anchor to', () => {
+    // No compaction has ever run on this agent, so there is no boundary. The floor must stay
+    // the pre-t94 answer — unfiltered, the row cap — or a young conversation would be clipped
+    // to zero rows and §4's byte-identity clause would be a lie.
+    const policy = contextWindowPolicy(WINDOW, { toolPayloadTokens: 1000, maxOutputTokens: 4096 });
+    const h = freshTailHorizon(AGENT, policy);
+    expect(h.anchorSeq, 'precondition: nothing is compacted').toBe(0);
+    expect(h.keepFromSeq, 'no filter — literally the pre-t94 call').toBe(0);
+    expect(h.requestRows).toBe(policy.freshTailCount);
+    expect(h.skippedRows).toBe(0);
+    expect(h.ceilingBound).toBe(false);
+  });
 });

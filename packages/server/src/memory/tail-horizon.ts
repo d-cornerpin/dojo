@@ -231,18 +231,40 @@ export function freshTailHorizon(agentId: string, policy: ContextWindowPolicy): 
     return floorAnswer;
   }
 
-  // THE FLOOR. A span smaller than the row cap is the pre-t94 answer, byte for byte: ask for
-  // the cap, filter nothing. This is the case on every young conversation and on the turn
-  // right after a compaction that reclaimed down to the cap — which is NOT a rare turn, and
-  // review I1 is what that cost before the ask stopped padding it (`assembler.ts`, the
-  // conditional slack: where nothing filters, asking for more than the cap admits rows a
-  // summary already covers).
+  // THE FLOOR, NARROWER THAN IT WAS — t109 item E, the deep-compaction floor state.
+  //
+  // The floor is the pre-t94 answer: ask for the cap, filter nothing. Its condition was
+  // `rows_since <= cap`, and that was one case too wide, because "filter nothing" means the
+  // assembler asks for THE NEWEST cap ROWS — measured from the BACK, which is a scrolling
+  // window by definition (this module's header). At `rows_since == cap` exactly those rows ARE
+  // the post-boundary rows and nothing scrolls (§10's routine case). BELOW the cap they are the
+  // post-boundary rows PLUS `cap - rows_since` from before it, which a summary in the same
+  // prompt already covers — review I1's own defect — and each appended row pushes one off the
+  // front. MEASURED in `__tests__` §11: a 32K → 128K switch steps the cap under a boundary that
+  // did not move, and the eight turns after it were EIGHT OF EIGHT DISCONTINUOUS, 20.6× byte
+  // waste. The window ladder is the reachable door: the cap is a function of the WINDOW while
+  // `rows_since` is a property of the HISTORY.
+  //
+  // BOTH HALVES OF THE CONDITION ARE LOAD-BEARING. A span over the cap already took the branch
+  // below; gating on the anchor ALONE would hand every uncompacted agent the unfiltered answer
+  // (mutant M-E2 reds §4 on exactly that). The two anchorless cases that keep the floor are
+  // `anchor === 0` (no compaction ever ran, so there is no boundary — every young conversation,
+  // and §4's byte-identity) and `rows_since === 0` (a compaction covered everything, so
+  // filtering would leave an EMPTY tail; summarised rows beside their summary beat no live
+  // conversation, and it lasts until the next row is written). Everywhere else the front IS the
+  // boundary, a fixed address, so the tail is a pure append.
+  //
+  // WHAT IT COSTS, stated: for `cap - rows_since` turns after a deep compaction the live view is
+  // SHORTER than the row cap, by rows a summary already covers. The owner's ranking is explicit
+  // — *"byte-stability beats shortness… dropping 2 messages costs exactly what dropping 200
+  // costs"* — and the rows are persisted, so it is live-view loss, not data loss.
   //
   // `rowsSinceBoundary` reports the REAL count here, not the placeholder (review M5): the
   // handed-up `compaction.ts` one-liner and `__tests__` §9 both read this struct, and a
   // field whose doc says "rows between the boundary and now" may not answer 0 on the one
   // branch where that number is small enough to matter.
-  if (boundary.rows_since <= cap) {
+  if (boundary.rows_since <= cap
+      && (boundary.anchor === 0 || boundary.rows_since === 0)) {
     return { ...floorAnswer, anchorSeq: boundary.anchor, rowsSinceBoundary: boundary.rows_since };
   }
 
