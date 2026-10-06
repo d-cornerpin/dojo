@@ -83,9 +83,8 @@ function digestFromManifest(body: string): string | null {
   return m ? m[1].toLowerCase() : null;
 }
 
-// ── t114 (census U20) — the manifest fetch's bounds, named ──
-// A manifest is a few hundred bytes of text. If the host is reachable it answers at once, so the
-// per-attempt bound stays short; what was missing was any tolerance for the attempt FAILING.
+// t114 (census U20): the per-attempt bound stays short because a manifest is a few hundred
+// bytes; what was missing was any tolerance for an attempt FAILING.
 const MANIFEST_FETCH_TIMEOUT_MS = 20_000;
 const MANIFEST_FETCH_ATTEMPTS = 3;
 const MANIFEST_RETRY_BACKOFF_MS = 2_000;
@@ -100,19 +99,13 @@ export async function fetchArtifactManifest(url: string | null | undefined): Pro
   if (!url) return null;
   // ── t114 (census U20) — A NETWORK BLIP MUST NOT BE THE REASON A GOOD RELEASE IS REFUSED ──
   //
-  // THE DEFECT: one flat `AbortSignal.timeout(20000)`, and on expiry the catch returned `''`,
-  // which `verifyArtifactAgainstManifest` reads as "a manifest was published and could not be
-  // read" -> `refused`. So twenty seconds of ordinary network latency REJECTED a perfectly good
-  // downloaded release, on a path whose whole job is to protect an update. The `'' -> refused`
-  // verdict is tested; the timeout as its cause was not, which is how it survived.
-  //
-  // THE SECURITY POSTURE IS DELIBERATELY UNCHANGED: `''` still means refused, because a manifest
-  // that exists and cannot be confirmed against must never be waved through. What changes is
-  // that a TRANSIENT failure is no longer sufficient to produce it. A manifest is a few hundred
-  // bytes — if it is reachable at all it arrives immediately — so the honest reading of one
-  // timeout is "the network hiccuped", not "the release is bad". Three attempts with backoff,
-  // and the refusal that follows a genuinely unreachable manifest is LOUD about which of the two
-  // it was, so an operator is never left thinking the bytes failed to match.
+  // One flat 20s whose catch returned `''`, which the verdict below reads as "published and
+  // unreadable" -> refused. So ordinary latency rejected a good release on the path whose job is
+  // to protect an update. The POSTURE IS UNCHANGED — `''` still refuses, because a manifest that
+  // cannot be confirmed must never be waved through; what changed is that one transient failure
+  // no longer produces it. A manifest is a few hundred bytes: if it is reachable it arrives at
+  // once, so one timeout reads as a hiccup, not as a bad release. The full argument and the
+  // controls that pin the posture are in `__tests__/a-big-download-is-not-cut-mid-body.test.ts`.
   let lastWhy = '';
   for (let attempt = 1; attempt <= MANIFEST_FETCH_ATTEMPTS; attempt += 1) {
     try {
