@@ -156,10 +156,74 @@ function publicSlug() {
 // currently needs explaining, which is the state this gate exists to hold.
 const ALLOWLIST = [];
 
+/**
+ * THE FIXTURE ROSTER — why a gate that reads a live database needs committed names (t111-C3).
+ *
+ * t101 concern 3, verbatim: "the roster-driven halves SKIP when no database exists, so they have
+ * only run on developer boxes." That is the whole defect. On CI, and on any box that has never
+ * run the platform, `liveRoster()` returned an EMPTY list, so `rosterNeedles` was empty and the
+ * roster half scanned the tree for nothing. The gate printed a loud skip and exited 0 — so the
+ * matching machinery that enforces the TOP RULE had never run anywhere but a developer's own
+ * machine, where the one roster it reads is the one roster it cannot be tested against.
+ *
+ * The fallback is three INVENTED names. They are not examples of the rule being broken: they ARE
+ * the needles, and the tree containing none of them is the gate passing. Each was measured to
+ * have ZERO occurrences in the repository at this commit, so a hit is a real regression — a
+ * shipped surface that genuinely gained that word — and never this fixture finding itself.
+ *
+ * ⚠ G1 / THE TOP RULE: a committed roster may never hold a real name. The live roster still WINS
+ * wherever a database exists, so this list never weakens what a real box checks; it only replaces
+ * measuring NOTHING with measuring something, on the boxes that were measuring nothing.
+ */
+// ⚠ THE THREE NAMES THEMSELVES LIVE INSIDE THE CORPUS FENCE, far below, and they have to.
+// This file is itself a scanned surface, and the roster half reads prose — so a fictional name
+// written HERE is found by the very machinery it exists to drive, and the gate reports its own
+// fixture. (Measured, not predicted: declaring it here failed the gate with three 8-character
+// "agent name" hits in this file on a no-database box.) The fence is the one place a name is
+// allowed to be an instance rather than a defect, which is exactly what these are.
+// See `FIXTURE_ROSTER` at the end of the corpus block.
+
+/**
+ * ONE needle builder, used by the SCAN and by the SELF-TEST.
+ *
+ * Extracted rather than duplicated, because the self-test's job is to prove the machinery the
+ * scan actually runs. The older fixture tables (`FIX_WORD_ONLY`, `FIX_QUOTED_LOWER`) build their
+ * own inline regexes, so they proved the SHAPE of a needle and never the pipeline that produces
+ * one — the two filters included. A second copy here would be that same gap in fixture clothing.
+ *
+ * CASE-SENSITIVE for the bare pass: an agent NAMED AFTER a vendor voice id is a name, while the
+ * lowercase voice id itself is an identifier, and the two must not be the same finding. The
+ * concrete pair lives in FIX_QUOTED_LOWER inside the fence; writing it here would put a live name
+ * in the doctrine, which is the exact defect this file's own review caught. Whole-word, so
+ * `am_michael` and `sticky` are not names.
+ */
+function rosterNeedleFor(n) {
+  const esc = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return {
+    name: n,
+    re: new RegExp(`\\b${esc}\\b`),
+    // the same needle, case-insensitively, but ONLY inside a quoted string (see the site below)
+    lower: new RegExp(`['"\`][^'"\`\\n]*\\b${esc}\\b[^'"\`\\n]*['"\`]`, 'i'),
+  };
+}
+
+/** The filters a roster name passes before it becomes a needle. Shared for the same reason. */
+function rosterNeedlesFrom(names, roles) {
+  return names
+    .filter((n) => n.length >= 3 && /^[A-Za-z][A-Za-z0-9 _-]*$/.test(n))
+    .filter((n) => !roles.has(n.toLowerCase()))
+    .map(rosterNeedleFor);
+}
+
 // ── HALF ONE: THE LIVE ROSTER (read at runtime, never written down) ─────────
 function liveRoster() {
   const dbPath = path.join(process.env.DOJO_HOME ?? os.homedir(), '.dojo/data/dojo.db');
-  if (!fs.existsSync(dbPath)) return { available: false, names: [], dbPath };
+  // NO DATABASE: fall back to the committed fictional roster rather than to nothing, so the
+  // matching machinery runs in CI. `available` stays FALSE — the run still says out loud that it
+  // could not read a real roster, because a skip must never quietly become silence.
+  if (!fs.existsSync(dbPath)) {
+    return { available: false, source: 'fixture', names: [...FIXTURE_ROSTER], dbPath };
+  }
   try {
     // `sqlite3 -readonly` rather than a driver: this gate must not be able to write, and the CLI is
     // what every other read-only instrument in this tree uses.
@@ -168,7 +232,11 @@ function liveRoster() {
     const names = out.split('\n').map((s) => s.trim()).filter(Boolean);
     return { available: true, names, dbPath };
   } catch (err) {
-    return { available: false, names: [], dbPath, error: err instanceof Error ? err.message : String(err) };
+    // An unreadable database is the same situation as an absent one: measure SOMETHING.
+    return {
+      available: false, source: 'fixture', names: [...FIXTURE_ROSTER], dbPath,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -630,6 +698,38 @@ const FIX_THROUGH_ESCAPE = [
   ['const zergoCount = 1;', 'Zergo', false],
   ['// marbles are not an agent', 'Arble', false],
 ];
+/**
+ * THE FIXTURE ROSTER (t111-C3) — three INVENTED names, standing in for a live roster on any box
+ * that has no database: CI, and every machine that has never run the platform.
+ *
+ * It is declared in here because fixture data belongs in the fence and nowhere else: this file is
+ * a scanned surface, the roster half reads prose, and a name written outside these sentinels is
+ * found by the machinery it exists to drive. The file's own doctrine says so a few hundred lines
+ * up, having learned it the hard way — exempting the WHOLE file instead then hid three live names
+ * in this gate's own commentary.
+ *
+ * Each was measured to have ZERO occurrences in the repository outside this block, so a hit is a
+ * real regression and never this fixture finding itself. The live roster still WINS wherever a
+ * database exists; this only replaces measuring NOTHING with measuring something.
+ */
+const FIXTURE_ROSTER = ['Vexworth', 'Plimbrey', 'Thassick'];
+
+/** The roster PIPELINE's fixture table: a line, the fixture name, and whether it must match. */
+const FIX_ROSTER_PIPELINE = [
+  ['Vexworth', 'const createdBy = "Vexworth";', true,  'a fixture name IS matched'],
+  ['Plimbrey', '// Plimbrey asked about it',    true,  'in a comment too — this half reads prose'],
+  ['Thassick', 'const thassickCount = 1;',      false, 'an identifier is not a name (whole-word, case-sensitive)'],
+  ['Vexworth', 'const x = vexworthing;',        false, 'nor a longer word containing it'],
+];
+
+/** The FILTERS' fixture table, both directions. A function because one row needs a role name. */
+const FIX_NEEDLE_FILTERS = (roles) => [
+  [['Vexworth', 'Plimbrey', 'Thassick'], 3, 'three valid names make three needles'],
+  [['Vo'], 0, 'a 2-character name is filtered out'],
+  [['Vex worth!'], 0, 'a name outside the allowed charset is filtered out'],
+  [[...roles].slice(0, 1), 0, 'a ROLE name is never a roster needle'],
+];
+
 // END NAMES-GATE TEST CORPUS
 
 /**
@@ -771,6 +871,42 @@ function selfTest() {
     if (!ok) bad++;
     console.log(`  ${ok ? '✓' : '✗'} ${String(got).padEnd(5)} want ${String(want).padEnd(5)} "${name}" in ${line.trim().slice(0, 52)}`);
   }
+  // ── THE ROSTER PIPELINE ITSELF, DRIVEN END TO END (t111-C3) ──────────────────────────
+  // The tables below prove the SHAPE of a needle with their own inline regexes. This block
+  // proves the machinery THE SCAN RUNS: `rosterNeedlesFrom` → `rosterNeedleFor` → match, with
+  // the two filters in place. Before this, that pipeline had only ever executed on a box with a
+  // database, because without one the roster was empty and there was nothing to drive.
+  console.log('── the roster needle pipeline, end to end on the fictional fixture roster ──');
+  const fixtureNeedles = rosterNeedlesFrom(FIXTURE_ROSTER, roles);
+  for (const [name, line, want, why] of FIX_ROSTER_PIPELINE) {
+    const needle = fixtureNeedles.find((x) => x.name === name);
+    const got = !!needle && needle.re.test(line);
+    const ok = got === want;
+    if (!ok) bad++;
+    console.log(`  ${ok ? '✓' : '✗'} ${String(got).padEnd(5)} want ${String(want).padEnd(5)} ${why}`);
+  }
+  // BOTH DIRECTIONS on the filters: a 2-character name and a role name must NOT become needles,
+  // or the gate flags every occurrence of a short common word.
+  for (const [names, wantCount, why] of FIX_NEEDLE_FILTERS(roles)) {
+    const got = rosterNeedlesFrom(names, roles).length;
+    const ok = got === wantCount;
+    if (!ok) bad++;
+    console.log(`  ${ok ? '✓' : '✗'} ${String(got).padEnd(5)} want ${String(wantCount).padEnd(5)} ${why}`);
+  }
+  // ⚠ G1: THE COMMITTED ROSTER MUST STAY FICTIONAL, and the gate refuses rather than trusts a
+  // comment. Checked against the halves that know real identities on a box that has them — so on
+  // a developer box this clause compares the fixture against the LIVE roster and the owner's own
+  // name, and a collision is a RED rather than a silent, permanently-passing needle.
+  const realIdentities = new Set([
+    ...(roster.source === 'fixture' ? [] : roster.names),
+    ...owner.names,
+  ].map((n) => n.toLowerCase()));
+  for (const fixture of FIXTURE_ROSTER) {
+    const collides = realIdentities.has(fixture.toLowerCase());
+    if (collides) bad++;
+    console.log(`  ${collides ? '✗' : '✓'} ${fixture} is not a real identity on this box`);
+  }
+
   console.log('── roster matching is whole-word, so vendor identifiers are not names ──');
   for (const [line, name, want] of FIX_WORD_ONLY) {
     const got = new RegExp(`\\b${name}\\b`).test(line);
@@ -798,23 +934,7 @@ if (selfTestBad > 0) {
 if (process.argv.includes('--self-test')) process.exit(0);
 
 // Roster names worth scanning for: whole words, at least 3 characters, and never a role name.
-const rosterNeedles = roster.names
-  .filter((n) => n.length >= 3 && /^[A-Za-z][A-Za-z0-9 _-]*$/.test(n))
-  .filter((n) => !roles.has(n.toLowerCase()))
-  // CASE-SENSITIVE: an agent NAMED AFTER a vendor voice id is a name, while the lowercase voice id
-  // itself is an identifier, and the two must not be the same finding. The concrete pair lives in
-  // FIX_QUOTED_LOWER inside the fence; writing it here would put a live name in the doctrine, which
-  // is the exact defect this file's own review caught. Whole-word, so `am_michael` and `sticky` are
-  // not names.
-  .map((n) => {
-    const esc = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return {
-      name: n,
-      re: new RegExp(`\\b${esc}\\b`),
-      // the same needle, case-insensitively, but ONLY inside a quoted string (see the site below)
-      lower: new RegExp(`['"\`][^'"\`\n]*\\b${esc}\\b[^'"\`\n]*['"\`]`, 'i'),
-    };
-  });
+const rosterNeedles = rosterNeedlesFrom(roster.names, roles);
 
 /**
  * The owner's own name, needled exactly like a roster name (lane t101, half 1c). Whole-word and
@@ -908,9 +1028,11 @@ console.log(`  identities derived at check time: ${handles.length} handle(s) (gi
 console.log(roster.available
   ? `  roster: ${rosterNeedles.length} live agent name(s) read from the database at check time `
     + `(${roster.names.length} agent row(s) total; role names excluded, nothing written to this file)`
-  : `  ⚠ roster half SKIPPED — no database at ${roster.dbPath}. The pattern half still ran. `
-    + 'On a developer box with no dojo installed this is expected; in CI it means the agent-name '
-    + 'half of this gate did not run and must not be read as a pass.');
+  : `  ⚠ roster half ran on the FICTIONAL FIXTURE ROSTER (${rosterNeedles.length} needle(s)) — no `
+    + `database at ${roster.dbPath}, so there is no live roster to read. The matching machinery `
+    + 'DID run and its self-test drove it end to end, which is what makes this half meaningful in '
+    + 'CI at all. But it checked invented names: a real agent name on this box, if there were one, '
+    + 'was NOT checked, so this is not the same assurance as a run on a box with a database.');
 console.log(owner.available
   ? `  owner half: ${ownerNeedles.length} name(s) read from config.owner_name at check time `
     + '(the product fallback and the anonymising placeholders subtracted; nothing written down)'
