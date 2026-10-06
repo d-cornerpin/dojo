@@ -24,8 +24,6 @@ import {
   truncateTextLane,
   LANE_PRIORITY,
   POST_BUDGET_LANES,
-  POST_BUDGET_RESERVE_TOKENS,
-  SCAFFOLDING_ACK_RESERVE_TOKENS,
   reserveLadderFor,
   LANE_TRUNCATION_MARKER,
   type AllocationReport,
