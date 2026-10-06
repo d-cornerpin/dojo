@@ -6553,6 +6553,97 @@
       "to": 3877,
       "by": "t108 A+B+C — the purpose axis at all four recordCost sites, and both dial sites spend the measured divisor",
       "why": "3829 -> 3877 (+48 net: 29 code added, 11 code removed; 30 comment added, 0 rewritten). THE SMALLEST TOUCH THIS FILE COULD TAKE, and that was the constraint — it is the hottest file in the tree and t93/t103 both landed in it. All arithmetic lives elsewhere: `memory/budget.ts`'s pure `estimateRequestTokens` and the new `costs/estimator-divisors.ts` leaf. What changes here is (i) two imports, (ii) `callPurpose: purpose` at the four `recordCost` sites, 4 lines, (iii) the two estimate sites switching from summing `estimateTokens()` to counting CHARACTERS and handing them to one call — which REPLACES 11 lines with 13 and deletes three now-unused locals — and (iv) `estimatorCharsPerToken` on the two sites that record an estimate. The 30 comment lines are 12 at the four recordCost sites (3 each: that `request_type` is unchanged byte for byte and this records the fact its `??` chain discards — the one thing a reader of two adjacent similar-looking fields will otherwise assume is redundant) and 18 at the two estimate sites, stating that the populations were already separated here so the split costs no classifier, that the estimate is floored and can only grow, and that an unmeasured provider gets today's number byte for byte. From 3877 this file may only shrink."
+    },
+    {
+      "path": "packages/shared/src/ws.ts",
+      "from": 1230,
+      "to": 1270,
+      "by": "t105 — the `agent:jobs` frame (OWNER RULING 2026-10-05 #9, BACKLOG L40)",
+      "why": "1230 -> 1270 (+40 net: 9 code, 30 comment, 1 blank; nothing removed). The 9 code lines are one interface of four fields plus its two registrations — the `WsEvent` union member and the `EVENT_BATCHABLE` entry, both of which are COMPILE-ENFORCED here by design (the map's own note: \"adding a member to WsEvent that is missing from this map is a compile error\"), so a new frame cannot be declared anywhere else. The 30 comment lines are the wire contract's own argument and they are load-bearing in a specific way: the obvious objection to this frame is \"you already broadcast `generation_job:update` and `video_job:update` — use those\", and the answer (each describes ONE job and carries a box-wide `activeCount`, so a per-agent answer from them is the server's predicate copied into a component) has to sit beside those two members or the next reader deletes this one. Already trimmed once: the full argument lives in `server/src/agent/live-work.ts` and this block points at it. From 1270 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/agents.ts",
+      "from": 963,
+      "to": 993,
+      "by": "t105 — the stop route stops asking a different question than the button it answers",
+      "why": "963 -> 993 (+30 net: 12 code added, 6 code removed, 24 comment added, 1 comment rewritten, 1 blank). The code is the predicate swap (`liveWork`/`hasLiveWork` for a bare `agents.status` comparison), the announced zero, and the counts on the response and the log line. 24 comment lines for a 6-line behaviour change is deliberate and it is the cheapest form of the only safeguard that exists here: what stood on this line was `if (agent.status !== 'working') return 400`, it looks like obvious hygiene, and MEASURED at 7dc71325 it refused the press on an idle row with a live background registration and cut nothing — the button A-5b had just made visible did nothing. The block records that probe and its output, because a future reader tidying this route back to a status check would reintroduce it in one line and the clause that catches it (§8) is in another file. From 993 this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/pages/Chat.tsx",
+      "from": 2074,
+      "to": 2109,
+      "by": "t105 — the composer hears the background lifecycle (BACKLOG L40) + the fix round's I1 latch",
+      "why": "2074 -> 2109 (+35 net: 15 code, 19 comment, 1 blank; nothing removed). RE-MEASURED TWICE and the first number is not the one in this entry. (i) t106 merged ahead of this lane and took this same pin 2048 -> 2068 -> 2074, so the lane's original `2048 -> 2077` was arithmetic against a baseline that no longer exists; the rebase onto `f7338fe2` conflicted on exactly this file in `ratchets.json` and nowhere else, which is the standing KEEP-BOTH case. (ii) the review's Important (I1) added 1 code line changed and 6 comment lines on top. The 15 code lines are one state value, the `agent:jobs` subscription and its unsubscribe, the arrival `inFlight` read, the `canStop` expression and the prop — all of it wiring this component cannot delegate, since the frame must be subscribed where the other eleven subscriptions live. This file's ratchet is WHY the decisions went to `lib/stop-affordance.ts` (`composerStopControl`, driven by the server suite) instead of growing here as more ternaries. 6 of the 19 comment lines are I1's own epitaph: the arrival latch may read only the BACKGROUND count, because `agent:jobs` is its sole clearing edge and turn calls never emit it — latched on turn work it could never be cleared, and a phantom \"Stop background job\" sat on a genuinely idle agent whose press 400'd. That is the single likeliest line for a future reader to \"fix\" back, and the clause that catches it (`src/__tests__/the-stop-control-goes-away-with-the-work.test.tsx`) is in another file. This file is on the overhaul's split list; the split is not this lane's. From 2109 it may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/components/Dojo3Composer.tsx",
+      "from": 723,
+      "to": 750,
+      "by": "t105 — a stop beside send, for work that outlived the turn",
+      "why": "723 -> 750 (+27 net: 21 code added, 1 code removed, 6 comment, 1 blank). Unusually code-heavy for this lane and the reason is the shape of the fix: a background job must NOT take send's seat (the agent is idle and must stay messageable), so this is a second button rather than a wider condition on the existing one — 11 of the 21 lines are that button's JSX, which has to be where the composer's button row is. The rest is one prop, its destructure, and the swap from two booleans to one `composerStopControl` answer; the decision itself lives in `lib/stop-affordance.ts` and is driven by the server suite, which is why only 6 comment lines are needed here. From 750 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/twilio.ts",
+      "from": 501,
+      "to": 512,
+      "by": "t105 — the voicemail door resolves the caller's conversation (t106's hand-up)",
+      "why": "501 -> 512 (+11 net: 6 code, 5 comment; nothing removed). The one site of the eight whose fix is two lines rather than one: it resolved NO conversation at all and left `conversation_id` NULL, so its RELOAD path was wrong too and no frame field could have fixed it. 4 code lines resolve the caller's phone identity (the shape `twilio/call-session.ts` already uses for the same person ringing the same number), 2 stamp it on the insert and the frame. The 5 comment lines say why this door is different from its six siblings, which is the thing that will not be obvious to whoever next reads a `resolveOrCreateConversation` call in a webhook handler. From 512 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/imessage-bridge.ts",
+      "from": 2314,
+      "to": 2322,
+      "by": "t105 — the iMessage inbound frame and its courtesy marker carry the conversation",
+      "why": "2314 -> 2322 (+8 net: 5 code added, 1 code removed, 4 comment). Two sites. The inbound frame gains the id its own insert already resolved (1 line). The courtesy-damping marker is stamped on BOTH its insert and its frame (4 lines, counting the insert call reflowed from one line to three): stamping only the frame would put an id on the wire that the stored row does not carry, which is the live-vs-reload split this fix is about, mirrored. 4 comment lines, the argument itself living in the census test. From 2322 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/generation-jobs.ts",
+      "from": 443,
+      "to": 449,
+      "by": "t105 — the run-once job lifecycle announces the agent's live work (BACKLOG L40)",
+      "why": "443 -> 449 (+6 net: 2 code, 4 comment). One import and one call in the module's existing `emitUpdate` chokepoint. It is NOT a duplicate of the frame already sent there: that one is per-JOB with a box-wide `activeCount`, and the composer's question is per-agent. This door also covers the window the abort registry cannot see at all — `image_create`'s delivery waits for the agent to go idle BEFORE it dials, so a queued row is the only standing fact. The 4 comment lines are that distinction. From 449 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/video-job-poller.ts",
+      "from": 413,
+      "to": 417,
+      "by": "t105 — the video poll loop's row edges announce the agent's live work",
+      "why": "413 -> 417 (+4 net: 2 code, 2 comment). The sibling of the `generation-jobs.ts` entry above, same two lines in the same kind of chokepoint; 2 comment lines because the argument is stated there and pointed at here. A render outlives its turn by up to thirty minutes, which is the whole window the composer was blind in. From 417 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/gmail-watcher.ts",
+      "from": 592,
+      "to": 595,
+      "by": "t105 — the mail watcher's live frame carries the person's conversation (t106's hand-up)",
+      "why": "592 -> 595 (+3 net: 1 code, 2 comment). One field on the broadcast, from the id this producer already resolved for its insert, plus a two-line pointer at the census that holds the argument (`services/__tests__/no-channel-inbound-frame-loses-its-conversation.test.ts`). The five-line note this replaced was repeated at six sites and was trimmed on purpose. From 595 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/outlook-watcher.ts",
+      "from": 517,
+      "to": 520,
+      "by": "t105 — the mail watcher's live frame carries the person's conversation (t106's hand-up)",
+      "why": "517 -> 520 (+3 net: 1 code, 2 comment). Identical to the `gmail-watcher.ts` entry above — one field on the broadcast from the already-resolved id, plus the two-line pointer at the census. From 520 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/teams-watcher.ts",
+      "from": 461,
+      "to": 464,
+      "by": "t105 — the Teams watcher's live frame carries the person's conversation (t106's hand-up)",
+      "why": "461 -> 464 (+3 net: 1 code, 2 comment). Identical to the two mail watchers — one field on the broadcast from the already-resolved id, plus the two-line pointer at the census. From 464 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/twilio/call-session.ts",
+      "from": 913,
+      "to": 916,
+      "by": "t105 — the live-call utterance frame carries the caller's conversation (t106's hand-up)",
+      "why": "913 -> 916 (+3 net: 1 code, 2 comment). One field on the broadcast from the id this leg already resolved for its insert, plus the two-line pointer at the census. From 916 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/twilio/sms-inbound.ts",
+      "from": 406,
+      "to": 409,
+      "by": "t105 — the SMS inbound frame carries the sender's conversation (t106's hand-up)",
+      "why": "406 -> 409 (+3 net: 1 code, 2 comment). One field on the broadcast from the id this producer already resolved for its insert, plus the two-line pointer at the census. From 409 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6563,7 +6654,7 @@
     "packages/dashboard/src/components/AttachmentChips.tsx": 465,
     "packages/dashboard/src/components/CanvasView.tsx": 430,
     "packages/dashboard/src/components/ContactsPanel.tsx": 470,
-    "packages/dashboard/src/components/Dojo3Composer.tsx": 723,
+    "packages/dashboard/src/components/Dojo3Composer.tsx": 750,
     "packages/dashboard/src/components/Dojo3Stage.tsx": 450,
     "packages/dashboard/src/components/ImportWizard.tsx": 663,
     "packages/dashboard/src/components/Markdown.tsx": 433,
@@ -6582,7 +6673,7 @@
     "packages/dashboard/src/lib/voice/voice-client.ts": 878,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 392,
     "packages/dashboard/src/pages/Agents.tsx": 683,
-    "packages/dashboard/src/pages/Chat.tsx": 2074,
+    "packages/dashboard/src/pages/Chat.tsx": 2109,
     "packages/dashboard/src/pages/Costs.tsx": 686,
     "packages/dashboard/src/pages/Health.tsx": 660,
     "packages/dashboard/src/pages/Memory.tsx": 499,
@@ -6726,14 +6817,14 @@
     "packages/server/src/credentials/store.ts": 412,
     "packages/server/src/db/migration-backup.ts": 399,
     "packages/server/src/db/migration-checksums.ts": 317,
-    "packages/server/src/gateway/routes/agents.ts": 963,
+    "packages/server/src/gateway/routes/agents.ts": 993,
     "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2977,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/reports.ts": 250,
     "packages/server/src/gateway/routes/setup-deps.ts": 514,
     "packages/server/src/gateway/routes/tracker.ts": 970,
-    "packages/server/src/gateway/routes/twilio.ts": 501,
+    "packages/server/src/gateway/routes/twilio.ts": 512,
     "packages/server/src/gateway/routes/update.ts": 1249,
     "packages/server/src/gateway/routes/upload.ts": 608,
     "packages/server/src/github/issues.ts": 415,
@@ -6795,18 +6886,18 @@
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/capability-registry.ts": 251,
     "packages/server/src/services/format-time.ts": 275,
-    "packages/server/src/services/generation-jobs.ts": 443,
-    "packages/server/src/services/gmail-watcher.ts": 592,
+    "packages/server/src/services/generation-jobs.ts": 449,
+    "packages/server/src/services/gmail-watcher.ts": 595,
     "packages/server/src/services/image-generation.ts": 476,
-    "packages/server/src/services/imessage-bridge.ts": 2314,
+    "packages/server/src/services/imessage-bridge.ts": 2322,
     "packages/server/src/services/num-ctx-calculator.ts": 563,
     "packages/server/src/services/ollama-lock.ts": 448,
-    "packages/server/src/services/outlook-watcher.ts": 517,
-    "packages/server/src/services/teams-watcher.ts": 461,
+    "packages/server/src/services/outlook-watcher.ts": 520,
+    "packages/server/src/services/teams-watcher.ts": 464,
     "packages/server/src/services/transcription.ts": 399,
     "packages/server/src/services/tunnel.ts": 683,
     "packages/server/src/services/video-generation.ts": 402,
-    "packages/server/src/services/video-job-poller.ts": 413,
+    "packages/server/src/services/video-job-poller.ts": 417,
     "packages/server/src/techniques/dependencies.ts": 586,
     "packages/server/src/techniques/share-export.ts": 464,
     "packages/server/src/techniques/share-import.ts": 311,
@@ -6824,8 +6915,8 @@
     "packages/server/src/tracker/task-stamps.ts": 296,
     "packages/server/src/tracker/tools.ts": 5067,
     "packages/server/src/tracker/version-gap-reconcile.ts": 327,
-    "packages/server/src/twilio/call-session.ts": 913,
-    "packages/server/src/twilio/sms-inbound.ts": 406,
+    "packages/server/src/twilio/call-session.ts": 916,
+    "packages/server/src/twilio/sms-inbound.ts": 409,
     "packages/server/src/update-state.ts": 417,
     "packages/server/src/update/disk-preflight.ts": 246,
     "packages/server/src/vault/archive.ts": 310,
@@ -6857,7 +6948,7 @@
     "packages/shared/src/outcome.ts": 270,
     "packages/shared/src/types.ts": 649,
     "packages/shared/src/visibility.ts": 989,
-    "packages/shared/src/ws.ts": 1230,
+    "packages/shared/src/ws.ts": 1270,
     "watchdog/src/auto-rollback.ts": 333,
     "watchdog/src/index.ts": 1217,
     "packages/dashboard/src/lib/working-note-visibility.ts": 283
