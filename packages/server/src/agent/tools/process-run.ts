@@ -69,9 +69,6 @@ export const EXEC_TIMEOUT_MAX_MS = 120000;
  */
 export const EXEC_ABSOLUTE_CEILING_MS = 60 * 60 * 1000;
 
-/** Both streams together, as `maxBuffer` bounded them on the buffered primitive. */
-const PROCESS_MAX_BUFFER_BYTES = 1024 * 1024;
-
 /** Phase 3.5 (2026-05-04), per-stream caps. Each of stdout/stderr gets its own
  *  ~4K-token cap (16K chars), tagged with `stdout_truncated:true` /
  *  `stderr_truncated:true` flags so the agent sees structurally that output was
