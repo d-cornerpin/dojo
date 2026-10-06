@@ -187,14 +187,14 @@ export async function runDistillationCycle(): Promise<void> {
     return;
   }
 
-  const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
+  const { deliverA2ANotice } = await import('../agent/a2a-notice.js');
 
   if (candidates.length > 0) {
     const list = candidates.map((c, i) =>
       `${i + 1}. "${c.sampleTitle}" — completed ${c.count}x in the last ${PATTERN_LOOKBACK_DAYS} days (latest task id ${c.sampleTaskId}).${c.sampleGoal ? ` Goal: ${c.sampleGoal.slice(0, 200)}` : ''}`,
     ).join('\n');
     try {
-      await deliverA2AMessage({
+      await deliverA2ANotice({
         intent: 'ASSIGN',
         threadId: uuidv4(),
         requiresResponse: false,
@@ -204,7 +204,7 @@ export async function runDistillationCycle(): Promise<void> {
           `Name it after the procedure, not the specific dates/people. When the drafts exist, you are done; the owner decides promotion.`,
         toAgent: getTrainerAgentId(),
         fromAgent: 'system',
-      });
+      }, 'Technique-distillation draft batch to the Trainer', { count: candidates.length, toAgent: getTrainerAgentId() });
       logger.info('distillation: sent draft batch to Trainer', { count: candidates.length });
     } catch (err) {
       logger.error('distillation: Trainer batch failed', {

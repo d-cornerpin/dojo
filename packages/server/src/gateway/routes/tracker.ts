@@ -489,16 +489,16 @@ trackerRouter.post('/override-requests/:id/resolve', async (c) => {
     });
     // Best-effort A2A notification to the requesting agent.
     try {
-      const { deliverA2AMessage } = await import('../../agent/a2a-transport.js');
+      const { deliverA2ANotice } = await import('../../agent/a2a-notice.js');
       const { getPMAgentId } = await import('../../config/platform.js');
-      await deliverA2AMessage({
+      await deliverA2ANotice({
         intent: 'QUESTION',
         threadId: '',
         requiresResponse: true,
         payload: `Your override request on task ${req.taskId.slice(0, 8)} was denied by the user. Reason: ${reason}. Address the original engine objection and resubmit cleanly.`,
         toAgent: req.requestedBy,
         fromAgent: getPMAgentId(),
-      });
+      }, 'Dashboard override-denial notice to the requesting agent', { taskId: req.taskId, requestedBy: req.requestedBy });
     } catch { /* best-effort */ }
     logger.info('Override denied via dashboard', { taskId: req.taskId, requestId: id });
     return c.json({ ok: true, data: { approved: false } });

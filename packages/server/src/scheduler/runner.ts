@@ -255,8 +255,8 @@ async function sweepStaleOverrideRequests(): Promise<void> {
 
       // Notify the requesting agent via A2A.
       try {
-        const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
-        await deliverA2AMessage({
+        const { deliverA2ANotice } = await import('../agent/a2a-notice.js');
+        await deliverA2ANotice({
           intent: 'QUESTION',
           threadId: '',
           requiresResponse: true,
@@ -266,7 +266,7 @@ async function sweepStaleOverrideRequests(): Promise<void> {
             `Address the engine's original concern and resubmit cleanly, or file a fresh work_close_request(action="override").`,
           toAgent: r.requestedBy,
           fromAgent: getPMAgentId(),
-        });
+        }, 'Override auto-denial notice to the requesting agent', { taskId: r.taskId, requestedBy: r.requestedBy });
       } catch { /* best-effort */ }
       swept++;
     }

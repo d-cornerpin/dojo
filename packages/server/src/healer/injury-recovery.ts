@@ -924,15 +924,15 @@ async function notifyHealerOfRecovery(agentId: string): Promise<void> {
     // Deliver via A2A transport, FYI intent does NOT wake the healer.
     // The recovery notice sits as read-only context, no tokens spent.
     // v2.3.19, fresh thread (matches the injury-alert change above).
-    const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
-    await deliverA2AMessage({
+    const { deliverA2ANotice } = await import('../agent/a2a-notice.js');
+    await deliverA2ANotice({
       intent: 'FYI',
       threadId: `recovery-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       requiresResponse: false,
       payload: content,
       toAgent: healerId,
       fromAgent: 'system',
-    });
+    }, 'Agent-recovery notice to the Healer', { agentId, agentName: agent.name });
 
     logger.info('Healer notified of agent recovery', { agentId, agentName: agent.name });
   } catch (err) {
