@@ -7239,6 +7239,13 @@
       "to": 1649,
       "by": "t116 fix round — the verifier's E3 defect: the drop-outcome fall-through was inverted",
       "why": "1617 -> 1649 (+32: 7 code, 31 comment, 2 blank, and 8 lines DELETED — the inline ternary and the comment it contradicted). THE DEFECT BEING FIXED WAS A COMMENT THAT TOLD THE TRUTH ABOVE CODE THAT DID THE OPPOSITE: the sentence promised that any unrecognised reason is a `failed` send, while the ternary below it allowlisted `failed` for two reasons and defaulted the other five to `suppressed`. `MALFORMED_ENVELOPE` and `PERSIST_SKIPPED` were therefore filed as the platform working as designed, and `PERSIST_SKIPPED` means the receiver's row persisted nothing — a message that vanished, recorded as a protocol decision. Nothing false reached `delivered`, so no reader was told a hand-off happened; the record lied about WHY nothing arrived. THE 7 CODE LINES ARE A NAMED SET PLUS A FOUR-LINE DECIDER, and moving the decision to module scope is the fix, not tidying: a condition written inline at a call site is one no clause can drive apart from the send, which is exactly how an inverted ternary survived a 16-clause file. The comment carries the two things the next editor must not undo — that the set is an ALLOWLIST of policy with `failed` as the DEFAULT (an allowlist of failures is the defect itself, and would quietly absorb the next reason added to the union), and that this matches the direction the transport already chose for the same vocabulary in `DROPS_THE_SENDER_IS_TOLD_ABOUT`. From 1649 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/agents.ts",
+      "from": 1649,
+      "to": 1664,
+      "by": "t116 — the ruled TERMINAL_THREAD_CLOSED reclassification (verifier, 2026-10-06)",
+      "why": "1649 -> 1664 (+15: 21 comment, 7 deleted, and ZERO net code — the only executable change REMOVES a member from a Set literal). This raise buys comment and nothing else, which is the whole of the argument for it: the change itself makes the file do strictly less, and what grew is the record of WHY. `TERMINAL_THREAD_CLOSED` reads like a protocol bound, sits beside three real ones, and is not one — v2.5.34 removed the rejection that raised it and PHASE-2 T10 (migration 143) deleted the `is_terminal` flag behind it, so the transport has no emit site left and the reason can only appear as a stale uncleared marker, i.e. a transport bug. Without that paragraph the next editor sees a reason named like its three neighbours sitting outside their set and \"corrects\" it back in, which silently re-files a bug as intended behaviour where only a ledger query would ever see it. The 21 lines are split between the set's own header (the enumeration and the migration references) and the handler's switch case (which now states that the ledger word agrees with the \"engine bug\" sentence the agent is shown) — the two places a reader could land. Clause-guarded in both directions besides. From 1664 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7314,7 +7321,7 @@
     "packages/server/src/agent/stream-patience.ts": 473,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
     "packages/server/src/agent/tools/assignment-capability.ts": 139,
-    "packages/server/src/agent/tools/cat/agents.ts": 1649,
+    "packages/server/src/agent/tools/cat/agents.ts": 1664,
     "packages/server/src/agent/tools/cat/comms.ts": 914,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
