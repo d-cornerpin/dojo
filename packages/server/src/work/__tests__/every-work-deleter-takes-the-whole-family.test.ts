@@ -54,6 +54,51 @@
 //
 // A new deleter therefore fails D1 (unknown file) and D2 (no driver) before it can fail in
 // front of a user. All rows and names below are fictional.
+//
+// ════════════════════════════════════════════════════════════════════════════════════════
+// WHAT A REFUSAL HERE LOOKS LIKE, AND WHY THE KIT'S TEARDOWN NEVER MEETS ONE
+// (t113 item F, BACKLOG line 33's routed remainder — documented where the census lives)
+// ════════════════════════════════════════════════════════════════════════════════════════
+//
+// The two NULLABLE references behave differently from the two owned ones, and the difference is
+// the thing a reader of this file needs and cannot see from the clauses alone.
+//
+//   work_events.work_id          OWNED    deleted with the row
+//   adjudications.work_id        OWNED    deleted with the row
+//   techniques.build_project_id  NULLED   a technique outlives whatever built it
+//   work.parent_id (itself)      NULLED   a child work row outlives its parent
+//
+// All four are `NO ACTION`, and `NO ACTION` REFUSES — it does not cascade and it does not
+// silently strand. So a deleter that clears three of four does not leave a mess: it RAISES
+// `SqliteError: FOREIGN KEY constraint failed` and the delete does not happen at all. That is
+// the loud half, and it is deliberate. The two NULLED references are the ones a reader is most
+// likely to assume are "just links" that the database will tidy; they are not, and forgetting
+// either one is what turned the three measured shapes in this file's header into raises rather
+// than orphans.
+//
+// NO PARTIAL PROGRESS IS THE OTHER HALF, and it is a property of the CALLER, not of the
+// constraint. `clearReferencesToWork` clears references and the caller deletes the rows, which
+// is two statements describing one fact — so its docstring requires both to run inside the
+// caller's `withUnit`, and D2 asserts the outcome with `PRAGMA foreign_key_check`. A failure
+// between the two halves is precisely the state that discipline exists to prevent: references
+// cleared, rows still present, nothing to say it happened.
+//
+// ⚠ AND THIS IS WHY THE KIT LEAVES DAMAGE THE DATABASE WOULD HAVE REFUSED. The behavioural
+// kit tears its battery down through the `sqlite3` CLI, which leaves `foreign_keys` OFF, and
+// deletes parent rows without naming what hangs off them. With the pragma off there is no
+// refusal to meet, so the teardown "succeeds" and leaves orphans that could not have been
+// created while the platform was running — the provenance `migration-173`'s fixture states in
+// its own words ("an orphan row cannot be created while the pragma is on; the database refuses
+// it"), and the reason migrations 172, 173 and 176 exist to sweep after it. So a clean run of
+// THIS file proves nothing about a kit-torn-down body: the refusal these clauses rely on is a
+// pragma the kit does not have on. The sweeping migrations are the kit path's answer, and they
+// have their own fixtures.
+//
+// ⚠ UNREACHED, and named rather than guessed: BACKLOG line 33 also says "the -1 is on purpose".
+// I could not source that -1. The only `-1` in `work/**` is `work-reaper.ts`'s `humanAsksOpen`
+// returning -1 for an unreadable spine (already documented there, and nothing to do with
+// teardown), and the kit's own teardown lives in `dojo-test-kit`, which this lane must not
+// touch. Rather than invent a meaning for a number I cannot find, it is recorded here as open.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
