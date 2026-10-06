@@ -6833,6 +6833,13 @@
       "to": 304,
       "by": "t110 D fold — the residual paragraph stops asking for the column that now exists",
       "why": "303 -> 304 (+1: 0 code, 1 comment). The 303 raise landed with the ask-binding build; this one line is the prose fold that had to follow it. The module's RESIDUAL paragraph still read 'closing it properly wants the `dojo_reports.ask_id` column the round-2 investigation named' — a delete-me note pointing at work that this same lane had just landed, which is the exact class of staleness (round-3 M2/L1) the lane is here to clear. It now says what is true: the five over-void shapes and the residual are what RECONSTRUCTING a binding from proximity costs, so they are paid only where there IS no binding; the batch partner and the span neighbour keep their stamps on every report filed since 182; and what remains is the pre-182 population, where nothing backfills honestly. One net line because the replacement paragraph was written to the ceiling deliberately rather than taking a second raise for prose."
+    },
+    {
+      "path": "packages/server/src/report/bounds.ts",
+      "from": 311,
+      "to": 320,
+      "by": "t110 C/F5 — the drop note stops calling the collector's capped count a window population",
+      "why": "311 -> 320 (+9: 3 code, 6 comment, 1 replaced). THE DEFECT (round-1 review F5): the note read `<section>: showing the K <order> of N collected in this window`, and N is ALREADY ROW-CAPPED — every collector reads at most `COLLECTOR_CAPS`, and the log reader takes the newest 200 lines GLOBALLY before the agent/window filter is applied. So 'of N in this window' asserted a window population nobody counted: a box with 210 audit rows inside the window rendered `auditLog: showing newest 13 of 200 in this window`, and on a box busy with OTHER agents the global 200-line read can leave `logs` near-empty with no note at all. The row-cap behaviour pre-dates this text; the CLAIM was new. The count is true about what the collector RETURNED, so that is what the sentence says now, and the cap is named so the reader cannot take N for a census. The clause that pinned the K-of-N shape moved with it and gained two arms: the old 'of N collected in this window' phrasing is now forbidden outright, and the row-cap warning is required. ALSO IN THIS COMMIT, NO LINES HERE: F6 and F7 were already STATED in this file's arithmetic (lines 46-48) and are now MEASURED, in the test file. F7 — the bound runs before `scrub()` and a redaction marker can be longer than the value it replaces — is held by asserting the margin itself: a maximal body leaves >15,000 characters below the engine's 48,000-character budget, and the scrub's worst realistic growth (200 occurrences x the marker) is asserted to fit inside it. Mutant: raising the `logs` budget 6,000 -> 20,000 reds it with '7001 characters of headroom' (and reds the pre-existing target clause too); reverted byte-identical to sha 141c246494f431b6935c72385b43cd253873b91d0580d2d42c8cb1bae02dc6ac. F6 — the budgets count UTF-16 code units, which is the engine's unit but not a tokenizer's — now has the CJK fixture the review measured but never pinned: it proves the bound still binds in the engine's own unit, that the same document costs >1.3x more UTF-8 bytes than code units, and that even priced at the byte count (a deliberate over-estimate of a tokenizer) it stays under the cap. ALREADY PAID AT THIS HEAD, verified and NOT re-fixed: L2 (`ShrinkKind` exists and the note is worded from it), L3 (`IDENTITY_FIELDS` ranked last plus the `MESSAGE_HEAD_CHARS` head-slice second pass), L5 (the 'everything behind it' sentence is conditional on `items.length > kept.length`), L4 (clause 25 drives a maximal brief through a real engine truncation), and NIT-7's first half (gather.ts now points at `bounds.ts`)."
     }
   ],
   "maxNewFileLines": 400,
@@ -7064,7 +7071,7 @@
     "packages/server/src/prompt/registry/types.ts": 491,
     "packages/server/src/providers/anthropic-sdk.ts": 516,
     "packages/server/src/providers/billing-breaker.ts": 316,
-    "packages/server/src/report/bounds.ts": 311,
+    "packages/server/src/report/bounds.ts": 320,
     "packages/server/src/report/state-lane.ts": 333,
     "packages/server/src/report/store.ts": 330,
     "packages/server/src/report/telemetry-whitelist.ts": 241,
