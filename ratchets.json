@@ -7169,6 +7169,20 @@
       "to": 332,
       "by": "t114 rebase sitting — the four collision-blocked timers, the widened memory fence, and t113 hand-up 2",
       "why": "319 -> 332 (+13: 1 code, 12 comment). CENSUS U16, and this file is the campaign's decision #12 ('embeddings.ts at its 319 pin exactly') which was RE-CLASSED as a maintainer call explicitly handled by ratchet discipline, so it is raised here rather than escalated. THE CODE IS ONE LINE: the OpenAI-compatible transport armed a hardcoded 30s while the Ollama branch thirty lines above arms the caller's own `timeoutMs` — census row 8's shape, two numbers that were always meant to be one, and a caller's declared bound silently discarded on one of two paths. A one-line fix cannot be made to fit a pin the file already sat on exactly, which is the whole content of decision #12. THE COMMENT records why this is the WHOLE fix and not half of one: an abort already classifies as backend-unavailable behind the announce-once latch, and `memory/backfill.ts` re-embeds what was missed, so the row was never permanently lost — only the declared bound was. From 332 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/update.ts",
+      "from": 1412,
+      "to": 1433,
+      "by": "t114 fix round — the review Important + two minors",
+      "why": "1412 -> 1433 (+21: 17 code, 8 comment). REVIEW MINOR 3: the release download no longer goes through a shell. `spawnIdleBounded('curl', argv)` hands arguments straight to `execve`, so the one value that comes from outside this process — the release asset URL — is data rather than text interpolated into a `/bin/sh -c` command line. The reviewer judged the old shape no new exposure (it is what the `execAsync` line it replaced already did) and flagged it for the next updater change; doing it now costs one small function and removes the question. THE CODE is the argv runner plus `curlDownloadArgv` returning an array; the shell form STAYS for `npm install`, which takes no outside input and reads better as a string. REFUSED: routing the installs through argv too — no input to protect, and it would make them harder to read for nothing. From 1433 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/retrieval.ts",
+      "from": 1171,
+      "to": 1180,
+      "by": "t114 fix round — the review Important + two minors",
+      "why": "1171 -> 1180 (+9: 9 code, 10 comment, and the net is small because the inline block this replaces was deleted). REVIEW IMPORTANT 1: U7 shipped with ZERO probe clauses, and the budget was a closure inside the handler, which is unreachable from a clause. It moves to module scope and is EXPORTED so the probe can drive the SHIPPED arithmetic rather than a copy of it — the lesson U5 taught this lane when a re-derived oracle left a planted flat bound entirely green. No behaviour change: same floor, same per-1K grant, same ceiling, same call site. From 1180 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7360,7 +7374,7 @@
     "packages/server/src/gateway/routes/setup-deps.ts": 606,
     "packages/server/src/gateway/routes/tracker.ts": 985,
     "packages/server/src/gateway/routes/twilio.ts": 512,
-    "packages/server/src/gateway/routes/update.ts": 1412,
+    "packages/server/src/gateway/routes/update.ts": 1433,
     "packages/server/src/gateway/routes/upload.ts": 608,
     "packages/server/src/github/issues.ts": 473,
     "packages/server/src/google/auth.ts": 776,
@@ -7391,7 +7405,7 @@
     "packages/server/src/memory/reader-pool.ts": 336,
     "packages/server/src/memory/recall-lane.ts": 907,
     "packages/server/src/memory/recall.ts": 510,
-    "packages/server/src/memory/retrieval.ts": 1171,
+    "packages/server/src/memory/retrieval.ts": 1180,
     "packages/server/src/memory/search-bounds.ts": 327,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
