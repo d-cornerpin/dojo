@@ -22,9 +22,15 @@
 //        honour, now covering this one too. Mirrors
 //        `a-doomed-request-refuses-before-dialing.test.ts`'s own RED/GREEN/CONTROL shape.
 //
-// This transport has no per-chunk watchdog (query()'s async generator gives no bump() hook), so
-// — like the Ollama raw-fetch transport — one flat derived ceiling stands in for the LIVE timer
-// (no first-chunk/idle split armed in real time).
+// SUPERSEDED BY t114 (census row 35): this header used to read "This transport has no per-chunk
+// watchdog (query()'s async generator gives no bump() hook), so — like the Ollama raw-fetch
+// transport — one flat derived ceiling stands in for the LIVE timer". The premise was wrong:
+// `query()` yields a message per chunk, which IS the bump hook. The flat ceiling it described
+// was row 7's defect on a new transport, and a healthy stream was killed on its total duration.
+// The timer now re-arms per message and the two bounds are applied as inter-read gaps. The
+// clauses below are unchanged and still pass — they pin the error TYPE and the
+// first-chunk-vs-idle reconstruction, which is reporting rather than the bound; the bound's own
+// behaviour is pinned by `the-agent-sdk-clock-bounds-a-gap-not-a-total.test.ts`.
 //
 // ── FIX ROUND (CRITICAL, review round) — §D below ──
 // The first cut of this task stopped at "the abort is named" (a plain `Error` with prose

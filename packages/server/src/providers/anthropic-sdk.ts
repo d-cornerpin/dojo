@@ -320,6 +320,18 @@ export async function callAnthropicViaSdk(params: {
    */
   timeoutMs?: number | null;
   /**
+   * t114 (census row 35) — THE IDLE HALF OF THE BOUND, WHICH IS WHAT MAKES IT A GAP.
+   *
+   * `timeoutMs` above is now the FIRST-CHUNK bound and this is the BETWEEN-CHUNK bound, the
+   * same pair every other transport in the tree arms (`makeStreamWatchdog(signal, firstChunkMs,
+   * idleMs)`). Both arrive from the one `resolveTransportTimeouts` struct, whose two numbers are
+   * already defined as inter-read bounds — `headersTimeoutMs` is "request written -> first
+   * response" and `bodyTimeoutMs` is "the gap between two bytes of the response body". This
+   * transport was the only one applying them as a TOTAL. `null`/`undefined` falls back to
+   * `timeoutMs` for both, which keeps a single-bound caller behaving sensibly.
+   */
+  idleTimeoutMs?: number | null;
+  /**
    * T83 FIX ROUND — THE EXTERNAL CANCELLATION THIS TRANSPORT USED TO DROP ON THE FLOOR.
    *
    * The stop button's signal. Every other transport in `agent/model.ts` has honoured
@@ -339,7 +351,7 @@ export async function callAnthropicViaSdk(params: {
    */
   abortSignal?: AbortSignal;
 }): Promise<AgentSdkCallResult> {
-  const { agentId, apiModelId, systemPrompt, messages, tools, onChunk, timeoutMs, abortSignal } = params;
+  const { agentId, apiModelId, systemPrompt, messages, tools, onChunk, timeoutMs, idleTimeoutMs, abortSignal } = params;
 
   // Dynamic import, SDK may not be installed
   const sdk = await import('@anthropic-ai/claude-agent-sdk');
@@ -386,19 +398,54 @@ export async function callAnthropicViaSdk(params: {
   // no declared patience and no live stop still gets `undefined`, i.e. byte-identical behaviour
   // to before both tasks. `timedOutByPatience` stays the timer's alone: that is what keeps an
   // external abort from being reported as a declared-patience trip.
+  // ── t114 (CENSUS ROW 35) — THIS TIMER BOUNDS A GAP, NOT A TOTAL ──
+  //
+  // THE DEFECT, in the shape census row 7 was closed for: the timer below was armed ONCE at
+  // dial and nothing ever touched it again. The `for await` loop receives content and calls
+  // `onChunk` throughout, so a call that was streaming perfectly was aborted the instant the
+  // wall-clock total hit the bound. Worse than row 7 in one respect — it only arms for a row
+  // that DECLARED its patience, so it punished exactly the owner who tried to configure the
+  // problem away: a provider row declaring 600s of patience got `bodyTimeoutMs = 630_000` and
+  // its healthy 700-second generation was murdered at 630s mid-sentence.
+  //
+  // The in-file comment at the `model.ts` call site used to justify this by saying it "matches
+  // `callOllamaModel`'s raw-fetch transport for the CLOCK itself: one flat derived ceiling" —
+  // citing T79e, which the census's own row 7 note records as INSUFFICIENT ("a derived flat
+  // ceiling is still a flat ceiling. Only the `makeStreamWatchdog` half is a fix"). The lesson
+  // was written down and then not applied one transport over. It is applied here now.
+  //
+  // THE SHAPE: `arm()` is re-entrant and every chunk re-arms it, which is `makeStreamWatchdog`'s
+  // contract (`bump`/`contentStarted`) expressed locally — this module cannot import it from
+  // `agent/model.ts` without a cycle, since `model.ts` is what dynamically imports this file.
+  // Absence of progress stays a MEASURED fact: silence longer than the declared gap still trips,
+  // and it trips with the bound that actually expired, so the honest exit reason names the right
+  // number. The arming CONDITION is deliberately unchanged — a NULL row still gets no timer at
+  // all — so this is a fix to the clock's shape and not a new bound for undeclared providers.
   let timedOutByPatience = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abortController: AbortController | undefined;
   let detachExternal: (() => void) | undefined;
+  // The bound that actually expired, so the error reports the gap it tripped on rather than
+  // whichever number happened to be in `timeoutMs`.
+  let trippedBoundMs: number | null = null;
+  const firstChunkBoundMs = timeoutMs;
+  const idleBoundMs = idleTimeoutMs ?? timeoutMs;
+  let armGap: ((ms: number) => void) | undefined;
   if (timeoutMs != null || abortSignal) {
     abortController = new AbortController();
     const controller = abortController;
-    if (timeoutMs != null) {
-      timer = setTimeout(() => {
-        timedOutByPatience = true;
-        controller.abort();
-      }, timeoutMs);
-      timer.unref?.();
+    if (firstChunkBoundMs != null) {
+      const arm = (ms: number): void => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          timedOutByPatience = true;
+          trippedBoundMs = ms;
+          controller.abort();
+        }, ms);
+        timer.unref?.();
+      };
+      armGap = arm;
+      arm(firstChunkBoundMs);
     }
     if (abortSignal) {
       // ALREADY ABORTED means the stop landed before this call could dial — abort before
@@ -415,6 +462,23 @@ export async function callAnthropicViaSdk(params: {
     }
   }
 
+  /**
+   * t114 — `makeStreamWatchdog.bump()`, locally. Called for EVERY message the stream yields,
+   * because any message at all is evidence the far end is alive; which bound gets re-armed
+   * depends on whether generated content has started, exactly as the shared watchdog decides it
+   * (`bump: () => arm(contentSeen ? idleMs : firstChunkMs)`).
+   */
+  const bumpGap = (): void => {
+    if (!armGap) return;
+    const ms = sawAnyContent ? idleBoundMs : firstChunkBoundMs;
+    if (ms != null) armGap(ms);
+  };
+  /** `contentStarted()` + `bump()`: generated content has arrived, so the idle bound governs. */
+  const noteContent = (): void => {
+    sawAnyContent = true;
+    bumpGap();
+  };
+
   try {
     for await (const message of query({
       prompt: lastUserMessage || 'Continue.',
@@ -427,6 +491,8 @@ export async function callAnthropicViaSdk(params: {
         ...(abortController ? { abortController } : {}),
       },
     })) {
+      // t114: ANY message is evidence of life — re-arm before inspecting what it was.
+      bumpGap();
       if (message.type === 'assistant') {
         // Full assistant message with content blocks
         const betaMsg = (message as any).message;
@@ -434,7 +500,7 @@ export async function callAnthropicViaSdk(params: {
           for (const block of betaMsg.content) {
             if (block.type === 'text' && block.text) {
               fullResponse += block.text;
-              sawAnyContent = true;
+              noteContent();
               onChunk?.(block.text);
             }
           }
@@ -453,7 +519,7 @@ export async function callAnthropicViaSdk(params: {
         if (event?.type === 'content_block_delta' && event?.delta?.type === 'text_delta') {
           const text = event.delta.text ?? '';
           fullResponse += text;
-          sawAnyContent = true;
+          noteContent();
           onChunk?.(text);
         }
       } else if (message.type === 'auth_status') {
@@ -469,10 +535,15 @@ export async function callAnthropicViaSdk(params: {
     // detect, not just a prose message — see `AgentSdkPatienceExceededError`'s own doc comment
     // for the exact chain a plain `Error` here broke.
     if (timedOutByPatience) {
-      logger.error(`Agent SDK call aborted: exceeded this provider's declared patience (${timeoutMs}ms)`, {
-        error: msg, model: sdkModel, timeoutMs, sawAnyContent,
+      // t114: the number reported is the GAP that actually expired — the first-chunk bound when
+      // nothing ever arrived, the idle bound when the stream went quiet mid-answer. Reporting
+      // `timeoutMs` for both was survivable while the clock was one flat total; now that the two
+      // bounds differ it would misname which one the provider actually failed.
+      const boundMs = trippedBoundMs ?? timeoutMs!;
+      logger.error(`Agent SDK call aborted: exceeded this provider's declared patience (${boundMs}ms gap)`, {
+        error: msg, model: sdkModel, boundMs, firstChunkBoundMs, idleBoundMs, sawAnyContent,
       }, agentId);
-      throw new AgentSdkPatienceExceededError(timeoutMs!, sawAnyContent);
+      throw new AgentSdkPatienceExceededError(boundMs, sawAnyContent);
     }
     // T83: an EXTERNAL abort (the stop button) lands here and is re-thrown untouched, exactly
     // like any other SDK failure. It deliberately does NOT get a type of its own: `model.ts`'s

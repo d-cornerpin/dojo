@@ -2910,25 +2910,36 @@ async function callAnthropicSdkModel(
   // here. Bring it under the same `resolveStreamPatience` discipline the other two transports
   // already have (T73b/T79e).
   //
-  // This transport has no per-chunk watchdog — `query()`'s async generator gives no per-token
-  // hook to bump one (unlike `makeStreamWatchdog`, which the OpenAI-compat and direct-Anthropic
-  // paths use), and building that machinery is a bigger change than "honour the stored bound".
-  // That makes its shape match `callOllamaModel`'s raw-fetch transport (T79e) for the CLOCK
-  // itself: one flat derived ceiling, no first-chunk/idle split armed in real time.
-  // `resolveTransportTimeouts` already folds both declared bounds into one number for exactly
-  // this reason. The CODE the abort carries is a different matter — see the catch block's
-  // `AgentSdkPatienceExceededError` branch below, added in the T81d review-round fix: a synthetic
-  // watchdog-shaped stand-in still reconstructs the first-chunk-vs-idle DECISION (not the live
-  // per-chunk timer) from whether this call ever saw content before it tripped.
+  // t114 (census row 35) — AND THEN THE CLOCK IT WAS GIVEN WAS THE WRONG SHAPE.
+  //
+  // This comment used to read: "This transport has no per-chunk watchdog … that makes its shape
+  // match `callOllamaModel`'s raw-fetch transport (T79e) for the CLOCK itself: one flat derived
+  // ceiling, no first-chunk/idle split armed in real time." It cited as precedent the very fix
+  // the census's row 7 note records as INSUFFICIENT — "a derived flat ceiling is still a flat
+  // ceiling. Only the `makeStreamWatchdog` half is a fix" — and the premise was wrong besides:
+  // `query()`'s async generator yields a message per chunk, which is exactly the per-token hook
+  // the comment said did not exist. The transport now re-arms its timer on every message it
+  // receives, so both declared bounds are applied as the inter-read gaps
+  // `resolveTransportTimeouts` already defines them to be, and a healthily streaming call is no
+  // longer killed for the crime of taking a long time in total.
+  //
+  // The CODE the abort carries is unchanged in kind — see the catch block's
+  // `AgentSdkPatienceExceededError` branch below — except that it now reports the bound that
+  // actually expired, which only became a distinction worth drawing once the two bounds differ.
   //
   // NULL row — nothing declared, or a declaration the standing transport default already
-  // covers — makes `resolveTransportTimeouts` return `null`, `sdkTimeoutMs` stays `null`, and
+  // covers — makes `resolveTransportTimeouts` return `null`, both bounds stay `null`, and
   // `callAnthropicViaSdk` never builds an `AbortController` at all: `query()` runs with EXACTLY
   // the arguments it always has. That is R6 (byte-preservation) for a transport that had no
   // clock to preserve until today — "today's behavior" for the NULL row IS "no bound at all".
   const patience = resolveStreamPatience(modelInfo);
   const transportTimeouts = resolveTransportTimeouts(patience);
-  const sdkTimeoutMs = transportTimeouts?.bodyTimeoutMs ?? null;
+  // t114 (census row 35): WAS a single `sdkTimeoutMs = bodyTimeoutMs`, armed once at dial as a
+  // TOTAL duration that no chunk ever bumped — row 7's exact defect on a different transport,
+  // and it only armed for rows that had DECLARED patience, so it punished the owner who tried
+  // to configure the problem away. The two bounds are now kept apart and applied as gaps.
+  const sdkFirstChunkTimeoutMs = transportTimeouts?.headersTimeoutMs ?? null;
+  const sdkIdleTimeoutMs = transportTimeouts?.bodyTimeoutMs ?? null;
 
   // T81d, closing the T81b review-round's parked minor finding: the pre-dial doomed-request
   // gate (`refuseIfDoomed`) covered the OpenAI-compat and direct-Anthropic transports and left
@@ -2969,7 +2980,14 @@ async function callAnthropicSdkModel(
         streamedChunks.push(chunk);
         onChunk?.(chunk);
       },
-      timeoutMs: sdkTimeoutMs,
+      // t114 (census row 35): the two bounds are handed down SEPARATELY now, because the
+      // transport applies them as inter-read gaps rather than as one flat total. They are the
+      // same two numbers `resolveTransportTimeouts` has always produced and already defines as
+      // inter-read: `headersTimeoutMs` bounds "request written -> first response", and
+      // `bodyTimeoutMs` bounds "the gap between two bytes of the response body". A NULL row
+      // still sends `null` for both and still arms no timer at all.
+      timeoutMs: sdkFirstChunkTimeoutMs,
+      idleTimeoutMs: sdkIdleTimeoutMs,
       // T83 FIX ROUND (review CRITICAL A-1): the fourth transport joins the other three. Ollama
       // folds this signal into its `fetch` (`:1133`), the OpenAI-compatible and Anthropic-direct
       // paths fold it into their stream watchdogs (`:2085`, `:3213`) — this one passed nothing,
