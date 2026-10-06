@@ -6919,18 +6919,18 @@
       "why": "Plus 32 lines, of which 28 are CONTRACT and 4 are executable. The executable half is `a2aThreadTokenMatchesSql`: three lines that build the predicate and one that names the prefix-stripped expression. The 28-line doc block is the size it is because this function is the SECOND spelling of a matcher that already exists four lines above it, and a reader who does not know WHY there are two will delete one of them: it records that two readers ask the question in SQL and cannot call the JS form, that both arms are needed (identical for an unprefixed id, legacy-plus-current for a named one), that the token must be bound TWICE, and where the clause binding the two forms lives. THE ALTERNATIVE REFUSED, with its line cost: write the predicate out at the two call sites (`agent/a2a-replies.ts`, `agent/v2/outbound-ledger.ts`) - about +6 lines each with the comment each would need, so +12 instead of +32, and it recreates exactly the defect this item fixes. The three sites being fixed here are three hand-written copies of the same comparison that drifted out of step with the authoritative queries directly above them, twice: first collision-wide, then, after t109 moved the producer, blind to every current marker. A fourth and fifth hand-written copy is not a saving. The clause `agent/__tests__/the-thread-token-asks-sql-the-same-question.test.ts` runs both forms over 56 (token, id) pairs in a real sqlite and asserts they agree pair for pair, which only means anything while there is one home per language. NOT a cache-prefix file; no prompt byte moves (G2 untouched)."
     },
     {
-      "path": "packages/server/src/agent/a2a-transport.ts",
-      "from": 2752,
-      "to": 2755,
-      "by": "t113 A2 - naming the legacy IN member at findUnlandedInboundReply",
-      "why": "Plus 3 lines, ALL comment, ZERO executable movement: `threadId.slice(0, 8)` became `a2aThreadShortLegacy(threadId)` on the same line, byte-identical in behaviour (the function IS that slice). The three lines say why there are two `IN` members, that both are EXACT members and neither is a prefix, and that the second one is the pre-makeThreadId spelling - which is the fact a reader needs to not \"simplify\" it away, and the fact whose absence let the same slice be retyped in three other modules. THE ALTERNATIVE REFUSED: leave the hand-rolled slice and spend 0 lines. Refused because this file is the PRODUCER of the current token (t109 B) and a consumer reading `slice(0, 8)` here cannot tell whether it means the current form or the legacy one - the ambiguity is the whole defect class. A one-line comment instead of three was considered and refused: it could say WHICH era, but not that both members are exact rather than prefixes, which is the property that makes this query safe where the other three were not. No prompt byte moves."
-    },
-    {
       "path": "packages/server/src/agent/v2/outbound-ledger.ts",
       "from": 459,
       "to": 462,
       "by": "t113 A2 - the legacy-caller path asks through the one home (t109 hand-up 2)",
       "why": "Plus 3 lines, ALL comment, and the executable half is a NET WASH: `AND substr(thread_id, 1, 8) = ?` became `AND ${a2aThreadTokenMatchesSql('thread_id')}` on the same line, with one extra bound parameter on the `.get` line. The three lines record that this is the same fix as `hasPriorReplyOnThread`'s legacy path - which this function's own header already says it carries verbatim, so the two must keep moving together - and that the bare front slice matched NOTHING for a marker written after t109. THE ALTERNATIVE REFUSED: no comment, +0 lines. Refused because the function's header documents the old predicate as an \"accepted residual\", and a fix that silently contradicts a paragraph above it leaves the next reader to choose which one to believe. No prompt byte moves."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 2755,
+      "to": 2752,
+      "by": "t113 A2 - the raise is WITHDRAWN, because the change it paid for was handed up",
+      "why": "TIGHTENED back to where it was, and recorded rather than quietly deleted so the pin's history reads straight. The 2752 -> 2755 entry three rows up paid for three comment lines naming the legacy `IN` member at `findUnlandedInboundReply`. Those lines are gone: the live lane `t114-flat-timers` took this file mid-sitting, a rehearsed `git merge-tree t113-reconciliation t114-flat-timers` CONFLICTED on the shared `@dojo/shared` import line that both lanes edit, and the campaign's live-lane rule is hand up rather than force. So the file is back at main's bytes (sha ff21beb4) and the ceiling is back at 2752 — a pin left at 2755 would be three lines of headroom nobody argued for, which is how a ratchet stops ratcheting. The fix is written down in overhaul-plans/t113-report.md item A2 for whoever owns the file next; it is byte-identical in behaviour, so nothing is broken in the meantime."
     }
   ],
   "maxNewFileLines": 400,
@@ -6977,7 +6977,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1985,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 402,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
-    "packages/server/src/agent/a2a-transport.ts": 2755,
+    "packages/server/src/agent/a2a-transport.ts": 2752,
     "packages/server/src/agent/access/authorize.ts": 454,
     "packages/server/src/agent/access/read.ts": 264,
     "packages/server/src/agent/agent-status.ts": 268,
