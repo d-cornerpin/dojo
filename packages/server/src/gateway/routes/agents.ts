@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { getAgentRuntime } from '../../agent/runtime.js';
-import { countAbortable } from '../../agent/shared-state.js';
+import { liveWork, hasLiveWork, announceLiveWork } from '../../agent/live-work.js';
 import { spawnAgent, terminateAgent } from '../../agent/spawner.js';
 import { parseCreatedByKind } from '../../agent/created-by-kind.js';
 import { stopAgent } from '../../agent/runtime.js';
@@ -539,8 +539,27 @@ agentsRouter.post('/:id/stop', (c) => {
     return c.json({ ok: false, error: 'Agent not found' }, 404);
   }
 
-  if (agent.status !== 'working') {
-    return c.json({ ok: false, error: 'Agent is not currently working' }, 400);
+  // ── OWNER RULING 2026-10-05 (#9): *"STOP means stop for anything that agent is doing"* ──
+  //
+  // THE MEASURED DEFECT THIS REPLACES. What stood here was `if (agent.status !== 'working')
+  // return 400 'Agent is not currently working'`, and `agents.status` answers a DIFFERENT
+  // question: is a TURN in flight. Background work deliberately outlives its turn — the video
+  // poller runs for up to thirty minutes, `image_create`'s delivery waits for the agent to go
+  // idle before it dials — so the row reads `idle` while a render burns. A-5b taught the agent
+  // card to offer the button for exactly that case; this route then refused it. Probed at
+  // `7dc71325`: an idle agent with one live `background` registration, `POST /:id/stop` →
+  // `400 {"ok":false,"error":"Agent is not currently working"}`, and the registration still
+  // un-aborted. The visible button and the working mechanism were separated by this line.
+  //
+  // So the predicate is the one module that owns it, and it reads both facts a stop can reach.
+  // The status check SURVIVES inside it (`working` is still stoppable with nothing registered —
+  // a run between dials), it is simply no longer the only way to qualify.
+  const live = liveWork(id);
+  if (agent.status !== 'working' && !hasLiveWork(live)) {
+    // Still a refusal, and the wording now says which question was asked. An agent with
+    // genuinely nothing running has nothing to stop, and saying otherwise would set
+    // `stopMarkerPending` on a turn that never happened.
+    return c.json({ ok: false, error: 'Agent is not currently working and has no background jobs running' }, 400);
   }
 
   stopAgent(id);
@@ -551,9 +570,22 @@ agentsRouter.post('/:id/stop', (c) => {
   // `stopAgent` now writes idle only when idle is TRUE (no run in flight) and otherwise leaves
   // the row saying `working` and broadcasts `stopping: true`. The route reports back whatever
   // actually happened rather than asserting an outcome it has not checked.
+  // A-5b — THE ZERO IS ANNOUNCED, not waited for. Every background job's own exit edge emits
+  // (its `release()`, its row's `emitUpdate`), so this frame is not the only one that will say
+  // so — but a video row is moved to `cancelled` by its poll loop a tick LATER, and the frame
+  // that matters most to a surface is the one that takes its stop control away. Saying it here,
+  // from the door the press came through, is what makes the control answer the press itself.
+  announceLiveWork(id);
+
   const after = db.prepare('SELECT status FROM agents WHERE id = ?').get(id) as { status: string };
-  logger.info('Agent stopped via dashboard', { agentId: id, statusAfter: after.status });
-  return c.json({ ok: true, data: { agentId: id, status: after.status, stopping: after.status === 'working' } });
+  logger.info('Agent stopped via dashboard', {
+    agentId: id, statusAfter: after.status, cutTurn: live.turn, cutBackground: live.background,
+  });
+  // The counts are the ones read BEFORE the stop — what it was asked to cut — and the payload
+  // reports what is left, which is the number the surface's own control reads next.
+  return c.json({ ok: true, data: {
+    agentId: id, status: after.status, stopping: after.status === 'working', inFlight: liveWork(id),
+  } });
 });
 
 // POST /:id/reset-session — reset a single agent's session.
@@ -939,8 +971,12 @@ function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
     uptime,
     model,
     dreamerIgnore: row.dreamer_ignore === 1,
-    // A-5b: a READ of the live abort registry — no column, no writer, no frame. Rule: `stop-affordance.ts`.
-    inFlight: { turn: countAbortable(agentId, 'turn'), background: countAbortable(agentId, 'background') },
+    // A-5b: a READ, never a writer — of the live abort registry AND of the open media job rows,
+    // through the one module that owns the question (`agent/live-work.ts`). The rendering rule
+    // is `dashboard/src/lib/stop-affordance.ts`; the live frame is `agent:jobs`. Three surfaces,
+    // one predicate — because when the card and the stop ROUTE each had their own, the card
+    // offered a button the route then refused with 400.
+    inFlight: liveWork(agentId),
   };
 }
 
