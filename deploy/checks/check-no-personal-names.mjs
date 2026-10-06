@@ -134,25 +134,27 @@ function publicSlug() {
  * and the reason it survives today. It is printed on EVERY run, it holds no name, and a stale entry
  * (the file is clean now, or gone) FAILS — so it cannot quietly become a permanent exemption.
  */
-const ALLOWLIST = [
-  {
-    path: 'packages/server/src/vault/maintenance.ts',
-    date: '2026-09-26',
-    owner: 'owner-confirmed fictional 2026-09-26',
-    reason:
-      'ADJUDICATED, and this entry now records an answer rather than a question. The Dreamer\'s '
-      + 'archive-processing PROMPT illustrates conversation attribution with example party tags and two '
-      + 'example sentences. The audit could not settle "whether Bob, Ben, Sarah, Josh, Marcus, Alex '
-      + 'Chen, Verve Health and Sarah Chen are fictional or real … Owner\'s call"; the OWNER RULED ON '
-      + '2026-09-26 THAT ALL OF THE FIXTURE NAMES ARE FICTIONAL, so no real person is named here and '
-      + 'there is nothing to scrub. The exemption stays because the hit is a COLLISION, not a leak: '
-      + 'the gate matches the live roster, and the invented example agent name happens to equal an '
-      + 'agent on the box being checked — it would re-fire on any box whose owner used the same word. '
-      + 'What is NOT settled by that ruling, and is deliberately left alone here, is whether a prompt '
-      + 'should teach by example agent NAMES at all; rewriting it changes what every Dreamer run is '
-      + 'taught, which is a behaviour change and not a scrub\'s business.',
-  },
-];
+// ── RETIRED 2026-10-05 (t107, OWNER RULING #5): the one entry this list ever carried is gone ──
+// It exempted `packages/server/src/vault/maintenance.ts`, whose Dreamer archive-processing
+// PROMPT illustrated conversation attribution with example party tags. The hit was a COLLISION
+// rather than a leak — the gate matches the LIVE roster, and one invented example name happened
+// to equal an agent on the box being checked, so it would re-fire on any box whose owner used
+// the same word. The 2026-09-26 adjudication settled that the names were fictional and left one
+// question open IN SO MANY WORDS: *"whether a prompt should teach by example agent NAMES at all;
+// rewriting it changes what every Dreamer run is taught, which is a behaviour change and not a
+// scrub's business."* OWNER RULING #5 (2026-10-05) answered it — anonymous placeholders — and
+// the prompts now carry `<the owner>`, `<a contact>`, `<an agent>` and their siblings. There is
+// no collision left to exempt, so the entry goes rather than standing as a permanent carve-out.
+//
+// The product-side clause that replaces it is
+// `packages/server/src/prompt/__tests__/a-shipped-prompt-teaches-with-placeholders.test.ts`:
+// this gate answers "is this a REAL person", that one answers "is this a person at all".
+//
+// THE EMPTY LIST IS STILL LOAD-BEARING. The stale-entry check below is what stops an exemption
+// becoming permanent, and the printing of this list on every run is what makes one visible. Both
+// keep working at length zero; what an empty list means is that nothing in the shipped surfaces
+// currently needs explaining, which is the state this gate exists to hold.
+const ALLOWLIST = [];
 
 // ── HALF ONE: THE LIVE ROSTER (read at runtime, never written down) ─────────
 function liveRoster() {
