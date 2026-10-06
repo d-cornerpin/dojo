@@ -598,12 +598,12 @@ export const SetupPermissions = () => {
     },
   ];
 
-  // t113: THREE STATES, BECAUSE THE SERVER HAS THREE ANSWERS. `allGranted` alone could no
-  // longer be reached once the Automation probe stopped claiming `granted` it could not
-  // establish — Automation is granted per (client, target) pair, so there is no boolean — and
-  // the Accessibility row has always answered `unknown` on a box without cliclick. A label that
-  // can never render is a reassurance the owner silently stops getting, so the unprobeable case
-  // gets its own sentence rather than being folded into failure.
+  // THREE STATES, BECAUSE THE SERVER HAS THREE ANSWERS (t113, re-argued t115). t113 added the
+  // third because the Automation probe had stopped claiming `granted`, making `allGranted`
+  // unreachable. t115's ruling gave Automation a REAL probe, so that row reaches `granted`
+  // again — but the third state is not scaffolding to remove: Accessibility still answers
+  // `unknown` without cliclick, and Automation still does when Messages cannot be reached or a
+  // consent dialog waits on the owner. Folding that into failure would accuse them of denying.
   const statusOf = (key: string): string => permissions[key] ?? 'unknown';
   const allGranted = permItems.every(item => statusOf(item.key) === 'granted');
   const anyDenied = permItems.some(item => statusOf(item.key) === 'denied');

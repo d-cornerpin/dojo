@@ -72,10 +72,11 @@ export function automationInstructions(execPath?: string | null): string {
     'This one is granted by USING it, not by adding it. macOS only lists an app under '
     + `${AUTOMATION_PANE} once that app has actually asked, and this pane has no "+" button — so `
     + 'opening it before anything has tried shows nothing, which is normal rather than broken. '
-    + `Send a test iMessage: macOS then asks to let Dojo control ${AUTOMATION_TARGET_APP}, and you `
-    + `click OK. After that the row appears in ${AUTOMATION_PANE}, filed under ${asker}, and the `
-    + `switch to leave ON is the one named ${AUTOMATION_TARGET_APP}. If you clicked "Don't Allow" `
-    + 'the first time, the popup will not come back — turn '
+    + `Checking this row is itself the asking: Dojo puts one harmless question to ${AUTOMATION_TARGET_APP}, `
+    + `so expect a macOS popup the first time asking whether to let Dojo control `
+    + `${AUTOMATION_TARGET_APP} — click OK. After that the row appears in ${AUTOMATION_PANE}, filed `
+    + `under ${asker}, and the switch to leave ON is the one named ${AUTOMATION_TARGET_APP}. If you `
+    + `clicked "Don't Allow" the first time, the popup will not come back — turn `
     + `${AUTOMATION_TARGET_APP} back on there instead.`
   );
 }
@@ -90,20 +91,29 @@ export function automationWhy(): string {
 }
 
 /**
- * WHAT THE STATUS LIGHT ON THIS ROW CAN AND CANNOT SEE, stated rather than implied.
+ * WHAT THE STATUS LIGHT ON THIS ROW CAN SEE — and as of t115 it can see the thing itself.
  *
- * ⚠ DELIBERATELY NOT the confident wording its Full Disk Access sibling gets. That one earns it:
- * `checkPermission('full-disk-access')` attempts the very read the permission protects, so a
- * pass is proof. The Automation probe does NOT — it runs `osascript -e "return 1"`, a script
- * that drives no application at all and therefore needs no Automation grant to succeed. So the
- * row is reporting that osascript can run, which is not the question. Rather than let the copy
- * imply a check that is not happening, the only real test is named: send one.
- * (The probe itself is `packages/server/src/gateway/routes/setup-deps.ts` and is handed up —
- * see this lane's report.)
+ * t113's version of this line REFUSED to claim a check, and it was right to at the time: the
+ * probe behind it answered `unknown` on every box, because the only probe that would answer for
+ * Messages raises a macOS consent dialog. THE OWNER RULED (2026-10-06) that the dialog is
+ * accepted and the check becomes real. `packages/server/src/gateway/routes/automation-probe.ts`
+ * now asks Messages for its own name — the Standard Suite's read-only `name` property, through
+ * the `get` AppleEvent, which has no parameter that could carry a value to store — and
+ * classifies the result: success is `granted`, macOS's -1743 refusal is `denied`, and no
+ * Messages (or any failure it does not recognise) stays `unknown` with this row's manual
+ * instruction intact.
+ *
+ * So this line is now allowed the confidence its Full Disk Access sibling has, for the same
+ * reason: the probe performs the very operation the permission governs. What it adds, because
+ * its sibling has no equivalent, is the warning that the check is also the request — the popup
+ * is the probe working, not something going wrong.
  */
 export const AUTOMATION_VERIFY =
-  'Dojo cannot check this one for you from here: the only honest test is to send a message and '
-  + 'see it arrive, so trust the iMessage test send rather than the status light on this row.';
+  `Dojo checks this one for real: it asks ${AUTOMATION_TARGET_APP} for its own name, which sends `
+  + 'nothing and changes nothing, so a green check here is proof rather than a guess. The first '
+  + 'check is also what makes macOS ask, so a popup the first time is this check working. If this '
+  + `row says denied, the ${AUTOMATION_TARGET_APP} switch really is off; if it says unknown, `
+  + `${AUTOMATION_TARGET_APP} could not be reached at all and the steps above are the way in.`;
 
 /**
  * The short form, for a surface that has just FAILED to send and needs one sentence about why.

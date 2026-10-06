@@ -15,6 +15,7 @@ import { noteRouteFailure, routeFailure } from './route-failure.js';
 import { homeDir } from '../../home.js';
 import { idleStreamDeadline } from '../../services/idle-stream-deadline.js';
 import { attachIdleBound } from '../../child-idle-bound.js';
+import { automationPermissionStatus } from './automation-probe.js';
 
 const logger = createLogger('setup-deps');
 
@@ -435,7 +436,7 @@ setupDepsRouter.post('/ollama/auto-configure', async (c) => {
 // ══════════════════════════════════════
 
 // GET /permissions/check — check macOS permission statuses
-setupDepsRouter.get('/permissions/check', (c) => {
+setupDepsRouter.get('/permissions/check', async (c) => {
   const checkPermission = (name: string): 'granted' | 'denied' | 'unknown' => {
     try {
       switch (name) {
@@ -471,31 +472,6 @@ setupDepsRouter.get('/permissions/check', (c) => {
             return 'denied';
           }
         }
-        case 'automation': {
-          // ── THIS CANNOT BE PROBED WITHOUT SIDE EFFECTS, SO IT IS NOT CLAIMED ──
-          //
-          // The old probe ran `osascript -e "return 1"`. That script drives NO application, so
-          // it needs no Automation grant at all: it succeeded on every box, and this row
-          // reported `granted` while sending an iMessage was blocked. A green light on a
-          // permission the user does not have is worse than no light — it sends them looking
-          // for the fault anywhere but the place it is.
-          //
-          // There is also no single boolean to report even in principle. macOS grants
-          // Automation per (client, target) PAIR, so "is Automation granted?" has as many
-          // answers as there are target apps. The only probe that would answer for Messages is
-          // an actual AppleEvent to Messages — and that raises a TCC consent dialog on first
-          // call. A status endpoint the dashboard polls on mount must not put a modal in front
-          // of the user, so that probe is not available here either.
-          //
-          // So: `unknown`, which this response type already carries (`accessibility` returns it
-          // when cliclick is absent), and the dashboard's own copy — `AUTOMATION_VERIFY` — tells
-          // the owner the honest test is to send a message and watch it arrive.
-          //
-          // ⚠ The louder variant — drive Messages for real and read error -1743 as `denied` —
-          // answers more and is the OWNER'S CALL, not a worker's, because it trades a status
-          // endpoint's silence for a consent dialog (G14). It is recorded on BACKLOG line 75.
-          return 'unknown';
-        }
         default:
           return 'unknown';
       }
@@ -510,7 +486,13 @@ setupDepsRouter.get('/permissions/check', (c) => {
       screen_recording: checkPermission('screen'),
       accessibility: checkPermission('accessibility'),
       full_disk: checkPermission('full-disk-access'),
-      automation: checkPermission('automation'),
+      // ── THE REAL PROBE (t115, owner ruling 2026-10-06) ──
+      // Not in `checkPermission` with the other three because it is the only one that can
+      // outlive its request: it drives Messages for real, so macOS may put a consent dialog in
+      // front of the owner and the answer arrives when they click. The mechanism, its two
+      // clocks, and the argument that its AppleScript cannot mutate anything live in
+      // `./automation-probe.ts`.
+      automation: await automationPermissionStatus(),
       serverExecPath: process.execPath,   // see `@dojo/shared/full-disk-access`
     },
   });

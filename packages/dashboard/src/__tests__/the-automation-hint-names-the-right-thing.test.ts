@@ -71,7 +71,12 @@ describe('the words name the right target', () => {
     // has been attempted. "Not listed" is normal, not broken.
     const s = automationInstructions('/x/node');
     expect(s, 'must say the pane has no "+"').toMatch(/no "\+" button/i);
-    expect(s, 'must tell the user to trigger a real send').toMatch(/send a test imessage/i);
+    // t115: WHAT TRIGGERS THE ASK CHANGED. t113's copy told the owner to send a test iMessage,
+    // because nothing else would make macOS ask. The probe now asks on its own, so the hint has
+    // to warn that CHECKING is what raises the pop-up — otherwise an accepted dialog arrives
+    // unannounced and reads as a fault.
+    expect(s, 'the check itself is what makes macOS ask').toMatch(/checking this row is itself the asking/i);
+    expect(s, 'and the pop-up must be predicted, not sprung').toMatch(/expect a macos popup/i);
     expect(s, 'must cover the already-denied case, where no popup returns').toMatch(/don't allow/i);
   });
 
@@ -91,14 +96,28 @@ describe('the words name the right target', () => {
     expect(why).toMatch(/dashboard/i);
   });
 
-  it('⚠ the verify line REFUSES to claim a check that is not happening', () => {
-    // THE DELIBERATE DIFFERENCE FROM THE FDA CLAUSE, and the reason is measured in the
-    // route below: that probe attempts the read the permission protects, so its copy is
-    // allowed to promise proof. This one cannot, so it must not.
-    expect(AUTOMATION_VERIFY).toMatch(/cannot check this one/i);
-    expect(AUTOMATION_VERIFY, 'it has to name the test that IS real').toMatch(/send/i);
-    expect(AUTOMATION_VERIFY, 'it must not borrow the FDA line\'s confidence')
-      .not.toMatch(/\bproof\b/i);
+  it('⚠ the verify line CLAIMS the check, because as of t115 there is one', () => {
+    // t113's version of this clause asserted the OPPOSITE — `toMatch(/cannot check this
+    // one/i)` and `not.toMatch(/proof/i)` — and it was right then: the probe answered
+    // `unknown` on every box. The owner ruled (2026-10-06) that the check becomes real and
+    // the macOS consent dialog is accepted, so the copy is now allowed its FDA sibling's
+    // confidence for the same reason: the probe performs the operation the permission
+    // governs. This clause is the pair of the server one; see the premises block below.
+    expect(AUTOMATION_VERIFY, 'it must no longer disclaim a check that happens')
+      .not.toMatch(/cannot check this one/i);
+    expect(AUTOMATION_VERIFY, 'it says what the check is worth').toMatch(/\bproof\b/i);
+    expect(AUTOMATION_VERIFY, 'and it names what is actually read')
+      .toMatch(/asks Messages for its own name/i);
+    expect(AUTOMATION_VERIFY, 'the read has to be stated as harmless')
+      .toMatch(/sends nothing and changes nothing/i);
+    // THE ONE THING ITS FDA SIBLING HAS NO EQUIVALENT FOR: the check is also the request, so
+    // the pop-up is the check working. Copy that omitted this would have the owner reading a
+    // consent dialog as a fault.
+    expect(AUTOMATION_VERIFY, 'the accepted pop-up must be explained, not sprung')
+      .toMatch(/popup/i);
+    // All three outcomes stay legible, including the one that keeps the manual steps.
+    expect(AUTOMATION_VERIFY).toMatch(/denied/i);
+    expect(AUTOMATION_VERIFY).toMatch(/unknown/i);
   });
 });
 
@@ -165,45 +184,57 @@ describe('the premises are still true of the code that creates them', () => {
       .not.toMatch(/osascript|imsg|tell application/);
   });
 
-  it('the Automation probe no longer CLAIMS anything, which is why the verify line is right', () => {
-    // ── WHAT THIS CLAUSE USED TO ASSERT, AND WHY IT WAS WRITTEN THAT WAY ──
+  it('⚠ THE COUPLED PAIR — the probe really drives Messages, and the copy says so', () => {
+    // ── THE HISTORY, BECAUSE IT IS WHY THIS CLAUSE EXISTS AT ALL ──
     //
-    // It deliberately asserted the DEFECT: `expect(route).toMatch(/osascript -e "return 1"/)`.
-    // t96 found that probe reports `granted` on a box where sending iMessage is blocked —
-    // `osascript -e "return 1"` drives no application, so it needs no Automation grant — but
-    // the probe lives in a server file that was outside t96's fence and t110's. The clause
-    // pinned today's truth so that whoever fixed the server would be told by a red test that
-    // this copy needed revisiting. That is the coupling, and it is why E1 was handed up as a
-    // pair rather than as two items: fixing the server alone turned this suite red.
+    // t113's version asserted `return 'unknown';` in this route and `cannot check this one for
+    // you from here` in the copy. Before that, t110's version asserted the DEFECT itself
+    // (`/osascript -e "return 1"/`) so that whoever fixed the server would be told by a red
+    // test that this copy needed revisiting. That coupling has now fired twice, exactly as
+    // designed: t115 could not move the server without this file going red.
     //
-    // t113 fixed it, and both halves move in the SAME COMMIT. The probe now returns `unknown`:
-    // Automation is granted per (client, target) pair so no single boolean can express it, and
-    // the only probe that would answer for Messages raises a TCC consent dialog, which a
-    // polled status endpoint must not do.
+    // THE OWNER RULED (2026-10-06): the check becomes the real probe and the TCC pop-up is
+    // accepted. So this clause now holds the pair in its third position — the probe asks
+    // Messages for real, and the copy claims the check. Both halves move in ONE commit, which
+    // is the whole reason they are pinned against each other.
     //
-    // So this clause flips from "the defect is still here" to "the probe does not claim what
-    // it cannot know", in both directions — the `.not.toMatch` half is what reds if someone
-    // restores the old probe or invents a new one that answers `granted`.
-    // STRIPPED FIRST: the rewritten probe explains the old one in the comment above it, so an
-    // unstripped read would fail on the explanation while the code is correct (G4).
+    // STRIPPED FIRST (G4): the probe module and the route both EXPLAIN the old probes in
+    // comments, so an unstripped read fails on the explanation while the code is correct.
     const route = stripComments(read(path.join(REPO_ROOT, 'packages/server/src/gateway/routes/setup-deps.ts')));
-    const probe = route.slice(route.indexOf("case 'automation':"));
-    const body = probe.slice(0, probe.indexOf('default:'));
-    expect(body, 'the probe answers `unknown`, which the response type already carries')
-      .toMatch(/return 'unknown';/);
-    expect(body, 'and it claims neither outcome it cannot establish')
-      .not.toMatch(/return 'granted'|return 'denied'/);
-    expect(body, 'the probe that proved nothing is gone')
-      .not.toMatch(/osascript -e "return 1"/);
-    expect(body, 'and nothing here drives an application, which is what would raise a TCC dialog')
-      .not.toMatch(/tell application|execSync|execFileSync/);
+    const probeSrc = stripComments(read(path.join(REPO_ROOT, 'packages/server/src/gateway/routes/automation-probe.ts')));
 
-    // AND THE COPY IS NOW CORRECT RATHER THAN MERELY CAUTIOUS. `AUTOMATION_VERIFY` says Dojo
-    // cannot check this from here; under `unknown` that is the literal truth of the row, so it
-    // keeps saying it — this is the assertion that reds if someone "upgrades" the copy to claim
-    // parity with its FDA sibling while the probe still answers `unknown`.
-    expect(AUTOMATION_VERIFY, 'the copy still refuses to claim a check')
-      .toMatch(/cannot check this one for you from here/);
+    // THE ROUTE: the automation field is the awaited probe, in APPLICATION not just in import.
+    expect(route, 'the status field must BE the probe call')
+      .toMatch(/automation:\s*await automationPermissionStatus\(\)/);
+    expect(route, 'the no-op probe t96 found must not come back')
+      .not.toMatch(/osascript -e "return 1"/);
+    // And the cheap no-side-effect switch must not answer for automation again — a restored
+    // `case 'automation'` there would shadow the real probe silently.
+    const sw = route.slice(route.indexOf('const checkPermission'), route.indexOf('serverExecPath'));
+    expect(sw, 'nothing in the sync switch may answer for automation')
+      .not.toMatch(/case 'automation'/);
+
+    // THE PROBE: it drives Messages, and it can say all three things.
+    expect(probeSrc, 'it has to actually tell Messages something')
+      .toMatch(/tell application "Messages" to get name/);
+    for (const answer of ["'granted'", "'denied'", "'unknown'"]) {
+      expect(probeSrc, `the probe must be able to answer ${answer}`)
+        .toMatch(new RegExp(`return ${answer}`));
+    }
+    // And the harmlessness the copy promises is a property of the script, which is pinned in
+    // the server's own clause file; here we only hold that the copy is not promising something
+    // the script has stopped being: no send verb anywhere in the probed expression.
+    const script = probeSrc.slice(probeSrc.indexOf('MESSAGES_READ_ONLY_PROBE ='));
+    expect(script.slice(0, script.indexOf('\n')), 'the script must stay a bare read')
+      .toBe("MESSAGES_READ_ONLY_PROBE = 'tell application \"Messages\" to get name';");
+
+    // THE COPY, the other direction. This is the half that reds if someone strengthens the
+    // probe and leaves the words disclaiming a check, or weakens the probe and leaves the words
+    // claiming one.
+    expect(AUTOMATION_VERIFY, 'the copy may no longer disclaim a check that happens')
+      .not.toMatch(/cannot check this one for you from here/);
+    expect(AUTOMATION_VERIFY, 'and it claims exactly what the probe establishes')
+      .toMatch(/checks this one for real/i);
   });
 
   it('⚠ the server still reports the path this copy renders', () => {
