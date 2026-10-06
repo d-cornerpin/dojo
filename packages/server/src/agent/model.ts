@@ -19,7 +19,7 @@ import { toolDefinitions } from './tools/definitions.js';
 import { getFilteredTools } from './tools/surface.js';
 import type { ToolDefinition } from './tools/types.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
-import { estimateTokens, estimateRequestTokens, reasoningRidesThisTurn } from '../memory/budget.js';
+import { estimateRequestTokens, reasoningRidesThisTurn } from '../memory/budget.js';
 import { validateAtProviderBoundary, AssemblyValidationError } from '../memory/assembly-validation.js';
 import { repairToolPairing } from './tool-pairing.js';
 import { collectMessageLaneIds } from '../memory/message-lane-tag.js';
@@ -2935,9 +2935,9 @@ async function callAnthropicSdkModel(
   // this one exempt only because nobody had computed an input estimate for it — not because the
   // gate doesn't apply here. `systemPrompt` + `messages` + `toolDefs` are the exact three inputs
   // this transport is about to send (`callAnthropicViaSdk` folds them into its own prompt/system
-  // string below), and estimating their size is the same cheap `estimateTokens` call the other
+  // string below), and estimating their size is the same cheap estimate call the other
   // two transports already pay at their own estimate sites — not new work invented for this
-  // gate. Byte-preserving no-op when this provider has not declared a prefill throughput,
+  // gate. (t113 D: that call is `estimateRequestTokens` at all four gates now.) Byte-preserving no-op when this provider has not declared a prefill throughput,
   // identical to the other two call sites.
   //
   // t113 D (BACKLOG line 101): and through the SHARED estimator, the second of the two side
