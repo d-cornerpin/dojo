@@ -14,8 +14,11 @@ import { measureAgentToolPayloadTokens } from '../tools/tool-docs.js';
 import { getRecentMessages } from './store.js';
 import { freshTailHorizon, groupsToDropForBudget, tailTrimBlockGroups } from './tail-horizon.js';
 import {
-  estimateTokens, contextWindowPolicy, assertSystemPromptFits, SUMMARY_SHARE, storedRowCost,
+  estimateTokens, contextWindowPolicy, assertSystemPromptFits, SystemPromptTooLargeError,
+  SUMMARY_SHARE, storedRowCost,
 } from './budget.js';
+// t113 G: the person-facing half of the starved-window refusal. See the call site below.
+import { noteWindowHolds, reportStarvedWindow } from './window-starvation-card.js';
 import {
   fitLanes,
   laneLimit,
@@ -1262,7 +1265,20 @@ async function assembleMessageContext(
   const systemTokens = estimateTokens(systemPrompt);
   // Fail loud rather than assemble a lie: a negative budget used to produce a
   // single-message context silently (budgetFreshTail's last-group safety, nothing logged).
-  assertSystemPromptFits(systemTokens, policy);
+  //
+  // t113 G — AND LOUD TO THE PERSON, NOT ONLY TO THE LOG. The refusal below is unchanged and
+  // still throws with its three repairs named; t109 §D kept it deliberately. What it could not
+  // do is reach the one human who can act: they saw an agent that answered with no memory of
+  // anything and nothing told them why. `reportStarvedWindow` cards them once per outage;
+  // `noteWindowHolds` is the other half of "per outage" — it forgets the note when assembly
+  // fits again, so a later outage cards again instead of being swallowed as a duplicate.
+  try {
+    assertSystemPromptFits(systemTokens, policy);
+    noteWindowHolds(agentId);
+  } catch (err) {
+    if (err instanceof SystemPromptTooLargeError) reportStarvedWindow(agentId, systemTokens, policy);
+    throw err;
+  }
 
   // PM agent gets a lightweight context: system prompt + recent messages only.
   // No briefing, no vault, no summaries. The tracker is its memory. Its row cap is a lane

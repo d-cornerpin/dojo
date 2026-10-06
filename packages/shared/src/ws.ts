@@ -355,7 +355,15 @@ export interface ChatErrorEvent {
     // Not a fault the owner must fix and nothing is lost — the tasks stay open until the
     // validator returns — so it rides `severity:'warning'`. It exists because the owner
     // watched a task sit unclosed with no surface anywhere saying what it was waiting on.
-    | 'VALIDATION_STALLED';
+    | 'VALIDATION_STALLED'
+    // t113 G (t109 hand-up 3, ruled). This agent's model window cannot hold its system prompt
+    // at all, so no message can be admitted and nothing about the turn would be true. The
+    // engine has always refused this loudly — `budget.ts`'s `SystemPromptTooLargeError` — but
+    // only into the LOG, so the person saw an agent answering with no memory of anything and
+    // nothing said why. `retryable: false` and `severity: 'error'` are both deliberate: unlike
+    // a provider outage this does NOT clear itself, somebody has to shorten the tool list or
+    // move the agent to a bigger-window model, and the card must stay until they do.
+    | 'WINDOW_TOO_SMALL';
   severity?: 'info' | 'warning' | 'error';
   retryable?: boolean;
 }
