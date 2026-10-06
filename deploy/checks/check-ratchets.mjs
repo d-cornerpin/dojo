@@ -78,11 +78,92 @@ function loadManifest() {
   return m;
 }
 
-function writeManifest(m) {
+/** The ONE encoder. `--tighten` and the selftest below must not be able to disagree. */
+function serializeManifest(m) {
   const files = {};
   for (const k of Object.keys(m.files).sort()) files[k] = m.files[k];
   const out = { ...m, files };
-  fs.writeFileSync(MANIFEST, JSON.stringify(out, null, 2) + '\n');
+  return JSON.stringify(out, null, 2) + '\n';
+}
+
+function writeManifest(m) {
+  fs.writeFileSync(MANIFEST, serializeManifest(m));
+}
+
+// ── The write path's own selftest: `--tighten` must not re-encode the file ────────────────
+//
+// THE MEASURED EVENT (BACKLOG wave-1A F3). A `--tighten` that lowered a handful of numbers
+// landed a 2,107-LINE diff, because the file on disk held `\uXXXX` escapes for its em-dashes
+// and `JSON.stringify` writes the CHARACTER back, not the escape. Every `$raises` argument
+// line in the manifest was rewritten as literal UTF-8 on top of whoever ran the tool. A gate
+// whose own maintenance tool cannot be trusted is a gate people route around — and they did:
+// the sibling `check-lint-baseline.mjs` carries the same selftest because four consecutive
+// release workers refused to run ITS tool and hand-edited the numbers instead.
+//
+// WHY THIS CLAUSE IS THE ROUND TRIP AND THE SIBLING'S IS AN ASCII SCAN. The two files have
+// OPPOSITE conventions, and that is fine as long as each is stable under its own encoder:
+// `lint-baseline.json` is pure ASCII with `\uXXXX` escapes, so its clause counts bytes above
+// 0x7e; `ratchets.json` is literal UTF-8 (2,079 em-dashes and no escapes, measured at this
+// commit), so an ASCII scan here would fail on a correct file. The property that holds for
+// BOTH, and the one the churn actually violated, is `encode(decode(file)) === file`. It is
+// also the property that keeps working if someone later decides this file should be escaped
+// after all — the clause follows the file's convention instead of dictating one.
+//
+// Runs on EVERY invocation, before anything is measured or written: it is pure string work.
+function encodingSelftest() {
+  // Clause 1: THE REAL FILE, re-encoded by the real encoder. If this is not byte-identical,
+  // merely RUNNING `--tighten` would churn the file, whatever it was asked to change.
+  const raw = fs.readFileSync(MANIFEST, 'utf8');
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return true; // `loadManifest` owns the "not valid JSON" error, with a better message.
+  }
+  const re = serializeManifest(parsed);
+  if (re !== raw) {
+    const a = raw.split('\n');
+    const b = re.split('\n');
+    let differing = 0;
+    let firstAt = -1;
+    for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+      if (a[i] !== b[i]) { differing += 1; if (firstAt < 0) firstAt = i + 1; }
+    }
+    console.error(`✗ write-path encoding: re-encoding ${MANIFEST_REL} changes ${differing} line(s), first at line ${firstAt}.`);
+    console.error('  So `--tighten` would land that churn on top of whatever it was asked to change —');
+    console.error('  the 2,107-line diff of BACKLOG wave-1A F3, returning. Re-encode the file once,');
+    console.error('  in a gate-side-only commit, so the stored bytes and this encoder agree again.');
+    return false;
+  }
+
+  // Clause 2: THE VOCABULARY, PLANTED. Clause 1 can only see characters the file happens to
+  // hold today. This names the shapes its `$raises` prose actually uses — em-dash, middot,
+  // arrow, the refusal sign, a curly quote — plus a surrogate pair, so the property is pinned
+  // rather than sampled. Planted text that does NOT survive its own encoder is the defect
+  // whether or not today's file contains that character.
+  const planted = {
+    maxNewFileLines: 400,
+    files: { 'b/second.ts': 2, 'a/first.ts': 1 },
+    $raises: ['— · ⛔ § ’ → ✓ 😀'],
+  };
+  const text = serializeManifest(planted);
+  if (serializeManifest(JSON.parse(text)) !== text) {
+    console.error('✗ write-path encoding: a planted manifest is not stable under its own encoder.');
+    return false;
+  }
+
+  // Clause 3: the encoding must not change MEANING, and the key SORT must be the only
+  // reordering. A lossy escape that still round-trips byte-wise would pass clause 2.
+  const back = JSON.parse(text);
+  if (back.$raises[0] !== planted.$raises[0]) {
+    console.error('✗ write-path encoding: the round trip is lossy — the argument text did not survive it.');
+    return false;
+  }
+  if (Object.keys(back.files).join(',') !== 'a/first.ts,b/second.ts') {
+    console.error('✗ write-path encoding: the encoder no longer sorts the pinned paths.');
+    return false;
+  }
+  return true;
 }
 
 function trackedInScope() {
@@ -92,6 +173,11 @@ function trackedInScope() {
     .split('\0')
     .filter(Boolean)
     .filter((rel) => IN_SCOPE.test(rel) && !EXCLUDED.some((r) => r.test(rel)));
+}
+
+if (!encodingSelftest()) {
+  console.error('✗ size ratchets: refusing. The tool that maintains the manifest would corrupt it.');
+  process.exit(1);
 }
 
 const manifest = loadManifest();
