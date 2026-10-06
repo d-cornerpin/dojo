@@ -29,6 +29,7 @@ import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { clearReferencesToWork } from './work-refs.js';
+import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { noSuchWorkDetail, noteUnsettled, type WorkPatchOutcome } from './outcome.js';
 import {
   transition, rejectClaim, appendWorkEvent,
@@ -101,6 +102,106 @@ export interface OpenTrackerTaskInput {
  *  place rather than at each insert. */
 const requesterOf = (createdBy: string): string => (createdBy === 'user' ? 'owner' : 'agent');
 
+// ════════════════════════════════════════════════════════════════════════════════
+// t118 — THE WORK SPINE'S TEXT COLUMNS ARE REDACTED AT THE DOOR
+//
+// WHY HERE AND NOT AT THE CALLERS. The tracker-scaffold leak was one caller holding a raw
+// owner message, and it is fixed at its own source (`tracker-floors.ts`), because that path
+// has sinks this door cannot see (a dashboard broadcast and the PM rename handoff, neither
+// of which is a column). But the census that fix demanded found the SAME SHAPE in eight more
+// writers into the same four columns — the A2A ASSIGN payload becoming a task's
+// title/description/goal (`tracker/schema.ts`), model-authored tool arguments on create and
+// edit, an apprentice's completion summary (`agent/spawner.ts`), engine-rendered delivery
+// evidence (`tracker/pm-agent.ts`, `teardown/finalize-record.ts`) — and the list grows every
+// time someone opens or patches work.
+//
+// A redact call per caller is EXACTLY THE DISEASE THAT PRODUCED THIS DEFECT: the helper sat
+// one import away from the leaking line for five months, and the only reason it was ever
+// noticed is that a random draw happened to cross a floor of six untracked calls with a
+// credential in the message. Nine call sites each owing a call they can forget is nine
+// chances to reproduce it, and a tenth writer tomorrow owes it too.
+//
+// So the DOOR owes it. Every text column on `work` that can receive owner- or model-authored
+// prose passes `redactHandedCredentials` — the tree's ONE redactor, which returns its input
+// BY REFERENCE when the agent has handled no credential, so the ordinary write pays a map
+// lookup and no string is rebuilt (G2: assembled bytes cannot move).
+//
+// KEYED TO THE ROW'S AGENTS, UNION. The handed-value set is per agent, and a work row has up
+// to three: its assignee, its creator/requester, and (on a patch) whoever the row belongs to
+// now. The union is deliberate and is the SAFE direction — redacting a value agent B handled
+// out of agent A's row is still correct (it is a secret either way), whereas keying on one
+// agent and guessing wrong leaves the value in the clear. Over-redaction cannot leak.
+// ════════════════════════════════════════════════════════════════════════════════
+
+/** Every `TrackerAttr` that can carry owner- or model-authored prose.
+ *
+ *  THE CENSUS CLAUSE READS THIS LIST against `TrackerAttr` itself, so a new text column
+ *  added to the union and not classified here fails rather than passing silently. The
+ *  columns deliberately absent are absent because they cannot carry prose: ids, agent
+ *  handles, enums, counts, timestamps and the JSON `depends_on` id array. */
+export const CREDENTIAL_BEARING_WORK_TEXT = [
+  'title', 'description', 'original_description', 'goal', 'notes',
+  'completion_summary', 'result', 'evidence_json',
+] as const satisfies readonly TrackerAttr[];
+
+const BEARING = new Set<string>(CREDENTIAL_BEARING_WORK_TEXT);
+
+/** One string, redacted against every agent the row belongs to. */
+function scrubText(agentIds: readonly (string | null | undefined)[], text: string): string {
+  let out = text;
+  const seen = new Set<string>();
+  for (const a of agentIds) {
+    if (typeof a !== 'string' || a.length === 0 || a === 'user' || a === 'engine') continue;
+    if (seen.has(a)) continue;
+    seen.add(a);
+    out = redactHandedCredentials(a, out);
+  }
+  return out;
+}
+
+/** `null`/`undefined` pass through untouched so the door never turns a CLEAR into a write. */
+function scrubMaybe(
+  agentIds: readonly (string | null | undefined)[], text: string | null | undefined,
+): string | null | undefined {
+  return typeof text === 'string' ? scrubText(agentIds, text) : text;
+}
+
+/** The agents a row belongs to, for a patch that names a prose column. One SELECT, taken
+ *  ONLY when such a column is named — an ordinary status/schedule patch reads nothing. */
+function rowAgents(id: string): readonly (string | null)[] {
+  try {
+    const r = getDb().prepare(
+      'SELECT agent_id, assignee_agent, requester_id FROM work WHERE id = ?',
+    ).get(id) as { agent_id: string | null; assignee_agent: string | null; requester_id: string | null } | undefined;
+    return r ? [r.agent_id, r.assignee_agent, r.requester_id] : [];
+  } catch (err) {
+    // A redaction that cannot resolve its agents must not fail the write; it degrades to the
+    // pre-t118 behaviour for this one patch and says so, loudly, rather than throwing inside
+    // someone else's transaction.
+    logger.warn('work text redaction could not resolve the row\'s agents; patch proceeds unredacted', {
+      workId: id, error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+}
+
+/** A patch with every prose column redacted against the row's agents. Returns the SAME
+ *  object when the patch names no prose column, so the common path allocates nothing. */
+function scrubPatch(id: string, patch: WorkPatch): WorkPatch {
+  let needs = false;
+  for (const k of Object.keys(patch)) {
+    if (BEARING.has(k) && typeof (patch as Record<string, unknown>)[k] === 'string') { needs = true; break; }
+  }
+  if (!needs) return patch;
+  const agents = rowAgents(id);
+  if (agents.length === 0) return patch;
+  const out: Record<string, unknown> = { ...patch };
+  for (const k of Object.keys(out)) {
+    if (BEARING.has(k) && typeof out[k] === 'string') out[k] = scrubText(agents, out[k] as string);
+  }
+  return out as WorkPatch;
+}
+
 export function openTrackerProject(p: OpenTrackerProjectInput): string {
   const db = getDb();
   const id = p.id ?? uuidv4();
@@ -116,10 +217,12 @@ export function openTrackerProject(p: OpenTrackerProjectInput): string {
                 ?, ?, ?, ?, ?, ?, ?, 'live')
     `).run(
       id, p.createdBy, requesterOf(p.createdBy), p.createdBy, TRACKER_ROOT_KIND, id,
-      p.title, p.description ?? null, p.level ?? 1, p.groupId ?? null,
+      // t118: the door's redaction, on the two prose columns this insert binds.
+      scrubText([p.createdBy], p.title), scrubMaybe([p.createdBy], p.description) ?? null,
+      p.level ?? 1, p.groupId ?? null,
       p.origin.sourceMessageId, p.origin.turn, p.origin.convKey, p.origin.kind, at, at,
     );
-    appendWorkEvent(id, 'opened', p.createdBy, { kind: 'project', title: p.title });
+    appendWorkEvent(id, 'opened', p.createdBy, { kind: 'project', title: scrubText([p.createdBy], p.title) });
   });
   return id;
 }
@@ -167,6 +270,7 @@ export function openTrackerTask(p: OpenTrackerTaskInput): string {
   // `agent_id` is NOT NULL on the spine and the legacy column was nullable, so an unassigned
   // task belongs to its creator until someone claims it — the same COALESCE migration `135`
   // used (`COALESCE(t.assigned_to, t.created_by)`), not a new rule.
+  const taskAgents: readonly (string | null | undefined)[] = [p.assignedTo, p.createdBy];
   withUnit(() => {
     db.prepare(`
       INSERT INTO work (
@@ -182,13 +286,17 @@ export function openTrackerTask(p: OpenTrackerTaskInput): string {
       id, p.projectId ?? null, p.assignedTo ?? p.createdBy, p.assignedTo ?? null,
       requesterOf(p.createdBy), p.createdBy, p.rootKind ?? TRACKER_ROOT_KIND, id,
       statusToState(p.status ?? 'in_progress'),
-      p.title, p.description ?? null, p.originalDescription ?? null, p.goal ?? null,
+      // t118: the door's redaction, on the four prose columns this insert binds, keyed to
+      // the assignee AND the creator (an A2A ASSIGN row is created by the sender whose
+      // model authored the payload and assigned to the receiver).
+      scrubText(taskAgents, p.title), scrubMaybe(taskAgents, p.description) ?? null,
+      scrubMaybe(taskAgents, p.originalDescription) ?? null, scrubMaybe(taskAgents, p.goal) ?? null,
       p.priority ?? 'normal', p.stepNumber ?? null, p.totalSteps ?? null, p.phase ?? 1,
       JSON.stringify(p.dependsOn ?? []), p.assignedToGroup ?? null, p.taskKind ?? null,
       p.a2aThreadId ?? null,
       sourceMessageId, p.origin.turn, p.origin.convKey, p.origin.kind, at, at,
     );
-    appendWorkEvent(id, 'opened', p.createdBy, { kind: 'task', title: p.title, project_id: p.projectId ?? null });
+    appendWorkEvent(id, 'opened', p.createdBy, { kind: 'task', title: scrubText(taskAgents, p.title), project_id: p.projectId ?? null });
   });
   return id;
 }
@@ -260,7 +368,10 @@ export type WorkPatch = Partial<Record<TrackerAttr, unknown>>;
  * The one extra read is on the empty-patch branch, which is the rare caller bug.
  */
 export function patchWork(id: string, patch: WorkPatch, opts?: { touch?: boolean }): WorkPatchOutcome {
-  const { sets, values } = patchAssignments(patch);
+  // t118: the door's redaction. Applied to the PATCH, before `patchAssignments` reads it, so
+  // every prose column a patcher names is scrubbed no matter which of the thirty-seven call
+  // sites named it. A patch that names no prose column is passed through by reference.
+  const { sets, values } = patchAssignments(scrubPatch(id, patch));
   // A patch that mentions no field CHANGED NOTHING, so `updated_at` may not move either:
   // the PM ladder reads that column as "when did this work last MOVE" and a clock bumped by
   // an empty patch is a receipt for something that did not happen. (Before M7 this function
@@ -308,6 +419,9 @@ export function patchWorkWhere(
 /** Append a timestamped line to `notes`, preserving `addTaskNotes`'s exact SQL shape (the
  *  CASE keeps a first note from becoming `NULL || text`). */
 export function appendWorkNotes(id: string, entry: string): number {
+  // t118: `notes` is a prose column and this is its own door (the CASE-append shape cannot
+  // go through `patchWork`), so the redaction is owed here too.
+  entry = scrubText(rowAgents(id), entry);
   return getDb().prepare(`
     UPDATE work SET
       notes = CASE WHEN notes IS NULL THEN ? ELSE notes || char(10) || ? END,

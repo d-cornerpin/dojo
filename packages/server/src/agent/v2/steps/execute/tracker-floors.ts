@@ -11,6 +11,7 @@
 // ════════════════════════════════════════
 
 import { isDreamerAgent, isHealerAgent, isPMAgent } from '../../../../config/platform.js';
+import { redactHandedCredentials } from '../../../../credentials/secret-fields.js';
 import { clearUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns } from '../../../turn-state.js';
 import { ENGINE_SCAFFOLD_ROOT_KIND } from '../../../../work/tracker-view.js';
 import { persistEngineSteer } from '../../engine-steer.js';
@@ -155,7 +156,27 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
         // capitalize) instead of a mangled raw slice. Capture the prompt now (narrowed to
         // string by the enclosing guard) so the rename dispatch below still has it after
         // the state reassignments that follow.
-        const scaffoldPrompt: string = state.lastUserMessageContent;
+        //
+        // ── t118 — THE SCAFFOLD PROMPT IS REDACTED AT ITS SOURCE, NOT AT ITS SINKS ──
+        // This capture was the owner's RAW inbound message, and FOUR surfaces derive from
+        // it on the lines below: the row's `description` (the `.slice(0, 2000)` persisted in
+        // the clear in an unencrypted column), the row's `title` via `deriveScaffoldTitle`
+        // (broadcast to the dashboard AND handed to the PM), the engine note, and the PM
+        // rename handoff, which ships `originalPrompt` across a model boundary. A draw that
+        // crossed this floor with a credential in the triggering message put that credential
+        // at rest in `work.description` in plaintext — the credential subsystems behaved
+        // exactly as designed and the leak was into the work spine.
+        //
+        // REDACTED HERE, ONCE, BECAUSE THIS IS THE ONE PLACE ALL FOUR SURFACES SHARE. The
+        // alternative — a redact call at each sink — is how this defect survived from
+        // 2026-05-08: the helper has been one import away from this line since the day the
+        // line was written, and nothing noticed because nothing drove the floor with a
+        // registered credential. A sink-side fix would leave the next sink to be forgotten.
+        // `redactHandedCredentials` is the tree's ONE redactor (its own doc says so, and the
+        // 15+ other persist/broadcast seams use it); it returns the input BY REFERENCE when
+        // the agent has handled nothing, so the ordinary turn pays one map lookup and the
+        // assembled bytes cannot move (G2).
+        const scaffoldPrompt: string = redactHandedCredentials(agentId, state.lastUserMessageContent);
         const scaffoldName = deriveScaffoldTitle(scaffoldPrompt) || 'Multi-step task';
         // ── ONE TASK, NOT A PROJECT-AND-A-TASK (PHASE-2 T8c item 3, DECIDED D4) ──
         // The floor used to call `createProject`, which opened a project row, a first

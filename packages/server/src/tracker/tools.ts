@@ -8,6 +8,7 @@
 // this file for bare role='system' INSERTs carrying imperative model-directed text.
 // ════════════════════════════════════════════════════════════════════════
 import { getDb } from '../db/connection.js';
+import { redactHandedCredentials } from '../credentials/secret-values.js';
 import {
   taskScope, projectScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
   validatedExpr, revertCountExpr, awaitingUserVerdictExpr, validationThreadIdExpr,
@@ -337,8 +338,15 @@ export async function fileAssignDeliverableCloseRequest(
   `).get(threadId, senderAgentId) as { id: string; title: string; assigned_to: string | null; project_id: string | null } | undefined;
   if (!task) return false;
 
-  const resultText = deliveredText.replace(/\s+/g, ' ').trim().slice(0, 2000)
-    || 'Terminal deliverable returned on the assignment thread.';
+  // t118 (the census sibling): `deliveredText` is the ASSIGNEE's model-authored terminal
+  // deliverable, bound below to `result` on the task row — the same unencrypted column, the
+  // same class of writer as `trackerUpdateStatus`. Redacted against the agent that authored
+  // it (`senderAgentId` is the assignee returning the deliverable, so it is that agent's
+  // handed-value set which can appear in its own prose).
+  const resultText = redactHandedCredentials(
+    senderAgentId,
+    deliveredText.replace(/\s+/g, ' ').trim().slice(0, 2000),
+  ) || 'Terminal deliverable returned on the assignment thread.';
   const evidenceJson = JSON.stringify([
     {
       kind: 'a2a_deliverable',
@@ -1785,8 +1793,22 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       }
 
       // Persist result + (augmented) evidence on the task row for PM to read.
+      //
+      // t118 — BOTH HALVES ARE REDACTED ON THE BIND. `result` and every `claim` in
+      // `evidence_json` are MODEL-AUTHORED free text kept VERBATIM by design (the
+      // coerce-not-reject rule above is explicit that "the claim text is kept verbatim"),
+      // so a model that quotes a credential it just handled into its own closing evidence
+      // writes that credential into two unencrypted columns. Observed: one draw's attempt 1
+      // carried the value in `evidence_json` as well as `description`, attempt 2 in
+      // `description` alone — the difference was only whether the model happened to quote it.
+      // The evidence is redacted AFTER serialization, the shape `report/bundle.ts:96` uses:
+      // one pass covers every nested `claim`/`pointer`, and the placeholder is plain
+      // `<redacted-credential:cN>` text, so the JSON stays parseable for the PM's reader
+      // (`pm-agent.ts:2051`). Unchanged by reference when this agent has handled nothing.
       try {
-        noteUnsettled(patchWork(taskId, { result, evidence_json: JSON.stringify(evidenceOut) }), 'trackerUpdateStatus: result + evidence recorded', { taskId });
+        const resultOut = redactHandedCredentials(agentId, result);
+        const evidenceJsonOut = redactHandedCredentials(agentId, JSON.stringify(evidenceOut));
+        noteUnsettled(patchWork(taskId, { result: resultOut, evidence_json: evidenceJsonOut }), 'trackerUpdateStatus: result + evidence recorded', { taskId });
       } catch (err) {
         logger.warn('Failed to persist result/evidence on complete (non-fatal)', {
           taskId, error: err instanceof Error ? err.message : String(err),

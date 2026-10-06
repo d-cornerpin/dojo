@@ -33,6 +33,7 @@
 
 import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
+import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 // PHASE-4 T1. `work/outcome.ts` DECLARES the boundary's answer (and carries the
@@ -1185,7 +1186,12 @@ export function openDelegationJoin(p: OpenJoinInput): string[] {
                   ?, ?, ?, ?, ?, ?, 'live')
       `).run(
         childId, p.parentWorkId, p.agentId, t.assigneeAgent ?? null, p.agentId,
-        t.threadId, t.intent ?? 'ASSIGN', t.hopCount ?? 0, t.title ?? null,
+        // t118 (census row 11): an A2A thread child's `title` is the SENDING agent's
+        // model-authored thread name, bound straight into a prose column on `work`. Same
+        // class as the scaffold leak, same one redactor, keyed to the creator (`p.agentId`,
+        // the sender whose handed-value set its own prose can carry).
+        t.threadId, t.intent ?? 'ASSIGN', t.hopCount ?? 0,
+        typeof t.title === 'string' ? redactHandedCredentials(p.agentId, t.title) : null,
         replyConversationId, p.ttlAt, at, at,
       );
       appendEvent(childId, 'opened', p.agentId, {
@@ -2027,7 +2033,11 @@ function commitmentId(agentId: string, turnNumber: number, description: string):
  * obligation or an error.
  */
 export function openCommitment(p: OpenCommitmentInput): string | null {
-  const description = (p.description ?? '').trim();
+  // t118 (census row 12): the commitment's own text is agent-authored prose and is bound to
+  // `work.title` by the insert below. Redacted BEFORE `commitmentId` derives the dedupe id
+  // from it, so the id and the stored title are derived from the same bytes — a redaction
+  // applied after the derivation would key the dedupe on a string the row does not hold.
+  const description = redactHandedCredentials(p.agentId, (p.description ?? '').trim());
   if (!description) return null;
   const db = getDb();
   const id = commitmentId(p.agentId, p.turnNumber, description);
