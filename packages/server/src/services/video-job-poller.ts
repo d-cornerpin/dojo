@@ -38,8 +38,11 @@ const logger = createLogger('video-job-poller');
 const POLL_START_MS = 5_000;
 const POLL_MAX_MS = 30_000;
 const POLL_BACKOFF = 1.5;
-// Wall-clock ceiling. A job that hasn't finished in 30 min is treated as
-// failed so it stops consuming a poll loop forever.
+// Wall-clock window, NOT a ceiling (t114/U4). It bounds how long the loop will keep asking a
+// provider that answers NOTHING usable; it does not bound a provider that answers
+// `in_progress`. A provider's own status outranks this number in both directions: it ends the
+// job early when the provider says `failed`, and it keeps the job alive past the window when
+// the provider says the render is still running. See the guard inside the poll loop.
 const MAX_JOB_AGE_MS = 30 * 60 * 1000;
 
 interface VideoJobRow {
@@ -340,12 +343,25 @@ async function pollLoop(jobId: string): Promise<void> {
         return;
       }
 
-      // Wall-clock guard.
+      // ── t114 (U4) — THE PROVIDER IS ASKED BEFORE THE CLOCK IS BELIEVED ──
+      //
+      // This guard used to KILL here, one line above `pollProviderVideo`. The measured fact —
+      // the provider's own `poll.status`, and the `poll.progress` percentage it reports beside
+      // it — was fetched on the very next line, and the clock pre-empted it. A render the
+      // provider still called `in_progress` at 30:01 was written `failed`, an apology was
+      // posted into the owner's chat, and because `startVideoJobPoller` only resumes
+      // `('queued','polling')` rows, `failed` is TERMINAL: when the provider finished two
+      // minutes later the asset was never fetched and the owner was billed for a video they
+      // never saw.
+      //
+      // The campaign doctrine is that a timer may only end work it can PROVE is dead. A
+      // provider answering `in_progress` is positive proof of the opposite, so the age is now
+      // only COMPUTED here and carried; the decision moves below the poll, to the one branch
+      // where the provider has given us no evidence of life at all. The clock stops being a
+      // verdict and becomes what `log-rotation.ts` makes it: a refusal guard that acts only in
+      // the absence of a fact.
       const age = Date.now() - new Date(row.started_at + 'Z').getTime();
-      if (Number.isFinite(age) && age > MAX_JOB_AGE_MS) {
-        markFailed(jobId, 'Timed out — provider did not finish within 30 minutes.');
-        return;
-      }
+      const pastWall = Number.isFinite(age) && age > MAX_JOB_AGE_MS;
 
       const poll = await pollProviderVideo(row.agent_id, row.provider_id, row.provider_job_id);
 
@@ -356,7 +372,17 @@ async function pollLoop(jobId: string): Promise<void> {
         // post a failure into the chat.
         if (poll.stopped) { await markCancelled(jobId, 'the user stopped this agent mid-poll'); return; }
         if (!poll.retryable) { markFailed(jobId, poll.error); return; }
-        // transient — fall through to backoff sleep
+        // transient — fall through to backoff sleep.
+        //
+        // t114 (U4): THIS is the only place the wall-clock may end the job, because this is the
+        // only branch where the provider has told us nothing. A transient poll error means we
+        // have no evidence either way; if that has been true for the whole window, the job is
+        // as dead as we can prove and the kill is honest about WHY — it names the absence of
+        // evidence and the last error, not a fictitious "provider did not finish".
+        if (pastWall) {
+          markFailed(jobId, `Timed out — the provider gave no usable answer for ${Math.round(MAX_JOB_AGE_MS / 60_000)} minutes; last poll error: ${poll.error}`);
+          return;
+        }
       } else if (poll.status === 'completed') {
         await handleSuccess(row, poll.durationSeconds);
         return;
@@ -364,6 +390,21 @@ async function pollLoop(jobId: string): Promise<void> {
         markFailed(jobId, poll.error ?? 'Provider reported the job failed.');
         return;
       } else {
+        // t114 (U4): the provider says `queued`/`in_progress` — positive proof the work is
+        // ALIVE. It outranks the wall, so the loop keeps polling. The overrun is LOUD rather
+        // than silent (the doctrine asks for the record, not for a quiet reprieve), and it
+        // carries the provider's own progress reading so the line is evidence and not a shrug.
+        // The loop stays bounded in every direction that matters: the owner's stop still cuts
+        // it at the top of the iteration, and a provider that goes quiet is still ended by the
+        // `pastWall` branch above.
+        if (pastWall) {
+          logger.warn('video job is past the 30-minute wall but the PROVIDER still reports it running — not failing it', {
+            jobId,
+            ageMinutes: Math.round(age / 60_000),
+            providerStatus: poll.status,
+            providerProgress: poll.progress,
+          });
+        }
         // queued / in_progress — advance the row to 'polling' the first
         // time we see it move, so the dashboard indicator reflects it.
         if (row.status === 'queued') {
