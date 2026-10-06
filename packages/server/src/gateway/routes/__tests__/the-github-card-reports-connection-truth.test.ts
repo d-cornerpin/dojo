@@ -292,6 +292,27 @@ describe('the last live outcome is the ledger, and an auth refusal is a reconnec
     // ADVERSARIAL: `401` inside a longer token must not match. A naive `includes('401')`
     // passes every credential row above and fails this one.
     ['Could not open an issue on 401k-planner', false],
+    // ── 🔴 THE TWO RESIDUAL SHAPES (ledgered 2026-09-24, measured and closed in t110) ──
+    // Fix round 1 closed every row the reviewer drove, and left the two BARE-NUMBER anchors
+    // over-broad in the one direction this predicate must never fail in. The carried note never
+    // said which two; measured at this head, these are they. A sentence-initial count is what a
+    // SWEEP or a TIMING line looks like, and a bracketed one is what a measurement looks like —
+    // so `/^\s*401\b/` and `/[([]\s*401\b/` were reading ordinary platform prose as a revoked
+    // credential and inviting the owner to Disconnect a connection that works.
+    //
+    // The anchors now reach only a 401 standing ALONE as the whole message or the whole bracket,
+    // which is all they ever uniquely bought: every genuine auth message carrying the number
+    // also carries a WORD, and the rows above prove each of those is caught by another pattern.
+    ['401 rows were swept from the audit log', false],
+    ['401 files changed', false],
+    ['401 ms elapsed before the issue was created', false],
+    ['(401 ms)', false],
+    ['[401 items]', false],
+    ['Comment refused (401 of 900 characters over the cap)', false],
+    // …AND THE COVERAGE THE TIGHTENING MUST NOT COST: a bare 401 is still a verdict.
+    ['401', true],
+    ['401.', true],
+    ['[401]', true],
     // ── 🔴 THE C1 ROWS: THE LINES THE LEDGER ACTUALLY HOLDS NOW ──
     // Everything above this marker is a spelling, tested in isolation. These are the WHOLE
     // SENTENCES `github/refusal.ts` writes into `last_error`, prefix and all, because until C1 the

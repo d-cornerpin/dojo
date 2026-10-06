@@ -114,8 +114,27 @@ export interface GithubStatus {
  * and `API rate limit exceeded for user ID 401.` is a row in the fixture table for that reason.)
  */
 const AUTH_REFUSAL = [
-  /^\s*401\b/,
-  /[([]\s*401\b/,
+  // ── THE TWO ANCHORS, TIGHTENED (the two residual 401 prose shapes, ledgered 2026-09-24) ──
+  // Fix round 1 replaced `\b401\b` with three anchored shapes — sentence-initial, bracketed, or
+  // introduced by a status word — and closed every row the reviewer drove. The two BARE-NUMBER
+  // anchors were still over-broad in the one direction this predicate must never fail in, and
+  // the carried note never said which: measured at this head, `/^\s*401\b/` reads
+  // *"401 rows were swept from the audit log"*, *"401 files changed"* and *"401 ms elapsed
+  // before the issue was created"* as a revoked credential, and `/[([]\s*401\b/` does the same
+  // for *"(401 ms)"*, *"[401 items]"* and *"Comment refused (401 of 900 characters over the
+  // cap)"*. Every one of those is a working connection being reported broken — the false YES the
+  // header says this predicate chose against — and a sentence-initial count is exactly what a
+  // sweep or a timing line looks like.
+  //
+  // WHAT THE BARE ANCHORS UNIQUELY BUY, which is what bounds the fix. A genuine auth message
+  // that carries a number ALSO carries a word: `401 Unauthorized` is caught by the
+  // `unauthoriz` pattern, `401 Bad credentials` by `bad credentials`, `(HTTP 401)` and
+  // `GitHub answered 401.` by the status-word anchor below. So the only thing these two arms
+  // have to reach is a 401 standing ALONE as the whole message or the whole bracket — and that
+  // is a shape, not an enumeration of the prose it must not match, which is this module's own
+  // stated discipline. 29 rows both directions.
+  /^\s*401\s*[.,;:!]?\s*$/,
+  /[([]\s*401\s*[)\]]/,
   /\b(?:http|https|status|code|error|answered|returned|responded|replied|received|rejected|refused|failed)\s+(?:code\s+)?401\b/i,
   /bad credentials/i,
   /unauthoriz(?:ed|ation)/i,
