@@ -175,6 +175,16 @@ describe('T10I — the identity readers no longer read messages.conv_key', () =>
     const edge = stripComments(src('packages/server/src/agent/v2/answered-edge.ts'));
     expect(edge).not.toMatch(/conv_key = \?/);
     expect(edge).toMatch(/AND conversation_id = \?/);
+    // ⚠ AND THE THIRD HOME, ADDED t113 B3 (t110 round-3 L3). The round-3 split moved the
+    // text-matching code OUT of the edge and into `report/withdrawn-claim.ts`, and this absence
+    // followed the edge rather than the code — which is precisely the failure mode the note
+    // above describes ("a tranche that carries the block into `agent/v2/steps/` leaves this
+    // reading a file the block is no longer in, and it passes without having looked at the SQL
+    // it forbids"). The split did exactly that, one directory further out. So the module that
+    // reconstructs a binding from proximity is now in the corpus too, and a `conv_key` scoping
+    // cannot come back in any of the three homes.
+    const claim = stripComments(src('packages/server/src/report/withdrawn-claim.ts'));
+    expect(claim).not.toMatch(/conv_key = \?/);
   });
 
   it('the party label for own-output rows comes from the conversation, not from parsing a key', () => {

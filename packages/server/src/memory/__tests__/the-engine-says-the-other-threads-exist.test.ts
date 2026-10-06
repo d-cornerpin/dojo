@@ -342,7 +342,39 @@ describe('§5 the lane rides the tail, provably', () => {
     const assembler = fs.readFileSync(path.join(SRC, 'memory', 'assembler.ts'), 'utf8');
     // `volatileFrom` IS the assembled array's length, so any push the loop makes is behind the
     // cache breakpoint BY CONSTRUCTION rather than by placement.
-    expect(assembler).toContain("`volatileFrom` is this array's length");
+    //
+    // ⚠ PINNED AT THE ASSIGNMENT, NOT AT A SENTENCE ABOUT IT (t113 B3 — round-4 F7's SECOND
+    // copy). This leg used to assert that `memory/assembler.ts` CONTAINS the string
+    // "`volatileFrom` is this array's length" — a COMMENT. The invariant is real; the clause was
+    // not. It was satisfiable by the prose and blind to the thing that would break the property:
+    // reword that comment and this reds while the invariant holds, move the capture past an
+    // injection and this stays green while the invariant is gone. Exactly backwards, and exactly
+    // what G4 means by a clause satisfiable by the prose above the call.
+    //
+    // The report-side copy was repinned in round 4 (`report/__tests__/
+    // the-engine-says-what-happened-to-the-card.test.ts`, commit d70dddb9); this is the same fix
+    // at the copy that was missed. The capture lives in `agent/v2/steps/assemble/index.ts`, so
+    // that is what is read, with comments stripped.
+    const assembleCode = fs.readFileSync(
+      path.join(SRC, 'agent', 'v2', 'steps', 'assemble', 'index.ts'), 'utf8',
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+    // Non-vacuity: the stripped source is still the step, not an empty string.
+    expect(assembleCode.length, 'the assemble step did not read as source').toBeGreaterThan(400);
+    expect(assembleCode, 'the volatile boundary is no longer captured as the assembled message '
+      + 'array\'s length — if it is computed some other way, every "the loop appends past the '
+      + 'boundary" argument in this tree needs re-deriving')
+      .toMatch(/const\s+volatileFrom\s*=\s*ctx\.messages\.length\s*;/);
+    // AND IT IS CAPTURED BEFORE ANYTHING IS APPENDED: nothing pushes onto `ctx.messages`
+    // between the capture and the hand-out.
+    const at = assembleCode.search(/const\s+volatileFrom\s*=/);
+    const ret = assembleCode.indexOf('volatileFrom,', at);
+    expect(at, 'the assignment was not found at all').toBeGreaterThan(-1);
+    expect(ret, 'the captured boundary is never handed out').toBeGreaterThan(at);
+    expect(assembleCode.slice(at, ret), 'something appends to the assembled message array AFTER '
+      + 'the volatile boundary was captured, so the boundary understates the cacheable region')
+      .not.toMatch(/ctx\.messages\.push\(/);
     const importers: string[] = [];
     const walk = (dir: string): void => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {

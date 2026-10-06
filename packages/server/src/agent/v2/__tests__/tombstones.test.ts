@@ -467,6 +467,41 @@ describe('TOMBSTONE 6 — the going-idle deliverable_shown stamp (a reply is not
       'a prose read appeared in the disposition that pauses drive-state work — this is the '
       + 'stamp\'s defect returning at the site that replaced it',
     ).not.toMatch(/RegExp|\.match\(|isNearDuplicateText|persistedContent/);
+
+    // ⚠ THE MODULE THAT ACTUALLY MATCHES TEXT IS THE ONE THIS GUARD WAS NOT READING
+    // (t113 B3, t110 round-3 L3). The round-3 split moved the text-matching code out of
+    // `answered-edge.ts` and into `report/withdrawn-claim.ts`; this guard stayed on the edge, so
+    // the tree's only anti-prose absence check was pointed at a file with nothing left to find.
+    // The corpus now includes the module that does the matching — and it cannot be a blanket
+    // ban, because that module matches text ON PURPOSE and argues for it at length.
+    //
+    // THE ALLOWANCE IS EXACTLY ONE SHAPE, and it is not a word: a PLATFORM-MINTED UUID's first
+    // eight characters, `LIKE '%' || substr(r.id, 1, 8) || '%'`, asking "does this message name
+    // this report". `r.id` is minted by the platform and never typed by a model or a person, so
+    // matching it is identity matching, not prose reading — which is the whole distinction this
+    // family of guards exists to hold. Everything else is refused, so the day somebody reaches
+    // for the model's own words here (a near-duplicate check, a keyword, a regex over
+    // `content`) this reds.
+    const claim = stripComments(fs.readFileSync(path.join(SERVER_SRC, 'report/withdrawn-claim.ts'), 'utf8'));
+    expect(claim, 'the deliberate identity match is still the id-shaped one')
+      .toMatch(/LIKE '%' \|\| substr\(r\.id, 1, 8\) \|\| '%'/);
+    expect(
+      claim,
+      'a PROSE read appeared in the module that reconstructs a report binding. The one text '
+      + 'match this module is allowed is the platform-minted id above; reading what the model '
+      + 'or the person WROTE is the stamp\'s defect returning one directory out.',
+    ).not.toMatch(/RegExp|\.match\(|isNearDuplicateText|persistedContent|toLowerCase\(/);
+    // and the allowance is NARROW: every `LIKE` in the module is the id shape, never a word.
+    // Each match is read with the 40 characters that FOLLOW it, because the pattern is built by
+    // concatenation (`LIKE '%' || substr(...) || '%'`) and stopping at the first quoted literal
+    // would read every one of them as the harmless `'%'` and pass on anything.
+    const likes = [...claim.matchAll(/LIKE[\s\S]{0,40}/g)].map((m) => m[0]);
+    for (const like of likes) {
+      expect(like.replace(/\s+/g, ' '), 'an unexpected LIKE pattern — the only text match this '
+        + 'module may make is against the platform-minted report id')
+        .toMatch(/substr\(r\.id, 1, 8\)/);
+    }
+    expect(likes.length, 'the walk still finds the matches it is bounding').toBeGreaterThanOrEqual(2);
   });
 });
 

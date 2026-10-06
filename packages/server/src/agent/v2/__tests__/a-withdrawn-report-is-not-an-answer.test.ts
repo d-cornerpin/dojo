@@ -704,8 +704,18 @@ describe('§4 the ghosted-ask ladder is not handed a withdrawn claim to restate'
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// §5 — ONE OWNER, STRUCTURALLY. The reason the predicate lives in `answered-edge.ts` is that a
-// carrier cannot inherit a check it has to remember to make.
+// §5 — ONE OWNER, STRUCTURALLY. A carrier cannot inherit a check it has to remember to make, so
+// the predicate has exactly one home and every read calls it.
+//
+// ⚠ THE HOME IS `report/withdrawn-claim.ts`, NOT `answered-edge.ts` (t113 B3, t110 round-3 L1).
+// This banner used to open "the reason the predicate lives in `answered-edge.ts`" — the one
+// sentence the round-3 split falsified, sitting at the top of the section that ASSERTS the
+// split. The clause below has said so in its own words the whole time ("round 3 moved the
+// predicate to its own module rather than taking a third ceiling raise on the edge"), which is
+// worse than a plain stale line: a reader met the heading and the body disagreeing and had no
+// way to tell which one had rotted. `answered-edge.ts` is still the EDGE — it owns the three
+// reads and applies the predicate at each — and that distinction is the whole point of the
+// section, so the banner now names both roles instead of collapsing them into the wrong one.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§5 the predicate has one home and every read applies it', () => {
@@ -859,17 +869,32 @@ describe('§6 the instrument failing is LOUD, and it fails OPEN', () => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 // §7 — THE ACCEPTED COLLATERAL, WRITTEN DOWN (review F3 / F7).
 //
-// The window is RAW CONTAINMENT, not a binding to the ask, and the review measured four over-void
-// shapes it admits. Two are held here so the behaviour is RECORDED rather than merely tolerated: a
-// future task that narrows the window (the `dojo_reports.ask_id` column the investigation named)
-// turns these red, which is the moment to delete them — they are characterization, and they say so.
+// ⚠ THIS BANNER CARRIED ROUND-2'S NUMBERS INSIDE A ROUND-3 FILE, AND THE ASK-BINDING MADE IT
+// STALER STILL (t113 B3, t110 round-3 M2). It said the review measured FOUR over-void shapes —
+// `report/withdrawn-claim.ts` says five — and quoted "8 of 4,240 … ALL EIGHT", where the module's
+// own measurement is 13 of 4,242. Both figures are restated below from the module that owns them,
+// and the scope sentence the binding requires is added, because without it this section reads as
+// a characterization of the CURRENT behaviour when it is a characterization of one arm of it.
 //
-// WHY THIS IS THE ACCEPTED DIRECTION, measured over the live body rather than assumed: 8 of 4,240
-// answered asks on gate-armed agents are voided, and ALL EIGHT are genuine report asks — zero
-// collateral in production today. The enabling fan-out is 89 of 4,511 stamped asks (~2%), and it
-// additionally needs that batch to hold report work that later dies. An over-void costs one
-// unrelated ask its anti-repetition — the owner may hear an answer twice, which 2026-08-05 chooses
-// out loud — while the under-void direction IS the round-2 red.
+// The window is RAW CONTAINMENT, not a binding to the ask, and five over-void shapes come with
+// it. Two are held here so the behaviour is RECORDED rather than merely tolerated — they are
+// characterization and they say so.
+//
+// WHY THIS IS THE ACCEPTED DIRECTION, measured over the live body rather than assumed: 13 of
+// 4,242 answered asks on gate-armed agents are voided, and all 13 are genuine report asks — zero
+// non-report collateral in production. An over-void costs one unrelated ask its anti-repetition
+// (the owner may hear an answer twice, which owner ruling 2026-08-05 chooses in those words);
+// the under-void direction IS the round-2 red.
+//
+// ── AND ALL OF IT IS THE SECOND ARM'S PRICE ONLY (migration 183) ──
+// Those shapes are what RECONSTRUCTING a binding from proximity costs, so they are paid only
+// where there IS none. A report row that NAMES this ask is answered by the bound arm at the top
+// of `answerStillStands` and reaches none of them — so the batch partner and the span neighbour
+// below keep their stamps for every report filed since 183, and the two clauses in this section
+// characterise the PRE-183 population, where nothing backfills honestly. That is why the
+// `dojo_reports.ask_id` column landing did NOT turn these red: it narrowed the window for bound
+// rows and left the unbound ones exactly here. When the pre-183 population is gone, this is the
+// section to delete.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§7 characterization: the over-void shapes the window admits', () => {
