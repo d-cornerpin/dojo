@@ -56,7 +56,7 @@ import { currentTurnNumber, readStoredTurnThreshold, CONTINUITY_BRIEF_HORIZON_TU
 import type { Summary } from './dag.js';
 import type { Message, MessageOrigin } from '@dojo/shared';
 // PHASE-3 T5 — the marker taxonomy. Four shapes this file used to spell itself.
-import { A2A_INBOUND_RE, parseA2AThreadShort, parseTechniqueFreshRead } from '@dojo/shared';
+import { A2A_INBOUND_RE, a2aThreadTokenMatches, parseA2AThreadShort, parseTechniqueFreshRead } from '@dojo/shared';
 
 const logger = createLogger('memory-assembler');
 
@@ -1698,13 +1698,26 @@ async function assembleMessageContext(
   // so a weak model never realizes it owes a reply. Move the most-recent unreplied A2A to
   // the tail with a reply directive, so the forced turn looks like a natural one.
   if (turnContext?.isA2ATurn && merged.length > 0) {
-    const repliedShorts = new Set<string>();
+    // ⚠ t109 item B — THE KEY WAS THE SHARED PREFIX. This read `substr(thread_id,1,8)`, the
+    // FRONT eight characters of the stored FULL id, and compared it to the marker's own front
+    // eight. For the ids `makeThreadId` mints (`thread-<hash>-<seed>`) those eight are
+    // `thread-` plus ONE hash character, so named threads shared a bucket: one reply on one
+    // named thread filtered the salience lift off EVERY other named thread this agent had not
+    // answered, which is the one message a forced A2A turn exists to surface.
+    //
+    // The whole FULL ids come back now, and the match runs through `a2aThreadTokenMatches` —
+    // which accepts the current token (eight characters of the VARYING region) AND the legacy
+    // front slice, so a marker already sitting in this agent's history keeps resolving against
+    // the same thread. Both directions are claused.
+    const repliedFullIds: string[] = [];
     try {
       const rows = getDb().prepare(
-        'SELECT DISTINCT substr(thread_id,1,8) AS s FROM a2a_replies WHERE agent_id = ?',
-      ).all(agentId) as Array<{ s: string }>;
-      for (const r of rows) repliedShorts.add(r.s);
+        'SELECT DISTINCT thread_id AS t FROM a2a_replies WHERE agent_id = ?',
+      ).all(agentId) as Array<{ t: string }>;
+      for (const r of rows) if (r.t) repliedFullIds.push(r.t);
     } catch { /* table may not exist yet */ }
+    const alreadyReplied = (token: string | null): boolean =>
+      !!token && repliedFullIds.some((full) => a2aThreadTokenMatches(token, full));
     // PHASE-3 T5: was hex-only, so it returned null for every NAMED thread id and skipped
     // the dedupe. Measured live: 70 of 250 `thread:` tokens (28%) are not hex.
     const threadShortOf = (c: string): string | null => parseA2AThreadShort(c);
@@ -1712,15 +1725,13 @@ async function assembleMessageContext(
       m.role === 'user' && typeof m.content === 'string' && A2A_INBOUND_RE.test(m.content);
     merged = merged.filter((m) => {
       if (!isA2AMsg(m)) return true;
-      const short = threadShortOf(m.content as string);
-      return !(short && repliedShorts.has(short));
+      return !alreadyReplied(threadShortOf(m.content as string));
     });
     if (merged.length > 0 && !isA2AMsg(merged[merged.length - 1])) {
       let idx = -1;
       for (let i = merged.length - 1; i >= 0; i--) {
         if (isA2AMsg(merged[i])) {
-          const short = threadShortOf(merged[i].content as string);
-          if (!short || !repliedShorts.has(short)) { idx = i; break; }
+          if (!alreadyReplied(threadShortOf(merged[i].content as string))) { idx = i; break; }
         }
       }
       if (idx >= 0) {

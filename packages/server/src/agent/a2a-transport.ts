@@ -14,7 +14,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
-import { A2A_THREAD_SHORT_LENGTH, OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
+import { A2A_THREAD_SHORT_LENGTH, a2aThreadShort, OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
@@ -758,7 +758,11 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   // "Reply expected, use send_to_agent". Receiving agents read both and
   // got confused. Now there are three honest states, one per intent group.
   // PHASE-3 T5: the 8 is the MARKER's shape, not this function's opinion.
-  const threadShort = threadId.slice(0, A2A_THREAD_SHORT_LENGTH);
+  // t109 B: the EIGHT come from the VARYING region now, not off the front — for a
+  // `makeThreadId` id the front eight are `thread-` plus one hash character, which is the
+  // collision this very file's `makeThreadId` header warns about. `a2aThreadShort` is the one
+  // producer; the derivation and the legacy form live with it in `markers.ts`.
+  const threadShort = a2aThreadShort(threadId);
   let threadInfo: string;
   if (effectiveIntent === 'QUESTION' || effectiveIntent === 'ASSIGN' || effectiveIntent === 'BLOCK') {
     // Open-thread reply intents, receiver should reply on the same thread.

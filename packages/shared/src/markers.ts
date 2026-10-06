@@ -123,7 +123,44 @@ export const A2A_THREAD_RE = /thread:([^\s\]]+)/;
  *  the FULL id, which is why its readers compare `substr(thread_id, 1, 8)`. */
 export const A2A_THREAD_SHORT_LENGTH = 8;
 
-/** The thread short-id in a marker, or null. Never hex-only. */
+/**
+ * ⚠ t109 item B — THE MARKER'S EIGHT CHARACTERS COME FROM THE VARYING REGION.
+ *
+ * They used to come off the FRONT, which is fine for a UUID id and useless for the ids
+ * `makeThreadId` mints: `thread-<base36 hash>-<seed>`, so the front eight are `thread-` plus
+ * ONE hash character — about 36 buckets across every named thread on the box. Stripping the
+ * shared `thread-` prefix puts the hash first. Same length, same wire grammar, byte-identical
+ * for an id without the prefix; only named ids move.
+ *
+ * ⚠ THIS IS THE PRODUCER, SO BOTH SIDES MUST APPLY IT. The stored side (`a2a_replies.thread_id`,
+ * `messages.a2a_thread_id`) holds FULL ids, so a reader comparing a marker's token to a stored
+ * id runs the stored id through here — never `substr(id, 1, 8)`, the old front slice, which is
+ * what collided. `a2aThreadShortLegacy` keeps that slice, named, because markers already in the
+ * history carry it. What the collision COST, and the clauses, are in
+ * `memory/__tests__/two-named-threads-are-two-threads.test.ts`'s header.
+ */
+export function a2aThreadShort(threadId: string): string {
+  return threadId.replace(/^thread-/, '').slice(0, A2A_THREAD_SHORT_LENGTH);
+}
+
+/** The PRE-t109 marker token: the front slice. A stored id's legacy form, for markers already
+ *  in the history. Never used to WRITE a marker. */
+export function a2aThreadShortLegacy(threadId: string): string {
+  return threadId.slice(0, A2A_THREAD_SHORT_LENGTH);
+}
+
+/** Does `markerToken` identify `fullThreadId`? True for the CURRENT form and for the legacy
+ *  front slice, so a marker written before t109 keeps resolving against the same thread. The
+ *  two forms are equal for every id without the `thread-` prefix, so this is one comparison on
+ *  the overwhelming majority of rows and two on the named ones. */
+export function a2aThreadTokenMatches(markerToken: string, fullThreadId: string): boolean {
+  if (!markerToken || !fullThreadId) return false;
+  return markerToken === a2aThreadShort(fullThreadId)
+    || markerToken === a2aThreadShortLegacy(fullThreadId);
+}
+
+/** The thread short-id in a marker, or null. Never hex-only. Reads whatever the marker
+ *  carries — current form or legacy — which is why it is unchanged by t109 B. */
 export function parseA2AThreadShort(content: string | null | undefined): string | null {
   if (!content) return null;
   const m = A2A_THREAD_RE.exec(content);
