@@ -6672,6 +6672,13 @@
       "to": 985,
       "by": "t112 — the PM-cost read compares the raw indexed column so the 24h window is SEEKED, not scanned",
       "why": "970 -> 985 (+15 net: 16 added, 1 removed; 1 code, 15 comment). The code change is ONE LINE — `datetime(created_at) > datetime('now','-1 day')` becomes `created_at > …`, which restores the `created_at>?` leg of idx_audit_log_agent_created: measured 13.58 ms/call -> 0.21 ms/call on a 200,000-row fixture. The other fourteen lines are why it is SAFE rather than merely faster: all seven writers into audit_log supply `datetime('now')`, so the stored text is already lexicographically ordered and a raw compare is the identical question. That premise now has its own clause (and a floor of 7) in db/__tests__/the-hot-audit-reads-take-their-index.test.ts, and the comment names it, because a reader of this query will ask exactly that. From 985 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/pm-agent.ts",
+      "from": 2963,
+      "to": 2977,
+      "by": "t109 item C — two escalations read the delivery result they already awaited",
+      "why": "2963 -> 2977 (+14 net: 11 code, 3 comment; measured by `wc -l` before and after, nothing deleted). THE CODE, at the two sites the BACKLOG line names: each `await deliverA2AMessage(...)` now binds its `A2ADeliveryResult` and branches on `delivered` — a warn carrying the transport's own `reason` and `threadId` when the hand-off was DROPPED, the existing info line when it landed. That is 5 code lines per site (the binding, the `if`, the warn's two-line body, the `else`) plus the 1 line each `const res =` adds, and the two reachable drop reasons (`AGENT_NOT_FOUND` on a purged or deactivated PM, `PERSIST_SKIPPED`) are why: a drop is a RETURN, not a throw, so the `.catch` already wrapped around each site could never see one and the record claimed an escalation nobody received. THE COMMENT HALF IS 3 LINES AND NOT MORE, deliberately: the reachable reasons, the template commit and the both-ways clause list are argued ONCE, in the new clause file's header, and each site carries only a pointer to it — the repo's own prose-has-one-home habit. ALTERNATIVES REFUSED: (i) a single-expression `logger[res.delivered ? 'info' : 'warn'](...)` (+4 instead of +14) — one call cannot carry two different messages and two different meta shapes without a ternary per field, which is less readable than the branch and makes the clause assert a string built at runtime; (ii) moving both sites into a shared helper in another module (+0 here) — the two payloads, two meta shapes and two call contexts share only the three-line shape, so the helper would take more argument lines than it saves and would put a tracker log line in a file that owns no tracker policy. From 2977 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6938,7 +6945,7 @@
     "packages/server/src/tools/work-verbs.ts": 399,
     "packages/server/src/tracker/assignee-patience.ts": 208,
     "packages/server/src/tracker/delivery-evidence.ts": 320,
-    "packages/server/src/tracker/pm-agent.ts": 2963,
+    "packages/server/src/tracker/pm-agent.ts": 2977,
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
     "packages/server/src/tracker/schema.ts": 1105,
     "packages/server/src/tracker/task-stamps.ts": 296,
