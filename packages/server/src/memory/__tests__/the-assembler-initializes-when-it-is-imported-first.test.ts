@@ -46,7 +46,7 @@
 // cycle) and arms 1-3 go red together. No import reordering can make them pass.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -83,6 +83,77 @@ function importsCleanlyAlone(relFromServerSrc: string): string {
     throw new Error(`the child printed no verdict for ${relFromServerSrc}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
   }
   return verdict;
+}
+
+// ── THE GRAPH, AND A POOLED PROBE OVER IT (the census arm below) ────────────────────────────
+/** Resolve a `./x.js` specifier written in TypeScript back to the `.ts` file it means. */
+function resolveTs(p: string): string | null {
+  for (const c of [p, p.replace(/\.js$/, '.ts'), p.replace(/\.js$/, '/index.ts'), `${p}.ts`, `${p}/index.ts`]) {
+    if (c.endsWith('.ts') && fs.existsSync(c)) return c;
+  }
+  return null;
+}
+
+const importCache = new Map<string, string[]>();
+/** The relative VALUE imports of one module. `import type` is skipped: it is erased at compile
+ *  time, so it cannot evaluate anything and cannot take part in a dead zone. */
+function relativeValueImports(file: string): string[] {
+  const hit = importCache.get(file);
+  if (hit) return hit;
+  const src = fs.readFileSync(file, 'utf8');
+  const out: string[] = [];
+  for (const re of [
+    /(?:^|\n)\s*(?:import|export)(?!\s+type\b)[^;'"]*?from\s*['"](\.[^'"]+)['"]/g,
+    /(?:^|\n)\s*import\s*['"](\.[^'"]+)['"]/g,
+  ]) {
+    for (const m of src.matchAll(re)) out.push(m[1]);
+  }
+  const resolved = [...new Set(out.map((r) => resolveTs(path.resolve(path.dirname(file), r))).filter(
+    (x): x is string => x !== null))];
+  importCache.set(file, resolved);
+  return resolved;
+}
+
+/** Every module reachable from `memory/assembler.ts` by relative value imports, itself included. */
+function assemblerGraph(): string[] {
+  const seen = new Set<string>();
+  const stack = [path.join(SERVER_SRC, 'memory', 'assembler.ts')];
+  while (stack.length) {
+    const cur = stack.pop()!;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    for (const n of relativeValueImports(cur)) stack.push(n);
+  }
+  return [...seen].sort();
+}
+
+/** Probe many modules, each FIRST in its own fresh process, a few at a time. Returns the ones
+ *  that threw, keyed by their path relative to `src/`, with the first line of the throw. */
+async function censusOfFirstImportThrows(modules: string[], concurrency = 12): Promise<Map<string, string>> {
+  const throwers = new Map<string, string>();
+  const queue = [...modules];
+  const child = (target: string) => new Promise<void>((resolve) => {
+    const proc = spawn(TSX, ['-e', `import(${JSON.stringify(target)})`
+      + `.then(() => console.log('OK'))`
+      + `.catch((e) => console.log('THROW|' + String((e && e.message) || e).split(String.fromCharCode(10))[0]))`],
+      { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    proc.stdout.on('data', (d) => { out += String(d); });
+    const hardStop = setTimeout(() => proc.kill('SIGKILL'), 120_000);
+    proc.on('close', () => {
+      clearTimeout(hardStop);
+      const rel = path.relative(SERVER_SRC, target);
+      const verdict = out.trim().split('\n').reverse().find((l) => l === 'OK' || l.startsWith('THROW|'));
+      // No verdict at all is NOT silently a pass: the child died without answering.
+      if (!verdict) throwers.set(rel, 'no verdict — the child died without answering');
+      else if (verdict.startsWith('THROW|')) throwers.set(rel, verdict.slice('THROW|'.length));
+      resolve();
+    });
+  });
+  await Promise.all(Array.from({ length: concurrency }, async () => {
+    while (queue.length) await child(queue.shift()!);
+  }));
+  return throwers;
 }
 
 describe('a module in the assembler graph can be the first thing a process imports', () => {
@@ -171,4 +242,97 @@ describe('the origin-intent vocabulary stays readable from module scope', () => 
     // and the value itself is not re-spelled here either
     expect(src, 'message-store.ts does not re-spell the value').not.toContain("'engine_start_ack'");
   });
+});
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE CENSUS — THE SET OF MODULES THAT CANNOT BE A FIRST IMPORT IS EXACTLY SIX, AND NAMED.
+//
+// ── WHY A CENSUS AND NOT ANOTHER PER-MODULE ARM ──
+// The two fixes above each took a whole FAMILY of entry points green (31 and 1 of the 33 that
+// threw when the defect was found). What remains is a third family — the provider tool-definition
+// arrays — and the review of this lane established the fact that makes an unwatched latent
+// defect unacceptable here:
+//
+//   **the six ARE inside the gate's runtime import closure.** They are not unreachable.
+//   `memory/assembler.ts -> prompt/assembler.ts -> agent/tools/definitions.ts -> google/tools-read.ts`
+//   is all value imports, as is the longer chain to `agent/tools/index.ts`, whose module-scope
+//   read is the one that throws. The prefix gate passes only on EVALUATION ORDER: entering
+//   through the assembler, `agent/tools/definitions.ts` fully initializes the provider module
+//   before `agent/tools/index.ts` runs its read.
+//
+// That is the same species of luck the rest of this file exists to remove, sitting one import
+// away from a release gate. It is not fixed here because it genuinely is not one commit away —
+// these are large arrays MUTATED at module scope in several passes inside their own files and
+// then aggregated, so the module-scope assembly has to become a function, which is its own lane.
+//
+// So it is MEASURED instead of left unwatched. This arm walks the assembler's whole graph,
+// imports every module first in a fresh process, and asserts the throwing set is EXACTLY the six
+// below. It bites in both directions, which is the point:
+//
+//   • a SEVENTH thrower — a new module-scope read into a cycle anywhere in the graph — reds here,
+//     immediately, instead of waiting for some future consumer to import it first;
+//   • and the day the v3.3.1 lane fixes these six, this arm goes red too and DEMANDS its own
+//     update. A latent defect cannot be quietly inherited or quietly fixed.
+//
+// MUTANT: give any module in the graph a module-scope read of a binding from a module that
+// imports it back, and the census reds naming that module as an unexpected thrower.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * The known-bad set, at the time of t117. Each entry is the module and the identifier whose
+ * temporal dead zone it hits — the identifier is held too, so that the SAME file acquiring a
+ * DIFFERENT module-scope defect is still a red rather than a silent pass.
+ *
+ * All six resolve through `agent/tools/index.ts`, whose module-scope read of the provider
+ * definition arrays is the actual offender. OWNED BY: the v3.3.1 provider tool-definition lane.
+ */
+const KNOWN_FIRST_IMPORT_THROWERS: ReadonlyArray<readonly [string, string]> = [
+  ['agent/tools/provider/google.ts', 'googleReadToolDefinitions'],
+  ['agent/tools/provider/microsoft.ts', 'microsoftReadToolDefinitions'],
+  ['google/tools-read.ts', 'googleReadToolDefinitions'],
+  ['google/tools-write.ts', 'googleWriteToolDefinitions'],
+  ['microsoft/tools-read.ts', 'microsoftReadToolDefinitions'],
+  ['microsoft/tools-write.ts', 'microsoftWriteToolDefinitions'],
+];
+
+describe('the census of modules that cannot be a first import', () => {
+  it('is EXACTLY the six known provider tool-definition modules', async () => {
+    const graph = assemblerGraph();
+
+    // A broken enumerator must not make this arm vacuously true: the graph is large and
+    // certainly contains the modules the arms above name individually.
+    expect(graph.length, 'the assembler graph is enumerated').toBeGreaterThan(400);
+    for (const must of ['memory/assembler.ts', 'memory/message-store.ts', 'work/ask-settlement.ts',
+      'scheduler/runner.ts', 'tracker/pm-agent.ts', 'agent/tools/index.ts']) {
+      expect(graph.map((g) => path.relative(SERVER_SRC, g)), `graph contains ${must}`).toContain(must);
+    }
+    // And the six it is about are genuinely IN the gate's closure — the review's load-bearing
+    // correction. If a refactor ever takes them out, this arm must be re-argued, not relaxed.
+    for (const [mod] of KNOWN_FIRST_IMPORT_THROWERS) {
+      expect(graph.map((g) => path.relative(SERVER_SRC, g)), `graph contains ${mod}`).toContain(mod);
+    }
+
+    const throwers = await censusOfFirstImportThrows(graph);
+
+    const expectedMods = KNOWN_FIRST_IMPORT_THROWERS.map(([m]) => m).sort();
+    const actualMods = [...throwers.keys()].sort();
+
+    // Report the difference in both directions, by name, so a failure is actionable.
+    const unexpected = actualMods.filter((m) => !expectedMods.includes(m));
+    const repaired = expectedMods.filter((m) => !actualMods.includes(m));
+    expect(unexpected.map((m) => `${m} :: ${throwers.get(m)}`),
+      'NEW module-scope dead zone(s) — a cycle that works today only by luck of import order')
+      .toEqual([]);
+    expect(repaired,
+      'these no longer throw: the provider lane landed, so update KNOWN_FIRST_IMPORT_THROWERS')
+      .toEqual([]);
+    expect(actualMods, 'the census is exactly the known set').toEqual(expectedMods);
+
+    // Same file, different defect, is still a red.
+    for (const [mod, identifier] of KNOWN_FIRST_IMPORT_THROWERS) {
+      expect(throwers.get(mod), `${mod} throws on ${identifier}`)
+        .toBe(`Cannot access '${identifier}' before initialization`);
+    }
+  }, 900_000);
 });

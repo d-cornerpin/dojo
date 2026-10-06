@@ -148,18 +148,45 @@ Six entry points — `google/tools-read`, `google/tools-write`, `microsoft/tools
 `Cannot access 'googleReadToolDefinitions' before initialization` (and the three siblings) from
 a module-scope read at `agent/tools/index.js:105`.
 
-Left unfixed, deliberately, on two counts:
+**CORRECTED AFTER REVIEW — the six ARE inside the gate's import closure.** This report's
+original wording was "it does not block this gate; the gate imports `memory/assembler.js`,
+which is green" — an empirical claim, and true. But that was offered as the licence to ride to
+v3.3.1, and the stronger reading of it does not survive contact with the graph. The reviewer
+computed the transitive closure of value imports from `memory/assembler.ts` and the family is
+inside it:
 
-1. **It does not block this gate.** The gate imports `memory/assembler.js`, which is green.
+```
+memory/assembler -> prompt/assembler -> agent/tools/definitions -> google/tools-read
+memory/assembler -> prompt/assembler -> services/imessage-bridge -> agent/runtime
+  -> agent/v2/loop -> .../execute/index -> .../execute/run-one -> agent/tools/index
+```
+
+Every edge is a value import, none erased at compile time. So the gate's import of the
+assembler **does** evaluate both the provider modules and `agent/tools/index.js`, whose
+module-scope read is the offender. **The gate is safe by EVALUATION ORDER, not by
+unreachability**: entering through the assembler, `agent/tools/definitions.ts:50` fully
+initializes `google/tools-read.js` before `agent/tools/index.ts:105` runs its read. The six
+throw only when one of *them* is the first module. That is precisely the species of luck this
+lane exists to remove, now sitting one import away from a release gate.
+
+Left unfixed here, deliberately, on the corrected basis — three things, none of them
+unreachability:
+
+1. **The gate's own entry point is clause-protected.** Arm 1 imports `memory/assembler.ts`
+   first in a fresh child, on source. If any future import flips the order so that
+   assembler-first trips the provider dead zone, arm 1 reds in CI rather than a release gate
+   refusing a cut.
 2. **It is not one commit away.** Unlike a string constant, these are large arrays *mutated at
    module scope in several passes* within their own files (`tools-read.ts:268-305`,
    `tools-write.ts:522-914` and siblings: `push`, `find`, and `for…of` over the array being
    built) and then aggregated in `agent/tools/index.ts`. Moving a declaration does not fix
    that; the module-scope assembly itself has to become a function. It needs its own lane.
+3. **It is pre-existing** — not introduced by v3.3. The cut it is near was refused by the
+   START_ACK family, which is fixed and proven fixed.
 
-It is the same class of defect — a cycle that works today by luck of import order — and should
-not be left indefinitely. The tool-conformance gate (`deploy/check-tool-conformance.mjs`)
-imports built tool modules and is the consumer most likely to trip it next.
+**And it is now MEASURED rather than left unwatched** — see the census arm in §6. The
+tool-conformance gate (`deploy/check-tool-conformance.mjs`) imports built tool modules and is
+the consumer most likely to enter one of the six first.
 
 ## 5. G2 — zero prompt bytes moved
 
@@ -234,6 +261,10 @@ The arms:
 9. `message-store.ts` re-exports the vocabulary and declares none of it (and does not re-spell
    `'engine_start_ack'`)
 
+10. **the census** — the set of assembler-graph modules that throw when imported first is
+    **exactly** the six named provider modules, each matched to the identifier whose dead zone
+    it hits. See §4 and below.
+
 Arms 6-9 compare **comment-stripped** source: these files discuss the very declarations they
 must not contain, and a first draft of arm 9 was red on its own doc comment.
 
@@ -252,5 +283,52 @@ must not contain, and a first draft of arm 9 was red on its own doc comment.
 
 Reverted byte-identically afterwards (`git diff` empty against the committed tree; the final
 gate run and the 466-module probe above were both made on the committed tree).
+
+### The census arm (added after review, in this lane's test-only commit)
+
+The review's correction — that the six ride inside the gate's closure and the gate passes on
+evaluation order — makes an unwatched latent defect unacceptable, so it is measured. The arm
+enumerates the assembler's graph by relative **value** imports (`import type` is erased and
+cannot evaluate anything), probes all 468 modules first-in-a-fresh-process at concurrency 12,
+and asserts the throwing set is exactly:
+
+```
+agent/tools/provider/google.ts      googleReadToolDefinitions
+agent/tools/provider/microsoft.ts   microsoftReadToolDefinitions
+google/tools-read.ts                googleReadToolDefinitions
+google/tools-write.ts               googleWriteToolDefinitions
+microsoft/tools-read.ts             microsoftReadToolDefinitions
+microsoft/tools-write.ts            microsoftWriteToolDefinitions
+```
+
+44s wall-clock; the whole clause file runs in ~51s. It holds the **identifier** per module too,
+so the same file acquiring a *different* module-scope defect is still red. It also asserts the
+graph is >400 modules and contains the six — a broken enumerator must not make it vacuously
+true — and treats a child that dies without a verdict as a thrower rather than a pass.
+
+It bites in **both** directions, which is the point. Both proven:
+
+- **a seventh thrower reds.** Mutant: a module-scope read between `tracker/notify.ts` and
+  `work/poke-ladder.ts` (two graph modules with no individual arm) — notify imports poke-ladder
+  at the top and declares the binding at the bottom, poke-ladder reads it at module scope:
+
+  ```
+  × NEW module-scope dead zone(s) — a cycle that works today only by luck of import order:
+    + "tracker/notify.ts :: Cannot access '__T117_MUTANT' before initialization"
+                                                          1 failed | 9 passed
+  ```
+
+  The other nine arms stayed green, so the census is what caught it. Reverted byte-identically.
+
+- **a module that stops throwing reds too**, so the v3.3.1 lane cannot land silently. Mutant: a
+  seventh entry added to the known set:
+
+  ```
+  × these no longer throw: the provider lane landed, so update KNOWN_FIRST_IMPORT_THROWERS:
+    + "memory/assembler.ts"
+  ```
+
+**So the v3.3.1 provider lane must update `KNOWN_FIRST_IMPORT_THROWERS` as part of its work** —
+the clause will not go green until it does. That is the required hand-off from this lane.
 
 No import was reordered anywhere in this fix.
