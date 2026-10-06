@@ -168,6 +168,12 @@ export async function submitUserMessage(
       latencyMs: null,
       createdAt: createdAtRow?.created_at ?? new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, ''),
       source: source ?? null,   // the ?source= query param of THIS request, not a column read
+      // t106 — the SAME binding the insert used, on the wire too. The history route projects
+      // this column (`:370`) so a reloaded feed always had it; the live feed builds its row
+      // from THIS frame, and `lib/working-note-visibility.ts` R4 reads the column to tell a
+      // person's question from an engine trigger. Omitted, the owner's reply stayed collapsed
+      // until he refreshed. One resolve (above), two consumers — never a second resolve.
+      conversationId,
     },
   });
 
