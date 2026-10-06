@@ -1,0 +1,123 @@
+-- 181 (t108, BACKLOG lines 61 + 36 + 56): THE LEDGER GAINS A PURPOSE AXIS, AND THE ESTIMATOR
+-- GAINS THE SECOND POPULATION'S DIVISOR. One design for three backlog lines, because they are
+-- one question asked three times: WHAT KIND OF CALL WAS THIS, and therefore how do its
+-- characters turn into tokens.
+--
+-- ════════════════════════════════════════════════════════════════════════════════════════
+-- PART 1 — `cost_records.call_purpose`: THE AXIS `request_type` CANNOT CARRY.
+-- ════════════════════════════════════════════════════════════════════════════════════════
+--
+-- BACKLOG line 61, verbatim: "engine cost ledger records utility dials (T61 probe etc.) as
+-- `agent_turn` — indistinguishable from real turns; twice forced the test kit into size
+-- heuristics."
+--
+-- The first half of that is CLOSED already and this migration does not re-close it. t88 gave
+-- `ModelCallParams` a `purpose` declared at the one dial that is a served turn, and every
+-- `recordCost` site in `agent/model.ts` now writes `routerTier ?? purpose ?? 'completion'`, so
+-- a probe no longer lands as `agent_turn`. Re-derived at this head: four sites, all four
+-- carrying that exact expression, and `costs/__tests__/a-utility-dial-is-not-an-agent-turn.test.ts`
+-- holds the property both ways.
+--
+-- WHAT IS STILL BROKEN IS THE OTHER DIRECTION, AND IT IS WHY LINE 36 ASKED FOR A COLUMN.
+-- `request_type` is ONE column being asked to hold THREE different facts, and the `??` chain
+-- means the leftmost truth erases the ones behind it:
+--
+--     routerTier ?? purpose ?? 'completion'
+--     └─ 'light' | 'standard' | 'heavy' | 'budget_fallback'   the ROUTER'S DECISION
+--                   └─ 'agent_turn' | 'ask_title' | …          the CALL'S PURPOSE
+--                                 └─ 'completion'             "nobody said"
+--
+-- So a served agent turn that went through the router records `light`, and the fact that it was
+-- a TURN is gone. The consumer question line 61 exists for — "how big is a real turn on this
+-- box" — is therefore STILL not answerable by a predicate on this table: `request_type =
+-- 'agent_turn'` silently omits every router-tiered turn, and `request_type IN ('light', …)`
+-- cannot tell a tiered turn from a tiered utility dial. A reader that wants both facts has to
+-- guess which axis a given value came from, which is the size-heuristic fallback by another
+-- name.
+--
+-- `call_purpose` ends the conflation by giving the purpose its own column. NOTHING about
+-- `request_type` changes — not its expression, not a single historical row, not one reader, not
+-- the whitelist domain — because a column whose meaning has been load-bearing for 180
+-- migrations is not a place to perform a redefinition. The purpose is written BESIDE it:
+--
+--     a tiered turn        request_type='light'       call_purpose='agent_turn'
+--     an untiered turn     request_type='agent_turn'  call_purpose='agent_turn'
+--     a declared dial      request_type='ask_title'   call_purpose='ask_title'
+--     an undeclared dial   request_type='completion'  call_purpose=NULL
+--
+-- and both questions become one predicate each, on every row, whatever the router did.
+--
+-- ════════════════════════════════════════════════════════════════════════════════════════
+-- PART 2 — `providers.measured_chars_per_token_prose`: THE POPULATION SPLIT, AND THE
+--          MEASUREMENT THAT DECIDED IT.
+-- ════════════════════════════════════════════════════════════════════════════════════════
+--
+-- BACKLOG line 36 deferred "letting estimateTokens spend the learned divisor" and named the
+-- open question: "a per-population vs single-minimum design call". BACKLOG line 56 is the same
+-- question from the other end: "estimator_chars_per_token pinned at 4.0 but provider-reported
+-- totals run 1.88-2.08x the estimate on dense prompts".
+--
+-- THE CALL IS PER-POPULATION, AND IT IS NOT AN AESTHETIC PREFERENCE — A SINGLE MINIMUM IS
+-- REFUSED BY THIS TREE'S OWN PRIOR MEASUREMENT. Two readings of the same estimator exist, both
+-- recorded durably, both taken from platform records rather than from theory:
+--
+--   `memory/budget.ts`'s derivation header, on PROSE:   /4 measured 2% UNDER the real cost,
+--                                                       /3.5 12% OVER, /3 30% OVER.
+--   the behavioural harness, on DENSE TOOL-SCHEMA
+--   requests (BACKLOG line 56):                         the estimate ran 1.88-2.08x UNDER.
+--
+-- Invert the second: a dense request is charged at roughly 4/2.0 ≈ 1.9-2.1 chars per token,
+-- against prose's ≈4.08. Two populations, a factor of two apart.
+--
+-- `measured_chars_per_token` (migration 174) is a MINIMUM over all qualifying rows, and the
+-- minimum of those two populations is the DENSE one. Spending a single minimum everywhere would
+-- therefore estimate PROSE at ≈1.9 chars/token — a 2.1x OVER-estimate of the population that
+-- dominates every stored row. And this tree has already ruled on over-estimating prose, in the
+-- very header that set the 4: "/3 30% over … A 30% over-estimate is not caution; it is the
+-- assembler dropping history the window did not require." A single minimum is that rejected
+-- 1.3x, doubled. It would answer line 56 by committing a worse version of the defect line 56's
+-- own module was written to avoid.
+--
+-- WHY THE DATA CAN NOW DISTINGUISH THEM, WHICH IS WHY THIS WAS DEFERRED AND IS NOW POSSIBLE.
+-- A whole-request ratio is all the ledger can measure, so splitting populations requires rows
+-- that are PURE. Part 1 supplies exactly that, structurally: every engine utility dial passes
+-- `tools: false` — asserted over all fourteen of them by
+-- `costs/__tests__/a-utility-dial-is-not-an-agent-turn.test.ts`, which fails if a fifteenth
+-- appears or an existing one starts shipping schemas — so a row with a DECLARED NON-TURN
+-- `call_purpose` is a request with NO tools array, i.e. pure prose. Its ratio measures the prose
+-- tokeniser directly, with no mixture to unpick. A served turn always carries the 72 KB schema
+-- array, so its ratio is the mixed, denser reading `measured_chars_per_token` already takes.
+--
+-- WHY A SECOND COLUMN RATHER THAN REDEFINING THE FIRST. `measured_chars_per_token` keeps its
+-- exact meaning — the minimum over ALL qualifying rows — its exact writer, and its existing
+-- clause. It is the conservative reading and it stays the one a caller gets when the population
+-- is unknown. The new pair is the PROSE reading, established only by rows whose `call_purpose`
+-- names a declared non-turn dial. A row whose `call_purpose` IS NULL — every historical row, and
+-- the five dials that deliberately stay undeclared — establishes NOTHING here, because "unknown"
+-- is not "prose", and guessing in that direction is the only guess that could make a consumer
+-- LESS safe than no reading at all.
+--
+-- `_at` is not decoration, for migration 174's reason verbatim: "the reading is a MINIMUM over a
+-- rolling window, and a minimum must be able to RISE again when the row that set it ages out."
+-- Identical shape to 167/174, identical reason, so the ratchet-down/rescan-up machinery in
+-- `costs/ledger-calibration.ts` serves both readings with one code path.
+--
+-- ════════════════════════════════════════════════════════════════════════════════════════
+-- STABLE-BRIDGE: ADDITIVE AND NULL-SAFE ON ALL THREE COLUMNS, so an upgrade-day box crosses
+-- this without a rewrite. Every column is new, nullable, defaults NULL; nothing backfills and
+-- nothing can be backfilled honestly — `call_purpose` for a historical row is not recoverable
+-- from `request_type` precisely because the `??` chain discarded it, and inventing one would put
+-- a guess in the column this migration exists to make trustworthy. A NULL reads as "this row
+-- predates the axis", which is exactly true, and every reader added in this change treats NULL
+-- as unknown-and-therefore-conservative rather than as a value.
+--
+-- NO INDEX. The prose reading's window query is narrowed by `estimated_input_tokens IS NOT NULL`
+-- (a minority of rows) on top of the `provider_id` + `created_at` predicate migration 167's
+-- index already serves, and it runs at most once per provider per day — migration 174's own
+-- accounting for declining an index, with one more conjunct making the candidate set smaller
+-- still. A second overlapping index would cost every INSERT on the hottest-written table in the
+-- tree to save a query that runs 24 times a day at worst.
+
+ALTER TABLE cost_records ADD COLUMN call_purpose TEXT;
+ALTER TABLE providers ADD COLUMN measured_chars_per_token_prose REAL;
+ALTER TABLE providers ADD COLUMN measured_chars_per_token_prose_at TEXT;
