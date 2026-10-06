@@ -682,7 +682,7 @@ export async function escalateCloseoutMissToPM(ctx: {
 
   try {
     const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
-    await deliverA2AMessage({
+    const res = await deliverA2AMessage({
       intent: 'QUESTION',
       threadId: uuidv4(),
       requiresResponse: true,
@@ -690,9 +690,17 @@ export async function escalateCloseoutMissToPM(ctx: {
       toAgent: pmId,
       fromAgent: 'system',
     });
-    logger.info('Closeout-miss escalated to PM', {
-      pmId, agentId: ctx.agentId, taskCount: rows.length, source: ctx.source,
-    });
+    // t109 C: A DROP IS A RETURN, NOT A THROW, so the `.catch` below never saw one and this
+    // record claimed a hand-off nobody received (`b67cd244` is the template; the reachable
+    // reasons and the clause are argued in `an-escalation-nobody-received-says-so.test.ts`).
+    if (!res.delivered) {
+      logger.warn('Closeout-miss escalation to the PM was NOT delivered', {
+        pmId, agentId: ctx.agentId, taskCount: rows.length, source: ctx.source,
+        threadId: res.threadId, reason: res.reason ?? 'unknown' });
+    } else {
+      logger.info('Closeout-miss escalated to PM', {
+        pmId, agentId: ctx.agentId, taskCount: rows.length, source: ctx.source });
+    }
   } catch (err) {
     logger.warn('Failed to deliver closeout-miss escalation to PM', {
       error: err instanceof Error ? err.message : String(err),
@@ -780,7 +788,7 @@ export async function escalateUnattendedBudgetTripToPM(ctx: {
 
   try {
     const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
-    await deliverA2AMessage({
+    const res = await deliverA2AMessage({
       intent: 'QUESTION',
       threadId: uuidv4(),
       requiresResponse: true,
@@ -788,9 +796,15 @@ export async function escalateUnattendedBudgetTripToPM(ctx: {
       toAgent: pmId,
       fromAgent: 'system',
     });
-    logger.info('Unattended-budget trip escalated to PM', {
-      pmId, agentId: ctx.agentId, budgetMinutes: ctx.budgetMinutes, continuationCap: ctx.continuationCap,
-    });
+    // t109 C, the second site, same class and same template as the closeout-miss above.
+    if (!res.delivered) {
+      logger.warn('Unattended-budget trip escalation to the PM was NOT delivered', {
+        pmId, agentId: ctx.agentId, budgetMinutes: ctx.budgetMinutes, threadId: res.threadId,
+        continuationCap: ctx.continuationCap, reason: res.reason ?? 'unknown' });
+    } else {
+      logger.info('Unattended-budget trip escalated to PM', {
+        pmId, agentId: ctx.agentId, budgetMinutes: ctx.budgetMinutes, continuationCap: ctx.continuationCap });
+    }
   } catch (err) {
     logger.warn('Failed to deliver unattended-budget trip escalation to PM', {
       error: err instanceof Error ? err.message : String(err),
