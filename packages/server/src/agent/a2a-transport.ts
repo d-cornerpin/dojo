@@ -18,7 +18,7 @@ import { getDb } from '../db/connection.js';
 // patience ladder that scales a grant by the assignee's own declared model speed.
 import { activeRuns } from './shared-state.js';
 import { patienceFloorFor } from '../tracker/assignee-patience.js';
-import { A2A_THREAD_SHORT_LENGTH, a2aThreadShort, OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
+import { A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
@@ -1772,7 +1772,7 @@ function findUnlandedInboundReply(
         AND a2a_thread_id IN (?, ?)
       ORDER BY (a2a_intent IN ('ANSWER','DELIVERABLE','COMPLETE','FAIL')) DESC, rowid DESC
       LIMIT 1`,
-  ).get(agentId, agentId, sinceMs - 15 * 60_000, threadId, threadId.slice(0, 8)) as
+  ).get(agentId, agentId, sinceMs - 15 * 60_000, threadId, a2aThreadShortLegacy(threadId)) as
     | { id: string; content: string; source_agent_id: string | null } | undefined;
   if (!row) return null;
   // The stored row is the full context message: [A2A:...] envelope + payload + [Thread ...]
