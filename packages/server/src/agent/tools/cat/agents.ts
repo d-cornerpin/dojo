@@ -911,6 +911,26 @@ export const agentsHandlers: ToolHandlerMap = {
         // cross-turn delivery. skipAudit: the fan-out audit is handled by the
         // transport / the summary content below.
         writeToolReceipt({ agentId, tool: 'broadcast_to_group', tier: 1, verified: true, basis: 'provider-id', providerId: bcResult.threadId, threadId: bcResult.threadId, recipient: member.name, sentText: broadcastPayload, detail: { intent: bcIntent, groupId }, skipAudit: true });
+        // t116 E3, FOUND BY THE CENSUS THAT CLOSED `send_to_agent`. This door had the exact
+        // same gap and for the same reason: a tool receipt claiming a send to a named
+        // recipient, and no `deliveries` row behind it. It is the "next receiptless sender"
+        // the census exists to catch, it is in the same handler and the same two lines, so it
+        // is closed here rather than carved out of the clause — a census with an exemption
+        // for the case it just found is not a census.
+        //
+        // ONE ROW PER DELIVERED MEMBER, matching the receipt above one-for-one. Each recipient
+        // gets a FRESH thread (A-1/A-2: a shared thread id collided the per-thread dedupe and
+        // dropped members 2+), so a fan-out to N members is genuinely N deliveries, not one.
+        recordedId(recordAtDoor({
+          outcome: 'delivered', channel: 'a2a',
+          agentId, tool: 'broadcast_to_group',
+          recipientId: member.id, recipientDisplay: member.name,
+          provider: bcResult.threadId, threadRoot: bcResult.threadId,
+          messageId: bcResult.messageId ?? null,
+          detail: `A2A ${bcIntent} (group ${groupId})`,
+        }), 'broadcast_to_group: fan-out to a group member', {
+          from: agentId, to: member.id, thread: bcResult.threadId, groupId,
+        });
       }
     }
 
