@@ -173,10 +173,17 @@ describe('B5 the refusal comes before anything is downloaded', () => {
     expect(applyAt).toBeGreaterThan(-1);
     const body = src.slice(applyAt);
     const preflightAt = body.indexOf('measureUpdateDiskNeed');
-    const curlAt = body.indexOf('curl -L -o');
+    // t114 (census U14): the download is no longer an inline `curl -L -o` string — it is a call
+    // to `execIdleBounded(curlDownloadCmd(...))`, because the flat 120s total that string carried
+    // made a slow box permanently un-updatable. The clause reads the CALL SITE rather than a
+    // fragment of the command text, which is strictly more precise: the literal `curl` now lives
+    // in a helper near the top of the file, so a text search would have found the helper instead
+    // of the download and compared the pre-flight against the wrong offset.
+    const downloadAt = body.indexOf('execIdleBounded(curlDownloadCmd(');
     expect(preflightAt, 'applyUpdate never consults the pre-flight').toBeGreaterThan(-1);
+    expect(downloadAt, 'applyUpdate never downloads anything').toBeGreaterThan(-1);
     expect(preflightAt, 'the pre-flight must run BEFORE the download, not after it')
-      .toBeLessThan(curlAt);
+      .toBeLessThan(downloadAt);
   });
 
   it('the refusal is the loud kind, with its own status', () => {

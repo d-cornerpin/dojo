@@ -28,6 +28,7 @@ import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/abo
 import { getEffectiveTranscriptionModel, type LocalTranscriptionEngine } from './transcription-model.js';
 import { transcribeBuffer as localTranscribe, isWhisperBinaryAvailable } from '../voice/stt-service.js';
 import { DEFAULT_WHISPER } from '../voice/model-manager.js';
+import { phasedTransferDeadline } from './transfer-deadline.js';
 
 // Audio length (in seconds, derived from 16 kHz mono PCM WAV size) beyond
 // which we transparently fall back from Moonshine to Whisper for local
@@ -43,6 +44,11 @@ const logger = createLogger('transcription');
 // 1 GB per fetched URL (matches the chat-upload cap). Single-user local
 // install — no abuse vector — only catches obviously-wrong inputs.
 const FETCH_MAX_BYTES = 1024 * 1024 * 1024;
+// ── t114 (census U10) — the body's own allowance, beside the cap it has to agree with ──
+// `FETCH_TIMEOUT_MS` keeps its honest job (time to first response). These two bound the TRANSFER,
+// which is what the 1 GiB cap above implies but the old flat clock contradicted.
+const FETCH_BODY_BASE_TIMEOUT_MS = 60_000;
+const FETCH_BODY_CEILING_MS = 30 * 60_000;
 const FETCH_TIMEOUT_MS = 30_000;
 
 export interface TranscribeAudioRequest {
@@ -108,19 +114,61 @@ async function dialAudioUrl(slot: AgentCallSlot, url: string): Promise<{ buffer:
     if (parsed.protocol !== 'https:') {
       return { error: `Only https URLs are allowed (got ${parsed.protocol}).` };
     }
-    const response = await fetch(url, {
-      // A-5: COMPOSED — the 30s fetch ceiling (SUSPECT clock U10) is unchanged.
-      signal: AbortSignal.any([slot.signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]),
+    // ── t114 (census U10) — THE FETCH'S TWO PHASES GET TWO BOUNDS ──
+    //
+    // THE DEFECT: one flat `FETCH_TIMEOUT_MS` (30s) covering the whole operation, in a file that
+    // permits `FETCH_MAX_BYTES = 1 GiB`. A 200 MB podcast cannot be downloaded in 30 seconds on
+    // any ordinary line, so the cap and the clock disagreed by orders of magnitude — and the
+    // clock won, silently, on exactly the recordings a user most wants transcribed. The byte cap
+    // IS the measured fact and `content-length` is read eight lines below the clock, so the
+    // information was already here.
+    //
+    // Now: the server must ANSWER inside the headers window, and the body earns a deadline from
+    // the size it declares (capped). The over-cap refusal below is unchanged and still fires
+    // first, so a 1 GiB file is still refused rather than patiently downloaded.
+    const deadline = phasedTransferDeadline({
+      headersMs: FETCH_TIMEOUT_MS,
+      bodyBaseMs: FETCH_BODY_BASE_TIMEOUT_MS,
+      bodyCeilingMs: FETCH_BODY_CEILING_MS,
+      external: slot.signal,
     });
+    let response: Response;
+    try {
+      response = await fetch(url, { signal: deadline.signal });
+    } catch (err) {
+      deadline.done();
+      if (slot.cutByStop()) return { error: STOPPED_BY_USER, stopped: true };
+      if (deadline.firedPhase() === 'headers') {
+        return { error: `The server did not answer within ${Math.round(FETCH_TIMEOUT_MS / 1000)}s.` };
+      }
+      throw err;
+    }
     if (!response.ok) {
+      deadline.done();
       return { error: `Fetch returned HTTP ${response.status}.` };
     }
     const contentLength = Number(response.headers.get('content-length') ?? '0');
     const capMb = FETCH_MAX_BYTES / (1024 * 1024);
     if (contentLength > FETCH_MAX_BYTES) {
+      deadline.done();
       return { error: `Audio file is too large (${(contentLength / 1024 / 1024).toFixed(1)} MB). Limit is ${capMb} MB.` };
     }
-    const ab = await response.arrayBuffer();
+    // Headers are in and the size is inside the cap: the body gets time proportional to it.
+    deadline.armBody(contentLength || null);
+    let ab: ArrayBuffer;
+    try {
+      ab = await response.arrayBuffer();
+    } catch (err) {
+      const stalled = deadline.firedPhase() === 'body';
+      const granted = deadline.grantedBodyMs();
+      deadline.done();
+      if (slot.cutByStop()) return { error: STOPPED_BY_USER, stopped: true };
+      if (stalled) {
+        return { error: `The audio stopped arriving inside its ${Math.round((granted ?? 0) / 1000)}s transfer window — the download stalled rather than the file being rejected.` };
+      }
+      throw err;
+    }
+    deadline.done();
     if (ab.byteLength > FETCH_MAX_BYTES) {
       return { error: `Audio file is too large after download (${(ab.byteLength / 1024 / 1024).toFixed(1)} MB).` };
     }

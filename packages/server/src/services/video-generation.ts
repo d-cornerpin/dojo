@@ -26,6 +26,7 @@ import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { buildWireBody } from './generation-params.js';
 import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/abortable-call.js';
+import { phasedTransferDeadline } from './transfer-deadline.js';
 import type { GenerationParamSpec } from '@dojo/shared';
 import { homeDir } from '../home.js';
 
@@ -118,6 +119,14 @@ function resolveProvider(providerId: string): { base: string; credential: string
   if (!credential) return null;
   return { base: resolveVideosBase(provider.base_url), credential };
 }
+
+// ── t114 (census U9) — the asset download's two phases, named ──
+// `ASSET_HEADERS_TIMEOUT_MS` is the old flat number's honest job: how long the provider may take
+// to START answering. The body then earns time from the size it declared, capped, because a
+// billed clip must not be thrown away for being large.
+const ASSET_HEADERS_TIMEOUT_MS = 30_000;
+const ASSET_BODY_BASE_TIMEOUT_MS = 120_000;
+const ASSET_BODY_CEILING_MS = 30 * 60_000;
 
 const COMMON_HEADERS = (credential: string): Record<string, string> => ({
   Authorization: `Bearer ${credential}`,
@@ -340,32 +349,65 @@ async function dialVideoAsset(slot: AgentCallSlot, providerId: string, providerJ
   const resolved = resolveProvider(providerId);
   if (!resolved) return { ok: false, error: `Provider ${providerId} unavailable.` };
 
+  // ── t114 (census U9) — THE DOWNLOAD'S DEADLINE IS SIZED FROM WHAT THE SERVER DECLARES ──
+  //
+  // THE DEFECT: a flat 120s `AbortSignal.timeout` covering the WHOLE operation, body included. A
+  // 1080p clip is tens of megabytes, so on an ordinary connection this aborted a transfer that
+  // was moving perfectly — and the clip is already RENDERED AND BILLED by the time this runs, so
+  // the abort threw away something the owner had paid for and `markFailed` made it terminal with
+  // no resume. The two phases now get two bounds (see `transfer-deadline.ts`): the provider must
+  // answer within the headers window, and the body then gets a deadline derived from the
+  // `content-length` it just declared.
+  const deadline = phasedTransferDeadline({
+    headersMs: ASSET_HEADERS_TIMEOUT_MS,
+    bodyBaseMs: ASSET_BODY_BASE_TIMEOUT_MS,
+    bodyCeilingMs: ASSET_BODY_CEILING_MS,
+    external: slot.signal,
+  });
+
   let response: Response;
   try {
     response = await fetch(`${resolved.base}/videos/${encodeURIComponent(providerJobId)}/content`, {
       method: 'GET',
       headers: COMMON_HEADERS(resolved.credential),
-      // A-5: COMPOSED — the 120s download ceiling (SUSPECT clock U9) is unchanged.
-      signal: AbortSignal.any([slot.signal, AbortSignal.timeout(120_000)]),
+      // A-5: COMPOSED — the agent's stop still cuts this, now alongside a phased deadline.
+      signal: deadline.signal,
     });
   } catch (err) {
+    deadline.done();
     if (slot.cutByStop()) return { ok: false, error: STOPPED_BY_USER, stopped: true };
+    // t114: name the phase. "the provider never answered" and "the download stalled" are
+    // different failures and the difference is what tells a person whether to retry.
+    if (deadline.firedPhase() === 'headers') {
+      return { ok: false, error: `Asset download failed: the provider did not answer within ${Math.round(ASSET_HEADERS_TIMEOUT_MS / 1000)}s.` };
+    }
     return { ok: false, error: `Asset download failed: ${err instanceof Error ? err.message : String(err)}` };
   }
 
   if (!response.ok) {
+    deadline.done();
     const errText = await response.text().catch(() => '');
     return { ok: false, error: `Asset HTTP ${response.status}: ${errText.slice(0, 300)}` };
   }
+
+  // Headers are in: re-arm from the size the provider declared for this clip.
+  deadline.armBody(Number(response.headers.get('content-length') ?? '0') || null);
 
   let bytes: Buffer;
   try {
     bytes = Buffer.from(await response.arrayBuffer());
   } catch (err) {
     // A-5: a stop landing while tens of megabytes of mp4 are arriving surfaces here.
-    if (slot.cutByStop()) return { ok: false, error: STOPPED_BY_USER, stopped: true };
+    if (slot.cutByStop()) { deadline.done(); return { ok: false, error: STOPPED_BY_USER, stopped: true }; }
+    const stalled = deadline.firedPhase() === 'body';
+    const granted = deadline.grantedBodyMs();
+    deadline.done();
+    if (stalled) {
+      return { ok: false, error: `Asset download stalled: the clip stopped arriving inside its ${Math.round((granted ?? 0) / 1000)}s transfer window. The render itself succeeded, so retrying the download is worth it.` };
+    }
     return { ok: false, error: `Asset download failed: ${err instanceof Error ? err.message : String(err)}` };
   }
+  deadline.done();
   if (bytes.length === 0) return { ok: false, error: 'Asset download returned an empty body.' };
 
   const filename = `${uuidv4()}.mp4`;

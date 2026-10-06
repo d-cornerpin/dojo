@@ -36,7 +36,9 @@
 // ── THE THIRD "CALL SITE" THAT ISN'T ONE ────────────────────────────────────
 // The inherited premise named three verify-free download sites. Re-derived by
 // command, `git grep -n "curl -L" -- packages/server/src` returns exactly TWO,
-// both in `gateway/routes/update.ts`. The third, `services/watchdog-refresh.ts`,
+// both in `gateway/routes/update.ts`. (t114: those two are now ONE command builder,
+// `curlDownloadCmd`, invoked at the same two sites — the census clause counts the invocations,
+// and strips comments so this very paragraph is not mistaken for a third downloader.) The third, `services/watchdog-refresh.ts`,
 // downloads nothing: it rsyncs `~/.dojo/platform/watchdog-dist`, which arrived
 // INSIDE the platform zip this module just verified, into `~/.dojo/watchdog`.
 // Its integrity IS the platform artifact's integrity, so a second check there
@@ -81,6 +83,13 @@ function digestFromManifest(body: string): string | null {
   return m ? m[1].toLowerCase() : null;
 }
 
+// ── t114 (census U20) — the manifest fetch's bounds, named ──
+// A manifest is a few hundred bytes of text. If the host is reachable it answers at once, so the
+// per-attempt bound stays short; what was missing was any tolerance for the attempt FAILING.
+const MANIFEST_FETCH_TIMEOUT_MS = 20_000;
+const MANIFEST_FETCH_ATTEMPTS = 3;
+const MANIFEST_RETRY_BACKOFF_MS = 2_000;
+
 /**
  * Fetch the published manifest. `null` means NO MANIFEST WAS PUBLISHED (the
  * transition case). An empty string means one was published and could not be
@@ -89,13 +98,45 @@ function digestFromManifest(body: string): string | null {
  */
 export async function fetchArtifactManifest(url: string | null | undefined): Promise<string | null> {
   if (!url) return null;
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
-    if (!res.ok) return '';
-    return await res.text();
-  } catch {
-    return '';
+  // ── t114 (census U20) — A NETWORK BLIP MUST NOT BE THE REASON A GOOD RELEASE IS REFUSED ──
+  //
+  // THE DEFECT: one flat `AbortSignal.timeout(20000)`, and on expiry the catch returned `''`,
+  // which `verifyArtifactAgainstManifest` reads as "a manifest was published and could not be
+  // read" -> `refused`. So twenty seconds of ordinary network latency REJECTED a perfectly good
+  // downloaded release, on a path whose whole job is to protect an update. The `'' -> refused`
+  // verdict is tested; the timeout as its cause was not, which is how it survived.
+  //
+  // THE SECURITY POSTURE IS DELIBERATELY UNCHANGED: `''` still means refused, because a manifest
+  // that exists and cannot be confirmed against must never be waved through. What changes is
+  // that a TRANSIENT failure is no longer sufficient to produce it. A manifest is a few hundred
+  // bytes — if it is reachable at all it arrives immediately — so the honest reading of one
+  // timeout is "the network hiccuped", not "the release is bad". Three attempts with backoff,
+  // and the refusal that follows a genuinely unreachable manifest is LOUD about which of the two
+  // it was, so an operator is never left thinking the bytes failed to match.
+  let lastWhy = '';
+  for (let attempt = 1; attempt <= MANIFEST_FETCH_ATTEMPTS; attempt += 1) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(MANIFEST_FETCH_TIMEOUT_MS) });
+      // A real HTTP answer is a real answer: 404 and friends mean the manifest is not there to be
+      // read and retrying cannot change that, so it returns immediately as it always did.
+      if (!res.ok) {
+        logger.warn('release manifest fetch returned a non-OK status — the release will be refused', {
+          url, status: res.status, attempt,
+        });
+        return '';
+      }
+      return await res.text();
+    } catch (err) {
+      lastWhy = err instanceof Error ? err.message : String(err);
+      if (attempt < MANIFEST_FETCH_ATTEMPTS) {
+        await new Promise((r) => { const t = setTimeout(r, MANIFEST_RETRY_BACKOFF_MS * attempt); t.unref?.(); });
+      }
+    }
   }
+  logger.error('release manifest UNREACHABLE after retries — refusing the release on absence of proof, NOT on a byte mismatch', {
+    url, attempts: MANIFEST_FETCH_ATTEMPTS, lastError: lastWhy,
+  });
+  return '';
 }
 
 /**

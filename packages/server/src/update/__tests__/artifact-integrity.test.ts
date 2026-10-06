@@ -164,18 +164,39 @@ describe('the check cannot be skipped by adding another download', () => {
     return out;
   }
 
+  /** Source with comments removed — a census must read code, never the prose about it. */
+  function stripComments(raw: string): string {
+    return raw
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .map((l) => l.replace(/\/\/.*$/, ''))
+      .join('\n');
+  }
+
   it('every artifact download in the server lives in ONE file, and that file verifies', () => {
     const downloaders = filesUnder(srcRoot)
-      // The INVOCATION shape (`curl -L -o <file>`), not the words: this module's
-      // own header quotes the grep that found them, and a census that counted
-      // its own documentation would be measuring the wrong thing.
-      .filter((f) => /curl\s+-L\s+-o/.test(fs.readFileSync(f, 'utf8')))
+      // The INVOCATION shape, not the words: this module's own header quotes the grep that found
+      // them, and a census that counted its own documentation would be measuring the wrong thing.
+      //
+      // t114 (census U14): widened from `curl -L -o` to `curl -L` because the download command
+      // now carries its own stall detector between those flags
+      // (`--fail --connect-timeout --speed-limit --speed-time`), the flat 120s total having made
+      // a slow box permanently un-updatable. Widening here KEEPS the census honest — any file
+      // that shells out a curl download still lands in this list — while the count below moves to
+      // the call-site shape, which is what actually performs a download.
+      // COMMENTS STRIPPED FIRST, and that is load-bearing rather than tidy: this census's own
+      // module quotes `git grep -n "curl -L"` in its header to record how it was derived, so a
+      // raw-text sweep lists `artifact-integrity.ts` as a downloader and the clause fails on its
+      // own documentation — precisely the thing the note above says it must not measure.
+      .filter((f) => /curl\s+-L\b/.test(stripComments(fs.readFileSync(f, 'utf8'))))
       .map((f) => path.relative(srcRoot, f))
       .sort();
     expect(downloaders).toEqual(['gateway/routes/update.ts']);
 
     const src = fs.readFileSync(path.join(srcRoot, 'gateway/routes/update.ts'), 'utf8');
-    const downloads = (src.match(/curl\s+-L\s+-o/g) ?? []).length;
+    // The command text is now built ONCE in a helper and invoked twice, so counting the text
+    // would read 1 where there are 2 downloads. The call site is the download.
+    const downloads = (src.match(/execIdleBounded\(curlDownloadCmd\(/g) ?? []).length;
     const verifies = (src.match(/verifyArtifactAgainstManifest\s*\(/g) ?? []).length;
     expect(downloads).toBe(2);
     expect(verifies).toBe(downloads);
