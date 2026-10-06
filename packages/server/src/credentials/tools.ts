@@ -10,6 +10,7 @@ import { CREDENTIAL_FRESH_SENTINEL } from '../memory/compaction.js';
 // (T5b): "which fields are secret" and "which values are secret" are the same
 // job, and a secret is only ever learned from a DECLARED field, never a shape.
 import { noteHandedCredentialValues } from './secret-values.js';
+import { unchangedReceipt } from './write-doors.js';
 import {
   listCredentials,
   getCredentialByService,
@@ -87,42 +88,6 @@ export const credentialsToolDefinitions: ToolDefinition[] = [
     },
   },
 ];
-
-// ════════════════════════════════════════
-// t120 — THE RECEIPT IS THE AFFORDANCE.
-//
-// Both failed account-setup draws looped here, and neither looped on a refusal: every write
-// succeeded and the model re-sent the identical payload until the identical-call brake blocked
-// it and the turn failed a SAFETY invariant. `credential_update`'s whole receipt was
-// `Credential "x" updated.` — it named no state and no next call, so the model had no way to
-// learn its write had landed and the cheapest check available to it was writing again.
-//
-// So every write result now ends with the SAME next step `credential_add`'s success has always
-// ended with (`credential_get(service_name=…)`), and a write that changed nothing says that
-// plainly instead of reporting as a change. This is per-turn tool-result text: no tool
-// description moves, so the assembled prompt prefix is byte-unchanged (G2).
-// ════════════════════════════════════════
-
-/**
- * What a write that changed nothing tells the caller.
- *
- * Says the value is already there, says nothing was destroyed (the honest counterpart of the
- * T83 destruction ledger, which no longer records a row for this case), names the one call that
- * is actually useful next, and says outright not to repeat the write — because the model that
- * repeated it is the reader.
- */
-function unchangedReceipt(serviceName: string, descriptionChanged: boolean): string {
-  const note = descriptionChanged
-    ? ' Its description was updated to the note you passed.'
-    : '';
-  return (
-    `Credential "${serviceName}" already holds exactly these values — nothing was written, and ` +
-    `no stored value was destroyed.${note} The credential is saved and ready to use: call ` +
-    `credential_get(service_name="${serviceName}") at the moment you make the API call. ` +
-    `Do NOT send this value again — it is already stored, and repeating an identical write is ` +
-    `what the engine's identical-call brake stops.`
-  );
-}
 
 // ── Executor ──
 
