@@ -3,6 +3,9 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { getAgentRuntime } from '../../agent/runtime.js';
 import { liveWork, hasLiveWork, announceLiveWork } from '../../agent/live-work.js';
+// t116 E2: the third fact the stop door asks — see `isRunUnwinding`'s header for why neither
+// of the other two can answer during a turn's unwind.
+import { isRunUnwinding } from '../../agent/shared-state.js';
 import { spawnAgent, terminateAgent } from '../../agent/spawner.js';
 import { parseCreatedByKind } from '../../agent/created-by-kind.js';
 import { stopAgent } from '../../agent/runtime.js';
@@ -563,8 +566,22 @@ agentsRouter.post('/:id/stop', (c) => {
   //
   // The status check SURVIVES inside the predicate (`working` is still stoppable with nothing
   // registered — a run between dials); it is simply no longer the only way to qualify.
+  // ── t116 E2 — AND THE THIRD DISJUNCT, FOR THE WINDOW BOTH THE OTHERS GO BLIND IN ──
+  //
+  // Ruling #9 moved this guard off the status column alone, and it was right to. But BOTH
+  // facts it now reads are instantaneous, and both go false while a run is still coming
+  // down: teardown writes `idle` before `finalizeTurnRecord`, and the model call releases its
+  // abort registration in its own `finally`. The release blast caught the consequence — a
+  // press inside that window answered `400 … is not currently working`, so nothing latched
+  // the stop and the turn recorded `answered`.
+  //
+  // `isRunUnwinding` is the fact `stopAgent` itself already reads (`activeRuns`), plus the
+  // bound on the drain tail that runs after it is released. Added as a DISJUNCT rather than
+  // by widening either existing one, so neither of their meanings moves: a press accepted
+  // here lands on the same stop fence E1 enforces, and a genuinely quiet agent — no run, no
+  // recent stamp, no jobs — is still refused.
   const live = liveWork(id);
-  if (agent.status !== 'working' && !hasLiveWork(live)) {
+  if (agent.status !== 'working' && !hasLiveWork(live) && !isRunUnwinding(id)) {
     // Still a refusal, and the wording now says which question was asked. An agent with
     // genuinely nothing running has nothing to stop, and saying otherwise would set
     // `stopMarkerPending` on a turn that never happened.

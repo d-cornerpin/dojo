@@ -384,6 +384,9 @@ import {
   // retires `stoppedAgents`); the registry is never written except through these.
   stopFencedRuns,
   isStopFenced,
+  // t116 E2 — the unwind stamp. Written by the run-exit `finally` below and by nothing else,
+  // for the same reason the two facts above have one owner each.
+  lastRunEndedAt,
   abortInFlight,
   // A-5 fix round (review CRITICAL C1): the turn-scoped count the preempt asks before it
   // decides anything — a background media job is not something a barge-in may tear down.
@@ -786,6 +789,12 @@ class AgentRuntime {
       } catch { /* best effort */ }
     } finally {
       activeRuns.delete(agentId);
+      // t116 E2: and STAMP the moment it went, because this `finally` releases the fact above
+      // at its top and then runs a long awaited tail. A stop press arriving inside that tail
+      // reads no `activeRuns` entry, no `working` status and no live work, and the stop door
+      // used to answer it with "nothing is happening". The stamp is what makes the tail
+      // visible to that door; `isRunUnwinding` in `shared-state.ts` carries the argument.
+      lastRunEndedAt.set(agentId, Date.now());
       // Safety net for any path that broke out of runAgentLoop without
       // calling stopStatusHeartbeat (e.g., uncaught throw, early return).
       // Idempotent, no-op if the heartbeat was already stopped.

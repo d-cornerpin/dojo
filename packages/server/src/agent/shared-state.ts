@@ -59,6 +59,50 @@ export function isStopFenced(agentId: string): boolean {
   return stoppedAgents.has(agentId) || stopFencedRuns.has(agentId);
 }
 
+// ════════════════════════════════════════
+// t116 E2 — THE TURN-UNWIND WINDOW, WHICH NO DOOR COULD SEE.
+//
+// THE MEASURED DEFECT. The stop route refused the press with `400 Agent is not currently
+// working and has no background jobs running` while a run was still unwinding. Both of its
+// disjuncts are INSTANTANEOUS facts and both go false before the run is actually over:
+// teardown writes `status='idle'` (`v2/steps/teardown/index.ts`'s `settleStatus`) *before*
+// `finalizeTurnRecord`, and `callModel` releases its abort registration in its own `finally`,
+// so `liveWork` reads zero too. Between those writes and the run's real end sits the whole of
+// finalize plus `handleMessage`'s awaited tail — and in that window the press bounced.
+//
+// `activeRuns` is the authoritative "a run is in flight" fact, and it is the one `stopAgent`
+// itself reads to decide whether to raise the fence. The route asking a different question
+// than the mechanism it drives is the whole defect, so the route now asks THIS.
+//
+// WHY A GRACE WINDOW TOO, AND WHY IT IS NOT A TUNED DIAL. The run's exit `finally` deletes
+// `activeRuns` at its TOP and then runs a long awaited tail (the A2A re-trigger, the drains).
+// That residual is named in `stopFencedRuns`'s own header above. `lastRunEndedAt` closes it
+// from the other side: the one stamp, written by the one owner that already retires the other
+// two facts, so a press arriving in the drain tail still lands rather than being told nothing
+// is happening. It is a BOUND on how long the tail may be believed, not a retry delay.
+//
+// WHAT IT DOES NOT DO: a genuinely quiet agent has no `activeRuns` entry and no recent stamp,
+// so the 400 survives for it exactly as designed — a button for nothing stays impossible, and
+// accepting that press would set `stopMarkerPending` on a turn that never happened.
+// ════════════════════════════════════════
+
+/** When this agent's last run left its exit `finally`, epoch ms. One entry per agent,
+ *  overwritten each run — the same ONE owner that retires `stoppedAgents` writes it. */
+export const lastRunEndedAt = new Map<string, number>();
+
+/** How long after the `activeRuns` delete the run's awaited tail is still believed to be
+ *  unwinding. Covers the drain tail named in `stopFencedRuns`'s header, nothing more. */
+export const RUN_UNWIND_GRACE_MS = 2_000;
+
+/** Is a run still coming down for this agent — in flight, or inside the drain tail its exit
+ *  `finally` runs after releasing `activeRuns`? The fact the stop door needs that neither
+ *  `agents.status` nor `liveWork` can answer, because both are already false by then. */
+export function isRunUnwinding(agentId: string): boolean {
+  if (activeRuns.has(agentId)) return true;
+  const ended = lastRunEndedAt.get(agentId);
+  return ended !== undefined && Date.now() - ended < RUN_UNWIND_GRACE_MS;
+}
+
 /**
  * THE ONE DOOR FOR A TURN'S OWN WAKEUP (UX-REPAIR T37).
  *
