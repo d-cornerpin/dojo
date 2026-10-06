@@ -13,12 +13,12 @@
 // Every one of those six is the same defect in different clothes. The platform MINTED the report
 // inside a turn that was answering a specific ask, knew which ask, and wrote it nowhere — so
 // containment reconstructs it afterwards from proximity and cannot be both complete and narrow.
-// Migration 182 writes it down. This file is that column's proof, and it is deliberately built
+// Migration 183 writes it down. This file is that column's proof, and it is deliberately built
 // around the CONTRAST: the same fixtures `a-withdrawn-report-is-not-an-answer.test.ts` §7
 // characterises as accepted collateral stop being collateral once the report is bound.
 //
 // WHAT IS NOT CLAIMED HERE. The containment window is not deleted and is not deprecated. Rows
-// written before 182 carry no binding and nothing backfills one — a historical row's ask is only
+// written before 183 carry no binding and nothing backfills one — a historical row's ask is only
 // recoverable from the very proximity the column replaces, so a backfill would write
 // containment's guess into the column built to end guessing. Those rows keep the old answer,
 // permanently, and §4 is that clause.
@@ -90,7 +90,7 @@ function openReportAnswering(): string {
   return r.id;
 }
 
-/** A pre-182 row: direct INSERT, no `ask_id`. This is the legacy population, exactly. */
+/** A pre-183 row: direct INSERT, no `ask_id`. This is the legacy population, exactly. */
 function seedLegacyReport(id: string, status: string, agentId = AGENT): string {
   getDb().prepare(
     `INSERT INTO dojo_reports (id, agent_id, status, lane, signature) VALUES (?, ?, ?, 'other', ?)`,
@@ -267,7 +267,7 @@ describe('§3 the binding is NARROW where containment could not be', () => {
 // ── 4. THE LEGACY POPULATION IS SERVED BY CONTAINMENT, PERMANENTLY, AND SAYS SO ───────────
 
 describe('§4 a row with no binding still gets the containment answer', () => {
-  it('a pre-182 cancelled report still voids its ask through the window', () => {
+  it('a pre-183 cancelled report still voids its ask through the window', () => {
     // The exact legacy shape: a row inserted with no `ask_id`, named in the answer's own turn.
     const reportId = seedLegacyReport('rep-legacy', 'cancelled');
     const askId = seedMessage({ id: 'ask-legacy', role: 'user', content: 'file a bug', turnNumber: 4 });
@@ -279,7 +279,7 @@ describe('§4 a row with no binding still gets the containment answer', () => {
 
     expect(getReport(reportId)?.askId, 'the legacy fixture accidentally carries a binding').toBeNull();
     expect(stands(askId), 'the containment arm stopped answering for rows that have no binding — '
-      + 'this is the round-3 red reopening for every report filed before 182').toBe(false);
+      + 'this is the round-3 red reopening for every report filed before 183').toBe(false);
   });
 
   it('and it says out loud that containment decided it, once per agent', () => {
@@ -334,7 +334,7 @@ describe('§4 a row with no binding still gets the containment answer', () => {
 // `EXPLAIN QUERY PLAN` assertion would be vacuous — it would pass with no index at all. So the
 // table is grown first, and the assertion is made where the planner has a reason to choose.
 
-describe('§5 the reads 182 adds take their indexes on a grown table', () => {
+describe('§5 the reads 183 adds take their indexes on a grown table', () => {
   const GROWN = 4000;
 
   function growReports(): void {
@@ -354,14 +354,14 @@ describe('§5 the reads 182 adds take their indexes on a grown table', () => {
     (getDb().prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params as never[]) as Array<{ detail: string }>)
       .map(r => r.detail).join(' | ');
 
-  // ⚠ THE INDEX THIS ONE PINS BELONGS TO 171, NOT TO 182 (fix round 1, review C1).
+  // ⚠ THE INDEX THIS ONE PINS BELONGS TO 171, NOT TO 183 (fix round 1, review C1).
   // `idx_dojo_reports_agent_id` was created by `171_report_read_indexes.sql:100` — explicitly FOR
   // this reader, which 171's header names ("READER it is FOR: `report/withdrawn-claim.ts`'s
-  // `agentHasWithdrawnReport`") — and 171 has its own plan clause pinning it by name. 182's first
+  // `agentHasWithdrawnReport`") — and 171 has its own plan clause pinning it by name. 183's first
   // cut created it a second time and argued it into existence as new; that was dead SQL against a
   // paid line, and it is gone. The clause stays HERE because the cheap gate is this lane's hot
   // path and a grown-box plan assertion is worth having twice, but it pins 171's index: if this
-  // reds, look at 171 before looking at 182.
+  // reds, look at 171 before looking at 183.
   it('the cheap gate seeks on agent_id — 171s index — instead of scanning every report ever filed', () => {
     growReports();
     // Non-vacuity: the table really is grown, so a scan would really cost something.
@@ -394,15 +394,15 @@ describe('§5 the reads 182 adds take their indexes on a grown table', () => {
   });
 
   // THE LOAD-BEARING PIN FOR `idx_dojo_reports_ask_id` (see M3 above), and the place the two
-  // owners are recorded: 182 adds the column and the ask_id index; 171 owns the agent_id index.
+  // owners are recorded: 183 adds the column and the ask_id index; 171 owns the agent_id index.
   it('the column and both indexes are actually in the migrated schema', () => {
     const cols = (getDb().prepare('PRAGMA table_info(dojo_reports)').all() as Array<{ name: string }>)
       .map(c => c.name);
-    expect(cols, 'migration 182 did not add the column').toContain('ask_id');
+    expect(cols, 'migration 183 did not add the column').toContain('ask_id');
 
     const idx = (getDb().prepare('PRAGMA index_list(dojo_reports)').all() as Array<{ name: string }>)
       .map(i => i.name);
-    expect(idx, 'migration 182 did not add the ask_id index').toContain('idx_dojo_reports_ask_id');
+    expect(idx, 'migration 183 did not add the ask_id index').toContain('idx_dojo_reports_ask_id');
     expect(idx, 'migration 171\'s agent_id index is gone — the cheap gate is back to a scan')
       .toContain('idx_dojo_reports_agent_id');
   });

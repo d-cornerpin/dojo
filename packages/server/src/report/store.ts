@@ -45,7 +45,7 @@ export interface ReportRow {
   approvedAt: string | null; postedAt: string | null;
   issueUrl: string | null; issueNumber: number | null; exportPath: string | null;
   /** The ask this report was opened to answer — `messages.id`. NULL on rows predating
-   *  migration 182; see `askIdForNow` and `report/withdrawn-claim.ts`. */
+   *  migration 183; see `askIdForNow` and `report/withdrawn-claim.ts`. */
   askId: string | null;
 }
 
@@ -106,7 +106,7 @@ function transition(sql: string, params: unknown[], id: string): ReportRow | nul
 
 /**
  * THE ASK THIS REPORT IS BEING OPENED TO ANSWER — `messages.id`, or `null` when there is no
- * ask to name (migration 182).
+ * ask to name (migration 183).
  *
  * ── WHY THE ASK AND NOT THE ANSWER ──
  * This runs inside the `gather` call, which is the agent working on a turn that has not
@@ -131,7 +131,7 @@ function transition(sql: string, params: unknown[], id: string): ReportRow | nul
  *
  * THE COST IS BOUNDED AND IN THE ACCEPTED DIRECTION, which is why this is a stated residual and
  * not a blocker. The ask the report really answers has no bound row naming it, so it falls to
- * the containment window exactly as a pre-182 row does — it is still voided on withdrawal. The
+ * the containment window exactly as a pre-183 row does — it is still voided on withdrawal. The
  * mis-bound neighbour pays one over-void, which is the same currency and the same class as the
  * five shapes `withdrawn-claim.ts` already accepts, and owner ruling 2026-08-05 chooses hearing
  * an answer twice over silence in those words. Closing it properly wants the engine to hand the
@@ -140,7 +140,7 @@ function transition(sql: string, params: unknown[], id: string): ReportRow | nul
  *
  * ── AND WHEN IT CANNOT ANSWER, IT SAYS NULL ──
  * A box with no `messages` row for this agent (the dashboard door, a fixture, a first turn that
- * somehow has no ask) gets `null`, and a `null` here is handled exactly like a pre-182 row: the
+ * somehow has no ask) gets `null`, and a `null` here is handled exactly like a pre-183 row: the
  * containment arm still runs. Nothing is invented, because a WRONG binding is worse than no
  * binding — it would void the wrong ask's anti-repetition and look authoritative doing it.
  */

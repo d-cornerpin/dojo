@@ -112,9 +112,9 @@ const REPORTS_NAMED_IN_SPAN = `SELECT DISTINCT r.id AS id, r.status AS status
         WHERE m.agent_id = ? AND m.seq >= ? AND m.seq <= ?
           AND m.role IN ('assistant', 'tool')`;
 
-// ── THE DURABLE BINDING (migration 182) — ASKED FIRST, AND IT ENDS THE QUESTION ──────────
+// ── THE DURABLE BINDING (migration 183) — ASKED FIRST, AND IT ENDS THE QUESTION ──────────
 // The round-2 investigation named this and three rounds paid interest on it: the window below
-// is RAW CONTAINMENT, and the durable fix is a column binding the report to the ask. 182 is
+// is RAW CONTAINMENT, and the durable fix is a column binding the report to the ask. 183 is
 // that column, `report/store.ts`'s `askIdForNow` writes it at mint time, and this is the read.
 //
 // It is asked FIRST and it is CONCLUSIVE when it answers, because it is not evidence of the
@@ -180,7 +180,7 @@ function agentHasWithdrawnReport(agentId: string): boolean {
  * TOLERATE AND LOG, once per agent per process. An agent whose report rows carry no binding for
  * the ask being checked is answered by containment, which is correct and measured — but it is
  * the WEAKER instrument, and a box quietly running on it for ever is a thing an operator should
- * be able to see. `info` and not `warn`: this is not a failure, it is the pre-182 population
+ * be able to see. `info` and not `warn`: this is not a failure, it is the pre-183 population
  * being served by the arm built for it, and a `warn` per model call would be noise that teaches
  * people to ignore the channel.
  */
@@ -190,7 +190,7 @@ function tolerateLegacy(agentId: string): void {
   legacyReported.add(agentId);
   logger.info(
     'withdrawn-claim: no report row names this ask, so the containment window decides it '
-    + '(rows predating migration 182 carry no `ask_id`, and nothing backfills one)',
+    + '(rows predating migration 183 carry no `ask_id`, and nothing backfills one)',
     { agentId },
   );
 }
@@ -227,13 +227,13 @@ function tolerateLegacy(agentId: string): void {
  * over-void costs one unrelated ask its anti-repetition (the owner may hear an answer twice,
  * which owner ruling 2026-08-05 chooses in those words); the under-void direction is the red.
  *
- * ── AND ALL OF IT IS THE SECOND ARM'S PRICE ONLY (migration 182) ──
+ * ── AND ALL OF IT IS THE SECOND ARM'S PRICE ONLY (migration 183) ──
  * Those shapes are what RECONSTRUCTING a binding from proximity costs, so they are paid only where
  * there IS none: a row naming this ask is answered at the top of this function and reaches none of
  * them, so the batch partner and the span neighbour keep their stamps on every report filed since
- * 182 (`the-report-remembers-which-ask-it-answers` §3). The old residual — a restatement naming no
+ * 183 (`the-report-remembers-which-ask-it-answers` §3). The old residual — a restatement naming no
  * id, two turns from any row that does, 0 of the 4,242 — is closed outright for bound rows; what
- * is left is the pre-182 population, where nothing backfills honestly.
+ * is left is the pre-183 population, where nothing backfills honestly.
  */
 export function answerStillStands(
   agentId: string, askSeq: number, answerMessageId: string | null | undefined,
@@ -252,7 +252,7 @@ export function answerStillStands(
     const arm = (sql: string, params: unknown[]): Array<{ id: string; status: string }> =>
       db.prepare(sql).all(...params as never[]) as Array<{ id: string; status: string }>;
 
-    // ── THE BOUND ARM FIRST, AND IT RETURNS (migration 182) ──
+    // ── THE BOUND ARM FIRST, AND IT RETURNS (migration 183) ──
     // A report row that NAMES this ask settles the question by itself: the platform recorded
     // which ask it opened the report for, so there is nothing to infer from proximity and none
     // of containment's five accepted over-void shapes gets to apply. One standing bound row
@@ -268,7 +268,7 @@ export function answerStillStands(
 
     // ── AND THE CONTAINMENT ARMS FOR EVERYTHING ELSE, WHICH IS NOT A TEMPORARY STATE ──
     // Reached when no report row names this ask: either every one of this agent's rows predates
-    // 182 (`ask_id IS NULL` — nothing is backfilled, because a historical row's ask is only
+    // 183 (`ask_id IS NULL` — nothing is backfilled, because a historical row's ask is only
     // recoverable from the very proximity this replaces, and writing that guess into the
     // binding column would make the column untrustworthy for ever), or the rows are bound to
     // OTHER asks and this ask's claim is carried by a restatement. Both are real and permanent

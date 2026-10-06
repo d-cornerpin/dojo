@@ -145,7 +145,7 @@ describe('BODY A — a fresh install', () => {
     // A CLOSED census, and therefore one every migration that extends this table must come
     // here and extend too — which is the point of writing it closed rather than as a subset
     // check: a column arriving unannounced is a schema change nobody declared.
-    //   * `ask_id` — migration 182 (t110), the report's binding to the ask it answers.
+    //   * `ask_id` — migration 183 (t110), the report's binding to the ask it answers.
     expect(reportColumns().sort()).toEqual([
       'agent_id', 'approved_at', 'ask_id', 'brief_json', 'bundle_path', 'created_at',
       'export_path', 'id', 'issue_number', 'issue_url', 'lane', 'posted_at', 'signature',
