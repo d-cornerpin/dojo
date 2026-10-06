@@ -6987,6 +6987,13 @@
       "to": 3914,
       "by": "t113 D - the ollama and agent-sdk fit gates route through the shared learned-divisor estimator (BACKLOG line 101)",
       "why": "Plus 37 lines: 24 comment and 13 executable, across TWO sites. The executable half per site is the `measuredDivisorsFor` read plus the `estimateRequestTokens` call spelled over its two character populations - which is three lines where one bare sum used to be, because the call takes prose and schema SEPARATELY and that separation is the entire point of the fix. THE COMMENT HALF: 24 lines over two sites, and the bulk of it is one block at the ollama gate that the agent-sdk gate then refers back to rather than repeating. It records four things a reader needs and cannot derive: that this is the SAME undercount t108 fixed elsewhere and not a new idea, that the prose/schema split is substantive rather than formatting (a site that passed the whole request as proseChars would spend the prose divisor on a dense tools array and be wrong while looking wired - which is one of the two mutants), that an unmeasured provider gets today's number byte for byte because both bounds collapse to /CHARS_PER_TOKEN, and that there was no regression here because these gates always did this. ALTERNATIVES REFUSED, with their line costs: keep the bare `estimateTokens` sums and spend 0 - refused, that IS the defect the line routes; call `estimateRequestTokens` with the whole request as prose, which would be about -6 lines and ONE character count instead of two - refused on correctness, it spends the wrong population's divisor on the tools array, and the clause `the two side doors split PROSE from SCHEMA` exists because that mistake looks identical to the fix from a presence-only reading; extract a helper taking (systemPrompt, messages, tools, providerId) to serve all four gates, about -10 lines here - refused because the four transports genuinely differ in WHAT is prose (the ollama gate has no separate systemPrompt argument at this point, the sdk one does) and a helper papering over that would hide the very distinction the two divisors exist for. ⚠ G2 UNTOUCHED: no prompt byte moves - this changes an ESTIMATE of the prompt, never the prompt. Live lane t114 holds this file; the merge was rehearsed with `git merge-file` (exit 0, zero conflict markers, both lanes' changes present) rather than assumed."
+    },
+    {
+      "path": "packages/server/src/agent/v2/recovery.ts",
+      "from": 901,
+      "to": 911,
+      "by": "t113 B3 (t110 C/L3) - two unbounded error messages leave the log MESSAGE position",
+      "why": "Plus 10 lines: 10 comment, ZERO net executable - both changes are `${message}` becoming `${message.slice(0, 200)}` on the lines they already occupied. The comment explains the POSITION, which is the non-obvious part and the reason a reader would otherwise undo it: `logger.<level>(message, meta, agentId)` writes `message` FIRST, so an unbounded provider string there pushes the `code` and `cause` that classify the failure past whatever the reader's log view truncates at - the diagnosis is displaced by the thing being diagnosed. It also records that 200 is this file's OWN existing convention for a message in a log (`:608`, `:690`) rather than a number invented here, and that the untruncated text is not lost because the structured fields still carry it. THE ALTERNATIVE REFUSED: slice with no comment (+0). Refused because a bare `.slice(0, 200)` on a log line reads as pointless defensive noise and is exactly the kind of thing a later reader removes while tidying; the four sentences are what make it a decision. Note the count t110 handed up was of the wrong population (five interpolated log messages, only two carrying an unbounded error message) - the correction and its command are in the new clause file's header, not here. No prompt byte moves (G2 untouched)."
     }
   ],
   "maxNewFileLines": 400,
@@ -7088,7 +7095,7 @@
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 546,
     "packages/server/src/agent/v2/recorded-commitment.ts": 209,
-    "packages/server/src/agent/v2/recovery.ts": 901,
+    "packages/server/src/agent/v2/recovery.ts": 911,
     "packages/server/src/agent/v2/refused-delivery.ts": 111,
     "packages/server/src/agent/v2/state.ts": 769,
     "packages/server/src/agent/v2/steer-queue.ts": 341,
