@@ -945,9 +945,15 @@ export const Chat = ({ panel = null }: ChatProps) => {
       }
       // …and the same question, asked once on the way in: a user who comes back mid-render
       // arrives before the next lifecycle edge. `inFlight` is `live-work.ts`'s own output.
+      //
+      // THE BACKGROUND HALF ONLY. `agent:jobs` is this latch's sole clearing edge and turn
+      // calls deliberately never emit it, so latching on `f.turn` too set a latch nothing
+      // could clear: a page load mid-turn left a "Stop background job" button on a genuinely
+      // idle agent for every turn after, pressing it 400'd silently (review I1). The turn half
+      // is already carried by the `status === 'working'` read above, which HAS a clearing edge.
       if (agentResult.ok) {
         const f = agentResult.data.inFlight;
-        setBackgroundStoppable(!!f && (f.turn > 0 || f.background > 0));
+        setBackgroundStoppable(!!f && f.background > 0);
       }
 
       // Load model name lookup for wordy mode display
