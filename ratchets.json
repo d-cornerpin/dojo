@@ -6910,6 +6910,27 @@
       "to": 328,
       "by": "t111 E1 - the Settings.tsx split (BACKLOG line 27, third clause)",
       "why": "The EIGHTH and last pin of the split, added because `check-growth.mjs` asked for it rather than because the 400-line cap did: at 328 lines UpdateTab is under the cap but over the detector's 240-line early-warning threshold, and the gate's remedy is exactly this - pin it at its current count so it is decrease-only from here. Taken rather than argued down: the tab is the update check, the download, the install and the rollback section, which is one screen the owner reads top to bottom, and splitting it further would separate the button from the preflight that gates it. Verbatim from the pre-split page (byte-compared); the four smaller tab modules (DreamingTab 193, SecurityTab 174, ProfileTab 110, RouterTab 94) are under the threshold and stay unpinned."
+    },
+    {
+      "path": "packages/shared/src/markers.ts",
+      "from": 326,
+      "to": 358,
+      "by": "t113 A2 - the SQL twin of the thread-token matcher (t109 hand-up 2)",
+      "why": "Plus 32 lines, of which 28 are CONTRACT and 4 are executable. The executable half is `a2aThreadTokenMatchesSql`: three lines that build the predicate and one that names the prefix-stripped expression. The 28-line doc block is the size it is because this function is the SECOND spelling of a matcher that already exists four lines above it, and a reader who does not know WHY there are two will delete one of them: it records that two readers ask the question in SQL and cannot call the JS form, that both arms are needed (identical for an unprefixed id, legacy-plus-current for a named one), that the token must be bound TWICE, and where the clause binding the two forms lives. THE ALTERNATIVE REFUSED, with its line cost: write the predicate out at the two call sites (`agent/a2a-replies.ts`, `agent/v2/outbound-ledger.ts`) - about +6 lines each with the comment each would need, so +12 instead of +32, and it recreates exactly the defect this item fixes. The three sites being fixed here are three hand-written copies of the same comparison that drifted out of step with the authoritative queries directly above them, twice: first collision-wide, then, after t109 moved the producer, blind to every current marker. A fourth and fifth hand-written copy is not a saving. The clause `agent/__tests__/the-thread-token-asks-sql-the-same-question.test.ts` runs both forms over 56 (token, id) pairs in a real sqlite and asserts they agree pair for pair, which only means anything while there is one home per language. NOT a cache-prefix file; no prompt byte moves (G2 untouched)."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 2752,
+      "to": 2755,
+      "by": "t113 A2 - naming the legacy IN member at findUnlandedInboundReply",
+      "why": "Plus 3 lines, ALL comment, ZERO executable movement: `threadId.slice(0, 8)` became `a2aThreadShortLegacy(threadId)` on the same line, byte-identical in behaviour (the function IS that slice). The three lines say why there are two `IN` members, that both are EXACT members and neither is a prefix, and that the second one is the pre-makeThreadId spelling - which is the fact a reader needs to not \"simplify\" it away, and the fact whose absence let the same slice be retyped in three other modules. THE ALTERNATIVE REFUSED: leave the hand-rolled slice and spend 0 lines. Refused because this file is the PRODUCER of the current token (t109 B) and a consumer reading `slice(0, 8)` here cannot tell whether it means the current form or the legacy one - the ambiguity is the whole defect class. A one-line comment instead of three was considered and refused: it could say WHICH era, but not that both members are exact rather than prefixes, which is the property that makes this query safe where the other three were not. No prompt byte moves."
+    },
+    {
+      "path": "packages/server/src/agent/v2/outbound-ledger.ts",
+      "from": 459,
+      "to": 462,
+      "by": "t113 A2 - the legacy-caller path asks through the one home (t109 hand-up 2)",
+      "why": "Plus 3 lines, ALL comment, and the executable half is a NET WASH: `AND substr(thread_id, 1, 8) = ?` became `AND ${a2aThreadTokenMatchesSql('thread_id')}` on the same line, with one extra bound parameter on the `.get` line. The three lines record that this is the same fix as `hasPriorReplyOnThread`'s legacy path - which this function's own header already says it carries verbatim, so the two must keep moving together - and that the bare front slice matched NOTHING for a marker written after t109. THE ALTERNATIVE REFUSED: no comment, +0 lines. Refused because the function's header documents the old predicate as an \"accepted residual\", and a fix that silently contradicts a paragraph above it leaves the next reader to choose which one to believe. No prompt byte moves."
     }
   ],
   "maxNewFileLines": 400,
@@ -6956,7 +6977,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1985,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 402,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
-    "packages/server/src/agent/a2a-transport.ts": 2752,
+    "packages/server/src/agent/a2a-transport.ts": 2755,
     "packages/server/src/agent/access/authorize.ts": 454,
     "packages/server/src/agent/access/read.ts": 264,
     "packages/server/src/agent/agent-status.ts": 268,
@@ -7007,7 +7028,7 @@
     "packages/server/src/agent/v2/classifiers/multistep.ts": 505,
     "packages/server/src/agent/v2/counterparty.ts": 997,
     "packages/server/src/agent/v2/loop.ts": 724,
-    "packages/server/src/agent/v2/outbound-ledger.ts": 459,
+    "packages/server/src/agent/v2/outbound-ledger.ts": 462,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 546,
     "packages/server/src/agent/v2/recorded-commitment.ts": 209,
@@ -7218,7 +7239,7 @@
     "packages/server/src/work/validation-drive.ts": 615,
     "packages/server/src/work/work-reaper.ts": 694,
     "packages/shared/src/access.ts": 338,
-    "packages/shared/src/markers.ts": 326,
+    "packages/shared/src/markers.ts": 358,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
     "packages/shared/src/types.ts": 649,
