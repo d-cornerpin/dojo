@@ -379,6 +379,21 @@ trackerRouter.get('/hygiene', async (c) => {
     // audit_log.target stores the model name on model_call rows. PM agent
     // id is config-driven (default 'pm', user-customizable via setup) —
     // don't hardcode a specific user's PM id here.
+    //
+    // THE COMPARISON IS AGAINST THE RAW COLUMN, NOT A FUNCTION OF IT (t112, 2026-10-05).
+    // This read used to ask `datetime(created_at) > datetime('now','-1 day')`. Wrapping the
+    // indexed column makes that leg NON-SARGABLE: `idx_audit_log_agent_created
+    // (agent_id, created_at)` can seek the agent, then SQLite evaluates `datetime()` on every
+    // one of that agent's rows instead of seeking into a 24h window of them — so the cost
+    // grows with the PM's whole history rather than with one day of it. MEASURED by
+    // `db/__tests__/the-hot-audit-reads-take-their-index.test.ts` on a 200,000-row fixture:
+    // 13.6-18.5 ms/call wrapped against ~0 sargable, and the plan loses `created_at>?`.
+    //
+    // The wrapper bought nothing. Every one of the seven writers that INSERT into this table
+    // supplies `datetime('now')`, i.e. `YYYY-MM-DD HH:MM:SS`, which is already
+    // lexicographically ordered — so a direct text compare against a bound in that same
+    // format answers the identical question. That identity is asserted, not assumed: the
+    // clause file above runs both spellings over the fixture and requires equal rows.
     const pmCost = db.prepare(`
       SELECT target as modelId,
              COUNT(*) as calls,
@@ -386,7 +401,7 @@ trackerRouter.get('/hygiene', async (c) => {
       FROM audit_log
       WHERE agent_id = ?
         AND action_type = 'model_call'
-        AND datetime(created_at) > datetime('now', '-1 day')
+        AND created_at > datetime('now', '-1 day')
       GROUP BY target
     `).all(getPMAgentId());
 

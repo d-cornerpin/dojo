@@ -20,7 +20,12 @@
 //      once the table is the size the line is worried about. This fixture is 200,000 rows.
 //   2. the DASHBOARD's hot read was never pinned at all — and it is the one with a finding.
 //
-// ── THE FINDING, WHICH IS A HAND-UP AND NOT A FIX HERE ──
+// ── THE FINDING, HANDED UP BY W2-B AND FIXED BY t112 (2026-10-05) ──
+// What follows is the finding as it was written. It is CLOSED: `gateway/routes/tracker.ts`
+// now compares the raw column, the clauses below read the route's own SQL rather than a copy,
+// and the wrapped spelling survives as the NEGATIVE CONTROL — derived from the route's bytes
+// by putting the wrapper back, so a regression is a named red here instead of a slow dashboard
+// nobody attributes. The original text:
 // `gateway/routes/tracker.ts`'s PM-cost read filters
 // `datetime(created_at) > datetime('now', '-1 day')`. Wrapping the indexed column in a
 // function makes that half NON-SARGABLE: SQLite cannot seek the `created_at` leg of the
@@ -42,6 +47,8 @@
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
 
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
@@ -95,20 +102,44 @@ const REPORT_GATHER = `
     FROM audit_log WHERE agent_id = ? AND created_at >= ?
    ORDER BY created_at DESC, id DESC LIMIT 200`;
 
-/** `gateway/routes/tracker.ts`'s PM-cost read — the dashboard's, with the `datetime()` wrapper. */
-const DASHBOARD_PM_COST = `
-  SELECT target as modelId, COUNT(*) as calls,
-         ROUND(COALESCE(SUM(cost), 0), 4) as cost_24h
-    FROM audit_log
-   WHERE agent_id = ?
-     AND action_type = 'model_call'
-     AND datetime(created_at) > datetime('now', '-1 day')
-   GROUP BY target`;
+/**
+ * `gateway/routes/tracker.ts`'s PM-cost read — READ OUT OF THE ROUTE, not retyped here.
+ *
+ * (t112, 2026-10-05) It was retyped, and it had to be while the finding was a hand-up: the
+ * clause's job was to PIN the wrapped plan so the hand-up was a measured claim. Now the
+ * route is fixed, and a retyped copy would go on proving things about a string this file
+ * owns — it would stay green if somebody put the `datetime()` wrapper back, which is the
+ * one event these clauses exist to catch. So the SQL comes from the route's bytes. If the
+ * read moves or is rewritten past recognition this throws, loudly, rather than measuring a
+ * query nothing runs.
+ */
+function dashboardPmCostSql(): string {
+  const route = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'gateway', 'routes', 'tracker.ts'), 'utf8',
+  );
+  // The PM-cost read is the one template literal selecting `cost_24h` out of `audit_log`.
+  const m = route.match(/`(\s*SELECT[^`]*?cost_24h[^`]*?FROM audit_log[^`]*?)`/);
+  if (!m) {
+    throw new Error(
+      'gateway/routes/tracker.ts no longer carries a recognisable `cost_24h` read of audit_log. '
+      + 'These clauses measure the ROUTE\'s query; with nothing to extract they would measure a '
+      + 'string this test file invented. Re-point the extraction at wherever that read now lives.',
+    );
+  }
+  return m[1];
+}
 
-/** The same question asked sargably — what the hand-up proposes. Measured, not just argued. */
-const DASHBOARD_SARGABLE = DASHBOARD_PM_COST.replace(
-  "datetime(created_at) > datetime('now', '-1 day')",
+/** The route's read as it stands — the sargable spelling, after t112. */
+const DASHBOARD_PM_COST = dashboardPmCostSql();
+
+/**
+ * THE NEGATIVE CONTROL, and the shape the route used to carry: the same question with the
+ * indexed column wrapped. Derived from the route's own bytes by putting the wrapper BACK, so
+ * the two spellings cannot drift apart in anything but the wrapper.
+ */
+const DASHBOARD_WRAPPED = DASHBOARD_PM_COST.replace(
   "created_at > datetime('now', '-1 day')",
+  "datetime(created_at) > datetime('now', '-1 day')",
 );
 
 const planOf = (sql: string, ...args: unknown[]): string =>
@@ -160,10 +191,29 @@ beforeAll(async () => {
   `);
   const kinds = ['model_call', 'tool_call', 'file_read', 'exec'];
   const start = Date.UTC(2026, 0, 1);
+  // ── THE LAST SLICE STRADDLES `now`, AND IT HAS TO (t112, 2026-10-05) ──────────────────
+  // The body of this fixture is a fictional year starting 2026-01-01, one row a minute. The
+  // dashboard read asks for the last 24 HOURS, so on any day after the 200,000th minute
+  // (≈2026-05-19) EVERY row is outside the window and the read returns nothing — which made
+  // the "both spellings answer the same question" clause compare [] with [] and pass without
+  // asking anything. Found by adding the non-vacuity guard that clause now carries.
+  //
+  // So the final RECENT_ROWS rows are dated relative to the RUN, half inside the window and
+  // half outside it, with the hot agent and `model_call` among them. The window now has a
+  // real inside and a real outside, which is what makes an equality between two spellings of
+  // it evidence. The year-long body is untouched: it is what makes the PLAN honest at scale.
+  const RECENT_ROWS = 2_000;
+  const now = Date.now();
   d.transaction(() => {
     for (let i = 0; i < AUDIT_ROWS; i++) {
       const agent = i % 4 === 0 ? HOT_AGENT : ids[i % AGENTS];
-      const at = new Date(start + i * 60_000).toISOString().replace('T', ' ').slice(0, 19);
+      const recent = i >= AUDIT_ROWS - RECENT_ROWS;
+      const ms = recent
+        // Even offsets land 1 minute to ~8 hours back (INSIDE the 24h window); odd offsets
+        // land 2 to ~30 days back (OUTSIDE it), so neither side of the bound is empty.
+        ? now - ((i % 2 === 0) ? (1 + (i % 480)) * 60_000 : (2 + (i % 28)) * 86_400_000)
+        : start + i * 60_000;
+      const at = new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
       ins.run(`audit-${i}`, agent, kinds[i % kinds.length], `model-${i % 7}`, at);
     }
   })();
@@ -235,34 +285,112 @@ describe('the report gather’s read', () => {
 
 // ── THE DASHBOARD: TODAY'S PLAN PINNED, AND THE SARGABLE SPELLING MEASURED BESIDE IT ─────
 
-describe('the dashboard’s PM-cost read — the `datetime()` wrapper costs the range seek', () => {
-  it('⚠ seeks `agent_id` but CANNOT seek `created_at`, because the column is wrapped', () => {
-    const plan = planOf(DASHBOARD_PM_COST, HOT_AGENT);
-    // It does take an index — the agent seek is real and is the expensive half.
-    expect(plan).toMatch(new RegExp(`${AUDIT_INDEX}|idx_audit_log_agent_id`));
-    // …but NOT on the second leg. `datetime(created_at)` is not a column reference, so no
-    // `created_at>?` can appear in the seek. This is the finding, pinned.
-    expect(plan).not.toMatch(/created_at>\?/);
-    measurements.push(`dashboard PM-cost (datetime-wrapped) : ${plan}`);
+describe('the dashboard’s PM-cost read — the route compares the RAW indexed column', () => {
+  it('the route\'s own SQL does not wrap `created_at` in a function', () => {
+    // The vacuity guard for everything below: these clauses measure the route's bytes, so
+    // the first thing to say is that the extraction found the read and the read is the
+    // sargable spelling. A wrapper put back here fails this clause by name.
+    expect(DASHBOARD_PM_COST).toContain('FROM audit_log');
+    expect(DASHBOARD_PM_COST).toMatch(/created_at > datetime\('now', '-1 day'\)/);
+    expect(DASHBOARD_PM_COST).not.toMatch(/datetime\(created_at\)/);
+    // …and the control really is the other spelling, or the comparison below is vacuous.
+    expect(DASHBOARD_WRAPPED).toMatch(/datetime\(created_at\)/);
+    expect(DASHBOARD_WRAPPED).not.toEqual(DASHBOARD_PM_COST);
   });
 
-  it('the SARGABLE spelling of the same question seeks both halves', () => {
-    const plan = planOf(DASHBOARD_SARGABLE, HOT_AGENT);
+  it('seeks BOTH halves of the composite at 200,000 rows', () => {
+    const plan = planOf(DASHBOARD_PM_COST, HOT_AGENT);
     expect(plan).toContain(AUDIT_INDEX);
     expect(plan).toMatch(/created_at>\?/);
-    measurements.push(`dashboard PM-cost (sargable)         : ${plan}`);
+    measurements.push(`dashboard PM-cost (route, sargable)  : ${plan}`);
+  });
 
-    const wrapped = timeOf(DASHBOARD_PM_COST, [HOT_AGENT]);
-    const sargable = timeOf(DASHBOARD_SARGABLE, [HOT_AGENT]);
+  it('⚠ NEGATIVE CONTROL: wrapping the column loses the range seek — the defect t112 closed', () => {
+    const plan = planOf(DASHBOARD_WRAPPED, HOT_AGENT);
+    // It still takes an index — the agent seek is real and is the expensive half.
+    expect(plan).toMatch(new RegExp(`${AUDIT_INDEX}|idx_audit_log_agent_id`));
+    // …but NOT on the second leg. `datetime(created_at)` is not a column reference, so no
+    // `created_at>?` can appear in the seek. This is what the route used to do.
+    expect(plan).not.toMatch(/created_at>\?/);
+    measurements.push(`dashboard PM-cost (datetime-wrapped) : ${plan}`);
+
+    const wrapped = timeOf(DASHBOARD_WRAPPED, [HOT_AGENT]);
+    const sargable = timeOf(DASHBOARD_PM_COST, [HOT_AGENT]);
     measurements.push(
       `dashboard timing: wrapped ${wrapped.toFixed(2)} ms/call, sargable ${sargable.toFixed(2)} ms/call `
       + `(mean of 20; wall clock on a shared box, reported not asserted)`,
     );
   });
 
+  // ── THE PREMISE THE ROUTE'S FIX RESTS ON, COUNTED BOTH WAYS ────────────────────────────
+  // A raw text compare against `datetime('now','-1 day')` is the identical question ONLY
+  // while every row in this column holds the SQLite form `YYYY-MM-DD HH:MM:SS`. JavaScript's
+  // `toISOString()` writes `YYYY-MM-DDTHH:MM:SS.sssZ`, and `T` (0x54) sorts above a space
+  // (0x20) — so ONE writer switching to it would make rows from earlier the same day read as
+  // newer than the bound and silently join a 24h rollup they do not belong to.
+  // `deploy/checks/check-iso-writes.mjs` watches that family tree-wide, but it is declared
+  // LOG-ONLY and never fails a build, so nothing was BINDING the premise for this column.
+  //
+  // Counted both ways on purpose: a clause that only checked the seven writers known today
+  // would stay green when an eighth arrived, and a clause that only counted writers would
+  // stay green if they all changed format. This asserts the floor AND the format of every
+  // one it finds, so a NEW audit_log writer in any shape is a red here until it is read.
+  it('every audit_log writer supplies `datetime(\'now\')` — the ordering the raw compare needs', () => {
+    const SRC = path.resolve(__dirname, '..', '..');
+    const files: string[] = [];
+    const walk = (dir: string): void => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'node_modules') walk(full); }
+        else if (e.name.endsWith('.ts')) files.push(full);
+      }
+    };
+    walk(SRC);
+
+    const offenders: string[] = [];
+    let writers = 0;
+    for (const f of files) {
+      const text = fs.readFileSync(f, 'utf8');
+      // Each INSERT and the statement that follows it, far enough to carry its VALUES list.
+      for (const m of text.matchAll(/INSERT\s+INTO\s+audit_log\s*\(([^)]*)\)/gi)) {
+        const cols = m[1];
+        if (!/\bcreated_at\b/.test(cols)) continue;
+        writers += 1;
+        // The statement runs to the end of its template literal — closing the slice on the
+        // next backtick rather than on a paren, because `datetime('now')` carries parens of
+        // its own and a paren-balanced match stops one character early inside it.
+        const from = m.index ?? 0;
+        const close = text.indexOf('`', from);
+        const stmt = text.slice(from, close === -1 ? from + 800 : close);
+        const rel = path.relative(SRC, f);
+        const values = stmt.match(/VALUES\s*\(([\s\S]*)$/i);
+        if (!values) { offenders.push(`${rel}: an audit_log INSERT naming created_at with no readable VALUES list`); continue; }
+        if (!/datetime\('now'\)/.test(values[1])) {
+          offenders.push(`${rel}: created_at is not supplied as datetime('now') — ${values[1].trim().slice(0, 120)}`);
+        }
+      }
+    }
+
+    // Vacuity floor: if the walk stops finding writers, the clause above proves nothing.
+    expect(writers, 'no audit_log INSERT naming created_at was found — the scan has gone blind').toBeGreaterThanOrEqual(7);
+    expect(
+      offenders,
+      'an audit_log writer supplies created_at in some other format. `gateway/routes/tracker.ts`'
+      + ' compares that column RAW against datetime(\'now\',\'-1 day\'), which is only the same'
+      + ' question while every row holds the SQLite YYYY-MM-DD HH:MM:SS form:\n'
+      + offenders.join('\n'),
+    ).toEqual([]);
+    measurements.push(`audit_log writers naming created_at: ${writers}, all datetime('now')`);
+  });
+
   it('both spellings answer the same question — a faster plan that lies is not a win', () => {
-    const a = db().prepare(DASHBOARD_PM_COST).all(HOT_AGENT);
-    const b = db().prepare(DASHBOARD_SARGABLE).all(HOT_AGENT);
+    // The equivalence the route's fix RESTS ON: every writer into this table supplies
+    // `datetime('now')`, so the stored text is already lexicographically ordered and a raw
+    // compare against a bound in that same format is the identical question. Asserted on
+    // 200,000 generated rows rather than argued.
+    const a = db().prepare(DASHBOARD_WRAPPED).all(HOT_AGENT);
+    const b = db().prepare(DASHBOARD_PM_COST).all(HOT_AGENT);
     expect(b).toEqual(a);
+    expect((b as unknown[]).length).toBeGreaterThan(0);
   });
 });
