@@ -221,6 +221,11 @@ function probeImageDimensions(src: string): { width: number; height: number } | 
   }
 }
 
+// t114 (census U21): two minutes for a format conversion. The 10s probe above is untouched —
+// reading two dimension fields really is instant, and a bound that matches the work is not a
+// flat-timer defect.
+const SIPS_CONVERT_CEILING_MS = 2 * 60_000;
+
 function runSips(src: string, dest: string, longSide: number, quality: number): boolean {
   try {
     execFileSync(
@@ -232,7 +237,13 @@ function runSips(src: string, dest: string, longSide: number, quality: number): 
         src,
         '--out', dest,
       ],
-      { encoding: 'utf-8', stdio: 'pipe', timeout: 30_000 },
+      // t114 (census U21): raised from a flat 30s, and argued for the same reason as the
+      // AppleScript site — `sips` prints nothing until it is done, so there is no progress to
+      // re-arm on. A 100-megapixel source on a busy box legitimately exceeds half a minute, and
+      // the failure mode was a silently un-attached image. The conversion is idempotent and
+      // writes to a temp `dest`, so a ceiling here costs a retry rather than a half-applied
+      // change; that is why it can be generous where the AppleScript ceiling cannot be reckless.
+      { encoding: 'utf-8', stdio: 'pipe', timeout: SIPS_CONVERT_CEILING_MS },
     );
     return true;
   } catch (err) {

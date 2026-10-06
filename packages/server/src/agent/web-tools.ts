@@ -7,7 +7,16 @@ import { openAgentCall, STOPPED_BY_USER } from './abortable-call.js';
 import { stripHtmlTags } from './html-text.js';
 import { getSearchApiKey } from '../config/loader.js';
 import { checkPermission } from './permissions.js';
+// ── t114 (census U17) — web_fetch's two phases, named ──
+// The headers bound is the old flat 15s keeping its honest job: how long a server may take to
+// ANSWER. The body bounds are new, because the old number was also silently governing the
+// download and could not do both.
+const WEB_FETCH_HEADERS_TIMEOUT_MS = 15_000;
+const WEB_FETCH_BODY_BASE_TIMEOUT_MS = 20_000;
+const WEB_FETCH_BODY_CEILING_MS = 2 * 60_000;
+
 import { assertPublicHttpTarget, NetGuardError } from './net-guard.js';
+import { phasedTransferDeadline } from '../services/transfer-deadline.js';
 
 const logger = createLogger('web-tools');
 
@@ -193,9 +202,26 @@ export async function webFetch(
   logger.info('Web fetch', { url, domain, hasPrompt: !!prompt }, agentId);
 
   // A-6. ONE slot for the whole redirect loop — a stop on hop three must not be survived by
-  // hop four — with the 15 s clock composed, so a slow page still times out as a page.
-  const slot = openAgentCall(agentId, 'turn', AbortSignal.timeout(15000));
-  if (slot.refused) { slot.release(); return STOPPED_BY_USER; }
+  // hop four — with the clock composed, so a slow page still times out as a page.
+  //
+  // ── t114 (census U17) — THE 15s COVERED BODY CONSUMPTION, AND THAT IS WHERE PAGES LIVE ──
+  //
+  // THE DEFECT: one flat `AbortSignal.timeout(15000)` for the whole operation. undici's signal
+  // covers the BODY read (`response.text()` below), so a 5 MB page arriving at 400 KB/s needs
+  // ~12.5 seconds of body ALONE — the download was aborted with the page nearly in hand, and the
+  // agent was told the fetch failed. No bytes-received check existed anywhere on the path.
+  //
+  // Phased now: the server gets the same 15s to ANSWER (unchanged for every ordinary page, which
+  // is the overwhelming majority), and once headers are in the body earns a deadline from the
+  // `content-length` it declared. A page that declares nothing still gets a real allowance rather
+  // than the remainder of a window it has already spent.
+  const deadline = phasedTransferDeadline({
+    headersMs: WEB_FETCH_HEADERS_TIMEOUT_MS,
+    bodyBaseMs: WEB_FETCH_BODY_BASE_TIMEOUT_MS,
+    bodyCeilingMs: WEB_FETCH_BODY_CEILING_MS,
+  });
+  const slot = openAgentCall(agentId, 'turn', deadline.signal);
+  if (slot.refused) { deadline.done(); slot.release(); return STOPPED_BY_USER; }
 
   let text: string;
   try {
@@ -266,6 +292,9 @@ export async function webFetch(
     }
 
     const contentType = response.headers.get('content-type') ?? '';
+    // t114: headers are in and redirects are resolved — the body gets time sized from what this
+    // page declared, instead of whatever was left of a 15-second whole-trip budget.
+    deadline.armBody(Number(response.headers.get('content-length') ?? '0') || null);
     const body = await response.text();
 
     if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
@@ -312,6 +341,9 @@ export async function webFetch(
     }
     return friendly;
   } finally {
+    // t114: the phased deadline is disarmed wherever the slot is handed back, so neither of its
+    // timers outlives the fetch it was bounding.
+    deadline.done();
     slot.release();
   }
 

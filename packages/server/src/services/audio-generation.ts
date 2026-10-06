@@ -32,6 +32,7 @@ import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/abortable-call.js';
 import { homeDir } from '../home.js';
+import { idleStreamDeadline } from './idle-stream-deadline.js';
 
 const logger = createLogger('audio-generation');
 
@@ -166,7 +167,21 @@ interface StreamCollect {
 }
 
 /** Parse the SSE chat-completions audio stream, collecting base64 PCM16. */
-async function collectAudioStream(body: ReadableStream<Uint8Array>): Promise<StreamCollect> {
+/**
+ * t114 (census U11): `onChunk` is the liveness signal this stream always had and nobody read. It
+ * fires for every read that returns bytes, which is what lets the caller bound the GAP between
+ * chunks instead of the narration's total length.
+ */
+// ── t114 (census U11) — the TTS stream's three bounds, each named for its own job ──
+// The old flat 180s was asked to be all three at once and could only be one of them.
+const TTS_FIRST_BYTE_TIMEOUT_MS = 180_000;
+const TTS_CHUNK_IDLE_TIMEOUT_MS = 60_000;
+const TTS_CEILING_MS = 60 * 60_000;
+
+async function collectAudioStream(
+  body: ReadableStream<Uint8Array>,
+  onChunk?: () => void,
+): Promise<StreamCollect> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
@@ -197,6 +212,7 @@ async function collectAudioStream(body: ReadableStream<Uint8Array>): Promise<Str
 
   for (;;) {
     const { done, value } = await reader.read();
+    if (value && value.length > 0) onChunk?.();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
     let nl: number;
@@ -274,6 +290,12 @@ async function dialAudio(req: GenerateAudioRequest, slot: AgentCallSlot): Promis
     speak: req.speak, sampleRate: req.sampleRate, channels: req.channels,
   });
 
+  const ttsDeadline = idleStreamDeadline({
+    firstByteMs: TTS_FIRST_BYTE_TIMEOUT_MS,
+    idleMs: TTS_CHUNK_IDLE_TIMEOUT_MS,
+    ceilingMs: TTS_CEILING_MS,
+  });
+
   let response: Response;
   try {
     response = await fetch(endpoint, {
@@ -284,16 +306,27 @@ async function dialAudio(req: GenerateAudioRequest, slot: AgentCallSlot): Promis
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
-      // A-5: COMPOSED, not replaced — the flat 180s stays this dial's budget and stays armed
-      // exactly here (SUSPECT clock U11, untouched by this task); the stop is a second source.
-      signal: AbortSignal.any([slot.signal, AbortSignal.timeout(180_000)]),
+      // ── t114 (census U11) — THE BOUND IS THE GAP BETWEEN CHUNKS, NOT THE NARRATION'S LENGTH ──
+      //
+      // THE DEFECT: a flat 180s covering the whole dial INCLUDING the streamed body. A long
+      // narration actively delivering `pcm16` at t=180s was cut and ALL COLLECTED AUDIO
+      // DISCARDED — the collector throws, the catch reports a read failure, and every second of
+      // speech already assembled goes with it. Chunk arrival was never consulted even though
+      // this body is a stream and arrival is the one fact that proves the provider is alive.
+      //
+      // The bound is now armed for the response to START and then re-armed on every chunk, so a
+      // twenty-minute audiobook streams and a provider that goes quiet mid-narration is still
+      // cut. The ceiling behind it does not re-arm.
+      signal: AbortSignal.any([slot.signal, ttsDeadline.signal]),
     });
   } catch (err) {
+    ttsDeadline.done();
     if (slot.cutByStop()) return { ok: false, error: STOPPED_BY_USER, code: 'STOPPED' };
     return { ok: false, error: `Request failed: ${err instanceof Error ? err.message : String(err)}`, code: 'HTTP_ERROR' };
   }
 
   if (!response.ok) {
+    ttsDeadline.done();
     const errText = await response.text().catch(() => '');
     return {
       ok: false,
@@ -302,6 +335,7 @@ async function dialAudio(req: GenerateAudioRequest, slot: AgentCallSlot): Promis
     };
   }
   if (!response.body) {
+    ttsDeadline.done();
     return { ok: false, error: 'Audio provider returned no response body.', code: 'EMPTY' };
   }
 
@@ -309,11 +343,26 @@ async function dialAudio(req: GenerateAudioRequest, slot: AgentCallSlot): Promis
   // failure out of the collector. It is the stop, and it is not "the provider errored".
   let collected: Awaited<ReturnType<typeof collectAudioStream>>;
   try {
-    collected = await collectAudioStream(response.body as ReadableStream<Uint8Array>);
+    // t114: every chunk re-arms the bound. This is the whole fix — audio arriving is the measured
+    // fact that the provider is alive, and it was being thrown away by a clock that never asked.
+    collected = await collectAudioStream(
+      response.body as ReadableStream<Uint8Array>,
+      () => ttsDeadline.bump(),
+    );
   } catch (err) {
+    const wentQuiet = ttsDeadline.fired();
+    ttsDeadline.done();
     if (slot.cutByStop()) return { ok: false, error: STOPPED_BY_USER, code: 'STOPPED' };
+    if (wentQuiet) {
+      return {
+        ok: false,
+        error: `Audio stream stalled: no audio arrived for ${Math.round(TTS_CHUNK_IDLE_TIMEOUT_MS / 1000)}s, so the narration was stopped.`,
+        code: 'HTTP_ERROR',
+      };
+    }
     return { ok: false, error: `Audio stream read failed: ${err instanceof Error ? err.message : String(err)}`, code: 'HTTP_ERROR' };
   }
+  ttsDeadline.done();
   if (collected.error) {
     return { ok: false, error: `Audio provider error: ${collected.error.slice(0, 400)}`, code: 'HTTP_ERROR' };
   }

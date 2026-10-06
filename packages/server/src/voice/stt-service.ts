@@ -129,11 +129,16 @@ class WhisperEngine implements SttEngine {
       ],
       { stdio: ['ignore', 'pipe', 'pipe'] },
     );
+    // t114 (census U18): these two handlers were ALREADY reading the server's output and
+    // throwing it at the debug log. That output is the boot-progress signal `waitForServerReady`
+    // needed and did not have — loading a large model off a slow disk prints as it goes.
     proc.stdout?.on('data', (chunk: Buffer) => {
+      noteWhisperBootOutput();
       const line = chunk.toString().trim();
       if (line) logger.debug('whisper-server stdout', { line });
     });
     proc.stderr?.on('data', (chunk: Buffer) => {
+      noteWhisperBootOutput();
       const line = chunk.toString().trim();
       if (line) logger.debug('whisper-server stderr', { line });
     });
@@ -458,6 +463,13 @@ async function pickFreePort(): Promise<number> {
   });
 }
 
+// ── t114 (census U18) — the boot's two bounds ──
+// `WHISPER_BOOT_QUIET_MS` carries the old flat 60s with its meaning corrected: silence, not age.
+// The ceiling is generous because a first-run model load off a slow disk is legitimately slow,
+// and the cost of being wrong is a user's first voice turn failing for no reason.
+const WHISPER_BOOT_QUIET_MS = 60_000;
+const WHISPER_BOOT_CEILING_MS = 10 * 60_000;
+
 function probeTcp(port: number, timeoutMs = 1000): Promise<boolean> {
   return new Promise((resolve) => {
     const sock = new net.Socket();
@@ -476,9 +488,32 @@ function probeTcp(port: number, timeoutMs = 1000): Promise<boolean> {
   });
 }
 
-async function waitForServerReady(port: number, timeoutMs = 60_000): Promise<void> {
+// ── t114 (CENSUS U18) — A SLOW BOOT IS NOT A FAILED BOOT ──
+//
+// THE DEFECT: a flat 60-second wall from spawn. The loop polled a TCP PORT and never measured
+// boot PROGRESS, so a cold first start of a large model off a slow disk — the exact case a new
+// user hits once, on their first voice turn — was abandoned and `load()` failed, even though the
+// server was visibly loading the whole time. "No port yet" is absence of evidence.
+//
+// The progress fact existed and was being discarded: both stream handlers above were reading the
+// server's output straight into the debug log. The wait now re-arms while that output keeps
+// arriving, with a ceiling that does NOT re-arm so a wedged binary is still given up on.
+let lastWhisperBootOutputAt = 0;
+
+/** Called for every chunk whisper-server writes while booting. */
+function noteWhisperBootOutput(): void {
+  lastWhisperBootOutputAt = Date.now();
+}
+
+async function waitForServerReady(
+  port: number,
+  quietMs = WHISPER_BOOT_QUIET_MS,
+  ceilingMs = WHISPER_BOOT_CEILING_MS,
+): Promise<void> {
   const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
+  // A boot that has not printed yet still gets its first full window.
+  lastWhisperBootOutputAt = start;
+  for (;;) {
     if (await probeTcp(port)) {
       try {
         const ctrl = new AbortController();
@@ -488,9 +523,22 @@ async function waitForServerReady(port: number, timeoutMs = 60_000): Promise<voi
         if (res && res.status >= 200 && res.status < 500) return;
       } catch { /* keep polling */ }
     }
+    const quietFor = Date.now() - lastWhisperBootOutputAt;
+    const aliveFor = Date.now() - start;
+    if (aliveFor >= ceilingMs) {
+      throw new Error(
+        `whisper-server did not become ready on port ${port} within its ${Math.round(ceilingMs / 1000)}s ceiling`,
+      );
+    }
+    if (quietFor >= quietMs) {
+      // The honest message: it went QUIET, which is what was actually observed. The old wording
+      // claimed it "did not become ready in 60s" even when it was loading busily throughout.
+      throw new Error(
+        `whisper-server stopped reporting progress for ${Math.round(quietFor / 1000)}s while starting on port ${port}`,
+      );
+    }
     await new Promise((r) => setTimeout(r, 250));
   }
-  throw new Error(`whisper-server did not become ready on port ${port} within ${timeoutMs}ms`);
 }
 
 // ── CLI fallback (Whisper-only, used by voice-roundtrip.ts) ──

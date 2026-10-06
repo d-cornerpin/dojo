@@ -39,6 +39,66 @@ const TUNNEL_PIDFILE = path.join(DOJO_DIR, 'tunnel.pid');
 const TUNNEL_BACKOFF_FILE = path.join(DOJO_DIR, 'tunnel-backoff.json');
 
 // Backoff window: 2^consecutiveFails minutes, capped at 30 minutes.
+// ── t114 (CENSUS U15) — "NO URL YET" IS ABSENCE OF EVIDENCE, NOT EVIDENCE OF FAILURE ──
+//
+// THE DEFECT: both start paths armed a flat deadline from spawn (30s quick, 60s named) and on
+// expiry called `stopTunnel()` — SIGTERM then SIGKILL — on a child that may have been
+// mid-handshake. cloudflared logs its progress continuously to stderr (registering the tunnel,
+// picking an edge, retrying a region), so proof it was alive was arriving the whole time and each
+// path's own `handleOutput` was already reading it. The clock never asked.
+//
+// The deadline now re-arms on the child's OUTPUT: a cloudflared that is still talking keeps its
+// window, one that has genuinely gone silent is still stopped, and a non-re-arming ceiling stops
+// a chatty child holding `starting` for ever. `TUNNEL_START_QUIET_MS` carries the old 30s with
+// its meaning corrected — "silent for this long" rather than "alive for this long", which is the
+// one thing that number can honestly measure about a process that is still logging.
+const TUNNEL_START_QUIET_MS = 30_000;
+const TUNNEL_START_CEILING_MS = 5 * 60_000;
+
+/** Set by each start path; `noteTunnelOutput` is what the child's streams bump. */
+let startWatch: { lastOutputAt: number; startedAt: number; timer: ReturnType<typeof setTimeout> | null } | null = null;
+
+/** Called for every chunk either stream produces — the measured fact of liveness. */
+function noteTunnelOutput(): void {
+  if (startWatch) startWatch.lastOutputAt = Date.now();
+}
+
+/** Stop watching: the tunnel reached a verdict, so the start deadline is no longer anyone's. */
+function clearStartWatch(): void {
+  if (startWatch?.timer) clearTimeout(startWatch.timer);
+  startWatch = null;
+}
+
+/**
+ * Arm the start deadline for whichever path is booting. `label` names the path in the error, so a
+ * user sees which kind of tunnel gave up and why — silence or the ceiling.
+ */
+function armTunnelStartDeadline(label: string): void {
+  clearStartWatch();
+  const watch: NonNullable<typeof startWatch> = { lastOutputAt: Date.now(), startedAt: Date.now(), timer: null };
+  startWatch = watch;
+  const tick = (): void => {
+    if (tunnelStatus !== 'starting') { clearStartWatch(); return; }
+    const quietFor = Date.now() - watch.lastOutputAt;
+    const aliveFor = Date.now() - watch.startedAt;
+    if (quietFor < TUNNEL_START_QUIET_MS && aliveFor < TUNNEL_START_CEILING_MS) {
+      watch.timer = setTimeout(tick, Math.min(TUNNEL_START_QUIET_MS - quietFor, 5_000));
+      watch.timer.unref?.();
+      return;
+    }
+    tunnelStatus = 'error';
+    tunnelError = aliveFor >= TUNNEL_START_CEILING_MS
+      ? `${label} did not produce a URL within ${Math.round(TUNNEL_START_CEILING_MS / 1000)} seconds`
+      : `${label} went silent for ${Math.round(quietFor / 1000)} seconds before producing a URL`;
+    logger.warn('Tunnel start deadline reached', { tunnelError, quietForMs: quietFor, aliveForMs: aliveFor });
+    clearStartWatch();
+    stopTunnel();
+    broadcastStatus();
+  };
+  watch.timer = setTimeout(tick, TUNNEL_START_QUIET_MS);
+  watch.timer.unref?.();
+}
+
 const BACKOFF_BASE_MS = 60_000;
 const BACKOFF_MAX_MS = 30 * 60_000;
 
@@ -414,6 +474,7 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
 
     // Parse stdout/stderr for the URL. cloudflared prints to stderr.
     const handleOutput = (data: Buffer) => {
+      noteTunnelOutput();   // t114 (U15): the start deadline reads this
       const text = data.toString();
       outputBuffer.append(text);
       const urlMatch = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
@@ -449,6 +510,7 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
     });
 
     proc.on('exit', (code) => {
+      clearStartWatch();   // t114 (U15): an exited child has no start deadline to keep
       const wasActive = tunnelStatus === 'active';
       const tail = outputBuffer.tail();
       tunnelStatus = 'inactive';
@@ -490,15 +552,7 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
       broadcastStatus();
     });
 
-    // Timeout — if no URL after 30s, mark as error
-    setTimeout(() => {
-      if (tunnelStatus === 'starting') {
-        tunnelStatus = 'error';
-        tunnelError = 'Tunnel failed to start within 30 seconds';
-        stopTunnel();
-        broadcastStatus();
-      }
-    }, 30000);
+    armTunnelStartDeadline('Tunnel');
 
     return { ok: true };
   } catch (err) {
@@ -532,6 +586,7 @@ function startNamedTunnel(): { ok: boolean; error?: string } {
     const outputBuffer = createOutputBuffer();
 
     const handleOutput = (data: Buffer) => {
+      noteTunnelOutput();   // t114 (U15): the start deadline reads this
       const text = data.toString();
       outputBuffer.append(text);
       // Named tunnels log "Connection registered" when active
@@ -577,15 +632,7 @@ function startNamedTunnel(): { ok: boolean; error?: string } {
       broadcastStatus();
     });
 
-    // Named tunnels take longer to connect
-    setTimeout(() => {
-      if (tunnelStatus === 'starting') {
-        tunnelStatus = 'error';
-        tunnelError = 'Tunnel failed to connect within 60 seconds';
-        stopTunnel();
-        broadcastStatus();
-      }
-    }, 60000);
+    armTunnelStartDeadline('Named tunnel');
 
     return { ok: true };
   } catch (err) {

@@ -287,6 +287,11 @@ export async function screenRead(
   }
 }
 
+// t114 (census U21): five minutes. An AppleScript driving a large mailbox or a Finder batch is
+// legitimately slow and its side effects are not transactional, so the cost of being wrong here
+// is a half-applied change to the user's machine. See the argument at the call site.
+const APPLESCRIPT_CEILING_MS = 5 * 60_000;
+
 // ── AppleScript Run ──
 
 export function applescriptRun(
@@ -305,7 +310,23 @@ export function applescriptRun(
     // `brokers/applescript.ts` now reads this script before the dispatcher lets
     // the call reach here, including any `do shell script` payload inside it.
     const result = execFileSync('osascript', ['-'], {
-      timeout: 30000,
+      // ── t114 (census U21) — A BOUND RAISE, ARGUED, BECAUSE THERE IS NO LIVENESS FACT HERE ──
+      //
+      // THE DEFECT: 30 seconds, and on expiry SIGTERM mid-action with side effects ALREADY
+      // APPLIED and no rollback. A legitimate AppleScript over a large mailbox or a Finder batch
+      // routinely exceeds half a minute, so this killed healthy work and left the user's machine
+      // half-changed — the worst shape of flat kill, because the damage outlives the turn.
+      //
+      // AND WHY THIS ONE IS NOT AN IDLE BOUND, which is the honest part. `osascript` produces NO
+      // incremental output: it prints its result when it finishes and says nothing before. There
+      // is no progress signal to re-arm on, so inventing one would be theatre — a bound that
+      // "re-arms on output" for a process that never writes any is just the old flat bound with a
+      // longer explanation. Where a process offers no proof of life, the doctrine's requirement
+      // reduces to "do not kill work you cannot prove is dead", so the number is raised to a
+      // ceiling a real script does not reach and the kill says plainly that the ceiling is what
+      // ended it. A bound still exists: a wedged `osascript` holding a UI dialog cannot run for
+      // ever.
+      timeout: APPLESCRIPT_CEILING_MS,
       encoding: 'utf-8',
       input: script,
       maxBuffer: 1024 * 1024,
