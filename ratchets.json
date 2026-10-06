@@ -6679,6 +6679,27 @@
       "to": 2977,
       "by": "t109 item C — two escalations read the delivery result they already awaited",
       "why": "2963 -> 2977 (+14 net: 11 code, 3 comment; measured by `wc -l` before and after, nothing deleted). THE CODE, at the two sites the BACKLOG line names: each `await deliverA2AMessage(...)` now binds its `A2ADeliveryResult` and branches on `delivered` — a warn carrying the transport's own `reason` and `threadId` when the hand-off was DROPPED, the existing info line when it landed. That is 5 code lines per site (the binding, the `if`, the warn's two-line body, the `else`) plus the 1 line each `const res =` adds, and the two reachable drop reasons (`AGENT_NOT_FOUND` on a purged or deactivated PM, `PERSIST_SKIPPED`) are why: a drop is a RETURN, not a throw, so the `.catch` already wrapped around each site could never see one and the record claimed an escalation nobody received. THE COMMENT HALF IS 3 LINES AND NOT MORE, deliberately: the reachable reasons, the template commit and the both-ways clause list are argued ONCE, in the new clause file's header, and each site carries only a pointer to it — the repo's own prose-has-one-home habit. ALTERNATIVES REFUSED: (i) a single-expression `logger[res.delivered ? 'info' : 'warn'](...)` (+4 instead of +14) — one call cannot carry two different messages and two different meta shapes without a ternary per field, which is less readable than the branch and makes the clause assert a string built at runtime; (ii) moving both sites into a shared helper in another module (+0 here) — the two payloads, two meta shapes and two call contexts share only the three-line shape, so the helper would take more argument lines than it saves and would put a tracker log line in a file that owns no tracker policy. From 2977 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 2091,
+      "to": 2159,
+      "by": "t109 item A — the A2A hop cap ages, and `a2a_threads` finally has a disposal",
+      "why": "2091 -> 2159 (+68 net: 35 code, 33 comment; `wc -l` before and after, 6 lines replaced in place). THE CODE, three pieces. (1) `THREAD_HOP_WINDOW_MS` — one line, and it is `JOIN_TTL_MINUTES * 60_000` as an IDENTITY rather than a copied number, so the two cannot drift (#14: the threshold is CARRIED from the platform's own declared 'this delegated reply is dead' line, not invented). (2) The aging itself: `hopWindowLapsed` (4 lines, exported because `a2a-transport.ts`'s fallback store must apply the SAME rule or the cap means two different things depending on whether a `work` row happens to exist), plus `threadHopCount` growing a column and a lapse test, plus `bumpThreadHopCount` growing a pre-read and a branch so a hop after the window RESTARTS the count at 1 instead of incrementing from 8. The read and the write must both carry the decision or the stored number drifts from the answer. (3) `purgeDeadA2AThreads` (12 lines incl. the try/catch) — before this the ONLY DELETE against `a2a_threads` in the whole tree was in a test, so the table grew for the life of the box. THE COMMENT HALF IS 33 AND NOT 70: the long argument for why reset-on-successful-reply measures wrong (a relay's every hop has a different sender, so resetting on a change of sender resets on every hop of the thing being capped) lives ONCE, in `agent/__tests__/a-long-thread-is-not-a-runaway-loop.test.ts`'s header beside the clauses, and this file carries a pointer to it — the repo's own prose-has-one-home habit (`8678dfea`). What stays here is what cannot live anywhere else: where the window's NUMBER comes from, at the constant; why both guards on the purge are necessary, at the DELETE. ALTERNATIVES REFUSED: (i) a new `work/a2a-thread-aging.ts` module (+0 here) — three functions totalling 20 lines, two of which are one-line reads on tables this file already owns, and the single-writer conformance clause files `work`/`a2a_threads` statements here; a module per predicate is the scattering this overhaul exists to undo; (ii) a migration carrying a one-time purge instead of the reaper sweep (+0 here) — rejected because the sweep must exist ANYWAY (rows accrue on a clock), and a migration would then be a second disposal rule to keep in step with the first. From 2159 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 2682,
+      "to": 2722,
+      "by": "t109 item A — the fallback hop store ages too, and a dropped message is said out loud",
+      "why": "2682 -> 2722 (+40 net: 23 code, 17 comment; 5 lines replaced in place). THE CODE: (1) `getThreadHopCount`'s fallback read applies `hopWindowLapsed` to `a2a_threads.updated_at` (+7, the widened SELECT and the lapse test) — a thread nobody delegated on has no `work` row, which is the MAJORITY of threads, so without this the aging on the spine would have fixed the minority case only; (2) `recordThreadDelivery` captures the lapse BEFORE its own UPDATE moves `updated_at` (+4) and then branches `hop_count = 1` vs `+ 1` (+5) — read after the stamp and every hop looks fresh, so nothing would ever restart; (3) `DROPS_THE_SENDER_IS_TOLD_ABOUT` plus the severity ternary in `logDrop` (+7): a drop is a RETURN, not a throw, so the `.catch` every caller wraps around `deliverA2AMessage` never sees one, and a census at this HEAD found 12 of 19 callers discarding the result entirely — the message was gone and nothing said so above `info`. Warning at the TRANSPORT is the only fix that does not depend on nineteen callers' discipline. THE COMMENT HALF IS 17: the enumerated quiet set needs its own argument at the site (why exactly these two are exempt — the sender is told synchronously in its own tool result — and why an unrecognised future reason must fall to WARN by default rather than being quietly added to the quiet list), because a later reader deleting that paragraph would re-silence the class. ALTERNATIVE REFUSED: reading `res.delivered` at the twelve remaining call sites instead (+0 here) — that is the right fix TOO and is handed up with its exact shape, but it is four files outside this lane's fence and it does not generalise: caller number twenty would ship silent again, where this does not. From 2722 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/work-reaper.ts",
+      "from": 680,
+      "to": 694,
+      "by": "t109 item A — the a2a_threads purge gets the one clock it needs",
+      "why": "680 -> 694 (+14 net: 12 code, 2 comment, 1 import line replaced in place). THE CODE is one `ReaperKind` entry: id, `everyMs`, `cadenceFrom`, `wakes` and a 4-line `run` that calls `purgeDeadA2AThreads` and logs only when something went. It is here because this module is the platform's declared single home for periodic sweeps — the file's own header exists to stop the 'nearest available setInterval' pattern that scattered eleven deadlines across three files — and a sweep with no clock is a sweep that never runs (the clause asserts the kind, its period and its `cadenceFrom`). The hour is CARRIED from the sibling with the same shape, `terminal-task-prune`'s PRUNE_INTERVAL_MS, because this horizon is measured in DAYS (`JOIN_MAX_AGE_DAYS`) and an hourly look is already more than enough; nothing is chosen (#14). The 2 comment lines point at where the disposal rule and its two guards are argued, rather than restating them. ALTERNATIVE REFUSED: calling the purge opportunistically from `ensureThread` behind a time or probability gate (+0 here) — that is a hidden sweep on a hot path with an invented gate, which is both of the things this module was built to delete. From 694 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6717,7 +6738,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1985,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 402,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
-    "packages/server/src/agent/a2a-transport.ts": 2682,
+    "packages/server/src/agent/a2a-transport.ts": 2722,
     "packages/server/src/agent/access/authorize.ts": 454,
     "packages/server/src/agent/access/read.ts": 264,
     "packages/server/src/agent/agent-status.ts": 268,
@@ -6973,11 +6994,11 @@
     "packages/server/src/work/obligation-memory.ts": 630,
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
-    "packages/server/src/work/store.ts": 2091,
+    "packages/server/src/work/store.ts": 2159,
     "packages/server/src/work/tracker-store.ts": 647,
     "packages/server/src/work/tracker-view.ts": 622,
     "packages/server/src/work/validation-drive.ts": 615,
-    "packages/server/src/work/work-reaper.ts": 680,
+    "packages/server/src/work/work-reaper.ts": 694,
     "packages/shared/src/access.ts": 338,
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
