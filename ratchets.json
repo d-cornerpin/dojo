@@ -6903,6 +6903,13 @@
       "to": 194,
       "by": "t111 E1 - the Settings.tsx split (BACKLOG line 27, third clause)",
       "why": "TIGHTENED, not raised: 7194 -> 194 as the eleven tabs moved out. Recorded here beside the seven new entries so the two halves of the accounting are read together. The t111-E1 split of pages/Settings.tsx. SEVEN new files are above the 400-line new-file cap, and ONE pin TIGHTENS by 7,000 lines, which is the whole accounting: Settings.tsx 7194 -> 194 (-7,000) against +6,279 across twelve new modules (1229+1223+1042+965+696+604+520 above the cap, plus 328+193+174+110+94 below it). NET -721 TRACKED LINES, and not one line of behaviour changed - every cut range is VERBATIM from the old file, proven by reconstructing each module's body and byte-comparing it against the same range in the pre-split HEAD (12/12 identical, modulo the added `export` keyword). WHY SEVEN PINS RATHER THAN A FINER SPLIT: the seam is the page's own eleven-way tab branch, plus two modules that exist because the tabs genuinely SHARE structure (ModelRows.tsx, because ProviderModelGroup renders ModelRow and the Models tab renders ProviderModelGroup - split per-tab they would import each other, a cycle; and CapabilityModelCards.tsx, which has two renderers). Cutting inside a tab to chase the 400-line cap would split a single screen's state across files, which is how the god file was defended in the first place. The honest trade is eight pinned files whose names say what they hold, against one 7,194-line pin that said nothing - and every one of them is now decrease-only, which the old file never was: it had ZERO headroom at exactly 7,194. Dashboard suite 116/116 before and after."
+    },
+    {
+      "path": "packages/dashboard/src/components/settings/UpdateTab.tsx",
+      "from": 0,
+      "to": 328,
+      "by": "t111 E1 - the Settings.tsx split (BACKLOG line 27, third clause)",
+      "why": "The EIGHTH and last pin of the split, added because `check-growth.mjs` asked for it rather than because the 400-line cap did: at 328 lines UpdateTab is under the cap but over the detector's 240-line early-warning threshold, and the gate's remedy is exactly this - pin it at its current count so it is decrease-only from here. Taken rather than argued down: the tab is the update check, the download, the install and the rollback section, which is one screen the owner reads top to bottom, and splitting it further would separate the button from the preflight that gates it. Verbatim from the pre-split page (byte-compared); the four smaller tab modules (DreamingTab 193, SecurityTab 174, ProfileTab 110, RouterTab 94) are under the threshold and stay unpinned."
     }
   ],
   "maxNewFileLines": 400,
@@ -6930,6 +6937,7 @@
     "packages/dashboard/src/components/settings/ModelsTab.tsx": 696,
     "packages/dashboard/src/components/settings/PlatformTab.tsx": 1042,
     "packages/dashboard/src/components/settings/ProvidersTab.tsx": 965,
+    "packages/dashboard/src/components/settings/UpdateTab.tsx": 328,
     "packages/dashboard/src/components/settings/VoiceTab.tsx": 1229,
     "packages/dashboard/src/lib/access-edits.ts": 354,
     "packages/dashboard/src/lib/access-summary.ts": 113,
