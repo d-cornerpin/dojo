@@ -6518,6 +6518,13 @@
       "to": 283,
       "by": "t106 never-collapse — the visibility rules module is pinned at its current size",
       "why": "NEW PIN, not a raise: 193 -> 283 (+90: 8 code, 82 comment), which crossed the growth detector's 60%-of-cap line (240) and is therefore pinned decrease-only from here. The 8 CODE LINES are R4 and its one predicate: `askedByAPerson` (6, a backward scan to the run's anchor row plus the non-empty `conversation_id` test) and the two-line guard in `workingNoteVerdict`, plus a three-way `renderWorkingNote` door replacing the old boolean so the feed's two note arms cannot be taught different answers. The 82 COMMENT LINES are the ratio this tree runs at and are the ruling itself: OWNER RULING 2026-10-05 #7 and the sighting behind it, WHY the discriminator is a column (`conversation_id`) and not a service-agent name list — nothing may rely on an agent name — why the verdict self-heals instead of latching, and why the two write-side mechanisms the half-done backlog line named (a `promoted:true` frame, a runtime writer of `messages.retired_at`) were refused as write-side answers to a read-side question. THE ALTERNATIVE WAS WORSE: these rules decide whether the owner sees his agent's words at all, and splitting them across two files would put the four arms' precedence in neither."
+    },
+    {
+      "path": "packages/dashboard/src/pages/Chat.tsx",
+      "from": 2068,
+      "to": 2074,
+      "by": "t106 fix round 1 (review Critical) — the live window: the optimistic reconcile carries the conversation too",
+      "why": "2068 -> 2074 (+6: 1 code, 5 comment). THE ONE CODE LINE is `conversationId: e.message.conversationId ?? updated[tempIdx].conversationId` inside the optimistic `temp-` user-bubble reconcile — the same carry-the-frame's-value-else-keep-ours shape the assistant/streaming merge twelve lines above already uses, so no new idea is introduced. WHY IT HAD TO BE HERE AND COULD NOT MOVE TO THE LIB: this is not a rule, it is the row-assembly step; the rule it feeds already lives in `lib/working-note-visibility.ts` and is pinned there. THE DEFECT, which is the owner's own case: a message he types exists first as an optimistic bubble with NO conversation (only the server resolves one) and the server's broadcast is MERGED INTO that bubble rather than appended, so dropping the frame's value left R4's anchor row conversation-less for the whole live window — the fix passed every reload-shaped clause and still failed him until he refreshed. THE 5 COMMENT LINES say exactly that at the site, because the next person to edit this reconcile will otherwise drop the field again for the same reason it was missing the first time. Driven by a DOM clause that types into the composer and never remounts; the mutant that drops the line reds it while 12 reload-shaped clauses stay green, which is why the clause exists."
     }
   ],
   "maxNewFileLines": 400,
@@ -6547,7 +6554,7 @@
     "packages/dashboard/src/lib/voice/voice-client.ts": 878,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 392,
     "packages/dashboard/src/pages/Agents.tsx": 683,
-    "packages/dashboard/src/pages/Chat.tsx": 2068,
+    "packages/dashboard/src/pages/Chat.tsx": 2074,
     "packages/dashboard/src/pages/Costs.tsx": 686,
     "packages/dashboard/src/pages/Health.tsx": 660,
     "packages/dashboard/src/pages/Memory.tsx": 499,
