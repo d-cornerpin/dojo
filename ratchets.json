@@ -6945,6 +6945,13 @@
       "to": 688,
       "by": "t113 B2 (E1) - the permissions summary gains the unprobeable state",
       "why": "Plus 14 lines: 6 comment, 8 executable, and the 8 are a DIRECT CONSEQUENCE of the server fix in the same product commit rather than new scope. `allGranted` required every row to be `granted`; once the Automation probe stopped claiming `granted` it could not establish, that expression became unreachable and the \"All permissions granted\" label could never render again. A label that can never render is a reassurance the owner silently stops getting, so the three server answers get three outcomes: all granted, nothing blocked with N rows unprobeable, or neither. It was already LATENT before this lane - the Accessibility row has always answered `unknown` on a box without cliclick, so `allGranted` was already dead there - which is the argument for fixing the expression rather than special-casing Automation. THE ALTERNATIVE REFUSED: exclude Automation from `allGranted` (+1 line). Refused because it makes the label lie in the other direction, reporting \"All permissions granted\" on a box whose Automation is actually denied, which is the same class of false green this item exists to remove. ⚠ DECLARED FENCE DEVIATION: the brief fenced the dashboard CLAUSE, not this component; argued in overhaul-plans/t113-report.md. Dashboard suite 116/116 before and after."
+    },
+    {
+      "path": "packages/server/src/tools/tool-docs.ts",
+      "from": 683,
+      "to": 770,
+      "by": "t113 B1 - the live-registry fallback for a missing manual (t97 item D, BACKLOG line 72)",
+      "why": "Plus 87 lines: +29 EXECUTABLE and +58 comment, measured by stripping comment and blank lines from both versions (code 310 -> 339). The executable half is the whole feature - a 12-line renderer, the four-line signature that takes the registry, the six-line loop arm, and the seven-line output sentence that keeps \"the registry answered\" apart from \"there was nothing\". THE 58 COMMENT LINES, AND WHY THEY ARE THAT SIZE: two of the three blocks record MEASUREMENTS a later reader would otherwise have to redo, and the third is the thing that makes the feature honest. (1) The registry is handed IN rather than imported, and the docstring says why with the numbers: the first shape of this fix imported `getAllToolDefinitions` here, typechecked, passed the whole tools suite at 601 and left the report handler closure census UNMOVED at 592/510 (`definitions.ts` is already inside that closure by another path) - and still turned `agent/tools/cat/__tests__/a-reset-forgets-the-loaded-tools.test.ts` from 5 passing into a COLLECTION ERROR, because the edge drags the registry graph into every small test touching this module. That is the same hazard that made `tool-doc-read.ts` a leaf under ruling P5-R15 part 2, one suite instead of eight. Without those four sentences the next reader deletes the parameter and re-imports. (2) The `registry` parameter defaults to EMPTY, not to the whole registry, and the comment says why: a caller with no registry in scope must get today's behaviour rather than a fallback rendered from entries it never checked the agent against. (3) The renderer's banner is argued, because serving the registry contract silently AS a manual is the more comfortable lie and the comment is what stops someone removing the label. ALTERNATIVES REFUSED, with their line costs: put the fallback in `tool-doc-read.ts` (+0 here) - refused, that module is a declared leaf and its own header records the eight suites it broke; import the registry here (-4 lines, no parameter) - refused ON MEASUREMENT, see above; serve the registry text with no banner and no separate sentence (-12) - refused, it tells the model it has a manual when it has a contract. NOT a prompt file; no cache prefix moves (G2 untouched). Tools suites 607/607, closure census green and unmoved."
     }
   ],
   "maxNewFileLines": 400,
@@ -7214,7 +7221,7 @@
     "packages/server/src/techniques/store.ts": 546,
     "packages/server/src/techniques/tools.ts": 914,
     "packages/server/src/tools/name-help.ts": 355,
-    "packages/server/src/tools/tool-docs.ts": 683,
+    "packages/server/src/tools/tool-docs.ts": 770,
     "packages/server/src/tools/unified-read.ts": 761,
     "packages/server/src/tools/work-verbs.ts": 399,
     "packages/server/src/tracker/assignee-patience.ts": 208,
