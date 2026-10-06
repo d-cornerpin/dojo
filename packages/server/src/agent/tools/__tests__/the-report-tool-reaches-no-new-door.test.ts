@@ -70,6 +70,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 
 const SRC = path.resolve(__dirname, '..', '..', '..');
 const HANDLER = path.join(SRC, 'agent', 'tools', 'cat', 'report.ts');
@@ -148,7 +149,7 @@ const ALLOWED_CONSENT_CALLERS: readonly string[] = [
   // BIND a door"; that clause answers "who may CALL one". Neither is sufficient alone.
   //
   // ⚠ T7 ADDS A SECOND ENTRY. Its poster calls `markPosted`, so it must be named here AND on
-  // FETCH_BEARING_IN_CLOSURE — see the note at the head of that list, which is written for it.
+  // the egress manifest — t99's census owns it now; see the retirement note further down.
   'gateway/routes/reports.ts',
   // ── APPENDED BY DOJO-REPORT T7. THIS IS THE ONE-LINE EDIT, AND IT IS THE REVIEW ──
   // THE EDGE IS THE BRACED STATIC FORM, and it binds one consent door by name:
@@ -167,7 +168,7 @@ const ALLOWED_CONSENT_CALLERS: readonly string[] = [
   // `gateway/routes/__tests__/only-the-card-can-post-a-report.test.ts`, which T7 widened from
   // `approveOnce` alone to all four doors (mint, both spends, and the release).
   //
-  // ⚠ IT IS ALSO ON FETCH_BEARING_IN_CLOSURE'S SIBLING BELOW (`github/issues.ts`, which holds
+  // ⚠ IT IS ALSO ON t99's EGRESS MANIFEST (`github/issues.ts`, which holds
   // the actual outbound calls). Both lists, as that note demanded.
   'report/post.ts',
   // The poster's own suite, which drives the doors to prove nothing posts without an approval —
@@ -301,139 +302,38 @@ const GATHER_IMPORTS: readonly string[] = [
 ];
 
 /**
- * PRONG C's MANIFEST — every module in the handler's closure that calls `fetch(`.
+ * PRONG C IS RETIRED, AND THIS NOTE IS ITS POINTER (t111-C4, BACKLOG's t99 hand-up).
  *
- * This is a RECORD OF WHAT IS, not a permission list: the engine's graph is broad and most of
- * these are reachable only because the tool registry pulls in the whole toolbox. The guard is
- * the DELTA. A name appearing here that was not here before means a new outbound door became
- * reachable from a tool whose entire purpose is that it cannot send — read the diff and say
- * why before editing this list.
+ * What stood here was `FETCH_BEARING_IN_CLOSURE`: a 100-name manifest of every module in the
+ * handler's closure matching `/\bfetch\s*\(/`, plus the clause asserting the set had not
+ * grown. It is retired for two reasons, both measured at this head rather than argued.
+ *
+ * 1. IT IS STRICTLY SUBSUMED. t99's `report/__tests__/only-the-audited-door-can-reach-the-wire
+ *    .test.ts` asks the same question over the same closure under a CLOSED egress vocabulary —
+ *    `node:http(s)/http2/net/tls/dgram/dns`, nine client packages, `XMLHttpRequest`,
+ *    `new WebSocket(`, `sendBeacon(`, `process.binding(`, and the shell pair (a
+ *    `child_process` edge plus a net binary named in the same file) — where this list knew
+ *    only the global `fetch`. t99's E2 says so in its own words: "this is prong C's `fetch(`
+ *    manifest widened to every spelling". A door reachable through `node:https` was invisible
+ *    here and is not invisible there.
+ *
+ * 2. IT WAS WRONG IN THE DIRECTION THAT CAUSES CHURN. The clause read each module's RAW
+ *    SOURCE, comments included, so SEVEN of its 38 `.ts` entries had no `fetch(` call in them
+ *    at all — they were on the list for English prose: `agent/runtime.ts` ("cancels the
+ *    underlying fetch (vs. v1's"), `agent/tools/types.ts`, `gateway/routes/techniques.ts`,
+ *    `gateway/routes/upload.ts`, `microsoft/tools-write.ts`, `receipts/store.ts`,
+ *    `tools/unified-read.ts`. That is the G4 failure this campaign names explicitly — a
+ *    source-matching clause that does not strip comments is testing the comment — and it is
+ *    also the churn the backlog line complained of: editing a sentence in an unrelated module
+ *    moved this security manifest.
+ *
+ * THE FIX CAME ACROSS, THE DEAD RULES DID NOT: t99's AST comment stripper now backs every
+ * reader in this file (see the note above `stripComments`), which fixes a real LOST EDGE that
+ * prong A and B were exposed to — a leading `/* keep *\/` dropped the whole line and with it
+ * the import. Prongs A, B and the one-hop pins are untouched and are what this file still
+ * holds: no new EDGE out of the handler's own two files, and the runtime-vs-type split.
  */
-const FETCH_BEARING_IN_CLOSURE: readonly string[] = [
-  // ── APPENDED BY DOJO-REPORT T4, and this comment IS the review the clause demanded ──
-  // `github/device-flow.ts` calls `fetch` three times and is now in the closure. It was read
-  // before it was added, and here is what the reading found.
-  //
-  // THE PATH, measured rather than guessed — four hops, and the tool is not on any of them:
-  //   cat/report.ts → gateway/routes/update.ts → gateway/server.ts → gateway/routes/github.ts
-  //   → github/device-flow.ts
-  //
-  // ⚠ AND HOP 2 IS NOT A RUNTIME EDGE AT ALL, WHICH IS THE FACT THAT SETTLES IT.
-  // `gateway/routes/update.ts:11` reads `import type { AppEnv } from '../server.js'` — a
-  // TYPE-ONLY import, ERASED AT COMPILE TIME. Nothing is required, nothing is evaluated, and
-  // the emitted `.js` has no such edge. Re-running this file's own walk with type-only edges
-  // dropped, the closure falls from 532 modules to 464 and `gateway/server.ts`,
-  // `gateway/routes/github.ts` and ALL FOUR `github/*` modules are NOT REACHABLE FROM THE TOOL
-  // AT RUNTIME. The same is true of the whole router fan-out that put `gateway/routes/config.ts`,
-  // `setup-deps.ts`, `system.ts`, `techniques.ts` and `upload.ts` on this list: it is a phantom
-  // of the static walk.
-  //
-  // That is NOT a hole, and the direction matters: the walk over-approximates, so it considers
-  // MORE modules reachable than really are, never fewer. Keeping the over-approximation is
-  // correct — a type-only edge can become a runtime edge in a one-word edit, and this census
-  // should notice that before it happens, not after. But the safety case is stronger than
-  // "everything fans out from the server", and the strongest true statement belongs here.
-  //
-  // WHY IT IS NOT A WAY OUT, in the three terms this file is written in:
-  //   * The handler's and the gather's OWN one-hop import lists are pinned EXACTLY below and
-  //     are UNCHANGED by T4 — nothing in `report/` names anything in `github/`.
-  //   * Prong B is green: no module in the closure imports a consent door, and T4 added none.
-  //   * The two endpoints it posts to are GitHub's OAUTH endpoints (`/login/device/code`,
-  //     `/login/oauth/access_token`) plus `GET /user`. None of them accepts content; there is
-  //     no body a brief could ride out on, and no function here takes a report, a brief or an
-  //     agent id as an argument. Compare `gateway/routes/update.ts`, already on this list,
-  //     which really does hold four `api.github.com/repos/…` calls.
-  //   * Its four entry points are reachable only from `POST /api/github/*`, behind the owner's
-  //     own authenticated session, never from a tool call.
-  //
-  // ⚠ FOR T7, AND THIS IS THE REUSABLE FORM OF THE ARGUMENT ABOVE. Do not reason from fan-out
-  // breadth — "lots of things are reachable from the server" proves nothing about anybody. The
-  // two questions that actually separate a phantom edge from a way out are:
-  //
-  //   1. IS IT RUNTIME-REACHABLE from the handler, with type-only edges dropped? (This module:
-  //      NO. A poster imported by `gateway/routes/reports.ts` behind the Post button: also
-  //      almost certainly no — but MEASURE it, do not assume it.)
-  //   2. DOES ANY EXPORTED FUNCTION ACCEPT CALLER-SUPPLIED CONTENT THAT REACHES THE WIRE?
-  //      (This module: NO — see the entry-point audit above. A poster: YES, unavoidably, because
-  //      its whole job is to carry a rendered brief to `POST /repos/:owner/:repo/issues`.)
-  //
-  // Question 2 is the one that decides it, and the poster fails it by construction. So the
-  // poster's appearance here is the moment to check prong A as well: it must ALSO be on
-  // ALLOWED_CONSENT_CALLERS, because posting is what consumes the owner's one approval.
-  'github/device-flow.ts',
-  // ── APPENDED BY DOJO-REPORT T7, AND THIS ENTRY DOES NOT BORROW THE ONE ABOVE ──
-  // `github/issues.ts` holds the three calls that reach GitHub's issues: one unauthenticated
-  // search and two authenticated writes. The T4 entry above answers the two questions this list
-  // asks and gets NO for both. This module answers NO and **YES**, and the difference is the
-  // whole reason it is written out rather than waved at the neighbour's paragraph.
-  //
-  //   1. RUNTIME-REACHABLE FROM THE TOOL? NO — measured, not assumed. The path in the
-  //      over-approximating walk is cat/report.ts → gateway/routes/update.ts → gateway/server.ts
-  //      → gateway/routes/reports.ts → report/post.ts → github/issues.ts, and hop 2 is
-  //      `import type { AppEnv }`, ERASED AT COMPILE TIME. Re-running this file's own walk with
-  //      type-only edges dropped: 538 modules over-approximating, 464 at runtime, and
-  //      `report/post.ts`, `github/issues.ts`, `report/issue-body.ts` and `report/repo.ts` are
-  //      ALL ABSENT from the runtime set. The clause "the gateway is NOT runtime-reachable from
-  //      the tool" pins the fact this rests on, and prong B measures on the runtime closure.
-  //
-  //   2. DOES AN EXPORTED FUNCTION CARRY CALLER-SUPPLIED CONTENT TO THE WIRE? **YES.**
-  //      `createIssue(repo, title, body, labels)` exists to carry a rendered brief to
-  //      `POST /repos/:owner/:repo/issues`. T4's argument — "none of these endpoints accepts
-  //      content" — IS NOT AVAILABLE HERE and must not be reused. What makes it safe is a
-  //      different fact, and it is a fact about the CALLER rather than the callee:
-  //
-  //        * its only caller is `report/post.ts`, which is on ALLOWED_CONSENT_CALLERS above and
-  //          refuses every row that is not already `approved` — measured as ZERO network calls,
-  //          not as a returned error;
-  //        * the only thing that can produce an `approved` row is `approveOnce`, called from
-  //          exactly one place in the tree: the route behind the owner's Post button (D4);
-  //        * the body it carries is `renderIssueBody(row)` — the platform's own renderer over a
-  //          row the owner has READ, never a string a caller hands in.
-  //
-  //      So the content door is real and the gate in front of it is the owner's consent, which
-  //      is the only gate that was ever going to be adequate for a module whose job is to
-  //      publish. A future edit that lets some other module call `createIssue` fails prong A at
-  //      `report/post.ts`'s call-site census before it fails anything here.
-  'github/issues.ts',
-  'agent/model.ts', 'agent/runtime.ts', 'agent/site-snapshot.ts', 'agent/tools/definitions.ts',
-  'agent/tools/types.ts', 'agent/web-tools.ts', 'gateway/routes/config.ts',
-  'gateway/routes/setup-deps.ts', 'gateway/routes/system.ts', 'gateway/routes/techniques.ts',
-  'gateway/routes/update.ts', 'gateway/routes/upload.ts', 'google/auth.ts', 'google/client.ts',
-  'google/tools-slides.ts', 'memory/embeddings.ts', 'microsoft/auth.ts', 'microsoft/client.ts',
-  // ── APPENDED BY THE A-6 FIX ROUND (sweep review L2-1), AND THIS COMMENT IS THE READING THE
-  //    CLAUSE DEMANDS BEFORE A NAME MAY BE ADDED ──
-  // `microsoft/graph-fetch.ts` is one `fetch` and it is NOT a new way out. What it is: the
-  // stop-aware door the 32 previously-bare Graph calls in the three files on the line below now
-  // go through. Those three files were ALREADY in this manifest — and so was `microsoft/client.ts`,
-  // which is how the new module enters the closure at all (`client.ts` re-exports the door, one
-  // edge, from a module that was already here). So the closure's REACH is unchanged; a call that
-  // used to be made from `tools-office.ts` is now made one hop away, under a registration.
-  //
-  // THE ENDPOINT IS UNCHANGED TOO: the door dials whatever URL its caller passes, every one of
-  // them `graph.microsoft.com`, and it holds the same `GRAPH_BASE` constant those files already
-  // held a second copy of. It imports exactly one module — `agent/abortable-call.ts`, the stop
-  // registry's per-call door — and nothing that posts, sends, or names a host of its own.
-  //
-  // WHY IT IS REACHABLE FROM THE REPORT TOOL AT ALL, measured rather than assumed: the tool
-  // registry pulls in the whole toolbox, so `cat/report.ts`'s closure has included the Microsoft
-  // tool files since T4. That is the same over-approximation this manifest's header describes,
-  // and the guard that matters for it — the one-hop import pins on the handler and the gather —
-  // is unchanged by this round.
-  // AND TWO NAMES LEAVE, which is the same fix seen from the other side: `tools-office.ts` and
-  // `tools-read.ts` no longer contain a `fetch(` AT ALL — every one of their Graph calls goes
-  // through the door above — so this manifest's exactness clause correctly reports them stale.
-  // `tools-write.ts` STAYS, and the reason is worth a line so nobody re-deletes it: its code has
-  // no `fetch(` either, but this walk does not strip comments (the review's NIT-8) and the file
-  // says "// re-fetch (never re-sends)". An over-read that fails safe, left as-is rather than
-  // silently narrowed — narrowing a guard's reader is not this round's business.
-  'microsoft/graph-fetch.ts', 'microsoft/tools-write.ts',
-  'receipts/store.ts', 'services/audio-generation.ts', 'services/capabilities.ts',
-  'services/image-generation.ts', 'services/litellm-pricing-sync.ts',
-  'services/num-ctx-calculator.ts', 'services/ollama.ts', 'services/transcription.ts',
-  'services/video-generation.ts', 'tools/unified-read.ts', 'twilio/client.ts',
-  'twilio/sms-inbound.ts', 'update/artifact-integrity.ts', 'voice/model-manager.ts',
-  'voice/smart-turn.ts', 'voice/stt-service.ts',
-];
+
 
 // ── the walk ────────────────────────────────────────────────────────────────────────────
 // Comment lines are dropped before a specifier is read. Four `await import('…')` mentions in
@@ -469,10 +369,55 @@ const FETCH_BEARING_IN_CLOSURE: readonly string[] = [
 // than a reviewer catching it later. A module specifier NEVER contains a newline, so excluding
 // one costs nothing real and closes the class for every delimiter, single quotes included.
 const SPEC = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s*)(['"`])([^'"`\n]+)\1/g;
-const isComment = (line: string): boolean => /^\s*(\/\/|\*|\/\*)/.test(line);
+// ── THE COMMENT STRIPPER IS t99's, AND THAT IS A FIX, NOT A TIDY-UP (t111-C4) ────────────
+//
+// What stood here dropped any LINE that STARTED with a comment marker. Two measured faults,
+// and the first runs in the dangerous direction:
+//
+//   `/* keep */ import x from './real.js';`   → the WHOLE LINE dropped: a REAL EDGE LOST.
+//   `const a = 1; /* import y from './f.js' */` → `./f.js` counted as a real edge.
+//
+// The first is a false NEGATIVE: an import can be hidden from every census in this file by
+// prefixing its line with a block comment. The long invariant note on `runtimeSpecifiersIn`
+// below reasons correctly about TRAILING comments and concludes a real edge can never be fully
+// consumed — that argument is about prong B's credit/occurrence cancellation and it still
+// holds; it never covered a LEADING one, which removes the occurrence and the credit together.
+//
+// So the stripper is now the AST one from
+// `report/__tests__/only-the-audited-door-can-reach-the-wire.test.ts` (t99), carried across
+// rather than re-derived. It asks TypeScript for the comment trivia ranges and BLANKS them in
+// place — offsets preserved, so every regex below reads the same positions it always did, and
+// both cases above come out right: the leading comment becomes spaces and the import survives;
+// the midline comment becomes spaces and the fake specifier is gone.
+const STRIP_CACHE = new Map<string, string>();
 
-const stripComments = (code: string): string =>
-  code.split('\n').filter(l => !isComment(l)).join('\n');
+const stripComments = (code: string): string => {
+  const cached = STRIP_CACHE.get(code);
+  if (cached !== undefined) return cached;
+  const source = ts.createSourceFile('census.ts', code, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  const chars = code.split('');
+  const blanked = new Set<string>();
+  const blank = (range: ts.CommentRange): void => {
+    const key = `${range.pos}:${range.end}`;
+    if (blanked.has(key)) return;
+    blanked.add(key);
+    for (let i = range.pos; i < range.end && i < chars.length; i += 1) {
+      if (chars[i] !== '\n' && chars[i] !== '\r') chars[i] = ' ';
+    }
+  };
+  const triviaAt = (pos: number): void => {
+    ts.getLeadingCommentRanges(code, pos)?.forEach(blank);
+    ts.getTrailingCommentRanges(code, pos)?.forEach(blank);
+  };
+  const visit = (node: ts.Node): void => {
+    triviaAt(node.pos); triviaAt(node.end); ts.forEachChild(node, visit);
+  };
+  visit(source);
+  triviaAt(source.endOfFileToken.pos);
+  const out = chars.join('');
+  STRIP_CACHE.set(code, out);
+  return out;
+};
 
 /** Every module specifier in a piece of code, in any spelling that creates an EDGE. */
 function specifiersIn(code: string): string[] {
@@ -485,7 +430,7 @@ function specifiersOf(file: string): string[] {
 
 // ── T6 / N4: A TYPE-ONLY EDGE IS NOT AN EDGE AT RUNTIME, AND PRONG B HAD TO LEARN IT ────────
 //
-// The FETCH_BEARING_IN_CLOSURE note above already measured this and wrote the argument down for
+// The retirement note above already measured this and wrote the argument down for
 // whoever landed the gateway route: `gateway/routes/update.ts:11` reads
 // `import type { AppEnv } from '../server.js'`, TypeScript ERASES it, and the emitted `.js` has
 // no such edge — so `gateway/server.ts` and everything it fans out to are phantoms of the static
@@ -1253,17 +1198,7 @@ describe('C — no new way out has appeared behind the report tool', () => {
       .toEqual([...GATHER_IMPORTS].sort());
   });
 
-  it('the fetch-bearing modules in the closure are exactly the recorded manifest', () => {
-    const fetchy = CLOSURE.modules
-      .filter(m => /\bfetch\s*\(/.test(fs.readFileSync(path.join(SRC, m), 'utf8')));
-    const added = fetchy.filter(m => !FETCH_BEARING_IN_CLOSURE.includes(m));
-    const gone = FETCH_BEARING_IN_CLOSURE.filter(m => !fetchy.includes(m));
-    expect(
-      added,
-      `NEW outbound module(s) reachable from the dojo_report handler: ${added.join(', ')}. `
-      + 'A tool whose whole claim is that it cannot send just grew a new way out. Read the diff '
-      + 'and say why before adding a name to FETCH_BEARING_IN_CLOSURE.',
-    ).toEqual([]);
-    expect(gone, `manifest names a module no longer in the closure (stale): ${gone.join(', ')}`).toEqual([]);
-  });
+  // (The fetch-bearing-closure clause that stood here is RETIRED — see the pointer note where
+  //  its manifest used to live. t99's egress census owns the question now, over the same
+  //  closure and a vocabulary this one did not have.)
 });
