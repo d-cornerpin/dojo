@@ -114,9 +114,41 @@ describe('LANE-3 — a row that cannot measure the estimator is refused', () => 
     expect(charsPerTokenFrom(sample(10_000, 20_000, { inputTokensEstimated: true }))).toBeNull();
   });
 
-  it('guard 2: a row written under a DIFFERENT divisor describes a different estimator', () => {
-    expect(charsPerTokenFrom(sample(10_000, 20_000, { divisorUsed: 3.5 }))).toBeNull();
-    expect(charsPerTokenFrom(sample(10_000, 20_000, { divisorUsed: null }))).toBeNull();
+  it('guard 2: a divisor must be a positive finite number — but NOT the constant any more', () => {
+    // ⚠ THIS CLAUSE WAS DELIBERATELY WIDENED BY t108 (BACKLOG 56), and this is where the change
+    // is argued rather than discovered. Its previous form asserted
+    // `charsPerTokenFrom(sample(10_000, 20_000, { divisorUsed: 3.5 })) === null` — "a row written
+    // under a DIFFERENT divisor describes a different estimator".
+    //
+    // WHY THAT NO LONGER HOLDS. `memory/budget.ts`'s `estimateRequestTokens` now divides each
+    // population by that provider's own MEASURED reading, so `estimator_chars_per_token`
+    // legitimately differs PER REQUEST and `costs/tracker.ts` stores the one that really produced
+    // the estimate. Under the old equality, every row from a box that had measured itself would
+    // be skipped and the reading would freeze at whatever it was the day the box began spending
+    // it — a silent, self-sealing failure, strictly worse than having no reading.
+    //
+    // WHY WIDENING IT IS SAFE, which is the half that matters. The module computes
+    // `chars = estimatedInputTokens * divisorUsed`, which is the exact INVERSE of the arithmetic
+    // that produced the row, so it recovers this request's character count exactly whatever
+    // divisor was used. No rescaling happens and no error term appears — the thing being measured
+    // is the PROVIDER'S tokeniser, which is indifferent to what we guessed. The old guard's
+    // stated worry ("rescaling assumes the estimator's error is linear in the divisor") was about
+    // a divisor that moved only when someone edited a constant, and it does not apply to an
+    // exact inverse.
+    //
+    // WHAT STILL FAILS, and it is the guard's real content: a divisor that is not a number.
+    expect(charsPerTokenFrom(sample(10_000, 20_000, { divisorUsed: null })),
+      'the estimate and its divisor must travel together; without one, `chars` is meaningless')
+      .toBeNull();
+    for (const bad of [0, -4, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(charsPerTokenFrom(sample(10_000, 20_000, { divisorUsed: bad })),
+        `divisorUsed ${String(bad)} is not a divisor`).toBeNull();
+    }
+    // AND WHAT NOW MEASURES: a row recorded under a measured divisor. 10,000 tokens estimated at
+    // 3.5 chars/token is 35,000 characters; billed 20,000 tokens, that is 1.75 chars/token —
+    // recovered exactly, which is the property the widening rests on.
+    expect(charsPerTokenFrom(sample(10_000, 20_000, { divisorUsed: 3.5 })))
+      .toBeCloseTo(35_000 / 20_000, 10);
   });
 
   it('guard 3: a tiny estimate is rounding noise, not a measurement', () => {

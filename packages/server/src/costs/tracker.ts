@@ -64,6 +64,24 @@ export interface RecordCostParams {
    *  (ollama, agent-sdk) and stored NULL — never 0, which reads as a perfect prediction. */
   estimatedInputTokens?: number;
   /**
+   * THE DIVISOR THAT REALLY PRODUCED `estimatedInputTokens` (T108, BACKLOG 56).
+   *
+   * Until the estimate began spending the MEASURED divisors, this was always the asserted
+   * constant and the writer supplied it itself. It no longer is: `estimateRequestTokens` divides
+   * each population by its own measured reading, so the single divisor equivalent to the result
+   * is `totalChars / tokens` and only the caller knows it.
+   *
+   * This column's contract is what makes the whole self-calibration loop work —
+   * `chars = estimated_input_tokens * estimator_chars_per_token` must recover THIS request's
+   * character count, because `costs/ledger-calibration.ts` divides that by the billed tokens to
+   * get the row's true ratio. Recording a flat `4` beside an estimate that did not use 4 would
+   * make every future reading a measurement of our own arithmetic error instead of the
+   * provider's tokeniser — a loop feeding on itself. Omitted (the ollama and agent-sdk paths,
+   * which compute no estimate) falls back to the constant, which is correct there because those
+   * paths do not spend a reading either.
+   */
+  estimatorCharsPerToken?: number;
+  /**
    * True when `inputTokens` above is the char-derived fallback rather than a count the provider
    * billed — the one transport branch that has one (`agent/model.ts`'s no-usage path). NOT
    * stored: it is read once, here, by the prefill speedometer, which must refuse such a row
@@ -150,7 +168,7 @@ function getModelPricing(modelId: string): ModelPricing {
 const warnedUnknownPriceModels = new Set<string>();
 
 export function recordCost(params: RecordCostParams): void {
-  const { agentId, modelId, providerId, inputTokens, outputTokens, latencyMs, requestType, imageWidth, imageHeight, units, cacheReadTokens, cacheCreationTokens, estimatedInputTokens, inputTokensEstimated, callPurpose } = params;
+  const { agentId, modelId, providerId, inputTokens, outputTokens, latencyMs, requestType, imageWidth, imageHeight, units, cacheReadTokens, cacheCreationTokens, estimatedInputTokens, inputTokensEstimated, callPurpose, estimatorCharsPerToken } = params;
 
   try {
     const pricing = getModelPricing(modelId);
@@ -194,6 +212,14 @@ export function recordCost(params: RecordCostParams): void {
       costUsd = inputCost + cacheReadCost + cacheCreationCost + outputCost;
     }
 
+    // ONE resolution of the divisor for this row, spent twice below (the stored column and the
+    // calibration sample) so the two can never disagree — a row whose stored divisor differs from
+    // the one the reading was taken under is the exact shape guard 2 exists to refuse.
+    const divisorUsed = estimatedInputTokens === undefined
+      ? null
+      : (typeof estimatorCharsPerToken === 'number' && Number.isFinite(estimatorCharsPerToken)
+          && estimatorCharsPerToken > 0 ? estimatorCharsPerToken : CHARS_PER_TOKEN);
+
     const db = getDb();
     db.prepare(`
       INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens, output_tokens,
@@ -221,9 +247,12 @@ export function recordCost(params: RecordCostParams): void {
       // (router_log.request_id). NULL for out-of-turn calls by design.
       turnContext(agentId)?.modelRequestId ?? null,
       // Estimate and divisor travel together: 4-chars/token and 3.5-chars/token rows are
-      // different measurements and a trend that mixes them silently is #14's class.
+      // different measurements and a trend that mixes them silently is #14's class. T108 makes
+      // that sentence do MORE work, not less — the divisor is now per-request (the measured
+      // readings, spent per population) rather than one constant, so storing the one that really
+      // produced this estimate is what keeps the pair a self-consistent measurement.
       estimatedInputTokens ?? null,
-      estimatedInputTokens === undefined ? null : CHARS_PER_TOKEN,
+      divisorUsed,
       // Migration 181. NULL when the site declared nothing, which is a FACT about the row and
       // not a missing value: the five deliberately-undeclared engine dials and every row written
       // before this column existed read the same way, and every reader of it treats NULL as
@@ -241,7 +270,7 @@ export function recordCost(params: RecordCostParams): void {
     // every half at the moment it becomes true. A no-op below either sample floor, which is
     // most rows, and never allowed to fail a recorded cost: accounting owes them nothing.
     try {
-      recalibrateFromLedgerRow(providerId, { inputTokens, latencyMs, inputTokensEstimated, estimatedInputTokens, cacheReadTokens, cacheCreationTokens, callPurpose, divisorUsed: estimatedInputTokens === undefined ? null : CHARS_PER_TOKEN });
+      recalibrateFromLedgerRow(providerId, { inputTokens, latencyMs, inputTokensEstimated, estimatedInputTokens, cacheReadTokens, cacheCreationTokens, callPurpose, divisorUsed });
     } catch {
       // Best-effort, exactly like the alert check below.
     }

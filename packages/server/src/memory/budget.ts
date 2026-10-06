@@ -96,6 +96,132 @@ export function estimateTokensFromChars(chars: number): number {
   return Math.ceil(Math.max(0, chars) / CHARS_PER_TOKEN);
 }
 
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE REQUEST ESTIMATE — where the MEASURED divisor is spent (BACKLOG lines 56 + 36).
+// ════════════════════════════════════════════════════════════════════════════════════════
+//
+// ── THE DEFECT, MEASURED, AND WHAT IT COSTS AT THE DIAL ──
+// BACKLOG line 56: "estimator_chars_per_token pinned at 4.0 but provider-reported totals run
+// 1.88-2.08x the estimate on dense prompts — any budget keyed on estimated_input_tokens
+// undercounts real billing by ~half." Migration 174 and `costs/ledger-calibration.ts` ENDED the
+// unmeasured half: the divisor is now observed per provider from the platform's own ledger. But
+// that module's header says plainly that nothing spent it — "`estimateTokens` does not read it
+// YET — that function is provider-agnostic and called from 71 sites". This is where it is spent.
+//
+// The consumer that the undercount actually HURTS is the pre-dial fit gate (`agent/model.ts`'s
+// `refuseIfDoomed`): it compares this estimate against what the provider's prefill throughput can
+// cover inside its first-chunk patience. Halve the estimate and the gate waves through a request
+// that will take twice as long to prefill as it believes — and the turn then dies at the
+// first-chunk watchdog, which is the one outcome the gate exists to buy out. The output budget
+// (`resolveOutputBudget`) reads the same number and over-grants from the same error.
+//
+// ⚠ A CORRECTION TO THAT BACKLOG LINE, re-derived at this head (G11): it names "the v3.1.27
+// unattended budget" as a victim. It is not one. `agent/unattended-budget.ts` contains ZERO token
+// references — it is a budget in MINUTES, and `grep -c 'token' agent/unattended-budget.ts` is 0.
+// The real consumers keyed on this estimate are the two named above.
+//
+// ── WHY THIS IS A NEW DOOR AND NOT A CHANGE TO `estimateTokens` ──
+// `estimateTokens` is the ONE char estimator and it stays exactly as it is, divisor included,
+// for three reasons that are each load-bearing:
+//   1. ITS 71 CALLERS ARE MOSTLY ABOUT A STORED ROW'S CARRYING COST, counted in the same
+//      `/4` dialect as `messages.token_count`, the SQL and `agent/v2/receipt.ts`. Re-dialecting
+//      history is a different change with a different blast radius.
+//   2. IT IS PROVIDER-AGNOSTIC AND SYNCHRONOUS. A learned divisor is a property of the
+//      TOKENISER, which travels with the serving endpoint; a function that does not know the
+//      provider cannot honestly spend one.
+//   3. THIS MODULE IS A LEAF and its header explains why (taking a modelId would make the
+//      budget cyclic with its own consumers). So the arithmetic here is PURE and takes the
+//      readings as an argument; `costs/estimator-divisors.ts` does the one DB read.
+//
+// ── THE TWO POPULATIONS, AND WHY THE SPLIT IS AT THE CALL SITE ──
+// The populations are prose and dense JSON tool schemas (the full argument is in migration 181
+// and in `costs/ledger-calibration.ts`). Both dial sites in `agent/model.ts` ALREADY compute
+// their estimate as "messages + system" plus "the tools array", separately — so the call site
+// already knows which characters are which, and no classifier is needed to find out.
+//
+// ── THE CONSERVATIVE FLOOR, WHICH IS THE WHOLE SAFETY ARGUMENT ──
+// Two bounds, in this order, and neither is a tuning knob:
+//   A. EACH DIVISOR IS CAPPED AT THE ASSERTED CONSTANT. `min(CHARS_PER_TOKEN, measured)`. A
+//      measured divisor may only make the estimate LARGER, never smaller. So a box that has
+//      measured itself is a box that plans more cautiously, and a measurement that is somehow
+//      too generous cannot make this estimate less safe than today's.
+//   B. THE RESULT IS FLOORED AT TODAY'S ANSWER. `max(result, estimateTokensFromChars(total))`.
+//      Bound A already implies this for every divisor it admits; B is here because it is the
+//      property that actually matters to a consumer and it should not depend on anyone
+//      re-deriving that implication after editing A.
+// Together: THE ESTIMATE NEVER SHRINKS. Every decision this number feeds — the fit gate
+// refusing, the output budget granting, compaction firing — moves only toward caution. That is
+// migration 174's own direction of travel ("an over-measured box is a cautious box") and it is
+// why spending a MINIMUM is safe at all.
+//
+// ── AND THE EFFECTIVE DIVISOR IS RECORDED, NOT ASSUMED ──
+// `effectiveCharsPerToken` is `totalChars / tokens`. The ledger stores it in
+// `estimator_chars_per_token`, which keeps that column's contract exact: `chars = estimate x
+// divisorUsed` still recovers this request's character count, so the next reading measures the
+// TRUE ratio and the loop cannot feed on itself. Recording a flat `4` beside an estimate that
+// did not use 4 is what WOULD poison it.
+
+/** What a request is made of, in characters, split by population. */
+export interface RequestChars {
+  /** System prompt + messages: prose. */
+  readonly proseChars: number;
+  /** The serialised tools array: dense JSON. Zero on a toolless call. */
+  readonly schemaChars: number;
+}
+
+/** The measured readings, as `costs/estimator-divisors.ts` supplies them. `null` = unmeasured. */
+export interface MeasuredDivisors {
+  /** `providers.measured_chars_per_token_prose` — the prose-population minimum. */
+  readonly prose: number | null;
+  /** `providers.measured_chars_per_token` — the all-rows (denser, conservative) minimum. */
+  readonly dense: number | null;
+}
+
+/** An estimate, and the single divisor it is equivalent to — which is what the ledger records. */
+export interface RequestEstimate {
+  readonly tokens: number;
+  /** `totalChars / tokens`. Keeps `chars = estimate x divisor` exact for the ledger. */
+  readonly effectiveCharsPerToken: number;
+}
+
+/** Bound A: a measurement may only make the estimate larger. Exported so the cap is argued in a
+ *  test rather than only here. */
+export function effectiveDivisor(measured: number | null | undefined): number {
+  if (typeof measured !== 'number' || !Number.isFinite(measured) || measured <= 0) {
+    return CHARS_PER_TOKEN;
+  }
+  return Math.min(CHARS_PER_TOKEN, measured);
+}
+
+/**
+ * THE REQUEST ESTIMATE: each population's characters divided by that population's measured
+ * divisor, floored at the answer the asserted constant would have given. Pure — the readings
+ * come in as an argument, so this module stays the leaf its header says it is.
+ *
+ * `MeasuredDivisors` entirely null is today's behaviour, exactly: both divisors fall back to
+ * `CHARS_PER_TOKEN` and the result equals `estimateTokensFromChars(prose + schema)`. That is the
+ * state every box is in until it has measured itself, so this function changes nothing on a box
+ * that has no reading — the same promise migrations 167 and 174 make.
+ */
+export function estimateRequestTokens(chars: RequestChars, measured: MeasuredDivisors): RequestEstimate {
+  const proseChars = Math.max(0, chars.proseChars);
+  const schemaChars = Math.max(0, chars.schemaChars);
+  const totalChars = proseChars + schemaChars;
+
+  const split = Math.ceil(proseChars / effectiveDivisor(measured.prose))
+    + Math.ceil(schemaChars / effectiveDivisor(measured.dense));
+
+  // Bound B — the conservative floor, stated independently of bound A (see the header).
+  const tokens = Math.max(split, estimateTokensFromChars(totalChars));
+
+  return {
+    tokens,
+    // A zero-character request estimates zero tokens; the constant is the only honest divisor to
+    // report for it, and it keeps the quotient out of 0/0.
+    effectiveCharsPerToken: tokens > 0 ? totalChars / tokens : CHARS_PER_TOKEN,
+  };
+}
+
 /**
  * The cost of carrying one STORED ROW, which is `estimateTokens` plus the floor the write
  * path has always applied (`memory/message-store.ts:227`): "never zero — a row that costs

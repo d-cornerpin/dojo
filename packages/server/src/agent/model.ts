@@ -19,11 +19,12 @@ import { toolDefinitions } from './tools/definitions.js';
 import { getFilteredTools } from './tools/surface.js';
 import type { ToolDefinition } from './tools/types.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
-import { estimateTokens, reasoningRidesThisTurn } from '../memory/budget.js';
+import { estimateTokens, estimateRequestTokens, reasoningRidesThisTurn } from '../memory/budget.js';
 import { validateAtProviderBoundary, AssemblyValidationError } from '../memory/assembly-validation.js';
 import { repairToolPairing } from './tool-pairing.js';
 import { collectMessageLaneIds } from '../memory/message-lane-tag.js';
 import { recordCost } from '../costs/tracker.js';
+import { measuredDivisorsFor } from '../costs/estimator-divisors.js';
 import { checkBudget } from '../costs/budget.js';
 import { updateRateLimits } from '../router/rate-limits.js';
 import { recordProviderSuccess, recordProviderError } from '../gateway/routes/services.js';
@@ -2116,10 +2117,24 @@ async function callOpenAIModel(
   // The arithmetic (and the two floors it rests on) is `resolveOutputBudget` above — pulled
   // out of this function by T72b claim 1 so it could be argued with in a test instead of
   // only observed on a wire.
-  const finalInputEstimate = openaiMessages.reduce((sum, m) => {
+  //
+  // T108 (BACKLOG 56): the estimate now SPENDS this provider's measured divisors instead of the
+  // asserted 4. The two populations were already separated here — the messages are prose, the
+  // tools array is dense JSON — so the split costs no classifier, only the arithmetic moving into
+  // `estimateRequestTokens`. That function is floored so the estimate can only GROW relative to
+  // today (both bounds argued in `memory/budget.ts`), and an unmeasured provider gets today's
+  // number byte for byte. Everything downstream of this line reads the truer estimate: the
+  // pre-dial fit gate, the output budget, and the recorded ledger row.
+  const openaiProseChars = openaiMessages.reduce((sum, m) => {
     const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
-    return sum + estimateTokens(content);
-  }, 0) + estimateTokens(JSON.stringify(openaiTools ?? []));
+    return sum + content.length;
+  }, 0);
+  const openaiSchemaChars = JSON.stringify(openaiTools ?? []).length;
+  const openaiEstimate = estimateRequestTokens(
+    { proseChars: openaiProseChars, schemaChars: openaiSchemaChars },
+    measuredDivisorsFor(modelInfo.providerId),
+  );
+  const finalInputEstimate = openaiEstimate.tokens;
 
   // T81b: the pre-dial gate, right where the estimate for THIS exact request first exists and
   // strictly before anything below builds a client or touches a socket (`patience` above is
@@ -2549,6 +2564,9 @@ async function callOpenAIModel(
       cacheReadTokens,
       // Step 3: the post-trim estimate, i.e. the one describing the request that went out.
       estimatedInputTokens: finalInputEstimate,
+      // T108: the divisor THIS estimate was really produced by, so `chars = estimate x divisor`
+      // keeps recovering this request's character count now that the divisor is per-request.
+      estimatorCharsPerToken: openaiEstimate.effectiveCharsPerToken,
       // Fix round 1 (review N1): true only on the no-usage fallback above. The prefill
       // speedometer refuses such a row; nothing else reads it.
       inputTokensEstimated,
@@ -3355,15 +3373,20 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
   const toolsJson = tools ? JSON.stringify(filteredTools) : '';
   // PHASE-3 T2: the ONE estimator. Was /3.5 here and /3 on the OpenAI path — two answers to
   // "what does this text cost" in one file.
-  const toolTokenEstimate = estimateTokens(toolsJson);
+  //
+  // T108 (BACKLOG 56): characters are counted here and turned into tokens ONCE, below, by
+  // `estimateRequestTokens` — which spends this provider's two measured divisors on the two
+  // populations (prose for the system prompt and the messages, dense for the schema array) and
+  // is floored so the estimate can only grow relative to the asserted 4. The per-part token
+  // numbers are kept because the log lines and `resolveOutputBudget` name them, but they are now
+  // the measured-divisor answers rather than four separate `/4`s.
+  const toolSchemaChars = toolsJson.length;
 
-  const estimateMessageTokens = (msgs: Anthropic.MessageParam[]) =>
+  const messageChars = (msgs: Anthropic.MessageParam[]) =>
     msgs.reduce((sum, m) => {
       const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-      return sum + estimateTokens(content);
+      return sum + content.length;
     }, 0);
-
-  const systemTokenEstimate = estimateTokens(systemPrompt);
 
   // ── THE ANTHROPIC FRONT-TRIMMER IS DELETED (PHASE-3 T4 Step 2b, 2026-08-01) ──
   // STRIP. It was `model.ts:2244-2292` at `1d112ad`: `minOutputReserve = 4096`, a
@@ -3379,7 +3402,14 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
   // (C11). Warn-and-send has no expression left in the tree.
   // Measured before deleting: day-0 detect run 73 calls / **0 budget violations**; the driven
   // pre-flip arm at `1d112ad` **checked=63 diverged=0**. On real traffic this loop never ran.
-  const inputEstimate = systemTokenEstimate + estimateMessageTokens(anthropicMessages) + toolTokenEstimate;
+  const anthropicEstimate = estimateRequestTokens(
+    {
+      proseChars: systemPrompt.length + messageChars(anthropicMessages),
+      schemaChars: toolSchemaChars,
+    },
+    measuredDivisorsFor(modelInfo.providerId),
+  );
+  const inputEstimate = anthropicEstimate.tokens;
 
   // T81b: the pre-dial gate, on the second transport. `anthPatience` above is the same
   // resolved bound `getClient` built its transport clock from — building that client is not a
@@ -3603,6 +3633,8 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
       // reality (`memory/budget.ts`). Nothing here decides a trim any more — the allocator
       // and `validateAssembly` do that upstream.
       estimatedInputTokens: inputEstimate,
+      // T108: as on the OpenAI path — the divisor this estimate was really produced by.
+      estimatorCharsPerToken: anthropicEstimate.effectiveCharsPerToken,
     });
 
     // Update rate limits from response headers (if available from stream)

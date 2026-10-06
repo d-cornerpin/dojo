@@ -45,12 +45,39 @@
 //     estimate measures the estimator against itself and always answers `divisorUsed`, which would
 //     silently pin the reading at 4 forever. `recordCost` already knows which rows those are and
 //     passes `inputTokensEstimated`; such a row establishes nothing.
-//  2. THE DIVISOR MUST BE THE ONE IN FORCE. A row written under a different divisor describes a
-//     different estimator; `tracker.ts`'s own comment at the INSERT makes the same point ("4-chars
-//     and 3.5-chars rows are different measurements and a trend that mixes them silently is #14's
-//     class"). Rows whose `estimator_chars_per_token` is not the live constant are skipped rather
-//     than rescaled, because rescaling assumes the estimator's error is linear in the divisor and
-//     nothing has measured that.
+//  2. THE DIVISOR MUST BE A REAL DIVISOR — and, since T108, NOT NECESSARILY THE CONSTANT.
+//     ⚠ THIS GUARD WAS DELIBERATELY WIDENED, and the widening is forced by the change that spends
+//     the reading, so it is argued here rather than discovered later.
+//
+//     IT USED TO REQUIRE `divisorUsed === CHARS_PER_TOKEN`, on this reasoning: "a row written
+//     under a different divisor describes a different estimator … skipped rather than rescaled,
+//     because rescaling assumes the estimator's error is linear in the divisor and nothing has
+//     measured that." That reasoning was about a divisor that only ever changed when SOMEONE
+//     EDITED THE CONSTANT, and under that assumption it was right.
+//
+//     `memory/budget.ts`'s `estimateRequestTokens` now divides each population by its own
+//     MEASURED reading, so `estimator_chars_per_token` legitimately differs per request, and
+//     `tracker.ts` stores the one that really produced the estimate. Keeping the old equality
+//     would therefore skip EVERY row written by a box that has measured itself — the reading
+//     would freeze at whatever it was the day the box started spending it, which is a silent,
+//     self-sealing failure and strictly worse than no reading.
+//
+//     AND NO RESCALING IS INVOLVED, which is why widening it is safe rather than a trade. The
+//     arithmetic this module performs is
+//
+//         chars = estimatedInputTokens * divisorUsed
+//
+//     and that is not a model of the estimator — it is the INVERSE OF THE ARITHMETIC THAT
+//     PRODUCED THE ROW, so it recovers this request's character count EXACTLY, whatever divisor
+//     was used. `chars / billed` is then the true ratio the provider charged for those
+//     characters. Nothing linear is assumed about any error, because no error term appears: the
+//     measurement is of the PROVIDER'S TOKENISER, and it does not know or care what we guessed.
+//     That is also why the loop cannot feed on itself — spend a measured divisor, record it, and
+//     the next reading still measures the tokeniser rather than our own last answer.
+//
+//     What survives of the old guard is its real content: a divisor must be a positive finite
+//     number. A NULL (the estimate and its divisor must travel together), a zero or a negative
+//     establishes nothing, because `chars` is then meaningless rather than merely imprecise.
 //  3. A SIZE FLOOR. `ceil()` quantises a small estimate — at 50 estimated tokens one token of
 //     rounding is a 2% error in the ratio — and a tiny request is also unrepresentative of the
 //     decisions the reading exists to inform (they are all about large ones). 2,000 estimated
@@ -162,7 +189,9 @@ export function isProseSample(callPurpose: string | null | undefined): boolean {
 export function rawCharsPerTokenFrom(sample: EstimatorSample): number | null {
   const { estimatedInputTokens, divisorUsed, inputTokens } = sample;
   if (sample.inputTokensEstimated === true) return null;                                  // guard 1
-  if (typeof divisorUsed !== 'number' || divisorUsed !== CHARS_PER_TOKEN) return null;     // guard 2
+  if (typeof divisorUsed !== 'number' || !Number.isFinite(divisorUsed) || divisorUsed <= 0) {
+    return null;                                                                           // guard 2
+  }
   if (typeof estimatedInputTokens !== 'number' || !Number.isFinite(estimatedInputTokens)) return null;
   if (estimatedInputTokens < ESTIMATOR_SAMPLE_MIN_ESTIMATED_TOKENS) return null;           // guard 3
   const billed = inputTokens + (sample.cacheReadTokens ?? 0) + (sample.cacheCreationTokens ?? 0);
