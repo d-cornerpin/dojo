@@ -179,7 +179,7 @@ describe('B5 the refusal comes before anything is downloaded', () => {
     // fragment of the command text, which is strictly more precise: the literal `curl` now lives
     // in a helper near the top of the file, so a text search would have found the helper instead
     // of the download and compared the pre-flight against the wrong offset.
-    const downloadAt = body.indexOf('execIdleBounded(curlDownloadCmd(');
+    const downloadAt = body.indexOf("spawnIdleBounded('curl', curlDownloadArgv(");
     expect(preflightAt, 'applyUpdate never consults the pre-flight').toBeGreaterThan(-1);
     expect(downloadAt, 'applyUpdate never downloads anything').toBeGreaterThan(-1);
     expect(preflightAt, 'the pre-flight must run BEFORE the download, not after it')

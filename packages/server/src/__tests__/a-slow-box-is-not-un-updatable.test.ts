@@ -156,7 +156,7 @@ describe('§4 the updater is wired to it, and the install failure is legible', (
       /execAsync\('npm install --omit=dev', \{ cwd: PLATFORM_DIR, timeout: 120000, env \}\)/.test(src),
       'the flat install wall is the worse half of it',
     ).toBe(false);
-    expect(/execIdleBounded\(/.test(src), 'both legs run under the idle bound').toBe(true);
+    expect(/execIdleBounded\(|spawnIdleBounded\(/.test(src), 'both legs run under the idle bound').toBe(true);
   });
 
   it('curl is given its OWN stall detector, which is a measured fact about the transfer', () => {
@@ -165,8 +165,13 @@ describe('§4 the updater is wired to it, and the install failure is legible', (
     // `--speed-time`/`--speed-limit` aborts only when the transfer sits below a floor for a whole
     // window — curl measuring its own liveness, rather than us guessing how long a file should
     // take. `--connect-timeout` bounds the one phase that has no bytes to measure.
-    expect(/--speed-limit \d+ --speed-time \d+/.test(src)).toBe(true);
-    expect(/--connect-timeout \d+/.test(src)).toBe(true);
+    // Review minor 3: the download is ARGV now, not a shell string, so the flags are array
+    // elements. The property is unchanged — curl is given its own stall detector — and the shape
+    // is strictly better: a release URL is data handed to `execve`, never text in a `/bin/sh -c`
+    // command line.
+    expect(/'--speed-limit', '\d+', '--speed-time', '\d+'/.test(src)).toBe(true);
+    expect(/'--connect-timeout', '\d+'/.test(src)).toBe(true);
+    expect(/spawnIdleBounded\('curl', curlDownloadArgv\(/.test(src), 'and no shell is involved').toBe(true);
   });
 
   it('an install that fails after the rsync says so, and names the backup to restore', () => {
@@ -186,7 +191,7 @@ describe('§4 the updater is wired to it, and the install failure is legible', (
     // one and leaving the other is the shape that made this defect survive its own review.
     const installs = src.match(/execIdleBounded\('npm install --omit=dev'/g) ?? [];
     expect(installs.length, 'both install legs are bounded').toBe(2);
-    const downloads = src.match(/execIdleBounded\(curlDownloadCmd\(/g) ?? [];
+    const downloads = src.match(/spawnIdleBounded\('curl', curlDownloadArgv\(/g) ?? [];
     expect(downloads.length, 'both download legs are bounded').toBe(2);
   });
 });

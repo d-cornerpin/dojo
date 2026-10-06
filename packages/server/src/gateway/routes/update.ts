@@ -66,14 +66,35 @@ async function execIdleBounded(
 }
 
 /**
- * The download command. `--speed-limit`/`--speed-time` is curl's OWN stall detector and the right
+ * The same idle bound with NO SHELL (review minor 3). `spawn(file, argv)` hands the arguments
+ * straight to `execve`, so a URL is data rather than text inside a `/bin/sh -c` string. The
+ * download leg is the one that takes a value from outside the process — the release asset URL —
+ * so it is the leg that should not be assembled into a command line at all. The shell form above
+ * stays for `npm install`, which genuinely has no untrusted input and reads better as a string.
+ */
+async function spawnIdleBounded(
+  file: string, argv: readonly string[],
+  opts: { idleMs: number; ceilingMs: number },
+): Promise<{ stdout: string; stderr: string }> {
+  const child = spawn(file, [...argv]);
+  return attachIdleBound(child, { idleMs: opts.idleMs, ceilingMs: opts.ceilingMs });
+}
+
+/**
+ * The download ARGV. `--speed-limit`/`--speed-time` is curl's OWN stall detector and the right
  * tool for this job: abort only if the transfer sits below 1 KB/s for a whole minute, which is a
  * measured fact about the transfer rather than a guess about how long a file "should" take.
  * `--connect-timeout` bounds the handshake, which is the one phase with no bytes to measure.
  * Our idle bound is the belt to curl's braces — it also covers curl itself wedging.
  */
-function curlDownloadCmd(url: string, dest: string): string {
-  return `curl -L --fail --connect-timeout 30 --speed-limit 1024 --speed-time 60 -o "${dest}" "${url}"`;
+function curlDownloadArgv(url: string, dest: string): string[] {
+  return [
+    '-L', '--fail',
+    '--connect-timeout', '30',
+    '--speed-limit', '1024', '--speed-time', '60',
+    '-o', dest,
+    url,
+  ];
 }
 const logger = createLogger('updater');
 
@@ -836,7 +857,7 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
     fs.mkdirSync(tmpDir, { recursive: true });
     const zipPath = path.join(tmpDir, 'dojo-platform.zip');
 
-    await execIdleBounded(curlDownloadCmd(zipAsset.browser_download_url, zipPath), {
+    await spawnIdleBounded('curl', curlDownloadArgv(zipAsset.browser_download_url, zipPath), {
       idleMs: UPDATE_DOWNLOAD_IDLE_MS, ceilingMs: UPDATE_DOWNLOAD_CEILING_MS,
     });
 
@@ -1155,7 +1176,7 @@ updateRouter.post('/rollback', async (c) => {
     fs.mkdirSync(tmpDir, { recursive: true });
     const zipPath = path.join(tmpDir, 'dojo-platform.zip');
 
-    await execIdleBounded(curlDownloadCmd(zipAsset.browser_download_url, zipPath), {
+    await spawnIdleBounded('curl', curlDownloadArgv(zipAsset.browser_download_url, zipPath), {
       idleMs: UPDATE_DOWNLOAD_IDLE_MS, ceilingMs: UPDATE_DOWNLOAD_CEILING_MS,
     });
 

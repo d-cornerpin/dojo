@@ -188,7 +188,15 @@ describe('the check cannot be skipped by adding another download', () => {
       // module quotes `git grep -n "curl -L"` in its header to record how it was derived, so a
       // raw-text sweep lists `artifact-integrity.ts` as a downloader and the clause fails on its
       // own documentation — precisely the thing the note above says it must not measure.
-      .filter((f) => /curl\s+-L\b/.test(stripComments(fs.readFileSync(f, 'utf8'))))
+      // t114 review minor 3: the download moved to ARGV (`spawn('curl', [...])`), so `curl -L` no
+      // longer appears as text anywhere. The detector matches an INVOCATION in either form — a
+      // shell command string, or curl as the program argument of a spawn-shaped call — because the
+      // property is "which files fetch an artifact", not "which files spell it as a command line".
+      // Deliberately NOT a bare `'curl'`: `agent/v2/classifiers/permission.ts` and
+      // `migration/step-classify.ts` both carry the word as a CLASSIFIER KEYWORD, and counting
+      // those would be the census measuring vocabulary instead of behaviour — the same
+      // own-documentation trap this clause already strips comments to avoid.
+      .filter((f) => /curl\s+-L\b|\(\s*['"]curl['"]\s*,/.test(stripComments(fs.readFileSync(f, 'utf8'))))
       .map((f) => path.relative(srcRoot, f))
       .sort();
     expect(downloaders).toEqual(['gateway/routes/update.ts']);
@@ -196,7 +204,7 @@ describe('the check cannot be skipped by adding another download', () => {
     const src = fs.readFileSync(path.join(srcRoot, 'gateway/routes/update.ts'), 'utf8');
     // The command text is now built ONCE in a helper and invoked twice, so counting the text
     // would read 1 where there are 2 downloads. The call site is the download.
-    const downloads = (src.match(/execIdleBounded\(curlDownloadCmd\(/g) ?? []).length;
+    const downloads = (src.match(/spawnIdleBounded\('curl', curlDownloadArgv\(/g) ?? []).length;
     const verifies = (src.match(/verifyArtifactAgainstManifest\s*\(/g) ?? []).length;
     expect(downloads).toBe(2);
     expect(verifies).toBe(downloads);
