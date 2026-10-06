@@ -241,7 +241,7 @@ export function recordCost(params: RecordCostParams): void {
     // every half at the moment it becomes true. A no-op below either sample floor, which is
     // most rows, and never allowed to fail a recorded cost: accounting owes them nothing.
     try {
-      recalibrateFromLedgerRow(providerId, { inputTokens, latencyMs, inputTokensEstimated, estimatedInputTokens, cacheReadTokens, cacheCreationTokens, divisorUsed: estimatedInputTokens === undefined ? null : CHARS_PER_TOKEN });
+      recalibrateFromLedgerRow(providerId, { inputTokens, latencyMs, inputTokensEstimated, estimatedInputTokens, cacheReadTokens, cacheCreationTokens, callPurpose, divisorUsed: estimatedInputTokens === undefined ? null : CHARS_PER_TOKEN });
     } catch {
       // Best-effort, exactly like the alert check below.
     }
