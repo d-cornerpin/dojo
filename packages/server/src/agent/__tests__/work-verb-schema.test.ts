@@ -136,13 +136,46 @@ const T18_BASELINE_CHARS = { work_open: 6327, work_update: 7606 };
 // T5's and T18's: this edit must add EXACTLY ONE property and must not touch an enum.
 const BASELINE_CHARS = { work_open: 6327, work_update: 7918 };
 
+// ── t107 (OWNER RULING 2026-10-05 #5) — ONE EXAMPLE NAME BECOMES A ROLE, AND IT COSTS 11 ──
+// The round's registered prefix re-blessing, and the smallest one this file records. Measured,
+// not estimated:
+//   work_open   6,327 → 6,338  (+11)
+//   work_update 7,918 → 7,918  (+0 — untouched; the edited field is `work_open.description`)
+// WHAT THE 11 ARE, exactly: `work_open.description`'s commitment example read *"email Bob the
+// roof quote after the site visit"* and now reads *"email <that contact> the roof quote after
+// the site visit"*. `Bob` (3) → `<that contact>` (14). That is the entire delta — no property
+// added, no property removed, no enum touched, no wording otherwise reflowed, and the guards
+// below are the inverse of T65's: this edit must add NOTHING.
+// WHY IT IS WORTH 11 BYTES OF CACHED PREFIX FOREVER: the ruling. A shipped prompt example that
+// names an invented person hands the model a person to reason about, and on a box where the
+// invented word matches a real contact it is worse than invented. The kit golden
+// `checks/golden/cache-prefix.primary.txt` was re-blessed in the same change (kit `98baa70`,
+// +51 chars across four such examples, of which this is one).
+const T107_BASELINE_CHARS = { work_open: 6338, work_update: 7918 };
+
 describe('S2 + N1 — the shared declaration, and the wording said once', () => {
   const open = schemaOf('work_open');
   const upd = schemaOf('work_update');
 
   it('serialises to exactly the measured byte count — the tools array is cached-prefix bytes', () => {
-    expect(JSON.stringify(open).length).toBe(BASELINE_CHARS.work_open);
-    expect(JSON.stringify(upd).length).toBe(BASELINE_CHARS.work_update);
+    expect(JSON.stringify(open).length).toBe(T107_BASELINE_CHARS.work_open);
+    expect(JSON.stringify(upd).length).toBe(T107_BASELINE_CHARS.work_update);
+  });
+
+  it('t107 — the +11 is ONE example name becoming a role, and NOTHING else moved', () => {
+    // The newest link in this file's chain of re-blessings, and the inverse of T65's guard:
+    // T65 had to add exactly one property to earn its bytes, this one has to add none.
+    expect(T107_BASELINE_CHARS.work_open - BASELINE_CHARS.work_open).toBe(11);
+    expect(T107_BASELINE_CHARS.work_update - BASELINE_CHARS.work_update).toBe(0);
+    const po = (open as { properties: Record<string, unknown> }).properties;
+    const pu = (upd as { properties: Record<string, unknown> }).properties;
+    // No capability rode in on the 11: both rosters are exactly T18's and T65's counts.
+    expect(Object.keys(po)).toHaveLength(25);
+    expect(Object.keys(pu)).toHaveLength(33);
+    // And the bytes landed where they were declared to land — the role, and no invented person.
+    const description = String((po.description as { description?: string }).description ?? '');
+    expect(description).toContain('email <that contact> the roof quote after the site visit');
+    expect(description).not.toMatch(/\bBob\b/);
   });
 
   it('T0C-W — the wire-through cost is EXACTLY the five new properties, and it is measured', () => {
@@ -199,8 +232,11 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     expect((pu.status as { enum: string[] }).enum).toEqual(
       ['on_deck', 'in_progress', 'complete', 'blocked', 'fallen', 'paused', 'cancelled'],
     );
-    // And `work_open` did not move at all: the whole delta is on this one verb.
-    expect(JSON.stringify(open).length).toBe(T18_BASELINE_CHARS.work_open);
+    // And `work_open` did not move AT T65: the whole T65 delta is on this one verb. The
+    // comparison is to T65's own pin plus t107's later +11 (one example name → a role), because
+    // the question this clause asks is about T65's edit, not about every edit since.
+    expect(JSON.stringify(open).length)
+      .toBe(T18_BASELINE_CHARS.work_open + (T107_BASELINE_CHARS.work_open - BASELINE_CHARS.work_open));
   });
 
   it('UX-REPAIR ROUND 3 T18 — the +295 is the status vocabulary and nothing else', () => {
@@ -222,8 +258,10 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     expect(status.description).toMatch(/two TERMINAL outcomes are different/);
     expect(status.description).toMatch(/"cancelled" = someone \(usually the user\) chose to call it off/);
     expect(status.description).toMatch(/NOT a failure/);
-    // `work_open` is untouched — this edit is one verb and one property wide.
-    expect(JSON.stringify(open).length).toBe(T0CW_BASELINE_CHARS.work_open);
+    // `work_open` is untouched BY T18 — this edit is one verb and one property wide. Same
+    // bookkeeping as the T65 clause above: T18's pin plus t107's later +11.
+    expect(JSON.stringify(open).length)
+      .toBe(T0CW_BASELINE_CHARS.work_open + (T107_BASELINE_CHARS.work_open - BASELINE_CHARS.work_open));
   });
 
   it('preserves KEY ORDER on every shared property — stringify emits insertion order', () => {
@@ -265,7 +303,9 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     // Was 2,328 + 2,072 = 4,400 at `8f36cdb` and still 4,400 at the phase exit `9a995ca`.
     // N1 collapses the seven paraphrase pairs: 2,333 + 1,400 = 3,733, −667 chars of prose
     // (−693 once JSON escaping is counted, `BASELINE_CHARS` above).
-    expect(totalChars).toBe(3733);
+    // +11 against N1's own 3,733: t107 turned `Bob` into `<that contact>` in
+    // `work_open.description`, which is one of the TEN pairs N1 left alone (pinned below).
+    expect(totalChars).toBe(3733 + 11);
     // NOT one description was deleted, and no pair was harmonised into identical bytes:
     // every field still reads differently on the two verbs because each verb still says
     // its own thing about it.
@@ -304,7 +344,9 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     // Measured at `9a995ca` before the collapse and unchanged by it. A later "tidy-up" that
     // trims one of these is a coaching trim nobody approved, and this pins it.
     const UNTOUCHED: Record<string, [number, number]> = {
-      title: [22, 25], description: [154, 75], project_id: [54, 115], assigned_to: [51, 83],
+      // `description` is 165 on work_open, not the 154 measured at `9a995ca`: t107 replaced the
+      // invented `Bob` in its commitment example with `<that contact>` (+11, registered above).
+      title: [22, 25], description: [165, 75], project_id: [54, 115], assigned_to: [51, 83],
       priority: [32, 36], step_number: [34, 62], depends_on: [55, 98], phase: [34, 51],
       goal: [68, 212], repeat_end_type: [165, 39],
     };
