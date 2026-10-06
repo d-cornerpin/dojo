@@ -133,3 +133,74 @@ describe('it never throws — a stamp is an assertion, not a precondition', () =
     expect(returned).toBeNull();
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// t108 (BACKLOG line 63) — THE TWO PROPERTIES THE LINE ASKED FOR BY NAME.
+//
+// Line 63, verbatim: "serverIdentity() attests the install directory, not the loaded code — three
+// stale/zombie dev servers caught by hand; wants a boot-time build stamp the probe reads back."
+// The stamp itself landed in `ce91ab13` and the clauses above hold its writer. Re-derived at this
+// head, two halves of the line had no clause:
+//
+//   1. THE STAMP CHANGES WHEN THE LOADED CODE CHANGES. This is the whole point — a stamp that
+//      reported the same sha across two different builds would reproduce the defect with extra
+//      steps, since the three zombie servers were caught by their sha NOT having moved.
+//   2. THE PROBE READS IT BACK. The probe is kit-side (`behavioral/lib/serverstate.mjs` reads
+//      `~/.dojo/server-boot.json` and labels provenance `boot-stamp:<source>`), so the half that
+//      belongs to THIS repo is the contract: the file is at the path the probe looks at, and it
+//      carries the fields the probe reads. That is what is asserted here.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('the stamp moves when the loaded code moves (BACKLOG 63)', () => {
+  it('RED-CRITICAL: two different builds produce two different stamps', () => {
+    process.env.DOJO_BUILD_SHA = 'a'.repeat(40);
+    const first = writeBootStamp();
+    expect(first).not.toBeNull();
+    const firstOnDisk = readStamp();
+
+    process.env.DOJO_BUILD_SHA = 'b'.repeat(40);
+    writeBootStamp();
+    const secondOnDisk = readStamp();
+
+    expect(
+      secondOnDisk.sha,
+      'the stamp reported the same sha after the loaded code changed. A stamp that cannot move is '
+      + 'the install-directory attestation wearing a new name — the three stale dev servers in '
+      + 'BACKLOG line 63 were caught precisely by a sha that had NOT moved.',
+    ).not.toBe(firstOnDisk.sha);
+    expect(secondOnDisk.sha).toBe('b'.repeat(40));
+  });
+
+  it('and the same build re-stamps to the same sha — it is the CODE that decides, not the clock', () => {
+    // The other direction: a stamp that changed on every boot would be noise rather than an
+    // identity, and no probe could tell "restarted" from "different code".
+    process.env.DOJO_BUILD_SHA = 'c'.repeat(40);
+    writeBootStamp();
+    const a = readStamp().sha;
+    writeBootStamp();
+    expect(readStamp().sha).toBe(a);
+  });
+});
+
+describe('the probe can read it back — this repo\'s half of that contract', () => {
+  it('the stamp is at `~/.dojo/server-boot.json`, which is the one path the probe knows', () => {
+    // The kit probe hard-codes this path. A rename here silently returns it to inferring the
+    // answer ABOUT the process instead of reading it FROM the process.
+    expect(path.basename(bootStampPath())).toBe('server-boot.json');
+    expect(bootStampPath()).toBe(path.join(HOME, '.dojo', 'server-boot.json'));
+  });
+
+  it('it carries every field the probe reads, and the pid that makes a leftover harmless', () => {
+    process.env.DOJO_BUILD_SHA = 'd'.repeat(40);
+    writeBootStamp();
+    const stamp = readStamp() as unknown as Record<string, unknown>;
+    // `pid` is load-bearing: a stamp whose pid is not the listening pid is somebody else's, which
+    // is what lets a leftover file be ignored rather than believed.
+    for (const field of ['pid', 'version', 'sha', 'shaSource', 'stampVersion']) {
+      expect(stamp, `the probe reads \`${field}\` and the stamp no longer carries it`)
+        .toHaveProperty(field);
+    }
+    expect(stamp.pid).toBe(process.pid);
+    expect(stamp.shaSource).toBe('env');
+  });
+});
