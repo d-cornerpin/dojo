@@ -271,8 +271,13 @@ describe('B8 the answer reaches the Update tab RESTORE-PATH built', () => {
   });
 
   it('the Update tab renders it beside the backup notice, and gates the button on it', () => {
+    // t111-E1 SPLIT the 7,194-line `pages/Settings.tsx` into one module per tab, so the Update
+    // tab now has its own file. This clause follows the COMPONENT, not the filename: it still
+    // asserts the same two properties, and the `tabAt` guard below is what made the move a
+    // visible RED rather than a slice of 12,000 characters that quietly matched nothing.
     const settings = fs.readFileSync(
-      path.join(__dirname, '..', '..', '..', '..', 'dashboard', 'src', 'pages', 'Settings.tsx'), 'utf8');
+      path.join(__dirname, '..', '..', '..', '..', 'dashboard',
+        'src', 'components', 'settings', 'UpdateTab.tsx'), 'utf8');
     const tabAt = settings.indexOf('const UpdateTab');
     expect(tabAt).toBeGreaterThan(-1);
     const tab = settings.slice(tabAt, tabAt + 12000);
