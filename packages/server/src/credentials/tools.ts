@@ -135,7 +135,9 @@ export async function executeCredentialTool(
     case 'credential_list': {
       const records = listCredentials();
       if (records.length === 0) {
-        return 'No credentials stored. Use credential_add to save one when the user provides it.';
+        // t120: named the verb but not its shape, so the one outcome whose next call is
+        // unambiguous was the vaguest message in the family.
+        return 'No credentials stored. When the user provides one, save it with credential_add(service_name="short-name", credentials={"api_key": "..."}).';
       }
       const lines = records.map(r => {
         const desc = r.description ? ` - ${r.description}` : '';
@@ -157,7 +159,15 @@ export async function executeCredentialTool(
         return `Error: ${err instanceof Error ? err.message : String(err)}`;
       }
       if (!record) {
-        return `No credential found for service "${serviceName}". Call credential_list to see what is stored, or ask the user to provide one and save it with credential_add.`;
+        // t120: this miss path was the family's BEST message and still named its two verbs
+        // without their shapes. The census holds every outcome to the same bar.
+        return (
+          `No credential found for service "${serviceName}" — the name is case-sensitive. ` +
+          `Call credential_list() to see the names that ARE stored. If this value has not been ` +
+          `saved yet, ask the user for it and store it with ` +
+          `credential_add(service_name="${serviceName}", credentials={…}). Do not retry this read ` +
+          `with the same name — it will fail the same way until something is stored under it.`
+        );
       }
       const fields = Object.entries(record.credentials)
         .map(([k, v]) => `  ${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)

@@ -127,10 +127,10 @@ function missingRefusal(serviceName: string, verb: string): string {
     ? `Nothing has been stored under that name yet, so there is no value to replace. If this is a ` +
       `credential the user has just handed you, store it with ` +
       `credential_add(service_name="${serviceName}", credentials={…}) — no overwrite flag is needed ` +
-      `for a name that is free. If you expected it to exist, call credential_list to see the names ` +
+      `for a name that is free. If you expected it to exist, call credential_list() to see the names ` +
       `that ARE stored; the name is case-sensitive.`
     : `Nothing is stored under that name, so there is nothing to remove and no further call is ` +
-      `needed. If you expected it to exist, call credential_list to see the names that ARE ` +
+      `needed. If you expected it to exist, call credential_list() to see the names that ARE ` +
       `stored; the name is case-sensitive.`;
   return `No credential found for service "${serviceName}". ${next}`;
 }
@@ -169,7 +169,7 @@ function overwriteRefusal(serviceName: string, row: ExistingRow, verb: string): 
     `If the user has genuinely handed you a replacement for THIS credential, call ` +
     `${verb}(service_name="${serviceName}", credentials={…}, overwrite=true) and the overwrite will be ` +
     `recorded. If you are storing a DIFFERENT service's key, pick a service_name that is not taken — ` +
-    `credential_list shows which names are in use. ` +
+    `credential_list() shows which names are in use. ` +
     // t120: the third case, and the one the two failed draws were actually in — the caller is
     // re-sending a value that is ALREADY in this slot. Naming it here costs one sentence and is
     // the only branch whose right answer is "write nothing at all".
@@ -397,7 +397,14 @@ export function getCredentialByService(
     logger.error('Failed to decrypt credential - master key likely rotated', {
       serviceName, error: err instanceof Error ? err.message : String(err),
     });
-    throw new Error(`Credential "${serviceName}" cannot be decrypted (master key likely rotated). Delete and re-add the credential.`);
+    // t120: "Delete and re-add the credential" named the acts but not the calls. This is the
+    // one refusal in the family a caller cannot reason its way out of, so it spells both.
+    throw new Error(
+      `Credential "${serviceName}" cannot be decrypted (the master key was likely rotated), so its ` +
+      `stored value is unrecoverable. Ask the user for a replacement value, then call ` +
+      `credential_add(service_name="${serviceName}", credentials={…}, overwrite=true) to seal the new ` +
+      `one under the same name. Do not retry this read — it will fail the same way every time.`,
+    );
   }
 
   let credentials: Record<string, unknown>;
