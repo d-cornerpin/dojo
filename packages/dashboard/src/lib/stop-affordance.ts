@@ -104,3 +104,48 @@ export function stopAffordance(agent: StopSubject): StopAffordance {
 
   return NOTHING;
 }
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// THE COMPOSER'S HALF (A-5b / OWNER RULING #9 — L40)
+//
+// The agent card asks "offer a stop at all, and what does it say". The chat composer has a
+// second question the card does not have: the stop control lives in the SEND button's seat,
+// and whether it may take that seat depends on which kind of work is running.
+//
+// THE DISTINCTION, which is the whole of L40's fix:
+//
+//   A TURN IS RUNNING — send becomes stop. Correct and unchanged: a reply is coming, the
+//   composer is not accepting anything until it does, and the dots are up.
+//
+//   ONLY BACKGROUND WORK IS RUNNING — the turn is over, the agent is free, and the owner must
+//   be able to type a new message AND cut the render. Taking the send seat here would mean a
+//   thirty-minute video render had disabled the composer; leaving the control out altogether is
+//   the defect L59 names. So it sits BESIDE send, and the dots stay down — the agent is not
+//   thinking.
+//
+// Why a function and not two booleans in the component: "never both buttons at once" is an
+// invariant, and an invariant expressed as two independent `&&`s in JSX is one edit away from
+// being two buttons. One answer, three values, driven from the server suite.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Where the composer's stop control goes, if anywhere. Exactly one of the three. */
+export type ComposerStopControl = 'none' | 'instead-of-send' | 'beside-send';
+
+export interface ComposerStopSubject {
+  /** A turn this user is waiting on — the composer's existing dots-and-stop state. */
+  isWorking: boolean;
+  /** ANYTHING is stoppable: this turn, or background work that outlived one. */
+  canStop: boolean;
+  /** The surface actually has somewhere to send the press. No handler, no button. */
+  hasHandler: boolean;
+}
+
+export function composerStopControl(o: ComposerStopSubject): ComposerStopControl {
+  if (!o.hasHandler) return 'none';
+  // A working turn wins the seat. `canStop` is true for a turn as well (it is the wider
+  // question), so the order of these two branches is what keeps them from both matching.
+  if (o.isWorking) return 'instead-of-send';
+  if (o.canStop) return 'beside-send';
+  return 'none';
+}

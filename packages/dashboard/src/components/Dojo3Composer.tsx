@@ -17,6 +17,7 @@ import { VoiceFirstRunModal } from './VoiceFirstRunModal';
 import { useDojoOrb } from './orb/OrbProvider';
 import { useToast } from '../hooks/useToast';
 import { usePresence } from './PresenceProvider';
+import { composerStopControl } from '../lib/stop-affordance';
 
 const ACCEPTED_EXTENSIONS = '.png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.md,.csv,.json,.xml,.doc,.docx,.xls,.xlsx,.pptx,.js,.ts,.tsx,.jsx,.py,.html,.css,.sh,.yaml,.yml,.toml,.env,.sql,.rs,.go,.java,.rb,.php,.swift,.kt,.c,.cpp,.h,.mp3,.wav,.m4a,.aac,.ogg,.opus,.flac,.webm,.mp4,.mov,.mkv,.avi';
 // 1 GB per file, 2 GB per message. Mirrors ChatInput's caps for early UI
@@ -35,6 +36,17 @@ interface Dojo3ComposerProps {
   agentId: string;
   onSend: (content: string, attachments?: AttachmentInfo[]) => void;
   isWorking?: boolean;
+  /**
+   * A-5b / OWNER RULING #9 — there is something to stop even though no turn is running.
+   *
+   * SEPARATE FROM `isWorking` ON PURPOSE. `isWorking` means "a turn this user is waiting on",
+   * and it is what swaps SEND for STOP — correct for a turn, because a reply is coming and
+   * nothing can be sent until it does. A background job (a video render, a narration) is the
+   * other case: the turn is over, the agent is free, and the owner must be able to type a new
+   * message AND cut the render. So this flag adds a stop BESIDE send rather than in place of
+   * it, and the dots stay down — the agent is not thinking.
+   */
+  canStop?: boolean;
   onStop?: () => void;
   placeholder?: string;
 }
@@ -59,6 +71,7 @@ export function Dojo3Composer({
   agentId,
   onSend,
   isWorking,
+  canStop,
   onStop,
   placeholder,
 }: Dojo3ComposerProps) {
@@ -470,7 +483,14 @@ export function Dojo3Composer({
     }
   };
 
-  const showStop = !!isWorking && !!onStop;
+  // A-5b — ONE ANSWER, asked of the rule the server suite drives (`lib/stop-affordance.ts`).
+  // "Never both buttons at once" is an invariant, and two independent `&&`s in the JSX below
+  // would be one edit away from breaking it.
+  const stopControl = composerStopControl({
+    isWorking: !!isWorking, canStop: !!canStop, hasHandler: !!onStop,
+  });
+  const showStop = stopControl === 'instead-of-send';
+  const showBackgroundStop = stopControl === 'beside-send';
 
   const mm = Math.floor(elapsed / 60);
   const ss = String(Math.floor(elapsed % 60)).padStart(2, '0');
@@ -640,6 +660,22 @@ export function Dojo3Composer({
               <svg className="ic ic--mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v1a7 7 0 0 0 14 0v-1" /><path d="M12 18v3" /></svg>
               <svg className="ic ic--mic-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6a3 3 0 0 1 6 0v4" /><path d="M15 11.6V12a3 3 0 0 1-5.1 2.1" /><path d="M5 10v1a7 7 0 0 0 11.3 5.5" /><path d="M18.6 13.4c.26-.75.4-1.56.4-2.4v-1" /><path d="M12 18v3" /><path d="M3 3l18 18" /></svg>
             </button>
+
+            {/* A-5b — STOP FOR WORK THAT OUTLIVED THE TURN. Beside send, not instead of it:
+                the agent is idle and can be messaged, and a background render can still be
+                cut. The ruling is that stop stops anything the agent is doing. */}
+            {showBackgroundStop && (
+              <button
+                type="button"
+                className="composer__btn composer__btn--stop"
+                onClick={onStop}
+                onPointerDown={(e) => e.preventDefault()}
+                aria-label="Stop background job"
+                title="Stop background job"
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg>
+              </button>
+            )}
 
             {/* SEND — becomes STOP while the agent is working */}
             {showStop ? (

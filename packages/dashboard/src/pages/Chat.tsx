@@ -781,6 +781,13 @@ export const Chat = ({ panel = null }: ChatProps) => {
   // idle (request done). Background a2a churn never sets this, so the UI still
   // stays quiet for PURE inter-agent work with no user waiting.
   const [awaitingUserReply, setAwaitingUserReply] = useState(false);
+  // A-5b / OWNER RULING #9 — THE WORK THAT OUTLIVES THE TURN, which no `agent:status` frame
+  // describes. A video render, a narration, an image delivery that waits for the agent to go
+  // idle: the turn's `idle` has already gone out and nothing follows it, so every state above
+  // reads "nothing is happening" while a thirty-minute job burns. `agent:jobs` is the emission
+  // that says otherwise, and `stoppable` is the SERVER'S answer — this component keeps no tally
+  // of its own (see `shared/src/ws.ts`'s note on why a rendering rule could not do this).
+  const [backgroundStoppable, setBackgroundStoppable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
@@ -939,6 +946,14 @@ export const Chat = ({ panel = null }: ChatProps) => {
       const agentResult = await api.getAgent(AGENT_ID);
       if (agentResult.ok && agentResult.data.status === 'working') {
         setIsWorking(true);
+      }
+      // …and the same question the frame answers, asked once on the way in. A user who
+      // navigates away and comes back mid-render arrives before the next lifecycle edge, so
+      // without this the stop control would be missing until the job happened to change state.
+      // Same two numbers, same predicate — `inFlight` is `live-work.ts`'s own output.
+      if (agentResult.ok) {
+        const f = agentResult.data.inFlight;
+        setBackgroundStoppable(!!f && (f.turn > 0 || f.background > 0));
       }
 
       // Load model name lookup for wordy mode display
@@ -1490,6 +1505,20 @@ export const Chat = ({ panel = null }: ChatProps) => {
       }
     });
 
+    // A-5b / L40 — THE NEW EMISSION. `agent:jobs` fires on the lifecycle EDGES of background
+    // work: a background dial registering or releasing, a media job row changing state, and the
+    // stop route's own "nothing left". It is the only frame that speaks AFTER a turn's `idle`,
+    // which is the whole window the defect lived in.
+    //
+    // The frame carries the server's own `stoppable`; this reads it rather than re-deriving a
+    // predicate from the counts, so the composer, the agent card's rule and the stop route can
+    // never disagree about whether there is something to stop.
+    const unsubJobs = subscribe('agent:jobs', (event: WsEvent) => {
+      const e = event as { agentId: string; stoppable: boolean };
+      if (e.agentId !== agentIdRef.current) return;
+      setBackgroundStoppable(e.stoppable === true);
+    });
+
     const unsubTerminated = subscribe('agent:terminated', (event: WsEvent) => {
       const e = event as { agentId: string; reason: string };
       if (e.agentId !== agentIdRef.current) return;
@@ -1525,6 +1554,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
       unsubMessage();
       unsubRetract();
       unsubStatus();
+      unsubJobs();
       unsubTerminated();
       unsubSource();
     };
@@ -1760,6 +1790,21 @@ export const Chat = ({ panel = null }: ChatProps) => {
   //     image generation) — `undefined !== false`, so it behaves exactly as today.
   const showWorkingUi = isWorking
     && (wordyMode || awaitingUserReply || (turnKind !== 'a2a' && turnUserFacing !== false));
+  // ── A-5b / OWNER RULING #9: *"STOP means stop for anything that agent is doing"* ──
+  //
+  // THE STOP CONTROL AND THE THINKING DOTS COME APART HERE, and that separation is the whole
+  // of this change. `showWorkingUi` answers "is a turn running that this user is waiting on" —
+  // it drives the dots, the orb's thinking state and the composer's quiet-for-a2a behaviour,
+  // and every one of those should stay FALSE for a background render: the agent is not
+  // thinking, it is not about to reply, and raising the dots over a thirty-minute video would
+  // make the composer look mid-turn for half an hour.
+  //
+  // But there IS something to stop, and `stopAgent` cuts it (A-5 wired the dials, A-6 the
+  // transports, and the stop route's predicate now lets the press through). So the stop control
+  // is offered on the WIDER question while the dots keep the narrow one. The agent card's rule
+  // (`lib/stop-affordance.ts`) reaches the same verdict from the same two numbers; a turn is
+  // stoppable either way, so the `||` can only ever ADD the background case.
+  const canStop = showWorkingUi || backgroundStoppable;
   // In-flight turn cutoff for the chip background test (see toolChips): while
   // working, rows at/after the last user trigger belong to the live turn.
   const liveTurnCutoff = isWorking
@@ -1771,10 +1816,17 @@ export const Chat = ({ panel = null }: ChatProps) => {
       agentId={AGENT_ID}
       onSend={handleSend}
       isWorking={showWorkingUi}
+      canStop={canStop}
       placeholder={activeAgentName ? `Message ${activeAgentName}` : undefined}
       onStop={async () => {
         await api.stopAgent(AGENT_ID);
         setIsWorking(false);
+        // The press settles BOTH halves. The route answers with what is left and emits the
+        // zero frame as well, but clearing here means the control never outlives its own click
+        // waiting for a frame — the stop is idempotent, so a frame that arrives after costs
+        // nothing, and a control left standing over work that is already cut is the missing
+        // button's lie wearing the other face.
+        setBackgroundStoppable(false);
       }}
     />
   );
