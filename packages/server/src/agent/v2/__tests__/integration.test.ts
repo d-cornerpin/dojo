@@ -409,17 +409,47 @@ import { renderCompactionContinuity } from '../../../prompt/assembler.js';
 
 // ── Test helpers ──
 
-function setupTestDb(): Database.Database {
-  const db = new Database(':memory:');
+// ── THE MIGRATION CHAIN RUNS ONCE PER WORKER, NOT ONCE PER CLAUSE ──────────────────────
+// (t112, 2026-10-05) This file is 132 clauses and each one built its fixture by running the
+// REAL migration chain. MEASURED on this box: `runMigrations()` on a fresh `:memory:` DB
+// costs 191.3ms (10 calls timed), 132 clauses cost 25.7s of the file's 29.4s, and a file
+// that runs that long crosses vitest's 60s birpc deadline under full-suite load — which is
+// the `[vitest-worker]: Timeout calling "onTaskUpdate"` error that cost three ritual rounds.
+//
+// The chain still runs — once — and its RESULT is the fixture. SQLite's serialize/deserialize
+// pair copies the migrated image byte-for-byte, measured at 0ms per restore. So every clause
+// gets the same schema the real chain produces (never a hand-rolled CREATE TABLE, which is
+// the drift the note below was written to end), and nothing about what any clause proves
+// moves. The restored handle is writable and growable (proven: 20,000 rows inserted into a
+// table created after the restore).
+let migratedImage: Buffer | null = null;
 
-  // Run the REAL migration chain instead of hand-rolling CREATE TABLE
-  // statements. The previous hand-rolled fixture drifted 4+ weeks behind the
-  // engine (no conv_key, no inter_agent_messages, no tool_receipts, no
-  // open_loops, ...) and every schema addition broke this suite. runMigrations
-  // resolves the DB via the mocked getDb(), so point the mock at this
-  // instance first.
+function migratedDb(): Database.Database {
+  if (migratedImage === null) {
+    // Run the REAL migration chain instead of hand-rolling CREATE TABLE
+    // statements. The previous hand-rolled fixture drifted 4+ weeks behind the
+    // engine (no conv_key, no inter_agent_messages, no tool_receipts, no
+    // open_loops, ...) and every schema addition broke this suite. runMigrations
+    // resolves the DB via the mocked getDb(), so point the mock at this
+    // instance first.
+    const seed = new Database(':memory:');
+    mockDb.current = seed;
+    runMigrations();
+    migratedImage = seed.serialize();
+    seed.close();
+  }
+  const db = new Database(migratedImage);
+  // `foreign_keys` is a PER-CONNECTION pragma, not part of the image: `runMigrations` leaves
+  // it ON (migrations.ts:275) and every clause's FK-order seeding below depends on that, so
+  // the restored handle re-asserts it rather than inheriting whatever the default happens to
+  // be. Proven: a `models` row naming an absent provider raises `FOREIGN KEY constraint failed`.
+  db.pragma('foreign_keys = ON');
+  return db;
+}
+
+function setupTestDb(): Database.Database {
+  const db = migratedDb();
   mockDb.current = db;
-  runMigrations();
 
   // Seed in FK order, migrations leave foreign_keys ON:
   // provider → model → agent → message.

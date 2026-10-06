@@ -40,16 +40,34 @@ const SERVER = path.resolve(__dirname, '..', '..', '..', '..');   // packages/se
 const TSC = path.resolve(SERVER, '..', '..', 'node_modules', '.bin', 'tsc');
 const TYPES = path.join(SERVER, 'src/prompt/registry/types.js').replace(/\\/g, '/');
 
-/** Compile one fixture and return ONLY the diagnostics that name the fixture itself. */
-function fixtureErrors(body: string): string[] {
+/**
+ * Compile a NAMED SET of fixtures in ONE `tsc` invocation and return, per fixture, only the
+ * diagnostics that name that fixture's own file.
+ *
+ * WHY ONE INVOCATION (t112, 2026-10-05): this file's `beforeAll` spawned `tsc` three times,
+ * and each spawn re-parses the lib files and re-resolves `types.ts`'s whole import closure.
+ * MEASURED on this box: 17.4s for the file, essentially all of it in those three compiles.
+ * `tsc` scopes every diagnostic to the file that produced it, and these fixtures import
+ * nothing from each other, so compiling them together is the SAME three compilations minus
+ * two redundant cold starts — re-measured at 11.4s for the file. Each fixture keeps a distinct
+ * basename so the per-fixture filter stays exact; the filter is still the honesty guard the
+ * header describes (diagnostics from the imported modules are never counted), and the
+ * POSITIVE control is now also a control ON THE FILTER: a filter that leaked the negative
+ * fixture's 18 diagnostics into `positive` would fail it.
+ */
+function fixtureErrors(fixtures: Record<string, string>): Record<string, string[]> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'd15-'));
-  const file = path.join(dir, 'fixture.ts');
-  fs.writeFileSync(file, body, 'utf8');
+  const files: string[] = [];
+  for (const [name, body] of Object.entries(fixtures)) {
+    const file = path.join(dir, `${name}.ts`);
+    fs.writeFileSync(file, body, 'utf8');
+    files.push(file);
+  }
   let out = '';
   try {
     execFileSync(TSC, [
       '--noEmit', '--strict', '--target', 'ES2022', '--module', 'NodeNext',
-      '--moduleResolution', 'NodeNext', '--skipLibCheck', file,
+      '--moduleResolution', 'NodeNext', '--skipLibCheck', ...files,
     ], { cwd: SERVER, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string };
@@ -57,7 +75,12 @@ function fixtureErrors(body: string): string[] {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
-  return out.split('\n').filter((l) => l.includes('fixture.ts('));
+  const lines = out.split('\n');
+  const byFixture: Record<string, string[]> = {};
+  for (const name of Object.keys(fixtures)) {
+    byFixture[name] = lines.filter((l) => l.includes(`${name}.ts(`));
+  }
+  return byFixture;
 }
 
 function systemFixture(reads: string[]): string {
@@ -82,11 +105,13 @@ let negative: string[];
 let messageSide: string[];
 
 beforeAll(() => {
-  // Three compiles, not eighteen: each volatile read sits on its own line in ONE negative
-  // fixture, so tsc emits one diagnostic per field and the per-field clauses read them.
-  positive = fixtureErrors(systemFixture(['ctx.agentId', 'ctx.modelId', 'ctx.isPM', 'ctx.ownerName']));
-  negative = fixtureErrors(systemFixture(VOLATILE_TURN_FIELDS.map((f) => `ctx.${f}`)));
-  messageSide = fixtureErrors(`
+  // ONE compile, not eighteen and not three: each volatile read sits on its own line in ONE
+  // negative fixture, so tsc emits one diagnostic per field and the per-field clauses read
+  // them; and all three fixtures ride a single `tsc` invocation (see `fixtureErrors`).
+  const compiled = fixtureErrors({
+    positive: systemFixture(['ctx.agentId', 'ctx.modelId', 'ctx.isPM', 'ctx.ownerName']),
+    negative: systemFixture(VOLATILE_TURN_FIELDS.map((f) => `ctx.${f}`)),
+    messageSide: `
 import type { MessageInjection } from '${TYPES}';
 import { MessageSlot } from '${TYPES}';
 
@@ -102,7 +127,11 @@ ${VOLATILE_TURN_FIELDS.map((f) => `      String(ctx.${f}),`).join('\n')}
     ].join(''),
   }),
 };
-`);
+`,
+  });
+  positive = compiled.positive;
+  negative = compiled.negative;
+  messageSide = compiled.messageSide;
 }, 120_000);
 
 describe('D15 — target:"system" renders cannot see per-turn fields', () => {
