@@ -406,7 +406,12 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
   it('CATEGORY CONVERTED: the process door no longer imports child_process', () => {
     const doorSrc = fs.readFileSync(path.join(SRC, 'agent/tools/process-run.ts'), 'utf8');
     expect(/^import .*child_process/m.test(doorSrc)).toBe(false);
-    expect(doorSrc.includes('execFileAuthorized('), 'it spawns through the facade').toBe(true);
+    // t114 (census U2): the door moved from the BUFFERED primitive to the STREAMING one, because
+    // an output-idle bound needs a per-chunk signal and a buffered call has none. Both are the
+    // same facade asking the same capability about the same program (`proc.ts` says so in its own
+    // doc), so the clause names either rather than pinning the door to one of them. It still
+    // bites: reaching `child_process` directly fails the assertion above and the grep-zero below.
+    expect(/\b(execFileAuthorized|spawnAuthorized)\(/.test(doorSrc), 'it spawns through the facade').toBe(true);
     // …and the whole toolbox tree is clean of it, which is the per-category
     // grep-zero the lint flip will rest on.
     const inToolbox = filesContaining("from 'node:child_process'", path.join(SRC, 'agent', 'tools'));

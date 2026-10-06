@@ -19,7 +19,7 @@
 import { resolveHomePath, isExistingDirectory } from '../path-resolve.js';
 import { sudoWouldHang } from '../brokers/sudo-probe.js';
 import { coerceNumberArg } from './pagination.js';
-import { execFileAuthorized } from '../effects/proc.js';
+import { spawnAuthorized } from '../effects/proc.js';
 
 // `execFile` never consults a shell, which is what makes `exec({argv})`
 // argv-no-shell rather than argv-shaped. The `shell` door reaches /bin/zsh
@@ -34,8 +34,151 @@ import { execFileAuthorized } from '../effects/proc.js';
 // 3 and 3s → `authorizeExecShapedCall`); what changed is that the carrying is no
 // longer done by a raw `child_process` import a handler could aim anywhere.
 
+// ── t114 (census U2) — THE EXEC CLOCK BOUNDS SILENCE, NOT WORK ──
+//
+// THE DEFECT: `EXEC_TIMEOUT_MAX_MS` was a hard TOTAL-duration cap the agent could not exceed
+// (`Math.min(coerced ?? 30s, 120s)`), handed to `execFile`'s own `timeout` option, which SIGTERMs
+// the child at that wall-clock mark whatever it is doing. `shell({script:"npm install"})`, a
+// `pytest` suite, a `docker build`, a large `git clone` all routinely exceed two minutes while
+// healthily producing output, and all were killed mid-stride. The census called it the
+// highest-frequency flat kill in the tree by raw call count, and noted the deeper problem: the
+// door used the BUFFERED `execFileAuthorized`, so there was structurally no per-chunk signal that
+// could have extended the clock even if someone had wanted to.
+//
+// THE FIX: the same bound, re-pointed at the thing it can actually prove. These numbers now bound
+// OUTPUT SILENCE — the gap between two writes to stdout/stderr — rather than total runtime, which
+// makes them the `makeStreamWatchdog` shape the model transports use (bound a GAP, re-arm on
+// every chunk) applied to a child process. A command that is talking is a command that is alive,
+// so it runs; a command that has gone quiet for the whole window is as dead as we can prove and
+// is still killed, loudly, with a reason that says silence is what ended it.
+//
+// The door moves to the STREAMING primitive (`spawnAuthorized`) to get that per-chunk signal.
+// Same capability, same program check, same no-shell argv — `proc.ts` makes that explicit.
 export const EXEC_TIMEOUT_MS = 30000;
 export const EXEC_TIMEOUT_MAX_MS = 120000;
+
+/**
+ * The absolute ceiling, and the reason it has to exist: an output-idle bound alone can be held
+ * open for ever by a process that dribbles a byte a minute, which is the unbounded-renewal trap
+ * the stream watchdog's own header refuses. ONE HOUR — far above any legitimate interactive tool
+ * call, far below "for ever", and reached only by a process that has been producing output
+ * continuously for an hour, which is a runaway rather than a slow build.
+ */
+export const EXEC_ABSOLUTE_CEILING_MS = 60 * 60 * 1000;
+
+/** Both streams together, as `maxBuffer` bounded them on the buffered primitive. */
+const PROCESS_MAX_BUFFER_BYTES = 1024 * 1024;
+
+/** The shape `execFile` rejects with, rebuilt from the streaming run so that
+ *  `processFailureReason` below is unchanged and both doors keep their exact wording. */
+interface ProcessRunFailure {
+  stdout: string;
+  stderr: string;
+  code?: number | string;
+  signal?: NodeJS.Signals;
+  killed?: boolean;
+  message?: string;
+}
+
+/**
+ * Run a child process under an OUTPUT-IDLE bound. Resolves on a clean exit; rejects with an
+ * `execFile`-shaped error otherwise, so every caller and every failure string below is untouched.
+ *
+ * `idleMs` re-arms on each chunk from either stream. `ceilingMs` does not re-arm — it is the one
+ * bound on total life, and the two are distinguished in the rejection so the agent is told which
+ * one ended its command rather than a single ambiguous "timed out".
+ */
+async function runWithIdleBound(
+  file: string, argv: readonly string[],
+  opts: { idleMs: number; ceilingMs: number; cwd?: string },
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawnAuthorized(file, argv, opts.cwd ? { cwd: opts.cwd } : undefined);
+    let stdout = '';
+    let stderr = '';
+    let bytes = 0;
+    let settled = false;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    /** Which bound fired, so the reason can name it. */
+    let killedBy: 'idle' | 'ceiling' | 'buffer' | null = null;
+
+    const done = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (idleTimer) clearTimeout(idleTimer);
+      clearTimeout(ceilingTimer);
+      fn();
+    };
+
+    const kill = (why: 'idle' | 'ceiling' | 'buffer'): void => {
+      if (settled) return;
+      killedBy = why;
+      // SIGTERM first, exactly as `execFile`'s own timeout does; the `close` handler below
+      // reports it. No SIGKILL escalation is added here — that would be a new behaviour, and
+      // the buffered primitive never had one either.
+      try { child.kill('SIGTERM'); } catch { /* already gone */ }
+    };
+
+    /** t114: THE RE-ARM. This is the whole fix — output is the measured fact of liveness. */
+    const bumpIdle = (): void => {
+      if (settled) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => kill('idle'), opts.idleMs);
+      idleTimer.unref?.();
+    };
+
+    const ceilingTimer = setTimeout(() => kill('ceiling'), opts.ceilingMs);
+    ceilingTimer.unref?.();
+
+    const take = (which: 'out' | 'err') => (chunk: Buffer | string): void => {
+      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
+      bytes += Buffer.byteLength(text, 'utf-8');
+      if (which === 'out') stdout += text; else stderr += text;
+      if (bytes > PROCESS_MAX_BUFFER_BYTES) { kill('buffer'); return; }
+      bumpIdle();
+    };
+
+    child.stdout?.setEncoding('utf-8');
+    child.stderr?.setEncoding('utf-8');
+    child.stdout?.on('data', take('out'));
+    child.stderr?.on('data', take('err'));
+
+    child.on('error', (err: NodeJS.ErrnoException) => {
+      done(() => reject({
+        stdout, stderr, code: err.code, message: err.message,
+      } satisfies ProcessRunFailure));
+    });
+
+    child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
+      done(() => {
+        if (killedBy !== null) {
+          reject({
+            stdout, stderr, killed: true, signal: signal ?? 'SIGTERM',
+            code: code ?? undefined,
+            message: killedBy === 'idle'
+              ? `no output for ${Math.round(opts.idleMs / 1000)}s`
+              : killedBy === 'ceiling'
+                ? `ran past the ${Math.round(opts.ceilingMs / 60000)}-minute ceiling`
+                : 'output exceeded the 1MB buffer',
+          } satisfies ProcessRunFailure);
+          return;
+        }
+        if (signal) {
+          reject({ stdout, stderr, signal } satisfies ProcessRunFailure);
+          return;
+        }
+        if (code !== 0) {
+          reject({ stdout, stderr, code: code ?? undefined } satisfies ProcessRunFailure);
+          return;
+        }
+        resolve({ stdout, stderr });
+      });
+    });
+
+    // Armed only once the process exists, so a spawn error is not reported as a silence.
+    bumpIdle();
+  });
+}
 
 /** Phase 3.5 (2026-05-04), per-stream caps. Each of stdout/stderr gets its own
  *  ~4K-token cap (16K chars), tagged with `stdout_truncated:true` /
@@ -84,7 +227,13 @@ function processFailureReason(err: unknown, timeout: number): { reason: string; 
   };
   let reason: string;
   if (error.killed && error.signal === 'SIGTERM') {
-    reason = `timed out after ${Math.round(timeout / 1000)}s (killed by SIGTERM)`;
+    // t114 (U2): the reason NAMES WHICH BOUND FIRED. "timed out after 120s" was the only story
+    // this door could tell while the clock was a total, and it was the wrong one — it implied the
+    // command had been given 120 seconds of work when what it had actually been given was 120
+    // seconds of SILENCE. `message` is set by the runner for exactly this.
+    reason = error.message
+      ? `stopped: ${error.message} (killed by SIGTERM)`
+      : `timed out after ${Math.round(timeout / 1000)}s (killed by SIGTERM)`;
   } else if (error.signal) {
     reason = `killed by ${error.signal}`;
   } else if (error.code === 'ENOENT') {
@@ -150,10 +299,12 @@ export async function runProcess(input: {
     return hang;
   }
   try {
-    const { stdout, stderr } = await execFileAuthorized(file, argv, {
-      timeout,
-      maxBuffer: 1024 * 1024, // 1MB
-      encoding: 'utf-8',
+    // t114 (U2): `timeout` is now the OUTPUT-IDLE bound rather than a total-duration cap, and
+    // the run streams so each chunk can re-arm it. A healthy long build talks the whole way
+    // through and survives; a wedged command says nothing and is still killed.
+    const { stdout, stderr } = await runWithIdleBound(file, argv, {
+      idleMs: timeout,
+      ceilingMs: EXEC_ABSOLUTE_CEILING_MS,
       ...(cwd ? { cwd } : {}),
     });
     const out = capStream(stdout ?? '');

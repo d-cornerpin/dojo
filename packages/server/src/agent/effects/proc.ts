@@ -63,7 +63,11 @@ export async function execFileAuthorized(
 export function spawnAuthorized(
   file: string,
   argv: readonly string[],
+  options?: { cwd?: string },
 ): ChildProcessWithoutNullStreams {
   requireAuthorized({ op: 'proc', program: file });
-  return spawn(file, [...argv]);
+  // t114: `cwd` is forwarded so the exec door can reach this streaming form without losing the
+  // working directory it has always honoured. Still no `shell` — `spawn` without `shell: true`
+  // hands argv straight to `execve`, which is the whole argv-no-shell property of both doors.
+  return spawn(file, [...argv], options?.cwd ? { cwd: options.cwd } : undefined);
 }
