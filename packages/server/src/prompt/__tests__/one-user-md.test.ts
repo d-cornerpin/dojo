@@ -224,7 +224,11 @@ describe('§3 every door goes through the one module, and the rival text is gone
     // engine-seeded predicate. A bare mention of the import would not satisfy this.
     expect(route).toMatch(/composeUserProfile\(\s*\{\s*userName,\s*userRole,\s*userPreferences\s*\}\s*\)/);
     expect(route).toMatch(/userProfileIsEngineSeeded\(\)/);
-    expect(route).toMatch(/writeUserProfile\(\s*user,\s*'oobe'\s*\)/);
+    // The composed profile is what gets WRITTEN, inside the guard...
+    expect(route).toMatch(/writeUserProfile\(\s*composeUserProfile\([^)]*\)[^)]*,\s*'oobe'\s*\)/);
+    // ...and the RESPONSE is read back off disk, never the composed text (review M3): returning
+    // what we composed would show the caller a profile the guard had just REFUSED to write.
+    expect(route).toMatch(/const user = readUserProfile\(\)/);
     // and the SOUL side seeds from the shipped default through the soul door — the composer
     // is APPLIED to the door's own fallback, so the two cannot disagree about the seed text.
     expect(route).toMatch(/soulFileForAgent\(\s*getPrimaryAgentId\(\)\s*\)/);

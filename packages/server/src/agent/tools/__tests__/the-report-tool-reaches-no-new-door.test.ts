@@ -449,7 +449,13 @@ function specifiersOf(file: string): string[] {
 // on — that `gateway/server.ts` is NOT runtime-reachable from the handler — is pinned rather than
 // assumed, so the day somebody adds a real edge, this file says so before prong B does.
 //
-// MEASURED AT THIS HEAD: 532 modules over-approximating, 464 at runtime.
+// THE TALLY IS NOT WRITTEN DOWN HERE ANY MORE (t110's NIT-7b). This file used to state it
+// twice, in two places, with two DIFFERENT numbers, each claiming to be "measured at this
+// head" — and both were stale (532/464 and 538/464 against a tree that measures 591/509
+// today). One of the two died with prong C's retirement; this was the other. The clause
+// `the two closures are both real and the runtime one is smaller` now PRINTS the pair from
+// `CLOSURE.modules.length` / `RUNTIME.modules.length`, so it is measured on every run and
+// cannot drift from the tree again. What matters is the RELATIONSHIP, which is asserted.
 const TYPE_ONLY =
   /(?:\bimport|\bexport)\s+type\s+(?:\{[^}]*\}|[A-Za-z_$][\w$]*|\*\s+as\s+[A-Za-z_$][\w$]*)\s*from\s*['"]([^'"]+)['"]/g;
 
@@ -461,9 +467,14 @@ const TYPE_ONLY =
  * ── THE INVARIANT THAT MAKES THIS SOUND, AND IT IS STRUCTURAL RATHER THAN A HAPPY FIXTURE ──
  * The dangerous direction is the FALSE NEGATIVE: a real value edge mistaken for an erased one
  * would vanish from prong B's set silently. The fixture table below drives that direction, but
- * fixtures only cover what somebody thought of, and `stripComments` drops only lines that START
- * with a comment marker — so a TRAILING `// import type { T } from './x.js'` beside a real value
- * import looks like it should steal that import's credit. It cannot, and here is why:
+ * fixtures only cover what somebody thought of. (⚠ t111-C4 CORRECTED THIS SENTENCE: it used to
+ * say `stripComments` "drops only lines that START with a comment marker", which described the
+ * RETIRED line-start stripper. The AST one blanks trailing and mid-line comments too, so a
+ * trailing `// import type …` is already gone before `TYPE_ONLY` runs and the hazard below is
+ * now hypothetical rather than live. The invariant is kept because it is what makes the
+ * property STRUCTURAL instead of dependent on the stripper, and it still holds either way.)
+ * A TRAILING `// import type { T } from './x.js'` beside a real value import would look like it
+ * should steal that import's credit. It cannot, and here is why:
  *
  *   EVERY `TYPE_ONLY` MATCH NECESSARILY CONTAINS `from '…'`, WHICH `SPEC` ALSO MATCHES.
  *
@@ -1065,6 +1076,10 @@ describe('the classification reader sees every shape a status-moving door takes'
 
 describe('the walk itself is sound', () => {
   it('reaches a real graph and leaves no unresolved relative specifier', () => {
+    // t110's NIT-7b: the tally is PRINTED from the walk rather than pinned in prose, so it
+    // cannot go stale. The two hardcoded counts this file used to carry disagreed with each
+    // other AND with the tree.
+    console.log(`  census: ${CLOSURE.modules.length} modules over-approximating, ${RUNTIME.modules.length} at runtime`);
     expect(CLOSURE.modules.length).toBeGreaterThan(100);
     expect(CLOSURE.modules).toContain('agent/tools/cat/report.ts');
     expect(CLOSURE.modules).toContain('report/gather.ts');

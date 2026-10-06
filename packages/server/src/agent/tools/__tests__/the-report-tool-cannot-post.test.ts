@@ -82,9 +82,14 @@ describe('the tool cannot post, structurally', () => {
   });
 
   it('reaches no github module and no approval door from its handler', () => {
-    const src = handlerSrc();
-    for (const forbidden of ['/github/', 'api.github.com', 'approveOnce', 'markPosted', 'postApprovedReport']) {
-      expect(src.includes(forbidden), `cat/report.ts references ${forbidden}`).toBe(false);
+    // t110's NIT-8: the handler is TWO files since the split, so the message must name WHICH
+    // one carries the violation. It used to say `cat/report.ts` unconditionally, sending the
+    // reader to the wrong file whenever the hit was in `report-prose.ts`.
+    for (const f of HANDLER_FILES) {
+      const src = fs.readFileSync(path.join(__dirname, '..', 'cat', f), 'utf8');
+      for (const forbidden of ['/github/', 'api.github.com', 'approveOnce', 'markPosted', 'postApprovedReport']) {
+        expect(src.includes(forbidden), `cat/${f} references ${forbidden}`).toBe(false);
+      }
     }
   });
 

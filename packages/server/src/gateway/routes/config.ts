@@ -2531,10 +2531,14 @@ configRouter.post('/identity/generate', async (c) => {
   // Only while no human has written in it. The old guard ("absent, or under 20 characters")
   // could not tell the engine's own ~600-byte seed from an owner's profile, so a box whose
   // first assembly beat setup to the file never recorded the name just typed.
-  const user = composeUserProfile({ userName, userRole, userPreferences });
   if (userProfileIsEngineSeeded()) {
-    writeUserProfile(user, 'oobe');
+    writeUserProfile(composeUserProfile({ userName, userRole, userPreferences }), 'oobe');
   }
+  // THE RESPONSE IS WHAT IS ON DISK, not what we composed (t111 review M3). Returning the
+  // composed text would show the caller a profile that was REFUSED — the guard above declines
+  // to overwrite a profile a person wrote, and a UI echoing the composed version would claim
+  // the owner's own words had just been replaced. One read, through the one door.
+  const user = readUserProfile();
 
   logger.info('Identity files generated', { style: communicationStyle, namedOwner: !!String(userName).trim() });
   return c.json({ ok: true, data: { soul, user } });
