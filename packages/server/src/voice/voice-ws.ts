@@ -826,6 +826,37 @@ const TURN_EXTENSION_MS = 500;
 // continuation gap, which is hundreds of ms).
 const DOUBLE_FIRE_GUARD_MS = 250;
 
+// ── t114 (census U5) — THE TRANSCRIPTION BUDGET, SIZED FROM THE RECORDING ──
+//
+// Replaces a flat 30,000 ms that discarded real captured speech on any dictation long enough to
+// need it. The three numbers are split so each says what it is for rather than being one
+// constant doing three jobs:
+//
+//   BOOT ALLOWANCE — a cold whisper-server with a large model on a slow disk. Carried verbatim
+//     from the old flat bound, which is the one thing that number WAS sized for (its own comment
+//     said so: "a stuck whisper-server boot ... still in the middle of download/warmup").
+//   PER AUDIO SECOND — the part the old bound was missing entirely. Whisper runs faster than
+//     realtime on most boxes, so 2s of grant per 1s of audio is deliberately generous: this is a
+//     bound on a WEDGE, not a performance target, and being stingy here is what destroyed work.
+//   MAX — the ceiling, because an idle-shaped grant that grows without limit is the
+//     unbounded-renewal trap. Ten minutes is far above any plausible single utterance.
+const TRANSCRIBE_BOOT_ALLOWANCE_MS = 30_000;
+const TRANSCRIBE_MS_PER_AUDIO_SECOND = 2_000;
+const TRANSCRIBE_MAX_MS = 10 * 60_000;
+
+/**
+ * How long this recording's transcription may take. EXPORTED because it is the whole fact of the
+ * fix and a clause that re-derived the arithmetic instead of calling it would pass while the
+ * shipped code said something else — which is how the flat bound survived in the first place.
+ */
+export function transcribeBudgetMsFor(pcmLength: number, sampleRate: number): number {
+  const audioSeconds = sampleRate > 0 ? pcmLength / sampleRate : 0;
+  return Math.min(
+    TRANSCRIBE_BOOT_ALLOWANCE_MS + Math.ceil(audioSeconds) * TRANSCRIBE_MS_PER_AUDIO_SECOND,
+    TRANSCRIBE_MAX_MS,
+  );
+}
+
 // ── Smart Turn hold policy ──
 // When Smart Turn says the user is mid-thought, the old flat 500ms wait was
 // far too short to catch a real thinking pause, so the fragment submitted and
@@ -1019,13 +1050,32 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
   sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'transcribing' });
   const wav = pcmFloatToWav(pcm, session.pcmSampleRate);
 
-  // Hard 30s cap. Without this, a stuck whisper-server boot (or a model that's
-  // still in the middle of download/warmup) leaves the client in "transcribing"
-  // forever with no error feedback.
+  // ── t114 (census U5) — THE BOUND SCALES WITH THE AUDIO IT IS TRANSCRIBING ──
+  //
+  // THE DEFECT: a flat 30 seconds, on a job whose cost is proportional to the length of the
+  // recording. `session.pcmChunks` is CLEARED eleven lines above (`chunks` is the only
+  // reference), so when this bound fired the user's real, fully-captured speech was GONE — no
+  // retry, no re-queue, just `voice:state error`. A two-minute dictation, or a first utterance
+  // landing while whisper-server is still warming, exceeded it as a matter of course.
+  //
+  // The measured fact was already in hand and already being used: `pcm.length` gates the
+  // tiny-utterance drop a few lines up. The clock simply did not consult it. It does now — a
+  // fixed allowance that covers a cold engine boot, plus a generous per-second-of-audio grant,
+  // capped so the bound is still a bound and a wedged engine cannot hold the session for ever.
+  const audioSeconds = pcm.length / session.pcmSampleRate;
+  const transcribeBudgetMs = transcribeBudgetMsFor(pcm.length, session.pcmSampleRate);
   const runTranscribe = () => Promise.race([
     transcribeBuffer(wav, { modelKey: session.sttModel }),
     new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('transcribe_timeout (30s) — STT engine not ready')), 30_000),
+      setTimeout(
+        // The reason carries BOTH numbers, so a user who hits it can see that the bound was
+        // sized for their recording rather than guess at a constant.
+        () => reject(new Error(
+          `transcribe_timeout (${Math.round(transcribeBudgetMs / 1000)}s for `
+          + `${Math.round(audioSeconds)}s of audio) — STT engine not ready`,
+        )),
+        transcribeBudgetMs,
+      ),
     ),
   ]);
   const emitTranscribeError = (msg: string): void => {
