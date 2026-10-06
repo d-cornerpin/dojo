@@ -28,6 +28,7 @@ import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
+import { announceLiveWork } from '../agent/live-work.js';
 import { pollProviderVideo, fetchVideoAsset, cancelProviderVideo } from './video-generation.js';
 import { openAgentCall, type AgentCallSlot } from '../agent/abortable-call.js';
 import { homeDir } from '../home.js';
@@ -78,6 +79,9 @@ function emitUpdate(row: { id: string; agent_id: string; status: string; prompt:
       activeCount: countActiveJobs(),
     },
   });
+  // A-5b — as in `generation-jobs.ts`: this frame is per-job with a box-wide count, and the
+  // composer's question is per-agent. A render outlives its turn by up to thirty minutes.
+  announceLiveWork(row.agent_id);
 }
 
 function slugify(s: string): string {

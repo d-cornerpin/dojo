@@ -13,6 +13,7 @@
 // `shared-state.ts` imports this — so the registry keeps exactly one set of writers.
 // ════════════════════════════════════════════════════════════════════════════
 
+import { announceLiveWork } from './live-work.js';
 import {
   registerAbortable,
   releaseAbortable,
@@ -96,6 +97,16 @@ export function openAgentCall(
   const present = externals.filter((s): s is AbortSignal => s != null);
   const signal = present.length === 0 ? ctl.signal : AbortSignal.any([ctl.signal, ...present]);
   let released = false;
+  // A-5b / L40 — THE BACKGROUND LIFECYCLE SPEAKS. A `background` dial is one that can outlive
+  // the turn that asked for it, which is exactly the work no `agent:status` frame describes:
+  // the turn's `idle` has already gone out and nothing follows it. One announcement here, at
+  // the door every such dial already comes through, is what the Chat composer reads — and it
+  // means a NEW background dial is heard about without its author remembering to emit.
+  //
+  // TURN-SCOPED CALLS SAY NOTHING, deliberately. `agent:status` already carries the turn, a
+  // turn makes dozens of these, and a frame per model call would be a per-token stream wearing
+  // a state change's clothes.
+  if (scope === 'background') announceLiveWork(agentId);
   return {
     signal,
     refused: !registered,
@@ -110,6 +121,9 @@ export function openAgentCall(
       if (released) return;
       released = true;
       releaseAbortable(agentId, ctl);
+      // …and the other edge. A stop control left standing over work that finished minutes ago
+      // is the missing button's own lie, reversed.
+      if (scope === 'background') announceLiveWork(agentId);
     },
   };
 }

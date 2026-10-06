@@ -33,6 +33,7 @@ import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
+import { announceLiveWork } from '../agent/live-work.js';
 import { homeDir } from '../home.js';
 
 const logger = createLogger('generation-jobs');
@@ -83,6 +84,11 @@ function emitUpdate(row: { id: string; agent_id: string; kind: GenerationKind; s
       activeCount: countActiveGenerationJobs(),
     },
   });
+  // A-5b — AND THE PER-AGENT ANSWER. This frame is per-JOB and its count is box-wide, so it
+  // cannot tell a composer whether THIS agent still has anything running. The row is also the
+  // only standing fact during `image_create`'s pre-dial wait, where the abort registry is
+  // empty — so the row's own edges are where that window becomes visible.
+  announceLiveWork(row.agent_id);
 }
 
 function slugify(s: string): string {
