@@ -354,7 +354,15 @@ describe('§5 the reads 182 adds take their indexes on a grown table', () => {
     (getDb().prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params as never[]) as Array<{ detail: string }>)
       .map(r => r.detail).join(' | ');
 
-  it('the cheap gate seeks on agent_id instead of scanning every report ever filed', () => {
+  // ⚠ THE INDEX THIS ONE PINS BELONGS TO 171, NOT TO 182 (fix round 1, review C1).
+  // `idx_dojo_reports_agent_id` was created by `171_report_read_indexes.sql:100` — explicitly FOR
+  // this reader, which 171's header names ("READER it is FOR: `report/withdrawn-claim.ts`'s
+  // `agentHasWithdrawnReport`") — and 171 has its own plan clause pinning it by name. 182's first
+  // cut created it a second time and argued it into existence as new; that was dead SQL against a
+  // paid line, and it is gone. The clause stays HERE because the cheap gate is this lane's hot
+  // path and a grown-box plan assertion is worth having twice, but it pins 171's index: if this
+  // reds, look at 171 before looking at 182.
+  it('the cheap gate seeks on agent_id — 171s index — instead of scanning every report ever filed', () => {
     growReports();
     // Non-vacuity: the table really is grown, so a scan would really cost something.
     expect((getDb().prepare('SELECT count(*) AS n FROM dojo_reports').get() as { n: number }).n)
@@ -377,10 +385,16 @@ describe('§5 the reads 182 adds take their indexes on a grown table', () => {
       [AGENT, 'ask-1'],
     );
     expect(detail, `the bound lookup scans the table: ${detail}`).not.toMatch(/SCAN dojo_reports/);
-    expect(detail, `the bound lookup uses neither new index: ${detail}`)
+    // ⚠ DELIBERATELY EITHER INDEX, AND THEREFORE WEAKER THAN IT READS (review M3). The planner
+    // can satisfy this two-column predicate from the `agent_id` seek alone, so losing
+    // `idx_dojo_reports_ask_id` would NOT red this clause. What holds that index is the PRAGMA
+    // pin in the next clause — do not delete it believing this one covers it.
+    expect(detail, `the bound lookup uses neither index: ${detail}`)
       .toMatch(/idx_dojo_reports_(ask_id|agent_id)/);
   });
 
+  // THE LOAD-BEARING PIN FOR `idx_dojo_reports_ask_id` (see M3 above), and the place the two
+  // owners are recorded: 182 adds the column and the ask_id index; 171 owns the agent_id index.
   it('the column and both indexes are actually in the migrated schema', () => {
     const cols = (getDb().prepare('PRAGMA table_info(dojo_reports)').all() as Array<{ name: string }>)
       .map(c => c.name);
@@ -388,7 +402,8 @@ describe('§5 the reads 182 adds take their indexes on a grown table', () => {
 
     const idx = (getDb().prepare('PRAGMA index_list(dojo_reports)').all() as Array<{ name: string }>)
       .map(i => i.name);
-    expect(idx).toContain('idx_dojo_reports_ask_id');
-    expect(idx).toContain('idx_dojo_reports_agent_id');
+    expect(idx, 'migration 182 did not add the ask_id index').toContain('idx_dojo_reports_ask_id');
+    expect(idx, 'migration 171\'s agent_id index is gone — the cheap gate is back to a scan')
+      .toContain('idx_dojo_reports_agent_id');
   });
 });

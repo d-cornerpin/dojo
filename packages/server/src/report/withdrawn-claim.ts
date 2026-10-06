@@ -154,12 +154,12 @@ const TURNS_BACK = 1;
  * `drafting` row IS round 1's false-filed shape), and the reason this is not phrased as "never
  * withdrew a report".
  *
- * COST, measured readonly on the owner's box: the plan is `SCAN dojo_reports` — there is no index
- * on `agent_id`, only `(status, created_at)`, `signature` and the PK — at 0.010 ms over 17 rows.
- * Left as a scan deliberately: the index-using form is `status IN (<the non-standing values>)`,
- * and a closed IN-list cannot express "anything this release does not recognise", which is the
- * safe direction `store.ts`'s rule 4 takes. It grows with every report ever filed; when that
- * table stops being tiny, index `agent_id`.
+ * COST: the plan SEEKS on `idx_dojo_reports_agent_id`, which `171_report_read_indexes.sql:100`
+ * created FOR THIS READER by name. This paragraph used to say "there is no index on `agent_id`
+ * … when that table stops being tiny, index `agent_id`" — false from the day 171 shipped, which
+ * answered it in advance ("Bought before the scan stops being tiny"). The `status` test stays
+ * OUT of that index deliberately: its index-using form is a closed `status IN (…)`, which cannot
+ * express "anything this release does not recognise", the safe direction `store.ts`'s rule 4 takes.
  *
  * A database with no `dojo_reports` table (a hand-built test fixture) has no reports at all,
  * which is the same answer — this is not a swallowed failure, it is the truth on that box.

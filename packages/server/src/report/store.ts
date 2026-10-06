@@ -115,13 +115,28 @@ function transition(sql: string, params: unknown[], id: string): ReportRow | nul
  * and `answerStillStands` is called once per ask. Binding the same end means the durable
  * binding and the containment it replaces are expressed in ONE vocabulary.
  *
- * ── WHY "THE LATEST USER ROW" IS THE RIGHT RESOLUTION AND NOT A GUESS ──
+ * ── WHY "THE LATEST USER ROW", AND THE ONE SHAPE IT GETS WRONG ──
  * An agent reaches this line because it is mid-turn, and a turn is opened by the ask it is
- * answering. The latest `role='user'` row for this agent IS that ask at this instant. This is
- * not the proximity reasoning the containment window does: containment looks BACKWARD from an
- * answer that already exists and asks which reports are near it, across turns, over a span,
- * tolerating five measured over-void shapes. This looks at the row the engine is literally
- * working on, once, at the moment of minting.
+ * answering, so the latest `role='user'` row is normally that ask. This is not the proximity
+ * reasoning the containment window does: containment looks BACKWARD from an answer that already
+ * exists and asks which reports are near it, across turns, over a span, tolerating five measured
+ * over-void shapes. This looks at the row the engine is working on, once, at the moment of
+ * minting.
+ *
+ * ⚠ IT IS NOT INFALLIBLE, AND THE EXCEPTION IS REACHABLE (review M2, measured at this head).
+ * `gateway/routes/chat.ts` WRITES an inbound message row and only then queues it behind the
+ * `activeRuns` guard as a pending wakeup — "let the current turn FINISH" — so a user message
+ * arriving mid-turn exists as a `role='user'` row BEFORE the turn that is minting this report
+ * ends. Bind then, and the report names the newer ask rather than the one it answers.
+ *
+ * THE COST IS BOUNDED AND IN THE ACCEPTED DIRECTION, which is why this is a stated residual and
+ * not a blocker. The ask the report really answers has no bound row naming it, so it falls to
+ * the containment window exactly as a pre-182 row does — it is still voided on withdrawal. The
+ * mis-bound neighbour pays one over-void, which is the same currency and the same class as the
+ * five shapes `withdrawn-claim.ts` already accepts, and owner ruling 2026-08-05 chooses hearing
+ * an answer twice over silence in those words. Closing it properly wants the engine to hand the
+ * ask id down to the tool call (the handler context carries no ask today); that is a wider seam
+ * than this lane's fence and is recorded rather than guessed at.
  *
  * ── AND WHEN IT CANNOT ANSWER, IT SAYS NULL ──
  * A box with no `messages` row for this agent (the dashboard door, a fixture, a first turn that

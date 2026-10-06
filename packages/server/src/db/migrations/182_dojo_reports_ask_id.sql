@@ -60,30 +60,39 @@
 -- touching its report history.
 --
 -- ════════════════════════════════════════════════════════════════════════════════════════
--- THE TWO INDEXES, EACH FOR A QUERY THAT EXISTS
+-- THE ONE INDEX THIS MIGRATION ADDS — AND THE ONE IT DOES NOT, BECAUSE 171 ALREADY DID
 -- ════════════════════════════════════════════════════════════════════════════════════════
 --
 -- `idx_dojo_reports_ask_id` serves the new bound lookup: given one ask, has it a report, and is
--- that report still standing. It runs on every answered-ask read that gets past the cheap gate.
+-- that report still standing. It runs on every answered-ask read that gets past the cheap gate,
+-- and it is the only index this migration creates.
 --
--- `idx_dojo_reports_agent_id` is the BACKLOG's own separate line, and it is the cheap gate's
--- index. `withdrawn-claim.ts`'s `agentHasWithdrawnReport` is documented as `SCAN dojo_reports`
--- at 0.010 ms over 17 rows, with its own note saying so out loud: "It grows with every report
--- ever filed; when that table stops being tiny, index `agent_id`." The table only grows, the
--- gate runs on EVERY model call, and 169's two indexes cover `(status, created_at)` and
--- `signature` — neither of which this predicate can use, because the predicate is
--- `agent_id = ? AND status NOT IN (…)` and a NOT IN cannot drive an index seek. So the seek has
--- to come from `agent_id`. Proven by `EXPLAIN QUERY PLAN` on a GROWN fixture rather than on a
--- 17-row one, where every plan is a scan and the assertion would be vacuous.
+-- ⚠ `idx_dojo_reports_agent_id` IS NOT HERE, AND THE FIRST CUT OF THIS FILE WAS WRONG ABOUT IT.
+-- The BACKLOG carries "the `dojo_reports` agent_id index" as its own line, and this migration
+-- was first written to pay it — arguing the index into existence as new, and quoting
+-- `withdrawn-claim.ts`'s "when that table stops being tiny, index `agent_id`" as an unpaid note.
+-- IT WAS ALREADY PAID. `171_report_read_indexes.sql:100` creates it, and 171's header names the
+-- reader it was bought FOR in so many words — "`idx_dojo_reports_agent_id` — WRITER: nobody
+-- (derived). READER it is FOR: `report/withdrawn-claim.ts`'s `agentHasWithdrawnReport`" — with
+-- its own answer to the tiny-table note one line above the statement: "Bought before the scan
+-- stops being tiny." 171 also owns the plan clause that keeps it alive
+-- (`db/__tests__/migration-171-report-read-indexes.test.ts`, which pins the index by name).
 --
--- The `status` column is deliberately NOT in either index. The gate's own header argues it: the
--- index-using form of the predicate is `status IN (<the standing values>)`, and a closed IN-list
--- cannot express "anything this release does not recognise is treated as withdrawn", which is
--- the safe direction `store.ts`'s rule 4 takes for an unknown status. So `agent_id` narrows to
--- this agent's handful of rows and the open-ended status test is applied to those — the whole
--- point being that the status test stays open-ended.
+-- So a second `CREATE INDEX IF NOT EXISTS` here would be DEAD SQL: harmless on every box, and
+-- permanently misleading, because a migration's text cannot be corrected after it merges. The
+-- statement is gone and the ownership is recorded instead. The EXPLAIN QUERY PLAN clause for
+-- the cheap gate lives with this lane's work but pins 171's index, which is the one the planner
+-- actually chooses; `withdrawn-claim.ts`'s own cost paragraph is corrected in the same commit,
+-- because it still claimed there was no index on `agent_id` long after 171 shipped one.
+--
+-- The `status` column is deliberately NOT in either index, and that part of the first cut stands.
+-- The gate's own header argues it: the index-using form of the predicate is
+-- `status IN (<the standing values>)`, and a closed IN-list cannot express "anything this
+-- release does not recognise is treated as withdrawn", which is the safe direction `store.ts`'s
+-- rule 4 takes for an unknown status. So `agent_id` narrows to this agent's handful of rows and
+-- the open-ended status test is applied to those — the whole point being that it stays
+-- open-ended.
 
 ALTER TABLE dojo_reports ADD COLUMN ask_id TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_dojo_reports_ask_id ON dojo_reports (ask_id);
-CREATE INDEX IF NOT EXISTS idx_dojo_reports_agent_id ON dojo_reports (agent_id);
