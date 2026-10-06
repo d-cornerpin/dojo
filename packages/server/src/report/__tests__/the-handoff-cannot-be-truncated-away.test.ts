@@ -354,11 +354,21 @@ describe('the evidence bundle is bounded by arithmetic, not by hope', () => {
     const note = notes.find(n => n.startsWith('logs:'));
     expect(note, `no drop note for logs; notes were ${JSON.stringify(notes)}`).toBeTruthy();
 
-    const m = /logs: showing the (\d+) newest of (\d+) collected/.exec(note!);
+    const m = /logs: showing the (\d+) newest of (\d+) rows this collector returned/.exec(note!);
     expect(m, `the note does not say K of N: ${note}`).toBeTruthy();
     expect(Number(m![1]), 'the note claims a count the bundle does not carry')
       .toBe((bundle.logs as unknown[]).length);
-    expect(Number(m![2]), 'the note claims a window total the collector never saw').toBe(66);
+    expect(Number(m![2]), 'the note claims a total the collector never returned').toBe(66);
+
+    // ── N IS THE COLLECTOR'S, AND THE NOTE MAY NOT CALL IT THE WINDOW'S (round-1 F5) ──
+    // `items` is already row-capped — every collector reads at most `COLLECTOR_CAPS`, and the
+    // log reader takes the newest 200 lines GLOBALLY before the agent/window filter — so "of 200
+    // in this window" asserted a population nobody counted. A box with 210 audit rows inside the
+    // window rendered exactly that sentence. The count is true about what the collector RETURNED.
+    expect(note, 'the note calls the collector\'s capped count a window population again')
+      .not.toMatch(/of \d+ collected in this window/);
+    expect(note, 'the note does not warn that the collector is row-capped, so the reader takes N '
+      + 'for a census').toContain('collectors are row-capped');
     expect(Number(m![1]), 'nothing was dropped, so the note is a lie in the other direction')
       .toBeLessThan(66);
     expect(Number(m![1]), 'the bound kept nothing — a note is not a substitute for evidence')
@@ -751,5 +761,100 @@ describe('a brief big enough to fire the cap still cannot cost the hand-off', ()
     // And the honest state survives too, so a severed result cannot read as FINISHED.
     expect(cut.slice(0, HEAD_CHARS).toUpperCase(), 'the not-yet-filed truth was cut away')
       .toMatch(/NOT.{0,20}FILED/);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE TWO THINGS THE ARITHMETIC DOES NOT COUNT, MEASURED RATHER THAN LEDGERED
+// (round-1 review F6 and F7).
+//
+// `bounds.ts`'s sum states both exclusions out loud and argues that the ~4,600 tokens of slack
+// below the 12,000-token cap covers them. Stating an exclusion is not measuring it, and the two
+// fail in opposite directions:
+//
+//   F6 — the budgets count UTF-16 CODE UNITS. That is the same unit `applyMaxResultTokensCap`
+//        counts, so the head-survival property is untouched and the engine will not truncate a
+//        result it agrees is small. But a tokenizer does not count code units, so a CJK- or
+//        emoji-heavy window costs materially MORE real tokens than the arithmetic says.
+//
+//   F7 — the bound runs BEFORE `scrub()`, and a redaction marker can be LONGER than the value it
+//        replaces, so the final document can exceed the section total by (occurrences × delta).
+//
+// Neither can realistically bite, and that is precisely the claim under test: the slack is a
+// NUMBER, so it can be asserted instead of asserted-about. These clauses hold the margin, so an
+// edit that spends it (a bigger section budget, a longer marker, a fatter head) reds here rather
+// than on a user's box in a language the arithmetic was never run in.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('the margin the arithmetic leaves is real, in both units it does not count', () => {
+  /** The bundle's rendered size in UTF-16 code units — the unit the budgets and the engine use. */
+  const renderedChars = (): number => {
+    const bundle = gatherEvidence(AGENT, {}).bundle;
+    return JSON.stringify(bundle, null, 2).length;
+  };
+
+  it('F7 — the bound leaves enough headroom that a scrub growing every value cannot reach the cap', () => {
+    seedOversize();
+    expect(rawEvidenceChars(), 'the seeded body is not over-cap, so there is no bound to measure')
+      .toBeGreaterThan(CAP_CHARS);
+
+    const chars = renderedChars();
+    const slack = CAP_CHARS - chars;
+    // The measured margin. `bounds.ts` claims ~20,000 characters of it; this is the assertion.
+    expect(chars, `the bounded bundle is ${chars} chars, past the engine's ${CAP_CHARS}`)
+      .toBeLessThan(CAP_CHARS);
+    expect(slack, `only ${slack} characters of headroom below the cap — the arithmetic's "~20,000 `
+      + 'to the cap" no longer holds, so the scrub growth and the tokenizer gap it covers are no '
+      + 'longer covered').toBeGreaterThan(15_000);
+
+    // AND THE SCRUB'S WORST CASE, PRICED. `<redacted-credential:tag>` is the marker; the worst
+    // case is every short value in the document being replaced by it. Even a pathological
+    // multiplier on the whole rendered document stays inside the slack.
+    const MARKER = '<redacted-credential:tag>';
+    const worstCaseGrowth = MARKER.length * 200;   // 200 handed credential occurrences
+    expect(worstCaseGrowth, 'the scrub\'s worst realistic growth now exceeds the headroom')
+      .toBeLessThan(slack);
+  });
+
+  it('F6 — a CJK-heavy window still fits the engine\'s own unit, and costs more REAL tokens', () => {
+    // The fixture the review measured but never pinned: the same shape, in a script where one
+    // code unit is three UTF-8 bytes. Invented text, no real content.
+    base();
+    const CJK = '構成要素の記録が一行ごとに積み上がっていく様子を観察する';
+    for (let i = 1; i <= 200; i++) {
+      logRows.push({
+        timestamp: new Date().toISOString(), level: 'info', component: 'model',
+        message: CJK.repeat(4), agentId: AGENT,
+        meta: { note: `${i} ` + CJK.repeat(8) },
+      });
+    }
+
+    const chars = renderedChars();
+    // (1) THE PROPERTY THAT MATTERS AND HOLDS: the budgets and the engine's cap count the SAME
+    //     unit, so the bound still binds and the engine still does not truncate.
+    expect(chars, `a CJK window rendered ${chars} code units, past the engine's ${CAP_CHARS}`)
+      .toBeLessThan(CAP_CHARS);
+
+    // (2) NON-VACUITY: the fixture really is CJK and really did reach the bundle.
+    const bundle = gatherEvidence(AGENT, {}).bundle as Record<string, unknown>;
+    expect(JSON.stringify(bundle.logs), 'the CJK rows never reached the logs section')
+      .toContain('構成要素');
+
+    // (3) THE GAP, MEASURED: the same text costs far more UTF-8 bytes than code units, which is
+    //     the direction a tokenizer moves in. This is the number `bounds.ts` warns about, and it
+    //     is asserted so the warning cannot drift into being decorative.
+    const bytes = Buffer.byteLength(JSON.stringify(bundle, null, 2), 'utf8');
+    expect(bytes, 'a CJK document no longer costs more bytes than code units, so either the '
+      + 'fixture stopped being CJK or the renderer stopped carrying it').toBeGreaterThan(chars);
+    const inflation = bytes / chars;
+    expect(inflation, `CJK inflation measured ${inflation.toFixed(2)}x — the arithmetic's note `
+      + 'assumes this is well above 1, and the slack asserted above is what pays for it')
+      .toBeGreaterThan(1.3);
+
+    // (4) AND IT IS STILL COVERED. Even priced at the byte count — a deliberate over-estimate of
+    //     what a tokenizer would charge — the result stays under the engine's budget.
+    expect(bytes, `priced in UTF-8 bytes the CJK window costs ${bytes}, past the ${CAP_CHARS} `
+      + 'budget: the margin no longer covers the unit the arithmetic does not count')
+      .toBeLessThan(CAP_CHARS);
   });
 });

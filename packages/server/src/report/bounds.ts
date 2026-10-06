@@ -274,7 +274,16 @@ export function boundBundleSections(
     }
     sections[name] = kept;
     if (kept.length < items.length || shrunk !== null) {
-      const head = `${name}: showing the ${kept.length} ${order} of ${items.length} collected in this window`;
+      // ── "OF N" IS THE COLLECTOR'S N, NOT THE WINDOW'S (round-1 review F5) ──
+      // `items` is already row-capped: every collector reads at most `COLLECTOR_CAPS`, and the
+      // log reader takes the newest 200 lines GLOBALLY before the agent/window filter. So the
+      // old wording, "of 200 in this window", asserted a window population nobody counted — a
+      // box with 210 audit rows inside the window rendered exactly that. The count is true about
+      // what this collector RETURNED, so that is what the sentence now says, and the cap is named
+      // so the reader knows the number has a ceiling rather than being a census.
+      const head = `${name}: showing the ${kept.length} ${order} of ${items.length} `
+        + 'rows this collector returned for the window (collectors are row-capped, so there may '
+        + 'be more in the window than were read)';
       if (shrunk === null) {
         notes.push(`${head} — the rest are not included here, to stay inside this section's size budget.`);
       } else {
