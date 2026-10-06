@@ -55,6 +55,10 @@ import { postAgentNotice } from '../agent/agent-notice.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { getPrimaryAgentId, getPMAgentId, getOwnerName } from '../config/platform.js';
 import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
+// t114 (census row 30): the liveness fact every other reaper in the tree guards on. Until
+// now `scheduler/` imported it nowhere, which is why this was the only reaper that could
+// force-fail a run that was still executing.
+import { activeRuns } from '../agent/shared-state.js';
 
 const logger = createLogger('scheduler');
 
@@ -1632,13 +1636,13 @@ export function cleanupStaleRuns(): void {
   // Projecting the messages side back to the TEXT shape keeps BOTH sides of the comparison
   // one type and reproduces the pre-migration answer exactly (44 = 44 in the same rehearsal).
   // If `tasks.updated_at` ever converts too, this wrap comes off and both sides go numeric.
-  const staleTasks = db.prepare(`
+  const staleTasksRaw = db.prepare(`
     SELECT t.id AS id, t.title AS title, t.agent_id AS assigned_to
     FROM work t
     WHERE ${taskScope('t')} AND t.schedule_status = 'running'
       AND t.state != 'paused'
       AND t.agent_id IS NOT NULL
-      AND MIN(
+      AND MAX(
         COALESCE(
           (SELECT MAX(m.created_at) FROM messages m WHERE m.agent_id = t.agent_id),
           t.updated_at
@@ -1646,6 +1650,39 @@ export function cleanupStaleRuns(): void {
         t.updated_at
       ) < ?
   `).all(Date.now() - AGENT_IDLE_THRESHOLD_MINUTES * 60_000) as Array<{ id: string; title: string; assigned_to: string }>;
+
+  // ── t114 (CENSUS ROW 30) — THE ONE REAPER IN THE TREE WITHOUT A LIVENESS GUARD ──
+  //
+  // THE DEFECT, in two parts, both of which had to be wrong for the damage to happen.
+  //
+  // (1) THE SQL READ THE OLDER OF TWO CLOCKS. It was `MIN(...)` over the agent's newest message
+  //     and the task row's `updated_at`, so a row was declared stale if EITHER side was stale.
+  //     `work.updated_at` only moves on an explicit `work_*` tool write, while the 30-second
+  //     heartbeat touches `agents.updated_at` — a different table this query never reads. So a
+  //     long research run that emitted messages the whole way and simply had not called a tracker
+  //     tool since claiming its task looked stale for its entire life. `MAX` is the only honest
+  //     reading: the NEWEST evidence of life is what says whether anything is alive.
+  //
+  // (2) NOTHING ASKED WHETHER THE RUN WAS STILL RUNNING. `scheduler/` imported `activeRuns`
+  //     nowhere — verified by grep at the census and again here — making this the only reaper in
+  //     the tree without the guard that `runtime.ts`, `healer-agent.ts`, `auto-fix.ts`,
+  //     `vault/maintenance.ts` and `pm-agent.ts` all carry. A nightly task on a local model,
+  //     35 minutes in and emitting messages, was `onTaskRunComplete(id,'failed',…)` and
+  //     force-reset WHILE STILL RUNNING; because the row was then re-scheduled, the next tick
+  //     could dispatch a SECOND run of the same task against the same agent — the status/reality
+  //     split that manufactures duplicate work, which is the failure class the preempt removal
+  //     was done to stop.
+  //
+  // The guard runs before any verdict is written. A run this process is actively executing is
+  // not stale, whatever the clocks say, and the decline is logged with the row so a human can
+  // see the reaper choosing not to act.
+  const staleTasks = staleTasksRaw.filter((t) => {
+    if (!activeRuns.has(t.assigned_to)) return true;
+    logger.info('cleanupStaleRuns: declining to fail a task whose agent is RUNNING right now', {
+      taskId: t.id, agentId: t.assigned_to, thresholdMinutes: AGENT_IDLE_THRESHOLD_MINUTES,
+    });
+    return false;
+  });
 
   // 2. Also catch running tasks with no assigned agent at all
   const unassigned = db.prepare(`
@@ -1664,15 +1701,27 @@ export function cleanupStaleRuns(): void {
   // onTaskRunComplete bails when there's no active task_runs row — so
   // they sit stuck forever. v2.3.8: catch them here and force-reset
   // directly via the helper below, bypassing onTaskRunComplete.
-  const stuckOutOfSync = db.prepare(`
-    SELECT t.id AS id, t.title AS title
+  const stuckOutOfSyncRaw = db.prepare(`
+    SELECT t.id AS id, t.title AS title, t.agent_id AS assigned_to
     FROM work t
     WHERE ${taskScope('t')} AND t.state = 'claimed'
       AND t.repeat_interval IS NOT NULL
       AND (t.schedule_status IS NULL OR t.schedule_status != 'running')
       AND t.is_paused = 0
       AND t.updated_at < ?
-  `).all(Date.now() - HARD_STUCK_THRESHOLD_MINUTES * 60_000) as Array<{ id: string; title: string }>;
+  `).all(Date.now() - HARD_STUCK_THRESHOLD_MINUTES * 60_000) as Array<{ id: string; title: string; assigned_to: string | null }>;
+
+  // t114 (census row 30, SECOND CLAUSE): the same defect with a longer fuse. This arm reads only
+  // `t.updated_at`, which a tracker-tool-quiet run never moves, so a two-hour task that is
+  // actively running was force-recovered on the same false premise. It now selects the assignee
+  // (it did not before) so it can ask the same question the 30-minute arm does.
+  const stuckOutOfSync = stuckOutOfSyncRaw.filter((t) => {
+    if (!t.assigned_to || !activeRuns.has(t.assigned_to)) return true;
+    logger.info('cleanupStaleRuns: declining to force-recover a recurring task whose agent is RUNNING right now', {
+      taskId: t.id, agentId: t.assigned_to, thresholdMinutes: HARD_STUCK_THRESHOLD_MINUTES,
+    });
+    return false;
+  });
 
   // 4. Recurring task with full repeat config but next_run_at not
   //    populated. Pre-2.9.x the create/edit paths could write a partial
@@ -1695,7 +1744,7 @@ export function cleanupStaleRuns(): void {
   `).all() as Array<{ id: string; title: string }>;
 
   const allStale = [
-    ...staleTasks.map(t => ({ id: t.id, title: t.title, reason: `assigned agent idle for ${AGENT_IDLE_THRESHOLD_MINUTES}+ minutes`, kind: 'stale_running' as const })),
+    ...staleTasks.map(t => ({ id: t.id, title: t.title, reason: `assigned agent produced nothing for ${AGENT_IDLE_THRESHOLD_MINUTES}+ minutes and is not running now`, kind: 'stale_running' as const })),
     ...unassigned.map(t => ({ id: t.id, title: t.title, reason: 'no agent assigned', kind: 'stale_running' as const })),
     ...stuckOutOfSync.map(t => ({ id: t.id, title: t.title, reason: `recurring task stuck in_progress with out-of-sync schedule_status for ${HARD_STUCK_THRESHOLD_MINUTES}+ minutes`, kind: 'stuck_out_of_sync' as const })),
     ...missingNextRun.map(t => ({ id: t.id, title: t.title, reason: 'recurring task has repeat_interval+repeat_unit but next_run_at is NULL — scheduler can\'t see it', kind: 'missing_next_run' as const })),
