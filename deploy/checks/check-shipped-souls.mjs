@@ -372,6 +372,16 @@ if (!fs.existsSync(shippedGenerator)) {
   const detectsManual = (dir) => {
     const generator = path.join(dir, 'packages', 'server', 'dist', 'tools', 'index-generator.js');
     if (!fs.existsSync(generator)) return true;                       // no anchor = refused
+    // ── t110's N4, taken here because `deploy/checks/**` is t111's fence ──────────────────
+    // §4 above refuses when the compiled generator stops resolving `path.resolve(__dirname,
+    // './docs')`, because this gate MIRRORS that resolution and a stale mirror measures the
+    // wrong directory. That branch had NO control reaching it: `syntheticArtifact` wrote the
+    // anchor as a bare `// synthetic anchor` line and never varied the resolution spelling, so
+    // the staleness regex was never exercised either way. It fails CLOSED, so the risk was a
+    // stale mirror surviving a source change rather than a false green — but an unclaused
+    // branch is one nobody is told about when it moves.
+    const text = fs.readFileSync(generator, 'utf8');
+    if (!/TOOL_DOCS_SOURCE_DIR = path\.resolve\(__dirname, ['"]\.\/docs['"]\)/.test(text)) return true;
     const docs = path.resolve(path.dirname(generator), './docs');
     return REQUIRED_TOOL_MANUALS.some((f) => !fs.existsSync(path.join(docs, f)));
   };
@@ -383,11 +393,16 @@ if (!fs.existsSync(shippedGenerator)) {
    * artifact, and a check that writes into the thing it is judging would be measuring itself.
    */
   const temporaryControlDirs = [];
-  const syntheticArtifact = ({ omit }) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shipped-souls-control-'));
+  const syntheticArtifact = ({ omit, resolution }) => {
+    const root = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'shipped-souls-control-'));
     const docs = path.join(root, 'packages', 'server', 'dist', 'tools', 'docs');
     fs.mkdirSync(docs, { recursive: true });
-    fs.writeFileSync(path.join(docs, '..', 'index-generator.js'), '// synthetic anchor\n');
+    // The anchor now carries a REAL resolution line by default (it used to be a bare comment,
+    // which is why no control could reach the staleness branch); `resolution` asks for a stale
+    // one. Both halves move together — mirroring §4 in `detectsManual` without this would have
+    // flipped the `every-manual-present-is-accepted` control to a false refusal.
+    fs.writeFileSync(path.join(docs, '..', 'index-generator.js'),
+      `// synthetic anchor\nconst TOOL_DOCS_SOURCE_DIR = ${resolution ?? "path.resolve(__dirname, './docs')"};\n`);
     for (const f of REQUIRED_TOOL_MANUALS) {
       if (f !== omit) fs.writeFileSync(path.join(docs, f), '# synthetic manual\n');
     }
@@ -428,6 +443,19 @@ if (!fs.existsSync(shippedGenerator)) {
     {
       id: 'a-real-anchor-with-every-manual-present-is-accepted',
       why: 'the manual rule must not simply refuse everything, which is what a constant-true control hid',
+      ok: !detectsManual(syntheticArtifact({})),
+    },
+    {
+      // t110's N4: the staleness branch, now reachable. A generator that resolves its docs
+      // SOMEWHERE ELSE must be refused, because this gate's mirror of that resolution is what
+      // decides which directory gets measured.
+      id: 'a-generator-that-resolves-its-docs-elsewhere-is-refused',
+      why: 'the gate mirrors the generator\'s own resolution; a stale mirror measures the wrong directory',
+      ok: detectsManual(syntheticArtifact({ resolution: "path.resolve(__dirname, '../docs')" })),
+    },
+    {
+      id: 'and-the-real-resolution-is-still-accepted',
+      why: 'a staleness check that refuses everything proves nothing — the constant-true control\'s lesson',
       ok: !detectsManual(syntheticArtifact({})),
     },
     {
