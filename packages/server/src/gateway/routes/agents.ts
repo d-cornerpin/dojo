@@ -542,18 +542,15 @@ agentsRouter.post('/:id/stop', (c) => {
   // ── OWNER RULING 2026-10-05 (#9): *"STOP means stop for anything that agent is doing"* ──
   //
   // THE MEASURED DEFECT THIS REPLACES. What stood here was `if (agent.status !== 'working')
-  // return 400 'Agent is not currently working'`, and `agents.status` answers a DIFFERENT
-  // question: is a TURN in flight. Background work deliberately outlives its turn — the video
-  // poller runs for up to thirty minutes, `image_create`'s delivery waits for the agent to go
-  // idle before it dials — so the row reads `idle` while a render burns. A-5b taught the agent
-  // card to offer the button for exactly that case; this route then refused it. Probed at
-  // `7dc71325`: an idle agent with one live `background` registration, `POST /:id/stop` →
-  // `400 {"ok":false,"error":"Agent is not currently working"}`, and the registration still
-  // un-aborted. The visible button and the working mechanism were separated by this line.
+  // return 400`, and `agents.status` answers a DIFFERENT question: is a TURN in flight.
+  // Background work outlives its turn, so the row reads `idle` while a render burns — and
+  // A-5b had just taught the agent card to offer a Stop for exactly that case. Probed at
+  // `7dc71325`: idle row, one live `background` registration, `POST /:id/stop` → `400
+  // {"ok":false,"error":"Agent is not currently working"}`, registration still un-aborted.
+  // The visible button and the working mechanism were separated by this one line.
   //
-  // So the predicate is the one module that owns it, and it reads both facts a stop can reach.
-  // The status check SURVIVES inside it (`working` is still stoppable with nothing registered —
-  // a run between dials), it is simply no longer the only way to qualify.
+  // The status check SURVIVES inside the predicate (`working` is still stoppable with nothing
+  // registered — a run between dials); it is simply no longer the only way to qualify.
   const live = liveWork(id);
   if (agent.status !== 'working' && !hasLiveWork(live)) {
     // Still a refusal, and the wording now says which question was asked. An agent with
@@ -570,11 +567,9 @@ agentsRouter.post('/:id/stop', (c) => {
   // `stopAgent` now writes idle only when idle is TRUE (no run in flight) and otherwise leaves
   // the row saying `working` and broadcasts `stopping: true`. The route reports back whatever
   // actually happened rather than asserting an outcome it has not checked.
-  // A-5b — THE ZERO IS ANNOUNCED, not waited for. Every background job's own exit edge emits
-  // (its `release()`, its row's `emitUpdate`), so this frame is not the only one that will say
-  // so — but a video row is moved to `cancelled` by its poll loop a tick LATER, and the frame
-  // that matters most to a surface is the one that takes its stop control away. Saying it here,
-  // from the door the press came through, is what makes the control answer the press itself.
+  // A-5b — THE ZERO IS ANNOUNCED, not waited for. Every job's own exit edge emits too, but a
+  // video row reaches `cancelled` a tick LATER, and the frame that matters most is the one that
+  // takes the stop control away. Said here, the control answers the press itself.
   announceLiveWork(id);
 
   const after = db.prepare('SELECT status FROM agents WHERE id = ?').get(id) as { status: string };
@@ -971,11 +966,10 @@ function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
     uptime,
     model,
     dreamerIgnore: row.dreamer_ignore === 1,
-    // A-5b: a READ, never a writer — of the live abort registry AND of the open media job rows,
-    // through the one module that owns the question (`agent/live-work.ts`). The rendering rule
-    // is `dashboard/src/lib/stop-affordance.ts`; the live frame is `agent:jobs`. Three surfaces,
-    // one predicate — because when the card and the stop ROUTE each had their own, the card
-    // offered a button the route then refused with 400.
+    // A-5b: a READ, never a writer — the registry AND the open job rows, through the one
+    // module that owns the question (`agent/live-work.ts`). Three surfaces, one predicate:
+    // when the card and the stop ROUTE each had their own, the card offered a button the
+    // route then refused with 400.
     inFlight: liveWork(agentId),
   };
 }

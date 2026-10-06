@@ -36,16 +36,9 @@ interface Dojo3ComposerProps {
   agentId: string;
   onSend: (content: string, attachments?: AttachmentInfo[]) => void;
   isWorking?: boolean;
-  /**
-   * A-5b / OWNER RULING #9 — there is something to stop even though no turn is running.
-   *
-   * SEPARATE FROM `isWorking` ON PURPOSE. `isWorking` means "a turn this user is waiting on",
-   * and it is what swaps SEND for STOP — correct for a turn, because a reply is coming and
-   * nothing can be sent until it does. A background job (a video render, a narration) is the
-   * other case: the turn is over, the agent is free, and the owner must be able to type a new
-   * message AND cut the render. So this flag adds a stop BESIDE send rather than in place of
-   * it, and the dots stay down — the agent is not thinking.
-   */
+  /** A-5b / RULING #9 — something is stoppable though no turn runs. Separate from `isWorking`
+   *  on purpose: this adds a stop BESIDE send instead of taking its seat, because the agent is
+   *  free and must stay messageable. The rule is `lib/stop-affordance.ts`. */
   canStop?: boolean;
   onStop?: () => void;
   placeholder?: string;
@@ -483,9 +476,8 @@ export function Dojo3Composer({
     }
   };
 
-  // A-5b — ONE ANSWER, asked of the rule the server suite drives (`lib/stop-affordance.ts`).
-  // "Never both buttons at once" is an invariant, and two independent `&&`s in the JSX below
-  // would be one edit away from breaking it.
+  // A-5b — ONE ANSWER, from the rule the server suite drives. "Never both buttons at once" is
+  // an invariant; two independent `&&`s in the JSX below are one edit from breaking it.
   const stopControl = composerStopControl({
     isWorking: !!isWorking, canStop: !!canStop, hasHandler: !!onStop,
   });
@@ -662,8 +654,7 @@ export function Dojo3Composer({
             </button>
 
             {/* A-5b — STOP FOR WORK THAT OUTLIVED THE TURN. Beside send, not instead of it:
-                the agent is idle and can be messaged, and a background render can still be
-                cut. The ruling is that stop stops anything the agent is doing. */}
+                the agent is idle and messageable, and the render can still be cut. */}
             {showBackgroundStop && (
               <button
                 type="button"

@@ -368,11 +368,8 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
       // fix). Without it the live broadcast fell back to marker-parsing while
       // refetch used inbound_meta, so an unauthorized-sender notification could
       // render live yet vanish on refresh (the live-vs-refetch divergence).
-      // t106 — the SAME binding the insert used, on the wire too. The history route
-      // projects this column so a RELOADED feed always had it; the live feed builds its
-      // row from THIS frame, and `lib/working-note-visibility.ts` R4 reads it to tell a
-      // person's message from an engine-synthetic trigger. Omitted, a routed-channel
-      // reply promoted only on refresh. One resolve (above), two consumers.
+      // t106 — the same binding the insert used, on the wire too (R4 reads it live). Why:
+      // `services/__tests__/no-channel-inbound-frame-loses-its-conversation.test.ts`.
       conversationId,
       inboundMeta: JSON.stringify(inboundMetaObj),
       tokenCount: null,

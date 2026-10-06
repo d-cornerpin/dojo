@@ -258,15 +258,10 @@ twilioRouter.post('/webhook/voicemail-transcription', async (c) => {
         // caller as sender, and the authorized:false verdict below) are stamped IN the
         // insert, so the row is never briefly unstamped. recordInboundMeta still records
         // the full meta blob for the resolver.
-        // t106 — AND THIS DOOR HAD NO CONVERSATION AT ALL, which is why its fix is two lines
-        // rather than one. The other six channel-inbound producers each resolve an identity
-        // before their insert (`services/imessage-bridge.ts`, the two mail watchers,
-        // `services/teams-watcher.ts`, `twilio/sms-inbound.ts`, `twilio/call-session.ts`); this
-        // one stamped `channel`/`senderId`/`authorized` and left `conversation_id` NULL, so the
-        // RELOAD path was wrong here too and no frame field alone could fix it. The identity is
-        // the caller's number on the phone channel — the same shape `twilio/call-session.ts`
-        // resolves for the same person ringing the same number, so a voicemail and a live call
-        // from one caller land in one thread instead of one thread and a stray orphan row.
+        // t106 — AND THIS DOOR HAD NO CONVERSATION AT ALL: it left `conversation_id` NULL, so
+        // its RELOAD path was wrong too and no frame field alone could fix it. The identity is
+        // the caller's number, the shape `twilio/call-session.ts` resolves for the same person
+        // ringing the same number — so voicemail and live call share one thread, not an orphan.
         const { resolveOrCreateConversation } = await import('../../memory/conversations.js');
         const conversationId = resolveOrCreateConversation(primaryId, {
           channel: 'phone', provider: 'twilio', counterpartyId: from ?? null, threadRoot: null,
@@ -302,8 +297,7 @@ twilioRouter.post('/webhook/voicemail-transcription', async (c) => {
           message: {
             id: msgId, agentId: primaryId, role: 'user' as const,
             content,
-            // t106 — the same binding the insert just used, on the wire too. The live feed
-            // builds its row from THIS frame and R4 reads the column.
+            // t106 — the same binding the insert just used; the live feed reads THIS frame.
             conversationId,
             tokenCount: null, modelId: null, cost: null, latencyMs: null,
             createdAt: new Date().toISOString(),

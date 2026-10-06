@@ -54,28 +54,22 @@ export interface AgentStatusEvent {
 // ════════════════════════════════════════
 // A-5b / OWNER RULING #9 — WHAT A STOP WOULD CUT FOR ONE AGENT, RIGHT NOW.
 //
-// The ruling: *"STOP means stop for anything that agent is doing"*. An agent with a live
-// background job is not idle, the stop control stays offered while anything runs, and the
-// press cuts the turn AND every background job.
+// *"STOP means stop for anything that agent is doing"*: an agent with a live background job is
+// not idle, the stop control stays offered while anything runs, and the press cuts the turn AND
+// every background job.
 //
-// ── WHY A NEW FRAME AND NOT A RULE OVER THE FRAMES THAT EXIST ──
-// The Chat composer's dots-and-stop state is driven by `agent:status`, which describes a TURN:
-// `working` when one starts, `idle` when it ends. A background job that outlives the turn — a
-// video render, a narration, an image delivery that deliberately waits for the agent to go
-// idle — emits no further status frame at all, so there was nothing for a rendering rule to be
-// clever about: the composer had never been told. The review's own wording is *"needs a new
-// emission, not a rendering rule"*.
+// WHY A NEW FRAME AND NOT A RULE OVER THE ONES THAT EXIST. `agent:status` describes a TURN, and
+// a background job that outlives one emits no further status frame — so there was nothing for a
+// rendering rule to be clever about: the composer had never been told (BACKLOG L40's own words,
+// *"needs a new emission, not a rendering rule"*). The two per-job frames below
+// (`generation_job:update`, `video_job:update`) are not it either: each describes ONE job and
+// carries a box-wide `activeCount`, so answering "does this agent still have anything running"
+// from them means a component keeping its own tally — the server's predicate, copied into JSX.
+// This frame carries the ANSWER; `server/src/agent/live-work.ts` owns the question and the full
+// argument, and `AgentDetail.inFlight` reports the same two numbers.
 //
-// The two per-job frames (`generation_job:update`, `video_job:update`) already existed and are
-// not that emission. They describe ONE job, carry a global `activeCount` rather than a
-// per-agent one, and say nothing about the abort registry — so answering "does this agent still
-// have anything running" from them means a component keeping its own running tally of every job
-// it has ever seen, which is a second copy of the server's predicate, drifting. This frame
-// carries the ANSWER instead: `server/src/agent/live-work.ts` computes it, and the route payload
-// (`AgentDetail.inFlight`) reports the same two numbers, so there is exactly one rule.
-//
-// Emitted on the lifecycle EDGES — a background registration opening or releasing, a media job
-// row changing state — never on a timer and never per turn, so a quiet box is quiet.
+// Emitted on the lifecycle EDGES — a background registration opening or releasing, a job row
+// changing state, the stop route's own zero — never on a timer, so a quiet box is quiet.
 // ════════════════════════════════════════
 export interface AgentJobsEvent {
   type: 'agent:jobs';
