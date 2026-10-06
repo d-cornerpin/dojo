@@ -50,7 +50,7 @@ function inCall<T>(args: Record<string, unknown>, body: () => Promise<T>): Promi
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'file-patch-'));
+  tmpDir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'file-patch-'));
 });
 
 afterEach(() => {

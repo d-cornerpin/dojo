@@ -79,7 +79,7 @@ function runChild(mode: 'kill-inside' | 'kill-after'): string {
 }
 
 beforeEach(() => {
-  home = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-crashc-'));
+  home = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-crashc-'));
   sink = path.join(home, 'effects.log');
 });
 

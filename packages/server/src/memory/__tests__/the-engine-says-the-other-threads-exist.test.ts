@@ -46,7 +46,7 @@ vi.mock('../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => p.join(os.tmpdir(), 'dojo-other-threads-test', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-other-threads-test', 'dojo.db'),
   };
 });
 /** The channel half reads live platform config; this file tests the LANE, so the registry is

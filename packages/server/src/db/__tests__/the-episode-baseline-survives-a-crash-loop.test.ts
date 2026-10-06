@@ -41,7 +41,7 @@ let dbFile: string;
 let db: Database.Database;
 
 beforeEach(() => {
-  scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'w53-snap-'));
+  scratch = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'w53-snap-'));
   dbFile = path.join(scratch, 'dojo.db');
   db = new Database(dbFile);
   db.exec(`CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL,

@@ -29,7 +29,7 @@ import type { AddressInfo } from 'node:net';
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
-  const dir = p.join(o.tmpdir(), 'dojo-t77b-pricing-sync');
+  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t77b-pricing-sync');
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
@@ -46,7 +46,7 @@ vi.mock('../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => path.join(os.tmpdir(), 'dojo-t77b-pricing-sync', 'dojo.db'),
+    getDbPath: () => path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t77b-pricing-sync', 'dojo.db'),
   };
 });
 

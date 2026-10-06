@@ -27,7 +27,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { rotateLogFile } from '../log-rotation.js';
 
-const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-log-rotation-'));
+const WORK = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-log-rotation-'));
 const LIVE = path.join(WORK, 'dojo.log');
 const BACKUP = LIVE + '.1';
 

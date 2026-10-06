@@ -27,7 +27,7 @@ import path from 'node:path';
 
 // `vi.mock` factories are hoisted above module-level consts, so the home path has to be too.
 const { HOME } = vi.hoisted(() => ({
-  HOME: `${require('node:os').tmpdir()}/dojo-profile-honest-${process.pid}`,
+  HOME: `${(process.env.DOJO_TEST_HOME_ROOT || require('node:os').tmpdir())}/dojo-profile-honest-${process.pid}`,
 }));
 
 vi.mock('../../home.js', () => ({

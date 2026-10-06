@@ -59,7 +59,7 @@ function extractRitualCheck(markerPath: string): string {
 
 /** What the gate says about one marker: '' = it would ship, anything else = the refusal reasons. */
 function verdictFor(marker: unknown): string {
-  const file = path.join(os.tmpdir(), `lane3-ritual-${Math.random().toString(36).slice(2)}.json`);
+  const file = path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), `lane3-ritual-${Math.random().toString(36).slice(2)}.json`);
   fs.writeFileSync(file, JSON.stringify(marker));
   try {
     return execFileSync(process.execPath, ['-e', extractRitualCheck(file)], { encoding: 'utf-8' }).trim();

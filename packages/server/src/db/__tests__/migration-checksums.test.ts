@@ -37,7 +37,7 @@ const read = (name: string): string | null => {
 };
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-migchk-'));
+  dir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-migchk-'));
   db = new Database(':memory:');
   db.exec(`CREATE TABLE _migrations (
     name TEXT PRIMARY KEY,

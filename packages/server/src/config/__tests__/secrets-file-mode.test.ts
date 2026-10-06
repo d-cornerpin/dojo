@@ -27,7 +27,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'secrets-mode-home-'));
+const fixtureHome = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'secrets-mode-home-'));
 fs.mkdirSync(path.join(fixtureHome, '.dojo'), { recursive: true });
 const SECRETS = path.join(fixtureHome, '.dojo', 'secrets.yaml');
 

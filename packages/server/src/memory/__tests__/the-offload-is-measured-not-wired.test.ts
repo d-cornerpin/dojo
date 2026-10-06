@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-t89-offload-'));
+const dbDir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t89-offload-'));
 const dbPath = path.join(dbDir, 'fixture.db');
 
 // The pool asks `getDbPath()` where to read, so the fixture IS the database as far as it is concerned.

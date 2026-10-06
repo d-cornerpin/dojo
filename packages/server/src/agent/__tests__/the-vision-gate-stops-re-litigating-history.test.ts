@@ -39,7 +39,7 @@ vi.mock('../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => p.join(os.tmpdir(), 'dojo-t27-vision', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t27-vision', 'dojo.db'),
   };
 });
 vi.mock('../../gateway/ws.js', () => ({ broadcast: (e: unknown) => broadcastSpy(e) }));

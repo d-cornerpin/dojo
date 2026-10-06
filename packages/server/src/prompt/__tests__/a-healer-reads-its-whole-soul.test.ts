@@ -38,7 +38,7 @@ const HOME_DIR_NAME = 'dojo-w42-healer-soul';
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
-  const dir = p.join(o.tmpdir(), 'dojo-w42-healer-soul');
+  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-w42-healer-soul');
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
@@ -64,7 +64,7 @@ import { getSoulContent, soulFileForAgent, healerSoulDefaultFrom } from '../asse
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../agent-prompt-surface.js';
 import { WORKING_NOTE_PREFIX } from '@dojo/shared';
 
-const HOME = path.join(realOs.tmpdir(), HOME_DIR_NAME);
+const HOME = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
 const HEALER = 'healer';
 const PRIMARY = 'zargo';

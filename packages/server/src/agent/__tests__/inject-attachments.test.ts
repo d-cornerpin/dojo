@@ -33,7 +33,7 @@ let tmpDir: string;
 let imgPath: string;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'inject-att-'));
+  tmpDir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'inject-att-'));
   imgPath = path.join(tmpDir, 'test.png');
   fs.writeFileSync(imgPath, TINY_PNG);
 

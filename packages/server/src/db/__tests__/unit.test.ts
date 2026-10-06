@@ -39,7 +39,7 @@ vi.mock('../connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => path.join(os.tmpdir(), 'dojo-unit-test', 'dojo.db'),
+    getDbPath: () => path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-unit-test', 'dojo.db'),
   };
 });
 
@@ -52,7 +52,7 @@ const rows = (): Array<{ id: string }> =>
 const put = (id: string): void => { mockDb.current!.prepare('INSERT INTO t (id) VALUES (?)').run(id); };
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-unit-'));
+  dir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-unit-'));
   mockDb.current = new Database(path.join(dir, 'dojo.db'));
   mockDb.current.pragma('journal_mode = WAL');
   mockDb.current.exec('CREATE TABLE t (id TEXT PRIMARY KEY)');

@@ -28,7 +28,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const ROOT = path.join(os.tmpdir(), `dojo-migrated-flag-${process.pid}`);
+const ROOT = path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), `dojo-migrated-flag-${process.pid}`);
 const SOURCE_DB = path.join(ROOT, 'source', 'dojo.db');
 const DEST_DB = path.join(ROOT, 'dest', 'dojo.db');
 

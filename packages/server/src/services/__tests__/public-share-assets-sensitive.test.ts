@@ -50,7 +50,7 @@ vi.mock('../tunnel.js', () => ({
 // The deny list answers `~`-rooted rules against `homeDir()`, and OUT_DIR is
 // computed from it at import time — so the fake home is installed before the
 // import, exactly as the sibling asset test does it.
-const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'public-share-sensitive-'));
+const tmpHome = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'public-share-sensitive-'));
 process.env.DOJO_HOME = tmpHome;
 
 import { createPublicShare, OUT_DIR } from '../public-share.js';
@@ -84,7 +84,7 @@ function shareTree(slug: string, dir?: string, out: string[] = []): string[] {
 }
 
 beforeEach(() => {
-  workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'share-sensitive-src-'));
+  workDir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'share-sensitive-src-'));
 });
 
 afterEach(() => {

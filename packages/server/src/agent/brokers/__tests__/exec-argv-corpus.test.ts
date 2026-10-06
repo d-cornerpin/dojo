@@ -47,7 +47,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const fixtureHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'exec-argv-home-')));
+const fixtureHome = fs.realpathSync(fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'exec-argv-home-')));
 // The deny table resolves home through `homeDir()`, which reads DOJO_HOME.
 process.env.DOJO_HOME = fixtureHome;
 const projects = path.join(fixtureHome, 'Projects');

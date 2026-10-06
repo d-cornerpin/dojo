@@ -28,7 +28,7 @@ vi.mock('../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => p.join(os.tmpdir(), 'dojo-t82c-reset-guard-test', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t82c-reset-guard-test', 'dojo.db'),
   };
 });
 

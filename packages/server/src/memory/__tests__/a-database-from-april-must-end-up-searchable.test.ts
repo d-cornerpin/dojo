@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-t89-ftshealth-'));
+const dbDir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t89-ftshealth-'));
 
 let probeCalls = 0;
 let currentPath = ':memory:';

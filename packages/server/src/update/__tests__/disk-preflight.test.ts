@@ -44,7 +44,7 @@ import path from 'node:path';
 let scratch: string;
 
 beforeEach(() => {
-  scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-disk-preflight-'));
+  scratch = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-disk-preflight-'));
 });
 afterEach(() => {
   vi.restoreAllMocks();

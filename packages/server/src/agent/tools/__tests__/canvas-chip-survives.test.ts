@@ -54,7 +54,7 @@ const { runWithToolCallId } = await import('../../turn-state.js');
 type ResourceGrant = import('../../effects/capability.js').ResourceGrant;
 
 const AGENT = 'canvas-chip-agent';
-const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'canvas-chip-'));
+const scratch = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'canvas-chip-'));
 const doc = path.join(scratch, 'report.md');
 fs.writeFileSync(doc, '# a document the user should be able to open\n');
 const missing = path.join(scratch, 'never-written.md');

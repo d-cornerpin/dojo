@@ -81,7 +81,7 @@ describe('pre-migration backup: destination', () => {
   let before: { real: string[]; cwd: string[] };
 
   beforeEach(() => {
-    scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-backup-loc-'));
+    scratch = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-backup-loc-'));
     before = { real: restorePoints(realBackupsDir), cwd: restorePoints(cwdBackupsDir) };
   });
 
@@ -136,7 +136,7 @@ describe('pre-migration backup: destination', () => {
     // `db/__tests__/connection-pragmas.test.ts` established. This is the clause that
     // says the fix changed nothing on the owner's box: on a real boot the snapshot
     // still lands in `<home>/.dojo/data/backups`.
-    const scratchHome = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-backup-home-'));
+    const scratchHome = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-backup-home-'));
     try {
       vi.stubEnv('DOJO_HOME', scratchHome);
       vi.resetModules();

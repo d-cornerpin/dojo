@@ -45,7 +45,7 @@ const HOME_DIR_NAME = 'dojo-w24-pm-soul';
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
-  const dir = p.join(o.tmpdir(), 'dojo-w24-pm-soul');
+  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-w24-pm-soul');
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
@@ -71,7 +71,7 @@ import { readAgentPromptSurface, writeAgentPromptSurface } from '../agent-prompt
 import { PM_ALLOWED_WORK_OPS } from '../../tracker/pm-agent.js';
 import { WORK_OPS } from '../../tools/work-verbs.js';
 
-const HOME = path.join(realOs.tmpdir(), HOME_DIR_NAME);
+const HOME = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
 const PM = 'quilba';
 const PRIMARY = 'zargo';

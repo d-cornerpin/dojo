@@ -324,7 +324,7 @@ describe('the receipt attributes the lane to itself, measured', () => {
   const REAL_MODE = process.env.DOJO_RECEIPT_MODE;
 
   it('records the lane as ADMITTED with its measured cost, and does not double-count it', async () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-t7-receipt-'));
+    const scratch = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t7-receipt-'));
     process.env.DOJO_HOME = scratch;
     process.env.DOJO_RECEIPT_MODE = 'meta';
     // RECEIPTS_ROOT resolves from homeDir() at module load, so the import comes after.

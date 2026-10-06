@@ -247,7 +247,7 @@ describe('⚠ THE WIRE — and it COUNTS, in both directions', () => {
 // one chunk cannot reproduce the defect at all — a chunk that spans the gap still examines rows.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-const GAP_DB = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-t89-c1-')), 'gap.db');
+const GAP_DB = path.join(fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t89-c1-')), 'gap.db');
 
 /** Two agents, interleaved by insertion key, with the needle in the OLDER agent-a block.
  *  Built with the production index set for the columns these queries name (migration 133):

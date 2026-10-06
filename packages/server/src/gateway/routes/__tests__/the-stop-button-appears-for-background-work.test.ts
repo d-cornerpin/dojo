@@ -46,7 +46,7 @@ vi.mock('../../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => p.join(os.tmpdir(), 'dojo-a5b-stop', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-a5b-stop', 'dojo.db'),
   };
 });
 // L40's emission is the subject of §5-§7, so the broadcaster RECORDS rather than swallows.

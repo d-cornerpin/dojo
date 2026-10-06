@@ -51,7 +51,7 @@ vi.mock('../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => p.join(os.tmpdir(), 'dojo-a5-media-stop', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-a5-media-stop', 'dojo.db'),
   };
 });
 
@@ -735,7 +735,7 @@ describe('§9 every video leg is cut ON THE WIRE, not just by a source match', (
   it('THE RED: the submit\'s MULTIPART branch is cut too — not only the JSON one', async () => {
     // §4 drives the JSON body. The reference-image path builds a `FormData` and assembles its
     // own `RequestInit`, so it is a second, independently-written `signal:` site.
-    const refPath = path.join(os.tmpdir(), `a5-ref-${process.pid}.png`);
+    const refPath = path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), `a5-ref-${process.pid}.png`);
     fs.writeFileSync(refPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     try {
       hangUntilAborted();

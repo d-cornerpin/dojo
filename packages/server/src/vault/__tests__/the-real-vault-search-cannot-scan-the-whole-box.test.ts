@@ -26,7 +26,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-t98-vault-'));
+const dbDir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t98-vault-'));
 const dbPath = path.join(dbDir, 'fixture.db');
 let readDb: Database.Database | null = null;
 /** Set by the write-path clause only: `createEntry` needs somewhere it can actually insert. */

@@ -45,7 +45,7 @@ vi.mock('../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => p.join(o.tmpdir(), 'dojo-t7-status-frame-test', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t7-status-frame-test', 'dojo.db'),
   };
 });
 

@@ -41,7 +41,7 @@ vi.mock('../../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => p.join(os.tmpdir(), 'dojo-a4-techniques', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-a4-techniques', 'dojo.db'),
   };
 });
 
@@ -115,7 +115,7 @@ beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   forgetAccessGrants();
-  tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-a4-tech-'));
+  tmpRoot = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-a4-tech-'));
   technique('alpha', 'Alpha Procedure');
   technique('beta', 'Beta Procedure');
 });

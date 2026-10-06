@@ -37,7 +37,7 @@ import type { AddressInfo } from 'node:net';
 vi.mock('../../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
-  const dir = p.join(o.tmpdir(), 'dojo-t63-manual-provider');
+  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t63-manual-provider');
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
@@ -56,7 +56,7 @@ vi.mock('../../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => path.join(os.tmpdir(), 'dojo-t63-manual-provider', 'dojo.db'),
+    getDbPath: () => path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t63-manual-provider', 'dojo.db'),
   };
 });
 vi.mock('../../ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
@@ -67,7 +67,7 @@ import { configRouter } from '../config.js';
 
 /** The fake `~/.dojo` this file's secrets land in. Wiped per case — a key that leaked
  *  across cases would make the no-key arm pass for the wrong reason. */
-const FAKE_DOJO = path.join(realOs.tmpdir(), 'dojo-t63-manual-provider', '.dojo');
+const FAKE_DOJO = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), 'dojo-t63-manual-provider', '.dojo');
 
 // ── The stub: an OpenAI-compatible server with no auth, rooted at /v1 ──
 

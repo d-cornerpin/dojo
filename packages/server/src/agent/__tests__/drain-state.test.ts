@@ -22,7 +22,7 @@ vi.mock('../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => path.join(os.tmpdir(), 'dojo-drain-state-test', 'dojo.db'),
+    getDbPath: () => path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-drain-state-test', 'dojo.db'),
   };
 });
 
@@ -89,7 +89,7 @@ describe('THE POINT: the ladder survives the process', () => {
     const os = require('node:os') as typeof import('node:os');
     const path = require('node:path') as typeof import('node:path');
     const fs = require('node:fs') as typeof import('node:fs');
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-drain-restart-'));
+    const dir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-drain-restart-'));
     const file = path.join(dir, 'dojo.db');
 
     mockDb.current?.close();

@@ -27,7 +27,7 @@ let db: Database.Database;
 let closeDb: () => void;
 
 beforeAll(async () => {
-  scratchHome = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-pragmas-'));
+  scratchHome = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-pragmas-'));
   vi.stubEnv('DOJO_HOME', scratchHome);
   vi.resetModules();
   const connection = await import('../connection.js');

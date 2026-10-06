@@ -39,7 +39,7 @@ vi.mock('../../db/connection.js', () => ({
   closeDb: vi.fn(),
   // migrations.ts uses this for its best-effort pre-chain VACUUM INTO backup.
   // Point it at the OS temp dir so nothing lands in the repo.
-  getDbPath: () => path.join(os.tmpdir(), 'dojo-t12-test', 'dojo.db'),
+  getDbPath: () => path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t12-test', 'dojo.db'),
 }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: (e: unknown) => broadcastSpy(e) }));
 vi.mock('../../services/imessage-bridge.js', () => ({ sendAlert: (...a: unknown[]) => sendAlertSpy(...a) }));

@@ -48,7 +48,7 @@ const SHAPE_ADJ =
   'SELECT verdict FROM adjudications WHERE work_id = ?';
 
 beforeAll(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-migration-178-'));
+  dir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-migration-178-'));
   db = new Database(path.join(dir, 'grown.db'));
   // The minimal schema the migration's DDL and the probe shapes touch. Column shapes match
   // production (work.id TEXT pk; work_events work_id/kind/created_at; adjudications work_id).

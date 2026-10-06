@@ -38,7 +38,7 @@ const HOME_DIR_NAME = 'dojo-w25-trainer-soul';
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
-  const dir = p.join(o.tmpdir(), 'dojo-w25-trainer-soul');
+  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-w25-trainer-soul');
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
@@ -62,7 +62,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { getSoulContent, soulFileForAgent, trainerSoulDefaultFrom } from '../assembler.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../agent-prompt-surface.js';
 
-const HOME = path.join(realOs.tmpdir(), HOME_DIR_NAME);
+const HOME = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
 const TRAINER = 'tyndo';
 const PRIMARY = 'zargo';

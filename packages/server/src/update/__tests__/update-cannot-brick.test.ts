@@ -345,7 +345,7 @@ describe('update-cannot-brick — the marker reader never becomes the failure', 
   let statePath: string;
 
   beforeEach(() => {
-    home = fs.mkdtempSync(path.join(os.tmpdir(), 'ucb-'));
+    home = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'ucb-'));
     statePath = path.join(home, 'update-state.json');
   });
   afterEach(() => { fs.rmSync(home, { recursive: true, force: true }); });

@@ -59,7 +59,7 @@ const BODY = 'this stands in for dojo-platform.zip';
 let digest: string;
 
 beforeAll(() => {
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), 't6b-integrity-'));
+  tmp = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 't6b-integrity-'));
   zip = path.join(tmp, 'dojo-platform.zip');
   fs.writeFileSync(zip, BODY);
   digest = crypto.createHash('sha256').update(BODY).digest('hex');

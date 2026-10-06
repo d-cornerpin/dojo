@@ -38,7 +38,7 @@ vi.mock('../../../../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => p.join(o.tmpdir(), 'dojo-t1-untracked-debt-test', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t1-untracked-debt-test', 'dojo.db'),
   };
 });
 

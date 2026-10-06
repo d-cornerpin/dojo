@@ -70,7 +70,7 @@ describe('pre-migration backup: what it says, and what it refuses', () => {
   let dbFile: string;
 
   beforeEach(() => {
-    scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-backup-policy-'));
+    scratch = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-backup-policy-'));
     dbFile = path.join(scratch, 'dojo.db');
   });
 

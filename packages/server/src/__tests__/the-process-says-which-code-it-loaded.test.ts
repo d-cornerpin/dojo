@@ -25,7 +25,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const HOME = path.join(os.tmpdir(), `dojo-boot-stamp-${process.pid}`);
+const HOME = path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), `dojo-boot-stamp-${process.pid}`);
 
 vi.mock('../home.js', () => ({
   homeDir: (): string => HOME,

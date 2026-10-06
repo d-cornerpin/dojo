@@ -37,7 +37,7 @@ import path from 'node:path';
 vi.mock('../../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
-  const dir = p.join(o.tmpdir(), 'dojo-t72b-model-limits');
+  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t72b-model-limits');
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
@@ -56,7 +56,7 @@ vi.mock('../../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => p.join(os.tmpdir(), 'dojo-t72b-model-limits', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t72b-model-limits', 'dojo.db'),
   };
 });
 vi.mock('../../ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
@@ -65,7 +65,7 @@ import { runMigrations } from '../../../db/migrations.js';
 import { clearSecretsCache } from '../../../config/loader.js';
 import { configRouter } from '../config.js';
 
-const FAKE_DOJO = path.join(realOs.tmpdir(), 'dojo-t72b-model-limits', '.dojo');
+const FAKE_DOJO = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), 'dojo-t72b-model-limits', '.dojo');
 
 beforeEach(() => {
   fs.rmSync(FAKE_DOJO, { recursive: true, force: true });

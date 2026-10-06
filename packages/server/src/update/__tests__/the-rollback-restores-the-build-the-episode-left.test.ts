@@ -51,7 +51,7 @@ let dojo: string;
 let binDir: string;
 
 beforeEach(() => {
-  home = fs.mkdtempSync(path.join(os.tmpdir(), 'w53-rollback-'));
+  home = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'w53-rollback-'));
   dojo = path.join(home, '.dojo');
   fs.mkdirSync(path.join(home, 'Library', 'LaunchAgents'), { recursive: true });
   fs.mkdirSync(dojo, { recursive: true });

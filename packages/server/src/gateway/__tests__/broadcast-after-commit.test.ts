@@ -39,7 +39,7 @@ vi.mock('../../db/connection.js', async () => ({
     return mockDb.current;
   },
   closeDb: vi.fn(),
-  getDbPath: () => path.join(os.tmpdir(), 'dojo-bcast-test', 'dojo.db'),
+  getDbPath: () => path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-bcast-test', 'dojo.db'),
 }));
 
 // The delivery half is exercised by its own suite; here it stands in as an
@@ -57,7 +57,7 @@ let seen: string[];
 let off: (() => void) | null = null;
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-bcast-'));
+  dir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-bcast-'));
   mockDb.current = new Database(path.join(dir, 'dojo.db'));
   mockDb.current.exec('CREATE TABLE t (id TEXT PRIMARY KEY)');
   seen = [];

@@ -21,8 +21,8 @@ import path from 'node:path';
 // ── Fixture world ──
 // Built BEFORE the module mocks so DOJO_HOME can point at it, and before
 // any import of the code under test (vitest hoists vi.mock, not these consts).
-const fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'share-guards-home-'));
-const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'share-guards-scratch-'));
+const fixtureHome = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'share-guards-home-'));
+const scratchDir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'share-guards-scratch-'));
 
 fs.mkdirSync(path.join(fixtureHome, '.dojo'), { recursive: true });
 fs.mkdirSync(path.join(fixtureHome, '.ssh'), { recursive: true });

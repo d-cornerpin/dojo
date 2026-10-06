@@ -26,7 +26,7 @@ import path from 'node:path';
 vi.mock('../../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
-  const dir = p.join(o.tmpdir(), 'dojo-t79b-budget-door');
+  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t79b-budget-door');
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
@@ -45,7 +45,7 @@ vi.mock('../../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => p.join(os.tmpdir(), 'dojo-t79b-budget-door', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t79b-budget-door', 'dojo.db'),
   };
 });
 vi.mock('../../ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
@@ -55,7 +55,7 @@ import { clearSecretsCache } from '../../../config/loader.js';
 import { configRouter } from '../config.js';
 import { UNATTENDED_MIN_MINUTES, UNATTENDED_MAX_MINUTES, UNCAPPED } from '../../../agent/unattended-budget.js';
 
-const FAKE_DOJO = path.join(realOs.tmpdir(), 'dojo-t79b-budget-door', '.dojo');
+const FAKE_DOJO = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), 'dojo-t79b-budget-door', '.dojo');
 
 beforeEach(() => {
   fs.rmSync(FAKE_DOJO, { recursive: true, force: true });

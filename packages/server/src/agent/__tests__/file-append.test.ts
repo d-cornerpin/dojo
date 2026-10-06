@@ -73,7 +73,7 @@ function append(args: Record<string, unknown>): Promise<{ content: string; isErr
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'file-append-'));
+  tmpDir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'file-append-'));
 });
 
 afterEach(() => {

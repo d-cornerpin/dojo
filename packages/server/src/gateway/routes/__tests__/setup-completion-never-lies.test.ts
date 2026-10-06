@@ -35,7 +35,7 @@ vi.mock('../../../db/connection.js', async () => {
   return {
     getDb: () => { if (!mockDb.current) throw new Error('no test DB'); return mockDb.current; },
     closeDb: vi.fn(),
-    getDbPath: () => p.join(os.tmpdir(), 'dojo-setup-complete', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-setup-complete', 'dojo.db'),
   };
 });
 vi.mock('../../ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));

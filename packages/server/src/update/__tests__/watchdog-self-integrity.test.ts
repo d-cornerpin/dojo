@@ -34,7 +34,7 @@ let home: string;
 let statePath: string;
 
 function scratchHome(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wd-si-'));
+  const dir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'wd-si-'));
   fs.mkdirSync(path.join(dir, '.dojo'), { recursive: true });
   return dir;
 }

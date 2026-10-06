@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-t89-wire-'));
+const dbDir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t89-wire-'));
 const dbPath = path.join(dbDir, 'wire.db');
 const handle = { current: null as Database.Database | null };
 

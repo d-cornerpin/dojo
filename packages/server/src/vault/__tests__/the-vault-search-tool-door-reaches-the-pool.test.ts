@@ -29,7 +29,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-t98-tooldoor-'));
+const dbDir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t98-tooldoor-'));
 const dbPath = path.join(dbDir, 'fixture.db');
 let db: Database.Database | null = null;
 /** ⚠ AND THE PATH MOVES WITH THE CONNECTION. The reader pool opens its own connection BY PATH, so a

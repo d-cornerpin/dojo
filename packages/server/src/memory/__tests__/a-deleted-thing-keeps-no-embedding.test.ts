@@ -76,7 +76,7 @@ const VEC = Array.from({ length: DIMS }, (_, i) => (i === 0 ? 1 : 0));
 let releaseEmbed: (() => void) | null = null;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-emb-orphan-'));
+  tmpDir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-emb-orphan-'));
   mockDb.current = new Database(path.join(tmpDir, 'dojo.db'));
   mockDb.current.pragma('foreign_keys = ON');
   runMigrations();

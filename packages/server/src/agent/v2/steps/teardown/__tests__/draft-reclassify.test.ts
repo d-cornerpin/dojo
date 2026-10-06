@@ -63,7 +63,7 @@ vi.mock('../../../../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => p.join(o.tmpdir(), 'dojo-draft-reclassify-test', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-draft-reclassify-test', 'dojo.db'),
   };
 });
 
@@ -94,7 +94,7 @@ const rowOf = (id: string) => mockDb.current!.prepare(
 
 beforeEach(() => {
   broadcasts.length = 0;
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-draft-reclassify-'));
+  tmpDir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-draft-reclassify-'));
   mockDb.current = new Database(path.join(tmpDir, 'dojo.db'));
   mockDb.current.pragma('journal_mode = WAL');
   runMigrations(mockDb.current);

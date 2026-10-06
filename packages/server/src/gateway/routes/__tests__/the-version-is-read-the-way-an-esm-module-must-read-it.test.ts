@@ -57,7 +57,7 @@ const rootPackage = (): { name: string; version: string } =>
 let home = '';
 
 beforeEach(() => {
-  home = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-version-esm-'));
+  home = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-version-esm-'));
 });
 
 afterEach(() => {

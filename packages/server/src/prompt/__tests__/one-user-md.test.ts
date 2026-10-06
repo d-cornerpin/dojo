@@ -28,7 +28,7 @@ import path from 'node:path';
 import ts from 'typescript';
 
 const { HOME } = vi.hoisted(() => ({
-  HOME: `${require('node:os').tmpdir()}/dojo-one-user-md-${process.pid}`,
+  HOME: `${(process.env.DOJO_TEST_HOME_ROOT || require('node:os').tmpdir())}/dojo-one-user-md-${process.pid}`,
 }));
 
 vi.mock('../../home.js', () => ({

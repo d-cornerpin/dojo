@@ -43,7 +43,7 @@ vi.mock('../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => path.join(os.tmpdir(), 'dojo-t19-reminder-test', 'dojo.db'),
+    getDbPath: () => path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t19-reminder-test', 'dojo.db'),
   };
 });
 

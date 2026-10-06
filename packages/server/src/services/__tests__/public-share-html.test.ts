@@ -21,7 +21,7 @@ vi.mock('../tunnel.js', () => ({
 }));
 
 // Override OUT_DIR location so the test doesn't pollute ~/.dojo/out.
-const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'public-share-html-'));
+const tmpHome = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'public-share-html-'));
 process.env.DOJO_HOME = tmpHome;
 
 import { createPublicShare, OUT_DIR } from '../public-share.js';
@@ -29,7 +29,7 @@ import { createPublicShare, OUT_DIR } from '../public-share.js';
 let workDir: string;
 
 beforeEach(() => {
-  workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'share-src-'));
+  workDir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'share-src-'));
 });
 
 afterEach(() => {

@@ -72,7 +72,7 @@ function seedEstablishedBox(): void {
 }
 
 beforeAll(async () => {
-  scratchHome = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-portfirst-'));
+  scratchHome = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-portfirst-'));
   seedEstablishedBox();
   squatter = net.createServer();
   await new Promise<void>((resolve, reject) => {

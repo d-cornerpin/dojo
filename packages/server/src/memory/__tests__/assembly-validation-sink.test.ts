@@ -55,7 +55,7 @@ import {
 } from '../assembly-validation-sink.js';
 
 const REAL_HOME = process.env.DOJO_HOME;
-const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-sink-'));
+const SCRATCH = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-sink-'));
 
 function useScratchHome(): void {
   process.env.DOJO_HOME = SCRATCH;

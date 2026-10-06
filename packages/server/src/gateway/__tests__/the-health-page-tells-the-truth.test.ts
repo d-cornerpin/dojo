@@ -41,7 +41,7 @@ const HOME_DIR_NAME = 'dojo-t14-health-truth';
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
-  const dir = p.join(o.tmpdir(), 'dojo-t14-health-truth');
+  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t14-health-truth');
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
@@ -49,7 +49,7 @@ vi.mock('../../home.js', async () => {
   };
 });
 
-const HOME = path.join(realOs.tmpdir(), HOME_DIR_NAME);
+const HOME = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), HOME_DIR_NAME);
 const STATE = path.join(HOME, '.dojo', 'watchdog-state.json');
 
 import { servicesRouter } from '../routes/services.js';

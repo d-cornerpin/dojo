@@ -54,7 +54,7 @@ vi.mock('../../db/connection.js', () => ({
     return mockDb.current;
   },
   closeDb: vi.fn(),
-  getDbPath: () => p.join(os.tmpdir(), 'dojo-t8-dropped-labels', 'dojo.db'),
+  getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t8-dropped-labels', 'dojo.db'),
 }));
 
 const logLines: string[] = [];

@@ -66,7 +66,7 @@ vi.mock('@anthropic-ai/sdk', () => {
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
-  const dir = p.join(o.tmpdir(), 'dojo-t81b-doomed-dial');
+  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t81b-doomed-dial');
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
@@ -85,7 +85,7 @@ vi.mock('../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => p.join(os.tmpdir(), 'dojo-t81b-doomed-dial', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t81b-doomed-dial', 'dojo.db'),
   };
 });
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
@@ -99,7 +99,7 @@ import { AgentError } from '../errors.js';
 
 vi.setConfig({ testTimeout: 20_000 });
 
-const FAKE_DOJO = path.join(realOs.tmpdir(), 'dojo-t81b-doomed-dial', '.dojo');
+const FAKE_DOJO = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), 'dojo-t81b-doomed-dial', '.dojo');
 
 // A short throughput/patience pair, scaled for the suite (see header): 40s of usable patience
 // after the 30s transport margin leaves 10s, at 10 tok/s that is a 100-token ceiling — small

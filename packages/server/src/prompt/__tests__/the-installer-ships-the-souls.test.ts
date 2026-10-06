@@ -37,7 +37,7 @@ const REPO_TEMPLATES = path.join(REPO_ROOT, 'templates');
 // short doc on every installed box and nothing said so.
 const REPO_TOOL_DOCS = path.join(REPO_ROOT, 'packages/server/src/tools/docs');
 
-const WORK = path.join(realOs.tmpdir(), 'dojo-t55-shipped-souls');
+const WORK = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), 'dojo-t55-shipped-souls');
 
 /** Run the gate exactly as release.sh and `npm run gates` do. */
 function runGate(args: string[]): { code: number; out: string } {

@@ -27,7 +27,7 @@ import path from 'node:path';
 vi.mock('../../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
-  const dir = p.join(o.tmpdir(), 'dojo-t81b-throughput-door');
+  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t81b-throughput-door');
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
@@ -46,7 +46,7 @@ vi.mock('../../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => p.join(os.tmpdir(), 'dojo-t81b-throughput-door', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t81b-throughput-door', 'dojo.db'),
   };
 });
 vi.mock('../../ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
@@ -56,7 +56,7 @@ import { clearSecretsCache } from '../../../config/loader.js';
 import { configRouter } from '../config.js';
 import { PREFILL_THROUGHPUT_MIN_TOK_PER_SEC, PREFILL_THROUGHPUT_MAX_TOK_PER_SEC } from '../../../agent/stream-patience.js';
 
-const FAKE_DOJO = path.join(realOs.tmpdir(), 'dojo-t81b-throughput-door', '.dojo');
+const FAKE_DOJO = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), 'dojo-t81b-throughput-door', '.dojo');
 
 beforeEach(() => {
   fs.rmSync(FAKE_DOJO, { recursive: true, force: true });

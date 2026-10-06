@@ -39,7 +39,7 @@ import path from 'node:path';
 
 // ── Fixture world, built before DOJO_HOME is pointed at it and before any import of the
 // code under test (vitest hoists `vi.mock`, not these consts). ──
-// `realpathSync` on purpose: macOS's `os.tmpdir()` is `/var/folders/…`, and
+// `realpathSync` on purpose: macOS's `(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir())` is `/var/folders/…`, and
 // `/var` is itself a symlink to `/private/var`. A HOME directory behind a
 // symlink is not the shape any real box has, and leaving the fixture in that
 // shape would have the test measuring the tmpdir's own indirection rather than
@@ -48,7 +48,7 @@ import path from 'node:path';
 // twins did, so a genuinely symlinked home would miss the home-anchored rules
 // on the RESOLVED candidate. Parity with the legacy lists, named rather than
 // silently inherited.)
-const fixtureHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'broker-corpus-home-')));
+const fixtureHome = fs.realpathSync(fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'broker-corpus-home-')));
 // The deny table resolves home through `homeDir()`, which reads DOJO_HOME.
 process.env.DOJO_HOME = fixtureHome;
 const projects = path.join(fixtureHome, 'Projects');

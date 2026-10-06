@@ -41,7 +41,7 @@ import type { AddressInfo } from 'node:net';
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
-  const dir = p.join(o.tmpdir(), 'dojo-t66b-call');
+  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t66b-call');
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
@@ -60,7 +60,7 @@ vi.mock('../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => p.join(os.tmpdir(), 'dojo-t66b-call', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t66b-call', 'dojo.db'),
   };
 });
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
@@ -72,7 +72,7 @@ import { configRouter } from '../../gateway/routes/config.js';
 
 vi.setConfig({ testTimeout: 20_000 });
 
-const FAKE_DOJO = path.join(realOs.tmpdir(), 'dojo-t66b-call', '.dojo');
+const FAKE_DOJO = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), 'dojo-t66b-call', '.dojo');
 
 // ── Two stub endpoints, so "which URL was called" is answerable as well as "which key" ──
 interface Stub { server: http.Server; url: string; seen: string[] }

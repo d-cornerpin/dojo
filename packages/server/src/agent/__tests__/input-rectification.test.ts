@@ -18,7 +18,7 @@ const TINY_PNG = Buffer.from(
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'input-rect-'));
+  tmpDir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'input-rect-'));
 });
 
 afterEach(() => {

@@ -40,7 +40,7 @@ vi.mock('../../gateway/routes/services.js', () => ({
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
-  const dir = p.join(o.tmpdir(), 'dojo-t88-stop-probe');
+  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t88-stop-probe');
   return {
     homeDir: (): string => dir,
     dojoDir: (...s: string[]): string => p.join(dir, '.dojo', ...s),
@@ -57,7 +57,7 @@ vi.mock('../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => p.join(o.tmpdir(), 'dojo-t88-stop-probe', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t88-stop-probe', 'dojo.db'),
   };
 });
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
@@ -69,7 +69,7 @@ import { activeAbortControllers, stoppedAgents } from '../shared-state.js';
 
 vi.setConfig({ testTimeout: 20_000 });
 
-const FAKE_DOJO = path.join(realOs.tmpdir(), 'dojo-t88-stop-probe', '.dojo');
+const FAKE_DOJO = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), 'dojo-t88-stop-probe', '.dojo');
 const AGENT = 'a-fixture';
 
 let server: http.Server;

@@ -50,7 +50,7 @@ import type { AddressInfo } from 'node:net';
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
-  const dir = p.join(o.tmpdir(), 'dojo-t73b-transport');
+  const dir = p.join((process.env.DOJO_TEST_HOME_ROOT || o.tmpdir()), 'dojo-t73b-transport');
   return {
     homeDir: (): string => dir,
     dojoDir: (...segs: string[]): string => p.join(dir, '.dojo', ...segs),
@@ -91,7 +91,7 @@ vi.mock('../../db/connection.js', async () => {
       return mockDb.current;
     },
     closeDb: vi.fn(),
-    getDbPath: () => p.join(os.tmpdir(), 'dojo-t73b-transport', 'dojo.db'),
+    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t73b-transport', 'dojo.db'),
   };
 });
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
@@ -114,7 +114,7 @@ import { configRouter } from '../../gateway/routes/config.js';
 // Real sockets and two cases that deliberately wait out a bound.
 vi.setConfig({ testTimeout: 30_000 });
 
-const FAKE_DOJO = path.join(realOs.tmpdir(), 'dojo-t73b-transport', '.dojo');
+const FAKE_DOJO = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), 'dojo-t73b-transport', '.dojo');
 
 // ── The stub: headers out at once, then the machine reads the prompt ──
 //
