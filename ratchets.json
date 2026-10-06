@@ -7246,6 +7246,27 @@
       "to": 1664,
       "by": "t116 — the ruled TERMINAL_THREAD_CLOSED reclassification (verifier, 2026-10-06)",
       "why": "1649 -> 1664 (+15: 21 comment, 7 deleted, and ZERO net code — the only executable change REMOVES a member from a Set literal). This raise buys comment and nothing else, which is the whole of the argument for it: the change itself makes the file do strictly less, and what grew is the record of WHY. `TERMINAL_THREAD_CLOSED` reads like a protocol bound, sits beside three real ones, and is not one — v2.5.34 removed the rejection that raised it and PHASE-2 T10 (migration 143) deleted the `is_terminal` flag behind it, so the transport has no emit site left and the reason can only appear as a stale uncleared marker, i.e. a transport bug. Without that paragraph the next editor sees a reason named like its three neighbours sitting outside their set and \"corrects\" it back in, which silently re-files a bug as intended behaviour where only a ledger query would ever see it. The 21 lines are split between the set's own header (the enumeration and the migration references) and the handler's switch case (which now states that the ledger word agrees with the \"engine bug\" sentence the agent is shown) — the two places a reader could land. Clause-guarded in both directions besides. From 1664 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/scheduler/runner.ts",
+      "from": 2065,
+      "to": 2073,
+      "date": "2026-10-06",
+      "why": "t117 (the release-blocking TDZ family): VALIDATION_ESCALATION_MIN moved to its own leaf (scheduler/validation-clock.ts) and runner now imports it from there — +8 is the import line plus the comment pointing at the leaf and the cycle it broke (runner<->pm-agent). The ALTERNATIVE (keeping the constant here) is the defect itself: a module-scope read inside a cycle. Reviewed GO in the t117 scoped review (ritual-blast-triage-1.md §t117); value 5 byte-unchanged. From 2073 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/ask-settlement.ts",
+      "from": 1307,
+      "to": 1314,
+      "date": "2026-10-06",
+      "why": "t117: the module-scope SQL fragment stops reading START_ACK_ORIGIN_INTENT through the cycle and imports it from the new leaf memory/origin-intents.ts — +7 is the import and the why-comment naming the TDZ the gate caught at the first cut attempt. Same review, same argument; the constant's bytes unchanged. From 1314 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/pm-agent.ts",
+      "from": 2977,
+      "to": 2982,
+      "date": "2026-10-06",
+      "why": "t117: pm-agent imports the escalation floor from the leaf instead of scheduler/runner — this DROPS its runner.js edge (the cycle shrinks) at +5 lines of import+comment. From 2982 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7496,7 +7517,7 @@
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
     "packages/server/src/scheduler/engine.ts": 414,
-    "packages/server/src/scheduler/runner.ts": 2065,
+    "packages/server/src/scheduler/runner.ts": 2073,
     "packages/server/src/services/audio-generation.ts": 435,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/capability-registry.ts": 251,
@@ -7524,7 +7545,7 @@
     "packages/server/src/tools/work-verbs.ts": 399,
     "packages/server/src/tracker/assignee-patience.ts": 208,
     "packages/server/src/tracker/delivery-evidence.ts": 320,
-    "packages/server/src/tracker/pm-agent.ts": 2977,
+    "packages/server/src/tracker/pm-agent.ts": 2982,
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
     "packages/server/src/tracker/schema.ts": 1105,
     "packages/server/src/tracker/task-stamps.ts": 296,
@@ -7545,7 +7566,7 @@
     "packages/server/src/voice/stt-service.ts": 586,
     "packages/server/src/voice/voice-ws.ts": 2352,
     "packages/server/src/work/ask-remediation.ts": 310,
-    "packages/server/src/work/ask-settlement.ts": 1307,
+    "packages/server/src/work/ask-settlement.ts": 1314,
     "packages/server/src/work/ask-title.ts": 444,
     "packages/server/src/work/deliverable-declaration.ts": 320,
     "packages/server/src/work/join-drive.ts": 498,
