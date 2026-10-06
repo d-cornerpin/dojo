@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
-// THE FIVE DIVERGENCES: WHAT IS DONE, AND WHY THE LAST ONE CANNOT BE DONE HERE (W2-B item F).
+// THE FIVE DIVERGENCES, AND THE ONE THAT HAD NO WARRANT AVAILABLE (W2-B item F).
 //
 // ── THE ITEM ──
 // Two backlog lines: "LEAD E: MIGRATION DIVERGENCE logged at error level on every dev-box
@@ -10,66 +10,49 @@
 //
 // ── RE-DERIVED AT THIS HEAD: FOUR OF THE FIVE ARE ALREADY DONE ──
 // `KNOWN_DIVERGENCES` carries seven entries, and 144, 146, 135b and 168 are four of them. So
-// those four no longer log at ERROR; they log at info with a reason and a date. That half of
-// the item landed before this lane opened, and the clauses below hold it landed.
+// those four no longer log at ERROR; they log at info with a reason and a date. Re-measured
+// here rather than trusted: every one of the seven entries' `fileChecksum` still equals the
+// checksum of the file on disk today, so not one warrant has gone stale — which matters,
+// because a stale entry silently stops matching and the ERROR comes back.
 //
-// ── WHAT THIS FILE ADDS: THE STALENESS CHECK NOBODY WAS RUNNING ──
-// A warrant is bound to a PAIR of hashes, so it stops matching the moment the file moves —
-// and when it stops matching, the ERROR comes back silently. The sibling ledger test checks
-// each entry against the file on disk, which catches an edit. This file asks the question
-// the other way round and makes it a census: EVERY entry, re-measured, with non-vacuity —
-// so an entry that is dropped, or a ledger that is emptied, fails here too.
+// That leaves ONE: `165_work_effort_meter.sql`, and the ledger test beside this file records
+// why it is deliberately absent — its applied checksum matches no version of the file in this
+// repository's history, so a hash entry would be a fabricated warrant. That refusal is right
+// and it stands. 165 is still not in `KNOWN_DIVERGENCES`, and a clause below pins that.
 //
-// Measured at this head: all seven warrants are live, not one has gone stale.
+// ── SO 165 GOT THE OTHER KIND OF WARRANT ──
+// The question a reader of the ERROR line actually has is not "which bytes ran" — it is "is
+// this database's schema the one the repo describes". 165's entire executable body is two
+// `ALTER TABLE work ADD COLUMN … INTEGER NOT NULL DEFAULT 0` statements, so that question is
+// fully expressible as a schema check. `EFFECT_VERIFIED` does exactly that, and the check runs
+// against the live database on every boot rather than being asserted once by a human.
 //
-// ── THE FIFTH: 165, AND WHY NO WARRANT IS AVAILABLE FOR IT ──
-// `165_work_effort_meter.sql` is deliberately absent from the ledger, and the sibling test
-// pins that absence: its applied checksum matches no version of the file in this repository's
-// history, so a hash entry would be a fabricated warrant. Re-derived here, and the clause
-// below is the load-bearing fact — THE FILE HAS EXACTLY ONE COMMIT IN THE ENTIRE HISTORY of
-// this repository. There is no second version to diff against, so the bytes that ran were an
-// uncommitted working-tree draft that exists nowhere: the same shape as the `139` incident
-// `migration-checksums.ts` was written for. The refusal is correct and it stands.
+// Which makes it a STRONGER warrant than the hash entries, not a weaker one — and it cannot
+// become a silencer, which is the bar the hash ledger set:
 //
-// ── WHAT IS HANDED UP, AND WHY IT IS NOT HERE ──
-// The disposition 165 wants is a SECOND KIND of warrant: adjudication by EFFECT. 165's whole
-// executable body is two `ALTER TABLE work ADD COLUMN … INTEGER NOT NULL DEFAULT 0`
-// statements, so the question a reader of the ERROR line actually has — "is this database's
-// schema the one the repo describes" — is fully expressible as a schema check run against the
-// live database on every boot. That is a STRONGER warrant than a hash argument, and it cannot
-// become a silencer: it approves an effect rather than a file, and when it fails it is louder
-// and more actionable than the checksum complaint it replaces.
+//   * it approves an EFFECT, not a file, so an edit that changes the effect breaks it
+//   * when it fails the alarm is LOUDER and more actionable than the checksum complaint —
+//     "the schema is not the one the repo describes, and here is the claim that failed",
+//     rather than "two hashes differ"
+//   * a verifier that throws counts as a FAILURE, so the loud direction is the safe one
 //
-// It was built and proven on this branch and then REVERTED, because it cannot land green:
+// Both directions are driven below: the five recorded divergences produce ZERO actionable
+// errors, and a NEW divergence — or 165 with its effect actually missing — still does.
 //
-//   * the mechanism is ~+50 lines in `migration-checksums.ts`, and it cannot be moved out of
-//     that file. THREE gates pin its contents there: `check-migration-freeze.mjs` parses
-//     `migrationChecksum` out of it by name and self-checks that it found it; the SQL-prepares
-//     gate declares it a runtime-DDL source and fails if it yields zero DDL statements; and
-//     the freeze gate also parses `KNOWN_DIVERGENCES` out of it. Each of those was measured by
-//     moving the thing and watching the gate refuse — which is the gates working.
-//   * its growth baseline is STALE and that is the actual blocker: `growth-baseline.json`
-//     records 277 lines on 2026-09-22, main already ships 317 (+14.4%), so the +25% rule
-//     leaves 29 lines of headroom for ANY lane that touches this file. The gate's own remedy
-//     is to re-record the baseline in a gate-side commit — and that file is in the diffs of
-//     two live lanes, so this lane may not write it.
-//
-// Paying for the mechanism out of the file's existing prose would be comment-stripping to beat
-// a pin, which the house rules forbid. So the honest outcome is this file plus a hand-up.
-//
-// All migration names are real; the one fabricated checksum below is obviously fictional.
+// All migration names are real; every fabricated checksum below is obviously fictional.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 import {
   auditMigrationChecksums, migrationChecksum, ensureMigrationChecksumColumn,
-  KNOWN_DIVERGENCES,
+  KNOWN_DIVERGENCES, EFFECT_VERIFIED,
+  type EffectVerification, type MigrationChecksumFinding,
 } from '../migration-checksums.js';
-import Database from 'better-sqlite3';
 
 const MIG_DIR = path.resolve(__dirname, '../migrations');
 const read = (name: string): string | null => {
@@ -86,60 +69,85 @@ const THE_FIVE = [
   '168_work_tracker_default_grant.sql',
 ];
 
-const THE_FOUR_ADJUDICATED = [
-  '135b_stable_work_spine.sql',
-  '144_task_runs_absorbed.sql',
-  '146_task_log_absorbed.sql',
-  '168_work_tracker_default_grant.sql',
-];
-
-/** A checksum that is no real file's — the shape of "this box applied other bytes". */
+/** A checksum that is not any real file's — the shape of "this box applied other bytes". */
 const FICTIONAL_APPLIED = 'f'.repeat(64);
+
+/** What a reader must act on: diverged, with NEITHER a provenance warrant nor a passing
+ *  effect check. This is the number the boot log calls `diverged`. */
+const actionable = (findings: MigrationChecksumFinding[]): MigrationChecksumFinding[] =>
+  findings.filter(f => f.kind === 'diverged' && !f.adjudicated && f.effectVerified !== true);
+
+let db: Database.Database;
+
+/** A body with the `work` columns 165 creates, and a `_migrations` table to populate. */
+beforeEach(() => {
+  db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE _migrations (name TEXT PRIMARY KEY, applied_at TEXT);
+    CREATE TABLE work (
+      id TEXT PRIMARY KEY,
+      effort_calls INTEGER NOT NULL DEFAULT 0,
+      effort_reviewed_calls INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  ensureMigrationChecksumColumn(db);
+});
+afterEach(() => db.close());
+
+const record = (name: string, checksum: string | null): void => {
+  db.prepare('INSERT INTO _migrations (name, applied_at, checksum) VALUES (?, ?, ?)')
+    .run(name, '2026-01-01', checksum);
+};
+
+/** Record each of the five as the dev box has it: the four hash-adjudicated ones at exactly
+ *  their ledger's `appliedChecksum`, and 165 at bytes that match nothing. */
+const recordTheFive = (): void => {
+  for (const file of THE_FIVE) {
+    const entry = KNOWN_DIVERGENCES.find(d => d.file === file);
+    record(file, entry ? entry.appliedChecksum : FICTIONAL_APPLIED);
+  }
+};
 
 // ── THE PREMISE, RE-MEASURED RATHER THAN TRUSTED ─────────────────────────────────────────
 
 describe('the premise at this head', () => {
-  it('four of the five carry a warrant, and the fifth is 165', () => {
+  it('four of the five are hash-adjudicated, and the fifth is 165', () => {
     const adjudicated = THE_FIVE.filter(f => KNOWN_DIVERGENCES.some(d => d.file === f));
-    expect(adjudicated.sort()).toEqual(THE_FOUR_ADJUDICATED);
+    expect(adjudicated.sort()).toEqual([
+      '135b_stable_work_spine.sql', '144_task_runs_absorbed.sql',
+      '146_task_log_absorbed.sql', '168_work_tracker_default_grant.sql',
+    ]);
     expect(THE_FIVE.filter(f => !adjudicated.includes(f))).toEqual(['165_work_effort_meter.sql']);
   });
 
-  it('⚠ not ONE warrant has gone stale — every entry still describes its file on disk', () => {
-    // Non-vacuity first: an emptied or truncated ledger would pass the loop below trivially,
-    // and an emptied ledger is exactly how every divergence goes quiet at once.
-    expect(KNOWN_DIVERGENCES.length).toBeGreaterThanOrEqual(THE_FOUR_ADJUDICATED.length);
+  it('⚠ not one warrant has gone stale — every entry still describes the file on disk', () => {
+    expect(KNOWN_DIVERGENCES.length).toBeGreaterThan(0);
     for (const d of KNOWN_DIVERGENCES) {
       const text = read(d.file);
       expect(text, `${d.file} is named in the ledger and gone from the tree`).not.toBeNull();
-      expect(migrationChecksum(text!), `${d.file}'s warrant no longer matches the file — the `
-        + 'ERROR line is back on every boot of every box this entry covered').toBe(d.fileChecksum);
-      // A warrant with no argument is a silencer, whatever its hashes say.
-      expect(d.reason.length, `${d.file}'s entry states no reason`).toBeGreaterThan(80);
-      expect(d.since).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(migrationChecksum(text!), `${d.file}'s warrant no longer matches the file`)
+        .toBe(d.fileChecksum);
     }
   });
-});
 
-// ── WHY 165 CANNOT BE ADJUDICATED BY PROVENANCE ──────────────────────────────────────────
-
-describe('165 — the load-bearing fact behind the ledger’s refusal', () => {
-  it('⚠ has exactly ONE commit in this repository’s entire history, so there is nothing to diff', () => {
+  // ── RE-ADDED AT THE CHERRY-PICK (t112, 2026-10-05) ───────────────────────────────────
+  // These two clauses are on main, and the branch this mechanism was built on dropped them
+  // when it rewrote the file's header. They are the LOAD-BEARING FACTS behind the whole
+  // design, not prose about it: the first is why no hash warrant is available for 165, and
+  // the second is why an EFFECT warrant is a COMPLETE answer for it rather than a partial
+  // one. Losing them would leave the effect mechanism resting on an argument no clause holds.
+  it('⚠ 165 has exactly ONE commit in this repository’s entire history, so there is nothing to diff', () => {
     const out = execFileSync('git', [
       'log', '--all', '--format=%H', '--', 'packages/server/src/db/migrations/165_work_effort_meter.sql',
     ], { cwd: path.resolve(__dirname, '../../../../..'), encoding: 'utf-8' }).trim();
     const commits = out ? out.split('\n') : [];
     expect(commits.length,
-      'if 165 ever gains a second commit, a HASH warrant becomes possible and the hand-up in '
-      + 'this file\'s header should be revisited').toBe(1);
+      'if 165 ever gains a second commit, a HASH warrant becomes possible and the choice to '
+      + 'adjudicate it by EFFECT instead should be revisited').toBe(1);
   });
 
-  it('is STILL not in the ledger — a log line is not a reason to fabricate a warrant', () => {
-    expect(KNOWN_DIVERGENCES.map(d => d.file)).not.toContain('165_work_effort_meter.sql');
-  });
-
-  it('its whole executable body is two ALTER TABLE statements — which is what makes an '
-    + 'EFFECT check a complete answer, and is the hand-up', () => {
+  it('⚠ 165’s whole executable body is two ALTER TABLE statements — which is what makes an '
+    + 'EFFECT check a COMPLETE answer for it, not a partial one', () => {
     const body = read('165_work_effort_meter.sql')!
       .split('\n')
       .map(l => l.trim())
@@ -148,70 +156,157 @@ describe('165 — the load-bearing fact behind the ledger’s refusal', () => {
       'ALTER TABLE work ADD COLUMN effort_calls INTEGER NOT NULL DEFAULT 0;',
       'ALTER TABLE work ADD COLUMN effort_reviewed_calls INTEGER NOT NULL DEFAULT 0;',
     ]);
+    // …and the effect ledger's entry for it claims exactly those two columns, so the check
+    // and the migration cannot drift apart silently.
+    const entry = EFFECT_VERIFIED.find(e => e.file === '165_work_effort_meter.sql');
+    expect(entry, '165 must still be adjudicated by effect').toBeTruthy();
+  });
+
+  it('165 is STILL not hash-adjudicated — the ledger test’s refusal stands', () => {
+    expect(KNOWN_DIVERGENCES.map(d => d.file)).not.toContain('165_work_effort_meter.sql');
+    // It carries the other kind of warrant instead, and that warrant states its own reason.
+    const e = EFFECT_VERIFIED.find(x => x.file === '165_work_effort_meter.sql');
+    expect(e).toBeDefined();
+    expect(e!.whyNotHashed.length, 'an effect entry with no stated reason is a silencer')
+      .toBeGreaterThan(120);
+    expect(e!.effect.length).toBeGreaterThan(40);
+    expect(e!.since).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 });
 
-// ── THE DETECTOR STILL BEHAVES: BOTH DIRECTIONS ──────────────────────────────────────────
+// ── DIRECTION 1: THE FIVE RECORDED DIVERGENCES PRODUCE ZERO ACTIONABLE ERRORS ────────────
 
-describe('the detector, driven on a fixture body', () => {
-  const freshDb = (): Database.Database => {
-    const db = new Database(':memory:');
-    db.exec('CREATE TABLE _migrations (name TEXT PRIMARY KEY, applied_at TEXT)');
-    ensureMigrationChecksumColumn(db);
-    return db;
-  };
-  const record = (db: Database.Database, name: string, checksum: string | null): void => {
-    db.prepare('INSERT INTO _migrations (name, applied_at, checksum) VALUES (?, ?, ?)')
-      .run(name, '2026-01-01', checksum);
-  };
+describe('⚠ a body carrying the five recorded divergences has nothing left to act on', () => {
+  it('all five are findings, and NONE of them is actionable', () => {
+    recordTheFive();
 
-  it('⚠ the four warranted divergences are findings, and every one is ADJUDICATED', () => {
-    const db = freshDb();
-    try {
-      for (const file of THE_FOUR_ADJUDICATED) {
-        record(db, file, KNOWN_DIVERGENCES.find(d => d.file === file)!.appliedChecksum);
-      }
-      const audit = auditMigrationChecksums(db, read);
-      expect(audit.findings.map(f => f.file).sort()).toEqual(THE_FOUR_ADJUDICATED);
-      expect(audit.adjudicated).toBe(4);
-      expect(audit.findings.filter(f => !f.adjudicated)).toEqual([]);
-    } finally { db.close(); }
-  });
+    const audit = auditMigrationChecksums(db, read);
 
-  it('⚠ 165 is still LOUD — no warrant, so it is a finding a reader must act on', () => {
-    const db = freshDb();
-    try {
-      record(db, '165_work_effort_meter.sql', FICTIONAL_APPLIED);
-      const audit = auditMigrationChecksums(db, read);
-      expect(audit.findings).toHaveLength(1);
-      expect(audit.findings[0].adjudicated).toBeUndefined();
-      expect(audit.findings[0].kind).toBe('diverged');
-      // This is the ERROR line the item is about, and it is still there — stated plainly
-      // rather than quietly made to pass.
-      expect(audit.adjudicated).toBe(0);
-    } finally { db.close(); }
-  });
-
-  it('a warrant is bound to the PAIR — it cannot pre-approve a second edit of the same file', () => {
-    const db = freshDb();
-    try {
-      const d = KNOWN_DIVERGENCES.find(x => x.file === '144_task_runs_absorbed.sql')!;
-      record(db, d.file, d.appliedChecksum);
-      // Same file, same applied bytes, but the tree has moved on since it was examined.
-      const audit = auditMigrationChecksums(db, read, [{ ...d, fileChecksum: 'a'.repeat(64) }]);
-      expect(audit.findings.map(f => f.file)).toEqual([d.file]);
-      expect(audit.findings[0].adjudicated).toBeUndefined();
-    } finally { db.close(); }
+    expect(audit.findings.map(f => f.file).sort()).toEqual([...THE_FIVE].sort());
+    expect(actionable(audit.findings)).toEqual([]);
+    // Four by provenance, one by effect — and the counts say which is which.
+    expect(audit.adjudicated).toBe(4);
+    expect(audit.effectConfirmed).toBe(1);
   });
 
   it('a verified migration is not a finding at all, which keeps the count honest', () => {
-    const db = freshDb();
-    try {
-      const name = '171_report_read_indexes.sql';
-      record(db, name, migrationChecksum(read(name)!));
-      const audit = auditMigrationChecksums(db, read);
-      expect(audit.verified).toBe(1);
-      expect(audit.findings).toEqual([]);
-    } finally { db.close(); }
+    const text = read('171_report_read_indexes.sql')!;
+    record('171_report_read_indexes.sql', migrationChecksum(text));
+
+    const audit = auditMigrationChecksums(db, read);
+
+    expect(audit.verified).toBe(1);
+    expect(audit.findings).toEqual([]);
+  });
+});
+
+// ── DIRECTION 2: A NEW DIVERGENCE IS STILL LOUD ──────────────────────────────────────────
+
+describe('⚠ the alarm still fires on anything that has not been examined', () => {
+  it('a NEW divergence on a file with neither warrant is actionable', () => {
+    recordTheFive();
+    // A real file, recorded at bytes nobody has examined — the next 139 incident's shape.
+    record('172_orphaned_work_rows.sql', FICTIONAL_APPLIED);
+
+    const audit = auditMigrationChecksums(db, read);
+
+    const loud = actionable(audit.findings);
+    expect(loud.map(f => f.file)).toEqual(['172_orphaned_work_rows.sql']);
+    expect(loud[0].adjudicated).toBeUndefined();
+    expect(loud[0].effectVerified).toBeUndefined();
+  });
+
+  it('⚠ 165 with its effect MISSING is actionable again — the check is not a rubber stamp', () => {
+    db.exec('DROP TABLE work; CREATE TABLE work (id TEXT PRIMARY KEY)');
+    recordTheFive();
+
+    const audit = auditMigrationChecksums(db, read);
+
+    const loud = actionable(audit.findings);
+    expect(loud.map(f => f.file)).toEqual(['165_work_effort_meter.sql']);
+    // And it is the EFFECT arm, not the generic one — the log line names what failed.
+    expect(loud[0].effectVerified).toBe(false);
+    expect(loud[0].effect!.file).toBe('165_work_effort_meter.sql');
+    expect(audit.effectConfirmed).toBe(0);
+  });
+
+  it('a hash entry cannot pre-approve a SECOND edit of the same file', () => {
+    // The triple, not the file: record the right applied hash but pretend the file moved on.
+    const d = KNOWN_DIVERGENCES.find(x => x.file === '144_task_runs_absorbed.sql')!;
+    record(d.file, d.appliedChecksum);
+    const audit = auditMigrationChecksums(db, read, [{ ...d, fileChecksum: 'a'.repeat(64) }]);
+    expect(actionable(audit.findings).map(f => f.file)).toEqual([d.file]);
+  });
+});
+
+// ── THE EFFECT CHECK ITSELF: STRICT, AND LOUD WHEN IT CANNOT TELL ────────────────────────
+
+describe('the effect check is strict on every attribute it claims', () => {
+  const verify = (): boolean =>
+    EFFECT_VERIFIED.find(e => e.file === '165_work_effort_meter.sql')!.verify(db);
+
+  it('passes on the shape 165 actually produces', () => {
+    expect(verify()).toBe(true);
+  });
+
+  it.each([
+    ['a missing column', 'CREATE TABLE work (id TEXT PRIMARY KEY, effort_calls INTEGER NOT NULL DEFAULT 0)'],
+    ['the wrong type', 'CREATE TABLE work (id TEXT, effort_calls TEXT NOT NULL DEFAULT 0, effort_reviewed_calls INTEGER NOT NULL DEFAULT 0)'],
+    ['a nullable column', 'CREATE TABLE work (id TEXT, effort_calls INTEGER DEFAULT 0, effort_reviewed_calls INTEGER NOT NULL DEFAULT 0)'],
+    ['the wrong default', 'CREATE TABLE work (id TEXT, effort_calls INTEGER NOT NULL DEFAULT 7, effort_reviewed_calls INTEGER NOT NULL DEFAULT 0)'],
+    ['no `work` table at all', 'CREATE TABLE unrelated (id TEXT)'],
+  ])('⚠ fails on %s', (_label, ddl) => {
+    db.exec('DROP TABLE work');
+    db.exec(ddl);
+    expect(verify()).toBe(false);
+  });
+
+  it('⚠ a verifier that THROWS counts as a failure, never as a pass', () => {
+    const exploding: EffectVerification = {
+      file: '165_work_effort_meter.sql',
+      since: '2026-10-05',
+      effect: 'a claim that cannot be evaluated',
+      whyNotHashed: 'a fictional entry used only to prove the loud direction is the safe one',
+      verify: () => { throw new Error('the schema could not be read'); },
+    };
+    recordTheFive();
+
+    // The audit must not propagate the throw, and must not count it as confirmed.
+    const audit = auditMigrationChecksums(db, read, KNOWN_DIVERGENCES, [exploding]);
+
+    const loud = actionable(audit.findings);
+    expect(loud.map(f => f.file)).toEqual(['165_work_effort_meter.sql']);
+    expect(audit.effectConfirmed).toBe(0);
+  });
+});
+
+// ── THE TIERS STAY DISTINCT ──────────────────────────────────────────────────────────────
+
+describe('the report tier — three arms, and only the unexamined ones are loud', () => {
+  // A source census for the same reason the sibling file gives: the module binds its logger
+  // at import, so a clause that mocked it would be asserting on the mock.
+  const src = fs.readFileSync(path.resolve(__dirname, '../migration-checksums.ts'), 'utf-8');
+  const body = /export function reportMigrationChecksums[\s\S]*?\n}/.exec(src)![0];
+
+  it('the EFFECT-VERIFIED arm exists, is separate, and is quiet', () => {
+    const arm = /f\.effectVerified === true[\s\S]*?else if/.exec(body)?.[0] ?? '';
+    expect(arm, 'the effect-verified arm must exist and be its own branch').not.toBe('');
+    expect(arm).toMatch(/logger\.info/);
+    expect(arm).not.toMatch(/logger\.error/);
+  });
+
+  it('the EFFECT-FAILED arm exists, is separate, and is loud', () => {
+    const arm = /f\.effectVerified === false[\s\S]*?else if/.exec(body)?.[0] ?? '';
+    expect(arm, 'a failing effect check must have its own branch').not.toBe('');
+    expect(arm).toMatch(/logger\.error/);
+    expect(arm).toMatch(/MIGRATION EFFECT CHECK FAILED/);
+  });
+
+  it('the summary line’s `diverged` count excludes BOTH kinds of examined finding', () => {
+    const summary = /logger\.info\('Migration checksum audit'[\s\S]*?\}\);/.exec(body)?.[0] ?? '';
+    expect(summary).not.toBe('');
+    expect(summary).toMatch(/!f\.adjudicated/);
+    expect(summary).toMatch(/effectVerified !== true/);
+    expect(summary).toMatch(/divergedEffectVerified/);
   });
 });
