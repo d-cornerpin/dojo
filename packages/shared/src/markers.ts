@@ -119,8 +119,11 @@ export const A2A_LEGACY_SOURCE_RE =
  */
 export const A2A_THREAD_RE = /thread:([^\s\]]+)/;
 
-/** How many characters of a thread id the marker carries. `a2a_replies.thread_id` holds
- *  the FULL id, which is why its readers compare `substr(thread_id, 1, 8)`. */
+/** How many characters of a thread id the marker carries. `a2a_replies.thread_id` USUALLY holds
+ *  the full id — `recordA2AReply`'s send path writes it verbatim — which is why its readers once
+ *  compared `substr(thread_id, 1, 8)`; but not always: `agent/runtime.ts`'s abandoned-reply path
+ *  records a marker-derived TOKEN. Readers must therefore handle both eras, which is what
+ *  `a2aThreadTokenMatches` below is for (review Minor 5: the earlier wording overstated). */
 export const A2A_THREAD_SHORT_LENGTH = 8;
 
 /**

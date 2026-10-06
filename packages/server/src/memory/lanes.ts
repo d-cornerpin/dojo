@@ -909,6 +909,16 @@ const UNCONDITIONAL_POST_BUDGET_IDS = ['lane.engine-end-of-history', 'lane.empty
  * available budget the answer is byte-identical — every window at or above ~32K on the measured
  * system prompt, which is every box the goldens are built on.
  *
+ * ⚠ IT IS ACCOUNTING, NOT ENFORCEMENT, and the backstop is named rather than assumed (review
+ * Minor 1). Nothing truncates a post-budget lane to its `reserveTokens` — the appends are
+ * unconditional inline pushes — so on the SCALED path the appends can still spend up to the
+ * declared ladder while less than that was reserved, and a worst-case small-window assembly can
+ * exceed its budget by the difference. What catches that is the pre-dial doomed-request gate
+ * (`agent/model.ts`, `a-doomed-request-refuses-before-dialing.test.ts`), which refuses loudly
+ * rather than letting a provider reject it. The corner needs several conditional lanes at worst
+ * case at once, and the box it affects previously held NO conversation at all, so this is a
+ * strict improvement with a known ceiling — recorded here, not discovered later.
+ *
  * ⚠ AND NOTHING HERE REPORTS TO A USER, because the line's other option already exists:
  * `budget.ts`'s `assertSystemPromptFits` throws before the assembler reaches this function and
  * already names the window, the budget, the reserve and the three repairs. A non-positive budget
