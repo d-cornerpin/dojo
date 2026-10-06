@@ -6832,7 +6832,7 @@
     "packages/server/src/credentials/store.ts": 412,
     "packages/server/src/db/migration-backup.ts": 399,
     "packages/server/src/db/migration-checksums.ts": 317,
-    "packages/server/src/gateway/routes/agents.ts": 993,
+    "packages/server/src/gateway/routes/agents.ts": 1005,
     "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2977,
     "packages/server/src/gateway/routes/memory.ts": 632,
