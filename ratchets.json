@@ -6966,6 +6966,20 @@
       "to": 1278,
       "by": "t113 G - `WINDOW_TOO_SMALL` joins the declared chat:error code vocabulary",
       "why": "Plus 8 lines: 7 comment, ONE executable (the union member). The union is what makes `chat:error` a vocabulary rather than a free-text field, so declaring the code here is USING the existing channel, not inventing one - and the dashboard needed no change at all, because it renders by severity rather than by code. The seven comment lines follow the convention every neighbouring code in this union already follows (each carries the reason it exists) and they carry the two values a reader would otherwise get wrong: `severity: error` so the card stays until dismissed, and `retryable: false` because unlike every other card in this family nothing about this state clears itself. THE ALTERNATIVE REFUSED: reuse an existing code - `CONTEXT_HIGH` is the nearest, and it is the opposite situation (a window filling up, which compaction fixes) so the person would be given the wrong mental model and no repair they can act on. A one-line entry with no comment was also refused: it would be the only undocumented member of the union."
+    },
+    {
+      "path": "packages/server/src/agent/v2/turn-record.ts",
+      "from": 312,
+      "to": 332,
+      "by": "t113 C - two writerless exit reasons retire from the enum (orchestrator ruling)",
+      "why": "Plus 20 lines, and the EXECUTABLE movement is NEGATIVE TWO: the union lost two members, which is the whole product change in this file. 22 comment lines, and they are the deliverable rather than decoration - a reader who finds a SHORTER vocabulary than the DB migration history shows will try to put the two words back, and the comment is the only thing that can stop them. It records t93's measured argument verbatim (both are MODEL dispositions, neither is in ENGINE_IMPOSED_EXITS, so wiring either changes what the ask ladder CHARGES and the obvious delegation site records `park` today, which IS engine-imposed - so the move would spend rungs on every delegating turn), that this was therefore held for a RULING rather than taken by a worker, what the ruling was, and the condition for either word returning: a defined event that writes it AND a ruling on what the ladder charges. It also points at the census that reds if a writerless word is re-added, in both directions. THE ALTERNATIVES REFUSED, with their line costs: delete the two members with no comment (+0, net -2) - refused, this file is the vocabulary's home and an unexplained shrink in a vocabulary is how the words come back; put the argument only in migration 184 (+0 here) - refused, a TypeScript reader editing an enum does not read SQL migrations, and the migration is where the COLUMN is argued, not where the type is; a one-line pointer to the report (+1) - refused, overhaul-plans/ is a campaign artifact and this constraint outlives the campaign. Note the header's stale \"17-value enum\" was also corrected to 15 and re-pointed from 135 to 184 as the authority. No prompt byte moves (G2 untouched)."
+    },
+    {
+      "path": "packages/server/src/report/telemetry-whitelist.ts",
+      "from": 241,
+      "to": 244,
+      "by": "t113 C - the published telemetry enum drops the two retired members",
+      "why": "Plus 3 lines: 3 comment, and the executable half is a NET LOSS of two list members on the same lines. The three lines say why a telemetry enum is not merely a list: this file is what a report PUBLISHES, so a member nothing can emit tells the report's reader that the value is possible - which is the same dishonest-record defect as the enum itself, one audience further out. THE ALTERNATIVE REFUSED: drop the two members silently (+0, net -2). Refused because this whitelist is hand-maintained against the source enum and the only clause binding them is in the engine-side census; a reader diffing this file wants to know whether the removal was deliberate or a merge accident. The binding clause (`the telemetry whitelist publishes exactly the source enum`) derives both sides from the enum, so it passed unchanged across this edit and needed no update."
     }
   ],
   "maxNewFileLines": 400,
@@ -7138,7 +7152,7 @@
     "packages/server/src/agent/v2/steps/teardown/conversation-tagging.ts": 53,
     "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 562,
     "packages/server/src/agent/v2/steps/teardown/index.ts": 317,
-    "packages/server/src/agent/v2/turn-record.ts": 312,
+    "packages/server/src/agent/v2/turn-record.ts": 332,
     "packages/server/src/config/schema.ts": 240,
     "packages/server/src/costs/ledger-calibration.ts": 440,
     "packages/server/src/costs/prefill-calibration.ts": 309,
@@ -7208,7 +7222,7 @@
     "packages/server/src/report/bounds.ts": 320,
     "packages/server/src/report/state-lane.ts": 333,
     "packages/server/src/report/store.ts": 345,
-    "packages/server/src/report/telemetry-whitelist.ts": 241,
+    "packages/server/src/report/telemetry-whitelist.ts": 244,
     "packages/server/src/report/withdrawn-claim.ts": 304,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
