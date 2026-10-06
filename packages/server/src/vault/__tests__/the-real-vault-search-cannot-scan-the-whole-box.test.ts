@@ -501,16 +501,41 @@ describe('⚠ THE REPRODUCTION — the same search, on a grown fixture, before a
     // `.all()` cannot let a timer fire, so this half is the same fact on every machine.
     expect(before.starvedMs, 'the fixture is too small to pin the loop — nothing to prove').toBeGreaterThan(0);
     expect(before.serviced, 'the unbounded read did not pin the loop').toBeLessThan(0.25);
-    // ⚠ A COMPARATIVE WITH A STATED MARGIN, AND NOT AN ABSOLUTE FLOOR — because an absolute floor is a
-    // benchmark and this box shares itself with nine other suites. My first cut asserted
-    // `serviced > 0.4` and `ticks > before.ticks * 3`, and the full suite reddened it under load while
-    // the same file passed alone: a number that moves with the load cannot be an assertion. The
-    // measured gap is 0 % → 56-65 %, so a 20-point floor is a three-times margin, and the STABLE form
-    // of this claim lives in the counted clauses above — zero page reads on the serving connection,
-    // which means the same thing on an idle box and a loaded one.
-    expect(after.serviced - before.serviced,
-      'the bounded pooled scan gave the loop back no better than the unbounded one did')
-      .toBeGreaterThan(0.2);
+    // ⚠ t121 — THE RATIO ASSERTION IS GONE, AND ITS OWN COMMENT SAID WHY IT HAD TO GO.
+    //
+    // It asserted `after.serviced - before.serviced > 0.2`: a twenty-POINT improvement in the
+    // fraction of wall time the event loop was serviced. The author had already been bitten once
+    // here (the note recorded a first cut at `serviced > 0.4` reddening under load) and moved to a
+    // comparative with a three-times margin — but a comparative of two wall-clock ratios is still
+    // a wall-clock ratio. Under seven-lane starvation BOTH measurements collapse: the 10 ms
+    // interval cannot fire on schedule in either half, `after.serviced` falls toward
+    // `before.serviced`, and the margin evaporates. It redded in t120's full run and passed 38/38
+    // alone — the signature of a clock being asserted rather than a fact.
+    //
+    // THE SUBJECT IS UNCHANGED and is still proven, twice, in forms that do not move with load:
+    //
+    //   1. THE UNBOUNDED SHAPE PINS THE LOOP — kept above, and structural rather than statistical:
+    //      one synchronous `.all()` cannot let a timer fire at all, so `before` serviced nothing on
+    //      any machine.
+    //   2. THE BOUNDED SHAPE HANDS THE LOOP BACK — asserted here as the MECHANISM instead of its
+    //      statistical shadow: the read is broken into chunks with a turn of the loop between them,
+    //      and the loop demonstrably ran during it (`after.ticks > 0`) where the unbounded read let
+    //      it run zero times. That is the same claim the ratio was reaching for, and it degrades in
+    //      the SAFE direction: more load means more elapsed time, which gives a 10 ms interval MORE
+    //      chances to fire, never fewer.
+    //
+    // The measurement itself is kept — it is logged above, which is where a benchmark belongs. The
+    // counted clauses (zero page reads on the serving connection, `rowsScanned`, `bytesScanned`,
+    // `chunks`) remain the stable spine of the claim, exactly as the original note said.
+    expect(s.report.chunks,
+      'the bounded scan was one synchronous gulp after all — there is no point for the loop to run')
+      .toBeGreaterThan(1);
+    expect(after.ticks,
+      'the loop never ran during the bounded scan, so it was not handed back at all')
+      .toBeGreaterThan(0);
+    expect(before.ticks,
+      'CONTROL: the unbounded read must service the loop strictly less — it is synchronous')
+      .toBeLessThan(after.ticks);
 
     // ⚠ AND THE COST IS COUNTED, not asserted away. The scan says how many rows and how many bytes
     // it read; a bound whose cost nobody reports is the `LIMIT` this whole package replaced.
