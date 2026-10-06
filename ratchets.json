@@ -6658,6 +6658,20 @@
       "to": 975,
       "by": "t107 B — the dashboard create door's DEFAULT grant set (OWNER RULING 2026-10-05 #4)",
       "why": "963 -> 975 (+12 net: 2 code added (the import and the fifth argument), 0 code removed, 10 comment added net — 16 new against 6 of the old block the ruling made false). THE TWO CODE LINES ARE THE WHOLE CHANGE AT THIS DOOR: one import of `DASHBOARD_CREATE_DEFAULT_GRANTS` from the new leaf `agent/access/create-defaults.ts` (71 lines, unpinned, under the 400 new-file cap, and the home of the ruling text, the no-backfill decision and the argument for why the shared floor did not move), and one argument on the `resolveSpawnGrants` call. THE COMMENT ARITHMETIC IS A REPLACEMENT, NOT AN ADDITION: the block above that call said \"it gets the same most-restrictive default a spawn does\" and ruling #4 makes that sentence false, so six lines went and sixteen say what is true now — which default this door resolves against, that everything else in the floor is unchanged (the half of the ruling as load-bearing as the addition), and that the base is clamped to the ceiling before anything merges over it. A reader who trims that paragraph re-derives \"this route is the same as a spawn\" and deletes the argument as redundant. WHAT WAS REFUSED: (a) putting the constant in `access/read.ts` or `access/authorize.ts` so it could join an EXISTING import line here, saving the 2 code lines — `read.ts` is the derivation and `authorize.ts` decides what may be WRITTEN, while this is a POLICY about one door, and the no-backfill decision has to be written somewhere a reader will find it; (b) appending the fifth argument to the `body.toolsPolicy` line, which hides an argument inside another's line to satisfy a number and would also defeat the wire clause's POSITION assertion. From 975 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/db/migration-checksums.ts",
+      "from": 317,
+      "to": 369,
+      "by": "t112 — the cherry-pick of t102 item F: 165 is adjudicated by EFFECT, verified against the live DB on every boot",
+      "why": "317 -> 369 (+52 net: 55 added, 3 removed; 37 code, 18 comment). The mechanism cannot be moved out of this file and that was MEASURED, not assumed: check-migration-freeze.mjs parses `migrationChecksum` out of it by name and self-checks that it found it, the SQL-prepares gate declares it a runtime-DDL source and fails if it yields zero DDL statements, and the freeze gate also parses KNOWN_DIVERGENCES out of it — each tested by moving the thing and watching the gate refuse. What is here is the wiring, the third report arm and the effect-aware finding shape; the LEDGER itself went to a new db/migration-effects.ts (99 lines, unpinned, under the 240 crossing) because data plus predicates is a different kind of thing from the comparison. Nothing was paid for out of the existing prose — that would be comment-stripping to beat a pin. From 369 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/tracker.ts",
+      "from": 970,
+      "to": 985,
+      "by": "t112 — the PM-cost read compares the raw indexed column so the 24h window is SEEKED, not scanned",
+      "why": "970 -> 985 (+15 net: 16 added, 1 removed; 1 code, 15 comment). The code change is ONE LINE — `datetime(created_at) > datetime('now','-1 day')` becomes `created_at > …`, which restores the `created_at>?` leg of idx_audit_log_agent_created: measured 13.58 ms/call -> 0.21 ms/call on a 200,000-row fixture. The other fourteen lines are why it is SAFE rather than merely faster: all seven writers into audit_log supply `datetime('now')`, so the stored text is already lexicographically ordered and a raw compare is the identical question. That premise now has its own clause (and a floor of 7) in db/__tests__/the-hot-audit-reads-take-their-index.test.ts, and the comment names it, because a reader of this query will ask exactly that. From 985 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6831,14 +6845,14 @@
     "packages/server/src/credentials/secret-values.ts": 278,
     "packages/server/src/credentials/store.ts": 412,
     "packages/server/src/db/migration-backup.ts": 399,
-    "packages/server/src/db/migration-checksums.ts": 317,
+    "packages/server/src/db/migration-checksums.ts": 369,
     "packages/server/src/gateway/routes/agents.ts": 1005,
     "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2977,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/reports.ts": 250,
     "packages/server/src/gateway/routes/setup-deps.ts": 514,
-    "packages/server/src/gateway/routes/tracker.ts": 970,
+    "packages/server/src/gateway/routes/tracker.ts": 985,
     "packages/server/src/gateway/routes/twilio.ts": 512,
     "packages/server/src/gateway/routes/update.ts": 1249,
     "packages/server/src/gateway/routes/upload.ts": 608,
