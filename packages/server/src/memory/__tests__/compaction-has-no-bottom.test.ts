@@ -181,6 +181,35 @@ function seedBox(): void {
   tx();
 }
 
+/**
+ * A SEEDED SUMMARY COVERS A MESSAGE, because a real box's summary does (t111-B2).
+ *
+ * `seedSummaries` and `seedMixed` used to write `summaries` rows and NO `summary_messages`
+ * links, so every fixture here held summaries that covered nothing — a boundary-less agent a
+ * real box cannot produce. t100 already hit this for one clause further down (see its note
+ * around `getCompactedMessageIds`) and linked that summary by hand; this does the same thing
+ * once, for every seeder, so the shape is right by construction rather than per clause.
+ *
+ * ⚠ WHAT THIS DOES AND DOES NOT BUY, stated so nobody reads more into it. It closes the
+ * STRUCTURAL lie (a summary covering no message). It does NOT make the agent look like one
+ * that has genuinely compacted before: the link goes to the OLDEST message the agent holds, so
+ * the compaction boundary sits at the very start and `rowsSinceBoundary` is still effectively
+ * every row — which is exactly why every clause's numbers are unchanged. Making the fixture
+ * boundary-REALISTIC (the link after the old rows, leaving a tail, as t100's one-off does)
+ * moves numbers in many clauses and wants its own item.
+ */
+function linkSeededSummaries(ids: readonly string[]): void {
+  const db = mockDb.current!;
+  const oldest = db.prepare(
+    'SELECT id FROM messages WHERE agent_id = ? ORDER BY created_at ASC LIMIT 1',
+  ).get(AGENT) as { id: string } | undefined;
+  if (!oldest) return;   // no messages yet: nothing to cover, and nothing to pretend about
+  const link = db.prepare(
+    'INSERT OR IGNORE INTO summary_messages (summary_id, message_id) VALUES (?, ?)',
+  );
+  for (const id of ids) link.run(id, oldest.id);
+}
+
 /** Put `count` already-written summaries at `depth` into this agent's context. */
 function seedSummaries(count: number, depth: number, tokensEach: number): void {
   const db = mockDb.current!;
@@ -196,6 +225,7 @@ function seedSummaries(count: number, depth: number, tokensEach: number): void {
     }
   });
   tx();
+  linkSeededSummaries(Array.from({ length: count }, (_, i) => `sum-d${depth}-${i}`));
   rebuildContextItems(AGENT);
 }
 
@@ -214,6 +244,7 @@ function seedMixed(rows: ReadonlyArray<{ depth: number; tokens: number }>): void
     });
   });
   tx();
+  linkSeededSummaries(rows.map((r, i) => `mix-${i}-d${r.depth}`));
   rebuildContextItems(AGENT);
 }
 
@@ -714,6 +745,41 @@ describe('§4 what an ordinary agent pays, and what stays responsive', () => {
 });
 
 // ── §5 — FIX ROUND 1: the shapes the first round's fixtures could not see ─────────────────
+
+describe('§0 the FIXTURES themselves are shapes a real box can produce (t111-B2)', () => {
+  // A fixture defect is invisible by construction: every clause here passes either way, which is
+  // exactly why the boundary-less summaries survived this long. So the seeders get their own
+  // clause. Without it `linkSeededSummaries` could become a silent no-op and nothing would say
+  // so — the numbers are deliberately unchanged by the link (see that function's note).
+  it('⚠ a seeded summary COVERS a message, rather than covering nothing', () => {
+    seedSummaries(3, 0, 1_000);
+
+    const db = mockDb.current!;
+    const summaries = db.prepare('SELECT id FROM summaries WHERE agent_id = ?').all(AGENT) as Array<{ id: string }>;
+    expect(summaries.length, 'non-vacuity: the seeder must have written summaries').toBe(3);
+
+    const links = db.prepare(
+      'SELECT summary_id, message_id FROM summary_messages WHERE summary_id IN (SELECT id FROM summaries WHERE agent_id = ?)',
+    ).all(AGENT) as Array<{ summary_id: string; message_id: string }>;
+    expect(links.length, 'every seeded summary must cover a message').toBe(3);
+
+    // and it covers a message THIS AGENT HOLDS, not an invented id.
+    const msgIds = new Set((db.prepare('SELECT id FROM messages WHERE agent_id = ?').all(AGENT) as Array<{ id: string }>).map(m => m.id));
+    for (const l of links) {
+      expect(msgIds.has(l.message_id), `${l.summary_id} covers a message that does not exist`).toBe(true);
+    }
+  });
+
+  it('seedMixed links its summaries too — the other seeder, same property', () => {
+    seedMixed([{ depth: 3, tokens: 1_000 }, { depth: 0, tokens: 400 }]);
+
+    const db = mockDb.current!;
+    const links = db.prepare(
+      'SELECT COUNT(*) AS n FROM summary_messages WHERE summary_id LIKE ?',
+    ).get('mix-%') as { n: number };
+    expect(links.n).toBe(2);
+  });
+});
 
 describe('§5 a level is the WHOLE top-level set, at any mix of depths', () => {
   /**
