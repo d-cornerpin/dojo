@@ -1497,15 +1497,12 @@ export function renderVisionCapBanner(agentId: string, modelId: string): string 
   return null;
 }
 
-/** The `user-profile` slot: USER.md, when sharing the owner profile is enabled
- *  for this agent. Returns null otherwise. */
+/** The `user-profile` slot: USER.md, when sharing it is enabled for this agent; else null. */
 export function renderUserProfile(agentId: string): string | null {
   if (!shouldShareUserProfile(agentId)) return null;
-  // ONE SOURCE OF TRUTH (owner ruling #11, t111-A3). The default, the seed-on-first-read and
-  // the write door all live in `prompt/user-profile.ts`; this slot is a reader and nothing
-  // more. It used to compose the seed itself, which is how the OOBE route came to compose a
-  // rival one. Edits made through the dashboard or the OOBE are therefore live on the NEXT
-  // assembly — there is no cached copy of this text anywhere.
+  // ONE SOURCE OF TRUTH (owner ruling #11, t111-A3): `prompt/user-profile.ts` owns the default,
+  // the seed-on-first-read and the write door, so a dashboard or OOBE edit is live on the next
+  // assembly. This slot composed its own seed once — that is how a rival one grew.
   return readUserProfile();
 }
 
