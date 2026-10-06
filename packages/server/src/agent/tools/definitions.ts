@@ -180,7 +180,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'exec',
-    description: 'Run ONE program directly and return its output, with NO shell. `argv` is an array: the first element is the program, every other element is one literal argument. Because there is no shell, characters like | > < * $ ` && ; are ordinary text — they do NOT pipe, redirect, glob or substitute. Use the `shell` tool when you need any of those. Has a 30-second default timeout. **Before reaching for exec, scan the tool index for a purpose-built tool**, there are dedicated tools for reading files (file_read), writing files (file_write), patching files (file_patch), web fetch (web_fetch), calendar, drive, forms, office docs, tracker, vault, scheduling, sending messages, and more. Use exec only when no purpose-built tool fits. If the task is "look at the chat / recall what was said," call recall_recent_thread instead of digging through files. Example: exec({ argv: ["ls", "-la", "~/projects"] }). Returns stdout and stderr.',
+    description: 'Run ONE program directly and return its output, with NO shell. `argv` is an array: the first element is the program, every other element is one literal argument. Because there is no shell, characters like | > < * $ ` && ; are ordinary text — they do NOT pipe, redirect, glob or substitute. Use the `shell` tool when you need any of those. Has a 30-second default IDLE timeout: it bounds how long the command may produce NO OUTPUT, not how long it may run. A long job that keeps printing (a build, a test suite, an install) keeps going; one that prints nothing for 30s is stopped. **Before reaching for exec, scan the tool index for a purpose-built tool**, there are dedicated tools for reading files (file_read), writing files (file_write), patching files (file_patch), web fetch (web_fetch), calendar, drive, forms, office docs, tracker, vault, scheduling, sending messages, and more. Use exec only when no purpose-built tool fits. If the task is "look at the chat / recall what was said," call recall_recent_thread instead of digging through files. Example: exec({ argv: ["ls", "-la", "~/projects"] }). Returns stdout and stderr.',
     effects: [{ kind: 'proc', from: 'args.argv' }],
     input_schema: {
       type: 'object',
@@ -196,7 +196,7 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         timeout: {
           type: 'number',
-          description: 'Timeout in milliseconds (default: 30000, max: 120000)',
+          description: 'Milliseconds of SILENCE to tolerate before the command is stopped (default: 30000, max: 120000). This bounds the gap between writes to stdout/stderr, NOT total runtime — a command that keeps producing output is never killed for taking long. Raise it only if the command is legitimately quiet for a while.',
         },
       },
       required: ['argv'],
@@ -211,7 +211,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'shell',
-    description: 'Run a shell SCRIPT under /bin/zsh and return its output — this is the tool for pipes, redirection, globbing, variables, command substitution, `&&`/`;` chains and for/while/if loops. Requires shell access; if you only need to run one program with plain arguments, use exec({argv:[...]}) instead, which is safer and always available to you if exec is. The whole script text is recorded. Has a 30-second default timeout. Example: shell({ script: "ls -la ~/projects | grep report | wc -l" }). Returns stdout and stderr.',
+    description: 'Run a shell SCRIPT under /bin/zsh and return its output — this is the tool for pipes, redirection, globbing, variables, command substitution, `&&`/`;` chains and for/while/if loops. Requires shell access; if you only need to run one program with plain arguments, use exec({argv:[...]}) instead, which is safer and always available to you if exec is. The whole script text is recorded. Has a 30-second default IDLE timeout: it bounds how long the command may produce NO OUTPUT, not how long it may run. A long job that keeps printing (a build, a test suite, an install) keeps going; one that prints nothing for 30s is stopped. Example: shell({ script: "ls -la ~/projects | grep report | wc -l" }). Returns stdout and stderr.',
     effects: [{ kind: 'shell', from: 'args.script' }],
     input_schema: {
       type: 'object',
@@ -226,7 +226,7 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         timeout: {
           type: 'number',
-          description: 'Timeout in milliseconds (default: 30000, max: 120000)',
+          description: 'Milliseconds of SILENCE to tolerate before the command is stopped (default: 30000, max: 120000). This bounds the gap between writes to stdout/stderr, NOT total runtime — a command that keeps producing output is never killed for taking long. Raise it only if the command is legitimately quiet for a while.',
         },
       },
       required: ['script'],
