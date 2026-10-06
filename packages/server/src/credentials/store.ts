@@ -63,6 +63,16 @@ export interface CredentialRecordWithValue extends CredentialRecord {
 // authorised one. A law with one unguarded door is a speed bump.
 // ════════════════════════════════════════
 
+/**
+ * t120: `unchanged` is the one bit the tool layer needs to tell the caller the truth about what
+ * its write did. It means the SEALED VALUE was not written because the payload already equalled
+ * what the row held — so nothing was destroyed and no audit row was cut. `descriptionChanged`
+ * rides along because a no-op on the value can still carry a new note.
+ */
+export type CredentialWriteResult =
+  | { ok: true; record: CredentialRecord; unchanged?: boolean; descriptionChanged?: boolean }
+  | { ok: false; error: string };
+
 export interface CredentialWriteOptions {
   /** Authorise destroying the value currently stored under this service name. */
   readonly overwrite?: boolean;
@@ -88,12 +98,41 @@ interface ExistingRow {
   created_at: string;
   updated_at: string;
   created_by_agent_id: string | null;
+  description: string | null;
+  encrypted_credentials: Buffer;
+  iv: Buffer;
+  auth_tag: Buffer;
 }
 
 function findExisting(serviceName: string): ExistingRow | undefined {
   return getDb().prepare(
-    'SELECT id, created_at, updated_at, created_by_agent_id FROM agent_credentials WHERE service_name = ?',
+    `SELECT id, created_at, updated_at, created_by_agent_id, description,
+            encrypted_credentials, iv, auth_tag
+     FROM agent_credentials WHERE service_name = ?`,
   ).get(serviceName) as ExistingRow | undefined;
+}
+
+/**
+ * t120 — THE OTHER HALF OF THE POINTER RULE, found by the census rather than by the triage.
+ *
+ * `credential_get`'s miss path has always ended with somewhere to go ("Call credential_list to
+ * see what is stored, or ask the user to provide one and save it with credential_add"). The
+ * WRITE doors' miss path said only `No credential found for service "x".` — a dead end on the
+ * one branch whose next call is obvious and different per door: an update that finds nothing
+ * wants `credential_add`, a delete that finds nothing is already done. Same defect shape as the
+ * no-op receipt above, pointing the opposite way, so it closes in the same lane.
+ */
+function missingRefusal(serviceName: string, verb: string): string {
+  const next = verb === 'credential_update'
+    ? `Nothing has been stored under that name yet, so there is no value to replace. If this is a ` +
+      `credential the user has just handed you, store it with ` +
+      `credential_add(service_name="${serviceName}", credentials={…}) — no overwrite flag is needed ` +
+      `for a name that is free. If you expected it to exist, call credential_list to see the names ` +
+      `that ARE stored; the name is case-sensitive.`
+    : `Nothing is stored under that name, so there is nothing to remove and no further call is ` +
+      `needed. If you expected it to exist, call credential_list to see the names that ARE ` +
+      `stored; the name is case-sensitive.`;
+  return `No credential found for service "${serviceName}". ${next}`;
 }
 
 /**
@@ -129,8 +168,14 @@ function overwriteRefusal(serviceName: string, row: ExistingRow, verb: string): 
     `Replacing it destroys the stored value permanently; there is no prior version and no undo. ` +
     `If the user has genuinely handed you a replacement for THIS credential, call ` +
     `${verb}(service_name="${serviceName}", credentials={…}, overwrite=true) and the overwrite will be ` +
-    `recorded. If you are storing a DIFFERENT service's key, pick a service_name that is not taken. ` +
-    `If you are unsure which of the two this is, ask the user before writing anything.`
+    `recorded. If you are storing a DIFFERENT service's key, pick a service_name that is not taken — ` +
+    `credential_list shows which names are in use. ` +
+    // t120: the third case, and the one the two failed draws were actually in — the caller is
+    // re-sending a value that is ALREADY in this slot. Naming it here costs one sentence and is
+    // the only branch whose right answer is "write nothing at all".
+    `If you think the value already stored here is the same one you were about to write, do NOT ` +
+    `write it again: call credential_get(service_name="${serviceName}") to confirm it is there. ` +
+    `If you are unsure which of these this is, ask the user before writing anything.`
   );
 }
 
@@ -160,6 +205,104 @@ function auditDestroy(
       serviceName, act, error: err instanceof Error ? err.message : String(err),
     });
   }
+}
+
+// ════════════════════════════════════════
+// t120 — A WRITE THAT CHANGES NOTHING SAYS SO.
+//
+// THE DEFECT, measured off the two failed account-setup draws rather than inferred. The
+// triage's stated mechanism was `credential_add` refusing on an existing name and the model
+// retrying `credential_update`. The run evidence says otherwise: in BOTH reds every credential
+// write SUCCEEDED and no refusal was ever issued. What the model actually did was re-send the
+// SAME payload to the SAME slot — byte-identical `credentials`, byte-identical description,
+// `overwrite: true` — eight times in one attempt and thirteen in another, until the
+// identical-call brake blocked calls 4, 5 and 6 and the turn tripped a SAFETY invariant.
+//
+// WHY it did that: the receipt. A successful re-write returned `Credential "x" updated.` —
+// five words that do not say whether anything changed, do not say the credential is ready to
+// use, and name no next call. So nothing in the loop ever told the model its write had landed,
+// and the cheapest way to check was to write again. The N-1 messages that failed to teach here
+// were SUCCESS messages, not refusals. T83's own header already recorded this receipt as the
+// whole of what the caller got; it fixed the authorisation and left the text.
+//
+// THE PROPERTY, two halves that have to hold together:
+//   1. A write whose payload equals what is already sealed in the row writes NOTHING — no
+//      re-seal, no `updated_at` bump, and above all NO destruction audit row. The T83 ledger
+//      exists to record that a specific stored value was ended; a no-op ended nothing, and a
+//      ledger that claims three unrecoverable destructions for three writes of identical bytes
+//      is lying in the one place this project cannot afford a lie.
+//   2. The caller is TOLD, in the result, that the value was already there and what to call
+//      next. That is the half that closes the loop.
+//
+// A row whose ciphertext cannot be opened (master key rotated) is treated as NOT identical, so
+// the overwrite proceeds exactly as it does today: the recovery path must never be blocked by
+// a comparison that cannot be made.
+// ════════════════════════════════════════
+
+/**
+ * Is `credentials` byte-for-byte what this row already holds?
+ *
+ * Compared on the PLAINTEXT, canonically keyed — never on the ciphertext, which carries a
+ * random IV per seal and so differs on every write of the same value.
+ */
+function storedValueEquals(row: ExistingRow, credentials: Record<string, unknown>): boolean {
+  let plaintext: string;
+  try {
+    plaintext = openSecret(row.encrypted_credentials, row.iv, row.auth_tag);
+  } catch {
+    return false;
+  }
+  let stored: unknown;
+  try {
+    stored = JSON.parse(plaintext);
+  } catch {
+    return false;
+  }
+  return canonicalJson(stored) === canonicalJson(credentials);
+}
+
+/** Stable key order, so `{a,b}` and `{b,a}` are the one value they are. */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const entries = Object.keys(value as Record<string, unknown>).sort()
+    .map((k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`);
+  return `{${entries.join(',')}}`;
+}
+
+/**
+ * The shared no-op branch for both write doors.
+ *
+ * Returns a result when the incoming payload is what the row already holds — meaning the caller
+ * gets `unchanged: true` and the store performs no re-seal, no `updated_at` value bump and no
+ * destruction audit. Returns `undefined` when this is a real change, and the caller proceeds
+ * down the ordinary destroy-and-write path untouched.
+ *
+ * A no-op NEVER clears the existing note: `description` arrives as `null` from `credential_add`
+ * whenever the caller simply omitted it, and a write that changed nothing has no business
+ * dropping the one column that records what the slot is FOR. A deliberate clear goes through
+ * `annotateCredential`, which is the door that says so.
+ */
+function noopWrite(
+  serviceName: string,
+  existing: ExistingRow,
+  credentials: Record<string, unknown>,
+  description: string | null | undefined,
+  verb: string,
+): { ok: true; record: CredentialRecord; unchanged: true; descriptionChanged: boolean } | undefined {
+  if (!storedValueEquals(existing, credentials)) return undefined;
+  const incomingNote = typeof description === 'string' && description.trim() !== '' ? description : null;
+  const descriptionChanged = incomingNote !== null && incomingNote !== existing.description;
+  if (descriptionChanged) writeDescriptionOnly(existing.id, incomingNote);
+  logger.info('Credential write changed nothing', { serviceName, verb, descriptionChanged });
+  return { ok: true, record: readRecord(existing.id), unchanged: true, descriptionChanged };
+}
+
+/** Replace ONLY the description column of an existing row. No re-seal, no value touched. */
+function writeDescriptionOnly(id: string, description: string | null): void {
+  getDb().prepare(
+    `UPDATE agent_credentials SET description = ?, updated_at = datetime('now') WHERE id = ?`,
+  ).run(description, id);
 }
 
 /** Replace the sealed value (and optionally the description) of a row that already exists. */
@@ -298,7 +441,7 @@ export function addCredential(
   description: string | null,
   createdByAgentId: string | null,
   opts?: CredentialWriteOptions,
-): { ok: true; record: CredentialRecord } | { ok: false; error: string } {
+): CredentialWriteResult {
   const trimmedName = serviceName.trim();
   if (!trimmedName) return { ok: false, error: 'service_name is required.' };
   if (trimmedName.length > 100) return { ok: false, error: 'service_name must be 100 characters or fewer.' };
@@ -309,6 +452,10 @@ export function addCredential(
     // verb that overwrites without asking. It now says WHOSE value is there and how old it is,
     // and the only way past it is the flag.
     if (!opts?.overwrite) return { ok: false, error: overwriteRefusal(trimmedName, existing, 'credential_add') };
+    // t120: an authorised overwrite whose payload is what is already sealed here destroys
+    // nothing, so it writes nothing and records nothing. See the header above the comparison.
+    const noop = noopWrite(trimmedName, existing, credentials, description, 'credential_add');
+    if (noop) return noop;
     // IN PLACE, never delete-and-reinsert: `created_at` / `created_by_agent_id` are what make
     // the NEXT refusal able to name what it is protecting, and a reinsert launders exactly that.
     auditDestroy(trimmedName, existing, createdByAgentId, 'credential_add', 'overwrote');
@@ -337,14 +484,19 @@ export function updateCredential(
   description: string | null | undefined,
   updatedByAgentId: string | null,
   opts?: CredentialWriteOptions,
-): { ok: true; record: CredentialRecord } | { ok: false; error: string } {
+): CredentialWriteResult {
   const row = findExisting(serviceName);
-  if (!row) return { ok: false, error: `No credential found for service "${serviceName}".` };
+  if (!row) return { ok: false, error: missingRefusal(serviceName, 'credential_update') };
 
   // T83 — THIS IS THE DOOR THE DATA WENT OUT OF, so this is the door that closes. A rotate is
   // a real and common thing; what was missing is the caller saying it MEANT to end the value
   // that is there. Same rule, same door text as `addCredential` above.
   if (!opts?.overwrite) return { ok: false, error: overwriteRefusal(serviceName, row, 'credential_update') };
+
+  // t120: the re-write loop that stormed the spin brake came through HERE, thirteen times in one
+  // attempt, every call authorised and every call writing the bytes already in the row.
+  const noop = noopWrite(serviceName, row, credentials, description, 'credential_update');
+  if (noop) return noop;
 
   auditDestroy(serviceName, row, updatedByAgentId, 'credential_update', 'overwrote');
   writeValue(row.id, credentials, description);
@@ -388,7 +540,7 @@ export function deleteCredentialByService(
   opts?: CredentialDeleteOptions,
 ): { ok: boolean; error?: string } {
   const row = findExisting(serviceName);
-  if (!row) return { ok: false, error: `No credential found for service "${serviceName}".` };
+  if (!row) return { ok: false, error: missingRefusal(serviceName, 'credential_delete') };
 
   // T83 FIX ROUND (review IMPORTANT B-1): THE SECOND DESTROY DOOR, closed with the same rule as
   // the first. This one took no confirmation at all, and a delete-then-add reaches the same end

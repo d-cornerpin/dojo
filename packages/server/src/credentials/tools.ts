@@ -88,6 +88,42 @@ export const credentialsToolDefinitions: ToolDefinition[] = [
   },
 ];
 
+// ════════════════════════════════════════
+// t120 — THE RECEIPT IS THE AFFORDANCE.
+//
+// Both failed account-setup draws looped here, and neither looped on a refusal: every write
+// succeeded and the model re-sent the identical payload until the identical-call brake blocked
+// it and the turn failed a SAFETY invariant. `credential_update`'s whole receipt was
+// `Credential "x" updated.` — it named no state and no next call, so the model had no way to
+// learn its write had landed and the cheapest check available to it was writing again.
+//
+// So every write result now ends with the SAME next step `credential_add`'s success has always
+// ended with (`credential_get(service_name=…)`), and a write that changed nothing says that
+// plainly instead of reporting as a change. This is per-turn tool-result text: no tool
+// description moves, so the assembled prompt prefix is byte-unchanged (G2).
+// ════════════════════════════════════════
+
+/**
+ * What a write that changed nothing tells the caller.
+ *
+ * Says the value is already there, says nothing was destroyed (the honest counterpart of the
+ * T83 destruction ledger, which no longer records a row for this case), names the one call that
+ * is actually useful next, and says outright not to repeat the write — because the model that
+ * repeated it is the reader.
+ */
+function unchangedReceipt(serviceName: string, descriptionChanged: boolean): string {
+  const note = descriptionChanged
+    ? ' Its description was updated to the note you passed.'
+    : '';
+  return (
+    `Credential "${serviceName}" already holds exactly these values — nothing was written, and ` +
+    `no stored value was destroyed.${note} The credential is saved and ready to use: call ` +
+    `credential_get(service_name="${serviceName}") at the moment you make the API call. ` +
+    `Do NOT send this value again — it is already stored, and repeating an identical write is ` +
+    `what the engine's identical-call brake stops.`
+  );
+}
+
 // ── Executor ──
 
 export async function executeCredentialTool(
@@ -165,6 +201,7 @@ export async function executeCredentialTool(
       // so. The store owns the rule; this layer owns nothing but the hand-off.
       const result = addCredential(serviceName, credentials, description, agentId, { overwrite: args.overwrite === true });
       if (!result.ok) return `Error: ${result.error}`;
+      if (result.unchanged) return unchangedReceipt(result.record.serviceName, result.descriptionChanged === true);
       return `Credential "${result.record.serviceName}" stored (id: ${result.record.id.slice(0, 8)}). Retrieve with credential_get(service_name="${result.record.serviceName}") when you need it for an API call.`;
     }
 
@@ -174,11 +211,17 @@ export async function executeCredentialTool(
       const description = (args.description as string | undefined);
       if (!serviceName || typeof serviceName !== 'string') return 'Error: service_name is required.';
       if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)) {
-        return 'Error: credentials must be an object.';
+        // t120: was 'credentials must be an object.' — the same fact `credential_add` states
+        // WITH the shape. A refusal that withholds the shape makes the caller guess, and this
+        // family's defect is a caller that retries instead of guessing right.
+        return 'Error: credentials must be an object (e.g. {"api_key": "..."} or {"api_key": "...", "secret": "..."}). Pass a string value as {"value": "..."} if the service needs just one opaque token.';
       }
       const result = updateCredential(serviceName, credentials, description, agentId, { overwrite: args.overwrite === true });
       if (!result.ok) return `Error: ${result.error}`;
-      return `Credential "${result.record.serviceName}" updated.`;
+      if (result.unchanged) return unchangedReceipt(result.record.serviceName, result.descriptionChanged === true);
+      // The five-word receipt T83's header recorded as "the whole receipt" is what left the
+      // caller with nothing to do next. It now ends where `credential_add`'s success ends.
+      return `Credential "${result.record.serviceName}" updated — the previous value is gone. Retrieve the new one with credential_get(service_name="${result.record.serviceName}") when you need it for an API call.`;
     }
 
     case 'credential_delete': {
