@@ -6742,6 +6742,13 @@
       "to": 2772,
       "by": "t109 item D — the assembler asks for a bounded ladder and reports the squeeze",
       "why": "2756 -> 2772 (+16 net: 10 code, 7 comment, 1 line replaced in place). THE CODE: the flat `const offTheTop = SCAFFOLDING_ACK_RESERVE_TOKENS + POST_BUDGET_RESERVE_TOKENS` becomes a `reserveLadderFor(maxTokens - systemTokens)` call and a read of its answer (+2), plus one `if (ladder.scaled)` warn carrying the four numbers that diagnose the squeeze — the declared ladder, what was actually reserved, the resulting content budget and the system prompt (+7, the call and its meta object), plus the import line. The warn is here and not in `lanes.ts` because `reserveLadderFor` is PURE by design and this is the only place that knows the agent id, and because a content budget of zero was previously invisible at every level: the array simply arrived as one message. THE COMMENT HALF IS 7: four lines naming the defect and pointing at the derivation (a reader who finds `offTheTop` bounded without knowing why will unbound it), and three recording that the 'told plainly' half of the backlog line is `assertSystemPromptFits` five lines above, so nobody adds a second report of the same state — which is a mistake the first cut of this commit actually made. ALTERNATIVE REFUSED: computing the bound inline here (+2 instead of +16, and -22 in `lanes.ts`) — that is exactly the split the lanes.ts entry refuses, and the clause that pins the share would then have no exported symbol to read. From 2772 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 2159,
+      "to": 2164,
+      "by": "t109 item A — the purge's live-work guard is NOT EXISTS, which costs four lines where NOT IN cost one",
+      "why": "2159 -> 2164 (+5 net: 3 code, 2 comment). THE CAUSE, and it is a gate doing its job: the purge's first form used `thread_id NOT IN (SELECT root_id FROM work WHERE root_kind = 'a2a_thread')`, and the tree's NULL-id census (`db/__tests__/a-null-id-silences-a-sweep.test.ts`) FAILED on the new site — its own doc says the fix is `NOT EXISTS` unless the subquery column is NOT NULL and the commit says so. `work.root_id` IS `NOT NULL DEFAULT ''`, so `NOT IN` would have been safe here; `NOT EXISTS` was taken anyway, because it is safe WITHOUT that argument having to stay true, it is the sargable form against the `work(root_kind, root_id)` read, and it leaves the census file (not in this lane's fence) untouched. A correlated `NOT EXISTS (SELECT 1 FROM work w WHERE … AND w.root_id = a2a_threads.thread_id)` is four lines where the `NOT IN` was one; the 2 comment lines name the census and the NULL hazard so the next reader does not shorten it back. ALTERNATIVE REFUSED: declare the new `NOT IN` site in the census instead (+0 here) — that is an edit to a db/__tests__ file this lane does not hold, to permit the shape the census exists to discourage. From 2164 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7036,7 +7043,7 @@
     "packages/server/src/work/obligation-memory.ts": 630,
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
-    "packages/server/src/work/store.ts": 2159,
+    "packages/server/src/work/store.ts": 2164,
     "packages/server/src/work/tracker-store.ts": 647,
     "packages/server/src/work/tracker-view.ts": 622,
     "packages/server/src/work/validation-drive.ts": 615,
