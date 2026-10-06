@@ -123,19 +123,25 @@ describe('§3 the warning is about the PASSWORD, not about danger', () => {
 });
 
 describe('§4 the component renders what the rule decides, and nothing it invents', () => {
-  it('Settings imports the rule rather than spelling the values inline', async () => {
+  it('the Security section imports the rule rather than spelling the values inline', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');
     const url = await import('node:url');
     const dir = path.dirname(url.fileURLToPath(import.meta.url));
-    const src = fs.readFileSync(path.join(dir, '..', 'pages', 'Settings.tsx'), 'utf8');
-    expect(src).toContain("from '../lib/sudo-policy'");
+    // t111-E1 SPLIT `pages/Settings.tsx` (7,194 lines) into one module per tab, so the card this
+    // clause reads now lives with the Security tab. The clause FOLLOWS the component rather than
+    // the filename — it reds if the card stops importing the rule, which is the property, and it
+    // red correctly when the file moved, which is the clause doing its job.
+    const src = fs.readFileSync(
+      path.join(dir, '..', 'components', 'settings', 'SecurityTab.tsx'), 'utf8');
+    expect(src).toContain("from '../../lib/sudo-policy'");
     expect(src).toContain('SUDO_POLICY_ORDER.map');
     expect(src).toContain('SUDO_FLOOR_NOTE');
     // the dropdown is reachable and labelled
     expect(src).toContain('aria-label="admin privileges policy"');
     // and no hand-typed policy word survives in the component
     const card = src.slice(src.indexOf('const SudoPolicyCard'), src.indexOf('const SecurityTab'));
+    expect(card.length, 'the card must still be findable in the file this clause reads').toBeGreaterThan(200);
     for (const word of ["'blocked'", "'gated'", "'free'"]) {
       expect(card, `the card must not spell ${word} itself`).not.toContain(word);
     }
