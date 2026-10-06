@@ -57,7 +57,7 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { transition, abandonUnservableAsks, clearPhantomCountdowns } from './store.js';
+import { transition, abandonUnservableAsks, clearPhantomCountdowns, purgeDeadA2AThreads } from './store.js';
 import { sweepByRowid } from '../memory/message-store.js';
 // Single-sourced, never restated: the max-attempts bound the engine-event lifecycle enforces
 // is read from the module that owns it, so the boot sweep's exclusion window cannot drift
@@ -499,6 +499,20 @@ export const REAPER_KINDS: readonly ReaperKind[] = [
     run: async () => {
       const { sweepExpiredJoins } = await import('../agent/a2a-transport.js');
       await sweepExpiredJoins();
+    },
+  },
+  {
+    // t109 item A: `a2a_threads` had NO purge and no aging anywhere — the only DELETE against
+    // it in the whole tree was in a test — so it grew for the life of the box. The disposal
+    // rule and both its guards live in `purgeDeadA2AThreads`; this is only its clock.
+    id: 'dead-a2a-threads',
+    everyMs: 3_600_000,
+    cadenceFrom:
+      "`terminal-task-prune`'s PRUNE_INTERVAL_MS = 3600_000 — the platform's declared period for disposing of rows whose horizon is measured in DAYS (`JOIN_MAX_AGE_DAYS` here). The hour is carried from the sibling with the same shape, not chosen",
+    wakes: false,
+    run: async () => {
+      const removed = purgeDeadA2AThreads();
+      if (removed > 0) logger.info('reaper: purged dead a2a_threads row(s)', { removed });
     },
   },
 ];

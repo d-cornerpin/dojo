@@ -1020,6 +1020,24 @@ export const JOIN_MAX_AGE_DAYS = 7;
  */
 export const THREAD_HOP_CAP = 8;
 
+/**
+ * HOW LONG A HOP COUNTS AGAINST THE CAP — t109 item A, the half that was missing. Nothing ever
+ * aged or reset `hop_count`, on EITHER store, so the cap was a lifetime budget of eight
+ * deliveries and any long-lived thread died at it. The cap is now eight hops inside a ROLLING
+ * WINDOW, materialised on both the read and the write side below.
+ *
+ * THE NUMBER IS CARRIED, NOT CHOSEN (#14): it IS `JOIN_TTL_MINUTES`, the platform's declared
+ * answer to *"how long a delegated reply may be waited for before the engine declares it
+ * dead"* (`work-reaper.ts`'s `join_ttl`). Past that line the platform has already given up on
+ * the previous turn, so the next message cannot be a continuation of it. A tighter window
+ * weakens the cap; a looser one keeps the bug on any thread slower than the window.
+ *
+ * WHY A WINDOW AND NOT RESET-ON-REPLY — the option a reader reaches for first, and why it
+ * measures wrong — is argued once, in
+ * `agent/__tests__/a-long-thread-is-not-a-runaway-loop.test.ts`'s header, with the clauses.
+ */
+export const THREAD_HOP_WINDOW_MS = JOIN_TTL_MINUTES * 60_000;
+
 /** One delegated thread, as the delegation exit knows it. */
 export interface DelegationThread {
   /** The FULL A2A thread id. Never an 8-char token — 3j, and the collision that produced it. */
@@ -1777,22 +1795,72 @@ export function clearJoinCompilePending(parentWorkId: string, reason: string): n
  */
 export function threadHopCount(threadId: string): number | null {
   const r = getDb().prepare(
-    `SELECT hop_count FROM work WHERE root_kind = 'a2a_thread' AND root_id = ?
+    `SELECT hop_count, updated_at FROM work WHERE root_kind = 'a2a_thread' AND root_id = ?
       ORDER BY opened_at DESC LIMIT 1`,
-  ).get(threadId) as { hop_count: number } | undefined;
-  return r ? r.hop_count : null;
+  ).get(threadId) as { hop_count: number; updated_at: number | null } | undefined;
+  if (!r) return null;
+  // THE AGING, READ SIDE (t109 A): hops from an exchange the platform has already declared
+  // dead answer 0. `bumpThreadHopCount` materialises the same decision on the write side.
+  return hopWindowLapsed(r.updated_at) ? 0 : r.hop_count;
+}
+
+/** True when the thread's last recorded delivery is outside the rolling window — so the hops
+ *  before it no longer count. A NULL instant is treated as lapsed: a row with no recorded
+ *  delivery time has no evidence of recent traffic, and the safe direction here is to let the
+ *  message through rather than to drop it on a timestamp nobody wrote. */
+export function hopWindowLapsed(lastDeliveryMs: number | null | undefined): boolean {
+  if (lastDeliveryMs == null) return true;
+  return now() - lastDeliveryMs > THREAD_HOP_WINDOW_MS;
 }
 
 /** Count one delivered hop on the thread's work row. Returns the new count, or null when the
- *  thread has no work row. */
+ *  thread has no work row. A hop that arrives after the window lapsed RESTARTS the count at 1
+ *  rather than incrementing — the write-side half of the aging above. */
 export function bumpThreadHopCount(threadId: string): number | null {
   const db = getDb();
+  const r = db.prepare(
+    `SELECT updated_at FROM work WHERE root_kind = 'a2a_thread' AND root_id = ?
+      ORDER BY opened_at DESC LIMIT 1`,
+  ).get(threadId) as { updated_at: number | null } | undefined;
+  if (!r) return null;
+  const restart = hopWindowLapsed(r.updated_at);
   const changed = db.prepare(
-    `UPDATE work SET hop_count = hop_count + 1, updated_at = ?
-      WHERE root_kind = 'a2a_thread' AND root_id = ?`,
+    restart
+      ? `UPDATE work SET hop_count = 1, updated_at = ?
+          WHERE root_kind = 'a2a_thread' AND root_id = ?`
+      : `UPDATE work SET hop_count = hop_count + 1, updated_at = ?
+          WHERE root_kind = 'a2a_thread' AND root_id = ?`,
   ).run(now(), threadId).changes;
   if (changed === 0) return null;
   return threadHopCount(threadId);
+}
+
+/**
+ * THE PURGE THE TABLE NEVER HAD — t109 item A's third half. Before this the only DELETE against
+ * `a2a_threads` in the whole tree was in a test, so it grew for the life of the box (measured
+ * body: 232 rows, migration `143`'s own census — hygiene, not a crisis, but the PM's
+ * per-interval re-drive threads add rows on a clock). BOTH GUARDS ARE NECESSARY: older than
+ * `JOIN_MAX_AGE_DAYS` (the declared "stale history, nothing re-fires it" horizon, carried as the
+ * join sweeps carry it) AND no `work` row still rooted on the thread — a delegated thread's
+ * count lives on the spine and its join may still be live, so age alone must never take the
+ * row out from under live work. Returns the row count, for the sweep's log line.
+ */
+export function purgeDeadA2AThreads(): number {
+  const floor = now() - JOIN_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+  try {
+    return getDb().prepare(
+      `DELETE FROM a2a_threads
+        WHERE unixepoch(updated_at) * 1000 < ?
+          AND thread_id NOT IN (SELECT root_id FROM work WHERE root_kind = 'a2a_thread')`,
+    ).run(floor).changes;
+  } catch (err) {
+    // The table predates the spine and a fixture may not have it. A missing table is not a
+    // reason to fail a reaper tick.
+    logger.warn('a2a_threads purge skipped', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return 0;
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════════════════

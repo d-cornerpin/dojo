@@ -38,7 +38,7 @@ import {
   joinState, joinPieces, dueJoins, openJoins,
   dueJoinsUnderClosedParent,
   compilePendingJoins, failJoinClosed, clearJoinCompilePending,
-  claimFailedJoinForLateAnswer, threadHopCount, bumpThreadHopCount,
+  claimFailedJoinForLateAnswer, threadHopCount, bumpThreadHopCount, hopWindowLapsed,
   type JoinState, type JoinPiece,
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';   // t90 D2
@@ -121,12 +121,24 @@ function ensureThread(threadId: string, senderId: string): void {
 function getThreadHopCount(threadId: string): number {
   const onSpine = threadHopCount(threadId);
   if (onSpine !== null) return onSpine;
-  const row = getDb().prepare('SELECT hop_count FROM a2a_threads WHERE thread_id = ?').get(threadId) as { hop_count: number } | undefined;
-  return row?.hop_count ?? 0;
+  // t109 A: THE FALLBACK STORE AGES ON THE SAME RULE AS THE SPINE, against the `updated_at`
+  // `recordThreadDelivery` already stamps. Without it a thread nobody delegated on — the
+  // majority of them — would keep the lifetime budget the spine just stopped keeping, and the
+  // cap would mean two different things depending on whether a work row happened to exist.
+  const row = getDb().prepare(
+    `SELECT hop_count, unixepoch(updated_at) * 1000 AS updated_ms
+       FROM a2a_threads WHERE thread_id = ?`,
+  ).get(threadId) as { hop_count: number; updated_ms: number | null } | undefined;
+  if (!row) return 0;
+  return hopWindowLapsed(row.updated_ms) ? 0 : row.hop_count;
 }
 
 function recordThreadDelivery(threadId: string, intent: A2AIntent, senderId: string): number {
   const db = getDb();
+  const before = db.prepare(
+    'SELECT unixepoch(updated_at) * 1000 AS updated_ms FROM a2a_threads WHERE thread_id = ?',
+  ).get(threadId) as { updated_ms: number | null } | undefined;
+  const lapsedBeforeThisDelivery = hopWindowLapsed(before?.updated_ms);
   // The awaiting-reply latch's durable record (RC-14), and after PHASE-2 T10 that is ALL this
   // write is: who sent last, with what intent, when. The `is_terminal` flag that used to ride
   // along was dropped by migration `143` — positive enumeration found its only reader was a
@@ -141,7 +153,14 @@ function recordThreadDelivery(threadId: string, intent: A2AIntent, senderId: str
 
   const onSpine = bumpThreadHopCount(threadId);
   if (onSpine !== null) return onSpine;
-  db.prepare('UPDATE a2a_threads SET hop_count = hop_count + 1 WHERE thread_id = ?').run(threadId);
+  // t109 A, the write-side half for the fallback store. The UPDATE above has already moved
+  // `updated_at` to now, so the lapse is read from the value captured BEFORE it — otherwise
+  // every hop would look fresh and nothing would ever restart.
+  db.prepare(
+    lapsedBeforeThisDelivery
+      ? 'UPDATE a2a_threads SET hop_count = 1 WHERE thread_id = ?'
+      : 'UPDATE a2a_threads SET hop_count = hop_count + 1 WHERE thread_id = ?',
+  ).run(threadId);
   return getThreadHopCount(threadId);
 }
 
@@ -332,8 +351,29 @@ export function payloadLooksDeliverable(payload: string): boolean {
 // lands.
 type A2ADropReasonLocal = A2ADropReason | 'AWAITING_REPLY';
 
+/**
+ * THE TWO DROPS THAT ARE A SERVICE AND NOT A LOSS — t109 A's "loud everywhere" half.
+ *
+ * A drop is a RETURN, not a throw, so the `.catch` every caller wraps around
+ * `deliverA2AMessage` never sees one, and a census at this HEAD found most of the nineteen
+ * callers discarding the result entirely: the message was gone and nothing said so above
+ * `info`. Being loud HERE is the fix that does not depend on caller discipline.
+ *
+ * These two are exempt because THE SENDER IS ALREADY TOLD, synchronously, in the tool result
+ * it is holding ("wait for the reply you are owed" / "you already sent this"). Both are the
+ * protection working and both are expected traffic, and warning on them is how a log becomes
+ * unreadable. Everything else is a message that VANISHED — and an unrecognised future reason
+ * lands at warn BY DEFAULT rather than being quietly added to the quiet set.
+ */
+const DROPS_THE_SENDER_IS_TOLD_ABOUT: ReadonlySet<A2ADropReasonLocal> = new Set([
+  'AWAITING_REPLY', 'SEMANTIC_DUPLICATE',
+]);
+
 function logDrop(envelope: A2AEnvelope, reason: A2ADropReasonLocal): void {
-  logger.info('A2A message dropped', {
+  const say = DROPS_THE_SENDER_IS_TOLD_ABOUT.has(reason)
+    ? logger.info.bind(logger)
+    : logger.warn.bind(logger);
+  say('A2A message dropped', {
     threadId: envelope.threadId,
     from: envelope.fromAgent,
     to: envelope.toAgent,
