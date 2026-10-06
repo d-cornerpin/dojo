@@ -30,7 +30,31 @@
 // already passed whatever gate governs it.
 // ════════════════════════════════════════════════════════════════════════════
 
-import type { ChildProcess } from 'node:child_process';
+/**
+ * The child, STRUCTURALLY — deliberately NOT `import type { ChildProcess } from
+ * 'node:child_process'`.
+ *
+ * The effects gate refuses that import from any module an agent can reach, and this one IS
+ * reachable: `agent/tools/process-idle-bound.ts` calls it on every `exec`/`shell`. Putting this
+ * file on the exclusion list would have been the wrong answer — that list is for platform
+ * machinery no agent can influence, and claiming it here would be false. The import is not needed
+ * either way: this module never CREATES a child, it only watches one, so the members it actually
+ * touches are the whole type it requires. Spelling them out keeps the gate honest and documents
+ * the entire surface this mechanism depends on.
+ */
+export interface WatchableChild {
+  stdout?: {
+    setEncoding(enc: string): unknown;
+    on(ev: 'data', cb: (chunk: Buffer | string) => void): unknown;
+  } | null;
+  stderr?: {
+    setEncoding(enc: string): unknown;
+    on(ev: 'data', cb: (chunk: Buffer | string) => void): unknown;
+  } | null;
+  on(ev: 'error', cb: (err: NodeJS.ErrnoException) => void): unknown;
+  on(ev: 'close', cb: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
+  kill(signal?: NodeJS.Signals): unknown;
+}
 
 /** Both streams together. Carried from `execFile`'s `maxBuffer` on the buffered primitive. */
 export const CHILD_MAX_BUFFER_BYTES = 1024 * 1024;
@@ -62,7 +86,7 @@ export interface IdleBoundOptions {
  * it never had.
  */
 export async function attachIdleBound(
-  child: ChildProcess,
+  child: WatchableChild,
   opts: IdleBoundOptions,
 ): Promise<{ stdout: string; stderr: string }> {
   const maxBytes = opts.maxBufferBytes ?? CHILD_MAX_BUFFER_BYTES;
