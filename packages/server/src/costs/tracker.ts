@@ -24,6 +24,20 @@ export interface RecordCostParams {
   outputTokens: number;
   latencyMs?: number;
   requestType?: string;
+  /**
+   * WHAT THIS CALL WAS, on its own axis (migration 181; BACKLOG lines 61 + 36).
+   *
+   * `requestType` above answers three questions in one column and the `??` chain that feeds it
+   * lets the leftmost answer erase the others: a router-tiered agent turn records `light`, and
+   * that it was a TURN is gone. This column carries the purpose the CALL SITE declared,
+   * whatever the router did, so "how big is a real turn on this box" is one predicate
+   * (`call_purpose = 'agent_turn'`) on every row instead of a size heuristic.
+   *
+   * Undefined — an engine dial that declares nothing — stores NULL, and NULL means "this row
+   * did not say" rather than any value. Never derived from `requestType` here: this module is
+   * the WRITER, and a writer that reconstructs a fact the caller withheld is inventing it.
+   */
+  callPurpose?: string;
   // For megapixel-priced image-gen models. The unit count is derived
   // from (imageWidth * imageHeight) / 1_000_000 so the caller passes the
   // raw dimensions and we compute MP here.
@@ -136,7 +150,7 @@ function getModelPricing(modelId: string): ModelPricing {
 const warnedUnknownPriceModels = new Set<string>();
 
 export function recordCost(params: RecordCostParams): void {
-  const { agentId, modelId, providerId, inputTokens, outputTokens, latencyMs, requestType, imageWidth, imageHeight, units, cacheReadTokens, cacheCreationTokens, estimatedInputTokens, inputTokensEstimated } = params;
+  const { agentId, modelId, providerId, inputTokens, outputTokens, latencyMs, requestType, imageWidth, imageHeight, units, cacheReadTokens, cacheCreationTokens, estimatedInputTokens, inputTokensEstimated, callPurpose } = params;
 
   try {
     const pricing = getModelPricing(modelId);
@@ -185,8 +199,9 @@ export function recordCost(params: RecordCostParams): void {
       INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens, output_tokens,
                                 cost_usd, latency_ms, request_type,
                                 cache_read_tokens, cache_creation_tokens, request_id,
-                                estimated_input_tokens, estimator_chars_per_token, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                                estimated_input_tokens, estimator_chars_per_token,
+                                call_purpose, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `).run(
       uuidv4(),
       agentId,
@@ -209,6 +224,11 @@ export function recordCost(params: RecordCostParams): void {
       // different measurements and a trend that mixes them silently is #14's class.
       estimatedInputTokens ?? null,
       estimatedInputTokens === undefined ? null : CHARS_PER_TOKEN,
+      // Migration 181. NULL when the site declared nothing, which is a FACT about the row and
+      // not a missing value: the five deliberately-undeclared engine dials and every row written
+      // before this column existed read the same way, and every reader of it treats NULL as
+      // unknown-and-therefore-conservative.
+      callPurpose ?? null,
     );
 
     // Invalidate daily spend cache so next budget check gets fresh data

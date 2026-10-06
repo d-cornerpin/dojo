@@ -1529,6 +1529,10 @@ async function callOllamaModel(
       outputTokens,
       latencyMs,
       requestType: routerTier ?? purpose ?? 'completion',
+      // Migration 181: the purpose on its OWN axis, so a router tier can no longer erase it.
+      // `requestType` above is unchanged, byte for byte, including the `??` chain — this is
+      // the fact that chain discards, recorded beside it rather than instead of it.
+      callPurpose: purpose,
     });
 
     recordProviderSuccess(modelInfo.providerId);
@@ -2538,6 +2542,10 @@ async function callOpenAIModel(
       providerId: modelInfo.providerId,
       inputTokens: uncachedInputTokens, outputTokens, latencyMs,
       requestType: routerTier ?? purpose ?? 'completion',
+      // Migration 181: the purpose on its OWN axis, so a router tier can no longer erase it.
+      // `requestType` above is unchanged, byte for byte, including the `??` chain — this is
+      // the fact that chain discards, recorded beside it rather than instead of it.
+      callPurpose: purpose,
       cacheReadTokens,
       // Step 3: the post-trim estimate, i.e. the one describing the request that went out.
       estimatedInputTokens: finalInputEstimate,
@@ -2930,6 +2938,10 @@ async function callAnthropicSdkModel(
         outputTokens: result.outputTokens,
         latencyMs,
         requestType: routerTier ?? purpose ?? 'completion',
+        // Migration 181: the purpose on its OWN axis, so a router tier can no longer erase it.
+        // `requestType` above is unchanged, byte for byte, including the `??` chain — this is
+        // the fact that chain discards, recorded beside it rather than instead of it.
+        callPurpose: purpose,
         cacheReadTokens: result.cacheReadTokens,
         cacheCreationTokens: result.cacheCreationTokens,
       });
@@ -3576,6 +3588,10 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
       outputTokens,
       latencyMs,
       requestType: routerTier ?? purpose ?? 'completion',
+      // Migration 181: the purpose on its OWN axis, so a router tier can no longer erase it.
+      // `requestType` above is unchanged, byte for byte, including the `??` chain — this is
+      // the fact that chain discards, recorded beside it rather than instead of it.
+      callPurpose: purpose,
       cacheReadTokens,
       cacheCreationTokens,
       // T2 Step 3 recorded this as "the same sum this transport's hard cap compares against
