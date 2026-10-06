@@ -130,6 +130,11 @@ afterEach(async () => {
   s.activeAbortControllers.clear();
   s.stoppedAgents.clear();
   s.stopFencedRuns.clear();
+  // t116 E2: §9 drives the unwind window through these two, so they are torn down with the
+  // rest of the shared state — a leaked `activeRuns` entry would make a later section's
+  // "genuinely idle agent" stoppable and the 400 controls would pass for the wrong reason.
+  s.activeRuns.clear();
+  s.lastRunEndedAt.clear();
   mockDb.current?.close();
   mockDb.current = null;
 });
@@ -557,5 +562,142 @@ describe('§8 nobody keeps a second copy of the question', () => {
     // Both edges. An open with no matching release is a control that never goes away.
     expect(src.match(/announceLiveWork\(agentId\)/g)?.length,
       'one of the two lifecycle edges stopped speaking').toBe(2);
+  });
+});
+
+// ── §9 — the turn-unwind window (t116 E2) ─────────────────────────────────────────────────
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// t116 E2 — THE PRESS THE DOOR REFUSED WHILE THE TURN WAS STILL COMING DOWN.
+//
+// From the release blast, attempt 1: `P6 stop: press=400 ok=false … {"ok":false,"error":
+// "Agent is not currently working and has no background jobs running"}`. Nothing latched the
+// stop, so the turn recorded `answered` and emitted no jobs frame — the two findings filed
+// beside it are consequences of this one, not defects of their own.
+//
+// WHY §4's PREDICATE WAS NOT ENOUGH, THOUGH IT WAS RIGHT. Ruling #9 moved the guard off the
+// status column and onto `liveWork`, and that fixed the background-job case §4 proves. But
+// BOTH facts are instantaneous, and during a turn's unwind both are already false:
+//
+//   · teardown's `settleStatus` writes `status='idle'` BEFORE `finalizeTurnRecord` runs;
+//   · `callModel` releases its abort registration in its own `finally`, so `liveWork` is 0;
+//   · and the run's exit `finally` deletes `activeRuns` at its TOP, then runs a long awaited
+//     tail (the A2A re-trigger, the drains).
+//
+// So between "the model stopped talking" and "the run is actually over" the agent looked
+// completely quiet to this door while being anything but. `activeRuns` is the fact `stopAgent`
+// itself reads to decide whether to raise the fence — the door asking a different question
+// than the mechanism it drives is the whole defect.
+//
+// ── DRIVEN BY STATE, NOT BY A SLEEP ──
+// The triage recorded E2 as flaky 1/3 because the probe could not tell it from a correct
+// refusal: a press after a run genuinely ends SHOULD get a 400. There is no ambiguity here
+// because the unwind state is constructed rather than waited for — the row says `idle`,
+// nothing is registered, and `activeRuns` holds the agent, which is exactly the shape
+// teardown leaves behind. The grace window is driven by stamping `lastRunEndedAt` to a chosen
+// value, so no clause in this section reads the wall clock or depends on how loaded the box
+// is.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§9 a stop lands on a turn that is still unwinding', () => {
+  /** The state teardown actually leaves behind: idle row, nothing registered, run in flight. */
+  async function unwinding(): Promise<void> {
+    const s = await import('../../../agent/shared-state.js');
+    mockDb.current!.prepare("UPDATE agents SET status = 'idle' WHERE id = ?").run(AGENT);
+    s.activeRuns.add(AGENT);
+    // The premise, asserted rather than assumed: if either of the door's two original facts
+    // were still true here, this section would be re-proving §4 instead of E2.
+    expect(statusOf(), 'the fixture left the row saying working').toBe('idle');
+    expect(hasLiveWork(liveWork(AGENT)), 'the fixture registered live work').toBe(false);
+  }
+
+  it('⚠ THE RED: idle row, nothing registered, run still in flight — the press is ACCEPTED', async () => {
+    await unwinding();
+
+    const { status, body } = await pressStop();
+    expect(status, 'the door refused a press landing inside the turn unwind — this is E2')
+      .toBe(200);
+    expect(body.ok).toBe(true);
+  });
+
+  it('…and the accepted press RAISES THE FENCE, which is the only reason accepting it matters', async () => {
+    // A 200 that latched nothing would be a worse defect than the 400: the owner would be
+    // told the stop took. The fence is the fact E1's checkpoints read, so this is the clause
+    // that joins the two halves of this lane — the door accepts, and what it accepts onto is
+    // the thing that actually suppresses the reply.
+    await unwinding();
+    const s = await import('../../../agent/shared-state.js');
+
+    await pressStop();
+
+    expect(s.isStopFenced(AGENT), 'the press was accepted and stopped nothing').toBe(true);
+    // Run-scoped, not just the liftable flag: `stopAgent` raises the fence only when a run is
+    // in flight, and the whole point of this window is that one still is.
+    expect(s.stopFencedRuns.has(AGENT), 'the run-scoped fence was not raised for a live run')
+      .toBe(true);
+  });
+
+  it('the DRAIN TAIL is covered too — the window after `activeRuns` is released', async () => {
+    // The run's exit `finally` deletes `activeRuns` at its top and then awaits a long tail.
+    // That residual is named in the fence's own header; the stamp is what closes it.
+    const s = await import('../../../agent/shared-state.js');
+    mockDb.current!.prepare("UPDATE agents SET status = 'idle' WHERE id = ?").run(AGENT);
+    s.activeRuns.delete(AGENT);
+    s.lastRunEndedAt.set(AGENT, Date.now());
+
+    expect((await pressStop()).status, 'a press in the drain tail was told nothing was happening')
+      .toBe(200);
+  });
+
+  it('the grace window is BOUNDED — an old stamp does not make an agent stoppable for ever', async () => {
+    // Driven by the stamp's value, never by waiting: a clause that slept for the window would
+    // be a timing clause on a box seven lanes share, and would red for the wrong reason.
+    const s = await import('../../../agent/shared-state.js');
+    mockDb.current!.prepare("UPDATE agents SET status = 'idle' WHERE id = ?").run(AGENT);
+    s.lastRunEndedAt.set(AGENT, Date.now() - (s.RUN_UNWIND_GRACE_MS + 1_000));
+
+    expect((await pressStop()).status, 'a long-finished run left the agent permanently stoppable')
+      .toBe(400);
+  });
+
+  it('CONTROL: a genuinely quiet agent is STILL refused — no run, no stamp, no jobs', async () => {
+    // The 400 has to survive, and this is the clause that makes the fix a narrowing rather
+    // than a widening. Accepting this press would set `stopMarkerPending` on a turn that
+    // never happened, which is the refusal's own stated reason for existing.
+    const s = await import('../../../agent/shared-state.js');
+    expect(s.activeRuns.has(AGENT)).toBe(false);
+    expect(s.lastRunEndedAt.has(AGENT)).toBe(false);
+
+    const { status, body } = await pressStop();
+    expect(status, 'a button for nothing became possible').toBe(400);
+    expect(String(body.error)).toContain('background jobs');
+  });
+
+  it('CONTROL: ANOTHER agent\'s run in flight does not make this agent stoppable', async () => {
+    const s = await import('../../../agent/shared-state.js');
+    s.activeRuns.add('some-other-agent');
+    s.lastRunEndedAt.set('some-other-agent', Date.now());
+
+    expect((await pressStop()).status, 'one agent\'s unwind made every agent stoppable').toBe(400);
+  });
+
+  it('the door reads the SHARED fact, never a fourth copy of "is a run in flight"', () => {
+    const src = fs.readFileSync(path.resolve(HERE, '../agents.ts'), 'utf-8')
+      // Comments first, always: this disjunct is introduced by a long paragraph naming
+      // `activeRuns`, and a clause satisfiable by that prose tests the prose.
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+    // THE APPLICATION, not the import: the refusal branch itself must consult it, as the
+    // sibling clause in §8 requires of `hasLiveWork`.
+    expect(/!isRunUnwinding\(id\)/.test(src), 'the route stopped asking whether a run is unwinding')
+      .toBe(true);
+    // And it is a DISJUNCT added beside the other two, not a replacement for either —
+    // ruling #9's predicate and the status check both still have to be in the condition.
+    expect(/status !== 'working' && !hasLiveWork\(live\) && !isRunUnwinding\(id\)/.test(src),
+      'the three facts stopped being asked together — one of them was widened or dropped')
+      .toBe(true);
+    // The route must not re-derive the window from `activeRuns` itself: one predicate, one
+    // owner, same rule §8 holds the other two surfaces to.
+    expect(/activeRuns/.test(src), 'the route grew its own copy of the in-flight question')
+      .toBe(false);
   });
 });
