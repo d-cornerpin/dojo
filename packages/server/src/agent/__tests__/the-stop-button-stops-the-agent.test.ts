@@ -195,6 +195,21 @@ describe('the stop flag outlives the checkpoint that honoured it', () => {
     // model-call catch and the executor's batch loop.
     expect(readers.length, 'the engine stopped checking the stop flag entirely').toBeGreaterThanOrEqual(3);
     expect(retirers, 'a step retired the stop flag again — the drains cannot see a stop that is already gone').toEqual([]);
+
+    // ── t116 E1: AND THE COUNT IS NOT THE REQUIREMENT, THE SEAM IS ──
+    //
+    // This clause counted readers, and a count is exactly what let E1 ship. The three
+    // checkpoints above were all present and all green while a user-visible reply escaped
+    // after the press, because the file that SHIPS the reply was not among them: the count
+    // was satisfied by three guards on the paths where a call fails, and the path where it
+    // succeeds had none.
+    //
+    // A presence-only count also stays green when a reader is MOVED rather than added, which
+    // is the both-directions failure this names its subject to avoid. The persist seam is
+    // where the row and the broadcast live, so it is the one file whose silence is a
+    // user-visible defect rather than a missed opportunity — it is required BY NAME.
+    expect(readers, 'the shipping door stopped reading the stop fence — this is E1, the reply that escapes the press')
+      .toContain('agent/v2/steps/post-call-classify/persist-assistant.ts');
   });
 
   it('the preempt flag is NOT changed by this task — it is still consumed at its checkpoints', async () => {
