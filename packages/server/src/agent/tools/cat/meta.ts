@@ -135,7 +135,11 @@ export const metaHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
-    content = executeLoadToolDocs(agentId, filteredTools);
+    // t113 B1: the registry this handler ALREADY derived for its naming verdict, handed to the
+    // executor so a tool whose generated manual never landed on this install falls back to its
+    // live registry entry instead of to a sentence saying there is nothing. No new module edge:
+    // `getAllToolDefinitions` is imported here already, three lines up.
+    content = executeLoadToolDocs(agentId, filteredTools, getAllToolDefinitions());
     // C27 hook 3: tell the model which requested names were renamed.
     if (aliasDocNotes.length > 0 && !content.startsWith('Error')) {
       content += `\n\n[Engine note: ${aliasDocNotes.join('; ')}. Docs above are for the new name(s).]`;

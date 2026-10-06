@@ -27,6 +27,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
 
 const mockDb = { current: null as Database.Database | null };
 vi.mock('../../db/connection.js', () => ({
@@ -59,6 +60,8 @@ import {
   rehydrateSessionToolsFromHistory, resetRehydrationForTests,
 } from '../tool-docs.js';
 import { getFilteredTools } from '../../agent/tools/surface.js';
+// §7: the LIVE registry, unmocked on purpose — the whole claim is that it is what answers.
+import { getAllToolDefinitions } from '../../agent/tools/definitions.js';
 import { metaHandlers } from '../../agent/tools/cat/meta.js';
 import type { ToolCall, ToolDefinition } from '@dojo/shared';
 
@@ -281,6 +284,125 @@ describe('§3 A MISSING MANUAL IS NOT A MISSING TOOL', () => {
     expect(executeLoadToolDocs(AGENT, [])).toBe('Error: tools parameter must be a non-empty array of tool names');
     // @ts-expect-error — the runtime guard exists for callers TypeScript cannot see
     expect(executeLoadToolDocs(AGENT, 'exec')).toBe('Error: tools parameter must be a non-empty array of tool names');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §7 (t113 B1, t97 item D / BACKLOG line 72) — A MISSING MANUAL IS NOT A MISSING ANSWER.
+//
+// §3 settled that a missing manual is not a missing TOOL: the name is marked loaded and the
+// absence is reported as a fact about the install. What it still left the model with was that
+// sentence and NOTHING ELSE — correct, and useless. The tool is real and callable and the model
+// has just been told to proceed with no account of its arguments.
+//
+// The registry is right there and cannot be stale: it is the same description and `input_schema`
+// the model is handed on the wire for every tool it can call. So a missing manual now degrades
+// to the registry entry rather than to nothing.
+//
+// ── WHY THIS SECTION LIVES IN THIS FILE AND IN THESE THREE ARMS ──
+//
+// This file already owns the only lever that can tell the two states apart: `manualsPresent`
+// mocks `readToolDoc`, so "the file is there" and "the file is gone" are a one-line difference
+// in a fixture rather than a directory someone has to write to. `getAllToolDefinitions` is
+// deliberately NOT mocked here — it is static data and the whole claim is that the LIVE registry
+// answers, so a mocked registry would prove nothing about the fallback.
+//
+// Three arms, because the server has three answers and they must not be collapsed:
+//   file present                      → the FILE wins, and nothing says "registry"
+//   file gone, registry HAS the tool   → the registry text, the banner, its own sentence
+//   file gone, registry does NOT       → §3's sentence, unchanged, and that is why §3 still
+//                                        passes with its synthetic names
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('§7 A MISSING MANUAL FALLS BACK TO THE LIVE REGISTRY', () => {
+  // The LIVE registry, and a tool that really is in it. Resolved FROM the registry rather than
+  // typed in, so this section cannot rot into testing a name nobody ships any more.
+  const REGISTRY = getAllToolDefinitions();
+  const REAL = REGISTRY[0];
+
+  it('the registry has entries to fall back TO — otherwise every arm below is vacuous', () => {
+    expect(REGISTRY.length).toBeGreaterThan(20);
+    expect(REAL?.name, 'and the one this section uses is a real registered tool').toBeTruthy();
+    expect(typeof REAL.description, 'with a description the model is already given').toBe('string');
+  });
+
+  it('FILE PRESENT: the generated manual wins, and nothing claims to be the registry', () => {
+    manualsPresent.add(REAL.name);
+    const out = executeLoadToolDocs(AGENT, [REAL.name], REGISTRY);
+    expect(out, 'the file is what is served').toContain(`the manual for ${REAL.name}`);
+    expect(out, 'and the fallback did not fire').not.toContain('LIVE REGISTRY');
+    expect(out).not.toContain('No generated manual is present on this install for');
+    expect([...getSessionLoadedTools(AGENT)]).toEqual([REAL.name]);
+  });
+
+  it('FILE GONE: the live registry entry is served, labelled, and the tool still loads', () => {
+    // `manualsPresent` is cleared between tests, so this is the same call with the file absent.
+    const out = executeLoadToolDocs(AGENT, [REAL.name], REGISTRY);
+    expect(out, 'the registry text arrives').toContain('LIVE REGISTRY');
+    expect(out, 'with the registry\'s own description of the tool').toContain(REAL.description.slice(0, 40));
+    expect(out, 'and its argument schema, which is the half the model cannot guess').toContain('## Arguments');
+    expect(out, 'named in its own sentence, apart from the no-entry case')
+      .toContain(`No generated manual is present on this install for: ${REAL.name}`);
+    expect(out, 'and it does NOT pretend to be the manual it is standing in for')
+      .toContain('none of the worked examples');
+    expect(out, 'the honest-but-empty sentence is NOT what the model gets any more')
+      .not.toContain(`no manual is available on this install for: ${REAL.name}`);
+    expect([...getSessionLoadedTools(AGENT)], 'the load still counts').toEqual([REAL.name]);
+  });
+
+  it('REGISTRY HAS NO ENTRY EITHER: §3\'s sentence stands, and says why there was no fallback', () => {
+    const out = executeLoadToolDocs(AGENT, ['not_a_registered_tool_at_all'], REGISTRY);
+    expect(out).toContain('no manual is available on this install for: not_a_registered_tool_at_all');
+    expect(out).toContain('real and callable');
+    expect(out, 'and the reason the fallback did not fire is stated')
+      .toContain('the registry has no entry under this name');
+    expect(out, 'nothing claims a registry entry it does not have').not.toContain('LIVE REGISTRY');
+  });
+
+  it('a MIXED call keeps the three states in three sentences', () => {
+    manualsPresent.add('has_manual');
+    const out = executeLoadToolDocs(AGENT, ['has_manual', REAL.name, 'not_a_registered_tool_at_all'], REGISTRY);
+    expect(out, 'file and registry both counted as documentation returned')
+      .toContain('Loaded documentation for 2 tool(s)');
+    expect(out).toContain(`No generated manual is present on this install for: ${REAL.name}`);
+    expect(out).toContain('no manual is available on this install for: not_a_registered_tool_at_all');
+    expect(getSessionLoadedTools(AGENT).size, 'and all three load').toBe(3);
+  });
+
+  it('the HANDLER hands the executor the registry it already holds', () => {
+    // THE HALF THAT MATTERS MOST, because the parameter DEFAULTS to empty. If the one production
+    // call site stops passing it, every arm above still passes (they pass it themselves) and the
+    // product quietly reverts to the honest-but-empty sentence. So the call site is pinned, over
+    // comment-stripped source, by shape AND application.
+    const strip = (s: string): string => s
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
+    const handler = strip(fs.readFileSync(new URL('../../agent/tools/cat/meta.ts', import.meta.url), 'utf8'));
+    expect(handler, 'the registry reaches the executor')
+      .toMatch(/executeLoadToolDocs\(agentId,\s*filteredTools,\s*getAllToolDefinitions\(\)\)/);
+    expect(handler, 'and it is the same registry the naming verdict already used — not a second source')
+      .toMatch(/getAllToolDefinitions\(\)\.map\(t => t\.name\)/);
+  });
+
+  it('the fallback is WIRED, not merely written — the call site reads the registry', () => {
+    // G4: comment-stripped, and the application is asserted rather than the import. The three
+    // negatives are the both-ways half: a fallback that stops being reached, or stops being
+    // reported, or starts being served silently, each reds here.
+    const strip = (s: string): string => s
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
+    const src = strip(fs.readFileSync(new URL('../tool-docs.ts', import.meta.url), 'utf8'));
+    expect(src, 'the renderer reads the registry it was HANDED, never a module-level one')
+      .toMatch(/registry\.find\(\(t\) => t\.name === name\)/);
+    expect(src, 'and this module takes no runtime edge to the registry — that was measured, see the docstring')
+      .not.toMatch(/from '\.\.\/agent\/tools\/definitions\.js'/);
+    expect(src, 'and the loop reaches the fallback only after the file misses')
+      .toMatch(/if \(doc\) \{ results\.push\(doc\); continue; \}\s*const fallback = registryManual\(name, registry\);/);
+    expect(src, 'a served fallback is pushed as documentation')
+      .toMatch(/results\.push\(fallback\)/);
+    expect(src, 'recorded separately from the no-entry case')
+      .toMatch(/registryServed\.push\(name\)/);
+    expect(src, 'and it is never silent — the install\'s failure is logged where an operator sees it')
+      .toMatch(/logger\.warn\('no generated manual on this install; served the live registry entry'/);
   });
 });
 

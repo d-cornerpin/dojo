@@ -569,10 +569,81 @@ export function filterToolsForApiCall(
 // ── Execute load_tool_docs ──
 
 /**
+ * THE REGISTRY'S OWN ACCOUNT OF A TOOL, for a box whose generated manual never landed.
+ *
+ * ── THE SHAPE OF THE FAILURE THIS ANSWERS ──
+ *
+ * The manuals are GENERATED at boot, one `.md` per registered tool, into a directory on the
+ * user's box. That write can fail — a directory that is not writable is the measured case, and
+ * the generator counted only its successes, so a box reported `count: 0` and served the previous
+ * version's manuals for ever. The gate side of that is closed (the count check, the loud card,
+ * and the release check). What was still true at RUNTIME is that a model asking for a manual
+ * this install does not have got a sentence saying so and nothing else: "Loaded, but no manual
+ * is available on this install for: x". Correct, and useless — the tool is real and callable and
+ * the model has just been told to proceed with no account of its arguments.
+ *
+ * The registry is RIGHT THERE and cannot be stale: it is the same description and `input_schema`
+ * the model is handed on the wire for every tool it can call. So a missing manual degrades to the
+ * registry entry rather than to nothing.
+ *
+ * ── WHAT IT DELIBERATELY DOES NOT CLAIM ──
+ *
+ * This is not a manual and it says so in its first line. A generated manual carries worked
+ * examples, the failure modes, and the prose a tool's author wrote; the registry carries the
+ * contract. Serving the contract silently AS a manual would be the more comfortable lie — the
+ * model would never know what it was missing — so the banner is part of the document and the
+ * tool result names these tools in their own sentence, apart from the ones with no entry at all.
+ *
+ * Returns `null` when the registry has no entry under this name, which is a different fact and
+ * keeps its own sentence.
+ *
+ * ── THE REGISTRY IS HANDED IN, NOT REACHED FOR, AND THAT WAS MEASURED ──
+ *
+ * The first shape of this fix imported `getAllToolDefinitions` here. It typechecked, the whole
+ * tools suite passed (601) and the report handler's closure census was unmoved — `definitions.ts`
+ * is ALREADY inside that closure by another path, so the edge added no module to it. What it DID
+ * do was drag the registry graph into every small test that touches this module, and
+ * `agent/tools/cat/__tests__/a-reset-forgets-the-loaded-tools.test.ts` went from 5 passing to a
+ * COLLECTION ERROR on an unrelated incomplete mock. That is the same hazard that made the reader
+ * a leaf, one suite instead of eight, and patching the mock would only move the next one.
+ *
+ * So the registry arrives as an ARGUMENT. `agent/tools/cat/meta.ts` — the one production caller
+ * — already holds `getAllToolDefinitions()` for its own naming verdict, so this costs nothing
+ * there and adds no edge here. It is also the MORE CORRECT read: the handler's list is what this
+ * agent can actually call, so the fallback cannot serve the entry for a tool the agent does not
+ * have. This is the convention `always-loaded-tools.ts` already follows, in its own words:
+ * "against the REGISTRY the caller hands in, never against the doc files".
+ */
+function registryManual(name: string, registry: readonly ToolDefinition[]): string | null {
+  const d = registry.find((t) => t.name === name);
+  if (!d) return null;
+  const schema = (d as { input_schema?: unknown }).input_schema;
+  return `# ${name}\n\n`
+    + '⚠ No generated manual is present on this install, so this is the LIVE REGISTRY entry — '
+    + 'the same description and argument schema the model is given on the wire. It is complete '
+    + 'enough to call the tool correctly, and it carries none of the worked examples or failure '
+    + 'notes a generated manual would.\n\n'
+    + `${d.description}\n\n`
+    + `## Arguments\n\n\`\`\`json\n${JSON.stringify(schema, null, 2)}\n\`\`\``;
+}
+
+/**
  * Handle a load_tool_docs call. Marks the requested tools as loaded
  * for this session and returns their full documentation.
  */
-export function executeLoadToolDocs(agentId: string, toolNames: string[]): string {
+export function executeLoadToolDocs(
+  agentId: string,
+  toolNames: string[],
+  /**
+   * The tools this agent may call, as the registry defines them — handed in by the handler
+   * (see `registryManual`). Defaulted to EMPTY rather than to the whole registry on purpose: a
+   * caller with no registry in scope gets today's behaviour (the honest-but-empty sentence)
+   * rather than a fallback rendered from entries it never checked the agent against. The clause
+   * `the handler hands the executor the registry it already holds` is what keeps the real call
+   * site from quietly becoming that caller.
+   */
+  registry: readonly ToolDefinition[] = [],
+): string {
   if (!Array.isArray(toolNames) || toolNames.length === 0) {
     return 'Error: tools parameter must be a non-empty array of tool names';
   }
@@ -592,12 +663,21 @@ export function executeLoadToolDocs(agentId: string, toolNames: string[]): strin
   // marked loaded, and the absent manual is reported as a fact about this INSTALL. "No such
   // tool" stays where its authority is: the handler's registry-backed `describeNameFailure` (T80a).
   const manualMissing: string[] = [];
+  // t113 B1 (t97 item D, BACKLOG line 72): and a missing manual is not a missing ANSWER either.
+  // The names served from the live registry instead of a generated file, reported separately
+  // because "here is the registry's own account" and "there is nothing" are different facts.
+  const registryServed: string[] = [];
 
   for (const name of toolNames) {
     const doc = readToolDoc(name);
     loaded.push(name);
-    if (doc) results.push(doc);
-    else manualMissing.push(name);
+    if (doc) { results.push(doc); continue; }
+    const fallback = registryManual(name, registry);
+    if (fallback) {
+      results.push(fallback);
+      registryServed.push(name);
+      logger.warn('no generated manual on this install; served the live registry entry', { agentId, name });
+    } else manualMissing.push(name);
   }
 
   const evicted = markToolsLoaded(agentId, loaded);
@@ -608,9 +688,16 @@ export function executeLoadToolDocs(agentId: string, toolNames: string[]): strin
     parts.push(`Loaded documentation for ${results.length} tool(s). These tools are now available to call directly.\n\n`
       + results.join('\n\n---\n\n'));
   }
+  if (registryServed.length > 0) {
+    parts.push(`No generated manual is present on this install for: ${registryServed.join(', ')} — `
+      + 'the LIVE REGISTRY entry was served instead, which is the same description and argument '
+      + 'schema the model is given on the wire. It is complete enough to call the tool correctly; '
+      + 'it carries none of the worked examples a generated manual would.');
+  }
   if (manualMissing.length > 0) {
     parts.push(`Loaded, but no manual is available on this install for: ${manualMissing.join(', ')}. `
-      + 'Those tools are real and callable — the generated documentation is missing, not the tool.');
+      + 'Those tools are real and callable — the generated documentation is missing, not the tool, '
+      + 'and the registry has no entry under this name to fall back to either.');
   }
   const output = parts.join('\n\n');
   return evicted.length > 0 ? output + evictionNote(evicted) : output;
