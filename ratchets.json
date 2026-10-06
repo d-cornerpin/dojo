@@ -6952,6 +6952,20 @@
       "to": 770,
       "by": "t113 B1 - the live-registry fallback for a missing manual (t97 item D, BACKLOG line 72)",
       "why": "Plus 87 lines: +29 EXECUTABLE and +58 comment, measured by stripping comment and blank lines from both versions (code 310 -> 339). The executable half is the whole feature - a 12-line renderer, the four-line signature that takes the registry, the six-line loop arm, and the seven-line output sentence that keeps \"the registry answered\" apart from \"there was nothing\". THE 58 COMMENT LINES, AND WHY THEY ARE THAT SIZE: two of the three blocks record MEASUREMENTS a later reader would otherwise have to redo, and the third is the thing that makes the feature honest. (1) The registry is handed IN rather than imported, and the docstring says why with the numbers: the first shape of this fix imported `getAllToolDefinitions` here, typechecked, passed the whole tools suite at 601 and left the report handler closure census UNMOVED at 592/510 (`definitions.ts` is already inside that closure by another path) - and still turned `agent/tools/cat/__tests__/a-reset-forgets-the-loaded-tools.test.ts` from 5 passing into a COLLECTION ERROR, because the edge drags the registry graph into every small test touching this module. That is the same hazard that made `tool-doc-read.ts` a leaf under ruling P5-R15 part 2, one suite instead of eight. Without those four sentences the next reader deletes the parameter and re-imports. (2) The `registry` parameter defaults to EMPTY, not to the whole registry, and the comment says why: a caller with no registry in scope must get today's behaviour rather than a fallback rendered from entries it never checked the agent against. (3) The renderer's banner is argued, because serving the registry contract silently AS a manual is the more comfortable lie and the comment is what stops someone removing the label. ALTERNATIVES REFUSED, with their line costs: put the fallback in `tool-doc-read.ts` (+0 here) - refused, that module is a declared leaf and its own header records the eight suites it broke; import the registry here (-4 lines, no parameter) - refused ON MEASUREMENT, see above; serve the registry text with no banner and no separate sentence (-12) - refused, it tells the model it has a manual when it has a contract. NOT a prompt file; no cache prefix moves (G2 untouched). Tools suites 607/607, closure census green and unmoved."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2772,
+      "to": 2786,
+      "by": "t113 G - the starved-window card is emitted at the one site that knows (t109 hand-up 3, ruled)",
+      "why": "Plus 14 lines: 8 comment, 6 executable. The six are a try/catch around the EXISTING `assertSystemPromptFits` call plus the two calls that make the card per-outage - `reportStarvedWindow` on the throw and `noteWindowHolds` on the fit - and a bare `throw err` so the refusal is rethrown unchanged. The eight comment lines say why a correct, loud refusal still needed something added: it was loud in the LOG, and the person whose agent would not hold a conversation saw an agent answering with no memory of anything. Without that paragraph the try/catch reads as swallowing an error, which is the one thing it must never be mistaken for. THE ALTERNATIVE REFUSED, with its cost: emit the card from inside `budget.ts` where the throw is (+0 here). Refused on module shape - `budget.ts` is pure arithmetic with no `broadcast` and no db edge, and giving it one would repeat the mistake t113 B1 measured in the same sitting, where a convenience import dragged a graph into every small test that touched the module. The assembler is where the agentId already is. Also refused: catch it higher up, at the turn boundary. That loses the policy object the card needs to say WHICH cause dominated, and would have to re-derive it. ⚠ G2 UNTOUCHED: no prompt byte moves - this is error handling around an assert, the system prompt is not read or rewritten, no golden was touched by this lane, and prefix-lane + assemble-contract are green 73/73. Memory suites 1063/1063."
+    },
+    {
+      "path": "packages/shared/src/ws.ts",
+      "from": 1270,
+      "to": 1278,
+      "by": "t113 G - `WINDOW_TOO_SMALL` joins the declared chat:error code vocabulary",
+      "why": "Plus 8 lines: 7 comment, ONE executable (the union member). The union is what makes `chat:error` a vocabulary rather than a free-text field, so declaring the code here is USING the existing channel, not inventing one - and the dashboard needed no change at all, because it renders by severity rather than by code. The seven comment lines follow the convention every neighbouring code in this union already follows (each carries the reason it exists) and they carry the two values a reader would otherwise get wrong: `severity: error` so the card stays until dismissed, and `retryable: false` because unlike every other card in this family nothing about this state clears itself. THE ALTERNATIVE REFUSED: reuse an existing code - `CONTEXT_HIGH` is the nearest, and it is the opposite situation (a window filling up, which compaction fixes) so the person would be given the wrong mental model and no repair they can act on. A one-line entry with no comment was also refused: it would be the only undocumented member of the union."
     }
   ],
   "maxNewFileLines": 400,
@@ -7156,7 +7170,7 @@
     "packages/server/src/healer/healer-agent.ts": 1163,
     "packages/server/src/healer/injury-recovery.ts": 1155,
     "packages/server/src/index.ts": 1310,
-    "packages/server/src/memory/assembler.ts": 2772,
+    "packages/server/src/memory/assembler.ts": 2786,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
     "packages/server/src/memory/budget.ts": 699,
@@ -7265,7 +7279,7 @@
     "packages/shared/src/outcome.ts": 270,
     "packages/shared/src/types.ts": 649,
     "packages/shared/src/visibility.ts": 989,
-    "packages/shared/src/ws.ts": 1270,
+    "packages/shared/src/ws.ts": 1278,
     "watchdog/src/auto-rollback.ts": 333,
     "watchdog/src/index.ts": 1217
   }
