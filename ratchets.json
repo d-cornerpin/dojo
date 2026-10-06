@@ -6728,6 +6728,20 @@
       "to": 391,
       "by": "t109 item E — the deep-compaction floor state stops scrolling two rows a turn",
       "why": "369 -> 391 (+22 net: 2 code, 27 comment added, 7 comment removed; `wc -l` before and after). THE CODE IS TWO LINES — the floor's condition gains a conjunct: `rows_since <= cap && (anchor === 0 || rows_since === 0)`. That is the whole behavioural change, and the measurement that authorises it is 8 of 8 turns discontinuous with a 20.6x byte waste factor, reproduced with the lane's own instrument before the fix was written. THE COMMENT HALF IS 27 LINES AND IT CANNOT LIVE ANYWHERE ELSE, for the reason every entry on this file already gives: this module is a page of derivation around a handful of arithmetic lines, because the WHOLE SUBSYSTEM is one invariant (a positional prefix cache is a function of whether the front moved) and a reader who cannot see why the condition has two conjuncts will widen it back to one. What the 27 lines carry, none of it restated elsewhere at the site: why `rows_since == cap` exactly is safe and below it is not (the newest-cap-rows ask is measured from the BACK); the reachable door (the cap is a function of the WINDOW, `rows_since` of the HISTORY, so a mid-session switch to a larger box opens it); why BOTH conjuncts are load-bearing, with the mutant that proves it (gating on the anchor alone reds the young-conversation clause); and WHAT THE FIX COSTS, stated rather than discovered — a live view shorter than the row cap for `cap - rows_since` turns — against the owner's own ranking. SEVEN LINES WERE DELETED, not kept alongside: the old floor paragraph's claim that `rows_since <= cap` is 'the pre-t94 answer, byte for byte' is now true of a narrower case and the sentence was rewritten rather than appended to. ALTERNATIVES REFUSED: (i) move the condition into a named predicate in a new module (+0 here) — a two-term boolean read once, whose terms are both fields of the struct this file defines; a module for it would put the condition and its argument in different files, which is how this one came to be pinned wrong; (ii) drop the cost paragraph (-4) — refused for the same reason the T4 entry on this file refuses it: a later reader who cannot see that the shorter view is DELIBERATE will read it as a regression and restore the scroll. From 391 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/lanes.ts",
+      "from": 1201,
+      "to": 1265,
+      "by": "t109 item D — the reserve ladder is bounded against the budget that is actually left",
+      "why": "1201 -> 1265 (+64 net: 17 code, 47 comment; `wc -l` before and after, nothing deleted). THE CODE: `UNCONDITIONAL_POST_BUDGET_IDS` (1 line), `RESERVE_LADDER_SHARE_DENOMINATOR` (1), `RESERVE_LADDER_FLOOR_TOKENS` (4, a reduce over the table so the floor is DERIVED and moves when the two unconditional lanes' measurements move), the `ReserveLadder` interface (4 fields) and `reserveLadderFor` (5). It is in THIS file because the file is the declared home of the ladder: the table it bounds, both reserve totals and the ack's own derived constant are all here, and a bound that lived elsewhere could disagree with the table it bounds — the exact failure mode `SCAFFOLDING_ACK_RESERVE_TOKENS` is derived-from-the-renderer to avoid. THE COMMENT HALF IS 47 AND IT IS THE PRICE OF A NUMBER THAT IS NOT A TUNING CONSTANT. Three things are argued and none of them is restated elsewhere at the site: (a) why an EQUAL SHARE is the bound — after the system prompt the assembly has exactly two claimants, and every post-budget lane appends TO a conversation, so a claimant that cannot exist without the other may not outbid it; (b) that the fraction is CARRIED from `tail-horizon.ts`'s `groupsToDropForBudget`, same reason, same subsystem (#14 forbids inventing one); (c) the G2 sentence — where the answer is byte-identical and why that covers every goldens box. The measured arithmetic itself (11,145 against 7,582, and the two corrections that NARROW the fix's claim) was MOVED OUT to the clause file's header rather than duplicated, which is what took this entry from +73 to +64. ALTERNATIVES REFUSED: (i) a new `memory/reserve-ladder.ts` (+0 here) — it would import the table, both totals and the ack constant from this file and export one function back into the assembler, so the bound and the table it bounds would sit in different files; (ii) scale each post-budget lane's own `reserveTokens` proportionally instead of the total (+~10) — refused on measurement: nothing in the tree truncates to `reserveTokens` (the varying lanes enforce their own caps), so per-lane scaling would change no behaviour while adding fifteen numbers that could drift from their `measured` strings. From 1265 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2756,
+      "to": 2772,
+      "by": "t109 item D — the assembler asks for a bounded ladder and reports the squeeze",
+      "why": "2756 -> 2772 (+16 net: 10 code, 7 comment, 1 line replaced in place). THE CODE: the flat `const offTheTop = SCAFFOLDING_ACK_RESERVE_TOKENS + POST_BUDGET_RESERVE_TOKENS` becomes a `reserveLadderFor(maxTokens - systemTokens)` call and a read of its answer (+2), plus one `if (ladder.scaled)` warn carrying the four numbers that diagnose the squeeze — the declared ladder, what was actually reserved, the resulting content budget and the system prompt (+7, the call and its meta object), plus the import line. The warn is here and not in `lanes.ts` because `reserveLadderFor` is PURE by design and this is the only place that knows the agent id, and because a content budget of zero was previously invisible at every level: the array simply arrived as one message. THE COMMENT HALF IS 7: four lines naming the defect and pointing at the derivation (a reader who finds `offTheTop` bounded without knowing why will unbound it), and three recording that the 'told plainly' half of the backlog line is `assertSystemPromptFits` five lines above, so nobody adds a second report of the same state — which is a mistake the first cut of this commit actually made. ALTERNATIVE REFUSED: computing the bound inline here (+2 instead of +16, and -22 in `lanes.ts`) — that is exactly the split the lanes.ts entry refuses, and the clause that pins the share would then have no exported symbol to read. From 2772 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6924,7 +6938,7 @@
     "packages/server/src/healer/healer-agent.ts": 1163,
     "packages/server/src/healer/injury-recovery.ts": 1155,
     "packages/server/src/index.ts": 1310,
-    "packages/server/src/memory/assembler.ts": 2756,
+    "packages/server/src/memory/assembler.ts": 2772,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
     "packages/server/src/memory/budget.ts": 699,
@@ -6935,7 +6949,7 @@
     "packages/server/src/memory/embeddings.ts": 319,
     "packages/server/src/memory/fts-health.ts": 536,
     "packages/server/src/memory/integration-status-lane.ts": 461,
-    "packages/server/src/memory/lanes.ts": 1201,
+    "packages/server/src/memory/lanes.ts": 1265,
     "packages/server/src/memory/message-store.ts": 1153,
     "packages/server/src/memory/other-threads-lane.ts": 276,
     "packages/server/src/memory/reader-pool.ts": 336,
