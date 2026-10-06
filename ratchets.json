@@ -7078,6 +7078,55 @@
       "to": 3942,
       "by": "t114 rebase onto main 8ff1fd04 — the one both-changed pin, re-derived",
       "why": "3914 -> 3942. NOT new work: this is the arithmetic of two lanes landing in one file. The 3-way merge flagged it as the single both-changed pin (base 3877, t113 3914, t114 3905) and the value is RE-DERIVED BY MEASUREMENT rather than by picking a side: `wc -l packages/server/src/agent/model.ts` on the rebased head is 3942, which is exactly 3877 + t113's 37 + t114's 28. That the two deltas are purely additive is itself the check that the auto-merge kept BOTH lanes' changes — t113's divisor reads in the fit gates and t114's clock handling in the ollama and agent-sdk transports — rather than silently dropping one. Taking either lane's number would have pinned the file below its own content and failed the gate on the next line anybody wrote. From 3942 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/update.ts",
+      "from": 1305,
+      "to": 1412,
+      "by": "t114 flat timers, continuation 2 — the ten unreached timers",
+      "why": "1305 -> 1412 (+107: 63 code, 44 comment). CENSUS U14, the remainder's highest priority because it cuts against the owner's update-integrity standard, which is a RELEASE GATE. `curl` on a ~200 MB zip and `npm install --omit=dev` each had a flat 120-second TOTAL: on a slow home line the download cannot finish inside it, so every attempt died at the same wall and the box became PERMANENTLY un-updatable — 'updates never fail' made into 'updates always fail' for exactly the boxes least able to recover. The install wall is worse, because that leg runs AFTER the new tree is rsynced over PLATFORM_DIR: a kill leaves new files with half-written dependencies and the error said nothing about the state it left behind. THE CODE: `execIdleBounded` (spawn + the shared bound), `curlDownloadCmd` carrying curl's OWN stall detector (`--speed-limit`/`--speed-time`, which measures the transfer rather than guessing at it), four re-pointed call sites, and the install's new catch naming the backup to restore. THE COMMENT is the two things a reader cannot reconstruct: that the install leg runs post-rsync so its failure is not a no-op, and why curl gets a second stall detector of its own on top of ours. REFUSED: making the install transactional — real work with its own blast radius, handed up rather than half-done in a timer lane. Both apply paths were treated, not just the first; a clause counts them. From 1412 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/transcription.ts",
+      "from": 399,
+      "to": 447,
+      "by": "t114 flat timers, continuation 2 — the ten unreached timers",
+      "why": "399 -> 447 (+48: 36 code, 12 comment). CENSUS U10 — one flat `FETCH_TIMEOUT_MS` (30s) covering the whole operation in a file that permits `FETCH_MAX_BYTES = 1 GiB`. The cap and the clock disagreed by orders of magnitude and the clock won, silently, on exactly the long recordings a user most wants transcribed; `content-length` was already read eight lines below it. THE CODE: the phased deadline, the two body constants, and the two catches that distinguish 'the server never answered' from 'the download stalled'. ORDERING IS LOAD-BEARING and clause-pinned: the over-cap refusal still fires BEFORE `armBody`, so a 1 GiB file is refused rather than patiently downloaded. The headers bound keeps the old number, so nothing was loosened for a dead host. From 447 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/voice/stt-service.ts",
+      "from": 538,
+      "to": 586,
+      "by": "t114 flat timers, continuation 2 — the ten unreached timers",
+      "why": "538 -> 586 (+48: 27 code, 21 comment). CENSUS U18 — a flat 60s wall that polled a TCP PORT and never measured boot PROGRESS, so a cold first load of a large model off a slow disk (the case a new user hits once, on their first voice turn) was abandoned while the server was visibly loading. The progress fact was being DISCARDED: both stream handlers were already reading the server's output straight into the debug log. THE CODE: `noteWhisperBootOutput`, two one-line handler bumps, and a wait loop that re-arms on output under a non-re-arming ceiling. THE COMMENT records that the old message claimed a readiness fact it never measured ('did not become ready in 60s' for a server that was loading busily throughout), which is why the new one says 'stopped reporting progress'. REFUSED: raising the flat number — that trades one wrong answer for a slower wrong answer. The 10s TCP probe is untouched and clause-pinned as such: a bound that matches its work was never the defect. From 586 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/tunnel.ts",
+      "from": 683,
+      "to": 730,
+      "by": "t114 flat timers, continuation 2 — the ten unreached timers",
+      "why": "683 -> 730 (+47: 40 code, 20 comment; 13 deleted). CENSUS U15 — BOTH start paths armed a flat deadline from spawn (30s quick, 60s named) and on expiry called `stopTunnel()`, SIGTERM then SIGKILL, on a child that may have been mid-handshake. cloudflared logs its progress continuously to stderr and each path's own `handleOutput` was ALREADY reading it; 'no URL yet' is absence of evidence. THE CODE: one shared `armTunnelStartDeadline` with module-level `startWatch`/`noteTunnelOutput`/`clearStartWatch`, replacing two copies of the flat setTimeout, plus a bump in each handler and a clear on exit. Net code is up because the two four-line deadlines became one re-arming one with a ceiling and two distinct failure messages — silent versus over-ceiling, which a user can act on differently. A clause counts BOTH call sites, because fixing one of a matched pair is how this family survived review. From 730 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/video-generation.ts",
+      "from": 402,
+      "to": 444,
+      "by": "t114 flat timers, continuation 2 — the ten unreached timers",
+      "why": "402 -> 444 (+42: 25 code, 17 comment). CENSUS U9 — a flat 120s covering the whole trip INCLUDING the body, on a download of a clip that is already RENDERED AND BILLED. Tens of megabytes on an ordinary connection exceeded it, the abort threw away something the owner paid for, and `markFailed` made it terminal with no resume. THE CODE: the phased deadline, three named phase constants, `armBody` from the declared `content-length`, and `deadline.done()` on each exit path. THE COMMENT carries the fact that makes the error wording matter — the render SUCCEEDED, so the message tells the owner retrying the download is worth it rather than implying the generation failed. From 444 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/web-tools.ts",
+      "from": 409,
+      "to": 441,
+      "by": "t114 flat timers, continuation 2 — the ten unreached timers",
+      "why": "409 -> 441 (+32: 24 code, 38 comment; 30 deleted). CENSUS U17 — one flat `AbortSignal.timeout(15000)` for the whole `web_fetch` operation, and undici's signal covers BODY CONSUMPTION: a 5 MB page at 400 KB/s needs ~12.5 seconds of body ALONE, so a healthily streaming download was aborted with the page nearly in hand and the agent was told the fetch failed. No bytes-received check existed on the path. THE CODE: the phased deadline, three named constants, `armBody` after the redirect loop resolves, and `done()` in the `finally` beside `slot.release()` so no timer outlives the fetch. The headers bound is the SAME 15s, clause- pinned, so every ordinary page behaves exactly as before and nothing was loosened for a dead host. This file was listed at 409 in the first sitting and is raised once more rather than split — the split is still handed up, for the same reason. From 441 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/audio-generation.ts",
+      "from": 0,
+      "to": 435,
+      "by": "t114 flat timers, continuation 2 — the ten unreached timers",
+      "why": "NEWLY LISTED at 435, past the 400-line new-file cap, and listed rather than split because the cap's own instruction is that the addition is meant to be SEEN AND ARGUED WITH. +52 (32 code, 20 comment) for CENSUS U11: a flat 180s covering the whole dial INCLUDING the streamed body, so a long narration still delivering `pcm16` at t=180s was cut and ALL COLLECTED AUDIO DISCARDED — the collector throws and every second of speech already assembled goes with it. The body is a STREAM and chunk arrival is the one fact that proves the provider is working; it was never consulted. THE CODE: an `onChunk` hook on `collectAudioStream` (the signal the loop always had and nobody read), the idle-bounded dial with three named bounds instead of one number doing three jobs, `done()` on every exit path, and a stalled-stream error that says it STALLED rather than blaming the provider. REFUSED: splitting this file in a timer lane — handed up. From 435 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7251,7 +7300,7 @@
     "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 562,
     "packages/server/src/agent/v2/steps/teardown/index.ts": 317,
     "packages/server/src/agent/v2/turn-record.ts": 332,
-    "packages/server/src/agent/web-tools.ts": 409,
+    "packages/server/src/agent/web-tools.ts": 441,
     "packages/server/src/config/schema.ts": 240,
     "packages/server/src/costs/ledger-calibration.ts": 440,
     "packages/server/src/costs/prefill-calibration.ts": 309,
@@ -7269,7 +7318,7 @@
     "packages/server/src/gateway/routes/setup-deps.ts": 530,
     "packages/server/src/gateway/routes/tracker.ts": 985,
     "packages/server/src/gateway/routes/twilio.ts": 512,
-    "packages/server/src/gateway/routes/update.ts": 1305,
+    "packages/server/src/gateway/routes/update.ts": 1412,
     "packages/server/src/gateway/routes/upload.ts": 608,
     "packages/server/src/github/issues.ts": 473,
     "packages/server/src/google/auth.ts": 776,
@@ -7328,6 +7377,7 @@
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
     "packages/server/src/scheduler/engine.ts": 414,
     "packages/server/src/scheduler/runner.ts": 2016,
+    "packages/server/src/services/audio-generation.ts": 435,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/capability-registry.ts": 251,
     "packages/server/src/services/format-time.ts": 275,
@@ -7339,9 +7389,9 @@
     "packages/server/src/services/ollama-lock.ts": 460,
     "packages/server/src/services/outlook-watcher.ts": 520,
     "packages/server/src/services/teams-watcher.ts": 464,
-    "packages/server/src/services/transcription.ts": 399,
-    "packages/server/src/services/tunnel.ts": 683,
-    "packages/server/src/services/video-generation.ts": 402,
+    "packages/server/src/services/transcription.ts": 447,
+    "packages/server/src/services/tunnel.ts": 730,
+    "packages/server/src/services/video-generation.ts": 444,
     "packages/server/src/services/video-job-poller.ts": 458,
     "packages/server/src/techniques/dependencies.ts": 586,
     "packages/server/src/techniques/share-export.ts": 464,
@@ -7372,7 +7422,7 @@
     "packages/server/src/vault/tools.ts": 658,
     "packages/server/src/voice/hume-engine.ts": 605,
     "packages/server/src/voice/model-manager.ts": 585,
-    "packages/server/src/voice/stt-service.ts": 538,
+    "packages/server/src/voice/stt-service.ts": 586,
     "packages/server/src/voice/voice-ws.ts": 2352,
     "packages/server/src/work/ask-remediation.ts": 310,
     "packages/server/src/work/ask-settlement.ts": 1307,
