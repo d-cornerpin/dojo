@@ -10,15 +10,16 @@
 // that would have turned it into a silent no-op the day the file moved. The orphan is deleted;
 // the clause now asks BOTH texts the extraction is really run against.
 //
-// ⚠ AND IT RECORDS A FINDING RATHER THAN HIDING ONE. `DEFAULT_SOUL_MD` has no `# Rules`
-// section at all (its headings are Core Traits / Capabilities / Communication Style /
-// Credentials), so on a box whose `SOUL.md` was ENGINE-SEEDED the carry-through at
-// `assembler.ts:601-605` extracts the empty string and spawned agents inherit no standing
-// rules. Only an OOBE-completed box has a `# Rules` heading to find. That is a gap in
-// `prompt/assembler.ts` + `prompt/templates.ts`, handed up by t107 rather than patched inside
-// it: closing it means adding a section to the primary's shipped soul, which moves prompt bytes
-// and is a deliberate re-blessing someone has to argue. If that happens, the second clause here
-// REDS and is updated in the same change — which is the point of pinning the truth.
+// ── t111-A2: THE GAP THIS FILE RECORDED IS CLOSED, AND THE CLAUSE FLIPPED ──────────────
+// t107 pinned a finding here rather than hiding one: `DEFAULT_SOUL_MD` had NO `Rules` section
+// (its headings were Core Traits / Capabilities / Communication Style / Credentials), so on a
+// box whose `SOUL.md` was ENGINE-SEEDED the carry-through at `assembler.ts:601-605` extracted
+// the empty string and spawned agents inherited no standing rules — only an OOBE-completed box
+// had a heading to find. t111 added `## Rules` to the shipped soul carrying the same four
+// universal rules the OOBE route writes, which moves the primary's prompt bytes ONCE and is
+// argued as a deliberate re-bless in that commit. The last clause below is therefore the
+// INVERSE of what t107 wrote, by design: it now asserts the heading exists and the extraction
+// returns those four rules. That is the pinning working as intended, not drift.
 
 import { describe, it, expect } from 'vitest';
 import { extractMarkdownSection } from '../assembler.js';
@@ -61,11 +62,23 @@ describe('extractMarkdownSection', () => {
     expect(rules).not.toContain('Be direct and concise'); // and so does the style block
   });
 
-  it('⚠ records the gap: the ENGINE-SEEDED primary soul has no `# Rules` for this to find', () => {
-    // Not a wish — the measured state of the text `assembler.ts:601` reads when a box never
-    // completed the OOBE form. See this file's header for why t107 handed it up instead of
-    // editing the shipped soul. Change the soul and this clause reds, deliberately.
-    expect(DEFAULT_SOUL_MD).not.toMatch(/^#+\s*Rules\s*$/m);
-    expect(extractMarkdownSection(DEFAULT_SOUL_MD, 'Rules')).toBe('');
+  it('the ENGINE-SEEDED primary soul now carries the `Rules` the carry-through reads (t111-A2)', () => {
+    // t107 pinned the GAP here: `DEFAULT_SOUL_MD` had no `Rules` heading, so the
+    // `assembler.ts:601` carry-through extracted `''` and spawned agents on an engine-seeded
+    // box inherited no standing rules. t111 closed it by adding the section, which is why this
+    // clause is the inverse of what it said — the deliberate prefix move is argued in that
+    // commit. Both directions: the heading EXISTS, and the extraction returns the four
+    // universal rules by their own bytes, so deleting the section or re-levelling the heading
+    // past `extractMarkdownSection`'s `#{1,3}` window reds here.
+    expect(DEFAULT_SOUL_MD).toMatch(/^#{1,3}\s*Rules\s*$/m);
+    const rules = extractMarkdownSection(DEFAULT_SOUL_MD, 'Rules');
+    expect(rules).toContain('- Never modify your own system prompt files or platform configuration.');
+    expect(rules).toContain('- Always confirm before deleting files or running destructive commands.');
+    expect(rules).toContain('- If a task will take multiple steps, briefly outline the plan before starting.');
+    expect(rules).toContain("- When you encounter an error, explain what went wrong and what you'll try next.");
+    // and it is the RULES, not the whole soul: the neighbouring sections stay with the primary.
+    expect(rules).not.toContain('Core Traits');
+    expect(rules).not.toContain('Credentials');
+    expect(rules).not.toContain('{{agent_name}}');
   });
 });
