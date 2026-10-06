@@ -97,9 +97,23 @@ export function compactionFailingCardText(stage: string): string {
 /**
  * THE DEFECT LINE (D3), and the card decision behind it.
  *
- * Logs every time it is called — a pass that failed is a pass worth a line, and the brake
- * is what keeps that from being per-turn. Records the note and cards at most once per
- * outage, and never while the provider breaker is already carding the same outage.
+ * Logs every time it is called — a pass that failed is a pass worth a line. Records the note
+ * and cards at most once per outage, and never while the provider breaker is already carding
+ * the same outage.
+ *
+ * ⚠ WHICH SPACER IS WHICH, CORRECTED — t91 re-review M-b, and the sentence this file and
+ * `compaction.ts:596` both got wrong. This said "the brake is what keeps that from being
+ * per-turn", and `compaction.ts`'s own `!resolved` branch said "the brake spaces the card".
+ * NEITHER IS TRUE OF THAT BRANCH: it returns `NO_COMPACTION` before `runCheckAndCompact`
+ * reaches its `compactionIsBraked` check, so a pass that dies on an unresolvable summary
+ * writer never consults the brake at all. What is actually true, and what the clause holds:
+ *   · THE CARD is spaced by the once-per-outage `failures` map below — for EVERY stage,
+ *     brake or no brake, and stronger than the brake (one card per outage, not per window).
+ *   · THE LINE is per failing pass, deliberately: it is the repair audience's record, not the
+ *     owner's toast, and gating it on the brake would silence the box that needs repairing.
+ *     On a mis-set box that is one line per forced pass, which is the intended volume.
+ * `compaction-has-no-bottom.test.ts` §6 drives three forced passes and asserts ONE card and
+ * THREE lines, so neither sentence can rot back into the other.
  *
  * Returns the note when THIS call created it, so the caller can tell a new failure from a
  * continuing one.

@@ -921,4 +921,41 @@ describe('§6 the D3 line and the I3 card', () => {
     expect(frames.filter(f => f.code === 'COMPACTION_FAILING'), 'no pressure, no card').toEqual([]);
     expect(defectLines(), 'and no defect line either').toEqual([]);
   });
+
+  /**
+   * ⚠ t109 item F — t91 re-review M-b, THE COMMENT THAT CLAIMED THE WRONG SPACER.
+   *
+   * `compaction.ts`'s `!resolved` branch said "the brake spaces the card to once per 15
+   * minutes". It cannot: `compactionIsBraked` is consulted further down the SAME function,
+   * after that branch's early `return NO_COMPACTION`, so a pass that dies there never reaches
+   * the brake. The card IS spaced — by the once-per-outage `failures` map in
+   * `reportCompactionDefect`, which is stronger than the brake — and the D3 LINE is per forced
+   * pass by charter. Both comments now say that; this is the clause that makes the corrected
+   * sentences false if the behaviour ever stops matching them, in BOTH directions:
+   *
+   *   - ONE card over three forced passes   (if the `failures` map stopped spacing it: 3)
+   *   - THREE defect lines over three       (if anything started spacing the line: 1)
+   *   - the brake is NEVER consulted on this path, proven by its own reader: an unresolvable
+   *     writer arms `summary_writer_unresolvable`, which is NOT the `summary_writer_unavailable`
+   *     stage `armBackoff` binds a model id to, so three passes in a row all get through —
+   *     a braked path would have produced one line, not three.
+   *
+   * MUTANT: gate the defect line on the brake (`if (options?.force && !compactionIsBraked(...))`)
+   * and the line count goes 3 → 1; move the `notePassOutcome` call below the brake check and
+   * the card count goes 1 → 0.
+   */
+  it('⚠ F: three forced passes on an unresolvable writer — ONE card, THREE lines, no brake in it', async () => {
+    seedSummaries(8, 0, 6_000);
+    mockDb.current!.prepare("UPDATE models SET capabilities = '[\"embedding\"]' WHERE id = ?").run(MODEL_64K);
+
+    for (let i = 0; i < 3; i++) {
+      const r = await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
+      expect(r, `pass ${i + 1} cannot compact`).toEqual({ leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
+    }
+
+    const cards = frames.filter(f => f.code === 'COMPACTION_FAILING');
+    expect(cards.length, 'the owner is told ONCE per outage — the failures map, not the brake').toBe(1);
+    expect(defectLines().length, 'and the repair audience gets a line per forced pass').toBe(3);
+    for (const l of defectLines()) expect(l.meta.stage).toBe('summary_writer_unresolvable');
+  });
 });
