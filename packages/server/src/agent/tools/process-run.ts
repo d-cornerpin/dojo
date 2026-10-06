@@ -19,7 +19,10 @@
 import { resolveHomePath, isExistingDirectory } from '../path-resolve.js';
 import { sudoWouldHang } from '../brokers/sudo-probe.js';
 import { coerceNumberArg } from './pagination.js';
-import { spawnAuthorized } from '../effects/proc.js';
+// t114 (census U2): the streaming, output-idle-bounded runner lives in its own leaf — see its
+// header for why. This door keeps the argument shapes, the per-stream caps and the failure
+// wording; the clock's mechanism is next door.
+import { runWithIdleBound } from './process-idle-bound.js';
 
 // `execFile` never consults a shell, which is what makes `exec({argv})`
 // argv-no-shell rather than argv-shaped. The `shell` door reaches /bin/zsh
@@ -68,117 +71,6 @@ export const EXEC_ABSOLUTE_CEILING_MS = 60 * 60 * 1000;
 
 /** Both streams together, as `maxBuffer` bounded them on the buffered primitive. */
 const PROCESS_MAX_BUFFER_BYTES = 1024 * 1024;
-
-/** The shape `execFile` rejects with, rebuilt from the streaming run so that
- *  `processFailureReason` below is unchanged and both doors keep their exact wording. */
-interface ProcessRunFailure {
-  stdout: string;
-  stderr: string;
-  code?: number | string;
-  signal?: NodeJS.Signals;
-  killed?: boolean;
-  message?: string;
-}
-
-/**
- * Run a child process under an OUTPUT-IDLE bound. Resolves on a clean exit; rejects with an
- * `execFile`-shaped error otherwise, so every caller and every failure string below is untouched.
- *
- * `idleMs` re-arms on each chunk from either stream. `ceilingMs` does not re-arm — it is the one
- * bound on total life, and the two are distinguished in the rejection so the agent is told which
- * one ended its command rather than a single ambiguous "timed out".
- */
-async function runWithIdleBound(
-  file: string, argv: readonly string[],
-  opts: { idleMs: number; ceilingMs: number; cwd?: string },
-): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawnAuthorized(file, argv, opts.cwd ? { cwd: opts.cwd } : undefined);
-    let stdout = '';
-    let stderr = '';
-    let bytes = 0;
-    let settled = false;
-    let idleTimer: ReturnType<typeof setTimeout> | null = null;
-    /** Which bound fired, so the reason can name it. */
-    let killedBy: 'idle' | 'ceiling' | 'buffer' | null = null;
-
-    const done = (fn: () => void): void => {
-      if (settled) return;
-      settled = true;
-      if (idleTimer) clearTimeout(idleTimer);
-      clearTimeout(ceilingTimer);
-      fn();
-    };
-
-    const kill = (why: 'idle' | 'ceiling' | 'buffer'): void => {
-      if (settled) return;
-      killedBy = why;
-      // SIGTERM first, exactly as `execFile`'s own timeout does; the `close` handler below
-      // reports it. No SIGKILL escalation is added here — that would be a new behaviour, and
-      // the buffered primitive never had one either.
-      try { child.kill('SIGTERM'); } catch { /* already gone */ }
-    };
-
-    /** t114: THE RE-ARM. This is the whole fix — output is the measured fact of liveness. */
-    const bumpIdle = (): void => {
-      if (settled) return;
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => kill('idle'), opts.idleMs);
-      idleTimer.unref?.();
-    };
-
-    const ceilingTimer = setTimeout(() => kill('ceiling'), opts.ceilingMs);
-    ceilingTimer.unref?.();
-
-    const take = (which: 'out' | 'err') => (chunk: Buffer | string): void => {
-      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
-      bytes += Buffer.byteLength(text, 'utf-8');
-      if (which === 'out') stdout += text; else stderr += text;
-      if (bytes > PROCESS_MAX_BUFFER_BYTES) { kill('buffer'); return; }
-      bumpIdle();
-    };
-
-    child.stdout?.setEncoding('utf-8');
-    child.stderr?.setEncoding('utf-8');
-    child.stdout?.on('data', take('out'));
-    child.stderr?.on('data', take('err'));
-
-    child.on('error', (err: NodeJS.ErrnoException) => {
-      done(() => reject({
-        stdout, stderr, code: err.code, message: err.message,
-      } satisfies ProcessRunFailure));
-    });
-
-    child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
-      done(() => {
-        if (killedBy !== null) {
-          reject({
-            stdout, stderr, killed: true, signal: signal ?? 'SIGTERM',
-            code: code ?? undefined,
-            message: killedBy === 'idle'
-              ? `no output for ${Math.round(opts.idleMs / 1000)}s`
-              : killedBy === 'ceiling'
-                ? `ran past the ${Math.round(opts.ceilingMs / 60000)}-minute ceiling`
-                : 'output exceeded the 1MB buffer',
-          } satisfies ProcessRunFailure);
-          return;
-        }
-        if (signal) {
-          reject({ stdout, stderr, signal } satisfies ProcessRunFailure);
-          return;
-        }
-        if (code !== 0) {
-          reject({ stdout, stderr, code: code ?? undefined } satisfies ProcessRunFailure);
-          return;
-        }
-        resolve({ stdout, stderr });
-      });
-    });
-
-    // Armed only once the process exists, so a spawn error is not reported as a silence.
-    bumpIdle();
-  });
-}
 
 /** Phase 3.5 (2026-05-04), per-stream caps. Each of stdout/stderr gets its own
  *  ~4K-token cap (16K chars), tagged with `stdout_truncated:true` /

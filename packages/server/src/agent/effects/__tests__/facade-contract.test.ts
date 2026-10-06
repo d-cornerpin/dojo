@@ -409,9 +409,21 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     // t114 (census U2): the door moved from the BUFFERED primitive to the STREAMING one, because
     // an output-idle bound needs a per-chunk signal and a buffered call has none. Both are the
     // same facade asking the same capability about the same program (`proc.ts` says so in its own
-    // doc), so the clause names either rather than pinning the door to one of them. It still
-    // bites: reaching `child_process` directly fails the assertion above and the grep-zero below.
-    expect(/\b(execFileAuthorized|spawnAuthorized)\(/.test(doorSrc), 'it spawns through the facade').toBe(true);
+    // doc), so the clause names either rather than pinning the door to one of them.
+    //
+    // THE DOOR IS NOW TWO FILES. The ~90 lines of streaming/re-arming mechanism live in the leaf
+    // `process-idle-bound.ts` (the growth detector asked for the split, correctly), so the facade
+    // call is read across the pair rather than in the handler file alone. The property under test
+    // is unchanged — the toolbox reaches a process ONLY through the facade — and it still bites in
+    // both directions: reaching `child_process` directly fails the assertion above for whichever
+    // of the two files does it, and the `agent/tools/**` grep-zero below covers the new leaf too,
+    // since it sweeps the directory rather than a list of names.
+    const runnerSrc = fs.readFileSync(path.join(SRC, 'agent/tools/process-idle-bound.ts'), 'utf8');
+    expect(/^import .*child_process/m.test(runnerSrc), 'the runner leaf must not hold child_process either').toBe(false);
+    expect(
+      /\b(execFileAuthorized|spawnAuthorized)\(/.test(doorSrc + runnerSrc),
+      'it spawns through the facade',
+    ).toBe(true);
     // …and the whole toolbox tree is clean of it, which is the per-category
     // grep-zero the lint flip will rest on.
     const inToolbox = filesContaining("from 'node:child_process'", path.join(SRC, 'agent', 'tools'));
