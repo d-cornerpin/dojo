@@ -38,7 +38,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
  */
 const agentSdk = vi.hoisted(() => ({
   queryCalls: [] as Array<{ prompt: string; options: Record<string, unknown> }>,
-  mode: 'answer' as 'answer' | 'slow-stream' | 'stall' | 'stall-after-content',
+  mode: 'answer' as 'answer' | 'slow-stream' | 'stall' | 'stall-after-content' | 'noncontent-keepalive',
   chunks: 8,
   gapMs: 25,
 }));
@@ -57,6 +57,30 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
         reject(new Error('The operation was aborted.'));
       }, { once: true });
     });
+
+    if (agentSdk.mode === 'noncontent-keepalive') {
+      // ONE content delta, then a run of NON-CONTENT messages, then a final delta. Only the
+      // loop-head `bumpGap()` re-arms on these; `noteContent` never sees them. The whole run
+      // outlives the bound several times over, so if the loop head stops bumping this dies.
+      return (async function* nonContentKeepalive() {
+        await waitOrAbort(agentSdk.gapMs);
+        yield {
+          type: 'stream_event',
+          event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'start ' } },
+        };
+        for (let i = 0; i < agentSdk.chunks; i += 1) {
+          await waitOrAbort(agentSdk.gapMs);
+          // A real SDK emits plenty of these: ping/keepalive frames, block starts and stops,
+          // message_delta usage updates. None of them carry generated text.
+          yield { type: 'stream_event', event: { type: 'ping' } };
+        }
+        await waitOrAbort(agentSdk.gapMs);
+        yield {
+          type: 'stream_event',
+          event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'end' } },
+        };
+      })();
+    }
 
     if (agentSdk.mode === 'slow-stream') {
       // THE HEALTHY LONG CALL. Each gap is `gapMs`; the TOTAL is `chunks * gapMs`. With the
@@ -171,6 +195,24 @@ describe('§1 a healthy stream that outlives the bound in TOTAL survives', () =>
     const result = await callAnthropicViaSdk({ ...BASE, timeoutMs: 100, idleTimeoutMs: 100 });
 
     expect(result.content).toContain('tok3');
+  });
+
+  it('a stream of NON-CONTENT messages between content gaps keeps the call alive', async () => {
+    // THE REVIEW'S MINOR 1. §1's own comment claims "ANY message is evidence of life", but every
+    // clause above re-armed through `noteContent` — so removing the loop-head `bumpGap()` left the
+    // probe 8/8 green and the documented property unpinned. The reviewer's sharper mutant found
+    // that; this clause closes it.
+    //
+    // Six pings 25ms apart plus two content deltas: ~200ms total against a 90ms bound, with every
+    // gap inside it. `noteContent` fires only twice — at the start and the end — so the middle of
+    // this stream is kept alive by the loop head and nothing else.
+    agentSdk.mode = 'noncontent-keepalive';
+    agentSdk.chunks = 6;
+    agentSdk.gapMs = 25;
+
+    const result = await callAnthropicViaSdk({ ...BASE, timeoutMs: 90, idleTimeoutMs: 90 });
+
+    expect(result.content, 'the call survived on non-content messages alone').toBe('start end');
   });
 });
 
