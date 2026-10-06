@@ -260,8 +260,14 @@ describe('a stop aborts EVERY call the agent has in flight', () => {
     // patience error, so an external stop is never reported as a declared-patience trip.
     const setters = sdkSrc.split('\n').filter((l) => /timedOutByPatience = true/.test(l));
     expect(setters, 'an external abort must never set the patience flag').toHaveLength(1);
-    const timerBlock = sdkSrc.slice(sdkSrc.indexOf('if (timeoutMs != null) {'), sdkSrc.indexOf('if (abortSignal) {'));
-    expect(timerBlock).toContain('timedOutByPatience = true');
+    // t114 (census row 35): the INNER guard is now `if (firstChunkBoundMs != null)`, because the
+    // timer re-arms per chunk with whichever of the two bounds applies instead of being armed
+    // once as a flat total. The outer guard this clause reads above is unchanged, and so is the
+    // INVARIANT this clause exists for — which is what is still asserted here: the single setter
+    // lives inside the TIMER-arming block and nowhere near the external-abort block below it, so
+    // a stop can never be reported as a declared-patience trip.
+    const timerBlock = sdkSrc.slice(sdkSrc.indexOf('if (firstChunkBoundMs != null) {'), sdkSrc.indexOf('if (abortSignal) {'));
+    expect(timerBlock, 'the patience flag is minted inside the timer block').toContain('timedOutByPatience = true');
   });
 
   it('callModel REFUSES to dial when the stop already landed — it reads the answer', () => {
