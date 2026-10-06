@@ -6497,6 +6497,27 @@
       "to": 1778,
       "by": "t103 B — the A2A give-up cap is the recipient's, not a constant (OWNER RULING 2026-10-05 #1)",
       "why": "1767 -> 1778 (+11 net: 6 code added, 2 code removed, 8 comment added, 1 comment line rewritten). THE SMALLEST POSSIBLE TOUCH, and that was the design constraint: t90 merged into this file and three live lanes carry it, so the arithmetic lives in a new leaf (`agent/a2a-patience.ts`, 81 lines, unpinned, under the 400 new-file cap) and this file changes only (i) the import, (ii) the resolved budget replacing `MAX_A2A_TURN_RETRIES` in one comparison, and (iii) three fields on the give-up log line, which previously said 'max dedicated turns' while the max was a constant and so could not tell a slow box from a dead one. The 8 comment lines state that an undeclared provider resolves to today's constant EXACTLY, because a reader of this retry arm needs to know the change is a FLOOR before they can judge the loop's bound. From 1778 this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/pages/Chat.tsx",
+      "from": 2048,
+      "to": 2068,
+      "by": "t106 never-collapse — OWNER RULING 2026-10-05 #7: a real reply never renders collapsed or dimmed",
+      "why": "2048 -> 2068 (+20: 13 code, 7 comment). THE RULING, his words: \"I do not want real replies to collapse.\" BACKLOG line 24 is the sighting (his agent's actual reply to \"you good now?\" rendered collapsed/greyed); line 34's remaining half is this arm. The DECISION is not here and deliberately so: `lib/working-note-visibility.ts` owns R4 and its whole argument, driven by 41 server-side clauses, and this file spends the minimum asking it. THE +13 CODE, line by line: a 6-line `NoteAsAnswer` wrapper (it reuses `AssistantBubble` rather than restyling the note bubble — the complaint is that a reply looked unlike a reply, so a third appearance would be the same defect again), and +2 at EACH of the feed's two note arms (the prefixed `role='system'` row and the re-classified `role='assistant'` row) to read the three-way verdict instead of the old boolean. BOTH arms, because a promotion taught to one and not the other keeps every lib clause green while the owner looks at the same grey box — the DOM clause `the system-note arm: the agent's only words to a person draw NO collapsed button` is red on exactly that mutant (proven: 2 clauses red, sha-identical revert). THE +7 COMMENT is the wrapper's header: why `AssistantBubble` and not a new style, and why `role` is overridden (the promoted row may be the system arm). NOTHING WAS STRIPPED TO PAY FOR IT. The alternative to a raise was deleting comment lines elsewhere in this file, which G5 forbids by name, or inlining the wrapper twice, which costs more lines and two copies of one decision."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/chat.ts",
+      "from": 486,
+      "to": 492,
+      "by": "t106 never-collapse — the live `chat:message` frame carries the conversation the insert already resolved",
+      "why": "486 -> 492 (+6: 1 code, 5 comment). ONE FIELD. `conversationId` is added to the user-row broadcast's `message` object, from the binding the `insertInboundMessageIfAbsent` call twelve lines above already uses — the resolve still happens exactly once, pinned by its own clause. WHY IT IS A DEFECT AND NOT A FEATURE: the history route projects `conversation_id` (`:370`), so a RELOADED feed always carried it while the LIVE feed's row (built from this frame in `Chat.tsx`) did not; one fact served two ways. With R4 reading that column to tell a person's question from an engine-synthetic trigger, the disagreement became visible — the owner's own reply stayed collapsed until he refreshed and then quietly un-collapsed. The 5 comment lines say that at the site, where the next reader of this frame needs it; the long argument is in the commit and in `lib/working-note-visibility.ts`."
+    },
+    {
+      "path": "packages/dashboard/src/lib/working-note-visibility.ts",
+      "from": 0,
+      "to": 283,
+      "by": "t106 never-collapse — the visibility rules module is pinned at its current size",
+      "why": "NEW PIN, not a raise: 193 -> 283 (+90: 8 code, 82 comment), which crossed the growth detector's 60%-of-cap line (240) and is therefore pinned decrease-only from here. The 8 CODE LINES are R4 and its one predicate: `askedByAPerson` (6, a backward scan to the run's anchor row plus the non-empty `conversation_id` test) and the two-line guard in `workingNoteVerdict`, plus a three-way `renderWorkingNote` door replacing the old boolean so the feed's two note arms cannot be taught different answers. The 82 COMMENT LINES are the ratio this tree runs at and are the ruling itself: OWNER RULING 2026-10-05 #7 and the sighting behind it, WHY the discriminator is a column (`conversation_id`) and not a service-agent name list — nothing may rely on an agent name — why the verdict self-heals instead of latching, and why the two write-side mechanisms the half-done backlog line named (a `promoted:true` frame, a runtime writer of `messages.retired_at`) were refused as write-side answers to a read-side question. THE ALTERNATIVE WAS WORSE: these rules decide whether the owner sees his agent's words at all, and splitting them across two files would put the four arms' precedence in neither."
     }
   ],
   "maxNewFileLines": 400,
@@ -6526,7 +6547,7 @@
     "packages/dashboard/src/lib/voice/voice-client.ts": 878,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 392,
     "packages/dashboard/src/pages/Agents.tsx": 683,
-    "packages/dashboard/src/pages/Chat.tsx": 2048,
+    "packages/dashboard/src/pages/Chat.tsx": 2068,
     "packages/dashboard/src/pages/Costs.tsx": 686,
     "packages/dashboard/src/pages/Health.tsx": 660,
     "packages/dashboard/src/pages/Memory.tsx": 499,
@@ -6671,7 +6692,7 @@
     "packages/server/src/db/migration-backup.ts": 399,
     "packages/server/src/db/migration-checksums.ts": 317,
     "packages/server/src/gateway/routes/agents.ts": 963,
-    "packages/server/src/gateway/routes/chat.ts": 486,
+    "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2977,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/reports.ts": 250,
@@ -6803,6 +6824,7 @@
     "packages/shared/src/visibility.ts": 989,
     "packages/shared/src/ws.ts": 1230,
     "watchdog/src/auto-rollback.ts": 333,
-    "watchdog/src/index.ts": 1217
+    "watchdog/src/index.ts": 1217,
+    "packages/dashboard/src/lib/working-note-visibility.ts": 283
   }
 }
