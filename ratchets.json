@@ -7183,6 +7183,13 @@
       "to": 1180,
       "by": "t114 fix round — the review Important + two minors",
       "why": "1171 -> 1180 (+9: 9 code, 10 comment, and the net is small because the inline block this replaces was deleted). REVIEW IMPORTANT 1: U7 shipped with ZERO probe clauses, and the budget was a closure inside the handler, which is unreachable from a clause. It moves to module scope and is EXPORTED so the probe can drive the SHIPPED arithmetic rather than a copy of it — the lesson U5 taught this lane when a re-derived oracle left a planted flat bound entirely green. No behaviour change: same floor, same per-1K grant, same ceiling, same call site. From 1180 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/automation-probe.ts",
+      "from": 0,
+      "to": 241,
+      "by": "t115 — the real Messages probe, pinned at birth because the growth gate asked",
+      "why": "NEW FILE, 241 lines (+241: 71 code, 170 comment — the ratio is the point and is argued below). The growth detector refuses an unlisted new file over 60% of the 400-line cap and offers two answers: split it, or pin it at its current count. SPLITTING WOULD BE WORSE. The file holds ONE mechanism — drive Messages harmlessly, classify three outcomes, bound the wait on a human — and its three parts are unusable apart: the classifier is meaningless without the script it classifies the failure of, and the two clocks exist only to govern that one child. A split here would be two files that must be read together, which is the defect the 400-line cap exists to prevent, not an instance of it. AND THE SIZE IS MOSTLY ARGUMENT: 170 of the 241 lines are the header, and they carry the three things a future reader must not have to re-derive — why `tell application \"Messages\" to get name` cannot mutate anything (a `get` AppleEvent has no parameter that could carry a value to store; `name` is a read-only Standard Suite property), why t114's idle bound is deliberately NOT used on a child that is silent by design, and what happens if the owner never answers the consent dialog. t96 and t113 both spent a lane on this probe for want of exactly that written reasoning. IT COULD NOT GO IN `setup-deps.ts`: that file is pinned at 606 with zero headroom, and this does not belong in its no-side-effect `checkPermission` switch anyway — it is the only probe that can outlive its request. From 241 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7367,6 +7374,7 @@
     "packages/server/src/db/migration-backup.ts": 399,
     "packages/server/src/db/migration-checksums.ts": 369,
     "packages/server/src/gateway/routes/agents.ts": 1005,
+    "packages/server/src/gateway/routes/automation-probe.ts": 241,
     "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2977,
     "packages/server/src/gateway/routes/memory.ts": 632,
