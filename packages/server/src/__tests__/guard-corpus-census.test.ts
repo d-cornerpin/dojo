@@ -338,6 +338,32 @@ const STEPS_BY_PATH: Declaration[] = [
       + 'no negative clause over step-package text; the whole file exercises one specific '
       + 'exported function, by direct call, against fixture rows.',
   },
+  {
+    rel: 'packages/server/src/work/__tests__/the-revet-hooks-fire-at-both-registrations.test.ts',
+    verdict: 'cannot-go-quiet',
+    why: 'THE SAME CLASS AS `effort-accumulates-until-the-task-advances.test.ts` DIRECTLY '
+      + 'ABOVE, and it is here for the same reason rather than a new one. IT GROWS NO WALK: '
+      + 'this file does not set readsSource at all — there is no readFileSync, readdirSync or '
+      + 'globSync anywhere in it, and t119 built it that way deliberately, because the pin it '
+      + 'adds is BEHAVIOURAL. The hooks it covers were already pinned by corpus TEXT in '
+      + '`work/__tests__/an-ask-title-is-re-vetted-when-the-credential-lands.test.ts` §4 (which '
+      + 'does use the shared derivation, correctly); this file exists to close that pin\'s one '
+      + 'blind spot — a refactor that moves a call and its text pin together — so asserting on '
+      + 'source text here would reintroduce the very weakness it was written to remove. The two '
+      + 'occurrences of agent/v2/steps are a plain named import of callWithRetryAndFallback '
+      + 'from agent/v2/steps/call-llm/model-call.js, dialled as a function against fixture '
+      + 'rows, plus the header sentence naming which hook that arm drives. A PHASE-6 cut that '
+      + 'relocated that module could not make this guard go quiet: the import would fail to '
+      + 'RESOLVE, which TypeScript refuses at compile time and which stops the file COLLECTING '
+      + '— louder and earlier than even a readFileSync ENOENT at run time. The failure mode '
+      + 'this census exists to prevent — a corpus silently narrowing until a negative clause '
+      + 'passes vacuously — cannot occur here, because there is no corpus and no negative '
+      + 'clause over step-package text: every clause asserts a ROW on the work spine after '
+      + 'driving a real registration door, and each of the two hook clauses is mutation-proven '
+      + 'RED by removing its own hook (verified byte-identical on revert by sha256). '
+      + '`engineText()` would be the wrong corpus AND useless here — concatenated engine text '
+      + 'cannot be called, and what this file needs from `model-call.ts` is its BEHAVIOUR.',
+  },
 ];
 
 // ════════════════════════════════════════════════════════════════════════════════════════
