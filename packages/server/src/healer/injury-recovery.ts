@@ -641,11 +641,41 @@ export function onAgentInjured(agentId: string, errorMessage: string, code?: str
  * Cancels the grace period timer if still pending, and notifies the Healer
  * that the agent recovered.
  */
-export function onAgentRecovered(agentId: string): void {
+// ── t114 (CENSUS U1) — WHAT A CLOCK MAY CLEAR, AND WHAT ONLY EVIDENCE MAY ──
+//
+// THE DEFECT: `onAgentRecovered` is the one chokepoint for "this agent is healthy again", and the
+// 30-minute auto-fix sweep called it on ELAPSED TIME ALONE. Every 5 minutes, any agent `paused`
+// or `error` for more than half an hour was flipped to `idle` and passed through here, which:
+//
+//   * reset `MAX_RECOVERY_ATTEMPTS` and the 10m->1h->6h->24h ladder (census row 14), the thing
+//     whose whole job is to escalate to a human instead of retrying for ever;
+//   * deleted `last_error`, the only human-facing account of what went wrong;
+//   * cleared `declaredPatienceHonestFails` — THE T82c MARKER, which is the only thing standing
+//     between an agent and a second doomed cold-redial chain.
+//
+// So the NO-DOOMED-DIALS chain could do its job perfectly — refuse a doomed dial, error honestly,
+// set the marker, tell the human — and thirty minutes later, with no fact consulted about WHY it
+// failed, the agent was returned to `idle` with its error text deleted and its guard erased, free
+// to re-enter the identical chain on a 30-minute cycle for ever while the dashboard showed a
+// healthy idle agent. `auto-fix.ts`'s own header names the failure it was creating: "a persistent
+// fault bounces error->idle->error with no fresh owner signal".
+//
+// THE SPLIT: recovery BY EVIDENCE (a turn actually completed) still clears everything, because a
+// completed turn is proof. Recovery BY COOLDOWN (a clock) may clear only the things a clock can
+// honestly speak to — the Healer's own backoff window and its pending grace timers — and must
+// leave the attempt ladder, the human-facing error and the doom marker exactly where they are.
+// A clock knows that time passed. It does not know that anything was fixed.
+export type RecoveryBasis = 'evidence' | 'cooldown';
+
+export function onAgentRecovered(agentId: string, basis: RecoveryBasis = 'evidence'): void {
   // Clear recovery attempt counter, the agent is healthy again.
   // If it errors again later, the counter starts fresh. Persisted to DB
   // so a future restart sees a clean state.
-  setAttempts(agentId, 0);
+  //
+  // t114 (U1): EVIDENCE ONLY. Row 14's ladder escalates to the owner precisely because repeated
+  // failures should stop being retried silently; a 30-minute clock resetting it to zero made the
+  // top of that ladder unreachable, so the owner was never told.
+  if (basis === 'evidence') setAttempts(agentId, 0);
 
   // FA-A2: this is the deliberate-recovery chokepoint (a clean turn end with
   // prior attempts, and the Tier-1 auto-fix reset, which moves the status without
@@ -655,7 +685,11 @@ export function onAgentRecovered(agentId: string): void {
   // survives retries" is preserved.
   // SWEEP CORE-2 item 2: the clear itself moved to the one owner of the column; the
   // decision to clear stays here, where it was made.
-  try { clearAgentLastError(agentId); } catch { /* best effort */ }
+  // t114 (U1): EVIDENCE ONLY. `last_error` is the human's only account of what happened; a clock
+  // deleting it is how a persistent fault became invisible on the dashboard.
+  if (basis === 'evidence') {
+    try { clearAgentLastError(agentId); } catch { /* best effort */ }
+  }
 
   // v2.3.19, also clear the Healer backoff window so the next injury
   // gets full attention again (don't carry a "muted Healer" state across
@@ -665,7 +699,10 @@ export function onAgentRecovered(agentId: string): void {
   // T82c: a clean recovery ends the current doomed chain — the next injury (of any class)
   // starts the session-reset guard's count at zero again, same reset point
   // `agents.recovery_attempts` already uses.
-  clearDeclaredPatienceHonestFails(agentId);
+  // t114 (U1): EVIDENCE ONLY, and this is the sharpest of the three. The marker is the ONLY
+  // thing stopping a second declared-patience cold-redial chain — the exact GPU livelock the
+  // whole NO-DOOMED-DIALS plan exists to close. A clock must never be able to clear it.
+  if (basis === 'evidence') clearDeclaredPatienceHonestFails(agentId);
 
   // Cancel the engine auto-wake timer if it's still pending, agent recovered
   // before we needed to poke them.
@@ -704,7 +741,48 @@ export function onAgentRecovered(agentId: string): void {
 
   // Agent recovered AFTER the healer was notified, let the healer know
   // so it can close the loop in its records.
-  notifyHealerOfRecovery(agentId);
+  //
+  // ── t114 (t113 hand-up 2) — THE FIRE-AND-FORGET IS NOW DRAINABLE ──
+  //
+  // THE DEFECT, measured by t113 and handed over: this call is async and nothing awaited it.
+  // `onAgentRecovered` is sync and so are its three callers (`auto-fix.ts`'s `.then`,
+  // `healer-agent.ts`, the turn path), so making it async would ripple through all of them for a
+  // notice that is deliberately non-blocking. The leak was not the asynchrony — it was that the
+  // promise had NO HANDLE: nothing could wait for it, so in tests it landed on whichever later
+  // case's module-cached transport spy happened to resolve first and made two
+  // `toHaveBeenCalledTimes` clauses a coin flip. Which case it hit moved when t113 re-routed the
+  // notice by one module, so the same latent bug produced a different red.
+  //
+  // The call stays unawaited HERE — production behaviour is byte-identical, a recovery FYI must
+  // not block a recovering agent's turn — but the promise is now tracked and its rejection
+  // swallowed at the source, so `drainRecoveryNotices()` below can settle it. That is what a
+  // test (or a shutdown path) needs in order to stop a stray notice deciding someone else's
+  // verdict.
+  trackRecoveryNotice(notifyHealerOfRecovery(agentId));
+}
+
+/**
+ * In-flight recovery notices. A SET of promises rather than a counter, so a caller can await the
+ * exact ones outstanding instead of polling a number.
+ */
+const pendingRecoveryNotices = new Set<Promise<void>>();
+
+function trackRecoveryNotice(p: Promise<void>): void {
+  // `.catch` at the source: an unhandled rejection from a best-effort FYI must not become a
+  // process-level warning, and must not reach whoever happens to await the drain.
+  const tracked = p.catch(() => undefined).finally(() => { pendingRecoveryNotices.delete(tracked); });
+  pendingRecoveryNotices.add(tracked);
+}
+
+/**
+ * Settle every recovery notice this module has started. The honest tool for a test that triggers
+ * a recovery and must not leak the resulting FYI into the next case, and a safe no-op when
+ * nothing is outstanding.
+ */
+export async function drainRecoveryNotices(): Promise<void> {
+  while (pendingRecoveryNotices.size > 0) {
+    await Promise.all([...pendingRecoveryNotices]);
+  }
 }
 
 async function notifyHealerOfInjury(agentId: string, errorMessage: string): Promise<void> {

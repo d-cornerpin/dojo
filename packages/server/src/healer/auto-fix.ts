@@ -25,6 +25,7 @@ import { taskScope } from '../work/tracker-view.js';
 import { ORPHANED_PROJECT_WHERE } from '../tracker/version-gap-reconcile.js';
 import { setTrackerStatus, patchWork, deliveryForCompletedChildren } from '../work/tracker-store.js';
 import { workSettled, noteUnsettled } from '../work/store.js';
+import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../agent/stream-patience.js';
 
 const logger = createLogger('healer-autofix');
 
@@ -48,10 +49,48 @@ interface AutoFixResult {
 // grace-timer clears find nothing, and it just emits a benign recovered
 // signal. The 30-min cooldown resets still happen; this only closes the
 // bookkeeping they were skipping.
+// t114 (census U1): the sweep says WHICH KIND of recovery this is. It is a clock, so it passes
+// `'cooldown'` and `onAgentRecovered` withholds the three clears only evidence may earn — the
+// attempt ladder, the human-facing error text, and the doomed-dial marker. The Healer's own
+// backoff window and its pending grace timers still clear, because those are the sweep's to own.
 function clearRecoveryBookkeeping(agentId: string): void {
   import('./injury-recovery.js')
-    .then((m) => { try { m.onAgentRecovered(agentId); } catch { /* best effort */ } })
+    .then((m) => { try { m.onAgentRecovered(agentId, 'cooldown'); } catch { /* best effort */ } })
     .catch(() => { /* best effort */ });
+}
+
+/**
+ * t114 (census U1) — MAY A COOLDOWN SWEEP TOUCH THIS AGENT AT ALL?
+ *
+ * The sweep's premise is "thirty minutes passed, so a fresh start is probably worth a try". That
+ * premise is FALSE for a failure a fresh start cannot fix, and the tree already records the one
+ * class it provably cannot: a declared-patience refusal means the request could not finish inside
+ * the patience its own provider row declares, so re-dialling it cold produces the identical
+ * refusal and burns the box again. That is the chain T82c's marker exists to break.
+ *
+ * Refusing here keeps the agent's honest `error` status and its error text in front of the owner,
+ * which is the outcome row 10's error-loop pause was built to produce and which this sweep was
+ * silently undoing every half hour.
+ */
+function cooldownSweepMayRecover(agentId: string): { ok: true } | { ok: false; why: string } {
+  try {
+    const row = getDb().prepare('SELECT last_error FROM agents WHERE id = ?').get(agentId) as
+      | { last_error: string | null } | undefined;
+    const lastError = row?.last_error ?? '';
+    if (lastError.includes(DECLARED_PATIENCE_EXCEEDED_CODE)) {
+      return {
+        ok: false,
+        why: 'its last failure was a declared-patience refusal, which a restart cannot fix — '
+          + 'the request cannot finish inside the patience this provider declares, so the honest '
+          + 'error stays visible instead of being cleared every 30 minutes',
+      };
+    }
+    return { ok: true };
+  } catch {
+    // Unreadable row: do not invent permission. The sweep is an optimisation, never an
+    // obligation, so the safe direction is to leave the agent as the human last saw it.
+    return { ok: false, why: 'its last error could not be read, so the sweep made no claim about it' };
+  }
 }
 
 // ── v2.3.19 (error-handling-spec Phase 4) — frequent auto-fix sweep ──
@@ -192,6 +231,14 @@ function fixPausedAgent(item: DiagnosticItem): AutoFixResult {
     return { applied: false, description: `${item.agentName} was paused recently — giving it time to cool down before restarting` };
   }
 
+  // t114 (U1): the cause is read BEFORE the status is written, so a fault a restart cannot fix is
+  // left alone with its diagnostic intact rather than bounced error->idle->error for ever.
+  const mayPaused = cooldownSweepMayRecover(item.agentId);
+  if (!mayPaused.ok) {
+    logger.info('frequent auto-fix: declining to restart a paused agent', { agentId: item.agentId, why: mayPaused.why });
+    return { applied: false, description: `${item.agentName ?? item.agentId} was left paused — ${mayPaused.why}` };
+  }
+
   writeAgentStatus(item.agentId, 'idle');
   broadcast({ type: 'agent:status', agentId: item.agentId, status: 'idle' });
   clearRecoveryBookkeeping(item.agentId); // FA-X3
@@ -214,6 +261,14 @@ function fixErrorAgent(item: DiagnosticItem): AutoFixResult {
   const errorMs = Date.now() - new Date(agent.updated_at.includes('Z') ? agent.updated_at : agent.updated_at + 'Z').getTime();
   if (errorMs < 30 * 60 * 1000) {
     return { applied: false, description: '' };
+  }
+
+  // t114 (U1): same cause check as the paused arm. This is the arm that was erasing the
+  // doomed-dial marker on a 30-minute cycle.
+  const mayError = cooldownSweepMayRecover(item.agentId);
+  if (!mayError.ok) {
+    logger.info('frequent auto-fix: declining to reset an errored agent', { agentId: item.agentId, why: mayError.why });
+    return { applied: false, description: `${item.agentName ?? item.agentId} was left in error — ${mayError.why}` };
   }
 
   writeAgentStatus(item.agentId, 'idle');
