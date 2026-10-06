@@ -33,12 +33,40 @@ import { graphFetch, GRAPH_BASE } from './graph-fetch.js';
 // true in-place cell editing via REST — no download-modify-upload needed.
 // ─────────────────────────────────────────
 
+// ── t114 (census U12) — THE OFFICE LEGS SIZE THEIR OWN DEADLINES ──
+//
+// THE DEFECT: this module moves whole re-zipped Office documents through a
+// download -> unzip -> edit -> re-zip -> PUT pipeline, and both wire legs carried a FLAT bound
+// with no size branch at all — 30s on the download, 60s on the write-back. The sibling
+// `tools-write.ts` branches at 4 MB and chunks; `google/client.ts` scales by payload. This file,
+// which carries the largest bodies of the three, had neither.
+//
+// The write-back leg is the one that hurts: an abort there DISCARDS ALL COMPLETED EDIT WORK —
+// the download, the unzip and every edit are gone, with nothing to resume from — and can leave a
+// partial PUT behind. So the flat clock destroyed work it could not prove was dead, which is the
+// exact shape the campaign doctrine refuses.
+//
+// Same resolver shape as `google/client.ts`'s `timeoutForBody` and the Graph client's own
+// `graphTimeoutForBody`, so the tree keeps ONE answer to "how long may a body take" rather than
+// gaining a fourth. A small document is bounded exactly as it is today.
+const OFFICE_BASE_TIMEOUT_MS = 30_000;
+const OFFICE_WRITE_BASE_TIMEOUT_MS = 60_000;
+const OFFICE_MAX_TIMEOUT_MS = 5 * 60_000;
+
+function officeTimeoutForBytes(baseMs: number, bytes: number | undefined): number {
+  if (!bytes || bytes <= 0) return baseMs;
+  const scaled = baseMs + Math.ceil(bytes / (1024 * 1024)) * 30_000;
+  return Math.min(scaled, OFFICE_MAX_TIMEOUT_MS);
+}
+
 async function downloadFileBytes(fileId: string, agentId?: string): Promise<Buffer> {
   const token = await getValidAccessToken();
   if (!token) throw new Error('Not authenticated with Microsoft');
   const resp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/content`, {
     headers: { Authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(30000),
+    // t114: the response size is not known until the headers arrive, so the download keeps its
+    // baseline. It is the named constant now, so the two legs cannot drift apart silently.
+    signal: AbortSignal.timeout(OFFICE_BASE_TIMEOUT_MS),
   });
   if (!resp.ok) throw new Error(`Download failed: HTTP ${resp.status}`);
   const ab = await resp.arrayBuffer();
@@ -1347,7 +1375,9 @@ async function uploadToOneDrive(
     method: 'PUT',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': mimeType },
     body: buffer,
-    signal: AbortSignal.timeout(60000),
+    // t114 (U12): THE LEG THAT DISCARDS WORK. The re-zipped document is in hand, so its size is
+    // a measured fact and the deadline is sized from it instead of from a flat minute.
+    signal: AbortSignal.timeout(officeTimeoutForBytes(OFFICE_WRITE_BASE_TIMEOUT_MS, buffer.byteLength)),
   });
 
   if (!resp.ok) {

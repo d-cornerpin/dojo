@@ -15,7 +15,34 @@ const logger = createLogger('ms-client');
 
 export { graphFetch } from './graph-fetch.js';   // the un-wrapped Graph door (L2-1)
 import { GRAPH_BASE } from './graph-fetch.js';
+// ── t114 (census U13) — THE GRAPH DEADLINE SCALES WITH THE BODY ──
+//
+// THE DEFECT: `TIMEOUT_MS` was a flat 30 seconds for EVERY Graph call, body-size-independent.
+// `google/client.ts:timeoutForBody` — in this same tree, for the same job — already scales its
+// bound by payload size (30s baseline plus 30s per MB, capped at 5 minutes) for exactly this
+// reason: a multi-MB `sendMail` with attachments cannot upload inside a bound sized for a
+// metadata GET. The census recorded the two files as the tree's two timeout philosophies and
+// most of its U-list as the gap between them.
+//
+// Worse than a slow failure, this one is AMBIGUOUS: a large `sendMail` aborted at 30s may
+// already have been ACCEPTED by Graph (a 202 with no id), and the codebase ships
+// `refetchOutlookSentId` precisely because of that ambiguity — so the flat bound manufactures
+// the uncertainty another module exists to clean up.
+//
+// The fix copies the sibling rather than inventing a second answer: same baseline, same per-MB
+// grant, same ceiling, one resolver shape. A bodyless call is bounded exactly as it is today.
 const TIMEOUT_MS = 30_000;
+const MAX_TIMEOUT_MS = 5 * 60_000; // 5 min hard ceiling — the bound is still a bound
+
+/** Carried from `google/client.ts`'s `timeoutForBody`, deliberately unchanged in shape so the
+ *  two clients cannot drift into two different answers again. */
+function graphTimeoutForBody(body: unknown): number {
+  if (body === undefined || body === null) return TIMEOUT_MS;
+  const serialized = typeof body === 'string' ? body : JSON.stringify(body);
+  if (!serialized) return TIMEOUT_MS;
+  const scaled = TIMEOUT_MS + Math.ceil(serialized.length / (1024 * 1024)) * 30_000;
+  return Math.min(scaled, MAX_TIMEOUT_MS);
+}
 
 /**
  * Build the URL prefix for a calendar operation based on the calendar_id form.
@@ -101,9 +128,11 @@ async function graphFetch(
   };
 
   // Composed, not replaced: the Graph deadline still fires as a deadline. `turn` scope.
+  // t114 (U13): the deadline is sized from THIS call's body, not from a flat constant.
+  const graphTimeoutMs = graphTimeoutForBody(body);
   const slot = agentId === undefined
     ? null
-    : openAgentCall(agentId, 'turn', AbortSignal.timeout(TIMEOUT_MS));
+    : openAgentCall(agentId, 'turn', AbortSignal.timeout(graphTimeoutMs));
   if (slot?.refused) {
     slot.release();
     return { ok: false, data: null, error: STOPPED_BY_USER, apiEndpoint: url };
@@ -113,7 +142,7 @@ async function graphFetch(
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
-      signal: slot?.signal ?? AbortSignal.timeout(TIMEOUT_MS),
+      signal: slot?.signal ?? AbortSignal.timeout(graphTimeoutMs),
     });
 
     if (!resp.ok) {
