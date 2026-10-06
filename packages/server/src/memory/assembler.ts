@@ -26,6 +26,7 @@ import {
   POST_BUDGET_LANES,
   POST_BUDGET_RESERVE_TOKENS,
   SCAFFOLDING_ACK_RESERVE_TOKENS,
+  reserveLadderFor,
   LANE_TRUNCATION_MARKER,
   type AllocationReport,
   type Lane,
@@ -1487,8 +1488,23 @@ async function assembleMessageContext(
   // Reservations taken off the top: the generated ack (slot 1000) and the post-budget lanes
   // (B7 — the seven appends plus the loop's own tail-append). Before this they were spent
   // after `usedTokens` stopped being consulted (research 06's write-only finding).
-  const offTheTop = SCAFFOLDING_ACK_RESERVE_TOKENS + POST_BUDGET_RESERVE_TOKENS;
+  //
+  // t109 D: THE LADDER IS NO LONGER FLAT. The bare sum (11,145) took more than a small window
+  // had left after its system prompt, so the content budget clamped to ZERO and the array
+  // collapsed to `lane.empty-context-fallback` every turn. The bound, its derivation, the floor
+  // and the G2 argument are all at `reserveLadderFor`.
+  const ladder = reserveLadderFor(maxTokens - systemTokens);
+  const offTheTop = ladder.offTheTop;
   const contentBudget = Math.max(0, maxTokens - systemTokens - offTheTop);
+  // The line's "told plainly" half needs nothing here: `assertSystemPromptFits` above already
+  // refuses that state by name. This reports the SQUEEZE, which nothing else could see.
+  if (ladder.scaled) {
+    logger.warn('Post-budget reserves scaled down: this window cannot hold the full ladder', {
+      contextWindow: policy.contextWindow, declaredReserveTokens: ladder.declared,
+      reservedTokens: offTheTop, contentBudgetTokens: contentBudget,
+      systemPromptTokens: systemTokens,
+    }, agentId);
+  }
 
   // ── Render every lane, then let the two-pass fit decide ──
   const lanes = buildContentLanes(contentBudget, policy.freshTailCount);

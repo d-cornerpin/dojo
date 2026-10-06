@@ -876,6 +876,70 @@ export const SCAFFOLDING_ACK_RESERVE_TOKENS = (() => {
   return estimateTokens(text);
 })();
 
+/** THE LANES THAT FIRE WHATEVER HAPPENS — the floor the ladder may never scale below.
+ *  `lane.engine-end-of-history` is `applyIntegrityPass`'s trailing marker (every assembly gets
+ *  one) and `lane.empty-context-fallback` is what the array becomes when nothing else survived,
+ *  which is precisely the state a starved window is in. Reserving less than these two reserves
+ *  less than will CERTAINLY be spent, so the floor is DERIVED from the table above, never
+ *  chosen, and moves if their measurements do. */
+const UNCONDITIONAL_POST_BUDGET_IDS = ['lane.engine-end-of-history', 'lane.empty-context-fallback'];
+
+/**
+ * HOW MUCH OF THE ASSEMBLY THE RESERVE LADDER MAY CLAIM — t109 item D.
+ *
+ * ⚠ THE DEFECT. The ladder was a FLAT number, 11,145 tokens, each reserve above being the worst
+ * case of a lane that MAY fire. On a 16K window with a modest tool surface the assembly budget
+ * is 10,264 and a 2,682-token system prompt leaves 7,582 — so the flat ladder asked for more
+ * than everything left and the CONTENT BUDGET CLAMPED TO ZERO, every turn, collapsing the array
+ * to `lane.empty-context-fallback`. The full arithmetic, the corrections to the report that
+ * found it, and what the fix does NOT claim are in
+ * `__tests__/a-small-window-still-holds-a-conversation.test.ts`'s header.
+ *
+ * ⚠ WHY A HALF, AND WHY IT IS NOT A TUNING CONSTANT. After the system prompt the assembly has
+ * exactly TWO claimants: the CONTENT (summaries plus the live conversation — everything
+ * `fitLanes` ranks) and these POST-BUDGET APPENDS. The appends are the smaller claimant BY
+ * CHARTER: the section above calls them "the seven appends plus the loop's own tail-append", and
+ * every one of them appends TO a conversation, so not one can be spent unless the content exists
+ * first. A claimant that cannot exist without the other may not outbid it, which bounds the
+ * ladder at an equal share. The fraction is also CARRIED: `tail-horizon.ts`'s
+ * `groupsToDropForBudget` bounds its own cut at half the live conversation, same reason, same
+ * subsystem.
+ *
+ * ⚠ WHAT MOVES AND WHAT DOES NOT (G2). Wherever the flat ladder already fits in half the
+ * available budget the answer is byte-identical — every window at or above ~32K on the measured
+ * system prompt, which is every box the goldens are built on.
+ *
+ * ⚠ AND NOTHING HERE REPORTS TO A USER, because the line's other option already exists:
+ * `budget.ts`'s `assertSystemPromptFits` throws before the assembler reaches this function and
+ * already names the window, the budget, the reserve and the three repairs. A non-positive budget
+ * therefore cannot reach here, and is handled below as a defensive floor rather than as a
+ * second, quieter report of a failure that guard already shouts about.
+ */
+export const RESERVE_LADDER_SHARE_DENOMINATOR = 2;
+
+/** The derived floor: what WILL be spent whatever the fit decides. */
+export const RESERVE_LADDER_FLOOR_TOKENS = SCAFFOLDING_ACK_RESERVE_TOKENS
+  + POST_BUDGET_LANES
+    .filter((l) => UNCONDITIONAL_POST_BUDGET_IDS.includes(l.id))
+    .reduce((t, l) => t + l.reserveTokens, 0);
+
+export interface ReserveLadder {
+  /** What to take off the top this assembly. */
+  offTheTop: number;
+  /** True when the window could not hold the full declared ladder, so it was scaled. */
+  scaled: boolean;
+  /** The full declared ladder, for the log line that reports the squeeze. */
+  declared: number;
+}
+
+/** The ladder, against the budget actually left after the system prompt. Pure: the caller logs. */
+export function reserveLadderFor(availableTokens: number): ReserveLadder {
+  const declared = SCAFFOLDING_ACK_RESERVE_TOKENS + POST_BUDGET_RESERVE_TOKENS;
+  const ceiling = Math.floor(Math.max(0, availableTokens) / RESERVE_LADDER_SHARE_DENOMINATOR);
+  if (declared <= ceiling) return { offTheTop: declared, scaled: false, declared };
+  return { offTheTop: Math.max(RESERVE_LADDER_FLOOR_TOKENS, ceiling), scaled: true, declared };
+}
+
 // ── Cost ────────────────────────────────────────────────────────────────────────────────
 
 /**
