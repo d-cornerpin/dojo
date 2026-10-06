@@ -74,6 +74,24 @@ vi.mock('../../services/imessage-bridge.js', () => ({ sendAlert: vi.fn() }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 
 import { runMigrations } from '../../db/migrations.js';
+// ── WHY THESE THREE ARE STATIC AND `injury-recovery.js` IS NOT ──────────────────────────
+//
+// t119 root-caused this file's long-running timeout family here. `beforeEach` resets the
+// module registry, and a COLD dynamic `await import()` of a multi-module graph taken inside
+// a test's measured window can, under a concurrent suite, never settle: vite-node's module
+// runner (vitest 3.2.4 / vite 6.4.1) leaves the import pending, so the clause fails at
+// whatever its per-test budget happens to be while the product call it was measuring takes
+// single-digit milliseconds. MEASURED: 12 duplicate copies of this file run together wedged
+// 14 clauses across 5 runs with these imports dynamic, and 0 across 7 runs (884 clauses)
+// with them static — the modules below are the ones a clause merely NEEDS, so loading them
+// once at file load removes the exposure without touching a subject.
+//
+// `injury-recovery.js` stays DYNAMIC on purpose: for the restart clauses the fresh registry
+// IS the subject — re-importing it against the same durable body is what a restart is — so
+// those three sites must keep paying for a real re-instantiation.
+import { compileDiagnosticReport } from '../diagnostic.js';
+import { runAutoFixes } from '../auto-fix.js';
+import { selectHealerApprovalRouting, evaluateScratchZoneAutoApprove } from '../approval-routing.js';
 
 const SRC = path.join(__dirname, '..', '..');
 const read = (r: string): string => fs.readFileSync(path.join(SRC, r), 'utf8');
@@ -240,19 +258,18 @@ describe('SWEEP CORE-2 item 2 — the shadow budget ledger is gone', () => {
     expect(diag).not.toMatch(/SUM\(cost\)[\s\S]{0,80}audit_log|audit_log[\s\S]{0,80}SUM\(cost\)/);
   });
 
-  // 120s, not the 30s default: this clause is a LOAD-ARTIFACT repeat offender — four sightings
-  // across t114/t116 merge gates timed out at 30s under a full concurrent suite, and every
-  // re-run alone finishes in ~3.4s (3/3, twice over). The work is real and the clause is sound;
-  // the budget it needs is wall-clock under contention, not a hidden hang (a genuine hang still
-  // fails at 120s). Recorded in the v3.3 campaign ledger, 2026-10-06.
-  it('the health report reads the REAL budget owner — the capability is preserved, not deleted', { timeout: 120_000 }, async () => {
+  // Back on the 30s default. The elevated budget this clause carried was reading a wedged
+  // dynamic import as slowness: the window measured a cold module-graph instantiation, not
+  // the collector. With the import hoisted (see the note at the top of this file) the body
+  // is one INSERT and one synchronous call — 2ms of work — so a 30s failure here is now a
+  // real hang rather than a load artifact.
+  it('the health report reads the REAL budget owner — the capability is preserved, not deleted', () => {
     // #15: this collector has live readers (the Healer's own cycle prompt, the stale-proposal
     // sweep's code set, `GET /healer/diagnostics`, the Settings counts). What dies is the
     // duplicate ACCOUNTING, not the answer; the answer now comes from the one owner.
     mockDb.current!.prepare(
       "INSERT OR REPLACE INTO budgets (id, scope, limit_usd, period) VALUES ('global_daily', 'global', 500.0, 'daily')",
     ).run();
-    const { compileDiagnosticReport } = await import('../diagnostic.js');
     const report = compileDiagnosticReport();
     const budgetItem = report.items.find((i) => i.code === 'BUDGET_OK' || i.code === 'BUDGET_HIGH');
     expect(budgetItem, 'the budget line still reaches the health report').toBeTruthy();
@@ -278,16 +295,14 @@ describe('SWEEP CORE-2 item 2 — the Healer\'s deterministic tier is unchanged 
     ).run(status, id);
   };
 
-  it('STUCK_AGENT unfreezes immediately — no cooldown, that is the point of it', async () => {
-    const { runAutoFixes } = await import('../auto-fix.js');
+  it('STUCK_AGENT unfreezes immediately — no cooldown, that is the point of it', () => {
     agedTo(INJURED, 'working', 20);
     const res = runAutoFixes('diag-stuck', [item('STUCK_AGENT', INJURED)]);
     expect(res.fixCount).toBe(1);
     expect(statusOf(INJURED)).toBe('idle');
   });
 
-  it('AGENT_PAUSED and AGENT_ERROR keep their 30-minute cooldowns, both directions', async () => {
-    const { runAutoFixes } = await import('../auto-fix.js');
+  it('AGENT_PAUSED and AGENT_ERROR keep their 30-minute cooldowns, both directions', () => {
     for (const [code, status] of [['AGENT_PAUSED', 'paused'], ['AGENT_ERROR', 'error']] as const) {
       agedTo(INJURED, status, 5);
       expect(runAutoFixes(`${code}-early`, [item(code, INJURED)]).fixCount,
@@ -300,8 +315,7 @@ describe('SWEEP CORE-2 item 2 — the Healer\'s deterministic tier is unchanged 
     }
   });
 
-  it('every applied fix still leaves its healer_actions row — the Vitals panel reads it', async () => {
-    const { runAutoFixes } = await import('../auto-fix.js');
+  it('every applied fix still leaves its healer_actions row — the Vitals panel reads it', () => {
     agedTo(INJURED, 'working', 20);
     runAutoFixes('diag-audit', [item('STUCK_AGENT', INJURED)]);
     const row = mockDb.current!.prepare(
@@ -310,7 +324,7 @@ describe('SWEEP CORE-2 item 2 — the Healer\'s deterministic tier is unchanged 
     expect(row).toEqual({ category: 'STUCK_AGENT', result: 'success', agent_id: INJURED });
   });
 
-  it('the deterministic tier still answers exactly its seven codes', async () => {
+  it('the deterministic tier still answers exactly its seven codes', () => {
     const src = read('healer/auto-fix.ts');
     const map = src.slice(src.indexOf('const FIX_MAP'), src.indexOf('// ── Main Entry Point ──'));
     expect([...map.matchAll(/^\s{2}([A-Z_]+):/gm)].map((m) => m[1]).sort()).toEqual([
@@ -319,9 +333,7 @@ describe('SWEEP CORE-2 item 2 — the Healer\'s deterministic tier is unchanged 
     ]);
   });
 
-  it('approval routing still fails closed on all three arms', async () => {
-    const { selectHealerApprovalRouting, evaluateScratchZoneAutoApprove } =
-      await import('../approval-routing.js');
+  it('approval routing still fails closed on all three arms', () => {
     // The ONE loud lane, and only when all three facts hold.
     expect(selectHealerApprovalRouting({ engineSeverity: 'critical', presence: 'away', imessageEnabled: true }))
       .toEqual({ urgency: 'urgent', surface: 'imessage' });
