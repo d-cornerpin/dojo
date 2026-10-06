@@ -1385,6 +1385,12 @@ export const Chat = ({ panel = null }: ChatProps) => {
               id: e.message.id,
               createdAt: e.message.createdAt,
               attachments: e.message.attachments ?? updated[tempIdx].attachments,
+              // t106 — THE LIVE WINDOW. The optimistic bubble `handleSend` pushed has no
+              // conversation (only the server resolves one), so a reconcile that did not carry
+              // the frame's left the anchor row conversation-less for the whole live window and
+              // `lib/working-note-visibility.ts` R4 answered NO — the owner's reply stayed
+              // collapsed until he refreshed, which is the symptom ruling #7 is about.
+              conversationId: e.message.conversationId ?? updated[tempIdx].conversationId,
             };
             return updated;
           }

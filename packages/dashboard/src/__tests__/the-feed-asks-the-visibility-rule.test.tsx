@@ -23,11 +23,11 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { ReactElement } from 'react';
 import { WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX } from '@dojo/shared';
-import { resetFrames } from './helpers/frames';
+import { emitFrame, resetFrames } from './helpers/frames';
 
 vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('../lib/api');
@@ -223,5 +223,73 @@ describe('R4 in the DOM — the reply is drawn as a reply, at both note arms', (
     const { container } = await feed([person(ASKED), systemNote(NOTE_TEXT, false), assistant(ANSWER)], false);
     await waitFor(() => expect(container.textContent).toContain(ANSWER));
     expect(noteBubbles(container, NOTE_TEXT), 'the self-healing fallback to R1 did not happen').toHaveLength(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// THE LIVE WINDOW — THE OWNER'S OWN CASE, WITHOUT A REFRESH.
+//
+// Every clause above seeds history and mounts, which is the RELOADED feed. The owner's
+// sighting happened in the live window, and the live window has one more step in it: the
+// message he typed exists first as an OPTIMISTIC `temp-` bubble with no conversation (only the
+// server resolves one), and the server's own broadcast is then MERGED INTO that bubble rather
+// than appended. A reconcile that drops the frame's `conversationId` leaves R4's anchor row
+// conversation-less for the whole live window — so the fix would appear to work on every
+// reload-shaped clause and still fail the man who reported it until he refreshed.
+//
+// So this clause drives the real sequence and never remounts: type → send → the server's user
+// frame arrives and reconciles → the turn's only utterance arrives as a demoted note.
+// ════════════════════════════════════════════════════════════════════════════
+describe('R4 in the live window — no refresh, no remount', () => {
+  const LIVE_ASK = 'you good now?';
+  const LIVE_REPLY = 'Yes — the sync finished and the queue is empty.';
+
+  it("the reply to a message typed THIS SESSION renders as a reply, with no reload", async () => {
+    // A prior exchange, so the feed has rendered and the helper's anchor is on screen. Its user
+    // row deliberately carries NO conversation, so it cannot stand in for the typed one.
+    const view = await feed([user(ASKED), assistant(ANSWER)], false);
+    // The agent id the component is actually using, read off its own first call — never
+    // guessed, because the frame handler drops anything whose agentId does not match.
+    const agentId = vi.mocked(api.getChatHistory).mock.calls[0]?.[0] as string;
+
+    const box = view.container.querySelector('textarea');
+    expect(box, 'the composer textarea is the live path; without it this clause proves nothing').not.toBeNull();
+    fireEvent.change(box as HTMLTextAreaElement, { target: { value: LIVE_ASK } });
+    fireEvent.keyDown(box as HTMLTextAreaElement, { key: 'Enter' });
+    // The OPTIMISTIC bubble: on screen, and carrying no conversation of its own.
+    await waitFor(() => expect(view.container.textContent).toContain(LIVE_ASK));
+
+    // The server stored the row and broadcast it WITH the conversation it resolved. This frame
+    // reconciles into the optimistic bubble; it does not append a second one.
+    emitFrame('chat:message', { agentId, message: {
+      id: 'u-live-1', agentId, role: 'user', content: LIVE_ASK, createdAt: at(),
+      conversationId: 'owner',
+    } });
+    // Then the turn's only utterance, demoted on co-occurrence with a tool call.
+    emitFrame('chat:message', { agentId, message: {
+      id: 's-live-1', agentId, role: 'system',
+      content: `${WORKING_NOTE_PREFIX}${LIVE_REPLY}`, createdAt: at(),
+    } });
+
+    await waitFor(() => expect(view.container.textContent).toContain(LIVE_REPLY));
+    expect(noteBubbles(view.container, LIVE_REPLY),
+      "the owner's live reply was collapsed — the reconcile dropped the conversation").toHaveLength(0);
+    // And the reconcile did its original job: one bubble for the typed message, not two.
+    expect((view.container.textContent ?? '').split(LIVE_ASK).length - 1).toBe(1);
+  });
+
+  it('CONTROL — the same live sequence with NO conversation on the frame keeps the collapsed note', async () => {
+    // A background/engine-triggered row broadcast live carries no conversation, and must not be
+    // promoted just because it arrived in the live window.
+    const view = await feed([user(ASKED), assistant(ANSWER)], false);
+    const agentId = vi.mocked(api.getChatHistory).mock.calls[0]?.[0] as string;
+    emitFrame('chat:message', { agentId, message: {
+      id: 'u-live-2', agentId, role: 'user', content: '═══ DREAM CYCLE ═══', createdAt: at(),
+    } });
+    emitFrame('chat:message', { agentId, message: {
+      id: 's-live-2', agentId, role: 'system',
+      content: `${WORKING_NOTE_PREFIX}${NOTE_TEXT}`, createdAt: at(),
+    } });
+    await waitFor(() => expect(noteBubbles(view.container, NOTE_TEXT)).toHaveLength(1));
   });
 });
