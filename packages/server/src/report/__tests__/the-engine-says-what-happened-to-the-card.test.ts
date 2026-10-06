@@ -660,14 +660,48 @@ describe('§5 it does not tick, and it does not touch the prefix', () => {
 
   it('THE PREFIX CANNOT MOVE: one importer, and it is the POST-assembly tail step', () => {
     // The decisive structural proof, and it is three facts rather than a promise.
-    // (1) `volatileFrom` is the LENGTH of the array the assembler returns — its own words:
-    //     "everything emitted here is the cacheable region (`volatileFrom` is this array's
-    //     length) … the loop appends it past the boundary". So ANY push made by the loop's
-    //     injection step is behind the cache breakpoint BY CONSTRUCTION, not by placement.
+    //
+    // (1) `volatileFrom` is the LENGTH of the message array AT THE INSTANT ASSEMBLY ENDS, so ANY
+    //     push the loop's injection step makes is behind the cache breakpoint BY CONSTRUCTION
+    //     rather than by placement.
+    //
+    //     ⚠ PINNED AT THE ASSIGNMENT, NOT AT A SENTENCE ABOUT IT (round-4 F7). This leg used to
+    //     assert that `memory/assembler.ts` CONTAINS the string "`volatileFrom` is this array's
+    //     length" — a comment. The invariant it describes is real, but the clause was satisfied by
+    //     the prose and would not have noticed the capture MOVING: reword that comment and the
+    //     clause reds while the property holds; move the assignment past an injection and the
+    //     clause stays green while the property is gone. Exactly backwards, and exactly what G4
+    //     means by a clause satisfiable by the prose above the call. The capture lives in
+    //     `agent/v2/steps/assemble/index.ts`, so that is what is read, with comments stripped.
+    const assembleStep = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)),
+        '..', '..', 'agent', 'v2', 'steps', 'assemble', 'index.ts'), 'utf8',
+    );
+    const assembleCode = assembleStep
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n');
+    // Non-vacuity: the stripped source is still the step.
+    expect(assembleCode.length, 'the comment-stripped assemble step is too small to be real')
+      .toBeGreaterThan(2000);
+    // THE ASSIGNMENT, as code: the boundary is the array's length, captured from the context the
+    // allocator just finished filling.
+    expect(assembleCode, 'the volatile boundary is no longer captured as the assembled message '
+      + 'array\'s length — if it is computed some other way, every "the loop appends past the '
+      + 'boundary" argument in this tree needs re-deriving')
+      .toMatch(/const\s+volatileFrom\s*=\s*ctx\.messages\.length\s*;/);
+    // AND IT IS CAPTURED BEFORE ANYTHING IS APPENDED: the assignment precedes the step's return,
+    // and no push onto `ctx.messages` happens between them.
+    const at = assembleCode.search(/const\s+volatileFrom\s*=/);
+    const ret = assembleCode.indexOf('volatileFrom,', at);
+    expect(at, 'the assignment was not found at all').toBeGreaterThan(-1);
+    expect(ret, 'the captured boundary is never handed out').toBeGreaterThan(at);
+    expect(assembleCode.slice(at, ret), 'something appends to the assembled message array AFTER '
+      + 'the volatile boundary was captured, so the boundary understates the cacheable region')
+      .not.toMatch(/ctx\.messages\.push\(/);
+
     const assembler = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'memory', 'assembler.ts'), 'utf8',
     );
-    expect(assembler).toContain("`volatileFrom` is this array's length");
     // (2) This lane is imported by EXACTLY ONE production file, and that file is the tail step.
     const src = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
     const importers: string[] = [];
