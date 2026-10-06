@@ -6721,6 +6721,13 @@
       "to": 2726,
       "by": "t109 item B — the marker token comes from the one producer",
       "why": "2722 -> 2726 (+4 net: 2 code, 2 comment; 1 line replaced in place). THE CODE: `threadId.slice(0, A2A_THREAD_SHORT_LENGTH)` becomes `a2aThreadShort(threadId)`, and the import line gains the symbol. That is the whole change, and it is the producer end of item B: this one expression is what every `[A2A:… thread:X …]` marker on the box is built from, so moving it moves the key everywhere at once. The 2 comment lines say WHY the slice moved and point at `markers.ts` for the derivation, which matters here specifically because this file's OWN `makeThreadId` header already warns that an 8-char front prefix 'collides heavily' — a reader who sees the warning and the old slice fifteen hundred lines apart should find the resolution at the slice. ALTERNATIVE REFUSED: none worth recording; there is no smaller change that moves the key. From 2726 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/tail-horizon.ts",
+      "from": 369,
+      "to": 391,
+      "by": "t109 item E — the deep-compaction floor state stops scrolling two rows a turn",
+      "why": "369 -> 391 (+22 net: 2 code, 27 comment added, 7 comment removed; `wc -l` before and after). THE CODE IS TWO LINES — the floor's condition gains a conjunct: `rows_since <= cap && (anchor === 0 || rows_since === 0)`. That is the whole behavioural change, and the measurement that authorises it is 8 of 8 turns discontinuous with a 20.6x byte waste factor, reproduced with the lane's own instrument before the fix was written. THE COMMENT HALF IS 27 LINES AND IT CANNOT LIVE ANYWHERE ELSE, for the reason every entry on this file already gives: this module is a page of derivation around a handful of arithmetic lines, because the WHOLE SUBSYSTEM is one invariant (a positional prefix cache is a function of whether the front moved) and a reader who cannot see why the condition has two conjuncts will widen it back to one. What the 27 lines carry, none of it restated elsewhere at the site: why `rows_since == cap` exactly is safe and below it is not (the newest-cap-rows ask is measured from the BACK); the reachable door (the cap is a function of the WINDOW, `rows_since` of the HISTORY, so a mid-session switch to a larger box opens it); why BOTH conjuncts are load-bearing, with the mutant that proves it (gating on the anchor alone reds the young-conversation clause); and WHAT THE FIX COSTS, stated rather than discovered — a live view shorter than the row cap for `cap - rows_since` turns — against the owner's own ranking. SEVEN LINES WERE DELETED, not kept alongside: the old floor paragraph's claim that `rows_since <= cap` is 'the pre-t94 answer, byte for byte' is now true of a narrower case and the sentence was rewritten rather than appended to. ALTERNATIVES REFUSED: (i) move the condition into a named predicate in a new module (+0 here) — a two-term boolean read once, whose terms are both fields of the struct this file defines; a module for it would put the condition and its argument in different files, which is how this one came to be pinned wrong; (ii) drop the cost paragraph (-4) — refused for the same reason the T4 entry on this file refuses it: a later reader who cannot see that the shorter view is DELIBERATE will read it as a regression and restore the scroll. From 391 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6939,7 +6946,7 @@
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 458,
-    "packages/server/src/memory/tail-horizon.ts": 369,
+    "packages/server/src/memory/tail-horizon.ts": 391,
     "packages/server/src/memory/work-board-lane.ts": 266,
     "packages/server/src/microsoft/auth.ts": 635,
     "packages/server/src/microsoft/tools-office.ts": 3508,
