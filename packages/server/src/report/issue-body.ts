@@ -35,6 +35,39 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import type { ReportBrief, ReportRow } from './store.js';
+import { boundDocumentArrays } from './bounds.js';
+
+/**
+ * ════════════════════════════════════════════════════════════════════════════════════════
+ * THE ONE BOUND ON THIS PATH — OWNER RULING 2026-10-05 #13, verbatim: one bound, GitHub's
+ * 65,536-character issue body, and NO per-field caps.
+ * ════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * ── IT WAS REACHABLE, AND BY THE MACHINE'S OWN HALF OF THE DOCUMENT ──
+ * `window.ts`'s row caps are the only size discipline the PUBLISHED attachment ever had, and a
+ * row cap is not a size bound (that file says so itself). Measured on a window seeded to every
+ * cap exactly — 20 turns, 60 calls, 200 tool calls, 25 work rows, each tool call carrying 24
+ * `arg_shape` entries — `JSON.stringify(telemetry, null, 2)` renders 601,404 characters: 9.2x
+ * GitHub's limit, before a single word of the brief. `bounds.ts` bounds the COPY the agent reads
+ * and says in so many words that nothing published is bounded here. So an ordinary busy window
+ * produced a body GitHub answers 422 to, and the owner saw a failed post with no account of why.
+ *
+ * ── WHICH HALF GIVES WAY, AND WHY IT IS NEVER THE BRIEF ──
+ * The attachment is MACHINE-BUILT and its whole copy stays on the box under the report id
+ * (`attachDraft` stores it before anything renders). The brief is the text the owner read and
+ * approved before pressing Post — trimming that would publish something they never approved,
+ * which is this module's verbatim contract (D4) and not a size decision. So the bound spends the
+ * room on the brief first and bounds the ATTACHMENT into what is left, through the same
+ * `boundDocumentArrays` the draft echo uses, with the drop said out loud in the body.
+ *
+ * ── AND WHEN THE BRIEF ALONE WILL NOT FIT ──
+ * Nothing here may trim it, so this function returns the over-long body and `report/post.ts`
+ * REFUSES before the network, naming this number. That is reachable only from the tool door,
+ * which caps no field; the dashboard edit door caps each at 8,000 (`EditReportSchema`), so
+ * 4 x 8,000 + headings + trailers always fits — which is why the refusal can honestly tell the
+ * owner that editing the text is the fix.
+ */
+export const GITHUB_ISSUE_BODY_MAX_CHARS = 65_536;
 
 /** The label every report carries, whatever version filed it. */
 export const REPORT_ISSUE_LABELS = ['dojo-report'] as const;
@@ -91,6 +124,34 @@ const HEADINGS: ReadonlyArray<readonly [keyof ReportBrief, string]> = [
   ['fixIdeas', 'Fix ideas'],
 ];
 
+/**
+ * The attachment JSON, inside `room` characters.
+ *
+ * The arrays are the part that scales with the window, so they are what gives way; the fixed
+ * members (`report`, `platform`, `window`, `settings`) are small and constant. The target
+ * HALVES until the rendered block fits, which terminates and needs no second size model —
+ * `boundDocumentArrays` already knows how to spend a per-section budget honestly and to write
+ * the note that says what it dropped. The last resort records the size and nothing else,
+ * because a body GitHub refuses carries no evidence at all.
+ */
+function telemetryJsonWithin(telemetry: Record<string, unknown>, room: number): string {
+  const full = JSON.stringify(telemetry, null, 2);
+  if (full.length <= room) return full;
+  const arrays = Object.keys(telemetry).filter((k) => Array.isArray(telemetry[k]));
+  for (let target = Math.floor(room * 0.9); target > 0 && arrays.length > 0; target = Math.floor(target / 2)) {
+    const per = Math.floor(target / arrays.length);
+    const bounded = boundDocumentArrays(telemetry, Object.fromEntries(arrays.map((k) => [k, per])));
+    const json = JSON.stringify({ publishedBounds: bounded.notes, ...bounded.doc }, null, 2);
+    if (json.length <= room) return json;
+  }
+  return JSON.stringify({
+    omitted: true,
+    chars: full.length,
+    note: 'the machine-built attachment did not fit GitHub\'s issue body; its whole copy is on '
+      + 'the reporting machine under this report id',
+  }, null, 2);
+}
+
 /** What the attachment is, and what it is not — in front of the JSON, for a human reader. */
 const ATTACHMENT_NOTE = [
   'Built by the platform from a fixed field whitelist. No conversation content, no',
@@ -117,16 +178,7 @@ export function renderIssueBody(row: ReportRow): string {
     '',
   ];
   for (const [key, heading] of HEADINGS) parts.push(`## ${heading}`, '', brief[key], '');
-  parts.push(
-    '## Technical attachment',
-    '',
-    ...ATTACHMENT_NOTE,
-    '',
-    '<details>',
-    '<summary>telemetry</summary>',
-    '',
-    '```json',
-    JSON.stringify(row.telemetry ?? {}, null, 2),
+  const tail = [
     '```',
     '',
     '</details>',
@@ -136,6 +188,22 @@ export function renderIssueBody(row: ReportRow): string {
     `dojo-report-id: ${row.id}`,
     `dojo-version: ${version ?? 'unknown'}`,
     '',
-  );
-  return parts.join('\n');
+  ];
+  const head = [
+    '## Technical attachment',
+    '',
+    ...ATTACHMENT_NOTE,
+    '',
+    '<details>',
+    '<summary>telemetry</summary>',
+    '',
+    '```json',
+  ];
+  // The room the attachment may have: the whole bound, less every character that is not it.
+  // `join('\n')` adds one newline per element after the first, and the attachment is one
+  // element, so the arithmetic is the joined length of everything else plus its own separator.
+  const around = [...parts, ...head, ...tail].join('\n').length + 1;
+  const json = telemetryJsonWithin((row.telemetry ?? {}) as Record<string, unknown>,
+    GITHUB_ISSUE_BODY_MAX_CHARS - around);
+  return [...parts, ...head, json, ...tail].join('\n');
 }

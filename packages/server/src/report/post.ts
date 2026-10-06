@@ -33,7 +33,9 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getReport, markPosted, type ReportRow } from './store.js';
-import { issueLabelsFor, renderIssueBody, renderIssueTitle, reportVersion } from './issue-body.js';
+import {
+  GITHUB_ISSUE_BODY_MAX_CHARS, issueLabelsFor, renderIssueBody, renderIssueTitle, reportVersion,
+} from './issue-body.js';
 import { commentOnIssue, createIssue, findIssueBySignature, type IssueMatch } from '../github/issues.js';
 import { reportRepo } from './repo.js';
 import { createLogger } from '../logger.js';
@@ -119,6 +121,21 @@ export async function postApprovedReport(id: string, choice?: PostChoice): Promi
   }
   const body = renderIssueBody(row);
   if (row.brief === null || body === '') return failed('This report has no text in it, so nothing was sent.');
+
+  // ── THE ONE BOUND, CHECKED BEFORE THE NETWORK (OWNER RULING 2026-10-05 #13) ──
+  // `renderIssueBody` spends the 65,536 characters on the brief first and bounds the
+  // machine-built attachment into what is left, so the only way to be over here is a BRIEF
+  // longer than the whole limit — reachable from the tool door, which caps no field. Refusing
+  // here rather than letting GitHub answer 422: their refusal arrives as an opaque validation
+  // error, and this one names the number, the overrun, and the thing the owner can actually do
+  // about it. The dashboard edit door caps each field at 8,000, so an edited brief always fits.
+  if (body.length > GITHUB_ISSUE_BODY_MAX_CHARS) {
+    return failed(
+      `This report is too long to file: ${body.length} characters against GitHub's `
+      + `${GITHUB_ISSUE_BODY_MAX_CHARS}-character limit for an issue body. Nothing was sent, and `
+      + 'the report is untouched. Shorten the text on the card and post it again.',
+    );
+  }
 
   const repo = reportRepo();
 
