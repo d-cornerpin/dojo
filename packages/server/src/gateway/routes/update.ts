@@ -3,7 +3,7 @@
 // ════════════════════════════════════════
 
 import { Hono } from 'hono';
-import { exec } from 'node:child_process';
+import { exec, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,6 +14,10 @@ import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
 import { readLastMigrationBackup } from '../../db/migration-backup.js';
 import { markPendingUpdate, markBootingNew } from '../../update-state.js';
+// t114 (census U14): the updater's long subprocesses are bounded by SILENCE, not by a flat
+// total. The mechanism takes an already-spawned child, so this route keeps its own spawn and
+// never borrows the agent toolbox's capability facade (which would refuse it outright).
+import { attachIdleBound } from '../../child-idle-bound.js';
 import { routeFailure } from './route-failure.js';
 import { ARTIFACT_MANIFEST_ASSET, fetchArtifactManifest, verifyArtifactAgainstManifest } from '../../update/artifact-integrity.js';
 // SWEEP CORE-2 item 3 — the owner's disk-space check, BEFORE anything is downloaded.
@@ -24,6 +28,53 @@ import {
 import { homeDir } from '../../home.js';
 
 const execAsync = promisify(exec);
+
+// ── t114 (CENSUS U14) — THE UPDATE'S LONG LEGS ARE BOUNDED BY SILENCE ──
+//
+// THE DEFECT, and it is the one that cuts against the owner's update-integrity standard (a
+// release gate): `curl` on a ~200 MB zip and `npm install --omit=dev` were each given a FLAT
+// 120-second total. On a slow home line the download simply cannot finish inside it, so the box
+// becomes PERMANENTLY un-updatable — every attempt dies at the same wall. Worse, the `npm
+// install` wall fires AFTER the new tree has already been rsynced over `PLATFORM_DIR`: the files
+// are new, the dependencies are half-written, and the next boot runs a platform whose
+// `node_modules` does not match its package.json. A flat clock cannot tell either of those from
+// a wedge, because both are producing output the whole way through.
+//
+// Both now re-arm on output. `curl` writes its progress meter to stderr and `npm` writes its
+// phases, so an actively-moving transfer or install keeps its bound alive, and a genuinely stuck
+// one still dies — at which point the reason says SILENCE rather than claiming a work budget the
+// command never had. A non-re-arming ceiling sits behind each, so neither can run for ever.
+const UPDATE_DOWNLOAD_IDLE_MS = 60_000;
+const UPDATE_DOWNLOAD_CEILING_MS = 60 * 60_000;
+const UPDATE_INSTALL_IDLE_MS = 120_000;
+const UPDATE_INSTALL_CEILING_MS = 30 * 60_000;
+
+/**
+ * Run a shell command under an output-idle bound, in the shape `execAsync` is called in here so
+ * the call sites stay readable. Rejects with the `execFile`-shaped failure `attachIdleBound`
+ * builds, whose `message` names which bound fired.
+ */
+async function execIdleBounded(
+  cmd: string,
+  opts: { idleMs: number; ceilingMs: number; cwd?: string; env?: NodeJS.ProcessEnv },
+): Promise<{ stdout: string; stderr: string }> {
+  const child = spawn('/bin/sh', ['-c', cmd], {
+    ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    ...(opts.env ? { env: opts.env } : {}),
+  });
+  return attachIdleBound(child, { idleMs: opts.idleMs, ceilingMs: opts.ceilingMs });
+}
+
+/**
+ * The download command. `--speed-limit`/`--speed-time` is curl's OWN stall detector and the right
+ * tool for this job: abort only if the transfer sits below 1 KB/s for a whole minute, which is a
+ * measured fact about the transfer rather than a guess about how long a file "should" take.
+ * `--connect-timeout` bounds the handshake, which is the one phase with no bytes to measure.
+ * Our idle bound is the belt to curl's braces — it also covers curl itself wedging.
+ */
+function curlDownloadCmd(url: string, dest: string): string {
+  return `curl -L --fail --connect-timeout 30 --speed-limit 1024 --speed-time 60 -o "${dest}" "${url}"`;
+}
 const logger = createLogger('updater');
 
 const GITHUB_REPO = 'd-cornerpin/dojo';
@@ -785,7 +836,9 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
     fs.mkdirSync(tmpDir, { recursive: true });
     const zipPath = path.join(tmpDir, 'dojo-platform.zip');
 
-    await execAsync(`curl -L -o "${zipPath}" "${zipAsset.browser_download_url}"`, { timeout: 120000 });
+    await execIdleBounded(curlDownloadCmd(zipAsset.browser_download_url, zipPath), {
+      idleMs: UPDATE_DOWNLOAD_IDLE_MS, ceilingMs: UPDATE_DOWNLOAD_CEILING_MS,
+    });
 
     // 2b. INTEGRITY BEFORE ANY SWAP (PHASE-5 T6B). Nothing is extracted and
     // nothing is rsynced until the bytes match the manifest published beside
@@ -868,7 +921,33 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
     logger.info('Files updated, running npm install');
 
     // 7. Install production dependencies (no build needed -- zip includes pre-compiled dist/)
-    await execAsync('npm install --omit=dev', { cwd: PLATFORM_DIR, timeout: 120000, env });
+    // t114 (U14), the second half: THIS LEG RUNS AFTER THE RSYNC, so a failure here does not
+    // leave the box where it started — the tree is already the new version and only its
+    // dependencies are incomplete. The flat 120s wall made that the ORDINARY outcome on a slow
+    // box, and the error it threw said nothing about the state it left behind. The bound above
+    // stops it killing a working install; this catch makes the remaining failure legible, names
+    // the backup that can be restored, and keeps the pending-update marker standing so the
+    // watchdog's rollback path still owns the episode rather than a half-updated tree booting as
+    // if it were whole.
+    try {
+      await execIdleBounded('npm install --omit=dev', {
+        cwd: PLATFORM_DIR, env,
+        idleMs: UPDATE_INSTALL_IDLE_MS, ceilingMs: UPDATE_INSTALL_CEILING_MS,
+      });
+    } catch (err) {
+      const why = (err as { message?: string }).message ?? String(err);
+      const stderr = ((err as { stderr?: string }).stderr ?? '').slice(0, 500);
+      logger.error('npm install after update FAILED — the platform tree is new but its dependencies are incomplete', {
+        error: why, stderr, platformDir: PLATFORM_DIR, backupDir,
+        restoreWith: `rm -rf "${PLATFORM_DIR}" && cp -R "${backupDir}" "${PLATFORM_DIR}"`,
+      });
+      throw new Error(
+        `Update halted after the files were swapped: \`npm install\` did not complete (${why}). `
+        + `The platform tree at ${PLATFORM_DIR} is version ${latestVersion} but its node_modules is `
+        + `incomplete, so it must not be booted as-is. The previous version is intact at ${backupDir}. `
+        + `Restore it, or re-run the update once the box can reach the registry.`,
+      );
+    }
 
     // Note: system-dependency installation (brew packages like whisper-cpp)
     // runs at server STARTUP via packages/server/src/services/ensure-system-deps.ts,
@@ -1076,7 +1155,9 @@ updateRouter.post('/rollback', async (c) => {
     fs.mkdirSync(tmpDir, { recursive: true });
     const zipPath = path.join(tmpDir, 'dojo-platform.zip');
 
-    await execAsync(`curl -L -o "${zipPath}" "${zipAsset.browser_download_url}"`, { timeout: 120000 });
+    await execIdleBounded(curlDownloadCmd(zipAsset.browser_download_url, zipPath), {
+      idleMs: UPDATE_DOWNLOAD_IDLE_MS, ceilingMs: UPDATE_DOWNLOAD_CEILING_MS,
+    });
 
     // Same gate as apply, and it must be here too: this path also rsyncs with
     // `--delete` over the running install (PHASE-5 T6B).
@@ -1119,7 +1200,33 @@ updateRouter.post('/rollback', async (c) => {
       }
     }
 
-    await execAsync('npm install --omit=dev', { cwd: PLATFORM_DIR, timeout: 120000, env });
+    // t114 (U14), the second half: THIS LEG RUNS AFTER THE RSYNC, so a failure here does not
+    // leave the box where it started — the tree is already the new version and only its
+    // dependencies are incomplete. The flat 120s wall made that the ORDINARY outcome on a slow
+    // box, and the error it threw said nothing about the state it left behind. The bound above
+    // stops it killing a working install; this catch makes the remaining failure legible, names
+    // the backup that can be restored, and keeps the pending-update marker standing so the
+    // watchdog's rollback path still owns the episode rather than a half-updated tree booting as
+    // if it were whole.
+    try {
+      await execIdleBounded('npm install --omit=dev', {
+        cwd: PLATFORM_DIR, env,
+        idleMs: UPDATE_INSTALL_IDLE_MS, ceilingMs: UPDATE_INSTALL_CEILING_MS,
+      });
+    } catch (err) {
+      const why = (err as { message?: string }).message ?? String(err);
+      const stderr = ((err as { stderr?: string }).stderr ?? '').slice(0, 500);
+      logger.error('npm install after update FAILED — the platform tree is new but its dependencies are incomplete', {
+        error: why, stderr, platformDir: PLATFORM_DIR, backupDir,
+        restoreWith: `rm -rf "${PLATFORM_DIR}" && cp -R "${backupDir}" "${PLATFORM_DIR}"`,
+      });
+      throw new Error(
+        `Update halted after the files were swapped: \`npm install\` did not complete (${why}). `
+        + `The platform tree at ${PLATFORM_DIR} is version ${targetVersion} but its node_modules is `
+        + `incomplete, so it must not be booted as-is. The previous version is intact at ${backupDir}. `
+        + `Restore it, or re-run the update once the box can reach the registry.`,
+      );
+    }
     fs.rmSync(tmpDir, { recursive: true });
 
     // Refresh the watchdog from the just-restored platform bundle and kickstart it,
