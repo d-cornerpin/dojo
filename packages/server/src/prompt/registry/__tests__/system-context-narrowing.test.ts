@@ -56,7 +56,7 @@ const TYPES = path.join(SERVER, 'src/prompt/registry/types.js').replace(/\\/g, '
  * fixture's 18 diagnostics into `positive` would fail it.
  */
 function fixtureErrors(fixtures: Record<string, string>): Record<string, string[]> {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'd15-'));
+  const dir = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'd15-'));
   const files: string[] = [];
   for (const [name, body] of Object.entries(fixtures)) {
     const file = path.join(dir, `${name}.ts`);

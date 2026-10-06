@@ -65,7 +65,7 @@ vi.mock('../../../db/connection.js', async () => {
     // (VACUUM INTO next to the DB file). Point it at the OS temp dir so the
     // snapshot never lands in the repo; a failure there is caught and logged
     // by migrations.ts without failing the chain.
-    getDbPath: () => path.join(os.tmpdir(), 'dojo-integration-test', 'dojo.db'),
+    getDbPath: () => path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-integration-test', 'dojo.db'),
   };
 });
 
