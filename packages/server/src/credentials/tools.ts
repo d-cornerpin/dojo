@@ -194,7 +194,7 @@ export async function executeCredentialTool(
       const result = updateCredential(serviceName, credentials, description, agentId, { overwrite: args.overwrite === true });
       if (!result.ok) return `Error: ${result.error}`;
       if (result.unchanged) return unchangedReceipt(result.record.serviceName, result.descriptionChanged === true);
-      // The five-word receipt T83's header recorded as "the whole receipt" is what left the
+      // The three-word receipt T83's header recorded as "the whole receipt" is what left the
       // caller with nothing to do next. It now ends where `credential_add`'s success ends.
       return `Credential "${result.record.serviceName}" updated — the previous value is gone. Retrieve the new one with credential_get(service_name="${result.record.serviceName}") when you need it for an API call.`;
     }

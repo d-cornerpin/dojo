@@ -124,7 +124,7 @@ export function overwriteRefusal(serviceName: string, row: StoredRowFacts, verb:
 // identical-call brake blocked calls 4, 5 and 6 and the turn tripped a SAFETY invariant.
 //
 // WHY it did that: the receipt. A successful re-write returned `Credential "x" updated.` —
-// five words that do not say whether anything changed, do not say the credential is ready to
+// three words that do not say whether anything changed, do not say the credential is ready to
 // use, and name no next call. So nothing in the loop ever told the model its write had landed,
 // and the cheapest way to check was to write again. The N-1 messages that failed to teach here
 // were SUCCESS messages, not refusals. T83's own header already recorded this receipt as the

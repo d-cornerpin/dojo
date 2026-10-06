@@ -27,7 +27,7 @@
 // `Credential "x" updated.` It says nothing about what changed, nothing about
 // whether the credential is usable, and names no next call — so the model had no
 // way to learn its write had landed, and the cheapest check it had was to write
-// again. (T83's header already recorded that five-word receipt as "the whole
+// again. (T83's header already recorded that three-word receipt as "the whole
 // receipt"; it closed the authorisation hole and left the text alone.)
 //
 // THE PROPERTY, three parts:
@@ -453,10 +453,23 @@ describe('§4 census: every model-facing credential outcome that refuses or no-o
   });
 
   it('BOTH WAYS: the roster covers every refusal site in all three credential modules', () => {
-    // THE TEETH. A presence-only census stays green when an undeclared refusal is added, so
-    // this one counts the refusal-returning sites in the SOURCE — comments stripped first, so
-    // the prose above a call can never satisfy it — and pins that count to the roster. A new
-    // refusal path reds this clause until it is driven above.
+    // THE TEETH, and the exact reach of them. A presence-only census stays green when an
+    // undeclared refusal is added, so this one counts the refusal-returning sites in the SOURCE
+    // — comments stripped first, so the prose above a call can never satisfy it — and pins that
+    // count to the roster.
+    //
+    // WHAT IT CATCHES: a refusal written in the engine's refusal shapes (`return { ok: false,
+    // error: … }`, a `return 'Error: …'`, a `No credential …` or `Unknown credential …`
+    // template). That is the convention this family is written in, and planting one of those
+    // reds this clause.
+    //
+    // WHAT IT DOES NOT CATCH, stated because a reviewer proved it by planting one: a refusal
+    // written OUTSIDE those shapes — a plain template with no `Error:` prefix — passes here, as
+    // does any new RECEIPT-class outcome, both uncounted by construction. The clause below
+    // ("every outcome the executor can return is declared") is what closes that gap; this one is
+    // the store-side backstop, since the refusals built in `store.ts` and `write-doors.ts` reach
+    // the model through shared `Error: ${result.error}` passthroughs that no per-outcome count
+    // can tell apart.
     const sites: string[] = [];
     // t120 extracted the door TEXTS into `write-doors.ts`, so the census follows the
     // concern: a refusal added in any of the three reds this clause.
@@ -488,6 +501,49 @@ describe('§4 census: every model-facing credential outcome that refuses or no-o
     const declared = ROSTER.filter(e => e.kind === 'refusal').length + NON_MODEL_FACING + TEXT_BUILDERS;
 
     expect(sites.length, `refusal sites in source:\n  ${sites.join('\n  ')}`).toBe(declared);
+  });
+
+  it('BOTH WAYS: every outcome the executor can return is DECLARED — shapeless refusals included', () => {
+    // WHY THIS EXISTS, and it is a reviewer's finding rather than mine: the clause above counts
+    // refusals written in the engine's four conventional shapes, so a refusal written outside
+    // them — a plain template with no `Error:` prefix — passed it GREEN when planted, and any
+    // new RECEIPT-class outcome was uncounted by construction. Both gaps have one cheap closure:
+    // stop pattern-matching the TEXT and count the `return`s instead. Every string a model can
+    // read out of these tools leaves `executeCredentialTool` through one of them, whatever its
+    // prose looks like, so an undeclared outcome of ANY class reds this.
+    const OUTCOMES = [
+      'credential_list: nothing stored',
+      'credential_list: the stored names',
+      'credential_get: service_name missing',
+      'credential_get: the row cannot be decrypted (the store throws; this is the catch)',
+      'credential_get: no row under that name',
+      'credential_get: the values, behind the freshness sentinel',
+      'credential_add: service_name missing',
+      'credential_add: payload is not an object',
+      'credential_add: a store refusal, passed through',
+      'credential_add: the write changed nothing',
+      'credential_add: stored',
+      'credential_update: service_name missing',
+      'credential_update: payload is not an object',
+      'credential_update: a store refusal, passed through',
+      'credential_update: the write changed nothing',
+      'credential_update: replaced',
+      'credential_delete: service_name missing',
+      'credential_delete: a store refusal, passed through',
+      'credential_delete: deleted',
+      'an unknown credential verb',
+    ];
+    // The one `return` in the executor that is NOT an outcome: the `.map` lambda that builds one
+    // line of the credential_list listing. It returns into an array, never to the model.
+    const LINE_BUILDERS = 1;
+
+    let src = fs.readFileSync(path.join(CRED_ROOT, 'tools.ts'), 'utf8');
+    src = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+    const body = src.slice(src.indexOf('export async function executeCredentialTool'));
+    const returns = [...body.matchAll(/\breturn\b/g)];
+
+    expect(returns.length, `\`return\`s in executeCredentialTool: ${returns.length}; declared outcomes: ${OUTCOMES.length} (+${LINE_BUILDERS} line builder)`)
+      .toBe(OUTCOMES.length + LINE_BUILDERS);
   });
 
   it('BOTH WAYS: the no-op branch is APPLIED at both write doors, not merely defined', () => {
