@@ -322,12 +322,23 @@ export function accessLine(agentId: string): string {
  * DEFAULT rather than being quietly added to the quiet set". Same rule here — a reason added to the
  * union later is a loss until somebody argues otherwise, rather than silently becoming policy.
  *
- * These four are the drops the handler's own switch answers as expected traffic: two the sender is
- * already holding the explanation for (`SEMANTIC_DUPLICATE`, `AWAITING_REPLY`) and two that are the
- * protocol's own bounds (`HOP_LIMIT_EXCEEDED`, `TERMINAL_THREAD_CLOSED`).
+ * THESE THREE ARE THE WHOLE OF POLICY: two the sender is already holding the explanation for
+ * (`SEMANTIC_DUPLICATE`, `AWAITING_REPLY`) and one that is the protocol's own bound
+ * (`HOP_LIMIT_EXCEEDED`). Each is a live refusal the transport makes on purpose.
+ *
+ * ⚠ `TERMINAL_THREAD_CLOSED` IS DELIBERATELY NOT HERE (ruled 2026-10-06). It reads like a
+ * protocol bound and is not one: v2.5.34 removed the rejection that raised it, and PHASE-2 T10
+ * (migration `143`) then deleted the `is_terminal` flag it was derived from. Positive enumeration
+ * over this tree finds NO EMIT SITE — the surviving mentions are this union member, two historical
+ * comments and the handler's own switch case, which tells the agent in as many words that a stale
+ * closure marker is an "engine bug, the transport should have auto-cleared it". A reason the
+ * transport can no longer raise on purpose cannot be the platform working as designed; if it ever
+ * surfaces it is evidence of an uncleared marker and the message is a LOSS. Filing it as
+ * `suppressed` would record a transport bug as intended behaviour, which is the same class of
+ * untruth as the inverted fall-through this set replaced.
  */
 const A2A_DROPS_THAT_ARE_POLICY: ReadonlySet<string> = new Set([
-  'SEMANTIC_DUPLICATE', 'AWAITING_REPLY', 'HOP_LIMIT_EXCEEDED', 'TERMINAL_THREAD_CLOSED',
+  'SEMANTIC_DUPLICATE', 'AWAITING_REPLY', 'HOP_LIMIT_EXCEEDED',
 ]);
 
 /** The honest ledger word for a refused A2A send. Unrecognised and absent reasons are `failed`. */
@@ -803,9 +814,13 @@ export const agentsHandlers: ToolHandlerMap = {
                 });
                 switch (result.reason) {
                   case 'TERMINAL_THREAD_CLOSED':
-                    // v2.5.34, Transport no longer rejects on this; if it
-                    // somehow still surfaces, it's a transport bug. Tell the
-                    // agent something useful instead of "the thread is closed."
+                    // v2.5.34 removed the rejection that raised this, and PHASE-2 T10
+                    // (migration 143) deleted the `is_terminal` flag behind it, so the
+                    // transport has NO EMIT SITE left: if it surfaces it is a stale
+                    // uncleared marker, i.e. a transport bug. The agent is told something
+                    // useful instead of "the thread is closed", and the LEDGER agrees with
+                    // this sentence — `a2aDropOutcome` files it `failed`, not `suppressed`,
+                    // because a bug is a lost message and never policy (ruled 2026-10-06).
                     content = `Thread ${result.threadId.slice(0, 8)} reported a stale closure marker (engine bug, the transport should have auto-cleared it). Try again, or omit thread_id to start a fresh thread.`;
                     break;
                   case 'HOP_LIMIT_EXCEEDED':

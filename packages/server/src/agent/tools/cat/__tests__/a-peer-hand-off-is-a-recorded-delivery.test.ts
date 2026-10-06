@@ -202,15 +202,46 @@ describe('§2 a hand-off that did NOT happen is recorded honestly', () => {
     expect(String(rows[0].detail)).toContain('SEMANTIC_DUPLICATE');
   });
 
-  it('every protocol drop the handler branches on records `suppressed`, not one of them', async () => {
-    // The four reasons are all "the protocol is doing its job" by the handler's own comment.
-    for (const reason of ['TERMINAL_THREAD_CLOSED', 'HOP_LIMIT_EXCEEDED', 'AWAITING_REPLY']) {
+  it('every GENUINE policy drop records `suppressed`, not one of them', async () => {
+    // The three refusals the transport still makes on purpose. `TERMINAL_THREAD_CLOSED` was in
+    // this list and has been ruled OUT of it — see the clause below.
+    for (const reason of ['SEMANTIC_DUPLICATE', 'HOP_LIMIT_EXCEEDED', 'AWAITING_REPLY']) {
       deliverSpy.mockResolvedValue(refused(reason));
       await sendToAgent();
     }
     const rows = deliveries('send_to_agent');
     expect(rows.length).toBe(3);
     expect(rows.map((r) => r.outcome)).toEqual(['suppressed', 'suppressed', 'suppressed']);
+  });
+
+  it('⚠ RULED 2026-10-06: `TERMINAL_THREAD_CLOSED` is a LOSS — it has no emit site left', async () => {
+    // It reads like a protocol bound and is not one. v2.5.34 removed the rejection that raised
+    // it, and PHASE-2 T10 (migration 143) then deleted the `is_terminal` flag it was derived
+    // from, so the transport cannot raise it on purpose any more. A reason nothing can emit
+    // deliberately cannot be "the platform working as designed": if it surfaces, a stale marker
+    // went uncleared and the message is gone. Filing it `suppressed` would record a transport
+    // bug as intended behaviour — the same class of untruth as the fall-through above.
+    deliverSpy.mockResolvedValue(refused('TERMINAL_THREAD_CLOSED'));
+
+    await sendToAgent();
+
+    expect(deliveries('send_to_agent')[0].outcome,
+      'a stale closure marker — a transport bug the handler itself calls one — was filed as policy')
+      .toBe('failed');
+  });
+
+  it('…and the handler already told the agent so, so the ledger and the message now agree', () => {
+    // The two halves must not drift: the sentence the agent reads says "engine bug", and the
+    // word the ledger records says `failed`. They disagreed before this ruling, which is how a
+    // bug could be read as designed behaviour by anyone querying the table instead of the chat.
+    const src = fs.readFileSync(path.resolve(HERE, '../agents.ts'), 'utf-8');
+    expect(/stale closure marker \(engine bug/.test(src),
+      'the handler stopped calling it an engine bug — the ledger word may need re-ruling with it')
+      .toBe(true);
+    const stripped = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+    expect(/A2A_DROPS_THAT_ARE_POLICY[\s\S]{0,200}?TERMINAL_THREAD_CLOSED/.test(stripped),
+      'TERMINAL_THREAD_CLOSED is back inside the policy set, against the 2026-10-06 ruling')
+      .toBe(false);
   });
 
   it('an unknown target is `failed` — a real send that could not be made', async () => {
@@ -252,16 +283,16 @@ describe('§2 a hand-off that did NOT happen is recorded honestly', () => {
   // list I write here, which is the only shape that closes that gap — and the clause after it
   // fails if the union grows a member this table has not ruled on.
   const HONEST_WORD: Record<string, 'suppressed' | 'failed'> = {
-    // Policy: the protocol working. Two the sender already holds the explanation for, two that
-    // are the protocol's own bounds.
+    // Policy: a live refusal the transport makes ON PURPOSE. Two the sender already holds the
+    // explanation for, one that is the protocol's own bound. These three are the whole of it.
     SEMANTIC_DUPLICATE: 'suppressed',
     AWAITING_REPLY: 'suppressed',
     HOP_LIMIT_EXCEEDED: 'suppressed',
-    TERMINAL_THREAD_CLOSED: 'suppressed',
     // Losses: a message that did not arrive and was not refused on purpose.
     AGENT_NOT_FOUND: 'failed',
-    MALFORMED_ENVELOPE: 'failed',   // ⇐ was `suppressed`: the verifier's defect
-    PERSIST_SKIPPED: 'failed',      // ⇐ was `suppressed`: the verifier's defect
+    MALFORMED_ENVELOPE: 'failed',     // ⇐ was `suppressed`: the verifier's fall-through defect
+    PERSIST_SKIPPED: 'failed',        // ⇐ was `suppressed`: the verifier's fall-through defect
+    TERMINAL_THREAD_CLOSED: 'failed', // ⇐ was `suppressed`: ruled 2026-10-06, see the clause below
   };
 
   it('⚠ EVERY reason in the union is filed under its honest word, not just the ones the switch names', async () => {
