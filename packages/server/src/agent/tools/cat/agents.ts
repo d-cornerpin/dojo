@@ -52,6 +52,10 @@ import { activeRuns } from '../../shared-state.js';
 import { turnContext } from '../../turn-context.js';
 import { decideApproval } from '../../destructive-gate.js';
 import { findInboundAssignByThread, recordA2AReply } from '../../a2a-replies.js';
+// t116 E3: the ONE delivery-ledger writer every send door goes through. `send_to_agent` is
+// one of PINNED §8's unrecorded paths and this import is that closure — see the call site.
+import { recordAtDoor } from '../../v2/outbound.js';
+import { recordedId } from '../../v2/delivery-outcome.js';
 import { getAgentPermissions } from '../../permissions.js';
 import { isNoWakeIntent, deliverA2AMessage, deliverA2AMessage as deliverBc } from '../../a2a-transport.js';
 import { onAgentRecovered } from '../../../healer/injury-recovery.js';
@@ -666,6 +670,39 @@ export const agentsHandlers: ToolHandlerMap = {
                 // turns (recipient = target agent name; the A2A thread id is the provider
                 // id). skipAudit: the auditLog row above is the provenance row.
                 writeToolReceipt({ agentId, tool: 'send_to_agent', tier: 1, verified: true, basis: 'provider-id', providerId: result.threadId, threadId: result.threadId, recipient: agentRef, sentText: payload, detail: { intent: effectiveIntent }, skipAudit: true });
+                // ── t116 E3 — THE DOOR THE SOURCE HAS BEEN NAMING FOR ITSELF ──
+                //
+                // `send_to_agent` wrote THREE bookkeeping rows here — the A2A reply mark, the
+                // audit row, the tool receipt — and no `deliveries` row at all. The ledger is
+                // the platform's one answer to "what did this agent actually deliver", every
+                // other send door writes it, and `git log -S recordAtDoor` over this file
+                // returned zero commits: the receipt was never here to lose. The gap is named
+                // in-source by `a2a-transport.ts`'s `recordPieceDelivery` — "PINNED §8 names
+                // `send_to_agent` as one of the ten unrecorded paths T5 closes AT THE DOOR" —
+                // and this is that door, so the row is written where the send is KNOWN rather
+                // than inferred later from a reply spine.
+                //
+                // THROUGH `recordAtDoor`, NOT a second writer. Attribution is the reason: the
+                // only existing producer of `tool='send_to_agent'` is that reply-spine call,
+                // and it credits the REPLYING PEER, so a delegator's own hand-off appeared
+                // nowhere. This row is the delegator's. Inside an outbound scope `recordAtDoor`
+                // folds into that scope's single row rather than standing beside it, so closing
+                // the door here cannot double-count the piece delivery it supersedes.
+                //
+                // Channel `a2a`, which mints no `conversations` row by construction — peer
+                // coordination is not a human conversation. Same channel, same vocabulary and
+                // same shape as the existing a2a producer; no new class of row is introduced.
+                recordedId(recordAtDoor({
+                  outcome: 'delivered', channel: 'a2a',
+                  agentId, tool: 'send_to_agent',
+                  recipientId: targetCheck?.id ?? agentRef,
+                  recipientDisplay: targetCheck?.name ?? agentRef,
+                  provider: result.threadId, threadRoot: result.threadId,
+                  messageId: result.messageId ?? null,
+                  detail: `A2A ${effectiveIntent}`,
+                }), 'send_to_agent: hand-off to a peer', {
+                  from: agentId, to: targetCheck?.id ?? agentRef, thread: result.threadId,
+                });
                 content = `[A2A:${effectiveIntent}] Message delivered to "${agentRef}" on thread ${result.threadId.slice(0, 8)}.` +
                   (requiresResponse || result.autoPromotedFromFyi
                     ? ` Their reply is ASYNCHRONOUS, it arrives on a LATER turn, NOT now, and you do NOT have it yet. ` +
@@ -710,6 +747,28 @@ export const agentsHandlers: ToolHandlerMap = {
                 auditLog(agentId, 'tool_call', 'send_to_agent', 'success',
                   `to:${agentRef} intent:${intent} reason:${result.reason}`,
                 );
+                // t116 E3, THE OTHER DIRECTION. A door that records only its successes is a
+                // ledger that cannot be asked "did this hand-off happen?" — the absence of a
+                // row would mean both "it was refused" and "nobody wrote one", which is the
+                // exact ambiguity that let the missing receipt sit here unnoticed. So the
+                // refusal is recorded too, in the vocabulary's own words: the four protocol
+                // drops above are the platform working as designed and are `suppressed`
+                // (dedupe, hop limit, awaiting-reply cooldown, stale closure marker); a
+                // target that does not exist, or any reason this handler does not recognise,
+                // is a `failed` send. Readers of this table filter `outcome='delivered'`, so
+                // neither row can be mistaken for a delivery.
+                recordedId(recordAtDoor({
+                  outcome: result.reason === 'AGENT_NOT_FOUND' || result.reason === undefined
+                    ? 'failed' : 'suppressed',
+                  channel: 'a2a',
+                  agentId, tool: 'send_to_agent',
+                  recipientId: targetCheck?.id ?? agentRef,
+                  recipientDisplay: targetCheck?.name ?? agentRef,
+                  provider: result.threadId, threadRoot: result.threadId,
+                  detail: `A2A ${intent} not delivered: ${result.reason ?? 'unknown'}`,
+                }), 'send_to_agent: hand-off refused by the protocol', {
+                  from: agentId, to: agentRef, thread: result.threadId, reason: result.reason,
+                });
                 switch (result.reason) {
                   case 'TERMINAL_THREAD_CLOSED':
                     // v2.5.34, Transport no longer rejects on this; if it
