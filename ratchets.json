@@ -6777,6 +6777,13 @@
       "to": 326,
       "by": "t109 fix round 1 — review Minor 5: one overstated sentence about what a2a_replies stores",
       "why": "323 -> 326 (+3 net: 0 code, +5 comment / -2 comment). COMMENT-ONLY. The doc said `a2a_replies.thread_id` 'holds the FULL id'; it usually does, because `recordA2AReply`'s send path writes it verbatim, but `agent/runtime.ts:837`'s abandoned-reply path records a marker-derived TOKEN. Behaviour was already correct — `a2aThreadTokenMatches` handles every era combination, which the reviewer traced independently — so this is the sentence catching up with the code, and it now points at that matcher as the reason a reader must handle both eras rather than trusting the column's shape. Three lines is the smallest form that says 'usually, and here is the exception, and here is what to use'. From 326 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/github/issues.ts",
+      "from": 415,
+      "to": 450,
+      "by": "t110 A/F5+F6 — the label read-back is handed to the caller instead of awaited before the row is marked",
+      "why": "415 -> 450 (+35: 15 code, 20 comment — 39 added, 4 removed; the removed 4 are the two inline return shapes the new `CreatedIssue` interface replaces). THE TWO DEFECTS THIS PAYS FOR, both about WHERE the read-back sat rather than what it measured. F5: it was awaited inside `createIssue`, putting a fresh authenticated HTTP call bounded only by `ISSUE_HTTP_TIMEOUT_MS` (10s) between a live public issue and `report/post.ts`'s `markPosted` — on the happy path of EVERY delivered report. A process death, supervisor restart or update inside that window left the issue filed on the public tracker and the row still `approved`: excluded from `listOpenReports`, refused forever by the one-shot `approveOnce`, and `releaseApproval` never reached because the handler died with the process — permanently undecidable, invisible on the card. F6: the read-back sat inside that function's outer `try`, whose `catch` returns `unreachable(...)`, so ANY escape from it (a throwing `logger.warn` in `cannotTell`, a hoisted measurement log) converted a LIVE issue into `ok: false`, drove `post.ts` to `failed`, and wrote `noteGithubFailure` — contradicting this module's own stated rule that a failed read-back performs no ledger write, which is the false YES the T5 round was spent removing. THE SHAPE OF THE PAY: the 15 code lines are the `CreatedIssue` interface (6), the thunk the accepted arm now returns instead of an awaited value (5), and the two signatures that name the interface (4). No branch was added and no behaviour changed on any green path — 42/42 across the two github label suites pass unmodified. The 20 comment lines are the argument for the ordering, and they are already the TRIMMED version: the first cut of this doc-block restated the whole F5/F6 account here and in `post.ts`, which measured 461 (+46); the duplication was cut and the ordering argument now lives once, in `post.ts`, beside the `record` call that is the half of it this module cannot see. 450 is the trimmed number, not the first one."
     }
   ],
   "maxNewFileLines": 400,
@@ -6961,7 +6968,7 @@
     "packages/server/src/gateway/routes/twilio.ts": 512,
     "packages/server/src/gateway/routes/update.ts": 1249,
     "packages/server/src/gateway/routes/upload.ts": 608,
-    "packages/server/src/github/issues.ts": 415,
+    "packages/server/src/github/issues.ts": 450,
     "packages/server/src/google/auth.ts": 776,
     "packages/server/src/google/tools-forms.ts": 821,
     "packages/server/src/google/tools-read.ts": 944,
