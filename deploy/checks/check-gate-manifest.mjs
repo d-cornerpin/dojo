@@ -37,6 +37,7 @@
 //   node deploy/checks/check-gate-manifest.mjs     # exit 0 clean, 1 on any violation
 // ════════════════════════════════════════
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -193,6 +194,143 @@ for (const r of REQUIRED_EMITS) {
         '  release.sh reads id / script / releaseArgs / title / fail off each line by position.',
         '',
       );
+    }
+  }
+}
+
+// ════════ 4c. the loop PASSES each row's declared release args — rehearsed, not read ════════
+// (t112, 2026-10-05) The manifest's `releaseArgs` column was inert. release.sh read it into
+// `$g_args` and then ran `node "$ROOT/$g_script"` with nothing after it, in BOTH loops. A gate
+// declared with a release-time flag it needs — `--require-kit`, `--require-live`,
+// `--require-artifact` each turn that gate's SKIP into a refusal — was therefore run without
+// the flag, skipped, and its skip counted as a green. Nothing failed; the gate answered a
+// weaker question than the manifest said it was asked. It never shipped a false green only
+// because every pre-build row declared no args on the day it was found.
+//
+// A text match on release.sh cannot prove this: `$g_args` can appear in a comment, in a
+// `step` title, or in a line whose quoting swallows it, and all three read as a fix. Section
+// 4b's own header is the precedent — "release.sh *asks* for the manifest" and "the manifest
+// *answers*" are different facts, and only running the thing settles the second one. So this
+// section EXTRACTS THE LOOP'S REAL BYTES out of deploy/release.sh and runs them in bash over a
+// PLANTED row whose gate exits 1 unless it is given the flag the row declares:
+//
+//   as written   the flag arrives  -> the planted gate exits 0 -> the loop completes
+//   mutated      the args dropped  -> the planted gate exits 1 -> the loop calls fail
+//
+// The mutation is applied HERE, every run, to the same extracted bytes — so the proof that
+// this clause can fail is not a note about something someone did once.
+{
+  const SH = 'bash';
+  // The loop's real bytes: from `run_gate() {` through the heredoc that feeds it. Extracting
+  // a REGION (rather than re-typing the loop) is the point — a rewrite that drops the args
+  // again is rehearsed as rewritten.
+  const START = 'run_gate() {';
+  const END = '__GATE_ROWS__\n';
+  const a = releaseSh.indexOf(START);
+  const b = a === -1 ? -1 : releaseSh.indexOf(END, releaseSh.indexOf(END, a) + 1);
+  if (a === -1 || b === -1) {
+    fail(
+      '✗ deploy/release.sh no longer carries an extractable blocking-gate loop.',
+      `  Looked for \`${START}\` followed by two \`__GATE_ROWS__\` lines. This section rehearses`,
+      '  those exact bytes to prove the loop passes each row\'s declared release args; with no',
+      '  region to extract it would silently prove nothing, which is worse than a red.',
+      '',
+    );
+  } else {
+    const loop = releaseSh.slice(a, b + END.length);
+    if (!/run_gate\s+"\$g_script"\s+"\$g_args"/.test(loop)) {
+      fail(
+        '✗ release.sh\'s blocking-gate loop does not hand `$g_args` to the gate runner.',
+        '  The manifest\'s releaseArgs column is then inert and a gate declared with a',
+        '  release-time flag runs without it. Pass the column: `run_gate "$g_script" "$g_args"`.',
+        '',
+      );
+    }
+    // The report tier reads the same column and dropped it the same way.
+    if (!/run_gate\s+"\$r_script"\s+"\$r_args"/.test(releaseSh)) {
+      fail(
+        '✗ release.sh\'s report-tier loop does not hand `$r_args` to the gate runner.',
+        '  Same inert column, same repair — a report instrument that needs a flag is recorded',
+        '  into the release record having answered a weaker question than it was asked.',
+        '',
+      );
+    }
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-args-'));
+    try {
+      const FLAG = '--require-the-flag';
+      fs.mkdirSync(path.join(dir, 'planted'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'planted/planted-gate.mjs'),
+        `if (!process.argv.includes(${JSON.stringify(FLAG)})) {\n`
+        + `  console.error('planted gate: ${FLAG} was not passed');\n`
+        + '  process.exit(1);\n}\nconsole.log("planted gate: flag arrived");\n',
+        'utf8',
+      );
+      // One row, five \x1f columns, exactly as the emit prints them. Spelled as a bash
+      // ANSI-C literal, because a JSON-escaped \u001f inside double quotes is six literal
+      // characters to bash and `IFS=$'\x1f' read` would split nothing — which fails this
+      // clause for a reason that has nothing to do with the loop under test.
+      const cols = ['planted', 'planted/planted-gate.mjs', FLAG, 'planted title', 'planted fail'];
+      const rowLiteral = `$'${cols.join('\\x1f')}'`;
+      const harness = (loopText) => [
+        'set -euo pipefail',
+        `ROOT=${JSON.stringify(dir)}`,
+        'fail() { echo "LOOP-FAILED: $*" >&2; exit 1; }',
+        'step() { :; }',
+        'GATE_TOTAL=1',
+        `GATE_ROWS=${rowLiteral}`,
+        loopText,
+        '[ "$GATE_N" -eq 1 ] || fail "ran $GATE_N of 1"',
+        'echo LOOP-COMPLETED',
+      ].join('\n');
+
+      const runHarness = (loopText) => {
+        const f = path.join(dir, 'harness.sh');
+        fs.writeFileSync(f, harness(loopText), 'utf8');
+        try {
+          const out = execFileSync(SH, [f], { encoding: 'utf8', cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
+          return { ok: true, out };
+        } catch (err) {
+          return { ok: false, out: `${err.stdout ?? ''}${err.stderr ?? ''}` };
+        }
+      };
+
+      const asWritten = runHarness(loop);
+      if (!asWritten.ok || !asWritten.out.includes('LOOP-COMPLETED')) {
+        fail(
+          `✗ release.sh's gate loop did NOT pass the planted row's declared arg (${FLAG}).`,
+          '  Rehearsed with the loop\'s own bytes over one manifest row whose gate refuses',
+          '  without the flag it declares. Output:',
+          ...asWritten.out.trim().split('\n').map((l) => `    ${l}`),
+          '',
+        );
+      }
+
+      // THE MUTANT, applied to the same extracted bytes: the pre-t112 invocation, which
+      // ignored the column. If this still completes, nothing above is measuring anything.
+      const mutant = loop.replace(/run_gate "\$g_script" "\$g_args"/, 'node "$ROOT/$g_script"');
+      if (mutant === loop) {
+        fail(
+          '✗ the args-passing mutant could not be planted (the call shape moved).',
+          '  Section 4c proves the loop passes `$g_args` by showing the no-args form FAILS.',
+          '  With no mutant to plant, the clause above would pass whatever the loop does.',
+          '',
+        );
+      } else {
+        const mutated = runHarness(mutant);
+        if (mutated.ok && mutated.out.includes('LOOP-COMPLETED')) {
+          fail(
+            '✗ the no-args mutant of release.sh\'s gate loop STILL completed.',
+            '  The planted gate is supposed to refuse when its declared flag is withheld, so',
+            '  this clause is not discriminating and the green above means nothing. Check the',
+            '  planted gate still exits non-zero without the flag.',
+            '',
+          );
+        }
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   }
 }

@@ -92,6 +92,64 @@ trap 'echo "" >&2; echo "interrupted — cleaning up" >&2; exit 130' INT TERM
 fail() { echo "" >&2; echo "❌ $*" >&2; exit 1; }
 step() { echo ""; echo "▶ $*"; }
 
+# ── ONE PLACE RESOLVES THE TEST KIT (t112, 2026-10-05) ──────────────────────────────────
+# The kit is a SIBLING repo, not a submodule, and three gates below read files out of it.
+# Every one of those reads used to spell its own path as `$SCRIPT_DIR/../../dojo-test-kit`,
+# which is correct from the MAIN checkout and wrong from anywhere else: a git worktree sits
+# one level deeper, so `../..` lands in `worktrees/` and the behavioral marker, the floor
+# model and the ritual shape all resolve to a path that does not exist. The gate that reads
+# the marker then refuses with "no last-green marker at <a path nobody has>", which reads as
+# "run the suite" and is really "this checkout cannot see the kit" — and the pressure that
+# produces is `--skip-behavioral-gate`, which is the one thing these gates exist to avoid.
+#
+# So the kit is resolved ONCE, loudly, and the answer is EXPORTED: `check-ritual-parity.mjs`
+# already honours `DOJO_TEST_KIT` and already tries both layouts, so exporting what this
+# script resolved makes the bash side and the node side name the same directory instead of
+# each guessing. A caller who knows better still wins — an inherited `DOJO_TEST_KIT` is taken
+# as given and never second-guessed.
+#
+# It is a FUNCTION, called from inside the behavioral block, not a line at file scope: with
+# `--skip-behavioral-gate` the owner has said this cut does not read the kit at all, and a
+# refusal at startup would turn an authorized skip into an impossible release.
+KIT_DIR=""
+KIT_MARKER='behavioral/lib/release-ritual.mjs'
+
+# Sets KIT_DIR and exports DOJO_TEST_KIT when a kit is found; returns 1 when none is, WITHOUT
+# failing — so a `--skip-behavioral-gate` run on a box with no kit still cuts, and the gates
+# that merely prefer a kit (check-ritual-parity.mjs skips loudly without one) see the same
+# directory this script resolved rather than guessing separately.
+find_kit() {
+  [ -n "$KIT_DIR" ] && return 0
+  local declared="${DOJO_TEST_KIT:-}"
+  local c
+  if [ -n "$declared" ]; then
+    if [ -f "$declared/$KIT_MARKER" ]; then
+      KIT_DIR="$(cd "$declared" && pwd)"
+      export DOJO_TEST_KIT="$KIT_DIR"
+      return 0
+    fi
+    # A DECLARED path that is not a kit is a typo, never a box without a kit. Saying so here
+    # rather than returning 1 stops it from being silently re-guessed into a sibling.
+    fail "Test kit: DOJO_TEST_KIT=$declared carries no $KIT_MARKER, so it is not a dojo-test-kit checkout. The behavioral, floor-model and ritual gates all read their evidence out of that repo and cannot be answered from a wrong path. Point DOJO_TEST_KIT at the kit, or clear it to let this script search beside the checkout. NOT publishing."
+  fi
+  for c in "$ROOT/../dojo-test-kit" "$ROOT/../../dojo-test-kit"; do
+    if [ -f "$c/$KIT_MARKER" ]; then
+      KIT_DIR="$(cd "$c" && pwd)"
+      export DOJO_TEST_KIT="$KIT_DIR"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# The same question, asked where the answer is REQUIRED: a loud refusal naming both layouts
+# it looked under, because the failure this replaces ("no last-green marker at <a path nobody
+# has>") read as "run the suite" when it meant "this checkout cannot see the kit".
+resolve_kit() {
+  find_kit && return 0
+  fail "Test kit: no dojo-test-kit found. Looked for $KIT_MARKER under $ROOT/../dojo-test-kit and $ROOT/../../dojo-test-kit. This checkout is not the one the kit sits beside (a git worktree is one level deeper than the main checkout), so the behavioral-suite, floor-model and release-ritual gates have no evidence to read and a green from them would mean nothing. Set DOJO_TEST_KIT=/path/to/dojo-test-kit and re-run. NOT publishing."
+}
+
 # Prerelease-aware "strictly greater": exit 0 iff version $1 ranks strictly
 # ABOVE version $2. Mirrors the engine's compareVersions (packages/server/src/
 # gateway/routes/update.ts) EXACTLY so this gate matches how a box actually
@@ -290,17 +348,49 @@ RELEASE_RECORD="$(mktemp)"
 # Gate 10/10 (upgrade-header auth bypass) is declared `post-smoke` and runs further
 # down, against the packaged artifact — that difference is DECLARED in the manifest
 # rather than left to be re-derived by counting.
+# Probe for the kit BEFORE the gates run, without refusing: `check-ritual-parity.mjs` reads
+# `DOJO_TEST_KIT` and otherwise guesses between two layouts, so exporting what this script
+# resolved makes the bash side and the node side name one directory. No kit found is not a
+# refusal here — that belongs to `resolve_kit` at the behavioral gate, which is the place the
+# kit is actually REQUIRED and the place `--skip-behavioral-gate` can excuse.
+find_kit || true
+
 GATE_ROWS="$(node "$SCRIPT_DIR/checks/gate-manifest.mjs" --emit blocking pre-build)" \
   || fail "Gate manifest: deploy/checks/gate-manifest.mjs could not be read. NOT publishing."
 GATE_TOTAL="$(printf '%s' "$GATE_ROWS" | grep -c . || true)"
 [ "${GATE_TOTAL:-0}" -ge 8 ] \
   || fail "Gate manifest: only ${GATE_TOTAL:-0} pre-build blocking gate(s) declared; a gate list that empties itself passes every release. NOT publishing."
+
+# ── EACH ROW'S DECLARED RELEASE ARGS ARE PASSED (t112, 2026-10-05) ──────────────────────
+# Both loops below read a `releaseArgs` column off the manifest and then ran `node $script`
+# with nothing after it. So the column was inert: a gate could be declared with a
+# release-time flag it needs — `--require-kit`, `--require-live`, `--require-artifact` are
+# all real flags that turn a SKIP into a refusal — and the release would run it without the
+# flag and accept its skip as a green. Nothing failed; the gate simply answered a weaker
+# question than the manifest said it was asked. (Harmless on the day it was found: every
+# pre-build row declared no args, and the three post-smoke rows that do are invoked by hand
+# further down WITH their flags. That is the ONLY reason it never shipped a false green.)
+#
+# `eval` and not word-splitting, deliberately: the column is declared SHELL SOURCE
+# (gate-manifest.mjs spells the post-smoke rows `"$SMOKE_PORT"`, `"$(git rev-parse HEAD)"`),
+# which is the whole point of having it — a release-time arg that cannot name a release-time
+# value is not worth declaring. The manifest is a tracked, gate-side file in this repo and
+# reaches here only through `check-gate-manifest.mjs`, which is itself gate 1/14.
+run_gate() {
+  # $1 = script path relative to ROOT, $2 = the declared args as shell source (may be empty)
+  if [ -n "$2" ]; then
+    eval "node \"\$ROOT/\$1\" $2"
+  else
+    node "$ROOT/$1"
+  fi
+}
+
 GATE_N=0
 while IFS=$'\x1f' read -r g_id g_script g_args g_title g_fail; do
   [ -n "$g_id" ] || continue
   GATE_N=$((GATE_N + 1))
   step "Blocking gate $GATE_N/$GATE_TOTAL: $g_title"
-  node "$ROOT/$g_script" || fail "$g_fail"
+  run_gate "$g_script" "$g_args" || fail "$g_fail"
 done <<__GATE_ROWS__
 $GATE_ROWS
 __GATE_ROWS__
@@ -333,7 +423,7 @@ while IFS=$'\x1f' read -r r_id r_script r_args r_title r_fail; do
   REPORT_N=$((REPORT_N + 1))
   {
     echo "── $r_id ──"
-    node "$ROOT/$r_script" 2>&1 || echo "(exit $? — report tier, not blocking)"
+    run_gate "$r_script" "$r_args" 2>&1 || echo "(exit $? — report tier, not blocking)"
     echo ""
   } >> "$RELEASE_RECORD"
   echo "  · $r_id recorded"
@@ -580,7 +670,11 @@ else
 # K1 (2026-07-26): the kit lives at the workspace sibling `dojo-test-kit/`
 # (the old `dev-test-tools/` path never resolved on this layout, which made
 # this gate permanently unpassable and pushed releases toward --skip).
-BEHAV_MARKER="${DOJO_TEST_KIT:-$SCRIPT_DIR/../../dojo-test-kit}/behavioral/results/last-green.json"
+# t112: WHICH sibling is now `resolve_kit`'s single answer rather than a path
+# spelled again here — see its header. It refuses loudly if there is no kit.
+resolve_kit
+echo "  · test kit: $KIT_DIR"
+BEHAV_MARKER="$KIT_DIR/behavioral/results/last-green.json"
 if [ ! -f "$BEHAV_MARKER" ]; then
   fail "Behavioral gate: no last-green marker at $BEHAV_MARKER. Run the behavioral suite to green first. NOT publishing."
 fi
@@ -633,7 +727,7 @@ fi
 # model is meant to expose, and a marker from before the pin carries no modelId
 # at all and cannot be checked. Both are refusals here, because "probably the
 # right model" is the belief this whole phase exists to stop shipping on.
-FLOOR_MODEL_FILE="${DOJO_TEST_KIT:-$SCRIPT_DIR/../../dojo-test-kit}/behavioral/floor-model.json"
+FLOOR_MODEL_FILE="$KIT_DIR/behavioral/floor-model.json"
 [ -f "$FLOOR_MODEL_FILE" ] \
   || fail "Behavioral gate: no declared floor model at $FLOOR_MODEL_FILE, so the marker's model cannot be checked against anything. NOT publishing."
 MODEL_MISMATCH=$(node -e "
@@ -717,7 +811,7 @@ if (m.fixesAfterFinalDraw !== false) bad.push('fixesAfterFinalDraw=' + JSON.stri
 console.log(bad.join(', '));
 ")
 if [ -n "$RITUAL_BAD" ]; then
-  fail "Behavioral gate: the marker is not a release-ritual marker ($RITUAL_BAD). The owner's 2026-09-20 ruling requires 3 green blast attempts AND a fresh 10-family generated draw, both at this commit: run \`node behavioral/runner.mjs --blast <scenario>\` then a plain generated run in dojo-test-kit. NOT publishing."
+  fail "Behavioral gate: the marker is not a release-ritual marker ($RITUAL_BAD). The owner's 2026-09-20 ruling requires 3 green blast attempts AND a fresh 10-family generated draw, both at this commit: run \`node behavioral/runner.mjs --blast <scenario>\` then a plain generated run in $KIT_DIR. NOT publishing."
 fi
 # The ✓ line reports `families.length` — THE FIELD THE GATE CHECKED — never `final.n`. They are equal
 # by construction in the kit, but `n` is a separate stored number that nothing above validates, so a
@@ -751,7 +845,7 @@ fi
 if grep -raqiE "sim-outbound|/api/dev/|DEV-INSTRUMENTS" "$SMOKE_PLATFORM/packages/server/dist" 2>/dev/null; then
   echo "  ---- offending dev-instrument references in packaged build ----"
   grep -raniE "sim-outbound|/api/dev/|DEV-INSTRUMENTS" "$SMOKE_PLATFORM/packages/server/dist" 2>/dev/null | head -10
-  fail "Dev-instrument ship-gate: packaged build still references dev instruments (sim-outbound / /api/dev). Run dojo-test-kit/server-instruments/uninstall.mjs, rebuild, and re-run. NOT publishing."
+  fail "Dev-instrument ship-gate: packaged build still references dev instruments (sim-outbound / /api/dev). Run <dojo-test-kit>/server-instruments/uninstall.mjs (DOJO_TEST_KIT names the one this run resolved), rebuild, and re-run. NOT publishing."
 fi
 echo "  ✓ no dev instruments (sim-outbound / /api/dev) in packaged build"
 
