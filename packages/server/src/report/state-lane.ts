@@ -129,6 +129,26 @@ export interface ReportStateRow {
   exportPath: string | null;
 }
 
+/**
+ * THE LANE'S STATE FOR A ROW, which is NOT always its `status` column (round-4 F9).
+ *
+ * `markExported` writes `status = 'posted'` with an `export_path` and no `issue_url` — the
+ * "unconnected box still gets its report out" door. The column is right (the report left the
+ * drafting machinery) and the lane's WORD for it was wrong: `renderRow` fell back to the export
+ * path, so a file on the owner's own disk rendered as `FILED` under a legend that defines FILED
+ * as *"it reached the builders, at the link shown"*. It did not reach them, and the link is a
+ * path only that box can open.
+ *
+ * That is precisely the fault §5b of this module's clauses exists to prevent — one word meaning
+ * two things across the surfaces an agent reads on the same turn — so the fix is a SEPARATE
+ * word, not a hedge on FILED. Hedging FILED would weaken the definition for the genuine tracker
+ * case, which is the one the whole ritual round was spent making unambiguous.
+ */
+function laneState(r: ReportStateRow): string {
+  if (r.status === 'posted' && r.issueUrl === null && r.exportPath !== null) return 'exported';
+  return String(r.status);
+}
+
 /** The word this release uses for each state, in the user's terms rather than the column's. */
 function stateWord(status: string): string {
   switch (status) {
@@ -137,6 +157,7 @@ function stateWord(status: string): string {
     case 'drafting': return 'UNFINISHED';
     case 'approved': return 'APPROVED, SENDING';
     case 'posted': return 'FILED';
+    case 'exported': return 'EXPORTED TO THIS BOX';
     // `store.ts` rule 4's direction, said rather than hidden: a value this release does not
     // recognise is not a card the user can see.
     default: return 'UNRECOGNISED STATE — treat as NOT on their dashboard';
@@ -173,6 +194,12 @@ function legendFor(statuses: readonly string[]): string {
       + 'promise a link until the row reads FILED.');
   }
   if (has('posted')) parts.push('FILED means it reached the builders, at the link shown.');
+  if (has('exported')) {
+    parts.push('EXPORTED TO THIS BOX means the report was written to a FILE on this machine '
+      + 'because the box could not reach GitHub — it has NOT reached the Dojo builders. The path '
+      + 'shown is local: do not offer it as a link, and do not say the report was filed or sent. '
+      + 'Someone has to hand that file over.');
+  }
   if (parts.length === 0) {
     parts.push('A state this release does not recognise is not a card the user can see — do not '
       + 'claim it is filed.');
@@ -182,8 +209,12 @@ function legendFor(statuses: readonly string[]): string {
 
 /** One row: the id, the state word, the recorded instant, and a link only when there is one. */
 function renderRow(r: ReportStateRow): string {
-  const link = r.status === 'posted' ? ` — ${r.issueUrl ?? r.exportPath ?? '(no link recorded)'}` : '';
-  return `${r.id} — ${stateWord(String(r.status))} ${recordedInstant(r.updatedAt)}${link}`;
+  const state = laneState(r);
+  // The export's path is LABELLED rather than rendered bare, so the row cannot read as an
+  // address someone else could open.
+  const link = state === 'exported' ? ` — written to ${r.exportPath ?? ''}`
+    : r.status === 'posted' ? ` — ${r.issueUrl ?? r.exportPath ?? '(no link recorded)'}` : '';
+  return `${r.id} — ${stateWord(state)} ${recordedInstant(r.updatedAt)}${link}`;
 }
 
 /**
@@ -241,7 +272,7 @@ export function renderReportStateBlock(
       + 'this list.' + settledNote
     : 'Every report of yours that is still LIVE is listed above, however old it is — so anything '
       + 'not listed is settled, and not a card on their dashboard.' + settledNote;
-  const legend = legendFor([...new Set(rows.map((r) => String(r.status)))]);
+  const legend = legendFor([...new Set(rows.map(laneState))]);
   return `${REPORT_STATE_HEAD}\n${SUPERSEDES}\n${legend}\n${lines.join('\n')}\n${bound}\n${REPORT_STATE_TAIL}`;
 }
 

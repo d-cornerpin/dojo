@@ -227,12 +227,13 @@ function tolerateLegacy(agentId: string): void {
  * over-void costs one unrelated ask its anti-repetition (the owner may hear an answer twice,
  * which owner ruling 2026-08-05 chooses in those words); the under-void direction is the red.
  *
- * ── THE RESIDUAL, STATED ──
- * A restatement that names NO id and is TWO OR MORE turns from any row that does is not bound.
- * There are 0 such stamps in the 4,242 — the model names the id when it has one, because the
- * tool told it — and closing it properly wants the `dojo_reports.ask_id` column the round-2
- * investigation named, not a wider text rule. Reach two turns back instead and the first thing
- * it voids is a question about centimetres.
+ * ── AND ALL OF IT IS THE SECOND ARM'S PRICE ONLY (migration 182) ──
+ * Those shapes are what RECONSTRUCTING a binding from proximity costs, so they are paid only where
+ * there IS none: a row naming this ask is answered at the top of this function and reaches none of
+ * them, so the batch partner and the span neighbour keep their stamps on every report filed since
+ * 182 (`the-report-remembers-which-ask-it-answers` §3). The old residual — a restatement naming no
+ * id, two turns from any row that does, 0 of the 4,242 — is closed outright for bound rows; what
+ * is left is the pre-182 population, where nothing backfills honestly.
  */
 export function answerStillStands(
   agentId: string, askSeq: number, answerMessageId: string | null | undefined,

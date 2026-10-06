@@ -98,16 +98,36 @@ const laneSource = (): string => fs.readFileSync(
   path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'state-lane.ts'), 'utf8',
 );
 
+/**
+ * THE LANE'S SOURCE WITH ITS COMMENTS REMOVED, for the absence clauses below.
+ *
+ * An absence clause over raw text asserts a property of the PROSE as well as the code, and this
+ * module's prose has to be able to NAME the doors it is not allowed to call — the writer census
+ * below is only comprehensible if the reader can see which doors are meant, and round-4 F9's fix
+ * had to explain that `markExported` writes `posted` with an `export_path`. The first version of
+ * that fix was failed by this file's own writer census on the WORD IN A COMMENT, which is the
+ * shape G4 warns about from the other side: a clause satisfiable (or breakable) by the prose
+ * above a call is testing the comment. So the absence is asserted over code only.
+ */
+const laneCode = (): string => laneSource()
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n');
+
 const AGENT = 'card-owner';
 const OTHER = 'card-owner-two';
 const db = (): Database.Database => mockDb.current!;
 
 /** A report row in an exact state at an exact recorded instant. */
-function seedReport(p: { id: string; status: string; updatedAt: string; agentId?: string; issueUrl?: string }): string {
+function seedReport(p: {
+  id: string; status: string; updatedAt: string; agentId?: string;
+  issueUrl?: string; exportPath?: string;
+}): string {
   db().prepare(
-    `INSERT INTO dojo_reports (id, agent_id, status, lane, signature, created_at, updated_at, issue_url)
-     VALUES (?, ?, ?, 'other', ?, ?, ?, ?)`,
-  ).run(p.id, p.agentId ?? AGENT, p.status, `sig-${p.id}`, p.updatedAt, p.updatedAt, p.issueUrl ?? null);
+    `INSERT INTO dojo_reports (id, agent_id, status, lane, signature, created_at, updated_at,
+                               issue_url, export_path)
+     VALUES (?, ?, ?, 'other', ?, ?, ?, ?, ?)`,
+  ).run(p.id, p.agentId ?? AGENT, p.status, `sig-${p.id}`, p.updatedAt, p.updatedAt,
+    p.issueUrl ?? null, p.exportPath ?? null);
   return p.id;
 }
 const daysAgo = (n: number): string =>
@@ -759,10 +779,91 @@ describe('§6 one injection site, declared and protected', () => {
   });
 
   it('the lane is read-only over report state — it is a new READER, never a writer', () => {
+    // Non-vacuity: stripping comments must not have stripped the module. If `laneCode` ever
+    // returned something empty or tiny, every absence below would pass for the wrong reason.
+    expect(laneCode().length, 'the comment-stripped source is too small to be the real module')
+      .toBeGreaterThan(2000);
+    expect(laneCode(), 'the stripped source lost the function the whole lane is')
+      .toContain('function renderRow');
+
     for (const writer of ['UPDATE dojo_reports', 'INSERT INTO dojo_reports', 'DELETE FROM dojo_reports',
       'approveOnce', 'markPosted', 'markExported', 'releaseApproval']) {
-      expect(laneSource(), 'the consent census names the doors that MOVE an approval; this lane touches none')
+      expect(laneCode(), 'the consent census names the doors that MOVE an approval; this lane calls none')
         .not.toContain(writer);
     }
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §5c — AN EXPORT IS NOT A DELIVERY, AND IT NO LONGER BORROWS THE WORD FOR ONE (round-4 F9).
+//
+// `markExported` — the "an unconnected box still gets its report out" door — writes
+// `status = 'posted'` with an `export_path` and NO `issue_url`. The column is right: the report
+// left the drafting machinery. The lane's WORD for it was wrong. `renderRow` fell back to the
+// export path, so a file on the owner's own disk rendered as `FILED`, under a legend that defines
+// FILED as "it reached the builders, at the link shown" — and it had reached nobody, at a path
+// only that one box can open.
+//
+// That is the §5b fault exactly: one word with two meanings across the surfaces an agent reads on
+// the same turn. §5b's own resolution was that the LANE'S LEGEND IS THE DEFINITION and the other
+// surface moves — so the fix here is a SEPARATE WORD, not a hedge on FILED. Hedging FILED would
+// weaken the definition for the genuine tracker case, which is the one the ritual round was spent
+// making unambiguous.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§5c an exported report is not described as filed', () => {
+  it('a posted row with only an export path renders EXPORTED, not FILED', () => {
+    seedReport({
+      id: 'e-1', status: 'posted', updatedAt: daysAgo(0),
+      exportPath: '~/.dojo/reports/e-1/report.md',
+    });
+    const b = block();
+
+    expect(b, 'the exported row is not shown at all').toContain('e-1');
+    expect(b, 'a file on this box is still called EXPORTED nowhere').toContain('EXPORTED TO THIS BOX');
+    // THE DEFECT, IN ONE LINE: the word that means "it reached the builders" may not appear for
+    // a row that reached nobody — not as the state word and not as the legend.
+    expect(b, 'a local export borrowed the word reserved for a delivery').not.toContain('FILED');
+    expect(b, 'the legend still defines this row as having reached the builders')
+      .not.toContain('FILED means it reached the builders');
+    // And it says what the agent must not do with the path.
+    expect(b).toContain('has NOT reached the Dojo builders');
+    expect(b, 'the path is offered as though someone else could open it').toContain('written to ');
+  });
+
+  it('a genuinely posted row is UNAFFECTED — this is a split, not a hedge', () => {
+    seedReport({
+      id: 'p-real', status: 'posted', updatedAt: daysAgo(0),
+      issueUrl: 'https://example.invalid/issues/41',
+    });
+    const b = block();
+
+    expect(b).toContain('FILED');
+    expect(b, 'the FILED definition was weakened for the case it was written for')
+      .toContain('FILED means it reached the builders, at the link shown.');
+    expect(b).toContain('https://example.invalid/issues/41');
+    expect(b, 'a tracker delivery was relabelled as a local export').not.toContain('EXPORTED TO THIS BOX');
+  });
+
+  it('a row carrying BOTH is a delivery: the issue URL wins', () => {
+    // `markPosted` then an export, or a box that recovered its connection. The tracker link is
+    // the stronger fact and the one triage can act on.
+    seedReport({
+      id: 'p-both', status: 'posted', updatedAt: daysAgo(0),
+      issueUrl: 'https://example.invalid/issues/42', exportPath: '/tmp/also-written.md',
+    });
+    const b = block();
+    expect(b).toContain('FILED');
+    expect(b).toContain('https://example.invalid/issues/42');
+    expect(b, 'a delivered report was downgraded to an export because a file also exists')
+      .not.toContain('EXPORTED TO THIS BOX');
+  });
+
+  it('the two legends coexist when both shapes are present', () => {
+    seedReport({ id: 'm-filed', status: 'posted', updatedAt: daysAgo(0), issueUrl: 'https://example.invalid/issues/7' });
+    seedReport({ id: 'm-exported', status: 'posted', updatedAt: daysAgo(0), exportPath: '/tmp/m.md' });
+    const b = block();
+    expect(b).toContain('FILED means it reached the builders');
+    expect(b).toContain('EXPORTED TO THIS BOX means');
   });
 });
