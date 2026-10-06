@@ -452,13 +452,15 @@ describe('§4 census: every model-facing credential outcome that refuses or no-o
     }
   });
 
-  it('BOTH WAYS: the roster covers every refusal site in the two credential modules', () => {
+  it('BOTH WAYS: the roster covers every refusal site in all three credential modules', () => {
     // THE TEETH. A presence-only census stays green when an undeclared refusal is added, so
     // this one counts the refusal-returning sites in the SOURCE — comments stripped first, so
     // the prose above a call can never satisfy it — and pins that count to the roster. A new
     // refusal path reds this clause until it is driven above.
     const sites: string[] = [];
-    for (const file of ['store.ts', 'tools.ts']) {
+    // t120 extracted the door TEXTS into `write-doors.ts`, so the census follows the
+    // concern: a refusal added in any of the three reds this clause.
+    for (const file of ['store.ts', 'tools.ts', 'write-doors.ts']) {
       let src = fs.readFileSync(path.join(CRED_ROOT, file), 'utf8');
       src = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
       const found = [
@@ -481,7 +483,7 @@ describe('§4 census: every model-facing credential outcome that refuses or no-o
     // ever sees them but which the store still owes its non-agent callers. Four sites.
     const NON_MODEL_FACING = 4;
     // `missingRefusal` is a text BUILDER, not a door: its `return` matches the same shape as a
-    // real site. One.
+    // real site, and it now lives in `write-doors.ts`. One.
     const TEXT_BUILDERS = 1;
     const declared = ROSTER.filter(e => e.kind === 'refusal').length + NON_MODEL_FACING + TEXT_BUILDERS;
 
