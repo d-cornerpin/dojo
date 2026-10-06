@@ -302,6 +302,39 @@ export function accessLine(agentId: string): string {
   return `\nAccess: ${parts.join(' | ')}`;
 }
 
+/**
+ * t116 E3 FIX ROUND (verifier's defect) — WHICH A2A DROPS ARE POLICY, AND WHICH ARE LOSSES.
+ *
+ * THE DEFECT THIS REPLACES, and it was mine: the outcome was an inline ternary that allowlisted
+ * `failed` for `AGENT_NOT_FOUND` and defaulted *everything else* to `suppressed` — the exact
+ * inverse of the sentence written above it, which promised that "any reason this handler does not
+ * recognise" is a failed send. The reason union has seven members and that ternary recognised two,
+ * so `MALFORMED_ENVELOPE` and `PERSIST_SKIPPED` were both filed as the platform working as
+ * designed. `PERSIST_SKIPPED` is the sharpest case: its own doc says the receiver's row persisted
+ * nothing, so there is no message to deliver — a message that VANISHED, recorded as a protocol
+ * decision. Nothing false ever reached `delivered`, so no reader was told a hand-off happened that
+ * did not; the lie was about WHY nothing arrived, which is the question this ledger exists to
+ * answer honestly.
+ *
+ * THE SET IS NOW THE ALLOWLIST AND `failed` IS THE DEFAULT, which is the safe direction and the
+ * one the transport already chose for the same vocabulary: `DROPS_THE_SENDER_IS_TOLD_ABOUT`
+ * (`a2a-transport.ts`) says in as many words that "an unrecognised future reason lands at warn BY
+ * DEFAULT rather than being quietly added to the quiet set". Same rule here — a reason added to the
+ * union later is a loss until somebody argues otherwise, rather than silently becoming policy.
+ *
+ * These four are the drops the handler's own switch answers as expected traffic: two the sender is
+ * already holding the explanation for (`SEMANTIC_DUPLICATE`, `AWAITING_REPLY`) and two that are the
+ * protocol's own bounds (`HOP_LIMIT_EXCEEDED`, `TERMINAL_THREAD_CLOSED`).
+ */
+const A2A_DROPS_THAT_ARE_POLICY: ReadonlySet<string> = new Set([
+  'SEMANTIC_DUPLICATE', 'AWAITING_REPLY', 'HOP_LIMIT_EXCEEDED', 'TERMINAL_THREAD_CLOSED',
+]);
+
+/** The honest ledger word for a refused A2A send. Unrecognised and absent reasons are `failed`. */
+function a2aDropOutcome(reason: string | undefined): 'suppressed' | 'failed' {
+  return reason !== undefined && A2A_DROPS_THAT_ARE_POLICY.has(reason) ? 'suppressed' : 'failed';
+}
+
 export const agentsHandlers: ToolHandlerMap = {
   async "spawn_agent"({ agentId, args }) {
     let content = '';
@@ -751,15 +784,14 @@ export const agentsHandlers: ToolHandlerMap = {
                 // ledger that cannot be asked "did this hand-off happen?" — the absence of a
                 // row would mean both "it was refused" and "nobody wrote one", which is the
                 // exact ambiguity that let the missing receipt sit here unnoticed. So the
-                // refusal is recorded too, in the vocabulary's own words: the four protocol
-                // drops above are the platform working as designed and are `suppressed`
-                // (dedupe, hop limit, awaiting-reply cooldown, stale closure marker); a
-                // target that does not exist, or any reason this handler does not recognise,
-                // is a `failed` send. Readers of this table filter `outcome='delivered'`, so
-                // neither row can be mistaken for a delivery.
+                // refusal is recorded too, in the vocabulary's own words. WHICH word is
+                // `a2aDropOutcome`'s to decide, not this call site's — it is a named set with a
+                // `failed` default, and it lives at module scope precisely because the inline
+                // ternary that stood here contradicted this comment and filed two real losses
+                // as policy. Readers of this table filter `outcome='delivered'`, so no refusal
+                // row of either word can be mistaken for a delivery.
                 recordedId(recordAtDoor({
-                  outcome: result.reason === 'AGENT_NOT_FOUND' || result.reason === undefined
-                    ? 'failed' : 'suppressed',
+                  outcome: a2aDropOutcome(result.reason),
                   channel: 'a2a',
                   agentId, tool: 'send_to_agent',
                   recipientId: targetCheck?.id ?? agentRef,

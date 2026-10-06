@@ -236,6 +236,81 @@ describe('§2 a hand-off that did NOT happen is recorded honestly', () => {
     expect(asDelivered, 'a refusal landed in the delivered set').toEqual([]);
   });
 
+  // ── THE VERIFIER'S DEFECT, and the clause that was missing when it slipped through ────────
+  //
+  // The first cut of this door allowlisted `failed` for `AGENT_NOT_FOUND` and defaulted every
+  // other reason to `suppressed` — the inverse of the sentence written directly above it. The
+  // reason union has seven members and that ternary recognised two, so `MALFORMED_ENVELOPE` and
+  // `PERSIST_SKIPPED` were both filed as the platform working as designed. `PERSIST_SKIPPED`'s
+  // own doc says the receiver's row persisted nothing, so there is no message to deliver: a
+  // message that vanished, recorded as a protocol decision.
+  //
+  // WHY THE SUITE MISSED IT. §2 above drove the four reasons the handler's switch NAMES and the
+  // one unknown target, and every one of them was mapped correctly. Nothing drove a reason the
+  // ternary did not recognise, so the defect sat in the gap between "the cases I thought of" and
+  // "the cases the type allows". The table below is keyed on the SHARED UNION rather than on a
+  // list I write here, which is the only shape that closes that gap — and the clause after it
+  // fails if the union grows a member this table has not ruled on.
+  const HONEST_WORD: Record<string, 'suppressed' | 'failed'> = {
+    // Policy: the protocol working. Two the sender already holds the explanation for, two that
+    // are the protocol's own bounds.
+    SEMANTIC_DUPLICATE: 'suppressed',
+    AWAITING_REPLY: 'suppressed',
+    HOP_LIMIT_EXCEEDED: 'suppressed',
+    TERMINAL_THREAD_CLOSED: 'suppressed',
+    // Losses: a message that did not arrive and was not refused on purpose.
+    AGENT_NOT_FOUND: 'failed',
+    MALFORMED_ENVELOPE: 'failed',   // ⇐ was `suppressed`: the verifier's defect
+    PERSIST_SKIPPED: 'failed',      // ⇐ was `suppressed`: the verifier's defect
+  };
+
+  it('⚠ EVERY reason in the union is filed under its honest word, not just the ones the switch names', async () => {
+    for (const [reason, want] of Object.entries(HONEST_WORD)) {
+      deliverSpy.mockResolvedValue(refused(reason));
+      await sendToAgent();
+    }
+    const got = deliveries('send_to_agent').map((r) => r.outcome);
+    expect(got, 'a drop is filed under the wrong word — the record lies about why nothing arrived')
+      .toEqual(Object.values(HONEST_WORD));
+  });
+
+  it('a reason the door does not recognise is a LOSS, never policy — the default direction', async () => {
+    // The safe direction, and the one the transport already chose for this same vocabulary: an
+    // unrecognised future reason is a failure until somebody argues otherwise. A door that
+    // defaults to `suppressed` quietly absorbs the next real loss, which is exactly what
+    // happened to `PERSIST_SKIPPED`.
+    deliverSpy.mockResolvedValue(refused('A_REASON_INVENTED_BY_A_LATER_TASK'));
+    await sendToAgent();
+    expect(deliveries('send_to_agent')[0].outcome,
+      'an unknown drop reason was filed as the platform working as designed').toBe('failed');
+  });
+
+  it('a refusal with NO stated reason at all is a loss too', async () => {
+    deliverSpy.mockResolvedValue({ delivered: false, threadId: THREAD });
+    await sendToAgent();
+    expect(deliveries('send_to_agent')[0].outcome).toBe('failed');
+  });
+
+  it('the table above rules on the WHOLE shared union — a new reason cannot arrive unruled', async () => {
+    // BOTH DIRECTIONS. The table is a list in a test file, so on its own it would go stale
+    // silently: a seventh reason added to the union would simply never be driven, which is the
+    // precise failure mode that hid the defect this section exists for. Keyed off the shipped
+    // type, a new member reds HERE and forces a decision rather than defaulting into a word
+    // nobody chose.
+    const src = fs.readFileSync(
+      path.resolve(HERE, '../../../../../../shared/src/a2a-protocol.ts'), 'utf-8',
+    ).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+    const union = src.match(/export type A2ADropReason =([\s\S]*?);/);
+    expect(union, 'the drop-reason union moved — this clause lost its subject').toBeTruthy();
+    const members = [...union![1].matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]);
+    expect(members.length, 'the union parsed empty').toBeGreaterThanOrEqual(6);
+    // `AWAITING_REPLY` is the local addition on top of the shared union (`A2ADropReasonLocal`),
+    // so it is ruled on above but is not expected in the shared type.
+    const unruled = members.filter((m) => !(m in HONEST_WORD));
+    expect(unruled, 'a drop reason exists that this door has never ruled on — it would default silently')
+      .toEqual([]);
+  });
+
   it('a refused send writes NO tool receipt, so the two ledgers still agree', async () => {
     // The receipt is written only on the delivered arm, and that is correct — it is a
     // grounding claim ("I told X"). The delivery ledger records the attempt either way. The
@@ -301,14 +376,42 @@ describe('§4 a door that claims a send records it', () => {
    *  claim being audited is "words reached somebody", so only a `delivered` record answers it. */
   const recorded = (src: string): string[] => {
     const names = new Set<string>();
-    for (const m of src.matchAll(/recordAtDoor\(\{([\s\S]*?)\}\)/g)) {
-      const body = m[1];
+    // ⚠ BRACE-MATCHED, NOT NON-GREEDY (verifier's second note). The obvious
+    // `recordAtDoor\(\{([\s\S]*?)\}\)` truncates at the FIRST `})` inside the call, and the
+    // broadcast site's `detail: \`A2A ${bcIntent} (group ${groupId})\`` contains exactly that
+    // sequence. It happened to work only because `outcome` and `tool` both precede `detail` at
+    // both call sites — i.e. the census depended on field ORDER nobody had agreed to keep.
+    // Reordering two keys would have silently emptied it, which is the quiet-vacuity failure a
+    // census is supposed to be immune to. Counting depth is cheap and removes the coupling.
+    for (const m of src.matchAll(/recordAtDoor\(\{/g)) {
+      const start = m.index! + m[0].length - 1;
+      let depth = 0;
+      let end = -1;
+      for (let i = start; i < src.length; i++) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+      }
+      if (end === -1) continue;
+      const body = src.slice(start, end);
       if (!/outcome:\s*'delivered'/.test(body)) continue;
       const tool = body.match(/tool:\s*'([^']+)'/);
       if (tool) names.add(tool[1]);
     }
     return [...names].sort();
   };
+
+  it('the census parser is not coupled to field ORDER inside the call', () => {
+    // The guard for the hardening above: `detail` carries a literal `})` at the broadcast site,
+    // so a non-greedy matcher reads a truncated body. Proven on the real source rather than a
+    // fixture — if the parser ever regresses to non-greedy, the delivered-outcome filter starts
+    // missing whichever call puts `detail` before `outcome` and the census quietly empties.
+    const src = code();
+    expect(/detail: `A2A \$\{bcIntent\} \(group \$\{groupId\}\)`/.test(src),
+      'the `})`-bearing detail string moved — this hardening may no longer have a subject')
+      .toBe(true);
+    expect(recorded(src), 'the parser lost a recorded door')
+      .toEqual(['broadcast_to_group', 'send_to_agent']);
+  });
 
   it('non-vacuity: the door really does claim sends, and the parser really finds them', () => {
     // A census over a corpus that has quietly stopped containing its subject passes for ever.
@@ -340,12 +443,29 @@ describe('§4 a door that claims a send records it', () => {
     expect(/recordAtDoor\(/.test(src), 'the door stopped recording deliveries at all').toBe(true);
   });
 
-  it('the recorded outcome is read from the transport\'s answer, never assumed', () => {
+  it('the recorded outcome is read from the transport\'s answer through the ONE decider', () => {
     const src = code();
-    // The honesty requirement in source form: the outcome on the refusal arm is DERIVED from
-    // `result.reason`, so a door cannot file a refusal as a delivery by forgetting a branch.
-    expect(/outcome:\s*result\.reason ===/.test(src),
+    // The honesty requirement in source form: the refusal arm's outcome is DERIVED from
+    // `result.reason`, and derived by the named decider rather than by an expression at the
+    // call site. That is not style — the inline ternary that stood here is what inverted its
+    // own comment and filed two real losses as policy, because a condition written at the call
+    // site is a condition nobody can test apart from the send.
+    expect(/outcome:\s*a2aDropOutcome\(result\.reason\)/.test(src),
       'the refusal arm stopped deriving its outcome from the transport\'s stated reason')
+      .toBe(true);
+  });
+
+  it('the decider ALLOWLISTS policy and DEFAULTS to loss — the direction, pinned in source', () => {
+    const src = code();
+    // The behavioural table in §2 pins today's seven reasons. This pins the SHAPE that keeps
+    // the eighth safe: membership of a named set earns `suppressed`, and everything else —
+    // unrecognised, absent, future — is `failed`. An allowlist of failures with a `suppressed`
+    // default is the exact defect the verifier caught, and it would pass §2 unchanged on the
+    // day a new reason is added.
+    expect(/A2A_DROPS_THAT_ARE_POLICY\s*:\s*ReadonlySet/.test(src),
+      'the policy set stopped being a declared vocabulary').toBe(true);
+    expect(/A2A_DROPS_THAT_ARE_POLICY\.has\(reason\)\s*\?\s*'suppressed'\s*:\s*'failed'/.test(src),
+      'the decider inverted: a drop reason now has to be recognised to be called a FAILURE, so the next unknown loss is filed as policy')
       .toBe(true);
   });
 });
