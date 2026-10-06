@@ -173,26 +173,59 @@ function resolveWriters(corpus: Corpus[]): Writer[] {
 }
 
 /**
- * The enum members this task deliberately did NOT wire, each with the reason.
+ * The enum members deliberately NOT wired, each with the reason.
  *
- * NOT a free pass: §2 asserts these have NO writer, so wiring one of them without moving it
- * off this list fails. The list can only shrink, and shrinking it is the visible act.
+ * NOT a free pass: §2 asserts these have NO writer, so wiring one of them without moving it off
+ * this list fails. The list can only shrink, and shrinking it is the visible act.
+ *
+ * ⚠ IT IS NOW EMPTY, AND THAT IS THE WHOLE OF t113 ITEM C. It held two entries,
+ * `delegation_exit` and `compile_pending`, and the shrink did not come from wiring them — it
+ * came from RETIRING them (orchestrator ruling, ledgered 2026-10-06; migration 184). Their
+ * arguments live in `RETIRED_BY_RULING` below, unchanged, because the argument for not wiring
+ * them is exactly the argument for retiring them.
+ *
+ * An empty list is a STRONGER census than a populated one, which is the thing to notice: §2's
+ * CENSUS clause subtracts this list before refusing, so with nothing declared, ANY enum member
+ * that has no production writer is now a failure with no exemption available. Re-adding a
+ * writerless word reds immediately, and so does adding an entry here without an argument.
  */
-const DECLARED_UNWIRED: ReadonlyArray<{ reason: string; why: string }> = [
+const DECLARED_UNWIRED: ReadonlyArray<{ reason: string; why: string }> = [];
+
+/**
+ * THE TWO WORDS THAT LEFT THE VOCABULARY, and what must stay true of them.
+ *
+ * t93 found TEN unwired exit reasons rather than the eight its brief named, wrote eight, and
+ * declined to invent writers for these two. The argument was never "we did not get to it":
+ * both are MODEL dispositions and neither is in `ENGINE_IMPOSED_EXITS`, so wiring either
+ * changes what the ask ladder CHARGES and not merely what the record says. Held for a ruling.
+ *
+ * The ruling was RETIRE, on the ground that a vocabulary naming events which cannot happen is
+ * the dishonest-record family — a reader of the enum, of the DB CHECK, or of a telemetry report
+ * is entitled to assume each declared value is a thing that occurs.
+ *
+ * ⚠ `compile_pending` ALSO NAMES A LIVE COLUMN, and the two are unrelated.
+ * `work.compile_pending` is an INTEGER column the owed-compile gate and the fan-out join both
+ * turn on; it is untouched and must stay untouched. What retired is the `turns.exit_reason`
+ * WORD. The clause below is written against the enum, the CHECK and the whitelist only, so it
+ * can never be satisfied or broken by anything in `work`.
+ */
+const RETIRED_BY_RULING: ReadonlyArray<{ reason: string; why: string }> = [
   {
     reason: 'delegation_exit',
     why: 'A MODEL disposition, and wiring it changes what the ask ladder CHARGES rather than '
       + 'only what the record says. The obvious site is the delegation-send async exit, and a '
       + 'turn that takes it records `park` today — which IS in ENGINE_IMPOSED_EXITS, while '
       + '`delegation_exit` deliberately is not. So the move would start spending rungs on '
-      + 'delegating turns, which is a decision about the ladder and not a wiring gap.',
+      + 'delegating turns, which is a decision about the ladder and not a wiring gap. Retired '
+      + 'rather than wired: the event it names has never happened and nobody has defined it.',
   },
   {
     reason: 'compile_pending',
     why: 'Declared in the enum, the DB CHECK and the telemetry whitelist with zero production '
       + 'references anywhere, and also a MODEL disposition per `exit-attribution.ts`. The '
-      + 'compile-owed gate refuses tool calls; it does not end a turn, so there is no site to '
-      + 'wire without first deciding what the word is for.',
+      + 'compile-owed gate refuses tool calls; it does not end a turn, so there was no site to '
+      + 'wire without first deciding what the word is for. Retired rather than wired, and NOT '
+      + 'to be confused with the live `work.compile_pending` column, which keeps its name.',
   },
 ];
 
@@ -347,6 +380,49 @@ describe('§1 every exit reason the record can hold has a production writer', ()
       ).toBeUndefined();
       expect(d.why.trim().length, `${d.reason}'s reason is too thin to be an argument`).toBeGreaterThan(120);
     }
+    // ⚠ THE LIST IS EMPTY AT THIS HEAD, so the loop above runs zero times and this clause would
+    // be vacuous on its own. Said out loud rather than left to be discovered: what carries the
+    // weight now is §2's CENSUS clause, which subtracts this list before refusing — so an empty
+    // list means no enum member has an exemption at all. The clause below is the other half.
+    expect(DECLARED_UNWIRED.map((d) => d.reason),
+      'if an entry is ever added here, that is a deliberate act and the CENSUS clause stops '
+      + 'covering that member — the entry must argue for itself, which the loop above checks')
+      .toEqual([]);
+  });
+
+  it('THE RETIREMENT HOLDS — neither retired word is back in the enum, the CHECK, or the report', () => {
+    // t113 C, both directions. Re-adding either word to any of the three places it was
+    // declared reds here, and the message says what the re-adder must do first.
+    const members = new Set(enumMembersFromSource());
+    const whitelistSrc = read('report/telemetry-whitelist.ts');
+    const migrationDir = path.join(SERVER_SRC, 'db', 'migrations');
+    // The authority on the column's vocabulary is the LATEST migration that rebuilds it, which
+    // is why this reads 184 rather than 135 — 135 still declares seventeen and always will,
+    // because a past migration is history and is never edited.
+    const check184 = fs.readFileSync(path.join(migrationDir, '184_retire_two_writerless_exit_reasons.sql'), 'utf8');
+    const createStmt = check184.slice(check184.indexOf('CREATE TABLE turns_184'), check184.indexOf(');', check184.indexOf('CREATE TABLE turns_184')));
+
+    for (const r of RETIRED_BY_RULING) {
+      expect(members, `${r.reason} is back in \`TurnExitReason\`. It was retired because nothing `
+        + 'can write it; if that changed, it needs a writer AND a ruling on what the ask ladder '
+        + 'should charge for it, because it is not in ENGINE_IMPOSED_EXITS.')
+        .not.toContain(r.reason);
+      expect(createStmt, `${r.reason} is back in migration 184's CHECK`).not.toContain(r.reason);
+      expect(whitelistSrc, `${r.reason} is back in the telemetry whitelist — a report enum that `
+        + 'declares a member nothing can emit tells its reader the value is possible')
+        .not.toContain(r.reason);
+      expect(r.why.trim().length, `${r.reason}'s reason is too thin to be an argument`).toBeGreaterThan(120);
+    }
+    expect(RETIRED_BY_RULING.map((r) => r.reason).sort(),
+      'both words, so neither can be quietly dropped from the record of what was retired')
+      .toEqual(['compile_pending', 'delegation_exit']);
+
+    // AND THE LIVE COLUMN THAT SHARES ONE OF THE NAMES IS UNTOUCHED. Without this, a future
+    // reader could "finish the job" by deleting `work.compile_pending` and break the
+    // owed-compile gate. The word retired; the column did not.
+    expect(read('agent/v2/compile-owed-gate.ts'),
+      'the owed-compile gate still reads the live work.compile_pending column')
+      .toMatch(/compile_pending = 1/);
   });
 
   it('every engine-imposed word is writable, which is what makes the classification reachable', () => {
@@ -530,7 +606,14 @@ describe('§3 first writer wins, and the throw is classified in a stated order',
 // §4 — THE DB CHECK AND THE TELEMETRY ENUM (D4: the consequences, handled and proven)
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('§4 the column and the telemetry enum already admit all seventeen', () => {
+// ⚠ THE TITLE USED TO SAY "all seventeen" AND IT WAS STALE THE MOMENT t113 C RETIRED TWO
+// WORDS. The CLAUSES below never were: all three derive the expected set from
+// `enumMembersFromSource()`, so they passed unchanged across the retirement and would pass
+// across the next one. Only the sentence was wrong, which is the exact shape of a census that
+// lies about itself — so the number comes out of the title rather than being corrected to a
+// figure that goes stale again. (The migrated CHECK is compared to the source enum in the
+// first clause, which is also what proves migration 184 admits precisely the surviving set.)
+describe('§4 the column and the telemetry enum admit exactly what the enum declares', () => {
   const ALL_EIGHT = ['stop', 'preempt', 'abort', 'terminated', 'budget', 'provider_error',
     'stream_idle', 'identical_call'] as const;
 

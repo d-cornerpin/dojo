@@ -135,10 +135,13 @@ export const TELEMETRY_WHITELIST: readonly TelemetryField[] = [
     members: ['conv', 'engine_event', 'a2a_thread', 'continuation', 'none'] },
   { path: 'turn.lane',                kind: 'enum',      source: 'turns.lane',
     members: ['voice', 'phone', 'none'] },
+  // t113 C: FIFTEEN, not seventeen. Two writerless members were retired from `TurnExitReason`
+  // and from the DB CHECK (migration 184) by orchestrator ruling — a telemetry enum that
+  // declares a member nothing can emit tells a reader of the report that the value is possible.
   { path: 'turn.exit_reason',         kind: 'enum',      source: 'turns.exit_reason (TurnExitReason)',
-    members: ['answered', 'no_reply_intended', 'park', 'handoff', 'delegation_exit', 'iteration_cap',
+    members: ['answered', 'no_reply_intended', 'park', 'handoff', 'iteration_cap',
       'brake', 'identical_call', 'stop', 'preempt', 'provider_error', 'stream_idle', 'abort',
-      'terminated', 'budget', 'compile_pending', 'unknown'] },
+      'terminated', 'budget', 'unknown'] },
   { path: 'turn.answered',            kind: 'bool',      source: 'turns.answered' },
   { path: 'turn.effectful_calls',     kind: 'count',     source: 'turns.effectful_calls' },
   { path: 'turn.duration_ms',         kind: 'millis',    source: 'turns.ended_at - turns.started_at' },

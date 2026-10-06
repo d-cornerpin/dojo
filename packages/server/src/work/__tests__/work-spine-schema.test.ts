@@ -10,6 +10,8 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -249,15 +251,41 @@ describe('the turns split', () => {
     expect(cols).toEqual(expect.arrayContaining(['exit_reason', 'answered', 'effectful_calls']));
   });
 
-  it('accepts all 17 exit reasons and refuses an eighteenth', () => {
-    const REASONS = ['answered', 'no_reply_intended', 'park', 'handoff', 'delegation_exit',
-      'iteration_cap', 'brake', 'identical_call', 'stop', 'preempt', 'provider_error',
-      'stream_idle', 'abort', 'terminated', 'budget', 'compile_pending', 'unknown'];
-    expect(REASONS.length).toBe(17);
+  it('accepts every exit reason the enum declares and refuses one it does not', () => {
+    // ⚠ THIS LIST IS NOT TYPED IN ANY MORE, and that is a t113 C correction rather than a
+    // tidy-up. It used to be seventeen literals plus `expect(REASONS.length).toBe(17)` — a
+    // SECOND hand-maintained copy of a vocabulary that already has an owner — and when the
+    // retirement narrowed the CHECK to fifteen this clause went red for the right reason while
+    // saying the wrong thing ("accepts all 17"). A clause that re-types the list it is checking
+    // tests the typist. It now reads the source enum, exactly as
+    // `agent/v2/__tests__/eight-exit-reasons-get-their-writers.test.ts` §4 does, so the pair
+    // cannot disagree and neither goes stale at the next ruling.
+    const enumSrc = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'agent', 'v2', 'turn-record.ts'), 'utf8',
+    );
+    const decl = /export type TurnExitReason =([\s\S]*?);/.exec(enumSrc);
+    expect(decl, 'the TurnExitReason declaration moved — this clause has lost its subject').toBeTruthy();
+    const REASONS = [...decl![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+
+    // A floor, not a pin: a vocabulary this small would mean the enum had been gutted, and the
+    // clause would then be asserting almost nothing.
+    expect(REASONS.length, 'the enum still declares a real vocabulary').toBeGreaterThan(10);
+    expect(new Set(REASONS).size, 'and no member is declared twice').toBe(REASONS.length);
+    // the two words t113 C retired by ruling must not be back — the same fact the engine-side
+    // census asserts, said here because this is the clause that talks to the COLUMN
+    expect(REASONS).not.toContain('delegation_exit');
+    expect(REASONS).not.toContain('compile_pending');
+
     REASONS.forEach((r, i) => {
-      expect(() => insertTurn({ turn_number: 1000 + i, ended_at: '2026-07-28 00:01:00', exit_reason: r }))
+      expect(() => insertTurn({ turn_number: 1000 + i, ended_at: '2026-07-28 00:01:00', exit_reason: r }), r)
         .not.toThrow();
     });
+    // Both ways, and this is the half that makes the loop above mean something: the CHECK is
+    // real, so a word the enum does not declare cannot be written.
+    for (const retired of ['delegation_exit', 'compile_pending']) {
+      expect(() => insertTurn({ ended_at: '2026-07-28 00:01:00', exit_reason: retired }), retired)
+        .toThrow(/exit_reason/);
+    }
     // 'no_reply' was the OLD vocabulary; it must not survive as a silent synonym
     expect(() => insertTurn({ ended_at: '2026-07-28 00:01:00', exit_reason: 'no_reply' }))
       .toThrow(/exit_reason/);

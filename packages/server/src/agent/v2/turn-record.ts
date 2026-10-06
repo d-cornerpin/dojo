@@ -21,22 +21,42 @@
 //
 //  3. `outcome` SPLIT INTO `exit_reason` + `answered`. One column meant both "why did the
 //     turn end" and "has the person heard from us", and the second meaning was then
-//     re-derived at ~29 sites from nine other variables. `exit_reason` is a 17-value enum
+//     re-derived at ~29 sites from nine other variables. `exit_reason` is a 15-value enum
 //     (CHECKed in the DB); `answered` is 0/1 NOT NULL with no default, so a writer must say.
 //
-// exit_reason vocabulary (the CHECK in migration 135 is the authority):
-//   answered · no_reply_intended · park · handoff · delegation_exit · iteration_cap · brake ·
+// exit_reason vocabulary (the CHECK in migration 184 is the authority — it SUPERSEDES 135's,
+// which declared seventeen):
+//   answered · no_reply_intended · park · handoff · iteration_cap · brake ·
 //   identical_call · stop · preempt · provider_error · stream_idle · abort · terminated ·
-//   budget · compile_pending · unknown
+//   budget · unknown
+//
+// ── TWO WORDS LEFT THIS LIST, AND THE REASON IS THE POINT (t113 C, orchestrator ruling) ──
+//
+// It declared SEVENTEEN. t93 set out to give every declared reason a writer, found TEN unwired
+// rather than the eight its brief named, and wrote eight of them. The last two had no writer
+// and t93 deliberately did not invent one: both are MODEL dispositions and neither is in
+// `ENGINE_IMPOSED_EXITS`, so wiring either changes what the anti-repetition ladder CHARGES and
+// not merely what the record says. The obvious site for the delegation one is a turn that
+// records `park` today — and `park` IS engine-imposed — so the move would have started
+// spending rungs on every delegating turn. A behaviour change nobody ordered.
+//
+// Held for a ruling, and the ruling is RETIRE. A vocabulary that names events which cannot
+// happen is the dishonest-record family: every reader of this type is entitled to assume each
+// member is a thing that occurs, and two of them never did. Either can return the day somebody
+// defines the event that writes it AND rules on what the ladder should charge for it.
+//
+// The census `agent/v2/__tests__/eight-exit-reasons-get-their-writers.test.ts` is what keeps
+// this honest in BOTH directions: it holds the vocabulary and refuses a member with no writer,
+// so re-adding a writerless word reds it.
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 
 const logger = createLogger('turn-record');
 
 export type TurnExitReason =
-  | 'answered' | 'no_reply_intended' | 'park' | 'handoff' | 'delegation_exit'
+  | 'answered' | 'no_reply_intended' | 'park' | 'handoff'
   | 'iteration_cap' | 'brake' | 'identical_call' | 'stop' | 'preempt' | 'provider_error'
-  | 'stream_idle' | 'abort' | 'terminated' | 'budget' | 'compile_pending' | 'unknown';
+  | 'stream_idle' | 'abort' | 'terminated' | 'budget' | 'unknown';
 
 /**
  * The subset a TURN SITE may latch as "the engine or the owner ended this turn" — t93's
