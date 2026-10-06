@@ -7283,6 +7283,13 @@
       "date": "2026-10-06",
       "by": "t118 round 2 (review merge condition 2) — the WRITE-side registration hook",
       "why": "470 -> 477 (+7: 1 import, 1 call, 5 comment). This is the WRITE-side half of the re-vet wiring described in the `work/ask-title.ts` entry above — one line of executable code and its reason. The call sits immediately AFTER `noteDeclaredSecretsFromToolCalls(agentId, result.toolCalls)`, which is the engine's per-result registration of declared secret fields, because registration is the moment this process first LEARNS a value and therefore the only point at which an ask title minted before the learning can be re-vetted deterministically. BEFORE that registration there would be nothing to match, and the clause pins the ORDER as well as the presence for exactly that reason. THE 5 COMMENT LINES name the ordering this hook closes (title-then-credential) and state that the pre-existing refusal was a race rather than a property, which is the fact a reader at this call site cannot reconstruct — the mint-time refusal lives in another file and looks complete from here. The hook is located by its clause through the shared engine corpus and asserted to sit in the SAME FILE as the registration it follows, so a future cut that separates them throws with both homes named rather than silently reopening the race on this path. REFUSED: putting the re-vet inside `noteDeclaredSecretsFromToolCalls` — that module owns which FIELDS are secret, and giving it an edge to the work spine is the import direction `ask-title.ts`'s own header warns about (the read-side hook at `credentials/tools.ts` is dynamically imported for the same reason). From 477 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/credentials/store.ts",
+      "from": 412,
+      "to": 437,
+      "by": "t120 credential retry affordance — a write that changes nothing says so",
+      "why": "+25 NET, and the gross is the argument. The lane added 159 lines to this file; 134 of them were EXTRACTED to a new module, `credentials/write-doors.ts` (189 lines, under the 400-line new-file cap), which now owns every refusal text an agent can read out of the credential tools plus the is-this-a-change judgement, and touches no database — the store owns the writes, that module owns the words. The +25 that stayed is irreducibly store work: `noopWrite`'s DB half (a no-op performs no re-seal, no value-bearing updated_at bump and NO destruction audit row, because the T83 ledger records that a specific value was ENDED and a no-op ended nothing), `findExisting` widened to carry the sealed columns so the comparison is possible at all, and the `CredentialWriteResult` type that lets the tool layer tell the caller the truth about what its write did. NOT taken: shuffling further code purely to reach 412, or stripping prose to fit — the comments moved with their code. The defect this buys: in two of the last three account-setup reds the model re-sent a byte-identical credential payload 8 and 13 times against a brake that fires at 4, failing a SAFETY invariant, because the success receipt was five words that named no state and no next call. From 437 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7463,7 +7470,7 @@
     "packages/server/src/costs/tracker.ts": 612,
     "packages/server/src/credentials/secret-fields.ts": 241,
     "packages/server/src/credentials/secret-values.ts": 278,
-    "packages/server/src/credentials/store.ts": 412,
+    "packages/server/src/credentials/store.ts": 437,
     "packages/server/src/db/migration-backup.ts": 399,
     "packages/server/src/db/migration-checksums.ts": 369,
     "packages/server/src/gateway/routes/agents.ts": 1022,
