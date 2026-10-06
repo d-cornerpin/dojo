@@ -1849,9 +1849,14 @@ export function purgeDeadA2AThreads(): number {
   const floor = now() - JOIN_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
   try {
     return getDb().prepare(
+      // `NOT EXISTS`, never `NOT IN (SELECT …)` — the shape the tree's NULL-id census requires
+      // (`db/__tests__/a-null-id-silences-a-sweep.test.ts`), and right twice here: one NULL in
+      // the subquery would make `NOT IN` match NOTHING and purge silently.
       `DELETE FROM a2a_threads
         WHERE unixepoch(updated_at) * 1000 < ?
-          AND thread_id NOT IN (SELECT root_id FROM work WHERE root_kind = 'a2a_thread')`,
+          AND NOT EXISTS (
+            SELECT 1 FROM work w
+             WHERE w.root_kind = 'a2a_thread' AND w.root_id = a2a_threads.thread_id)`,
     ).run(floor).changes;
   } catch (err) {
     // The table predates the spine and a fixture may not have it. A missing table is not a
