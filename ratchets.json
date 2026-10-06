@@ -6525,6 +6525,34 @@
       "to": 2074,
       "by": "t106 fix round 1 (review Critical) — the live window: the optimistic reconcile carries the conversation too",
       "why": "2068 -> 2074 (+6: 1 code, 5 comment). THE ONE CODE LINE is `conversationId: e.message.conversationId ?? updated[tempIdx].conversationId` inside the optimistic `temp-` user-bubble reconcile — the same carry-the-frame's-value-else-keep-ours shape the assistant/streaming merge twelve lines above already uses, so no new idea is introduced. WHY IT HAD TO BE HERE AND COULD NOT MOVE TO THE LIB: this is not a rule, it is the row-assembly step; the rule it feeds already lives in `lib/working-note-visibility.ts` and is pinned there. THE DEFECT, which is the owner's own case: a message he types exists first as an optimistic bubble with NO conversation (only the server resolves one) and the server's broadcast is MERGED INTO that bubble rather than appended, so dropping the frame's value left R4's anchor row conversation-less for the whole live window — the fix passed every reload-shaped clause and still failed him until he refreshed. THE 5 COMMENT LINES say exactly that at the site, because the next person to edit this reconcile will otherwise drop the field again for the same reason it was missing the first time. Driven by a DOM clause that types into the composer and never remounts; the mutant that drops the line reds it while 12 reload-shaped clauses stay green, which is why the clause exists."
+    },
+    {
+      "path": "packages/server/src/costs/ledger-calibration.ts",
+      "from": 311,
+      "to": 440,
+      "by": "t108 B — the estimator divisor is learned PER POPULATION (BACKLOG 36's deferred design call) and guard 2 is widened (BACKLOG 56)",
+      "why": "311 -> 440 (+129 net: 53 code added, 12 code removed; 95 comment added, 7 comment rewritten). THE CODE HALF IS SMALL AND MOSTLY A DE-DUPLICATION: migration 181 adds a SECOND chars-per-token reading with the identical shape and identical one-way rule as 174's, and rather than a second copy of the ratchet-down/rescan-up machinery the two readings became DATA (a 4-field `Reading` descriptor each, and `recalibrateEstimator` takes which one it is taking). Two hand-rolled copies of a ratchet is precisely the shape that drifted into four different answers in this tree's session-reset census, so a copy here would have been the cheaper line count and the worse module. The rest of the code is the population predicate (`isProseSample`, 5 lines) and one `.filter()` on the window rescan. THE COMMENT HALF IS 74% OF THE GROWTH AND IT IS LOAD-BEARING TWICE OVER. First, guard 2 was DELIBERATELY WIDENED — it required `divisorUsed === CHARS_PER_TOKEN`, which after the estimate began spending measured divisors would have skipped every row from a box that had measured itself and frozen the reading forever, silently. The 40 lines replacing its old argument carry the proof that widening is safe (`chars = estimate * divisorUsed` is the exact INVERSE of the arithmetic that produced the row, so it recovers the character count whatever divisor was used; nothing is rescaled and no error term appears). A future reader who meets the widened guard without that proof will either re-narrow it or distrust the reading. Second, the population predicate's comment carries why NULL establishes nothing (unknown is not prose) and why `vision_caption` is refused despite being a declared dial (it bills PIXELS, and guard 4's floor catches only the clear cases while a minimum fold cannot survive one borderline row). From 440 this file may only shrink; the next reading added here goes in its own leaf."
+    },
+    {
+      "path": "packages/server/src/memory/budget.ts",
+      "from": 573,
+      "to": 699,
+      "by": "t108 C — the estimate spends the measured divisor, floored so it can only grow (BACKLOG 56)",
+      "why": "573 -> 699 (+126 net: 39 code added, 0 removed; 87 comment added, 0 rewritten). NOTHING WAS REPLACED, which is the first thing to say: `estimateTokens` and its 71 callers are byte-unchanged at /4, because they are mostly about a stored row's carrying cost in the same dialect as `messages.token_count`, the SQL and `agent/v2/receipt.ts`, and re-dialecting history is a different change with a different blast radius. The 39 code lines are one new pure door (`estimateRequestTokens`), one exported cap (`effectiveDivisor`) and three small interfaces. It is PURE and takes the readings as an argument precisely so this module stays the LEAF its own header says it must be — the DB read lives in the new `costs/estimator-divisors.ts` (63 lines, unpinned, far under the 400 new-file cap), which is where the honest alternative of 'just read the provider here' was refused. THE COMMENT HALF IS THE SAFETY ARGUMENT AND IT CANNOT BE ELSEWHERE. This module's header is the tree's one place where the estimator's divisor is derived and defended ('/4 2% UNDER, /3.5 12% over, /3 30% over … Re-derive before changing it; never tune it'), and this change is the re-derivation that instruction asked for. The new block states: which consumers the undercount actually hurts (the pre-dial fit gate and the output budget — and a CORRECTION, re-derived at this head, that BACKLOG 56's named victim `agent/unattended-budget.ts` is not one, since it is a MINUTES budget with zero token references); why a new door rather than a change to `estimateTokens`; and the two conservative bounds, each argued separately, which together are the property every consumer rests on — THE ESTIMATE NEVER SHRINKS, so a measurement can only make a box more cautious. A reader who meets `Math.min(CHARS_PER_TOKEN, measured)` without that argument will read it as an arbitrary clamp and remove it. From 699 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/costs/tracker.ts",
+      "from": 563,
+      "to": 612,
+      "by": "t108 A+B — `call_purpose` written beside `request_type`, and the per-request divisor recorded",
+      "why": "563 -> 612 (+49 net: 14 code added, 5 code removed; 41 comment added, 1 comment rewritten). The code is two new params on `RecordCostParams`, one resolved `divisorUsed` local spent twice (so the stored column and the calibration sample can never disagree), two INSERT bindings and two column names — and it REMOVES the two inline `estimatedInputTokens === undefined ? null : CHARS_PER_TOKEN` expressions it replaces. THE COMMENTS ARE TWO PARAM DOCSTRINGS AND THEY EXIST BECAUSE BOTH FIELDS ARE EASY TO GET WRONG IN THE SAME DIRECTION. `callPurpose`: a writer that reconstructed the purpose from `request_type` would put a plausible fiction in the column the whole change exists to make trustworthy, so the docstring forbids it in words and the clause plants it. `estimatorCharsPerToken`: this column's contract is what makes the self-calibration loop work at all — `chars = estimated_input_tokens * estimator_chars_per_token` must recover THIS request's character count, so recording a flat 4 beside an estimate that did not use 4 would make every future reading a measurement of our own arithmetic error rather than the provider's tokeniser, a loop feeding on itself. That is not inferable from the field name. From 612 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 3829,
+      "to": 3877,
+      "by": "t108 A+B+C — the purpose axis at all four recordCost sites, and both dial sites spend the measured divisor",
+      "why": "3829 -> 3877 (+48 net: 29 code added, 11 code removed; 30 comment added, 0 rewritten). THE SMALLEST TOUCH THIS FILE COULD TAKE, and that was the constraint — it is the hottest file in the tree and t93/t103 both landed in it. All arithmetic lives elsewhere: `memory/budget.ts`'s pure `estimateRequestTokens` and the new `costs/estimator-divisors.ts` leaf. What changes here is (i) two imports, (ii) `callPurpose: purpose` at the four `recordCost` sites, 4 lines, (iii) the two estimate sites switching from summing `estimateTokens()` to counting CHARACTERS and handing them to one call — which REPLACES 11 lines with 13 and deletes three now-unused locals — and (iv) `estimatorCharsPerToken` on the two sites that record an estimate. The 30 comment lines are 12 at the four recordCost sites (3 each: that `request_type` is unchanged byte for byte and this records the fact its `??` chain discards — the one thing a reader of two adjacent similar-looking fields will otherwise assume is redundant) and 18 at the two estimate sites, stating that the populations were already separated here so the split costs no classifier, that the estimate is floored and can only grow, and that an unmeasured provider gets today's number byte for byte. From 3877 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6580,7 +6608,7 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 187,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 3829,
+    "packages/server/src/agent/model.ts": 3877,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
@@ -6690,9 +6718,9 @@
     "packages/server/src/agent/v2/steps/teardown/index.ts": 317,
     "packages/server/src/agent/v2/turn-record.ts": 312,
     "packages/server/src/config/schema.ts": 240,
-    "packages/server/src/costs/ledger-calibration.ts": 311,
+    "packages/server/src/costs/ledger-calibration.ts": 440,
     "packages/server/src/costs/prefill-calibration.ts": 309,
-    "packages/server/src/costs/tracker.ts": 563,
+    "packages/server/src/costs/tracker.ts": 612,
     "packages/server/src/credentials/secret-fields.ts": 241,
     "packages/server/src/credentials/secret-values.ts": 278,
     "packages/server/src/credentials/store.ts": 412,
@@ -6723,7 +6751,7 @@
     "packages/server/src/memory/assembler.ts": 2745,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
-    "packages/server/src/memory/budget.ts": 573,
+    "packages/server/src/memory/budget.ts": 699,
     "packages/server/src/memory/compaction-brakes.ts": 306,
     "packages/server/src/memory/compaction.ts": 1650,
     "packages/server/src/memory/condense-until-fits.ts": 427,
