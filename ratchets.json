@@ -6749,6 +6749,34 @@
       "to": 2164,
       "by": "t109 item A — the purge's live-work guard is NOT EXISTS, which costs four lines where NOT IN cost one",
       "why": "2159 -> 2164 (+5 net: 3 code, 2 comment). THE CAUSE, and it is a gate doing its job: the purge's first form used `thread_id NOT IN (SELECT root_id FROM work WHERE root_kind = 'a2a_thread')`, and the tree's NULL-id census (`db/__tests__/a-null-id-silences-a-sweep.test.ts`) FAILED on the new site — its own doc says the fix is `NOT EXISTS` unless the subquery column is NOT NULL and the commit says so. `work.root_id` IS `NOT NULL DEFAULT ''`, so `NOT IN` would have been safe here; `NOT EXISTS` was taken anyway, because it is safe WITHOUT that argument having to stay true, it is the sargable form against the `work(root_kind, root_id)` read, and it leaves the census file (not in this lane's fence) untouched. A correlated `NOT EXISTS (SELECT 1 FROM work w WHERE … AND w.root_id = a2a_threads.thread_id)` is four lines where the `NOT IN` was one; the 2 comment lines name the census and the NULL hazard so the next reader does not shorten it back. ALTERNATIVE REFUSED: declare the new `NOT IN` site in the census instead (+0 here) — that is an edit to a db/__tests__ file this lane does not hold, to permit the shape the census exists to discourage. From 2164 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 2164,
+      "to": 2189,
+      "by": "t109 fix round 1 — the hop window measures deliveries, so one read becomes two named questions",
+      "why": "2164 -> 2189 (+25 net: +10 code / -11 code, +34 comment / -8 comment; `wc -l` before and after). Review Important 1: the lapse read `work.updated_at`, which EIGHT statements in this file stamp and only ONE of which is the hop bump, so a capped thread whose join row kept being touched inside each window never aged. THE CODE is a SPLIT, not an addition: `threadHopCount` goes back to the raw stored count (6 lines, the pre-t109 body, which is what `delegation-exit.ts:100` needs when it carries a chain's count onto a child row and which the first cut had silently turned into an aged read), and `threadHopCountInWindow` (5 lines) is the cap's read with the delivery instant as a REQUIRED argument so no caller can get the wrong clock by omission; `bumpThreadHopCount` loses its own row read (-6) and takes the instant too. Net executable movement is about -1; the +25 is almost entirely the contract. THE COMMENT HALF IS 34 ADDED AND 8 REMOVED, and it is the price of a correction that must not be re-made: the eight writers are NAMED WITH THEIR LINE NUMBERS at the function whose contract they break, because the next reader will otherwise see an `updated_at` column on the row and use it; the no-migration argument is recorded at the same place (`a2a_threads.updated_at` is written by exactly two statements, both on the delivery path, so a dedicated column would be a second copy of a fact the tree already has and would need the G13 rehearsal for nothing); and `hopWindowLapsed`'s doc now states what may be passed, which is the sentence the review found overstated. ALTERNATIVES REFUSED: (i) a `work.last_hop_at` column (+~4 here, plus a migration and its G13 adversarial rehearsal) — refused as a second home for a recorded fact; (ii) read `a2a_threads` from this module (+~6, -4 in the transport) — refused because this module does not own that table and the single-writer discipline is what keeps the two stores from drifting; the clock is passed in instead. From 2189 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 2726,
+      "to": 2752,
+      "by": "t109 fix round 1 — the transport reads the delivery clock once, before ensureThread can stamp it",
+      "why": "2726 -> 2752 (+26 net: +21 code / -16 code, +28 comment / -7 comment). THE CODE: `threadLastDeliveryMs` (5 lines, the one read of `a2a_threads.updated_at` — the only column in the tree that no non-delivery writer touches); `getThreadHopCount` gains the instant as a parameter and LOSES its own second read of the same column (the fallback branch is now 3 lines where it was 6); `recordThreadDelivery` gains the instant as a parameter and loses its inline capture; and `deliverA2AMessage` captures the clock ONE line before `ensureThread`. That last line is the whole of the second defect this round found: `ensureThread`'s INSERT stamps `datetime('now')` when no row exists, so a read after it reports a delivery that never happened, and on a `work` row carrying the cap with no thread row a capped thread would look permanently fresh — the exact shape item A exists to delete. One capture per delivery is also what makes the cap decision and the restart decision agree by construction rather than by inspection. THE COMMENT HALF IS 28 ADDED AND 7 REMOVED: the ordering argument sits AT the capture (a reader who moves that line for tidiness re-opens the hole, and clause FIX-1c is named there so they find the proof), the two-writers fact sits at the read, and both point at `work/store.ts` for the long argument rather than restating it — which is what took this entry from +40 to +26. ALTERNATIVE REFUSED: leave the capture after `ensureThread` and special-case the absent row (+~4) — that is an invented exception where an ordering already gives the right answer for free. From 2752 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/lanes.ts",
+      "from": 1265,
+      "to": 1275,
+      "by": "t109 fix round 1 — review Minor 1: the scaled reserve names its backstop",
+      "why": "1265 -> 1275 (+10 net: 0 code, 10 comment). COMMENT-ONLY, and it is the finding itself: the reviewer observed that nothing truncates a post-budget lane to its `reserveTokens`, so on the SCALED path the appends can still spend up to the declared ladder while less was reserved, and asked for one sentence naming the backstop or a total-bound clause. The sentence is the honest half: the backstop is the pre-dial doomed-request gate in `agent/model.ts` (pinned by t108's `a-doomed-request-refuses-before-dialing.test.ts`), which is not this module's to assert — a total-bound clause here would pin a number that gate owns. The paragraph records the mitigation, the two reasons the fix is still a strict improvement (the corner needs several conditional lanes at worst case at once; the affected box previously held no conversation at all) and the fact that the reserve is accounting rather than enforcement, so a later reader does not mistake the scaled number for a cap. From 1275 this file may only shrink."
+    },
+    {
+      "path": "packages/shared/src/markers.ts",
+      "from": 323,
+      "to": 326,
+      "by": "t109 fix round 1 — review Minor 5: one overstated sentence about what a2a_replies stores",
+      "why": "323 -> 326 (+3 net: 0 code, +5 comment / -2 comment). COMMENT-ONLY. The doc said `a2a_replies.thread_id` 'holds the FULL id'; it usually does, because `recordA2AReply`'s send path writes it verbatim, but `agent/runtime.ts:837`'s abandoned-reply path records a marker-derived TOKEN. Behaviour was already correct — `a2aThreadTokenMatches` handles every era combination, which the reviewer traced independently — so this is the sentence catching up with the code, and it now points at that matcher as the reason a reader must handle both eras rather than trusting the column's shape. Three lines is the smallest form that says 'usually, and here is the exception, and here is what to use'. From 326 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -6787,7 +6815,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1985,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 402,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
-    "packages/server/src/agent/a2a-transport.ts": 2726,
+    "packages/server/src/agent/a2a-transport.ts": 2752,
     "packages/server/src/agent/access/authorize.ts": 454,
     "packages/server/src/agent/access/read.ts": 264,
     "packages/server/src/agent/agent-status.ts": 268,
@@ -6956,7 +6984,7 @@
     "packages/server/src/memory/embeddings.ts": 319,
     "packages/server/src/memory/fts-health.ts": 536,
     "packages/server/src/memory/integration-status-lane.ts": 461,
-    "packages/server/src/memory/lanes.ts": 1265,
+    "packages/server/src/memory/lanes.ts": 1275,
     "packages/server/src/memory/message-store.ts": 1153,
     "packages/server/src/memory/other-threads-lane.ts": 276,
     "packages/server/src/memory/reader-pool.ts": 336,
@@ -7043,13 +7071,13 @@
     "packages/server/src/work/obligation-memory.ts": 630,
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
-    "packages/server/src/work/store.ts": 2164,
+    "packages/server/src/work/store.ts": 2189,
     "packages/server/src/work/tracker-store.ts": 647,
     "packages/server/src/work/tracker-view.ts": 622,
     "packages/server/src/work/validation-drive.ts": 615,
     "packages/server/src/work/work-reaper.ts": 694,
     "packages/shared/src/access.ts": 338,
-    "packages/shared/src/markers.ts": 323,
+    "packages/shared/src/markers.ts": 326,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
     "packages/shared/src/types.ts": 649,
