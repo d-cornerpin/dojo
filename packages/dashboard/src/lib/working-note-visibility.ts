@@ -44,6 +44,29 @@
 //     the same run — never a similarity score, because a note that merely resembles the answer
 //     is a different sentence and the owner is entitled to both.
 //
+//  R4 — A NOTE THAT IS THE ONLY THING THE AGENT SAID BACK TO A PERSON IS THE REPLY, AND
+//     RENDERS AS ONE. **NEW (t106).** OWNER RULING 2026-10-05 (#7), his words: *"I do not want
+//     real replies to collapse."* R2 reached the display layer's silence (a note that vanished
+//     now shows); it did not reach the owner's own sighting, which was a note that SHOWED —
+//     dimmed, italic, collapsed to one line behind a click — and which was his agent's actual
+//     answer to a question he had just asked. Dimming is the collapse he complained about, so
+//     "shown" is not the bar; "shown as a reply" is.
+//     ⚠ WHAT KEEPS THE 45 CORRECTLY-DEMOTED SCHEDULER NOTES DEMOTED, AND IT IS A COLUMN AND
+//     NOT A NAME LIST: `conversation_id` on the run's ANCHOR row. A person's message resolves
+//     one at ingest (`gateway/routes/chat.ts` resolveOrCreateConversation, in the same write);
+//     every engine-synthetic `role='user'` trigger — the Dreamer's cycle prompt the loudest,
+//     stored as a plain user row with `origin_kind` NULL *and no conversation* by
+//     `vault/maintenance.ts` wakeupDreamer — carries NULL. So the question "was this a reply to
+//     a PERSON?" is answered by the row the engine already wrote, not by matching its text and
+//     not by a service-agent roster. A row that does not carry the column at all (a local
+//     optimistic bubble, a legacy row) answers NO and keeps the shipped verdict: this arm only
+//     ever fires on evidence that a person opened the run.
+//     ⚠ AND IT SELF-HEALS RATHER THAN LATCHING. The promotion is a pure function of the rows on
+//     screen, so the moment a real answer lands in the same run `answers` is non-empty, R4's
+//     guard is false, and the note falls back to R1's dimmed bubble beside it — the 2026-07-10
+//     demote-don't-discard behaviour, unchanged. Nothing is stored, no frame is invented, and
+//     no engine write moves: this is the display layer stating what the rows already say.
+//
 // ── "THE ONLY THING THE AGENT SAID" IS SCOPED TO THE PERSON'S OWN UNIT, NOT THE ENGINE'S ──
 // The run is `(last user row before this one, next user row after this one)`. That is
 // deliberate, and it is NOT an approximation of the engine's turn — it is a better question.
@@ -54,13 +77,21 @@
 // re-continues across turns, each one demoting its only words — lives inside ONE such run and
 // outside any one turn. Keying on the engine's turn would have split it.
 //
-// ── WHAT IS DELIBERATELY NOT HERE ──
-// No `promoted: true` frame arm. See the lane report: `chat:workingnote`'s `reclassified` arm
-// has a live server caller (`teardown/draft-reclassify.ts`); a `promoted` mirror would have
-// NONE, because the shipped engine promotion writes no note and broadcasts no dim frame at all
-// (asserted by a clause). Building the field now is dead code waiting for a caller, which is
-// the habit this campaign exists to break. What it would take when Option A lands: this file's
-// verdict type gains nothing, and `Chat.tsx` gains a six-line arm beside the `reclassified` one.
+// ── WHAT IS DELIBERATELY NOT HERE, AND WHY R4 DID NOT NEED IT ──
+// No `promoted: true` frame arm, and no new runtime writer of `messages.retired_at`. Those were
+// the two candidate mechanisms the half-done line named, and both are WRITE-SIDE answers to a
+// READ-SIDE question: the rows already record everything the verdict needs (who said what, in
+// which order, and whether a person opened the run), so inventing a second record of it would
+// be the duplication this campaign exists to delete. `chat:workingnote`'s `reclassified` arm
+// keeps its one live server caller (`teardown/draft-reclassify.ts`) and gains no twin.
+//
+// Nor is the ENGINE touched. `post-call-classify/answer-to-a-live-ask.ts` refused predicate A
+// (`hasUnansweredUser`) on measured evidence — it turned five reviewed control clauses red,
+// because it is true on every ordinary human turn and would have promoted mid-work preamble,
+// the branch owner ruling 2026-07-23 deleted. R4 is not that predicate wearing a different hat:
+// it is asked at RENDER time, where the one fact the engine seam could not have — *is this the
+// only thing the person was shown* — is finally knowable, and where being wrong costs a note
+// that un-dims on the next render rather than a duplicate row in the model's own context.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 // THE MARKERS ARE NOT DECLARED HERE, AND THAT IS A CENSUS RULE, NOT TASTE.
@@ -74,8 +105,13 @@ import { parseWorkingNote } from '@dojo/shared';
 /** Which demotion wrote the row. `internal` is RC-9's routed-channel arm. */
 export type WorkingNoteArm = 'plain' | 'internal';
 
-/** `dimmed` = the expandable note bubble, in both modes. `wordyOnly` = hidden in regular mode. */
-export type NoteVerdict = 'dimmed' | 'wordyOnly';
+/** `answer` = an ordinary agent bubble, never dimmed (R4). `dimmed` = the expandable note
+ *  bubble, in both modes. `wordyOnly` = hidden in regular mode. */
+export type NoteVerdict = 'answer' | 'dimmed' | 'wordyOnly';
+
+/** What `Chat.tsx` does with the row. One question, asked once, at each of the feed's two note
+ *  arms — so a future edit cannot teach one arm the answer and leave the other behind. */
+export type NoteRender = 'hide' | 'note' | 'answer';
 
 /** The only fields any of these rules read. A superset of `Chat.tsx`'s `ChatMessage`. */
 export interface NoteRow {
@@ -83,6 +119,14 @@ export interface NoteRow {
   readonly content: string;
   /** `messages.display_kind`, as stored. `'working-note'` on a re-classified assistant row. */
   readonly displayKind?: string | null;
+  /**
+   * `messages.conversation_id`, as stored. Read on the run's ANCHOR row and nowhere else: a
+   * non-empty value is the engine's own record that a PERSON opened this exchange on a real
+   * conversation ('owner', 'imessage:…'), resolved by that row's producer at ingest. NULL —
+   * or absent, on a locally-built optimistic bubble — is the engine's record that nobody did,
+   * which is what every synthetic `role='user'` trigger carries. R4 reads it; nothing else does.
+   */
+  readonly conversationId?: string | null;
 }
 
 /** The owner's match, in this file's vocabulary. One reader, so the arm cannot be re-derived. */
@@ -153,12 +197,38 @@ export function conversationalRun(
 }
 
 /**
+ * DID A PERSON OPEN THIS RUN? — read off the run's ANCHOR row, the nearest `role='user'` row
+ * before `index`, and off no other row.
+ *
+ * The nearest one, deliberately: it is the row `conversationalRun` measures from, so the
+ * question this answers is about the same unit the rest of the file is about. An engine-synthetic
+ * trigger that interleaves with real traffic therefore anchors its OWN run and cannot borrow the
+ * person's, and the person's ask cannot be made to pay for a note the scheduler caused.
+ *
+ * A run with no user row before it at all (the top of a freshly-truncated history page, a
+ * service agent's very first cycle) answers NO. That is the conservative direction: the note
+ * keeps the verdict it ships with today.
+ */
+export function askedByAPerson(rows: readonly NoteRow[], index: number): boolean {
+  for (let i = index - 1; i >= 0; i--) {
+    const row = rows[i];
+    if (row === undefined || row.role !== 'user') continue;
+    return typeof row.conversationId === 'string' && row.conversationId.trim() !== '';
+  }
+  return false;
+}
+
+/**
  * THE VERDICT for the note at `index`, or `null` when that row is not a note at all.
  *
  * Order is load-bearing: R3 is asked FIRST, so a note that merely repeats the answer beside it
  * is quiet whichever arm wrote it — including the internal arm, where R2 would otherwise have
  * to decide whether a duplicate counts as "the only thing said". It does not: the answer is on
  * screen, the person is not in silence, and the second copy is the thing to remove.
+ *
+ * R4 is asked SECOND, ahead of both R2 and R1, and its guard is disjoint from R3's: R3 needs a
+ * visible answer in the run and R4 needs there to be none. So the two can never both be true,
+ * and the order between them is readability rather than precedence.
  */
 export function workingNoteVerdict(rows: readonly NoteRow[], index: number): NoteVerdict | null {
   const note = noteOn(rows[index] as NoteRow);
@@ -176,6 +246,13 @@ export function workingNoteVerdict(rows: readonly NoteRow[], index: number): Not
   const body = note.text.trim();
   if (body !== '' && answers.some((a) => a === body)) return 'wordyOnly';
 
+  // R4 — the person asked and this is all they were shown: it is the reply, so it reads as one.
+  // Both arms, because the owner's bar is about what a reply may look like and not about which
+  // demotion wrote it. R2's internal-arm `dimmed` answer is subsumed here, not contradicted:
+  // that arm's whole finding was that a lone internal note must be VISIBLE, and this says what
+  // visible means for it.
+  if (answers.length === 0 && askedByAPerson(rows, index)) return 'answer';
+
   // R2 — RC-9, narrowed: hidden only when there is a reply for it to be second to.
   if (note.arm === 'internal') return answers.length > 0 ? 'wordyOnly' : 'dimmed';
 
@@ -183,11 +260,24 @@ export function workingNoteVerdict(rows: readonly NoteRow[], index: number): Not
   return 'dimmed';
 }
 
-/** The one question `Chat.tsx` asks per row: render this note, given the viewer's mode? */
+/** Is this note on screen at all, given the viewer's mode? `true` for a promoted reply too —
+ *  a reply is the most on-screen a row can be. */
 export function showsWorkingNote(
   rows: readonly NoteRow[], index: number, wordyMode: boolean,
 ): boolean {
   const verdict = workingNoteVerdict(rows, index);
   if (verdict === null) return false;
-  return wordyMode || verdict === 'dimmed';
+  return wordyMode || verdict !== 'wordyOnly';
+}
+
+/** The one question `Chat.tsx` asks per row, at both of its note arms: how does this render? */
+export function renderWorkingNote(
+  rows: readonly NoteRow[], index: number, wordyMode: boolean,
+): NoteRender {
+  const verdict = workingNoteVerdict(rows, index);
+  if (verdict === null || (verdict === 'wordyOnly' && !wordyMode)) return 'hide';
+  // A promoted reply is a reply in wordy mode too. Wordy mode is a DISPLAY FILTER that only
+  // ever adds rows (`shared/visibility.ts` says so in its own header); making it also re-dim a
+  // row the regular viewer sees as the answer would be the one place it subtracted.
+  return verdict === 'answer' ? 'answer' : 'note';
 }

@@ -9,8 +9,9 @@ import { ToolBadgeGroup, type ToolChipData } from '../components/ToolBadge';
 import * as api from '../lib/api';
 import type { AttachmentInfo } from '../lib/api';
 import { formatDate } from '../lib/dates';
-// Whether a demoted note is dimmed or gone — three rules, driven from the server suite.
-import { showsWorkingNote } from '../lib/working-note-visibility';
+// Whether a demoted note is dimmed, gone, or the reply itself — four rules, driven from the
+// server suite. R4 is OWNER RULING 2026-10-05 #7's acceptance bar: a real reply never collapses.
+import { renderWorkingNote } from '../lib/working-note-visibility';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { ToolCallBlock, ToolCallCard, ToolResultBlock } from '../components/ToolCallBlock';
 import { stripVoiceMarkers, stripVoiceMarkersForStream, parseMoodMarker } from '../lib/voice-markers';
@@ -462,6 +463,21 @@ const AssistantBubble = ({
     </div>
   );
 };
+// ── R4 (OWNER RULING 2026-10-05 #7) — A PROMOTED NOTE IS AN ORDINARY REPLY BUBBLE ──
+// The VERDICT is `lib/working-note-visibility.ts`'s and is argued there; this is only the
+// rendering of it, and it deliberately reuses `AssistantBubble` rather than restyling the note
+// one: the owner's complaint is that his reply looked unlike a reply, so anything short of the
+// same component would be a third appearance for the same thing. `role` is overridden because
+// the promoted row may be the `role='system'` prefixed arm, and `content` is the note's own
+// text with the marker already stripped by the caller's parser.
+const NoteAsAnswer = ({ msg, text, wordyMode, modelNames }: {
+  msg: ChatMessage; text: string; wordyMode: boolean; modelNames: Record<string, string>;
+}) => (
+  <AssistantBubble
+    msg={{ ...msg, role: 'assistant', content: text }}
+    wordyMode={wordyMode} modelNames={modelNames} outboundChannel={null}
+  />
+);
 
 // Tool-only assistant turns render as class-aware badges (V2b): effectful action
 // vs retrieval vs hidden bookkeeping. The badge atom + the wrap row live in the
@@ -1881,8 +1897,10 @@ export const Chat = ({ panel = null }: ChatProps) => {
           // wordy-only. Everything else here is unchanged — the verdict comes from
           // `working-note-visibility.ts` so both note routes ask one question.
           if (msg.role === 'assistant' && msg.displayKind === 'working-note') {
-            if (!showsWorkingNote(messages, msgIndex, wordyMode)) return null;
+            const how = renderWorkingNote(messages, msgIndex, wordyMode);
+            if (how === 'hide') return null;
             const { text: noteText } = parseMessageContent(msg.content);
+            if (how === 'answer') return <NoteAsAnswer key={msg.id} msg={msg} text={noteText || msg.content} wordyMode={wordyMode} modelNames={modelNames} />;
             return <WorkingNoteBubble key={msg.id} text={noteText || msg.content} />;
           }
           if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} wordyMode={wordyMode} />;
@@ -1915,7 +1933,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
             // this one — which he did not see — vanished completely.
             const note = parseWorkingNote(trimmedSys);
             if (note) {
-              if (!showsWorkingNote(messages, msgIndex, wordyMode)) return null;
+              const how = renderWorkingNote(messages, msgIndex, wordyMode);
+              if (how === 'hide') return null;
+              if (how === 'answer') return <NoteAsAnswer key={msg.id} msg={msg} text={note.text} wordyMode={wordyMode} modelNames={modelNames} />;
               return <WorkingNoteBubble key={msg.id} text={note.text} />;
             }
             // Divider-style markers: any system message shaped "── label ──"

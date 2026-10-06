@@ -64,11 +64,16 @@ const ANSWER = 'Done — the thing is fixed.';
 type Row = {
   id: string; role: 'user' | 'assistant' | 'system' | 'tool';
   content: string; createdAt: string; displayKind?: string | null;
+  conversationId?: string | null;
 };
 
 let seq = 0;
 const at = () => `2020-01-01T00:00:${String(10 + seq++).padStart(2, '0')}.000Z`;
 const user = (content: string): Row => ({ id: `u${seq}`, role: 'user', content, createdAt: at() });
+/** A PERSON asking, as `gateway/routes/chat.ts` stores and now broadcasts it: with the
+ *  conversation it resolved. The bare `user()` above keeps NO conversation and so keeps
+ *  standing for every engine-synthetic trigger, which is what R4's control arm needs. */
+const person = (content: string): Row => ({ ...user(content), conversationId: 'owner' });
 const assistant = (content: string): Row => ({ id: `a${seq}`, role: 'assistant', content, createdAt: at() });
 const systemNote = (text: string, internal: boolean): Row => ({
   id: `s${seq}`, role: 'system',
@@ -171,5 +176,52 @@ describe('the feed asks the visibility rule, on both note routes', () => {
     const { container } = await feed([user(ASKED), reclassified(NOTE_TEXT), assistant(ANSWER)], false);
     await waitFor(() => expect(container.textContent).toContain(ANSWER));
     expect(noteBubbles(container, NOTE_TEXT), 'a note saying something else was swallowed').toHaveLength(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// R4 IN THE DOM — OWNER RULING 2026-10-05 (#7): a real reply never collapses.
+//
+// The verdict is proven 20 ways in the server suite. What only the DOM can prove is that the
+// feed DRAWS a promoted note as a reply instead of as a collapsed button — both arms of it —
+// because a `renderWorkingNote` call whose 'answer' branch was dropped at one arm keeps every
+// one of those clauses green while the owner looks at the same grey box he reported.
+// ════════════════════════════════════════════════════════════════════════════
+describe('R4 in the DOM — the reply is drawn as a reply, at both note arms', () => {
+  const REPLY = 'Yes — the sync finished and the queue is empty.';
+
+  it("the system-note arm: the agent's only words to a person draw NO collapsed button", async () => {
+    const { container } = await feed([person(ASKED), systemNote(REPLY, false)], false);
+    await waitFor(() => expect(container.textContent).toContain(REPLY));
+    expect(noteBubbles(container, REPLY), "the owner's own reply was collapsed again").toHaveLength(0);
+  });
+
+  it('the internal arm promotes the same way', async () => {
+    const { container } = await feed([person(ASKED), systemNote(REPLY, true)], false);
+    await waitFor(() => expect(container.textContent).toContain(REPLY));
+    expect(noteBubbles(container, REPLY)).toHaveLength(0);
+  });
+
+  it('the turn-boundary arm: a re-classified row that is all there was draws no button either', async () => {
+    const { container } = await feed([person(ASKED), reclassified(REPLY)], false);
+    await waitFor(() => expect(container.textContent).toContain(REPLY));
+    expect(noteBubbles(container, REPLY)).toHaveLength(0);
+  });
+
+  it('CONTROL — an engine-synthetic trigger anchors its OWN run, so its note stays collapsed', async () => {
+    // The 45 correctly-demoted scheduler/service rows, in the DOM. The cycle row is faithful:
+    // `vault/maintenance.ts` stores the Dreamer's cycle prompt as a plain user row with NO
+    // conversation resolved, and it is the NEAREST user row before the note — so the person's
+    // real ask above it cannot be borrowed to promote engine narration.
+    const { container } = await feed(
+      [person(ASKED), assistant(ANSWER), user('═══ DREAM CYCLE ═══'), systemNote(NOTE_TEXT, false)], false,
+    );
+    await waitFor(() => expect(noteBubbles(container, NOTE_TEXT)).toHaveLength(1));
+  });
+
+  it('CONTROL — once a real answer is beside it, the note is a collapsed button again', async () => {
+    const { container } = await feed([person(ASKED), systemNote(NOTE_TEXT, false), assistant(ANSWER)], false);
+    await waitFor(() => expect(container.textContent).toContain(ANSWER));
+    expect(noteBubbles(container, NOTE_TEXT), 'the self-healing fallback to R1 did not happen').toHaveLength(1);
   });
 });
