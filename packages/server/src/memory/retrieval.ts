@@ -1060,18 +1060,6 @@ export async function memoryExpand(
   const userMessage = `Here is the expanded conversation history:\n\n${materialParts.join('\n')}\n\n---\n\nQuestion: ${prompt}`;
 
   // Truncate if too long
-  // t114 (census U7): the synthesis budget, derived from the size of what is being synthesised.
-  // FLOOR is W3-1's own number, so a small expand is exactly as fast to fail as it is today;
-  // the per-1K-token grant is what the flat version was missing; the CEILING keeps this a
-  // bounded utility call that cannot sit on a live tool result indefinitely.
-  const EXPAND_FLOOR_MS = 60_000;
-  const EXPAND_MS_PER_1K_TOKENS = 1_500;
-  const EXPAND_CEILING_MS = 10 * 60_000;
-  const expandSynthesisBudgetMs = (inputTokens: number): number => Math.min(
-    EXPAND_FLOOR_MS + Math.ceil(Math.max(inputTokens, 0) / 1000) * EXPAND_MS_PER_1K_TOKENS,
-    EXPAND_CEILING_MS,
-  );
-
   const maxInputTokens = 100000;
   const truncatedMessage = estimateTokens(userMessage) > maxInputTokens
     ? userMessage.slice(0, maxInputTokens * 4) + '\n\n[... material truncated ...]'
@@ -1124,6 +1112,27 @@ export async function memoryExpand(
       ? `Expanded material (synthesis ran out of time for this much material — ask a narrower question to have it summarised):\n\n${materialParts.join('\n')}`
       : `Expanded material (model call failed):\n\n${materialParts.join('\n')}`;
   }
+}
+
+// ── t114 (census U7) — THE SYNTHESIS BUDGET, DERIVED FROM WHAT IS BEING SYNTHESISED ──
+//
+// FLOOR is W3-1's own number, so a small expand is exactly as fast to fail as it is today; the
+// per-1K-token grant is what the flat version was missing; the CEILING keeps this a bounded
+// utility call that cannot sit on a live tool result indefinitely.
+//
+// EXPORTED, and at module scope rather than inside the handler, for the reason U5 taught this lane
+// twice: a clause that re-derives this arithmetic instead of calling it passes while the shipped
+// code says something else. The review found U7 shipped with no clause at all; this is the seam
+// that makes one possible.
+export const EXPAND_FLOOR_MS = 60_000;
+export const EXPAND_MS_PER_1K_TOKENS = 1_500;
+export const EXPAND_CEILING_MS = 10 * 60_000;
+
+export function expandSynthesisBudgetMs(inputTokens: number): number {
+  return Math.min(
+    EXPAND_FLOOR_MS + Math.ceil(Math.max(inputTokens, 0) / 1000) * EXPAND_MS_PER_1K_TOKENS,
+    EXPAND_CEILING_MS,
+  );
 }
 
 // ── memory_search: hybrid FTS + vector search ──
