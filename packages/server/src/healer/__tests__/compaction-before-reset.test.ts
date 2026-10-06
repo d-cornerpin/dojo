@@ -84,8 +84,19 @@ beforeEach(() => {
   vi.resetModules();
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // t114 (closing t113's hand-up 2): SETTLE THE STRAY RECOVERY NOTICE BEFORE THE NEXT CASE.
+  //
+  // `onAgentRecovered` starts an async healer FYI that production deliberately does not await.
+  // With no handle on that promise it used to land on whichever LATER case's module-cached
+  // transport spy resolved first, which is what made two `toHaveBeenCalledTimes` clauses a coin
+  // flip — and why re-routing the notice by one module moved the red to a different file without
+  // anything being wrong with the product. Draining here closes the leak at its real boundary:
+  // real timers are restored first (the notice may be waiting on one), then the notices settle,
+  // and only then is the database torn out from under them.
   vi.useRealTimers();
+  const { drainRecoveryNotices } = await import('../injury-recovery.js');
+  await drainRecoveryNotices();
   mockDb.current?.close();
   mockDb.current = null;
 });

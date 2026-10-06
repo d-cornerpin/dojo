@@ -149,11 +149,23 @@ describe('SWEEP CORE-2 item 2 — the damping the 2026-07-27 correction protects
     expect(stillThere?.at_ms).toBe(suppression?.at_ms);
   });
 
-  it('the module declares no module-scope Map/Set except the two timer registries', () => {
+  it('the module declares no module-scope Map/Set except the timer and in-flight registries', () => {
     // The correction's teeth: if a future change puts damping back in memory, this names it.
+    //
+    // t114 WIDENED THE ALLOWLIST BY ONE, and the argument matters because widening an allowlist
+    // is how a clause like this normally dies. The two originals are TIMER REGISTRIES: handles to
+    // things that exist only in this process, which is why they cannot be `healer_state` rows.
+    // `pendingRecoveryNotices` is the same class — a Set of IN-FLIGHT PROMISES, and a promise is
+    // not a persistable fact. It carries no damping, no suppression and no attempt count, so it
+    // cannot be the shadow ledger this clause exists to refuse; it exists so a fire-and-forget
+    // recovery notice can be awaited (t113 hand-up 2), which is what stopped that notice landing
+    // on an unrelated test's spy.
+    //
+    // The teeth are intact: a FOURTH entry still fails here, and any of the three growing a
+    // damping-shaped meaning still has to come past this line to do it.
     const src = read('healer/injury-recovery.ts');
     const declared = [...src.matchAll(/^const\s+(\w+)\s*=\s*new\s+(?:Map|Set)\b/gm)].map((m) => m[1]);
-    expect(declared.sort()).toEqual(['autoWakeTimers', 'pendingTimers']);
+    expect(declared.sort()).toEqual(['autoWakeTimers', 'pendingRecoveryNotices', 'pendingTimers']);
     // …and the two facades that LOOK like Maps are reads of `healer_state`.
     expect(src).toMatch(/healerSuppressedUntil\s*=\s*\{[\s\S]{0,400}?readHealerState\('agent_suppression'/);
     expect(src).toMatch(/providerPatternAlerted\s*=\s*\{[\s\S]{0,400}?readHealerState\('provider_alert'/);
