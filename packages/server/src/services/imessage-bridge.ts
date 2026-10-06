@@ -1258,6 +1258,12 @@ export async function processInboundIMessage(
         // inboundMeta and fell back to marker-parsing, so a live-rendered
         // iMessage bubble could disagree with the refetched one (some
         // inbound bubbles rendered, others didn't).
+        // t106 — the SAME binding the insert used, on the wire too. The history route
+        // projects this column so a RELOADED feed always had it; the live feed builds its
+        // row from THIS frame, and `lib/working-note-visibility.ts` R4 reads it to tell a
+        // person's message from an engine-synthetic trigger. Omitted, a routed-channel
+        // reply promoted only on refresh. One resolve (above), two consumers.
+        conversationId,
         inboundMeta: JSON.stringify(inboundMetaObj),
         tokenCount: null,
         modelId: null,
@@ -1292,13 +1298,21 @@ export async function processInboundIMessage(
       const markerId = uuidv4();
       const markerContent = `[Courtesy reply from ${senderRecord.name} received; no turn taken]`;
       try {
-        insertMessageIfAbsent({ id: markerId, agentId: primaryId, role: 'system', content: markerContent });
+        // t106 — BOTH SIDES, or this door disagrees with itself in the other direction. The
+        // marker is part of the exchange it explains, so it belongs to the conversation the
+        // inbound row above already resolved; stamping only the frame would put an id on the
+        // wire that the stored row does not carry, which is the live-vs-reload split this fix
+        // is about, mirrored.
+        insertMessageIfAbsent({
+          id: markerId, agentId: primaryId, role: 'system', content: markerContent, conversationId,
+        });
         broadcast({
           type: 'chat:message',
           agentId: primaryId,
           message: {
             id: markerId, agentId: primaryId, role: 'system' as const,
             content: markerContent,
+            conversationId,
             tokenCount: null, modelId: null, cost: null, latencyMs: null,
             createdAt: new Date().toISOString(),
           },
