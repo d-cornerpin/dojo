@@ -240,7 +240,12 @@ describe('SWEEP CORE-2 item 2 — the shadow budget ledger is gone', () => {
     expect(diag).not.toMatch(/SUM\(cost\)[\s\S]{0,80}audit_log|audit_log[\s\S]{0,80}SUM\(cost\)/);
   });
 
-  it('the health report reads the REAL budget owner — the capability is preserved, not deleted', async () => {
+  // 120s, not the 30s default: this clause is a LOAD-ARTIFACT repeat offender — four sightings
+  // across t114/t116 merge gates timed out at 30s under a full concurrent suite, and every
+  // re-run alone finishes in ~3.4s (3/3, twice over). The work is real and the clause is sound;
+  // the budget it needs is wall-clock under contention, not a hidden hang (a genuine hang still
+  // fails at 120s). Recorded in the v3.3 campaign ledger, 2026-10-06.
+  it('the health report reads the REAL budget owner — the capability is preserved, not deleted', { timeout: 120_000 }, async () => {
     // #15: this collector has live readers (the Healer's own cycle prompt, the stale-proposal
     // sweep's code set, `GET /healer/diagnostics`, the Settings counts). What dies is the
     // duplicate ACCOUNTING, not the answer; the answer now comes from the one owner.
