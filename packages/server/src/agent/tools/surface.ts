@@ -39,16 +39,7 @@
 
 import type { ToolDefinition } from './types.js';
 import { getDb } from '../../db/connection.js';
-// t107 (t92 review Minor 5): `agent/manifest.js`, the module that DECLARES this function,
-// not `agent/permissions.js`'s re-export of it. The sudo claim door (`brokers/sudo-claim.ts`)
-// reads the manifest straight from `manifest.js`, and this file asks that door a question
-// (`agentMayRunAdminCommands` below) about the SAME agent's exec grant. Two spellings of one
-// module are two modules to a test: the blast suite for the sudo-door sentence mocked
-// `permissions.js` while the door read `manifest.js`, so its planted exec grant reached this
-// file and not the door it was written to drive. One import direction, and the direct module
-// is the one both readers can agree on — `permissions.js` re-exports it from here anyway, so
-// the value is identical and the edge count goes down.
-import { getAgentPermissions } from '../manifest.js';
+import { getAgentPermissions } from '../manifest.js'; // the DECLARING module, which `brokers/sudo-claim.ts` also reads — census + why: `agent/brokers/__tests__/the-sudo-door-and-the-surface-read-one-manifest.test.ts`
 import { toolGrantsFor, toolCategoryGranted, mayUsePlaud, holdsCredentialGrant, integrationLevelFor, mayUseChannel } from '../access/read.js';
 import { channelForTool } from '../access/channels.js';
 import { PRIMARY_ONLY_TOOLS } from './gates.js';
