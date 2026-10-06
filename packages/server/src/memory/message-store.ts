@@ -32,6 +32,7 @@ import {
   type BroadcastRow, type DisplayKind, type MessageLane, type VisibilityTier,
 } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
+import { AGENT_BUS_INTENT, START_ACK_ORIGIN_INTENT } from './origin-intents.js';
 import { withUnit } from '../db/unit.js';
 import { openAsk, askIdForMessage } from '../work/store.js';
 import { NOW_MS, createdAtText } from './store.js';
@@ -1131,23 +1132,22 @@ export function deleteAgentBusRowsFor(agentId: string): number {
   ).run({ agentId }).changes;
 }
 
-/** What marks a row as the agent BUS (spawn results, PM status, scheduler notices)
- *  rather than ordinary peer conversation. `origin_intent` is the open-vocabulary
- *  "which subsystem produced this" column (T3-0b §2) and this is exactly its job. */
-export const AGENT_BUS_INTENT = 'agent_bus';
-
 /**
- * UX-REPAIR T2 — WHAT MARKS THE PROMOTED START LINE, IN ONE SPELLING.
+ * THE `origin_intent` VOCABULARY — DECLARED IN `origin-intents.ts`, RE-EXPORTED HERE.
  *
- * The model's opening line, pushed to the person EARLY, ahead of the answer
- * (`post-call-classify/terminal-text.ts` — one production writer). It is the agent's own
- * words, not engine prose (PHASE-4 T4), which is why its row also carries an explicit
- * `displayKind: 'agent-text'` and reads in chat exactly as any other bubble.
+ * `origin_intent` is this module's vocabulary and these values read naturally beside the
+ * functions above that stamp and match them, which is why they were declared here and why
+ * every existing importer still reads them from here.
  *
- * It lives HERE, beside `AGENT_BUS_INTENT`, for the reason stated there: `origin_intent` is
- * this module's vocabulary. It is a CONSTANT rather than two string literals because the
- * writer and the settlement authority that refuses it as an ask's receipt
- * (`work/ask-settlement.ts`, the seventh narrowing) must be unable to drift apart — a stamp
- * nobody matches is the defect this fix exists to close, in a new spelling.
+ * They are DECLARED one file over because `work/ask-settlement.ts` reads
+ * `START_ACK_ORIGIN_INTENT` at MODULE SCOPE, and this module reaches `ask-settlement` again
+ * through its own dependency graph — so a declaration here was a temporal dead zone for any
+ * process that entered this module first (t117; the full argument is in `origin-intents.ts`).
+ * A leaf module cannot be mid-initialization when someone reads it.
+ *
+ * Reading them THROUGH this re-export is safe, including from module scope: an ESM re-export
+ * binds the importer to the leaf's own binding, not to anything of this module's, so the value
+ * is initialized even while this module is not. What must not come back is the DECLARATION —
+ * put `export const START_ACK_ORIGIN_INTENT = …` in this file again and the dead zone returns.
  */
-export const START_ACK_ORIGIN_INTENT = 'engine_start_ack';
+export { AGENT_BUS_INTENT, START_ACK_ORIGIN_INTENT };

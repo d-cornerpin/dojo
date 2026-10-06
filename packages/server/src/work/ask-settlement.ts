@@ -53,7 +53,14 @@
 import { getDb } from '../db/connection.js';
 import { engineCutHandBackReason, turnWasEngineCut } from './exit-attribution.js';
 import { createLogger } from '../logger.js';
-import { recordServingTurnByRowid, START_ACK_ORIGIN_INTENT } from '../memory/message-store.js';
+import { recordServingTurnByRowid } from '../memory/message-store.js';
+// FROM THE LEAF (t117). `NOT_A_START_ACK` below reads this constant at MODULE SCOPE, and
+// `message-store` reaches this file again through its own dependency graph — so while the
+// constant was DECLARED in `message-store`, this read was a temporal dead zone for any process
+// that entered `message-store` first. `origin-intents.ts` imports nothing, so it is always
+// fully initialized. (`message-store` re-exports it and reading it from there would also be
+// safe, because a re-export binds to the leaf; naming the leaf just says so out loud.)
+import { START_ACK_ORIGIN_INTENT } from '../memory/origin-intents.js';
 import {
   appendWorkEvent, askIdForMessage, claimFailedJoinForLateAnswer, claimingTurnOf, isTerminal,
   revertAskClaimOnAbort, transition,
