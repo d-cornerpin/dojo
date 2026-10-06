@@ -168,17 +168,50 @@ export async function postApprovedReport(id: string, choice?: PostChoice): Promi
     repo, renderIssueTitle(row.brief), body, issueLabelsFor(reportVersion(row) ?? ''),
   );
   if (!created.ok) return failed(created.error);
+  // ── THE ROW IS MARKED BEFORE THE LABEL READ-BACK, AND THAT ORDER IS THE FIX (F5) ──
+  // `record` is a local SQLite write; the read-back below is a 10-second authenticated HTTP call.
+  // Measuring first put that round-trip between a live public issue and the row that records it,
+  // on the happy path of every delivered report — and a crash in the window stranded the row as
+  // `approved` with the issue already filed: refused forever by the one-shot approval, absent
+  // from the open list, undecidable. `record` first; measure second.
   record(row, created.url, created.number);
+  const labelsDropped = created.labelsDropped ?? await measureLabelsAfterDelivery(created, row.id);
   // THE LOG IS THE OTHER RECORD. The row has no column for it — a dropped label is a fact about
   // one delivery attempt, not about the report — so it is logged here beside the issue number
   // that proves the report actually landed, and handed to the route for the card.
-  if (created.labelsDropped !== null) {
+  if (labelsDropped !== null) {
     logger.warn('the report was filed without its labels', {
-      reportId: row.id, issueNumber: created.number, detail: created.labelsDropped,
+      reportId: row.id, issueNumber: created.number, detail: labelsDropped,
     });
   }
   return {
-    kind: 'created', issueUrl: created.url, issueNumber: created.number,
-    labelsDropped: created.labelsDropped,
+    kind: 'created', issueUrl: created.url, issueNumber: created.number, labelsDropped,
   };
+}
+
+/**
+ * THE LABEL MEASUREMENT, AND THE ONE TRY/CATCH THAT MAKES IT UNABLE TO TAKE THE DELIVERY BACK.
+ *
+ * The report HAS LANDED by the time this runs — the issue is public and `record` has already
+ * spent the row. So every outcome here is a detail about one delivery attempt, and NO outcome
+ * may become the owner's answer. `github/issues.ts` returns `null` for "not measured" on every
+ * failure it anticipates; this catch is for the ones it does not, which is the whole point of
+ * F6: the invariant used to rest on inspection of a single try/catch deep inside `createIssue`,
+ * where an escape turned a live issue into a `failed` outcome AND wrote a connection failure to
+ * the ledger. Now an escape costs one warn line and a `null` sentence, and the owner still gets
+ * the address of their issue.
+ */
+async function measureLabelsAfterDelivery(
+  created: { measureLabels: (() => Promise<string | null>) | null },
+  reportId: string,
+): Promise<string | null> {
+  if (created.measureLabels === null) return null;
+  try {
+    return await created.measureLabels();
+  } catch (err) {
+    logger.warn('the label read-back threw after the report had already been filed', {
+      reportId, error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
 }

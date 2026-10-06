@@ -158,6 +158,32 @@ export async function findIssueBySignature(repo: string, signature: string): Pro
 
 export type IssueWriteResult<T> = ({ ok: true } & T) | { ok: false; error: string };
 
+/**
+ * A CREATED ISSUE, AND THE MEASUREMENT THAT HAS NOT RUN YET.
+ *
+ * `labelsDropped` is the sentence this module can answer WITHOUT another network call — the retry
+ * arm's controlled note, already known the moment the bare POST succeeds.
+ *
+ * `measureLabels` is the label read-back, DEFERRED AND HANDED TO THE CALLER (fix round F5/F6).
+ * Awaiting it here bought two defects with one line: it put a 10-second authenticated round-trip
+ * BETWEEN a live public issue and `markPosted`, so a crash in the window stranded a filed issue
+ * against an `approved` row that nothing could then decide (F5); and it sat inside `createIssue`'s
+ * outer `try`, where any escape turned a LIVE issue into `ok: false` and wrote `noteGithubFailure`
+ * — contradicting the rule two doc-blocks up that a failed read-back performs NO ledger write
+ * (F6). Out here the second property is structural rather than a matter of inspecting one
+ * try/catch. `report/post.ts` records the row and then calls this; the ordering argument lives
+ * there, next to the `record` call that is the half of it this module cannot see.
+ *
+ * `null` means there is nothing to measure — the request sent no labels, or the arm that
+ * succeeded is the label-less retry whose note is already in `labelsDropped`.
+ */
+export interface CreatedIssue {
+  number: number;
+  url: string;
+  labelsDropped: string | null;
+  measureLabels: (() => Promise<string | null>) | null;
+}
+
 /** A call that never got an answer: a dead socket, a timeout, an HTML page where JSON was due. */
 function unreachable(what: string, err: unknown): { ok: false; error: string } {
   const detail = err instanceof Error ? err.message : String(err);
@@ -340,7 +366,7 @@ async function labelsThatDidNotSurvive(
  */
 export async function createIssue(
   repo: string, title: string, body: string, labels: string[],
-): Promise<IssueWriteResult<{ number: number; url: string; labelsDropped: string | null }>> {
+): Promise<IssueWriteResult<CreatedIssue>> {
   const postable = assertPostableRepo(repo);
   if (!postable.ok) return postable;
   const token = getGithubToken();
@@ -372,7 +398,16 @@ export async function createIssue(
     // an account without write access is answered 201 and saved unlabelled, silently. Ask.
     const accepted = await readCreated(res, null);
     if (!accepted.ok || labels.length === 0) return accepted;
-    return { ...accepted, labelsDropped: await labelsThatDidNotSurvive(repo, token, accepted.number, labels) };
+    // THE MEASUREMENT IS HANDED BACK, NOT AWAITED. The issue is live as of the line above; the
+    // read-back is a second 10-second round-trip that must not sit between a public issue and the
+    // row that records it (F5), and must not be inside this `try` where an escape from it would
+    // turn a delivered report into `ok: false` and write a failure to the ledger (F6). The caller
+    // marks the row posted and then calls this. See `CreatedIssue`.
+    const issueNumber = accepted.number;
+    return {
+      ...accepted,
+      measureLabels: () => labelsThatDidNotSurvive(repo, token, issueNumber, labels),
+    };
   } catch (err) {
     return unreachable('file the issue', err);
   }
@@ -381,13 +416,13 @@ export async function createIssue(
 /** GitHub accepted it. One reader for both attempts, so neither can drift from the other. */
 async function readCreated(
   res: Response, labelsDropped: string | null,
-): Promise<IssueWriteResult<{ number: number; url: string; labelsDropped: string | null }>> {
+): Promise<IssueWriteResult<CreatedIssue>> {
   const answer = await res.json() as { number?: unknown; html_url?: unknown };
   if (typeof answer.number !== 'number' || typeof answer.html_url !== 'string') {
     return reportUnreadableAnswer('file the issue', res.status);
   }
   noteGithubOk();
-  return { ok: true, number: answer.number, url: answer.html_url, labelsDropped };
+  return { ok: true, number: answer.number, url: answer.html_url, labelsDropped, measureLabels: null };
 }
 
 /** Add this report to an issue that already exists. Same gate, same ledger, same silence about numbers. */

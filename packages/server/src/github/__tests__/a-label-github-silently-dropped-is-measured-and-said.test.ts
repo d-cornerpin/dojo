@@ -58,10 +58,22 @@ vi.mock('../../db/connection.js', () => ({
 }));
 
 const logLines: string[] = [];
+/**
+ * A MESSAGE WHOSE LOG LINE THROWS, or null. §7's F6 clause needs an escape from
+ * `labelsThatDidNotSurvive` that `labelsOnIssue`'s OWN try/catch cannot absorb — a rejecting
+ * `fetch` is caught there and answered `null`, so driving the network proves nothing about the
+ * containment F6 is on. The measurement log sits OUTSIDE that try, and a throwing `logger.warn`
+ * is one of the two escape shapes the review named. Matched on the exact message so only that
+ * one line is affected and every other component logs normally.
+ */
+let warnThrowsOn: string | null = null;
 vi.mock('../../logger.js', () => ({
   createLogger: (component: string) => {
     const write = (level: string) => (message: string, meta?: unknown) => {
       logLines.push(`${level} ${component}: ${message} ${meta === undefined ? '' : JSON.stringify(meta)}`);
+      if (level === 'warn' && warnThrowsOn !== null && message === warnThrowsOn) {
+        throw new Error('the log line itself threw');
+      }
     };
     return { info: write('info'), warn: write('warn'), error: write('error'), debug: write('debug') };
   },
@@ -169,6 +181,7 @@ beforeEach(() => {
   runMigrations();
   calls = [];
   logLines.length = 0;
+  warnThrowsOn = null;
   createAnswers = [() => created()];
   readBack = () => issueWithLabels(SENT);   // the collaborator's case is the default
   installFetch();
@@ -452,5 +465,96 @@ describe('nothing on the read-back path can print the credential', () => {
       expect(githubStatus().lastError ?? '', `${label}: the ledger carried the token`)
         .not.toContain(TOKEN);
     }
+  });
+});
+
+// ── 7. THE MEASUREMENT RUNS AFTER THE DELIVERY IS RECORDED (fix round F5/F6) ──────────────
+//
+// The read-back bought the owner a true sentence and bought the platform two defects, both of
+// them about WHERE in the sequence it sat rather than what it measured.
+//
+// F5 — THE CRASH WINDOW. It was awaited inside `createIssue`, which put a fresh authenticated
+// HTTP call bounded only by `ISSUE_HTTP_TIMEOUT_MS` (10s) BETWEEN a live public issue and
+// `markPosted`. A process death, supervisor restart or update inside that window left the issue
+// filed and the row still `approved`: excluded from the open list, refused forever by the
+// one-shot approval, and `releaseApproval` never reached because the handler died with the
+// process. The report becomes permanently undecidable and leaves no trace on the card. The gap
+// pre-existed as the sub-millisecond hop from the create response to `record`; the read-back
+// made it a deliberate round-trip on the happy path of EVERY delivered report.
+//
+// F6 — THE INVARIANT WAS ONE TRY/CATCH DEEP. "No failure here may take the delivery back" held
+// by inspection, not by construction: anything that escaped `labelsOnIssue` fell into
+// `createIssue`'s outer catch, turned a LIVE issue into `ok: false`, and sent `unreachable` to
+// write `noteGithubFailure` — contradicting the module's own rule that a failed read-back
+// performs no ledger write. A one-line edit re-opened it silently and no clause drove an escape.
+//
+// Both clauses below are ORDERING and CONTAINMENT clauses, driven through the real poster.
+
+describe('the label read-back cannot cost the platform the delivery it already made', () => {
+  it('F5: the row is already `posted` at the moment the read-back goes out', async () => {
+    const id = approvedReport();
+    // The probe runs INSIDE the read-back answer, which is the one moment the old order was
+    // wrong. Reading the row here reads it exactly as a crash in the window would find it.
+    let statusWhenRead: string | undefined;
+    let issueNumberWhenRead: number | null | undefined;
+    readBack = () => {
+      statusWhenRead = getReport(id)?.status;
+      issueNumberWhenRead = getReport(id)?.issueNumber ?? null;
+      return issueWithLabels([]);
+    };
+
+    const { kind, note } = await postAndNote(id);
+
+    // Non-vacuity FIRST: a read-back that never happened would satisfy any claim about its
+    // ordering. This is the clause's own control.
+    expect(reads().length, 'no read-back went out, so there was no window to order').toBe(1);
+    expect(statusWhenRead, 'the probe never ran inside the read-back').toBeDefined();
+
+    // THE PROPERTY. A crash at this instant strands nothing: the row already names the issue.
+    expect(statusWhenRead, 'the read-back ran while the row was still unposted — a crash in that '
+      + 'window strands a filed issue against an `approved` row, undecidable forever').toBe('posted');
+    expect(issueNumberWhenRead, 'the row did not yet carry the issue number when the read-back '
+      + 'went out').toBe(ISSUE);
+
+    // And the measurement still reaches the owner — the fix reorders, it does not disable.
+    expect(kind).toBe('created');
+    expect(note, 'the reordered measurement stopped reaching the owner').toBeTruthy();
+    expect(getReport(id)?.status).toBe('posted');
+  });
+
+  it('F6: a read-back that THROWS leaves the report delivered and the ledger clean', async () => {
+    const id = approvedReport();
+    // THE ESCAPE HAS TO BE A REAL ONE. A rejecting `fetch` is NOT: `labelsOnIssue` has its own
+    // try/catch and answers `null`, so a thrown read-back answer would leave this clause green
+    // with the containment removed — it would be testing nothing. The escape F6 names lives
+    // OUTSIDE that try: the measurement log in `labelsThatDidNotSurvive`, reached only once a
+    // drop has actually been measured. So: measure a real drop, and make that log line throw.
+    readBack = () => issueWithLabels([]);
+    warnThrowsOn = 'github silently dropped labels off an issue it accepted';
+
+    const { kind, note } = await postAndNote(id);
+
+    // THE DELIVERY SURVIVES. This is the whole invariant: the issue is public, so the owner
+    // gets its address and the row is spent, whatever happened after.
+    expect(kind, 'a throw in the label read-back took the delivery back — the issue is public and '
+      + `the owner was told it failed. ${JSON.stringify(logLines)}`).toBe('created');
+    expect(getReport(id)?.status, 'the row was left unspent against a live public issue')
+      .toBe('posted');
+    expect(getReport(id)?.issueNumber).toBe(ISSUE);
+
+    // NON-VACUITY: the escape really was driven. If the throwing line was never reached, this
+    // clause proves nothing about containment.
+    expect(logLines.some(l => l.includes('github silently dropped labels off an issue it accepted')),
+      'the throwing log line was never reached, so no escape was driven').toBe(true);
+    expect(reads().length, 'no read-back went out at all').toBe(1);
+
+    // NOT MEASURED IS NOT A DROP. No sentence is invented out of a failure to measure.
+    expect(note, 'a measurement that threw was reported to the owner as a label drop').toBeNull();
+
+    // AND NO LEDGER WRITE. The write succeeded, so the credential demonstrably works; a failed
+    // read-back of our own issue must never become "your connection is broken" on the card.
+    expect(githubStatus().lastError ?? null, 'a failed read-back wrote a connection failure to '
+      + 'the ledger after the POST had already succeeded').toBeNull();
+    expect(githubStatus().connected, 'the box was shown as disconnected').toBe(true);
   });
 });
