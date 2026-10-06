@@ -1,0 +1,89 @@
+-- 182 (t110, BACKLOG "round-3-red" + "round-2-red"): THE REPORT LEARNS WHICH ASK IT ANSWERS.
+--
+-- The round-2 investigation said it in one sentence and three rounds have now paid interest on
+-- it: the withdrawal window is RAW CONTAINMENT, and the durable fix is a column binding the
+-- report to the ask it was opened for. This is that column.
+--
+-- ════════════════════════════════════════════════════════════════════════════════════════
+-- WHAT CONTAINMENT COSTS, AND WHY A COLUMN IS NOT A TIDINESS PREFERENCE
+-- ════════════════════════════════════════════════════════════════════════════════════════
+--
+-- `dojo_report` is the only user-facing door in the engine that writes no `deliveries` row, so
+-- the "answered" stamp and the preview card it announced have no edge between them. Cancel the
+-- card and every read that lists or quotes settled asks keeps serving the claim as an engine
+-- record, under "do NOT re-execute this work". `report/withdrawn-claim.ts` closes that, and it
+-- closes it by asking a question no schema could answer: WHICH REPORTS ARE NAMED NEAR THIS
+-- ANSWER. Near is three arms (the stamp's own turn, one turn back, and the `seq` span between
+-- ask and answer) and one `LIKE '%' || substr(r.id, 1, 8) || '%'` per report row.
+--
+-- That predicate was measured honestly and it is NOT a false-green: over the live corpus of
+-- 4,242 answered asks it voids 13, and all 13 are genuine report asks. But the cost is written
+-- into its own header as five accepted over-void shapes and one unclosed residual:
+--
+--   * two asks batched into one turn void TOGETHER, because `setAnswerMessageId` stamps every
+--     row it served;
+--   * the span arm voids anything answered between the pair;
+--   * a report named in ANOTHER conversation inside the span voids a dashboard ask;
+--   * the turn arm reaches rows written BEFORE the ask;
+--   * the one-turn reach adds the previous turn's rows;
+--   * AND THE RESIDUAL: a restatement that names no id and is two or more turns from any row
+--     that does is not bound at all. The header says what closing it properly wants, by name:
+--     "the `dojo_reports.ask_id` column the round-2 investigation named, not a wider text rule."
+--
+-- Every one of those six is the same defect wearing six hats: the platform MINTED the report
+-- inside a turn that was answering a specific ask, knew exactly which ask that was, and wrote
+-- it down nowhere. Containment then reconstructs it afterwards from proximity, which is why it
+-- cannot be both complete and narrow — widen the window and it voids a question about
+-- centimetres; narrow it and the no-id restatement escapes.
+--
+-- ════════════════════════════════════════════════════════════════════════════════════════
+-- WHAT GOES IN THE COLUMN
+-- ════════════════════════════════════════════════════════════════════════════════════════
+--
+-- `messages.id` of the ASK the report was opened in response to — the same row whose
+-- `answer_message_id` the answered edge reads, so the binding is expressed in the vocabulary
+-- that already decides answeredness rather than a second one invented here. `report/store.ts`
+-- resolves it at `createReport` (the `gather` phase, the one call that mints the id) as the
+-- agent's latest `role='user'` row, which is the ask the turn is answering; the answer row does
+-- not exist yet at that moment, which is precisely why the ask is the durable end to bind.
+--
+-- NULLABLE, AND NOTHING IS BACKFILLED. A historical row's ask is not recoverable: the only
+-- evidence of it is the proximity containment already reads, so a backfill would write
+-- containment's GUESS into the column built to replace guessing — and then the column could
+-- never be trusted as a binding again. NULL reads as "this row predates the binding", which is
+-- exactly true, and `withdrawn-claim.ts` keeps the containment arm for those rows and says so
+-- in a log line. The two arms coexist permanently by design: bound rows get the narrow answer,
+-- legacy rows get the old one, and no row gets a fabricated binding.
+--
+-- STABLE-BRIDGE: additive and NULL-safe. One new nullable column, two indexes, no rewrite of a
+-- single existing row, no reader that breaks on NULL. An upgrade-day box crosses this without
+-- touching its report history.
+--
+-- ════════════════════════════════════════════════════════════════════════════════════════
+-- THE TWO INDEXES, EACH FOR A QUERY THAT EXISTS
+-- ════════════════════════════════════════════════════════════════════════════════════════
+--
+-- `idx_dojo_reports_ask_id` serves the new bound lookup: given one ask, has it a report, and is
+-- that report still standing. It runs on every answered-ask read that gets past the cheap gate.
+--
+-- `idx_dojo_reports_agent_id` is the BACKLOG's own separate line, and it is the cheap gate's
+-- index. `withdrawn-claim.ts`'s `agentHasWithdrawnReport` is documented as `SCAN dojo_reports`
+-- at 0.010 ms over 17 rows, with its own note saying so out loud: "It grows with every report
+-- ever filed; when that table stops being tiny, index `agent_id`." The table only grows, the
+-- gate runs on EVERY model call, and 169's two indexes cover `(status, created_at)` and
+-- `signature` — neither of which this predicate can use, because the predicate is
+-- `agent_id = ? AND status NOT IN (…)` and a NOT IN cannot drive an index seek. So the seek has
+-- to come from `agent_id`. Proven by `EXPLAIN QUERY PLAN` on a GROWN fixture rather than on a
+-- 17-row one, where every plan is a scan and the assertion would be vacuous.
+--
+-- The `status` column is deliberately NOT in either index. The gate's own header argues it: the
+-- index-using form of the predicate is `status IN (<the standing values>)`, and a closed IN-list
+-- cannot express "anything this release does not recognise is treated as withdrawn", which is
+-- the safe direction `store.ts`'s rule 4 takes for an unknown status. So `agent_id` narrows to
+-- this agent's handful of rows and the open-ended status test is applied to those — the whole
+-- point being that the status test stays open-ended.
+
+ALTER TABLE dojo_reports ADD COLUMN ask_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_dojo_reports_ask_id ON dojo_reports (ask_id);
+CREATE INDEX IF NOT EXISTS idx_dojo_reports_agent_id ON dojo_reports (agent_id);

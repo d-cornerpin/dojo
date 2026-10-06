@@ -142,10 +142,14 @@ afterEach(() => {
 describe('BODY A — a fresh install', () => {
   it('the chain leaves the table present, with every declared column', () => {
     expect(tableExists(NEW_TABLE)).toBe(true);
+    // A CLOSED census, and therefore one every migration that extends this table must come
+    // here and extend too — which is the point of writing it closed rather than as a subset
+    // check: a column arriving unannounced is a schema change nobody declared.
+    //   * `ask_id` — migration 182 (t110), the report's binding to the ask it answers.
     expect(reportColumns().sort()).toEqual([
-      'agent_id', 'approved_at', 'brief_json', 'bundle_path', 'created_at', 'export_path', 'id',
-      'issue_number', 'issue_url', 'lane', 'posted_at', 'signature', 'status', 'telemetry_json',
-      'updated_at',
+      'agent_id', 'approved_at', 'ask_id', 'brief_json', 'bundle_path', 'created_at',
+      'export_path', 'id', 'issue_number', 'issue_url', 'lane', 'posted_at', 'signature',
+      'status', 'telemetry_json', 'updated_at',
     ]);
   });
 

@@ -112,6 +112,33 @@ const REPORTS_NAMED_IN_SPAN = `SELECT DISTINCT r.id AS id, r.status AS status
         WHERE m.agent_id = ? AND m.seq >= ? AND m.seq <= ?
           AND m.role IN ('assistant', 'tool')`;
 
+// ── THE DURABLE BINDING (migration 182) — ASKED FIRST, AND IT ENDS THE QUESTION ──────────
+// The round-2 investigation named this and three rounds paid interest on it: the window below
+// is RAW CONTAINMENT, and the durable fix is a column binding the report to the ask. 182 is
+// that column, `report/store.ts`'s `askIdForNow` writes it at mint time, and this is the read.
+//
+// It is asked FIRST and it is CONCLUSIVE when it answers, because it is not evidence of the
+// same kind. Containment asks "which reports are NEAR this answer" and accepts five measured
+// over-void shapes to do it; this asks "which report was opened FOR this ask", which the
+// platform knew at the moment it minted the id and now writes down. When a bound row exists
+// there is nothing left to infer, so none of the three containment arms runs and none of their
+// collateral applies — no sibling ask in the same turn, no span neighbour, no other
+// conversation, no previous turn.
+//
+// `ask_id` is the ask's `messages.id`, so the lookup needs the ask's ID and this function is
+// handed its `seq`. One indexed hop converts it, deliberately HERE rather than by widening
+// `answerStillStands`'s signature: the three callers live in `agent/v2/answered-edge.ts`, whose
+// own header declares it the one place this tree answers "has the person heard from us". This
+// module owns artefact validity. Keeping the conversion inside the module that needs it leaves
+// that seam where round 3 put it.
+const REPORTS_BOUND_TO_ASK = `SELECT r.id AS id, r.status AS status
+         FROM dojo_reports r
+        WHERE r.agent_id = ? AND r.ask_id = ?`;
+
+/** The ask's own row id, from the `seq` the answered edge hands us. `(agent_id, seq)` is the
+ *  pair every arm here is already keyed on, and `idx_messages_agent_id` serves it. */
+const ASK_ROW_ID = `SELECT id FROM messages WHERE agent_id = ? AND seq = ? LIMIT 1`;
+
 /** How far back the turn arm reaches. ONE, and the number is measured rather than chosen: at 1
  *  it catches the no-id restatement (the harness bot's 83265, which called no tool and named no id
  *  one turn after the work) and adds nothing else; at 2 it starts voiding *"How many centimetres
@@ -147,6 +174,25 @@ function agentHasWithdrawnReport(agentId: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * TOLERATE AND LOG, once per agent per process. An agent whose report rows carry no binding for
+ * the ask being checked is answered by containment, which is correct and measured — but it is
+ * the WEAKER instrument, and a box quietly running on it for ever is a thing an operator should
+ * be able to see. `info` and not `warn`: this is not a failure, it is the pre-182 population
+ * being served by the arm built for it, and a `warn` per model call would be noise that teaches
+ * people to ignore the channel.
+ */
+const legacyReported = new Set<string>();
+function tolerateLegacy(agentId: string): void {
+  if (legacyReported.has(agentId)) return;
+  legacyReported.add(agentId);
+  logger.info(
+    'withdrawn-claim: no report row names this ask, so the containment window decides it '
+    + '(rows predating migration 182 carry no `ask_id`, and nothing backfills one)',
+    { agentId },
+  );
 }
 
 /**
@@ -204,6 +250,31 @@ export function answerStillStands(
     if (!ans) return true;
     const arm = (sql: string, params: unknown[]): Array<{ id: string; status: string }> =>
       db.prepare(sql).all(...params as never[]) as Array<{ id: string; status: string }>;
+
+    // ── THE BOUND ARM FIRST, AND IT RETURNS (migration 182) ──
+    // A report row that NAMES this ask settles the question by itself: the platform recorded
+    // which ask it opened the report for, so there is nothing to infer from proximity and none
+    // of containment's five accepted over-void shapes gets to apply. One standing bound row
+    // keeps the answer, exactly as in the window below — an ask that lost one card and had
+    // another filed for it is telling the truth about the one that exists.
+    const askRow = db.prepare(ASK_ROW_ID).get(agentId, askSeq) as { id: string } | undefined;
+    if (askRow !== undefined) {
+      const bound = arm(REPORTS_BOUND_TO_ASK, [agentId, askRow.id]);
+      if (bound.length > 0) {
+        return bound.some((r) => (STANDING_REPORT_STATUSES as readonly string[]).includes(r.status));
+      }
+    }
+
+    // ── AND THE CONTAINMENT ARMS FOR EVERYTHING ELSE, WHICH IS NOT A TEMPORARY STATE ──
+    // Reached when no report row names this ask: either every one of this agent's rows predates
+    // 182 (`ask_id IS NULL` — nothing is backfilled, because a historical row's ask is only
+    // recoverable from the very proximity this replaces, and writing that guess into the
+    // binding column would make the column untrustworthy for ever), or the rows are bound to
+    // OTHER asks and this ask's claim is carried by a restatement. Both are real and permanent
+    // populations, so the window below is the standing answer for them, not a migration-era
+    // shim. `tolerateLegacy` records which it was, once per process per agent, so a box still
+    // leaning on containment can be seen to be doing so.
+    tolerateLegacy(agentId);
     named = ans.turn === null ? []
       : arm(REPORTS_NAMED_IN_TURNS, [agentId, agentId, ans.turn - TURNS_BACK, ans.turn]);
     named = named.concat(arm(REPORTS_NAMED_IN_SPAN, [agentId, agentId, askSeq, ans.seq]));

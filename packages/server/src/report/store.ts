@@ -44,6 +44,9 @@ export interface ReportRow {
   bundlePath: string | null; createdAt: string; updatedAt: string;
   approvedAt: string | null; postedAt: string | null;
   issueUrl: string | null; issueNumber: number | null; exportPath: string | null;
+  /** The ask this report was opened to answer — `messages.id`. NULL on rows predating
+   *  migration 182; see `askIdForNow` and `report/withdrawn-claim.ts`. */
+  askId: string | null;
 }
 
 /** The five fields a brief has. An edit carries these and nothing else. */
@@ -55,6 +58,7 @@ interface DbRow {
   brief_json: string | null; telemetry_json: string | null; bundle_path: string | null;
   export_path: string | null; issue_url: string | null; issue_number: number | null;
   created_at: string; updated_at: string; approved_at: string | null; posted_at: string | null;
+  ask_id: string | null;
 }
 
 /** A column this module wrote is valid JSON; a column a human edited may not be. */
@@ -74,11 +78,13 @@ function toReport(row: DbRow): ReportRow {
     issueUrl: row.issue_url, issueNumber: row.issue_number,
     createdAt: row.created_at, updatedAt: row.updated_at,
     approvedAt: row.approved_at, postedAt: row.posted_at,
+    askId: row.ask_id,
   };
 }
 
 const COLUMNS = `id, agent_id, status, lane, signature, brief_json, telemetry_json, bundle_path,
-                 export_path, issue_url, issue_number, created_at, updated_at, approved_at, posted_at`;
+                 export_path, issue_url, issue_number, created_at, updated_at, approved_at, posted_at,
+                 ask_id`;
 
 export function getReport(id: string): ReportRow | null {
   const row = getDb().prepare(`SELECT ${COLUMNS} FROM dojo_reports WHERE id = ?`).get(id) as DbRow | undefined;
@@ -98,12 +104,51 @@ function transition(sql: string, params: unknown[], id: string): ReportRow | nul
   return getReport(id);
 }
 
+/**
+ * THE ASK THIS REPORT IS BEING OPENED TO ANSWER — `messages.id`, or `null` when there is no
+ * ask to name (migration 182).
+ *
+ * ── WHY THE ASK AND NOT THE ANSWER ──
+ * This runs inside the `gather` call, which is the agent working on a turn that has not
+ * produced its reply yet, so the answer row DOES NOT EXIST. The ask does, and the ask is the
+ * end the answered edge already keys on: `messages.answer_message_id` hangs off the ask row,
+ * and `answerStillStands` is called once per ask. Binding the same end means the durable
+ * binding and the containment it replaces are expressed in ONE vocabulary.
+ *
+ * ── WHY "THE LATEST USER ROW" IS THE RIGHT RESOLUTION AND NOT A GUESS ──
+ * An agent reaches this line because it is mid-turn, and a turn is opened by the ask it is
+ * answering. The latest `role='user'` row for this agent IS that ask at this instant. This is
+ * not the proximity reasoning the containment window does: containment looks BACKWARD from an
+ * answer that already exists and asks which reports are near it, across turns, over a span,
+ * tolerating five measured over-void shapes. This looks at the row the engine is literally
+ * working on, once, at the moment of minting.
+ *
+ * ── AND WHEN IT CANNOT ANSWER, IT SAYS NULL ──
+ * A box with no `messages` row for this agent (the dashboard door, a fixture, a first turn that
+ * somehow has no ask) gets `null`, and a `null` here is handled exactly like a pre-182 row: the
+ * containment arm still runs. Nothing is invented, because a WRONG binding is worse than no
+ * binding — it would void the wrong ask's anti-repetition and look authoritative doing it.
+ */
+function askIdForNow(agentId: string): string | null {
+  try {
+    const row = getDb().prepare(
+      `SELECT id FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY seq DESC LIMIT 1`,
+    ).get(agentId) as { id: string } | undefined;
+    return row?.id ?? null;
+  } catch {
+    // No `messages` table (a hand-built fixture) is not a failure to swallow — it is a box with
+    // no asks on it, and `null` is the true answer there.
+    return null;
+  }
+}
+
 export function createReport(agentId: string, lane: FailureLane, signature: string): ReportRow {
   if (!isFailureLane(lane)) throw new Error(`not a failure lane: ${JSON.stringify(lane)}`);
   const id = uuidv4();
   getDb().prepare(
-    `INSERT INTO dojo_reports (id, agent_id, status, lane, signature) VALUES (?, ?, 'drafting', ?, ?)`,
-  ).run(id, agentId, lane, signature);
+    `INSERT INTO dojo_reports (id, agent_id, status, lane, signature, ask_id)
+     VALUES (?, ?, 'drafting', ?, ?, ?)`,
+  ).run(id, agentId, lane, signature, askIdForNow(agentId));
   const row = getReport(id);
   if (!row) throw new Error(`report ${id} vanished between its INSERT and its read-back`);
   return row;
