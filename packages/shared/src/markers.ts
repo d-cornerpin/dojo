@@ -162,6 +162,38 @@ export function a2aThreadTokenMatches(markerToken: string, fullThreadId: string)
     || markerToken === a2aThreadShortLegacy(fullThreadId);
 }
 
+/**
+ * ⚠ t113 A2 — THE SAME QUESTION, ASKED IN SQL, FROM THE SAME PLACE.
+ *
+ * Two readers ask "did this agent already send on the thread this marker names?" against a
+ * column of FULL thread ids with only a marker TOKEN in hand, and no full id to match exactly:
+ * `agent/a2a-replies.ts`'s `hasPriorReplyOnThread` legacy-caller path and
+ * `agent/v2/outbound-ledger.ts`'s `hasVerifiedA2ASendOnThread` legacy-caller path. Both asked
+ * it as `substr(thread_id, 1, 8) = ?` — the LEGACY front slice alone, which for a
+ * `makeThreadId` id is `thread-` plus one hash character. So a current-era marker, whose token
+ * comes off the varying region, matched NOTHING there: a false negative that silences a note
+ * the agent is owed, while the ids it did match were ~36 buckets wide.
+ *
+ * It must stay one answer, so the SQL form lives HERE beside the JS one rather than being
+ * written out twice at the two call sites. `markers.test.ts`'s equivalence clause runs the two
+ * forms over the same ids in a real sqlite and asserts they agree row for row, in both
+ * directions, so a change to one that is not made to the other reds.
+ *
+ * Both arms are needed and neither is redundant: for an id WITHOUT the `thread-` prefix the two
+ * expressions are identical (the JS doc above says the same thing), so on the overwhelming
+ * majority of rows this is one comparison; for a named id the first arm keeps resolving markers
+ * already in the history and the second resolves the ones written since.
+ *
+ * @param column the SQL expression holding the FULL thread id, e.g. `thread_id`
+ * @returns a parenthesised predicate taking the marker token as ONE bound parameter, repeated
+ *          — bind the same token twice, in order.
+ */
+export function a2aThreadTokenMatchesSql(column: string): string {
+  const stripped = `CASE WHEN ${column} LIKE 'thread-%' THEN substr(${column}, 8) ELSE ${column} END`;
+  return `(substr(${column}, 1, ${A2A_THREAD_SHORT_LENGTH}) = ?`
+    + ` OR substr(${stripped}, 1, ${A2A_THREAD_SHORT_LENGTH}) = ?)`;
+}
+
 /** The thread short-id in a marker, or null. Never hex-only. Reads whatever the marker
  *  carries — current form or legacy — which is why it is unchanged by t109 B. */
 export function parseA2AThreadShort(content: string | null | undefined): string | null {

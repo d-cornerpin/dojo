@@ -14,7 +14,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
-import { A2A_THREAD_SHORT_LENGTH, a2aThreadShort, OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
+import { A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
@@ -1767,7 +1767,10 @@ function findUnlandedInboundReply(
         AND a2a_thread_id IN (?, ?)
       ORDER BY (a2a_intent IN ('ANSWER','DELIVERABLE','COMPLETE','FAIL')) DESC, rowid DESC
       LIMIT 1`,
-  ).get(agentId, agentId, sinceMs - 15 * 60_000, threadId, threadId.slice(0, 8)) as
+    // t113 A2: NAMED, not hand-rolled. The second arm is the pre-`makeThreadId` spelling, for
+    // rows stored when this column held an 8-char token; both arms are EXACT `IN` members, never
+    // a prefix, so neither collides. Byte-identical to the slice it replaces.
+  ).get(agentId, agentId, sinceMs - 15 * 60_000, threadId, a2aThreadShortLegacy(threadId)) as
     | { id: string; content: string; source_agent_id: string | null } | undefined;
   if (!row) return null;
   // The stored row is the full context message: [A2A:...] envelope + payload + [Thread ...]

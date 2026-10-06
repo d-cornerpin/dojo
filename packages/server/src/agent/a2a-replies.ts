@@ -22,7 +22,10 @@
 
 // PHASE-3 T5: the envelope regex was inlined TWICE here, hex-only, so every named-thread
 // A2A fell out of both reply readers.
-import { A2A_ENVELOPE_RE, A2A_THREAD_SHORT_LENGTH } from '@dojo/shared';
+import {
+  A2A_ENVELOPE_RE, A2A_THREAD_SHORT_LENGTH,
+  a2aThreadShortLegacy, a2aThreadTokenMatches, a2aThreadTokenMatchesSql,
+} from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 
@@ -161,7 +164,11 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
  */
 export function findInboundAssignByThread(agentId: string, threadId: string): { messageId: string; intent: string } | null {
   if (!threadId || threadId.length < 8) return null;
-  const threadShort = threadId.slice(0, 8);
+  // t113 A2: NAMED, not hand-rolled. This token keys the genuinely-short legacy row query
+  // below (`length(a2a_thread_id) = 8`), whose rows predate `makeThreadId` and so carry the
+  // front-slice spelling — byte-identical to what was here, from the vocabulary's one home, so
+  // a reader can tell at a glance WHICH era's token this is.
+  const threadShort = a2aThreadShortLegacy(threadId);
   const db = getDb();
   // F13 (harness finding, wave 2): STRUCTURAL columns first, matching the F7
   // fix on the detection side. This was the other prose-bound end of the pipe:
@@ -226,7 +233,12 @@ export function findInboundAssignByThread(agentId: string, threadId: string): { 
   for (const row of rows) {
     const match = row.content?.match(A2A_ENVELOPE_RE);
     if (!match) continue;
-    if (match[2] !== threadShort) continue;
+    // t113 A2: the marker's token identifies the thread in EITHER era's spelling. This was
+    // `match[2] !== threadShort` against `threadId.slice(0, 8)` — the legacy front slice —
+    // which for a named id is `thread-` plus one hash character, so it was a false-positive
+    // magnet for pre-t109 markers and, since t109 moved the producer to the varying region, a
+    // false NEGATIVE for every marker written after it. One matcher answers both.
+    if (!a2aThreadTokenMatches(match[2], threadId)) continue;
     if (!REPLY_NEEDED_INTENTS.has(match[1])) continue;
     return { messageId: row.id, intent: match[1] };
   }
@@ -288,12 +300,16 @@ export function hasPriorReplyOnThread(agentId: string, threadShort: string, full
   // Legacy caller path: only the 8-char short token is available (prose-parsed wire
   // header, no structural full id). Prefix match against the stored full id is the only
   // resolution possible here; accepted residual, same as parkThreadCondition's short case.
+  // t113 A2: BOTH eras' spellings of the token, from the one home (`a2aThreadTokenMatchesSql`
+  // in `@dojo/shared`, the SQL twin of `a2aThreadTokenMatches` and clause-bound to it). The
+  // bare front slice alone matched nothing for a marker written since t109 moved the producer
+  // to the varying region — a false negative that drops the nudge the agent is owed.
   const row = db
     .prepare(
       `SELECT 1 FROM a2a_replies
-       WHERE agent_id = ? AND substr(thread_id, 1, 8) = ?
+       WHERE agent_id = ? AND ${a2aThreadTokenMatchesSql('thread_id')}
        LIMIT 1`,
     )
-    .get(agentId, threadShort);
+    .get(agentId, threadShort, threadShort);
   return !!row;
 }

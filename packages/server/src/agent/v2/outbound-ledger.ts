@@ -24,7 +24,7 @@
 
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
-import { channelOfSendTool, type ChannelKind } from '@dojo/shared';
+import { a2aThreadTokenMatchesSql, channelOfSendTool, type ChannelKind } from '@dojo/shared';
 import { findMatchingContact } from '../../contacts/store.js';
 import { recipientIdsMatch } from '../recipient-identity.js';
 import type { ToolReceiptRow } from '../../receipts/store.js';
@@ -225,12 +225,15 @@ export function hasVerifiedA2ASendOnThread(
       ).get(agentId, threadShort);
       return !!legacy;
     }
+    // t113 A2: BOTH eras' spellings, from the one home — the same fix as
+    // `hasPriorReplyOnThread`'s legacy path, which this function's header already says it
+    // carries verbatim. The bare front slice matched nothing for a post-t109 marker.
     const row = db.prepare(
       `SELECT 1 FROM tool_receipts
         WHERE agent_id = ? AND tool = 'send_to_agent' AND verified = 1
-          AND substr(thread_id, 1, 8) = ?
+          AND ${a2aThreadTokenMatchesSql('thread_id')}
         LIMIT 1`,
-    ).get(agentId, threadShort);
+    ).get(agentId, threadShort, threadShort);
     return !!row;
   } catch (err) {
     // Best effort, and the failure direction is the SAFE one: with no evidence the enforcer
