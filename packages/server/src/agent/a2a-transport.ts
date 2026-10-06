@@ -38,7 +38,7 @@ import {
   joinState, joinPieces, dueJoins, openJoins,
   dueJoinsUnderClosedParent,
   compilePendingJoins, failJoinClosed, clearJoinCompilePending,
-  claimFailedJoinForLateAnswer, threadHopCount, bumpThreadHopCount, hopWindowLapsed,
+  claimFailedJoinForLateAnswer, threadHopCountInWindow, bumpThreadHopCount, hopWindowLapsed,
   type JoinState, type JoinPiece,
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';   // t90 D2
@@ -118,27 +118,48 @@ function ensureThread(threadId: string, senderId: string): void {
  * gives the remaining threads rows). The two are never both authoritative for one thread, and
  * the CAP is declared exactly once, on the spine, as `THREAD_HOP_CAP`.
  */
-function getThreadHopCount(threadId: string): number {
-  const onSpine = threadHopCount(threadId);
-  if (onSpine !== null) return onSpine;
-  // t109 A: THE FALLBACK STORE AGES ON THE SAME RULE AS THE SPINE, against the `updated_at`
-  // `recordThreadDelivery` already stamps. Without it a thread nobody delegated on — the
-  // majority of them — would keep the lifetime budget the spine just stopped keeping, and the
-  // cap would mean two different things depending on whether a work row happened to exist.
+/**
+ * THE ONE CLOCK BOTH HOP STORES AGE AGAINST — t109 fix round 1 (review Important 1).
+ *
+ * `a2a_threads.updated_at` is the DELIVERY WRITER'S OWN STAMP: exactly two statements in the
+ * tree write it, `ensureThread`'s insert above and `recordThreadDelivery`'s update below, both
+ * on the delivery path. Why that matters, and what `work.updated_at` could not say, is argued
+ * once at `work/store.ts`'s `threadHopCountInWindow`.
+ *
+ * Null for an absent row is the SAFE direction (`hopWindowLapsed(null)` is lapsed), rather than
+ * inventing `now` for a thread with no delivery record.
+ */
+function threadLastDeliveryMs(threadId: string): number | null {
   const row = getDb().prepare(
-    `SELECT hop_count, unixepoch(updated_at) * 1000 AS updated_ms
-       FROM a2a_threads WHERE thread_id = ?`,
-  ).get(threadId) as { hop_count: number; updated_ms: number | null } | undefined;
-  if (!row) return 0;
-  return hopWindowLapsed(row.updated_ms) ? 0 : row.hop_count;
-}
-
-function recordThreadDelivery(threadId: string, intent: A2AIntent, senderId: string): number {
-  const db = getDb();
-  const before = db.prepare(
     'SELECT unixepoch(updated_at) * 1000 AS updated_ms FROM a2a_threads WHERE thread_id = ?',
   ).get(threadId) as { updated_ms: number | null } | undefined;
-  const lapsedBeforeThisDelivery = hopWindowLapsed(before?.updated_ms);
+  return row?.updated_ms ?? null;
+}
+
+function getThreadHopCount(threadId: string, lastDelivery: number | null): number {
+  // ONE clock, handed to BOTH stores, so the spine and the fallback can never age against two
+  // definitions of "recently". It is the CALLER's because of `ensureThread` — see the capture.
+  const onSpine = threadHopCountInWindow(threadId, lastDelivery);
+  if (onSpine !== null) return onSpine;
+  // t109 A: THE FALLBACK STORE AGES ON THE SAME RULE. Without it a thread nobody delegated on —
+  // the majority of them — would keep the lifetime budget the spine just stopped keeping, and
+  // the cap would mean two things depending on whether a work row happened to exist.
+  const row = getDb().prepare(
+    'SELECT hop_count FROM a2a_threads WHERE thread_id = ?',
+  ).get(threadId) as { hop_count: number } | undefined;
+  if (!row) return 0;
+  return hopWindowLapsed(lastDelivery) ? 0 : row.hop_count;
+}
+
+/** `priorDeliveryMs` is the delivery clock as it stood BEFORE this delivery — captured ONCE by
+ *  `deliverA2AMessage` and threaded here rather than re-read, so the cap decision and the
+ *  restart decision agree by construction. Re-reading would see the stamp this function is
+ *  about to write. */
+function recordThreadDelivery(
+  threadId: string, intent: A2AIntent, senderId: string, priorDeliveryMs: number | null,
+): number {
+  const db = getDb();
+  const lapsedBeforeThisDelivery = hopWindowLapsed(priorDeliveryMs);
   // The awaiting-reply latch's durable record (RC-14), and after PHASE-2 T10 that is ALL this
   // write is: who sent last, with what intent, when. The `is_terminal` flag that used to ride
   // along was dropped by migration `143` — positive enumeration found its only reader was a
@@ -151,17 +172,17 @@ function recordThreadDelivery(threadId: string, intent: A2AIntent, senderId: str
     WHERE thread_id = ?
   `).run(intent, senderId, threadId);
 
-  const onSpine = bumpThreadHopCount(threadId);
+  const onSpine = bumpThreadHopCount(threadId, priorDeliveryMs);
   if (onSpine !== null) return onSpine;
-  // t109 A, the write-side half for the fallback store. The UPDATE above has already moved
-  // `updated_at` to now, so the lapse is read from the value captured BEFORE it — otherwise
-  // every hop would look fresh and nothing would ever restart.
+  // t109 A, the write-side half for the fallback store, on the same captured instant.
   db.prepare(
     lapsedBeforeThisDelivery
       ? 'UPDATE a2a_threads SET hop_count = 1 WHERE thread_id = ?'
       : 'UPDATE a2a_threads SET hop_count = hop_count + 1 WHERE thread_id = ?',
   ).run(threadId);
-  return getThreadHopCount(threadId);
+  // The clock has moved to now, which is correct for this read: the count it reports is THIS
+  // delivery's, and this delivery is by definition inside its own window.
+  return getThreadHopCount(threadId, threadLastDeliveryMs(threadId));
 }
 
 // ── Semantic Deduplication ──
@@ -603,6 +624,11 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     }
   }
   const threadId = envelope.threadId || reusedAssignThreadId || uuidv4();
+  // ⚠ READ BEFORE `ensureThread`, and the order is load-bearing: that insert stamps
+  // `datetime('now')` when no row exists, so a later read would report a delivery that never
+  // happened and a `work` row carrying the cap with no thread row would look permanently fresh.
+  // Clause FIX-1c.
+  const lastDeliveryMs = threadLastDeliveryMs(threadId);
   ensureThread(threadId, envelope.fromAgent);
 
   // v2.5.34 removed the TERMINAL_THREAD_CLOSED rejection. Pre-fix, a thread that received any
@@ -621,7 +647,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   // ever branched on it.
 
   // ── 5. Hop counter ──
-  const currentHops = getThreadHopCount(threadId);
+  const currentHops = getThreadHopCount(threadId, lastDeliveryMs);
   if (currentHops >= THREAD_HOP_CAP) {
     logDrop(envelope, 'HOP_LIMIT_EXCEEDED');
     return { delivered: false, reason: 'HOP_LIMIT_EXCEEDED', threadId };
@@ -711,7 +737,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   }
 
   // ── 7. Record delivery in thread state ──
-  recordThreadDelivery(threadId, effectiveIntent, envelope.fromAgent);
+  recordThreadDelivery(threadId, effectiveIntent, envelope.fromAgent, lastDeliveryMs);
 
   // ── 8. Resolve sender name ──
   const senderRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(envelope.fromAgent) as { name: string } | undefined;

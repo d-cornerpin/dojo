@@ -1787,27 +1787,55 @@ export function clearJoinCompilePending(parentWorkId: string, reason: string): n
 }
 
 /**
- * D2: the A2A thread's hop count, on the spine.
+ * D2: the A2A thread's hop count, on the spine. THE STORED NUMBER, UNAGED.
  *
  * `null` means "this thread has no work row", which is a different answer from `0` and the
  * caller must be able to tell them apart — a thread nobody delegated on is not a thread that
  * has taken zero hops on the spine.
+ *
+ * ⚠ NOT THE CAP'S READ — that is `threadHopCountInWindow`. This answers the raw stored value,
+ * which is what `delegation-exit.ts` wants when it CARRIES a chain's count onto a new child row:
+ * a copy of history, not a decision about whether the chain is live. Fix round 1 gave the two
+ * questions two names; before it, this one briefly aged and silently changed that seeding read.
  */
 export function threadHopCount(threadId: string): number | null {
   const r = getDb().prepare(
-    `SELECT hop_count, updated_at FROM work WHERE root_kind = 'a2a_thread' AND root_id = ?
+    `SELECT hop_count FROM work WHERE root_kind = 'a2a_thread' AND root_id = ?
       ORDER BY opened_at DESC LIMIT 1`,
-  ).get(threadId) as { hop_count: number; updated_at: number | null } | undefined;
-  if (!r) return null;
-  // THE AGING, READ SIDE (t109 A): hops from an exchange the platform has already declared
-  // dead answer 0. `bumpThreadHopCount` materialises the same decision on the write side.
-  return hopWindowLapsed(r.updated_at) ? 0 : r.hop_count;
+  ).get(threadId) as { hop_count: number } | undefined;
+  return r ? r.hop_count : null;
 }
 
-/** True when the thread's last recorded delivery is outside the rolling window — so the hops
- *  before it no longer count. A NULL instant is treated as lapsed: a row with no recorded
- *  delivery time has no evidence of recent traffic, and the safe direction here is to let the
- *  message through rather than to drop it on a timestamp nobody wrote. */
+/**
+ * THE COUNT THE CAP READS: the stored number, aged against the last recorded DELIVERY.
+ *
+ * ⚠ THE INSTANT IS THE CALLER'S TO SUPPLY, AND THAT IS THE WHOLE POINT (fix round 1, review
+ * Important 1). The first cut read `work.updated_at` and called it "time since the last
+ * delivery". IT IS NOT: EIGHT statements in this file stamp that column and only ONE is the hop
+ * bump — `transition` (:461), the children decrement (:500), the compile-pending set (:523),
+ * `stampClaimingTurn` (:717), `openDelegationJoin`'s countdown (:1199, :1296), the TTL sweep
+ * (:1572), `clearJoinCompilePending` (:1782) — and every one fires on exactly these
+ * a2a_thread-rooted join and piece rows. So a thread at the cap whose join row kept being
+ * TOUCHED inside each window never aged, and the BACKLOG failure shape survived in that state.
+ *
+ * The honest clock is the DELIVERY WRITER'S OWN STAMP and it needs no migration:
+ * `a2a_threads.updated_at`, written by exactly two statements in the tree (`ensureThread`'s
+ * insert and `recordThreadDelivery`'s update, both in `a2a-transport.ts`, both on the delivery
+ * path). The transport reads it once per delivery and hands it in, which keeps this module off a
+ * table it does not own and makes the coupling a declared argument rather than an accident.
+ * Clauses FIX-1a/1b/1c in `agent/__tests__/a-long-thread-is-not-a-runaway-loop.test.ts`.
+ */
+export function threadHopCountInWindow(threadId: string, lastDeliveryMs: number | null): number | null {
+  const stored = threadHopCount(threadId);
+  if (stored === null) return null;
+  return hopWindowLapsed(lastDeliveryMs) ? 0 : stored;
+}
+
+/** True when the last recorded DELIVERY is outside the rolling window, so the hops before it no
+ *  longer count. ⚠ WHAT MAY BE PASSED (corrected in fix round 1): the instant a DELIVERY was
+ *  recorded, and nothing else — never `work.updated_at`, see above. A NULL instant is LAPSED: no
+ *  evidence of recent traffic, and the safe direction is to deliver rather than to drop on a
+ *  timestamp nobody wrote. */
 export function hopWindowLapsed(lastDeliveryMs: number | null | undefined): boolean {
   if (lastDeliveryMs == null) return true;
   return now() - lastDeliveryMs > THREAD_HOP_WINDOW_MS;
@@ -1815,15 +1843,12 @@ export function hopWindowLapsed(lastDeliveryMs: number | null | undefined): bool
 
 /** Count one delivered hop on the thread's work row. Returns the new count, or null when the
  *  thread has no work row. A hop that arrives after the window lapsed RESTARTS the count at 1
- *  rather than incrementing — the write-side half of the aging above. */
-export function bumpThreadHopCount(threadId: string): number | null {
+ *  rather than incrementing — the write-side half of the aging. `lastDeliveryMs` is the delivery
+ *  writer's own stamp, read BEFORE this delivery moved it, and it is required for the reason
+ *  `threadHopCountInWindow` gives at length. */
+export function bumpThreadHopCount(threadId: string, lastDeliveryMs: number | null): number | null {
   const db = getDb();
-  const r = db.prepare(
-    `SELECT updated_at FROM work WHERE root_kind = 'a2a_thread' AND root_id = ?
-      ORDER BY opened_at DESC LIMIT 1`,
-  ).get(threadId) as { updated_at: number | null } | undefined;
-  if (!r) return null;
-  const restart = hopWindowLapsed(r.updated_at);
+  const restart = hopWindowLapsed(lastDeliveryMs);
   const changed = db.prepare(
     restart
       ? `UPDATE work SET hop_count = 1, updated_at = ?

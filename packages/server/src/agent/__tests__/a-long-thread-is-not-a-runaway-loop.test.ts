@@ -130,13 +130,27 @@ function seedFallbackThread(threadId: string, hops: number, agoMs: number): void
 }
 
 /** The same thread on the SPINE — a `work` row rooted on it, which is what a delegation makes.
- *  `updated_at` is INTEGER ms here, unlike the fallback store's TEXT. */
-function seedSpineThread(threadId: string, hops: number, agoMs: number): void {
+ *  `updated_at` is INTEGER ms here, unlike the fallback store's TEXT.
+ *
+ *  ⚠ FIX ROUND 1: `spineAndClock` seeds the `a2a_threads` row TOO, because in production every
+ *  thread with a spine row has one — `ensureThread` runs at the top of every delivery, and the
+ *  purge spares any thread with a live `work` row. The clock the cap ages against is that
+ *  table's `updated_at` (the delivery writer's own stamp), never `work.updated_at`. A fixture
+ *  that seeded only the spine row was testing an unreachable shape AND hiding the coupling
+ *  §1b now pins. */
+function seedSpineRowOnly(threadId: string, hops: number, agoMs: number): void {
   const at = Date.now() - agoMs;
   mockDb.current!.prepare(
     `INSERT INTO work (id, kind, agent_id, root_kind, root_id, state, hop_count, opened_at, updated_at)
      VALUES (?, 'task', ?, 'a2a_thread', ?, 'open', ?, ?, ?)`,
   ).run(`piece:${threadId}`, SENDER, threadId, hops, at, at);
+}
+
+/** A delegated thread as production has it: the count on the spine, the delivery clock on
+ *  `a2a_threads`, both aged by the same amount. */
+function seedSpineThread(threadId: string, hops: number, agoMs: number): void {
+  seedSpineRowOnly(threadId, hops, agoMs);
+  seedFallbackThread(threadId, 0, agoMs);
 }
 
 async function deliver(threadId = THREAD, intent = 'FYI') {
@@ -194,6 +208,59 @@ describe('§1 a thread at the cap, on the spine', () => {
       `SELECT hop_count FROM work WHERE root_kind = 'a2a_thread' AND root_id = ?`,
     ).get(THREAD) as { hop_count: number };
     expect(row.hop_count).toBe(THREAD_HOP_CAP);
+  });
+
+  /**
+   * ⚠ FIX ROUND 1 — REVIEW IMPORTANT 1. THE WINDOW MEASURES DELIVERIES, NOT TOUCHES.
+   *
+   * The first cut decided lapse from `work.updated_at`, and that column is NOT a delivery
+   * clock: EIGHT statements in `work/store.ts` stamp it and only ONE is the hop bump —
+   * `transition` (:461), the remaining-children decrement (:500), the compile-pending set
+   * (:523), `stampClaimingTurn` (:717), `openDelegationJoin`'s countdown (:1199, :1296), the
+   * TTL sweep (:1572) and `clearJoinCompilePending` (:1782). Every one of them fires on exactly
+   * these a2a_thread-rooted join and piece rows, so a thread sitting at the cap whose join row
+   * kept being TOUCHED inside each 60-minute window never aged, and the BACKLOG failure shape
+   * (every later delivery dropped) survived in that one state.
+   *
+   * The clock is now `a2a_threads.updated_at`, written by exactly two statements in the tree and
+   * both on the delivery path. These two clauses pin the coupling in BOTH directions, which is
+   * the only way to tell "it ages" from "it ages for the right reason".
+   */
+  it('⚠ FIX-1a: a NON-DELIVERY touch inside the window does NOT block aging', async () => {
+    // The thread's last real delivery is older than the window…
+    seedSpineThread(THREAD, THREAD_HOP_CAP, THREAD_HOP_WINDOW_MS + 60_000);
+    // …but something stamped the join row a moment ago, exactly as `transition()`,
+    // `stampClaimingTurn`, the countdown decrement and the TTL sweep all do.
+    mockDb.current!.prepare(
+      `UPDATE work SET updated_at = ? WHERE root_kind = 'a2a_thread' AND root_id = ?`,
+    ).run(Date.now(), THREAD);
+
+    const res = await deliver();
+    expect(res.delivered, 'a touch is not a delivery, so the hops still aged out').toBe(true);
+    expect(dropLines('warn')).toEqual([]);
+  });
+
+  it('⚠ FIX-1b, THE OTHER DIRECTION: a real DELIVERY inside the window DOES block aging', async () => {
+    // The spine row is ancient — so a `work.updated_at` reader would age it out and deliver…
+    seedSpineRowOnly(THREAD, THREAD_HOP_CAP, THREAD_HOP_WINDOW_MS + 60_000);
+    // …but the DELIVERY clock says a hop landed a minute ago, so this is the runaway.
+    seedFallbackThread(THREAD, 0, 60_000);
+
+    const res = await deliver();
+    expect(res.delivered, 'the cap bites on the delivery clock, not on the row clock').toBe(false);
+    expect(res.reason).toBe('HOP_LIMIT_EXCEEDED');
+    const warns = dropLines('warn');
+    expect(warns.length).toBe(1);
+    expect(warns[0].reason).toBe('HOP_LIMIT_EXCEEDED');
+  });
+
+  it('⚠ FIX-1c: the clock is read BEFORE `ensureThread` can stamp it', async () => {
+    // A spine row carrying the cap with NO `a2a_threads` row at all. `ensureThread` INSERTs one
+    // stamped `now` at the top of every delivery, so a clock read AFTER it would report a
+    // delivery that never happened and the capped thread would look permanently fresh. Read
+    // first, an absent row answers null, and null is LAPSED — the safe direction.
+    seedSpineRowOnly(THREAD, THREAD_HOP_CAP, THREAD_HOP_WINDOW_MS + 60_000);
+    expect((await deliver()).delivered).toBe(true);
   });
 
   it('a thread one hop under the cap delivers inside the window, and counts', async () => {
@@ -338,7 +405,7 @@ describe('§4 dead a2a_threads rows get disposed of', () => {
     // A delegated thread's hop count is on the spine and its ask may still be outstanding. Age
     // alone must never take the thread row out from under live work.
     seedFallbackThread('thread-old-but-working', 3, (JOIN_MAX_AGE_DAYS + 30) * 24 * 3_600_000);
-    seedSpineThread('thread-old-but-working', 3, (JOIN_MAX_AGE_DAYS + 30) * 24 * 3_600_000);
+    seedSpineRowOnly('thread-old-but-working', 3, (JOIN_MAX_AGE_DAYS + 30) * 24 * 3_600_000);
     expect(purgeDeadA2AThreads()).toBe(0);
     expect(mockDb.current!.prepare('SELECT COUNT(*) AS n FROM a2a_threads').get())
       .toEqual({ n: 1 });

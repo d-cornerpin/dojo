@@ -820,13 +820,17 @@ describe('D2: the delegated thread carries its own hop count on the spine', () =
       ttlAt: Date.now() + 60 * 60_000, threads: [{ threadId: T1, hopCount: 2 }],
     });
     expect(threadHopCount(T1)).toBe(2);
-    expect(bumpThreadHopCount(T1)).toBe(3);
+    // t109 fix round 1: `bumpThreadHopCount` takes the LAST RECORDED DELIVERY instant, because
+    // the window may only be measured against the delivery writer's own stamp — never against
+    // `work.updated_at`, which seven other statements in `store.ts` also move. A delivery
+    // moments after the previous one is inside the window, so the count INCREMENTS.
+    expect(bumpThreadHopCount(T1, Date.now())).toBe(3);
     expect(threadHopCount(T1)).toBe(3);
   });
 
   it('NEGATIVE: a thread with no work row has no spine hop count, and says so rather than answering 0', () => {
     expect(threadHopCount('thread-unknown-9999')).toBeNull();
-    expect(bumpThreadHopCount('thread-unknown-9999')).toBeNull();
+    expect(bumpThreadHopCount('thread-unknown-9999', Date.now())).toBeNull();
   });
 
   it('the cap is declared once, beside the column it keys on', () => {
