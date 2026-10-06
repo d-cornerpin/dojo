@@ -542,9 +542,9 @@ node "$SCRIPT_DIR/checks/check-upgrade-bypass.mjs" "$SMOKE_PORT" --require-live 
 # out loud that no gate checks it. This is that gate: it asks the unzipped
 # PACKAGED ARTIFACT, recomputing the assembler's own relative hop rather than
 # trusting the script text, and --require-artifact refuses a skip.
-step "Shipped-souls gate (the built artifact carries templates/*-SOUL.md where the code looks)"
+step "Shipped-souls gate (the built artifact carries templates/*-SOUL.md AND src/tools/docs/*.md where the code looks)"
 node "$SCRIPT_DIR/checks/check-shipped-souls.mjs" "$SMOKE_PLATFORM" --require-artifact \
-  || fail "Shipped-souls gate: the packaged build is missing a soul template, or ships one the compiled assembler cannot resolve. NOT publishing."
+  || fail "Shipped-souls gate: the packaged build is missing a soul template or a TOOL MANUAL, or ships one the compiled assembler / doc reader cannot resolve. NOT publishing. (Which one it is: read the gate's own output — it names the file and the directory it looked in.)"
 
 # ── Blocking gate `shipped-tool-docs`, declared post-smoke in gate-manifest.mjs ──
 # The installed-box audit's cheap gate-side close. The doc generator writes one
@@ -563,7 +563,7 @@ node "$SCRIPT_DIR/checks/check-shipped-souls.mjs" "$SMOKE_PLATFORM" --require-ar
 # (correct for `npm run gates`) into a failure.
 step "Shipped tool-docs gate (the boot wrote every manual the registry owed)"
 node "$SCRIPT_DIR/checks/check-shipped-tool-docs.mjs" "$SMOKE_HOME" "$SMOKE_PORT" --require-boot \
-  || fail "Shipped tool-docs gate: the packaged build booted and did not write every tool manual its own registry declares, or could not say whether it had. NOT publishing."
+  || fail "Shipped tool-docs gate: the packaged build booted and did not write every tool manual its own registry declares, or could not say whether it had. Agents on that build would read the PREVIOUS version's instructions, which look exactly like current ones. NOT publishing."
 
 # The smoke server has now answered every question we have for it. Stop it
 # BEFORE the prefix-determinism gate below, which opens the same sandbox

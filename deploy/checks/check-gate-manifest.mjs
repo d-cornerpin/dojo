@@ -369,16 +369,85 @@ for (const g of GATES) {
   }
 }
 
-// ════════ 6. every release-only gate is still IN release.sh ════════
-// The half that sharing a list cannot solve: these appear in exactly one consumer, so
-// only their `step` title binds them. Declared here, asserted present there.
-for (const g of byTier('release-only')) {
-  if (!releaseSh.includes(`step "${g.title}"`)) {
+// ════════ 6. every INLINE gate's step title AND fail banner are the manifest's own words ════════
+//
+// ── WHAT THIS SECTION USED TO BE, AND THE DRIFT THAT PROVED IT TOO NARROW ──
+//
+// It walked `byTier('release-only')` and checked the `step` title only. That left the gates
+// release.sh invokes INLINE at BLOCKING tier — post-smoke rows, which cannot ride the manifest
+// loop because they need `$SMOKE_PORT` or `$SMOKE_PLATFORM` — bound by nothing at all. Their
+// titles and their fail banners are hand-typed in release.sh, and a hand-typed copy of a
+// sentence that lives somewhere else is the two-list problem this whole gate exists to end.
+//
+// It drifted, and t113 MEASURED the drift at its head before widening anything (G11). Of the
+// four rows release.sh invokes inline, TWO had fallen out of step:
+//
+//   shipped-souls      step DRIFTED and fail DRIFTED
+//   shipped-tool-docs  step ok,       fail DRIFTED
+//   upgrade-bypass     both ok
+//   prompt-gate-record both ok   (release-only; the old section already covered its step)
+//
+// The cost is not cosmetic, and `shipped-souls` is the worked example. The gate was widened to
+// cover TOOL MANUALS as well as soul templates — the manifest's `fail` says so, and names the
+// doc reader and tells the reader to read the gate's own output for which file it was. The
+// banner release.sh actually pastes in front of whoever is cutting the release still said
+// "missing a soul template … the compiled assembler cannot resolve": for a missing tool manual
+// that sentence names the wrong artifact, the wrong resolver, and gives no next step. The gate
+// refused correctly and then explained the refusal wrongly, which is the dishonest-record
+// family — a release-blocking message is a user-facing surface, and the person reading it at
+// 2am has no reason to doubt it.
+//
+// ── THE RULE NOW ──
+//
+// For every row release.sh invokes inline, BOTH the `step` title and the `fail` banner must
+// appear in release.sh verbatim. Not "a similar sentence": the manifest is the one home, and
+// `fail` text is exactly the kind of prose that reads as fine while being wrong. The fail half
+// is what this section was missing; it is also the half that drifted.
+//
+// The rule is a PURE function of (rows, release.sh text) so section 7 can plant a drifted
+// banner against a synthetic pair and prove this clause can fail — rather than recording that
+// someone once checked by hand.
+const bannerDrift = (rows, shText) => {
+  const out = [];
+  for (const g of rows) {
+    if (!shText.includes(`step "${g.title}"`)) out.push({ g, what: 'step' });
+    if (g.fail && !shText.includes(g.fail)) out.push({ g, what: 'fail' });
+  }
+  return out;
+};
+
+{
+  const inlineRows = GATES.filter((g) => g.script && inlineInvoked.has(g.script));
+  for (const { g, what } of bannerDrift(inlineRows, releaseSh)) {
+    if (what === 'step') {
+      fail(
+        `✗ gate "${g.id}" (${g.tier}/${g.phase}) is invoked inline by release.sh, but release.sh has no \`step "${g.title}"\`.`,
+        `  ${g.why}`,
+        '  Either the gate was removed from the release path (a real loss, and this is the only',
+        '  thing that would have noticed) or its step title was reworded in one of the two',
+        '  places. The manifest is the home; re-sync release.sh to it.',
+        '',
+      );
+    } else {
+      fail(
+        `✗ gate "${g.id}" (${g.tier}/${g.phase}) does not paste the manifest's own fail banner.`,
+        '  The manifest says the refusal reads:',
+        `    ${g.fail}`,
+        '  release.sh prints something else. That banner is the whole explanation the person',
+        '  cutting the release gets, so a stale copy describes a refusal that did not happen —',
+        '  naming the wrong artifact, or omitting the next step. Paste the manifest text.',
+        '',
+      );
+    }
+  }
+  // A walk over an empty set is green and proves nothing. A FLOOR, not a budget: a new inline
+  // gate raises the count and nothing here reds.
+  if (inlineRows.length < 4) {
     fail(
-      `✗ release-only gate "${g.id}" is declared in the manifest but release.sh has no \`step "${g.title}"\`.`,
-      `  ${g.why}`,
-      '  Either the gate was removed from the release path (a real loss, and this is the only',
-      '  thing that would have noticed) or its step title was reworded. Re-sync the manifest.',
+      `✗ this section found only ${inlineRows.length} inline gate row(s) in release.sh; four were there when it was written.`,
+      '  Section 5 derives the inline set from `$SCRIPT_DIR/checks/…` invocations. If that',
+      '  spelling changed, the set goes empty and both parity rules above pass vacuously,',
+      '  which is how a gate stops gating without anything turning red.',
       '',
     );
   }
@@ -411,6 +480,33 @@ for (const g of byTier('release-only')) {
       why: 'the whole point: every blocking gate reaches `npm run gates:block` AND `release.sh`',
       ok: byTier('blocking').every((g) => g.script && (g.phase === 'pre-build' || inlineInvoked.has(g.script))),
     },
+    // ── §6's own controls (t113). The section was widened because it had been passing while
+    // two live banners were stale, so its new half ships with a planted fault and the
+    // constant-true control that keeps the fault honest. ──
+    {
+      id: 'a-drifted-fail-banner-is-refused',
+      why: 'the exact shape found at t113\'s head: the step title matches, the fail text is the PREVIOUS wording, and §6 before the widening said nothing',
+      ok: bannerDrift(
+        [{ id: 'synthetic', title: 'Synthetic gate', fail: 'the NEW wording, which names the tool manual too' }],
+        'step "Synthetic gate"\n  || fail "the old wording"\n',
+      ).length === 1,
+    },
+    {
+      id: 'and-a-pasted-banner-is-accepted',
+      why: 'a parity rule that refuses everything proves nothing — the constant-true control\'s lesson',
+      ok: bannerDrift(
+        [{ id: 'synthetic', title: 'Synthetic gate', fail: 'the NEW wording, which names the tool manual too' }],
+        'step "Synthetic gate"\n  || fail "the NEW wording, which names the tool manual too"\n',
+      ).length === 0,
+    },
+    {
+      id: 'a-reworded-step-title-is-still-refused',
+      why: 'the half §6 already had must survive the widening — a title reworded in one place only',
+      ok: bannerDrift(
+        [{ id: 'synthetic', title: 'Synthetic gate', fail: 'x' }],
+        'step "Synthetic gate, now with more words"\n  || fail "x"\n',
+      ).length === 1,
+    },
   ];
   const bad = controls.filter((c) => !c.ok);
   if (bad.length) {
@@ -430,3 +526,4 @@ const counts = ['blocking', 'report', 'release-only'].map((t) => `${byTier(t).le
 console.log(`✓ gate manifest conformant — ${GATES.length} declared gates (${counts})`);
 console.log(`  ${onDisk.length} checker file(s) in deploy/checks/, all named; package.json and release.sh both read the manifest`);
 console.log(`  ${byTier('release-only').length} release-only gate(s) declared as such and all still present in release.sh`);
+console.log(`  ${GATES.filter((g) => g.script && inlineInvoked.has(g.script)).length} inline gate(s) paste the manifest's own step title AND fail banner, verbatim`);
