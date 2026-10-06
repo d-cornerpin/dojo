@@ -22,6 +22,9 @@ import path from 'node:path';
 import os from 'node:os';
 import { createLogger } from '../logger.js';
 import { callModel } from './model.js';
+// t114 (census U6): the abort door every other dial in the tree comes through, so the vision
+// call is cut rather than abandoned and the owner's stop can reach it.
+import { openAgentCall } from './abortable-call.js';
 import { getDb } from '../db/connection.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
 import {
@@ -206,11 +209,30 @@ export async function screenRead(
       ? `You are a screen reader assistant. Look at this screenshot and answer: ${query}\nFor interactive elements (buttons, links, text fields, menus), provide approximate pixel coordinates as [x,y]. Be precise about positions.`
       : 'You are a screen reader assistant. Describe what you see on the screen. For interactive elements (buttons, links, text fields, menus), provide approximate pixel coordinates as [x,y]. Be precise about positions. List all visible text and UI elements.';
 
-    // 60s timeout on the model call. screencapture has its own 10s timeout
-    // above; this caps the inner vision call so a hung provider returns a
-    // clean error instead of bleeding into the agent's turn budget.
+    // ── t114 (census U6 / row 34) — THE RACE ABANDONED A FINISHED ANSWER AND LEAKED THE CALL ──
+    //
+    // THE DEFECT, two halves. `callModel` was invoked with NO `abortSignal`, and `Promise.race`
+    // only ABANDONS the losing promise — it cannot cancel it. So on expiry the provider call
+    // kept running, orphaned, OUTSIDE the abort registry: the GPU went on grinding, the agent
+    // was told "Screen read failed", and the description the model eventually produced was
+    // thrown away. A local vision model on a 4K screenshot legitimately takes longer than a
+    // minute, so this was the ordinary case rather than the pathological one.
+    //
+    // THE FIX: the bound is composed into the call itself through `openAgentCall`, the same door
+    // every other dial in the tree comes through. Three things follow from that and none of them
+    // were true before — the abort actually CUTS the request, the call is in the registry so the
+    // owner's stop reaches it, and the slot is released when the call settles. `Promise.race` is
+    // gone: there is no second promise to abandon, so there is no finished answer to discard and
+    // nothing left running behind the error.
     const SCREEN_READ_MODEL_TIMEOUT_MS = 60_000;
+    const slot = openAgentCall(agentId, 'turn', AbortSignal.timeout(SCREEN_READ_MODEL_TIMEOUT_MS));
+    if (slot.refused) {
+      slot.release();
+      try { fs.unlinkSync(screenshotPath); } catch { /* best-effort */ }
+      return 'Error: Screen read failed: the user stopped this agent before the vision call began';
+    }
     const modelCall = callModel({
+      abortSignal: slot.signal,
       agentId,
       modelId: visionModel.modelId,
       // t88: a caption of what is on screen, for the agent to read — an engine artifact.
@@ -235,13 +257,22 @@ export async function screenRead(
       systemPrompt: 'You are a screen reader assistant for a macOS automation platform. Be precise and thorough in describing screen contents.',
       tools: false,
     });
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(
-        () => reject(new Error(`screen_screenshot timed out after ${SCREEN_READ_MODEL_TIMEOUT_MS / 1000}s waiting for ${visionModel.apiModelId} (provider ${visionModel.providerId}). The screenshot was captured fine; the model call hung. Try again, or pick a different vision model in Settings > Models.`)),
-        SCREEN_READ_MODEL_TIMEOUT_MS,
-      ),
-    );
-    const result = await Promise.race([modelCall, timeoutPromise]);
+    // t114: awaited directly. The bound rides the call's own signal, so an expiry arrives as a
+    // failure OF THIS CALL rather than as a second promise winning a race against it. The
+    // message is preserved verbatim from the old timeout branch — it is good, and the agent
+    // relies on it — and is now attached where the abort is actually translated, below.
+    let result;
+    try {
+      result = await modelCall;
+    } catch (callErr) {
+      const cut = slot.cutBy();
+      if (cut && !slot.cutByStop()) {
+        throw new Error(`screen_screenshot timed out after ${SCREEN_READ_MODEL_TIMEOUT_MS / 1000}s waiting for ${visionModel.apiModelId} (provider ${visionModel.providerId}). The screenshot was captured fine; the model call hung. Try again, or pick a different vision model in Settings > Models.`);
+      }
+      throw callErr;
+    } finally {
+      slot.release();
+    }
 
     // Clean up screenshot
     try { fs.unlinkSync(screenshotPath); } catch { /* best-effort */ }

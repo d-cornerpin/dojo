@@ -321,6 +321,20 @@ export async function webFetch(
   // on web_fetch — a 50K-token page becomes a ~1-2K targeted extract.
   // Falls back to raw fetch if the extractor model isn't available or
   // the call fails (callers always get *something* useful back).
+  // ── t114 (census row 34, the `web_fetch` extractor arm) — THE DEGRADATION STOPS BEING SILENT ──
+  //
+  // The 45-second bound below is DEFENSIBLE and deliberately kept: F3 measured a busy local
+  // extractor stalling real turns for MINUTES against the provider's 5-minute default, and
+  // failing fast to the raw-fetch fallback is the point of this path. Scaling it with declared
+  // patience would reinstate the defect F3 closed.
+  //
+  // What was NOT defensible is that the fallback was INVISIBLE TO THE AGENT. On expiry the
+  // extraction was discarded and the agent received the raw page under an unchanged header, so
+  // it could not tell that the prompt it asked to be applied never was — a silent quality
+  // degradation, worst exactly when the page is large enough to need extracting. The census
+  // called this arm a silent degrade rather than a silent kill, and this is the half that makes
+  // it honest: the record travels with the result the agent reads, not only into the log.
+  let extractionSkipped: string | null = null;
   if (prompt && prompt.trim().length > 0) {
     try {
       const { selectModel } = await import('../router/selector.js');
@@ -363,13 +377,22 @@ export async function webFetch(
         if (extract && extract.length > 0) {
           return `Fetched from ${url} (extracted via prompt):\n\n${extract}`;
         }
+        extractionSkipped = 'the extractor returned nothing, so the raw page is shown instead';
         logger.warn('web_fetch extractor returned empty content — falling back to raw', { url }, agentId);
       } else {
+        extractionSkipped = 'no light-tier model was available to apply it, so the raw page is shown instead';
         logger.warn('web_fetch: no light-tier model available — falling back to raw fetch', { url }, agentId);
       }
     } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      // A timeout and a provider error land in the same place and must not read the same way:
+      // the first means the extraction was ABANDONED while possibly healthy, which is the fact
+      // the agent needs in order to decide whether to ask again.
+      extractionSkipped = /abort|timed out|timeout/i.test(why)
+        ? 'the extractor was still working at its 45s bound and was abandoned, so the raw page is shown instead'
+        : 'the extractor failed, so the raw page is shown instead';
       logger.warn('web_fetch prompt extraction failed — falling back to raw', {
-        url, error: err instanceof Error ? err.message : String(err),
+        url, error: why,
       }, agentId);
     }
   }
@@ -379,5 +402,8 @@ export async function webFetch(
   if (text.length > maxChars) {
     text = text.slice(0, maxChars) + `\n\n... [TRUNCATED: content is ${text.length} characters, showing first ${maxChars}]`;
   }
-  return `Fetched from ${url}:\n\n${text}`;
+  // t114: the note rides the RESULT, so the agent learns its prompt was not applied.
+  return extractionSkipped
+    ? `Fetched from ${url} (NOTE: your extraction prompt was NOT applied — ${extractionSkipped}):\n\n${text}`
+    : `Fetched from ${url}:\n\n${text}`;
 }

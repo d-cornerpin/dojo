@@ -358,6 +358,13 @@ export async function executeWebBrowse(
           );
         }
         const raw = await session.extract();
+        // t114 (census row 34, the `web_browse` extractor arm) — same shape and same argument as
+        // `web-tools.ts`'s: the 45s bound is DEFENSIBLE and kept (W3-1 carried F3's measured
+        // finding that a busy extractor stalls real turns for minutes, and the raw page below is
+        // a genuine fallback), but the fallback was INVISIBLE TO THE AGENT. It asked for a goal to
+        // be applied, got the raw page under an unchanged header, and could not tell the
+        // difference. The note below travels with the result so the degradation is not silent.
+        let extractionSkipped: string | null = null;
         if (goal && goal.trim().length > 0) {
           try {
             const { selectModel } = await import('../router/selector.js');
@@ -389,15 +396,25 @@ export async function executeWebBrowse(
               if (extract && extract.length > 0) {
                 return `Extracted (goal: ${goal}):\n\n${extract}`;
               }
+              extractionSkipped = 'the extractor returned nothing, so the raw page is shown instead';
               logger.warn('web_browse extract: extractor returned empty content — falling back to raw', { agentId });
+            } else {
+              extractionSkipped = 'no light-tier model was available to apply it, so the raw page is shown instead';
             }
           } catch (err) {
+            const why = err instanceof Error ? err.message : String(err);
+            extractionSkipped = /abort|timed out|timeout/i.test(why)
+              ? 'the extractor was still working at its 45s bound and was abandoned, so the raw page is shown instead'
+              : 'the extractor failed, so the raw page is shown instead';
             logger.warn('web_browse extract: goal extraction failed — falling back to raw', {
-              error: err instanceof Error ? err.message : String(err),
+              error: why,
             }, agentId);
           }
         }
-        return raw;
+        // t114: the note rides the RESULT, so the agent learns its goal was not applied.
+        return extractionSkipped
+          ? `(NOTE: your extraction goal was NOT applied — ${extractionSkipped})\n\n${raw}`
+          : raw;
       }
 
       case 'close':
