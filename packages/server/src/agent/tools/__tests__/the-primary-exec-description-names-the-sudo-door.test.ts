@@ -56,7 +56,14 @@ vi.mock('../../../db/connection.js', () => ({
   }),
 }));
 
-vi.mock('../../permissions.js', async (importOriginal) => {
+// t107 (t92 review Minor 5): THE MOCK HAS TO NAME THE MODULE THE DOOR READS.
+// This mocked `agent/permissions.js` while `brokers/sudo-claim.ts` — the door whose sentence
+// every clause below asserts — read `agent/manifest.js`. The planted `exec_allow` therefore
+// reached `tools/surface.ts` and NOT `agentMayRunAdminCommands`, so `state.execAllow` was
+// steering half of what the test believed it steered. Both readers now import
+// `agent/manifest.js`, so one mock drives both; `the-sudo-door-and-the-surface-read-one-manifest`
+// is the census that keeps them from drifting apart again.
+vi.mock('../../manifest.js', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
@@ -128,6 +135,32 @@ describe('the command-tool descriptions and the sudo door agree about who may kn
       const d = await description('fixture-subagent', 'exec');
       expect(d, `policy=${p}`).not.toContain('sudo');
     }
+  });
+
+  // ── THE FIXTURE REACHES THE DOOR, NOT ONLY THE SURFACE (t107, t92 review Minor 5) ──
+  // Every clause above asks `getFilteredTools` for words, and the words are chosen by
+  // `adminCommandsToolSentence` only AFTER `agentMayRunAdminCommands` has said yes. That door
+  // read `agent/manifest.js` while the mock at the top of this file named
+  // `agent/permissions.js`, so `state.execAllow` never reached it: the door answered from the
+  // production manifest, where a primary holds `exec_allow: ['*']` unconditionally, and the
+  // "who may knock" half of this suite was green for a reason unrelated to its fixture.
+  // This clause is the one that could not pass before the import direction was unified — the
+  // no-grant arm asserts FALSE where the production manifest says TRUE.
+  it('the fixture manifest steers the DOOR: no command grant, no claim, whatever the policy', async () => {
+    state.execAllow = [];
+    vi.resetModules();
+    const closed = await import('../../brokers/sudo-claim.js');
+    for (const p of ['gated', 'free'] as const) {
+      expect(closed.agentMayRunAdminCommands('fixture-primary', p), `policy=${p}`).toBe(false);
+    }
+
+    state.execAllow = ['*'];
+    vi.resetModules();
+    const open = await import('../../brokers/sudo-claim.js');
+    expect(open.agentMayRunAdminCommands('fixture-primary', 'gated')).toBe(true);
+    // And the other two guards the door holds are still the door's, not the manifest's.
+    expect(open.agentMayRunAdminCommands('fixture-primary', 'blocked')).toBe(false);
+    expect(open.agentMayRunAdminCommands('fixture-subagent', 'gated')).toBe(false);
   });
 
   it('ONE policy read per surface build: a flip mid-compute cannot store new text under an old key', async () => {
