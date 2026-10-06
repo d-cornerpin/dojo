@@ -114,7 +114,12 @@ export async function callWithRetryAndFallback(
   //  `no_reply_intended` from the absence of a reply. That is the BACKLOG's headline shape:
   //  the owner's press written down as the model choosing silence, and a rung spent on it.
   //  `state` is the live `let` above, so the latch rides whatever the retry loop has advanced.
-  const abandonForStop = (reason: 'stopped-before-call' | 'stopped-mid-call'): { abandoned: StepOutcome } => {
+  //  t116 E1: AND THE THIRD REASON IS THE SUCCESS SIDE. The two reasons above are the two
+  //  ways a call can fail to produce text; `stopped-after-call` is the way it SUCCEEDS and
+  //  the owner still said no. Said through this same closure deliberately — the step's
+  //  abandon census counts `abandonTurn` in this file and must keep reading TWO (this and
+  //  the preempt), so a third checkpoint may add a REASON here but never a third call.
+  const abandonForStop = (reason: 'stopped-before-call' | 'stopped-mid-call' | 'stopped-after-call'): { abandoned: StepOutcome } => {
     return { abandoned: abandonTurn(latchEngineCut(state, 'stop'), reason) };
   };
 
@@ -433,6 +438,28 @@ export async function callWithRetryAndFallback(
     revertTriggerStampOnAbort();
     throw new AgentError('Model call failed after all attempts', agentId, { code: 'MODEL_CALL_FAILED' });
   }
+
+  // ── t116 E1 — THE FOURTH CHECKPOINT, AND THE ONE THE OTHER THREE LEFT OPEN ──
+  //
+  // THE MEASURED DEFECT. The fence was read before the dial (`:147`) and in the catch
+  // (`:292`) — never on the path where the call SUCCEEDS. A press landing after the stream
+  // completed but before the broadcast was accepted (the status still reads `working`, so
+  // the route said 200), raised the fence, and the reply shipped anyway: seven post-call
+  // stages ran and `runPersistAssistant` inserted and broadcast the owner-lane row with
+  // zero fence reads. The fence was first honoured at the NEXT checkpoint, which is why the
+  // record correctly said `stop` while the person still watched the answer arrive. Observed
+  // on both release-blast attempts whose press got a 200: `replies after press=1 (must be 0)`.
+  //
+  // THE ASYMMETRY IS THE WHOLE POINT, and it is deliberate in both directions:
+  //   · text arriving AFTER the press never reaches the person — this return is taken before
+  //     anything downstream can persist or broadcast it;
+  //   · a press landing AFTER the row is already persisted retro-deletes NOTHING. The fence
+  //     is read here and at the persist seam, both BEFORE the write; neither is a reader of
+  //     the past, so a reply the person has honestly already received stays received.
+  // Either way the turn keeps its honest record: an abandon still runs the run's `finally`,
+  // so the recorder sees this turn, and `latchEngineCut(state, 'stop')` above means it is
+  // written down as the owner's stop rather than as the model choosing silence.
+  if (isStopFenced(agentId)) return abandonForStop('stopped-after-call');
 
   // PHASE-4 T5b (P4-R2): learn this result's DECLARED secrets here, once,
   // before it reaches any persist / index / broadcast seam below. The live

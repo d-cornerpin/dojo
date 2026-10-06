@@ -20,6 +20,7 @@ import { createLogger } from '../../../../logger.js';
 import { redactAssistantBlocksForPersist, redactHandedCredentials } from '../../../../credentials/secret-fields.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { ownOutputBroadcast } from '../../../interagent-broadcast.js';
+import { isStopFenced } from '../../../shared-state.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
@@ -57,6 +58,45 @@ export async function runPersistAssistant(
   } = ctx;
   const chosenConversationId = turnCtx.conversationId ?? null;
   const { interAgentTurn, persistedContent } = sc;
+
+  // ── t116 E1 — THE SEAM'S OWN FENCE READ, BECAUSE THE POST-CALL STAGES CAN AWAIT ──
+  //
+  // `model-call.ts`'s fourth checkpoint catches the press that landed by the time the call
+  // returned. It cannot catch the press that lands AFTER it: between that checkpoint and
+  // this writer sit seven post-call stages, several of which await (the no-reply drains, the
+  // closeout floors, the terminal-text classifier), and this module's own docstring says
+  // "No way out." It was literally true — zero fence reads in this file — and the owner-lane
+  // insert plus `ownOutputBroadcast` below are the exact two statements that put a refused
+  // answer in front of a person.
+  //
+  // WHAT IS SUPPRESSED AND WHAT IS NOT. The row and the broadcast are suppressed; the TURN's
+  // honest record is not touched, and cannot be from here — `exit_reason` is derived from
+  // this same fence by `engine-exit.ts` and written by the run's own exit path, so the stop
+  // is still written down as a stop. A stop must neither lose the record nor show the person
+  // a reply they refused, and those are two different writers.
+  //
+  // THE RETRACT IS NOT COSMETIC. Live `onChunk` frames may have already painted a partial
+  // bubble, so suppressing the row silently would leave the refused text on screen for ever
+  // with no row behind it — the one shape that makes "every bubble has a row" unstateable.
+  // This is the established idiom, not a new one: same two frames, same order, as
+  // `no-reply.ts`'s ghosted-ask arm and `closeout-floors.ts`'s redundant-closeout arm.
+  //
+  // `proceed`, deliberately NOT `abandon`: abandon leaves the TURN and the engine's two
+  // abandons are pinned to the `callLLM` span by CUT 4's finalize contract. Proceeding hands
+  // the stop to `execute`'s own checkpoint, which cancels the remaining tool batch and lets
+  // the turn leave through the path where finalize runs and the record gets written.
+  if (isStopFenced(agentId)) {
+    sc.hasXmlFallbackTools = result.toolCalls.some((tc) => tc.id.startsWith('text_tool_'));
+    sc.effectiveModelIdForPersist =
+      state.modelId === '__auto__' ? configuredModelId : state.modelId;
+    broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
+    broadcast({ type: 'chat:retract', agentId, messageId });
+    logger.info('v2: the owner stopped this agent while the post-call stages ran — the reply is NOT persisted and NOT broadcast', {
+      agentId, turnNumber, hadText: !!(persistedContent && persistedContent.trim().length > 0),
+      toolCalls: result.toolCalls.length,
+    }, agentId);
+    return proceed(state);
+  }
   // ── XML-fallback detection (matches v1 runtime.ts:1240) ──
   // Weak/local models that don't support structured tool calling emit
   // tool calls via the XML text-fallback parser. Their tool IDs are
