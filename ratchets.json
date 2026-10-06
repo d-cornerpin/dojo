@@ -7190,6 +7190,48 @@
       "to": 241,
       "by": "t115 — the real Messages probe, pinned at birth because the growth gate asked",
       "why": "NEW FILE, 241 lines (+241: 71 code, 170 comment — the ratio is the point and is argued below). The growth detector refuses an unlisted new file over 60% of the 400-line cap and offers two answers: split it, or pin it at its current count. SPLITTING WOULD BE WORSE. The file holds ONE mechanism — drive Messages harmlessly, classify three outcomes, bound the wait on a human — and its three parts are unusable apart: the classifier is meaningless without the script it classifies the failure of, and the two clocks exist only to govern that one child. A split here would be two files that must be read together, which is the defect the 400-line cap exists to prevent, not an instance of it. AND THE SIZE IS MOSTLY ARGUMENT: 170 of the 241 lines are the header, and they carry the three things a future reader must not have to re-derive — why `tell application \"Messages\" to get name` cannot mutate anything (a `get` AppleEvent has no parameter that could carry a value to store; `name` is a read-only Standard Suite property), why t114's idle bound is deliberately NOT used on a child that is silent by design, and what happens if the owner never answers the consent dialog. t96 and t113 both spent a lane on this probe for want of exactly that written reasoning. IT COULD NOT GO IN `setup-deps.ts`: that file is pinned at 606 with zero headroom, and this does not belong in its no-side-effect `checkPermission` switch anyway — it is the only probe that can outlive its request. From 241 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/model-call.ts",
+      "from": 443,
+      "to": 470,
+      "by": "t116 — the stop fence reads before a reply ships, the stop door sees the unwind, and the A2A doors record",
+      "why": "443 -> 470 (+27: 2 code, 25 comment, 1 blank — the ratio is the point and is argued here). THE CODE IS TWO LINES: one `isStopFenced` read returning the existing abandon closure, and one widened reason union. That is the whole of E1's primary fix — the release blocker, a user-visible reply that escaped after the owner pressed STOP on both blast attempts whose press got a 200. The 25 comment lines are the measured defect: the fence was read before the dial and in the catch, both FAILURE shapes, so a call that SUCCEEDED while a press was live walked out of the retry loop and shipped. The next reader of this file has to know why a third checkpoint exists beside two that look sufficient, and why a third REASON may be added here but never a third `abandonTurn` call (the step's abandon census pins that count at two, and CUT 4's finalize contract pins it from the driver's side). Stripping that leaves two inexplicable lines guarding the repo's worst shipped defect. From 470 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts",
+      "from": 357,
+      "to": 397,
+      "by": "t116 — the stop fence reads before a reply ships, the stop door sees the unwind, and the A2A doors record",
+      "why": "357 -> 397 (+40: 13 code, 26 comment, 1 blank). E1's second half. This module's own docstring read \"No way out.\" and it was literally true: zero fence reads in the file, while the owner-lane insert and `ownOutputBroadcast` it holds are the exact two statements that put a refused answer in front of a person. The 13 code lines are one guard — read the fence, set the step's two declared outputs, emit the established retract idiom, return `proceed`. The comment carries the three things a reader cannot re-derive: that seven post-call stages await between the previous checkpoint and this writer (which is why a second read is not redundant), that the retract is required rather than cosmetic because live chunks may already have painted a bubble, and that `proceed` is deliberate over `abandon` because abandon would bypass finalize and LOSE the turn record — the stop must cost the reply, never the record. From 397 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/shared-state.ts",
+      "from": 415,
+      "to": 459,
+      "by": "t116 — the stop fence reads before a reply ships, the stop door sees the unwind, and the A2A doors record",
+      "why": "415 -> 459 (+44: 7 code, 33 comment, 4 blank). E2's fact and its predicate: a `lastRunEndedAt` map, a named grace constant, and a four-line `isRunUnwinding`. It lives HERE rather than in the route or in `live-work.ts` because this file already owns `activeRuns` and `stopFencedRuns`, and the stop family's own standing rule is that nobody keeps a second copy of the question. The comment block is the argument the number cannot carry: that BOTH facts the stop door already read go false before a run is over (teardown writes idle before finalizeTurnRecord; the model call releases its registration in its own finally), that this closes the drain-tail residual `stopFencedRuns`'s own header records as uncovered, and that the window is a BOUND on how long the tail may be believed rather than a tuned dial. A future reader deleting the grace as a magic number would reopen the half of E2 that bit. From 459 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1778,
+      "to": 1787,
+      "by": "t116 — the stop fence reads before a reply ships, the stop door sees the unwind, and the A2A doors record",
+      "why": "1778 -> 1787 (+9: 2 code, 7 comment). One `lastRunEndedAt.set` in the run-exit `finally` plus its import, stamped by the same ONE owner that already retires `stoppedAgents` and `activeRuns` — the single-owner property this file's existing headers argue for at length. The comment says why a stamp is needed at all: this `finally` releases `activeRuns` at its TOP and then runs a long awaited tail, so the stop door went blind precisely where a press is most likely. From 1787 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/agents.ts",
+      "from": 1005,
+      "to": 1022,
+      "by": "t116 — the stop fence reads before a reply ships, the stop door sees the unwind, and the A2A doors record",
+      "why": "1005 -> 1022 (+17: 2 code, 16 comment, one line replaced). The code is one added disjunct and one import. The comment is load-bearing because the line it modifies is ALREADY argued at length by owner ruling #9, which moved this same guard off the status column — a reader seeing a third conjunct appear needs to know it is a DISJUNCT added beside the other two rather than a widening of either, that it is the fact `stopAgent` itself reads, and that the 400 deliberately survives for a genuinely quiet agent because accepting that press would set `stopMarkerPending` on a turn that never happened. From 1022 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/agents.ts",
+      "from": 1538,
+      "to": 1617,
+      "by": "t116 — the stop fence reads before a reply ships, the stop door sees the unwind, and the A2A doors record",
+      "why": "1538 -> 1617 (+79: 35 code, 44 comment). E3, and the second door the census found. The code is two `recordAtDoor` calls for `send_to_agent` (delivered, and refused with the outcome derived from the transport's stated reason) and one for `broadcast_to_group`'s fan-out, plus two imports. These close a gap the source NAMES AGAINST ITSELF: the transport's `recordPieceDelivery` says `send_to_agent` is one of PINNED §8's ten unrecorded paths that T5 closes AT THE DOOR, and `git log -S recordAtDoor` over this file returned zero commits — the receipt was never here to lose, and the blast measured `deliveries[send_to_agent]=0` on all three attempts while the hop worked every time. The comment carries the attribution argument, which is the whole reason presence was not enough: the one pre-existing producer of these rows credits the REPLYING PEER, so 'which agent handed this work over' had no answer anywhere. It also records why refusals are recorded too (a door that logs only its successes leaves 'refused' and 'nobody wrote one' indistinguishable, which is how this sat unnoticed) and why `broadcast_to_group` was fixed rather than exempted from the census that found it. RAISED ONCE, NOT TWICE: the broadcast closure is folded into this single entry. From 1617 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7259,13 +7301,13 @@
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 400,
-    "packages/server/src/agent/runtime.ts": 1778,
-    "packages/server/src/agent/shared-state.ts": 415,
+    "packages/server/src/agent/runtime.ts": 1787,
+    "packages/server/src/agent/shared-state.ts": 459,
     "packages/server/src/agent/spawner.ts": 1459,
     "packages/server/src/agent/stream-patience.ts": 473,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
     "packages/server/src/agent/tools/assignment-capability.ts": 139,
-    "packages/server/src/agent/tools/cat/agents.ts": 1538,
+    "packages/server/src/agent/tools/cat/agents.ts": 1617,
     "packages/server/src/agent/tools/cat/comms.ts": 914,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
@@ -7301,7 +7343,7 @@
     "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 81,
     "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 233,
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 244,
-    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 443,
+    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 470,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 407,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 165,
@@ -7335,7 +7377,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/no-reply.ts": 409,
     "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 104,
     "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 275,
-    "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 357,
+    "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 397,
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 286,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 437,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
@@ -7373,7 +7415,7 @@
     "packages/server/src/credentials/store.ts": 412,
     "packages/server/src/db/migration-backup.ts": 399,
     "packages/server/src/db/migration-checksums.ts": 369,
-    "packages/server/src/gateway/routes/agents.ts": 1005,
+    "packages/server/src/gateway/routes/agents.ts": 1022,
     "packages/server/src/gateway/routes/automation-probe.ts": 241,
     "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2977,
