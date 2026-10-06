@@ -410,3 +410,83 @@ describe('nothing on the label path can print the credential', () => {
     }
   });
 });
+
+// ── 6. THE RETRY'S "NEVER A DUPLICATE" PREMISE, MEASURED (fix round F10) ──────────────────
+//
+// The module stated it as a fact: "Neither creates an issue, so a second smaller request is a
+// fresh attempt and never a duplicate", and at the retry site, "Being wrong here costs one
+// refused POST." The first is GITHUB'S CONTRACT, not something this box established; the second
+// is the cost on the arm where both attempts are refused, and it understates the other arm.
+//
+// If a 403 or 422 ever arrives from something that DID create the issue — an intermediary
+// rewriting the status, a partial write, a proxy — the retry files a SECOND public issue for one
+// approval. Realism is low, and the D-B round's measurement (GitHub answers 201-and-discard, so
+// this retry has never fired for the case it was written for) makes it lower. It is driven here
+// anyway, because the round's doctrine is that unmeasured premises get named rather than
+// assumed, and a premise with a clause behind it is no longer a premise.
+//
+// THIS CLAUSE ASSERTS NO FIX. Nothing in the module can distinguish "403 that created nothing"
+// from "403 that created something" — the status is all there is — so there is no branch to add
+// and no behaviour to change. What it pins is the COST, so the comment that quotes it cannot
+// drift back to "one refused POST" without a red test.
+
+describe('the cost of the retry being wrong is a duplicate page, not a refused POST', () => {
+  it('a refusal from something that DID create files a second issue, and the row keeps the second',
+    async () => {
+      // Issue 12 exists on the tracker; GitHub answers 403 anyway. Then the bare retry
+      // succeeds as issue 99. One approval, two public pages.
+      createAnswers = [
+        () => refused(403, 'Resource not accessible by personal access token'),
+        () => created(99),
+      ];
+      const id = approvedReport();
+      const outcome = await postApprovedReport(id);
+
+      // TWO CREATES WENT OUT. This is the premise, measured: the retry is only "never a
+      // duplicate" because GitHub documents that it creates nothing on these statuses.
+      expect(creates().length, 'the retry did not fire, so nothing about duplication was measured')
+        .toBe(2);
+      // The second request is the smaller one — the retry asked for no labels.
+      expect(payload(0).labels, 'the first attempt sent no labels, so this is not the retry arm')
+        .toBeTruthy();
+      expect(payload(1).labels, 'the retry asked for labels again').toBeUndefined();
+
+      // AND THE ROW KEEPS THE SECOND. The report is delivered and points at 99; if 12 was real,
+      // nothing on this box records that it exists.
+      expect(outcome.kind).toBe('created');
+      expect(outcome.kind === 'created' && outcome.issueNumber,
+        'the row did not take the retry\'s issue number').toBe(99);
+      expect(getReport(id)?.issueNumber, 'the stored row disagrees with the owner\'s answer')
+        .toBe(99);
+      expect(getReport(id)?.status).toBe('posted');
+
+      // THE ACCOUNTING THE COMMENT NOW CARRIES: one duplicate public page, and the row names
+      // only one of the two. "One refused POST" is the OTHER arm — §3 drives that one, where
+      // both attempts are refused and nothing is filed.
+      expect(outcome.kind === 'created' && outcome.issueUrl).toContain('/issues/99');
+    });
+
+  it('the control: the dedupe search protects the NEXT press, and it never saw issue 12', async () => {
+    // Why the duplicate is not caught: `findIssueBySignature` runs BEFORE the create, so a page
+    // this delivery itself orphaned cannot be in its answer. The search that would find 12 is
+    // the one on the next Post press, and there is no next press for a row already `posted`.
+    createAnswers = [
+      () => refused(422, 'Validation Failed'),
+      () => created(99),
+    ];
+    const id = approvedReport();
+    await postApprovedReport(id);
+
+    const searches = calls.filter(c => c.url.includes('/search/issues'));
+    expect(searches.length, 'no duplicate check ran, so this control is blind').toBe(1);
+    // The search preceded both creates — it cannot have seen anything either of them made.
+    const firstCreateAt = calls.findIndex(c => c.method === 'POST' && /\/issues$/.test(c.url));
+    const searchAt = calls.findIndex(c => c.url.includes('/search/issues'));
+    expect(searchAt, 'the duplicate check ran AFTER a create, which would be a different defect')
+      .toBeLessThan(firstCreateAt);
+
+    // And the row is spent, so the protective search will not run again for this report.
+    expect(getReport(id)?.status, 'the row is still postable, so a second press could dedupe')
+      .toBe('posted');
+  });
+});

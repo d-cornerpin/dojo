@@ -50,10 +50,23 @@ export const INDEX_NOTES: Readonly<Record<string, string>> = {
 /**
  * `` `name` `` — or `` `name` (what it is for) `` for an annotated one.
  *
- * THE IDENTITY FOR EVERY UNANNOTATED NAME, which is the cache-prefix property stated as code: an
- * agent that does not hold `dojo_report` gets a byte-identical index line, because the annotation
- * rides the NAME and not the category. A note keyed on the category would have widened the cached
- * prefix of every agent, including the ones that cannot call the tool.
+ * THE IDENTITY FOR EVERY UNANNOTATED NAME, and what that is and is not worth (corrected, F9).
+ *
+ * The annotation rides the NAME, not the category, so an agent whose index does not list the
+ * annotated tool gets a byte-identical line. What this does NOT buy is a population of
+ * unaffected agents TODAY: `dojo_report` is in `Meta` (`tools/categories.ts`), `Meta` is in
+ * `MOST_RESTRICTIVE_GRANTS` (`@dojo/shared`'s `access.ts`) — which is exactly why T3 could add
+ * the tool with no new label and no backfill — so EVERY agent holds it and every agent's cached
+ * prefix carries the phrase. The honest number is the one the kit's golden re-bless records:
+ * **+82 bytes on one line (15 from T3 + 67 from T8), one re-cache for every agent on upgrade
+ * day.** That cost was paid deliberately and is not what this function avoids.
+ *
+ * What it avoids is the FUTURE edit: a note keyed on a CATEGORY would annotate a line for every
+ * agent holding any tool in it, so the next entry's blast radius is one tool rather than one
+ * category — and it keeps the cost legible per entry instead of per grant. The per-turn
+ * cache-preservation tenet is untouched either way; nothing here is volatile (the description is
+ * a static literal with no interpolation). The clause that holds the keying is PART 5 of
+ * `__tests__/the-index-names-what-the-agent-can-call.test.ts`.
  */
 export function renderIndexName(name: string): string {
   const note = INDEX_NOTES[name];

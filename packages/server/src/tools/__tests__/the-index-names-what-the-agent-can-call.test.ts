@@ -44,6 +44,7 @@
 import { describe, it, expect } from 'vitest';
 import type { ToolDefinition } from '../../agent/tools/types.js';
 import { generateToolIndex, TOOL_CATEGORIES } from '../categories.js';
+import { INDEX_NOTES } from '../index-notes.js';
 
 function makeTool(name: string): ToolDefinition {
   return {
@@ -395,14 +396,47 @@ describe('PART 5 — the index says what `dojo_report` is for, not just that it 
     }
   });
 
-  it('an agent WITHOUT the tool gets the line it got before — the annotation rides the NAME', () => {
-    // The cache-prefix consequence, stated as a rule rather than left to PART 1's
-    // fixture: the annotation is attached to a tool, so withholding the tool
-    // withholds the phrase. A note keyed on the CATEGORY would have widened every
-    // agent's cached prefix, including the ones that cannot call the tool.
+  // ── WHAT THIS CLAUSE PROTECTS, CORRECTED (F9) ──
+  // It used to read as "an agent WITHOUT the tool gets the line it got before", on a fixture of
+  // `['load_tool_docs', 'file_read']`. That population DOES NOT EXIST: `dojo_report` is in
+  // `Meta`, `Meta` is in `MOST_RESTRICTIVE_GRANTS`, which is precisely why T3 could add the tool
+  // with no new label and no backfill — so every agent holds it and every agent's prefix carries
+  // the phrase. The claim protected no production agent, and the +82 bytes on one line were paid
+  // on purpose, once, for every agent on upgrade day.
+  //
+  // The MECHANISM is still worth holding, and it is a statement about the next entry rather than
+  // this one: notes are keyed on TOOL NAMES, so a new entry's blast radius is one tool. Keyed on
+  // a CATEGORY LABEL it would be every agent holding anything in that category, and the cost
+  // would stop being legible per entry. So the clause now drives the keying directly.
+  it('every note is keyed on a TOOL NAME, never a category label — the next entry costs one tool', () => {
+    const categoryLabels = new Set(TOOL_CATEGORIES.map(c => c.label));
+    const everyToolName = new Set(TOOL_CATEGORIES.flatMap(c => c.tools));
+    expect(Object.keys(INDEX_NOTES).length, 'INDEX_NOTES is empty, so this clause is blind')
+      .toBeGreaterThan(0);
+
+    for (const key of Object.keys(INDEX_NOTES)) {
+      expect(categoryLabels.has(key), `\`${key}\` is a CATEGORY LABEL. A note keyed on a category `
+        + 'annotates that line for every agent holding any tool in it, so the entry\'s cost stops '
+        + 'being one tool and becomes one grant').toBe(false);
+      expect(everyToolName.has(key), `\`${key}\` is not a tool in any category, so no index line `
+        + 'can ever carry it — the note is dead weight in the cached prefix').toBe(true);
+    }
+  });
+
+  it('the phrase rides the name: an index without the annotated tool does not carry it', () => {
+    // THE MECHANISM, on an explicitly SYNTHETIC grant. This is not a production population —
+    // every real agent holds `dojo_report` (see the note above) — it is the keying demonstrated
+    // end to end through the renderer, so a note re-keyed on the category reds here as well as
+    // in the clause above.
     const without = generateToolIndex(makeTools(['load_tool_docs', 'file_read']), ['load_tool_docs']);
-    expect(without).toContain('**Meta:** `load_tool_docs`\n');
-    expect(without).not.toContain('the Dojo itself');
+    expect(without, 'the synthetic grant did not render a Meta line, so this is blind')
+      .toContain('**Meta:** `load_tool_docs`\n');
+    expect(without, 'the annotation appeared on an index that does not list the annotated tool')
+      .not.toContain('the Dojo itself');
+    // …and the positive control on the SAME renderer, so this is about the keying and not about
+    // a fixture that annotates nothing.
+    const with_ = generateToolIndex(makeTools(['load_tool_docs', 'dojo_report']), ['load_tool_docs']);
+    expect(with_, 'the annotation is gone entirely').toContain('the Dojo itself');
   });
 });
 

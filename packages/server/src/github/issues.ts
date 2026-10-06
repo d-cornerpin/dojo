@@ -206,7 +206,14 @@ function writeHeaders(token: string): Record<string, string> {
 /**
  * The two statuses GitHub answers when it will not accept a FIELD of the payload from this
  * account: 403 for a permission it does not hold, 422 for a value it will not validate. Neither
- * creates an issue, so a second smaller request is a fresh attempt and never a duplicate.
+ * creates an issue in GitHub's documented behaviour, so a second smaller request is a fresh
+ * attempt rather than a duplicate.
+ *
+ * THAT IS GITHUB'S CONTRACT, NOT A MEASUREMENT THIS BOX MADE (F10) — it used to read "and never
+ * a duplicate", a fact nobody here established. A 403/422 from something that DID create files a
+ * second public page for one approval and stamps the row with the second number. Driven and
+ * measured in `__tests__/the-labels-are-best-effort.test.ts` §6, which also shows why the dedupe
+ * search cannot catch it: that search protects the NEXT press, and it ran before both creates.
  */
 const LABEL_RETRY_STATUSES: ReadonlySet<number> = new Set([403, 422]);
 
@@ -360,9 +367,14 @@ async function labelsThatDidNotSurvive(
  * on GitHub's prose containing "label" might simply not fire against the defect it was written
  * for. Status + "labels were actually sent" cannot miss, and cannot misreport either: a 403 about
  * something else fails honestly one refused POST later, carrying GitHub's sentence for the
- * label-less attempt, the request that asked for the least. Being wrong here costs one refused
- * POST; the narrow version being wrong costs the release blocker. The control is that a call
- * carrying NO labels retries nothing at all.
+ * label-less attempt, the request that asked for the least.
+ *
+ * THE COST OF BEING WRONG, CORRECTED (F10). "One refused POST" is the cost on the arm where both
+ * attempts are refused and nothing is filed (§3). On the arm where the refusal came from
+ * something that nonetheless created, it is ONE DUPLICATE PUBLIC PAGE with the row naming only
+ * the second — measured in §6, so this is a number rather than an estimate. The trade still
+ * stands (the narrow version being wrong costs the release blocker); the accounting was
+ * understated. The control is that a call carrying NO labels retries nothing at all.
  */
 export async function createIssue(
   repo: string, title: string, body: string, labels: string[],
