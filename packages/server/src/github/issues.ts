@@ -279,7 +279,11 @@ async function labelsOnIssue(repo: string, token: string, issueNumber: number): 
     const answer = await res.json() as { labels?: unknown };
     if (!Array.isArray(answer.labels)) return cannotTell('the answer carried no `labels` array');
     const names = answer.labels.map(l => typeof l === 'string' ? l : (l as { name?: unknown } | null)?.name);
-    if (names.every(n => typeof n === 'string' && n !== '')) return names as string[];
+    // THE PREDICATE, NOT A CAST (N5). Nothing was unsound — the runtime check is the line below
+    // either way — but `names as string[]` asked the compiler to take our word for it one line
+    // after we had earned it. A guard makes `every` narrow, so proof and check are one expression.
+    const isReadableName = (n: unknown): n is string => typeof n === 'string' && n !== '';
+    if (names.every(isReadableName)) return names;
     return cannotTell('a label in the answer carried no readable name');
   } catch (err) {
     return cannotTell(err instanceof Error ? err.message : String(err));
@@ -293,14 +297,21 @@ async function labelsOnIssue(repo: string, token: string, issueNumber: number): 
  * documented rule as the cause ONLY WHERE THAT RULE FITS THE MEASUREMENT (fix round F3): it drops
  * EVERY label, so a label that SURVIVED refutes it, and the sentence used to cite it on a partial
  * drop anyway — sending the owner to fix a permission the measurement proves they already have.
+ *
+ * AND THE PARTIAL ARM NO LONGER INFERS EITHER (N5). It used to add "what GitHub KEPT shows this
+ * account can label issues here" — an inference dressed as a measurement, since it assumes the
+ * surviving label came from THIS account's create rather than from something else in the
+ * create-to-read-back window, the window this very sentence declines to guess about one clause
+ * earlier. Safer than the claim F3 removed, and the reading most people would make, but the rule
+ * here is that the owner-facing sentence carries measurements only. It says what it saw and stops.
  */
 function silentlyDroppedNote(sent: string[], kept: string[], dropped: string[]): string {
   const why = kept.length === 0
     ? 'GitHub does that when the account filing has no write access to the repository; its own reference '
       + 'for creating an issue says labels "are silently dropped otherwise". Only someone with write '
       + 'access can add them now, and '
-    : 'What removed the rest is not something this box can see, and it will not guess — what GitHub KEPT '
-      + 'shows this account can label issues here. Someone with write access can add them, and ';
+    : 'What removed the rest is not something this box can see, and it will not guess. Someone with '
+      + 'write access can add them, and ';
   return `Your report posted. It asked for the label${sent.length === 1 ? '' : 's'} ${sent.join(', ')}, and `
     + `GitHub saved the issue ${kept.length === 0 ? 'with no labels at all' : `with only ${kept.join(', ')}`} — `
     + `${dropped.join(', ')} ${dropped.length === 1 ? 'was' : 'were'} dropped. ${why}nothing triage needs is `

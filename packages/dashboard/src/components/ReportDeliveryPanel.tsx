@@ -32,11 +32,19 @@ export const DeliveredPanel = ({ delivery, onDone }: {
             reference says it does (T8 LIVE D-B); occasionally because it refuses the labelled
             request outright. The server measures which labels are actually on the issue after
             filing it, and this sentence is the SERVER's, verbatim. WHAT IT CARRIES DIFFERS BY
-            BRANCH, and the earlier wording here claimed the stronger one for both (re-review N3):
-            on the REFUSAL branch it carries GitHub's own explanation, because GitHub gave one;
-            on the SILENT-DROP branch (201, labels absent from the read-back) GitHub said nothing
-            at all, so the sentence is the MEASUREMENT alone — the labels asked for against the
-            labels the issue has. Either way only someone with write access can label it now.
+            BRANCH — there are THREE, not two, and the previous two-way split (re-review N3) was
+            wrong about the commonest one:
+              * REFUSAL (403/422, then accepted bare): GitHub's own words, because GitHub gave
+                them, plus the controlled result — same issue refused with labels and accepted
+                without them.
+              * SILENT FULL DROP (201, the read-back shows NO labels — the live 2026-09-26 case):
+                the measurement AND GitHub's documented rule, because a total drop is exactly
+                what that rule describes ("labels are silently dropped otherwise").
+              * SILENT PARTIAL DROP (201, some labels kept): the MEASUREMENT ALONE. A label that
+                SURVIVED refutes the documented rule, so citing it here would send the owner to
+                fix a permission the measurement proves they already have (that is fix F3), and
+                the sentence says in so many words that it will not guess.
+            Either way only someone with write access can label it now.
             Rendered as a notice, not an error: nothing failed. */}
         {delivery.labelsDropped && (
           <p className="text-xs text-ui/80 bg-cp-amber/10 border border-cp-amber/25 rounded-lg p-2 whitespace-pre-wrap">

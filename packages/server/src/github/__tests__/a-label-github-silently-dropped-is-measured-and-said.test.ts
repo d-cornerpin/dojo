@@ -281,7 +281,9 @@ describe('GitHub answers 201 and keeps none of the labels', () => {
 
   it('a PARTIAL drop does not explain itself with a rule the surviving label refutes', async () => {
     // F3. GitHub's documented rule drops EVERY label from an account without push access, so a
-    // label that came back is a measurement that this account CAN label this issue. Citing that
+    // label that came back REFUTES that rule as the cause here. (It does not positively establish
+    // what this account can do — see the N5 arm below; it establishes that the documented
+    // explanation does not fit the measurement.) Citing that
     // rule here sends the owner to fix a permission they demonstrably have — a fabricated cause in
     // the module whose sibling states the opposite doctrine: when the body cannot be read it SAYS
     // the body could not be read rather than filling the hole with a plausible story
@@ -298,6 +300,19 @@ describe('GitHub answers 201 and keeps none of the labels', () => {
       .toMatch(/will not guess/);
     expect(note, 'the owner is not told who can put the missing label back')
       .toMatch(/write access/i);
+
+    // ── N5: AND IT MAKES NO CLAIM ABOUT THIS ACCOUNT'S CAPABILITY EITHER ──
+    // The sentence used to add "what GitHub KEPT shows this account can label issues here". That
+    // is an inference wearing a measurement's clothes: it assumes the surviving label was set by
+    // THIS account's create request, and not added by something else in the window between the
+    // create and the read-back — the window this same sentence declines to guess about one line
+    // earlier. Weaker and safer than the cause F3 removed, and the reading most people would
+    // make, but the rule in this module is that the owner-facing sentence carries measurements
+    // only. So: it may say who can FIX it, and it may not say what this account IS.
+    for (const claim of ['this account can', 'shows this account', 'can label issues here']) {
+      expect(note, `the partial-drop sentence infers "${claim}" from a label it did not watch `
+        + 'GitHub set').not.toContain(claim);
+    }
   });
 });
 
