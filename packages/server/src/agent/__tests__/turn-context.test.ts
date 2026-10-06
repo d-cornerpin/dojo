@@ -349,9 +349,20 @@ describe('PHASE-6 T1: the ten maps are GONE, not standing beside their replaceme
     // was requested", which the two human-intent doors may legitimately lift for the NEXT run,
     // and on 2026-09-21 one of them lifted it mid-unwind and the stopped chain resumed. The
     // fence is the fact that clear cannot reach. The count moves to 15.
+    //
+    // ⚠ RE-DERIVED, NOT LOWERED (t116 E2). `lastRunEndedAt` is the sixteenth: a per-agent
+    // `agentId -> epoch ms` stamp of when a run left its exit `finally`, written by that one
+    // owner and read by the stop door. It is a RUN-LIFECYCLE fact, not per-turn context, so it
+    // is not a reintroduction of anything the collapse retired — `RETIRED_FROM_TURN_STATE`
+    // above names none of it, and the clause two above still guards that list. It exists
+    // because the three facts the stop door could already see — `agents.status`, `liveWork`
+    // and `activeRuns` — all go false during the drain tail this `finally` runs AFTER
+    // releasing `activeRuns`, which is the residual `stopFencedRuns`'s own header records as
+    // uncovered. Same idiom as the two Maps argued above, one window further out.
+    // The count moves to 16.
     const src = read('agent/shared-state.ts');
     const declared = [...src.matchAll(/export const (\w+) = new (?:Map|Set)/g)].map((m) => m[1]);
-    expect(declared).toHaveLength(15);
+    expect(declared).toHaveLength(16);
   });
 
   it('the two ambient-state files are PINNED in ratchets.json', () => {
