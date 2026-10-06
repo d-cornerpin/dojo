@@ -1060,6 +1060,18 @@ export async function memoryExpand(
   const userMessage = `Here is the expanded conversation history:\n\n${materialParts.join('\n')}\n\n---\n\nQuestion: ${prompt}`;
 
   // Truncate if too long
+  // t114 (census U7): the synthesis budget, derived from the size of what is being synthesised.
+  // FLOOR is W3-1's own number, so a small expand is exactly as fast to fail as it is today;
+  // the per-1K-token grant is what the flat version was missing; the CEILING keeps this a
+  // bounded utility call that cannot sit on a live tool result indefinitely.
+  const EXPAND_FLOOR_MS = 60_000;
+  const EXPAND_MS_PER_1K_TOKENS = 1_500;
+  const EXPAND_CEILING_MS = 10 * 60_000;
+  const expandSynthesisBudgetMs = (inputTokens: number): number => Math.min(
+    EXPAND_FLOOR_MS + Math.ceil(Math.max(inputTokens, 0) / 1000) * EXPAND_MS_PER_1K_TOKENS,
+    EXPAND_CEILING_MS,
+  );
+
   const maxInputTokens = 100000;
   const truncatedMessage = estimateTokens(userMessage) > maxInputTokens
     ? userMessage.slice(0, maxInputTokens * 4) + '\n\n[... material truncated ...]'
@@ -1072,11 +1084,21 @@ export async function memoryExpand(
       messages: [{ role: 'user', content: truncatedMessage }],
       systemPrompt,
       tools: false,
-      // W3-1: fully handled utility call, the catch below falls back to
-      // returning the raw expanded material, so the caller always gets the
-      // content. Fail fast instead of riding the provider's 5-minute default
-      // (this synthesis blocks a live tool result), and log at WARN.
-      abortSignal: AbortSignal.timeout(60_000),
+      // ── t114 (CENSUS U7) — THE BOUND READS THE SIZE THE SAME FUNCTION JUST SET ──
+      //
+      // THE DEFECT: a flat 60 seconds, on a call this very function sizes at up to
+      // `maxInputTokens = 100000` sixteen lines above. A local model prefilling 100K tokens
+      // cannot finish in a minute on any realistic box, so the bigger the legitimately-retrieved
+      // corpus the MORE CERTAIN the abort — and the failure is invisible: the catch returns the
+      // raw dump and the agent silently receives unsynthesised material. A silent quality
+      // degradation, worst exactly when recall matters most.
+      //
+      // W3-1's reasoning is kept, not discarded: this IS a fully-handled utility call that blocks
+      // a live tool result, so it must fail FAST rather than ride the provider's 5-minute
+      // default. What changes is that "fast" is now measured against the work rather than being
+      // one number for every size — the same scale-by-the-fact-in-hand the rest of this sweep
+      // uses, with the input estimate the truncation step already computed.
+      abortSignal: AbortSignal.timeout(expandSynthesisBudgetMs(estimateTokens(truncatedMessage))),
       bestEffort: true,
     });
 
@@ -1092,8 +1114,15 @@ export async function memoryExpand(
       error: err instanceof Error ? err.message : String(err),
     }, agentId);
 
-    // Return raw material on failure
-    return `Expanded material (model call failed):\n\n${materialParts.join('\n')}`;
+    // t114 (U7): the label distinguishes an ABANDONED synthesis from a FAILED one. The agent is
+    // reading this string and can only decide whether to ask again if it knows which happened —
+    // "the synthesis ran out of time" invites a narrower question, "the model call failed" does
+    // not. The old wording said the latter for both.
+    const why = err instanceof Error ? err.message : String(err);
+    const abandoned = /abort|timed out|timeout/i.test(why);
+    return abandoned
+      ? `Expanded material (synthesis ran out of time for this much material — ask a narrower question to have it summarised):\n\n${materialParts.join('\n')}`
+      : `Expanded material (model call failed):\n\n${materialParts.join('\n')}`;
   }
 }
 

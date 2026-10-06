@@ -188,7 +188,20 @@ export async function generateEmbedding(
         model: config.model,
         input: truncated,
       }),
-      signal: slot ? AbortSignal.any([slot.signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000),
+      // ── t114 (CENSUS U16) — THE DECLARED BOUND IS HONOURED ON BOTH TRANSPORTS ──
+      //
+      // THE DEFECT: a hardcoded flat 30s here, while the Ollama branch thirty lines above arms
+      // the caller's own `timeoutMs`. The parameter exists precisely so a latency-sensitive
+      // caller can ask for less and a background embed can tolerate a cold GPU load — and on
+      // this transport it was silently discarded, so a caller's declared bound meant nothing.
+      // Census row 8's shape exactly: two numbers that were always meant to be the same one.
+      //
+      // Why this is the whole fix: an abort here is already classified as
+      // `isEmbeddingBackendUnavailable` (it matches /aborted|timeout/), which pauses embedding
+      // behind the announce-once latch rather than silently dropping the work, and
+      // `memory/backfill.ts` is the sweep that re-embeds what was missed. So the row is
+      // recoverable — the un-honoured bound was the part that was not.
+      signal: slot ? AbortSignal.any([slot.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
     });
     if (response.ok) {
       const data = await response.json() as { data: Array<{ embedding: number[] }> };
