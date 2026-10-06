@@ -56,7 +56,7 @@ vi.mock('../../config/platform.js', () => ({
   isPrimaryAgent: () => false,
 }));
 import { PRIMARY_AGENT_PERMISSIONS, artifactPathFor } from '../manifest.js';
-import { defaultChildScope, resolveChildScope, parseStoredManifest } from '../scope.js';
+import { defaultChildScope, resolveChildScope, parseStoredManifest, scopeExcesses } from '../scope.js';
 import { projectManifestToRules, grantForManifest } from '../brokers/grants.js';
 import { authorizeFs } from '../brokers/fs.js';
 import { resolvePathArg } from '../brokers/resolve.js';
@@ -195,5 +195,71 @@ describe('B — deny-all projects NO allow rule, so the letters are not grants',
       .map((r) => r.pattern);
     expect(writes).toContain('/tmp/**');
     expect(writes).toContain(artifactPathFor(AGENT));
+  });
+});
+
+// ── C. `'none'` AND `[]` ARE ONE ANSWER AT THE SUBSET RULE (t111-C2) ─────────
+//
+// BACKLOG wave-1A recorded this as "deliberate but unargued", and measuring it
+// settled which way it goes. Both values grant NOTHING — the broker's own
+// behaviour, asserted below, not a reading of the names — but they used to be
+// answered by different branches on either side of `pathSubset`'s
+// `parent === 'none'` line, so a child asking for nothing was REFUSED when it
+// asked with the empty-list spelling and ALLOWED with the scalar one.
+//
+// The clauses count both ways: the two spellings now agree, AND the refusals
+// that are real security properties still refuse.
+describe('C — the two spellings of "grants nothing" behave identically', () => {
+  const EMPTY_SPELLINGS: Array<['none' | never[], string]> = [
+    ['none', "the scalar 'none'"],
+    [[], 'the empty list'],
+  ];
+
+  it('⚠ the broker grants nothing for EITHER spelling — this is why they must agree', () => {
+    // The premise the unification rests on. If an empty list were ever read as
+    // "unset, therefore allow", the rest of this block would be an escalation.
+    for (const [value, label] of EMPTY_SPELLINGS) {
+      const m = { ...PRIMARY_AGENT_PERMISSIONS, file_read: value, file_write: value } as PermissionManifest;
+      const v = verdict(m, 'fs_write', '/tmp/anything.txt');
+      expect(v.allowed, `${label} must grant no write`).toBe(false);
+      const r = verdict(m, 'fs_read', '/tmp/anything.txt');
+      expect(r.allowed, `${label} must grant no read`).toBe(false);
+    }
+  });
+
+  it('⚠ a child that asks for NOTHING is inside a deny-all parent, however it spells it', () => {
+    for (const [value, label] of EMPTY_SPELLINGS) {
+      const resolved = resolveChildScope({ file_write: value, file_read: value }, denyAll(), 'grandchild');
+      expect(resolved.ok, `${label} inside a deny-all parent must be allowed`).toBe(true);
+      expect(scopeExcesses({ file_write: value, file_read: value }, denyAll()))
+        .toEqual([]);
+    }
+  });
+
+  it('⚠ and inside a BOUNDED parent too — the empty list is not a request for the parent\'s paths', () => {
+    const bounded = { ...PRIMARY_AGENT_PERMISSIONS, file_write: ['/tmp/**'] } as PermissionManifest;
+    for (const [value, label] of EMPTY_SPELLINGS) {
+      expect(scopeExcesses({ file_write: value }, bounded), label).toEqual([]);
+    }
+  });
+
+  it('⚠ THE OTHER DIRECTION: what must stay refused is still refused', () => {
+    // These are the two lines the unification did NOT move. If the emptiness
+    // test had been written too broadly, these would have gone green.
+    expect(resolveChildScope({ file_write: ['/tmp/**'] }, denyAll(), 'g1').ok).toBe(false);
+    expect(resolveChildScope({ file_write: '*' }, denyAll(), 'g2').ok).toBe(false);
+    expect(scopeExcesses({ file_write: ['/tmp/**'] }, denyAll()).join('|')).toMatch(/^file_write:/);
+    expect(scopeExcesses({ file_write: '*' }, denyAll()).join('|')).toMatch(/^file_write:/);
+
+    // and a non-empty list that leaves a BOUNDED parent is still an excess.
+    const bounded = { ...PRIMARY_AGENT_PERMISSIONS, file_write: ['/tmp/**'] } as PermissionManifest;
+    expect(scopeExcesses({ file_write: ['/etc/**'] }, bounded).join('|')).toMatch(/^file_write:/);
+  });
+
+  it('the same unification holds for network domains, which had the identical divergence', () => {
+    const denyNet = { ...PRIMARY_AGENT_PERMISSIONS, network_domains: 'none' } as PermissionManifest;
+    expect(scopeExcesses({ network_domains: 'none' }, denyNet)).toEqual([]);
+    expect(scopeExcesses({ network_domains: [] }, denyNet)).toEqual([]);
+    expect(scopeExcesses({ network_domains: ['evil.test'] }, denyNet).join('|')).toMatch(/^network_domains:/);
   });
 });

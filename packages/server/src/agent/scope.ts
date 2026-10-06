@@ -210,24 +210,54 @@ export function defaultScopeFor(agentId: string): PermissionManifest {
  * is `['*']`, not the scalar `'*'`, so a naive `parent.includes(entry)` refused
  * the primary's own children the right to run `ls`. A parent list holding `'*'`
  * holds everything, exactly as `matchCommandPattern` reads it at the broker.
+ *
+ * ── `'none'` AND `[]` ARE THE SAME ANSWER, AND NOW THEY ARE TREATED LIKE IT ──
+ * (t111-C2, BACKLOG wave-1A's "deliberate but unargued" line.)
+ *
+ * Both values grant NOTHING. That is not a reading of the names, it is what the
+ * broker does: `evaluateRules` walks the projected rules, an empty grant has no
+ * rule to match, it returns `{decided:false}`, and `brokers/fs.ts` falls through
+ * to `deny`. So `[]` is deny-all, exactly as `'none'` is.
+ *
+ * The two were nevertheless answered by DIFFERENT branches on either side of the
+ * `parent === 'none'` line, so the empty list was refused where the scalar passed:
+ *
+ *       child     parent     before      now
+ *       'none'    'none'     true        true
+ *       []        'none'     FALSE       true
+ *
+ * That `false` was a FALSE REFUSAL — a child asking for nothing, denied for
+ * asking it with the wrong one of two spellings of nothing. It cannot be a
+ * security property: there is no path in `[]` to escalate to, and the cases
+ * that must stay refused (`'*'`, or a NON-EMPTY list, inside `'none'`) are
+ * refused by the two lines below, unmoved.
+ *
+ * It is also a live trap rather than a theoretical one, because normalising
+ * `'none'` to `[]` is the obvious thing for a caller to do — and doing it used
+ * to flip a passing subset check to a failing one. The emptiness test now sits
+ * with its twin at the top, where "the child requests nothing" is answered once
+ * for both spellings, before any question about the parent is asked.
  */
 function pathSubset(child: string[] | '*' | 'none', parent: string[] | '*' | 'none'): boolean {
-  if (child === 'none') return true;          // nothing is always inside anything
+  if (requestsNothing(child)) return true;    // nothing is always inside anything
   if (parent === '*') return true;            // everything contains everything
   if (Array.isArray(parent) && parent.includes('*')) return true;
   if (child === '*') return false;            // '*' inside a bounded list is an escalation
-  if (parent === 'none') return false;        // a list inside nothing is an escalation
-  if (Array.isArray(child) && child.length === 0) return true;
+  if (parent === 'none') return false;        // a NON-EMPTY list inside nothing is an escalation
   return child.every((p) => parent.includes(p));
 }
 
+/** The two spellings of "grants nothing", said once. See `pathSubset`'s note. */
+function requestsNothing(v: string[] | '*' | 'none'): v is 'none' | [] {
+  return v === 'none' || (Array.isArray(v) && v.length === 0);
+}
+
 function domainSubset(child: PermissionManifest['network_domains'], parent: PermissionManifest['network_domains']): boolean {
-  if (child === 'none') return true;
+  if (requestsNothing(child)) return true;
   if (parent === '*') return true;
   if (Array.isArray(parent) && parent.includes('*')) return true;
   if (child === '*') return false;
   if (parent === 'none') return false;
-  if (Array.isArray(child) && child.length === 0) return true;
   return child.every((d) => parent.includes(d));
 }
 
