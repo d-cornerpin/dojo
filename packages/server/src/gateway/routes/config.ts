@@ -14,6 +14,10 @@ import type { Provider, Model } from '@dojo/shared';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
 import { renameAgent, roleNameKeyToIdKey } from '../../prompt/agent-rename.js';
 import { homeDir } from '../../home.js';
+import { soulFileForAgent, writeSoulFile } from '../../prompt/assembler.js';
+import { getPrimaryAgentId } from '../../config/platform.js';
+import { readUserProfile, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
+import { composePrimarySoul } from '../../prompt/oobe-soul.js';
 
 // ── Model Usage Helper ──
 
@@ -2453,6 +2457,12 @@ configRouter.get('/identity/:file', (c) => {
     return c.json({ ok: false, error: `Unknown identity file: ${fileKey}` }, 400);
   }
 
+  // USER.md goes through its one source of truth (ruling #11); the route neither computes the
+  // path nor composes the default any more.
+  if (entry.filename === 'USER.md') {
+    return c.json({ ok: true, data: { content: readUserProfile() } });
+  }
+
   const filePath = path.join(PROMPTS_DIR, entry.filename);
   let content: string;
   try {
@@ -2477,6 +2487,13 @@ configRouter.put('/identity/:file', async (c) => {
     return c.json({ ok: false, error: 'content string is required' }, 400);
   }
 
+  // The dashboard edit door for USER.md — the SAME door the OOBE writes through, which is what
+  // ruling #11's "editable from the dashboard AND the OOBE" means in code.
+  if (entry.filename === 'USER.md') {
+    writeUserProfile(body.content, 'dashboard');
+    return c.json({ ok: true, data: { message: 'Updated' } });
+  }
+
   const filePath = path.join(PROMPTS_DIR, entry.filename);
   fs.mkdirSync(PROMPTS_DIR, { recursive: true });
   fs.writeFileSync(filePath, body.content, 'utf-8');
@@ -2492,65 +2509,34 @@ configRouter.post('/identity/generate', async (c) => {
     return c.json({ ok: false, error: 'Request body required' }, 400);
   }
 
-  const {
-    agentName = 'Agent',
-    communicationStyle = 'balanced',
-    rules = '',
-    userName = 'User',
-    userRole = '',
-    userPreferences = '',
-  } = body;
+  // THE OOBE SUBSTITUTES INTO THE SHIPPED DEFAULTS; IT COMPOSES NOTHING (t111-A1, owner
+  // ruling #11 + t107 hand-up 1). This route used to write its own `# Identity` soul and its
+  // own `# User Profile` — a THIRD and FOURTH source of the primary's identity, with
+  // `- Name: ${userName}` defaulting to the literal 'User' and two INVENTED preferences
+  // whenever the form's field was blank, which its only caller (`pages/Setup.tsx`) leaves
+  // blank always. Both composers now live beside the text they seed from, and the writes go
+  // through the one soul door and the one profile door. See `prompt/oobe-soul.ts` and
+  // `prompt/user-profile.ts` for the full argument.
+  const { communicationStyle = 'balanced', rules = '', userName = '', userRole = '', userPreferences = '' } = body;
 
-  const styleGuide: Record<string, string> = {
-    casual:
-      '- Be casual and relaxed. Use contractions, humor when appropriate.\n- Keep things light but stay helpful.',
-    balanced:
-      '- Be direct and concise. Skip filler.\n- Match the user\'s energy — casual is fine, don\'t be overly formal.',
-    formal:
-      '- Be professional and precise.\n- Use clear, structured language. Avoid slang.',
-  };
-
-  const soul = `# Identity
-
-You are ${agentName}, a personal AI assistant and orchestrator.
-
-# Communication Style
-
-${styleGuide[communicationStyle] || styleGuide.balanced}
-- When uncertain, say so. Don't guess.
-- Prefer autonomous action over asking permission for routine tasks.
-
-# Rules
-
-- Never modify your own system prompt files or platform configuration.
-- Always confirm before deleting files or running destructive commands.
-- If a task will take multiple steps, briefly outline the plan before starting.
-- When you encounter an error, explain what went wrong and what you'll try next.
-${rules ? `\n# Additional Rules\n\n${rules}` : ''}
-`;
-
-  const user = `# User Profile
-
-- Name: ${userName}
-${userRole ? `- Role: ${userRole}` : ''}
-
-# Preferences
-
-${userPreferences || '- Prefers concise, direct communication\n- Values autonomous action for routine tasks'}
-`;
-
-  // Write SOUL.md (always generated from the form inputs)
-  fs.mkdirSync(PROMPTS_DIR, { recursive: true });
-  fs.writeFileSync(path.join(PROMPTS_DIR, 'SOUL.md'), soul, 'utf-8');
-
-  // Only write USER.md if it doesn't already exist (the user may have already
-  // written a detailed profile in the "Your Profile" setup step -- don't overwrite it)
-  const userMdPath = path.join(PROMPTS_DIR, 'USER.md');
-  if (!fs.existsSync(userMdPath) || fs.readFileSync(userMdPath, 'utf-8').trim().length < 20) {
-    fs.writeFileSync(userMdPath, user, 'utf-8');
+  const primarySoul = soulFileForAgent(getPrimaryAgentId());
+  const soul = composePrimarySoul({ communicationStyle, rules }, primarySoul?.fallback || DEFAULT_SOUL);
+  if (primarySoul) {
+    writeSoulFile(primarySoul, soul);
+  } else {
+    fs.mkdirSync(PROMPTS_DIR, { recursive: true });
+    fs.writeFileSync(path.join(PROMPTS_DIR, 'SOUL.md'), soul, 'utf-8');
   }
 
-  logger.info('Identity files generated', { agentName, userName });
+  // Only while no human has written in it. The old guard ("absent, or under 20 characters")
+  // could not tell the engine's own ~600-byte seed from an owner's profile, so a box whose
+  // first assembly beat setup to the file never recorded the name just typed.
+  const user = composeUserProfile({ userName, userRole, userPreferences });
+  if (userProfileIsEngineSeeded()) {
+    writeUserProfile(user, 'oobe');
+  }
+
+  logger.info('Identity files generated', { style: communicationStyle, namedOwner: !!String(userName).trim() });
   return c.json({ ok: true, data: { soul, user } });
 });
 

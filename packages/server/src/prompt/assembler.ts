@@ -2,14 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_SOUL_MD, DEFAULT_USER_MD, DEFAULT_PM_SOUL_MD, DEFAULT_TRAINER_SOUL_MD, DEFAULT_HEALER_SOUL_MD, DEFAULT_IMAGINER_SOUL_MD } from './templates.js';
+import { DEFAULT_SOUL_MD, DEFAULT_PM_SOUL_MD, DEFAULT_TRAINER_SOUL_MD, DEFAULT_HEALER_SOUL_MD, DEFAULT_IMAGINER_SOUL_MD } from './templates.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { toolDefinitions } from '../agent/tools/definitions.js';
 import { getFilteredTools } from '../agent/tools/surface.js';
 import { getAgentPermissions } from '../agent/manifest.js';
 import { SOUL_ADMIN_COMMANDS_CLAIM } from '../agent/brokers/sudo-claim.js';
-import { isPrimaryAgent, isPMAgent, isTrainerAgent, isHealerAgent, isImaginerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getHealerAgentId, getHealerAgentName, getImaginerAgentName, ownerNameIsSet} from '../config/platform.js';
+import { isPrimaryAgent, isPMAgent, isTrainerAgent, isHealerAgent, isImaginerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getHealerAgentId, getHealerAgentName, getImaginerAgentName} from '../config/platform.js';
 import type { TurnCounterparty } from '../agent/v2/counterparty.js';
 import { NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, type Channel } from '@dojo/shared';
 import { isWorkVerb } from '../tools/work-verbs.js';
@@ -34,6 +34,7 @@ import { getTwilioConfig } from '../twilio/auth.js';
 import { generateToolIndex } from '../tools/categories.js';
 import { getAgentAlwaysLoadedTools, partitionToolsForApiCall } from '../tools/tool-docs.js';
 import { homeDir } from '../home.js';
+import { readUserProfile } from './user-profile.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
 
 const logger = createLogger('prompt-assembler');
@@ -1500,10 +1501,12 @@ export function renderVisionCapBanner(agentId: string, modelId: string): string 
  *  for this agent. Returns null otherwise. */
 export function renderUserProfile(agentId: string): string | null {
   if (!shouldShareUserProfile(agentId)) return null;
-  // Real name where setup recorded one; `ownerNameIsSet()` asks the ROW. See `prompt/templates.ts`.
-  const seed = ownerNameIsSet()
-    ? DEFAULT_USER_MD.replace('- Name: not recorded yet', `- Name: ${getOwnerName()}`) : DEFAULT_USER_MD;
-  return readPromptFile('USER.md', seed);
+  // ONE SOURCE OF TRUTH (owner ruling #11, t111-A3). The default, the seed-on-first-read and
+  // the write door all live in `prompt/user-profile.ts`; this slot is a reader and nothing
+  // more. It used to compose the seed itself, which is how the OOBE route came to compose a
+  // rival one. Edits made through the dashboard or the OOBE are therefore live on the NEXT
+  // assembly — there is no cached copy of this text anywhere.
+  return readUserProfile();
 }
 
 /** The `runtime` slot. Agent id / model / host footer, all STABLE so the whole
