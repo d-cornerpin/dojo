@@ -280,26 +280,39 @@ describe('t125 — the silent turns (Q2): a turn that owes a person never ends i
   });
 
   // ══════════════════════════════════════════════════════════════════════════════════════
-  // THE REFUSAL, PINNED SO IT IS NOT QUIETLY REVERSED.
+  // THE REFUSAL, PINNED SO IT IS NOT QUIETLY REVERSED — AND PINNED TO THE *SOUND* ARGUMENT.
   //
   // The triage's clause asked for the terminal rung to `latchEngineCut` as well, so the
-  // re-serve ladder stops being charged for an engine decision. It is NOT latched, and the
-  // reason is a measured regression rather than a preference: `work/ask-settlement.ts:776`
-  // reads `if (!engineCut && spent >= MAX_ASK_RE_SERVES) return standDownReServe(...)` — an
-  // engine cut bypasses the stand-down ENTIRELY. A model that returns empty returns empty
-  // again, so latching here would re-serve the same ask forever at three model calls a
-  // cycle: the owner's own standing complaint (agents repeat themselves) installed as an
-  // infinite loop.
+  // re-serve ladder stops being charged for an engine decision. It is NOT latched.
+  //
+  // ⚠ THE FIRST VERSION OF THIS PIN GAVE A FALSE REASON, and it is corrected here rather
+  // than quietly dropped, because a correct refusal pinned to a checkable falsehood is
+  // exactly how the next lane overturns it. It said latching would re-serve the ask "for
+  // ever", "an infinite loop". IT WOULD NOT. The drain is bounded: `MAX_DRAIN_STUCK = 4`
+  // (`agent/turn-state.ts:189`, read at `agent/runtime.ts:1032`) QUARANTINES the head
+  // conversation after four failed serves, and every self-wake is additionally gated by
+  // `underWakeBudget`. The real cost is 3 model calls per turn x up to 4 serves per ask —
+  // about a dozen calls — and then the conversation is set aside with the owner told.
+  //
+  // THE SOUND REASON IS THAT THE ASK NEVER SETTLES. `work/ask-settlement.ts:777` reads
+  // `!engineCut && spent >= MAX_ASK_RE_SERVES` and `:786` reads `if (!engineCut)
+  // recordReServe(...)`, so a cut BOTH bypasses the stand-down AND suppresses the counter:
+  // the ask is handed back open, spends nothing, and can never reach `blocked`. That matters
+  // because `blocked` is not a dead end — it is the OWED state the open-work surface renders
+  // while the drain's `state = 'open'` queue stops picking it up, i.e. the one place a
+  // question that was neither answered nor declined stays VISIBLE to the owner. Latching
+  // here would leave his question sitting `open` behind a quarantined conversation instead:
+  // not answered, not declined, and no longer in the held state built for that case.
   //
   // And by THIS rung `no_reply_intended` is honest in a way it never was at the exit this
   // lane fixed: the model has now been asked three times, once explicitly, and has chosen
   // silence every time — exactly what `work/exit-attribution.ts` reserves the word for. The
   // lie was the UNRETRIED exit.
   //
-  // If someone later decides the cut IS wanted here, this test reds and they must deal with
-  // the stand-down bypass first.
+  // If someone later decides the cut IS wanted here, this test reds and they must answer the
+  // settling question first: where does an unanswered, undeclined ask become visible?
   // ══════════════════════════════════════════════════════════════════════════════════════
-  it('the terminal rung does NOT latch an engine cut — the stand-down bypass would unbound the re-serve', () => {
+  it('the terminal rung does NOT latch an engine cut — a cut suppresses the counter, so the ask could never settle to `blocked`', () => {
     let state = afterHistorySearches();
     for (let i = 0; i < 2; i++) {
       const out = runEmptyResponse(state, ctxFor());

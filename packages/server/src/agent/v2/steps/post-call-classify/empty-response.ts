@@ -132,12 +132,11 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
       return continueLoop(state);
     }
     // ── WHO IS WAITING — HOISTED (t125, triage Q2). THE SAME PREDICATE, ONE SCOPE UP. ──
-    // It used to be computed inside the after-tools block and consulted ONLY inside the
-    // `answersInReasoning` gate — true for DeepSeek, false for every other model
-    // (`model-contract.ts`: `/deepseek/i`; `BASE_CONTRACT.answersInReasoning: false`). So a
-    // Claude-backed agent computed "a person is waiting", discarded it, and ended the turn
-    // mute: the owner's PM ran two `history_search` calls, returned no text, and left him
-    // looking at nothing — twice. Not re-derived and not widened; the whole ladder reads it.
+    // It used to be read ONLY inside the `answersInReasoning` gate — true for DeepSeek,
+    // false for every other model (`model-contract.ts`: `/deepseek/i`; `BASE_CONTRACT`).
+    // So a Claude-backed agent computed "a person is waiting", discarded it, and ended the
+    // turn mute: a PM ran two `history_search` calls, returned no text, and left the owner
+    // looking at nothing — twice. Not re-derived, not widened; the whole ladder reads it.
     const contract = contractForConfiguredModel(ctx.configuredModelId);
     const startAckOwed =
       (ctx.turnCtx.startAckSteerRequested || ctx.turnCtx.startAckSteerArmedThisTurn)
@@ -204,12 +203,11 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
         return continueLoop(state);
       }
       // v1 line 1167-1171, "the agent did work and has nothing more to say" — TRUE ONLY
-      // WHEN NOBODY IS WAITING (t125). A turn that owes a person and comes back empty has
-      // not finished, it has produced nothing; calling that a no-comment is what blanked
-      // the owner's screen. The owed case falls out of this block into the ladder already
-      // below — one silent retry, the one-shot steer, the bounded give-up. No new
-      // mechanism, rung, voice or predicate, and the same bound as before; the only change
-      // is that this exit stops being a DeepSeek-only privilege.
+      // WHEN NOBODY IS WAITING (t125). A turn that owes a person and returns nothing has
+      // not finished; calling that a no-comment is what blanked the owner's screen. The
+      // owed case falls into the ladder already below (silent retry, one-shot steer,
+      // bounded give-up): no new mechanism, rung, voice, predicate or bound — this exit
+      // just stops being DeepSeek-only.
       if (!owesAPerson) return requestExit(state, 'empty-response-after-tools');
     }
     // No tools called and no text, empty response. v1 runtime.ts:1166-1199
@@ -249,22 +247,24 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
     state = advance(state, { steerQueue: clearSteerQueueFor(state.steerQueue, EMPTY_LADDER_FAMILY) });
     // ── THE HONEST END OF THE LADDER, WHEN A PERSON IS OWED (t125, OR2's last clause) ──
     // A `chat:error` toast is a health surface, not a reply: live-only, no row, so a person
-    // who was away — or who reloads — still meets a turn that said nothing. So the owed case
-    // ends through the mechanism that already exists for exactly this, the way the sibling
-    // `handoff-floors.ts` does it: `recordFloorGhost` writes a durable `role='system'` row
-    // in the PLATFORM's voice (never the agent's face), announces it, and counts a
-    // `floor_ghosted` event on the ask.
-    //
-    // ⚠ IT DELIBERATELY DOES NOT `latchEngineCut`, against the triage's clause, and the
-    // reason is a measured regression: `work/ask-settlement.ts:776` reads
-    // `if (!engineCut && spent >= MAX_ASK_RE_SERVES) return standDownReServe(...)` — a cut
-    // bypasses the stand-down ENTIRELY. A model that returns empty returns empty again, so
-    // latching here re-serves the same ask forever at three model calls a cycle: the owner's
-    // own complaint (agents repeat themselves) installed as an infinite loop. And
-    // `no_reply_intended` is honest at THIS rung in a way it never was at the exit above —
-    // the model has now been asked three times, once explicitly, and chose silence each
-    // time, which is what `work/exit-attribution.ts` reserves the word for. The lie was the
-    // UNRETRIED exit, and that is the one this file fixed. Pinned by a test.
+    // who reloads still meets a turn that said nothing. The owed case ends through the
+    // mechanism that exists for it, as the sibling `handoff-floors.ts` does —
+    // `recordFloorGhost`: a durable platform-voice `role='system'` row, announced.
+    // ⚠ IT DELIBERATELY DOES NOT `latchEngineCut`, against the triage's clause — and NOT
+    // because the ask would be re-served for ever. IT WOULD NOT: `MAX_DRAIN_STUCK = 4`
+    // (`agent/turn-state.ts:189`, read at `agent/runtime.ts:1032`) QUARANTINES the head
+    // conversation after four failed serves and each self-wake is gated by
+    // `underWakeBudget` — ~3 model calls a turn x up to 4 serves, then quarantine. Bounded.
+    // THE SOUND REASON IS THAT THE ASK NEVER SETTLES: `work/ask-settlement.ts:777`
+    // (`!engineCut && spent >= …`) and `:786` (`if (!engineCut) recordReServe(...)`) mean a
+    // cut bypasses the stand-down AND suppresses the counter, so the ask is handed back
+    // open, spends nothing, and can never reach `blocked` — the OWED state the open-work
+    // surface renders and the drain's `state = 'open'` queue stops picking up: the one place
+    // a question neither answered nor declined stays VISIBLE. Latching leaves the owner's
+    // question `open` behind a quarantined conversation instead. And
+    // `no_reply_intended` is honest at THIS rung as it never was at the exit above: the
+    // model has now been asked three times, once explicitly, and chose silence each time
+    // (`work/exit-attribution.ts`). The lie was the UNRETRIED exit. Pinned by a test.
     if (owesAPerson) {
       const root = ctx.turnCtx.root;
       recordFloorGhost({
