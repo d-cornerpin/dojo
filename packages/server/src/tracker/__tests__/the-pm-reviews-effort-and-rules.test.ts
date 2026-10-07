@@ -57,13 +57,22 @@ vi.mock('../../memory/message-store.js', async (importOriginal) => ({
 const callModelSpy = vi.fn();
 let verdictText: string | null = null;
 let callModelThrows: Error | null = null;
+/** When `hungGate` is armed, `callModel` never settles until `releaseHungCall()` is called. This
+ *  is how the single-flight clause drives "a review is still in flight" with NO sleeps and no
+ *  wall clock: the hang is a promise nobody resolves, which is deterministic. */
 vi.mock('../../agent/model.js', () => ({
   callModel: async (params: unknown) => {
     callModelSpy(params);
+    if (hungGate) {
+      await new Promise<void>((resolve) => { releaseHungCall = resolve; });
+    }
     if (callModelThrows) throw callModelThrows;
     return { content: verdictText };
   },
 }));
+/** Armed by the single-flight clause only. */
+let hungGate = false;
+let releaseHungCall: () => void = () => { /* nothing hung */ };
 
 // Still mocked, now as a pure no-op: `runEffortReview` no longer touches the runtime at all,
 // but `runPMReview` (fired by §3) does.
@@ -170,6 +179,8 @@ beforeEach(() => {
   mockDb.current = db;
   verdictText = null;
   callModelThrows = null;
+  hungGate = false;
+  releaseHungCall = () => { /* nothing hung */ };
   callModelSpy.mockClear();
   deliverA2ASpy.mockClear();
 });
@@ -572,6 +583,134 @@ describe('§4 the verdict is asked for OFF the turn plumbing, so it cannot reach
     // The durable marker is untouched, so the existing re-drive tries again next tick.
     expect(queueEffortReviewIfNeeded('boom-1')).toBe(false);
     expect(requestCount('boom-1')).toBe(1);
+  });
+
+  // ⚠ THE FIX-ROUND CLAUSE. t123 round 1 deleted the `pmActiveRuns` deferral on the correct
+  // reasoning that a direct call races nothing — and removed, by accident, the ONLY thing
+  // serialising this review. `runPMReview` is fire-and-forget from two sites and `await`s this
+  // function in a loop; the durable pending marker clears only at the END (`advanceBaseline`), so
+  // while a call is in flight the next 60s tick finds the task still pending and starts a second
+  // review. If both return `circling`, both record `effort_review_intervene` and each can land
+  // its own rung-2 poke at the assignee.
+  //
+  // Driven with a HUNG MOCK and no sleeps: the first call awaits a promise nobody resolves, which
+  // is what "still in flight" means deterministically. No wall clock, so this cannot flake on a
+  // loaded box (seven lanes share this machine).
+  it('SINGLE-FLIGHT: a slow in-flight review + the next sweep runs EXACTLY ONE review, and pokes once', async () => {
+    seedOverThreshold('inflight-1');
+    expect(queueEffortReviewIfNeeded('inflight-1')).toBe(true);
+    pmAnswers(JSON.stringify({
+      advancing: false, reason: 'circling on the same three calls', task_id: 'inflight-1',
+    }));
+
+    // Sweep 1 — starts the review and hangs inside the model call. NOT awaited: this is exactly
+    // how `runPMReview` calls it, and awaiting it here would serialise the test rather than the
+    // product.
+    hungGate = true;
+    const sweep1 = runEffortReview('inflight-1');
+    // `flushMicrotasks` (a zero-delay macrotask, already this file's idiom) rather than a bare
+    // `await Promise.resolve()`: the call sits behind a dynamic `await import('../agent/model.js')`,
+    // so one microtask tick does not reach it. Still no sleep and no wall-clock dependency.
+    await flushMicrotasks();            // let it reach the model call
+    expect(callModelSpy, 'the first review did not reach the model').toHaveBeenCalledTimes(1);
+
+    // Sweep 2, sixty seconds later. The task is still pending (the baseline has not moved), so
+    // the sweep hands it over again — and the guard must refuse to start a second one.
+    //
+    // NOT awaited before the assertion, deliberately: with the guard removed, sweep 2 enters the
+    // SAME hung model call and never settles, so an `await` here would make the clause fail by
+    // 30-second test timeout instead of by assertion. Started-then-flushed, the mutant fails it
+    // in milliseconds on the count that actually matters — "the model was asked twice".
+    const sweep2 = runEffortReview('inflight-1');
+    await flushMicrotasks();
+    expect(callModelSpy, 'a SECOND review of the same task started while the first was in flight')
+      .toHaveBeenCalledTimes(1);
+    await sweep2;                       // the guard made this a no-op, so it is already resolved
+    expect(effortRow('inflight-1').effort_reviewed_calls, 'the duplicate applied a verdict').toBe(0);
+    expect(interveneCount('inflight-1'), 'the duplicate recorded a second circling verdict').toBe(0);
+
+    // Now let the first one finish. Exactly one verdict, exactly one intervene record — so the
+    // guarded poke sweep has exactly one rung-2 poke to deliver, not two.
+    hungGate = false;
+    releaseHungCall();
+    await sweep1;
+
+    expect(callModelSpy).toHaveBeenCalledTimes(1);
+    expect(interveneCount('inflight-1'), 'exactly one circling verdict must be on record').toBe(1);
+    expect(effortRow('inflight-1').effort_reviewed_calls).toBe(effortRow('inflight-1').effort_calls);
+  });
+
+  it('SINGLE-FLIGHT: a HANDLED failure (the budget abort) leaves the task reviewable next sweep', async () => {
+    // The realistic failure: the latency budget fires and `callModel` rejects. The review's own
+    // catch handles it, so nothing propagates — the guard is released on the ordinary path and
+    // the durable request is simply still pending.
+    seedOverThreshold('wedge-1');
+    callModelThrows = new Error('aborted: latency budget');
+    await runEffortReview('wedge-1');
+    expect(effortRow('wedge-1').effort_reviewed_calls).toBe(0);
+
+    callModelThrows = null;
+    pmAnswers(JSON.stringify({ advancing: true, reason: 'landing progress after all', task_id: 'wedge-1' }));
+    await runEffortReview('wedge-1');
+
+    expect(callModelSpy, 'the retry never reached the model — the task is wedged').toHaveBeenCalledTimes(2);
+    expect(effortRow('wedge-1').effort_reviewed_calls).toBe(effortRow('wedge-1').effort_calls);
+  });
+
+  it('SINGLE-FLIGHT: an UNCAUGHT failure still releases the guard — this is what the `finally` is for', async () => {
+    // ⚠ THE CLAUSE THAT REACHES THE `finally`, and it took a mutant to notice it was missing.
+    // The clause above cannot: `runEffortReviewOnce` catches its own model errors and RETURNS, so
+    // the guard is released on the happy path and a release placed outside the `finally` passes
+    // it. (Planted exactly that — M10 — and watched it stay green.) The `finally` exists for the
+    // UNCAUGHT class, so this clause produces one: `writeTaskLog` writes a `work_events` row, so
+    // dropping that table makes the verdict's audit write throw straight out of the review.
+    // Without the `finally`, the in-flight marker is never cleared and THIS TASK CAN NEVER BE
+    // REVIEWED AGAIN for the lifetime of the process — strictly worse than the bug this guard
+    // fixes, which is why it is worth a clause of its own.
+    seedOverThreshold('uncaught-1');
+    pmAnswers(JSON.stringify({ advancing: true, reason: 'the audit write will fail', task_id: 'uncaught-1' }));
+    mockDb.current!.exec('DROP TABLE work_events');
+
+    await expect(runEffortReview('uncaught-1'), 'the audit write was expected to throw uncaught').rejects.toThrow();
+
+    // Rebuild the table and prove the task is still reviewable: the guard was released.
+    mockDb.current!.close();
+    const db = new Database(':memory:');
+    createWorkTable(db);
+    createMessagesTable(db);
+    createAgentsTable(db);
+    db.prepare(`INSERT INTO agents (id, name, status, model_id) VALUES (?, 'PM', 'idle', 'test-model')`).run(PM_ID);
+    mockDb.current = db;
+    seedOverThreshold('uncaught-1');
+    pmAnswers(JSON.stringify({ advancing: true, reason: 'now it works', task_id: 'uncaught-1' }));
+    callModelSpy.mockClear();
+
+    await runEffortReview('uncaught-1');
+
+    expect(callModelSpy, 'the task is WEDGED — the guard was never released after the throw')
+      .toHaveBeenCalledTimes(1);
+    expect(effortRow('uncaught-1').effort_reviewed_calls).toBe(effortRow('uncaught-1').effort_calls);
+  });
+
+  it('SINGLE-FLIGHT is per TASK, not per PM — a different task still gets reviewed', async () => {
+    // Counted the other way: a guard that keyed on the PM instead of the task would make this
+    // RED, and would re-introduce round 1's lost-review class by another route.
+    seedOverThreshold('par-a');
+    seedOverThreshold('par-b');
+    pmAnswers(JSON.stringify({ advancing: true, reason: 'fine', task_id: 'par-b' }));
+
+    hungGate = true;
+    const hung = runEffortReview('par-a');
+    await flushMicrotasks();
+    expect(callModelSpy).toHaveBeenCalledTimes(1);
+
+    hungGate = false;
+    await runEffortReview('par-b');
+    expect(callModelSpy, 'an unrelated task was refused a review').toHaveBeenCalledTimes(2);
+    expect(effortRow('par-b').effort_reviewed_calls).toBe(effortRow('par-b').effort_calls);
+
+    releaseHungCall();
+    await hung;
   });
 
   it('no PM model to ask is not a verdict either — and nothing is written', async () => {

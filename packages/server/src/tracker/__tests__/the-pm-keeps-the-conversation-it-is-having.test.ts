@@ -355,7 +355,17 @@ describe('§B the engine\'s private verdict never reaches a user-visible lane', 
     // …and `runEffortReview` no longer reaches the turn plumbing to ask for it. These three
     // are the mechanism that published it: an events-lane prompt row as the delivery vehicle,
     // a real agent turn, and a read-back of the persisted assistant reply.
-    const review = pmAgent.slice(pmAgent.indexOf('export async function runEffortReview'));
+    // ⚠ ANCHORED ON `runEffortReviewOnce`, NOT the exported `runEffortReview`. The fix round
+    // split the function: the export is now a thin single-flight wrapper and the body moved
+    // into `runEffortReviewOnce`. A slice anchored on the export therefore reads the WRAPPER,
+    // which contains no `callModel` — and the "it must still ask somebody" clause below would
+    // fail for a reason that has nothing to do with the defect it guards. Caught exactly that
+    // way while planting M9. Both anchors are asserted present so this cannot silently slice
+    // nothing if either name changes again.
+    expect(pmAgent, 'the single-flight wrapper is gone — re-point this slice').toMatch(/export async function runEffortReview\(/);
+    const marker = 'async function runEffortReviewOnce';
+    expect(pmAgent, 'runEffortReviewOnce is gone — re-point this slice').toContain(marker);
+    const review = pmAgent.slice(pmAgent.indexOf(marker));
     const body = review.slice(0, review.indexOf('\n}\n'));
     expect(body, 'the effort review inserts an engine event again — the row IS the delivery mechanism')
       .not.toMatch(/insertEngineEventIfAbsent/);
@@ -369,6 +379,42 @@ describe('§B the engine\'s private verdict never reaches a user-visible lane', 
     expect(body, 'the effort review no longer calls a model at all').toMatch(/callModel/);
     expect(body, 'the call must be toolless — that is what makes it persist nothing').toMatch(/tools:\s*false/);
     expect(body, 'the call must declare its purpose so the utility dial applies').toMatch(/purpose:\s*'effort_verdict'/);
+  });
+
+  // ⚠ THE FIX-ROUND CLAUSE, and the one line round 1 failed to copy from the precedent it copied
+  // everything else from. `work/ask-title.ts` passes its own `AbortSignal.timeout` because a
+  // measured utility call on a user's box once took 275 SECONDS. This call needs it for a second
+  // reason round 1 created: it is now guarded by a single-flight marker, and a call that never
+  // settles would hold that marker for ever, so no later sweep could ever review the task again.
+  // The budget is what turns "wedged for ever" into "retried on the next tick".
+  it('B4 — the verdict call carries a BOUNDED latency budget, like every other utility dial', () => {
+    const pmAgent = stripComments(readSrc('tracker/pm-agent.ts'));
+    const marker = 'async function runEffortReviewOnce';
+    const review = pmAgent.slice(pmAgent.indexOf(marker));
+    const body = review.slice(0, review.indexOf('\n}\n'));
+
+    expect(body, 'the verdict call has no latency budget — a hung call wedges this task out of review for ever')
+      .toMatch(/abortSignal:\s*AbortSignal\.timeout\(/);
+
+    // Counted the other way: a budget must be a real finite number, not `Infinity` or a 0 that
+    // aborts instantly, and it must be declared rather than inlined as a magic literal.
+    const declared = /const EFFORT_VERDICT_LATENCY_BUDGET_MS = ([0-9_]+);/.exec(pmAgent);
+    expect(declared, 'the budget is no longer a declared constant').not.toBeNull();
+    const ms = Number(declared![1].replace(/_/g, ''));
+    expect(ms).toBeGreaterThan(1_000);
+    expect(ms).toBeLessThanOrEqual(600_000);
+  });
+
+  it('B5 — the review is SERIALISED: the guard and its release are both present', () => {
+    // The behavioural proof is in `the-pm-reviews-effort-and-rules.test.ts` (driven with a hung
+    // mock). This is the structural half: the guard must be released in a `finally`, because a
+    // release on the happy path only is how a failed call wedges a task permanently.
+    const pmAgent = stripComments(readSrc('tracker/pm-agent.ts'));
+    expect(pmAgent, 'the single-flight set is gone').toMatch(/effortReviewsInFlight/);
+    const wrapper = pmAgent.slice(pmAgent.indexOf('export async function runEffortReview('));
+    const body = wrapper.slice(0, wrapper.indexOf('\n}\n'));
+    expect(body, 'the guard no longer refuses a second in-flight review').toMatch(/effortReviewsInFlight\.has\(/);
+    expect(body, 'the guard is never released in a finally — a failed call wedges the task').toMatch(/finally\s*\{[\s\S]*effortReviewsInFlight\.delete\(/);
   });
 
   it('B2 — assistant output has no engine lane, so the only safe route is not to persist it', () => {

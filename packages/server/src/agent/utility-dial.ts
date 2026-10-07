@@ -82,9 +82,15 @@ const DIALS: Readonly<Record<UtilityPurpose, UtilityDial>> = {
   // the arithmetic is `multistep_classify`'s with room for the two fields it does not have: a
   // 36-char uuid is ~18 tokens, and "one or two sentences" of reason is ~40. 128 covers both with
   // the braces and slack for a model that opens with a stray newline, and is far short of the
-  // room an essay would need. No latency budget: the caller is a 60s background sweep with
-  // nobody waiting on it, and it already leaves the request pending on any failure, so a slow
-  // answer costs nothing a fast fallback would have saved.
+  // room an essay would need.
+  // ⚠ `null` HERE MEANS "THE CALLER OWNS THE BUDGET", the first of the two readings this field's
+  // doc gives — NOT "no budget". t123 round 1 wrote the second reading into this comment ("a 60s
+  // background sweep with nobody waiting on it, so a slow answer costs nothing") and it was
+  // wrong in the one way that mattered: the sweep AWAITS this call in a loop and is itself
+  // fire-and-forget, so a slow answer stalls the sweep and the next tick starts a duplicate
+  // review that can land a duplicate poke at an agent. The caller now passes its own
+  // `AbortSignal.timeout(EFFORT_VERDICT_LATENCY_BUDGET_MS)` (120s) — see `tracker/pm-agent.ts`,
+  // which also carries the single-flight guard that makes the duplicate impossible either way.
   effort_verdict: { purpose: 'effort_verdict', maxOutputTokens: 128, latencyBudgetMs: null },
 
   // A conversation summary, and the ONLY entry whose size the CALLER knows better than this table:

@@ -1431,7 +1431,69 @@ function parseEffortVerdict(text: string | null | undefined): { advancing: boole
  * is no longer one of these cases (t123): a direct model call turns nothing and races nothing,
  * so the whole class of reviews lost to the busy-deferral is gone rather than merely rarer.
  */
+/** Reviews in flight, keyed by task id. See `runEffortReview`'s guard for why this exists. */
+const effortReviewsInFlight = new Set<string>();
+
+/**
+ * ⚠ A TOTAL LATENCY BUDGET, and the one line t123 round 1 failed to copy from the precedent it
+ * copied everything else from (`work/ask-title.ts`'s `resolveAskTitle`, which passes its own
+ * `AbortSignal.timeout`). Without it the single-flight guard below is a liability rather than a
+ * fix: a call that never returns would hold this task's in-flight marker FOR EVER and no later
+ * sweep could ever review it again. With it, the abort lands in the existing catch, the `finally`
+ * releases the marker, and the durable request simply stays pending for the next tick.
+ *
+ * 120s: the sweep's own period is 60s, so anything past two full sweep intervals is not a slow
+ * answer, it is a wedged one — and this artifact is ~64 output tokens of JSON. `ask-title.ts`
+ * uses 30s for a one-line title; this prompt is a page of status plus 20 work-event lines, so it
+ * gets four times that. The measured horror story this budget exists for was a 275-second call on
+ * a user's box.
+ */
+const EFFORT_VERDICT_LATENCY_BUDGET_MS = 120_000;
+
+/**
+ * ⚠ SINGLE-FLIGHT, t123 FIX ROUND — a lane-introduced regression, fixed at its root.
+ *
+ * Round 1 deleted the `pmActiveRuns` busy-deferral on the correct reasoning that a direct model
+ * call turns nothing and races nothing. What that reasoning missed is that the deferral was ALSO
+ * the only thing serialising this review, by accident: the old path `await`ed
+ * `getAgentRuntime().handleMessage`, the runtime added the PM to `activeRuns` for the duration,
+ * and a concurrent review therefore bailed. Remove the turn and that accidental interlock goes
+ * with it, leaving NOTHING. The re-entrancy is real and every hop was re-verified:
+ *
+ *   1. `runPMReview()` is fire-and-forget from two sites (the event-wake debounce and the poke
+ *      sweep) — each only `.catch()`es, so neither awaits the previous run.
+ *   2. `runPMReview` `await`s this function in a loop, so a slow call hangs the whole sweep.
+ *   3. The durable pending marker is an `effort_review_requested` `task_log` entry that clears
+ *      only when `advanceBaseline` runs AT THE END, so `findPendingEffortReviewTaskIds` keeps
+ *      returning this task for as long as the call is in flight.
+ *   4. So the next 60s tick starts a SECOND review of the same task — and if both return
+ *      `circling`, both write `effort_review_intervene`, and each one can land its own rung-2
+ *      poke at the assignee. Duplicate pokes are exactly what this file's guards exist to stop.
+ *
+ * Why a single-flight and NOT the old deferral restored: the old one keyed on whether the PM was
+ * mid-TURN, an unrelated condition, which is why it silently lost every review that happened to
+ * land while the PM was busy. This keys on whether THIS REVIEW is already running, which is never
+ * a lost review — the identical work is already in flight, and the durable marker means the next
+ * tick retries if it fails. Narrower than the guard it replaces, and it actually serialises.
+ *
+ * The guard wraps the WHOLE body, writes included, because the duplicate-poke window is the
+ * writes and not just the call. The `finally` is what makes it total across all of the body's
+ * early returns.
+ */
 export async function runEffortReview(taskId: string): Promise<void> {
+  if (effortReviewsInFlight.has(taskId)) {
+    logger.info('Effort review already in flight for this task; this sweep does not start a second one', { taskId });
+    return;
+  }
+  effortReviewsInFlight.add(taskId);
+  try {
+    await runEffortReviewOnce(taskId);
+  } finally {
+    effortReviewsInFlight.delete(taskId);
+  }
+}
+
+async function runEffortReviewOnce(taskId: string): Promise<void> {
   const db = getDb();
   const row = db.prepare(`
     SELECT title, goal, agent_id AS assigned_to, effort_calls, effort_reviewed_calls,
@@ -1519,6 +1581,9 @@ export async function runEffortReview(taskId: string): Promise<void> {
       // model without the tools capability, so the dial keys off `purpose` and nothing else.
       tools: false,
       purpose: 'effort_verdict',
+      // See `EFFORT_VERDICT_LATENCY_BUDGET_MS`. This is the line that keeps the single-flight
+      // guard above from being able to wedge a task's review for ever.
+      abortSignal: AbortSignal.timeout(EFFORT_VERDICT_LATENCY_BUDGET_MS),
       // The caller fully handles failure by leaving the request pending for the next sweep, so
       // a handled failure must not read as an agent-level error in the log.
       bestEffort: true,
