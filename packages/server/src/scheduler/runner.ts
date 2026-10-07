@@ -558,12 +558,12 @@ export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
       // behaviour for every recurring row and red that clause. So this is a NARROWED
       // capability, not an absent one, and the marking says which half works.
       //
-      // ACCEPTED AND DEFERRED TO v3.4, not left as a silent always-false branch. The ruling
+      // ACCEPTED AND DEFERRED TO v3.3.3, not left as a silent always-false branch. The ruling
       // withdrew its own first prescription (a `root_kind='engine'` edge — refuted by the
       // rider exclusion above, it could only ever read false) and refused the obvious
       // alternative (matching deliveries on the notice's `served_by_turn`) because that
       // re-admits defect (b) in a narrower form: an unrelated delivery made on the very turn
-      // that read this row's steer would retire the escalation. The v3.4 lane that gives the
+      // that read this row's steer would retire the escalation. The v3.3.3 lane that gives the
       // steer a REAL per-row serve record is where the capability gets rebuilt; until then the
       // failure direction is deliberately fail-safe — the owner is told twice rather than
       // never.

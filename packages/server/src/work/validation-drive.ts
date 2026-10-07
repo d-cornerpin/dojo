@@ -856,7 +856,7 @@ export function ownerEscalationAlertLine(p: {
   // that was still speaking beyond the evidence.
   //
   // ⚠ IT IS NOT A FIX FOR THE BLIND SPOT, and must not be mistaken for one. The ruling
-  // ACCEPTS the missing record and defers the capability to a v3.4 lane (the fail-safe
+  // ACCEPTS the missing record and defers the capability to a v3.3.3 lane (the fail-safe
   // direction: the owner is told twice rather than never). When that lane gives the steer a
   // real serve record, this clause can go back to stating the stronger fact — and it should,
   // because "I have no record" is weaker than the owner deserves once a record exists.
