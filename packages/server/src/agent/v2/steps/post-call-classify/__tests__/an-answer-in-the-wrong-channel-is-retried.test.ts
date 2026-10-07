@@ -149,34 +149,86 @@ describe('HL2 — an answer left in the reasoning channel is retried, not called
     expect(runEmptyResponse(afterToolsState(), ctxFor({ counterpartyIsAgentSender: true })).directive).toBe('exit');
   });
 
-  it('CONTROL — a model whose contract says answersInReasoning:false never takes the branch', () => {
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  // ⚠ REWRITTEN BY t125 (Q2 of the PM-cluster triage). THESE TWO TESTS ASSERTED THE DEFECT.
+  //
+  // As written they pinned "an owed person gets silence" as intended behaviour, and the
+  // fixture spelled out the question that went unanswered: `ctxFor()` carries
+  // `hasUnansweredUser: true` and `triggerRow: { content: 'when are the flights?' }`. No
+  // typical user would call that turn a success — a *judge tests by user expectation*
+  // failure, and a green test holding a shipped defect in place.
+  //
+  // WHAT WAS ACTUALLY BEING CONTROLLED FOR, and still is: the HL2 wrong-channel door is
+  // DeepSeek-only, and a model that cannot answer in its reasoning channel must not take
+  // it. That is a true statement about the DOOR and it is kept below. What it never licensed
+  // is the CONSEQUENCE the old assertion attached to it — `exit`, in silence, on every
+  // non-DeepSeek provider in the tree. The owed turn now falls through to the ordinary
+  // ladder instead, which is the same door every other empty reply has always walked.
+  //
+  // The two CONTROLs above (`nobody is owed`, `an A2A turn is not a person`) are the correct
+  // remaining meaning of the not-a-failure exit and stay green, unchanged.
+  // ══════════════════════════════════════════════════════════════════════════════════════
+
+  it('t125 — answersInReasoning:false no longer means SILENCE: the owed turn walks the ladder', () => {
     CONTRACT = { ...ANSWERS_IN_REASONING, answersInReasoning: false };
     const out = runEmptyResponse(afterToolsState(), ctxFor());
-    expect(out.directive).toBe('exit');
-    if (out.directive !== 'exit') throw new Error('unreachable');
-    expect(out.reason).toBe('empty-response-after-tools');
+    // Not the wrong-channel door — that one is still DeepSeek's alone, and the latch below
+    // is the LADDER's own silent retry, reached by falling out of the after-tools block.
+    expect(out.directive).toBe('continue');
+    if (out.directive !== 'continue') throw new Error('unreachable');
+    expect(out.state.retriedEmptyResponse).toBe(true);
+    // A silent retry is silent: no steer, no toast, no re-arm.
+    expect(out.state.steerQueue).toEqual(afterToolsState().steerQueue);
+    expect(broadcastSpy).not.toHaveBeenCalled();
+    expect(reArmSpy).not.toHaveBeenCalled();
   });
 
-  it('CONTROL — a blank or absent reasoning channel is a real no-comment', () => {
+  it('t125 — a blank reasoning channel is a no-comment ONLY when nobody is owed', () => {
     for (const reasoningContent of [undefined, '', '   \n  ']) {
-      const out = runEmptyResponse(afterToolsState(), ctxFor({
+      const blank = (over: Partial<PostCallClassifyContext> = {}) => ctxFor({
         result: modelResult(reasoningContent === undefined ? {} : { reasoningContent }),
+        ...over,
+      });
+      // Nobody owed: byte-identical to before. The model did work and has nothing to say.
+      const quiet = runEmptyResponse(afterToolsState(), blank({
+        hasUnansweredUser: false, triggerRow: null,
       }));
-      expect(out.directive).toBe('exit');
+      expect(quiet.directive).toBe('exit');
+      if (quiet.directive !== 'exit') throw new Error('unreachable');
+      expect(quiet.reason).toBe('empty-response-after-tools');
+      // A person owed: a blank reasoning channel plus nothing visible is NOT a no-comment.
+      // It is the ordinary case the ladder exists for, and this is the shape the owner met
+      // on his own box — two `history_search` calls, no text, turn over.
+      expect(runEmptyResponse(afterToolsState(), blank()).directive).toBe('continue');
     }
   });
 
   it('CONTROL — the latch is SHARED: a turn gets one silent retry, whichever door asked', () => {
     const out = runEmptyResponse(afterToolsState({ retriedEmptyResponse: true }), ctxFor());
-    expect(out.directive).toBe('exit');
-    if (out.directive !== 'exit') throw new Error('unreachable');
-    expect(out.reason).toBe('empty-response-after-tools');
+    // STILL THE CONTROL IT ALWAYS WAS — no SECOND silent retry: the latch is spent and
+    // neither door re-spends it. t125 only moved what happens NEXT for an owed turn: the
+    // ladder's one-shot nudge instead of an exit in silence. The bound is unchanged (one
+    // silent retry + one steer); what changed is that the person is still in the loop.
+    expect(out.directive).toBe('continue');
+    if (out.directive !== 'continue') throw new Error('unreachable');
+    expect(out.state.retriedEmptyResponse).toBe(true);
+    expect(steerFired(out.state.steerQueue, 'empty-response')).toBe(true);
   });
 
   it('CONTROL — a contract with emptyRetryBudget 0 gets no silent retry from EITHER door', () => {
     CONTRACT = { ...ANSWERS_IN_REASONING, emptyRetryBudget: 0 };
-    // the wrong-channel door
-    expect(runEmptyResponse(afterToolsState(), ctxFor()).directive).toBe('exit');
+    // The wrong-channel door is still refused — and t125: an OWED turn with no retry budget
+    // skips to the nudge rather than exiting mute. `retriedEmptyResponse` stays false, which
+    // is the assertion this control is really about.
+    const owed = runEmptyResponse(afterToolsState(), ctxFor());
+    expect(owed.directive).toBe('continue');
+    if (owed.directive !== 'continue') throw new Error('unreachable');
+    expect(owed.state.retriedEmptyResponse).toBe(false);
+    expect(steerFired(owed.state.steerQueue, 'empty-response')).toBe(true);
+    // Nobody owed: the not-a-failure exit, untouched, with no retry spent either.
+    expect(runEmptyResponse(afterToolsState(), ctxFor({
+      hasUnansweredUser: false, triggerRow: null,
+    })).directive).toBe('exit');
     // and the ordinary empty-response door, which skips straight to the nudge
     const noTools = runEmptyResponse(afterToolsState({ toolCallsExecutedThisTurn: 0 }), ctxFor());
     expect(noTools.directive).toBe('continue');

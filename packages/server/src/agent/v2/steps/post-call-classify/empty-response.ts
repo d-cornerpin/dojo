@@ -14,6 +14,8 @@
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { contractForConfiguredModel } from '../../../model.js';
+import { askIdForMessage } from '../../../../work/store.js';
+import { recordFloorGhost } from '../../floor-ghost.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { clearSteerQueueFor, steerFired, type SteerFloorId } from '../../steer-queue.js';
@@ -129,6 +131,30 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
       state = advance(state, { outputTokensEscalated: trunc.escalateTo });
       return continueLoop(state);
     }
+    // ════════════════════════════════════════════════════════════════════════════════════
+    // WHO IS WAITING — HOISTED, because the WHOLE LADDER needs it and not just the
+    // wrong-channel door (t125, Q2 of the PM-cluster triage).
+    //
+    // THE DEFECT THIS MOVE REPAIRS: this predicate was computed twenty lines further down,
+    // INSIDE the after-tools block, and then consulted only inside the `answersInReasoning`
+    // gate — which is true for DeepSeek and false for every other model
+    // (`agent/model-contract.ts`: `ANSWERS_IN_REASONING_MODELS = /deepseek/i`, and the base
+    // contract's `answersInReasoning: false`). So on a Claude-backed agent the engine
+    // computed "a person is waiting", discarded the fact, and ended the turn in total
+    // silence. Field evidence: a PM agent ran two `history_search` calls, returned no text,
+    // and the turn ended with nothing on the owner's screen — twice.
+    //
+    // It is the SAME predicate, read one scope up. Not re-derived, not widened: the start-ack
+    // owed pair and the unanswered-person flags, exactly as HL2 wrote them.
+    // ════════════════════════════════════════════════════════════════════════════════════
+    const contract = contractForConfiguredModel(ctx.configuredModelId);
+    const startAckOwed =
+      (ctx.turnCtx.startAckSteerRequested || ctx.turnCtx.startAckSteerArmedThisTurn)
+      && !ctx.turnCtx.engineStartAckDeliveredThisTurn;
+    const owesAPerson =
+      !ctx.isA2ATurn && !ctx.isEngineTurn && !ctx.counterpartyIsAgentSender
+      && (startAckOwed || ctx.hasUnansweredUser || ctx.triggerRow !== null);
+
     // Clean end-of-turn after tools, legitimate exit, no error.
     if (state.toolCallsExecutedThisTurn > 0) {
       // ════════════════════════════════════════════════════════════════════════════════
@@ -167,13 +193,6 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
       // the `[no-reply]` sentinel, which is VISIBLE CONTENT by design and never reaches
       // this guard at all.
       // ════════════════════════════════════════════════════════════════════════════════
-      const contract = contractForConfiguredModel(ctx.configuredModelId);
-      const startAckOwed =
-        (ctx.turnCtx.startAckSteerRequested || ctx.turnCtx.startAckSteerArmedThisTurn)
-        && !ctx.turnCtx.engineStartAckDeliveredThisTurn;
-      const owesAPerson =
-        !ctx.isA2ATurn && !ctx.isEngineTurn && !ctx.counterpartyIsAgentSender
-        && (startAckOwed || ctx.hasUnansweredUser || ctx.triggerRow !== null);
       const reasoningBody = (result.reasoningContent ?? '').trim();
 
       if (
@@ -193,8 +212,24 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
         state = advance(state, { retriedEmptyResponse: true });
         return continueLoop(state);
       }
-      // v1 line 1167-1171: agent did work and has nothing more to say.
-      return requestExit(state, 'empty-response-after-tools');
+      // ════════════════════════════════════════════════════════════════════════════════
+      // v1 line 1167-1171: "the agent did work and has nothing more to say" — TRUE ONLY
+      // WHEN NOBODY IS WAITING (t125).
+      //
+      // A turn that owes a person a reply and comes back empty has not finished; it has
+      // produced nothing. It is not a no-comment, and calling it one is what put the
+      // owner's two `history_search` turns on screen as blank. So the owed case falls out
+      // of this block into the ladder that already exists below — one silent retry, then
+      // the one-shot `empty-response` steer, then the bounded give-up. ONE MODEL, ONE
+      // LADDER: this exit is no longer a DeepSeek-only privilege, and nothing about which
+      // provider is serving changes which door a silent turn walks out of.
+      //
+      // NO NEW MECHANISM, RUNG, VOICE OR PREDICATE: `owesAPerson` was already computed and
+      // thrown away; the rungs below are the ones every other empty reply has always
+      // walked; the bound is the contract's `emptyRetryBudget` plus the queue's own
+      // per-floor latch, as before.
+      // ════════════════════════════════════════════════════════════════════════════════
+      if (!owesAPerson) return requestExit(state, 'empty-response-after-tools');
     }
     // No tools called and no text, empty response. v1 runtime.ts:1166-1199
     // does a 3-phase fallback before giving up. Many empties are transient
@@ -204,7 +239,7 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
     // `emptyRetryBudget`. It is seeded at 1 for every configured model, which is exactly
     // what this boolean latch has always meant — the field says it out loud so a model
     // that must never be silently re-run can be declared instead of special-cased.
-    if (!state.retriedEmptyResponse && contractForConfiguredModel(ctx.configuredModelId).emptyRetryBudget > 0) {
+    if (!state.retriedEmptyResponse && contract.emptyRetryBudget > 0) {
       logger.warn('v2: model returned empty response, retrying silently', {
         loopCount: state.loopCount, stopReason: result.stopReason,
       }, agentId);
@@ -231,14 +266,56 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
     // never silently forgotten. HL4 2b: it no longer speaks for the rest of the queue. A
     // guard about something the person was already told is not answered by an empty call.
     state = advance(state, { steerQueue: clearSteerQueueFor(state.steerQueue, EMPTY_LADDER_FAMILY) });
-    broadcast({
-      type: 'chat:error',
-      agentId,
-      error: 'Agent gave an empty reply. Send your message again to retry.',
-      code: 'MODEL_FAILED',
-      severity: 'warning',
-      retryable: true,
-    });
+    // ══════════════════════════════════════════════════════════════════════════════════
+    // THE HONEST END OF THE LADDER, WHEN A PERSON IS OWED (t125, OR2's last clause).
+    //
+    // A `chat:error` toast is a HEALTH SURFACE, not a reply: it is live-only, it leaves no
+    // row, and a person who was elsewhere when it fired — or who reloads — sees a turn that
+    // said nothing at all. That is the owner's symptom in one sentence, and it survives the
+    // ungating above for the turn where the model stays empty all the way down.
+    //
+    // So the owed case ends the way every other ghosted floor in this engine ends, through
+    // the mechanism that already exists for exactly this: `recordFloorGhost` — a durable
+    // `role='system'` row in the PLATFORM's voice (never the agent's face, OR2), announced
+    // on the wire beside the write, plus the health frame and a countable `floor_ghosted`
+    // event on the ask. The sibling `handoff-floors.ts` calls it the same way, for the same
+    // reason, with the same `askIdForMessage` lookup.
+    //
+    // ⚠ WHAT THIS DELIBERATELY DOES **NOT** DO, and the reason is a measured regression:
+    // it does not `latchEngineCut`. The triage's clause asked for an engine-imposed exit
+    // here so the re-serve ladder stops being charged — but `work/ask-settlement.ts:776`
+    // reads `if (!engineCut && spent >= MAX_ASK_RE_SERVES) return standDownReServe(...)`,
+    // i.e. an engine cut bypasses the stand-down ENTIRELY. A model that returns empty
+    // returns empty again, so latching here would re-serve the same ask forever, three
+    // model calls a cycle — the owner's own standing complaint (agents repeat themselves),
+    // installed as an infinite loop. And `no_reply_intended` is HONEST at THIS rung in a
+    // way it never was at the exit above: by here the model has been asked three times,
+    // once explicitly, and has chosen silence every time — which is precisely what
+    // `work/exit-attribution.ts` reserves the word for. The lie was the UNRETRIED exit, and
+    // that is the one this file fixed.
+    // ══════════════════════════════════════════════════════════════════════════════════
+    if (owesAPerson) {
+      const root = ctx.turnCtx.root;
+      recordFloorGhost({
+        agentId, turnNumber, floor: 'empty-response',
+        workId: root?.kind === 'ask' ? askIdForMessage(root.id) : null,
+        attempts: 1,
+        ownerLine:
+          'your agent returned an empty reply to your last message every time it was asked — '
+          + 'including once after the engine told it to answer — so nothing was sent and the turn '
+          + 'ended with no reply. Your message is still open; send it again to retry.',
+        detail: { conv_key: ctx.chosenConvKey ?? null, model: contract.id },
+      }, { broadcast });
+    } else {
+      broadcast({
+        type: 'chat:error',
+        agentId,
+        error: 'Agent gave an empty reply. Send your message again to retry.',
+        code: 'MODEL_FAILED',
+        severity: 'warning',
+        retryable: true,
+      });
+    }
     // C4: this give-up break is the clean-retry case, reached only when NO tools
     // executed this turn (the empty-after-tools break above catches the tools case)
     // and the model produced empty text 3x. Re-arm the human ask so the drain re-serves
