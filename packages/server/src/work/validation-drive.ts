@@ -44,7 +44,7 @@ import { createLogger } from '../logger.js';
 import { AUDIT_KIND } from './audit-trail.js';
 import { appendWorkEvent } from './store.js';
 import {
-  taskScope, msToText, STATE_TO_STATUS_SQL, validatedExpr, awaitingUserVerdictExpr,
+  taskScope, msToText, STATE_TO_STATUS_SQL, awaitingUserVerdictExpr,
   unvalidatedCloseExpr, unvalidatedPauseExpr,
 } from './tracker-view.js';
 
@@ -250,6 +250,200 @@ const PARENT_ASK_RECEIPT_EXPR = (a: string): string =>
 export const alreadyDeliveredReceiptExpr = (a: string): string =>
   `COALESCE(${DELIVERED_RECEIPT_EXPR(a)}, ${PARENT_ASK_RECEIPT_EXPR(a)})`;
 
+// ════════════════════════════════════════════════════════════════════════════════════════
+// 3a · WHICH ROWS ARE THE OWNER'S PROBLEM — THE STATE ARMS, WITH ONE OWNER
+//
+// ⚠ THESE ARMS WERE WRITTEN TWICE. `selectRowsForOwnerEscalation` asks "who escalates" and
+// `selectRowsSkippedAsDelivered` asks "who did the reality check hold back", and both carried
+// their own copy of the same four-line OR group. That is the exact TB5 drift class this
+// module's own header refuses ("one expression lives in two places and one copy is repaired:
+// the writer and the reader disagree, silently"), and t124 hit it immediately — the blocked
+// arm below had to be repaired in both copies or the log would have described a different
+// population from the one that escalated. One owner now; both callers interpolate it.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * ── t124 FIX 1 — A BLESSED BLOCK IS NOT A SOLVED BLOCK, AND IT USED TO BE TREATED AS ONE. ──
+ *
+ * ⟨TOMBSTONE⟩ This arm read, from 2026-06-01 to t124:
+ *
+ *     OR (w.state = 'blocked' AND <blocked_validated> = 0)
+ *
+ * The conjunct is REMOVED, and its removal is the headline fix of the escalation lane.
+ *
+ * WHAT IT DID, driven rather than argued (`overhaul-plans/pm-cluster-triage.md` §Q4b, live
+ * drive run 1): `work_validate(kind="blocked", valid=true)` → `upholdClaim(…,'blocked',…)`
+ * sets `blocked_validated = 1`, so the moment the PM CONFIRMED a block was real the row left
+ * this predicate permanently. It was already outside the PM's own UNVALIDATED_BLOCK lens and
+ * already outside the poke ladder (which filters `in_progress`). Three sweeps, and the one
+ * state that means "the platform has verified this work is genuinely stuck" was reachable by
+ * none of them. The drive measured the consequence directly: 6 passes, idleness backdated to
+ * 9,800 s, **zero `lane='owner'` rows**.
+ *
+ * WHY READING THE FLAG WAS THE ERROR, not the number behind it. `blocked_validated` answers
+ * *"has an authority agreed the claim is true?"* — it is Key 2 on a BLOCK claim, and the
+ * authority agreeing makes the block MORE real, not less. The predicate was treating a
+ * verdict of "yes, genuinely stuck" as a resolution. Nothing in the uphold unblocks anything:
+ * `upholdClaim` writes an adjudication and `tracker/tools.ts` then asks the primary, on an
+ * `events`-lane notice, to "surface it to the user or unblock it manually" — a request to an
+ * LLM, not a mechanism.
+ *
+ * SO THE ARM IS NOW THE STATE ALONE, and the bound is the one the sweep always had: the
+ * top-level `NOT EXISTS (… kind='validation_escalated')` clause, which `work/tracker-view.ts`
+ * records as *"a permanent stamp … one shot per row, forever"*. A blocked row gets ONE trip
+ * up the ladder — two steers at the primary, then the platform's own surface — whether or not
+ * the PM blessed it. It cannot loop, and it can no longer be cancelled by the blessing.
+ *
+ * THE NEGATIVE CONTROL IS THE OTHER TWO ARMS: `close` and `pause` KEEP their validation
+ * conjunct, because for those two an uphold IS the resolution (the work is done / the pause is
+ * legitimate) and there is nothing left to tell anybody.
+ */
+export const blockedNeedsOwnerExpr = (a: string): string => `${a}.state = 'blocked'`;
+
+/**
+ * ── t124 — THE FAILURE COUNTER THE OWNER ALREADY BELIEVED IN. ──
+ *
+ * OWNER RULING OR-PM-1v2 (`BACKLOG.md`, 2026-10-07), his words: blocked/declined work
+ * *"should already happen after some failures/time."* The triage checked both halves against
+ * the tree. **Time existed and was the ONLY trigger** — every rung of the poke ladder is
+ * `now - work.updated_at`, and this sweep's own bound is `updated_at < staleBefore`.
+ * **A failure counter did not exist anywhere.** A declined A2A, a refusal, an error and a
+ * `blocked` status incremented nothing; the only counted things in the platform were its own
+ * attempts (`currentRung`, `escalationSteerCount`), which is the engine counting how often it
+ * has spoken, not how often the work has failed.
+ *
+ * ── WHAT COUNTS AS A FAILURE, AND WHY IT NEEDS NO NEW WRITE ──
+ * The triage names three shapes. All three already land as ONE recorded row shape, because
+ * all three go through `transition()`, the spine's single state writer:
+ *   · a `blocked` status            → `transition` payload `$.to = 'blocked'`
+ *   · an `intent:'FAIL'` decline    → `settlePieceWithoutResult(child, {to:'failed'})`
+ *                                     (`agent/a2a-transport.ts` FAIL arm) → `$.to = 'failed'`
+ *   · the synthetic `ABANDONED`     → `settlePieceWithoutResult(child, {to:'abandoned'})`
+ *                                     (the give-up hook) → `$.to = 'abandoned'`
+ * So the counter is a COUNT over durable `work_events` rows that the platform already writes,
+ * read exactly the way `validationAttemptCountExpr` above reads the attempt ledger and
+ * `tracker-view.ts`'s `lastEntryInto` already reads this very payload path. **No new
+ * `work_events.kind`, no new column, no maintained integer, and no new WRITE anywhere.** A new
+ * kind would have been available — migration `159` (`owed_interrupt`) is the worked example of
+ * the three-part move (the declared list, a CHECK rebuild, a real writer) — and it is declined
+ * because there is nothing left to record: every failure this counter counts is ALREADY a row.
+ * Minting a second, parallel record of the same event is how a counter comes to disagree with
+ * the history that caused it. This one cannot: it survives a restart and it is derived, for the
+ * same reason the attempt ledger above is.
+ *
+ * ── AND IT COUNTS THE PIECES, which is where a DECLINE actually lands — ON TWO EDGES ──
+ * A `FAIL` settles the delegated PIECE, never the task that the decline is about, and the piece
+ * is a separate `work` row (`kind='task'`, `root_kind='a2a_thread'`, `root_id=<full thread id>`,
+ * `parent_id NOT NULL` — `work/store.ts`'s `childrenForThread`). Pieces are OUTSIDE `taskScope`
+ * by that `root_kind`, so they never escalate for themselves; the count has to reach them from
+ * the row that IS in scope, and the two in-scope rows reach them by DIFFERENT columns:
+ *
+ *   · the row that DELEGATED the work (the asker's join row) owns its pieces by `parent_id`;
+ *   · the row the decline is ABOUT — the assignee's auto-created ASSIGN task, which
+ *     `tracker/schema.ts` opens `in_progress` with `a2aThreadId: threadId` and the default
+ *     `root_kind='tracker'`, so it IS in scope — shares only the THREAD with the failed piece:
+ *     `piece.root_id = task.a2a_thread_id`.
+ *
+ * The second edge is the owner's case and the one a `parent_id`-only count scores ZERO: the
+ * assignee says it cannot do the work, its piece goes `failed`, the Key-1 close filer is gated
+ * to success intents (`agent/a2a-transport.ts`, *"FAIL leaves the task open for the PM chase"*),
+ * and the ASSIGN task is left `in_progress` on the agent that just declined it — carrying no
+ * marker of the refusal at all. Both edges are columns, one level, no prose.
+ *
+ * `a2a_thread_id IS NOT NULL` is required on the thread edge on purpose: without it, every
+ * ordinary tracker row (thread id NULL) would join every piece whose `root_id` is NULL and the
+ * count would be a global failure tally wearing each row's name.
+ *
+ * ── THE NUMBER IS THE OWNER'S, AND IT IS ONE CONSTANT ──
+ * The triage files the threshold as a design item needing his number (§Q4b fix 5). The
+ * MECHANISM is what t124 builds; `3` is a stated placeholder, not a ruling, and it is a single
+ * exported constant so his answer is a one-line change with a clause already around it.
+ */
+export const FAILURE_TRANSITION_STATES = ['blocked', 'failed', 'abandoned'] as const;
+
+const FAILURE_STATE_LIST = FAILURE_TRANSITION_STATES.map((s) => `'${s}'`).join(', ');
+
+/**
+ * PLACEHOLDER PENDING AN OWNER RULING (triage §Q4b fix 5). "Some failures" is his phrase; the
+ * number is his call. Three is chosen to be defensible rather than right: one failure is an
+ * ordinary bad minute, two is a pattern the assignee may still recover from, and by the third
+ * the platform is watching something it has no plan for. Raise or lower it HERE.
+ */
+export const ESCALATION_FAILURE_THRESHOLD = 3;
+
+/**
+ * The delegated pieces one row owns, by BOTH recorded edges — the `parent_id` edge for a row
+ * that delegated the work, and the `a2a_thread_id` edge for the ASSIGN task a decline is about.
+ *
+ * ONE OWNER, and the parameters are why. The escalation arm interpolates this into a query that
+ * already has the owning row in scope as `w`; `workFailureCount` below has no outer row and
+ * joins one. `extraFrom`/`extraWhere` let the SECOND caller supply that join instead of
+ * hand-translating the edges into a parallel query — the TB5 drift class, which this module has
+ * now hit twice (the state arms above, and this), so nothing here is written twice.
+ */
+const pieceIdsExpr = (owner: string, extraFrom = '', extraWhere = ''): string =>
+  `SELECT c.id FROM work c${extraFrom}`
+  + `  WHERE c.kind = 'task' AND c.root_kind = 'a2a_thread' AND c.parent_id IS NOT NULL${extraWhere}`
+  + `    AND (c.parent_id = ${owner}.id`
+  + `         OR (${owner}.a2a_thread_id IS NOT NULL AND c.root_id = ${owner}.a2a_thread_id))`;
+
+/** How many recorded failures this row and its delegated pieces have come back with, as SQL. */
+export const workFailureCountExpr = (a: string): string =>
+  `(SELECT COUNT(*) FROM work_events fe`
+  + `  WHERE fe.kind = 'transition'`
+  + `    AND json_extract(fe.payload, '$.to') IN (${FAILURE_STATE_LIST})`
+  + `    AND (fe.work_id = ${a}.id`
+  + `         OR fe.work_id IN (${pieceIdsExpr(a)})))`;
+
+/** The failure ARM: this row has failed enough times to be the owner's problem on count alone. */
+export const failureCountReachedExpr = (a: string): string =>
+  `(${workFailureCountExpr(a)} >= ${ESCALATION_FAILURE_THRESHOLD})`;
+
+/** The same count, for callers that are not building SQL (the log line, and the clause file). */
+export function workFailureCount(workId: string): number {
+  try {
+    return (getDb().prepare(
+      `SELECT COUNT(*) AS n FROM work_events fe
+        WHERE fe.kind = 'transition'
+          AND json_extract(fe.payload, '$.to') IN (${FAILURE_STATE_LIST})
+          AND (fe.work_id = @id
+               OR fe.work_id IN (${pieceIdsExpr('ow', ', work ow', ' AND ow.id = @id')}))`,
+    ).get({ id: workId }) as { n: number } | undefined)?.n ?? 0;
+  } catch (err) {
+    // Same direction as `validationAttemptCount`'s unreadable branch, for the same reason: a
+    // reader that cannot read must not manufacture the answer that SILENCES the owner. Zero
+    // would say "nothing has failed" and hold the row back, so the failure is reported as a
+    // count of zero ONLY to the log and the arm is left to the other predicates — never
+    // inflated into an escalation this function cannot evidence.
+    logger.warn('failure counter unreadable; reporting zero and leaving the state arms to decide', {
+      workId, error: err instanceof Error ? err.message : String(err),
+    });
+    return 0;
+  }
+}
+
+/**
+ * THE STATE ARMS — the four shapes of "this is the owner's problem", in one place.
+ *
+ * ── WHY THE FAILURE ARM IS AN ARM AND NOT A BYPASS OF THE CLOCK ──
+ * "Failures/time" could have been read as `failures >= N OR stale`, dropping the staleness
+ * floor for a row with a high count. It is deliberately read as `(one of these shapes) AND
+ * stale` instead, with the count as a fourth SHAPE. The reason is the acceptance bar's own
+ * negative control: **healthy progressing work must never escalate.** A row that failed three
+ * times and is right now being retried has a moving `updated_at`, so the 5-minute quiet floor
+ * excludes it — and that floor is the only thing standing between this arm and an escalation
+ * fired at an agent mid-recovery. Failures change WHICH rows can escalate (a declined ASSIGN
+ * left `in_progress` was in no arm at all and was therefore structurally invisible to this
+ * sweep); the clock still decides WHEN.
+ */
+export const ownerEscalationStateArmsExpr = (a: string): string =>
+  `(\n`
+  + `        ${unvalidatedCloseExpr(a)}\n`
+  + `        OR (${unvalidatedPauseExpr(a)} AND ${a}.missed_runs_paused_at IS NULL)\n`
+  + `        OR ${blockedNeedsOwnerExpr(a)}\n`
+  + `        OR ${failureCountReachedExpr(a)}\n`
+  + `      )`;
+
 /**
  * The rows the scheduler may tell the owner about. Moved here from `scheduler/runner.ts` so
  * the query and the law it now obeys live in one place, beside the spine tables they read —
@@ -275,19 +469,15 @@ export function selectRowsForOwnerEscalation(
       AND ${awaitingUserVerdictExpr('w')} = 0
       AND COALESCE(w.agent_id, '') NOT IN (${placeholders})
       AND COALESCE(w.requester_id, '') NOT IN (${placeholders})
-      AND (
-        -- PHASE-2 T8T: "an unvalidated close does not sit forever" has two shapes, and
-        -- migration 139 means the worker's own close leaves the row where it was with a
-        -- Key-1 request on it. Reading only the done arm would let exactly the rows this
-        -- sweep exists for age out of its sight; unvalidatedCloseExpr is both shapes and
-        -- the whole state set they can sit in (T21).
-        ${unvalidatedCloseExpr('w')}
-        -- An active missed_runs_paused_at means the ENGINE paused this task for missed runs
-        -- (alertMissedRuns), not the agent — not the owner's call. The PM sweep adjudicates
-        -- that unvalidated pause and D12 owns its resolution.
-        OR (${unvalidatedPauseExpr('w')} AND w.missed_runs_paused_at IS NULL)
-        OR (w.state = 'blocked' AND ${validatedExpr('w', 'blocked')} = 0)
-      )
+      -- PHASE-2 T8T: "an unvalidated close does not sit forever" has two shapes, and
+      -- migration 139 means the worker's own close leaves the row where it was with a
+      -- Key-1 request on it. Reading only the done arm would let exactly the rows this
+      -- sweep exists for age out of its sight; unvalidatedCloseExpr is both shapes and
+      -- the whole state set they can sit in (T21). An active missed_runs_paused_at means
+      -- the ENGINE paused this task for missed runs (alertMissedRuns), not the agent — not
+      -- the owner's call; the PM sweep adjudicates that unvalidated pause and D12 owns its
+      -- resolution. The blocked and failure-count arms are t124's; §3a argues both.
+      AND ${ownerEscalationStateArmsExpr('w')}
       -- SWEEP CORE-2 item 1 — THE ORDERING LAW. The owner is not told his validator did not
       -- rule while the platform holds no record that it was ever asked.
       AND ${ownerEscalationOrderingExpr('w')} = 1
@@ -328,11 +518,7 @@ export function selectRowsSkippedAsDelivered(
         AND ${awaitingUserVerdictExpr('w')} = 0
         AND COALESCE(w.agent_id, '') NOT IN (${placeholders})
         AND COALESCE(w.requester_id, '') NOT IN (${placeholders})
-        AND (
-          ${unvalidatedCloseExpr('w')}
-          OR (${unvalidatedPauseExpr('w')} AND w.missed_runs_paused_at IS NULL)
-          OR (w.state = 'blocked' AND ${validatedExpr('w', 'blocked')} = 0)
-        )
+        AND ${ownerEscalationStateArmsExpr('w')}
         AND ${ownerEscalationOrderingExpr('w')} = 1
         AND ${alreadyDeliveredReceiptExpr('w')} IS NOT NULL
         AND w.updated_at < ?
