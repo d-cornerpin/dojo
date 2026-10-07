@@ -255,6 +255,27 @@ describe('t125 — the silent turns (Q2): a turn that owes a person never ends i
         }));
         expect(out.directive).toBe('continue');
       });
+
+      // ⚠ EACH HALF OF THE OWED PREDICATE, ALONE. Added after two mutants SURVIVED the
+      // first census: dropping `hasUnansweredUser` and dropping `triggerRow` each left the
+      // whole suite green, because every fixture above sets BOTH and either one alone keeps
+      // the predicate true. A census that cannot tell which half is load-bearing is not a
+      // census of the predicate — it is a census of their disjunction.
+      it(`${seam}: an UNANSWERED USER alone is a person, with no trigger ask`, () => {
+        CONTRACT = contractForModel(facts);
+        const out = runEmptyResponse(afterHistorySearches(), ctxFor({
+          hasUnansweredUser: true, triggerRow: null,
+        }));
+        expect(out.directive).toBe('continue');
+      });
+
+      it(`${seam}: a TRIGGER ASK alone is a person, with nothing recorded as unanswered`, () => {
+        CONTRACT = contractForModel(facts);
+        const out = runEmptyResponse(afterHistorySearches(), ctxFor({
+          hasUnansweredUser: false, triggerRow: { rowid: 9, content: 'where are we on the email project?' },
+        }));
+        expect(out.directive).toBe('continue');
+      });
     }
   });
 
