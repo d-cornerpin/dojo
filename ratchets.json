@@ -7381,6 +7381,41 @@
       "to": 2181,
       "by": "t124 REVIEW RULING 2026-10-07 — the alert claims only what the platform knows",
       "why": "2148 -> 2181 (+33: +33 comment, ZERO code). Pure marking, no behaviour change. The `spokeSince` branch is false by construction for a non-recurring row and an unmarked always-false branch is the artifact this review round existed to remove. The block cites the mechanism by file and line (`engine-riders.ts:88` — 'engine rows that ride a turn and must never BE one' — plus `counterparty.ts:400`, the SQL exclusion), and then records the three things that stop the next reader deleting it: the `occurrence` edge is LIVE so a scheduled row's run does resolve there (a clause drives it green, and deleting would red it), the review's own first prescription was WITHDRAWN as refuted by that same rider exclusion, and the obvious alternative was REFUSED for re-admitting defect (b) in narrower form. v3.4 owns the rebuild; until then the failure direction is deliberately fail-safe. Marked rather than deleted BECAUSE it is a narrowed capability, not an absent one — the distinction the comment exists to carry."
+    },
+    {
+      "path": "packages/server/src/memory/message-store.ts",
+      "from": 1153,
+      "to": 1206,
+      "by": "t123 the PM conversation wipe — the unscoped by-agent delete is gone and the pruner spares the owner lane",
+      "why": "1153 -> 1206 (+53: +4 code, +56 comment, -7 lines removed with `deleteNonSystemForAgent`). THE CODE IS FOUR LINES: `deleteForAgentBefore` is renamed `deleteAgentDebrisBefore` and both of its DELETEs gain `AND lane <> 'owner'`. An entire function is DELETED (the unscoped `DELETE ... WHERE agent_id = ? AND role != 'system'`), so the product surface shrank; the file grew because the two tombstones carry the argument. They have to: this door deleted the owner's live on-screen conversation every 60 seconds, and the next author who wants 'a fresh start' must find the reason it is gone rather than the function. The spare's comment also records two schema corrections the triage got wrong — `lane` is NOT NULL (so the proposed `lane IS NULL` arm is dead) and DEFAULTS to 'owner' (so the lane does not cleanly separate the human's conversation from the PM's own replies, and the delete is written to be correct under that fail-open default rather than to pretend it is fixed)."
+    },
+    {
+      "path": "packages/server/src/tracker/pm-agent.ts",
+      "from": 2982,
+      "to": 3025,
+      "by": "t123 the 60-second conversation wipe deleted, and the effort verdict moved off the turn plumbing",
+      "why": "2982 -> 3025 (+43: +21 code, +116 comment, against 92 lines removed). TWO MECHANISMS LEAVE THIS FILE and the net is +43 only because each departure is tombstoned. (i) The validation-review wipe call is deleted outright — its stated premise ('the OpenAI Pass 1 sanitizer can strip orphan tool_results') is stale, because `applyIntegrityPass`/`repairToolPairing` have run on the PM assembly path since F22. (ii) `runEffortReview` no longer drives a PM turn: `insertEngineEventIfAbsent` + `handleMessage` + the `seq`-bounded readback + the `pmActiveRuns` busy-deferral + the `task_id` echo-rejection are ALL removed (~45 lines) and replaced by one `callModel({tools:false, purpose:'effort_verdict'})`. The 21 code lines are that call plus the PM model lookup. The comment is long because it carries the hop-by-hop reason the verdict reached the owner's chat — a PM turn's counterparty is user-shaped, so every guard keyed on `counterparty.kind !== 'user'` short-circuits and the assistant row's lane falls through to the owner-visible default — and because reversing a function's stated central design choice without recording the claim it replaces is how the next author re-introduces it."
+    },
+    {
+      "path": "packages/server/src/memory/lanes.ts",
+      "from": 1275,
+      "to": 1301,
+      "by": "t123 the PM tail row cap raised 10 -> 40, with the cache-preservation argument",
+      "why": "1275 -> 1301 (+26: +1 code, +26 comment, -1). ONE NUMBER CHANGED: `'lane.pm-tail': { rows: { tail: 10 } }` becomes 40. Every other line is the argument, and it is carried here because this is the one item in the lane that touches prompt assembly (G2). The PM path is the only assembly in the tree with no other lane — no summaries, no recall, no directive pin, no empty-context fallback — so for the PM the tail IS the context and this is not a trim knob but the size of its mind. 10 rows cannot hold one tool-using turn plus a per-minute situation report plus a human exchange. 40 is `policy.freshTailCount`'s own value, so the PM stops being held to a tenth of the tree's standard. CACHE: the tail is the prompt SUFFIX; `t94-review.md:177` bounds the cost as 'the PM re-prefills at most 10 rows per turn; the system/tracker prefix above stays cached', which becomes at most 40 rows with the cached prefix untouched. No prompt TEMPLATE bytes move — a row count is not a string — so the goldens are byte-unchanged."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2786,
+      "to": 2811,
+      "by": "t123 rows that render to nothing stop spending a PM tail slot",
+      "why": "2786 -> 2811 (+25: +6 code, +20 comment, -1). The six code lines raise the PM tail's row ask by the number of unrenderable (`role='system'`) rows the first ask came back holding. The comment argues the two choices a reader would otherwise have to guess at: WHY NOT a role filter on `getRecentMessages` (it must stay exactly complementary with `getOlderMessages` — FA-M3 — so a predicate on one is a correctness change to both, a far wider blast radius than the PM's own tail needs; and `memory/store.ts` is outside this lane's fence), and WHY ONE re-ask rather than a loop (the widened window can surface further system rows, so the guarantee is 'strictly more renderable rows than before', never 'exactly the cap' — an unbounded query ladder for a cosmetic last row is not worth it, and the budgeter below is the real cap)."
+    },
+    {
+      "path": "packages/server/src/report/telemetry-whitelist.ts",
+      "from": 244,
+      "to": 253,
+      "by": "t123 the effort verdict becomes a declared call purpose",
+      "why": "244 -> 253 (+9: +1 code, +9 comment, -1). The code is one new member of the `call.request_type` domain, `effort_verdict`. The comment states the widening rather than leaving a report to meet a novel string: these rows used to land here as `agent_turn` precisely BECAUSE the verdict was asked for through the turn plumbing, which is the defect t123 fixed. It also records the trap that cost a test run — the member list admits STRING LITERALS ONLY, so a comment placed inside the array reads as a non-literal element and fails `the-telemetry-whitelist-admits-no-free-text.test.ts`. Hence the note above the declaration, not in it."
     }
   ],
   "maxNewFileLines": 400,
@@ -7587,7 +7622,7 @@
     "packages/server/src/healer/healer-agent.ts": 1163,
     "packages/server/src/healer/injury-recovery.ts": 1233,
     "packages/server/src/index.ts": 1318,
-    "packages/server/src/memory/assembler.ts": 2786,
+    "packages/server/src/memory/assembler.ts": 2811,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
     "packages/server/src/memory/budget.ts": 699,
@@ -7598,8 +7633,8 @@
     "packages/server/src/memory/embeddings.ts": 332,
     "packages/server/src/memory/fts-health.ts": 536,
     "packages/server/src/memory/integration-status-lane.ts": 461,
-    "packages/server/src/memory/lanes.ts": 1275,
-    "packages/server/src/memory/message-store.ts": 1153,
+    "packages/server/src/memory/lanes.ts": 1301,
+    "packages/server/src/memory/message-store.ts": 1206,
     "packages/server/src/memory/other-threads-lane.ts": 276,
     "packages/server/src/memory/reader-pool.ts": 336,
     "packages/server/src/memory/recall-lane.ts": 907,
@@ -7626,7 +7661,7 @@
     "packages/server/src/report/bounds.ts": 320,
     "packages/server/src/report/state-lane.ts": 333,
     "packages/server/src/report/store.ts": 345,
-    "packages/server/src/report/telemetry-whitelist.ts": 244,
+    "packages/server/src/report/telemetry-whitelist.ts": 253,
     "packages/server/src/report/withdrawn-claim.ts": 304,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
@@ -7659,7 +7694,7 @@
     "packages/server/src/tools/work-verbs.ts": 399,
     "packages/server/src/tracker/assignee-patience.ts": 208,
     "packages/server/src/tracker/delivery-evidence.ts": 320,
-    "packages/server/src/tracker/pm-agent.ts": 2982,
+    "packages/server/src/tracker/pm-agent.ts": 3025,
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
     "packages/server/src/tracker/schema.ts": 1105,
     "packages/server/src/tracker/task-stamps.ts": 296,
