@@ -7423,6 +7423,13 @@
       "to": 3090,
       "by": "t123 FIX ROUND — single-flight serialisation on the effort review, a lane-introduced regression",
       "why": "3025 -> 3090 (+65: +15 code, +47 comment, -0). A SECOND raise on this file in the same lane, and it pays for fixing a regression the lane itself introduced — recorded as its own entry rather than folded into the first, because a raise that hides a correction is the thing $raises exists to prevent. Round 1 deleted the `pmActiveRuns` busy-deferral on the correct reasoning that a direct model call turns nothing and races nothing; what that missed is that the deferral was ALSO the only thing serialising the review, by accident — the old path awaited `handleMessage`, the runtime held the PM in `activeRuns` for the duration, and a concurrent review bailed on it. `runPMReview` is fire-and-forget from two sites and awaits the review in a loop, and the durable pending marker clears only at the END, so a slow call meant the next 60s tick started a DUPLICATE review of the same task — and two `circling` verdicts can land two rung-2 pokes at an assignee. The 15 code lines are a task-keyed in-flight Set, a guarded early return, a try/finally release, and the `AbortSignal.timeout` that round 1 failed to copy from the precedent it copied everything else from (`work/ask-title.ts`'s own latency budget) — without which the new guard could wedge a task out of review for ever. The 47 comment lines carry the four verified re-entrancy hops and the argument for why a single-flight is the right shape where the old per-PM deferral was not: it defers only when THIS review is already running, which is never a lost review, where the old one deferred on an unrelated condition and silently dropped every review that landed while the PM was busy."
+    },
+    {
+      "path": "packages/server/src/agent/utility-dial.ts",
+      "from": 225,
+      "to": 242,
+      "date": "2026-10-07",
+      "why": "t123 (PM cluster): +17 lines are the engine-rider guard — a utility dial must never BE a turn (the pm-cluster ruling's rider-exclusion, engine-riders.ts:88 cited at the site). The file crosses the 240 unlisted-visibility line and gets PINNED instead of re-recorded: from 242 it may only shrink, and the 400 cap's warning stands — the next grower splits the file on the dial/turn seam."
     }
   ],
   "maxNewFileLines": 400,
@@ -7742,6 +7749,7 @@
     "packages/shared/src/visibility.ts": 989,
     "packages/shared/src/ws.ts": 1278,
     "watchdog/src/auto-rollback.ts": 333,
-    "watchdog/src/index.ts": 1217
+    "watchdog/src/index.ts": 1217,
+    "packages/server/src/agent/utility-dial.ts": 242
   }
 }
