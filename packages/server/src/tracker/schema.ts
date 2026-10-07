@@ -17,7 +17,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { writeTaskLog } from './task-log.js';
-import { isDashboardHiddenAgent, isPMAgent } from '../config/platform.js';
+import { isDashboardHiddenAgent, isPMAgent, getOwnerName } from '../config/platform.js';
 import {
   taskRowColumns, projectRowColumns, taskScope, projectScope, dueScope,
   statusToState, type TrackerStatus,
@@ -26,7 +26,7 @@ import {
   openTrackerProject, openTrackerTask, patchWork, appendWorkNotes,
   setTrackerStatus, type WorkPatch, type SetStatusInput,
 } from '../work/tracker-store.js';
-import { workSettled, noteUnsettled, type Actor } from '../work/store.js';
+import { workSettled, noteUnsettled, type Actor, type WorkOutcome } from '../work/store.js';
 import type { Project, ProjectDetail, Task } from '@dojo/shared';
 
 const logger = createLogger('tracker-schema');
@@ -982,7 +982,20 @@ export function updateTask(id: string, updates: Partial<{
   // `openTrackerTask` already sets exactly this pair — an unassigned task belongs to its
   // creator until someone claims it. So a null CLEARS the assignee and leaves the holder.
   if (updates.assignedTo === null) patch.assignee_agent = null;
-  else if (updates.assignedTo !== undefined) patch.agent_id = updates.assignedTo;
+  else if (updates.assignedTo !== undefined) {
+    // t129 / S5 — AND `assignee_agent`, which this write used to leave pointing at the agent
+    // who no longer holds the work. The triage ranks that split-brain as half of S5's harm:
+    // `work_update(action="status", assigned_to=X)` reached here and moved `agent_id` alone,
+    // so the two columns disagreed and a reader got whichever one it happened to ask. The
+    // `work_update:reassign` door has always written BOTH
+    // (`agent/tools/cat/tracker.ts`: `{ agent_id, assignee_agent, assigned_to_group: null }`),
+    // and so does `openTrackerTask` at birth; this is the same pair, stated once more.
+    // The null branch above is untouched: M7 / P706's clear protocol is a DIFFERENT fact
+    // (`agent_id` is `TEXT NOT NULL`, so "nobody in particular" can only live in
+    // `assignee_agent`, and the holder survives a clear).
+    patch.agent_id = updates.assignedTo;
+    patch.assignee_agent = updates.assignedTo;
+  }
   if (updates.priority !== undefined) patch.priority = updates.priority;
   if (updates.notes !== undefined) patch.notes = updates.notes;
   if (updates.title !== undefined) patch.title = updates.title;
@@ -1041,6 +1054,11 @@ export function updateTask(id: string, updates: Partial<{
  * `setTaskStatusResult`.
  */
 export function setTaskStatus(id: string, status: TrackerStatus, input: SetStatusInput): Task | null {
+  const blocked = blockedDisposalRefusal(id, status, input);
+  if (blocked) {
+    logger.warn('task status change refused', { taskId: id, status, result: blocked });
+    return null;
+  }
   const r = setTrackerStatus(id, status, input);
   if (!workSettled(r)) {
     logger.warn('task status change refused', { taskId: id, status, result: r });
@@ -1053,10 +1071,120 @@ export function setTaskStatus(id: string, status: TrackerStatus, input: SetStatu
 
 /** The same call, handing the caller the gate's own verdict so it can be steered on. */
 export function setTaskStatusResult(id: string, status: TrackerStatus, input: SetStatusInput) {
+  const blocked = blockedDisposalRefusal(id, status, input);
+  if (blocked) return { result: blocked, task: getTask(id) };
   const r = setTrackerStatus(id, status, input);
   const task = getTask(id);
   if (task) broadcast({ type: 'tracker:task_updated', data: task });
   return { result: r, task };
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// t129 — THE BLOCKED-WORK DISPOSAL DOOR. (v3.3.2 blast run 4, clause P4; triage Lane D ∪ S5)
+// ════════════════════════════════════════════════════════════════════════════════════════
+//
+// ── WHAT IT REFUSES ──
+// A PRIMARY-role agent killed ANOTHER agent's PM-upheld blocked row with one
+// `work_update(action="status", status="cancelled")` and got `isError: false`: the row went
+// `abandoned`, still assigned to the victim, with `owner_rows_naming_it = 0`. The escalation
+// ladder was not slow — it was PRE-EMPTED, because the row left `blocked` before any steer
+// could be spent. The drive, its aftermath counts and the full clause list are in
+// `tracker/__tests__/blocked-work-is-the-owners-to-dispose.test.ts`.
+//
+// ── THE RULE, DERIVED FROM THE STANDING OWNER RULING ──
+// OR-PM-1v2: blocked/declined work *"is NOT reassignable by agents — it ESCALATES to the
+// user."* Disposal is strictly worse than the reassignment that ruling fences: the work does
+// not move, it VANISHES, and none of the three legitimate reasons the ruling names (assignee
+// gone/deactivated · multi-agent coordination · user-requested) covers "an agent decided to
+// cancel it". The DISPOSAL IS THE RULING THE ESCALATION EXISTS TO OBTAIN, so it belongs to
+// the person the escalation is addressed to. Nothing new is decided here; the ruling is read.
+//
+// The triage left exactly one point open — *"whether a PM-upheld block should be un-disposable
+// by ANY agent including the assignee until the owner rules"* — and the sentence above answers
+// it, because an upheld block is the platform's own confirmation that the obstacle is real:
+// the next word is the owner's by construction. So the predicate has two legs:
+//
+//   * a BYSTANDER (an actor that is not the assignee) may never dispose of a blocked row; and
+//   * NOBODY under a model's control may dispose of a PM-UPHELD one — the assignee included.
+//
+// An ORDINARY (not-upheld) block stays the assignee's to close out. The triage names that the
+// normal path and run-4's P5 depends on it, so it is deliberately untouched.
+//
+// ── WHY THIS IS NOT A NEW CONCEPT, AND WHY IT IS HERE AND NOT IN `transition()` ──
+// The authority distinction already exists and the owner's own door already carries it:
+// `claim: 'authoritative'`. A CENSUS of every caller of `setTaskStatus`/`setTaskStatusResult`
+// (11 of them, taken when this landed) found that every single one carries that claim except
+// `tracker/tools.ts`'s `work_update(action="status")` handler — the agent's door, which passes
+// `by: callerIsPM ? 'pm' : 'agent'` and no claim. So this is a predicate on material already
+// in hand, and the owner's dashboard PUT, the owner's verdict and the PM's six
+// `work_validate` doors are unchanged BY CONSTRUCTION rather than by exemption.
+//
+// It sits at the TRACKER's door rather than in `transition()` because `transition()` is the
+// one writer of `work.state` for every kind OR1 folded onto that table — asks, commitments,
+// occurrences, and T4's join pieces, which are `kind='task'` too. This rule is about the
+// tracker's two nouns and a ruling about THEM; applying it to a join piece's settlement would
+// be a different rule wearing this one's name.
+//
+// ── TWO THINGS IT DELIBERATELY DOES NOT DO ──
+//   1. IT DOES NOT TOUCH RESOLVING FORWARD. Only TERMINAL targets reach the predicate, so any
+//      agent may still move a blocked row back to `in_progress`/`on_deck`/`paused` — that IS
+//      the resolution the block is waiting for, and it stays recorded like any transition.
+//   2. IT DOES NOT TOUCH `complete`. A `done` close is already two-key-fenced by G9, which
+//      FILES the Key-1 close request, rings the validation doorbell and refuses the move. If
+//      this gate swallowed `complete`, that recorded request — the useful half — would stop
+//      being written. The discriminator is the spine's own: terminal AND not `done`.
+
+/** The two disposals this gate is about: `cancelled`/`fallen` in the tracker's words. `done`
+ *  is excluded on purpose — see note 2 above. */
+const BLOCKED_DISPOSALS: ReadonlySet<TrackerStatus> = new Set<TrackerStatus>(['cancelled', 'fallen']);
+
+/** Whose word a status change arrives under. An authority turns the key; `engine`, `healer`
+ *  and `scheduler` are subsystems with their own fences (G6 makes the engine point at real
+ *  evidence) and are not what this ruling is about. `agent` and `pm` are the two actors a
+ *  MODEL drives, and the drive is theirs. */
+const MODEL_DRIVEN: ReadonlySet<string> = new Set(['agent', 'pm']);
+
+/**
+ * The refusal, or `null` when this call is none of this gate's business.
+ *
+ * Returned rather than thrown, and in the same shape a `transition()` gate refuses in, so
+ * every existing `if (!workSettled(r))` branch and `closeRefusalText`'s renderer read it with
+ * no second code path.
+ */
+function blockedDisposalRefusal(
+  id: string, status: TrackerStatus, input: SetStatusInput,
+): (WorkOutcome & { kind: 'refused' }) | null {
+  if (!BLOCKED_DISPOSALS.has(status)) return null;
+  if (input.claim === 'authoritative') return null;
+  if (!MODEL_DRIVEN.has(input.by)) return null;
+
+  const row = getDb().prepare(
+    `SELECT w.agent_id AS agent_id, w.state AS state FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
+  ).get(id) as { agent_id: string; state: string } | undefined;
+  // Not a tracker task, or gone: `transition()`'s G1 owns both answers and says them better.
+  if (!row || row.state !== 'blocked') return null;
+
+  const actorId = input.actorId ?? input.by;
+  const isAssignee = actorId === row.agent_id;
+  // An upheld block has already been adjudicated real. `work/tracker-view.ts:validatedExpr`
+  // asks this same question of the same rows for the PM's board; asked here directly because
+  // the answer is needed about ONE row inside a door, not as a column on a listing.
+  const upheld = getDb().prepare(
+    `SELECT 1 AS ok FROM adjudications
+      WHERE work_id = ? AND claim_state = 'blocked' AND verdict = 'upheld' LIMIT 1`,
+  ).get(id) !== undefined;
+
+  if (isAssignee && !upheld) return null;   // the normal close-out path; P5 depends on it
+
+  const why = upheld
+    ? 'this block has been UPHELD — the platform has already confirmed the obstacle is real, '
+      + `so the disposal is ${getOwnerName()}'s call, not an agent's`
+    : "blocked work is not a bystander's to dispose of — it belongs to its assignee until "
+      + `${getOwnerName()} rules otherwise`;
+
+  return {
+    kind: 'refused', workId: id, reason: 'blocked-disposal-not-the-actors', detail: why,
+  };
 }
 
 /** SQLite-form TEXT -> epoch ms, for the two legacy TEXT instants `updateTask` still takes

@@ -87,8 +87,22 @@ export type TransitionGate =
   // that answers it (`work/ask-settlement.ts`), so the door refuses, steerably.
   | 'ask-not-a-commitment';
 
-/** The two reasons that are not gates: G4's "already there" and G3's lost race. */
-export type WorkOutcomeReason = TransitionGate | 'already-in-state' | 'state-conflict';
+/**
+ * The reasons that are not `transition()` gates: G4's "already there", G3's lost race, and
+ * the TRACKER DOOR's own refusal.
+ *
+ * `blocked-disposal-not-the-actors` is deliberately NOT a member of `TransitionGate`. The
+ * twelve gate names are all `transition()`'s, which is the ONE writer of `work.state` for
+ * every kind OR1 folded onto the table — asks, commitments, occurrences and T4's join pieces
+ * included. This refusal is about the TRACKER's two nouns and the owner's standing ruling over
+ * them, so it is decided one layer up, in `tracker/schema.ts`'s status door, and it wears a
+ * reason of that layer rather than borrowing a gate number it does not have. (t129.)
+ */
+export type WorkOutcomeReason =
+  | TransitionGate
+  | 'already-in-state'
+  | 'state-conflict'
+  | 'blocked-disposal-not-the-actors';
 
 /** The applied proof. `eventId` is the row somebody can go and read. */
 export interface TransitionApplied {
@@ -125,6 +139,10 @@ export type WorkUnsettledOutcome =
       readonly workId: string; readonly expected: WorkState; readonly actual: WorkState;
     })
   | (OutcomeRefused<TransitionGate> & { readonly workId: string })
+  // t129: the tracker door's own refusal, carried in the SAME shape as a gate's so every
+  // existing `if (!workSettled(r))` branch — and `closeRefusalText`'s renderer — reads it
+  // without a second code path. See `WorkOutcomeReason` above for why it is not a gate.
+  | (OutcomeRefused<'blocked-disposal-not-the-actors'> & { readonly workId: string })
   | Extract<LiveOutcome<TransitionApplied, WorkOutcomeReason>, { kind: 'failed' }>;
 
 /**

@@ -161,6 +161,23 @@ export function workOperation(name: string | undefined | null, args?: Args): Wor
       // handed what is OPEN, which is the exact substitution T60's own router arm exists to
       // stop, arriving one field over.
       if (has(args, 'hours')) return 'work_update:activity';
+      // ⚠ t129 / S5 — `status` BEFORE `assigned_to` IS THE SIDE DOOR, AND IT STAYS.
+      //
+      // A call carrying BOTH resolves as `work_update:status`, so it never meets a
+      // `:reassign` gate — and with an EXPLICIT `action: "status"` the arm above decides it
+      // before this ladder is reached at all, which is how the v3.3.2 triage's S5 and the
+      // blast's P4 drive both got where they got. The classification is NOT changed here, for
+      // two reasons: an explicit discriminator winning is this module's whole contract (#77),
+      // and re-routing the pair to `:reassign` would hand the STATUS half to a door that does
+      // not perform one — the caller asked for both, and only one op id can be returned.
+      //
+      // What changed instead is that the side path is no longer silent: the status door
+      // RECORDS the assignee move through the same `recordReassignment` the two declared
+      // reassignment doors use (`tracker/tools.ts`, in the `work_update(action="status")`
+      // handler), and writes both assignee columns rather than leaving them split-brain
+      // (`tracker/schema.ts`'s `updateTask`). So do not "fix" this ordering: moving the
+      // reassign arm up would reroute the status half, and the audit is already where the
+      // write is. `blocked-work-is-the-owners-to-dispose.test.ts` §4 holds that record.
       if (has(args, 'status')) return 'work_update:status';
       if (has(args, 'assigned_to') || has(args, 'assigned_to_group')) return 'work_update:reassign';
       // A project id with no task id and a `reason` is a close; with edit

@@ -308,25 +308,70 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
   // The old statement did both jobs in one ungated UPDATE — it moved state with no reason,
   // no actor and no event. Unassigning is a column patch; moving to `on_deck` is a
   // transition and says who did it and why.
+  // ── t129 / S6 — THIS SWEEP COULD NOT SUCCEED, AND THE FIRST ORPHAN TOOK THE REST WITH IT ──
+  //
+  // The write below used to be `{ agent_id: null, assignee_agent: null }`. `work.agent_id` is
+  // `TEXT NOT NULL` (`135_work_spine.sql:42`), so that is a constraint abort, not an
+  // unassignment — verified at this head rather than inherited:
+  // `NOT NULL constraint failed: work.agent_id`. And it THROWS: `patchWork` returns its
+  // refusals, but SQLite's abort comes out of the statement, so `noteUnsettled` never saw it
+  // and the exception left this function entirely. The state half had ALREADY committed by
+  // then — its own `setTrackerStatus` call above — so each attempt left a row reading
+  // `on_deck` while still owned by a terminated agent, and the FIRST such row aborted the
+  // whole pass, including every orphan behind it. Daily cycle, `healerMode === 'active'`.
+  //
+  // THE CORRECT WRITE WAS ALREADY WRITTEN DOWN, one module over. `tracker/schema.ts`'s
+  // `updateTask` carries the M7 / P706 clear protocol in full: *"`null` means 'nobody in
+  // particular is assigned', and that fact does NOT live in `agent_id` … `assignee_agent` is
+  // the nullable column that carries it … a null CLEARS the assignee and leaves the holder."*
+  // This is that protocol, applied here. The holder survives (it is the row's history, and
+  // NOT NULL means it must be someone); the ASSIGNEE is what gets cleared, which is what
+  // "unassign" means on this spine. `assigned_to_group` goes with it so the row cannot come
+  // back pointing at a group nobody chose — the `work_update:reassign` door clears the same
+  // trio.
+  //
+  // ⚠ WHAT IS STILL OPEN, AND IT IS A DIFFERENT FENCE (handed up, t129-report):
+  // `healer/diagnostic.ts` raises `ORPHANED_TASK` through the SHARED `ORPHANED_TASK_WHERE`
+  // predicate (`tracker/version-gap-reconcile.ts:81`), which keys on `agent_id` — the HOLDER.
+  // A correctly-unassigned row still has the terminated agent as its holder, so that
+  // diagnostic keeps raising it. The selection below is therefore keyed on the ASSIGNEE, which
+  // makes THIS pass idempotent (a row it has already cleared is not selected again, so it
+  // cannot report the same fix every day for ever). Making the two agree means deciding what
+  // an orphan's HOLDER becomes — the spine's answer is the creator, `openTrackerTask`'s own
+  // shape — and that changes a predicate shared with the version-gap reconciliation pass,
+  // which is outside this lane's fence.
   const db = getDb();
   const orphans = db.prepare(`
     SELECT w.id AS id, w.state AS state FROM work w
      WHERE ${taskScope('w')}
-       AND w.agent_id IN (SELECT id FROM agents WHERE status = 'terminated')
+       AND w.assignee_agent IS NOT NULL
+       AND w.assignee_agent IN (SELECT id FROM agents WHERE status = 'terminated')
        AND w.state IN ('claimed', 'on_deck', 'paused')
   `).all() as Array<{ id: string; state: string }>;
   let changed = 0;
   for (const o of orphans) {
-    // Paused tasks stay paused (the user explicitly paused them — don't silently unpause).
-    if (o.state !== 'paused') {
-      const r = setTrackerStatus(o.id, 'on_deck', {
-        by: 'healer', actorId: 'healer',
-        reason: 'assigned agent no longer exists; returned to the deck for reassignment',
+    // ONE ROW CANNOT TAKE THE PASS DOWN ANY MORE. The write above is fixed, so the known
+    // abort is gone; this is here because the lesson of S6 is not "that one constraint" but
+    // that a per-row fault was escaping into the caller and silently ending the sweep.
+    try {
+      // Paused tasks stay paused (the user explicitly paused them — don't silently unpause).
+      if (o.state !== 'paused') {
+        const r = setTrackerStatus(o.id, 'on_deck', {
+          by: 'healer', actorId: 'healer',
+          reason: 'assigned agent no longer exists; returned to the deck for reassignment',
+        });
+        if (!workSettled(r)) continue;
+      }
+      noteUnsettled(
+        patchWork(o.id, { assignee_agent: null, assigned_to_group: null }),
+        'healer: orphaned task unassigned', { taskId: o.id },
+      );
+      changed++;
+    } catch (err) {
+      logger.warn('healer: could not unassign one orphaned task; the rest of the sweep continues', {
+        taskId: o.id, error: err instanceof Error ? err.message : String(err),
       });
-      if (!workSettled(r)) continue;
     }
-    noteUnsettled(patchWork(o.id, { agent_id: null, assignee_agent: null }), 'healer: orphaned task unassigned', { taskId: o.id });
-    changed++;
   }
   const orphaned = { changes: changed };
 

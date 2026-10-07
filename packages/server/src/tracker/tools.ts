@@ -68,6 +68,9 @@ import { onTaskRunComplete, terminateLiveScheduleOnFallen } from '../scheduler/r
 import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, isPrimaryAgent, getOwnerName, isPMAgent } from '../config/platform.js';
+// t129 / S5: the ONE reassignment recorder, so the status door's assignee side path leaves
+// the same shape of record the two declared reassignment doors already write.
+import { recordReassignment } from './assignee-patience.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { turnContext, getTurnReceipts, getWorkOriginForAgent } from '../agent/turn-context.js';
@@ -463,6 +466,33 @@ function closeRefusalText(taskId: string, r: WorkOutcome, wanted: string): strin
       `Error: "${wanted}" needs a delivery to point at. Work is done because something reached the person, ` +
       `not because the tracker says so. Send the result first (reply, message, file, or hand it back on the ` +
       `thread that asked), then set status="complete" — the engine records the delivery for you.`
+    );
+  }
+  // ── t129: THE BLOCKED-WORK DISPOSAL REFUSAL, AND IT POINTS AT THE ESCALATION PATH ──
+  //
+  // The judge's drive (v3.3.2 blast run 4, P4) killed another agent's PM-upheld blocked row
+  // with one `work_update(action="status", status="cancelled")` and got `isError: false`. The
+  // gate behind this arm is in `tracker/schema.ts`; this is what the model is TOLD, and the
+  // text matters as much as the refusal: a model refused with no next move retries the
+  // refusal, and the thing it would retry here is the destruction of someone else's work.
+  //
+  // So it names three things — what is still true (the block stands, nothing was lost), WHO
+  // rules on it (the owner, because that is what the escalation is for), and the DOOR that
+  // asks him (`work_close_request(action="user_verdict")`, the same verb the PM's own
+  // rejected-close path already steers models to). It deliberately does NOT offer a
+  // workaround: there isn't one, and inventing a softer phrasing here is how the hole gets
+  // re-opened by a model that reads "try something else" as "try `fallen`".
+  if (r.reason === 'blocked-disposal-not-the-actors') {
+    return (
+      `Error: "${wanted}" is not yours to set on blocked work — ${r.detail}. `
+      + `Nothing was lost: the task is still BLOCKED and still assigned, and the block itself `
+      + `is not in question. Your three real moves: (1) if the obstacle is gone, resolve it `
+      + `FORWARD with work_update(action="status", status="in_progress") — that is always `
+      + `allowed and is what the block is waiting for; (2) if it should be called off, ask `
+      + `${getOwnerName()} by calling work_close_request(action="user_verdict", `
+      + `task_id="${taskId.slice(0, 8)}", status_requested="${wanted}") with the reason, and `
+      + `he rules; (3) if you just have something to add, use work_note. Do NOT retry this `
+      + `status change, and do not try a different terminal word — the same answer comes back.`
     );
   }
   return `Error: that status change was refused (${r.reason}): ${r.detail}`;
@@ -2032,9 +2062,44 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // and hands back the gate's verdict so a refusal can be steered on instead of read as
     // "the task vanished".
     const { status: statusUpdate, ...columnUpdates } = updates as Record<string, unknown>;
+
+    // ── t129 / S5 — THE SIDE DOOR IS AUDITED. ──
+    //
+    // `work_update(action="status", assigned_to=X)` resolves as `work_update:status`
+    // (`tools/work-verbs.ts`: an explicit `action` always wins, and in the no-action shape
+    // ladder `status` is read before `assigned_to`). So it moved a task's assignee WITHOUT
+    // touching `work_update:reassign` — and `recordReassignment` is wired at the two
+    // reassignment doors, not here. The result was the triage's S5: the one assignee-moving
+    // path in the platform with NO audit record at all, which is also why it is the one the
+    // owner's own dating queries cannot see. It both caused his "you keep reassigning"
+    // complaint and hid itself from every query that would have dated it.
+    //
+    // The judge's P4 drive came through this same door, which is why the two are one lane.
+    //
+    // Read BEFORE the patch lands, because the patch is what destroys the answer. The record
+    // is written AFTER, and only if the row actually moved to someone new: naming the current
+    // assignee moves nothing, and a reassignment event for a no-op would make the audit
+    // trail's own counts lie.
+    const assigneeBefore = (typeof columnUpdates.assignedTo === 'string' && columnUpdates.assignedTo)
+      ? (db.prepare('SELECT agent_id FROM work WHERE id = ?').get(taskId) as { agent_id: string } | undefined)?.agent_id ?? null
+      : null;
+
     let task = Object.keys(columnUpdates).length > 0
       ? updateTask(taskId, columnUpdates)
       : getTask(taskId);
+
+    if (assigneeBefore !== null && assigneeBefore !== columnUpdates.assignedTo && task) {
+      // Same recorder the `work_update:reassign` door and the dashboard PUT use, so there is
+      // ONE shape of reassignment record rather than a second one invented here: who moved
+      // it, from whom, to whom, why, and what the previous assignee was last seen doing. The
+      // ladder re-arm rides along inside it, which is correct for this door too — the work
+      // has a new owner and the escalation cycle starts against them.
+      recordReassignment({
+        taskId, actor: agentId, fromAgentId: assigneeBefore,
+        toAgentId: columnUpdates.assignedTo as string, toGroupId: null,
+        reason: 'moved through work_update(action="status") — the status door\'s assignee side path',
+      });
+    }
     if (statusUpdate) {
       const sr = setTaskStatusResult(taskId, statusUpdate as TrackerStatus, {
         by: callerIsPM ? 'pm' : 'agent', actorId: agentId,
