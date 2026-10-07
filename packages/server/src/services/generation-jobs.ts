@@ -433,16 +433,16 @@ export function enqueueAudioOrMusicJob(jobId: string): void {
 }
 
 /**
- * t122 — THE BOOT NOTICE, which is now all this does. `services/job-orphans.ts` closes the
- * rows (both tables, before either adopter, each row fenced); this posts the one thing a closed
- * row cannot do for itself.
+ * t122 — THE BOOT NOTICE, which is now all this does. `services/job-orphans.ts` closes the rows
+ * (both tables, before either adopter, each row fenced); this posts what a closed row cannot.
  *
- * It used to be the terminaliser too — scan `('queued','running')`, write `failed`, deliver —
- * in ONE BARE LOOP, and that is why the owner's box carried rows that read as live work for
- * ever: `deliverError` writes a chat message, so a job belonging to an agent since purged THREW
- * out of the whole loop (boot logged "worker failed to start") and every row behind it stayed
- * open on that boot and on every boot after. Hence the per-row fence here, and hence closing
- * the rows is no longer downstream of a delivery that can fail.
+ * It used to be the terminaliser too — scan, write `failed`, deliver — in ONE BARE LOOP, and
+ * that is why the owner's box carried rows that read as live work: `deliverError` writes a chat
+ * message, so a job belonging to an agent since purged THREW out of the whole loop (boot logged
+ * "worker failed to start") and every row behind it stayed open for the rest of that server's
+ * uptime — one ghost drained per boot, since `setFailed` ran a line above the delivery (bound
+ * measured; `job-orphans.ts` carries it). Hence the fence, and hence closing a row is no
+ * longer downstream of a delivery that can fail.
  */
 export function notifyAbandonedGenerationJobs(abandoned: ReadonlyArray<{ id: string }>): void {
   if (abandoned.length === 0) return;

@@ -365,7 +365,11 @@ describe('§8 one undeliverable notice costs its own row and nothing else', () =
     // in ONE bare loop, and the notice writes a chat message — which throws for an agent that
     // has since been purged (`messages.agent_id` has a foreign key). The throw unwound out of
     // the whole loop and out of the function, boot logged "worker failed to start", and every
-    // row behind the throwing one stayed open on that boot and on every boot after it.
+    // row behind the throwing one stayed open for the rest of that server's uptime. Measured
+    // bound (review correction): the ghost closed ITSELF first — `setFailed` ran a line above
+    // the delivery — so the scan advanced one ghost per boot: N ghosts needed N restarts, not
+    // a permanent block. Which is why this clause plants ONE ghost and TWO deliverable rows:
+    // the thing that must hold is that a single undeliverable notice costs its own row only.
     genJob('g-ghost', 'queued', 'an-agent-that-was-purged', 'audio');
     genJob('g-ok-1', 'queued', AGENT, 'audio');
     genJob('g-ok-2', 'queued', AGENT_B, 'music');
@@ -413,7 +417,8 @@ describe('§7 the wire', () => {
   it('the notice half is driven by what the sweep moved, not by a status scan of its own', () => {
     const src = code(path.resolve(HERE, '../generation-jobs.ts'));
     expect(/export function notifyAbandonedGenerationJobs/.test(src)).toBe(true);
-    // The scan is what made one throwing row poison every row behind it. It must not come back,
+    // The scan is what left every row behind a throwing one open until the next restart. It
+    // must not come back,
     // and neither may a bare `for` loop around a delivery that can throw.
     expect(
       /SELECT[^;]*FROM generation_jobs WHERE status IN \('queued','running'\)/.test(src),

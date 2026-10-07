@@ -101,7 +101,15 @@ export interface AbandonedJob {
  * bookkeeping sweep must never be the reason a server does not come up. That is not a
  * defensive flourish — the sweep this replaces put its `setFailed` + chat delivery in a bare
  * `for` loop, so one row whose agent had since been purged threw out of the whole scan and
- * left every row behind it open for ever. One row could poison the sweep for all of them.
+ * left every row behind it open.
+ *
+ * THE COST, MEASURED RATHER THAN DRAMATISED (review correction): the throwing row terminalised
+ * ITSELF before the throw — `setFailed` ran a line above `deliverError` — so the scan advanced
+ * by exactly one ghost per boot. N ghost rows therefore needed N restarts to drain, and the
+ * rows queued behind a ghost stayed open for that server's whole uptime rather than for ever.
+ * That is still the regression the owner met: a box that is restarted rarely and has collected
+ * a few ghosts over months shows a phantom stop control the entire time it is up, and nothing
+ * on the box tells anyone why. It is not, as this comment first claimed, permanent.
  *
  * Idempotent by its PREDICATE: after a pass no row matches, so a second pass moves nothing.
  *
