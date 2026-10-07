@@ -42,7 +42,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { AUDIT_KIND } from './audit-trail.js';
-import { appendWorkEvent } from './store.js';
+import { appendWorkEvent, TERMINAL_STATES } from './store.js';
 import {
   taskScope, msToText, STATE_TO_STATUS_SQL, validatedExpr, awaitingUserVerdictExpr,
   unvalidatedCloseExpr, unvalidatedPauseExpr,
@@ -460,8 +460,53 @@ export const workFailureCountExpr = (a: string): string =>
  * room through the ladder's functions, and `failureArmStillWithinPatience` below is the LAW it
  * applies — one sentence, in the module that owns the predicate.
  */
+/**
+ * ── THE STATE BOUND — REVIEW FIX ROUND, 2026-10-07. A REGRESSION THIS LANE INTRODUCED. ──
+ *
+ * ⚠ The arm first read `workFailureCountExpr(a) >= 1` with NO state clause, and the reviewer
+ * proved empirically what that admits. `taskScope` is only `kind='task' AND root_kind IN (…)` —
+ * **it has no state filter at all** — and the three STATE arms beside this one are each bounded by
+ * their own state, so this arm was the only shape in the predicate that could match a row in ANY
+ * state. His repro, against the real schema:
+ *
+ *     id          state      failures  failure_arm
+ *     drv-cancel  abandoned  2         ADMITTED -> escalates
+ *
+ * A task the OWNER CANCELLED reaches `abandoned` through `transition()`, and that transition is
+ * itself one of the three shapes `workFailureCountExpr` counts. So his own cancellation scored the
+ * failures that then escalated it, and ~30 minutes later the platform would tell him, about work he
+ * closed himself:
+ *
+ *     "<title> has been cancelled since <date> and nobody has brought it to you. Your PM cannot
+ *      confirm it. The platform asked <agent> 2 times to raise it with you and got no reply."
+ *
+ * Every clause of that is false, and this cluster began with the owner watching his PM say things
+ * that made no sense in his chat. A new source of confidently-wrong platform statements is the one
+ * thing this lane must not ship.
+ *
+ * ── WHAT IS EXCLUDED, AND WHERE EACH EXCLUSION COMES FROM ──
+ * `TERMINAL_STATES` is `work/store.ts`'s own list (`['done','failed','abandoned']`) — imported, not
+ * retyped, so the bound cannot drift from the spine's definition of over. Nothing terminal is
+ * anyone's problem: `done` is delivered, `failed` and `abandoned` are closed, and `abandoned` is
+ * where a cancel lands.
+ *
+ * `paused` is excluded too, and that one is NOT in the reviewer's required fix — it is this round's
+ * own addition, for the same defect class caught one state earlier. A pause is the owner holding
+ * the ball, and the platform's own tool contract promises him silence in it: *"Paused tasks are
+ * INVISIBLE to the PM agent, no pokes, no nags, ever"* (`agent/tools/definitions.ts`). A paused row
+ * that once failed would otherwise be nagged about on the strength of a failure that is no longer
+ * what is happening. Coverage is not lost: a pause that nobody validated still escalates through
+ * `unvalidatedPauseExpr`, which is the arm that OWNS that state and applies its own validation
+ * gate — and the whole bug here was this arm bypassing another arm's gate.
+ *
+ * What stays admissible is live work: `open`, `on_deck`, `claimed`, `blocked`. That is the set the
+ * owner's case lives in — a declined ASSIGN left `claimed` on the agent that refused it.
+ */
+const failureArmStateBound = (a: string): string =>
+  `${a}.state NOT IN (${[...TERMINAL_STATES, 'paused'].map((st) => `'${st}'`).join(', ')})`;
+
 export const anyRecordedFailureExpr = (a: string): string =>
-  `(${workFailureCountExpr(a)} >= 1)`;
+  `(${workFailureCountExpr(a)} >= 1 AND ${failureArmStateBound(a)})`;
 
 /**
  * THE LAW the scheduler applies to a row admitted by the failure arm alone: it still has room.

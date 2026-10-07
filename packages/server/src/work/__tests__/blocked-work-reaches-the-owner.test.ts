@@ -513,12 +513,122 @@ describe('§4 healthy progressing work NEVER escalates', () => {
     ).not.toContain('t-recovering');
   });
 
-  it('a terminal row never escalates, however it ended', () => {
-    for (const state of ['failed', 'abandoned'] as const) {
-      seedWork(`t-${state}`, { state, closed_at: T });
-      age(`t-${state}`);
-      expect(candidates(), `a ${state} row is over, not escalated`).not.toContain(`t-${state}`);
+  // ════════════════════════════════════════════════════════════════════════════════════
+  // ⚠ REVIEW FIX ROUND 2026-10-07 — THIS CONTROL USED TO BE VACUOUS, AND THAT IS HOW A
+  // REGRESSION SHIPPED PAST IT.
+  //
+  // It read: `seedWork('t-failed', { state: 'failed' })` — a RAW `INSERT INTO work`. No
+  // `transition()` ran, so `work_events` was empty for that id, so `workFailureCount` was
+  // ZERO, so the row could not match the failure arm **for a reason that had nothing to do
+  // with its state.** The clause asserted exactly the right law and passed for the wrong
+  // reason; the reviewer's own repro is the same row seeded through the real door, scoring 2
+  // failures and escalating.
+  //
+  // Both halves are fixed here, and the second matters as much as the first: the terminal
+  // state is now reached THROUGH THE PRODUCTION DOOR, so the row carries the real transition
+  // that the real counter counts, and the clause can go red.
+  // ════════════════════════════════════════════════════════════════════════════════════
+
+  it('AN OWNER-CANCELLED TASK IS NEVER ESCALATED — driven through the dashboard door', async () => {
+    // The row first FAILS for real, so it carries the recorded failures the arm counts. This is
+    // the reviewer's `drv-cancel`: without the state bound it scores >= 1 and is admitted.
+    seedWork('t-cancelled', { remaining_children: 1 });
+    seedWork('t-cancelled-piece', {
+      root_kind: 'a2a_thread', root_id: 'thread-cancel', parent_id: 't-cancelled',
+      state: 'claimed', title: 'a delegated piece',
+    });
+    expect(transition('t-cancelled-piece', {
+      to: 'failed', by: 'agent', actorId: ASSIGNEE, reason: 'the peer replied FAIL',
+    }).kind).toBe('applied');
+
+    // THE REAL DOOR. `setTaskStatusResult` is the tracker's one status door and this is the
+    // dashboard PUT's own call, argument for argument (`gateway/routes/tracker.ts`): the owner
+    // dragging a card IS the authority, so it carries `claim: 'authoritative'`.
+    const { setTaskStatusResult } = await import('../../tracker/schema.js');
+    const { result } = setTaskStatusResult('t-cancelled', 'cancelled', {
+      by: 'owner', actorId: 'user', claim: 'authoritative',
+      reason: 'dashboard PUT /tracker/tasks/:id', resultDeliveryId: null,
+    });
+    expect(result.kind, 'the cancel really went through the door').toBe('applied');
+
+    // THE PRODUCTION SHAPE IS PRESENT — this is what the old control lacked, and the assertion
+    // exists so a future reseed by raw INSERT makes this clause fail instead of passing hollow.
+    const row = mockDb.current!.prepare('SELECT state FROM work WHERE id = ?')
+      .get('t-cancelled') as { state: string };
+    expect(row.state, 'cancelled lands on the `abandoned` spine state').toBe('abandoned');
+    expect(workFailureCount('t-cancelled'),
+      'the row genuinely scores failures — the old control scored ZERO and could not fail',
+    ).toBeGreaterThanOrEqual(1);
+
+    age('t-cancelled');
+    expect(candidates(),
+      'the owner closed this himself; telling him nobody brought it to him would be false',
+    ).not.toContain('t-cancelled');
+
+    await driveLadderToTheEnd();
+    expect(ownerAlerts().join('\n'),
+      'and nothing reaches him about it, through the whole ladder',
+    ).not.toContain('wire up the greenhouse sensor');
+  });
+
+  it('every TERMINAL state is bounded, each reached through transition() with real failures', () => {
+    // `done` needs a delivery receipt by CHECK, so it is driven with one; the other two are the
+    // shapes a failure itself produces.
+    for (const [id, to] of [['t-fail', 'failed'], ['t-aband', 'abandoned']] as const) {
+      seedWork(id, { remaining_children: 1 });
+      seedWork(`${id}-p`, {
+        root_kind: 'a2a_thread', root_id: `thread-${id}`, parent_id: id,
+        state: 'claimed', title: 'a piece',
+      });
+      expect(transition(`${id}-p`, {
+        to: 'failed', by: 'agent', actorId: ASSIGNEE, reason: 'FAIL',
+      }).kind).toBe('applied');
+      expect(transition(id, {
+        to, by: 'agent', actorId: ASSIGNEE, reason: `the work ${to}`,
+      }).kind).toBe('applied');
+      expect(workFailureCount(id), 'it really counts failures').toBeGreaterThanOrEqual(1);
+      age(id);
+      expect(candidates(), `a ${to} row is over, not escalated`).not.toContain(id);
     }
+  });
+
+  it('THE OTHER DIRECTION: a genuinely stuck OPEN task with the same failures still escalates', () => {
+    // The bound must cost nothing on live work — otherwise the fix for the regression re-opens
+    // the void. Same failures, same age, the only difference is that this row is not finished.
+    seedWork('t-still-open', { remaining_children: 1, state: 'claimed' });
+    seedWork('t-still-open-p', {
+      root_kind: 'a2a_thread', root_id: 'thread-open', parent_id: 't-still-open',
+      state: 'claimed', title: 'a piece',
+    });
+    expect(transition('t-still-open-p', {
+      to: 'failed', by: 'agent', actorId: ASSIGNEE, reason: 'FAIL',
+    }).kind).toBe('applied');
+    age('t-still-open');
+    expect(workFailureCount('t-still-open')).toBeGreaterThanOrEqual(1);
+    expect(candidates(), 'live work that failed is exactly what the arm is for')
+      .toContain('t-still-open');
+  });
+
+  it('a PAUSED row is not nagged either — the tool contract promises the owner silence in it', () => {
+    // This exclusion is beyond the reviewer's required fix and is argued at the predicate: a
+    // pause is the owner holding the ball. Coverage is not lost — an UNVALIDATED pause still
+    // escalates through the arm that owns that state, which the next clause drives.
+    seedWork('t-paused-fail', { remaining_children: 1 });
+    seedWork('t-paused-fail-p', {
+      root_kind: 'a2a_thread', root_id: 'thread-paused', parent_id: 't-paused-fail',
+      state: 'claimed', title: 'a piece',
+    });
+    expect(transition('t-paused-fail-p', {
+      to: 'failed', by: 'agent', actorId: ASSIGNEE, reason: 'FAIL',
+    }).kind).toBe('applied');
+    expect(transition('t-paused-fail', {
+      to: 'paused', by: 'agent', actorId: ASSIGNEE, reason: 'waiting on the owner for a part',
+    }).kind).toBe('applied');
+    // Validated, so the pause arm correctly has nothing to say about it either.
+    upholdClaim('t-paused-fail', 'paused', 'pm', PM, 'the pause is legitimate');
+    age('t-paused-fail');
+    expect(workFailureCount('t-paused-fail')).toBeGreaterThanOrEqual(1);
+    expect(candidates(), 'no pokes, no nags, ever').not.toContain('t-paused-fail');
   });
 
   it('the one-shot stamp still bounds everything: a row already escalated is not escalated twice', async () => {
