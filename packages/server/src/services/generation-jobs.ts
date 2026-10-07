@@ -35,6 +35,7 @@ import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
 import { announceLiveWork } from '../agent/live-work.js';
 import { homeDir } from '../home.js';
+import { TERMINAL_JOB_STATUS_SQL } from './media-job-status.js';
 
 const logger = createLogger('generation-jobs');
 
@@ -66,8 +67,10 @@ function getJob(jobId: string): GenerationJobRow | undefined {
 }
 
 export function countActiveGenerationJobs(): number {
+  // t122: asked from the TERMINAL end. An enumerated open end is blind to any status word
+  // added later, which is the shape that let abandoned rows rot unseen.
   const row = getDb().prepare(
-    "SELECT COUNT(*) AS n FROM generation_jobs WHERE status IN ('queued','running')"
+    `SELECT COUNT(*) AS n FROM generation_jobs WHERE status NOT IN (${TERMINAL_JOB_STATUS_SQL})`
   ).get() as { n: number };
   return row.n;
 }
@@ -183,9 +186,11 @@ export function setSucceeded(jobId: string, f: SucceededFields): boolean {
  * same event arriving through a different door.
  */
 export function setCancelled(jobId: string): boolean {
+  // t122: the fence is "not already finished", not a list of the open words — a stop must be
+  // able to cut ANY open row. It is still a fence: a terminal row can never be re-opened.
   const res = getDb().prepare(`
     UPDATE generation_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now')
-    WHERE id = ? AND status IN ('queued','running')
+    WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})
   `).run(jobId);
   if (res.changes === 0) return false;
   const row = getJob(jobId);
@@ -214,7 +219,8 @@ export function cancelAgentGenerationJobs(agentId: string): number {
   let ids: string[];
   try {
     ids = (getDb().prepare(
-      "SELECT id FROM generation_jobs WHERE agent_id = ? AND status IN ('queued','running')"
+      // t122: every OPEN row of this agent's, however its status is spelled.
+      `SELECT id FROM generation_jobs WHERE agent_id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})`
     ).all(agentId) as Array<{ id: string }>).map((r) => r.id);
   } catch {
     // A pre-migration DB has no table. A stop must never throw out of `stopAgent`.
@@ -229,9 +235,11 @@ export function cancelAgentGenerationJobs(agentId: string): number {
 }
 
 export function setFailed(jobId: string, error: string): void {
+  // t122: the fence is "not already finished" rather than a list of the open words — a failure
+  // must be recordable against ANY open row. Still a fence: a terminal row keeps its verdict.
   const res = getDb().prepare(`
     UPDATE generation_jobs SET status='failed', error=?, finished_at=datetime('now'), updated_at=datetime('now')
-    WHERE id = ? AND status IN ('queued','running')
+    WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})
   `).run(error.slice(0, 1000), jobId);
   if (res.changes === 0) return;
   const row = getJob(jobId);
@@ -425,25 +433,36 @@ export function enqueueAudioOrMusicJob(jobId: string): void {
 }
 
 /**
- * Boot-time cleanup. A run-once job can't resume mid-flight, so any row
- * still queued/running after a restart is dead — mark it failed so the
- * indicator clears and the agent's chat isn't left hanging.
+ * t122 — THE BOOT NOTICE, which is now all this does.
+ *
+ * It used to be the terminaliser too: it scanned `('queued','running')`, wrote `failed` and
+ * posted the chat notice, in one bare loop. Two things were wrong with that, and both are why
+ * the owner's box carried rows that showed as live work for ever.
+ *
+ *  1. ONE THROWING ROW POISONED THE WHOLE SCAN. `deliverError` writes a chat message, so a row
+ *     whose agent has since been purged throws — and the throw unwound out of the loop, out of
+ *     this function, and was logged by `index.ts` as "worker failed to start". Every row behind
+ *     it stayed non-terminal, on every boot, for ever.
+ *  2. THE VOCABULARY WAS AN IN-LIST. Anything not literally `queued` or `running` was invisible
+ *     to it.
+ *
+ * `services/job-orphans.ts` now owns closing the rows, reads the vocabulary from the terminal
+ * end, fences every row of its own, and does it for BOTH job tables before either adopter
+ * starts. This function receives what that sweep moved and does the half that talks to the
+ * user, one fenced row at a time — so a notice that cannot be delivered costs its own row and
+ * nothing else.
  */
-export function startGenerationJobsWorker(): void {
-  let rows: Array<{ id: string; agent_id: string; kind: GenerationKind; prompt: string }>;
-  try {
-    rows = getDb().prepare(
-      "SELECT id, agent_id, kind, prompt FROM generation_jobs WHERE status IN ('queued','running')"
-    ).all() as Array<{ id: string; agent_id: string; kind: GenerationKind; prompt: string }>;
-  } catch (err) {
-    logger.warn('generation-jobs boot scan skipped', { error: err instanceof Error ? err.message : String(err) });
-    return;
-  }
-  if (rows.length === 0) return;
-  logger.info('generation-jobs: clearing interrupted jobs from previous run', { count: rows.length });
-  for (const r of rows) {
-    setFailed(r.id, 'Interrupted by a server restart.');
-    const fresh = getJob(r.id);
-    if (fresh) deliverError(fresh, 'Interrupted by a server restart.');
+export function notifyAbandonedGenerationJobs(abandoned: ReadonlyArray<{ id: string }>): void {
+  if (abandoned.length === 0) return;
+  logger.info('generation-jobs: telling the chat about jobs interrupted by a restart', { count: abandoned.length });
+  for (const job of abandoned) {
+    try {
+      const fresh = getJob(job.id);
+      if (fresh) deliverError(fresh, 'Interrupted by a server restart.');
+    } catch (err) {
+      logger.warn('generation-jobs: could not post the interrupted-job notice', {
+        jobId: job.id, error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }
