@@ -75,6 +75,39 @@ function startChild(source: string): Promise<{ code: number | null; stdout: stri
 
 const sleepSrc = 'const sleep = (ms) => new Promise(r => setTimeout(r, ms));';
 
+// ── t128 — THE INTERLEAVE IS A HANDSHAKE, NOT TWO SLEEPS ──
+//
+// The lost-update clause below staged its race with `sleep(900)` in one child and `sleep(400)` in
+// the other, so the platform's write would land inside the watchdog's read-then-write window. That
+// is a 2.25x ratio between two INDEPENDENT processes' schedulers: if the platform child is late —
+// and under a full suite it can be — the stale write finds the marker unchanged, the
+// compare-and-swap legitimately accepts it, and the clause reds while the product is correct. It is
+// the same family as the four that have already cost a gate-red each.
+//
+// The ordering the clause needs is causal and has THREE steps, not two — which the first cut of
+// this conversion got wrong and the repeat runs caught: the watchdog must READ FIRST, then the
+// platform writes, and only then does the watchdog attempt its stale write. A handshake that only
+// enforced "the platform wrote before the attempt" let the platform write BEFORE the read, so the
+// snapshot already carried the migration flag, the compare-and-swap found the file unchanged and
+// correctly ACCEPTED the write — the clause went red for the honest reason that the race it meant
+// to stage had not been staged.
+//
+// So the handshake runs both ways, over two sentinel files in the shared HOME. No clock decides
+// anything; each side waits for the other's fact to exist.
+const handshakeSrc = `
+  const fsH = await import('node:fs');
+  const pathH = await import('node:path');
+  const flag = (n) => pathH.join(process.env.DOJO_HOME, n + '.flag');
+  const signal = (n) => fsH.writeFileSync(flag(n), '1');
+  const waitFor = async (n, timeoutMs = 30000) => {
+    const t0 = Date.now();
+    while (!fsH.existsSync(flag(n))) {
+      if (Date.now() - t0 > timeoutMs) throw new Error('the other child never signalled: ' + n);
+      await sleep(5);
+    }
+  };
+`;
+
 const PLATFORM_MOD = path.join(REPO_ROOT, 'packages/server/src/update-state.ts');
 const WATCHDOG_MOD = path.join(REPO_ROOT, 'watchdog/src/auto-rollback.ts');
 
@@ -188,9 +221,14 @@ describe('watchdog self-integrity — update-state.json single-writer discipline
     // inside that window. This is the lost update, staged.
     const watchdog = startChild(`
       ${sleepSrc}
+      ${handshakeSrc}
       const w = await import(${JSON.stringify(WATCHDOG_MOD)});
       const stale = w.readMarker();
-      await sleep(900);
+      // STEP 1 DONE — the snapshot predates the platform's write, which is the whole premise.
+      signal('watchdog-read');
+      // STEP 3 WAITS — the platform has stamped the migration, so the stale write below is
+      // attempted against a file that really did move underneath it.
+      await waitFor('platform-wrote');
       // First, the PRE-FIX shape, verbatim: a transition computed from the copy
       // read before the platform moved the file. It must be REFUSED — this is
       // the compare-and-swap being the thing that saves the box, proven
@@ -205,9 +243,12 @@ describe('watchdog self-integrity — update-state.json single-writer discipline
     `);
     const platform = startChild(`
       ${sleepSrc}
+      ${handshakeSrc}
       const m = await import(${JSON.stringify(PLATFORM_MOD)});
-      await sleep(400);
+      // STEP 2 — strictly AFTER the watchdog's read, so its snapshot is genuinely stale.
+      await waitFor('watchdog-read');
       m.markMigrationsRan();
+      signal('platform-wrote');      // the watchdog is blocked until this lands
       console.log('platform-done');
     `);
     const [w, p] = await Promise.all([watchdog, platform]);
