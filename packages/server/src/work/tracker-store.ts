@@ -687,7 +687,13 @@ export function deliveryForTaskClose(workId: string): string | null {
  *   · `root_kind='ask'` → the turn served the ask this row exists to satisfy. The join is
  *     `work.source_message_id` (T11's edge, the same one `validation-drive.ts`'s reality check
  *     already dereferences for the parent-ask receipt).
- *   · `root_kind='occurrence'` → the turn served a scheduled RUN of this row: `task_runs.task_id`.
+ *   · `root_kind='occurrence'` → the turn served a scheduled RUN of this row. The run id is an
+ *     OCCURRENCE WORK ROW (`kind='occurrence'`, `parent_id` = the scheduled row), not a
+ *     `task_runs` id: migration `144` absorbed that table into `work` and DROPPED it. Worth
+ *     stating because the obvious spelling of this clause is a join to `task_runs`, and on a
+ *     migrated body that throws `no such table` — which, inside this sweep's one outer
+ *     try/catch, would abort the whole escalation pass and restore the exact silence this lane
+ *     exists to remove. Caught by driving the arm rather than reading it.
  *
  * There is deliberately **no `root_kind='task'` clause**: no turn root of that kind exists in
  * the union, so the clause would be unsatisfiable — a gate that can only ever read false, which
@@ -721,7 +727,8 @@ export function deliveryAboutWorkSince(workId: string, sinceMs: number): string 
           (d.root_kind = 'ask' AND w.source_message_id IS NOT NULL
              AND d.root_id = w.source_message_id)
           OR (d.root_kind = 'occurrence'
-             AND d.root_id IN (SELECT tr.id FROM task_runs tr WHERE tr.task_id = w.id))
+             AND d.root_id IN (SELECT occ.id FROM work occ
+                                WHERE occ.kind = 'occurrence' AND occ.parent_id = w.id))
         )
       ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
   ).get({ workId, since: sinceMs }) as { id: string } | undefined;
