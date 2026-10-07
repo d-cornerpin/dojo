@@ -25,7 +25,7 @@ import { staleOverrideRequests, resolveOverrideRequest } from '../work/override-
 import {
   patchWork, setTrackerStatus, bumpWorkAttempts, upholdClaim, clearUserVerdict,
   recordValidationEscalation, deleteTrackerRow, deliveryForTaskClose,
-  deliveryForAgentSince,
+  deliveryForAgentSince, deliveryAboutWorkSince,
 } from '../work/tracker-store.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
 import { setNextRun, clearLiveSchedule } from '../work/next-run.js';
@@ -470,12 +470,20 @@ export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
 
       // ── UX-REPAIR round 2 T12: VERIFY BEFORE RE-STEERING ──
       // OR2's shape is detect → steer → VERIFY VIA DELIVERY RECORDS → bounded retry → the
-      // platform's own surface. The verify step: has the primary put anything in front of a
-      // person since the first steer went out? If so the nudge landed and the agent spoke, and
-      // the one-shot suppressor is written for that FIRED case exactly as it always was.
+      // platform's own surface. The verify step: has a person been told about THIS ROW since
+      // the first steer went out? If so the nudge landed and the agent spoke, and the one-shot
+      // suppressor is written for that FIRED case exactly as it always was.
+      //
+      // ⚠ t124 — THE SCOPE OF THAT QUESTION IS THE WHOLE FIX. This read was
+      // `deliveryForAgentSince(primaryId, firstSteerAt)`: agent-and-time scoped, no work
+      // reference. It asked "has the primary said anything to anyone?", so the triage's live
+      // drive watched an unrelated email bulletin retire a pending escalation and burn the
+      // row's one permanent `validation_escalated` stamp. `deliveryAboutWorkSince` asks the
+      // question the ladder means, scoped to the row by the ledger's own root columns; the
+      // argument for the two edges it accepts lives with the query in `work/tracker-store.ts`.
       const firstSteerAt = firstEscalationSteerAt(t.id);
       const spokeSince = firstSteerAt !== null
-        && deliveryForAgentSince(primaryId, firstSteerAt) !== null;
+        && deliveryAboutWorkSince(t.id, firstSteerAt) !== null;
       const steersSpent = escalationSteerCount(t.id);
 
       if (spokeSince || steersSpent >= MAX_FLOOR_STEER_ATTEMPTS) {
@@ -500,7 +508,8 @@ export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
           entryKind: 'directive',
           actionTaken: '5-min validation escalation: asked user',
           reason: spokeSince
-            ? `the primary was steered and has since spoken; the escalation is fired and closed`
+            ? `the primary was steered and a person has since been told about THIS row; `
+              + `the escalation is fired and closed`
             : `task has been ${t.status} with *_validated=0 since ${t.updated}; the primary was steered `
               + `${steersSpent} time(s) and did not come back — handed to the platform surface`,
           note: askText,
