@@ -7346,6 +7346,20 @@
       "to": 2096,
       "by": "t124 the escalation void — blocked work now reaches the owner",
       "why": "2073 -> 2096 (+23: +7 code net, +16 comment net). THE CODE: the verify step's read swaps to the work-scoped query (one line), and the floor ghost's `ownerLine` becomes a call carrying the row's recorded facts with those same facts added to its `detail` so the alert can be audited against what the platform knew when it spoke. The old fixed three-line sentence is DELETED. THE +16 COMMENT: why the scope of the verify question is the whole fix, and why the owner line could not stay as it was once the blocked arm admits a PM-upheld row."
+    },
+    {
+      "path": "packages/server/src/work/validation-drive.ts",
+      "from": 915,
+      "to": 1010,
+      "by": "t124 OWNER CORRECTION 2026-10-07 — the failure arm derives its room from assignee patience",
+      "why": "915 -> 1010 (+95: +14 code net, +80 comment net, +1 blank). THE CODE SHRANK IN SUBSTANCE while the file grew: `ESCALATION_FAILURE_THRESHOLD = 3` and `failureCountReachedExpr` are DELETED, replaced by `anyRecordedFailureExpr` (an existence test, `>= 1`), one pure predicate `failureArmStillWithinPatience`, and the `ownerEscalationShapesExpr` / `ownerEscalationStateArmsExpr` split that lets the escalating query report WHICH shape matched (a failure-shape-alone row is held to its assignee's patience; a state-shape row is late at the sweep's own bound and is not). Three columns were added to the row the query returns — `priority`, raw `updated_at_ms` and `by_state_arm` — because the caller cannot resolve a row's room without the key `POKE_THRESHOLDS` is indexed by. THE +80 COMMENT IS THE CORRECTION ITSELF, and it is the whole reason this raise is worth taking: the owner struck down the constant this lane had shipped (\"we don't specify numbers or times. We make judgement calls based on how fast the model and model provider are. We've been over this so so many times.\"), and the tombstone records what the constant was, why a flat count is the same forbidden shape as a flat time, that `tracker/assignee-patience.ts`'s own header had already refused it by name (a multiplier needs a REFERENCE speed; none exists; inventing one is the 'scaling the numbers' fix ruling R1 rejected), and why the resolution is NOT called from this module (`work/` may not import `tracker/`, and the scheduler already owns this sweep's clock while the drive owns its law). A reader who deletes that block re-invents the number."
+    },
+    {
+      "path": "packages/server/src/scheduler/runner.ts",
+      "from": 2096,
+      "to": 2148,
+      "by": "t124 OWNER CORRECTION 2026-10-07 — the failure arm derives its room from assignee patience",
+      "why": "2096 -> 2148 (+52: +22 code net, +29 comment net, +1 blank). THE CODE: the patience resolution for failure-shape-alone rows — `patienceFloorFor(assignee)` -> `flooredThresholds(POKE_THRESHOLDS[priority], floorSeconds).escalate`, the ladder's own two functions in the ladder's own order, dynamically imported as this function already imports `tracker/task-log.js`; one `filter`; and the held-rows log line, because every other hold this sweep applies is said out loud and a hold nobody can see is the same silent behaviour in the other direction. NO NEW CONSTANT and no second copy of the speed judgement: this is a READER of the one place it lives. THE +29 COMMENT: why the room is resolved here rather than in the drive (the clock/law split the drive already declares for `staleBeforeMs`), and why only failure-shape-alone rows are held — holding a blocked row would re-open the void this lane was built to close."
     }
   ],
   "maxNewFileLines": 400,
@@ -7596,7 +7610,7 @@
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
     "packages/server/src/scheduler/engine.ts": 414,
-    "packages/server/src/scheduler/runner.ts": 2096,
+    "packages/server/src/scheduler/runner.ts": 2148,
     "packages/server/src/services/audio-generation.ts": 435,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/capability-registry.ts": 251,
@@ -7655,7 +7669,7 @@
     "packages/server/src/work/store.ts": 2258,
     "packages/server/src/work/tracker-store.ts": 834,
     "packages/server/src/work/tracker-view.ts": 622,
-    "packages/server/src/work/validation-drive.ts": 915,
+    "packages/server/src/work/validation-drive.ts": 1010,
     "packages/server/src/work/work-reaper.ts": 694,
     "packages/shared/src/access.ts": 338,
     "packages/shared/src/markers.ts": 358,
