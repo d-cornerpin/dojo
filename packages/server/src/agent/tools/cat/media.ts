@@ -628,8 +628,6 @@ const handlers = {
       return { content, isError };
     }
 
-    const db = getDb();
-
     const modelChoice = getEffectiveVideoGenModel();
     if (!modelChoice) {
       content =
