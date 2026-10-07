@@ -29,7 +29,7 @@
 //      the cap now bounds is how much silence may be tolerated, which cannot kill healthy work.
 // ════════════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 
 // Real child processes are spawned here, so the capability facade has to answer rather than
 // refuse. Nothing about the capability is under test in this file — the facade's own contract
@@ -43,11 +43,69 @@ vi.mock('../../effects/capability.js', async (orig) => ({
 import {
   runProcess, processTimeout, EXEC_TIMEOUT_MAX_MS, EXEC_ABSOLUTE_CEILING_MS,
 } from '../process-run.js';
+import { attachIdleBound, type WatchableChild } from '../../../child-idle-bound.js';
 
 const audits: Array<{ target: string; status: string; detail: string }> = [];
 const audit = (target: string, status: string, detail: string): void => {
   audits.push({ target, status, detail });
 };
+
+// ── t127 — THE SURVIVAL CLAIM MOVES OFF THE WALL CLOCK ──
+//
+// §1 BET AND LOST, on a full-suite merge gate: a real child sleeping 0.5s six times against a
+// 1,000ms idle bound — a ratio of two. The suite has grown ~600 tests since this file was written,
+// and a descheduled child's `sleep 0.5` stretches past 1,000ms under contention, so the bound
+// fired and the clause redded while the product was correct. My own t121 sweep flagged this exact
+// file as "the same bet at 3x margin"; the margin was 2x and 1.6x, and it came due.
+//
+// A real child against a fixed wall-clock bound is an IRREDUCIBLE bet: the bound is real time, the
+// child's scheduling is not under the test's control, and no margin fixes that — it only moves the
+// odds, which is what this campaign refuses to do in the product and should refuse here.
+//
+// So the two claims are separated and each is proven where it can be proven exactly:
+//
+//   THE MECHANISM — "ticks inside the bound keep it alive, for a total far beyond the bound" — is
+//   driven against `attachIdleBound` with a STUB CHILD and FAKE TIMERS. `WatchableChild` is a
+//   structural type precisely because this module watches a child rather than creating one, so a
+//   stub is not a workaround; it is the seam. The test owns the clock, so the total can be twenty
+//   times the bound with zero wall-clock risk.
+//
+//   THE INTEGRATION — "the real door really spawns, streams and collects every chunk" — stays on a
+//   real child, with the ticks driven BY THE TEST over stdin so the gap is causal (the next tick is
+//   written when the previous echo is observed) instead of a sleep racing the bound.
+//
+// NO MARGIN WAS RAISED. Every bound in this file is the number it was.
+
+/** A child the test drives by hand. Shaped to `WatchableChild`, which is all the clock reads. */
+function stubChild(): {
+  child: WatchableChild;
+  out(text: string): void;
+  err(text: string): void;
+  close(code: number, signal?: NodeJS.Signals): void;
+  killed: () => NodeJS.Signals | null;
+} {
+  let outCb: ((c: Buffer | string) => void) | null = null;
+  let errCb: ((c: Buffer | string) => void) | null = null;
+  let closeCb: ((code: number | null, sig: NodeJS.Signals | null) => void) | null = null;
+  let killedWith: NodeJS.Signals | null = null;
+  const child: WatchableChild = {
+    stdout: { setEncoding: () => undefined, on: (_e, cb) => { outCb = cb; return undefined; } },
+    stderr: { setEncoding: () => undefined, on: (_e, cb) => { errCb = cb; return undefined; } },
+    on: ((ev: string, cb: never) => {
+      if (ev === 'close') closeCb = cb as never;
+      return undefined;
+    }) as WatchableChild['on'],
+    kill: (sig) => { killedWith = sig ?? 'SIGTERM'; return undefined; },
+  };
+  return {
+    child,
+    out: (text) => outCb?.(text),
+    err: (text) => errCb?.(text),
+    // A real child that is SIGTERMed still emits `close`; the clock's verdict is written there.
+    close: (code, signal) => closeCb?.(code, signal ?? null),
+    killed: () => killedWith,
+  };
+}
 
 /** Drive the real exec seam with a shell script, the way the `shell` door does. */
 async function shell(script: string, idleMs: number): Promise<string> {
@@ -63,30 +121,90 @@ async function shell(script: string, idleMs: number): Promise<string> {
 }
 
 describe('§1 a command that keeps talking is not killed for taking long', () => {
-  it('THE RED: a 3-second command under a 1-second idle bound completes, with all its output', async () => {
-    // Six chunks, ~0.5s apart: TOTAL ~3s against a 1,000ms bound. Every GAP is half the bound,
-    // so a gap-shaped clock survives this and the old total-duration clock cannot — this is a
-    // build's exact shape, printing steadily for longer than any single pause.
+  it('THE RED: twenty ticks inside a 1-second bound keep a 20-second command alive', async () => {
+    // THE SUBJECT, unchanged: a gap-shaped clock survives a long command that keeps printing,
+    // where the old total-duration clock could not. What changed is WHO OWNS THE CLOCK. The test
+    // does, so the total can be 20x the bound instead of 3x and the proof is exact: twenty ticks
+    // 800ms apart under a 1,000ms bound is twenty seconds of command, every gap inside the bound,
+    // and not one wall-clock race anywhere in it.
+    vi.useFakeTimers();
+    const k = stubChild();
+    const run = attachIdleBound(k.child, { idleMs: 1_000, ceilingMs: 60 * 60_000 });
+
+    for (let i = 1; i <= 20; i += 1) {
+      await vi.advanceTimersByTimeAsync(800);   // inside the bound, every time
+      k.out(`step ${i}\n`);
+    }
+    expect(k.killed(), 'a command that keeps talking is never killed').toBeNull();
+
+    k.close(0);
+    const { stdout } = await run;
+    expect(stdout, 'the command ran to completion').toContain('step 20');
+    expect(stdout, 'and nothing it printed on the way was lost').toContain('step 1');
+  });
+
+  it('output on STDERR counts as life too — a build that logs to stderr is not silence', async () => {
+    // Same treatment, and this clause's margin was the WORSE of the two: three 0.5s sleeps against
+    // an 800ms bound, a ratio of 1.6. It had not been seen to red yet; it was next.
+    vi.useFakeTimers();
+    const k = stubChild();
+    const run = attachIdleBound(k.child, { idleMs: 800, ceilingMs: 60 * 60_000 });
+
+    for (let i = 1; i <= 12; i += 1) {
+      await vi.advanceTimersByTimeAsync(600);
+      k.err(`progress ${i}\n`);               // STDERR only — the stream under test
+    }
+    expect(k.killed(), 'stderr writes re-arm the bound exactly as stdout writes do').toBeNull();
+
+    k.out('done\n');
+    k.close(0);
+    const { stdout, stderr } = await run;
+    expect(stdout).toContain('done');
+    expect(stderr, 'every stderr chunk was collected too').toContain('progress 12');
+  });
+
+  it('CONTROL: the stub clock really can kill — silence past the bound still SIGTERMs', async () => {
+    // Without this, the two clauses above would pass just as well against a clock that never
+    // fires, which is the vacuous shape this lane has been caught by three times.
+    vi.useFakeTimers();
+    const k = stubChild();
+    const run = attachIdleBound(k.child, { idleMs: 1_000, ceilingMs: 60 * 60_000 });
+
+    k.out('starting\n');
+    await vi.advanceTimersByTimeAsync(1_500);   // past the bound, with nothing said
+
+    expect(k.killed(), 'the bound fires on silence').toBe('SIGTERM');
+    k.close(null as unknown as number, 'SIGTERM');
+    const err = await run.catch((e: { message?: string }) => e);
+    expect((err as { message?: string }).message, 'and names what it measured').toMatch(/no output for/i);
+  });
+
+  it('INTEGRATION: the real door spawns, streams and collects every chunk a child writes', async () => {
+    // The half a stub cannot prove — that `runProcess` really spawns, really reads BOTH streams and
+    // really assembles what it collects. It WAITS FOR NOTHING: the child writes several chunks to
+    // both streams and exits immediately, so every gap is effectively zero and the 1,000ms bound
+    // (the number it always was) is never approached. Load can make this slower; it cannot make it
+    // wrong, because nothing here is racing anything.
+    //
+    // Measured correction: the first cut of this clause used `while read line; do …; done` on the
+    // assumption that an unattached stdin means instant EOF. It does not — the door gives the
+    // child a pipe, the read blocked, and the idle bound correctly killed a genuinely silent
+    // command. The clause was wrong; the product was right.
     const out = await shell(
-      'for i in 1 2 3 4 5 6; do echo "step $i"; sleep 0.5; done',
+      'echo one; echo two 1>&2; echo three; exit 0',
       1_000,
     );
 
-    expect(out, 'the command ran to completion').toContain('step 6');
-    expect(out, 'and nothing it printed on the way was lost').toContain('step 1');
-    expect(out, 'a completed command is not reported as stopped').not.toMatch(/SIGTERM|timed out|stopped:/i);
-  }, 20_000);
-
-  it('output on STDERR counts as life too — a build that logs to stderr is not silence', async () => {
-    const out = await shell(
-      'for i in 1 2 3; do echo "progress $i" 1>&2; sleep 0.5; done; echo done',
-      800,
-    );
-
-    expect(out, 'stderr writes re-arm the bound exactly as stdout writes do').toContain('done');
-    expect(out).not.toMatch(/SIGTERM/i);
+    expect(out, 'a real child ran and was not killed').not.toMatch(/SIGTERM|no output for/i);
+    expect(out, 'stdout was collected').toContain('one');
+    expect(out, 'and so was stderr, from the same real spawn').toContain('two');
+    expect(out, 'every chunk, not just the first').toContain('three');
   }, 20_000);
 });
+
+// t127: the fake clock is per-case. A leaked fake timer would freeze the REAL child clauses below
+// and turn them into timeouts — the opposite failure, and a confusing one.
+afterEach(() => { vi.useRealTimers(); });
 
 describe('§2 a silent command is still killed, and the reason says so', () => {
   it('THE OTHER DIRECTION: no output for longer than the bound is still a SIGTERM', async () => {
