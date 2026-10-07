@@ -210,7 +210,7 @@ afterEach(async () => {
   // The poller is asked to stand down FIRST — which is the very interlock under test, so every
   // clause here also exercises it — and only then are the fixtures torn down.
   try {
-    const { stopVideoJobPoller } = await import('../video-job-poller.js');
+    const { stopVideoJobPoller } = await import('../video-poller-lifetime.js');
     stopVideoJobPoller();
     await untilLoopSettled(2_000);
   } catch { /* a clause that never imported the module */ }
@@ -231,7 +231,8 @@ afterEach(async () => {
 describe('§1 a loop left mid-flight across a teardown rejects nothing and actually settles', () => {
   it('THE RED: the DB goes away under a live poll loop and NOTHING rejects unhandled', async () => {
     answerWith(() => json({ status: 'in_progress', progress: 40 }));
-    const { enqueueVideoJob, stopVideoJobPoller } = await import('../video-job-poller.js');
+    const { enqueueVideoJob } = await import('../video-job-poller.js');
+    const { stopVideoJobPoller } = await import('../video-poller-lifetime.js');
     const jobId = queueJob();
 
     enqueueVideoJob(jobId);
@@ -260,7 +261,8 @@ describe('§1 a loop left mid-flight across a teardown rejects nothing and actua
 
   it('the loop\'s promise SETTLED — it released the slot it took, so nothing of it survives', async () => {
     answerWith(() => json({ status: 'in_progress', progress: 40 }));
-    const { enqueueVideoJob, stopVideoJobPoller } = await import('../video-job-poller.js');
+    const { enqueueVideoJob } = await import('../video-job-poller.js');
+    const { stopVideoJobPoller } = await import('../video-poller-lifetime.js');
     const jobId = queueJob();
 
     enqueueVideoJob(jobId);
@@ -280,7 +282,8 @@ describe('§1 a loop left mid-flight across a teardown rejects nothing and actua
 describe('§1a the other phase: a shutdown that lands while a leg is ON THE WIRE', () => {
   it('stands down just as cleanly mid-leg, and still records no attempt', async () => {
     answerWith(() => json({ status: 'in_progress', progress: 40 }));
-    const { enqueueVideoJob, stopVideoJobPoller } = await import('../video-job-poller.js');
+    const { enqueueVideoJob } = await import('../video-job-poller.js');
+    const { stopVideoJobPoller } = await import('../video-poller-lifetime.js');
     const jobId = queueJob();
 
     gateTheNextLeg();
@@ -305,7 +308,8 @@ describe('§1a the other phase: a shutdown that lands while a leg is ON THE WIRE
 describe('§1b a stopped loop asks the provider NOTHING MORE', () => {
   it('not one further dial after the stop — the exit is above the poll, not after it', async () => {
     answerWith(() => json({ status: 'in_progress', progress: 40 }));
-    const { enqueueVideoJob, stopVideoJobPoller } = await import('../video-job-poller.js');
+    const { enqueueVideoJob } = await import('../video-job-poller.js');
+    const { stopVideoJobPoller } = await import('../video-poller-lifetime.js');
     const jobId = queueJob();
 
     enqueueVideoJob(jobId);
@@ -327,7 +331,8 @@ describe('§1b a stopped loop asks the provider NOTHING MORE', () => {
 describe('§2 the stop WAKES the loop rather than being noticed a backoff later', () => {
   it('the loop stands down well inside its own backoff window, because the signal cuts the sleep', async () => {
     answerWith(() => json({ status: 'in_progress', progress: 40 }));
-    const { enqueueVideoJob, stopVideoJobPoller } = await import('../video-job-poller.js');
+    const { enqueueVideoJob } = await import('../video-job-poller.js');
+    const { stopVideoJobPoller } = await import('../video-poller-lifetime.js');
     const jobId = queueJob();
 
     enqueueVideoJob(jobId);
@@ -347,7 +352,8 @@ describe('§2 the stop WAKES the loop rather than being noticed a backoff later'
 describe('§3 a shutdown is not a verdict on the render', () => {
   it('the stood-down loop writes NO row — the job stays open for the boot resume', async () => {
     answerWith(() => json({ status: 'in_progress', progress: 40 }));
-    const { enqueueVideoJob, stopVideoJobPoller } = await import('../video-job-poller.js');
+    const { enqueueVideoJob } = await import('../video-job-poller.js');
+    const { stopVideoJobPoller } = await import('../video-poller-lifetime.js');
     const jobId = queueJob();
 
     enqueueVideoJob(jobId);
@@ -368,7 +374,8 @@ describe('§3 a shutdown is not a verdict on the render', () => {
 
   it('and posts NO apology into the owner\'s chat — a shutdown never wears the owner\'s stop', async () => {
     answerWith(() => json({ status: 'in_progress', progress: 40 }));
-    const { enqueueVideoJob, stopVideoJobPoller } = await import('../video-job-poller.js');
+    const { enqueueVideoJob } = await import('../video-job-poller.js');
+    const { stopVideoJobPoller } = await import('../video-poller-lifetime.js');
     const jobId = queueJob();
 
     enqueueVideoJob(jobId);
@@ -383,11 +390,12 @@ describe('§3 a shutdown is not a verdict on the render', () => {
   it('the row it leaves open is one the boot resume actually ADOPTS — the exit is not a leak', async () => {
     answerWith(() => json({ status: 'in_progress', progress: 40 }));
     const poller = await import('../video-job-poller.js');
+    const { stopVideoJobPoller } = await import('../video-poller-lifetime.js');
     const jobId = queueJob();
 
     poller.enqueueVideoJob(jobId);
     await untilDialled();
-    poller.stopVideoJobPoller();
+    stopVideoJobPoller();
     await untilLoopSettled();
 
     // The contract §3 relies on: `startVideoJobPoller`'s scan sees this row. Asked of the census
@@ -400,9 +408,10 @@ describe('§3 a shutdown is not a verdict on the render', () => {
 describe('§4 the stop is a fence, and only a fresh boot lifts it', () => {
   it('a job enqueued after the stop does NOT start a loop', async () => {
     answerWith(() => json({ status: 'in_progress', progress: 40 }));
-    const { enqueueVideoJob, stopVideoJobPoller, videoJobPollerStopped } = await import('../video-job-poller.js');
+    const { enqueueVideoJob } = await import('../video-job-poller.js');
+    const { stopVideoJobPoller, pollerStopped } = await import('../video-poller-lifetime.js');
     stopVideoJobPoller();
-    expect(videoJobPollerStopped()).toBe(true);
+    expect(pollerStopped()).toBe(true);
 
     const { activeAbortControllers } = await import('../../agent/shared-state.js');
     enqueueVideoJob(queueJob('vid_t126_fenced'));
@@ -422,7 +431,8 @@ describe('§4 the stop is a fence, and only a fresh boot lifts it', () => {
 
   it('and the fence holds after the DB itself is gone — a late enqueue is a silent no-op', async () => {
     answerWith(() => json({ status: 'in_progress', progress: 40 }));
-    const { enqueueVideoJob, stopVideoJobPoller } = await import('../video-job-poller.js');
+    const { enqueueVideoJob } = await import('../video-job-poller.js');
+    const { stopVideoJobPoller } = await import('../video-poller-lifetime.js');
     const jobId = queueJob('vid_t126_late');
 
     // The real shutdown order, and the real late caller: `submitVideoJob` can enqueue from a
@@ -449,13 +459,14 @@ describe('§4 the stop is a fence, and only a fresh boot lifts it', () => {
   it('a fresh boot re-arms it — the fence is a process generation, not a permanent kill', async () => {
     answerWith(() => json({ status: 'in_progress', progress: 40 }));
     const poller = await import('../video-job-poller.js');
-    poller.stopVideoJobPoller();
+    const life = await import('../video-poller-lifetime.js');
+    life.stopVideoJobPoller();
     queueJob('vid_t126_rearm');
 
     poller.startVideoJobPoller();          // the boot resume adopts the open row
     await untilDialled();
 
-    expect(poller.videoJobPollerStopped(), 'a boot lifts the fence').toBe(false);
+    expect(life.pollerStopped(), 'a boot lifts the fence').toBe(false);
     expect(dials.some((u) => u.includes('/videos/prov-job-t126')),
       'and the re-armed poller actually resumes the open render').toBe(true);
   }, 30_000);

@@ -1301,7 +1301,7 @@ async function main(): Promise<void> {
     // each exits at its next wake without writing anything — the rows stay open and the next
     // boot's resume adopts them, which is the honest outcome for a render still running at the
     // provider.
-    import('./services/video-job-poller.js').then(m => m.stopVideoJobPoller()).catch(() => {});
+    import('./services/video-poller-lifetime.js').then(m => m.stopVideoJobPoller()).catch(() => {});
     // Stop tunnel gracefully
     import('./services/tunnel.js').then(m => m.stopTunnel()).catch(() => {});
     server.close(async () => {
