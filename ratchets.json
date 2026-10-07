@@ -7514,6 +7514,20 @@
       "to": 1127,
       "by": "t129 fix round (review Gaps 1-3 + the healer ruling) — the disposal gate moves to the one place every tracker status writer crosses, and the orphan definition absorbs its join key",
       "why": "LOWERED, not raised. Round 1 raised this ceiling to 1233 for a gate that the review then moved to `work/tracker-store.ts` (the one place every tracker status writer crosses). The file is 1127 now and the pin follows it down — a ratchet is a floor on shrinking, not a budget to keep, and leaving 106 lines of slack this lane created would let the next change spend it without an argument. Same for `healer/auto-fix.ts`, 521 -> 520, where the inline orphan predicate was replaced by the shared one."
+    },
+    {
+      "path": "packages/server/src/work/tracker-store.ts",
+      "from": 964,
+      "to": 1019,
+      "by": "t130 (run-5 residual) — the authoritative claim carried two meanings; the gate's exemption is deleted, not narrowed",
+      "why": "964 -> 1019 (+55: ZERO code, 56 comment, and one line of code DELETED). The gate's executable size went DOWN. Run 5 of the v3.3.2 blast caught the acting PM, in its own turn with its own authored reason, calling work_validate{action:'override',approve:true} and forcing a PM-UPHELD blocked row to 'cancelled' ~35 s after the probe armed, against a 1200 s escalate floor. The cause: `claim: 'authoritative'` carries TWO meanings — 'a human authority has ruled' (the owner's door, which the exemption was written for) and 'the PM's override verb', whose own comment says it exists to 'Force the status through (bypass engine hard gate)' — and the gate read only the first. THE CODE CHANGE IS A DELETION. The prescribed fix was to narrow the clause to `claim === 'authoritative' && by === 'owner'`; a mutant proved that line is DEAD — replacing it with `by === 'owner'` alone changes no test and no behaviour, because `Actor` is a closed union (owner|pm|agent|engine|scheduler|healer), `MODEL_DRIVEN` is {agent,pm}, and every actor the narrowed clause would exempt is already exempt one line below for not being a model. Only `owner` and `pm` may assert the claim at all, and `pm` is the actor the fix exists to stop. So the exemption is removed and the rule is stated once: the gate is about actors a MODEL drives, and an authoritative-shaped claim buys such an actor nothing. THE 56 COMMENT LINES are the part a reader cannot reconstruct and would otherwise re-add: the caught call with its timing, why the claim is not a key, the equivalence argument for the deletion (so nobody 'restores' the guard), and a DOOR-BY-DOOR blast radius verified rather than inherited — of the six by:'pm'+authoritative callers only override-approve can name a disposal on a blocked row; the Key-2 close (`tools.ts:4487`) targets `complete` and the stale-A2A sweep (`pm-agent.ts:2545`) does target `fallen` but reads only `state='on_deck'`, and NEITHER was in the triage's census of five, so both are recorded with the reason they are safe."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 5181,
+      "to": 5199,
+      "by": "t130 (run-5 residual) — the authoritative claim carried two meanings; the gate's exemption is deleted, not narrowed",
+      "why": "5181 -> 5199 (+18: 5 code, 14 comment). The override-approve door can now be REFUSED, so it has to read the verdict. It called `setTaskStatus`, which answers `Task | null`, and rendered a null as 'the task was deleted' — the only possible cause back when the only refusals here were races. It is not any more: the blocked-work gate refuses a PM override of a ruled block, and reporting that as a deleted task would be the engine stating a FALSE CAUSE and sending the PM to re-read a row that never moved. THE 5 CODE LINES switch to `setTaskStatusResult` and hand the refusal to `closeRefusalText` — the SAME renderer the status door uses, so the PM gets the escalation pointer and the do-not-retry instruction in one wording from one place; a second hand-written refusal here would be the copy the t129 fix round existed to remove. The override ask is deliberately left PENDING, because a refused approval has not answered it and retiring it would lose the question the owner is the one to rule on (its own clause, and a mutant). THE 14 COMMENT LINES carry exactly that: why the null-path was a lie, why the renderer is shared, and why the ask survives."
     }
   ],
   "maxNewFileLines": 400,
@@ -7797,7 +7811,7 @@
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
     "packages/server/src/tracker/schema.ts": 1127,
     "packages/server/src/tracker/task-stamps.ts": 296,
-    "packages/server/src/tracker/tools.ts": 5181,
+    "packages/server/src/tracker/tools.ts": 5199,
     "packages/server/src/tracker/version-gap-reconcile.ts": 361,
     "packages/server/src/twilio/call-session.ts": 916,
     "packages/server/src/twilio/sms-inbound.ts": 409,
@@ -7822,7 +7836,7 @@
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/store.ts": 2258,
-    "packages/server/src/work/tracker-store.ts": 964,
+    "packages/server/src/work/tracker-store.ts": 1019,
     "packages/server/src/work/tracker-view.ts": 649,
     "packages/server/src/work/validation-drive.ts": 1078,
     "packages/server/src/work/work-reaper.ts": 694,
