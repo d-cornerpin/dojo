@@ -598,11 +598,25 @@ describe('§5 the owner is told what is blocked, since when, and what was tried'
     expect(line.length).toBeLessThan(700);
   });
 
-  it('G1: the composer invents no identity — every name in the line was passed in', () => {
-    const line = ownerEscalationAlertLine({ ...base, agentName: 'Qqq', obstacle: OBSTACLE });
-    const strippedOfInputs = line
-      .replace(/Qqq/g, '').replace(base.title, '').replace(base.since, '').replace(OBSTACLE, '');
-    expect(strippedOfInputs).not.toMatch(/\b(David|Marcus)\b/);
+  it('G1: the composer invents no identity — it is a pure function of its arguments', () => {
+    // Stated as a STRUCTURAL property rather than a blacklist of names, for two reasons: a
+    // blacklist can only catch the names someone thought to list, and writing a real name into
+    // a shipped test to assert it is absent is itself the thing G1 forbids (the names gate
+    // refused exactly that, correctly, on the first version of this clause).
+    //
+    // THE PROPERTY: render the same row twice with every identity-bearing input different. Map
+    // each input to a common token and the two sentences must be IDENTICAL — so no word in the
+    // output came from anywhere but the arguments. A composer that reached for the owner's name,
+    // a config value or a database row would leave a residue this cannot normalise away.
+    const render = (agentName: string, title: string, since: string, obstacle: string): string =>
+      ownerEscalationAlertLine({ ...base, agentName, title, since, obstacle })
+        .split(obstacle).join('<OBSTACLE>')
+        .split(agentName).join('<AGENT>')
+        .split(title).join('<TITLE>')
+        .split(since).join('<SINCE>');
+
+    expect(render('Qqq', 'alpha widget', 'INSTANT-1', 'the first obstacle'))
+      .toBe(render('Zzz', 'beta gadget', 'INSTANT-2', 'the second obstacle'));
   });
 });
 
