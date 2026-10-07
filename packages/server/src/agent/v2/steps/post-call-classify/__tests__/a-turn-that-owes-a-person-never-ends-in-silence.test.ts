@@ -32,6 +32,8 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import type { ToolCall } from '@dojo/shared';
 
 const broadcastSpy = vi.fn();
@@ -323,5 +325,35 @@ describe('t125 — the silent turns (Q2): a turn that owes a person never ends i
     expect(last.directive).toBe('exit');
     if (last.directive !== 'exit') throw new Error('unreachable');
     expect(last.state.engineCutExit).toBeNull();
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  // t131 — THE SAME CLAUSE, EXTENDED TO THE LEVEL THE STAND-DOWN LOGS AT.
+  //
+  // The refusal above rests on the re-serve stand-down being the SANCTIONED place an
+  // unanswered ask settles — `blocked`, the one state where a question that was neither
+  // answered nor declined stays visible to its owner. That rung logged at ERROR on every
+  // occurrence (`ask re-serve STOOD DOWN: the same question was served into silence…`), and
+  // a designed, upheld behaviour that cries error every time is the quieted-boot-divergence
+  // dishonesty class: an error nobody can act on teaches readers to skip the tier, which is
+  // how a real one goes unseen. It also undercut the refusal's own premise — a rung this
+  // engine deliberately routes to cannot simultaneously be the platform reporting a fault.
+  //
+  // Source-level here (this file has no database); the BEHAVIOUR, the words and the
+  // never-quieter-than-the-bound half are driven against a real migrated DB in
+  // `work/__tests__/the-stand-down-is-the-bound-working-not-a-fault.test.ts`.
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  it('t131 — the stand-down this refusal relies on logs at WARN, and ask-settlement spends no error', () => {
+    const src = readFileSync(
+      fileURLToPath(new URL('../../../../../work/ask-settlement.ts', import.meta.url)), 'utf8',
+    );
+    // The rung is reported as the bound working…
+    expect(src).toMatch(/logger\.warn\('ask re-serve bound reached:/);
+    // …and never as damage. These were the words.
+    expect(src).not.toMatch(/STOOD DOWN/);
+    // The module's error budget is zero, with its own denominator so it cannot pass vacuously.
+    const calls = src.match(/logger\.(error|warn|info|debug)\(/g) ?? [];
+    expect(calls.length).toBeGreaterThan(5);
+    expect(calls.filter((c) => c === 'logger.error(')).toEqual([]);
   });
 });

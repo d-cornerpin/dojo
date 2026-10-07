@@ -572,7 +572,17 @@ function standDownReServe(
     to: 'blocked', by: 'agent', actorId, expectedState: ask.state, reason,
   });
   if (r.kind !== 'applied') return out('unchanged', `stand-down refused: ${r.kind}`);
-  logger.error('ask re-serve STOOD DOWN: the same question was served into silence up to its bound', {
+  // ── `warn`, AND IT WAS `error` UNTIL t131. THIS RUNG IS THE BOUND WORKING, NOT A FAULT:
+  // designed, upheld, fires on every ask that reaches it, and nothing for an operator to do
+  // — the ask is HELD, OWED and on the open-work surface, as the docstring above says. A
+  // designed behaviour that cries `error` every time is the quieted-boot-divergence
+  // dishonesty class: an error nobody can act on teaches readers to skip the tier, which is
+  // how a real one goes unseen. The words moved for the same reason. `warn` not `info`,
+  // because a person asked and is not getting an answer — and the module's one genuine fault
+  // path (`reServesSpent`'s unreadable counter) is `warn` too, so a fault is never QUIETER
+  // than the bound working. Both halves pinned by
+  // `work/__tests__/the-stand-down-is-the-bound-working-not-a-fault.test.ts`.
+  logger.warn('ask re-serve bound reached: the agent did not answer within its serve budget, so the ask is now HELD owed and will stop being re-served', {
     agentId: ask.agent_id, workId: ask.id, serves: spent + 1, bound: MAX_ASK_RE_SERVES + 1,
     turnNumber: ctx.turnNumber,
   }, ask.agent_id);
