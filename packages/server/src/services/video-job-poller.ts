@@ -36,7 +36,9 @@ import { TERMINAL_JOB_STATUS_SQL } from './media-job-status.js';
 
 const logger = createLogger('video-job-poller');
 
-const POLL_START_MS = 5_000;
+/** Exported for t126's clause: the backoff a stop must CUT rather than wait out. A clause that
+ *  hard-coded 5000 would quietly stop testing anything if the clock moved. */
+export const POLL_START_MS = 5_000;
 const POLL_MAX_MS = 30_000;
 const POLL_BACKOFF = 1.5;
 // Wall-clock window, NOT a ceiling (t114/U4). It bounds how long the loop will keep asking a
@@ -60,6 +62,55 @@ interface VideoJobRow {
 }
 
 const inFlight = new Set<string>();
+
+// ════════════════════════════════════════
+// t126 — THE POLL LOOPS' LIFETIME IS OWNED BY THIS MODULE.
+//
+// THE DEFECT, MEASURED. `pollLoop` was fired with a bare `void` and tied to nothing. It runs up
+// to thirty minutes and is asleep in its backoff for nearly all of them, so a loop that woke
+// after `index.ts`'s shutdown (`closeDb()`, then exit) reached `getDb()` on a closed handle. The
+// throw landed in the `catch` below — whose own `markFailed` calls `getDb()` AGAIN and threw the
+// same error back OUT of the handler, so the honest log path was skipped and the `void`-ed
+// promise rejected with nobody listening: one `unhandledRejection` per surviving loop, which is
+// what intermittently exited the full suite 1 while every test passed.
+//
+// THE SHAPE. One signal says "this process is done polling", read at each of the two points the
+// loop could next touch the DB, and the exit WRITES NOTHING — a shutdown is not a verdict on a
+// render still running at the provider, and the boot resume exists to adopt those rows.
+//
+// WHY THE LOOP READS IT DIRECTLY RATHER THAN ASKING ITS SLOT. The lifetime IS composed into the
+// slot, so the HTTP legs and the backoff sleep are cut by it — but `AgentCallSlot.cutBy()`
+// answers for the slot's OWN controller only, by design, so a caller's clock can never be
+// misread as a stop. A loop trusting `cutBy()` alone would see an aborted signal, an
+// instantly-resolving sleep, and no reason to exit: the documented hot-spin trap, one narrowing
+// away.
+// ════════════════════════════════════════
+let lifetime = new AbortController();
+let stopped = false;
+
+/** Stop every poll loop at its next wake. Called from `index.ts`'s shutdown. Idempotent. */
+export function stopVideoJobPoller(): void {
+  stopped = true;
+  lifetime.abort();
+}
+
+/** Whether the fence is standing. Exported so a clause asserts it rather than infers it. */
+export function videoJobPollerStopped(): boolean {
+  return lifetime.signal.aborted;
+}
+
+/**
+ * The honest log path for a `void`-ed loop: a fire-and-forget promise with no rejection handler
+ * turns any throw — including one from the error path itself — into an `unhandledRejection` that
+ * kills the exit code and says nothing useful. The worst case here is a log line.
+ */
+function detach(jobId: string, work: Promise<void>): void {
+  void work.catch((err) => {
+    logger.error('video poll loop rejected outside its own handler', {
+      jobId, error: err instanceof Error ? err.message : String(err),
+    });
+  });
+}
 
 function getJob(jobId: string): VideoJobRow | undefined {
   return getDb().prepare('SELECT * FROM video_jobs WHERE id = ?').get(jobId) as VideoJobRow | undefined;
@@ -114,6 +165,9 @@ const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve) 
     resolve();
   };
   const timer = setTimeout(finish, ms);
+  // t126: the loop spends nearly all its life in this timer, and an instrument must never be
+  // why a process refuses to exit (`stall-sentinel.ts`, `router/maintenance.ts` unref theirs).
+  if (typeof timer.unref === 'function') timer.unref();
   signal?.addEventListener('abort', finish, { once: true });
 });
 
@@ -304,13 +358,19 @@ async function handleSuccess(row: VideoJobRow, durationSeconds: number | null): 
  */
 async function pollLoop(jobId: string): Promise<void> {
   if (inFlight.has(jobId)) return;
+  // t126: the fence, ABOVE the first DB read — `getJob` below is already a `getDb()` call, and
+  // a late `enqueueVideoJob` from an unwinding turn would otherwise reach a closed handle.
+  if (lifetime.signal.aborted) return;
   inFlight.add(jobId);
+  const shutdown = lifetime.signal;
   const owner = getJob(jobId);
   // A-5 FIX ROUND (review CRITICAL C1): `background`. This loop is the clearest case the scope
   // exists for — up to THIRTY MINUTES, enqueued inside a turn that ends seconds later. Before
   // the scope, a voice barge-in or a thrown turn reached it and it wrote `cancelled` with the
   // owner's name on it.
-  const slot: AgentCallSlot | null = owner ? openAgentCall(owner.agent_id, 'background') : null;
+  // t126: the lifetime rides along as an external, so a shutdown cuts the in-flight HTTP leg and
+  // wakes the backoff sleep. The EXIT is still its own check below — see the header on `cutBy()`.
+  const slot: AgentCallSlot | null = owner ? openAgentCall(owner.agent_id, 'background', shutdown) : null;
   let delay = POLL_START_MS;
   try {
     // A stop already standing when this job was enqueued: do not start polling at all, and do
@@ -320,6 +380,14 @@ async function pollLoop(jobId: string): Promise<void> {
       return;
     }
     while (true) {
+      // t126 — THE STAND-DOWN, FIRST, AND IT TOUCHES NOTHING. Above `getJob` because that is a
+      // `getDb()` call on a handle that may be closed; above the stop check because a process
+      // going down is not the owner pressing stop and must never be written into his chat as
+      // one. No UPDATE, no broadcast, no verdict — the boot resume adopts the row.
+      if (shutdown.aborted) {
+        logger.info('video poll loop standing down — the poller was stopped; the row stays open for the boot resume', { jobId });
+        return;
+      }
       const row = getJob(jobId);
       if (!row) return;
       if (row.status === 'cancelled' || row.status === 'succeeded' || row.status === 'failed') return;
@@ -369,6 +437,14 @@ async function pollLoop(jobId: string): Promise<void> {
       const pastWall = Number.isFinite(age) && age > MAX_JOB_AGE_MS;
 
       const poll = await pollProviderVideo(row.agent_id, row.provider_id, row.provider_job_id);
+
+      // t126: the OTHER phase. A shutdown landing during that await cuts the leg, which returns
+      // a plain retryable error and NOT `stopped` (`stopped` is the owner's button alone), so
+      // without this the loop falls into the `attempt_count` UPDATE below on a closed handle.
+      if (shutdown.aborted) {
+        logger.info('video poll loop standing down mid-leg — the poller was stopped; the row stays open for the boot resume', { jobId });
+        return;
+      }
 
       getDb().prepare('UPDATE video_jobs SET attempt_count = attempt_count + 1, updated_at = datetime(\'now\') WHERE id = ?').run(jobId);
 
@@ -427,6 +503,19 @@ async function pollLoop(jobId: string): Promise<void> {
       delay = Math.min(delay * POLL_BACKOFF, POLL_MAX_MS);
     }
   } catch (err) {
+    // t126: THE BACKSTOP, and the exact path that used to re-throw out of its own handler —
+    // `markFailed` below calls `getDb()`, which threw again on the closed handle.
+    if (shutdown.aborted) {
+      // WARN, not info, deliberately: with the two checks above in place a stand-down RETURNS
+      // and never arrives here, so reaching this line means something threw that the guards did
+      // not get in front of. The row is still left open, but the near-miss is on the record
+      // instead of reading like a clean exit — and t126's clause asserting that a stand-down is
+      // SILENT at warn-and-above is what keeps those two checks load-bearing, not decorative.
+      logger.warn('video poll loop unwound through its ERROR PATH on shutdown — a stand-down guard was missed; the row stays open for the boot resume', {
+        jobId, error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
     // A-5: an abort unwinding through here is not an internal poller error.
     if (slot?.cutBy()) {
       await markCancelled(jobId, slot.cutByStop()
@@ -444,11 +533,15 @@ async function pollLoop(jobId: string): Promise<void> {
 
 /** Start polling a single job immediately (called right after submit). */
 export function enqueueVideoJob(jobId: string): void {
-  void pollLoop(jobId);
+  detach(jobId, pollLoop(jobId));
 }
 
 /** Boot-time resume: pick up every job still in flight and poll it. */
 export function startVideoJobPoller(): void {
+  // t126: a boot re-arms the module. `stopVideoJobPoller()` is a permanent fence by design — a
+  // stopped poller must not resume on the next `enqueueVideoJob` — so only a new process
+  // generation lifts it.
+  if (stopped) { stopped = false; lifetime = new AbortController(); }
   let rows: Array<{ id: string }>;
   try {
     // t122: the resume adopts every OPEN row, not only the two words this file writes — the
@@ -464,5 +557,5 @@ export function startVideoJobPoller(): void {
   }
   if (rows.length === 0) return;
   logger.info('video poller: resuming in-flight jobs', { count: rows.length });
-  for (const r of rows) void pollLoop(r.id);
+  for (const r of rows) detach(r.id, pollLoop(r.id));
 }

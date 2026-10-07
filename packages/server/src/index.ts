@@ -1295,6 +1295,13 @@ async function main(): Promise<void> {
     // rows); `terminateReaderPool` ends the read side. Both are no-ops when nothing is running.
     if (stopFtsRepair()) logger.info('asked the background FTS repair to stop; it will be redone on the next boot');
     void terminateReaderPool();
+    // t126: the video poll loops are `void`-ed and live for up to thirty minutes, asleep for
+    // nearly all of them. `closeDb()` is four lines below; a loop that woke after it reached a
+    // closed handle and rejected with nobody listening. Asking them to stand down FIRST means
+    // each exits at its next wake without writing anything — the rows stay open and the next
+    // boot's resume adopts them, which is the honest outcome for a render still running at the
+    // provider.
+    import('./services/video-job-poller.js').then(m => m.stopVideoJobPoller()).catch(() => {});
     // Stop tunnel gracefully
     import('./services/tunnel.js').then(m => m.stopTunnel()).catch(() => {});
     server.close(async () => {
