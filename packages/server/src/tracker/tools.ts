@@ -4687,6 +4687,33 @@ export async function trackerValidateBlocked(
       intent: 'block_validated',
       brief: `I confirmed the block on "${task.title}" (${taskId.slice(0, 8)}) is a real obstacle. Please surface it to the user or unblock it manually.`,
     });
+    // ── t124 — AND IT IS WOKEN, because an actionable notice nobody reads is not an escalation.
+    //
+    // The comment above records that this notice was once `role='system'` and therefore
+    // invisible to the model, and that routing it through the awareness lane fixed the
+    // visibility. What it did NOT fix is WHEN the primary would look: an events-lane row
+    // surfaces on the next assembled context, which needs a turn, and nothing here caused one.
+    // The triage's live drive measured the consequence — a PM-confirmed block produced exactly
+    // one row for the owner-facing primary, this notice, and then nothing for ~6 minutes and
+    // 9,800 s of backdated idleness.
+    //
+    // The wake is the idiom `scheduler/runner.ts` uses after its own validation notices (which
+    // is itself a copy of `alertMissedRuns`): best-effort, never awaited, and never load-bearing
+    // — the notice is already durable in the awareness lane and will surface on the next context
+    // regardless. This only removes the wait.
+    //
+    // It is ALSO no longer the only hope, which is the structural half of the fix: t124's
+    // blocked arm in `work/validation-drive.ts` means a blocked row the primary never speaks
+    // about now reaches `recordFloorGhost` and the owner hears it from the platform. The wake
+    // makes the fast path work; the sweep is the backstop when it does not.
+    try {
+      getAgentRuntime().handleMessage(getPrimaryAgentId(), '[PM: a block was validated]')
+        .catch((err) => {
+          logger.warn('block validated: primary wake failed (the notice is durable; it surfaces next context)', {
+            taskId, error: err instanceof Error ? err.message : String(err),
+          });
+        });
+    } catch { /* runtime not ready; the notice is in the store and surfaces next time */ }
     logger.info('Block validated by PM', { taskId, pmAgentId }, pmAgentId);
     return `[OK] Block validated on "${task.title}" (${taskId}). Primary notified to investigate or unblock.`;
   }
