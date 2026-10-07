@@ -7290,6 +7290,27 @@
       "to": 437,
       "by": "t120 credential retry affordance — a write that changes nothing says so",
       "why": "+25 NET = 14 code + 9 comment + 2 blank, and the gross is the argument. The lane added 159 lines to this file; 134 of them were EXTRACTED to a new module, `credentials/write-doors.ts` (228 lines, unpinned and under the 400-line new-file cap), which now owns every text an agent can read out of the credential tools — refusals and receipts alike — plus the is-this-a-change judgement, and touches no database: the store owns the writes, that module owns the words. The +25 that stayed is irreducibly store work: `noopWrite`'s DB half (a write whose payload equals the sealed value performs no re-seal, no value-bearing updated_at bump and NO destruction audit row, because the T83 ledger records that a specific value was ENDED and a no-op ended nothing), `findExisting` widened to select the sealed columns without which the comparison cannot be made at all, and the `CredentialWriteResult` type that lets the tool layer tell the caller the truth about what its write did. NOT taken, the structural option: moving `noopWrite` wholesale into `write-doors.ts` and injecting the two store writers it needs (`writeDescriptionOnly`, `readRecord`) as callbacks — that would have reached 412 exactly, and it was rejected because a door-text module taking DB callbacks stops being the no-database module whose whole value is that a reviewer can read it without reasoning about writes; the seam belongs where the decision ends and the write begins. Nor was prose stripped to fit: the comments moved with their code. The defect this buys: in two of the last three account-setup draws the model re-sent a byte-identical credential payload 8 and 13 times against an identical-call brake that fires at 4, failing a SAFETY invariant, because the success receipt was the three-word \"Credential \\\"X\\\" updated.\" — naming no state and no next call. From 437 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/generation-jobs.ts",
+      "from": 449,
+      "to": 460,
+      "by": "t122 stale media job rows — a row nobody owns is closed at boot, and says so",
+      "why": "449 -> 460 (+11: 0 code net, +11 comment). The function COUNT here went DOWN: `startGenerationJobsWorker` (a scan + a terminalise + a delivery in one bare loop) is gone, replaced by `notifyAbandonedGenerationJobs`, which only delivers. Four predicates in this file also moved from the enumerated OPEN end (`status IN ('queued','running')`) to the terminal end, which is one template literal each and no new lines. THE +11 IS THE DOCSTRING ON THE REPLACEMENT, and it is the thing a reader provably cannot reconstruct: the old function looked correct, and WHY it rotted the owner's box is not visible in what replaces it. `deliverError` writes a chat message and `messages.agent_id` carries a foreign key, so a job belonging to an agent that had since been purged THREW out of the whole loop — boot logged it as \"worker failed to start\" — and every row behind the throwing one stayed non-terminal on that boot and on every boot after it. The docstring states that mechanism, and it is why the terminalising moved OUT of this file: closing a row must not be downstream of a delivery that can fail. Both halves are clauses too (`services/__tests__/an-abandoned-job-row-does-not-fake-live-work.test.ts` §8, which the mutation round added after deleting the per-row fence left all nineteen other clauses green). REFUSED: keeping the sweep here — one table's rows and the other's are the same question, and `services/job-orphans.ts` answers it once for both. Growth: 460 against a 561 limit. From 460 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/video-job-poller.ts",
+      "from": 458,
+      "to": 468,
+      "by": "t122 stale media job rows — the open question is asked from the terminal end",
+      "why": "458 -> 468 (+10: +4 code, +6 comment). Five predicates move off the enumerated open end; four are one-line template-literal swaps, and the fifth — the boot resume scan — gains 3 lines because the one-line statement had to break across lines to carry the interpolation. The exported `countActiveVideoJobs` is the SAME statement renamed (`tools/cat/media.ts` was keeping a fourth hand-written copy of it and now asks this one; that file went DOWN by 2 and stayed under its own pin). THE +6 COMMENT, all of it argument a reader cannot reconstruct: that the resume widening is not symmetry but a dependency — the boot reconciliation in `services/job-orphans.ts` deliberately declines to close a video row that has a `provider_job_id`, because migration 062's contract is that the provider's render outlives a restart and t114/U4 measured what closing one costs (`failed` is terminal, the resume skips it, the asset is never fetched, the owner is billed) — so a vocabulary gap in THIS scan is a paid-for render abandoned in silence; and on the three fences, that \"not already finished\" is still a fence, so a cancel can never clobber a success. Three of this file's comments were tightened in the same pass to pay for part of it. Growth: 468 against a 572 limit. From 468 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/index.ts",
+      "from": 1310,
+      "to": 1318,
+      "by": "t122 stale media job rows — the boot sweep that makes the regression impossible",
+      "why": "1310 -> 1318 (+8: +11 code, -3 comment, after the existing `startGenerationJobsWorker` block's 13 lines were removed). Boot gains ONE step, not two: the reconciliation and the chat notice are one block sharing one try/catch, which is 5 lines fewer than the two blocks this first landed as and is also the honest shape — nothing may run between closing a row and saying so. THE COMMENT IS 8 LINES AND CARRIES THE ONE THING THAT IS NOT VISIBLE AT THE CALL SITE: the step's POSITION is its premise. It must run before the video resume because only at that instant can no job row in either table belong to a process in this one, which is what makes \"non-terminal and unadopted\" decidable without guessing from a timestamp; after the poller has adopted rows and the first tool call has written one, the same sweep would close live work. That ordering is a clause (§7, which reds when the block is moved below `startVideoJobPoller()`), and the module's own header carries the full argument so this comment stays a premise and a pointer rather than a copy. Growth: 1318 against a 1637 limit. From 1318 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7495,7 +7516,7 @@
     "packages/server/src/healer/diagnostic.ts": 1067,
     "packages/server/src/healer/healer-agent.ts": 1163,
     "packages/server/src/healer/injury-recovery.ts": 1233,
-    "packages/server/src/index.ts": 1310,
+    "packages/server/src/index.ts": 1318,
     "packages/server/src/memory/assembler.ts": 2786,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
@@ -7545,7 +7566,7 @@
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/capability-registry.ts": 251,
     "packages/server/src/services/format-time.ts": 275,
-    "packages/server/src/services/generation-jobs.ts": 449,
+    "packages/server/src/services/generation-jobs.ts": 460,
     "packages/server/src/services/gmail-watcher.ts": 595,
     "packages/server/src/services/image-generation.ts": 476,
     "packages/server/src/services/imessage-bridge.ts": 2322,
@@ -7556,7 +7577,7 @@
     "packages/server/src/services/transcription.ts": 447,
     "packages/server/src/services/tunnel.ts": 730,
     "packages/server/src/services/video-generation.ts": 444,
-    "packages/server/src/services/video-job-poller.ts": 458,
+    "packages/server/src/services/video-job-poller.ts": 468,
     "packages/server/src/techniques/dependencies.ts": 586,
     "packages/server/src/techniques/share-export.ts": 464,
     "packages/server/src/techniques/share-import.ts": 311,
