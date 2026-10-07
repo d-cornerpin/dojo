@@ -70,6 +70,11 @@ function applySchema(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS agents (
       id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'idle'
     );
+    CREATE TABLE IF NOT EXISTS healer_actions (
+      id TEXT PRIMARY KEY, diagnostic_id TEXT, category TEXT, description TEXT,
+      agent_id TEXT, action_taken TEXT, result TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
     CREATE TABLE IF NOT EXISTS config (
       key TEXT PRIMARY KEY, value TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -460,6 +465,65 @@ describe('C7 the healer and this pass do not hold two copies of one predicate', 
     expect(healer).toMatch(/\$\{ORPHANED_PROJECT_WHERE\(/);
   });
 
+  // ⚠ t129 — AND THE JOIN KEY, WHICH IS THE HALF THAT DRIFTED.
+  //
+  // C7 above has always asserted that the PREDICATE has one owner, and the module's own
+  // comment claimed *"'what counts as orphaned' has ONE definition"*. That claim was false:
+  // the KEY the predicate is joined ON was never inside the definition, so each consumer
+  // supplied its own and they disagreed — `diagnostic.ts` and this file's scan on `agent_id`
+  // (the HOLDER), `auto-fix.ts` on `assignee_agent` (the ASSIGNEE). The consequence was a
+  // permanent `critical` false positive on every row the auto-fix had correctly fixed.
+  //
+  // So the join is `ORPHANED_TASK_JOIN` now, and this clause is what stops a FOURTH consumer
+  // re-typing it: every file that reads the orphan predicate must take the join from here too.
+  it('⚠ all THREE consumers take the JOIN from this module, not their own', async () => {
+    const fs = await import('node:fs');
+    const consumers = ['../../healer/diagnostic.ts', '../../healer/auto-fix.ts', '../version-gap-reconcile.ts'];
+    for (const rel of consumers) {
+      const body = fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
+      expect(body, `${rel} must call ORPHANED_TASK_JOIN`).toMatch(/\$\{ORPHANED_TASK_JOIN\(/);
+      // SCOPED TO THE ORPHAN STATEMENT, deliberately. A file-wide ban on
+      // `JOIN agents … ON … .agent_id` over-claims and was measured doing it: `diagnostic.ts`
+      // also carries TRACKER_STALE, which joins on the HOLDER to name the stuck agent and is
+      // a different detector, not a copy of this predicate. So the census reads the SQL
+      // template that actually contains `ORPHANED_TASK_WHERE` and requires that statement to
+      // take its join from the helper rather than writing one.
+      // Comments are stripped FIRST: the prose above these queries names the helper too, and
+      // a comment is not a statement.
+      const code = body.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+      // The marker is the INTERPOLATION `${ORPHANED_TASK_WHERE(` — splitting on backticks also
+      // yields the chunk holding the helper's IMPORT, which names it but is not a statement.
+      const stmts = code.split('`').filter((t) => /\$\{ORPHANED_TASK_WHERE\(/.test(t));
+      expect(stmts.length, `${rel} must contain an orphan statement`).toBeGreaterThan(0);
+      for (const stmt of stmts) {
+        expect(stmt, `${rel} re-types the orphan join inside the orphan statement`)
+          .not.toMatch(/JOIN\s+agents/i);
+        expect(stmt, `${rel}'s orphan statement must use the shared join`)
+          .toMatch(/\$\{ORPHANED_TASK_JOIN\(/);
+      }
+    }
+  });
+
+  it('the JOIN\'s distinctive fragment lives in ONE file', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const SRC = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
+    const walk = (dir: string, acc: string[] = []): string[] => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const fp = path.join(dir, e.name);
+        if (e.isDirectory()) { if (e.name === '__tests__' || e.name === 'migrations') continue; walk(fp, acc); }
+        else if (e.name.endsWith('.ts')) acc.push(fp);
+      }
+      return acc;
+    };
+    const owners = walk(SRC)
+      .filter((f) => /JOIN agents \$\{a\} ON \$\{a\}\.id = \$\{t\}\.assignee_agent/.test(fs.readFileSync(f, 'utf8')))
+      .map((f) => f.slice(SRC.length + 1).split(path.sep).join('/'));
+    expect(owners, 'the orphan join has grown a second copy').toEqual(
+      ['tracker/version-gap-reconcile.ts']);
+  });
+
   it('the predicate\'s distinctive fragments live in ONE file', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');
@@ -484,10 +548,38 @@ describe('C7 the healer and this pass do not hold two copies of one predicate', 
       // The two DISTINCTIVE fragments, narrow enough not to over-claim: `work/occurrences.ts`
       // also tests `a.status = 'terminated'`, on a different subject (terminated-agent
       // occurrences), and that is not a copy of this predicate.
-      return /t\.state IN \('claimed', 'on_deck', 'paused'\) AND \$\{a\}\.status = 'terminated'/.test(body)
+      // t129: the task fragment is re-anchored on the CURRENT text. The old spelling
+      // (`… 'paused') AND ${a}.status = 'terminated'`) stopped existing when the join key
+      // moved inside the predicate, and a census that no longer matches anything passes
+      // VACUOUSLY — which is the "deleting a row to make it green" failure this family of
+      // clauses exists to refuse. Asserted against the live string instead.
+      return /assignee_agent IS NOT NULL AND \$\{a\}\.status = 'terminated'/.test(body)
         || /t\.kind = 'task' AND t\.state <> 'done'/.test(body);
     }).map((f) => f.slice(SRC.length + 1).split(path.sep).join('/'));
     expect(owners, 'the orphan predicate has grown a second copy').toEqual(
       ['tracker/version-gap-reconcile.ts']);
+  });
+
+  // ════════════════════════════════════════════════════════════════════════════════════
+  // ⚠ t129 — THE RULING'S OWN CLAUSE: the diagnostic and the auto-fix select the SAME row
+  //          set, so a row the auto-fix has just fixed cannot still be flagged critical.
+  // ════════════════════════════════════════════════════════════════════════════════════
+  it('⚠ a row the auto-fix has fixed is no longer raised by the diagnostic', async () => {
+    const { runAutoFixes } = await import('../../healer/auto-fix.js');
+    const { ORPHANED_TASK_JOIN, ORPHANED_TASK_WHERE } = await import('../version-gap-reconcile.js');
+    const db = mockDb.current!;
+    seedTrackerTask(db, { id: 'orphan-0001', title: 'left behind', status: 'in_progress', agentId: 'ghost' });
+
+    /** The diagnostic's own row set, read through the shared definition. */
+    const flagged = (): string[] => (db.prepare(
+      `SELECT t.id AS id FROM work t ${ORPHANED_TASK_JOIN('t', 'a')} WHERE ${ORPHANED_TASK_WHERE('t', 'a')}`,
+    ).all() as Array<{ id: string }>).map((r) => r.id);
+
+    expect(flagged(), 'the orphan is flagged before the fix').toEqual(['orphan-0001']);
+    const r = runAutoFixes('diag-conformance', [
+      { code: 'ORPHANED_TASK', severity: 'critical', message: '', detail: '' } as never,
+    ]);
+    expect(r.fixCount, 'the auto-fix acted').toBe(1);
+    expect(flagged(), 'and the diagnostic no longer raises the row it just fixed').toEqual([]);
   });
 });

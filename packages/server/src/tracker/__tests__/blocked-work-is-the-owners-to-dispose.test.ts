@@ -103,7 +103,8 @@ vi.mock('../../config/platform.js', () => ({
 import { trackerUpdateStatus } from '../tools.js';
 import { setTaskStatusResult, updateTask } from '../schema.js';
 import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixture.js';
-import { upholdClaim } from '../../work/tracker-store.js';
+import { upholdClaim, setTrackerStatus } from '../../work/tracker-store.js';
+import { validatedExpr } from '../../work/tracker-view.js';
 import { AUDIT_KIND } from '../../work/audit-trail.js';
 import { PATIENCE_ENTRY } from '../assignee-patience.js';
 
@@ -120,6 +121,9 @@ const TITLE = 'Reconcile the quarterly supplier ledger';
 const BLOCK_REASON = 'the supplier portal credential has expired';
 /** The judge's own notes, verbatim — the sentence that makes the call unambiguous. */
 const UNPROMPTED = 'Cancelling this on my own initiative as the primary agent; nobody asked me to.';
+/** A stated instant for every seeded uphold, comfortably before anything the clauses do. See
+ *  the note in `seedBlockedRow` for why the timeline is declared rather than raced. */
+const UPHELD_AT = 1_700_000_500_000;
 
 function applySchema(db: Database.Database): void {
   createWorkTable(db);
@@ -170,14 +174,34 @@ function applySchema(db: Database.Database): void {
 }
 
 /** Seed the drive's row: blocked, owned by the victim, with a real reason on it. */
-function seedBlockedRow(opts: { upheld: boolean; id?: string; assignee?: string }): string {
+function seedBlockedRow(opts: { upheld: boolean; id?: string; assignee?: string; upheldBy?: string }): string {
   const id = opts.id ?? TASK;
   seedTrackerTask(mockDb.current!, {
     id, title: TITLE, status: 'blocked', agentId: opts.assignee ?? VICTIM,
     description: 'Pull the supplier statements and tie them to the ledger for the quarter.',
     notes: BLOCK_REASON,
   });
-  if (opts.upheld) upholdClaim(id, 'blocked', 'pm', PM, 'PM confirmed the block is real');
+  if (opts.upheld) {
+    upholdClaim(id, 'blocked', 'pm', opts.upheldBy ?? PM, 'PM confirmed the block is real');
+    // ⚠ THE UPHOLD IS BACKDATED, AND THAT IS THE REAL TIMELINE, NOT A CONVENIENCE.
+    //
+    // `validatedExpr`'s freshness clause is `adj.created_at >= lastEntryInto(…,'blocked')`,
+    // compared on a CLOCK. In production an uphold and a later re-block are separated by real
+    // time — minutes or hours — and the scoping then reads exactly as intended (measured on a
+    // real-schema copy: validatedExpr 0 after a resolve-and-reblock). In THIS fixture every
+    // write lands inside one or two milliseconds, so without a stated instant §6's clauses
+    // would be decided by whether two `Date.now()` readings happened to tick — which is a
+    // coin-flip test, not a measurement. Backdating states the timeline instead of racing it.
+    //
+    // Handed up rather than fixed here (pre-existing, and not this lane's fence): the `>=`
+    // comparison is on `created_at`, while `work_events` carries a SEQUENCE and this codebase
+    // has already recorded hitting the same-millisecond defect three times
+    // (`pendingCloseRequestExpr`'s own comment: "Compared by `work_events.id`, never by
+    // `created_at` … a sequence exists here, so a clock is the wrong instrument"). The same
+    // argument applies to this clause; changing it touches every `<state>_validated` reader.
+    mockDb.current!.prepare('UPDATE adjudications SET created_at = ? WHERE work_id = ?')
+      .run(UPHELD_AT, id);
+  }
   return id;
 }
 
@@ -488,5 +512,267 @@ describe('§5 the audit census', () => {
     });
     expect(reassignmentsOf('ride-0006').length, 'the move is recorded').toBe(1);
     expect(censusOf('ride-0006').transition, 'and so is the status change').toBe(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §6 — FIX ROUND, GAP 1: THE UPHOLD QUESTION IS THE BOARD'S OWN, SCOPED.
+//
+// The first cut of this gate hand-wrote its own `EXISTS` over `adjudications` and dropped the
+// third clause `validatedExpr` carries — `adj.created_at >= lastEntryInto(…, 'blocked')`, the
+// uphold must be NEWER than the row's last entry into `blocked`. Measured consequence: a row
+// blocked, upheld, resolved forward, then blocked AGAIN on a fresh obstacle nobody has
+// adjudicated read as STILL UPHELD (gate 1, validatedExpr 0) — so one upheld block marked the
+// row for life and refused the assignee's own ordinary close-out, which is the exact path this
+// gate promises to leave alone and is P5's dependency in the blast.
+//
+// Two copies of one predicate with one of them repaired. §6 holds the single source.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§6 one upheld block does not mark the row for life', () => {
+  /** Drive the row through the full cycle the first cut got wrong. */
+  function reblockOnAFreshObstacle(): void {
+    seedBlockedRow({ upheld: true });
+    // resolved forward — the uphold now belongs to a block that is over
+    expect(trackerUpdateStatus(VICTIM, {
+      taskId: TASK, status: 'in_progress', notes: 'the credential was renewed; resuming',
+    })).toContain('[OK]');
+    // and blocked AGAIN, on something new that nobody has ruled on
+    expect(trackerUpdateStatus(VICTIM, {
+      taskId: TASK, status: 'blocked', notes: 'the ledger export endpoint now returns 500s',
+    })).toContain('[OK]');
+  }
+
+  it('⚠ THE BLOCKER: after resolve-and-reblock the assignee closes out its own ordinary block', () => {
+    reblockOnAFreshObstacle();
+    const out = trackerUpdateStatus(VICTIM, {
+      taskId: TASK, status: 'cancelled', notes: 'the export endpoint is retired; this work is moot',
+    });
+    expect(out, `the stale uphold must not survive the re-block, got: ${out}`).toContain('[OK]');
+    expect(rowOf().state).toBe('abandoned');
+  });
+
+  it('the gate and the BOARD agree on the same row — one source, not two readings', () => {
+    reblockOnAFreshObstacle();
+    const board = (mockDb.current!.prepare(
+      `SELECT ${validatedExpr('w', 'blocked')} AS v FROM work w WHERE w.id = ?`,
+    ).get(TASK) as { v: number }).v;
+    expect(board, 'the board calls this block unvalidated — the stale uphold is out of scope').toBe(0);
+    // And the door's own answer, read through the same expression the gate uses.
+    const door = (mockDb.current!.prepare(
+      `SELECT ${validatedExpr('w', 'blocked', { excludeSystemClosers: true })} AS v FROM work w WHERE w.id = ?`,
+    ).get(TASK) as { v: number }).v;
+    expect(door, 'and so does the door').toBe(0);
+  });
+
+  it('CONTROL: a FRESH uphold on the SECOND block is in scope and does refuse the assignee', () => {
+    reblockOnAFreshObstacle();
+    upholdClaim(TASK, 'blocked', 'pm', PM, 'PM confirmed the new obstacle too');
+    const out = trackerUpdateStatus(VICTIM, { taskId: TASK, status: 'cancelled', notes: 'giving up' });
+    expect(out.startsWith('Error'), `a fresh ruling still binds, got: ${out}`).toBe(true);
+    expect(rowOf().state).toBe('blocked');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §7 — FIX ROUND, GAP 2: A TIMEOUT IS NOT A RULING.
+//
+// Two non-PM writers mint "upheld blocked" automatically:
+//   · `scheduler/runner.ts:316`  upholdClaim(id,'blocked','pm','scheduler',
+//                                  'verdict request timed out; block recorded')
+//   · `pre-call-gates/thrash-gate.ts:180` upholdClaim(task.id,'blocked','engine','engine',
+//                                  'deterministic engine block: …')
+//
+// Under the first cut, a verdict request that merely EXPIRED and every engine thrash
+// circuit-breaker instantly made a row owner-only — permanently, via Gap 1. The gate's
+// justification ("the platform has already confirmed the obstacle is real") is simply untrue
+// of a timeout and of an auto-block: both are the platform FAILING to obtain a ruling.
+//
+// The exclusion follows the platform's own precedent rather than a new judgement —
+// `validatedExpr`'s `done` arm already excludes `SYSTEM_CLOSER_ROLES` for exactly this reason
+// (a close RECEIPT is not a verdict). The door reuses that list. The BOARD's blocked arm is
+// deliberately NOT changed: an engine auto-block IS a validated block for the board, which is
+// ruled and pinned by `two-key-completion.test.ts`'s "the engine can still uphold a BLOCKED
+// claim" — so the one divergence is a named argument on the single source, not a second copy.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§7 machine-minted upholds do not make a row owner-only', () => {
+  it("⚠ the SCHEDULER's timed-out verdict does not bind the assignee", () => {
+    seedBlockedRow({ upheld: true, upheldBy: 'scheduler' });
+    const out = trackerUpdateStatus(VICTIM, {
+      taskId: TASK, status: 'cancelled', notes: 'the supplier portal is retired; this work is moot',
+    });
+    expect(out, `a verdict request that merely expired is not a ruling, got: ${out}`).toContain('[OK]');
+    expect(rowOf().state).toBe('abandoned');
+  });
+
+  it("⚠ the ENGINE's thrash auto-block does not bind the assignee either", () => {
+    seedBlockedRow({ upheld: true, upheldBy: 'engine' });
+    const out = trackerUpdateStatus(VICTIM, {
+      taskId: TASK, status: 'cancelled', notes: 'this task was mis-scoped from the start; dropping it',
+    });
+    expect(out, `an engine circuit-breaker is not a ruling, got: ${out}`).toContain('[OK]');
+  });
+
+  it('nor the healer — the exclusion is the whole SYSTEM_CLOSER_ROLES list, not a special case', () => {
+    seedBlockedRow({ upheld: true, upheldBy: 'healer' });
+    expect(trackerUpdateStatus(VICTIM, {
+      taskId: TASK, status: 'cancelled', notes: 'the supplier portal is retired; this work is moot',
+    })).toContain('[OK]');
+  });
+
+  it('but a machine uphold still does not let a BYSTANDER dispose — the other leg is untouched', () => {
+    seedBlockedRow({ upheld: true, upheldBy: 'scheduler' });
+    const out = trackerUpdateStatus(PRIMARY, { taskId: TASK, status: 'cancelled', notes: UNPROMPTED });
+    expect(out.startsWith('Error'), `the bystander leg stands on its own, got: ${out}`).toBe(true);
+    expect(rowOf().state).toBe('blocked');
+  });
+
+  it("CONTROL: a real PM verdict is NOT a system closer — the PM's agent id binds as before", () => {
+    seedBlockedRow({ upheld: true, upheldBy: PM });
+    const out = trackerUpdateStatus(VICTIM, { taskId: TASK, status: 'cancelled', notes: 'giving up' });
+    expect(out.startsWith('Error'), `a PM ruling must still bind, got: ${out}`).toBe(true);
+  });
+
+  it('and the BOARD still counts an engine uphold as validated — that reading is ruled and unchanged', () => {
+    seedBlockedRow({ upheld: true, upheldBy: 'engine' });
+    const board = (mockDb.current!.prepare(
+      `SELECT ${validatedExpr('w', 'blocked')} AS v FROM work w WHERE w.id = ?`,
+    ).get(TASK) as { v: number }).v;
+    expect(board, "the done-only scoping stays done-only; the door's exclusion is opt-in").toBe(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §8 — FIX ROUND, GAP 3: THE DISPOSAL BELOW THE OLD DOOR.
+//
+// `agent/spawner.ts` computes `taskStatus = … : status === 'fallen' ? 'fallen' : …` and calls
+// `setTrackerStatus` DIRECTLY with `by: 'agent'`. While the gate guarded
+// `tracker/schema.ts`'s two doors, that path was BELOW it — so `complete_task(status="fallen")`
+// still disposed of a PM-ruled blocked row under a model's hand, contradicting the rule the
+// lane states. The gate moved onto `setTrackerStatus` itself (the tracker's one status writer)
+// rather than being copied to a second site, so this shape is now dead at the source.
+//
+// §8 drives the spawner's exact call shape rather than the spawner function, which needs a
+// live apprentice; the call is the thing that was below the gate.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§8 the direct setTrackerStatus path is gated too', () => {
+  it("⚠ THE BYPASS: complete_task(status=\"fallen\")'s own call shape is refused", () => {
+    seedBlockedRow({ upheld: true });
+    const r = setTrackerStatus(TASK, 'fallen', {
+      by: 'agent', actorId: VICTIM,
+      reason: 'apprentice "Worker" called complete_task(status="fallen")',
+    });
+    expect(r.kind, `the direct writer must refuse too, got ${JSON.stringify(r)}`).toBe('refused');
+    expect(rowOf().state).toBe('blocked');
+  });
+
+  it('a BYSTANDER apprentice on the same path is refused as well', () => {
+    seedBlockedRow({ upheld: false });
+    const r = setTrackerStatus(TASK, 'fallen', {
+      by: 'agent', actorId: PRIMARY, reason: 'apprentice called complete_task(status="fallen")',
+    });
+    expect(r.kind).toBe('refused');
+    expect(rowOf().state).toBe('blocked');
+  });
+
+  it('CONTROL: the same path still disposes of an ORDINARY block for its own assignee', () => {
+    seedBlockedRow({ upheld: false });
+    const r = setTrackerStatus(TASK, 'fallen', {
+      by: 'agent', actorId: VICTIM, reason: 'apprentice called complete_task(status="fallen")',
+    });
+    expect(r.kind, 'the apprentice closing out its own unruled block is the normal path').toBe('applied');
+    expect(rowOf().state).toBe('failed');
+  });
+
+  // ⚠ THE SCOPING CLAUSE. A mutant that deleted `taskScope` from the gate's own row read
+  // SURVIVED the first round-2 sweep — nothing pinned that this rule is about the TRACKER's
+  // two nouns. It has to be: `transition()` is the one writer of `work.state` for every kind
+  // OR1 folded onto that table, and T4's fan-out children are `kind='task'` with
+  // `root_kind='a2a_thread'`, settled `by: 'agent'` by `landPiece`. A gate that caught those
+  // would be refusing a join piece's settlement under a rule written about tracker work.
+  it('⚠ SCOPED: a non-tracker work row in `blocked` is none of this gate\'s business', () => {
+    // An ASK, not a tracker task — same table, same state, same model-driven actor.
+    mockDb.current!.prepare(
+      `INSERT INTO work (id, kind, agent_id, assignee_agent, requester, requester_id, root_kind,
+                         root_id, state, intent, wakes, closes_thread, title, opened_at, updated_at)
+       VALUES ('ask-00000001', 'ask', ?, ?, 'agent', ?, 'a2a_thread', 'ask-00000001', 'blocked',
+               'ask', 0, 0, 'a question in flight', 1700000000000, 1700000000000)`,
+    ).run(VICTIM, VICTIM, VICTIM);
+    upholdClaim('ask-00000001', 'blocked', 'pm', PM, 'upheld');
+    mockDb.current!.prepare('UPDATE adjudications SET created_at = ? WHERE work_id = ?')
+      .run(UPHELD_AT, 'ask-00000001');
+
+    const r = setTrackerStatus('ask-00000001', 'cancelled', {
+      by: 'agent', actorId: PRIMARY, reason: 'the thread is dead',
+    });
+    expect(r.kind, `an ask is not a tracker noun, got ${JSON.stringify(r)}`).not.toBe('refused');
+  });
+
+  it('CONTROL: the ENGINE is not model-driven and is not gated on this path', () => {
+    seedBlockedRow({ upheld: true });
+    // G6 makes the engine point at something real, which is the engine's own fence and not
+    // this gate's — so it gets a delivery that resolves, and then the ONLY thing that could
+    // refuse this move is the disposal gate. It does not.
+    mockDb.current!.prepare(
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
+       VALUES ('del-eng01', ?, 1, 'send_message', 'chat', 'delivered', datetime('now'))`,
+    ).run(VICTIM);
+    const r = setTrackerStatus(TASK, 'fallen', {
+      by: 'engine', actorId: 'engine', reason: 'the run was reaped', evidenceRef: 'del-eng01',
+    });
+    expect(r.kind, `an engine disposal is untouched by this gate, got ${JSON.stringify(r)}`).toBe('applied');
+    expect(rowOf().state).toBe('failed');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §9 — THE OWED BYSTANDER CLAUSE. `complete` is actor-independent, and that is WHY it needs
+//      no help from this gate — but the assertion a reader will look for was a copy of the
+//      assignee's clause, so here it is driven as the bystander.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§9 a bystander\'s `complete` on blocked work files Key 1 and moves nothing', () => {
+  it("⚠ the PRIMARY's `complete` on another agent's blocked row: [FILED], still blocked", () => {
+    seedBlockedRow({ upheld: true });
+    mockDb.current!.prepare(
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
+       VALUES ('del-0002', ?, 1, 'send_message', 'chat', 'delivered', datetime('now'))`,
+    ).run(VICTIM);
+    // G7 resolves the delivery against the ROW's agent (`deliveryForTaskClose` reads
+    // `work.agent_id`), not against whoever is calling — so it belongs to the assignee even
+    // when the bystander is the one filing. G7 is satisfied first so the clause measures G9.
+    mockDb.current!.prepare('INSERT INTO turns (agent_id, turn_number) VALUES (?, 1)').run(VICTIM);
+
+    const out = trackerUpdateStatus(PRIMARY, {
+      taskId: TASK, status: 'complete',
+      notes: 'I picked this up and finished it for her',
+      result: 'reconciled the ledger against the supplier statements',
+      evidence: [{ kind: 'claim', claim: 'the ledger ties out for the quarter' }],
+    });
+    // Key 2 needs the owner's authoritative claim or a SYSTEM_CLOSER. A bystander has neither
+    // — and neither does the assignee, which is exactly why `complete` is not this gate's job.
+    expect(out, `a bystander's complete can only FILE, got: ${out}`).toContain('[FILED]');
+    expect(eventsOf().some((e) => e.kind === 'validation_requested'),
+      'the close request is on the record, naming the bystander').toBe(true);
+    expect(eventsOf().find((e) => e.kind === 'validation_requested')!.actor).toBe(PRIMARY);
+    expect(rowOf().state, 'and the row did not move').toBe('blocked');
+  });
+
+  it('an ORDINARY block is the same answer — `complete` never depends on the uphold', () => {
+    seedBlockedRow({ upheld: false });
+    mockDb.current!.prepare(
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
+       VALUES ('del-0003', ?, 1, 'send_message', 'chat', 'delivered', datetime('now'))`,
+    ).run(VICTIM);
+    mockDb.current!.prepare('INSERT INTO turns (agent_id, turn_number) VALUES (?, 1)').run(VICTIM);
+    const out = trackerUpdateStatus(PRIMARY, {
+      taskId: TASK, status: 'complete', notes: 'finished it for her',
+      result: 'reconciled the ledger against the supplier statements',
+      evidence: [{ kind: 'claim', claim: 'the ledger ties out' }],
+    });
+    expect(out).toContain('[FILED]');
+    expect(rowOf().state).toBe('blocked');
   });
 });

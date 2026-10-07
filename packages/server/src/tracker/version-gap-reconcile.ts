@@ -77,9 +77,43 @@ export const VERSION_GAP_REPORT_KEY = 'version_gap_reconcile_last';
  * SHAPE (d): a task dangling in a live state on an assignee that no longer exists.
  * `state IN ('claimed','on_deck','paused')` is the tracker's `in_progress`/`on_deck`/`paused`;
  * the assignee's dormancy is `agents.status = 'terminated'`, the tree's own predicate.
+ *
+ * ── ⚠ t129 — THE JOIN KEY IS PART OF THE DEFINITION NOW, AND IT HAD TO BECOME SO ──
+ *
+ * This predicate's own comment claimed *"'what counts as orphaned' has ONE definition, because
+ * two copies of it is the drift this project keeps closing"* — and that claim was false, because
+ * the KEY the predicate is joined ON was never inside it. Each of the three consumers supplied
+ * its own, and they did not agree: `healer/diagnostic.ts` and this file's own scan joined on
+ * `agent_id` (the HOLDER), while `healer/auto-fix.ts` selected and cleared on `assignee_agent`
+ * (the ASSIGNEE, the nullable twin).
+ *
+ * The consequence was a permanent critical false positive. `agent_id` is `TEXT NOT NULL`, so
+ * "nobody in particular is assigned" can only live in `assignee_agent` (M7 / P706, stated on
+ * `tracker/schema.ts:updateTask`) — which means a CORRECTLY unassigned orphan still has the
+ * terminated agent as its holder. After a successful auto-fix the row was `on_deck` (inside the
+ * state set), `assignee_agent` NULL, `agent_id` still the dead agent — so the diagnostic raised
+ * `severity: 'critical'` ORPHANED_TASK on it on every sweep, for ever, about a row the auto-fix
+ * deliberately and correctly leaves alone. A diagnostic that cries wolf every sweep trains both
+ * the owner and the healer's own active mode to discount the one signal that would catch a REAL
+ * orphan.
+ *
+ * So the key moves INSIDE. `ORPHANED_TASK_JOIN` is the join every consumer must use and
+ * `ORPHANED_TASK_WHERE` now reads the same column, which makes the drift unrepresentable rather
+ * than merely discouraged: a consumer cannot pick a different key without declining the helper
+ * that supplies the join. The ASSIGNEE is the correct key on the merits as well as for
+ * agreement — "is anyone who still exists assigned to this?" is the question, and the holder is
+ * the row's history, not its owner.
+ *
+ * `__tests__/version-gap-reconcile.test.ts` carries the conformance clause: the diagnostic and
+ * the auto-fix must select the SAME row set, and a row the auto-fix has just fixed must not
+ * still be flagged. It also censuses the three consumers for a re-typed join.
  */
+export const ORPHANED_TASK_JOIN = (t = 't', a = 'a'): string =>
+  `JOIN agents ${a} ON ${a}.id = ${t}.assignee_agent`;
+
 export const ORPHANED_TASK_WHERE = (t = 't', a = 'a'): string =>
-  `${taskScope(t)} AND ${t}.state IN ('claimed', 'on_deck', 'paused') AND ${a}.status = 'terminated'`;
+  `${taskScope(t)} AND ${t}.state IN ('claimed', 'on_deck', 'paused')`
+  + ` AND ${t}.assignee_agent IS NOT NULL AND ${a}.status = 'terminated'`;
 
 /**
  * SHAPE (a): every task in the project is DONE and the project is still open.
@@ -221,7 +255,7 @@ export function scanVersionGap(): ReconcileScan {
   // SHAPE (d) — reported, never touched. Task-level data is his named red line.
   const dangling = db.prepare(
     `SELECT t.id AS id, t.title AS title, a.name AS agent_name
-       FROM work t JOIN agents a ON a.id = t.agent_id
+       FROM work t ${ORPHANED_TASK_JOIN('t', 'a')}
       WHERE ${ORPHANED_TASK_WHERE('t', 'a')}`,
   ).all() as Array<Row & { agent_name: string | null }>;
   for (const t of dangling) {

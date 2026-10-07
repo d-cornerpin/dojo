@@ -837,6 +837,13 @@ export async function completeAgent(
       completion_summary: summary,
       ...(taskStatus === 'complete' ? { result: summary, evidence_json: evidenceJson } : {}),
     }), 'completeAgent: completion summary recorded', { taskId: resolvedTaskId });
+    // t129: `taskStatus` is reachable as `'fallen'`, and this call used to be the one
+    // model-driven disposal BELOW the blocked-work gate — so `complete_task(status="fallen")`
+    // could still kill a PM-ruled blocked row. It is gated now because the gate moved onto
+    // `setTrackerStatus` itself, "the tracker's one status writer", rather than being copied
+    // to a second site. Nothing changed at this call; the refusal arrives in `closeRes` and
+    // the branch below already logs it. An apprentice closing out an ORDINARY block, or
+    // reporting `complete`, is untouched — `complete` still files its Key-1 request.
     const closeRes = setTrackerStatus(resolvedTaskId, taskStatus, {
       by: 'agent', actorId: agentId,
       reason: `apprentice "${agent.name}" called complete_task(status="${status}")`,

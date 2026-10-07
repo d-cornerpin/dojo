@@ -25,7 +25,7 @@ import { readMarker } from '../update-state.js';
 import { taskScope, msToText } from '../work/tracker-view.js';
 // SWEEP CORE-2 item 3 — "what counts as orphaned" has ONE definition, shared with the
 // version-gap reconciliation pass that looks for the same two shapes on a different clock.
-import { ORPHANED_TASK_WHERE, ORPHANED_PROJECT_WHERE } from '../tracker/version-gap-reconcile.js';
+import { ORPHANED_TASK_WHERE, ORPHANED_TASK_JOIN, ORPHANED_PROJECT_WHERE } from '../tracker/version-gap-reconcile.js';
 
 const logger = createLogger('healer-diagnostic');
 
@@ -389,10 +389,14 @@ function getTrackerHealth(): DiagnosticItem[] {
   // pass, which looks for the same shape on a different clock. The two mechanisms stay separate
   // — continuous health is not a one-shot version-gap pass — but "what counts as orphaned" has
   // one definition, because two copies of it is the drift this project keeps closing.
+  // t129: the JOIN comes from the shared definition too. It used to be written here on
+  // `t.agent_id` — the HOLDER — while the auto-fix selected and cleared `assignee_agent`, so a
+  // row the auto-fix had correctly fixed was still raised `critical` here on every sweep, for
+  // ever. The key is inside `ORPHANED_TASK_WHERE`'s definition now; see its header.
   const orphanedTasks = db.prepare(`
-    SELECT t.id, t.title, t.agent_id AS assigned_to, a.name as agent_name
+    SELECT t.id, t.title, t.assignee_agent AS assigned_to, a.name as agent_name
     FROM work t
-    JOIN agents a ON a.id = t.agent_id
+    ${ORPHANED_TASK_JOIN('t', 'a')}
     WHERE ${ORPHANED_TASK_WHERE('t', 'a')}
   `).all() as Array<{ id: string; title: string; assigned_to: string; agent_name: string }>;
 

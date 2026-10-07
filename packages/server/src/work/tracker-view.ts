@@ -274,11 +274,38 @@ const SYSTEM_CLOSER_ROLES = `('engine', 'scheduler', 'healer')`;
  * has the scheduler's timed-out verdict (`scheduler/runner.ts:288`); neither is touched by
  * the trigger and neither may be scoped away. Asserted both ways in
  * `work/__tests__/two-key-completion.test.ts` §5.
+ *
+ * ── t129 FIX ROUND: `opts.excludeSystemClosers` — THE ONE DIFFERENCE, DECLARED ──
+ *
+ * The blocked-work DISPOSAL door (`setTrackerStatus`) asks a question of the same rows and
+ * needs the same freshness scoping, but NOT the same answer about machine writers, so it
+ * passes this flag instead of re-typing the expression. The first cut of that gate DID re-type
+ * it and dropped the `lastEntryInto` clause, which made one upheld block mark a row for life:
+ * blocked -> upheld -> resolved forward -> blocked again on a fresh obstacle read as "still
+ * upheld" and refused the assignee's own ordinary close-out. Two copies of one predicate, one
+ * of them repaired, is the drift this file's own comments keep closing — so the gate now calls
+ * THIS builder and the single divergence is an argument with a name.
+ *
+ * WHY THE FLAG RATHER THAN WIDENING THE `done` ARM: the two questions are genuinely different
+ * and both answers are already ruled. The BOARD asks *"is this block validated?"* and an
+ * engine auto-block IS a validated block — the paragraph above is that ruling, and
+ * `two-key-completion.test.ts`'s *"the engine can still uphold a BLOCKED claim"* pins it. The
+ * DOOR asks *"has an authority RULED on this block, such that disposing of it is the owner's
+ * call?"* — and of `scheduler/runner.ts:316` (`'verdict request timed out; block recorded'`)
+ * and `pre-call-gates/thrash-gate.ts:180` (`'deterministic engine block'`) that is false: a
+ * verdict request that merely EXPIRED, and a thrash circuit-breaker, are the platform failing
+ * to get a ruling rather than giving one. Treating either as a ruling would hand rows to the
+ * owner permanently on the strength of a timeout. The exclusion list is the same
+ * `SYSTEM_CLOSER_ROLES` the `done` arm uses, read from the same constant, so a machine writer
+ * added to one list is excluded from both.
  */
-export const validatedExpr = (a: string, state: WorkState): string =>
+export const validatedExpr = (
+  a: string, state: WorkState, opts?: { excludeSystemClosers?: boolean },
+): string =>
   `(CASE WHEN EXISTS (SELECT 1 FROM adjudications adj`
   + ` WHERE adj.work_id = ${a}.id AND adj.claim_state = '${state}' AND adj.verdict = 'upheld'`
-  + (state === 'done' ? ` AND adj.by_agent NOT IN ${SYSTEM_CLOSER_ROLES}` : '')
+  + (state === 'done' || opts?.excludeSystemClosers
+      ? ` AND adj.by_agent NOT IN ${SYSTEM_CLOSER_ROLES}` : '')
   + `   AND adj.created_at >= COALESCE(${lastEntryInto(a, state)}, 0)) THEN 1 ELSE 0 END)`;
 
 /**

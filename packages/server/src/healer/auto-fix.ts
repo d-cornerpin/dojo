@@ -7,6 +7,8 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
+// t129: the orphan definition — predicate AND join key — comes from its one source.
+import { ORPHANED_TASK_JOIN, ORPHANED_TASK_WHERE } from '../tracker/version-gap-reconcile.js';
 import { broadcast } from '../gateway/ws.js';
 // SWEEP CORE-2 item 2: the Healer's six status resets go through the ONE writer
 // (`agent/agent-status.ts`, PHASE-6 T10). Same column, same value, same `updated_at`; the
@@ -21,7 +23,6 @@ import { activeRuns } from '../agent/shared-state.js';
 import { v4 as uuidv4 } from 'uuid';
 import { sanitizeMessagesOnModelChange } from '../agent/model-switch.js';
 import type { DiagnosticItem } from './diagnostic.js';
-import { taskScope } from '../work/tracker-view.js';
 import { ORPHANED_PROJECT_WHERE } from '../tracker/version-gap-reconcile.js';
 import { setTrackerStatus, patchWork, deliveryForCompletedChildren } from '../work/tracker-store.js';
 import { workSettled, noteUnsettled } from '../work/store.js';
@@ -330,23 +331,20 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
   // back pointing at a group nobody chose — the `work_update:reassign` door clears the same
   // trio.
   //
-  // ⚠ WHAT IS STILL OPEN, AND IT IS A DIFFERENT FENCE (handed up, t129-report):
-  // `healer/diagnostic.ts` raises `ORPHANED_TASK` through the SHARED `ORPHANED_TASK_WHERE`
-  // predicate (`tracker/version-gap-reconcile.ts:81`), which keys on `agent_id` — the HOLDER.
-  // A correctly-unassigned row still has the terminated agent as its holder, so that
-  // diagnostic keeps raising it. The selection below is therefore keyed on the ASSIGNEE, which
-  // makes THIS pass idempotent (a row it has already cleared is not selected again, so it
-  // cannot report the same fix every day for ever). Making the two agree means deciding what
-  // an orphan's HOLDER becomes — the spine's answer is the creator, `openTrackerTask`'s own
-  // shape — and that changes a predicate shared with the version-gap reconciliation pass,
-  // which is outside this lane's fence.
+  // t129 FIX ROUND — AND THE SELECTION IS NOT THIS FILE'S TO WRITE ANY MORE.
+  // The first cut keyed this query on the ASSIGNEE (correctly) while `healer/diagnostic.ts`
+  // and the version-gap scan still joined on the HOLDER, so a row THIS function had just
+  // fixed was raised `critical` by the diagnostic on every sweep, for ever. That was a second
+  // copy of one definition with only one of them repaired — the same drift class as the
+  // disposal gate's re-typed uphold predicate, in the same lane. Both the JOIN and the WHERE
+  // now come from `ORPHANED_TASK_JOIN`/`ORPHANED_TASK_WHERE`, and the key lives INSIDE the
+  // definition so a fourth consumer cannot pick a different one. Keying on the assignee is
+  // also what makes this pass idempotent: a row it has cleared is no longer selected.
   const db = getDb();
   const orphans = db.prepare(`
-    SELECT w.id AS id, w.state AS state FROM work w
-     WHERE ${taskScope('w')}
-       AND w.assignee_agent IS NOT NULL
-       AND w.assignee_agent IN (SELECT id FROM agents WHERE status = 'terminated')
-       AND w.state IN ('claimed', 'on_deck', 'paused')
+    SELECT w.id AS id, w.state AS state
+      FROM work w ${ORPHANED_TASK_JOIN('w', 'a')}
+     WHERE ${ORPHANED_TASK_WHERE('w', 'a')}
   `).all() as Array<{ id: string; state: string }>;
   let changed = 0;
   for (const o of orphans) {
