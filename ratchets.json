@@ -7416,6 +7416,13 @@
       "to": 253,
       "by": "t123 the effort verdict becomes a declared call purpose",
       "why": "244 -> 253 (+9: +1 code, +9 comment, -1). The code is one new member of the `call.request_type` domain, `effort_verdict`. The comment states the widening rather than leaving a report to meet a novel string: these rows used to land here as `agent_turn` precisely BECAUSE the verdict was asked for through the turn plumbing, which is the defect t123 fixed. It also records the trap that cost a test run — the member list admits STRING LITERALS ONLY, so a comment placed inside the array reads as a non-literal element and fails `the-telemetry-whitelist-admits-no-free-text.test.ts`. Hence the note above the declaration, not in it."
+    },
+    {
+      "path": "packages/server/src/tracker/pm-agent.ts",
+      "from": 3025,
+      "to": 3090,
+      "by": "t123 FIX ROUND — single-flight serialisation on the effort review, a lane-introduced regression",
+      "why": "3025 -> 3090 (+65: +15 code, +47 comment, -0). A SECOND raise on this file in the same lane, and it pays for fixing a regression the lane itself introduced — recorded as its own entry rather than folded into the first, because a raise that hides a correction is the thing $raises exists to prevent. Round 1 deleted the `pmActiveRuns` busy-deferral on the correct reasoning that a direct model call turns nothing and races nothing; what that missed is that the deferral was ALSO the only thing serialising the review, by accident — the old path awaited `handleMessage`, the runtime held the PM in `activeRuns` for the duration, and a concurrent review bailed on it. `runPMReview` is fire-and-forget from two sites and awaits the review in a loop, and the durable pending marker clears only at the END, so a slow call meant the next 60s tick started a DUPLICATE review of the same task — and two `circling` verdicts can land two rung-2 pokes at an assignee. The 15 code lines are a task-keyed in-flight Set, a guarded early return, a try/finally release, and the `AbortSignal.timeout` that round 1 failed to copy from the precedent it copied everything else from (`work/ask-title.ts`'s own latency budget) — without which the new guard could wedge a task out of review for ever. The 47 comment lines carry the four verified re-entrancy hops and the argument for why a single-flight is the right shape where the old per-PM deferral was not: it defers only when THIS review is already running, which is never a lost review, where the old one deferred on an unrelated condition and silently dropped every review that landed while the PM was busy."
     }
   ],
   "maxNewFileLines": 400,
@@ -7694,7 +7701,7 @@
     "packages/server/src/tools/work-verbs.ts": 399,
     "packages/server/src/tracker/assignee-patience.ts": 208,
     "packages/server/src/tracker/delivery-evidence.ts": 320,
-    "packages/server/src/tracker/pm-agent.ts": 3025,
+    "packages/server/src/tracker/pm-agent.ts": 3090,
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
     "packages/server/src/tracker/schema.ts": 1105,
     "packages/server/src/tracker/task-stamps.ts": 296,
