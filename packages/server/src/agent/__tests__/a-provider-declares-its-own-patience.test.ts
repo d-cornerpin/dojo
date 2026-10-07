@@ -28,7 +28,7 @@
 //  5. The two bounds are INDEPENDENT: declaring patience for the first token says nothing
 //     about how long a mid-stream silence may run, and vice versa.
 // ════════════════════════════════════════════════════════════════════════════════════
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   makeStreamWatchdog,
   STREAM_FIRST_CHUNK_TIMEOUT_MS,
@@ -133,7 +133,26 @@ describe('T64b — a stored value that is not a coherent bound is not a declarat
   });
 });
 
+// ── t128 — THESE FOUR CLAUSES RUN ON A FAKE CLOCK, AND BOTH DIRECTIONS NEEDED IT ──
+//
+// They each did `await sleep(700)` against bounds of 200 (STANDING) and 1,400 (DECLARED), and the
+// two directions fail for OPPOSITE reasons under load:
+//
+//   * the `timedOut() === true` clauses need the 200ms timer to have fired by the time a 700ms
+//     sleep returns — under starvation the timer can be late and the clause reds;
+//   * the `timedOut() === false` clauses need 700ms of sleep NOT to have stretched past 1,400ms —
+//     a NON-EVENT, which no amount of awaiting can make deterministic, because there is nothing to
+//     await. My t121 sweep flagged this file as the one it could not fix by waiting for an event.
+//
+// `makeStreamWatchdog` is built on `setTimeout`, so a fake clock makes both exact: time advances by
+// the amount the test names, the watchdog's timer fires if and only if its bound was crossed, and
+// no sleep is racing anything. The numbers below are the numbers that were always there.
 describe('T64b — the resolved numbers are what the watchdog is armed with', () => {
+  // The fake clock is installed per case and removed after, so a leaked fake timer cannot reach the
+  // real-network clauses elsewhere in this file and freeze them.
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
   // Millisecond-scaled exactly as `stream-watchdog.test.ts` does: the bounds are injectable
   // parameters, so the production logic runs unchanged at a size a suite can wait for. The
   // shape is the owner's: NOTHING arrives for longer than the standing bound, and the
@@ -143,14 +162,14 @@ describe('T64b — the resolved numbers are what the watchdog is armed with', ()
 
   it('the standing bound fires when the first token is late', async () => {
     const w = makeStreamWatchdog(undefined, STANDING, STANDING);
-    await sleep(700);
+    await vi.advanceTimersByTimeAsync(700);   // past a 200ms bound, exactly
     expect(w.timedOut()).toBe(true);
     w.finish();
   });
 
   it('a longer declared bound carries the same wait through', async () => {
     const w = makeStreamWatchdog(undefined, DECLARED, STANDING);
-    await sleep(700);
+    await vi.advanceTimersByTimeAsync(700);   // half of a 1,400ms bound, exactly
     expect(w.timedOut()).toBe(false);
     expect(w.signal.aborted).toBe(false);
     w.finish();
@@ -172,7 +191,7 @@ describe('T64b — the resolved numbers are what the watchdog is armed with', ()
     const w = makeStreamWatchdog(undefined, DECLARED, STANDING);
     w.bump();
     w.contentStarted();
-    await sleep(700);
+    await vi.advanceTimersByTimeAsync(700);   // past the 200ms IDLE bound content switched it to
     expect(w.timedOut()).toBe(true);
     expect(w.firstChunkTimedOut()).toBe(false); // the IDLE bound fired, which is the point
     w.finish();
@@ -184,7 +203,7 @@ describe('T64b — the resolved numbers are what the watchdog is armed with', ()
     // silently became "the idle bound governs once the socket says anything".
     const w = makeStreamWatchdog(undefined, DECLARED, STANDING);
     w.bump();
-    await sleep(700);
+    await vi.advanceTimersByTimeAsync(700);   // still inside the 1,400ms first-chunk grant
     expect(w.timedOut()).toBe(false);
     w.finish();
   });

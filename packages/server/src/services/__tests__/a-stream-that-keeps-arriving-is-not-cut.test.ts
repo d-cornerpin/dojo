@@ -28,7 +28,7 @@
 // would be testing the operator's machine.
 // ════════════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,13 +47,28 @@ function stripped(rel: string): string {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// ── t128 — §1 RUNS ON A FAKE CLOCK ──
+//
+// These six clauses drove `idleStreamDeadline` with real `sleep`s against real bounds: 40ms gaps
+// under a 120ms bound, 200ms of silence against 60ms, and so on. My own t121 sweep flagged this
+// file — "same family… margins are 3x rather than 1.3x, so it has not been seen to red, but it is
+// the same bet" — and by now three other members of that family have cost a gate-red each, one of
+// them in a file I wrote with exactly that note attached.
+//
+// `idleStreamDeadline` is built on `setTimeout`, so a fake clock makes every one of these exact in
+// BOTH directions: the survival clauses advance less than the bound, the kill clauses advance past
+// it, and nothing is racing anything. Every number below is the number that was always there — no
+// bound and no margin was changed.
 describe('§1 the idle-stream bound: a stream that keeps arriving survives', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
   it('THE RED: chunks every 40ms under a 120ms idle bound survive well past the total', async () => {
     const d = idleStreamDeadline({ firstByteMs: 200, idleMs: 120, ceilingMs: 10_000 });
 
     // ~400ms of streaming — several times the idle bound. A flat bound of 120ms kills this.
     for (let i = 0; i < 10; i += 1) {
-      await sleep(40);
+      await vi.advanceTimersByTimeAsync(40);
       d.bump();
     }
 
@@ -65,7 +80,7 @@ describe('§1 the idle-stream bound: a stream that keeps arriving survives', () 
   it('THE OTHER DIRECTION: a stream that goes quiet past the bound IS cut', async () => {
     const d = idleStreamDeadline({ firstByteMs: 500, idleMs: 60, ceilingMs: 10_000 });
     d.bump();
-    await sleep(200);
+    await vi.advanceTimersByTimeAsync(200);
 
     expect(d.signal.aborted, 'silence is still a kill').toBe(true);
     expect(d.fired(), 'and it is OUR bound that fired, which is what makes the message honest').toBe(true);
@@ -74,7 +89,7 @@ describe('§1 the idle-stream bound: a stream that keeps arriving survives', () 
 
   it('a server that never sends a first byte is cut on the first-byte bound', async () => {
     const d = idleStreamDeadline({ firstByteMs: 60, idleMs: 10_000, ceilingMs: 10_000 });
-    await sleep(200);
+    await vi.advanceTimersByTimeAsync(200);
 
     expect(d.signal.aborted).toBe(true);
     d.done();
@@ -85,7 +100,7 @@ describe('§1 the idle-stream bound: a stream that keeps arriving survives', () 
     // a byte at a time would otherwise hold a slot open indefinitely.
     const d = idleStreamDeadline({ firstByteMs: 10_000, idleMs: 10_000, ceilingMs: 150 });
     for (let i = 0; i < 6; i += 1) {
-      await sleep(40);
+      await vi.advanceTimersByTimeAsync(40);
       d.bump();
     }
 
@@ -95,10 +110,18 @@ describe('§1 the idle-stream bound: a stream that keeps arriving survives', () 
   });
 
   it('CONTROL: an external stop still cuts, and is NOT misreported as our deadline', async () => {
+    // t128: the external signal is an explicit `AbortController`, not `AbortSignal.timeout`.
+    // Two reasons, and the first is a measured trap: `AbortSignal.timeout` is a PLATFORM api, not a
+    // patched `setTimeout`, so a fake clock cannot advance it and the stop never arrives — this
+    // clause went red on exactly that when §1 moved to fake timers. The second is that the subject
+    // needs no clock at all: "a stop is not misreported as our deadline" is about WHICH signal
+    // fired, so aborting it outright is both exact and closer to what a user's stop actually is.
+    const external = new AbortController();
     const d = idleStreamDeadline({
-      firstByteMs: 10_000, idleMs: 10_000, ceilingMs: 10_000, external: AbortSignal.timeout(40),
+      firstByteMs: 10_000, idleMs: 10_000, ceilingMs: 10_000, external: external.signal,
     });
-    await sleep(140);
+    external.abort();
+    await vi.advanceTimersByTimeAsync(140);
 
     expect(d.signal.aborted, 'the agent\'s stop still reaches the stream').toBe(true);
     expect(d.fired(), 'a stop is not a timeout and must never wear its name').toBe(false);
@@ -108,7 +131,7 @@ describe('§1 the idle-stream bound: a stream that keeps arriving survives', () 
   it('CONTROL: done() disarms both timers', async () => {
     const d = idleStreamDeadline({ firstByteMs: 50, idleMs: 50, ceilingMs: 60 });
     d.done();
-    await sleep(180);
+    await vi.advanceTimersByTimeAsync(180);
 
     expect(d.signal.aborted, 'a settled stream has no live clock').toBe(false);
   });

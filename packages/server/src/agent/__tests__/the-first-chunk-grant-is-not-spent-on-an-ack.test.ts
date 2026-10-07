@@ -119,7 +119,12 @@ describe('T72b/2 — a content-free frame does not spend the first-chunk grant',
     const external = new AbortController();
     const w = makeStreamWatchdog(external.signal, FIRST_CHUNK, IDLE);
     external.abort();
-    await sleep(10);
+    // t128: the `sleep(10)` that used to sit here is gone, and nothing replaces it.
+    // `AbortSignal.any` reflects a source's abort SYNCHRONOUSLY, so there was never anything to
+    // wait for — and the wait was the only thing that could go wrong: a 10ms sleep stretching past
+    // the 400ms FIRST_CHUNK bound under load would fire the watchdog and red the `timedOut()`
+    // assertion below. A 40x margin is the largest in this family, which is why it never bit; it is
+    // also free to remove, so it goes with the rest of them.
     expect(w.signal.aborted).toBe(true);
     expect(w.timedOut()).toBe(false);
     expect(w.firstChunkTimedOut()).toBe(false);
