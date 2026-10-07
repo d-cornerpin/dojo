@@ -4927,11 +4927,29 @@ export async function trackerOverride(
     // Override approval is AUTHORITATIVE, and that word is now the argument: `transition()`
     // files the upheld adjudication in the same transaction as the move, which is what the
     // three CASE-WHEN flag assignments were imitating by hand.
-    const updated = setTaskStatus(req.taskId, req.requestedStatus as TrackerStatus, {
+    // ⚠ t130 — THE RESULT, NOT A BARE BOOLEAN, because this door can now be REFUSED.
+    //
+    // `setTaskStatus` answers `Task | null`, and a null was rendered below as "the task was
+    // deleted" — which was the only possible cause when the only refusals here were races.
+    // It is not any more: the blocked-work disposal gate refuses a PM override of a PM-upheld
+    // block (run 5 caught this exact call forcing one to "cancelled" ~35 s after arm), and
+    // reporting that as a DELETED TASK would be the engine lying to the PM about why — and
+    // sending it to re-read a row that is still there. So the verdict is read, and the
+    // refusal is rendered by `closeRefusalText`, the SAME renderer the status door uses: the
+    // PM gets the escalation pointer and the instruction not to retry, in one wording, from
+    // one place. A second hand-written refusal here would be the copy the t129 fix round
+    // existed to remove.
+    const ov = setTaskStatusResult(req.taskId, req.requestedStatus as TrackerStatus, {
       by: 'pm', actorId: pmAgentId, claim: 'authoritative',
       reason: `PM approved override request ${req.id}: ${reason}`,
       resultDeliveryId: req.requestedStatus === 'complete' ? deliveryForTaskClose(req.taskId) : null,
     });
+    if (!workSettled(ov.result)) {
+      // The override request stays PENDING on purpose: it has not been answered, and
+      // retiring it here would lose the ask that the owner is the one to rule on.
+      return closeRefusalText(req.taskId, ov.result, String(req.requestedStatus));
+    }
+    const updated = ov.task;
     if (!updated) return `Error: task ${req.taskId} was deleted before override approval could land.`;
     resetRevertCount(req.taskId, pmAgentId, `override ${req.id} approved`);
     clearUserVerdict(req.taskId, pmAgentId, `override ${req.id} approved`);

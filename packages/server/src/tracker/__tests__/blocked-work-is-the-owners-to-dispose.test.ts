@@ -100,10 +100,11 @@ vi.mock('../../config/platform.js', () => ({
   isPMAgent: (id: string) => id === PM,
 }));
 
-import { trackerUpdateStatus } from '../tools.js';
+import { trackerUpdateStatus, trackerOverride } from '../tools.js';
 import { setTaskStatusResult, updateTask } from '../schema.js';
 import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 import { upholdClaim, setTrackerStatus } from '../../work/tracker-store.js';
+import { fileOverrideRequest } from '../../work/override-requests.js';
 import { validatedExpr } from '../../work/tracker-view.js';
 import { AUDIT_KIND } from '../../work/audit-trail.js';
 import { PATIENCE_ENTRY } from '../assignee-patience.js';
@@ -308,11 +309,30 @@ describe("§1 the primary cannot dispose of another agent's PM-upheld blocked wo
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// §2 — THE OWNER DOOR STILL DISPOSES. The gate is a predicate on material already in hand,
-//      so the door that carries the claim is unchanged BY CONSTRUCTION — and this proves it.
+// §2 — THE OWNER DISPOSES. THE PM ESCALATES. (⚠ INVERTED BY t130 — see below.)
+//
+// ── WHAT THIS SECTION USED TO ASSERT, AND WHY IT WAS WRONG ──
+// The second clause here read *"the PM's AUTHORITATIVE door disposes too — it is the claim
+// that decides, not the name"*, and it PASSED, and that is exactly what made it dangerous: it
+// was a green test holding a hole open. Run 5 of the blast caught the consequence — the acting
+// PM, in its own turn, with its own authored reason:
+//
+//     work_validate { action: "override", approve: true, override_request_id: "55c14cb2-…" }
+//     → "[OK] override approved. Task a3dee56a forced to \"cancelled\"."
+//
+// on a PM-UPHELD blocked row, ~35 s after the probe armed, three orders of magnitude inside the
+// 1200 s escalate floor. `tracker/tools.ts`'s override-approve door passes
+// `claim: 'authoritative'` beneath a comment stating its purpose — *"Force the status through
+// (bypass engine hard gate)"* — so the gate's exemption, written for the OWNER, was being
+// claimed by a verb a MODEL calls.
+//
+// "It is the claim that decides, not the name" is the right abstraction for the owner and the
+// WRONG one for a model-callable verb. The claim carried two meanings; the gate now names the
+// one it means. So the clause is inverted rather than deleted: the hole it used to pin open is
+// now pinned SHUT, and the owner's door is the passing control beside it.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('§2 the owner still disposes of blocked work', () => {
+describe('§2 the owner disposes; the PM escalates', () => {
   it("the dashboard PUT's own authority disposes of a PM-upheld block", () => {
     seedBlockedRow({ upheld: true });
     const { result } = setTaskStatusResult(TASK, 'cancelled', {
@@ -323,14 +343,89 @@ describe('§2 the owner still disposes of blocked work', () => {
     expect(rowOf().state).toBe('abandoned');
   });
 
-  it("the PM's AUTHORITATIVE door disposes too — it is the claim that decides, not the name", () => {
+  it("⚠ INVERTED (t130): the PM's authoritative claim does NOT dispose of a PM-upheld block", () => {
     seedBlockedRow({ upheld: true });
     const { result } = setTaskStatusResult(TASK, 'fallen', {
       by: 'pm', actorId: PM, claim: 'authoritative',
       reason: 'PM ruled the block fatal',
     });
+    expect(result.kind, `an authoritative-shaped PM claim must not dispose, got ${JSON.stringify(result)}`)
+      .toBe('refused');
+    expect(rowOf().state, 'the row waits for the owner').toBe('blocked');
+  });
+
+  it('the exemption names the OWNER, so the claim alone is not the key', () => {
+    // The same call, the same claim, one word different. That word is the whole fix.
+    seedBlockedRow({ upheld: true, id: 'pair-owner-01' });
+    seedBlockedRow({ upheld: true, id: 'pair-pm-0001' });
+    const asOwner = setTaskStatusResult('pair-owner-01', 'cancelled', {
+      by: 'owner', actorId: 'user', claim: 'authoritative', reason: 'the owner called it off',
+    }).result;
+    const asPm = setTaskStatusResult('pair-pm-0001', 'cancelled', {
+      by: 'pm', actorId: PM, claim: 'authoritative', reason: 'the PM called it off',
+    }).result;
+    expect(asOwner.kind).toBe('applied');
+    expect(asPm.kind).toBe('refused');
+  });
+
+  it('⚠ the authoritative CLAIM buys a model-driven actor nothing — the fact the gate turns on', () => {
+    // This is what t130 actually changed, stated as the rule rather than as a line of code:
+    // the claim is not a key here. `store.ts:AUTHORITIES` lets exactly `owner` and `pm`
+    // assert it, the owner is exempt because the owner is not a model, and the PM is gated
+    // BECAUSE it is one — with or without the claim, and whatever the claim's shape.
+    for (const claim of ['authoritative', undefined] as const) {
+      seedBlockedRow({ upheld: true, id: `claimkey-${claim ? 'a' : 'n'}1` });
+      const { result } = setTaskStatusResult(`claimkey-${claim ? 'a' : 'n'}1`, 'cancelled', {
+        by: 'pm', actorId: PM, claim, reason: 'the PM called it off',
+      });
+      expect(result.kind, `claim=${String(claim)} must not open this door`).toBe('refused');
+    }
+  });
+
+  it('CONTROL: the non-model actors are all still exempt — the owner is not a special case', () => {
+    // The gate's own complement, driven: `Actor` is a closed union and `MODEL_DRIVEN` is
+    // {agent, pm}, so these four are exempt by the same single predicate the owner uses.
+    // Pinned because t130 deleted the separate owner clause, and this is the fact that
+    // replaced it.
+    mockDb.current!.prepare(
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
+       VALUES ('del-nm001', ?, 1, 'send_message', 'chat', 'delivered', datetime('now'))`,
+    ).run(VICTIM);
+    const actors = [
+      { by: 'owner' as const, claim: 'authoritative' as const, ev: null },
+      { by: 'engine' as const, claim: undefined, ev: 'del-nm001' },
+      { by: 'scheduler' as const, claim: undefined, ev: null },
+      { by: 'healer' as const, claim: undefined, ev: null },
+    ];
+    for (const [n, a] of actors.entries()) {
+      const id = `nonmodel-${n}1`;
+      seedBlockedRow({ upheld: true, id });
+      const { result } = setTaskStatusResult(id, 'cancelled', {
+        by: a.by, actorId: a.by, claim: a.claim, reason: `${a.by} disposed of it`,
+        evidenceRef: a.ev,
+      });
+      expect(result.kind, `${a.by} must not be gated, got ${JSON.stringify(result)}`).not.toBe('refused');
+    }
+  });
+
+  it("the OWNER's authority is not gated even on an ORDINARY block", () => {
+    seedBlockedRow({ upheld: false });
+    const { result } = setTaskStatusResult(TASK, 'cancelled', {
+      by: 'owner', actorId: 'user', claim: 'authoritative', reason: 'not worth doing',
+    });
     expect(result.kind).toBe('applied');
-    expect(rowOf().state).toBe('failed');
+  });
+
+  it('CONTROL: a PM authoritative move that is NOT a disposal is untouched — the five other doors', () => {
+    // reject-pause / reject-close / reject-block resolve a row FORWARD, and retask moves it to
+    // in_progress. None names a disposal, so none is affected by the narrowing. Driven rather
+    // than asserted from the ALLOWED_TARGETS reading alone.
+    seedBlockedRow({ upheld: true });
+    const { result } = setTaskStatusResult(TASK, 'in_progress', {
+      by: 'pm', actorId: PM, claim: 'authoritative', reason: 'PM rejected the block',
+    });
+    expect(result.kind, `forward is never the refusal, got ${JSON.stringify(result)}`).toBe('applied');
+    expect(rowOf().state).toBe('claimed');
   });
 });
 
@@ -774,5 +869,133 @@ describe('§9 a bystander\'s `complete` on blocked work files Key 1 and moves no
     });
     expect(out).toContain('[FILED]');
     expect(rowOf().state).toBe('blocked');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §10 — t130: THE CALL THE INSTRUMENTS CAUGHT, driven end to end through the real verb.
+//
+// Run 5 of the v3.3.2 blast (`bmuy529vzhn`), with t129 live at `1d6bb8ca`. Not a sweep, not
+// the thrash gate, not a reaper — a genuine model tool call in the acting PM's own turn, with
+// a model-authored reason, against a PM-upheld blocked row:
+//
+//   seq 92222  assistant  13:27:30
+//     work_validate { action:"override", approve:true, override_request_id:"55c14cb2-…",
+//                     reason:"a3dee56a is the same harness fixture family: fictional dusk-shift
+//                             lantern depot manifest … no deliverable…" }
+//   seq 92223  tool       13:27:30
+//     [OK] override approved. Task a3dee56a forced to "cancelled".
+//
+// The move landed 13:27:32 — ~35 s after the probe armed at 13:26:57, against a 1200 s
+// escalate floor. §2 above pins the gate; this pins the DOOR, because a gate that is right and
+// a door that reports its refusal as "the task was deleted" still leaves the PM re-reading a
+// row that never moved.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe("§10 the PM's override verb cannot force a PM-upheld block to a disposal", () => {
+  /** File the pending ask the caught call answered. */
+  const fileAsk = (status: string, id = TASK): string =>
+    fileOverrideRequest(id, {
+      requestedBy: VICTIM, requestedStatus: status,
+      justification: 'the supplier portal credential has expired and nobody can reissue it',
+    });
+
+  it('⚠ THE CAUGHT CALL: work_validate(action="override", approve:true) is REFUSED, row still blocked', async () => {
+    seedBlockedRow({ upheld: true });
+    const askId = fileAsk('cancelled');
+
+    const out = await trackerOverride(PM, {
+      override_request_id: askId, approve: true,
+      reason: 'the same harness fixture family: a manifest against a supplier index that never resolves, no deliverable',
+    });
+
+    // The executor derives `isError` from a leading "Error", so this IS the `isError: true`
+    // the fix owes — and the `[OK] override approved … forced to "cancelled"` string the
+    // instruments captured must not come back.
+    expect(out.startsWith('Error'), `the caught call must now come back isError:true, got: ${out}`).toBe(true);
+    expect(out).not.toContain('[OK]');
+    expect(out).not.toMatch(/forced to/);
+
+    expect(rowOf().state, 'the row is still blocked and still the victim\'s').toBe('blocked');
+    expect(rowOf().agent_id).toBe(VICTIM);
+    expect(eventsOf().filter((e) => e.kind === 'transition'), 'nothing moved it').toEqual([]);
+  });
+
+  it('the refusal carries the ESCALATION POINTER, not a bare no and not a false cause', async () => {
+    seedBlockedRow({ upheld: true });
+    const out = await trackerOverride(PM, {
+      override_request_id: fileAsk('cancelled'), approve: true, reason: 'no deliverable here',
+    });
+    // The old null-path rendered every refusal as a deletion. That would send the PM to
+    // re-read a row that is still there, and it would be the engine stating a false cause.
+    expect(out, 'the door must not claim the task was deleted').not.toMatch(/was deleted/);
+    expect(out.toLowerCase(), 'it names who rules').toMatch(/owner|the user/);
+    expect(out, 'and the door that escalates it').toContain('work_close_request');
+    expect(out, 'and tells the model to stop rather than loop').toMatch(/do NOT retry/i);
+  });
+
+  it('`fallen` through the same verb is the same answer', async () => {
+    seedBlockedRow({ upheld: true });
+    const out = await trackerOverride(PM, {
+      override_request_id: fileAsk('fallen'), approve: true, reason: 'this one failed outright',
+    });
+    expect(out.startsWith('Error')).toBe(true);
+    expect(rowOf().state).toBe('blocked');
+  });
+
+  it('the override ask stays PENDING — a refused approval has not answered it', async () => {
+    seedBlockedRow({ upheld: true });
+    const askId = fileAsk('cancelled');
+    await trackerOverride(PM, { override_request_id: askId, approve: true, reason: 'no deliverable' });
+    const { findOverrideRequest } = await import('../../work/override-requests.js');
+    expect(findOverrideRequest(askId)?.status,
+      'retiring the ask would lose the question the owner is the one to rule on').toBe('pending');
+  });
+
+  // ⚠ WIDER THAN THE TRIAGE DESCRIBED, AND MEASURED RATHER THAN ASSUMED.
+  //
+  // I wrote this clause expecting the PM to still override an UNRULED block, and it failed —
+  // so the assumption was wrong, not the code. The reason is the gate's OTHER leg, shipped in
+  // t129 and reviewed then: a BYSTANDER may not dispose of a blocked row, and the PM is never
+  // the assignee of a worker's task. So once the exemption names the owner, the PM's
+  // override-approve can no longer dispose of ANY blocked row — not only an upheld one.
+  //
+  // That is the ruling rather than an overreach, and it is worth stating because the triage's
+  // fix note emphasised the upheld case. OR-PM-1v2 is unconditional: blocked/declined work
+  // *"is NOT reassignable by agents — it ESCALATES to the user"*, and disposal is strictly
+  // worse than the reassignment it fences. An unruled block is work nobody has adjudicated at
+  // all, so a model forcing it to `cancelled` pre-escalation is the same pre-emption with less
+  // evidence behind it, not more entitlement. The PM's route is the ladder; the owner's door
+  // disposes (asserted in §2).
+  it('⚠ an UNRULED block is not the PM\'s to override either — the bystander leg still binds', async () => {
+    seedBlockedRow({ upheld: false });
+    const out = await trackerOverride(PM, {
+      override_request_id: fileAsk('cancelled'), approve: true,
+      reason: 'the supplier portal is retired; this work is moot',
+    });
+    expect(out.startsWith('Error'), `the PM is a bystander on a worker's row, got: ${out}`).toBe(true);
+    expect(rowOf().state).toBe('blocked');
+  });
+
+  it('and the ASSIGNEE\'s own override of its own unruled block still lands — the normal path', async () => {
+    // The override verb is the PM's, so the assignee reaches this shape through the status
+    // door; driven here so the "who may still dispose of an unruled block" answer is pinned
+    // beside the refusals above rather than only in §3.
+    seedBlockedRow({ upheld: false });
+    const out = trackerUpdateStatus(VICTIM, {
+      taskId: TASK, status: 'cancelled', notes: 'the supplier portal is retired; this work is moot',
+    });
+    expect(out, `the assignee's own close-out is untouched, got: ${out}`).toContain('[OK]');
+    expect(rowOf().state).toBe('abandoned');
+  });
+
+  it('CONTROL: the verb still overrides a NON-blocked row to a disposal', async () => {
+    seedTrackerTask(mockDb.current!, { id: 'ip-ovr-001', title: TITLE, status: 'in_progress', agentId: VICTIM });
+    const out = await trackerOverride(PM, {
+      override_request_id: fileAsk('cancelled', 'ip-ovr-001'), approve: true,
+      reason: 'no longer needed',
+    });
+    expect(out, `only BLOCKED rows are fenced, got: ${out}`).not.toMatch(/^Error/);
+    expect(rowOf('ip-ovr-001').state).toBe('abandoned');
   });
 });

@@ -576,7 +576,62 @@ function blockedDisposalRefusal(
   id: string, status: TrackerStatus, input: SetStatusInput,
 ): (WorkOutcome & { kind: 'refused' }) | null {
   if (!BLOCKED_DISPOSALS.has(status)) return null;
-  if (input.claim === 'authoritative') return null;
+  // ⚠ t130 — THE OWNER'S AUTHORITY, NOT ANY AUTHORITATIVE-SHAPED CLAIM.
+  //
+  // This read `input.claim === 'authoritative'` alone, and run 5 of the blast caught what that
+  // let through: the acting PM calling, in its own turn, with its own authored reason,
+  //
+  //     work_validate { action: "override", approve: true, override_request_id: "…" }
+  //     → "[OK] override approved. Task a3dee56a forced to \"cancelled\"."
+  //
+  // ~35 s after the probe armed, on a PM-UPHELD blocked row, three orders of magnitude inside
+  // the 1200 s escalate floor. `tracker/tools.ts`'s override-approve door passes
+  // `claim: 'authoritative'` under a comment that says out loud what it is for — *"Force the
+  // status through (bypass engine hard gate)"* — so the claim was carrying TWO meanings and
+  // this gate read only one:
+  //
+  //   · "a human authority has ruled"  — the owner's door, which this exemption is FOR; and
+  //   · "the PM's override verb"       — a door a MODEL calls, whose stated purpose is
+  //                                      bypassing engine hard gates.
+  //
+  // Under OR-PM-1v2 the second is the destruction the ruling forbids: a model-driven override
+  // of a PM-upheld block, pre-escalation, is exactly the disposal that is supposed to reach
+  // the owner instead. It is the run-4 hole again, wearing the one hat the gate was told to
+  // trust — and t129's own §2 clause ("it is the claim that decides, not the name") was a
+  // GREEN TEST holding it open. Right abstraction for the owner; wrong for a verb a model can
+  // call. That clause is inverted now.
+  //
+  // BLAST RADIUS, verified door by door rather than inherited. Of the six `by:'pm'` +
+  // authoritative callers, only override-approve can name a disposal on a blocked row:
+  //   · reject-pause (`tools.ts:3733`), reject-close (`:4645`), reject-block (`:4796`) are
+  //     confined by their own ALLOWED_TARGETS to in_progress/on_deck/blocked, and retask
+  //     (`:3864`) to in_progress/on_deck — none is in `BLOCKED_DISPOSALS`;
+  //   · the Key-2 close (`:4487`) targets `complete`, which this gate deliberately leaves to
+  //     G9 (the triage's census of five did not name this one; it is unaffected for that
+  //     reason);
+  //   · the stale-A2A sweep (`pm-agent.ts:2545`) DOES target `fallen`, and is safe only
+  //     because its candidate query reads `t.state = 'on_deck'` — it never sees a blocked row.
+  //     Recorded because that is a property of its SELECT, not of this gate.
+  //   · override-approve (`:4931`) takes `req.requestedStatus` unconstrained. That is the hole.
+  // The OWNER's routes are untouched by construction: `gateway/routes/tracker.ts:452` and
+  // `:734` pass `by: 'owner'`, and so does the dashboard's bulk close (`:890`), which is the
+  // path that SHOULD dispose of these rows.
+  //
+  // ── AND THE EXEMPTION IS DELETED, NOT NARROWED. ──
+  // The prescribed one-line fix was `claim === 'authoritative' && by === 'owner'`. Measured:
+  // that line is DEAD CODE, and the mutant proved it — replacing it with `by === 'owner'`
+  // alone changed no test and no behaviour, because `Actor` is a closed union
+  // (`store.ts:61`: owner | pm | agent | engine | scheduler | healer), `MODEL_DRIVEN` is
+  // {agent, pm}, and so every actor the narrowed clause would have exempted is ALREADY
+  // exempted one line below by not being model-driven. Narrowing the claim check to the owner
+  // is therefore exactly equivalent to removing it — and only `owner` and `pm` may asssert the
+  // claim at all (`store.ts:AUTHORITIES`), with `pm` being the actor this fix exists to stop.
+  //
+  // So the rule is stated ONCE instead of twice: the gate is about actors a MODEL drives, and
+  // an authoritative-shaped claim buys such an actor nothing. Keeping both guards would mean
+  // two overlapping predicates for one fact, with the redundant one untestable — which is the
+  // drift class this lane has already been sent back for twice. The owner's exemption now
+  // rests on the single fact that the owner is not a model.
   if (!MODEL_DRIVEN.has(input.by)) return null;
 
   // ⚠ ONE QUESTION, ONE SOURCE. This used to be a hand-written `EXISTS` over `adjudications`
