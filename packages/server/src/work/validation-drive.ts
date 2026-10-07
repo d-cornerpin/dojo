@@ -839,7 +839,30 @@ export function ownerEscalationAlertLine(p: {
   obstacle: string | null;
 }): string {
   const title = p.title.length > 60 ? `${p.title.slice(0, 60)}…` : p.title;
-  const parts: string[] = [`"${title}" has been ${p.status} since ${p.since} and nobody has brought it to you.`];
+  // ── REVIEW RULING 2026-10-07 — THE PLATFORM CLAIMS ONLY WHAT IT KNOWS. ──
+  //
+  // ⟨TOMBSTONE⟩ This read `… and nobody has brought it to you.` — asserted as FACT, and the
+  // review proved it can be FALSE at the moment it is spoken. The verify step cannot see the
+  // delivery it is asking about for a non-recurring row: the steer rides an awareness notice
+  // whose intent is on `ENGINE_RIDER_INTENTS`, so it never drives a turn of its own, and the
+  // turn the primary does speak on carries no root this query can match
+  // (`work/tracker-store.ts`'s two edges). So the platform fires this line having NO RECORD
+  // either way — and the old wording turned that absence of a record into a claim about the
+  // agent's conduct.
+  //
+  // The fix is epistemic, not cosmetic: the sentence now reports the platform's OWN state —
+  // it holds no record — which is true whether or not the agent spoke. That is the whole
+  // honest-record standard this composer exists to enforce, applied to the one clause of it
+  // that was still speaking beyond the evidence.
+  //
+  // ⚠ IT IS NOT A FIX FOR THE BLIND SPOT, and must not be mistaken for one. The ruling
+  // ACCEPTS the missing record and defers the capability to a v3.4 lane (the fail-safe
+  // direction: the owner is told twice rather than never). When that lane gives the steer a
+  // real serve record, this clause can go back to stating the stronger fact — and it should,
+  // because "I have no record" is weaker than the owner deserves once a record exists.
+  const parts: string[] = [
+    `"${title}" has been ${p.status} since ${p.since}, and I have no record of anyone bringing it to you.`,
+  ];
 
   // THE VALIDATOR'S VERDICT, three-valued and never collapsed. "Upheld" is the case fix 1
   // opened and it is the STRONGEST thing the platform can say — the block was checked and is

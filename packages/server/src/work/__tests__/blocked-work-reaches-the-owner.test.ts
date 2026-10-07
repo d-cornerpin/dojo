@@ -663,6 +663,23 @@ describe('§5 the owner is told what is blocked, since when, and what was tried'
     obstacle: null as string | null,
   };
 
+  it('CLAIMS ONLY WHAT THE SYSTEM KNOWS: no assertion that nobody brought it to the owner', () => {
+    // REVIEW RULING 2026-10-07. The line asserted "and nobody has brought it to you" as fact,
+    // and the review proved it can be false when spoken: for a non-recurring row the verify
+    // step cannot see the delivery it asks about (the steer's intent is an ENGINE RIDER, so it
+    // never roots a turn), so the platform fires this holding no record either way. The
+    // sentence now reports its OWN state, which is true in both worlds.
+    const line = ownerEscalationAlertLine({ ...base, obstacle: OBSTACLE });
+    expect(line, 'the platform does not claim a fact it has no record of')
+      .not.toMatch(/nobody has brought it to you/);
+    expect(line, 'it reports what it actually holds').toContain('I have no record of anyone bringing it to you');
+
+    // THE MUTANT THIS FORBIDS, stated as a property rather than a phrase: the alert must make
+    // no bare claim about what the AGENT did or did not do. Every remaining clause is either
+    // about the platform's own record, the PM's recorded verdict, or quoted from the agent.
+    expect(line).not.toMatch(/\bnobody\b/);
+  });
+
   it('names the work and the instant — the old line named neither', () => {
     const line = ownerEscalationAlertLine(base);
     expect(line).toContain('wire up the greenhouse sensor');

@@ -534,6 +534,39 @@ export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
       // row's one permanent `validation_escalated` stamp. `deliveryAboutWorkSince` asks the
       // question the ladder means, scoped to the row by the ledger's own root columns; the
       // argument for the two edges it accepts lives with the query in `work/tracker-store.ts`.
+      //
+      // ⚠⚠ REVIEW RULING 2026-10-07 — `spokeSince` IS FALSE BY CONSTRUCTION FOR A
+      //    NON-RECURRING ROW, WHICH IS THE CASE THIS LADDER MAINLY SERVES. MARKED, NOT
+      //    DELETED, AND THE DISTINCTION IS LOAD-BEARING.
+      //
+      // WHY IT CANNOT BE TRUE FOR A PLAIN TASK. The steer is delivered by `postAgentNotice`
+      // with `intent: 'validation_check'`, and that intent is on `ENGINE_RIDER_INTENTS`
+      // (`agent/v2/engine-riders.ts:88`) — a list whose whole purpose is *"engine rows that
+      // ride a turn and must never BE one"*. `getPendingEngineEvent` excludes it in SQL
+      // (`agent/v2/counterparty.ts:400`). So the notice never becomes the turn's root, and the
+      // turn the primary speaks on carries no root `deliveryAboutWorkSince` can match: its
+      // `ask` edge is `work.source_message_id`, reachable only from the turn that served the
+      // original ask, which by construction PREDATES `firstSteerAt` (the row must be ≥5
+      // minutes stale before the first steer). The platform therefore holds NO RECORD either
+      // way, which is why the owner line below now says exactly that and no more.
+      //
+      // WHY IT IS STILL NOT DEAD CODE, and why deleting it would be wrong: the `occurrence`
+      // edge is live. A SCHEDULED row's run is a turn rooted at its own occurrence, so a
+      // delivered output of that run does resolve here — driven green by
+      // `work/__tests__/blocked-work-reaches-the-owner.test.ts` §2 ("a delivery rooted at a
+      // scheduled RUN of this row counts too"). Deleting the branch would remove real
+      // behaviour for every recurring row and red that clause. So this is a NARROWED
+      // capability, not an absent one, and the marking says which half works.
+      //
+      // ACCEPTED AND DEFERRED TO v3.4, not left as a silent always-false branch. The ruling
+      // withdrew its own first prescription (a `root_kind='engine'` edge — refuted by the
+      // rider exclusion above, it could only ever read false) and refused the obvious
+      // alternative (matching deliveries on the notice's `served_by_turn`) because that
+      // re-admits defect (b) in a narrower form: an unrelated delivery made on the very turn
+      // that read this row's steer would retire the escalation. The v3.4 lane that gives the
+      // steer a REAL per-row serve record is where the capability gets rebuilt; until then the
+      // failure direction is deliberately fail-safe — the owner is told twice rather than
+      // never.
       const firstSteerAt = firstEscalationSteerAt(t.id);
       const spokeSince = firstSteerAt !== null
         && deliveryAboutWorkSince(t.id, firstSteerAt) !== null;
