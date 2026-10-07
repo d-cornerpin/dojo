@@ -7367,6 +7367,20 @@
       "to": 1055,
       "by": "t124 REVIEW FIX ROUND 2026-10-07 — the failure arm gets a state bound",
       "why": "1010 -> 1055 (+45: +2 code net, +42 comment, +1 blank). THE CODE IS TWO LINES: a `failureArmStateBound` expression and the `AND` that applies it. That is the entire repair of a BLOCKING regression this lane introduced — the failure arm had no state clause and `taskScope` has none either, so it was the only shape in the predicate that could match a row in any state, and the reviewer proved empirically that an owner-CANCELLED task (which reaches `abandoned` through `transition()`, itself one of the three shapes the counter counts) scored 2 failures and escalated — telling the owner '<title> has been cancelled since <date> and nobody has brought it to you' about work he closed himself. `TERMINAL_STATES` is imported from `work/store.ts` rather than retyped so the bound cannot drift from the spine's own definition of over. THE +42 COMMENT is the regression's post-mortem and it is the reason this raise is worth taking rather than an apology for it: it records the reviewer's repro table verbatim, the false sentence the owner would have received, WHY the count itself is what scored his cancellation (the non-obvious half — a cancel is a failure transition), and why `paused` is excluded too with the tool contract's own promise quoted ('Paused tasks are INVISIBLE to the PM agent, no pokes, no nags, ever') plus the argument that coverage is not lost because the pause arm owns that state and applies its own gate. A reader who trims that block re-widens the arm; this lane has now demonstrated that is not hypothetical."
+    },
+    {
+      "path": "packages/server/src/work/validation-drive.ts",
+      "from": 1055,
+      "to": 1078,
+      "by": "t124 REVIEW RULING 2026-10-07 — the alert claims only what the platform knows",
+      "why": "1055 -> 1078 (+23: +3 code, +21 comment, -1 code). THE CODE is the owner line's first sentence, re-split across three lines because it no longer asserts 'nobody has brought it to you' — a claim the review proved can be FALSE when spoken, since for a non-recurring row the verify step cannot see the delivery it asks about and the platform holds no record either way. It now reports its own state instead. THE +21 COMMENT is the tombstone for that claim and the one thing a future reader must not get wrong: this is an EPISTEMIC softening, not a fix for the blind spot, and when the v3.4 lane gives the steer a real serve record the clause should go BACK to the stronger statement — so the comment records both the reason it was weakened and the condition under which it should be strengthened again, which is the half a bare 'softened for honesty' note would lose."
+    },
+    {
+      "path": "packages/server/src/scheduler/runner.ts",
+      "from": 2148,
+      "to": 2181,
+      "by": "t124 REVIEW RULING 2026-10-07 — the alert claims only what the platform knows",
+      "why": "2148 -> 2181 (+33: +33 comment, ZERO code). Pure marking, no behaviour change. The `spokeSince` branch is false by construction for a non-recurring row and an unmarked always-false branch is the artifact this review round existed to remove. The block cites the mechanism by file and line (`engine-riders.ts:88` — 'engine rows that ride a turn and must never BE one' — plus `counterparty.ts:400`, the SQL exclusion), and then records the three things that stop the next reader deleting it: the `occurrence` edge is LIVE so a scheduled row's run does resolve there (a clause drives it green, and deleting would red it), the review's own first prescription was WITHDRAWN as refuted by that same rider exclusion, and the obvious alternative was REFUSED for re-admitting defect (b) in narrower form. v3.4 owns the rebuild; until then the failure direction is deliberately fail-safe. Marked rather than deleted BECAUSE it is a narrowed capability, not an absent one — the distinction the comment exists to carry."
     }
   ],
   "maxNewFileLines": 400,
@@ -7617,7 +7631,7 @@
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
     "packages/server/src/scheduler/engine.ts": 414,
-    "packages/server/src/scheduler/runner.ts": 2148,
+    "packages/server/src/scheduler/runner.ts": 2181,
     "packages/server/src/services/audio-generation.ts": 435,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/capability-registry.ts": 251,
@@ -7676,7 +7690,7 @@
     "packages/server/src/work/store.ts": 2258,
     "packages/server/src/work/tracker-store.ts": 834,
     "packages/server/src/work/tracker-view.ts": 622,
-    "packages/server/src/work/validation-drive.ts": 1055,
+    "packages/server/src/work/validation-drive.ts": 1078,
     "packages/server/src/work/work-reaper.ts": 694,
     "packages/shared/src/access.ts": 338,
     "packages/shared/src/markers.ts": 358,
