@@ -7472,6 +7472,48 @@
       "to": 416,
       "by": "t129 (Lane D + S5) — the blocked-work disposal door: an agent could terminally dispose of another agent's PM-upheld blocked row, pre-empting the owner escalation entirely",
       "why": "399 -> 416 (+17: 0 code, 17 comment). ZERO CODE LINES ON PURPOSE, and the comment is the deliverable. The `status`-before-`assigned_to` ordering in the no-action shape ladder — and the explicit `action: \"status\"` arm above it — are how a call carrying BOTH resolves as `work_update:status` and so never meets a `:reassign` gate. That is the classification side door the triage ranks S5 and the route the blast's P4 drive took. It is NOT changed: an explicit discriminator winning is this module's stated contract (#77), and only one op id can be returned, so re-routing the pair would hand the STATUS half to a door that does not perform one. The note exists because the obvious 'fix' is to move the reassign arm up, which would silently reroute the status half and move the write away from the audit that now covers it — a future reader needs to know the hole was closed at the write rather than at the router, and where the clause that holds it lives."
+    },
+    {
+      "path": "packages/server/src/work/tracker-store.ts",
+      "from": 834,
+      "to": 964,
+      "by": "t129 fix round (review Gaps 1-3 + the healer ruling) — the disposal gate moves to the one place every tracker status writer crosses, and the orphan definition absorbs its join key",
+      "why": "834 -> 964 (+130: 32 code, 98 comment). THE GATE MOVED HERE, and the move is the fix rather than a relocation. Round 1 guarded `tracker/schema.ts`'s `setTaskStatus`/`setTaskStatusResult`; the review census then found a model-driven disposal BELOW them — `agent/spawner.ts` calls `setTrackerStatus` DIRECTLY with `by: 'agent'` and `taskStatus` reachable as `'fallen'`, so `complete_task(status=\"fallen\")` still destroyed another agent's PM-ruled blocked row. Repeating the refusal at that site would have been a SECOND COPY of this predicate, which is the exact drift the same review caught twice in this lane. This function's own docstring already named it — \"The tracker's one status writer\" — so the gate sits at the crossing point and is unbypassable by construction instead of by enumeration. `tracker/schema.ts` SHRANK 1233 -> 1127 in the same change: this is a net move plus the argument, not new surface. THE 32 CODE LINES are the two declared sets, one row read that now calls `validatedExpr` instead of re-typing it, the two-leg predicate and the guard at the top of the writer. THE 98 COMMENT LINES carry what a reader would otherwise undo: that the rule is DERIVED from the standing owner ruling (so the assignee leg is not 'relaxed' back), WHY the gate is here and not one layer up (the spawner census, by name, so the next person does not re-raise it to the doors), WHY it is still tracker-scoped rather than in `transition()` — which is the one writer of `work.state` for asks, commitments, occurrences and T4's join pieces too — and why `complete` is excluded, which is ACTOR-INDEPENDENT: G9's Key 2 needs the owner's claim or a SYSTEM_CLOSER and no agent has either, so any agent's `complete` can only FILE a close request. A mutant deleting the tracker scoping survived the first sweep of this round and is now killed by its own clause."
+    },
+    {
+      "path": "packages/server/src/work/tracker-view.ts",
+      "from": 622,
+      "to": 649,
+      "by": "t129 fix round (review Gaps 1-3 + the healer ruling) — the disposal gate moves to the one place every tracker status writer crosses, and the orphan definition absorbs its join key",
+      "why": "622 -> 649 (+27: 5 code, 22 comment). THE BLOCKER, AND IT IS A DELETION OF A COPY. The gate's first cut hand-wrote its own `EXISTS` over `adjudications` and dropped the third clause this file's `validatedExpr` carries — `adj.created_at >= lastEntryInto(…, state)`, the uphold must be newer than the row's last entry into the state. Measured consequence: blocked -> upheld -> resolved forward -> blocked AGAIN on a fresh obstacle read as still upheld (gate 1, validatedExpr 0), so ONE upheld block marked a row for life and refused the assignee's own ordinary close-out — the exact path the gate promises to leave alone, and P5's dependency in the blast. THE 5 CODE LINES make this builder take an `opts.excludeSystemClosers` argument so the door CALLS it instead of re-typing it. THE 22 COMMENT LINES argue the one divergence, which is the half a reader cannot reconstruct: the BOARD asks 'is this block validated?' and an engine auto-block IS validated — that is ruled, and `two-key-completion.test.ts`'s 'the engine can still uphold a BLOCKED claim' pins it — while the DOOR asks 'has an authority RULED on this, such that disposal is the owner's call?', and of `scheduler/runner.ts:316` ('verdict request timed out') and `thrash-gate.ts:180` ('deterministic engine block') that is false: both are the platform FAILING to obtain a ruling, and treating either as one handed rows to the owner permanently on the strength of a timeout. The exclusion reuses the `done` arm's own `SYSTEM_CLOSER_ROLES` precedent rather than inventing a list. Two mutants pin it in both directions: dropping the exclusion from the door, and leaking it into the board."
+    },
+    {
+      "path": "packages/server/src/tracker/version-gap-reconcile.ts",
+      "from": 327,
+      "to": 361,
+      "by": "t129 fix round (review Gaps 1-3 + the healer ruling) — the disposal gate moves to the one place every tracker status writer crosses, and the orphan definition absorbs its join key",
+      "why": "327 -> 361 (+34: 5 code, 29 comment). THE JOIN KEY MOVES INSIDE THE DEFINITION. This predicate's own comment claimed \"'what counts as orphaned' has ONE definition, because two copies of it is the drift this project keeps closing\" — and the claim was false, because the KEY it is joined ON was never inside it: `healer/diagnostic.ts` and this file's own scan joined on `agent_id` (the HOLDER) while `healer/auto-fix.ts` selected and cleared `assignee_agent` (the ASSIGNEE). Since `agent_id` is `TEXT NOT NULL`, a CORRECTLY unassigned orphan still has the terminated agent as its holder — so the diagnostic raised `severity: 'critical'` on every row the auto-fix had just fixed, on every sweep, for ever. A diagnostic that cries wolf trains the owner and the healer's active mode to discount the one signal that would catch a real orphan. THE 5 CODE LINES are `ORPHANED_TASK_JOIN` plus the predicate reading the same column. THE 29 COMMENT LINES record the measured consequence and why the assignee is the right key on the merits (the question is 'is anyone who still exists assigned to this?'; the holder is the row's history), because the obvious future 'fix' is to flip it back. Three mutants — the definition re-keyed to the holder, and each of the two other consumers re-typing its own join — are each killed by a named clause."
+    },
+    {
+      "path": "packages/server/src/healer/diagnostic.ts",
+      "from": 1067,
+      "to": 1071,
+      "by": "t129 fix round (review Gaps 1-3 + the healer ruling) — the disposal gate moves to the one place every tracker status writer crosses, and the orphan definition absorbs its join key",
+      "why": "1067 -> 1071 (+4: 3 code, 1 comment). One of the three consumers of the orphan definition. Its hand-written `JOIN agents a ON a.id = t.agent_id` — the HOLDER — is replaced by `ORPHANED_TASK_JOIN`, and the selected column follows, so this detector and the auto-fix now select the SAME row set. That is the whole of the permanent-critical false positive. The conformance clause in `version-gap-reconcile.test.ts` asserts the two row sets agree and censuses all three consumers for a re-typed join; the census is scoped to the orphan STATEMENT on purpose, because a file-wide ban over-claimed and was measured doing it — this same file carries TRACKER_STALE, which joins on the holder to name a stuck agent and is a different detector, not a copy."
+    },
+    {
+      "path": "packages/server/src/agent/spawner.ts",
+      "from": 1459,
+      "to": 1466,
+      "by": "t129 fix round (review Gaps 1-3 + the healer ruling) — the disposal gate moves to the one place every tracker status writer crosses, and the orphan definition absorbs its join key",
+      "why": "1459 -> 1466 (+7: 0 code, 7 comment). ZERO CODE LINES, and that is the point of the fix round's shape. This call site was the model-driven disposal below the gate — `taskStatus` reachable as `'fallen'`, `setTrackerStatus` called directly with `by: 'agent'`. It is gated now because the GATE moved to `setTrackerStatus`, not because a refusal was copied here; nothing at this call changed, the refusal simply arrives in `closeRes` and the branch below already logs it. The comment exists so the next reader knows this site is deliberately bare: the obvious 'defensive' addition here is a second copy of the predicate, which is what the review refused. `blocked-work-is-the-owners-to-dispose.test.ts` §8 drives this exact call shape, and a mutant that moves the gate back up a layer reds 13 clauses."
+    },
+    {
+      "path": "packages/server/src/tracker/schema.ts",
+      "from": 1233,
+      "to": 1127,
+      "by": "t129 fix round (review Gaps 1-3 + the healer ruling) — the disposal gate moves to the one place every tracker status writer crosses, and the orphan definition absorbs its join key",
+      "why": "LOWERED, not raised. Round 1 raised this ceiling to 1233 for a gate that the review then moved to `work/tracker-store.ts` (the one place every tracker status writer crosses). The file is 1127 now and the pin follows it down — a ratchet is a floor on shrinking, not a budget to keep, and leaving 106 lines of slack this lane created would let the next change spend it without an argument. Same for `healer/auto-fix.ts`, 521 -> 520, where the inline orphan predicate was replaced by the shared one."
     }
   ],
   "maxNewFileLines": 400,
@@ -7543,7 +7585,7 @@
     "packages/server/src/agent/provider-error.ts": 400,
     "packages/server/src/agent/runtime.ts": 1787,
     "packages/server/src/agent/shared-state.ts": 459,
-    "packages/server/src/agent/spawner.ts": 1459,
+    "packages/server/src/agent/spawner.ts": 1466,
     "packages/server/src/agent/stream-patience.ts": 473,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
     "packages/server/src/agent/tools/assignment-capability.ts": 139,
@@ -7674,8 +7716,8 @@
     "packages/server/src/google/tools-slides.ts": 3022,
     "packages/server/src/google/tools-write.ts": 2020,
     "packages/server/src/healer/approval-routing.ts": 513,
-    "packages/server/src/healer/auto-fix.ts": 521,
-    "packages/server/src/healer/diagnostic.ts": 1067,
+    "packages/server/src/healer/auto-fix.ts": 519,
+    "packages/server/src/healer/diagnostic.ts": 1071,
     "packages/server/src/healer/healer-agent.ts": 1163,
     "packages/server/src/healer/injury-recovery.ts": 1233,
     "packages/server/src/index.ts": 1325,
@@ -7753,10 +7795,10 @@
     "packages/server/src/tracker/delivery-evidence.ts": 320,
     "packages/server/src/tracker/pm-agent.ts": 3090,
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
-    "packages/server/src/tracker/schema.ts": 1233,
+    "packages/server/src/tracker/schema.ts": 1127,
     "packages/server/src/tracker/task-stamps.ts": 296,
     "packages/server/src/tracker/tools.ts": 5181,
-    "packages/server/src/tracker/version-gap-reconcile.ts": 327,
+    "packages/server/src/tracker/version-gap-reconcile.ts": 361,
     "packages/server/src/twilio/call-session.ts": 916,
     "packages/server/src/twilio/sms-inbound.ts": 409,
     "packages/server/src/update-state.ts": 417,
@@ -7780,8 +7822,8 @@
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/store.ts": 2258,
-    "packages/server/src/work/tracker-store.ts": 834,
-    "packages/server/src/work/tracker-view.ts": 622,
+    "packages/server/src/work/tracker-store.ts": 964,
+    "packages/server/src/work/tracker-view.ts": 649,
     "packages/server/src/work/validation-drive.ts": 1078,
     "packages/server/src/work/work-reaper.ts": 694,
     "packages/shared/src/access.ts": 338,
