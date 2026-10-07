@@ -1050,25 +1050,20 @@ async function main(): Promise<void> {
     })();
   }
 
-  // 4m-0 (t122). THE MEDIA JOB ROWS NOBODY OWNS ARE CLOSED, FIRST.
-  //
-  // This runs BEFORE either adopter below, and the ORDER is the whole argument rather than a
-  // preference: at this instant no job row in either table can belong to a process in this one,
-  // so "non-terminal and unadopted" is decidable without guessing from a timestamp. After the
-  // poller has resumed rows and the first tool call has written one, it would not be.
-  //
-  // What it exists for: `agent/live-work.ts` reads the open job rows to decide whether to offer
-  // an agent's stop control, and a box that has been running for months carries non-terminal
-  // rows left by crashes and by versions that predate that read. Each one offered a stop for
-  // nothing, for ever, on an agent correctly reading `idle`. The rows are marked `failed` with
-  // an explicit reason and a loud log line — never deleted; the record stays honest.
-  //
-  // It returns what it closed so the chat notice (4m-2) can be posted for exactly those rows.
-  let abandonedJobs: Array<{ table: string; id: string; agentId: string; kind: string | null }> = [];
+  // 4m-0 (t122). THE MEDIA JOB ROWS NOBODY OWNS ARE CLOSED, FIRST. A box that has run for
+  // months carries non-terminal job rows left by crashes and by versions that predate the stop
+  // predicate reading them, and each one offered a permanent stop control on an idle agent.
+  // `services/job-orphans.ts` holds the argument; it marks them failed with a reason and never
+  // deletes. Its position BEFORE the video resume below is that argument's premise, not a
+  // preference: only here can no row belong to a process in THIS one, which is what makes
+  // "non-terminal and unadopted" decidable without guessing from a timestamp. The notice is the
+  // one thing a closed row cannot do for itself, so it rides along with what the sweep moved.
   {
     try {
       const { reconcileOrphanedJobsAtBoot } = await import('./services/job-orphans.js');
-      abandonedJobs = [...reconcileOrphanedJobsAtBoot()];
+      const { notifyAbandonedGenerationJobs } = await import('./services/generation-jobs.js');
+      const abandoned = reconcileOrphanedJobsAtBoot();
+      notifyAbandonedGenerationJobs(abandoned.filter((j) => j.table === 'generation_jobs'));
     } catch (err) {
       logger.warn('Abandoned media job reconciliation failed', {
         error: err instanceof Error ? err.message : String(err),
@@ -1088,21 +1083,6 @@ async function main(): Promise<void> {
       startVideoJobPoller();
     } catch (err) {
       logger.warn('Video job poller failed to start', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  // 4m-2. Run-once generation jobs (image / audio / music) can't resume
-  // mid-flight after a restart. 4m-0 already closed their rows; this posts
-  // the one thing a closed row cannot do for itself — tell the agent's chat
-  // that the work it was asked for is not coming.
-  {
-    try {
-      const { notifyAbandonedGenerationJobs } = await import('./services/generation-jobs.js');
-      notifyAbandonedGenerationJobs(abandonedJobs.filter((j) => j.table === 'generation_jobs'));
-    } catch (err) {
-      logger.warn('Generation jobs notice failed', {
         error: err instanceof Error ? err.message : String(err),
       });
     }

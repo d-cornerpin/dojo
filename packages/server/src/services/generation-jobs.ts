@@ -433,24 +433,16 @@ export function enqueueAudioOrMusicJob(jobId: string): void {
 }
 
 /**
- * t122 — THE BOOT NOTICE, which is now all this does.
+ * t122 — THE BOOT NOTICE, which is now all this does. `services/job-orphans.ts` closes the
+ * rows (both tables, before either adopter, each row fenced); this posts the one thing a closed
+ * row cannot do for itself.
  *
- * It used to be the terminaliser too: it scanned `('queued','running')`, wrote `failed` and
- * posted the chat notice, in one bare loop. Two things were wrong with that, and both are why
- * the owner's box carried rows that showed as live work for ever.
- *
- *  1. ONE THROWING ROW POISONED THE WHOLE SCAN. `deliverError` writes a chat message, so a row
- *     whose agent has since been purged throws — and the throw unwound out of the loop, out of
- *     this function, and was logged by `index.ts` as "worker failed to start". Every row behind
- *     it stayed non-terminal, on every boot, for ever.
- *  2. THE VOCABULARY WAS AN IN-LIST. Anything not literally `queued` or `running` was invisible
- *     to it.
- *
- * `services/job-orphans.ts` now owns closing the rows, reads the vocabulary from the terminal
- * end, fences every row of its own, and does it for BOTH job tables before either adopter
- * starts. This function receives what that sweep moved and does the half that talks to the
- * user, one fenced row at a time — so a notice that cannot be delivered costs its own row and
- * nothing else.
+ * It used to be the terminaliser too — scan `('queued','running')`, write `failed`, deliver —
+ * in ONE BARE LOOP, and that is why the owner's box carried rows that read as live work for
+ * ever: `deliverError` writes a chat message, so a job belonging to an agent since purged THREW
+ * out of the whole loop (boot logged "worker failed to start") and every row behind it stayed
+ * open on that boot and on every boot after. Hence the per-row fence here, and hence closing
+ * the rows is no longer downstream of a delivery that can fail.
  */
 export function notifyAbandonedGenerationJobs(abandoned: ReadonlyArray<{ id: string }>): void {
   if (abandoned.length === 0) return;

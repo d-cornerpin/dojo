@@ -82,7 +82,7 @@ import { auditLog, toolsLogger as logger } from '../util.js';
 import * as effectFs from '../../effects/fs.js';
 import pathModule from 'node:path';
 import { createGenerationJob as createImgJob, setRunning as setImgRunning, setSucceeded as setImgSucceeded, setFailed as setImgFailed, setCancelled as setImgCancelled, createGenerationJob, enqueueAudioOrMusicJob } from '../../../services/generation-jobs.js';
-import { enqueueVideoJob } from '../../../services/video-job-poller.js';
+import { enqueueVideoJob, countActiveVideoJobs } from '../../../services/video-job-poller.js';
 import { generateImage } from '../../../services/image-generation.js';
 import { getEffectiveAudioGenModel } from '../../../services/audio-gen-model.js';
 import { getEffectiveImageGenModel } from '../../../services/image-gen-model.js';
@@ -100,7 +100,6 @@ import { resolveAttachmentPath, fetchAudioUrl, transcribeAudio } from '../../../
 import { submitVideoJob } from '../../../services/video-generation.js';
 import type { ToolHandler, ToolHandlerMap } from '../handler.js';
 import { homeDir } from '../../../home.js';
-import { TERMINAL_JOB_STATUS_SQL } from '../../../services/media-job-status.js';
 
 const handlers = {
   async "image_create"({ agentId, args }) {
@@ -710,10 +709,9 @@ const handlers = {
     // Broadcast the initial queued state so the dashboard indicator
     // appears immediately, then start polling.
     try {
-      const activeRow = db.prepare(
-        // t122: open = NOT terminal (services/media-job-status.ts).
-        `SELECT COUNT(*) AS n FROM video_jobs WHERE status NOT IN (${TERMINAL_JOB_STATUS_SQL})`
-      ).get() as { n: number };
+      // t122: the count comes from the module that owns the table rather than a fourth copy
+      // of the predicate here — one census, one place (services/media-job-status.ts).
+      const activeRow = { n: countActiveVideoJobs() };
       broadcast({
         type: 'video_job:update',
         data: { id: submit.jobId, agentId, status: 'queued', prompt: description, activeCount: activeRow.n },

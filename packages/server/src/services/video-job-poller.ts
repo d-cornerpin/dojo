@@ -65,8 +65,10 @@ function getJob(jobId: string): VideoJobRow | undefined {
   return getDb().prepare('SELECT * FROM video_jobs WHERE id = ?').get(jobId) as VideoJobRow | undefined;
 }
 
-function countActiveJobs(): number {
-  // t122: asked from the TERMINAL end (services/media-job-status.ts holds the census).
+/** How many video jobs are open. t122: asked from the TERMINAL end — `media-job-status.ts`
+ *  holds the census. Exported because `tools/cat/media.ts` needs the same number and a second
+ *  copy of the predicate is how the vocabulary drifted in the first place. */
+export function countActiveVideoJobs(): number {
   const row = getDb().prepare(
     `SELECT COUNT(*) AS n FROM video_jobs WHERE status NOT IN (${TERMINAL_JOB_STATUS_SQL})`
   ).get() as { n: number };
@@ -81,7 +83,7 @@ function emitUpdate(row: { id: string; agent_id: string; status: string; prompt:
       agentId: row.agent_id,
       status: row.status as 'queued' | 'polling' | 'succeeded' | 'failed' | 'cancelled',
       prompt: row.prompt,
-      activeCount: countActiveJobs(),
+      activeCount: countActiveVideoJobs(),
     },
   });
   // A-5b — as in `generation-jobs.ts`: this frame is per-job with a box-wide count, and the
@@ -199,8 +201,7 @@ async function markCancelled(jobId: string, reason: string): Promise<void> {
   if (row?.provider_job_id) {
     try { await cancelProviderVideo(row.provider_id, row.provider_job_id); } catch { /* best effort */ }
   }
-  // t122: the fence is "not already finished", not a list of the open words. Still a fence —
-  // a terminal row keeps its verdict, so a cancel cannot clobber a success.
+  // t122: the fence is "not already finished" — a terminal row still keeps its verdict.
   const res = db.prepare(`
     UPDATE video_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now')
     WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})
@@ -213,8 +214,7 @@ async function markCancelled(jobId: string, reason: string): Promise<void> {
 
 function markFailed(jobId: string, error: string): void {
   const db = getDb();
-  // Only fail a job that's still active — don't clobber a cancel. (t122: "active" asked from
-  // the terminal end, so a row spelled any other open way can still be failed honestly.)
+  // Only fail a job that's still active — don't clobber a cancel. (t122: from the terminal end.)
   const res = db.prepare(`
     UPDATE video_jobs SET status='failed', error=?, finished_at=datetime('now'), updated_at=datetime('now')
     WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})
@@ -451,10 +451,9 @@ export function enqueueVideoJob(jobId: string): void {
 export function startVideoJobPoller(): void {
   let rows: Array<{ id: string }>;
   try {
-    // t122: the resume adopts every OPEN row, not only the two words this file writes. A row
-    // whose status it does not recognise is one NOTHING would drive otherwise — the boot
-    // reconciliation deliberately leaves video rows that have a provider render to this scan,
-    // so a vocabulary gap here would be a render abandoned in silence.
+    // t122: the resume adopts every OPEN row, not only the two words this file writes — the
+    // boot reconciliation leaves every video row with a provider render to this scan, so a
+    // vocabulary gap here is a paid-for render abandoned in silence.
     rows = getDb().prepare(
       `SELECT id FROM video_jobs WHERE status NOT IN (${TERMINAL_JOB_STATUS_SQL})`,
     ).all() as Array<{ id: string }>;
