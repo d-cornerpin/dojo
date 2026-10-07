@@ -7444,6 +7444,34 @@
       "to": 1325,
       "by": "t126 — the shutdown asks the video poll loops to stand down before it closes the DB",
       "why": "1318 -> 1325 (+7: 1 code, 6 comment). ONE statement in `shutdown()`, beside the two worker-thread stops it belongs with and in the same best-effort shape as the `stopTunnel()` line directly below it: `import('./services/video-poller-lifetime.js').then(m => m.stopVideoJobPoller())`. THE POSITION IS THE POINT, and is what the 6 comment lines carry: it must precede the `closeDb()` four lines below, because the defect IS a detached poll loop waking into a closed handle — placed after, the statement is decoration and the unhandled rejection comes back. The comment also records what standing down does NOT do (no row is written; the renders stay open and the next boot's resume adopts them), because a reader meeting a shutdown hook would otherwise reasonably expect it to close out the jobs it stops. Growth: 1325 against a 1637 limit. From 1325 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/schema.ts",
+      "from": 1105,
+      "to": 1233,
+      "by": "t129 (Lane D + S5) — the blocked-work disposal door: an agent could terminally dispose of another agent's PM-upheld blocked row, pre-empting the owner escalation entirely",
+      "why": "1105 -> 1233 (+128: 41 code, 87 comment). THE DEFECT: the v3.3.2 blast's run-4 clause P4, re-driven at 937e2051 and ACCEPTED there — a PRIMARY-role agent cancelled ANOTHER agent's PM-upheld blocked row through `work_update(action=\"status\", status=\"cancelled\")`, got `isError: false`, and the row went `abandoned` while still assigned to the victim with `owner_rows_naming_it = 0`. The escalation ladder was PRE-EMPTED: the row left `blocked` before any steer could be spent. THE 41 CODE LINES are `blockedDisposalRefusal` — two declared sets, one row read, one adjudication read, the two-leg predicate (not the assignee / the block is PM-upheld), and the two guard calls in `setTaskStatus`/`setTaskStatusResult` — plus the 2-line split-brain fix in `updateTask` (it wrote `agent_id` alone and left `assignee_agent` on the old agent). THE 87 COMMENT LINES ARE THE THREE THINGS A READER CANNOT RECONSTRUCT AND WOULD OTHERWISE UNDO: (1) that the rule is DERIVED from the standing owner ruling rather than chosen here, and specifically that an upheld block is un-disposable by the ASSIGNEE too — the triage filed that as the one open owner question and the ruling answers it, so the next reader must not 'relax' it back; (2) WHY the gate is at the tracker door and not in `transition()` — `transition()` is the one writer of `work.state` for asks, commitments, occurrences and T4's join pieces, which are `kind='task'` too, and this is a ruling about the tracker's two nouns only; (3) WHY `complete` is deliberately excluded — G9 already two-key-fences `done` and FILES a Key-1 close request, so swallowing `complete` into this gate would delete the recorded request, and a mutant that adds it is killed by one named clause. The caller census (11 callers, every one authoritative except the agent's own status door) is recorded because it is the proof the owner's and the PM's doors are unchanged BY CONSTRUCTION rather than by exemption."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 5116,
+      "to": 5181,
+      "by": "t129 (Lane D + S5) — the blocked-work disposal door: an agent could terminally dispose of another agent's PM-upheld blocked row, pre-empting the owner escalation entirely",
+      "why": "5116 -> 5181 (+65: 24 code, 41 comment). TWO FIXES, both at the `work_update(action=\"status\")` handler the P4 drive came through. THE 24 CODE LINES: (a) the `closeRefusalText` arm for `blocked-disposal-not-the-actors`, which is what the model is actually TOLD — it names what is still true, who rules, and the escalation door `work_close_request(action=\"user_verdict\")`; (b) triage S5, the unaudited side door — a pre-read of the current assignee, and a `recordReassignment` call when the move is real. S5 was the ONE assignee-moving path in the platform with no audit record at all, which is also why it is the one the owner's own dating queries could not see: it both caused his 'you keep reassigning' report and hid itself from every query that would have dated it. THE 41 COMMENT LINES carry the two facts that keep the fix alive: that a refusal with no next move is retried by a weak model — and the thing it would retry here is the destruction of another agent's work, so the text must offer the forward resolution and the owner door and must NOT soften into 'try something else'; and that the pre-read happens BEFORE the patch because the patch is what destroys the answer. Both are asserted by named clauses, and two mutants (refusal text disabled, recorder disabled) are killed."
+    },
+    {
+      "path": "packages/server/src/healer/auto-fix.ts",
+      "from": 476,
+      "to": 521,
+      "by": "t129 (Lane D + S5) — the blocked-work disposal door: an agent could terminally dispose of another agent's PM-upheld blocked row, pre-empting the owner escalation entirely",
+      "why": "476 -> 521 (+45: 18 code, 27 comment). THE DEFECT, measured at this head rather than inherited from the triage: `fixOrphanedTask` unassigned with `patchWork(id, { agent_id: null, … })` and `work.agent_id` is `TEXT NOT NULL`, so the write is `NOT NULL constraint failed: work.agent_id` — and it THROWS rather than refusing, so `noteUnsettled` never saw it and the exception left the function with the STATE half already committed. Every orphan on a box arrives inside ONE diagnostic item, so the first bad row ended the pass for all of them while the cycle still read healthy from outside. THE 18 CODE LINES: the write becomes the clear protocol already written down on `tracker/schema.ts`'s `updateTask` (clear `assignee_agent`, leave the holder, clear `assigned_to_group`); the selection keys on the ASSIGNEE so the pass is idempotent — without that it would report the same fix every day for ever, which is its own defect; and a per-row try/catch so no single row can end the sweep again. THE 27 COMMENT LINES record the measured error string, why `noteUnsettled` could not catch it, and — handed up rather than fixed — that `healer/diagnostic.ts` raises `ORPHANED_TASK` through the SHARED `ORPHANED_TASK_WHERE` predicate which keys on the HOLDER, so making the two agree means deciding what an orphan's holder becomes and changing a predicate shared with the version-gap reconciliation pass, outside this lane's fence."
+    },
+    {
+      "path": "packages/server/src/tools/work-verbs.ts",
+      "from": 399,
+      "to": 416,
+      "by": "t129 (Lane D + S5) — the blocked-work disposal door: an agent could terminally dispose of another agent's PM-upheld blocked row, pre-empting the owner escalation entirely",
+      "why": "399 -> 416 (+17: 0 code, 17 comment). ZERO CODE LINES ON PURPOSE, and the comment is the deliverable. The `status`-before-`assigned_to` ordering in the no-action shape ladder — and the explicit `action: \"status\"` arm above it — are how a call carrying BOTH resolves as `work_update:status` and so never meets a `:reassign` gate. That is the classification side door the triage ranks S5 and the route the blast's P4 drive took. It is NOT changed: an explicit discriminator winning is this module's stated contract (#77), and only one op id can be returned, so re-routing the pair would hand the STATUS half to a door that does not perform one. The note exists because the obvious 'fix' is to move the reassign arm up, which would silently reroute the status half and move the write away from the audit that now covers it — a future reader needs to know the hole was closed at the write rather than at the router, and where the clause that holds it lives."
     }
   ],
   "maxNewFileLines": 400,
@@ -7646,7 +7674,7 @@
     "packages/server/src/google/tools-slides.ts": 3022,
     "packages/server/src/google/tools-write.ts": 2020,
     "packages/server/src/healer/approval-routing.ts": 513,
-    "packages/server/src/healer/auto-fix.ts": 476,
+    "packages/server/src/healer/auto-fix.ts": 521,
     "packages/server/src/healer/diagnostic.ts": 1067,
     "packages/server/src/healer/healer-agent.ts": 1163,
     "packages/server/src/healer/injury-recovery.ts": 1233,
@@ -7720,14 +7748,14 @@
     "packages/server/src/tools/name-help.ts": 355,
     "packages/server/src/tools/tool-docs.ts": 770,
     "packages/server/src/tools/unified-read.ts": 761,
-    "packages/server/src/tools/work-verbs.ts": 399,
+    "packages/server/src/tools/work-verbs.ts": 416,
     "packages/server/src/tracker/assignee-patience.ts": 208,
     "packages/server/src/tracker/delivery-evidence.ts": 320,
     "packages/server/src/tracker/pm-agent.ts": 3090,
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
-    "packages/server/src/tracker/schema.ts": 1105,
+    "packages/server/src/tracker/schema.ts": 1233,
     "packages/server/src/tracker/task-stamps.ts": 296,
-    "packages/server/src/tracker/tools.ts": 5116,
+    "packages/server/src/tracker/tools.ts": 5181,
     "packages/server/src/tracker/version-gap-reconcile.ts": 327,
     "packages/server/src/twilio/call-session.ts": 916,
     "packages/server/src/twilio/sms-inbound.ts": 409,
