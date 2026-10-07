@@ -63,6 +63,7 @@ import {
   reconcileOrphanedJobsAtBoot, sweepAbandonedJobRows, resetBootReconciliationForTests,
   ABANDONED_AT_BOOT,
 } from '../job-orphans.js';
+import { notifyAbandonedGenerationJobs } from '../generation-jobs.js';
 import { stopAffordance } from '../../../../dashboard/src/lib/stop-affordance.js';
 
 const AGENT = 'agent-t122-one';
@@ -353,6 +354,37 @@ describe('§6 the grown box — the owner\'s own shape, as a fixture', () => {
     expect(rowOf('video_jobs', 'hist-video').status).toBe('succeeded');
     expect(db().prepare('SELECT COUNT(*) AS n FROM generation_jobs').get()).toEqual({ n: 5 });
     expect(db().prepare('SELECT COUNT(*) AS n FROM video_jobs').get()).toEqual({ n: 2 });
+  });
+});
+
+// ── §8 ──────────────────────────────────────────────────────────────────────────────────
+
+describe('§8 one undeliverable notice costs its own row and nothing else', () => {
+  it('notifies the rows behind a row whose agent is gone', () => {
+    // THE ORIGINAL DEFECT'S MECHANISM, kept red. The boot worker used to scan, fail and notify
+    // in ONE bare loop, and the notice writes a chat message — which throws for an agent that
+    // has since been purged (`messages.agent_id` has a foreign key). The throw unwound out of
+    // the whole loop and out of the function, boot logged "worker failed to start", and every
+    // row behind the throwing one stayed open on that boot and on every boot after it.
+    genJob('g-ghost', 'queued', 'an-agent-that-was-purged', 'audio');
+    genJob('g-ok-1', 'queued', AGENT, 'audio');
+    genJob('g-ok-2', 'queued', AGENT_B, 'music');
+
+    const moved = reconcileOrphanedJobsAtBoot();
+    expect(moved).toHaveLength(3);
+    // The rows are closed REGARDLESS of the notice — that separation is the fix.
+    for (const j of moved) expect(rowOf('generation_jobs', j.id).status).toBe('failed');
+
+    // And the notice half must not be stopped by the row it cannot deliver.
+    expect(() => notifyAbandonedGenerationJobs(moved)).not.toThrow();
+
+    const said = db().prepare(
+      `SELECT agent_id FROM messages WHERE role = 'assistant' AND content LIKE '%Interrupted by a server restart.%' ORDER BY agent_id`,
+    ).all() as Array<{ agent_id: string }>;
+    expect(
+      said.map((m) => m.agent_id),
+      'a notice that could not be delivered swallowed the ones that could',
+    ).toEqual([AGENT, AGENT_B]);
   });
 });
 
