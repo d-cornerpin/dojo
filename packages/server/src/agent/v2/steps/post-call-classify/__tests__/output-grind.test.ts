@@ -71,10 +71,30 @@ const modelResult = (
   inputTokens: 10, outputTokens: 16_384, stopReason: 'end_turn', ...over,
 } as unknown as PostCallClassifyContext['result']);
 
+// t125 — THE FIXTURE NOW SAYS WHO IS WAITING, because the ladder below the grind rung asks.
+// `turnCtx`, `hasUnansweredUser` and `triggerRow` are NOT optional on the real
+// `PostCallClassifyContext`; this fixture used to omit them and the `as unknown as` cast hid
+// it, which is why ungating the empty-response floor surfaced here as an undefined read
+// rather than as a changed assertion. These rows are this file's subject stated plainly: a
+// GRIND, with nobody waiting — so every grind assertion below is about the grind rung alone
+// and never borrows the owed path's behaviour.
 const ctxFor = (over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext => ({
   agentId: 'zargo',
+  turnNumber: 7,
+  chosenConvKey: null,
   result: modelResult(),
   reArmIfStrandedNoAnswer: reArmSpy,
+  turnCtx: {
+    startAckSteerRequested: false,
+    startAckSteerArmedThisTurn: false,
+    engineStartAckDeliveredThisTurn: false,
+    root: null,
+  },
+  isA2ATurn: false,
+  isEngineTurn: false,
+  counterpartyIsAgentSender: false,
+  hasUnansweredUser: false,
+  triggerRow: null,
   ...over,
 } as unknown as PostCallClassifyContext);
 

@@ -1055,9 +1055,22 @@ describe('runV2Turn integration', () => {
     expect(modelCallCount).toBe(3);
 
     // Exactly one chat:error event was broadcast on the final empty.
+    //
+    // ⚠ t125 CHANGED THE CODE, NOT THE COUNT, AND THE REASON IS THIS FIXTURE'S OWN SHAPE:
+    // `msg-user-1` is left UNCLAIMED here, so a person is waiting. A waiting person now
+    // gets the honest end of the ladder — `FLOOR_GHOSTED`, carrying a DURABLE role='system'
+    // row in the platform's voice — instead of `MODEL_FAILED`, which is live-only and left
+    // a reloaded page showing a turn that said nothing at all. The nobody-waiting turn still
+    // gets exactly the old `MODEL_FAILED` toast and no row; that arm is asserted in
+    // `post-call-classify/__tests__/a-turn-that-owes-a-person-never-ends-in-silence.test.ts`.
     const errors = getBroadcastEventsByType('chat:error') as Array<{ code?: string }>;
     expect(errors).toHaveLength(1);
-    expect(errors[0].code).toBe('MODEL_FAILED');
+    expect(errors[0].code).toBe('FLOOR_GHOSTED');
+    // The durable half, which a toast never had.
+    const ghostRows = mockDb.current!
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' AND content LIKE '%empty reply%'")
+      .all();
+    expect(ghostRows).toHaveLength(1);
 
     // No assistant message was persisted (all responses were empty).
     const assistantMsgs = mockDb.current!
@@ -1309,48 +1322,70 @@ describe('runV2Turn integration', () => {
     expect(nudged).toBe(true);
   });
 
-  it('PRESERVATION #38: empty after tool calls is a clean end-of-turn (no toast)', async () => {
-    // Carve-out from v1 runtime.ts:1167-1171, if the agent already executed
-    // tool calls this turn and now returns empty, that's a legitimate end.
-    // No retry, no nudge, no toast.
-    const toolCall: ToolCall = {
-      id: 'tc1',
-      name: 'file_read',
-      arguments: { path: '/x' },
-    };
+  it('PRESERVATION #38 (REWRITTEN BY t125): tool calls then empty, with a person waiting, never ends the turn silently', async () => {
+    // ════════════════════════════════════════════════════════════════════════════════════
+    // ⚠ THIS TEST ASSERTED THE DEFECT, END TO END, AND IT IS THE THIRD ONE THAT DID
+    //   (the other two are in `post-call-classify/__tests__/an-answer-in-the-wrong-channel-
+    //   is-retried.test.ts`; this one the triage did not find).
+    //
+    // AS WRITTEN: it drove a real turn on an agent holding a WAITING user message
+    // (`msg-user-1`, seeded by this file's fixture), had the model call a tool and then
+    // return empty, and asserted "two model calls, no toast — a legitimate end". That is
+    // the owner's screenshot pinned as correct behaviour: he asked his PM a question, it
+    // ran two `history_search` calls, and the turn ended with nothing on his screen.
+    //
+    // THE v1 CARVE-OUT IT CITED IS REAL AND IS KEPT — runtime.ts:1167-1171, "the agent did
+    // work and has nothing more to say" — but only for the turn it was written about: one
+    // where NOBODY IS WAITING. That half cannot be asserted here, and the reason is the
+    // finding itself: on a user-driven turn the engine's own convention is `triggerRow` set
+    // ⇒ this turn serves a waiting human (`steps/preflight/closeout-gate.ts:106`), so a
+    // user turn is never a nobody-owed turn and this fixture cannot honestly make it one.
+    // The carve-out is asserted where it is actually reachable, across all seven provider
+    // seams, in `post-call-classify/__tests__/a-turn-that-owes-a-person-never-ends-in-
+    // silence.test.ts` ("nobody is owed: the not-a-failure exit is byte-identical").
+    //
+    // What this test now asserts is the shape the owner actually met, end to end, on the
+    // default (non-DeepSeek) contract this fixture resolves.
+    // ════════════════════════════════════════════════════════════════════════════════════
+    const toolCall: ToolCall = { id: 'tc1', name: 'file_read', arguments: { path: '/x' } };
     let modelCallCount = 0;
     callModelSpy.mockImplementation(async () => {
       modelCallCount++;
       if (modelCallCount === 1) {
-        return {
-          content: 'reading',
-          toolCalls: [toolCall],
-          inputTokens: 100,
-          outputTokens: 5,
-          stopReason: 'tool_use',
-        };
+        return { content: '', toolCalls: [toolCall], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
       }
-      return {
-        content: '',
-        toolCalls: [],
-        inputTokens: 100,
-        outputTokens: 0,
-        stopReason: 'end_turn',
-      };
+      return { content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' };
     });
     executeToolSpy.mockResolvedValue({
-      toolCallId: 'tc1',
-      name: 'file_read',
-      content: 'file body',
-      isError: false,
+      toolCallId: 'tc1', name: 'file_read', content: 'file body', isError: false,
     });
 
     await runV2Turn('primary');
 
-    // Two model calls: tool-use then empty end-of-turn. No silent retry.
-    expect(modelCallCount).toBe(2);
-    const errors = getBroadcastEventsByType('chat:error');
-    expect(errors).toHaveLength(0);
+    // THE MODEL IS ASKED AGAIN rather than left alone: the ladder's silent retry, then its
+    // one-shot steer. Four calls (tool-use, empty, retry, post-steer) — bounded, and the
+    // same bound every other empty reply in this engine gets. Before t125: two.
+    expect(modelCallCount).toBe(4);
+
+    // AND THE PERSON HEARS SOMETHING DURABLE. Not a live-only toast — a role='system' row
+    // in the platform's own voice (OR2: never the engine wearing the agent's face), which
+    // is still there after a reload. That is the half the owner's screen was missing.
+    const notices = mockDb.current!
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' AND content LIKE '%empty reply%'")
+      .all() as Array<{ content: string }>;
+    expect(notices).toHaveLength(1);
+    expect(notices[0].content).toMatch(/send it again/i);
+    // The platform speaks as the platform: no first-person line standing in for the agent.
+    expect(notices[0].content).not.toMatch(/\bI\b/);
+
+    // "THE REPLY STANDS" IS UNTOUCHED: no assistant row was forged for the person. The one
+    // assistant row this turn wrote is the tool_use itself, which carries no text — a ghost
+    // is by definition a turn with no reply to stand.
+    const spoken = (mockDb.current!
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'assistant'")
+      .all() as Array<{ content: string }>)
+      .filter((r) => !r.content.includes('"type":"tool_use"'));
+    expect(spoken).toHaveLength(0);
   });
 
   it('CONVERSATION INVARIANT: no system message between assistant tool_use and tool_result', async () => {

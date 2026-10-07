@@ -268,7 +268,11 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     // The empty-after-tools exit: one of this span's seven ways out.
     const exited = await runPostCallClassify(
       freshState({ toolCallsExecutedThisTurn: 2 }),
-      ctxFor({ result: modelResult({ content: '', toolCalls: [] }) }),
+      // t125: NOBODY IS OWED. This arm is the VEHICLE for the exit channel, not a claim
+      // about silence — and since t125 the empty-after-tools exit is reachable only when no
+      // person is waiting (an owed turn walks the ladder instead). The fixture says which
+      // turn this is rather than relying on the gate that used to ignore the question.
+      ctxFor({ result: modelResult({ content: '', toolCalls: [] }), hasUnansweredUser: false }),
     );
     expect(exited.directive).toBe('exit');
     expect(exited.state.phase).toBe(POST_CALL_CLASSIFY_PHASE);
@@ -382,7 +386,11 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
   it('EXIT IS NOT SAYABLE WITHOUT A REASON, and the arms name their own', async () => {
     const afterTools = await runPostCallClassify(
       freshState({ toolCallsExecutedThisTurn: 2 }),
-      ctxFor({ result: modelResult({ content: '', toolCalls: [] }) }),
+      // t125: NOBODY IS OWED. This arm is the VEHICLE for the exit channel, not a claim
+      // about silence — and since t125 the empty-after-tools exit is reachable only when no
+      // person is waiting (an owed turn walks the ladder instead). The fixture says which
+      // turn this is rather than relying on the gate that used to ignore the question.
+      ctxFor({ result: modelResult({ content: '', toolCalls: [] }), hasUnansweredUser: false }),
     );
     expect(afterTools.directive).toBe('exit');
     if (afterTools.directive !== 'exit') throw new Error('unreachable');
@@ -404,7 +412,11 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     // run, which is observable because none of them can write a row or a steer.
     const out = await runPostCallClassify(
       freshState({ toolCallsExecutedThisTurn: 2 }),
-      ctxFor({ result: modelResult({ content: '', toolCalls: [] }) }),
+      // t125: NOBODY IS OWED. This arm is the VEHICLE for the exit channel, not a claim
+      // about silence — and since t125 the empty-after-tools exit is reachable only when no
+      // person is waiting (an owed turn walks the ladder instead). The fixture says which
+      // turn this is rather than relying on the gate that used to ignore the question.
+      ctxFor({ result: modelResult({ content: '', toolCalls: [] }), hasUnansweredUser: false }),
     );
     expect(out.directive).toBe('exit');
     expect(persistAndBroadcastSystemRowSpy).not.toHaveBeenCalled();

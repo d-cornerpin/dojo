@@ -131,22 +131,13 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
       state = advance(state, { outputTokensEscalated: trunc.escalateTo });
       return continueLoop(state);
     }
-    // ════════════════════════════════════════════════════════════════════════════════════
-    // WHO IS WAITING — HOISTED, because the WHOLE LADDER needs it and not just the
-    // wrong-channel door (t125, Q2 of the PM-cluster triage).
-    //
-    // THE DEFECT THIS MOVE REPAIRS: this predicate was computed twenty lines further down,
-    // INSIDE the after-tools block, and then consulted only inside the `answersInReasoning`
-    // gate — which is true for DeepSeek and false for every other model
-    // (`agent/model-contract.ts`: `ANSWERS_IN_REASONING_MODELS = /deepseek/i`, and the base
-    // contract's `answersInReasoning: false`). So on a Claude-backed agent the engine
-    // computed "a person is waiting", discarded the fact, and ended the turn in total
-    // silence. Field evidence: a PM agent ran two `history_search` calls, returned no text,
-    // and the turn ended with nothing on the owner's screen — twice.
-    //
-    // It is the SAME predicate, read one scope up. Not re-derived, not widened: the start-ack
-    // owed pair and the unanswered-person flags, exactly as HL2 wrote them.
-    // ════════════════════════════════════════════════════════════════════════════════════
+    // ── WHO IS WAITING — HOISTED (t125, triage Q2). THE SAME PREDICATE, ONE SCOPE UP. ──
+    // It used to be computed inside the after-tools block and consulted ONLY inside the
+    // `answersInReasoning` gate — true for DeepSeek, false for every other model
+    // (`model-contract.ts`: `/deepseek/i`; `BASE_CONTRACT.answersInReasoning: false`). So a
+    // Claude-backed agent computed "a person is waiting", discarded it, and ended the turn
+    // mute: the owner's PM ran two `history_search` calls, returned no text, and left him
+    // looking at nothing — twice. Not re-derived and not widened; the whole ladder reads it.
     const contract = contractForConfiguredModel(ctx.configuredModelId);
     const startAckOwed =
       (ctx.turnCtx.startAckSteerRequested || ctx.turnCtx.startAckSteerArmedThisTurn)
@@ -212,23 +203,13 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
         state = advance(state, { retriedEmptyResponse: true });
         return continueLoop(state);
       }
-      // ════════════════════════════════════════════════════════════════════════════════
-      // v1 line 1167-1171: "the agent did work and has nothing more to say" — TRUE ONLY
-      // WHEN NOBODY IS WAITING (t125).
-      //
-      // A turn that owes a person a reply and comes back empty has not finished; it has
-      // produced nothing. It is not a no-comment, and calling it one is what put the
-      // owner's two `history_search` turns on screen as blank. So the owed case falls out
-      // of this block into the ladder that already exists below — one silent retry, then
-      // the one-shot `empty-response` steer, then the bounded give-up. ONE MODEL, ONE
-      // LADDER: this exit is no longer a DeepSeek-only privilege, and nothing about which
-      // provider is serving changes which door a silent turn walks out of.
-      //
-      // NO NEW MECHANISM, RUNG, VOICE OR PREDICATE: `owesAPerson` was already computed and
-      // thrown away; the rungs below are the ones every other empty reply has always
-      // walked; the bound is the contract's `emptyRetryBudget` plus the queue's own
-      // per-floor latch, as before.
-      // ════════════════════════════════════════════════════════════════════════════════
+      // v1 line 1167-1171, "the agent did work and has nothing more to say" — TRUE ONLY
+      // WHEN NOBODY IS WAITING (t125). A turn that owes a person and comes back empty has
+      // not finished, it has produced nothing; calling that a no-comment is what blanked
+      // the owner's screen. The owed case falls out of this block into the ladder already
+      // below — one silent retry, the one-shot steer, the bounded give-up. No new
+      // mechanism, rung, voice or predicate, and the same bound as before; the only change
+      // is that this exit stops being a DeepSeek-only privilege.
       if (!owesAPerson) return requestExit(state, 'empty-response-after-tools');
     }
     // No tools called and no text, empty response. v1 runtime.ts:1166-1199
@@ -266,34 +247,24 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
     // never silently forgotten. HL4 2b: it no longer speaks for the rest of the queue. A
     // guard about something the person was already told is not answered by an empty call.
     state = advance(state, { steerQueue: clearSteerQueueFor(state.steerQueue, EMPTY_LADDER_FAMILY) });
-    // ══════════════════════════════════════════════════════════════════════════════════
-    // THE HONEST END OF THE LADDER, WHEN A PERSON IS OWED (t125, OR2's last clause).
+    // ── THE HONEST END OF THE LADDER, WHEN A PERSON IS OWED (t125, OR2's last clause) ──
+    // A `chat:error` toast is a health surface, not a reply: live-only, no row, so a person
+    // who was away — or who reloads — still meets a turn that said nothing. So the owed case
+    // ends through the mechanism that already exists for exactly this, the way the sibling
+    // `handoff-floors.ts` does it: `recordFloorGhost` writes a durable `role='system'` row
+    // in the PLATFORM's voice (never the agent's face), announces it, and counts a
+    // `floor_ghosted` event on the ask.
     //
-    // A `chat:error` toast is a HEALTH SURFACE, not a reply: it is live-only, it leaves no
-    // row, and a person who was elsewhere when it fired — or who reloads — sees a turn that
-    // said nothing at all. That is the owner's symptom in one sentence, and it survives the
-    // ungating above for the turn where the model stays empty all the way down.
-    //
-    // So the owed case ends the way every other ghosted floor in this engine ends, through
-    // the mechanism that already exists for exactly this: `recordFloorGhost` — a durable
-    // `role='system'` row in the PLATFORM's voice (never the agent's face, OR2), announced
-    // on the wire beside the write, plus the health frame and a countable `floor_ghosted`
-    // event on the ask. The sibling `handoff-floors.ts` calls it the same way, for the same
-    // reason, with the same `askIdForMessage` lookup.
-    //
-    // ⚠ WHAT THIS DELIBERATELY DOES **NOT** DO, and the reason is a measured regression:
-    // it does not `latchEngineCut`. The triage's clause asked for an engine-imposed exit
-    // here so the re-serve ladder stops being charged — but `work/ask-settlement.ts:776`
-    // reads `if (!engineCut && spent >= MAX_ASK_RE_SERVES) return standDownReServe(...)`,
-    // i.e. an engine cut bypasses the stand-down ENTIRELY. A model that returns empty
-    // returns empty again, so latching here would re-serve the same ask forever, three
-    // model calls a cycle — the owner's own standing complaint (agents repeat themselves),
-    // installed as an infinite loop. And `no_reply_intended` is HONEST at THIS rung in a
-    // way it never was at the exit above: by here the model has been asked three times,
-    // once explicitly, and has chosen silence every time — which is precisely what
-    // `work/exit-attribution.ts` reserves the word for. The lie was the UNRETRIED exit, and
-    // that is the one this file fixed.
-    // ══════════════════════════════════════════════════════════════════════════════════
+    // ⚠ IT DELIBERATELY DOES NOT `latchEngineCut`, against the triage's clause, and the
+    // reason is a measured regression: `work/ask-settlement.ts:776` reads
+    // `if (!engineCut && spent >= MAX_ASK_RE_SERVES) return standDownReServe(...)` — a cut
+    // bypasses the stand-down ENTIRELY. A model that returns empty returns empty again, so
+    // latching here re-serves the same ask forever at three model calls a cycle: the owner's
+    // own complaint (agents repeat themselves) installed as an infinite loop. And
+    // `no_reply_intended` is honest at THIS rung in a way it never was at the exit above —
+    // the model has now been asked three times, once explicitly, and chose silence each
+    // time, which is what `work/exit-attribution.ts` reserves the word for. The lie was the
+    // UNRETRIED exit, and that is the one this file fixed. Pinned by a test.
     if (owesAPerson) {
       const root = ctx.turnCtx.root;
       recordFloorGhost({
