@@ -7430,6 +7430,20 @@
       "to": 242,
       "date": "2026-10-07",
       "why": "t123 (PM cluster): +17 lines are the engine-rider guard — a utility dial must never BE a turn (the pm-cluster ruling's rider-exclusion, engine-riders.ts:88 cited at the site). The file crosses the 240 unlisted-visibility line and gets PINNED instead of re-recorded: from 242 it may only shrink, and the 400 cap's warning stands — the next grower splits the file on the dial/turn seam."
+    },
+    {
+      "path": "packages/server/src/services/video-job-poller.ts",
+      "from": 468,
+      "to": 507,
+      "by": "t126 — the detached poll loop reads an owned lifetime, so it stops outliving its process",
+      "why": "468 -> 507 (+39: 43 added, 4 removed-and-replaced; of the 43, 20 code, 21 comment, 2 blank). THE DEFECT, driven not argued: `pollLoop` was fired with a bare `void` and tied to nothing, runs up to thirty minutes and is asleep in its backoff for nearly all of them, so a loop waking after `index.ts`'s shutdown (`closeDb()`, then exit) reached `getDb()` on a closed handle; the throw landed in the loop's own `catch`, whose `markFailed` calls `getDb()` AGAIN and threw the same error back OUT of the handler, so the honest log path was skipped and the promise rejected unheard. Measured before the fix: exactly one `unhandledRejection: test DB not initialized` per surviving loop — the intermittent `Errors 1 error` that exited a full suite 1 on 9053/9053 passing. WHAT LANDS HERE IS ONLY THE READING: the lifetime itself, its stop/re-arm doors, the `detachPollLoop` rejection path and the whole of the argument live in the NEW `services/video-poller-lifetime.ts` (66 lines), for the reason `media-job-status.ts` exists — the question is asked by the loop, by `index.ts`'s shutdown and by the clauses, and a second copy of the answer is how a vocabulary drifts. That split is also what kept this file inside its growth ceiling without deleting another lane's reasoning: an in-file version measured 561 lines against the 521 limit (417 baseline x 1.25), and re-recording a baseline six lanes share is a campaign-wide maintainer call, not a micro-lane's. THE 20 CODE LINES, each mutation-proven: the two stand-down checks at 4 lines each — above the iteration's first `getJob` (deleting it reds §1/§1b) and after the poll leg before the `attempt_count` UPDATE (reds §1a) — the `catch` backstop's own check, the entry fence (reds §4b), the boot re-arm (reds §4's re-arm clause), the composed-in signal, the `unref`, and the two `detachPollLoop` sites (reverting one to `void pollLoop(jobId)` is the original defect verbatim and reds §5). THE 21 COMMENT LINES carry only what the call sites cannot show and do not restate the module header: at each check, WHY IT SITS WHERE IT SITS (above `getJob` because that IS a `getDb()` call; above the stop check because a process going down is not the owner pressing stop and must never reach his chat as one); that the cut leg returns a plain retryable error and NOT `stopped`, which is why the mid-leg check is a separate guard rather than a tidy-up; and the `catch` backstop's WARN wording, which states that reaching it means a guard was missed — the thing that makes the clause 'a stand-down is SILENT at warn-and-above' hold the two checks above it load-bearing instead of decorative. REFUSED: the sleep or catch-and-ignore patch the brief ruled out (~2 lines). REFUSED: folding the two in-loop checks into one — they guard different phases, on the wire versus asleep, and have separate mutants. Growth: 507 against the 521 limit. From 507 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/index.ts",
+      "from": 1318,
+      "to": 1325,
+      "by": "t126 — the shutdown asks the video poll loops to stand down before it closes the DB",
+      "why": "1318 -> 1325 (+7: 1 code, 6 comment). ONE statement in `shutdown()`, beside the two worker-thread stops it belongs with and in the same best-effort shape as the `stopTunnel()` line directly below it: `import('./services/video-poller-lifetime.js').then(m => m.stopVideoJobPoller())`. THE POSITION IS THE POINT, and is what the 6 comment lines carry: it must precede the `closeDb()` four lines below, because the defect IS a detached poll loop waking into a closed handle — placed after, the statement is decoration and the unhandled rejection comes back. The comment also records what standing down does NOT do (no row is written; the renders stay open and the next boot's resume adopts them), because a reader meeting a shutdown hook would otherwise reasonably expect it to close out the jobs it stops. Growth: 1325 against a 1637 limit. From 1325 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7636,7 +7650,7 @@
     "packages/server/src/healer/diagnostic.ts": 1067,
     "packages/server/src/healer/healer-agent.ts": 1163,
     "packages/server/src/healer/injury-recovery.ts": 1233,
-    "packages/server/src/index.ts": 1318,
+    "packages/server/src/index.ts": 1325,
     "packages/server/src/memory/assembler.ts": 2811,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
@@ -7697,7 +7711,7 @@
     "packages/server/src/services/transcription.ts": 447,
     "packages/server/src/services/tunnel.ts": 730,
     "packages/server/src/services/video-generation.ts": 444,
-    "packages/server/src/services/video-job-poller.ts": 468,
+    "packages/server/src/services/video-job-poller.ts": 507,
     "packages/server/src/techniques/dependencies.ts": 586,
     "packages/server/src/techniques/share-export.ts": 464,
     "packages/server/src/techniques/share-import.ts": 311,
