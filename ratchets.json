@@ -7318,6 +7318,34 @@
       "to": 300,
       "by": "t125 Q2 — a turn that owes a person never ends in silence (the DeepSeek-only silence gate)",
       "why": "252 -> 300 (+48: 22 code, 26 comment). THE DEFECT: `owesAPerson` was computed at the old :174 and consulted ONLY inside the `contract.answersInReasoning` branch, which is true for DeepSeek and false for every other model in the tree (`agent/model-contract.ts`: `ANSWERS_IN_REASONING_MODELS = /deepseek/i`; `BASE_CONTRACT.answersInReasoning: false`). So the engine's only door out of silence was per-provider BY CONSTRUCTION: on a Claude-backed agent it computed 'a person is waiting', threw the fact away, and ended the turn mute at `requestExit(state, 'empty-response-after-tools')`. Field evidence: a PM agent ran two `history_search` calls, returned no text, and ended the turn twice in one conversation with nothing on the owner's screen, and the follow-ups then spent the model's own anti-repetition rungs because the exit recorded `no_reply_intended` for a turn the model was never asked a second time. THE 22 CODE LINES: the predicate hoisted one scope (a MOVE, not a second copy — the old declaration is deleted, and the silent-retry rung now reads the same hoisted `contract` instead of re-calling `contractForConfiguredModel`); `if (!owesAPerson)` in front of the existing exit; and an owed arm at the ladder's terminal rung that calls the EXISTING `recordFloorGhost` (the sibling `handoff-floors.ts`'s own call shape, same `askIdForMessage` lookup) instead of the live-only toast. No new mechanism, rung, voice or predicate; the bound is unchanged (`emptyRetryBudget` + the steer queue's per-floor latch). THE 26 COMMENT LINES CARRY THE THREE THINGS A READER CANNOT RECONSTRUCT FROM THE CODE: (1) why the predicate moved scope, i.e. that the per-provider gate was the defect and not a feature, with the contract file and the field evidence; (2) that the v1 carve-out at line 1167-1171 ('the agent did work and has nothing more to say') is KEPT and is true only when nobody is waiting, so a future reader does not restore the unconditional exit as a simplification; (3) the REFUSAL — the terminal rung deliberately does NOT `latchEngineCut` even though the triage's clause asked for it. ⚠ THIS ENTRY FIRST GAVE A FALSE REASON AND IT IS CORRECTED HERE RATHER THAN DROPPED, because this is the durable claim a later auditor reads and a correct refusal pinned to a checkable falsehood is how the next lane overturns it. IT SAID latching would re-serve the ask 'forever at three model calls a cycle'. IT WOULD NOT, and the bound was there to be read: `MAX_DRAIN_STUCK = 4` (declared `agent/turn-state.ts:189`, read at `agent/runtime.ts:1032`) QUARANTINES the head conversation after four failed serves — skipped, never dropped, `swept_at` keeps its identity, the owner is told and the NEXT conversation is served — and every self-wake is additionally gated by `underWakeBudget`. The real cost of latching is 3 model calls per turn x up to 4 serves per ask, about a dozen calls, and then quarantine. Bounded, not infinite. THE SOUND REASON, which survives the correction: `work/ask-settlement.ts:777` reads `!engineCut && spent >= MAX_ASK_RE_SERVES` and `:786` reads `if (!engineCut) recordReServe(...)`, so an engine cut BOTH bypasses the stand-down AND suppresses the counter — the ask is handed back open, spends nothing, and can never reach `blocked`. `blocked` is not a dead end: it is the OWED state the open-work surface renders while the drain's `state = 'open'` queue stops picking it up, i.e. the one place a question that was neither answered nor declined stays VISIBLE to the owner. Latching would leave his question sitting `open` behind a quarantined conversation instead: not answered, not declined, and no longer in the held state built for that case. That module's own docstring already said it ('an engine cut never gets here… spends nothing, and can never reach the stand-down'). The refusal is the single most likely thing for a later lane to reverse without re-measuring, so the corrected argument is written at the site AND pinned by a test ('the terminal rung does NOT latch an engine cut — a cut suppresses the counter, so the ask could never settle to `blocked`'), which names the question such a lane must answer first: where does an unanswered, undeclined ask become visible? PROSE WAS CUT BEFORE ANYTHING WAS RAISED: the landed file was 329 lines and three comment blocks were compressed to 300 before this entry was written; no comment was stripped to game the pin and no reasoning was dropped to buy lines. Growth: 300 against a 315 limit (252 x 1.25 = 315). From 300 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/validation-drive.ts",
+      "from": 615,
+      "to": 915,
+      "by": "t124 the escalation void — blocked work now reaches the owner",
+      "why": "615 -> 915 (+300: +80 code, +202 comment, +18 blank). THE CODE: four new SQL expressions and two readers the escalation predicate needs — the blocked arm (`blockedNeedsOwnerExpr`), the failure counter the owner ruled for (`workFailureCountExpr` + `pieceIdsExpr` + `workFailureCount`), the stated-obstacle read, and `ownerEscalationAlertLine`, the sentence the owner actually receives. It also REMOVED 11 lines by folding the state-arm OR group, which was written twice (the escalating query and the held-back log) — this lane's blocked fix had to land in both copies or the log would describe a different population from the one that escalates, which is the TB5 drift class this module's own header refuses. THE +202 COMMENT, and it is the larger half on purpose: every clause here is a REMOVAL or a REVERSAL of a shipped behaviour that was driven on a live box, and the argument is not reconstructible from the SQL. The blocked arm's tombstone records what the removed `blocked_validated = 0` conjunct did (a PM CONFIRMING a block was what deleted it from the predicate, measured: zero owner rows in six passes to 9,800 s) and why reading that flag was the error rather than the number behind it. The failure counter records which three recorded shapes count and why they need no new write, plus why the count reaches delegated pieces on TWO different columns — a `parent_id`-only count scores the owner's own declined-ASSIGN case zero. The sentence's block records that 'your PM cannot confirm it' becomes a LIE under this same lane's fix 1, which is the kind of fact that must be written down beside the code that would otherwise reintroduce it."
+    },
+    {
+      "path": "packages/server/src/work/tracker-store.ts",
+      "from": 761,
+      "to": 834,
+      "by": "t124 the escalation void — blocked work now reaches the owner",
+      "why": "761 -> 834 (+73: +18 code, +54 comment, +1 blank). THE CODE: one function, `deliveryAboutWorkSince` — the work-scoped delivery read that replaces an agent-scoped one at the sweep's verify step. 18 lines, one prepared statement. THE +54 COMMENT: the measured defect (the triage's live drive watched an unrelated vendor-email bulletin satisfy the old read, retire a pending escalation and burn the row's one PERMANENT `validation_escalated` stamp), and then the three scoping decisions a future reader would otherwise undo — why the two root edges are the only two possible (`TurnRoot.kind` is a four-member union, and a `root_kind='task'` clause would be UNSATISFIABLE, a gate that reads like a gate while being none), why the occurrence edge joins `work` and not `task_runs` (migration 144 dropped that table; the obvious spelling throws `no such table` inside the sweep's one outer try/catch and would abort every escalation pass — caught by driving it), and why the query is deliberately NOT agent-scoped."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 5089,
+      "to": 5116,
+      "by": "t124 the escalation void — blocked work now reaches the owner",
+      "why": "5089 -> 5116 (+27: +8 code, +19 comment). THE CODE: the wake behind the `block_validated` notice — the idiom `scheduler/runner.ts` already uses after its own validation notices, in a try/catch, best-effort, never awaited. THE +19 COMMENT: the comment already above this notice records that it was once invisible to the model and that the awareness lane fixed the VISIBILITY; what it could not say is that nothing fixed the TIMING, because an events-lane row needs a turn and nothing caused one (measured: one row, then nothing for ~6 minutes and 9,800 s of backdated idleness). The new block says that, and says which half of the fix is structural — the sweep's blocked arm is the backstop, so this wake is the fast path rather than the only hope."
+    },
+    {
+      "path": "packages/server/src/scheduler/runner.ts",
+      "from": 2073,
+      "to": 2096,
+      "by": "t124 the escalation void — blocked work now reaches the owner",
+      "why": "2073 -> 2096 (+23: +7 code net, +16 comment net). THE CODE: the verify step's read swaps to the work-scoped query (one line), and the floor ghost's `ownerLine` becomes a call carrying the row's recorded facts with those same facts added to its `detail` so the alert can be audited against what the platform knew when it spoke. The old fixed three-line sentence is DELETED. THE +16 COMMENT: why the scope of the verify question is the whole fix, and why the owner line could not stay as it was once the blocked arm admits a PM-upheld row."
     }
   ],
   "maxNewFileLines": 400,
@@ -7568,7 +7596,7 @@
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
     "packages/server/src/scheduler/engine.ts": 414,
-    "packages/server/src/scheduler/runner.ts": 2073,
+    "packages/server/src/scheduler/runner.ts": 2096,
     "packages/server/src/services/audio-generation.ts": 435,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/capability-registry.ts": 251,
@@ -7600,7 +7628,7 @@
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
     "packages/server/src/tracker/schema.ts": 1105,
     "packages/server/src/tracker/task-stamps.ts": 296,
-    "packages/server/src/tracker/tools.ts": 5089,
+    "packages/server/src/tracker/tools.ts": 5116,
     "packages/server/src/tracker/version-gap-reconcile.ts": 327,
     "packages/server/src/twilio/call-session.ts": 916,
     "packages/server/src/twilio/sms-inbound.ts": 409,
@@ -7625,9 +7653,9 @@
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/store.ts": 2258,
-    "packages/server/src/work/tracker-store.ts": 761,
+    "packages/server/src/work/tracker-store.ts": 834,
     "packages/server/src/work/tracker-view.ts": 622,
-    "packages/server/src/work/validation-drive.ts": 615,
+    "packages/server/src/work/validation-drive.ts": 915,
     "packages/server/src/work/work-reaper.ts": 694,
     "packages/shared/src/access.ts": 338,
     "packages/shared/src/markers.ts": 358,
