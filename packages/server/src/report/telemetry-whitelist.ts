@@ -164,11 +164,20 @@ export const TELEMETRY_WHITELIST: readonly TelemetryField[] = [
     // can now be asked "what did the engine spend on titling tickets" and answer it.
     // `completion` stays a member: four dials still declare nothing (the router probe, retrieval, the
     // technique share-export, vault extraction), and history is full of it.
+    // ⚠ t123 ADDED AN EIGHTH, `effort_verdict` — the PM's advancing-or-circling judgment on one
+    // task. It used to land in this column as `agent_turn`, because the review was asked for
+    // THROUGH the turn plumbing, which is precisely the defect t123 fixed: a PM turn's
+    // counterparty is user-shaped, so the verdict persisted to the owner lane and was broadcast
+    // into the owner's chat as a raw JSON bubble. It is now a declared utility dial on the
+    // non-persisting path, so this column can be asked what the engine spends judging whether
+    // work is advancing. ⚠ The member list below admits STRING LITERALS ONLY — a comment inside
+    // the array reads as a non-literal element and fails
+    // `__tests__/the-telemetry-whitelist-admits-no-free-text.test.ts`. Hence this note here.
     members: ['light', 'standard', 'heavy', 'budget_fallback', 'ollama', 'agent_turn',
       'agent-sdk', 'completion', 'image_generation', 'transcription', 'music_generation',
       'audio_generation', 'video_generation',
       'ask_title', 'multistep_classify', 'memory_summarize', 'continuity_brief',
-      'vision_caption', 'page_summary', 'voice_opener'] },
+      'vision_caption', 'page_summary', 'voice_opener', 'effort_verdict'] },
   { path: 'call.input_tokens',        kind: 'count',     source: 'cost_records.input_tokens' },
   { path: 'call.output_tokens',       kind: 'count',     source: 'cost_records.output_tokens' },
   { path: 'call.cache_read_tokens',   kind: 'count',     source: 'cost_records.cache_read_tokens' },

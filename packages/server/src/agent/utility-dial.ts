@@ -36,6 +36,7 @@ import { estimateTokensFromChars } from '../memory/budget.js';
 export type UtilityPurpose =
   | 'ask_title'
   | 'multistep_classify'
+  | 'effort_verdict'
   | 'memory_summarize'
   | 'continuity_brief'
   | 'vision_caption'
@@ -75,6 +76,16 @@ const DIALS: Readonly<Record<UtilityPurpose, UtilityDial>> = {
   // one small JSON object. 48 tokens covers it with the braces and a long project name.
   // The caller passes its own `AbortSignal.timeout`, so no budget is imposed here.
   multistep_classify: { purpose: 'multistep_classify', maxOutputTokens: 48, latencyBudgetMs: null },
+
+  // `{"advancing": true|false, "reason": "one or two sentences", "task_id": "<uuid>"}` — the PM's
+  // advancing-or-circling judgment on one task. The whole artifact is one small JSON object, so
+  // the arithmetic is `multistep_classify`'s with room for the two fields it does not have: a
+  // 36-char uuid is ~18 tokens, and "one or two sentences" of reason is ~40. 128 covers both with
+  // the braces and slack for a model that opens with a stray newline, and is far short of the
+  // room an essay would need. No latency budget: the caller is a 60s background sweep with
+  // nobody waiting on it, and it already leaves the request pending on any failure, so a slow
+  // answer costs nothing a fast fallback would have saved.
+  effort_verdict: { purpose: 'effort_verdict', maxOutputTokens: 128, latencyBudgetMs: null },
 
   // A conversation summary, and the ONLY entry whose size the CALLER knows better than this table:
   // `getDepthPrompt(depth, targetTokens)` tells the model its target in words. The cap is applied

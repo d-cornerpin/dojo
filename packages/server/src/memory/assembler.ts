@@ -1284,7 +1284,32 @@ async function assembleMessageContext(
   // No briefing, no vault, no summaries. The tracker is its memory. Its row cap is a lane
   // declaration like every other (§T0-B C `:681`).
   if (isPMAgent(agentId)) {
-    const freshTail = getRecentMessages(agentId, laneLimit('lane.pm-tail', 'rows', 'tail'));
+    // ── t123: ROWS THAT RENDER TO NOTHING MUST NOT SPEND A TAIL SLOT ────────────────────────
+    // The row cap is a budget on what the MODEL SEES, but `getRecentMessages` has no role
+    // filter, so `role='system'` rows spent slots and then rendered to nothing. The two rows a
+    // session reset inserts are the case that bit the owner: immediately after the reset he
+    // complained about, his PM's window was a 10-row cap holding 8 renderable rows — and he was
+    // the one who had just pressed reset, so the eviction was worst exactly when he most needed
+    // the conversation carried.
+    //
+    // The ask is RAISED by the number of unrenderable rows it came back holding, rather than a
+    // role predicate being pushed into `getRecentMessages`. Two reasons, and the second is the
+    // load-bearing one: `memory/store.ts` is outside this lane's fence, and more importantly
+    // `getRecentMessages` must stay exactly complementary with `getOlderMessages` (FA-M3 —
+    // their partition is what keeps the tail-to-summary handoff from dropping or duplicating a
+    // message), so a role filter on one of the pair is a correctness change to BOTH readers,
+    // which is a far wider blast radius than the PM's own tail needs.
+    //
+    // ONE re-ask, deliberately bounded. It is not a loop: the re-ask can itself surface further
+    // system rows in the widened window, so the guarantee is "strictly more renderable rows
+    // than before, never fewer", not "exactly the cap". A loop here would be an unbounded query
+    // ladder for a cosmetic last row, and the budgeter below is the real cap on what fits.
+    const pmTailCap = laneLimit('lane.pm-tail', 'rows', 'tail');
+    const firstAsk = getRecentMessages(agentId, pmTailCap);
+    const unrenderable = firstAsk.filter((m) => m.role === 'system').length;
+    const freshTail = unrenderable > 0
+      ? getRecentMessages(agentId, pmTailCap + unrenderable)
+      : firstAsk;
     const budgeted = budgetFreshTail(
       freshTail, maxTokens - systemTokens, tailTrimBlockGroups(policy.freshTailCount),
     );

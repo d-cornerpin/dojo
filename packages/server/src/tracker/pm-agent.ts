@@ -36,8 +36,7 @@ import { patienceFloorFor, flooredThresholds, type PokeThresholds } from './assi
 import { getAgentRuntime } from '../agent/runtime.js';
 import { getRecentObservations, getRecentTransitions, formatEntryLine, listTaskLog, writeTaskLog } from './task-log.js';
 import {
-  deleteForAgentBefore,
-  deleteNonSystemForAgent,
+  deleteAgentDebrisBefore,
   insertEngineEventIfAbsent,
 } from '../memory/message-store.js';
 import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isPMEnabled, isSetupCompleted, isSystemServiceAgent, isDreamerAgent } from '../config/platform.js';
@@ -1102,7 +1101,14 @@ function recordValidatorUnavailable(pmId: string, pmStatus: string): void {
 // more pair-completeness to work with while still keeping the PM's
 // window small. PM is still stateless conceptually (tracker is its
 // memory), this is just enough scratch space.
-const PM_MAX_MESSAGES = 30;
+// t123 RAISED THIS FROM 30 TO 60, for coherence with the lane rather than as a tuning nudge.
+// `lane.pm-tail` now asks the assembler for 40 rows. A pruner that keeps only the newest 30 can
+// therefore DELETE rows the window was about to render — the two numbers were set years apart
+// and nothing made them agree. 60 keeps the pruner strictly behind the tail: it can only ever
+// remove rows the assembly would not have shown anyway. It still bounds the table, and the rows
+// it removes are the ones with the volume (the per-minute `events`-lane situation reports),
+// because `deleteAgentDebrisBefore` spares the owner lane.
+const PM_MAX_MESSAGES = 60;
 
 /**
  * Prune old PM messages to keep the context window small.
@@ -1149,12 +1155,12 @@ function pruneOldPMMessages(pmId: string): void {
     // threw and the prune failed forever ("Failed to prune PM messages" every 10 min for
     // hours, observed in production). The PM doesn't need its archived summaries anyway —
     // the tracker is its memory — so the link rows go first, then the messages, both inside
-    // deleteForAgentBefore in one transaction.
+    // deleteAgentDebrisBefore in one transaction.
     // PHASE-1 T7 re-stated: the reference is BACK (migration 130, now that one table holds
     // every lane) and it is ON DELETE CASCADE precisely so this incident cannot return by
-    // way of some other delete path forgetting the ordering. deleteForAgentBefore keeps its
+    // way of some other delete path forgetting the ordering. deleteAgentDebrisBefore keeps its
     // explicit first delete regardless — see the note there.
-    const deleted = deleteForAgentBefore(pmId, cutoff.id);
+    const deleted = deleteAgentDebrisBefore(pmId, cutoff.id);
 
     if (deleted > 0) {
       logger.debug('Pruned old PM messages', { pmId, deleted, kept: PM_MAX_MESSAGES });
@@ -1390,11 +1396,22 @@ function parseEffortVerdict(text: string | null | undefined): { advancing: boole
 // poke-sweep call site a few hundred lines down is unchanged.
 
 /**
- * Run ONE out-of-band effort review, start to finish. RIDES the same plumbing
+ * Run ONE out-of-band effort review, start to finish.
+ *
+ * ⚠ t123 REVERSED THIS FUNCTION'S CENTRAL DESIGN CHOICE, so the old docstring's claim is
+ * recorded here rather than quietly dropped. It used to say it "RIDES the same plumbing
  * `runPMReview` uses for its own LLM turn (`insertEngineEventIfAbsent` + `getAgentRuntime()
- * .handleMessage`) rather than inventing a second way to talk to the PM's model — this is
- * a SEPARATE message/turn from the situation report, though, because the verdict this needs
- * is a structured yes/no+reason, not a freeform tool-calling pass.
+ * .handleMessage`) rather than inventing a second way to talk to the PM's model." The
+ * reasoning was good and the consequence was not: riding the TURN plumbing means the model's
+ * answer is persisted and broadcast as an ordinary assistant reply, and the PM's turn
+ * counterparty is user-shaped, so the engine's private judgment question was answered IN THE
+ * OWNER'S CHAT WINDOW as a raw JSON bubble. It is not a second way to talk to the model
+ * either: `callModel` with `tools: false` is the engine's EXISTING non-persisting path for
+ * exactly this class of call, the one `work/ask-title.ts` already uses. The full hop-by-hop
+ * argument is at the call site below.
+ *
+ * The verdict is a structured yes/no+reason, not a freeform tool-calling pass — which is why
+ * it was always a separate ask from the situation report, and why it never needed a turn.
  *
  * advancing=true: `advanceBaseline` + a `task_log` `observation` (actor `'pm'`) carrying the
  * reason — the audit trail IS the feature, and NOTHING reaches the agent.
@@ -1409,8 +1426,10 @@ function parseEffortVerdict(text: string | null | undefined): { advancing: boole
  * path (the `in_progress` loop below, `pendingCirclingVerdict` + `circlingPokeAlreadyDelivered`)
  * delivers rung 2 on whichever LATER sweep tick both guards actually allow it — the sweep runs
  * every 60s, so delivery is eventual by construction, never a spin.
- * No parseable verdict, a task_id mismatch, or a busy PM: baseline untouched, nothing sent or
- * recorded, logged — the request stays pending and `runPMReview`'s next tick tries again.
+ * No parseable verdict, or no PM model to ask: baseline untouched, nothing sent or recorded,
+ * logged — the request stays pending and `runPMReview`'s next tick tries again. "A busy PM"
+ * is no longer one of these cases (t123): a direct model call turns nothing and races nothing,
+ * so the whole class of reviews lost to the busy-deferral is gone rather than merely rarer.
  */
 export async function runEffortReview(taskId: string): Promise<void> {
   const db = getDb();
@@ -1435,70 +1454,86 @@ export async function runEffortReview(taskId: string): Promise<void> {
 
   const pmId = getPMAgentId();
 
-  // FIX ROUND, Finding 2, ruling (c): `getAgentRuntime().handleMessage` (`agent/runtime.ts`)
-  // has NO signal in its return value for "the PM was already mid-run, so I only queued a
-  // wakeup and did not actually turn" — it resolves `void` either way. Detect it BEFORE
-  // dispatch, off the SAME `activeRuns` set the runtime itself gates on (imported once
-  // already, above, as `pmActiveRuns`, for the poke sweep's own busy-deferral) and bail out
-  // completely: no prompt is even inserted, nothing is read back, and the durable request
-  // marker is untouched — `runPMReview`'s existing re-drive tries again next tick, which is
-  // the self-heal this file already has rather than a new one.
-  if (pmActiveRuns.has(pmId)) {
-    logger.info('Effort review deferred: the PM is mid-run, no synchronous turn to read a reply from; the request stays pending and retries next cycle', { taskId, pmId });
+  // ── t123: THE VERDICT IS ASKED FOR ON THE NON-PERSISTING MODEL PATH, NOT A PM TURN ───────
+  // What stood here: `insertEngineEventIfAbsent` + `getAgentRuntime().handleMessage(pmId)` +
+  // a `seq`-bounded read-back of the PM's newest assistant row. That shape is what put the
+  // engine's private question into the OWNER'S CHAT WINDOW. The hops, each verified:
+  //
+  //   1. `handleMessage(agentId, _content)` DISCARDS its content argument — the prompt reached
+  //      the model only as the durable `messages` row inserted the line before, so the
+  //      delivery mechanism WAS the DB row and the turn was an ordinary agent turn.
+  //   2. The prompt row itself was safe (`lane:'events'`, and the human-facing `chat_messages`
+  //      view is `WHERE lane = 'owner'`). THE REPLY ROW WAS NOT.
+  //   3. `resolveTurnCounterparty` synthesizes a USER-SHAPED counterparty for every non-A2A
+  //      turn, engine turns included. So `turn-classification.ts`'s `interAgentTurn` begins
+  //      `counterparty.kind !== 'user' && (…)`, whose `&&` prefix short-circuits the entire
+  //      six-way union — `pureBackgroundTurn` included, which would otherwise have caught
+  //      exactly this case. `outputPersistenceClassifier` has no engine-turn arm either.
+  //   4. `persist-assistant.ts`'s non-A2A arm writes with NO lane, and `message-store.ts`
+  //      defaults it: `const lane: Lane = m.lane ?? 'owner'`. The lane default FAILS OPEN to
+  //      owner-visible, and there is no engine lane for assistant output at all.
+  //   5. It was then broadcast live into the PM's dashboard chat.
+  //
+  // So the owner saw `{"advancing": true, "reason": "…", "task_id": "…"}` as a chat bubble,
+  // reading as the answer to the question he had just asked. The model's behaviour was CORRECT
+  // — the engine demanded bare JSON and got bare JSON. The defect was routing a machine-readable
+  // answer through the human-visible reply lane.
+  //
+  // WHY NOT JUST SUPPRESS THE PERSISTENCE: the read-back found the verdict BY QUERYING the
+  // persisted assistant row. Suppress the write and every verdict becomes unparseable, the
+  // request retries forever, and the same visible turn re-fires on each sweep — strictly worse.
+  // The fix is to stop asking for the judgment through the human-reply path at all. `callModel`
+  // with `tools: false` persists NOTHING of the model's output, which is what this class of
+  // call has always needed; the shape is copied from `work/ask-title.ts`'s `resolveAskTitle`.
+  //
+  // THREE GUARDS GO WITH IT, because a direct call makes them dead weight rather than safety:
+  //   · the `pmActiveRuns` busy-deferral — it existed ONLY because `handleMessage` gives no
+  //     "I merely queued a wakeup" signal. A direct call turns nothing and races nothing, so
+  //     the whole "the review is deferred because the PM is mid-run" class of LOST REVIEWS is
+  //     deleted with it rather than merely made rarer.
+  //   · the `dispatchSeq` correlation boundary and the `task_id` echo-rejection — both defended
+  //     against mis-reading a STALE PERSISTED ROW as this request's answer. There is no row to
+  //     mis-read: `r.content` is this call's own return value. Keeping the echo-rejection would
+  //     also have kept a spin (a model that echoes a wrong id never advances the baseline, so
+  //     the request re-fires an LLM call every 60s for ever). `task_id` stays a REQUIRED field
+  //     of `parseEffortVerdict`'s schema — it is still a shape check that the model followed
+  //     the instruction — it is simply no longer load-bearing as a correlation device.
+  const pmAgent = db.prepare('SELECT model_id, status FROM agents WHERE id = ?')
+    .get(pmId) as { model_id: string | null; status: string } | undefined;
+  if (!pmAgent?.model_id || pmAgent.status === 'terminated') {
+    logger.info('Effort review skipped: there is no PM model to ask; the request stays pending and retries next cycle', { taskId, pmId });
     return;
   }
 
   const prompt = buildEffortReviewPrompt(taskId, row, row.assigned_to);
-  // FIX ROUND, Finding 2, ruling (b): the correlation boundary, captured BEFORE dispatch. The
-  // read-back below only considers PM messages with a HIGHER `seq` than this — never `created_
-  // at`, for the reason `pendingCirclingVerdict` states above (two writes can share a
-  // millisecond; an autoincrement id cannot repeat) — so a stale reply left over from an
-  // earlier, unrelated PM turn can never be misread as THIS request's verdict.
-  //
-  // T79 FIX WAVE 2: `seq`, not the bare SQLite `rowid` keyword. PHASE-1 T10
-  // (`133_drop_dead_stores_and_promote_seq.sql`) made `messages.seq` the table's actual
-  // `INTEGER PRIMARY KEY` — `seq` IS the rowid, under the one name every other reader in this
-  // tree uses (`agent/v2/counterparty.ts`'s `WAITING_COLS`, this same file's own poke-history
-  // reads a few hundred lines up). A bare `rowid` still returns the identical integer (SQLite
-  // aliases them), so this is a rename with no behaviour change — pinned by
-  // `memory/__tests__/lane-readers.test.ts`'s "no reader projects a bare `rowid`" conformance
-  // walk, which this exact site was the one violation of.
-  const dispatchSeq = (db.prepare(
-    `SELECT COALESCE(MAX(seq), 0) AS m FROM messages WHERE agent_id = ?`,
-  ).get(pmId) as { m: number }).m;
-
-  insertEngineEventIfAbsent({
-    id: uuidv4(), agentId: pmId, content: prompt, sourceAgentId: null,
-    originIntent: 'effort_review', work: { taskId, runId: null, rootKind: null, rootId: null },
-  });
-
+  let replyText: string | null = null;
   try {
-    await getAgentRuntime().handleMessage(pmId, prompt);
+    const { callModel } = await import('../agent/model.js');
+    const r = await callModel({
+      agentId: pmId,
+      modelId: pmAgent.model_id,
+      systemPrompt: '',
+      messages: [{ role: 'user', content: prompt }],
+      // ⚠ `tools: false` is what makes this call persist nothing. It is NOT what declares the
+      // call a utility dial — `runtime.ts`'s tools gate turns a REAL agent turn toolless on a
+      // model without the tools capability, so the dial keys off `purpose` and nothing else.
+      tools: false,
+      purpose: 'effort_verdict',
+      // The caller fully handles failure by leaving the request pending for the next sweep, so
+      // a handled failure must not read as an agent-level error in the log.
+      bestEffort: true,
+    });
+    replyText = r.content;
   } catch (err) {
-    logger.error('Effort review: the PM turn failed; the request stays pending and retries next cycle', {
+    logger.error('Effort review: the PM model did not answer; the request stays pending and retries next cycle', {
       taskId, error: err instanceof Error ? err.message : String(err),
     });
     return;
   }
 
-  const replyRow = db.prepare(`
-    SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' AND seq > ?
-     ORDER BY created_at DESC, seq DESC LIMIT 1
-  `).get(pmId, dispatchSeq) as { content: string } | undefined;
-  const verdict = parseEffortVerdict(replyRow?.content);
+  const verdict = parseEffortVerdict(replyText);
   if (!verdict) {
     logger.warn('Effort review: the PM reply did not parse as a verdict; the request stays pending and retries next cycle', { taskId });
-    return;
-  }
-  // FIX ROUND, Finding 2, ruling (a): a verdict whose echoed task_id does not match is
-  // REJECTED, never applied to the task it happened to be read for. A seq-scoped mismatch
-  // should be rare in practice (the boundary above already excludes stale replies), but the
-  // schema's whole point is to make a wrong-task application impossible rather than merely
-  // unlikely.
-  if (verdict.taskId !== taskId) {
-    logger.warn('Effort review: PM verdict task_id does not match this request; rejected, the request stays pending and retries next cycle', {
-      taskId, verdictTaskId: verdict.taskId,
-    });
     return;
   }
 
@@ -1579,37 +1614,45 @@ async function runPMReview(): Promise<void> {
   // Prune old messages before each review to keep context tight
   pruneOldPMMessages(pmId);
 
-  // ── Validation-review context wipe ──
-  // When there's pending validation work, the PM agent's previous turns
-  // left assistant tool_calls + tool_results in its history. The OpenAI
-  // Pass 1 sanitizer can strip orphan tool_results (e.g., when a prior
-  // assistant got pruned away or compacted out), leaving the PM's view
-  // of its own past work inconsistent, and it responds with [no-reply]
-  // because it can't reconcile what it sees with what it's being asked
-  // to do. The codebase's design intent is that PM is stateless and the
-  // tracker is its memory. Honor that: wipe the PM's conversation
-  // history before each validation review so it starts fresh. We keep
-  // system messages (system prompt, session boundary) so identity /
-  // instructions persist.
-  if (pendingValidationCount > 0) {
-    try {
-      const wiped = deleteNonSystemForAgent(pmId);
-      if (wiped > 0) {
-        // D7: do NOT reset the dedup hash here. The dedup key is the actionable
-        // issue-SET (stableIssuesKey), so keeping the hash means a re-review fires
-        // only when the set of tasks needing validation actually CHANGES, not on
-        // every 60s poll of an unchanged board. Resetting it forced a fresh LLM
-        // review each poll while any task sat unvalidated, the ~900-calls/day loop.
-        logger.info('Wiped PM conversation history before validation review', {
-          pmId, deletedMessages: wiped, pendingValidation: pendingValidationCount,
-        });
-      }
-    } catch (err) {
-      logger.warn('Failed to wipe PM conversation before validation review (non-fatal)', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
+  // ── TOMBSTONE: THE VALIDATION-REVIEW CONTEXT WIPE IS DELETED (t123) ─────────────────────
+  // What stood here: `if (pendingValidationCount > 0) deleteNonSystemForAgent(pmId)` — an
+  // unconditional delete over every row the agent owned, guarded by nothing but a `role` test
+  // that spared the system rows. Scoped by agent and by nothing else: no conversation clause,
+  // no lane clause, no session floor, no "keep the newest N", and no interlock with a live
+  // owner turn. Every user, assistant and tool row the PM owned, destroyed rather than
+  // archived. (The statement itself is quoted in the matching tombstone in
+  // `memory/message-store.ts`, which is the one file allowed to name it: `messages` has a
+  // SINGLE-WRITER conformance clause whose matcher does not strip comments, so quoting the SQL
+  // here would register this file as a new writer of the table.)
+  //
+  // WHY IT HAD TO GO, and it is not a tuning argument. This sweep runs on `POKE_INTERVAL_MS`
+  // (60s) and the gate above DELIBERATELY BYPASSES the 10-minute review throttle while
+  // validation is pending, so with one task awaiting validation the delete ran EVERY SIXTY
+  // SECONDS — against the platform PM, which is the agent the owner actually talks to. It
+  // therefore deleted the owner's live, on-screen conversation mid-conversation. The owner's
+  // reported symptom was the engine answering "Hey, I'm here. What's up?" to a four-exchange
+  // thread: the correct answer to the only message the assembly still contained.
+  //
+  // ITS STATED PREMISE IS STALE, which is why this is a deletion and not a narrowing. The
+  // comment that stood here justified the wipe by "the OpenAI Pass 1 sanitizer can strip
+  // orphan tool_results … leaving the PM's view of its own past work inconsistent", so the PM
+  // "responds with [no-reply]". `agent/tool-pairing.ts`'s `repairToolPairing` now repairs
+  // exactly that, in BOTH directions, and the PM assembly path has run it since F22 —
+  // `memory/assembler.ts`'s PM branch calls `applyIntegrityPass`, which does the role
+  // normalisation AND strips a leading tool_result AND repairs the pairing. The damage was no
+  // longer buying anything, and the irony on the record is that the wipe was added to STOP the
+  // PM replying `[no-reply]`.
+  //
+  // "The PM is stateless, the tracker is its memory" stays true and is still served: the
+  // tracker is where WORK lives, and `pruneOldPMMessages` above still bounds the row count.
+  // Statelessness about work was never a licence to destroy a human conversation.
+  //
+  // `deleteNonSystemForAgent` itself is DELETED from `memory/message-store.ts` with this call —
+  // it had no other caller, and an unscoped by-agent conversation delete should not sit in the
+  // tree as a loaded gun for the next author who wants "a fresh start".
+  //
+  // D7 is preserved by construction: nothing here touches the dedup hash, so a re-review still
+  // fires only when the actionable issue-SET changes, never on every 60s poll.
 
   const pmName = getPMAgentName();
   const primaryName = getPrimaryAgentName();

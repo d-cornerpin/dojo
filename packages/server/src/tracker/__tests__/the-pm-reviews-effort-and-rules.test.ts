@@ -12,15 +12,23 @@
 //      reaches the assignee through the SAME guarded delivery every other poke in this file
 //      uses (`assigneeStatus === 'working'`, `pmActiveRuns` busy-deferral); it is eventual by
 //      construction (the sweep runs every 60s) and it embeds the PM's reason.
-//   §4 (FIX ROUND, Finding 2, IMPORTANT) — the verdict is CORRELATED to its own request: a
-//      busy PM defers the whole review, the read-back ignores anything older than the
-//      dispatch, and a task_id mismatch is rejected.
+//   §4 (t123 REWROTE THIS SECTION) — the verdict is asked for OFF the turn plumbing, so it
+//      can never reach a human lane. What §4 used to pin was a set of correlation devices
+//      (`pmActiveRuns` busy-deferral, a `seq` dispatch boundary, a `task_id` echo-rejection)
+//      that existed ONLY because the verdict was read back out of the `messages` table after
+//      driving a real PM turn. t123 deleted that mechanism — see the tombstone in
+//      `runEffortReview` — so §4 now pins the INVARIANT those devices were approximating:
+//      the verdict comes from the call's own return value, it persists NOTHING, and a review
+//      is never lost to a busy PM.
 //
-// The LLM call is stubbed at the exact seam `effort-accumulates-until-the-task-advances.
-// test.ts` already stubs it at for this same file: `agent/runtime.js`'s
-// `getAgentRuntime().handleMessage`. Here the stub is made CONFIGURABLE per test (it has to
-// simulate the PM's actual verdict text landing in `messages`, which the real runtime would
-// do by actually calling a model) rather than a permanent no-op.
+// ⚠ THE LLM SEAM MOVED (t123). It used to be `agent/runtime.js`'s
+// `getAgentRuntime().handleMessage` — a stub that wrote an assistant `messages` row, because
+// that is literally how the verdict travelled: `handleMessage` DISCARDS its content argument,
+// the prompt reached the model as a durable events-lane row, and the reply was read back out
+// of `messages`. That is exactly what published the engine's private JSON into the owner's
+// chat. The seam is now `agent/model.js`'s `callModel`, the non-persisting path, and the stub
+// returns the verdict as a RETURN VALUE — which is the whole point: a stub that cannot write
+// a message row is a stub that cannot fake the defect.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -41,13 +49,26 @@ vi.mock('../../memory/message-store.js', async (importOriginal) => ({
   insertEngineEventIfAbsent: () => null,
 }));
 
-/** The LLM stub seam. Reassigned per test so each test controls what "the PM's turn" does —
- *  the real runtime would call a model and let it write an assistant message; the stub writes
- *  one directly, which is the behavioural contract `runEffortReview` actually depends on
- *  (it reads the PM's latest assistant `messages` row back after the turn returns). */
-let handleMessageImpl: (agentId: string, content: string) => Promise<void> = async () => { /* no-op default */ };
+/** The LLM stub seam (t123): `callModel`, the engine's non-persisting model path. Reassigned
+ *  per test so each test controls what the PM's model answers. The spy records the params so
+ *  the clauses can assert the CALL SHAPE — `tools: false` and the declared purpose are what
+ *  make the call persist nothing, and a clause that only checked the verdict would stay green
+ *  if someone put the judgment back on the turn plumbing. */
+const callModelSpy = vi.fn();
+let verdictText: string | null = null;
+let callModelThrows: Error | null = null;
+vi.mock('../../agent/model.js', () => ({
+  callModel: async (params: unknown) => {
+    callModelSpy(params);
+    if (callModelThrows) throw callModelThrows;
+    return { content: verdictText };
+  },
+}));
+
+// Still mocked, now as a pure no-op: `runEffortReview` no longer touches the runtime at all,
+// but `runPMReview` (fired by §3) does.
 vi.mock('../../agent/runtime.js', () => ({
-  getAgentRuntime: () => ({ handleMessage: (agentId: string, content: string) => handleMessageImpl(agentId, content) }),
+  getAgentRuntime: () => ({ handleMessage: async () => { /* no-op */ } }),
 }));
 
 const deliverA2ASpy = vi.fn(async () => ({ delivered: true }));
@@ -115,12 +136,21 @@ function createAgentsTable(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, name TEXT, status TEXT, model_id TEXT)`);
 }
 
-/** Simulate the PM's assistant reply landing in `messages`, the way a real model turn would. */
-function pmReplies(pmId: string, content: string): void {
+/** What the PM's model answers this test. t123: a RETURN VALUE, not a `messages` row. */
+function pmAnswers(content: string | null): void {
+  verdictText = content;
+}
+
+/** A row written directly into `messages`, used only to prove rows are NOT read or written. */
+function plantAssistantRow(pmId: string, content: string): void {
   mockDb.current!.prepare(
     `INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'assistant', ?, datetime('now'))`,
   ).run(`m-${Math.random()}`, pmId, content);
 }
+
+const assistantRowCount = (pmId: string): number => (mockDb.current!.prepare(
+  `SELECT COUNT(*) AS c FROM messages WHERE agent_id = ? AND role = 'assistant'`,
+).get(pmId) as { c: number }).c;
 
 /** Dynamic `import().then()` deliveries (the poke sweep's own long-standing shape) resolve on
  *  a LATER microtask than `runPokeCheck`'s own returned promise — flush it before asserting
@@ -131,8 +161,16 @@ beforeEach(() => {
   const db = new Database(':memory:');
   createWorkTable(db);
   createMessagesTable(db);
+  createAgentsTable(db);
+  // t123: `runEffortReview` resolves the PM's OWN model before asking it anything (the review
+  // is the PM's judgment, so it rides the PM's configured model, not the system tier). Every
+  // test that runs a review therefore needs a PM row — seeded here rather than per test, so a
+  // new clause cannot accidentally assert "no verdict" when the real reason is "no PM model".
+  db.prepare(`INSERT INTO agents (id, name, status, model_id) VALUES (?, 'PM', 'idle', 'test-model')`).run(PM_ID);
   mockDb.current = db;
-  handleMessageImpl = async () => { /* reset to the no-op default each test */ };
+  verdictText = null;
+  callModelThrows = null;
+  callModelSpy.mockClear();
   deliverA2ASpy.mockClear();
 });
 
@@ -234,9 +272,7 @@ describe('§2 runEffortReview — advancing=true extends silently, advancing=fal
 
   it('advancing=true: writes the observation, moves the baseline, and sends NO poke', async () => {
     seedOverThreshold('adv-1');
-    handleMessageImpl = async (agentId) => {
-      pmReplies(agentId, JSON.stringify({ advancing: true, reason: '400-email sweep, labels are landing steadily', task_id: 'adv-1' }));
-    };
+    pmAnswers(JSON.stringify({ advancing: true, reason: '400-email sweep, labels are landing steadily', task_id: 'adv-1' }));
 
     await runEffortReview('adv-1');
 
@@ -258,9 +294,7 @@ describe('§2 runEffortReview — advancing=true extends silently, advancing=fal
 
   it('advancing=false: records the verdict durably and moves the baseline, but delivers NOTHING directly (Finding 1 fix)', async () => {
     seedOverThreshold('circ-1');
-    handleMessageImpl = async (agentId) => {
-      pmReplies(agentId, JSON.stringify({ advancing: false, reason: 'same three calls repeated with nothing new landing', task_id: 'circ-1' }));
-    };
+    pmAnswers(JSON.stringify({ advancing: false, reason: 'same three calls repeated with nothing new landing', task_id: 'circ-1' }));
 
     await runEffortReview('circ-1');
 
@@ -286,21 +320,18 @@ describe('§2 runEffortReview — advancing=true extends silently, advancing=fal
     seedTrackerTask(mockDb.current!, { id: 'under-1', agentId: 'a1', status: 'in_progress' });
     mockDb.current!.prepare('UPDATE work SET effort_calls = ?, effort_reviewed_calls = 0 WHERE id = ?')
       .run(EFFORT_REVIEW_DELTA_CALLS - 1, 'under-1');
-    let asked = false;
-    handleMessageImpl = async () => { asked = true; };
-
     await runEffortReview('under-1');
 
-    expect(asked).toBe(false);
+    // t123: "no verdict is asked for" is now literally "the model was never called", which is a
+    // stronger and cheaper observation than the old stub flag it replaces.
+    expect(callModelSpy).not.toHaveBeenCalled();
     expect(effortRow('under-1').effort_reviewed_calls).toBe(0);
     expect(pokeCount('under-1')).toBe(0);
   });
 
   it('an unparseable PM reply leaves the baseline untouched and pokes nobody — the request just retries next cycle', async () => {
     seedOverThreshold('garbled-1');
-    handleMessageImpl = async (agentId) => {
-      pmReplies(agentId, 'sorry, I got distracted and did not answer the question');
-    };
+    pmAnswers('sorry, I got distracted and did not answer the question');
 
     await runEffortReview('garbled-1');
 
@@ -312,9 +343,7 @@ describe('§2 runEffortReview — advancing=true extends silently, advancing=fal
 
   it('the assignee is never sent anything, and no steer enters its turn, on the advancing=true path', async () => {
     seedOverThreshold('adv-2');
-    handleMessageImpl = async (agentId) => {
-      pmReplies(agentId, JSON.stringify({ advancing: true, reason: 'still going, still landing real progress', task_id: 'adv-2' }));
-    };
+    pmAnswers(JSON.stringify({ advancing: true, reason: 'still going, still landing real progress', task_id: 'adv-2' }));
 
     await runEffortReview('adv-2');
 
@@ -346,11 +375,9 @@ describe('§3 the guarded poke path delivers rung 2, eventually, once its own gu
 
   it('assignee WORKING: no delivery this tick; the assignee goes idle and the NEXT tick delivers rung 2 with the reason intact', async () => {
     seedGuardedTask('circ-guard-1', 'working');
-    handleMessageImpl = async (agentId) => {
-      pmReplies(agentId, JSON.stringify({
-        advancing: false, reason: 'same handful of calls, nothing new landing', task_id: 'circ-guard-1',
-      }));
-    };
+    pmAnswers(JSON.stringify({
+      advancing: false, reason: 'same handful of calls, nothing new landing', task_id: 'circ-guard-1',
+    }));
     await runEffortReview('circ-guard-1');
     // Sanity: the verdict landed and re-armed the baseline, but nothing was sent (§2 already
     // pins this in isolation; repeated here because it is this test's own starting condition).
@@ -395,11 +422,9 @@ describe('§3 the guarded poke path delivers rung 2, eventually, once its own gu
 
   it('assignee already idle: the very first tick delivers it (no artificial extra delay)', async () => {
     seedGuardedTask('circ-guard-2', 'idle');
-    handleMessageImpl = async (agentId) => {
-      pmReplies(agentId, JSON.stringify({
-        advancing: false, reason: 'circling on the same three files', task_id: 'circ-guard-2',
-      }));
-    };
+    pmAnswers(JSON.stringify({
+      advancing: false, reason: 'circling on the same three files', task_id: 'circ-guard-2',
+    }));
     await runEffortReview('circ-guard-2');
 
     await runPokeCheck();
@@ -415,19 +440,72 @@ describe('§3 the guarded poke path delivers rung 2, eventually, once its own gu
 // §4 (FIX ROUND, Finding 2, IMPORTANT) — the verdict is correlated to its own request
 // ════════════════════════════════════════════════════════════════════════════════
 
-describe('§4 the verdict is correlated: a busy PM defers, a stale reply is ignored, a mismatched task_id is rejected', () => {
+describe('§4 the verdict is asked for OFF the turn plumbing, so it cannot reach a human', () => {
   function seedOverThreshold(id: string, agentId = 'a1'): void {
     seedTrackerTask(mockDb.current!, { id, agentId, status: 'in_progress', title: 'Sweep the mailbox' });
     mockDb.current!.prepare('UPDATE work SET effort_calls = ?, effort_reviewed_calls = 0 WHERE id = ?')
       .run(EFFORT_REVIEW_DELTA_CALLS, id);
   }
 
-  it('a busy PM defers the review entirely: nothing dispatched, nothing read, the durable request stays pending', async () => {
+  // ⚠ THE CLAUSE THE OWNER'S SCREENSHOT IS ABOUT. He asked his PM a question and the visible
+  // reply was `{"advancing": true, "reason": "...", "task_id": "..."}` — the engine's private
+  // judgment, rendered as a chat bubble, reading as the answer to his question. It was never
+  // addressed to him at all. This clause is the census: the verdict shape must not reach a
+  // message row by ANY route, and the model must be asked on the non-persisting path.
+  it('THE VERDICT NEVER BECOMES A MESSAGE ROW, and the call that asks for it persists nothing', async () => {
+    seedOverThreshold('lane-1');
+    const verdict = JSON.stringify({
+      advancing: true, reason: 'the sweep is landing real progress', task_id: 'lane-1',
+    });
+    pmAnswers(verdict);
+
+    await runEffortReview('lane-1');
+
+    // 1. The verdict was applied, so this is not vacuously green on a review that never ran.
+    expect(effortRow('lane-1').effort_reviewed_calls).toBe(effortRow('lane-1').effort_calls);
+
+    // 2. NOTHING the PM owns is a message row. Not an assistant reply (what the owner saw),
+    //    and not an events-lane prompt row either — the prompt used to be inserted as a
+    //    durable row because `handleMessage` discards its content argument and the ROW was the
+    //    delivery mechanism. A direct call needs no row in either direction.
+    expect(assistantRowCount(PM_ID), 'the verdict was persisted as an assistant row — this is the defect the owner photographed').toBe(0);
+    const anyRow = (mockDb.current!.prepare(
+      'SELECT COUNT(*) AS c FROM messages WHERE agent_id = ?',
+    ).get(PM_ID) as { c: number }).c;
+    expect(anyRow, 'the review wrote a message row of some kind; the judgment must leave no row at all').toBe(0);
+
+    // 3. Nowhere in the table does the verdict's own shape appear, by any route or agent.
+    const shaped = (mockDb.current!.prepare(
+      `SELECT COUNT(*) AS c FROM messages WHERE content LIKE '%advancing%' AND content LIKE '%task_id%'`,
+    ).get() as { c: number }).c;
+    expect(shaped, 'the advancing/task_id shape reached a message row').toBe(0);
+
+    // 4. The CALL SHAPE, counted the other way: a clause that only checked for absent rows
+    //    would stay green if someone asked for the verdict through the turn plumbing again and
+    //    the stub simply did not write a row. `tools: false` is what makes `callModel` persist
+    //    nothing, and the declared purpose is what caps the dial.
+    expect(callModelSpy).toHaveBeenCalledTimes(1);
+    const params = callModelSpy.mock.calls[0][0] as {
+      tools: boolean; purpose: string; agentId: string; modelId: string;
+    };
+    expect(params.tools, 'tools:false is what makes this call non-persisting').toBe(false);
+    expect(params.purpose).toBe('effort_verdict');
+    expect(params.agentId).toBe(PM_ID);
+    expect(params.modelId, "the review rides the PM's own configured model").toBe('test-model');
+  });
+
+  // t123 REPLACES 'a busy PM defers the review entirely'. That test asserted the OPPOSITE of
+  // what this one asserts, and it was right about the old mechanism: `handleMessage` resolves
+  // `void` whether it turned or merely queued a wakeup, so a review dispatched at a busy PM
+  // read back a reply that was never written. Deferring was the only safe move. A direct model
+  // call turns nothing and races nothing, so the deferral is not merely unnecessary — keeping
+  // it would keep a whole class of SILENTLY LOST REVIEWS (every review that happened to land
+  // while the PM was mid-run) for no remaining benefit.
+  it('a BUSY PM no longer loses the review — it runs anyway, because a direct call races nothing', async () => {
     seedOverThreshold('busy-1');
     expect(queueEffortReviewIfNeeded('busy-1')).toBe(true); // the durable pending marker
+    pmAnswers(JSON.stringify({ advancing: true, reason: 'still landing progress', task_id: 'busy-1' }));
 
-    let dispatched = false;
-    handleMessageImpl = async () => { dispatched = true; };
     pmActiveRuns.add(PM_ID);
     try {
       await runEffortReview('busy-1');
@@ -435,46 +513,76 @@ describe('§4 the verdict is correlated: a busy PM defers, a stale reply is igno
       pmActiveRuns.delete(PM_ID);
     }
 
-    expect(dispatched).toBe(false); // handleMessage was never even called
-    expect(effortRow('busy-1').effort_reviewed_calls).toBe(0); // untouched
-    expect(interveneCount('busy-1')).toBe(0);
-    expect(deliverA2ASpy).not.toHaveBeenCalled();
-    // Still pending — a second queue attempt does not file a duplicate, proving the durable
-    // marker was left exactly as it was (this is the "self-heal already exists" re-drive:
-    // the NEXT runPMReview tick will try the review again).
-    expect(queueEffortReviewIfNeeded('busy-1')).toBe(false);
-    expect(requestCount('busy-1')).toBe(1);
+    expect(callModelSpy, 'the review was skipped because the PM was mid-run — that is the lost-review class t123 deleted').toHaveBeenCalledTimes(1);
+    expect(effortRow('busy-1').effort_reviewed_calls).toBe(effortRow('busy-1').effort_calls);
+    // And it still wrote no message row, mid-run or not.
+    expect(assistantRowCount(PM_ID)).toBe(0);
   });
 
-  it('a pre-existing OLDER {advancing,...} message in the PM history is NOT mistaken for this request\'s verdict', async () => {
+  // t123 REPLACES 'a pre-existing OLDER {advancing,...} message is NOT mistaken for this
+  // request's verdict'. The old clause pinned a `seq` dispatch boundary that existed only
+  // because the verdict was READ BACK OUT of `messages`. There is no read-back to mislead now,
+  // which is a stronger guarantee than the boundary was — so the clause is re-pointed at it:
+  // a planted row that would have fooled the old reader must be ignored completely.
+  it('a planted assistant row that would have fooled the old read-back is never consulted', async () => {
     seedOverThreshold('stale-1');
-    // An older reply sitting in the PM's history from some earlier, unrelated exchange —
-    // written BEFORE this review dispatches, so it predates the correlation boundary.
-    pmReplies(PM_ID, JSON.stringify({ advancing: true, reason: 'an old unrelated verdict', task_id: 'stale-1' }));
-    // This review's OWN turn writes nothing new (e.g. the PM called a tool and produced no
-    // fresh plain-text reply) — the correlation boundary must still refuse the OLD message
-    // rather than fall back to "whatever the newest PM message happens to be."
-    handleMessageImpl = async () => { /* no new assistant message this turn */ };
+    plantAssistantRow(PM_ID, JSON.stringify({
+      advancing: true, reason: 'an old unrelated verdict', task_id: 'stale-1',
+    }));
+    // The model answers nothing usable this time. The old reader would have fallen back to
+    // "whatever the newest PM assistant message happens to be" unless its boundary caught it.
+    pmAnswers(null);
 
     await runEffortReview('stale-1');
 
-    expect(effortRow('stale-1').effort_reviewed_calls).toBe(0); // the stale verdict was NOT applied
+    expect(effortRow('stale-1').effort_reviewed_calls, 'a row in the table was applied as a verdict').toBe(0);
     expect(interveneCount('stale-1')).toBe(0);
+    // Counted the other way: the planted row is still sitting there untouched, so the review
+    // neither read it nor deleted it.
+    expect(assistantRowCount(PM_ID)).toBe(1);
   });
 
-  it('a verdict whose task_id does not match this request is REJECTED, not applied', async () => {
-    seedOverThreshold('mismatch-1');
-    seedOverThreshold('mismatch-2'); // the (wrong) task the garbled verdict claims to be about
-    handleMessageImpl = async (agentId) => {
-      pmReplies(agentId, JSON.stringify({ advancing: true, reason: 'looks fine to me', task_id: 'mismatch-2' }));
-    };
+  // t123 REPLACES 'a verdict whose task_id does not match this request is REJECTED'. The echo-
+  // rejection defended against reading a STALE PERSISTED ROW as this request's answer; with a
+  // direct call, `r.content` IS this request's answer and there is no other candidate. Keeping
+  // the rejection would have kept a spin: a model that echoes a wrong id never advances the
+  // baseline, so the request re-fires an LLM call every 60 seconds for ever. `task_id` remains
+  // a REQUIRED field of the parse — it is still a check that the model followed instructions —
+  // which is what this clause now pins.
+  it('task_id stays a required field of the shape, so a reply missing it is not a verdict', async () => {
+    seedOverThreshold('shape-1');
+    pmAnswers(JSON.stringify({ advancing: true, reason: 'no task_id at all' }));
 
-    await runEffortReview('mismatch-1');
+    await runEffortReview('shape-1');
 
-    // Rejected: neither task is touched by a verdict that named the wrong one.
-    expect(effortRow('mismatch-1').effort_reviewed_calls).toBe(0);
-    expect(effortRow('mismatch-2').effort_reviewed_calls).toBe(0);
+    expect(effortRow('shape-1').effort_reviewed_calls, 'a reply missing task_id was accepted as a verdict').toBe(0);
+    expect(interveneCount('shape-1')).toBe(0);
     expect(deliverA2ASpy).not.toHaveBeenCalled();
+  });
+
+  it('the model failing is not a verdict: the request stays pending for the next sweep', async () => {
+    seedOverThreshold('boom-1');
+    expect(queueEffortReviewIfNeeded('boom-1')).toBe(true);
+    callModelThrows = new Error('provider refused');
+
+    await runEffortReview('boom-1');
+
+    expect(effortRow('boom-1').effort_reviewed_calls).toBe(0);
+    expect(interveneCount('boom-1')).toBe(0);
+    // The durable marker is untouched, so the existing re-drive tries again next tick.
+    expect(queueEffortReviewIfNeeded('boom-1')).toBe(false);
+    expect(requestCount('boom-1')).toBe(1);
+  });
+
+  it('no PM model to ask is not a verdict either — and nothing is written', async () => {
+    seedOverThreshold('nomodel-1');
+    mockDb.current!.prepare('UPDATE agents SET model_id = NULL WHERE id = ?').run(PM_ID);
+
+    await runEffortReview('nomodel-1');
+
+    expect(callModelSpy).not.toHaveBeenCalled();
+    expect(effortRow('nomodel-1').effort_reviewed_calls).toBe(0);
+    expect(assistantRowCount(PM_ID)).toBe(0);
   });
 });
 

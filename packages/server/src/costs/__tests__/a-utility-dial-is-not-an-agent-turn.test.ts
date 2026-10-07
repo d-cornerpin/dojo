@@ -168,12 +168,21 @@ describe('the premise: exactly one dial declares a purpose', () => {
   // seven purposes are members of the column's domain in `report/telemetry-whitelist.ts`. That is
   // strictly more information in the column this file exists to protect.
   it('every engine utility dial is either DECLARED with a purpose or still a plain completion', () => {
-    // L3-F3's count discipline is kept: fourteen dials, now split, and a fifteenth cannot appear
+    // L3-F3's count discipline is kept: FIFTEEN dials, now split, and a sixteenth cannot appear
     // unpinned in either list.
     const declared = [
       'agent/browser.ts', 'agent/canvas-view.ts', 'agent/system-control.ts',
       'agent/v2/classifiers/multistep.ts', 'agent/web-tools.ts', 'memory/briefing.ts',
       'memory/summarize.ts', 'voice/voice-ws.ts', 'work/ask-title.ts',
+      // t123 ADDED THE FIFTEENTH, and this clause is where it is argued rather than discovered.
+      // `tracker/pm-agent.ts`'s `runEffortReview` used to ask for its advancing/circling verdict
+      // by driving a real PM TURN (`insertEngineEventIfAbsent` + `handleMessage`) and reading the
+      // persisted assistant row back. That is precisely how the engine's private JSON question
+      // came to be answered in the owner's chat window: a PM turn's counterparty is user-shaped,
+      // so the reply persisted to the owner lane and was broadcast live. It is now a declared
+      // utility dial on the non-persisting `callModel` path — the same door `work/ask-title.ts`
+      // uses — which is what makes the verdict unable to reach a human lane at all.
+      'tracker/pm-agent.ts',
     ];
     // Still undeclared, each for a reason: the router PROBE measures a model rather than asking it for
     // an artifact; retrieval dials the AGENT'S OWN model, not the system one; the share-export and
@@ -182,7 +191,7 @@ describe('the premise: exactly one dial declares a purpose', () => {
       'agent/runtime.ts', 'memory/retrieval.ts', 'router/probe.ts',
       'techniques/share-export.ts', 'vault/extraction.ts',
     ];
-    expect(declared.length + undeclared.length).toBe(14);
+    expect(declared.length + undeclared.length).toBe(15);
     for (const rel of [...declared, ...undeclared]) {
       const src = fs.readFileSync(path.join(REPO_ROOT, 'packages/server/src', rel), 'utf-8');
       expect(src, `${rel} is expected to be an engine utility dial but no longer passes tools: false`)
@@ -208,7 +217,7 @@ describe('the premise: exactly one dial declares a purpose', () => {
     // a value this column can now hold must be declared here or a report meets a novel string.
     for (const member of [TURN, UTILITY, 'ollama', 'agent-sdk',
       'ask_title', 'multistep_classify', 'memory_summarize', 'continuity_brief',
-      'vision_caption', 'page_summary', 'voice_opener']) {
+      'vision_caption', 'page_summary', 'voice_opener', 'effort_verdict']) {
       expect(block, `the request_type domain no longer declares ${member}`).toContain(member);
     }
   });

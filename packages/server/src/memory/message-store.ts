@@ -1098,27 +1098,80 @@ export function deleteAllForAgent(agentId: string): number {
  *  for the whole migration chain (see runSqlMigrations) — a delete performed from a
  *  migration would otherwise leave the links behind. Same statement, two conditions
  *  covered. */
-export function deleteForAgentBefore(agentId: string, cutoffId: string): number {
+export function deleteAgentDebrisBefore(agentId: string, cutoffId: string): number {
   const db = getDb();
+  // ── t123: THE OWNER-LANE SPARE, AND WHY IT IS IN THE DELETE RATHER THAN THE CALLER ──────
+  // This door has exactly one caller — `pruneOldPMMessages` — and its job is to bound the PM's
+  // own turn debris, not to erase a human conversation. It used to delete EVERYTHING older than
+  // the cutoff by `seq`, which on the platform PM meant the owner's chat history. That is the
+  // aggravator behind the symptom the owner actually watched: the PM running `history_search`
+  // twice and finding nothing, because the rows it was searching for had been hard-DELETED (not
+  // retired, not archived) by its own pruner. `history_search` cannot recover a destroyed row.
+  //
+  // The spare is a clause of the DELETE and not a filter the caller passes, deliberately: the
+  // caller computes a cutoff `seq`, and a lane predicate applied to cutoff SELECTION does not
+  // protect anything, because the delete is by seq and would step straight over the owner rows
+  // the selection skipped. The guarantee has to live where the rows are removed.
+  //
+  // Unbounded growth is not the trade it looks like: the human half of a PM conversation is
+  // small, every OTHER agent in this tree keeps its conversation in full, and what bounds the
+  // PM's WINDOW is the row cap on `lane.pm-tail` at assembly time — not this delete. This
+  // function bounds the table; the lane bounds the prompt. Those were conflated here, and
+  // conflating them is what let a table-size concern destroy the owner's thread.
+  //
+  // RENAMED from `deleteForAgentBefore` on purpose: a function named "delete for agent before"
+  // that silently spares a lane is a trap for the next caller. The name now says what it keeps.
+  //
+  // ⚠ WHAT THIS SPARE ACTUALLY SPARES, measured against the schema rather than assumed — the
+  // triage that specified this fix proposed `(lane IS NULL OR lane <> 'owner')`, and BOTH halves
+  // of that needed correcting at head:
+  //   · `lane` is `TEXT NOT NULL DEFAULT 'owner' CHECK (lane IN ('owner','a2a','events'))`
+  //     (migration 127, carried by 131 and 133). The `IS NULL` arm can never be true, so it is
+  //     dropped rather than carried as reassuring dead SQL.
+  //   · Because the DEFAULT is `'owner'`, the lane does NOT cleanly separate "the human's
+  //     conversation" from "the PM's turn debris": assistant rows are persisted with no explicit
+  //     lane and fall through that default, so the PM's own replies are owner-lane too. That is
+  //     the lane system's own fail-open defect (filed as a v3.4 structural item, not fixable
+  //     inside a hotfix: assistant output has only `a2a` or the owner default, and no engine
+  //     lane at all). This delete is written to be CORRECT UNDER that defect rather than to
+  //     pretend it is fixed.
+  // The consequence, stated plainly so nobody reads a stronger guarantee into it: what this door
+  // still prunes is the `events` lane — which is where the volume actually is, one `pm_review`
+  // situation report every sixty seconds, stamped `lane:'events'` by `insertEngineEvent`. What it
+  // now keeps is the owner-lane conversation: the human's messages AND the PM's replies to them.
+  // That is the right side of the trade. Unbounded owner-lane growth is not the leak it looks
+  // like either — a human conversation is small, every OTHER agent in this tree keeps its
+  // conversation in full, and what bounds the PM's prompt is the `lane.pm-tail` row cap.
   const txn = (aid: string, cid: string): number => withUnit((): number => {
     db.prepare(`
       DELETE FROM summary_messages
       WHERE message_id IN (
         SELECT id FROM messages WHERE agent_id = ? AND seq < (SELECT seq FROM messages WHERE id = ?)
+          AND lane <> 'owner'
       )
     `).run(aid, cid);
     return db.prepare(
-      'DELETE FROM messages WHERE agent_id = ? AND seq < (SELECT seq FROM messages WHERE id = ?)',
+      `DELETE FROM messages WHERE agent_id = ? AND seq < (SELECT seq FROM messages WHERE id = ?)
+         AND lane <> 'owner'`,
     ).run(aid, cid).changes;
   });
   return txn(agentId, cutoffId);
 }
 
-/** Wipe an agent's conversation but keep its system rows (identity + session boundary). */
-export function deleteNonSystemForAgent(agentId: string): number {
-  const db = getDb();
-  return db.prepare("DELETE FROM messages WHERE agent_id = ? AND role != 'system'").run(agentId).changes;
-}
+// ── TOMBSTONE: `deleteNonSystemForAgent` IS DELETED (t123) ────────────────────────────────
+// It was `DELETE FROM messages WHERE agent_id = ? AND role != 'system'` — an unconditional
+// by-agent conversation wipe, documented as "wipe an agent's conversation but keep its system
+// rows". Its ONE caller was the PM's validation-review sweep, which ran it every 60 seconds
+// against the agent the owner talks to and so deleted his live on-screen thread; see the
+// tombstone at that call site in `tracker/pm-agent.ts` for the full argument and for why the
+// premise that justified it (orphan tool_results breaking the PM's view) is stale now that
+// `applyIntegrityPass`/`repairToolPairing` run on the PM assembly path.
+//
+// It is deleted rather than left unused. An exported, unscoped, by-agent conversation DELETE is
+// a loaded gun: the next author who wants "a fresh start" finds it by name, and nothing in the
+// signature warns that it reaches a human conversation. Scoped deletes that still exist:
+// `deleteAgentDebrisBefore` (above, spares the owner lane), `deleteAllForAgent` (agent teardown,
+// where erasing everything IS the intent) and `deleteAgentBusRowsFor` (origin-intent scoped).
 
 /** The agent-bus rows an agent is either end of. Replaces the third store's own DELETE
  *  cascade (`DELETE FROM agent_messages WHERE from_agent = ? OR to_agent = ?`) exactly:

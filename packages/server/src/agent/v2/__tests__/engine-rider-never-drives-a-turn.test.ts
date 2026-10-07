@@ -201,6 +201,16 @@ describe('PHASE-2 T10H — the rider set is COMPLETE, enforced against the write
     // rider, for the same reason `pm_review` is one: it IS the reason for a turn (a dedicated
     // PM turn asking for a structured advancing/circling verdict), not content riding a turn
     // that would happen anyway.
+    // ⚠ t123 RETIRED THIS WRITER, and the value stays listed for the same reason the T53 block
+    // below gives: the exclusion list is read against ROWS, and boxes already hold events-lane
+    // rows stamped `effort_review`. Dropping the value would admit those rows as turn drivers,
+    // which is the failure this file exists to prevent. What changed is only "somebody still
+    // writes it": `runEffortReview` no longer drives a PM turn at all. It asked for its verdict
+    // by inserting an events-lane prompt row and reading the persisted assistant reply back —
+    // and because a PM turn's counterparty is user-shaped, that reply landed in the OWNER'S
+    // CHAT as a raw JSON bubble. The verdict is now a non-persisting `callModel` utility dial,
+    // so there is no turn and no row in either direction. This walk stays green either way: it
+    // requires every writer it FINDS to be classified, never that a classified intent be found.
     'effort_review',
     // STRIP (PHASE-3 T7 Step 2): 'cross_conv_send_echo' left with its writer. It was never
     // reachable by this walk in any case (the echo used insertMessageIfAbsent, not

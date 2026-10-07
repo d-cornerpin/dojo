@@ -51,7 +51,7 @@ import { memoryGrep } from '../retrieval.js';
 import { vectorSearch } from '../vector-search.js';
 import { archiveAgentConversation, getArchiveHighWaterMark } from '../../vault/archive.js';
 import { archiveConversation } from '../../vault/store.js';
-import { deleteNonSystemForAgent } from '../message-store.js';
+import { deleteAllForAgent } from '../message-store.js';
 
 const AGENT = 'agent-derived';
 const PEER = 'agent-derived-peer';
@@ -330,8 +330,15 @@ describe('summary links point at real messages', () => {
     const summary = createLeafSummary(AGENT, 'compressed', 9, [a.id, b.id], '2026-01-01 00:00:00', '2026-01-01 00:00:05');
     expect(one<{ c: number }>('SELECT COUNT(*) c FROM summary_messages WHERE summary_id = ?', summary.id).c).toBe(2);
 
-    // reset_session's wipe. It must not throw, and it must not leave a dangling link.
-    expect(() => deleteNonSystemForAgent(AGENT)).not.toThrow();
+    // t123: this clause used to drive `deleteNonSystemForAgent`, which is DELETED — it was an
+    // unscoped by-agent conversation wipe whose one caller deleted the owner's live chat every
+    // 60 seconds. The property under test is unchanged and belongs to the cascade, not to any
+    // one door: a message delete must not leave a dangling `summary_messages` link. So it is
+    // re-pointed at the delete door that still erases these rows. `deleteAllForAgent` is the
+    // RIGHT substitute rather than the convenient one: both rows here are `lane: 'owner'`, and
+    // the PM pruner's `deleteAgentDebrisBefore` now SPARES the owner lane by design, so it
+    // would delete nothing and the clause would pass vacuously.
+    expect(() => deleteAllForAgent(AGENT)).not.toThrow();
 
     expect(one<{ c: number }>('SELECT COUNT(*) c FROM summary_messages WHERE summary_id = ?', summary.id).c).toBe(0);
     expect(one<{ c: number }>(

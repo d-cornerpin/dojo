@@ -8,7 +8,8 @@
 // `GET /agents/:id/system-prompt` served, for every NON-primary agent,
 //   `SELECT content FROM messages WHERE agent_id=? AND role='system' ORDER BY rowid ASC LIMIT 1`
 // — first-system-row ARCHAEOLOGY. And the PM's own history is bounded: `prunePMMessages`
-// keeps the newest 30 rows and `deleteForAgentBefore` deletes EVERYTHING older, system rows
+// keeps the newest 60 rows and `deleteAgentDebrisBefore` deletes everything older EXCEPT the
+// owner lane (t123: it used to delete everything, which destroyed the owner's own chat), system rows
 // included. The engine writes `NO_REPLY_CLOSED_MARKER` as a `role='system'` row. So on any
 // worn-in box the oldest SURVIVING system row can be that marker — and the card renders an
 // engine marker as the agent's identity.

@@ -61,7 +61,7 @@ import { storeEmbedding } from '../embeddings.js';
 import { EMBEDDING_SOURCE_TABLES, type EmbeddingSourceType } from '../embedding-sources.js';
 import { vectorSearch } from '../vector-search.js';
 import {
-  deleteAllForAgent, deleteForAgentBefore, deleteNonSystemForAgent,
+  deleteAllForAgent, deleteAgentDebrisBefore,
 } from '../message-store.js';
 
 const AGENT = 'agent-emb';
@@ -107,11 +107,28 @@ afterEach(() => {
 
 const db = (): Database.Database => mockDb.current!;
 
-function seedMessage(id: string, role = 'user'): string {
-  db().prepare('INSERT INTO messages (id, agent_id, role, content) VALUES (?, ?, ?, ?)')
-    .run(id, AGENT, role, `a message long enough to be embedded: ${id}`);
+function seedMessage(id: string, role = 'user', lane = 'owner'): string {
+  // t123 added the `lane` parameter: `deleteAgentDebrisBefore` spares the owner lane, so a
+  // census of the delete doors cannot be written without being able to seed a laned row. The
+  // default is `'owner'` because that is the COLUMN's own default — `lane TEXT NOT NULL DEFAULT
+  // 'owner'` (migration 127) — so a seeded row matches what the real write path produces when
+  // the caller declares no lane. Note what that means and why it is not a convenience: the lane
+  // default FAILS OPEN to owner-visible, which is the v3.4 structural item behind this cluster.
+  db().prepare('INSERT INTO messages (id, agent_id, role, lane, content) VALUES (?, ?, ?, ?, ?)')
+    .run(id, AGENT, role, lane, `a message long enough to be embedded: ${id}`);
   return id;
 }
+
+const rowExists = (id: string): boolean =>
+  (db().prepare('SELECT COUNT(*) AS c FROM messages WHERE id = ?').get(id) as { c: number }).c > 0;
+
+// ⚠ `fileURLToPath`, NEVER `.pathname` — the repo's real path has spaces; see §6's note below,
+// and `__tests__/this-files-own-path-has-one-idiom.test.ts` which pins the idiom. Resolved
+// against the module under test directly rather than against a counted repo root: a wrong
+// level count is a silently-unreadable file, which is the failure mode §6's note is about.
+const MESSAGE_STORE_SRC = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)), '../message-store.ts',
+);
 
 function seedSummary(id: string): string {
   db().prepare(`
@@ -187,23 +204,49 @@ describe('§2 every real message-delete door takes the embedding with it', () =>
     expect(embCount('message', id), 'the embedding died with its message').toBe(0);
   });
 
-  it('deleteForAgentBefore (the project manager\'s bounded history)', async () => {
-    const older = seedMessage('m-older');
+  it('deleteAgentDebrisBefore (the project manager\'s bounded history)', async () => {
+    // `'events'` explicitly: this clause is about the row the pruner DOES remove, and after
+    // t123 that is turn debris, never the owner lane. Seeding it owner-lane would have made the
+    // clause assert the opposite of the contract while still reading as if it passed.
+    const older = seedMessage('m-older', 'user', 'events');
     const cutoff = seedMessage('m-cutoff');
     await storeEmbedding('message', older, AGENT, 'content long enough to embed for real');
     expect(embCount('message', older)).toBe(1);
-    deleteForAgentBefore(AGENT, cutoff);
+    deleteAgentDebrisBefore(AGENT, cutoff);
     expect(embCount('message', older), 'the trimmed message took its embedding').toBe(0);
   });
 
-  it('deleteNonSystemForAgent (the wipe that keeps identity rows)', async () => {
-    const sys = seedMessage('m-sys', 'system');
-    const chat = seedMessage('m-chat', 'user');
-    await storeEmbedding('message', sys, AGENT, 'content long enough to embed for real');
-    await storeEmbedding('message', chat, AGENT, 'content long enough to embed for real');
-    deleteNonSystemForAgent(AGENT);
-    expect(embCount('message', chat), 'the wiped message took its embedding').toBe(0);
-    expect(embCount('message', sys), 'and the kept system row kept its own').toBe(1);
+  // t123 renamed the door above (`deleteForAgentBefore`) and gave it an owner-lane spare, so
+  // this file's census gains the other half of that contract: the row it now KEEPS must keep
+  // its embedding too. Without this clause the rename would be covered in one direction only —
+  // "the deleted row's embedding dies" stays green even if the spare silently stopped working.
+  it('deleteAgentDebrisBefore SPARES the owner lane, and a spared row keeps its embedding', async () => {
+    const ownerRow = seedMessage('m-owner', 'user', 'owner');
+    const debris = seedMessage('m-debris', 'assistant', 'events');
+    const cutoff = seedMessage('m-cutoff-2');
+    await storeEmbedding('message', ownerRow, AGENT, 'content long enough to embed for real');
+    await storeEmbedding('message', debris, AGENT, 'content long enough to embed for real');
+
+    deleteAgentDebrisBefore(AGENT, cutoff);
+
+    expect(rowExists(ownerRow), 'the owner-lane row survived the pruner').toBe(true);
+    expect(embCount('message', ownerRow), 'and kept its embedding, so history_search can still find it').toBe(1);
+    expect(rowExists(debris), 'the turn debris was pruned').toBe(false);
+    expect(embCount('message', debris), 'and took its embedding with it').toBe(0);
+  });
+
+  // t123 TOMBSTONE: `deleteNonSystemForAgent (the wipe that keeps identity rows)` stood here.
+  // The door is deleted, not merely unused — an exported unscoped by-agent conversation DELETE
+  // is a loaded gun, and its one caller ran it against the owner's live chat every 60 seconds.
+  // Its embedding-cascade coverage is not lost: the cascade is tested per LANE by §3 below and
+  // by the two doors above, not per door.
+  it('the unscoped by-agent conversation wipe is GONE from the store', () => {
+    const src = fs.readFileSync(MESSAGE_STORE_SRC, 'utf-8');
+    const code = src.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
+    expect(code, 'deleteNonSystemForAgent is back: an unscoped by-agent conversation delete must not exist')
+      .not.toMatch(/export function deleteNonSystemForAgent/);
+    expect(code, "a replacement under another name is the same gun: no by-agent delete may be scoped by role alone")
+      .not.toMatch(/DELETE FROM messages WHERE agent_id = \? AND role != 'system'/);
   });
 });
 

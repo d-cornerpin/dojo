@@ -256,7 +256,33 @@ export interface LaneLimits {
 
 export const LANE_LIMITS: Record<string, LaneLimits> = {
   // §T0-B C `:681`(10) — the PM tail is its own lane and its own row cap.
-  'lane.pm-tail': { rows: { tail: 10 } },
+  //
+  // ── t123 RAISED THIS FROM 10 TO 40, and the raise is the whole reason the PM could not hold
+  // a conversation. The PM path is the ONLY assembly in the tree with no other lane: no
+  // summaries, no recall, no directive pin, no empty-context fallback (`assembler.ts`'s PM
+  // branch returns early, ahead of all of them). For the PM the tail IS the context, so this
+  // number is not a trim knob — it is the entire size of the PM's mind.
+  //
+  // 10 rows cannot hold what 10 rows were being asked to hold. One tool-using turn is an
+  // assistant row plus one `tool` row per call; the 60-second `pm_review` situation report is
+  // another row every minute; a post-session-reset pair of `role='system'` rows takes two more
+  // and RENDERS TO NOTHING. Against that, a human exchange was evicted within one or two review
+  // cycles even with the 60-second wipe (now deleted) out of the picture. The owner's reported
+  // symptom — the PM answering a four-exchange thread as if it had just been greeted — is what
+  // a scrolling 10-row window looks like from the outside.
+  //
+  // 40 is `policy.freshTailCount`'s own small-window value (40/64), i.e. the number every OTHER
+  // agent's fresh tail is allowed, so this stops being the one lane held to a tenth of the
+  // tree's standard rather than becoming a new special case in the other direction.
+  //
+  // ⚠ CACHE-PRESERVATION TENET (G2). This is the one item in t123 that touches prompt assembly,
+  // so it is argued, not assumed. The PM tail is the SUFFIX of the assembled prompt; the system
+  // and tracker prefix above it is untouched by this number. `t94-review.md:177` quantified the
+  // cost in exactly these terms — "the PM re-prefills at most 10 rows per turn; the system/
+  // tracker prefix above stays cached" — so the raise changes that bound to "at most 40 rows
+  // per turn" and leaves the cached prefix where it was. No prompt TEMPLATE bytes move: this is
+  // a row count, not a string, which is why the cache-prefix goldens are byte-unchanged.
+  'lane.pm-tail': { rows: { tail: 40 } },
 
   // T67b: `queryMessages` and `query` are GONE with the retrieval they sized. This lane
   // built a query from the last 3 messages, sliced to 500 chars, and ran a semantic search
