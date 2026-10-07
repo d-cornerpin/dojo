@@ -40,7 +40,8 @@ import { RUN_STATUS_UNDELIVERED } from '../work/run-deliver-drive.js';
 // SWEEP CORE-2 item 1 — the owner-escalation candidate query and the ordering law it obeys.
 import {
   countRowsHeldBackFromOwner, selectRowsForOwnerEscalation, selectRowsSkippedAsDelivered,
-  ownerVerdictNudgeText, escalationSteerCount, firstEscalationSteerAt, recordEscalationSteer,
+  ownerVerdictNudgeText, ownerEscalationAlertLine,
+  escalationSteerCount, firstEscalationSteerAt, recordEscalationSteer,
   recordAttemptsForRowsNoValidatorEverSaw, noteValidatorSilence,
 } from '../work/validation-drive.js';
 import { recordFloorGhost, MAX_FLOOR_STEER_ATTEMPTS } from '../agent/v2/floor-ghost.js';
@@ -491,14 +492,27 @@ export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
         // has not. The second case is a PLATFORM fault and the platform's own watchdog surface
         // is what says so — never the engine wearing the agent's face (OR2's last clause).
         if (!spokeSince) {
+          // ── t124 — THE OWNER IS TOLD WHAT IS BLOCKED, SINCE WHEN, AND WHAT WAS TRIED. ──
+          // The line was one fixed sentence that named no work, carried nothing actionable,
+          // and asserted "your PM cannot confirm it" unconditionally — which this lane's own
+          // blocked-arm fix turns into a LIE for the PM-upheld case it newly admits.
+          // `ownerEscalationAlertLine` composes it from the row's recorded facts and omits any
+          // clause whose fact is not on file; the argument lives with it in `validation-drive`.
           recordFloorGhost({
             agentId: primaryId, turnNumber: null, floor: 'owner-verdict-unasked', workId: t.id,
             attempts: steersSpent,
-            ownerLine:
-              `a task has been marked ${t.status} for over ${VALIDATION_ESCALATION_MIN} minutes, `
-              + `your PM cannot confirm it, and your agent has not come back to you about it — `
-              + `the platform asked it twice and got no reply.`,
-            detail: { steers: steersSpent, task_title: t.title },
+            ownerLine: ownerEscalationAlertLine({
+              title: t.title, status: t.status, since: t.updated, agentName,
+              steers: steersSpent, failures: t.failures,
+              blockedValidated: t.blocked_validated === 1, obstacle: t.obstacle,
+            }),
+            detail: {
+              steers: steersSpent, task_title: t.title,
+              // The facts the sentence was built from, on the row's own durable history, so the
+              // alert can be audited against what the platform knew when it spoke.
+              failures: t.failures, blocked_validated: t.blocked_validated,
+              stated_obstacle: t.obstacle, since: t.updated,
+            },
           }, { broadcast });
         }
         stamp.run(threadId, t.id);

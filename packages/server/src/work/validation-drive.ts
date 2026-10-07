@@ -44,7 +44,7 @@ import { createLogger } from '../logger.js';
 import { AUDIT_KIND } from './audit-trail.js';
 import { appendWorkEvent } from './store.js';
 import {
-  taskScope, msToText, STATE_TO_STATUS_SQL, awaitingUserVerdictExpr,
+  taskScope, msToText, STATE_TO_STATUS_SQL, validatedExpr, awaitingUserVerdictExpr,
   unvalidatedCloseExpr, unvalidatedPauseExpr,
 } from './tracker-view.js';
 
@@ -214,6 +214,12 @@ export interface OwnerEscalationRow {
   status: string;
   assigned_to: string | null;
   updated: string;
+  /** 1 when an authority upheld the CURRENT block claim — "the PM agrees it is really stuck". */
+  blocked_validated: number;
+  /** Recorded failures on this row and its delegated pieces (`workFailureCountExpr`). */
+  failures: number;
+  /** What the agent said was in its way, from the newest blocked transition. NULL if none. */
+  obstacle: string | null;
 }
 
 /**
@@ -423,6 +429,26 @@ export function workFailureCount(workId: string): number {
 }
 
 /**
+ * WHAT THE AGENT SAID WAS IN ITS WAY — the newest blocked transition's own note.
+ *
+ * This is a RECORDED sentence, not a generated one, and it is the only part of the owner's
+ * alert that can say what was actually tried. `tracker/tools.ts` hard-gates it at creation:
+ * `status="blocked"` is REFUSED below 15 characters of `notes`, with a steer naming the shape
+ * ("need API key for service X", "external service Y is returning 500s"). So on the blocked
+ * arm this is reliably present and reliably specific — the one thing the platform knows about
+ * the obstacle that it did not compose itself.
+ *
+ * `$.note` and not `$.reason`: `transition()` writes the CALLER's prose to `note` and its own
+ * mechanical description to `reason` (for a status change that reads
+ * `work_update(action="status") -> blocked`, which tells the owner nothing he can act on).
+ */
+export const statedObstacleExpr = (a: string): string =>
+  `(SELECT json_extract(te.payload, '$.note') FROM work_events te`
+  + `  WHERE te.work_id = ${a}.id AND te.kind = 'transition'`
+  + `    AND json_extract(te.payload, '$.to') = 'blocked'`
+  + `  ORDER BY te.id DESC LIMIT 1)`;
+
+/**
  * THE STATE ARMS — the four shapes of "this is the owner's problem", in one place.
  *
  * ── WHY THE FAILURE ARM IS AN ARM AND NOT A BYPASS OF THE CLOCK ──
@@ -462,7 +488,10 @@ export function selectRowsForOwnerEscalation(
   const placeholders = serviceParams.map(() => '?').join(',');
   return getDb().prepare(`
     SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
-           w.agent_id AS assigned_to, ${msToText('w.updated_at')} as updated
+           w.agent_id AS assigned_to, ${msToText('w.updated_at')} as updated,
+           ${validatedExpr('w', 'blocked')} AS blocked_validated,
+           ${workFailureCountExpr('w')} AS failures,
+           ${statedObstacleExpr('w')} AS obstacle
     FROM work w
     WHERE ${taskScope('w')}
       AND NOT EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = w.id AND e.kind = 'validation_escalated')
@@ -511,6 +540,9 @@ export function selectRowsSkippedAsDelivered(
     return getDb().prepare(`
       SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
              w.agent_id AS assigned_to, ${msToText('w.updated_at')} as updated,
+             ${validatedExpr('w', 'blocked')} AS blocked_validated,
+             ${workFailureCountExpr('w')} AS failures,
+             ${statedObstacleExpr('w')} AS obstacle,
              ${alreadyDeliveredReceiptExpr('w')} AS deliveryId
       FROM work w
       WHERE ${taskScope('w')}
@@ -621,6 +653,88 @@ export function recordEscalationSteer(
     evidence_json: null,
     turn_number: detail.turnNumber,
   });
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE SENTENCE THE OWNER ACTUALLY READS — t124, and it is the point of the whole lane.
+//
+// The ladder's end is `recordFloorGhost`, the one sanctioned way the platform addresses the
+// owner directly (`role='system'`, the `Heads up:` prefix). Until t124 it said this, for every
+// row and every shape:
+//
+//   "a task has been marked blocked for over 5 minutes, your PM cannot confirm it, and your
+//    agent has not come back to you about it — the platform asked it twice and got no reply."
+//
+// Three things wrong with that, and the third is a defect this lane CREATED and must close:
+//
+//   1. It never names the work. "a task" — on a box with thirty open rows the owner cannot tell
+//      which one, cannot act, and cannot even ask a useful question about it.
+//   2. It never says what was tried, so there is nothing in it he can act on. The agent's own
+//      stated obstacle is RECORDED and hard-gated to at least 15 specific characters, and it
+//      was being thrown away at exactly the moment it was needed.
+//   3. ⚠ "your PM cannot confirm it" IS NOW SOMETIMES A LIE, because of this lane's own first
+//      fix. Dropping the validation conjunct from the blocked arm means a PM-UPHELD block —
+//      the PM checked it and agreed it is genuinely stuck — reaches this surface for the first
+//      time. Shipping fix 1 without this one would have the platform tell the owner its
+//      validator was silent in precisely the case where its validator had SPOKEN, and the
+//      honest-record family does not permit a line that reads the same whether a fact is known,
+//      unknown, or known to be the opposite.
+//
+// So the sentence is COMPOSED FROM THE ROW'S OWN RECORDED FACTS, and every clause is omitted
+// rather than guessed when the fact behind it is missing. Nothing here is generated prose about
+// the work: the title is the title, the instant is `updated_at`, the obstacle is the agent's own
+// note, the attempt counts are COUNTs over durable events, and the PM's verdict is its
+// adjudication. If a fact is not on file, its clause is not in the sentence.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** One recorded sentence per fact, with nothing asserted that is not on file. */
+export function ownerEscalationAlertLine(p: {
+  title: string;
+  status: string;
+  since: string;
+  agentName: string;
+  steers: number;
+  failures: number;
+  blockedValidated: boolean;
+  obstacle: string | null;
+}): string {
+  const title = p.title.length > 60 ? `${p.title.slice(0, 60)}…` : p.title;
+  const parts: string[] = [`"${title}" has been ${p.status} since ${p.since} and nobody has brought it to you.`];
+
+  // THE VALIDATOR'S VERDICT, three-valued and never collapsed. "Upheld" is the case fix 1
+  // opened and it is the STRONGEST thing the platform can say — the block was checked and is
+  // real — so it must not be delivered in the words for "we could not check".
+  if (p.status === 'blocked') {
+    parts.push(p.blockedValidated
+      ? `Your PM checked it and confirmed the block is real.`
+      : `Your PM has not been able to confirm it.`);
+  } else {
+    parts.push(`Your PM cannot confirm it.`);
+  }
+
+  // WHAT THE AGENT SAID WAS IN ITS WAY. Quoted, never paraphrased, and whitespace-collapsed
+  // the way every other owner-facing composer in this module treats stored prose.
+  const obstacle = (p.obstacle ?? '').replace(/\s+/g, ' ').trim();
+  if (obstacle) {
+    const quoted = obstacle.length > 200 ? `${obstacle.slice(0, 200)}…` : obstacle;
+    parts.push(`${p.agentName} said what was in the way: "${quoted}".`);
+  }
+
+  // WHAT THE PLATFORM ITSELF TRIED. The steer count is `escalationSteerCount`'s DISTINCT-turn
+  // count, so it is attempts the agent actually had a turn to answer, not sweep passes.
+  parts.push(p.steers === 1
+    ? `The platform asked ${p.agentName} once to raise it with you and got no reply.`
+    : `The platform asked ${p.agentName} ${p.steers} times to raise it with you and got no reply.`);
+
+  // THE FAILURE COUNT, only when there is one. Omitted at zero rather than printed as "0
+  // failures", which reads like a reassurance on a row that is stuck for some other reason.
+  if (p.failures > 0) {
+    parts.push(p.failures === 1
+      ? `This work has come back failed or blocked once already.`
+      : `This work has come back failed or blocked ${p.failures} times already.`);
+  }
+
+  return parts.join(' ');
 }
 
 export function ownerVerdictNudgeText(p: {
