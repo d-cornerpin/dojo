@@ -7360,6 +7360,13 @@
       "to": 2148,
       "by": "t124 OWNER CORRECTION 2026-10-07 — the failure arm derives its room from assignee patience",
       "why": "2096 -> 2148 (+52: +22 code net, +29 comment net, +1 blank). THE CODE: the patience resolution for failure-shape-alone rows — `patienceFloorFor(assignee)` -> `flooredThresholds(POKE_THRESHOLDS[priority], floorSeconds).escalate`, the ladder's own two functions in the ladder's own order, dynamically imported as this function already imports `tracker/task-log.js`; one `filter`; and the held-rows log line, because every other hold this sweep applies is said out loud and a hold nobody can see is the same silent behaviour in the other direction. NO NEW CONSTANT and no second copy of the speed judgement: this is a READER of the one place it lives. THE +29 COMMENT: why the room is resolved here rather than in the drive (the clock/law split the drive already declares for `staleBeforeMs`), and why only failure-shape-alone rows are held — holding a blocked row would re-open the void this lane was built to close."
+    },
+    {
+      "path": "packages/server/src/work/validation-drive.ts",
+      "from": 1010,
+      "to": 1055,
+      "by": "t124 REVIEW FIX ROUND 2026-10-07 — the failure arm gets a state bound",
+      "why": "1010 -> 1055 (+45: +2 code net, +42 comment, +1 blank). THE CODE IS TWO LINES: a `failureArmStateBound` expression and the `AND` that applies it. That is the entire repair of a BLOCKING regression this lane introduced — the failure arm had no state clause and `taskScope` has none either, so it was the only shape in the predicate that could match a row in any state, and the reviewer proved empirically that an owner-CANCELLED task (which reaches `abandoned` through `transition()`, itself one of the three shapes the counter counts) scored 2 failures and escalated — telling the owner '<title> has been cancelled since <date> and nobody has brought it to you' about work he closed himself. `TERMINAL_STATES` is imported from `work/store.ts` rather than retyped so the bound cannot drift from the spine's own definition of over. THE +42 COMMENT is the regression's post-mortem and it is the reason this raise is worth taking rather than an apology for it: it records the reviewer's repro table verbatim, the false sentence the owner would have received, WHY the count itself is what scored his cancellation (the non-obvious half — a cancel is a failure transition), and why `paused` is excluded too with the tool contract's own promise quoted ('Paused tasks are INVISIBLE to the PM agent, no pokes, no nags, ever') plus the argument that coverage is not lost because the pause arm owns that state and applies its own gate. A reader who trims that block re-widens the arm; this lane has now demonstrated that is not hypothetical."
     }
   ],
   "maxNewFileLines": 400,
@@ -7669,7 +7676,7 @@
     "packages/server/src/work/store.ts": 2258,
     "packages/server/src/work/tracker-store.ts": 834,
     "packages/server/src/work/tracker-view.ts": 622,
-    "packages/server/src/work/validation-drive.ts": 1010,
+    "packages/server/src/work/validation-drive.ts": 1055,
     "packages/server/src/work/work-reaper.ts": 694,
     "packages/shared/src/access.ts": 338,
     "packages/shared/src/markers.ts": 358,
