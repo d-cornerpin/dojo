@@ -32,6 +32,7 @@ import { announceLiveWork } from '../agent/live-work.js';
 import { pollProviderVideo, fetchVideoAsset, cancelProviderVideo } from './video-generation.js';
 import { openAgentCall, type AgentCallSlot } from '../agent/abortable-call.js';
 import { homeDir } from '../home.js';
+import { TERMINAL_JOB_STATUS_SQL } from './media-job-status.js';
 
 const logger = createLogger('video-job-poller');
 
@@ -65,8 +66,9 @@ function getJob(jobId: string): VideoJobRow | undefined {
 }
 
 function countActiveJobs(): number {
+  // t122: asked from the TERMINAL end (services/media-job-status.ts holds the census).
   const row = getDb().prepare(
-    "SELECT COUNT(*) AS n FROM video_jobs WHERE status IN ('queued','polling')"
+    `SELECT COUNT(*) AS n FROM video_jobs WHERE status NOT IN (${TERMINAL_JOB_STATUS_SQL})`
   ).get() as { n: number };
   return row.n;
 }
@@ -197,9 +199,11 @@ async function markCancelled(jobId: string, reason: string): Promise<void> {
   if (row?.provider_job_id) {
     try { await cancelProviderVideo(row.provider_id, row.provider_job_id); } catch { /* best effort */ }
   }
+  // t122: the fence is "not already finished", not a list of the open words. Still a fence —
+  // a terminal row keeps its verdict, so a cancel cannot clobber a success.
   const res = db.prepare(`
     UPDATE video_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now')
-    WHERE id = ? AND status IN ('queued','polling')
+    WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})
   `).run(jobId);
   if (res.changes === 0) return;
   const fresh = getJob(jobId);
@@ -209,10 +213,11 @@ async function markCancelled(jobId: string, reason: string): Promise<void> {
 
 function markFailed(jobId: string, error: string): void {
   const db = getDb();
-  // Only fail a job that's still active — don't clobber a cancel.
+  // Only fail a job that's still active — don't clobber a cancel. (t122: "active" asked from
+  // the terminal end, so a row spelled any other open way can still be failed honestly.)
   const res = db.prepare(`
     UPDATE video_jobs SET status='failed', error=?, finished_at=datetime('now'), updated_at=datetime('now')
-    WHERE id = ? AND status IN ('queued','polling')
+    WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})
   `).run(error.slice(0, 1000), jobId);
   if (res.changes === 0) return;
   const row = getJob(jobId);
@@ -268,7 +273,7 @@ async function handleSuccess(row: VideoJobRow, durationSeconds: number | null): 
   const res = db.prepare(`
     UPDATE video_jobs
     SET status='succeeded', asset_path=?, duration_seconds=?, cost_usd=?, finished_at=datetime('now'), updated_at=datetime('now')
-    WHERE id = ? AND status IN ('queued','polling')
+    WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})
   `).run(asset.filePath, durationSeconds, costUsd, row.id);
   if (res.changes === 0) {
     // A cancel raced us — the asset is downloaded but the user asked to
@@ -446,7 +451,13 @@ export function enqueueVideoJob(jobId: string): void {
 export function startVideoJobPoller(): void {
   let rows: Array<{ id: string }>;
   try {
-    rows = getDb().prepare("SELECT id FROM video_jobs WHERE status IN ('queued','polling')").all() as Array<{ id: string }>;
+    // t122: the resume adopts every OPEN row, not only the two words this file writes. A row
+    // whose status it does not recognise is one NOTHING would drive otherwise — the boot
+    // reconciliation deliberately leaves video rows that have a provider render to this scan,
+    // so a vocabulary gap here would be a render abandoned in silence.
+    rows = getDb().prepare(
+      `SELECT id FROM video_jobs WHERE status NOT IN (${TERMINAL_JOB_STATUS_SQL})`,
+    ).all() as Array<{ id: string }>;
   } catch (err) {
     // video_jobs table may not exist yet on a very old DB pre-migration.
     logger.warn('video poller boot scan skipped', { error: err instanceof Error ? err.message : String(err) });

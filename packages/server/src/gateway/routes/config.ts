@@ -18,6 +18,7 @@ import { soulFileForAgent, writeSoulFile } from '../../prompt/assembler.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
 import { readUserProfile, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
 import { composePrimarySoul } from '../../prompt/oobe-soul.js';
+import { TERMINAL_JOB_STATUSES, TERMINAL_JOB_STATUS_SQL } from '../../services/media-job-status.js';
 
 // ── Model Usage Helper ──
 
@@ -1051,7 +1052,8 @@ configRouter.get('/video-jobs', (c) => {
   const statusFilter = c.req.query('status');
   const rows = statusFilter === 'active'
     ? db.prepare(
-        "SELECT id, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM video_jobs WHERE status IN ('queued','polling') ORDER BY started_at DESC"
+        // t122: "active" means NOT terminal (services/media-job-status.ts holds the census).
+        `SELECT id, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM video_jobs WHERE status NOT IN (${TERMINAL_JOB_STATUS_SQL}) ORDER BY started_at DESC`
       ).all()
     : db.prepare(
         "SELECT id, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM video_jobs ORDER BY started_at DESC LIMIT 50"
@@ -1086,7 +1088,10 @@ configRouter.post('/video-jobs/:id/cancel', async (c) => {
   if (!row) {
     return c.json({ ok: false, error: 'Video job not found.' }, 404);
   }
-  if (row.status !== 'queued' && row.status !== 'polling') {
+  // t122: the door refuses only a row that is genuinely FINISHED. Asked the other way round
+  // ("is it one of the two words I know"), an open row spelled any other way could never be
+  // cancelled by the owner at all.
+  if ((TERMINAL_JOB_STATUSES as readonly string[]).includes(row.status)) {
     return c.json({ ok: false, error: `Job is already ${row.status}; nothing to cancel.` }, 409);
   }
 
@@ -1098,12 +1103,14 @@ configRouter.post('/video-jobs/:id/cancel', async (c) => {
   }
 
   db.prepare(
-    "UPDATE video_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now') WHERE id = ? AND status IN ('queued','polling')"
+    `UPDATE video_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now') WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})`
   ).run(id);
 
   try {
     const { broadcast } = await import('../ws.js');
-    const active = db.prepare("SELECT COUNT(*) AS n FROM video_jobs WHERE status IN ('queued','polling')").get() as { n: number };
+    const active = db.prepare(
+      `SELECT COUNT(*) AS n FROM video_jobs WHERE status NOT IN (${TERMINAL_JOB_STATUS_SQL})`,
+    ).get() as { n: number };
     broadcast({
       type: 'video_job:update',
       data: { id: row.id, agentId: row.agent_id, status: 'cancelled', prompt: row.prompt, activeCount: active.n },
@@ -1126,7 +1133,7 @@ configRouter.get('/generation-jobs', (c) => {
   try {
     genRows = (activeOnly
       ? db.prepare(
-          "SELECT id, kind, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM generation_jobs WHERE status IN ('queued','running') ORDER BY started_at DESC"
+          `SELECT id, kind, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM generation_jobs WHERE status NOT IN (${TERMINAL_JOB_STATUS_SQL}) ORDER BY started_at DESC`
         ).all()
       : db.prepare(
           "SELECT id, kind, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM generation_jobs ORDER BY started_at DESC LIMIT 50"
@@ -1137,7 +1144,7 @@ configRouter.get('/generation-jobs', (c) => {
   try {
     vidRows = (activeOnly
       ? db.prepare(
-          "SELECT id, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM video_jobs WHERE status IN ('queued','polling') ORDER BY started_at DESC"
+          `SELECT id, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM video_jobs WHERE status NOT IN (${TERMINAL_JOB_STATUS_SQL}) ORDER BY started_at DESC`
         ).all()
       : db.prepare(
           "SELECT id, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM video_jobs ORDER BY started_at DESC LIMIT 50"
@@ -1179,12 +1186,13 @@ configRouter.post('/generation-jobs/:id/cancel', async (c) => {
   if (!row) {
     return c.json({ ok: false, error: 'Generation job not found.' }, 404);
   }
-  if (row.status !== 'queued' && row.status !== 'running') {
+  // t122: as above — refuse only what is genuinely finished.
+  if ((TERMINAL_JOB_STATUSES as readonly string[]).includes(row.status)) {
     return c.json({ ok: false, error: `Job is already ${row.status}; nothing to cancel.` }, 409);
   }
 
   db.prepare(
-    "UPDATE generation_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now') WHERE id = ? AND status IN ('queued','running')"
+    `UPDATE generation_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now') WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})`
   ).run(id);
 
   try {

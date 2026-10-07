@@ -23,11 +23,24 @@
 //
 //   1. THE LIVE ABORT REGISTRY (`shared-state.ts`), scope `background` — every dial that
 //      registered itself as able to outlive its turn. This is what `abortInFlight` will cut.
-//   2. THE OPEN JOB ROWS — `generation_jobs` (queued/running) and `video_jobs`
-//      (queued/polling). These exist because the registry alone CANNOT answer: `image_create`'s
+//   2. THE OPEN JOB ROWS — a row in `generation_jobs` or `video_jobs` that has not reached a
+//      terminal status. These exist because the registry alone CANNOT answer: `image_create`'s
 //      delivery IIFE waits for the agent to go idle before it dials, so during that wait there
 //      is nothing registered and nothing fenced, and the ROW is the only standing fact.
 //      `stopAgent` cuts both, so the predicate must see both.
+//
+//      t122 — THE PREDICATE IS ASKED FROM THE TERMINAL END, and the rows are now kept true.
+//      This read shipped as `status IN ('queued','running')` / `IN ('queued','polling')`, and
+//      that was two defects at once. The small one: an enumerated OPEN end is blind to any
+//      status word added later, so such a row would be open-but-uncounted here for ever
+//      (`services/media-job-status.ts` holds the census and the argument). The large one: it
+//      was the first reader these tables ever had, and the rows were not true. A long-lived box
+//      carries non-terminal rows abandoned by crashes and by versions that predate this file,
+//      and nothing closed them because until this file nothing asked. Every one of them offered
+//      a permanent stop control on an agent correctly reading `idle`. The fix is NOT in this
+//      file and deliberately so — `services/job-orphans.ts` closes the unowned rows once at
+//      boot, with a reason on the row. A reader whose only defence is distrusting its own data
+//      is the wrong place to fix data.
 //
 // ── WHY `max` AND NOT `turn + background` ──
 // A video poll loop holds a registration AND owns a row for the same job, so summing would
@@ -45,6 +58,7 @@
 import { countAbortable } from './shared-state.js';
 import { getDb } from '../db/connection.js';
 import { broadcast } from '../gateway/ws.js';
+import { TERMINAL_JOB_STATUS_SQL } from '../services/media-job-status.js';
 
 /**
  * What a stop would cut for one agent, right now.
@@ -66,7 +80,7 @@ export function hasLiveWork(w: LiveWork): boolean {
 }
 
 /**
- * Count the open media job ROWS this agent owns.
+ * Count the open media job ROWS this agent owns — "open" meaning NOT terminal.
  *
  * Every failure is zero, never a throw: this is read on the stop path and from inside
  * `openAgentCall`, and a bookkeeping table must never be able to stop a stop or break a dial.
@@ -76,12 +90,12 @@ function openJobRows(agentId: string): number {
   let n = 0;
   try {
     n += (getDb().prepare(
-      "SELECT COUNT(*) AS n FROM generation_jobs WHERE agent_id = ? AND status IN ('queued','running')",
+      `SELECT COUNT(*) AS n FROM generation_jobs WHERE agent_id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})`,
     ).get(agentId) as { n: number }).n;
   } catch { /* no table, no db, no claim */ }
   try {
     n += (getDb().prepare(
-      "SELECT COUNT(*) AS n FROM video_jobs WHERE agent_id = ? AND status IN ('queued','polling')",
+      `SELECT COUNT(*) AS n FROM video_jobs WHERE agent_id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})`,
     ).get(agentId) as { n: number }).n;
   } catch { /* as above */ }
   return n;

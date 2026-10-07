@@ -100,6 +100,7 @@ import { resolveAttachmentPath, fetchAudioUrl, transcribeAudio } from '../../../
 import { submitVideoJob } from '../../../services/video-generation.js';
 import type { ToolHandler, ToolHandlerMap } from '../handler.js';
 import { homeDir } from '../../../home.js';
+import { TERMINAL_JOB_STATUS_SQL } from '../../../services/media-job-status.js';
 
 const handlers = {
   async "image_create"({ agentId, args }) {
@@ -710,7 +711,8 @@ const handlers = {
     // appears immediately, then start polling.
     try {
       const activeRow = db.prepare(
-        "SELECT COUNT(*) AS n FROM video_jobs WHERE status IN ('queued','polling')"
+        // t122: open = NOT terminal (services/media-job-status.ts).
+        `SELECT COUNT(*) AS n FROM video_jobs WHERE status NOT IN (${TERMINAL_JOB_STATUS_SQL})`
       ).get() as { n: number };
       broadcast({
         type: 'video_job:update',
