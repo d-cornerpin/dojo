@@ -7522,6 +7522,7 @@
     "packages/server/src/agent/tools/util.ts": 371,
     "packages/server/src/agent/turn-context.ts": 641,
     "packages/server/src/agent/turn-state.ts": 239,
+    "packages/server/src/agent/utility-dial.ts": 242,
     "packages/server/src/agent/v2/ack-copy.ts": 303,
     "packages/server/src/agent/v2/answered-edge.ts": 818,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 505,
@@ -7749,7 +7750,6 @@
     "packages/shared/src/visibility.ts": 989,
     "packages/shared/src/ws.ts": 1278,
     "watchdog/src/auto-rollback.ts": 333,
-    "watchdog/src/index.ts": 1217,
-    "packages/server/src/agent/utility-dial.ts": 242
+    "watchdog/src/index.ts": 1217
   }
 }
