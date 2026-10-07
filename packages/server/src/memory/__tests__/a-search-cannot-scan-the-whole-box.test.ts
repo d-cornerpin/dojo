@@ -172,6 +172,8 @@ describe('⚠ THE REPRODUCTION — the same search, on a grown fixture, before a
       ORDER BY created_at DESC LIMIT 60`).all('agent-fixture', '%nothing-matches-this%') as Array<{ detail: string }>;
     expect(plan.map((p) => p.detail).join(' ')).toMatch(/SCAN messages/);
     const before = measureStarvation(() => { unbounded.all('agent-fixture', '%nothing-matches-this%'); });
+    // Structural, not a bet: one synchronous `.all()` cannot let a timer fire, so this is the same
+    // fact on every machine and load can only make it larger.
     expect(before.starvedMs, 'the fixture is too small to reproduce the pin').toBeGreaterThan(0);
 
     // The BOUNDED walk over the same table, same term: it stops at the first chunk's worth of budget.
@@ -180,8 +182,9 @@ describe('⚠ THE REPRODUCTION — the same search, on a grown fixture, before a
       ORDER BY rowid DESC LIMIT ?
     `);
     const countStmt = db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(content)),0) AS bytes FROM messages WHERE agent_id = ? AND rowid <= ? AND rowid > ?');
+    let report: BoundedScanReport | null = null;
     const after = measureStarvation(() => {
-      boundedRecencyScanSync<{ id: string }>({
+      ({ report } = boundedRecencyScanSync<{ id: string }>({
         limit: 60,
         startRowidCeiling: ROWS,
         chunkRows: 5_000,
@@ -194,15 +197,47 @@ describe('⚠ THE REPRODUCTION — the same search, on a grown fixture, before a
             rowsExamined: cost.n, bytesRead: cost.bytes,
           };
         },
-      });
+      }));
     });
 
     // eslint-disable-next-line no-console
     console.log(`STARVATION  unbounded ${before.starvedMs}ms of ${before.elapsedMs}ms elapsed `
       + `· bounded ${after.starvedMs}ms of ${after.elapsedMs}ms (${ROWS} fixture rows)`);
-    // ⚠ THE HEADLINE: the bounded walk gives the loop back, because it reads a fraction of the table.
-    expect(after.elapsedMs).toBeLessThan(before.elapsedMs);
-    expect(after.starvedMs).toBeLessThan(Math.max(1, before.starvedMs));
+    // ⚠ THE HEADLINE, AND IT IS NOW COUNTED RATHER THAN TIMED — t128.
+    //
+    // This clause used to assert `after.elapsedMs < before.elapsedMs` and the same for `starvedMs`:
+    // a before/after comparison of two WALL-CLOCK measurements on a grown fixture. It failed a
+    // merge gate at 371ms under full-suite load and passed 3/3 alone, which is the whole family's
+    // signature. Under contention the comparison's premise wobbles — both halves are scheduled
+    // against the same starved CPU, so "the bounded one was faster" stops being a property of the
+    // code and becomes a property of the machine that minute.
+    //
+    // THE CLAIM IS UNCHANGED — "the bounded walk reads a FRACTION of the table" — and the bounded
+    // reader already counts exactly that. `BoundedScanReport` (t89's work) carries `rowsExamined`,
+    // `chunks` and `truncated`, so the fraction is a number the scan reports about itself. That is
+    // the same reading on an idle box and a starved one.
+    //
+    // The teaching value of the reproduction is kept: the unbounded statement is still built and
+    // still run, its plan is still asserted to be a full `SCAN messages`, and the starvation
+    // measurement is still printed above. What is gone is the assertion ON the clock.
+    const r = report as unknown as BoundedScanReport;
+    expect(r, 'the bounded walk reported nothing about itself').not.toBeNull();
+    // THE STRONGEST FORM AVAILABLE: the scan says WHY it stopped, as an enum. `row_budget` means it
+    // hit its own ceiling with the answer incomplete — which is precisely "it did not walk the
+    // table". `exhausted` here would mean it crossed all 60,000 rows after all.
+    expect(r.stoppedBecause, 'the bounded walk did not stop on its row budget').toBe('row_budget');
+    expect(r.truncated, 'a budget that bit must report an incomplete answer').toBe(true);
+    expect(r.rowsScanned, 'the bounded walk scanned more than its own budget allowed')
+      .toBeLessThanOrEqual(10_000 + 5_000);     // maxRows, plus at most one chunk's overshoot
+    // …and that budget is a genuine fraction of the table the unbounded shape must cross.
+    expect(r.rowsScanned, 'the bounded walk read the whole table after all — there is no bound')
+      .toBeLessThan(ROWS / 2);
+    // Both directions: a bound that scanned nothing would satisfy the two above and prove nothing.
+    expect(r.rowsScanned, 'the bounded walk scanned nothing — the fixture or the window is wrong')
+      .toBeGreaterThan(0);
+    expect(r.chunks, 'a budget that stops inside one chunk is not a chunked walk').toBeGreaterThan(1);
+    expect(r.matched, 'the term really is absent, so the fraction is not explained by an early hit')
+      .toBe(0);
   });
 });
 
@@ -495,11 +530,24 @@ describe('⚠ I5 — THE COST OF THE POST-FIX QUERIES, MEASURED, ON PRODUCTION I
     // eslint-disable-next-line no-console
     console.log(`I5 MEASURED  combined MIN+MAX ${tCombined.toFixed(3)}ms · two statements `
       + `${tSplit.toFixed(3)}ms · identical plans`);
-    // ⚠ A RATIO, NOT A CEILING. Seven lanes share this machine, so an absolute millisecond bound is a
-    // coin flip; the ratio is a property of the query planner and holds under load. 10× is far below
-    // the ~1,500× measured and far above any noise.
-    expect(tSplit, 'the two-statement span is no longer cheaper — re-measure before simplifying')
-      .toBeLessThan(tCombined / 10);
+    // ⚠ t128 — THE RATIO IS NOW A LOGGED OBSERVATION, NOT AN ASSERTION.
+    //
+    // It read `tSplit < tCombined / 10`, and its own note argued that a ratio "is a property of the
+    // query planner and holds under load". That is the same argument the vault's serviced-ratio
+    // clause made before it failed a merge gate, and the same one this file's own reproduction
+    // clause made before it failed one at 371ms: a comparative of two wall-clock measurements is
+    // still wall-clock. The margin here is large (10× asserted against ~1,500× measured) and it has
+    // not redded — but this is the fourth member of the family to materialise, so the family is
+    // being closed rather than re-priced one gate-red at a time.
+    //
+    // NOTHING IS LOST, because this clause was never the enforcement. The plan assertions above
+    // stand (both shapes are indexed, which is the point — a plan-only clause CANNOT tell them
+    // apart), and the clause immediately below is the teeth: it reads the SOURCE and refuses a
+    // combined MIN/MAX on a search path at all. The measurement's job is to justify that rule to a
+    // reader, which is exactly what a `console.log` does. If the rule is ever questioned, the
+    // number is printed above, on whatever machine asked.
+    expect(tSplit, 'the measurement did not run').toBeGreaterThan(0);
+    expect(tCombined, 'the measurement did not run').toBeGreaterThan(0);
   });
 
   it('and the SOURCE takes the cheap shape — no combined MIN/MAX survives on a search path', () => {
@@ -582,13 +630,21 @@ describe('⚠ I5 — THE COST OF THE POST-FIX QUERIES, MEASURED, ON PRODUCTION I
     // ⚠ WHAT IS TRUE: the index exists and the per-agent read uses it.
     expect(plan, 'the per-agent MAX no longer uses an index — finding A\'s guard is not affordable')
       .toMatch(/USING COVERING INDEX idx_summaries_agent_depth/);
-    // Same order of magnitude as the global read, so A's guard costs one indexed probe.
-    expect(perAgentIdx, 'the per-agent MAX is not an indexed probe').toBeLessThan(Math.max(0.5, globalIdx * 50));
-    // ⚠ AND THE OTHER DIRECTION, so this clause cannot silently become vacuous: the index is what
-    // makes the difference. Without it the same read IS the reverse walk round 1 measured — which is
-    // why an index-less fixture kept telling me a true-sounding falsehood.
-    expect(perAgentBare, 'an index-less summaries table no longer walks — re-check migration 002')
-      .toBeGreaterThan(perAgentIdx * 10);
+    // ⚠ t128 — THE TWO TIMING RATIOS BECOME LOGGED OBSERVATIONS, for the same reason as the
+    // MIN/MAX clause above. `perAgentIdx < globalIdx * 50` and `perAgentBare > perAgentIdx * 10`
+    // are both comparatives of wall-clock measurements, and under contention both halves are
+    // scheduled against the same starved CPU.
+    //
+    // THE MECHANISM CARRIES THE CLAIM, and here it genuinely does, in two independent places: the
+    // plan assertion directly above proves the per-agent read USES the covering index (which is
+    // what "one indexed probe" means), and the clause immediately below READS MIGRATION 002 from
+    // disk to prove the index is really shipped rather than remembered. An index-less fixture
+    // cannot satisfy either of those, which is the vacuity the second ratio was guarding against —
+    // so the guard survives its removal.
+    //
+    // The measurements are still taken and still printed, which is where a benchmark belongs.
+    expect(perAgentIdx, 'the per-agent measurement did not run').toBeGreaterThan(0);
+    expect(perAgentBare, 'the index-less measurement did not run').toBeGreaterThan(0);
   });
 
   it('⚠ B — the index is really in the migrations, read from the file rather than remembered', () => {
