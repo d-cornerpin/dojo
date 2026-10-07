@@ -40,7 +40,7 @@ import { RUN_STATUS_UNDELIVERED } from '../work/run-deliver-drive.js';
 // SWEEP CORE-2 item 1 — the owner-escalation candidate query and the ordering law it obeys.
 import {
   countRowsHeldBackFromOwner, selectRowsForOwnerEscalation, selectRowsSkippedAsDelivered,
-  ownerVerdictNudgeText, ownerEscalationAlertLine,
+  ownerVerdictNudgeText, ownerEscalationAlertLine, failureArmStillWithinPatience,
   escalationSteerCount, firstEscalationSteerAt, recordEscalationSteer,
   recordAttemptsForRowsNoValidatorEverSaw, noteValidatorSilence,
 } from '../work/validation-drive.js';
@@ -404,7 +404,59 @@ export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
     const { getSystemServiceAgentIds } = await import('../config/platform.js');
     const serviceIds = getSystemServiceAgentIds().filter((id): id is string => Boolean(id));
     const staleBefore = Date.now() - VALIDATION_ESCALATION_MIN * 60_000;
-    const stale = selectRowsForOwnerEscalation(staleBefore, serviceIds);
+    const admitted = selectRowsForOwnerEscalation(staleBefore, serviceIds);
+
+    // ── t124 OWNER CORRECTION 2026-10-07 — A FAILED ROW IS LATE ON ITS ASSIGNEE'S CLOCK. ──
+    //
+    // The failure shape is admitted by SQL on the existence of a recorded failure; how much room
+    // that failure buys is a JUDGEMENT ABOUT PACE, and the owner's standing rule is that this
+    // platform never writes such a judgement as a number: *"we don't specify numbers or times. We
+    // make judgement calls based on how fast the model and model provider are."* This lane's first
+    // cut shipped `ESCALATION_FAILURE_THRESHOLD = 3` and that was the violation — a statement about
+    // pace with the pace taken out of it, applied identically to a provider that answers in two
+    // seconds and one whose first chunk honestly takes ten minutes (the agent t90 exists to
+    // protect).
+    //
+    // So the room is resolved HERE, through the ladder's own two functions in the ladder's own
+    // order (`tracker/pm-agent.ts`: `patienceFloorFor` → `flooredThresholds(POKE_THRESHOLDS[
+    // priority], floorSeconds)`), at the rung the platform already names for escalation. There is
+    // exactly ONE place a speed judgement is made in this platform and this is a READER of it, not
+    // a second copy: no reference speed is invented, no multiplier is chosen, and `flooredThresholds`
+    // is all `max`, so this can never fire sooner than the base table for any row.
+    //
+    // It lands in the scheduler and not in `work/validation-drive.ts` for the reason that module
+    // already states about `staleBeforeMs`: the scheduler owns the clock, the drive owns the law. A
+    // patience-scaled idle bound is a clock, and `work/` may not import `tracker/`. The LAW is
+    // still the drive's — `failureArmStillWithinPatience` — so the comparison's direction cannot
+    // drift from the module that owns the arm.
+    //
+    // ONLY failure-shape-alone rows are held. A blocked or unvalidated-close row is late at the
+    // sweep's own bound and is untouched by this, which is the negative control in the clause file.
+    const { patienceFloorFor, flooredThresholds } = await import('../tracker/assignee-patience.js');
+    const { POKE_THRESHOLDS } = await import('../tracker/pm-agent.js');
+    const nowForPatience = Date.now();
+    const heldForPatience: Array<{ id: string; idleSeconds: number; roomSeconds: number; basis: string }> = [];
+    const stale = admitted.filter((r) => {
+      if (r.by_state_arm === 1) return true;
+      const floor = patienceFloorFor(r.assigned_to);
+      const room = flooredThresholds(
+        POKE_THRESHOLDS[r.priority] ?? POKE_THRESHOLDS.normal, floor.floorSeconds,
+      ).escalate;
+      const idleSeconds = Math.max(0, Math.floor((nowForPatience - r.updated_at_ms) / 1000));
+      if (failureArmStillWithinPatience(idleSeconds, room)) {
+        heldForPatience.push({ id: r.id, idleSeconds, roomSeconds: room, basis: floor.basis });
+        return false;
+      }
+      return true;
+    });
+    // SAID OUT LOUD, like every other hold this sweep applies. A row kept back because its
+    // assignee's own model is still inside one legitimate escalate-rung is not a silent skip, and
+    // on the day that resolution is wrong the log is where it becomes visible.
+    if (heldForPatience.length > 0) {
+      logger.info('Validation escalation HELD on ASSIGNEE PATIENCE: these rows have failed but are still inside their own model\'s escalate rung', {
+        held: heldForPatience.length, rows: heldForPatience.slice(0, 5), escalating: stale.length,
+      });
+    }
 
     // THE HOLD IS SAID OUT LOUD. A row kept back by the ordering law is not a silent skip:
     // it is the platform saying "my own validator has not been asked yet, so this is not the

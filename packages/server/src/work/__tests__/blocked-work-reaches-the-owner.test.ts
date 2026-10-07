@@ -72,10 +72,13 @@ import {
   setValidationDoorbellHandler,
   ownerEscalationAlertLine,
   workFailureCount,
-  ESCALATION_FAILURE_THRESHOLD,
   FAILURE_TRANSITION_STATES,
   recordEscalationSteer,
+  failureArmStillWithinPatience,
 } from '../validation-drive.js';
+import { patienceFloorFor, flooredThresholds } from '../../tracker/assignee-patience.js';
+import { POKE_THRESHOLDS } from '../../tracker/pm-agent.js';
+import { STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS } from '../../agent/stream-patience.js';
 
 /** Fictional throughout (G1): no real agent or person names reach a shipped surface. */
 const ASSIGNEE = 'zargo';
@@ -388,7 +391,7 @@ describe('§3 failures count toward escalation, not only time', () => {
 
     expect(workFailureCount('t-parent')).toBe(3);
     expect(candidates(),
-      'three failures is the threshold; time alone would never have seen this row',
+      'a recorded failure admits the row; time alone would never have seen it',
     ).toContain('t-parent');
   });
 
@@ -421,17 +424,21 @@ describe('§3 failures count toward escalation, not only time', () => {
     expect(candidates()).toContain('t-assigned');
   });
 
-  it('THE MUTANT: below the threshold the row is NOT escalated', () => {
-    seedWork('t-two', { remaining_children: 2 });
-    failPiece('t-two', 'q-1', 'failed');
-    failPiece('t-two', 'q-2', 'failed');
-    age('t-two');
+  it('THE ARM IS AN EXISTENCE TEST, NOT A TUNED COUNT (owner correction 2026-10-07)', () => {
+    // ⟨TOMBSTONE⟩ This clause asserted `ESCALATION_FAILURE_THRESHOLD === 3` and that two failures
+    // were "under the bound". THE CONSTANT IS GONE: a flat count is a judgement about pace with
+    // the pace taken out of it, and the owner's standing rule is that this platform does not write
+    // such judgements as numbers. One failure is enough to ADMIT a row; how much room that failure
+    // buys is the assignee's measured pace, which §7 drives. There is no number left to assert.
+    seedWork('t-one', { remaining_children: 1 });
+    failPiece('t-one', 'q-1', 'failed');
+    age('t-one');
+    expect(workFailureCount('t-one')).toBe(1);
+    expect(candidates(), 'some is not none — the shape admits it').toContain('t-one');
 
-    expect(workFailureCount('t-two')).toBe(2);
-    expect(ESCALATION_FAILURE_THRESHOLD, 'the placeholder the owner will replace').toBe(3);
-    expect(candidates(),
-      'two failures is under the bound — the arm must not fire early',
-    ).not.toContain('t-two');
+    seedWork('t-none');
+    age('t-none');
+    expect(candidates(), 'and none is still none').not.toContain('t-none');
   });
 
   it('THE OTHER MUTANT: the thread edge needs a thread, or the count becomes a global tally', () => {
@@ -617,6 +624,167 @@ describe('§5 the owner is told what is blocked, since when, and what was tried'
 
     expect(render('Qqq', 'alpha widget', 'INSTANT-1', 'the first obstacle'))
       .toBe(render('Zzz', 'beta gadget', 'INSTANT-2', 'the second obstacle'));
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §7 · OWNER CORRECTION 2026-10-07 — THE FAILURE ARM RUNS ON THE ASSIGNEE'S OWN CLOCK.
+//
+//   *"we don't specify numbers or times. We make judgement calls based on how fast the model and
+//    model provider are. We've been over this so so many times."*
+//
+// This lane's first cut shipped `ESCALATION_FAILURE_THRESHOLD = 3`. That is the house doctrine's
+// own forbidden shape — `tracker/assignee-patience.ts` states it outright: a multiplier needs a
+// REFERENCE speed, no such number exists in this platform, and inventing one is the "scaling the
+// numbers" fix ruling R1 rejected. The constant is deleted. The arm now reads the rung the ladder
+// already names for escalation, floored by the assignee's own declared patience, through the
+// SAME two functions in the SAME order `tracker/pm-agent.ts` uses.
+//
+// Both directions are driven here, which is the point of the correction: a slow assignee must get
+// MORE room than a fast one for the identical row and the identical failure.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§7 a slow model gets more room than a fast one before the owner is told', () => {
+  /** A provider that DECLARES its patience, and an agent on it. The `models JOIN providers`
+   *  shape `patienceFloorFor` reads. */
+  function seedAssigneeOnProvider(p: {
+    agentId: string; firstChunkMs: number | null; idleMs: number | null;
+  }): void {
+    const db = mockDb.current!;
+    db.prepare(
+      `INSERT INTO providers (id, name, type, auth_type, is_validated,
+                              first_chunk_timeout_ms, stream_idle_timeout_ms,
+                              created_at, updated_at)
+       VALUES (@pid, 'P', 'openai-compatible', 'none', 1, @fc, @idle,
+               datetime('now'), datetime('now'))`,
+    ).run({ pid: `prov-${p.agentId}`, fc: p.firstChunkMs, idle: p.idleMs });
+    db.prepare(
+      `INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window,
+                           is_enabled, created_at, updated_at)
+       VALUES (@mid, @pid, 'M', 'm', '["tools"]', 8192, 1, datetime('now'), datetime('now'))`,
+    ).run({ mid: `model-${p.agentId}`, pid: `prov-${p.agentId}` });
+    db.prepare(
+      `INSERT INTO agents (id, name, status, model_id) VALUES (@id, @id, 'idle', @mid)`,
+    ).run({ id: p.agentId, mid: `model-${p.agentId}` });
+  }
+
+  /** The room this assignee's failures get, resolved exactly as the ladder resolves it. */
+  const roomFor = (agentId: string, priority = 'normal'): number =>
+    flooredThresholds(
+      POKE_THRESHOLDS[priority] ?? POKE_THRESHOLDS.normal,
+      patienceFloorFor(agentId).floorSeconds,
+    ).escalate;
+
+  /** A row with one recorded failure, owned by `agentId`, idle for `idleSeconds`. */
+  function seedFailedRow(id: string, agentId: string, idleSeconds: number, title = 'a failed thing'): void {
+    seedWork(id, { agent_id: agentId, remaining_children: 1, title });
+    seedWork(`${id}-piece`, {
+      agent_id: agentId, root_kind: 'a2a_thread', root_id: `thread-${id}`,
+      parent_id: id, state: 'claimed', title: 'a delegated piece',
+    });
+    const r = transition(`${id}-piece`, {
+      to: 'failed', by: 'agent', actorId: agentId, reason: 'the peer replied FAIL',
+    });
+    expect(r.kind).toBe('applied');
+    mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?')
+      .run(NOW - idleSeconds * 1000, id);
+  }
+
+  const SLOW = 'slowpoke';
+  const FAST = 'quickdraw';
+
+  beforeEach(() => {
+    // A declared ~15-minute first chunk — the deliberately-slow local model t90 was written for.
+    seedAssigneeOnProvider({ agentId: SLOW, firstChunkMs: 900_000, idleMs: 120_000 });
+    // Declares nothing, so it resolves to the platform defaults: the R6 path.
+    seedAssigneeOnProvider({ agentId: FAST, firstChunkMs: null, idleMs: null });
+  });
+
+  it('THE PROPORTIONALITY: the slow assignee\'s room is strictly larger, and neither is chosen here', () => {
+    const slowFloor = patienceFloorFor(SLOW);
+    const fastFloor = patienceFloorFor(FAST);
+    expect(slowFloor.basis, 'the provider declared it').toBe('declared');
+    expect(fastFloor.basis, 'nothing declared — the defaults, which is the R6 path').toBe('default');
+
+    // The fast floor is the platform's own default total, not a number this file picked.
+    expect(fastFloor.floorSeconds)
+      .toBe(Math.ceil((STREAM_FIRST_CHUNK_TIMEOUT_MS + STREAM_IDLE_TIMEOUT_MS) / 1000));
+    expect(slowFloor.floorSeconds).toBeGreaterThan(fastFloor.floorSeconds);
+    expect(roomFor(SLOW), 'a slow model gets proportionally more room').toBeGreaterThan(roomFor(FAST));
+
+    // R6, inherited arithmetic: an UNDECLARED provider leaves the ladder's own table untouched,
+    // which is the whole reason this is a floor and not a replacement.
+    expect(roomFor(FAST)).toBe(POKE_THRESHOLDS.normal.escalate);
+  });
+
+  it('the law is one-directional: the floor can never fire SOONER than the base table', () => {
+    // The shape that would otherwise bring escalation forward — a provider declaring a 1-second
+    // patience. `flooredThresholds` is all `max`, so it cannot.
+    seedAssigneeOnProvider({ agentId: 'blink', firstChunkMs: 1_000, idleMs: 1_000 });
+    expect(roomFor('blink')).toBe(POKE_THRESHOLDS.normal.escalate);
+  });
+
+  it('DRIVEN, BOTH DIRECTIONS: the same failure at the same age tells the owner about the FAST row only', async () => {
+    const idle = Math.floor((roomFor(FAST) + roomFor(SLOW)) / 2);
+    expect(idle, 'the probe age sits between the two rooms').toBeGreaterThan(roomFor(FAST));
+    expect(idle).toBeLessThan(roomFor(SLOW));
+
+    // Distinct titles, so the owner's own sentence says which row reached him.
+    seedFailedRow('t-fast', FAST, idle, 'the quick provider job');
+    seedFailedRow('t-slow', SLOW, idle, 'the slow provider job');
+
+    // Both are ADMITTED by the SQL shape — the existence of a failure is identical.
+    expect(candidates()).toContain('t-fast');
+    expect(candidates()).toContain('t-slow');
+    // And the LAW separates them.
+    expect(failureArmStillWithinPatience(idle, roomFor(FAST)), 'the fast row is out of room').toBe(false);
+    expect(failureArmStillWithinPatience(idle, roomFor(SLOW)), 'the slow row still has room').toBe(true);
+
+    await driveLadderToTheEnd();
+    const alerts = ownerAlerts().join('\n');
+    expect(alerts, 'the fast assignee\'s failures reached the owner').toContain('the quick provider job');
+    expect(alerts,
+      'and the slow assignee\'s identical failure did NOT — poking it here is the t90 defect',
+    ).not.toContain('the slow provider job');
+    // Same fact on the rows' own durable history.
+    const slowGhost = mockDb.current!.prepare(
+      `SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'floor_ghosted'`,
+    ).get('t-slow');
+    const fastGhost = mockDb.current!.prepare(
+      `SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'floor_ghosted'`,
+    ).get('t-fast');
+    expect(fastGhost, 'the fast row is out of room and the owner was told').toBeDefined();
+    expect(slowGhost,
+      'the slow row is inside its own model\'s escalate rung — poking it here is the t90 defect',
+    ).toBeUndefined();
+  });
+
+  it('AND THE SLOW ROW IS NOT FORGOTTEN: past its OWN room, it escalates too', async () => {
+    seedFailedRow('t-slow', SLOW, roomFor(SLOW) + 60);
+    await driveLadderToTheEnd();
+    const ghost = mockDb.current!.prepare(
+      `SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'floor_ghosted'`,
+    ).get('t-slow');
+    expect(ghost, 'more room is not immunity').toBeDefined();
+  });
+
+  it('THE NEGATIVE CONTROL: a STATE shape is not held by patience at all', async () => {
+    // A blocked row is late at the SWEEP's bound; its assignee's model speed is irrelevant to
+    // that question, and holding it would re-open the void this lane closed.
+    seedWork('t-blocked-slow', { agent_id: SLOW });
+    const r = transition('t-blocked-slow', {
+      to: 'blocked', by: 'agent', actorId: SLOW, reason: 'r', note: OBSTACLE,
+    });
+    expect(r.kind).toBe('applied');
+    mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(T, 't-blocked-slow');
+
+    const row = candidateRow('t-blocked-slow');
+    expect(row!.by_state_arm, 'it matched a state shape').toBe(1);
+    await driveLadderToTheEnd();
+    const ghost = mockDb.current!.prepare(
+      `SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'floor_ghosted'`,
+    ).get('t-blocked-slow');
+    expect(ghost, 'the slowest model in the world does not excuse a confirmed block').toBeDefined();
   });
 });
 

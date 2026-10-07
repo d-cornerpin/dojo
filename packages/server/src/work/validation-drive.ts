@@ -220,6 +220,15 @@ export interface OwnerEscalationRow {
   failures: number;
   /** What the agent said was in its way, from the newest blocked transition. NULL if none. */
   obstacle: string | null;
+  /** The row's own priority — the key `POKE_THRESHOLDS` is indexed by, so the caller resolves
+   *  this row's patience room through the ladder's table rather than guessing one. */
+  priority: string;
+  /** `updated_at` RAW, epoch ms. `updated` is the same instant rendered for the owner's sentence;
+   *  this is the one the idle arithmetic runs on, because a clock is not a label. */
+  updated_at_ms: number;
+  /** 1 when a STATE shape matched (unvalidated close, unvalidated pause, blocked). A row that is
+   *  here on the failure shape ALONE is 0, and only those are held to the assignee's patience. */
+  by_state_arm: number;
 }
 
 /**
@@ -360,22 +369,17 @@ export const blockedNeedsOwnerExpr = (a: string): string => `${a}.state = 'block
  * ordinary tracker row (thread id NULL) would join every piece whose `root_id` is NULL and the
  * count would be a global failure tally wearing each row's name.
  *
- * ── THE NUMBER IS THE OWNER'S, AND IT IS ONE CONSTANT ──
- * The triage files the threshold as a design item needing his number (§Q4b fix 5). The
- * MECHANISM is what t124 builds; `3` is a stated placeholder, not a ruling, and it is a single
- * exported constant so his answer is a one-line change with a clause already around it.
+ * ── THERE IS NO THRESHOLD HERE, AND THAT IS THE OWNER CORRECTION OF 2026-10-07 ──
+ * The triage filed the count's threshold as a design item needing the owner's number. **There was
+ * no number to wait for.** His standing rule: *"we don't specify numbers or times. We make
+ * judgement calls based on how fast the model and model provider are."* This counter is therefore
+ * a COUNT and nothing else — a recorded fact with no judgement in it. How much room a failure buys
+ * is resolved from the assignee's own measured pace, and the whole argument lives on
+ * `anyRecordedFailureExpr` below.
  */
 export const FAILURE_TRANSITION_STATES = ['blocked', 'failed', 'abandoned'] as const;
 
 const FAILURE_STATE_LIST = FAILURE_TRANSITION_STATES.map((s) => `'${s}'`).join(', ');
-
-/**
- * PLACEHOLDER PENDING AN OWNER RULING (triage §Q4b fix 5). "Some failures" is his phrase; the
- * number is his call. Three is chosen to be defensible rather than right: one failure is an
- * ordinary bad minute, two is a pattern the assignee may still recover from, and by the third
- * the platform is watching something it has no plan for. Raise or lower it HERE.
- */
-export const ESCALATION_FAILURE_THRESHOLD = 3;
 
 /**
  * The delegated pieces one row owns, by BOTH recorded edges — the `parent_id` edge for a row
@@ -401,9 +405,82 @@ export const workFailureCountExpr = (a: string): string =>
   + `    AND (fe.work_id = ${a}.id`
   + `         OR fe.work_id IN (${pieceIdsExpr(a)})))`;
 
-/** The failure ARM: this row has failed enough times to be the owner's problem on count alone. */
-export const failureCountReachedExpr = (a: string): string =>
-  `(${workFailureCountExpr(a)} >= ${ESCALATION_FAILURE_THRESHOLD})`;
+/**
+ * ── OWNER CORRECTION, 2026-10-07 — AND IT DELETED A CONSTANT THIS LANE HAD SHIPPED. ──
+ *
+ * ⟨TOMBSTONE⟩ This arm first read `${workFailureCountExpr(a)} >= ESCALATION_FAILURE_THRESHOLD`,
+ * with `ESCALATION_FAILURE_THRESHOLD = 3` declared here as a placeholder pending the owner's
+ * number. **There was no number to wait for, and asking for one was the error.** His words:
+ *
+ *   *"we don't specify numbers or times. We make judgement calls based on how fast the model and
+ *   model provider are. We've been over this so so many times."*
+ *
+ * A flat `3` is a judgement about pace with the pace taken out of it. It says the same thing about
+ * an assignee whose provider answers in two seconds and one whose first chunk legitimately takes
+ * ten minutes — and the second is the exact agent t90 was written to protect, after the PM read a
+ * deliberately-slow model's honest pace as a stall and reassigned its work repeatedly.
+ *
+ * ── WHERE THE JUDGEMENT LIVES INSTEAD: ONE PLACE, AND IT IS NOT HERE ──
+ * `tracker/assignee-patience.ts` already answers *"how long may ONE call on THIS assignee's model
+ * legitimately take"* — `patienceFloorFor` → `resolveStreamPatience`, the provider's own declared
+ * first-chunk and idle allowances. That module's header states the doctrine this correction
+ * enforces: a "slow model multiplier" would need a REFERENCE speed to multiply against, *"and no
+ * such number exists anywhere in this platform — inventing one is exactly the 'scaling the
+ * numbers' fix SLOW-INFERENCE ruling R1 rejected."* `ESCALATION_FAILURE_THRESHOLD` was that
+ * invention, in count form rather than time form.
+ *
+ * So the failure arm now consumes **the same source, through the same two functions, in the same
+ * order as the poke ladder** (`tracker/pm-agent.ts`: `patienceFloorFor(assignee)` →
+ * `flooredThresholds(POKE_THRESHOLDS[priority], floorSeconds)`), and it reads the rung that
+ * platform already NAMES for escalation — `escalate`, rung 3. Nothing is chosen here: the table is
+ * the ladder's, the floor is the provider's, the arithmetic is `flooredThresholds`'.
+ *
+ * ── WHAT IS LEFT IN SQL, AND WHY IT IS AN EXISTENCE TEST AND NOT A COUNT ──
+ * `anyRecordedFailureExpr` asks *"has this work come back failed at all?"* — a FACT, with no
+ * judgement in it. `>= 1` is not a tuned threshold the way `>= 3` was: it is the difference
+ * between some and none. Every judgement about *how much room* that failure buys is made by the
+ * patience resolution above, which is why the count stopped needing a number the moment the speed
+ * judgement moved to the place that owns it.
+ *
+ * ── THE EFFECT, WHICH IS THE OWNER'S SENTENCE ──
+ * A slow assignee's floor is large, so `max(base.escalate, floor × 3)` gives its honest attempts
+ * proportionally more room before the owner is involved. A fast assignee resolves to the defaults,
+ * so `max(1800, 450) = 1800` — today's table exactly, the same R6 arithmetic
+ * `assignee-patience.ts` relies on — and its failures accumulate the owner's attention sooner
+ * precisely because the same elapsed time means more from a model that answers quickly.
+ * `flooredThresholds` is all `max`, so this arm can never be MORE aggressive than the base table
+ * for any row, declared or not; that one-directionality is inherited, not re-argued.
+ *
+ * ── AND WHY THE RESOLUTION IS NOT CALLED FROM THIS MODULE ──
+ * `work/` must not import `tracker/` (this module's doorbell seam exists for that reason), and
+ * the patience family lives in `tracker/`. That is not a workaround here — it lands the split
+ * this module already declares: **`scheduler/runner.ts` owns the clock, `work/validation-drive.ts`
+ * owns the law.** `staleBeforeMs` is passed in for exactly that reason, and a patience-scaled idle
+ * bound IS a clock. So the SQL admits a row that has failed, the scheduler resolves that row's own
+ * room through the ladder's functions, and `failureArmStillWithinPatience` below is the LAW it
+ * applies — one sentence, in the module that owns the predicate.
+ */
+export const anyRecordedFailureExpr = (a: string): string =>
+  `(${workFailureCountExpr(a)} >= 1)`;
+
+/**
+ * THE LAW the scheduler applies to a row admitted by the failure arm alone: it still has room.
+ *
+ * `flooredEscalateSeconds` is `flooredThresholds(POKE_THRESHOLDS[priority], patienceFloorFor(
+ * assignee).floorSeconds).escalate` — resolved by the caller because the resolver lives in
+ * `tracker/`. Kept as a named predicate rather than a bare `<` at the call site so the law is
+ * greppable from the module that owns the arm, and so the clause file and the scheduler cannot
+ * disagree about which direction the comparison runs.
+ *
+ * A row whose assignee cannot be resolved at all gets the DEFAULT floor, never an exemption:
+ * `patienceFloorFor(null)` returns the R6 defaults, so an unknown provider buys itself no extra
+ * silence. That direction is `assignee-patience.ts`'s own and is not re-decided here.
+ */
+export function failureArmStillWithinPatience(
+  idleSeconds: number, flooredEscalateSeconds: number,
+): boolean {
+  return idleSeconds < flooredEscalateSeconds;
+}
 
 /** The same count, for callers that are not building SQL (the log line, and the clause file). */
 export function workFailureCount(workId: string): number {
@@ -467,8 +544,20 @@ export const ownerEscalationStateArmsExpr = (a: string): string =>
   + `        ${unvalidatedCloseExpr(a)}\n`
   + `        OR (${unvalidatedPauseExpr(a)} AND ${a}.missed_runs_paused_at IS NULL)\n`
   + `        OR ${blockedNeedsOwnerExpr(a)}\n`
-  + `        OR ${failureCountReachedExpr(a)}\n`
   + `      )`;
+
+/**
+ * EVERY shape that can put a row in front of the owner: a STATE the sweep's own clock governs, or
+ * a recorded FAILURE whose room is governed by the assignee's measured pace.
+ *
+ * The two are kept separable — and the escalating query SELECTs which one matched — because they
+ * are answerable on different clocks. A blocked row is late at the sweep's bound; a failed row is
+ * late at its own assignee's patience-floored escalate rung, which is longer and which only the
+ * caller can resolve. Collapsing them would force one clock onto both and lose the correction
+ * above.
+ */
+export const ownerEscalationShapesExpr = (a: string): string =>
+  `(${ownerEscalationStateArmsExpr(a)} OR ${anyRecordedFailureExpr(a)})`;
 
 /**
  * The rows the scheduler may tell the owner about. Moved here from `scheduler/runner.ts` so
@@ -491,7 +580,10 @@ export function selectRowsForOwnerEscalation(
            w.agent_id AS assigned_to, ${msToText('w.updated_at')} as updated,
            ${validatedExpr('w', 'blocked')} AS blocked_validated,
            ${workFailureCountExpr('w')} AS failures,
-           ${statedObstacleExpr('w')} AS obstacle
+           ${statedObstacleExpr('w')} AS obstacle,
+           COALESCE(w.priority, 'normal') AS priority,
+           w.updated_at AS updated_at_ms,
+           (CASE WHEN ${ownerEscalationStateArmsExpr('w')} THEN 1 ELSE 0 END) AS by_state_arm
     FROM work w
     WHERE ${taskScope('w')}
       AND NOT EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = w.id AND e.kind = 'validation_escalated')
@@ -506,7 +598,7 @@ export function selectRowsForOwnerEscalation(
       -- the ENGINE paused this task for missed runs (alertMissedRuns), not the agent — not
       -- the owner's call; the PM sweep adjudicates that unvalidated pause and D12 owns its
       -- resolution. The blocked and failure-count arms are t124's; §3a argues both.
-      AND ${ownerEscalationStateArmsExpr('w')}
+      AND ${ownerEscalationShapesExpr('w')}
       -- SWEEP CORE-2 item 1 — THE ORDERING LAW. The owner is not told his validator did not
       -- rule while the platform holds no record that it was ever asked.
       AND ${ownerEscalationOrderingExpr('w')} = 1
@@ -543,6 +635,9 @@ export function selectRowsSkippedAsDelivered(
              ${validatedExpr('w', 'blocked')} AS blocked_validated,
              ${workFailureCountExpr('w')} AS failures,
              ${statedObstacleExpr('w')} AS obstacle,
+             COALESCE(w.priority, 'normal') AS priority,
+             w.updated_at AS updated_at_ms,
+             (CASE WHEN ${ownerEscalationStateArmsExpr('w')} THEN 1 ELSE 0 END) AS by_state_arm,
              ${alreadyDeliveredReceiptExpr('w')} AS deliveryId
       FROM work w
       WHERE ${taskScope('w')}
@@ -550,7 +645,7 @@ export function selectRowsSkippedAsDelivered(
         AND ${awaitingUserVerdictExpr('w')} = 0
         AND COALESCE(w.agent_id, '') NOT IN (${placeholders})
         AND COALESCE(w.requester_id, '') NOT IN (${placeholders})
-        AND ${ownerEscalationStateArmsExpr('w')}
+        AND ${ownerEscalationShapesExpr('w')}
         AND ${ownerEscalationOrderingExpr('w')} = 1
         AND ${alreadyDeliveredReceiptExpr('w')} IS NOT NULL
         AND w.updated_at < ?
