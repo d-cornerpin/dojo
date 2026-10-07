@@ -64,6 +64,28 @@ const logger = createLogger('job-orphans');
 
 export { ABANDONED_AT_BOOT };
 
+/**
+ * The write, one statement per table and the table name a LITERAL in both.
+ *
+ * Interpolating the table into one shared statement reads tidier and is the wrong trade twice
+ * over: a SQL identifier is the one thing a placeholder cannot carry, so the tidy form puts a
+ * `${}` where a table name belongs — and the repository's single-writer census matches writes
+ * by exactly that shape, because a dynamic table name is how a write to a table nobody audited
+ * gets past an audit. Two literals cost two lines and are auditable by reading them.
+ *
+ * The predicate is repeated from the scan deliberately: it is a CAS, so a terminal write that
+ * lands between the scan and this statement wins instead of being overwritten, and `changes`
+ * is then the number of rows THIS pass actually moved.
+ */
+const CLOSE_SQL = {
+  generation_jobs:
+    `UPDATE generation_jobs SET status = 'failed', error = ?, finished_at = datetime('now'),`
+    + ` updated_at = datetime('now') WHERE id = ? AND status NOT IN (${TERMINAL_SQL})`,
+  video_jobs:
+    `UPDATE video_jobs SET status = 'failed', error = ?, finished_at = datetime('now'),`
+    + ` updated_at = datetime('now') WHERE id = ? AND status NOT IN (${TERMINAL_SQL})`,
+} as const;
+
 export interface AbandonedJob {
   readonly table: 'generation_jobs' | 'video_jobs';
   readonly id: string;
@@ -122,13 +144,7 @@ export function sweepAbandonedJobRows(): AbandonedJob[] {
   const moved: AbandonedJob[] = [];
   for (const job of found) {
     try {
-      // The CAS repeats the predicate so a concurrent terminal write wins rather than being
-      // overwritten, and so the count below is the number of rows THIS pass moved.
-      const res = getDb().prepare(
-        `UPDATE ${job.table}
-            SET status = 'failed', error = ?, finished_at = datetime('now'), updated_at = datetime('now')
-          WHERE id = ? AND status NOT IN (${TERMINAL_SQL})`,
-      ).run(ABANDONED_AT_BOOT, job.id);
+      const res = getDb().prepare(CLOSE_SQL[job.table]).run(ABANDONED_AT_BOOT, job.id);
       if (res.changes > 0) moved.push(job);
     } catch (err) {
       logger.warn('abandoned job row could not be closed', { table: job.table, jobId: job.id, error: msg(err) });
