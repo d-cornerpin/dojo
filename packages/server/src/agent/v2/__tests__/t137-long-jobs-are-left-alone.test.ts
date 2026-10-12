@@ -618,7 +618,7 @@ describe('t137 (c): a 15-minute park writes nothing to the owner\'s chat', () =>
 // "vague pause" reject (#9) had nothing to judge but this engine-made pause.
 // ════════════════════════════════════════════════════════════════════════════════
 describe('t137 (b): a parked turn never moves its task to "paused, waiting on the owner"', () => {
-  it.fails('two parks of a read-only job that spoke to the owner: the task stays claimed, the PM has nothing to reject', async () => {
+  it('two parks of a read-only job that spoke to the owner: the task stays claimed, the PM has nothing to reject', async () => {
     seedInFlightTask();
     // The owner's ask turn: a working line beside the first read, then the 15-minute park.
     await readOnlyTurnAcrossTheCheckpoint({ narrate: 'Starting on the research folder now.' });
@@ -643,6 +643,32 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
     expect(mockDb.current!.prepare(
       `SELECT COUNT(*) AS n FROM adjudications WHERE work_id = 'w-long-job'`,
     ).get()).toEqual({ n: 0 });
+  });
+
+  it('the OTHER engine continuation (the 75-call tool-loop checkpoint) is not a hand-back either', async () => {
+    // Exit is NOT `budget` here: the turn spoke, read 75 files, and the engine scheduled its
+    // continuation at the tool-loop cap. The queued-continuation arm is what keeps this claimed.
+    seedInFlightTask();
+    mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(Date.now() + 5_000, 'w-long-job');
+    let call = 0;
+    callModelSpy.mockImplementation(async () => {
+      call++;
+      return {
+        content: call === 1 ? 'Starting on the research folder now.' : '',
+        toolCalls: [{ id: `tc-loop-${call}`, name: 'file_read', arguments: { path: `/research/file-${call}.txt` } }],
+        inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
+      };
+    });
+    executeToolSpy.mockImplementation(async (_a: string, tc: ToolCall) => (
+      { toolCallId: tc.id, name: tc.name, content: `body of ${tc.id}`, isError: false }));
+    await runV2Turn('primary');
+
+    const [t] = turnRows();
+    expect(t.answered).toBe(1);
+    expect(t.effectful_calls).toBe(0);
+    expect(t.exit_reason).not.toBe('budget');
+    expect(continuationContext.has('primary')).toBe(true);   // the engine queued its continuation
+    expect(workState('w-long-job')).toBe('claimed');
   });
 
   it('CONTROL: a turn that genuinely handed the ball back (answered, did nothing, no park) still pauses, and the owner\'s next word reopens it', async () => {

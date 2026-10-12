@@ -22,7 +22,8 @@
 
 import { createLogger } from '../../../../logger.js';
 import { setAnswerMessageId } from '../../../../memory/message-store.js';
-import { clearUntrackedWorkAcrossTurnsForConversation } from '../../../turn-state.js';
+import { clearUntrackedWorkAcrossTurnsForConversation, continuationContext } from '../../../turn-state.js';
+import { isStopFenced } from '../../../shared-state.js';
 import { taskScope } from '../../../../work/tracker-view.js';
 import { setTrackerStatus, patchWork } from '../../../../work/tracker-store.js';
 import { appendWorkEvent, claimingTurnOf, joinState, noteUnsettled } from '../../../../work/store.js';
@@ -189,6 +190,13 @@ export async function finalizeTurnRecord(
           // A turn that delegated did not hand the ball back to the owner; the work is
           // waiting on the delegated pieces. See the refusal in `answered-edge.ts`.
           delegatedThisTurn,
+          // t137: a turn whose own continuation is queued is still working. The C3 stash is
+          // written by every engine auto-continue (checkpoint, tool-loop cap, context rebuild)
+          // and consumed by the next preflight, so at finalize it is THIS turn's; the tool-loop
+          // latch covers the non-human arm. A stop refuses the wake, so a stopped turn is not
+          // continuing.
+          queuedOwnContinuation: !isStopFenced(agentId)
+            && (continuationContext.has(agentId) || toolLoopCapReached),
           // SCOPE: only work THIS TURN touched. A backlog item nobody moved belongs to
           // the poke ladder ("an in_progress task does not EVER just get ignored"), and
           // this window is what keeps the disposition from ever reaching it.
