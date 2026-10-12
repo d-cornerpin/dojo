@@ -2247,20 +2247,30 @@ export function getApprovedSenders(): string[] {
   return getSafeSenders().map(s => s.address);
 }
 
+/**
+ * The dashboard half of the owner-notice door. Its component name is what the Vitals log view
+ * filters on; its WARN level is what puts it on the dashboard's live log feed and in the
+ * persisted log the same view reads back.
+ */
+const ownerNoticeLog = createLogger('owner-notice');
+
+/**
+ * THE OWNER-NOTICE DOOR — the one place the PLATFORM, rather than an agent, speaks to the owner.
+ *
+ * Severity contract:
+ *   - `critical` and `notice` go to the owner's phone (critical with a "[CRITICAL]" prefix,
+ *     notice without). When there is no phone channel, or the send fails, the same words land
+ *     on the dashboard as an `owner-notice` entry, so the owner is never left with nothing.
+ *   - `warning` and `info` never reach the phone (v2.3.19, owner: "I only want true blockers or
+ *     true issues the user needs to be aware of to go to imessage"). They are logged only.
+ *
+ * Who may call it is ruled, not chosen here: the platform telling the owner the platform is in
+ * trouble (ruling 10(a)), plus budget alerts and a broken/silent agent (OR-V333-SET (3)). Every
+ * caller's class and severity is pinned by `services/__tests__/t138-every-owner-notice-has-a-class.test.ts`;
+ * a caller with the wrong severity is fixed at the call site, never by widening this filter.
+ */
 export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice'): void {
   try {
-    // v2.3.19 (error-handling-spec Phase 5), only CRITICAL alerts go
-    // to iMessage. User feedback: "I only want true blockers or true
-    // issues the user needs to be aware of to go to imessage." Warning
-    // and info still get logged (and broadcast to the dashboard
-    // separately via chat:error / Vitals), they just don't ping the
-    // phone. If a caller is wrong-severity, fix it at the call site ,
-    // don't override here.
-    //
-    // v2.5.7, added 'notice' for friendly status announcements that
-    // SHOULD go to iMessage but DON'T deserve the scary "[CRITICAL]"
-    // prefix (e.g. "Dojo is online at <url>"). Routes to iMessage same
-    // as critical, but with no urgency tag prepended.
     const scrubbed = scrubTechnicalDetail(message);
 
     if (urgency !== 'critical' && urgency !== 'notice') {
@@ -2278,16 +2288,17 @@ export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critic
 
     const recipient = getDefaultSender();
     if (!recipient) {
-      logger.warn('Cannot send alert: no default sender configured');
+      ownerNoticeLog.warn(scrubbed, { urgency, phone: 'no phone channel set up' });
       return;
     }
     // PHASE-2 T5: an alert reaches a real person's phone and recorded nothing. It is a
     // PLATFORM outbound, not an agent's — attributing it to whichever agent happened to
     // trigger it would put watchdog-class traffic inside that agent's own ledger.
-    withOutboundIfAbsent(
+    const sent = withOutboundIfAbsent(
       { agentId: PLATFORM_SENDER, tool: 'alert', channel: 'imessage', recipientId: recipient },
       () => sendIMessage(recipient, fullMessage),
     );
+    if (!sent) ownerNoticeLog.warn(scrubbed, { urgency, phone: 'the phone send failed' });
   } catch (err) {
     logger.error('Failed to send alert', {
       error: err instanceof Error ? err.message : String(err),
