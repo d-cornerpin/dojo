@@ -141,9 +141,12 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
     const startAckOwed =
       (ctx.turnCtx.startAckSteerRequested || ctx.turnCtx.startAckSteerArmedThisTurn)
       && !ctx.turnCtx.engineStartAckDeliveredThisTurn;
+    // t137: TRUTHINESS, like every other reader of `triggerRow` in the engine. The preflight
+    // hands over `waitingConvs[0]?.oldest`, which is `undefined` — not `null` — when nobody is
+    // waiting, so `!== null` counted every continuation and background wake as owing a person.
     const owesAPerson =
       !ctx.isA2ATurn && !ctx.isEngineTurn && !ctx.counterpartyIsAgentSender
-      && (startAckOwed || ctx.hasUnansweredUser || ctx.triggerRow !== null);
+      && (startAckOwed || ctx.hasUnansweredUser || !!ctx.triggerRow);
 
     // Clean end-of-turn after tools, legitimate exit, no error.
     if (state.toolCallsExecutedThisTurn > 0) {

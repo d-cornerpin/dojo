@@ -399,6 +399,12 @@ import { continuationContext } from '../../turn-state.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { unvalidatedPauseExpr } from '../../../work/tracker-view.js';
+import { engineSources } from './engine-sources.js';
+
+/** Comments blanked (line structure kept), so a clause over source reads CODE, never prose. */
+const stripComments = (src: string): string => src
+  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+  .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
 
 let migratedImage: Buffer | null = null;
 function migratedDb(): Database.Database {
@@ -676,7 +682,7 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
 // `waitingConvs[0]?.oldest`: `undefined` when nobody is waiting, never `null`.
 // ════════════════════════════════════════════════════════════════════════════════
 describe('t137 (a): a continuation that ends quietly after its tools ends quietly', () => {
-  it.fails('the parked job\'s continuation reads, returns nothing, and exits `no_reply_intended` — no retry, no steer, no "empty reply" notice', async () => {
+  it('the parked job\'s continuation reads, returns nothing, and exits `no_reply_intended` — no retry, no steer, no "empty reply" notice', async () => {
     seedInFlightTask();
     // The owner's ask turn speaks (so the ask is served and nobody is left waiting), then parks.
     await readOnlyTurnAcrossTheCheckpoint({ narrate: 'Starting on the research folder now.' });
@@ -693,6 +699,23 @@ describe('t137 (a): a continuation that ends quietly after its tools ends quietl
     expect(emptyReplySteers()).toBe(0);
     expect(turnRows()[1]).toEqual(expect.objectContaining({ turn_number: 2, exit_reason: 'no_reply_intended', answered: 0 }));
     expect(systemRowsOfTurn(2)).toEqual([]);
+  });
+
+  it('CENSUS: no engine reader compares `triggerRow` against null; the owed-a-person arm reads it by truthiness', () => {
+    // Both directions: zero null-comparisons anywhere in the engine corpus (a new one fails
+    // here), and the one predicate this fix owns still READS the trigger (deleting the arm
+    // instead of repairing it would also pass the first half).
+    const offenders: string[] = [];
+    let truthy = 0;
+    for (const f of engineSources()) {
+      const code = stripComments(f.text);
+      if (/triggerRow\s*[!=]==?\s*null|null\s*[!=]==?\s*(?:ctx\.)?triggerRow/.test(code)) offenders.push(f.rel);
+      if (f.rel.endsWith('post-call-classify/empty-response.ts')) {
+        truthy = (code.match(/ctx\.hasUnansweredUser \|\| !!ctx\.triggerRow\)/g) ?? []).length;
+      }
+    }
+    expect(offenders).toEqual([]);
+    expect(truthy).toBe(1);
   });
 
   it('CONTROL: the SAME empty ending on a turn a person IS waiting on still gets the ladder (t125\'s own guarantee stands)', async () => {
