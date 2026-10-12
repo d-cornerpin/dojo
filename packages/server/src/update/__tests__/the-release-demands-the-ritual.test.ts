@@ -2,12 +2,20 @@
 // LANE-3 — THE RELEASE GATE DEMANDS THE RITUAL, AND THIS IS WHAT PROVES THE DEMAND BITES.
 //
 // ── THE HOLE, MEASURED ──
-// `grep -c ritual deploy/release.sh` was ZERO. The owner's 2026-09-20 ruling makes every cut prove
-// TWO things — 3 green attempts of a blast-radius scenario, then a FRESH 10-family generated draw,
-// all green, both at the same platform commit — and `dojo-test-kit/behavioral/lib/release-ritual.mjs`
-// assembles a marker that records them. But the release's behavioural gate only asked: green, under
-// 24h, this HEAD, floor model. An ORDINARY green marker satisfies every one of those, so a cut with
-// no blast proof and no 10-family draw walked straight through the gate the ruling stands behind.
+// `grep -c ritual deploy/release.sh` was ZERO. The owner's ruling makes every cut prove its own
+// fixes held, and `dojo-test-kit/behavioral/lib/release-ritual.mjs` assembles a marker that records
+// it. But the release's behavioural gate only asked: green, under 24h, this HEAD, floor model. An
+// ORDINARY green marker satisfies every one of those, so a cut with no ritual proof at all walked
+// straight through the gate the ruling stands behind.
+//
+// ── THE SHAPE THESE CLAUSES NOW DRIVE (owner redesign, 2026-10-11) ──
+// His words: "we need to remove the random scenarios run before each cut. Instead, I want 5
+// targeted scenarios against the things being fixed to make sure the fixes hold." So the proof is
+// FIVE hand-authored scenarios, each aimed at something THIS cut fixes, each run 3 times with
+// UNANIMITY (the 2026-09-20 blast discipline, generalised), ALL at ONE platform commit. The
+// ten-random generated draw is gone from the cut path; the v1 marker shape (blast{} + final{}) is a
+// NAMED refusal, not a silent accept, because it is a complete once-shippable object that proves a
+// ritual this project no longer runs. v3.3.2 shipped under v1; the first v2 cut is the next one.
 //
 // ── WHY THE CHECK IS A COPY, AND WHY THAT COPY NEEDS THIS FILE ──
 // The kit's module header names the release gate as the second, deliberate copy of
@@ -19,7 +27,8 @@
 // So this suite EXTRACTS the `RITUAL_BAD` script out of `deploy/release.sh` and runs the real
 // bytes: the happy path must pass, and every planted fault must refuse with its own sentence. A
 // future edit that weakens the copy — deletes a field check, softens `=== 3`, drops the
-// same-commit equality — fails here rather than at the next release that should not have shipped.
+// same-commit equality, re-admits the v1 shape — fails here rather than at the next release that
+// should not have shipped.
 //
 // It lives beside `update-cannot-brick.test.ts` for that file's reason: both are vitest files under
 // `packages/server/src`, so both ride the `unit-suite` release gate, which release.sh runs and
@@ -74,8 +83,26 @@ const ritualMarker = () => ({
   gitSha: HEAD,
   dojoHead: HEAD,
   mode: 'release-ritual',
+  ritualVersion: 2,
+  targetedVersion: 'v9.9.9',
   fixesAfterFinalDraw: false,
-  blast: { scenario: 'blast-radius-x.mjs', attempts: 3, allGreen: true, gitSha: HEAD },
+  targeted: Array.from({ length: 5 }, (_, i) => ({
+    id: `targeted-probe-0${i + 1}`,
+    attempts: 3,
+    passCount: 3,
+    allGreen: true,
+    gitSha: HEAD,
+  })),
+});
+
+/** The pre-redesign marker shape, verbatim — now a refusal, and an important one. */
+const v1Marker = () => ({
+  green: true,
+  gitSha: HEAD,
+  dojoHead: HEAD,
+  mode: 'release-ritual',
+  fixesAfterFinalDraw: false,
+  blast: { scenario: 'v3.3.2', attempts: 3, allGreen: true, gitSha: HEAD },
   final: {
     seed: 'f1d22d892260',
     families: Array.from({ length: 10 }, (_, i) => `family-${i}`),
@@ -87,13 +114,25 @@ const ritualMarker = () => ({
   },
 });
 
+/** The ritual-specific fields BOTH sides must check. The four `green`/`verdicts`/`knownFailing`/
+ *  `merged` questions are deliberately NOT here: release.sh's earlier K1 block owns them, which is
+ *  exactly the ordering dependency the last clause pins. `blast`/`final` ARE here — after the
+ *  redesign both sides must still NAME the v1 objects, to refuse them. */
+const RITUAL_FIELDS = [
+  'release-ritual', 'ritualVersion', 'targetedVersion', 'targeted',
+  'attempts', 'passCount', 'allGreen', 'gitSha',
+  'dojoHead', 'fixesAfterFinalDraw', 'blast', 'final',
+];
+
 describe('LANE-3 — release.sh carries the ritual check at all', () => {
   it('the block exists, and the word the ruling turns on is in the script', () => {
     const sh = fs.readFileSync(RELEASE_SH, 'utf-8');
     expect(sh, 'deploy/release.sh has no RITUAL_BAD block — the ritual demand was deleted')
       .toMatch(/RITUAL_BAD=\$\(node -e "/);
-    expect(sh, 'the refusal must name the two kit commands that produce a ritual marker')
-      .toMatch(/--blast/);
+    expect(sh, 'the refusal must name the kit command that produces a ritual marker')
+      .toMatch(/--targeted/);
+    expect(sh, 'the ten-random draw must not be demanded any more (the owner removed it from the cut path)')
+      .not.toMatch(/needs exactly 10/);
     // The extraction anchor this whole file depends on. If the block is rewritten into another
     // shape, say THAT rather than passing every clause below on an empty script.
     expect(() => extractRitualCheck('/nonexistent.json')).not.toThrow();
@@ -103,11 +142,7 @@ describe('LANE-3 — release.sh carries the ritual check at all', () => {
     // A field-name inventory, not a behaviour assertion: the clauses below prove the behaviour.
     // This one catches a deletion that happens to leave the happy path passing.
     const block = extractRitualCheck('/nonexistent.json');
-    for (const field of [
-      'release-ritual', 'blast', 'scenario', 'attempts', 'allGreen', 'gitSha',
-      'final', 'seed', 'families', 'seedFresh', 'drawUnsteered', 'pinnedDraws', 'dojoHead',
-      'fixesAfterFinalDraw',
-    ]) {
+    for (const field of RITUAL_FIELDS) {
       expect(block, `the ritual check no longer mentions ${field}`).toContain(field);
     }
   });
@@ -124,38 +159,52 @@ describe('LANE-3 — every way the ritual can be unproven is refused', () => {
   // writes, and before this gate existed it shipped.
   it('RED: a plain non-ritual green marker is refused, naming what is missing', () => {
     const plain = ritualMarker() as Record<string, unknown>;
-    delete plain.mode; delete plain.blast; delete plain.final; delete plain.fixesAfterFinalDraw;
+    delete plain.mode; delete plain.ritualVersion; delete plain.targetedVersion;
+    delete plain.targeted; delete plain.fixesAfterFinalDraw;
     const why = verdictFor(plain);
     expect(why).not.toBe('');
     expect(why).toContain('mode=undefined');
-    expect(why).toContain('blast');
-    expect(why).toContain('final');
+    expect(why).toContain('targeted[]');
+    expect(why).toContain('targetedVersion');
+  });
+
+  // THE HONEST MIGRATION. A v1 marker is complete, internally consistent, and was shippable
+  // yesterday — which is precisely why it must be refused BY NAME rather than ignored. Accepting it
+  // would certify a cut against a ritual nobody ran; quietly dropping its v1 fields would let one
+  // marker carry two contradictory stories.
+  it('RED: a complete v1 (blast + ten-random) marker is refused, naming the redesign', () => {
+    const why = verdictFor(v1Marker());
+    expect(why, 'the v1 marker shape still ships — the redesign was not enforced').not.toBe('');
+    expect(why).toContain('2026-10-11');
+    expect(why).toContain('blast{}');
+    expect(why).toContain('final{}');
+    expect(why).toContain('--targeted');
   });
 
   it.each([
-    ['the blast attempts were not all green', (m: ReturnType<typeof ritualMarker>) => { m.blast.allGreen = false; }, 'blast.allGreen'],
-    ['only two blast attempts ran', (m: ReturnType<typeof ritualMarker>) => { m.blast.attempts = 2; }, 'needs exactly 3'],
-    ['the blast scenario is not recorded', (m: ReturnType<typeof ritualMarker>) => { m.blast.scenario = ''; }, 'blast.scenario'],
-    ['the final draw was a --seed replay', (m: ReturnType<typeof ritualMarker>) => { m.final.seedFresh = false; }, 'seedFresh'],
-    ['nine families instead of ten', (m: ReturnType<typeof ritualMarker>) => { m.final.families.pop(); }, 'needs exactly 10'],
-    ['a family went red', (m: ReturnType<typeof ritualMarker>) => { m.final.allGreen = false; }, 'final.allGreen'],
-    ['the draw is not replayable', (m: ReturnType<typeof ritualMarker>) => { m.final.seed = ''; }, 'final.seed'],
-    ['a fix landed between the blast and the draw', (m: ReturnType<typeof ritualMarker>) => { m.blast.gitSha = OTHER; }, 'landed between'],
+    ['one of the five was not all green', (m: ReturnType<typeof ritualMarker>) => { m.targeted[0].allGreen = false; }, 'allGreen'],
+    ['one scenario ran only two attempts', (m: ReturnType<typeof ritualMarker>) => { m.targeted[1].attempts = 2; }, 'needs exactly 3'],
+    ['one scenario passed two of its three attempts', (m: ReturnType<typeof ritualMarker>) => { m.targeted[2].passCount = 2; }, 'unanimity'],
+    ['one scenario is not identified', (m: ReturnType<typeof ritualMarker>) => { m.targeted[3].id = ''; }, 'non-empty'],
+    ['four scenarios instead of five', (m: ReturnType<typeof ritualMarker>) => { m.targeted.pop(); }, 'needs exactly 5'],
+    ['six scenarios instead of five', (m: ReturnType<typeof ritualMarker>) => {
+      m.targeted.push({ id: 'targeted-probe-06', attempts: 3, passCount: 3, allGreen: true, gitSha: HEAD });
+    }, 'needs exactly 5'],
+    ['five copies of one scenario', (m: ReturnType<typeof ritualMarker>) => {
+      m.targeted = m.targeted.map((r) => ({ ...r, id: 'targeted-probe-01' }));
+    }, 'distinct'],
+    ['one scenario records no head', (m: ReturnType<typeof ritualMarker>) => { m.targeted[4].gitSha = ''; }, 'gitSha missing'],
+    // THE ONE-HEAD RULE, v1's "a fix landed between the two proofs", generalised to five.
+    ['a fix landed between two of the five', (m: ReturnType<typeof ritualMarker>) => { m.targeted[2].gitSha = OTHER; }, 'not the same commit'],
+    // ...and "no fix landed SINCE", which stays a release-time comparison against the real HEAD.
     ['the ritual proved a different tree', (m: ReturnType<typeof ritualMarker>) => { m.dojoHead = OTHER; m.gitSha = OTHER; }, 'not the tree being shipped'],
-    ['a fix landed after the final draw', (m: ReturnType<typeof ritualMarker>) => { m.fixesAfterFinalDraw = true; }, 'fixesAfterFinalDraw'],
-    // 2026-09-26, hours after the first replication: the kit's validator gained `final.drawUnsteered`
-    // (a variant-PINNED draw is a rehearsal, so it can no more mint a shippable marker than a
-    // --seed replay can), and this copy owes every field the kit checks.
-    ['the draw cannot be proven unsteered', (m: ReturnType<typeof ritualMarker>) => { m.final.drawUnsteered = false; }, 'drawUnsteered'],
-    ['a variant-pinned draw claims it was unsteered', (m: ReturnType<typeof ritualMarker>) => { m.final.pinnedDraws = ['memory-recall:variant']; }, 'contradicts itself'],
-    // Review C, L3-F4: ten was a COUNT. Both of these passed — on the real script bytes AND in the
-    // kit — so the TEN-RANDOM law's machine proof was satisfiable by ten copies of one scenario.
-    ['ten EMPTY family names', (m: ReturnType<typeof ritualMarker>) => { m.final.families = Array.from({ length: 10 }, () => ''); }, 'non-empty'],
-    ['ten IDENTICAL family names', (m: ReturnType<typeof ritualMarker>) => { m.final.families = Array.from({ length: 10 }, () => 'family-0'); }, 'distinct'],
-    ['nine real families and one blank', (m: ReturnType<typeof ritualMarker>) => { m.final.families[3] = '   '; }, 'non-empty'],
+    ['a fix landed after the ritual', (m: ReturnType<typeof ritualMarker>) => { m.fixesAfterFinalDraw = true; }, 'fixesAfterFinalDraw'],
+    ['the marker does not say which cut the five probed', (m: ReturnType<typeof ritualMarker>) => { m.targetedVersion = '  '; }, 'targetedVersion'],
+    ['a pre-redesign kit wrote the marker (no ritualVersion)', (m: Record<string, unknown>) => { delete m.ritualVersion; }, 'ritualVersion'],
+    ['the marker claims a ritual version this gate does not implement', (m: ReturnType<typeof ritualMarker>) => { m.ritualVersion = 3; }, 'literal 2'],
   ])('RED: %s', (_label, mutate, expected) => {
     const marker = ritualMarker();
-    mutate(marker);
+    mutate(marker as never);
     const why = verdictFor(marker);
     expect(why, 'the gate would have shipped this marker').not.toBe('');
     expect(why).toContain(expected);
@@ -192,15 +241,6 @@ function kitValidatorBody(src: string): string {
   return src.slice(i);
 }
 
-/** The ritual-specific fields BOTH sides must check. The four `green`/`verdicts`/`knownFailing`/
- *  `merged` questions are deliberately NOT here: release.sh's earlier K1 block owns them, which is
- *  exactly the ordering dependency the last clause pins. */
-const RITUAL_FIELDS = [
-  'release-ritual', 'blast', 'scenario', 'attempts', 'allGreen', 'gitSha',
-  'final', 'seed', 'families', 'seedFresh', 'drawUnsteered', 'pinnedDraws',
-  'dojoHead', 'fixesAfterFinalDraw',
-];
-
 describe('the copy and the original check the same fields', () => {
   it('release.sh names every ritual field (frozen list — cannot pass vacuously if the kit is absent)', () => {
     const block = extractRitualCheck('/nonexistent.json');
@@ -228,17 +268,20 @@ describe('the copy and the original check the same fields', () => {
       + 'release would refuse a marker the kit considers shippable').toEqual([]);
   });
 
-  it('PARITY of the pinnedDraws shape: both sides filter to NON-EMPTY strings', () => {
-    // L3-F5a: the copy tested `.length > 0` while the kit filtered to non-empty strings, so
-    // `pinnedDraws: ['']` refused here and shipped there. Safe direction, but not equivalent.
+  it('PARITY of the id shape: both sides count NON-EMPTY, DISTINCT ids, not entries', () => {
+    // L3-F5a's lesson, carried over: the two sides once differed on whether an empty string
+    // counted (`pinnedDraws: ['']` refused in one copy and shipped in the other). Safe direction,
+    // not equivalent. The v2 equivalent is the five-ids check, so both copies must filter.
     const copy = extractRitualCheck('/nonexistent.json');
-    expect(copy, "the copy no longer filters pinnedDraws to non-empty strings").toMatch(/pinnedDraws[\s\S]{0,200}filter/);
-    const marker = ritualMarker();
-    (marker.final as { pinnedDraws: string[] }).pinnedDraws = [''];
-    expect(verdictFor(marker), 'an empty pinnedDraws entry is not a steered draw and must not refuse')
-      .toBe('');
+    expect(copy, 'the copy no longer filters the targeted ids to non-empty strings')
+      .toMatch(/named[\s\S]{0,200}filter/);
     const kit = kitValidatorSource();
-    if (kit !== null) expect(kitValidatorBody(kit)).toMatch(/pinnedDraws[\s\S]{0,200}filter/);
+    if (kit !== null) expect(kitValidatorBody(kit)).toMatch(/named[\s\S]{0,200}filter/);
+    // And both must agree on the SAME five-different-things rule, measured rather than read.
+    const marker = ritualMarker();
+    marker.targeted = marker.targeted.map((r) => ({ ...r, id: 'targeted-probe-01' }));
+    expect(verdictFor(marker), 'five copies of one scenario id is one proof recorded five times')
+      .not.toBe('');
   });
 
   it('THE ORDERING CONTRACT: the K1 honesty block runs BEFORE the ritual block', () => {
@@ -256,13 +299,16 @@ describe('the copy and the original check the same fields', () => {
     expect(sh, 'the ritual block does not disclose that it leans on K1').toMatch(/NOT SELF-SUFFICIENT/);
   });
 
-  it('the ✓ line reports the field the gate CHECKED, not the unchecked `final.n`', () => {
-    // L3-F6: a marker with `n: 3` and ten families made the success line announce "3 families".
+  it('the ✓ line reports the fields the gate CHECKED, not a separate stored count', () => {
+    // L3-F6: a v1 marker with `n: 3` and ten families made the success line announce "3 families"
+    // about a draw the gate had just accepted as ten. The rule the finding set stands: the ✓ line
+    // may only read what a clause above validated.
     const sh = fs.readFileSync(RELEASE_SH, 'utf-8');
     const echoLine = sh.split('\n').find((l) => l.includes('release ritual proven')) ?? '';
     expect(echoLine).not.toBe('');
-    expect(echoLine, 'the ✓ line still reads final.n, a number nothing above validates')
-      .not.toMatch(/final\.n\b/);
-    expect(echoLine, 'the ✓ line should report families.length').toMatch(/families\|\|\[\]\)\.length|families\|\| \[\]\)\.length/);
+    expect(echoLine, 'the ✓ line should report targeted.length, the field the gate counted')
+      .toMatch(/targeted\|\|\s?\[\]/);
+    expect(echoLine, 'the ✓ line should report the per-scenario ratio the gate validated')
+      .toMatch(/passCount/);
   });
 });
