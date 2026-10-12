@@ -30,66 +30,98 @@ const logger = createLogger('budget');
 // exactly the threshold, without hiding a genuine sustained drop-and-recross.
 const ALERT_HYSTERESIS = 0.02;
 
-function checkAndSendAlerts(scope: string, currentSpend: number, limitUsd: number): void {
+// ── One window per budget period ──
+//
+// Every budget is a ROLLING sum, and both readers — the post-cost alert check and the
+// pre-call `checkBudget` — must read the SAME window. They did not: the post-cost check knew
+// only 'daily' and summed ALL TIME for weekly/monthly, while `checkBudget` knew daily and
+// weekly and summed all time for monthly. On a weekly agent budget with older spend, the
+// post-cost check saw a crossing and latched, the next pre-call check saw the week and re-armed
+// it, and every turn alerted again — nine dashboard alerts in three turns at 30% of the week
+// (t138 witness). One reader now, one window per period.
+const PERIOD_WINDOW: Record<string, { sqlite: string; words: string }> = {
+  daily: { sqlite: '-1 day', words: 'the last 24 hours' },
+  weekly: { sqlite: '-7 days', words: 'the last 7 days' },
+  monthly: { sqlite: '-30 days', words: 'the last 30 days' },
+};
+/** The Ledger route accepts only the three periods above; anything else reads as daily. */
+const windowOf = (period: string): { sqlite: string; words: string } => PERIOD_WINDOW[period] ?? PERIOD_WINDOW.daily;
+
+function agentPeriodSpend(agentId: string, period: string): number {
+  return (getDb().prepare(`
+    SELECT COALESCE(SUM(cost_usd), 0) as total FROM cost_records
+    WHERE agent_id = ? AND created_at >= datetime('now', ?)
+  `).get(agentId, windowOf(period).sqlite) as { total: number }).total;
+}
+
+interface BudgetScope {
+  /** `global` or the agent id — the `scope` the dashboard's `cost:alert` event carries. */
+  scope: string;
+  budgetId: string;
+  period: string;
+}
+
+const THRESHOLDS: ReadonlyArray<{ pct: number; field: 'alert_50_sent' | 'alert_75_sent' | 'alert_90_sent' }> = [
+  { pct: 0.90, field: 'alert_90_sent' },
+  { pct: 0.75, field: 'alert_75_sent' },
+  { pct: 0.50, field: 'alert_50_sent' },
+];
+
+/** The words the owner reads. Budget alerts are one of the two classes the platform may send
+ *  him directly (OR-V333-SET (3)), so they say what crossed, by how much, over what window. */
+function ownerWords(b: BudgetScope, pctLabel: number, currentSpend: number, limitUsd: number): string {
+  const money = `$${currentSpend.toFixed(2)} of $${limitUsd.toFixed(2)} in ${windowOf(b.period).words}`;
+  if (b.scope === 'global') return `Budget alert: ${pctLabel}% of your daily budget is used (${money}).`;
+  const agent = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(b.scope) as { name: string } | undefined;
+  return `Budget alert: ${agent?.name ?? b.scope} has used ${pctLabel}% of its ${b.period} budget (${money}).`;
+}
+
+function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: number): void {
   const db = getDb();
-  const budgetId = scope === 'global' ? 'global_daily' : `agent_${scope}`;
   const row = db.prepare(`
     SELECT alert_50_sent, alert_75_sent, alert_90_sent FROM budgets WHERE id = ?
-  `).get(budgetId) as { alert_50_sent: number; alert_75_sent: number; alert_90_sent: number } | undefined;
+  `).get(b.budgetId) as { alert_50_sent: number; alert_75_sent: number; alert_90_sent: number } | undefined;
 
   if (!row) return;
 
   const ratio = limitUsd > 0 ? currentSpend / limitUsd : 0;
-  const thresholds: Array<{ pct: number; field: 'alert_50_sent' | 'alert_75_sent' | 'alert_90_sent' }> = [
-    { pct: 0.90, field: 'alert_90_sent' },
-    { pct: 0.75, field: 'alert_75_sent' },
-    { pct: 0.50, field: 'alert_50_sent' },
-  ];
+  let highestCrossed: number | null = null;
 
-  for (const { pct, field } of thresholds) {
-    // Rising edge: crossed the threshold and not yet alerted -> fire + latch.
+  for (const { pct, field } of THRESHOLDS) {
+    // Rising edge: crossed the threshold and not yet alerted -> latch. Latched BEFORE the owner
+    // is told, so a crash between the two can never tell him twice.
     if (ratio >= pct && row[field] === 0) {
-      db.prepare(`UPDATE budgets SET ${field} = 1, updated_at = datetime('now') WHERE id = ?`).run(budgetId);
-
-      const pctLabel = Math.round(pct * 100);
-      logger.warn(`Budget alert: ${scope} at ${pctLabel}%`, {
-        scope,
-        currentSpend: currentSpend.toFixed(4),
-        limitUsd,
-        percentage: pctLabel,
-      });
-
-      logger.info(`Budget alert triggered: ${pctLabel}% threshold crossed, broadcasting cost:alert`, {
-        scope,
-        percentage: pctLabel,
-      });
-
-      broadcast({
-        type: 'cost:alert',
-        data: {
-          scope,
-          percentage: pctLabel,
-          currentSpend,
-          limitUsd,
-        },
-      });
-
-      // Send iMessage alert at 90% threshold
-      if (pct === 0.90) {
-        sendAlert(`Budget alert: 90% of daily budget consumed ($${currentSpend.toFixed(2)} of $${limitUsd.toFixed(2)})`, 'warning');
-      }
+      db.prepare(`UPDATE budgets SET ${field} = 1, updated_at = datetime('now') WHERE id = ?`).run(b.budgetId);
+      highestCrossed = Math.max(highestCrossed ?? 0, pct);
     // Falling edge: rolling spend dropped genuinely below the threshold (by the
     // hysteresis margin) -> re-arm so a real re-crossing alerts again.
     } else if (ratio < pct - ALERT_HYSTERESIS && row[field] === 1) {
-      db.prepare(`UPDATE budgets SET ${field} = 0, updated_at = datetime('now') WHERE id = ?`).run(budgetId);
-      logger.info(`Budget alert re-armed: ${scope} fell below ${Math.round(pct * 100)}%`, {
-        scope,
+      db.prepare(`UPDATE budgets SET ${field} = 0, updated_at = datetime('now') WHERE id = ?`).run(b.budgetId);
+      logger.info(`Budget alert re-armed: ${b.scope} fell below ${Math.round(pct * 100)}%`, {
+        scope: b.scope,
         currentSpend: currentSpend.toFixed(4),
         limitUsd,
         percentage: Math.round(pct * 100),
       });
     }
   }
+
+  if (highestCrossed === null) return;
+
+  // One crossing event per check: a single call that jumps from 40% to 95% is ONE thing that
+  // happened, told once at the highest level it reached (every threshold it passed is latched).
+  const pctLabel = Math.round(highestCrossed * 100);
+  logger.warn(`Budget alert: ${b.scope} at ${pctLabel}%`, {
+    scope: b.scope,
+    currentSpend: currentSpend.toFixed(4),
+    limitUsd,
+    percentage: pctLabel,
+  });
+  broadcast({
+    type: 'cost:alert',
+    data: { scope: b.scope, percentage: pctLabel, currentSpend, limitUsd },
+  });
+  sendAlert(ownerWords(b, pctLabel, currentSpend, limitUsd), 'notice');
 }
 
 // ── Post-Cost Alert Check ──
@@ -111,7 +143,7 @@ export function checkAlertsAfterCost(agentId: string): void {
       limit: globalBudget.limit_usd,
       percentage: pct,
     });
-    checkAndSendAlerts('global', dailySpend, globalBudget.limit_usd);
+    checkAndSendAlerts({ scope: 'global', budgetId: 'global_daily', period: 'daily' }, dailySpend, globalBudget.limit_usd);
   }
 
   // Check agent-specific budget
@@ -120,14 +152,8 @@ export function checkAlertsAfterCost(agentId: string): void {
   `).get(`agent_${agentId}`) as { limit_usd: number; period: string } | undefined;
 
   if (agentBudget) {
-    const periodFilter = agentBudget.period === 'daily'
-      ? "AND created_at >= datetime('now', '-1 day')"
-      : '';
-    const agentSpend = (db.prepare(`
-      SELECT COALESCE(SUM(cost_usd), 0) as total FROM cost_records
-      WHERE agent_id = ? ${periodFilter}
-    `).get(agentId) as { total: number }).total;
-    checkAndSendAlerts(agentId, agentSpend, agentBudget.limit_usd);
+    const agentSpend = agentPeriodSpend(agentId, agentBudget.period);
+    checkAndSendAlerts({ scope: agentId, budgetId: `agent_${agentId}`, period: agentBudget.period }, agentSpend, agentBudget.limit_usd);
   }
 }
 
@@ -195,7 +221,7 @@ export function checkBudget(agentId: string, estimatedCost: number): BudgetCheck
 
   if (globalBudget) {
     const dailySpend = getDailySpend();
-    checkAndSendAlerts('global', dailySpend, globalBudget.limit_usd);
+    checkAndSendAlerts({ scope: 'global', budgetId: 'global_daily', period: 'daily' }, dailySpend, globalBudget.limit_usd);
 
     if (dailySpend + estimatedCost > globalBudget.limit_usd) {
       // Budget exceeded — check for free model fallback
@@ -217,18 +243,9 @@ export function checkBudget(agentId: string, estimatedCost: number): BudgetCheck
   `).get(`agent_${agentId}`) as { limit_usd: number; period: string } | undefined;
 
   if (agentBudget) {
-    const periodFilter = agentBudget.period === 'daily'
-      ? "AND created_at >= datetime('now', '-1 day')"
-      : agentBudget.period === 'weekly'
-        ? "AND created_at >= datetime('now', '-7 days')"
-        : '';
+    const agentSpend = agentPeriodSpend(agentId, agentBudget.period);
 
-    const agentSpend = (db.prepare(`
-      SELECT COALESCE(SUM(cost_usd), 0) as total FROM cost_records
-      WHERE agent_id = ? ${periodFilter}
-    `).get(agentId) as { total: number }).total;
-
-    checkAndSendAlerts(agentId, agentSpend, agentBudget.limit_usd);
+    checkAndSendAlerts({ scope: agentId, budgetId: `agent_${agentId}`, period: agentBudget.period }, agentSpend, agentBudget.limit_usd);
 
     if (agentSpend + estimatedCost > agentBudget.limit_usd) {
       return {

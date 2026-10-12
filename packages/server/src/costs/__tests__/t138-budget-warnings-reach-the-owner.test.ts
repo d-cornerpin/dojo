@@ -77,7 +77,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 import { runMigrations } from '../../db/migrations.js';
-import { setLogBroadcast, type LogEntry } from '../../logger.js';
+import type { LogEntry } from '../../logger.js';
 
 const OWNER = 'owner@example.test';
 const db = (): Database.Database => mockDb.current!;
@@ -95,7 +95,6 @@ beforeEach(() => {
   transport.length = 0;
   transportFails.on = false;
   logs.length = 0;
-  setLogBroadcast((e) => { logs.push(e); });
   seed();
 });
 
@@ -134,6 +133,8 @@ async function boot(): Promise<{
   bridge: typeof import('../../services/imessage-bridge.js');
 }> {
   vi.resetModules();
+  // A fresh process has a fresh logger: hook the dashboard's log feed onto THIS one.
+  (await import('../../logger.js')).setLogBroadcast((e) => { logs.push(e); });
   const tracker = await import('../tracker.js');
   const budget = await import('../budget.js');
   const bridge = await import('../../services/imessage-bridge.js');
@@ -159,7 +160,7 @@ const costAlerts = (): Array<Record<string, unknown>> =>
   broadcasts.filter((b) => b.type === 'cost:alert').map((b) => b.data ?? {});
 
 describe('the RED witness (#8): a daily-budget crossing reaches the owner', () => {
-  it.fails('a cost record pushing daily spend over 90% texts the owner exactly once, as the platform', async () => {
+  it('a cost record pushing daily spend over 90% texts the owner exactly once, as the platform', async () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     spend(recordCost, 9.2);
@@ -173,7 +174,7 @@ describe('the RED witness (#8): a daily-budget crossing reaches the owner', () =
     expect(logs.some((l) => /Alert suppressed/.test(l.message))).toBe(false);
   });
 
-  it.fails('50%, 75% and 90% are each told once as spend climbs through them', async () => {
+  it('50%, 75% and 90% are each told once as spend climbs through them', async () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     spend(recordCost, 5.1);
@@ -191,7 +192,7 @@ describe('the RED witness (#8): a daily-budget crossing reaches the owner', () =
     expect(ownerTexts()).toHaveLength(3);
   });
 
-  it.fails('one call that jumps past several thresholds at once is ONE text, naming the highest', async () => {
+  it('one call that jumps past several thresholds at once is ONE text, naming the highest', async () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     spend(recordCost, 9.5);
@@ -204,7 +205,7 @@ describe('the RED witness (#8): a daily-budget crossing reaches the owner', () =
     expect(costAlerts().map((a) => a.percentage)).toEqual([90]);
   });
 
-  it.fails('an agent budget crossing names the agent and its period', async () => {
+  it('an agent budget crossing names the agent and its period', async () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(1000);
     budget.setAgentBudget('ag', 4, 'daily');
@@ -217,7 +218,7 @@ describe('the RED witness (#8): a daily-budget crossing reaches the owner', () =
 });
 
 describe('once per REAL crossing: restart-safe, re-arms only after a genuine drop', () => {
-  it.fails('a restart does not re-alert a crossing already told', async () => {
+  it('a restart does not re-alert a crossing already told', async () => {
     let mods = await boot();
     mods.budget.setGlobalBudget(10);
     spend(mods.recordCost, 9.2);
@@ -229,7 +230,7 @@ describe('once per REAL crossing: restart-safe, re-arms only after a genuine dro
     expect(ownerTexts()).toHaveLength(1);
   });
 
-  it.fails('a genuine drop (spend ages out of the rolling day) re-arms, and the re-crossing texts again', async () => {
+  it('a genuine drop (spend ages out of the rolling day) re-arms, and the re-crossing texts again', async () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     spend(recordCost, 9.2);
@@ -243,7 +244,7 @@ describe('once per REAL crossing: restart-safe, re-arms only after a genuine dro
     expect(sentTexts()[1]).toContain('90%');
   });
 
-  it.fails('a weekly agent budget is measured over ONE window by both checks — no alert/re-arm flapping', async () => {
+  it('a weekly agent budget is measured over ONE window by both checks — no alert/re-arm flapping', async () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(1000);
     budget.setAgentBudget('ag', 10, 'weekly');
@@ -260,7 +261,7 @@ describe('once per REAL crossing: restart-safe, re-arms only after a genuine dro
     expect(ownerTexts()).toHaveLength(0);
   });
 
-  it.fails('a monthly agent budget is a rolling month, not all time', async () => {
+  it('a monthly agent budget is a rolling month, not all time', async () => {
     const { budget } = await boot();
     budget.setGlobalBudget(1000);
     budget.setAgentBudget('ag', 10, 'monthly');
@@ -273,7 +274,7 @@ describe('once per REAL crossing: restart-safe, re-arms only after a genuine dro
 });
 
 describe('backwards lifecycle', () => {
-  it.fails('limit raised above current spend after an alert: silent re-arm; lowered again: told once', async () => {
+  it('limit raised above current spend after an alert: silent re-arm; lowered again: told once', async () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     spend(recordCost, 9.2);
@@ -288,7 +289,7 @@ describe('backwards lifecycle', () => {
     expect(ownerTexts()).toHaveLength(2);
   });
 
-  it.fails('limit lowered under current spend: the next check tells the owner once', async () => {
+  it('limit lowered under current spend: the next check tells the owner once', async () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(100);
     spend(recordCost, 6);
@@ -302,7 +303,7 @@ describe('backwards lifecycle', () => {
 });
 
 describe('no phone channel: the notice still lands on the dashboard', () => {
-  it.fails('no safe sender set up → no text, a dashboard event, and an owner-notice entry carrying the words', async () => {
+  it('no safe sender set up → no text, a dashboard event, and an owner-notice entry carrying the words', async () => {
     setPhone(null);
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
@@ -317,7 +318,7 @@ describe('no phone channel: the notice still lands on the dashboard', () => {
     expect(notice[0].message).toContain('90%');
   });
 
-  it.fails('the phone send fails → the same dashboard notice, so the owner is not left with nothing', async () => {
+  it('the phone send fails → the same dashboard notice, so the owner is not left with nothing', async () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     transportFails.on = true;
