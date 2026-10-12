@@ -742,11 +742,22 @@ else if (got !== want) { console.log('the battery ran on ' + got + ', the declar
 if [ -n "$MODEL_MISMATCH" ]; then
   fail "Behavioral gate: $MODEL_MISMATCH. A green on an undeclared model is not evidence about this build. NOT publishing."
 fi
-# ── The marker must be a RELEASE-RITUAL marker (owner ruling 2026-09-20) ──
+# ── The marker must be a RELEASE-RITUAL marker (owner ruling 2026-09-20, REDESIGNED 2026-10-11) ──
+#
+# THE OWNER'S REDESIGN, verbatim (2026-10-11): "we need to remove the random scenarios run before
+# each cut. Instead, I want 5 targeted scenarios against the things being fixed to make sure the
+# fixes hold." So the ritual is now ONE proof, five times over: FIVE hand-authored scenarios, each
+# aimed at something THIS cut fixes, each run with 3 independent attempts and UNANIMITY required
+# (the 2026-09-20 blast discipline, generalised from one scenario to five), all five at ONE dojo
+# platform commit. The ten-random generated draw is GONE FROM THE CUT PATH — the generator and the
+# kit's `--generated` mode stay for the separate on-demand Real World protocol, and a generated
+# marker is refused here BY NAME. The v1 marker shape (blast{} + final{}) is likewise a named
+# refusal rather than a silent accept: it is a complete, once-shippable object that proves a ritual
+# this project no longer runs, so accepting it would certify a cut against the wrong evidence.
+# v3.3.2 shipped under the v1 shape; the first v2 cut is the next one.
 # THE HOLE, MEASURED: `grep -c ritual deploy/release.sh` was ZERO. The owner's ruling says every
-# cut runs TWO proofs — 3 green attempts of a blast-radius scenario, then 10 random generated
-# scenarios on a FRESH seed, all green, at the SAME platform commit — and the kit does assemble a
-# marker that records both (`behavioral/lib/release-ritual.mjs`). But the gate above only ever
+# cut proves its own fixes held — and the kit does assemble a
+# marker that records it (`behavioral/lib/release-ritual.mjs`). But the gate above only ever
 # asked "green, fresh, this HEAD, floor model", every one of which an ORDINARY green marker
 # satisfies. So a cut with no blast proof and no 10-family draw walked straight through the one
 # gate the ruling exists to stand behind, and nothing said the ritual had been skipped.
@@ -759,7 +770,9 @@ fi
 # script's block against fixture markers so the copy cannot silently rot into a weaker one. When the
 # kit's validator gains a field, this copy owes the same one: `final.drawUnsteered` + `pinnedDraws`
 # arrived that way, HOURS after the first replication, and for that window a steered rehearsal draw
-# was refused at write time and accepted here, with nothing failing.
+# was refused at write time and accepted here, with nothing failing. (Those two fields are now gone
+# from both sides with the rest of the ten-random draw — the lesson they taught is why the v1-to-v2
+# rewrite moved all four surfaces, this block included, in one change.)
 #
 # THAT HOLE IS NOW MACHINE-BOUND (2026-10-05): `deploy/checks/check-ritual-parity.mjs`, a blocking
 # gate in `npm run gates`, EXTRACTS both this block and BEHAV_DISHONEST above, runs them, imports the
@@ -779,45 +792,44 @@ RITUAL_BAD=$(node -e "
 const m = require('$BEHAV_MARKER');
 const bad = [];
 if (m.mode !== 'release-ritual') bad.push('mode=' + JSON.stringify(m.mode) + ' (needs release-ritual)');
-const b = m.blast;
-if (!b || typeof b !== 'object') bad.push('no blast{} — the 3-attempt blast-radius proof is not recorded');
+if (m.blast !== undefined) bad.push('marker carries the v1 blast{} object - the owner redesign of 2026-10-11 replaced the single blast-radius scenario plus the ten-random draw with FIVE hand-authored targeted scenarios, 3 attempts each, all at one dojo head. A v1 marker is not a weaker v2 marker, it is evidence about a different ritual: re-certify with --targeted <version-tag>');
+if (m.final !== undefined) bad.push('marker carries the v1 final{} object (the ten-random generated draw) - that draw was REMOVED from the cut path by the owner redesign of 2026-10-11 and no longer certifies anything. The generator and --generated mode still exist for the on-demand Real World protocol, but a generated run cannot mint a shippable marker: re-certify with --targeted <version-tag>');
+if (m.ritualVersion !== 2) bad.push('ritualVersion=' + JSON.stringify(m.ritualVersion) + ' (needs the literal 2; a marker carrying none was written by the pre-redesign kit and is refused rather than read as a v2 marker missing a field)');
+if (typeof m.targetedVersion !== 'string' || !m.targetedVersion.trim()) bad.push('targetedVersion missing - the marker cannot say WHICH cut these five scenarios were authored against, and five targeted scenarios are only evidence about the fixes they were aimed at');
+const t = m.targeted;
+if (!Array.isArray(t)) bad.push('no targeted[] array - the ritual requires 5 hand-authored scenarios aimed at this cut changes, each run 3 times with unanimity');
 else {
-  if (typeof b.scenario !== 'string' || !b.scenario) bad.push('blast.scenario missing');
-  if (b.attempts !== 3) bad.push('blast.attempts=' + JSON.stringify(b.attempts) + ' (needs exactly 3)');
-  if (b.allGreen !== true) bad.push('blast.allGreen!=true');
-  if (typeof b.gitSha !== 'string' || !b.gitSha) bad.push('blast.gitSha missing');
+  if (t.length !== 5) bad.push('targeted[] has ' + t.length + ' entries (needs exactly 5 - the owner number is five scenarios against the things being fixed)');
+  var ids = t.map(function (e) { return (e && typeof e === 'object') ? e.id : null; });
+  var named = ids.filter(function (x) { return typeof x === 'string' && x.trim(); });
+  var distinct = new Set(named).size;
+  if (named.length !== t.length || distinct !== named.length) bad.push('targeted[] ids are ' + named.length + ' non-empty / ' + distinct + ' distinct of ' + t.length + ' - the ritual requires five DIFFERENT scenarios; a count alone is satisfiable by five copies of one id (or five entries with no id at all), which is one proof recorded five times');
+  t.forEach(function (r, i) {
+    var label = (r && typeof r === 'object' && typeof r.id === 'string' && r.id) ? r.id : ('targeted[' + i + ']');
+    if (!r || typeof r !== 'object') { bad.push('targeted[' + i + '] is not an object - it records no scenario, no attempts and no head'); return; }
+    if (typeof r.id !== 'string' || !r.id.trim()) bad.push('targeted[' + i + '].id missing - which scenario this entry is about is not recorded');
+    if (r.attempts !== 3) bad.push(label + ': attempts=' + JSON.stringify(r.attempts) + ' (needs exactly 3 - the standing blast discipline, owner ruling 2026-09-20)');
+    if (r.passCount !== 3) bad.push(label + ': passCount=' + JSON.stringify(r.passCount) + ' of the required 3 - unanimity means every attempt passed; a majority, a retry rescue or a short record is not a 3/3');
+    if (r.allGreen !== true) bad.push(label + ': allGreen!=true - all 3 attempts of every one of the five must have passed');
+    if (typeof r.gitSha !== 'string' || !r.gitSha) bad.push(label + ': gitSha missing - cannot prove this scenario ran at the same commit as the other four');
+    else if (m.dojoHead && r.gitSha !== m.dojoHead) bad.push(label + ' ran at ' + String(r.gitSha).slice(0, 8) + ' but the marker dojoHead is ' + String(m.dojoHead).slice(0, 8) + ' - not the same commit (a fix landed between this scenario and the rest, so the five do not certify one build)');
+  });
 }
-const f = m.final;
-if (!f || typeof f !== 'object') bad.push('no final{} — the 10-family generated draw is not recorded');
-else {
-  if (typeof f.seed !== 'string' || !f.seed) bad.push('final.seed missing (the draw is not replayable)');
-  if (!Array.isArray(f.families) || f.families.length !== 10) bad.push('final.families=' + (Array.isArray(f.families) ? f.families.length : 'none') + ' (needs exactly 10)');
-  else {
-    var famNames = f.families.filter(function (x) { return typeof x === 'string' && x.trim(); });
-    var famDistinct = new Set(famNames).size;
-    if (famNames.length !== 10 || famDistinct !== 10) bad.push('final.families is ' + famNames.length + ' non-empty / ' + famDistinct + ' distinct of 10 — the ruling is TEN RANDOM scenarios, one per family, and a count alone is satisfiable by ten copies of one name (or ten empty strings)');
-  }
-  if (f.allGreen !== true) bad.push('final.allGreen!=true');
-  if (f.seedFresh !== true) bad.push('final.seedFresh!=true (a --seed replay cannot mint a shippable marker)');
-  if (f.drawUnsteered !== true) bad.push('final.drawUnsteered!=true (the draw cannot be proven unsteered; a variant-pinned rehearsal can never satisfy the TEN-RANDOM law)');
-  var steered = Array.isArray(f.pinnedDraws) ? f.pinnedDraws.filter(function (x) { return typeof x === 'string' && x; }) : [];
-  if (steered.length > 0 && f.drawUnsteered === true) bad.push('final.drawUnsteered claims true while final.pinnedDraws records a steered draw (' + steered.join(', ') + ') - the marker contradicts itself, and a hand-edited flag cannot unsteer a pinned run');
-  }
 if (typeof m.dojoHead !== 'string' || !m.dojoHead) bad.push('dojoHead missing');
-if (b && b.gitSha && m.dojoHead && b.gitSha !== m.dojoHead) bad.push('blast ran at ' + String(b.gitSha).slice(0, 8) + ' but the final draw is at ' + String(m.dojoHead).slice(0, 8) + ' (a fix landed between the two proofs)');
 if (m.gitSha && m.dojoHead && m.gitSha !== m.dojoHead) bad.push('marker.gitSha != marker.dojoHead');
 if (m.dojoHead && m.dojoHead !== '$HEAD_SHA') bad.push('dojoHead ' + String(m.dojoHead).slice(0, 8) + ' is not the tree being shipped (' + '$HEAD_SHA'.slice(0, 8) + ')');
 if (m.fixesAfterFinalDraw !== false) bad.push('fixesAfterFinalDraw=' + JSON.stringify(m.fixesAfterFinalDraw) + ' (must be the literal false)');
 console.log(bad.join(', '));
 ")
 if [ -n "$RITUAL_BAD" ]; then
-  fail "Behavioral gate: the marker is not a release-ritual marker ($RITUAL_BAD). The owner's 2026-09-20 ruling requires 3 green blast attempts AND a fresh 10-family generated draw, both at this commit: run \`node behavioral/runner.mjs --blast <scenario>\` then a plain generated run in $KIT_DIR. NOT publishing."
+  fail "Behavioral gate: the marker is not a release-ritual marker ($RITUAL_BAD). The owner's 2026-10-11 redesign requires FIVE hand-authored targeted scenarios aimed at THIS cut's fixes, 3 green attempts each, all at this commit: author them as behavioral/blast/<version-tag>/*.mjs and run \`node behavioral/runner.mjs --targeted <version-tag>\` in $KIT_DIR. The ten-random generated draw is no longer part of the cut path and a mode:'generated' marker can never certify a cut. NOT publishing."
 fi
-# The ✓ line reports `families.length` — THE FIELD THE GATE CHECKED — never `final.n`. They are equal
-# by construction in the kit, but `n` is a separate stored number that nothing above validates, so a
-# marker carrying `n: 3` with ten families used to make this line announce "3 families" about a draw
-# the gate had just accepted as ten (review C, L3-F6).
-echo "  ✓ release ritual proven: blast $(node -e "const m=require('$BEHAV_MARKER');console.log((m.blast&&m.blast.scenario||'?')+' x'+(m.blast&&m.blast.attempts||'?'))") + $(node -e "const m=require('$BEHAV_MARKER');console.log(((m.final&&m.final.families||[]).length||'?')+' families on fresh seed '+String(m.final&&m.final.seed||'?').slice(0,8))")"
+# The ✓ line reports `targeted.length` and each entry's OWN recorded ratio — THE FIELDS THE GATE
+# CHECKED — never a separate stored count. v1 learned this the hard way: a marker carrying `n: 3`
+# with ten families made this line announce "3 families" about a draw the gate had just accepted as
+# ten (review C, L3-F6), so the rule is that the ✓ line may only read what a clause above validated.
+echo "  ✓ release ritual proven: $(node -e "const m=require('$BEHAV_MARKER');const t=m.targeted||[];console.log(t.length+' targeted scenarios for '+(m.targetedVersion||'?')+', each '+[...new Set(t.map(r=>(r.passCount||0)+'/'+(r.attempts||0)))].join(' ')+' at '+String(m.dojoHead||'?').slice(0,8))")"
+echo "    $(node -e "const m=require('$BEHAV_MARKER');console.log((m.targeted||[]).map(r=>r.id).join(', '))")"
 echo "  ✓ battery ran on the declared floor model $(node -e "const d=require('$FLOOR_MODEL_FILE');console.log((d.observed&&d.observed.name||'?')+' ('+d.modelId.slice(0,8)+'…)')")"
 echo "  ✓ behavioral suite honest-green ${BEHAV_AGE_H}h ago at this exact HEAD (${HEAD_SHA:0:8})$(node -e "const m=require('$BEHAV_MARKER'); if(m.merged) console.log(' [merged over '+(m.mergedFrom&&m.mergedFrom.runId||'?')+']')")"
 {

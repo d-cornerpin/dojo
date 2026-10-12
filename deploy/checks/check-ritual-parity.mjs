@@ -3,9 +3,10 @@
 // THE RITUAL-MARKER VALIDATOR EXISTS TWICE. THIS IS WHAT BINDS THE COPIES.
 //
 // ── THE DEFECT, MEASURED (backlog 2026-09-26, lane 3 concern 4) ──
-// The owner's 2026-09-20 ruling — every cut proves a 3-attempt blast AND a fresh
-// ten-family draw, both at the same platform commit — is enforced by TWO
-// validators that are deliberately separate copies:
+// The owner's ruling — 2026-09-20, REDESIGNED 2026-10-11 into FIVE hand-authored
+// targeted scenarios per cut, 3 attempts each with unanimity, all at one platform
+// commit (the ten-random generated draw removed from the cut path entirely) — is
+// enforced by TWO validators that are deliberately separate copies:
 //
 //   · the kit's `behavioral/lib/release-ritual.mjs` `validateReleaseRitualMarker`,
 //     which refuses at WRITE time, before the runner will overwrite last-green.json;
@@ -139,7 +140,7 @@ function extractBlock(name) {
 
 const BLOCKS = [
   { name: 'BEHAV_DISHONEST', what: 'the K1 honesty block (green, verdicts, known-failing, merge provenance)' },
-  { name: 'RITUAL_BAD', what: 'the ritual-shape block (mode, blast 3/3, final 10/10, heads, fixesAfterFinalDraw)' },
+  { name: 'RITUAL_BAD', what: 'the ritual-shape block (mode, ritualVersion, targetedVersion, five targeted 3/3 entries, heads, fixesAfterFinalDraw, and the named v1-shape refusals)' },
 ];
 for (const b of BLOCKS) {
   b.src = extractBlock(b.name);
@@ -191,30 +192,33 @@ if (failed) {
 // ════════ 2. the fixture corpus ════════
 // One valid marker, then one mutant per clause on either side. No names, no PII:
 // every identifier here is fictional and generic by construction (G1).
+//
+// THE SHAPE IS v2 (owner redesign 2026-10-11): five targeted scenarios, each 3
+// attempts / 3 passes / all-green, each recording the ONE head the marker claims.
+// The old v1 fixtures (blast{} 3/3 + final{} ten-family draw) are not kept as
+// "legacy also-accepted" cases — they are now MUTANTS, because both validators
+// refuse that shape by name, and a corpus that still accepted it would be
+// measuring the opposite of the rule.
 const SHA = '1111111111111111111111111111111111111111';
 const OTHER_SHA = '2222222222222222222222222222222222222222';
-const FAMILIES = ['family-01', 'family-02', 'family-03', 'family-04', 'family-05',
-  'family-06', 'family-07', 'family-08', 'family-09', 'family-10'];
+const TARGETED_IDS = [
+  'targeted-probe-01', 'targeted-probe-02', 'targeted-probe-03',
+  'targeted-probe-04', 'targeted-probe-05',
+];
 
 const validMarker = () => ({
   green: true,
   gitSha: SHA,
   dojoHead: SHA,
   mode: 'release-ritual',
+  ritualVersion: 2,
+  targetedVersion: 'v9.9.9',
   modelId: 'a-pinned-model-id',
   runId: 'fixture-run',
-  blast: { scenario: 'blast-scenario-a', attempts: 3, allGreen: true, gitSha: SHA },
-  final: {
-    seed: '0123456789ab',
-    seedFresh: true,
-    drawUnsteered: true,
-    families: [...FAMILIES],
-    n: 10,
-    allGreen: true,
-  },
+  targeted: TARGETED_IDS.map((id) => ({ id, attempts: 3, passCount: 3, allGreen: true, gitSha: SHA })),
   verdicts: {
-    'gen-family-01-aaaa-1': { attempts: 1, passCount: 1, flaked: false },
-    'gen-family-02-bbbb-1': { attempts: 2, passCount: 2, flaked: false },
+    'targeted-probe-01': { attempts: 3, passCount: 3, flaked: false },
+    'targeted-probe-02': { attempts: 3, passCount: 3, flaked: false },
   },
   fixesAfterFinalDraw: false,
 });
@@ -229,49 +233,56 @@ const mutant = (clause, mutate) => {
 const MUTANTS = [
   // ── the ritual shape (release.sh: RITUAL_BAD · kit: validateReleaseRitualMarker) ──
   mutant('mode is not release-ritual', (m) => { m.mode = 'generated'; }),
-  mutant('no blast{} at all', (m) => { delete m.blast; }),
-  mutant('blast{} is not an object', (m) => { m.blast = 'three green attempts, honest'; }),
-  mutant('blast.scenario missing', (m) => { delete m.blast.scenario; }),
-  mutant('blast.scenario empty', (m) => { m.blast.scenario = ''; }),
-  mutant('blast.attempts is 2, not 3', (m) => { m.blast.attempts = 2; }),
-  mutant('blast.attempts is 4, not 3', (m) => { m.blast.attempts = 4; }),
-  mutant('blast.allGreen is not true', (m) => { m.blast.allGreen = false; }),
-  mutant('blast.gitSha missing', (m) => { delete m.blast.gitSha; }),
-  mutant('no final{} at all', (m) => { delete m.final; }),
-  mutant('final.seed missing', (m) => { delete m.final.seed; }),
-  mutant('final.families has 9', (m) => { m.final.families = FAMILIES.slice(0, 9); }),
-  mutant('final.families has 11', (m) => { m.final.families = [...FAMILIES, 'family-11']; }),
-  mutant('final.families is ten copies of one name', (m) => { m.final.families = FAMILIES.map(() => 'family-01'); }),
-  mutant('final.families is ten empty strings', (m) => { m.final.families = FAMILIES.map(() => ''); }),
-  mutant('final.allGreen is not true', (m) => { m.final.allGreen = false; }),
-  mutant('final.seedFresh is not true (a --seed replay)', (m) => { m.final.seedFresh = false; }),
-  mutant('final.drawUnsteered missing (THE DRIFT THIS GATE EXISTS FOR)', (m) => { delete m.final.drawUnsteered; }),
-  mutant('final.drawUnsteered is false (a steered draw)', (m) => {
-    m.final.drawUnsteered = false;
-    m.final.pinnedDraws = ['family-03:someSlot=someValue'];
+  // THE HONEST MIGRATION: a v1 marker is complete and was once shippable, which is
+  // exactly why both sides must refuse it rather than ignore its v1 fields.
+  mutant('the v1 blast{} object is present (THE REDESIGN THIS GATE NOW GUARDS)', (m) => {
+    m.blast = { scenario: 'v3.3.2', attempts: 3, allGreen: true, gitSha: SHA };
   }),
-  mutant('final.drawUnsteered true over its own pinnedDraws', (m) => {
-    m.final.pinnedDraws = ['family-03:someSlot=someValue'];
+  mutant('the v1 final{} ten-random draw is present', (m) => {
+    m.final = {
+      seed: '0123456789ab', seedFresh: true, drawUnsteered: true, n: 10, allGreen: true,
+      families: Array.from({ length: 10 }, (_, i) => `family-${i + 1}`),
+    };
   }),
+  mutant('ritualVersion missing (a pre-redesign kit wrote it)', (m) => { delete m.ritualVersion; }),
+  mutant('ritualVersion is 3, not the literal 2', (m) => { m.ritualVersion = 3; }),
+  mutant('targetedVersion missing (which cut did these five probe?)', (m) => { delete m.targetedVersion; }),
+  mutant('targetedVersion is blank', (m) => { m.targetedVersion = '   '; }),
+  mutant('no targeted[] at all', (m) => { delete m.targeted; }),
+  mutant('targeted is an object, not an array', (m) => { m.targeted = { 'not-an': 'array' }; }),
+  mutant('targeted[] has 4 entries', (m) => { m.targeted = m.targeted.slice(0, 4); }),
+  mutant('targeted[] has 6 entries', (m) => {
+    m.targeted = [...m.targeted, { id: 'targeted-probe-06', attempts: 3, passCount: 3, allGreen: true, gitSha: SHA }];
+  }),
+  mutant('targeted[] is five copies of one id', (m) => { m.targeted = m.targeted.map((r) => ({ ...r, id: TARGETED_IDS[0] })); }),
+  mutant('targeted[] ids are five empty strings', (m) => { m.targeted = m.targeted.map((r) => ({ ...r, id: '' })); }),
+  mutant('four real ids and one blank', (m) => { m.targeted[3].id = '   '; }),
+  mutant('one entry is not an object', (m) => { m.targeted[2] = 'three green attempts, honest'; }),
+  mutant('one entry has no id', (m) => { delete m.targeted[1].id; }),
+  mutant('one scenario ran 2 attempts, not 3', (m) => { m.targeted[0].attempts = 2; m.targeted[0].passCount = 2; }),
+  mutant('one scenario ran 4 attempts, not 3', (m) => { m.targeted[0].attempts = 4; m.targeted[0].passCount = 4; }),
+  mutant('one scenario passed 2 of its 3 attempts (a majority, not unanimity)', (m) => { m.targeted[4].passCount = 2; }),
+  mutant('one scenario records allGreen false', (m) => { m.targeted[3].allGreen = false; }),
+  mutant('one scenario records no gitSha', (m) => { delete m.targeted[2].gitSha; }),
+  mutant('one scenario ran at a DIFFERENT head than the rest', (m) => { m.targeted[1].gitSha = OTHER_SHA; }),
   mutant('dojoHead missing', (m) => { delete m.dojoHead; }),
-  mutant('blast ran at a different head than the final draw', (m) => { m.blast.gitSha = OTHER_SHA; }),
   mutant('gitSha disagrees with dojoHead', (m) => { m.gitSha = OTHER_SHA; }),
   mutant('fixesAfterFinalDraw is true', (m) => { m.fixesAfterFinalDraw = true; }),
   mutant('fixesAfterFinalDraw is missing (not the literal false)', (m) => { delete m.fixesAfterFinalDraw; }),
   // ── the honesty clauses (release.sh: K1 · kit: the mirror block) ──
   mutant('green is not true', (m) => { m.green = false; }),
   mutant('no verdicts{} (a pre-hardening marker)', (m) => { delete m.verdicts; }),
-  mutant('a scenario flaked and was rescued by its retry', (m) => { m.verdicts['gen-family-01-aaaa-1'].flaked = true; }),
-  mutant('a scenario passed 1 of 2 attempts', (m) => { m.verdicts['gen-family-02-bbbb-1'].passCount = 1; }),
-  mutant('a scenario carries a known-failing acknowledgment', (m) => { m.verdicts['gen-family-01-aaaa-1'].knownFailing = 'a booked defect'; }),
-  mutant('the marker lists known-failing scenarios', (m) => { m.knownFailing = ['gen-family-04-cccc-1']; }),
+  mutant('a scenario flaked and was rescued by its retry', (m) => { m.verdicts['targeted-probe-01'].flaked = true; }),
+  mutant('a scenario passed 2 of 3 attempts in verdicts{}', (m) => { m.verdicts['targeted-probe-02'].passCount = 2; }),
+  mutant('a scenario carries a known-failing acknowledgment', (m) => { m.verdicts['targeted-probe-01'].knownFailing = 'a booked defect'; }),
+  mutant('the marker lists known-failing scenarios', (m) => { m.knownFailing = ['targeted-probe-04']; }),
   mutant('a merged marker with no mergedFrom provenance', (m) => { m.merged = true; }),
 ];
 
 // Vacuity floor: one mutant per clause is the design, so a corpus that shrank is a
 // corpus that stopped covering the clause list. Not a ratchet — the floor is "the
 // fixtures emptied themselves".
-const MUTANT_FLOOR = 25;
+const MUTANT_FLOOR = 30;
 if (MUTANTS.length < MUTANT_FLOOR) {
   fail(
     `✗ the corpus carries ${MUTANTS.length} mutant(s); the floor is ${MUTANT_FLOOR}.`,
@@ -420,7 +431,9 @@ if (disagreements.length) {
     fail(
       '  This is exactly the shape the gate exists for: `final.drawUnsteered` + `pinnedDraws`',
       '  landed in the kit and not in release.sh, and for the window in between a steered',
-      '  rehearsal draw was refused at write time and accepted at the cut.',
+      '  rehearsal draw was refused at write time and accepted at the cut. (Those two fields are',
+      '  gone with the rest of the ten-random draw since the 2026-10-11 redesign; the lesson is',
+      '  why that rewrite moved all four surfaces at once instead of one at a time.)',
       '  The fix is to add the clause to whichever side is missing it — never to delete it from',
       '  the side that has it, and never to weaken this corpus.',
       '',
