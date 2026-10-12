@@ -259,8 +259,13 @@ const MUTANTS = [
   mutant('four real ids and one blank', (m) => { m.targeted[3].id = '   '; }),
   mutant('one entry is not an object', (m) => { m.targeted[2] = 'three green attempts, honest'; }),
   mutant('one entry has no id', (m) => { delete m.targeted[1].id; }),
-  mutant('one scenario ran 2 attempts, not 3', (m) => { m.targeted[0].attempts = 2; m.targeted[0].passCount = 2; }),
-  mutant('one scenario ran 4 attempts, not 3', (m) => { m.targeted[0].attempts = 4; m.targeted[0].passCount = 4; }),
+  // SINGLE-CLAUSE MEANS SINGLE CLAUSE (measured, 2026-10-11 mutant round M9). These two first
+  // moved `passCount` alongside `attempts` to keep the entry coherent — and that made them
+  // double-clause mutants: a validator that DROPPED the attempts check still refused them on
+  // passCount, so both sides agreed and the drift was invisible. An incoherent entry is exactly
+  // what a single-clause mutant is for, so `attempts` moves alone.
+  mutant('one scenario ran 2 attempts, not 3', (m) => { m.targeted[0].attempts = 2; }),
+  mutant('one scenario ran 4 attempts, not 3', (m) => { m.targeted[0].attempts = 4; }),
   mutant('one scenario passed 2 of its 3 attempts (a majority, not unanimity)', (m) => { m.targeted[4].passCount = 2; }),
   mutant('one scenario records allGreen false', (m) => { m.targeted[3].allGreen = false; }),
   mutant('one scenario records no gitSha', (m) => { delete m.targeted[2].gitSha; }),
