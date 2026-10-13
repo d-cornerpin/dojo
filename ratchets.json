@@ -7920,6 +7920,27 @@
       "to": 237,
       "by": "t140 round 2 — re-review 1 C1",
       "why": "236 -> 237 (+1 comment). condenseLeavingInBackground is the gate's PRESSURE fold alone again (un-exported; the re-fit's M3 background fold is deleted); its doc says where exact out-of-view folds now happen."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts",
+      "from": 237,
+      "to": 238,
+      "by": "t140 round 3 — re-review 2 / R-V333-10",
+      "why": "237 -> 238 (+1 code: the import of replacePlaceholdersInBackground). The gate starts the background replacement of not-yet-condensed placeholders when a writer is eligible, and the pressure fold only when that did not start; the launch line replaced the old one and its doc was shortened to pay for the comment."
+    },
+    {
+      "path": "packages/server/src/memory/condense-until-fits.ts",
+      "from": 427,
+      "to": 428,
+      "by": "t140 round 3 — re-review 2 / R-V333-10",
+      "why": "427 -> 428 (+1 code: the import of the placeholder head). Condensation never merges a not-yet-condensed placeholder (both the count and the loop exclude it, so they still agree); the SQL condition rides the existing line."
+    },
+    {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1580,
+      "to": 1513,
+      "by": "t140 round 3 — re-review 2 / R-V333-10 (a LOWERED pin)",
+      "why": "1580 -> 1513 (-67). The out-of-view door moved to memory/out-of-view-fold.ts with its bound, writer fallback and placeholders; leavingViewPass is exported for it and resolveSummaryWriterModel now reads summary-writer-health.ts. Pin lowered to what is there."
     }
   ],
   "maxNewFileLines": 400,
@@ -8073,7 +8094,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 233,
-    "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 237,
+    "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 238,
     "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 185,
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 401,
     "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 213,
@@ -8130,8 +8151,8 @@
     "packages/server/src/memory/assembly-validation.ts": 713,
     "packages/server/src/memory/budget.ts": 699,
     "packages/server/src/memory/compaction-brakes.ts": 306,
-    "packages/server/src/memory/compaction.ts": 1580,
-    "packages/server/src/memory/condense-until-fits.ts": 427,
+    "packages/server/src/memory/compaction.ts": 1513,
+    "packages/server/src/memory/condense-until-fits.ts": 428,
     "packages/server/src/memory/deliveries-lane.ts": 257,
     "packages/server/src/memory/embeddings.ts": 332,
     "packages/server/src/memory/fts-health.ts": 536,
