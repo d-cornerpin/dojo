@@ -176,8 +176,11 @@ async function dialAsRouted(pick: string): Promise<{ prompt: string; options: Re
   const systemPrompt = re?.systemPrompt ?? assembled.systemPrompt;
   const before = provider.requests.length;
   await callModel({ agentId: AGENT, modelId: pick, messages, systemPrompt, tools: true });
-  expect(provider.requests.length, 'the scripted provider must have been dialed exactly once').toBe(before + 1);
-  return provider.requests[provider.requests.length - 1];
+  // Only the TURN's own request counts: since fix round 1 (M3) a re-fit that sets rows aside also
+  // starts a background fold, whose summariser dials this same scripted provider.
+  const turnRequests = provider.requests.slice(before).filter((r) => shown(r).includes('Runtime Information'));
+  expect(turnRequests.length, 'the turn must have been dialed exactly once').toBe(1);
+  return turnRequests[0];
 }
 
 beforeEach(() => {
@@ -194,7 +197,13 @@ afterEach(async () => {
   // before the DB closes, so it cannot hold this agent's compaction lock into the next clause.
   const { backgroundDrains } = await import('../../../../shared-state.js');
   for (let i = 0; i < 400 && backgroundDrains.has(AGENT); i++) await new Promise((r) => setTimeout(r, 5));
-  await new Promise((r) => setTimeout(r, 50));
+  // And a FORCED condense (the boundary refusal's) holds the per-agent compaction lock without
+  // the background latch: wait for that lock too, so it cannot skip the next clause's fold.
+  const { withLock } = await import('../../../../../db/with-lock.js');
+  await Promise.race([
+    withLock(`compact:${AGENT}`, async () => undefined, { ifBusy: 'wait' }),
+    new Promise((r) => setTimeout(r, 15_000)),
+  ]);
   mockDb.current?.close();
   mockDb.current = null;
 });
@@ -384,9 +393,8 @@ describe('t140 fix round 1 — M3: a single-call turn routed to a smaller pick f
   it('the 16K pick\'s re-fit sets rows aside, and exactly those (never its floor) are folded in the background', async () => {
     seedConversation(250);
     await dialAsRouted(LIGHT);
-    const { backgroundDrains } = await import('../../../../shared-state.js');
-    for (let i = 0; i < 400 && backgroundDrains.has(AGENT); i++) await new Promise((r) => setTimeout(r, 5));
-    const folded = summarisedRowCount();
+    let folded = 0;
+    for (let i = 0; i < 400 && folded === 0; i++) { await new Promise((r) => setTimeout(r, 5)); folded = summarisedRowCount(); }
     expect(folded, 'the rows the 16K view set aside were folded for that window').toBeGreaterThan(0);
     const total = (db().prepare('SELECT COUNT(*) AS n FROM messages WHERE agent_id = ?').get(AGENT) as { n: number }).n;
     expect(folded, 'and never into the 16K floor').toBeLessThanOrEqual(total - getFreshTailCount(LIGHT_WINDOW));
