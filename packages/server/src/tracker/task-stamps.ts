@@ -174,10 +174,8 @@ export function stampTasksAtTurnFinalize(input: {
 }): void {
   try {
     const db = getDb();
-    // t143 round 2: only work THIS turn's trigger names — never a conversation's other tasks
-    // (`input.convKey` is no longer a tie: an abandoned task born in the same conversation as a
-    // long job was stamped fresh at every park). A continuation inherits its job's work from the
-    // checkpoint that queued it.
+    // t143 r2: only work THIS turn's trigger names (a continuation inherits its job from the park
+    // that queued it) — never by conversation: `input.convKey` kept a same-conversation abandoned task fresh.
     const carried = turnWorkIds(input.agentId);
     const tied = db.prepare(
       `SELECT w.id AS id FROM work w
