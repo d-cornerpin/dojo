@@ -27,7 +27,7 @@ const logger = createLogger('v2-loop');
 export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext): StepOutcome {
   const {
     agentId, turnNumber, db, counterparty, result, triggerRow, triggerWorkId,
-    triggerConversationId, turnStartedAt, persistedContent, deferredDeliveredByAck,
+    triggerConversationId, persistedContent, deferredDeliveredByAck,
     maxToolLoops,
   } = ctx;
   const MAX_TOOL_LOOPS = maxToolLoops;
@@ -80,12 +80,23 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
         // collided in the relay, and `makeThreadId`'s own comment records that an 8-char
         // prefix of a `thread-<hash>-<seed>` id is ~36 buckets. The short-token minter that
         // forced the old length-sniffing SQL is GONE with this block (3j).
+        // t139 round 2 (hand-up 4): THIS TURN'S sends are read off this turn's own DELIVERY
+        // records (`send_to_agent` writes one per hand-off, stamped with the turn number, and it
+        // names the row it delivered), never off a clock. The clock bound was
+        // `created_at >= unixepoch(turnStartedAt) * 1000`, and the a2a rows are stored to the
+        // WHOLE SECOND (measured: `…259000` against a turn start of `…259053`), so a turn starting
+        // inside the previous turn's second swept that turn's sends into its own join and held its
+        // ask on pieces that were never its own. A millisecond bound cannot work either — the row
+        // is rounded DOWN past it — so the key is the turn number.
         const sentRows = db.prepare(
-          `SELECT a2a_thread_id, agent_id, a2a_intent FROM messages
-             WHERE source_agent_id = @agentId AND a2a_thread_id IS NOT NULL
-               AND a2a_intent IN ('QUESTION','ASSIGN','BLOCK') AND created_at >= (unixepoch(@turnStartedAt) * 1000)
-           ORDER BY created_at ASC, rowid ASC`,
-        ).all({ agentId, turnStartedAt }) as Array<{ a2a_thread_id: string; agent_id: string; a2a_intent: string | null }>;
+          `SELECT m.a2a_thread_id AS a2a_thread_id, m.agent_id AS agent_id, m.a2a_intent AS a2a_intent
+             FROM deliveries d JOIN messages m ON m.id = d.message_id
+            WHERE d.agent_id = @agentId AND d.turn_number = @turnNumber
+              AND d.tool = 'send_to_agent' AND d.outcome = 'delivered'
+              AND m.source_agent_id = @agentId AND m.a2a_thread_id IS NOT NULL
+              AND m.a2a_intent IN ('QUESTION','ASSIGN','BLOCK')
+            ORDER BY m.created_at ASC, m.rowid ASC`,
+        ).all({ agentId, turnNumber }) as Array<{ a2a_thread_id: string; agent_id: string; a2a_intent: string | null }>;
         const seen = new Set<string>();
         const threads: DelegationThread[] = [];
         for (const r of sentRows) {

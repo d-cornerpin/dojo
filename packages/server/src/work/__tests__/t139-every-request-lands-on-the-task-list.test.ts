@@ -902,7 +902,7 @@ async function fanOutAndLand(msgId: string, ask: string, tag: string): Promise<v
 }
 
 describe('t139 round 2 (hand-up 4) — a delegation joins only the sends of ITS OWN turn', () => {
-  it.fails('two delegating turns inside one wall-clock second: the second join holds only its own piece', async () => {
+  it('two delegating turns inside one wall-clock second: the second join holds only its own piece', async () => {
     // The clock is pinned (Date only — timers stay real) so both turns start in the same second,
     // 500 ms apart: the shape a whole-second lower bound cannot tell apart.
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -937,10 +937,8 @@ describe('t139 round 2 (hand-up 4) — a delegation joins only the sends of ITS 
 describe('t139 — the delegate-reply link has recorded facts behind it, or it is not made', () => {
   it('two owed compiles at once: the wake turn is tied to the ask whose piece reply woke it, never the other', async () => {
     await fanOutAndLand('msg-two-a', 'Compare the two caterer quote sets and pick one.', 'JOBA');
-    // The delegation exit finds its own sends by `created_at >= unixepoch(turn start)`, a
-    // whole-second comparison; two scripted turns inside one second would share their sends.
-    // Real turns are seconds apart, so the fixture is too.
-    await new Promise((r) => setTimeout(r, 1100));
+    // (Round 1 slept 1.1 s here: the delegation exit's whole-second lower bound made two turns
+    // inside one second share their sends. Fixed at the root in round 2 — hand-up 4.)
     await fanOutAndLand('msg-two-b', 'Compare the two venue quote sets and pick one.', 'JOBB');
     const owed = mockDb.current!.prepare(
       "SELECT COUNT(*) AS n FROM work WHERE agent_id = ? AND kind = 'ask' AND compile_pending = 1",
