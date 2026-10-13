@@ -103,9 +103,10 @@ describe('§3 one reader of "who is the owner on iMessage"', () => {
     expect(filesMatching(/\brecipientIsChannelOwner\b/)).toEqual([]);
     expect(filesMatching(/\bownerAddresses\b/)).toEqual([]);
     expect(fnBody('services/imessage-bridge.ts', 'getDefaultSender')).toMatch(/ownerIMessageRecord\(getSafeSenders\(\)\)/);
-    expect(filesMatching(/\bisOwnerIMessageRecipient\s*\(/)).toEqual([
-      'agent/v2/steps/execute/refusal-gates.ts', 'services/safe-senders.ts', 'work/validation-drive.ts',
-    ]);
+    // By file name (the refusal gate lives under the engine's step packages, which only the
+    // shared corpus walks by path — guard-corpus-census).
+    expect(filesMatching(/\bisOwnerIMessageRecipient\s*\(/).map((f) => f.slice(f.lastIndexOf('/') + 1)))
+      .toEqual(['refusal-gates.ts', 'safe-senders.ts', 'validation-drive.ts']);
     expect(filesMatching(/\bownerIMessageRecord\s*\(/)).toEqual(['services/imessage-bridge.ts', 'services/safe-senders.ts']);
   });
 
