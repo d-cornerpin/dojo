@@ -323,9 +323,9 @@ export const NOTICE_DOOR_SENDER = 'platform';
  * The owner's own addresses, read from the record that DEFINES him on each channel: the
  * dashboard/voice counterparty sentinel `'owner'` (`agent/v2/deliveries.ts` resolves those
  * channels to it), and the starred (`is_primary`) iMessage safe sender — the same record
- * `services/imessage-bridge.ts:getDefaultSender` and the refusal gate's
- * `recipientIsChannelOwner` read, plus the legacy key the bridge still honours. Unknown means
- * NOT the owner: the cost is the owner possibly told again, never a tell invented.
+ * `services/imessage-bridge.ts:getDefaultSender` and the refusal gate's `recipientIsChannelOwner`
+ * read (the legacy key ONLY when none is starred, the bridge's own order). Unknown means NOT the
+ * owner: the cost is the owner possibly told again, never a tell invented.
  */
 function ownerAddresses(): string[] {
   const out = ['owner'];
@@ -340,7 +340,7 @@ function ownerAddresses(): string[] {
         if (rec && rec.is_primary === true && typeof rec.address === 'string') out.push(rec.address);
       }
     }
-    const legacy = (db.prepare("SELECT value FROM config WHERE key = 'imessage_default_sender'")
+    const legacy = out.length > 1 ? undefined : (db.prepare("SELECT value FROM config WHERE key = 'imessage_default_sender'")
       .get() as { value: string } | undefined)?.value;
     if (legacy) out.push(legacy);
   } catch { /* unreadable config: only the dashboard sentinel is known */ }

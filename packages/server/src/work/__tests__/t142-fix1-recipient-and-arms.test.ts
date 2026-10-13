@@ -318,7 +318,7 @@ describe('round 2 N2: the legacy owner key counts only when no primary is starre
     ).run(key, value);
   };
 
-  it.fails('a starred primary exists: a send to the stale legacy address is NOT the owner told', () => {
+  it('a starred primary exists: a send to the stale legacy address is NOT the owner told', () => {
     seedOwnerAddress();
     setConfig('imessage_default_sender', OLD_ADDRESS);
     seedBlocked('t-legacy');
