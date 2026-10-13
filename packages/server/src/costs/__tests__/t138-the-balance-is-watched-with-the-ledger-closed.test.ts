@@ -58,6 +58,11 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import { runMigrations } from '../../db/migrations.js';
 
+// Each clause boots the real module graph (the iMessage door pulls in the engine) and runs the
+// full migration chain; that is an import cost, not a timing assertion, and on a box shared by
+// many suites it can pass the 30 s default. Nothing here measures time.
+vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
+
 const OWNER = 'owner@example.test';
 const db = (): Database.Database => mockDb.current!;
 
