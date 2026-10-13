@@ -7941,6 +7941,20 @@
       "to": 1513,
       "by": "t140 round 3 — re-review 2 / R-V333-10 (a LOWERED pin)",
       "why": "1580 -> 1513 (-67). The out-of-view door moved to memory/out-of-view-fold.ts with its bound, writer fallback and placeholders; leavingViewPass is exported for it and resolveSummaryWriterModel now reads summary-writer-health.ts. Pin lowered to what is there."
+    },
+    {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1513,
+      "to": 1523,
+      "by": "t140 round 4 — re-review 3 F1/F2",
+      "why": "1513 -> 1523 (+10: +4 code, +6 comment). `archiveBeforeCovering` is now the one archive step before rows are covered (leavingViewPass and the placeholder writer share it; inline copy removed), and each real leaf write supersedes any not-yet-condensed note on its rows (one note per row). Still 57 under round 2's 1580."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts",
+      "from": 238,
+      "to": 240,
+      "by": "t140 round 4 — re-review 3 F1",
+      "why": "238 -> 240 (+2 code). The background pressure fold registers its abort as preemptible and releases it, so the turn's own out-of-view fold can set it aside and write under the lock in time."
     }
   ],
   "maxNewFileLines": 400,
@@ -8094,7 +8108,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 233,
-    "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 238,
+    "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 240,
     "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 185,
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 401,
     "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 213,
@@ -8151,7 +8165,7 @@
     "packages/server/src/memory/assembly-validation.ts": 713,
     "packages/server/src/memory/budget.ts": 699,
     "packages/server/src/memory/compaction-brakes.ts": 306,
-    "packages/server/src/memory/compaction.ts": 1513,
+    "packages/server/src/memory/compaction.ts": 1523,
     "packages/server/src/memory/condense-until-fits.ts": 428,
     "packages/server/src/memory/deliveries-lane.ts": 257,
     "packages/server/src/memory/embeddings.ts": 332,
