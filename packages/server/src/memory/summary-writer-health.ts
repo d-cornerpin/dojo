@@ -5,16 +5,18 @@
 // timed out; the next pick answered 402. Nothing remembered either, so every fold picked the same
 // unreachable writer again. Two facts now travel with each provider:
 //   · its BILLING BREAKER (`providers/billing-breaker.ts`) — open after permanent failures;
-//   · round 5: NOT ANSWERING SINCE — its last summary call failed (its transport's patience ran out,
-//     empty text, an error), or it did not answer within a turn's patience, and it has not answered
-//     since. No clock: the writer's own next answer clears it (owner ruling 2026-10-13, no hard
-//     limits — the five-minute bench this replaced kept a writer that was back unused).
+//   · NOT ANSWERING — its last summary call failed (its transport's patience ran out, empty text, an
+//     error), or it did not answer within a turn's patience. No clock (owner ruling 2026-10-13, no
+//     hard limits). Round 6 (final review I1, R-V333-15): it is not dialled again — by a turn OR by
+//     the background — until something has CHANGED: a person starts a new turn (`noteAPersonSpoke`),
+//     the owner picks another writer in Settings (a writer never marked is simply eligible), or the
+//     writer answers. Round 5 let the background try every writer on every gate; with writers
+//     answering empty that paid all of them on every tool-loop iteration (40 calls where v3.3.2 made 4).
 // The order: the owner's Settings choice, then the agent's own model and provider, then (only with
-// no Settings choice, as before) the cheapest — see `summaryWriterCandidates`. INSIDE A TURN
-// (`eligibleSummaryWriters`) that order skips broken writers and those not answering since: the
-// owner's turn does not wait on them again. IN THE BACKGROUND (`backgroundSummaryWriters`) it
-// skips only broken ones: nobody waits there, and trying the preferred writer is how its return is
-// noticed. A call the OWNER stopped, or set aside for the turn's fold, is not the writer's failure.
+// no Settings choice, as before) the cheapest — see `summaryWriterCandidates`. The eligible writers
+// are that order without broken or not-answering ones; when none is left, nothing is dialled and
+// placeholder notes stay, labelled. A call the OWNER stopped, or set aside for the turn's fold, is
+// not the writer's failure.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -107,14 +109,16 @@ export function summaryWriterCandidates(preferredModelId?: string): string[] {
   return [...new Set(list)];
 }
 
-/** The writers a TURN may wait on: no open breaker, and answering. */
+/** The writers anything may dial now, turn or background: no open breaker, and answering. */
 export function eligibleSummaryWriters(preferredModelId?: string): string[] {
   return summaryWriterCandidates(preferredModelId).filter((id) => !writerBreaker(id) && !notAnswering(id));
 }
 
-/** The writers the BACKGROUND tries, in the owner's order: every one without an open breaker. */
-export function backgroundSummaryWriters(preferredModelId?: string): string[] {
-  return summaryWriterCandidates(preferredModelId).filter((id) => !writerBreaker(id));
+/** A person has started a new turn: something has changed, so every writer gets one more try. */
+export function noteAPersonSpoke(): void {
+  if (notAnsweringSince.size === 0) return;
+  notAnsweringSince.clear();
+  logger.info('A person started a new turn: summary writers that were not answering are tried again');
 }
 
 /** Test-only reset; the map is per-process. */

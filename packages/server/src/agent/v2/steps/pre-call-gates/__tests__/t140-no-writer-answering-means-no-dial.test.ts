@@ -112,7 +112,7 @@ beforeEach(() => {
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 describe('t140 round 6 — no writer answering: the gate does not dial', () => {
-  it.fails('the reviewer\'s case: placeholders present, all four writers answering empty, ten iterations of one turn — at most v3.3.2\'s four calls', async () => {
+  it('the reviewer\'s case: placeholders present, all four writers answering empty, ten iterations of one turn — at most v3.3.2\'s four calls', async () => {
     expect(hasUncondensedPlaceholders(AGENT), 'precondition: placeholder notes').toBe(true);
     for (let loop = 1; loop <= 10; loop++) await gate(500, loop);
     expect(summariser.calls.length, `writer calls over ten iterations: ${summariser.calls.join(', ')}`).toBeLessThanOrEqual(4);

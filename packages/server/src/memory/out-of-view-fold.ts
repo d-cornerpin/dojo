@@ -17,8 +17,9 @@
 //   · THE TURN'S PATIENCE (`turnPatienceMs`): the fold sits in front of the turn's own model call,
 //     so it may take as long as the owner already lets that model take to start answering — its
 //     provider's declared first-chunk patience, or the transport's standing one. Inside it the door
-//     folds AS MUCH AS IS LEAVING. The turn's Stop ends it at once. The per-agent compaction lock is
-//     waited for only within that patience (a routine background holder is set aside first).
+//     folds AS MUCH AS IS LEAVING. The turn's Stop ends it at once. The turn never waits on the
+//     per-agent compaction lock (round 6): if another compaction holds it, the rows are labelled now
+//     and folded after.
 //   · A WRITER FALLBACK: every eligible writer in turn (`summary-writer-health.ts`); one that
 //     answers badly (empty, an error, 402) is passed over for the next. One that has not answered
 //     when the patience runs out is not failing, but no later turn waits on it again until it has
@@ -121,25 +122,21 @@ export async function assembleWithNothingOutOfViewUnsummarised<T extends { outOf
 
 /**
  * Fold what is owed through `throughSeq` within the turn's patience, and cover the rest with
- * placeholders — all UNDER the compaction lock (round 4, re-review 3 F1). A routine background
- * compaction holding the lock is set aside first, and the door waits for it to step out. Only a
- * holder that will not yield (a manual or recovery compaction) can keep the lock past the turn's
- * patience; then, rather than dial a turn with rows nobody represents, the synchronous placeholder
- * write lands outside it — safe, because a real summary landing later takes its rows out of the
- * note (`uncondensed-head.ts`).
+ * placeholders — UNDER the compaction lock when the turn gets it (round 4, re-review 3 F1). A routine
+ * background compaction is set aside first. Round 6 (final review I2, R-V333-15): A TURN NEVER WAITS
+ * ON ANOTHER COMPACTION'S LOCK. If anyone holds it — a manual or recovery compaction, or background
+ * work that has not stepped out yet — the rows are labelled by placeholder notes now, beside the
+ * lock, and the real fold happens after, in the background. That is safe because a real summary
+ * landing later takes its rows out of the note (`uncondensed-head.ts`).
  */
 async function foldOutOfView(agentId: string, contextWindow: number, throughSeq: number, budget: TurnBudget): Promise<void> {
   const bound = boundedSignal(budget.deadline, budget.stop);
   let failedWriter: string | null = null;
   let noWriter = false;
   let covered = 0;
-  let started = false;
-  let gaveUp = false;
-  const setAside = preemptBackgroundCompaction(agentId);
+  preemptBackgroundCompaction(agentId);
   try {
-    const locked = withLock(`compact:${agentId}`, async () => {
-      if (gaveUp) return;   // the turn already covered these rows and moved on
-      started = true;
+    const ran = await withLock(`compact:${agentId}`, async () => {
       while (!bound.signal.aborted) {
         const owed = owedThrough(agentId, throughSeq).length;
         if (owed === 0) break;
@@ -159,25 +156,18 @@ async function foldOutOfView(agentId: string, contextWindow: number, throughSeq:
       }
       // Still under the lock: whatever is owed is represented now — model-free, so this always lands.
       covered += writeUncondensedPlaceholders(agentId, throughSeq);
-    }, { ifBusy: 'wait' });
-    const finished = locked.then(() => 'done' as const, (err: unknown) => {
+      return true;
+    }, { ifBusy: 'skip' }).catch((err: unknown) => {
       logger.error('The out-of-view fold failed; placeholders cover its rows', { error: err instanceof Error ? err.message : String(err) }, agentId);
-      return 'done' as const;
+      return false;
     });
-    const outOfTime = new Promise<'out-of-time'>((resolve) => {
-      if (bound.signal.aborted) resolve('out-of-time');
-      else bound.signal.addEventListener('abort', () => resolve('out-of-time'), { once: true });
-    });
-    let outcome: 'done' | 'out-of-time' = await Promise.race([finished, outOfTime]);
-    // Our own fold holds the lock and is aborting: it only has its placeholders left to write. A
-    // routine holder we set aside is stepping out — unless the owner stopped the turn.
-    if (outcome === 'out-of-time' && (started || (setAside && budget.stop?.aborted !== true))) outcome = await finished;
-    if (outcome !== 'done' && !started) {
-      gaveUp = true;
+    if (ran !== true) {
       covered += writeUncondensedPlaceholders(agentId, throughSeq);
-      logger.warn('The compaction lock was held past the turn\'s patience by a compaction that would not yield; placeholders were written beside it', {
-        throughSeq, covered,
-      }, agentId);
+      if (ran === undefined) {
+        logger.info('Another compaction holds the lock: the turn labels the rows leaving view and the fold happens after', {
+          throughSeq, covered,
+        }, agentId);
+      }
     }
   } finally {
     bound.done();

@@ -102,7 +102,7 @@ vi.mock('../../agent/model.js', async () => {
 
 import * as compaction from '../compaction.js';
 import * as door_ from '../out-of-view-fold.js';
-import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { __resetSummaryWriterHealthForTests, noteAPersonSpoke } from '../summary-writer-health.js';
 import { assembleContext } from '../assembler.js';
 import { insertMessage } from '../message-store.js';
 import { __resetBrakesForTests, noteLowYield } from '../compaction-brakes.js';
@@ -233,11 +233,13 @@ describe('t140 round 3 — a failing writer is passed over for the next one, wit
       expect(writers.calls, 'the next eligible writer was tried').toContain(CHEAP);
       expect(placeholders(), 'a real summary, not a placeholder').toEqual([]);
       expect(failingCards()).toBe(0);
-      // …and a writer that FAILED (its own transport gave up, it answered empty, or 402) is not waited
-      // on by a turn again until it answers — round 5: no clock decides that — while the background,
-      // where nobody waits, keeps trying it in the owner's order.
+      // …and a writer that FAILED (its own transport gave up, it answered empty, or 402) is not dialled
+      // again — by a turn, or (round 6, R-V333-15) by the background — until something changes: a
+      // person's new turn earns it another try. No clock decides it.
       expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a turn does not wait on it again').not.toBe(OWN);
-      expect(compaction.resolveSummaryWriterModel(AGENT, OWN, { background: true }), 'the background keeps trying it').toBe(OWN);
+      expect(compaction.resolveSummaryWriterModel(AGENT, OWN, { background: true }), 'nor does the background').not.toBe(OWN);
+      noteAPersonSpoke();
+      expect(compaction.resolveSummaryWriterModel(AGENT, OWN, { background: true }), 'a person spoke: it is tried again').toBe(OWN);
     }, 5_000);
   }
 });
@@ -276,7 +278,8 @@ describe('t140 round 3 — recovery: a real summary replaces the placeholder, an
     expect(placeholders().length).toBeGreaterThan(0);
     noteLowYield(AGENT);   // the brake a pressure pass would arm
     writers.mode = {};
-    // The writers come back. Round 5: no waiting period — the background tries them at once.
+    // The writers come back; a person's next turn is the change that earns them a retry (round 6).
+    noteAPersonSpoke();
     const ph = await import('../uncondensed-placeholder.js') as unknown as { replaceUncondensedPlaceholders: (a: string) => Promise<number> };
     const replaced = await ph.replaceUncondensedPlaceholders(AGENT);
     expect(replaced).toBeGreaterThan(0);
@@ -324,16 +327,20 @@ describe('t140 round 3 — the brake and a busy lock', () => {
     expect(placeholders()).toEqual([]);
   }, 5_000);
 
-  it('a compaction holding the lock briefly is WAITED for, then the rows get a real summary', async () => {
+  // Round 6 (final review I2, R-V333-15) re-aimed this clause: a turn never waits on another
+  // compaction's lock, even briefly. The rows are labelled now and folded after.
+  it('a compaction holding the lock is NOT waited for: the rows are labelled now, and get their real summary after', async () => {
     seedACut();
     let release!: () => void;
     const held = withLock(`compact:${AGENT}`, () => new Promise<void>((r) => { release = r; }), { ifBusy: 'wait' });
-    setTimeout(() => release(), 100);
     const ctx = await door();
-    await held;
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
-    expect(placeholders(), 'waited for the lock, did not give up').toEqual([]);
-    expect(writers.calls.length).toBeGreaterThan(0);
+    expect(placeholders().length, 'labelled, not waited for').toBeGreaterThan(0);
+    release();
+    await held;
+    const { replaceUncondensedPlaceholders } = await import('../uncondensed-placeholder.js');
+    await replaceUncondensedPlaceholders(AGENT);
+    expect(placeholders(), 'the fold happened after').toEqual([]);
   }, 5_000);
 });
 
@@ -507,6 +514,7 @@ describe('t140 round 4 (re-aimed round 5) — F4: running past the turn\'s patie
     expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a turn does not wait on it again until it answers').not.toBe(OWN);
     const { replaceUncondensedPlaceholders } = await import('../uncondensed-placeholder.js');
     writers.calls = [];
+    noteAPersonSpoke();   // round 6: the change that earns it another try
     await onTheClock(replaceUncondensedPlaceholders(AGENT));
     expect(placeholders()).toEqual([]);
     expect(writers.calls[0], 'the background used the agent\'s own writer, and nothing cut it').toBe(OWN);
@@ -557,7 +565,9 @@ describe('t140 round 4 — R-V333-12: the fallback never widens who sees the con
 });
 
 describe('t140 round 4 — F1: the turn sets a routine background fold aside to get the lock in time', () => {
-  it('a slow background fold holding the lock is preempted: the door folds UNDER the lock, and the preempted writer is not blamed', async () => {
+  // Round 6 (R-V333-15) re-aimed this clause: the turn sets the background fold aside but does not wait
+  // for it to step out; the rows are labelled now and get their real summaries after.
+  it('a slow background fold holding the lock is set aside and not waited for: the rows are labelled, the preempted writer is not blamed, and the real summaries come after', async () => {
     for (let t = 1; t <= 40; t++) appendTurn(false);
     appendTurn(true);
     const throughSeq = (await assembleContext(AGENT, OWN)).outOfViewThroughSeq ?? 0;
@@ -576,9 +586,12 @@ describe('t140 round 4 — F1: the turn sets a routine background fold aside to 
     expect(Date.now() - started, 'the door did not wait out the background writer behind the lock').toBeLessThan(1_500);
     await background;
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
-    expect(placeholders(), 'the door got the lock in time and wrote real summaries').toEqual([]);
     expect(coverCounts()).toEqual([]);
     expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a preempted call is not the writer\'s failure').toBe(OWN);
+    const { replaceUncondensedPlaceholders } = await import('../uncondensed-placeholder.js');
+    await replaceUncondensedPlaceholders(AGENT);
+    expect(placeholders(), 'the real summaries came after').toEqual([]);
+    expect(coverCounts(), 'one note per row throughout').toEqual([]);
   }, 8_000);
 });
 

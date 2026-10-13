@@ -169,7 +169,8 @@ describe('t140 round 5 — the routine background condense is never cut short by
     expect(summariser.calls.length, 'every chunk of the leaving span, not ten').toBeGreaterThan(10);
   });
 
-  it('the background tries the owner\'s preferred writer even after it failed once — nobody waits on it there, and its answer is how the engine learns it is back', async () => {
+  // Round 6 (R-V333-15): the retry is earned by a real change — this gate is a person's new turn.
+  it('a writer that failed once is tried first again at a person\'s new turn — the change that earns it another try', async () => {
     seedAgent(200_000);
     seedRows(610, 'Quick one: is the dock open? Yes, the dock is open.');
     noteSummaryWriterOutcome(MODEL, false);   // it failed a moment ago

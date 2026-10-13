@@ -223,20 +223,25 @@ afterEach(() => {
 import { withLock } from '../../db/with-lock.js';
 
 describe('t140 round 6 — a turn never waits on another compaction\'s lock', () => {
-  it.fails('a compaction that will not yield holds the lock: the turn proceeds at once with the rows labelled', async () => {
+  it('a compaction that will not yield holds the lock: the turn proceeds at once with the rows labelled', async () => {
     seedACut();
     let release!: () => void;
     const held = withLock(`compact:${AGENT}`, () => new Promise<void>((r) => { release = r; }), { ifBusy: 'wait' });
     const started = Date.now();
     const ctx = await door();
-    expect(Date.now() - started, 'the turn did not wait on the lock (its patience is five minutes)').toBeLessThan(5_000);
-    expect(lostRows(JSON.stringify(ctx.messages)), 'every row out of view is labelled').toEqual([]);
-    expect(placeholders(), 'placeholder notes stand in for now').toBeGreaterThan(0);
-    release();
-    await held;
+    try {
+      // A fifth of the turn's five-minute patience: far below waiting on the lock, far above the fake
+      // clock's drift while the assembly reads its templates from disk for real.
+      expect(Date.now() - started, 'the turn did not wait on the lock (its patience is five minutes)').toBeLessThan(60_000);
+      expect(lostRows(JSON.stringify(ctx.messages)), 'every row out of view is labelled').toEqual([]);
+      expect(placeholders(), 'placeholder notes stand in for now').toBeGreaterThan(0);
+    } finally {
+      release();
+      await held;
+    }
   });
 
-  it.fails('the reviewer\'s shape: a placeholder replacement QUEUED behind that lock — the turn still proceeds at once, and the fold happens after', async () => {
+  it('the reviewer\'s shape: a placeholder replacement QUEUED behind that lock — the turn still proceeds at once, and the fold happens after', async () => {
     seedACut();
     const through = (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(AGENT) as { s: number }).s - 20;
     writeUncondensedPlaceholders(AGENT, through);
@@ -245,7 +250,7 @@ describe('t140 round 6 — a turn never waits on another compaction\'s lock', ()
     expect(replacePlaceholdersInBackground(AGENT), 'precondition: a replacement is queued on the lock').toBe(true);
     const started = Date.now();
     const ctx = await door();
-    expect(Date.now() - started, 'the turn did not wait behind the lock').toBeLessThan(5_000);
+    expect(Date.now() - started, 'the turn did not wait behind the lock').toBeLessThan(60_000);
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
     // The holder finishes; the real fold happens after, in the background.
     release();

@@ -219,6 +219,20 @@ describe('t140 census, round 5 — no fixed number cuts a working writer or caps
     expect(gate).not.toMatch(/setTimeout\(/);
     const ph = FILES.find((f) => f.rel === 'memory/uncondensed-placeholder.ts')!.code;
     expect(ph).not.toMatch(/setTimeout\(/);
-    expect(ph).toMatch(/for \(const writer of backgroundSummaryWriters\(preferred\)\) \{/);
+    expect(ph).toMatch(/for \(const writer of eligibleSummaryWriters\(preferred\)\) \{/);   // round 6: answering writers only
+  });
+});
+
+describe('t140 census, round 6 — writer health everywhere; a turn never waits on another compaction', () => {
+  it('there is one list of writers anything may dial, and the background has no list of its own', () => {
+    expect(filesWith(/\bbackgroundSummaryWriters\b/)).toEqual([]);
+    expect(filesWith(/\bnoteAPersonSpoke\(/)).toEqual([GATE_REL, 'memory/summary-writer-health.ts']);
+  });
+
+  it('the turn\'s fold takes the lock only if it is free, and never awaits another holder', () => {
+    const door = FILES.find((f) => f.rel === 'memory/out-of-view-fold.ts')!.code;
+    expect(door).toMatch(/withLock\(`compact:\$\{agentId\}`[\s\S]*?\}, \{ ifBusy: 'skip' \}\)/);
+    expect(door).not.toMatch(/ifBusy: 'wait'/);
+    expect(door).not.toMatch(/await finished/);
   });
 });

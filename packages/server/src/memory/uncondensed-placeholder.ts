@@ -33,7 +33,7 @@ import { generateSummary } from './summarize.js';
 import { refreshEmbedding } from './embeddings.js';
 import { estimateTokens } from './budget.js';
 import { annotateSummaryObligations } from './summary-obligations.js';
-import { abortBlamesWriter, backgroundSummaryWriters, FOLD_PREEMPTED } from './summary-writer-health.js';
+import { abortBlamesWriter, eligibleSummaryWriters, FOLD_PREEMPTED } from './summary-writer-health.js';
 import { noteCompactionRecovered, reportCompactionDefect } from './compaction-defect.js';
 import { backgroundDrains } from '../agent/shared-state.js';
 import type { Message } from '@dojo/shared';
@@ -88,8 +88,8 @@ function coveredElsewhere(messageId: string, placeholderId: string): boolean {
 
 /**
  * Replace placeholders with real summaries of exactly their rows, oldest first, trying each writer in
- * the owner's order once per note (`backgroundSummaryWriters`: only broken ones are passed over —
- * nobody waits here). Round 5: no clock and no per-run cap; a writer is ended only by its own
+ * the owner's order once per note — only writers that are answering (round 6: a failed writer waits
+ * for something to change, `summary-writer-health.ts`). Round 5: no clock and no per-run cap; a writer is ended only by its own
  * transport's patience, Stop, or the turn setting this aside. A pass stops at the first note no
  * writer could replace, and the next gate tries again. Under the per-agent compaction lock (waiting
  * for one running); never consults the low-yield brake. When none remain, the compaction-failing
@@ -122,7 +122,7 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
     const content = buildLeafSummaryInput(source);
     let done = content.trim().length === 0;
     if (done) updateSummaryContent(id, NO_CONVERSATION_PLACEHOLDER, estimateTokens(NO_CONVERSATION_PLACEHOLDER));
-    for (const writer of backgroundSummaryWriters(preferred)) {
+    for (const writer of eligibleSummaryWriters(preferred)) {
       if (done || opts.abortSignal?.aborted) break;
       const summary = await generateSummary({ content, depth: 0, targetTokens: getLeafTargetTokens(), agentId, modelId: writer, abortSignal: opts.abortSignal });
       if (!summary.ok) { if (abortBlamesWriter(opts.abortSignal)) failedWriter = writer; continue; }
@@ -164,11 +164,11 @@ export function preemptBackgroundCompaction(agentId: string): boolean {
 }
 
 /** THE GATE'S LAUNCHER: one background replacement per agent (sharing the routine condense's
- *  one-in-flight slot), only when a placeholder exists and some writer is not broken. */
+ *  one-in-flight slot), only when a placeholder exists and some writer is answering. */
 export function replacePlaceholdersInBackground(agentId: string): boolean {
   try {
     if (backgroundDrains.has(agentId) || !hasUncondensedPlaceholders(agentId)) return false;
-    if (backgroundSummaryWriters(configuredModel(agentId)).length === 0) return false;
+    if (eligibleSummaryWriters(configuredModel(agentId)).length === 0) return false;   // none answering: no dial
   } catch {
     return false;   // a read that failed starts nothing; the gate never fails a turn over this
   }

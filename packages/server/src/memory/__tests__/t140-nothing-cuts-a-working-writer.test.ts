@@ -87,7 +87,7 @@ vi.mock('../../agent/model.js', async () => {
 });
 
 import * as door_ from '../out-of-view-fold.js';
-import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { __resetSummaryWriterHealthForTests, noteAPersonSpoke } from '../summary-writer-health.js';
 import { assembleContext } from '../assembler.js';
 import { insertMessage } from '../message-store.js';
 import { __resetBrakesForTests } from '../compaction-brakes.js';
@@ -242,7 +242,9 @@ describe('t140 round 5 — the turn\'s own fold: no clock of ours cuts a writer 
     expect(placeholders(), 'the fourth writer answered; nothing was left to a note').toBe(0);
   });
 
-  it('a writer that does not answer within the turn\'s patience is not waited on again in the next turn; the background keeps trying it, and its first answer brings it back', async () => {
+  // Round 6 (R-V333-15) re-aimed the last step: the background no longer retries a writer that did
+  // not answer on every gate; a person's new turn is the change that earns it another try.
+  it('a writer that does not answer within the turn\'s patience is not waited on again in the next turn; a person\'s next turn earns it a retry, and its first answer brings it back', async () => {
     writers.mode = { [OWN]: 'hang' };
     seedACut();
     await door();
@@ -258,6 +260,7 @@ describe('t140 round 5 — the turn\'s own fold: no clock of ours cuts a writer 
     writers.calls.length = 0;
     appendTurn(false);
     writeUncondensedPlaceholders(AGENT, (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ? AND seq < (SELECT MAX(seq) - 40 FROM messages WHERE agent_id = ?)').get(AGENT, AGENT) as { s: number }).s);
+    noteAPersonSpoke();   // a person's new turn: the change that earns the writer another try
     await onTheClock(replaceUncondensedPlaceholders(AGENT));
     expect(writers.calls[0], 'the background tried the agent\'s own writer first').toBe(OWN);
     writers.calls.length = 0;
@@ -291,7 +294,8 @@ describe('t140 round 5 — the background replacement has no clock and no per-ru
 });
 
 describe('t140 round 5 — a writer that failed is used again the moment it answers, not after a waiting period', () => {
-  it('the owner\'s one Settings writer failed; it comes back a second later: the background replaces the notes at once', async () => {
+  // Round 6 (R-V333-15): "at once" means at the next real change — a person's new turn — not on a timer.
+  it('the owner\'s one Settings writer failed; it comes back, and at a person\'s next turn the background replaces the notes — no waiting period', async () => {
     // A Settings writer narrows the list to it and the agent's own provider (R-V333-12): here, one writer.
     db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(OWN);
     writers.mode = { [OWN]: 'empty' };
@@ -299,8 +303,9 @@ describe('t140 round 5 — a writer that failed is used again the moment it answ
     await door();
     expect(placeholders(), 'precondition: placeholder notes').toBeGreaterThan(0);
     writers.mode = {};
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(replacePlaceholdersInBackground(AGENT), 'the background starts with the writers it has').toBe(true);
+    expect(replacePlaceholdersInBackground(AGENT), 'no writer answering: nothing is dialled').toBe(false);
+    noteAPersonSpoke();
+    expect(replacePlaceholdersInBackground(AGENT), 'a person spoke: the writer gets another try').toBe(true);
     for (let t = 0; t < 60 && backgroundDrains.has(AGENT); t++) await vi.advanceTimersByTimeAsync(1_000);
     expect(placeholders(), 'no note left: the writers answered and were used').toBe(0);
   });
