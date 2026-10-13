@@ -1053,12 +1053,21 @@ describe('t139 — the delegate-reply link has recorded facts behind it, or it i
     expect(rows[0].source_message_id).toBe('msg-owed-rider');
   });
 
+  // ⚠ RED, HANDED BACK (review M1, second half). Measured while fixing it: `messages.created_at`
+  // is WHOLE-SECOND for every row (SQLite's clock — the notice below lands at `…680000` however
+  // the JS clock is set), and so is `turns.started_at`. No bound on either clock can separate a
+  // notice arriving 300 ms into the turn from a reply that arrived before it; a millisecond turn
+  // start was tried and changes nothing, because the rows are floored past it. What would work is
+  // a SEQUENCE high-water recorded when the turn starts (`messages.seq` at pickup) — a turn-record
+  // field written in preflight, outside this lane's fence. Until then a row landing in the wake
+  // turn's first second can take the link (the task is then opened unlinked, labelled as such).
   it.fails('a notice arriving INSIDE the wake turn\'s first second is not "the row it woke on" (review M1)', async () => {
+    await fanOutAndLand('msg-owed-sec', 'Combine the two quote sets and pick one.', 'JOBH');
+    // Pin the clock (Date only) for the wake turn: 100 ms into a second safely after the replies.
+    const wakeAt = (Math.floor(Date.now() / 1000) + 5) * 1000 + 100;
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
-      vi.setSystemTime(Date.parse('2026-10-12T16:00:00.050Z'));
-      await fanOutAndLand('msg-owed-sec', 'Combine the two quote sets and pick one.', 'JOBH');
-      vi.setSystemTime(Date.parse('2026-10-12T16:00:05.100Z'));
+      vi.setSystemTime(wakeAt);
       mockDb.current!.prepare(
         `INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, counterparty_name, created_at)
          VALUES ('conv-notice-2', ?, 'email', 'gmail', 'news@example.test', 'A Newsletter', datetime('now'))`,
@@ -1068,7 +1077,7 @@ describe('t139 — the delegate-reply link has recorded facts behind it, or it i
         i++;
         if (i === 1) {
           // The notice lands 300 ms AFTER the wake turn started — the same wall-clock second.
-          vi.setSystemTime(Date.parse('2026-10-12T16:00:05.400Z'));
+          vi.setSystemTime(wakeAt + 300);
           insertMessage({
             id: 'msg-notice-2', agentId: PRIMARY, role: 'user', content: 'New email from A Newsletter.',
             turnNumber: 1, channel: 'email', senderId: 'news@example.test', conversationId: 'conv-notice-2',
