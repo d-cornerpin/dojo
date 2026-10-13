@@ -132,7 +132,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { checkAndCompact, estimateAssembledTokens, rebuildContextItems } from '../compaction.js';
 import {
   condenseUntilFits, condensableSummaries, rawContextSummaryTokens, shrinkTarget,
-  CONDENSE_MAX_LEVELS, CONDENSE_MAX_CALLS_PER_RUN, CONDENSE_MIN_TARGET_TOKENS,
+  CONDENSE_MAX_LEVELS, CONDENSE_MIN_TARGET_TOKENS,
 } from '../condense-until-fits.js';
 import { compactionIsBraked, LOW_YIELD_BACKOFF_MS, __resetBrakesForTests } from '../compaction-brakes.js';
 import { compactionFailureReason } from '../compaction-defect.js';
@@ -502,7 +502,9 @@ describe('§2 the loop is finite per run, whatever the summariser does', () => {
 
     await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
 
-    expect(calls.length, 'bounded by the declared per-run call ceiling').toBeLessThanOrEqual(CONDENSE_MAX_CALLS_PER_RUN);
+    // t140 round 6 (H3): the per-run call cap is gone; finiteness rests on the level ceiling, so
+    // the bound is at most one call per seeded summary per level.
+    expect(calls.length, 'bounded by the level ceiling, whatever the summariser does').toBeLessThanOrEqual(8 * CONDENSE_MAX_LEVELS);
     expect(calls.length, 'and it really did try — a bound that stops at zero proves nothing').toBeGreaterThan(0);
     expect(held(), 'the adversary wins: nothing was reclaimed').toBeGreaterThan(await admitted());
     expect(compactionFailureReason(AGENT), 'so a stage is named for repair')
@@ -522,8 +524,7 @@ describe('§2 the loop is finite per run, whatever the summariser does', () => {
   });
 
   it('the declared bounds are small enough to be a bound at all', () => {
-    expect(CONDENSE_MAX_LEVELS).toBeLessThanOrEqual(16);
-    expect(CONDENSE_MAX_CALLS_PER_RUN).toBeLessThanOrEqual(20);
+    expect(CONDENSE_MAX_LEVELS).toBeLessThanOrEqual(16);   // t140 round 6: the per-run call cap is gone (H3)
   });
 
   it('an abort signal stops the climb between levels', async () => {
@@ -536,7 +537,7 @@ describe('§2 the loop is finite per run, whatever the summariser does', () => {
       measure: () => cachedAssembledEstimate(AGENT, 65_536, MODEL_64K, () => estimateAssembledTokens(AGENT, 65_536, MODEL_64K)),
       rebuild: () => rebuildContextItems(AGENT),
     });
-    expect(outcome.levels, 'the forced path\'s three-minute wall clock must be able to stop this')
+    expect(outcome.levels, 'the forced path\'s bound (the turn\'s patience, round 6) must be able to stop this')
       .toBeLessThanOrEqual(1);
   });
 });

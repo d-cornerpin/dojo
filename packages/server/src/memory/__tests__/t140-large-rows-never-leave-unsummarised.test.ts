@@ -101,7 +101,7 @@ async function drive(turns: number, largeEvery: number): Promise<RunLog> {
     const leaving = rowsLeavingView(AGENT, { freshTailCount: getFreshTailCount(windowNow.value) },
       { viewFull: liveViewIsFull(est, lastSystemTokens) });
     if (leaving) {
-      const r = await checkAndCompact(AGENT, MODEL, windowNow.value, { leaving, maxChunksPerRun: 10 });
+      const r = await checkAndCompact(AGENT, MODEL, windowNow.value, { leaving });
       if (r.leafCreated > 0) log.folds.push({ turn: t, rows: leaving.rowsLeaving });
     }
     // The engine's own door (round 2). "Trimmed" still reads the FIRST assembly's cut — what the
@@ -211,7 +211,7 @@ async function driveCounting(turns: number, largeEvery: number, timing: FoldTimi
     const est = await estimateAssembledTokens(AGENT, windowNow.value, MODEL);
     const leaving = rowsLeavingView(AGENT, { freshTailCount: getFreshTailCount(windowNow.value) },
       { viewFull: liveViewIsFull(est, lastSystemTokens) });
-    const fold = leaving ? checkAndCompact(AGENT, MODEL, windowNow.value, { leaving, maxChunksPerRun: 10 }) : null;
+    const fold = leaving ? checkAndCompact(AGENT, MODEL, windowNow.value, { leaving }) : null;
     if (fold && timing === 'awaited') await fold;
     const ctx = await turnAssembly();
     const lost = lostRows(JSON.stringify(ctx.messages));

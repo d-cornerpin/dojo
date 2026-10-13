@@ -19,10 +19,11 @@
 // ── WHAT THIS FILE IS, IN ONE SENTENCE ──
 // Emergency means FIRST, not INFINITE — and never TERMINAL.
 //
-//  1. A FORCED PASS IS BUDGETED. `forcedCompactionOptions()` gives the forced path the
-//     same two bounds the routine drain has always had (`context-gates.ts`'s own
-//     `maxChunksPerRun` + wall-clock abort). A forced pass does the FIRST slice of the
-//     work and returns; the next turn continues if there is anything left to win.
+//  1. A FORCED PASS IS BOUNDED BY THE TURN. `forcedCompactionOptions(turnPatienceMs)` aborts
+//     the pass when the owner's turn has waited as long as it already lets the dialed model
+//     take to start answering (t140 round 6, H3: this replaced a 3-minute clock and a 10-chunk
+//     cap). Inside that the pass does as much as it can and returns; the next turn continues
+//     if there is anything left to win.
 //  2. THE BACKOFF SETS EVEN ON FORCE. `notePassOutcome` records what a pass achieved, and
 //     a FORCED pass that reclaimed nothing arms the brake against everybody — including
 //     the next forced pass. That anti-thrash property is the whole of what survives from
@@ -70,15 +71,6 @@ export const MIN_COMPACTABLE_ROWS = 6;
  */
 export const FORCED_YIELD_FLOOR_TOKENS = 1_000;
 
-/**
- * THE FORCED PASS'S OWN BOUNDS — the routine drain's numbers, applied to the path that
- * never had them. `context-gates.ts` caps a routine drain at 1-10 chunks with a 60-180 s
- * abort; a forced pass is more urgent, not less bounded, so it gets the generous end of
- * both. Ten leaf chunks is ~300K tokens of history per turn — more than any single turn
- * can have added.
- */
-export const FORCED_MAX_CHUNKS_PER_RUN = 10;
-export const FORCED_WALL_CLOCK_MS = 180_000;
 
 /**
  * THE BRAKE, AND WHAT IT REMEMBERS ABOUT WHY IT IS ON.
@@ -281,21 +273,21 @@ export function summaryWriterUnavailable(agentId: string, modelId: string | unde
 /**
  * THE FORCED PASS'S OPTIONS — the whole of "emergency means FIRST, not INFINITE".
  *
- * Returns the option bag `checkAndCompact` already understands, so the gate's call site
- * changes by one argument and this module never imports the compactor (no cycle, and the
- * compactor keeps exactly one entry point). The abort is a real wall-clock timer, exactly as
- * `context-gates.ts` arms one for the routine drain.
+ * Returns the option bag `checkAndCompact` already understands, so this module never imports
+ * the compactor (no cycle, and the compactor keeps exactly one entry point). `turnPatienceMs` is
+ * the caller's `memory/turn-patience.ts` answer for the model the turn dials: the pass is aborted
+ * when the turn has waited that long, never by a number of this file's (t140 round 6, H3).
  */
-export function forcedCompactionOptions(): {
-  force: true; maxChunksPerRun: number; abortSignal: AbortSignal;
+export function forcedCompactionOptions(turnPatienceMs: number): {
+  force: true; abortSignal: AbortSignal;
 } {
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), FORCED_WALL_CLOCK_MS);
+  const timer = setTimeout(() => ctl.abort(), turnPatienceMs);
   // Never keep the process alive for a compaction deadline.
   if (typeof (timer as unknown as { unref?: () => void }).unref === 'function') {
     (timer as unknown as { unref: () => void }).unref();
   }
-  return { force: true, maxChunksPerRun: FORCED_MAX_CHUNKS_PER_RUN, abortSignal: ctl.signal };
+  return { force: true, abortSignal: ctl.signal };
 }
 
 /** Test-only reset; the maps are per-process. Resets the failure notes with them, because a

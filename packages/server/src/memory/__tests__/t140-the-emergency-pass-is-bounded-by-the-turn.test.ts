@@ -307,7 +307,7 @@ async function onTheClock<T>(p: Promise<T>, maxMs = 900_000): Promise<T> {
 }
 
 describe('t140 round 6 — the forced pass is bounded by the turn\'s patience', () => {
-  it.fails('a writer that answers after 200 s — past t91\'s 3-minute clock, inside a 5-minute patience — has its work kept', async () => {
+  it('a writer that answers after 200 s — past t91\'s 3-minute clock, inside a 5-minute patience — has its work kept', async () => {
     seedSummaries(43, 0, 2_000);
     const before = held();
     answer = slowWriter(200_000);
@@ -318,7 +318,7 @@ describe('t140 round 6 — the forced pass is bounded by the turn\'s patience', 
     expect(held()).toBeLessThan(before);
   });
 
-  it.fails('the forced pass carries no chunk cap: more than ten leaf chunks are folded in one pass', async () => {
+  it('the forced pass carries no chunk cap: more than ten leaf chunks are folded in one pass', async () => {
     // 400 older rows of ~1,000 tokens outside the 40-row fresh tail: ~13 leaf chunks of 30K.
     const db = mockDb.current!;
     const ins = db.prepare(`INSERT INTO messages (id, agent_id, role, lane, content, display_kind, display_tier,
@@ -332,7 +332,7 @@ describe('t140 round 6 — the forced pass is bounded by the turn\'s patience', 
     expect((opts as { maxChunksPerRun?: number }).maxChunksPerRun, 'no chunk cap on the forced pass').toBeUndefined();
   });
 
-  it.fails('condensation has no per-run call cap: a level that needs fifteen calls makes fifteen', async () => {
+  it('condensation has no per-run call cap: a level that needs fifteen calls makes fifteen', async () => {
     seedSummaries(60, 0, 2_000);
     await condenseUntilFits({
       agentId: AGENT, modelId: MODEL_64K, minFanout: 4, targetTokens: 2_000,

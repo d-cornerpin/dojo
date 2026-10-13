@@ -38,7 +38,7 @@ import { withLock } from '../db/with-lock.js';
 import { createLogger } from '../logger.js';
 import { leavingViewPass } from './compaction.js';
 import { abortBlamesWriter, eligibleSummaryWriters, noteDidNotAnswerInTurn, summaryWriterCandidates, FOLD_IN_TURN_LIMIT, FOLD_STOPPED_BY_OWNER } from './summary-writer-health.js';
-import { resolveStreamPatience } from '../agent/stream-patience.js';
+import { turnPatienceMs } from './turn-patience.js';
 import { owedThrough, preemptBackgroundCompaction, writeUncondensedPlaceholders } from './uncondensed-placeholder.js';
 import { reportCompactionDefect } from './compaction-defect.js';
 import { registerAbortable, releaseAbortable } from '../agent/shared-state.js';
@@ -48,24 +48,6 @@ const logger = createLogger('memory-out-of-view-fold');
 /** Recursion bound: each pass covers everything the last assembly cut. A backstop, not a limit: a
  *  fold that has not converged after this many passes is a defect (logged), and placeholders cover. */
 const OUT_OF_VIEW_FOLD_PASSES = 4;
-
-/**
- * THE TURN'S PATIENCE, in ms: how long the owner already lets the model this turn dials take to
- * start answering — its provider's declared first-chunk patience, or the transport's standing one
- * (an auto-routed turn's assembly, before the router names its pick, gets the standing one).
- */
-function turnPatienceMs(agentId: string, dialedModelId?: string): number {
-  try {
-    const db = getDb();
-    const modelId = dialedModelId ?? (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id;
-    const row = modelId ? db.prepare(
-      'SELECT p.first_chunk_timeout_ms AS ms FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.id = ?',
-    ).get(modelId) as { ms: number | null } | undefined : undefined;
-    return resolveStreamPatience({ firstChunkTimeoutMs: row?.ms ?? null, streamIdleTimeoutMs: null }).firstChunkMs;
-  } catch {
-    return resolveStreamPatience(null).firstChunkMs;
-  }
-}
 
 interface TurnBudget { deadline: number; stop?: AbortSignal; tried: Set<string> }
 

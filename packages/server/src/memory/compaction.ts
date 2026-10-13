@@ -542,12 +542,9 @@ export function resolveSummaryWriterModel(agentId: string, preferredModelId?: st
 
 export interface CheckAndCompactOptions {
   force?: boolean;
-  // v2.5.12, Per-call cap on how many leaf chunks may be summarized.
-  // Used by the routine gap-trigger path so a huge backlog (e.g. an
-  // upgrade from a pre-gap-trigger version with thousands of uncompacted
-  // messages) drains across many turns instead of blocking a single turn
-  // for minutes while it does dozens of LLM calls back-to-back.
-  maxChunksPerRun?: number;
+  // STRIP (t140 round 6, H3): `maxChunksPerRun`, v2.5.12's per-call cap on leaf chunks. Its last
+  // two callers (the routine condense, round 5; the forced pass, round 6) are bounded by what is
+  // leaving and by the turn's patience instead, so the option had no reader left.
   // v2.5.14, Optional abort signal for cancellation. Used by the
   // background condense in the v2 pre-call gate so a hung summarizer LLM call
   // can actually be cancelled instead of running until the SDK's
@@ -823,7 +820,6 @@ async function runCheckAndCompact(
 
     const tokensBefore = totalTokens;
     const leafCreated = await withCompactionActivity(agentId, () => runLeafCompaction(agentId, modelId, contextWindow, {
-      maxChunks: options?.maxChunksPerRun,
       abortSignal: options?.abortSignal,
     }));
     // The pressure path condenses until the assembly fits (OR-COMPACT-1). The routine fold of
@@ -1022,7 +1018,6 @@ export async function leavingViewPass(
   if (!archiveBeforeCovering(agentId, span)) return NO_COMPACTION;
 
   const leafCreated = await withCompactionActivity(agentId, () => runLeafCompaction(agentId, modelId, contextWindow, {
-    maxChunks: options?.maxChunksPerRun,
     abortSignal: options?.abortSignal,
     throughSeq: leaving.throughSeq,
     floorRows,
@@ -1253,7 +1248,7 @@ export async function runLeafCompaction(
   modelId: string,
   contextWindow?: number,
   opts?: {
-    maxChunks?: number; abortSignal?: AbortSignal;
+    abortSignal?: AbortSignal;
     /** t140: fold only rows with `seq <= throughSeq` (the leaving-view span). Absent: every
      *  unsummarised row outside the floor, the pressure path's input. */
     throughSeq?: number;
@@ -1278,17 +1273,12 @@ export async function runLeafCompaction(
     return 0;
   }
 
-  // Group into chunks of ~leafChunkTokens. Chunks come out in chronological
-  // order (oldest first), which matters for maxChunks: when capped, we drain
-  // the OLDEST gap first so newer messages stay raw in fresh tail longer.
-  const allChunks = chunkMessages(uncompacted, getLeafChunkTokens());
-  const chunks = opts?.maxChunks ? allChunks.slice(0, opts.maxChunks) : allChunks;
+  // Group into chunks of ~leafChunkTokens, oldest first.
+  const chunks = chunkMessages(uncompacted, getLeafChunkTokens());
 
   logger.info('Leaf compaction: processing chunks', {
     totalMessages: uncompacted.length,
     chunkCount: chunks.length,
-    chunksAvailable: allChunks.length,
-    capped: opts?.maxChunks ? true : false,
   }, agentId);
 
   let summariesCreated = 0;

@@ -697,12 +697,12 @@ function refuseAndCondense(
   );
   // Measured for the dialed model; WRITTEN by the summary writer resolved from the agent's
   // configured model (fix round 1, review I3), never by a dialed routed pick.
-  void Promise.all([import('./compaction.js'), import('../db/connection.js')])
-    .then(([{ checkAndCompact, forcedCompactionOptions }, { getDb }]) => {
+  void Promise.all([import('./compaction.js'), import('../db/connection.js'), import('./turn-patience.js')])
+    .then(([{ checkAndCompact, forcedCompactionOptions }, { getDb }, { turnPatienceMs }]) => {
       const configured = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(input.agentId) as
         { model_id: string | null } | undefined)?.model_id ?? input.modelId;
       return checkAndCompact(input.agentId, configured, input.contextWindow,
-        { ...forcedCompactionOptions(), dialedModelId: input.modelId });
+        { ...forcedCompactionOptions(turnPatienceMs(input.agentId, input.modelId)), dialedModelId: input.modelId });
     })
     .catch((condenseErr: unknown) => {
       logger.warn('the condense started by a live-conversation refusal failed', {

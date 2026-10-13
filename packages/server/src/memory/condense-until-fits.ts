@@ -58,13 +58,13 @@
 // IS condensed with the parents this level just made, for one model call instead of two.
 //
 // ── THE BOUND, AND WHY THE LOOP IS FINITE PER RUN ──
-// Three independent bounds, any one of which ends the run:
+// Two independent bounds, either of which ends the run:
 //   1. `CONDENSE_MAX_LEVELS` levels — a `for` loop with a constant ceiling, so finiteness
-//      does not rest on the summariser behaving.
-//   2. `CONDENSE_MAX_CALLS_PER_RUN` model calls. Every level is model calls, and one turn
-//      may not spend an unbounded number of them (t87's "emergency means FIRST, not
-//      INFINITE", carried forward).
-//   3. The caller's abort signal — the forced path's three-minute wall clock.
+//      does not rest on the summariser behaving. A backstop: each level divides the set by the
+//      fanout, so eight levels is far beyond any real body.
+//   2. The caller's abort signal — the forced path's bound is the turn's patience (t140 round 6,
+//      H3, which removed a 12-calls-per-run cap: a level needs as many calls as it has batches,
+//      and the turn's patience, not a count, is what says the owner has waited long enough).
 // Hitting a bound is NOT a dead end: a run that made real progress returns `fits:false`
 // with no refusal, the brake is not armed, and the next pressure continues where this one
 // stopped. That is what "compaction never ends" means operationally.
@@ -90,9 +90,6 @@ const logger = createLogger('condense-until-fits');
  *  floor-sized one (43→11→3→1, then four halvings); eight leaves a level of headroom. */
 export const CONDENSE_MAX_LEVELS = 8;
 
-/** Model calls one run may spend. The incident's first level is 11 batches of four, so
- *  twelve lets its worst level finish inside one turn and stops there. */
-export const CONDENSE_MAX_CALLS_PER_RUN = 12;
 
 /** A lone summary is re-asked for half of what it currently costs… */
 export const CONDENSE_SHRINK_FACTOR = 0.5;
@@ -269,7 +266,7 @@ function parentShape(batch: readonly Summary[]): { depth: number; earliestAt: st
  * old floor silently refused, and the lone arm runs only when the set really is one row.
  */
 async function condenseLevel(
-  rows: Summary[], args: CondenseArgs, callBudget: number,
+  rows: Summary[], args: CondenseArgs,
 ): Promise<LevelResult> {
   const { agentId, modelId, minFanout, targetTokens, abortSignal } = args;
   let created = 0;
@@ -307,7 +304,6 @@ async function condenseLevel(
   }
 
   for (const batch of batchesOf(rows, minFanout)) {
-    if (calls >= callBudget) break;
     if (abortSignal?.aborted) { stage ??= 'bounded_without_progress'; detail ??= 'aborted mid-level'; break; }
     // A trailing single waits for the next level, which reads the whole set again and so merges
     // it with the parents just written — one model call instead of two.
@@ -373,7 +369,6 @@ export async function condenseUntilFits(args: CondenseArgs): Promise<Condensatio
 
   for (let level = 0; level < CONDENSE_MAX_LEVELS; level += 1) {
     if (abortSignal?.aborted) break;
-    if (out.modelCalls >= CONDENSE_MAX_CALLS_PER_RUN) break;
 
     const rows = topLevelRows(agentId);
     if (rows.length === 0) {
@@ -382,7 +377,7 @@ export async function condenseUntilFits(args: CondenseArgs): Promise<Condensatio
       break;
     }
 
-    const res = await condenseLevel(rows, args, CONDENSE_MAX_CALLS_PER_RUN - out.modelCalls);
+    const res = await condenseLevel(rows, args);
     out.modelCalls += res.calls;
     out.condensedCreated += res.created;
     if (res.created > 0) {

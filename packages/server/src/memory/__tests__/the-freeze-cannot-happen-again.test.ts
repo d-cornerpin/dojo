@@ -61,7 +61,7 @@ import { runMigrations } from '../../db/migrations.js';
 import {
   compactionIsBraked, notePassOutcome,
   forcedCompactionOptions, summaryWriterUnavailable,
-  FORCED_MAX_CHUNKS_PER_RUN, FORCED_WALL_CLOCK_MS, LOW_YIELD_BACKOFF_MS,
+  LOW_YIELD_BACKOFF_MS,
   __resetBrakesForTests,
 } from '../compaction-brakes.js';
 // OR-COMPACT-1 (owner, 2026-10-02): the terminal latch and its "archive or reset" card are
@@ -561,13 +561,24 @@ describe('§2 the forced path has a brake and NO terminal state', () => {
     expect(LOW_YIELD_BACKOFF_MS).toBe(15 * 60_000);
   });
 
-  it('the forced pass is BOUNDED — the routine drain\'s two bounds, on the emergency path', () => {
-    const opts = forcedCompactionOptions();
-    expect(opts.force).toBe(true);
-    expect(opts.maxChunksPerRun, 'emergency means FIRST, not INFINITE').toBe(FORCED_MAX_CHUNKS_PER_RUN);
-    expect(FORCED_MAX_CHUNKS_PER_RUN).toBeLessThan(50);
-    expect(opts.abortSignal.aborted).toBe(false);
-    expect(FORCED_WALL_CLOCK_MS).toBe(180_000);
+  // t140 round 6 (H3, ruling R-V333-15) RE-AIMED THIS CLAUSE: the forced pass was bounded by a
+  // 3-minute clock and a 10-chunk cap. It is now bounded by the turn's patience the caller passes
+  // (the dialed model's own first-chunk patience, `memory/turn-patience.ts`): FIRST, not INFINITE,
+  // still holds — the pass ends when the owner has waited as long as they allow, and continues
+  // next turn. `t140-the-emergency-pass-is-bounded-by-the-turn.test.ts` drives it through the pass.
+  it('the forced pass is BOUNDED — by the turn\'s patience it is given, and nothing else', () => {
+    vi.useFakeTimers();
+    try {
+      const opts = forcedCompactionOptions(90_000);
+      expect(opts.force).toBe(true);
+      expect((opts as { maxChunksPerRun?: number }).maxChunksPerRun, 'no chunk cap').toBeUndefined();
+      vi.advanceTimersByTime(89_999);
+      expect(opts.abortSignal.aborted, 'not before the turn\'s patience').toBe(false);
+      vi.advanceTimersByTime(2);
+      expect(opts.abortSignal.aborted, 'emergency means FIRST, not INFINITE').toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

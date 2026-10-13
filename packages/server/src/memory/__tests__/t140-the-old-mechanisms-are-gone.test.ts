@@ -214,7 +214,7 @@ describe('t140 census, round 5 — no fixed number cuts a working writer or caps
     const door = FILES.find((f) => f.rel === 'memory/out-of-view-fold.ts')!.code;
     expect(door).toMatch(/deadline: Date\.now\(\) \+ turnPatienceMs\(agentId, opts\.dialedModelId\)/);
     expect(door).toMatch(/\{ cause: 'out-of-view', throughSeq, rowsLeaving: owed \}, \{ abortSignal: bound\.signal \}\);/);
-    expect(filesWith(/maxChunksPerRun:/)).toEqual(['memory/compaction-brakes.ts']);   // the forced pass's (t91; tabled, handed up)
+    expect(filesWith(/maxChunksPerRun/)).toEqual([]);   // round 6 (H3): the forced pass's cap went too
     const gate = FILES.find((f) => f.rel === GATE_REL)!.code;
     expect(gate).not.toMatch(/setTimeout\(/);
     const ph = FILES.find((f) => f.rel === 'memory/uncondensed-placeholder.ts')!.code;
@@ -234,5 +234,21 @@ describe('t140 census, round 6 — writer health everywhere; a turn never waits 
     expect(door).toMatch(/withLock\(`compact:\$\{agentId\}`[\s\S]*?\}, \{ ifBusy: 'skip' \}\)/);
     expect(door).not.toMatch(/ifBusy: 'wait'/);
     expect(door).not.toMatch(/await finished/);
+  });
+});
+
+describe('t140 census, round 6 (H3) — the forced pass is bounded by the turn, not by numbers', () => {
+  it.each(['FORCED_MAX_CHUNKS_PER_RUN', 'FORCED_WALL_CLOCK_MS', 'CONDENSE_MAX_CALLS_PER_RUN'])('no shipped code says %s', (token) => {
+    expect(filesWith(token)).toEqual([]);
+  });
+
+  it('every forced pass is given the turn\'s patience for the model it is condensing for', () => {
+    expect(filesWith(/\bforcedCompactionOptions\(/)).toEqual([GATE_REL, 'memory/assembly-validation.ts', 'memory/compaction-brakes.ts']);
+    const gate = FILES.find((f) => f.rel === GATE_REL)!.code;
+    expect(gate.match(/\{ \.\.\.forcedCompactionOptions\(turnPatienceMs\(agentId, dialModelId\)\), dialedModelId: dialModelId \}/g)?.length,
+      'both emergency arms').toBe(2);
+    const val = FILES.find((f) => f.rel === 'memory/assembly-validation.ts')!.code;
+    expect(val).toMatch(/\{ \.\.\.forcedCompactionOptions\(turnPatienceMs\(input\.agentId, input\.modelId\)\), dialedModelId: input\.modelId \}/);
+    expect(filesWith(/\bturnPatienceMs\(/)).toEqual([GATE_REL, 'memory/assembly-validation.ts', 'memory/out-of-view-fold.ts', 'memory/turn-patience.ts']);
   });
 });

@@ -40,6 +40,7 @@ import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
 import { replacePlaceholdersInBackground, registerBackgroundCompaction, releaseBackgroundCompaction } from '../../../../memory/uncondensed-placeholder.js';
 import { noteAPersonSpoke } from '../../../../memory/summary-writer-health.js';
+import { turnPatienceMs } from '../../../../memory/turn-patience.js';
 
 const logger = createLogger('v2-loop');
 
@@ -118,7 +119,7 @@ export async function runContextGates(
       agentId, ratio: gateResult.ratio,
     }, agentId);
     try {
-      await checkAndCompact(agentId, configuredModelId, contextWindow, { ...forcedCompactionOptions(), dialedModelId: dialModelId });
+      await checkAndCompact(agentId, configuredModelId, contextWindow, { ...forcedCompactionOptions(turnPatienceMs(agentId, dialModelId)), dialedModelId: dialModelId });
     } catch (compErr) {
       logger.warn('v2: emergency compaction failed', {
         agentId, error: compErr instanceof Error ? compErr.message : String(compErr),
@@ -150,7 +151,7 @@ export async function runContextGates(
     });
     // Force compaction then wakeup so we recover next turn
     try {
-      await checkAndCompact(agentId, configuredModelId, contextWindow, { ...forcedCompactionOptions(), dialedModelId: dialModelId });
+      await checkAndCompact(agentId, configuredModelId, contextWindow, { ...forcedCompactionOptions(turnPatienceMs(agentId, dialModelId)), dialedModelId: dialModelId });
     } catch { /* best effort */ }
     stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
     queueSelfWake(agentId, 'context-gate-rebuild');
